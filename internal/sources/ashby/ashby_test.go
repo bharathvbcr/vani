@@ -17,7 +17,7 @@ import (
 
 var fixedNow = time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
 
-const boardURL = "https://api.ashbyhq.com/posting-api/job-board/ashby?includeCompensation=false"
+const boardURL = "https://api.ashbyhq.com/posting-api/job-board/ashby?includeCompensation=true"
 
 var board = sources.Board{ATS: posting.Ashby, Token: "ashby", Company: "Ashby"}
 
@@ -241,7 +241,7 @@ func TestWrongATSAndEmptyTokenRefused(t *testing.T) {
 }
 
 func TestTokenIsEscaped(t *testing.T) {
-	const want = "https://api.ashbyhq.com/posting-api/job-board/a%2Fb%3FincludeCompensation=true%23x%20y?includeCompensation=false"
+	const want = "https://api.ashbyhq.com/posting-api/job-board/a%2Fb%3FincludeCompensation=true%23x%20y?includeCompensation=true"
 	s, d := newSource(map[string]srctest.Reply{want: {Status: 200, Body: []byte(`{"jobs":[]}`)}})
 	if _, err := s.List(context.Background(), sources.Board{ATS: posting.Ashby, Token: "a/b?includeCompensation=true#x y"}); err != nil {
 		t.Fatal(err)

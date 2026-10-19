@@ -51,6 +51,17 @@ type lpost struct {
 		Text    string `json:"text"`
 		Content string `json:"content"`
 	} `json:"lists"`
+	// AdditionalPlain is the closing text, where boards usually state the
+	// pay range; SalaryDescriptionPlain and SalaryRange are Lever's own pay
+	// fields (github.com/lever/postings-api).
+	AdditionalPlain        string `json:"additionalPlain"`
+	SalaryDescriptionPlain string `json:"salaryDescriptionPlain"`
+	SalaryRange            *struct {
+		Currency string   `json:"currency"`
+		Interval string   `json:"interval"`
+		Min      *float64 `json:"min"`
+		Max      *float64 `json:"max"`
+	} `json:"salaryRange"`
 }
 
 func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
@@ -121,16 +132,30 @@ func (lp lpost) posting(b sources.Board, seen time.Time) (posting.Posting, error
 	return p, nil
 }
 
-// description is the plain description followed by each list (requirements,
-// benefits, ...) as a heading line and its text. The lists carry HTML.
+// description is the structured pay range as a first line (when the board
+// gives one), the plain description, each list (requirements, benefits, ...)
+// as a heading line and its text, then the salary description and the
+// closing text. The lists carry HTML.
 func (lp lpost) description() string {
 	var sb strings.Builder
+	if r := lp.SalaryRange; r != nil {
+		if line := srcutil.PayLine(r.Currency, r.Min, r.Max, r.Interval); line != "" {
+			sb.WriteString(line)
+			sb.WriteString("\n\n")
+		}
+	}
 	sb.WriteString(lp.DescriptionPlain)
 	for _, l := range lp.Lists {
 		sb.WriteString("\n\n")
 		sb.WriteString(l.Text)
 		sb.WriteString("\n")
 		sb.WriteString(htmltext.Text(l.Content, srcutil.MaxDescription))
+	}
+	for _, s := range []string{lp.SalaryDescriptionPlain, lp.AdditionalPlain} {
+		if strings.TrimSpace(s) != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(s)
+		}
 	}
 	return htmltext.Plain(sb.String(), srcutil.MaxDescription)
 }

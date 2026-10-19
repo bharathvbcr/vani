@@ -48,6 +48,46 @@ type job struct {
 	IsListed         *bool  `json:"isListed"`
 	DescriptionPlain string `json:"descriptionPlain"`
 	DescriptionHTML  string `json:"descriptionHtml"`
+	// Compensation is present with includeCompensation=true. It is used only
+	// when the company shows it on its postings (an absent flag counts as
+	// shown: the board returned it publicly).
+	Compensation *compensation `json:"compensation"`
+	ShowPay      *bool         `json:"shouldDisplayCompensationOnJobPostings"`
+}
+
+type compensation struct {
+	CompensationTierSummary             string `json:"compensationTierSummary"`
+	ScrapeableCompensationSalarySummary string `json:"scrapeableCompensationSalarySummary"`
+	SummaryComponents                   []struct {
+		CompensationType string   `json:"compensationType"`
+		Interval         string   `json:"interval"`
+		CurrencyCode     *string  `json:"currencyCode"`
+		MinValue         *float64 `json:"minValue"`
+		MaxValue         *float64 `json:"maxValue"`
+	} `json:"summaryComponents"`
+}
+
+// payLine is the job's salary as one line: the structured Salary component
+// when there is one, else the board's salary summary, else its tier summary
+// (which may also name equity and bonus; jobinsight.ParsePay reads the
+// salary out of it). Empty without compensation.
+func (c *compensation) payLine() string {
+	if c == nil {
+		return ""
+	}
+	for _, s := range c.SummaryComponents {
+		if s.CompensationType == "Salary" && s.CurrencyCode != nil {
+			if line := srcutil.PayLine(*s.CurrencyCode, s.MinValue, s.MaxValue, s.Interval); line != "" {
+				return line
+			}
+		}
+	}
+	for _, s := range []string{c.ScrapeableCompensationSalarySummary, c.CompensationTierSummary} {
+		if s = strings.TrimSpace(s); s != "" {
+			return "Compensation: " + s
+		}
+	}
+	return ""
 }
 
 func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
@@ -55,7 +95,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, err
 	}
 	var resp response
-	endpoint := baseURL + url.PathEscape(b.Token) + "?includeCompensation=false"
+	endpoint := baseURL + url.PathEscape(b.Token) + "?includeCompensation=true"
 	if err := srcutil.GetJSON(ctx, s.d, endpoint, &resp); err != nil {
 		return nil, fmt.Errorf("ashby %q: %w", b.Token, err)
 	}
@@ -105,6 +145,10 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 	desc := htmltext.Plain(j.DescriptionPlain, srcutil.MaxDescription)
 	if desc == "" {
 		desc = htmltext.Text(j.DescriptionHTML, srcutil.MaxDescription)
+	}
+	// The pay line goes first, so the description cap never cuts it.
+	if line := j.Compensation.payLine(); line != "" && (j.ShowPay == nil || *j.ShowPay) {
+		desc = htmltext.Plain(line+"\n\n"+desc, srcutil.MaxDescription)
 	}
 	return posting.Posting{
 		Key:         key,

@@ -1,0 +1,77 @@
+{
+  "jobs": [
+    {
+      "id": "7d8ec4fe-50aa-4d7e-9eec-db7b2d14bcbd",
+      "title": "Mid-Market Solutions Engineering Manager",
+      "location": "Remote - US",
+      "department": "Sales",
+      "jobUrl": "https://jobs.ashbyhq.com/ashby/7d8ec4fe-50aa-4d7e-9eec-db7b2d14bcbd",
+      "applyUrl": "https://jobs.ashbyhq.com/ashby/7d8ec4fe-50aa-4d7e-9eec-db7b2d14bcbd/application",
+      "publishedAt": "2026-08-03T23:05:52.543+00:00",
+      "isRemote": true,
+      "isListed": true,
+      "shouldDisplayCompensationOnJobPostings": true,
+      "descriptionPlain": "(description omitted)",
+      "compensation": {
+        "compensationTierSummary": "$210,000 – $280,313 • Offers Equity • Offers Commission • Multiple Ranges",
+        "scrapeableCompensationSalarySummary": "$210,000 - $280,313",
+        "summaryComponents": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 210000,
+            "maxValue": 280313
+          },
+          {
+            "compensationType": "Commission",
+            "interval": "1 YEAR",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "1 YEAR",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c62ec47a-8de9-4781-b1f7-563a229c4e90",
+      "title": "GTM Systems Analyst",
+      "location": "Remote - US",
+      "department": "Sales",
+      "jobUrl": "https://jobs.ashbyhq.com/ashby/c62ec47a-8de9-4781-b1f7-563a229c4e90",
+      "applyUrl": "https://jobs.ashbyhq.com/ashby/c62ec47a-8de9-4781-b1f7-563a229c4e90/application",
+      "publishedAt": "2026-08-27T15:22:29.182+00:00",
+      "isRemote": true,
+      "isListed": true,
+      "shouldDisplayCompensationOnJobPostings": true,
+      "descriptionPlain": "(description omitted)",
+      "compensation": {
+        "compensationTierSummary": "$115,000 – $162,438 • Offers Equity • Multiple Ranges",
+        "scrapeableCompensationSalarySummary": "$115,000 - $162,438",
+        "summaryComponents": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 115000,
+            "maxValue": 162438
+          },
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "1 YEAR",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          }
+        ]
+      }
+    }
+  ]
+}
