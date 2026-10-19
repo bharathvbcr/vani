@@ -36,7 +36,14 @@ cp "$BIN/vani-apply-agent" "$APP/Contents/Helpers/vani-apply-agent"
 mkdir -p "$APP/Contents/Library/LaunchAgents"
 cp "$MACOS/Support/LaunchAgents/dev.vbcr.vani.apply.agent.plist" "$APP/Contents/Library/LaunchAgents/"
 # Vani's Go CLI, for `vani draft` (Claude answer drafts) from the app and the Chrome host.
-go -C "$VANI" build -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
+# VANI_CLI_BINARY reuses an already-built vani (an absolute path) when only the
+# Mac or extension side changed and the Go tree is mid-edit elsewhere.
+if [ -n "${VANI_CLI_BINARY:-}" ]; then
+  [ -x "$VANI_CLI_BINARY" ] || { echo "VANI_CLI_BINARY is not an executable: $VANI_CLI_BINARY" >&2; exit 1; }
+  cp "$VANI_CLI_BINARY" "$APP/Contents/Helpers/vani"
+else
+  go -C "$VANI" build -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
+fi
 cp "$MACOS/Support/Extension-Info.plist" "$APPEX/Contents/Info.plist"
 cp "$BIN/VaniApplyExtension" "$APPEX/Contents/MacOS/VaniApplyExtension"
 cp -R "$VANI/extension/dist-safari/." "$APPEX/Contents/Resources/"

@@ -224,6 +224,35 @@ func TestGetJSONBodyCap(t *testing.T) {
 	}
 }
 
+func TestGetJSONLimit(t *testing.T) {
+	const u = "https://x.test/one"
+	ok := `{"A":1}` + strings.Repeat(" ", 9) // exactly 16 bytes
+	limited := func(body string, limit int64) error {
+		d := srctest.New(map[string]srctest.Reply{u: {Status: 200, Body: []byte(body)}})
+		var v struct{ A int }
+		return GetJSONLimit(context.Background(), d, u, limit, &v)
+	}
+	if err := limited(ok, 16); err != nil {
+		t.Fatalf("body at the limit: %v", err)
+	}
+	if err := limited(ok+" ", 16); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("body over the limit: %v", err)
+	}
+	// A limit above MaxBody, or none, is MaxBody: never wider.
+	old := maxBody
+	maxBody = 16
+	t.Cleanup(func() { maxBody = old })
+	for _, limit := range []int64{0, -1, 1 << 40} {
+		if err := limited(ok+" ", limit); !errors.Is(err, ErrBodyTooLarge) {
+			t.Errorf("limit %d: %v", limit, err)
+		}
+	}
+	d := srctest.New(map[string]srctest.Reply{u: {Status: 404}})
+	if err := GetJSONLimit(context.Background(), d, u, 16, &struct{}{}); !errors.Is(err, ErrBoardNotFound) {
+		t.Errorf("404: %v", err)
+	}
+}
+
 type failDoer struct{}
 
 func (failDoer) Do(context.Context, *http.Request) (*http.Response, error) {

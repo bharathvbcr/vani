@@ -121,6 +121,15 @@ func GetJSON(ctx context.Context, d egress.Doer, rawURL string, v any) error {
 	return DoJSON(ctx, d, http.MethodGet, rawURL, nil, nil, v)
 }
 
+// GetJSONLimit is GetJSON with a body cap of limit bytes (at most MaxBody),
+// for a per-posting request where a whole board's allowance is far too much.
+func GetJSONLimit(ctx context.Context, d egress.Doer, rawURL string, limit int64, v any) error {
+	if limit <= 0 || limit > maxBody {
+		limit = maxBody
+	}
+	return doJSON(ctx, d, http.MethodGet, rawURL, nil, nil, limit, v)
+}
+
 // PostJSON POSTs body, marshalled as JSON, and decodes the reply into v under
 // GetJSON's contract. It is for read-only search endpoints (a Workday
 // listing): a 429 or 503 resends the same body.
@@ -143,7 +152,11 @@ func PostJSON(ctx context.Context, d egress.Doer, rawURL string, body any, heade
 // (seconds or an HTTP date) or retryBackoff; a Retry-After over maxRetryWait,
 // or the last attempt, returns the status error. The wait ends with ctx.
 func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, v any) error {
-	raw, err := fetch(ctx, d, method, rawURL, body, header, "application/json")
+	return doJSON(ctx, d, method, rawURL, body, header, maxBody, v)
+}
+
+func doJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, limit int64, v any) error {
+	raw, err := fetch(ctx, d, method, rawURL, body, header, "application/json", limit)
 	if err != nil {
 		return err
 	}
@@ -160,11 +173,11 @@ func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []by
 // GetBody GETs rawURL and returns the body under DoJSON's status, body-cap
 // and retry rules, for sources that read an HTML page rather than an API.
 func GetBody(ctx context.Context, d egress.Doer, rawURL string) ([]byte, error) {
-	return fetch(ctx, d, http.MethodGet, rawURL, nil, nil, "text/html,application/xhtml+xml")
+	return fetch(ctx, d, http.MethodGet, rawURL, nil, nil, "text/html,application/xhtml+xml", maxBody)
 }
 
 // fetch is DoJSON's request loop; it returns the 200 body.
-func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string) ([]byte, error) {
+func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64) ([]byte, error) {
 	if d == nil {
 		return nil, errors.New("sources: no http doer configured")
 	}
@@ -190,7 +203,7 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 			return nil, fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
 		}
 		if resp.StatusCode == http.StatusOK {
-			return readBody(resp.Body, req)
+			return readBody(resp.Body, req, limit)
 		}
 		code, hdr := resp.StatusCode, resp.Header
 		// Drain a little so the connection can be reused, then let it go.
@@ -219,14 +232,14 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 	}
 }
 
-func readBody(rc io.ReadCloser, req *http.Request) ([]byte, error) {
+func readBody(rc io.ReadCloser, req *http.Request, limit int64) ([]byte, error) {
 	defer rc.Close()
-	body, err := io.ReadAll(io.LimitReader(rc, maxBody+1))
+	body, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("sources: read %s: %w", req.URL.Redacted(), err)
 	}
-	if int64(len(body)) > maxBody {
-		return nil, fmt.Errorf("%w: over %d bytes from %s", ErrBodyTooLarge, maxBody, req.URL.Redacted())
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%w: over %d bytes from %s", ErrBodyTooLarge, limit, req.URL.Redacted())
 	}
 	return body, nil
 }

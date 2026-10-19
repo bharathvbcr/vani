@@ -146,8 +146,14 @@ function ensurePanel(): void {
   document.documentElement.appendChild(host);
 }
 
+/** How long a message stays up before a rescan may replace it with the coverage line. */
+const HOLD_MS = 60_000;
+let heldUntil = 0;
+
+/** Show a message the user must be able to read; rescans (every DOM change) leave it alone for HOLD_MS. */
 function toast(text: string): void {
   if (statusEl) statusEl.textContent = text;
+  heldUntil = Date.now() + HOLD_MS;
 }
 
 // --- live help ------------------------------------------------------------------
@@ -285,7 +291,8 @@ function suggestButton(): HTMLButtonElement | null {
 }
 
 async function suggestAll(): Promise<void> {
-  if (suggesting || helpBusy) return;
+  if (suggesting) { toast("Suggest is already running on this page."); return; }
+  if (helpBusy) { toast("Finish or close the open draft in the list first, then Suggest."); return; }
   const job = jobInfo();
   // Only empty free-text fields that are neither secret nor self-identification.
   const refs = lastUnknown.filter(r => draftable(r) && classify(r.info) === "standard");
@@ -294,7 +301,10 @@ async function suggestAll(): Promise<void> {
   try {
     request = buildSuggestRequest(fields, job);
   } catch (e) {
-    toast(e instanceof Error ? e.message : String(e));
+    const why = e instanceof Error ? e.message : String(e);
+    // Counts only, never labels or values: enough to tell which filter emptied the list.
+    console.warn("Vani Suggest:", why, { unknown: lastUnknown.length, eligible: refs.length, posting: job.description.length });
+    toast(`Suggest: ${why} (${lastUnknown.length} new questions, ${refs.length} empty free-text).`);
     return;
   }
   const byId = new Map(refs.map((r, i) => [`f${i}`, r]));
@@ -394,7 +404,7 @@ async function scheduleScan(): Promise<void> {
   if (s.disabled || !c || c.found < MIN_FORM_FIELDS) return;
   ensurePanel();
   renderUnknown(c);
-  if (statusEl && !statusEl.textContent?.startsWith("Filled") && !statusEl.textContent?.startsWith("Saved")) {
+  if (statusEl && Date.now() >= heldUntil && !statusEl.textContent?.startsWith("Filled") && !statusEl.textContent?.startsWith("Saved")) {
     statusEl.textContent = `Vani: ${coverageLine(c)}` + (c.unknown ? " Click for the new questions." : "");
   }
 }

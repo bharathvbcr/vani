@@ -1,0 +1,76 @@
+{
+  "anthropic/4461450008": {
+    "id": 4461450008,
+    "title": "Account Executive, AI Native",
+    "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/4461450008",
+    "updated_at": "2026-08-21T21:32:54-04:00",
+    "first_published": "2024-12-20T13:53:38-05:00",
+    "content": "(description omitted)",
+    "pay_input_ranges": [
+      {
+        "min_cents": 22280000,
+        "max_cents": 29000000,
+        "currency_type": "USD",
+        "title": "Annual Salary:",
+        "blurb": "<p>The annual compensation range for this role is listed below.&nbsp;</p>\n<p>For sales roles, the range provided is the role’s On Target Earnings (\"OTE\") range, meaning that the range includes both the sales commissions/sales bonuses target and annual base salary for the role.</p>"
+      }
+    ]
+  },
+  "anthropic/5391313008": {
+    "id": 5391313008,
+    "title": "Account Executive, Startups",
+    "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/5391313008",
+    "updated_at": "2026-09-07T12:12:06-04:00",
+    "first_published": "2026-09-07T12:12:06-04:00",
+    "content": "(description omitted)",
+    "pay_input_ranges": [
+      {
+        "min_cents": 15500000,
+        "max_cents": 20500000,
+        "currency_type": "EUR",
+        "title": "Annual Salary:",
+        "blurb": "<p>The annual compensation range for this role is listed below.&nbsp;</p>\n<p>For sales roles, the range provided is the role’s On Target Earnings (\"OTE\") range, meaning that the range includes both the sales commissions/sales bonuses target and annual base salary for the role.</p>"
+      }
+    ]
+  },
+  "anthropic/5183044008": {
+    "id": 5183044008,
+    "title": "Anthropic Fellows Program, AI Safety & Security",
+    "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/5183044008",
+    "updated_at": "2026-10-07T17:23:43-04:00",
+    "first_published": "2026-04-09T20:28:23-04:00",
+    "content": "(description omitted)",
+    "pay_input_ranges": []
+  },
+  "robinhood/6669758": {
+    "id": 6669758,
+    "title": "Android Engineer, Government Products",
+    "absolute_url": "https://boards.greenhouse.io/robinhood/jobs/6669758?t=gh_src=&gh_jid=6669758",
+    "updated_at": "2026-10-02T18:48:15-04:00",
+    "first_published": "2025-05-08T14:52:01-04:00",
+    "content": "(description omitted)",
+    "pay_input_ranges": [
+      {
+        "min_cents": 16600000,
+        "max_cents": 19500000,
+        "currency_type": "USD",
+        "title": "Zone 1 (Menlo Park, CA; New York, NY; Bellevue, WA; Washington, DC)",
+        "blurb": "<p><strong>In addition to the base pay range listed below, this role is also eligible for bonus opportunities + equity + benefits.</strong></p>\n<p>Base pay for the successful applicant will depend on a variety of job-related factors, which may include education, training, experience, location, business needs, or market demands. The expected base pay range for this role is based on the location where the work will be performed and is aligned to one of 3 compensation zones. For other locations not listed, compensation can be discussed with your recruiter during the interview process.</p>\n<p><span style=\"text-decoration: underline;\">Base Pay Range:</span></p>"
+      },
+      {
+        "min_cents": 14700000,
+        "max_cents": 17200000,
+        "currency_type": "USD",
+        "title": "Zone 2 (Denver, CO; Westlake, TX; Chicago, IL)",
+        "blurb": ""
+      },
+      {
+        "min_cents": 13000000,
+        "max_cents": 15200000,
+        "currency_type": "USD",
+        "title": "Zone 3 (Lake Mary, FL; Clearwater, FL; Gainesville, FL)",
+        "blurb": ""
+      }
+    ]
+  }
+}

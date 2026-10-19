@@ -171,6 +171,19 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return err
 	}
 	srcs := apiSources(d)
+	gh, err := greenhouse.NewWithPay(d, greenhouse.Pay{
+		Known: func(k posting.Key) (posting.Posting, bool) {
+			r, ok := w.led.Get(k)
+			return r.Posting, ok
+		},
+		Report: func(b sources.Board, st greenhouse.PayStats) {
+			fmt.Fprintf(w.warn, "vani: board %s/%s: pay %+v\n", b.ATS, b.Token, st)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	srcs[posting.Greenhouse] = gh
 	if w.hasPageBoard() {
 		src, stop, err := w.pageSource(ctx, d)
 		if err != nil {
