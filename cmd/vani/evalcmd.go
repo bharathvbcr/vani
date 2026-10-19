@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -29,14 +30,22 @@ func (e *env) openEvalStore(labels string) (*eval.Store, error) {
 	return eval.NewStore(labels, filepath.Join(e.stateDir, "eval", "text"))
 }
 
-// openLedger opens the ledger for commands that only read it. The
-// ledger's lock still applies, so this refuses while the daemon is running.
-func (e *env) openLedger() (*ledger.File, error) {
-	l, err := ledger.Open(filepath.Join(e.stateDir, "ledger"))
+// ledgerRecords reads the ledger for commands that only read it. It takes no
+// lock (ledger.ReadSnapshot), so it works while the daemon or a run holds the
+// ledger; a line a writer is still appending is left out, with a note. A
+// ledger that was never written is empty.
+func (e *env) ledgerRecords() ([]ledger.Record, error) {
+	snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ledger: %w", err)
 	}
-	return l, nil
+	if snap.Torn {
+		fmt.Fprintln(e.stderr, "vani: the ledger's last line is still being written; it is left out")
+	}
+	return snap.Records, nil
 }
 
 func (e *env) cmdLabel(args []string) error {
@@ -54,11 +63,10 @@ func (e *env) cmdLabel(args []string) error {
 	if err != nil {
 		return err
 	}
-	l, err := e.openLedger()
+	recs, err := e.ledgerRecords()
 	if err != nil {
 		return err
 	}
-	defer l.Close()
 	if _, bad, err := s.Labels(); err != nil {
 		return fmt.Errorf("labels unreadable, refusing to queue (would repeat work): %w", err)
 	} else if bad > 0 {
@@ -68,7 +76,7 @@ func (e *env) cmdLabel(args []string) error {
 	if sd == 0 {
 		sd = now().UnixNano()
 	}
-	queue := eval.Queue(l.All(), s, *n, rand.New(rand.NewSource(sd)))
+	queue := eval.Queue(recs, s, *n, rand.New(rand.NewSource(sd)))
 	if len(queue) == 0 {
 		fmt.Fprintln(e.stdout, "nothing to label: no unlabelled triaged postings")
 		return nil
@@ -104,16 +112,14 @@ func (e *env) cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
-	l, err := e.openLedger()
+	recs, err := e.ledgerRecords()
 	if err != nil {
 		return err
 	}
-	defer l.Close()
 	names, err := e.evalNames()
 	if err != nil {
 		return err
 	}
-	recs := l.All()
 	if *heldOut == "" {
 		fmt.Fprint(e.stdout, eval.BuildReport(recs, s, names).Markdown())
 		return nil

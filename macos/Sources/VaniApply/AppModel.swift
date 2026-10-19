@@ -145,7 +145,7 @@ final class AppModel {
         let runner = draftSettings.runner(vaniBinary: vaniBinary)
         let reply = await Task.detached(priority: .userInitiated) { runner.run(request) }.value
         try? store?.log(ActivityEntry(source: .app, event: .draft, counts: [reply.error == nil ? "drafted" : "failed": 1]))
-        activity = (try? store?.recentActivity()) ?? activity
+        if let store { refreshActivity(store) }
         return reply
     }
 
@@ -165,7 +165,9 @@ final class AppModel {
         guard let store else { return }
         do {
             snapshot = try store.read()
-            activity = (try? store.recentActivity()) ?? []
+            activityStamp = nil
+            activity = []
+            refreshActivity(store)
             storeError = nil
         } catch {
             storeError = String(describing: error)
@@ -180,10 +182,26 @@ final class AppModel {
                 snapshot = next
                 storeError = nil
             }
-            activity = (try? store.recentActivity()) ?? activity
+            refreshActivity(store)
         } catch {
             storeError = String(describing: error)
         }
+    }
+
+    /// The activity log as last read, by its files' stamp. Every tick used to
+    /// re-read and re-decode up to 500 lines from both files and republish
+    /// them, redrawing the Activity list, though nothing had been appended.
+    private var activityStamp: BankStore.ActivityStamp?
+
+    /// Re-read the log only when its files changed. The stamp is taken before
+    /// the read, so an append landing in between is read again next tick
+    /// rather than missed.
+    private func refreshActivity(_ store: BankStore) {
+        let stamp = store.activityStamp()
+        guard stamp != activityStamp else { return }
+        guard let entries = try? store.recentActivity() else { return }
+        activityStamp = stamp
+        activity = entries
     }
 
     // MARK: - Editing
@@ -196,7 +214,7 @@ final class AppModel {
         do {
             snapshot = try store.update(body)
             try? store.log(ActivityEntry(source: .app, event: event, counts: counts))
-            activity = (try? store.recentActivity()) ?? activity
+            refreshActivity(store)
             return true
         } catch {
             actionError = String(describing: error)

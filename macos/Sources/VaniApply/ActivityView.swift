@@ -52,10 +52,16 @@ struct ActivityView: View {
         return ([e.source.rawValue.capitalized] + counts).joined(separator: " · ")
     }
 
-    private func time(_ iso: String) -> String {
+    /// One parser for every row: building an ISO8601DateFormatter per row on
+    /// each render of a 500-row list is the expensive part of drawing it.
+    @MainActor private static let isoParser: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let d = f.date(from: iso) else { return iso }
+        return f
+    }()
+
+    private func time(_ iso: String) -> String {
+        guard let d = Self.isoParser.date(from: iso) else { return iso }
         return d.formatted(date: .abbreviated, time: .shortened)
     }
 }

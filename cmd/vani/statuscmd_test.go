@@ -385,11 +385,12 @@ func TestStatusJSONRejectsStrayArguments(t *testing.T) {
 	mustCode(t, 2, "status", "--nope")
 }
 
-// The text status is unchanged by --json existing.
+// The text status is unchanged by --json existing. It reads the ledger file
+// (without its lock), so the fixture is written there.
 func TestTextStatusStillCountsByStatus(t *testing.T) {
-	setup(t)
+	_, stateDir := setup(t)
 	mustCode(t, 0, "init")
-	wire(t, fixture(), &fakeNotifier{}, nil)
+	seedLedger(t, stateDir, fixture())
 	o, _ := mustCode(t, 0, "status")
 	for _, want := range []string{"postings: 4", "explained  1", "dropped    1"} {
 		if !strings.Contains(o, want) {

@@ -332,10 +332,9 @@ func (e *env) cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	app, err := buildApp(cfg, e.stateDir, e.stderr)
+	recs, err := e.ledgerRecords() // no lock: works while the daemon runs
 	if err != nil {
 		return err
 	}
-	defer app.close()
-	return e.printStatus(app, cfg)
+	return e.printStatus(recs, cfg)
 }

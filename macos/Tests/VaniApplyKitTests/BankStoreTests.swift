@@ -134,4 +134,63 @@ final class BankStoreTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: store.directory.appendingPathComponent("activity.2.jsonl").path))
         XCTAssertLessThanOrEqual(try store.recentActivity(limit: 10_000).count, 2 * cap / 40)
     }
+
+    /// The app re-reads the activity log only when this stamp changes, so it
+    /// must change with every append and rotation, and with nothing else.
+    func testActivityStampChangesOnlyWithTheLog() throws {
+        let store = BankStore(directory: try tempDir(self), maxActivityBytes: 1024)
+        let empty = store.activityStamp()
+        XCTAssertEqual(store.activityStamp(), empty, "no log yet: stable")
+
+        try store.log(ActivityEntry(source: .chrome, event: .capture, host: "a.example"))
+        let one = store.activityStamp()
+        XCTAssertNotEqual(one, empty)
+        XCTAssertEqual(store.activityStamp(), one, "unchanged log: same stamp")
+        _ = try store.recentActivity()
+        XCTAssertEqual(store.activityStamp(), one, "a read is not a change")
+
+        _ = try store.put(baseRev: 0, bank: bankJSON([answerJSON("aa")]))
+        XCTAssertEqual(store.activityStamp(), one, "a bank write is not a log change")
+
+        try store.log(ActivityEntry(source: .safari, event: .fill, host: "b.example"))
+        let two = store.activityStamp()
+        XCTAssertNotEqual(two, one)
+
+        // Rotation moves the live file aside; the stamp follows both files.
+        let rotated = store.directory.appendingPathComponent("activity.1.jsonl")
+        var last = two
+        while !FileManager.default.fileExists(atPath: rotated.path) {
+            try store.log(ActivityEntry(source: .safari, event: .fill, host: "jobs.example"))
+            let now = store.activityStamp()
+            XCTAssertNotEqual(now, last)
+            last = now
+        }
+    }
+
+    /// The lock wait is bounded by lockWait, and a lock released partway
+    /// through is taken promptly rather than at the next coarse poll.
+    func testLockWaitIsBoundedAndTakesAReleasedLock() throws {
+        let dir = try tempDir(self)
+        let store = BankStore(directory: dir, lockWait: 0.3)
+        _ = try store.read() // creates the directory and the lock file
+        let fd = open(dir.appendingPathComponent("bank.lock").path, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        var start = Date()
+        XCTAssertThrowsError(try store.read()) { err in
+            XCTAssertTrue(String(describing: err).contains("locked by another process"), "\(err)")
+        }
+        let waited = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(waited, 0.3)
+        XCTAssertLessThan(waited, 0.3 + 0.2, "no sleep may run past the deadline")
+
+        // Held 50 ms, then released: the reader gets it well before its 2 s limit.
+        let patient = BankStore(directory: dir, lockWait: 2)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { flock(fd, LOCK_UN) }
+        start = Date()
+        XCTAssertEqual(try patient.read().rev, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
+    }
 }
