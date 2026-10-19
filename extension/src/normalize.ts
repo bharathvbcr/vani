@@ -122,8 +122,23 @@ export function signature(host: string, field: { name: string; automationId: str
   return `${siteKey(host)}|${id}`;
 }
 
-/** The registrable part of a host: boards.greenhouse.io -> greenhouse.io. */
+/**
+ * Generic second levels that country registries sell names under
+ * (acme.co.uk, acme.com.au, acme.co.jp): under a two-letter country code
+ * they are part of the suffix, not the company.
+ */
+const COUNTRY_SECOND_LEVELS = new Set(["ac", "co", "com", "edu", "go", "gob", "gov", "ltd", "mil", "ne", "net", "or", "org", "plc"]);
+
+/**
+ * The registrable part of a host: boards.greenhouse.io -> greenhouse.io,
+ * jobs.acme.co.uk -> acme.co.uk. Not a full public-suffix list: it covers
+ * the two-part country suffixes above, which is where taking the last two
+ * labels put unrelated companies under one key ("co.uk").
+ */
 export function siteKey(host: string): string {
   const parts = host.toLowerCase().replace(/\.$/, "").split(".");
-  return parts.length <= 2 ? parts.join(".") : parts.slice(-2).join(".");
+  const n = parts.length;
+  const countrySuffix = n >= 3 && /^[a-z]{2}$/.test(parts[n - 1] ?? "") && COUNTRY_SECOND_LEVELS.has(parts[n - 2] ?? "");
+  const keep = countrySuffix ? 3 : 2;
+  return n <= keep ? parts.join(".") : parts.slice(-keep).join(".");
 }
