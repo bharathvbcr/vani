@@ -288,15 +288,27 @@ type DropRule struct {
 // VANI_CONFIG and VANI_STATE_DIR win; otherwise macOS keeps both under
 // ~/Library/Application Support/Vani and Linux follows the XDG base
 // directories: $XDG_CONFIG_HOME/vani/config.json and $XDG_STATE_HOME/vani.
+// Windows uses %AppData%\Vani (compiled, untested, unsupported).
 func Paths(getenv func(string) string, home string) (configPath, stateDir string) {
 	return pathsFor(runtime.GOOS, getenv, home)
 }
 
 func pathsFor(goos string, getenv func(string) string, home string) (configPath, stateDir string) {
-	if goos == "linux" {
+	switch goos {
+	case "linux":
 		configPath = filepath.Join(xdgDir(getenv, "XDG_CONFIG_HOME", home, ".config"), "vani", "config.json")
 		stateDir = filepath.Join(xdgDir(getenv, "XDG_STATE_HOME", home, ".local", "state"), "vani")
-	} else {
+	case "windows":
+		// %AppData%\Vani, as os.UserConfigDir resolves it; the profile's
+		// Roaming folder when the variable is missing.
+		appData := getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		base := filepath.Join(appData, "Vani")
+		configPath = filepath.Join(base, "config.json")
+		stateDir = filepath.Join(base, "state")
+	default:
 		base := filepath.Join(home, "Library", "Application Support", "Vani")
 		configPath = filepath.Join(base, "config.json")
 		stateDir = filepath.Join(base, "state")

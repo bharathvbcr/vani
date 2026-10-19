@@ -212,6 +212,15 @@ flowchart TD
   more than 6 h late (and one that runs late) but does not record it, so Vani Apply's Pipeline tab
   shows "No run in over a day" rather than why. A hook from `daemon.Run` into the run record
   (`cmd/vani/runrecord.go`) would say "skipped: 7 h late".
+- **`internal/vault` is built but not wired (left as is, Fable D21, 2026-10-19).** Nothing imports
+  it. It is the planned `resume.HeaderSource` (`internal/resume/tools.go:94`;
+  `internal/resume/types.go:6`: typed wrappers fill the name and contact lines from the vault
+  after a call has been decided), and `internal/rule7/boundary_test.go` already gates it as a
+  package the decision code may not import. `resume.Client.Synthesize` already takes a
+  `HeaderSource`, but nothing calls `Synthesize` yet, so wiring the vault means adding that
+  caller. It brings personal data into the resume path and needs the owner's go-ahead.
+  Until then it is kept: its allowlist is sealed (`Allowed()` returns a copy) and it refuses
+  with `ErrNoKeychain` off macOS.
 - **`JobsClient.call` and `PipelineClient.status` are the same twelve lines** (run vani, bound,
   decode `{"error"}`). Extract one `VaniJSONCall` in `VaniApplyKit` when `Jobs.swift` is next
   touched.

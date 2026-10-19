@@ -286,6 +286,24 @@ func TestLinuxPathsFollowXDG(t *testing.T) {
 			t.Errorf("%s: %s %s, want %s %s", name, c, s, tc.config, tc.stat)
 		}
 	}
+	// Windows: %AppData%\Vani, or the profile's Roaming folder without it;
+	// the VANI_* overrides still win.
+	for name, tc := range map[string]struct {
+		env          map[string]string
+		config, stat string
+	}{
+		"appdata": {map[string]string{"APPDATA": `C:\Users\u\AppData\Roaming`},
+			filepath.Join(`C:\Users\u\AppData\Roaming`, "Vani", "config.json"), filepath.Join(`C:\Users\u\AppData\Roaming`, "Vani", "state")},
+		"no appdata": {map[string]string{},
+			filepath.Join(`C:\Users\u`, "AppData", "Roaming", "Vani", "config.json"), filepath.Join(`C:\Users\u`, "AppData", "Roaming", "Vani", "state")},
+		"vani overrides win": {map[string]string{"APPDATA": `C:\A`, "VANI_CONFIG": `D:\c.json`, "VANI_STATE_DIR": `D:\s`}, `D:\c.json`, `D:\s`},
+	} {
+		get := func(k string) string { return tc.env[k] }
+		c, s := pathsFor("windows", get, `C:\Users\u`)
+		if c != tc.config || s != tc.stat {
+			t.Errorf("windows %s: %s %s, want %s %s", name, c, s, tc.config, tc.stat)
+		}
+	}
 	// XDG variables do not move the macOS layout.
 	c, _ := pathsFor("darwin", func(k string) string { return map[string]string{"XDG_CONFIG_HOME": "/c"}[k] }, "/Users/u")
 	if c != "/Users/u/Library/Application Support/Vani/config.json" {

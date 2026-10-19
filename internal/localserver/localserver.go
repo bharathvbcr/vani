@@ -68,7 +68,10 @@ type Server struct {
 }
 
 // args is the llama-server command line for a validated cfg.
-// Metal only, every layer: CPU is never a fallback. Without MTL0 llama.cpp
+// Metal only, every layer: CPU is never a fallback. The device is fixed, not
+// configurable, by the owner's rule of 2026-10-18 (the served path is Metal;
+// CPU is never a fallback); a 2026-10 audit's request to make it configurable
+// was declined on that ground (Fable D17). Without MTL0 llama.cpp
 // exits at once ("invalid device"), so the run goes on without the shadow
 // rather than measuring a different numeric path. -np stays on auto unless
 // Parallel is set, which keeps the KV pool unified (an explicit -np splits -c
