@@ -66,6 +66,10 @@ func TestFixture(t *testing.T) {
 		!strings.HasPrefix(p.Location, "London, UK; Mountain View, CA, USA") || !p.SeenAt.Equal(fixedNow) {
 		t.Errorf("posting 0: %+v", p)
 	}
+	// Field 13, not the earlier creation time in field 12 (1789652341).
+	if want := time.Unix(1791200531, 991000000).UTC(); !p.PostedAt.Equal(want) {
+		t.Errorf("posted %v, want %v", p.PostedAt, want)
+	}
 	for _, want := range []string{"Google DeepMind", "Minimum qualifications", "Bachelor"} {
 		if !strings.Contains(p.Description, want) {
 			t.Errorf("description lacks %q: %.300s", want, p.Description)
@@ -167,6 +171,49 @@ func TestUnescapesText(t *testing.T) {
 	}
 	if p := got[0]; p.Title != "Revenue Insights Analyst, Ads Finance P&L" || p.Department != "Research & Ads" || p.Location != "São Paulo, Brazil" {
 		t.Errorf("not unescaped: %q / %q / %q", p.Title, p.Department, p.Location)
+	}
+}
+
+// The published time is field 13; a row without it, or with null, has no
+// posted time rather than a guessed one, and a malformed one is refused.
+func TestPublishedTime(t *testing.T) {
+	u := searchURL("x", nil)
+	withTimes := func(f13 string) string {
+		r := one("1", "A")
+		return r[:len(r)-1] + `,[2],[1789652341,118000000],` + f13 + `,[1791200532,376000000]]`
+	}
+	for name, tc := range map[string]struct {
+		row  string
+		want time.Time
+	}{
+		"field 13":        {withTimes(`[1791200531,991000000]`), time.Unix(1791200531, 991000000).UTC()},
+		"seconds only":    {withTimes(`[1791200531]`), time.Unix(1791200531, 0).UTC()},
+		"null":            {withTimes(`null`), time.Time{}},
+		"row without it":  {one("1", "A"), time.Time{}},
+		"cut before it":   {strings.TrimSuffix(withTimes(`[1791200531,0]`), `,[1791200531,0],[1791200532,376000000]]`) + `]`, time.Time{}},
+		"cut right after": {strings.TrimSuffix(withTimes(`[1791200531,0]`), `,[1791200532,376000000]]`) + `]`, time.Unix(1791200531, 0).UTC()},
+	} {
+		s, _ := newSource(map[string]string{u: wrap(`[[` + tc.row + `], null, 1, 20]`)})
+		got, err := s.List(context.Background(), board("x"))
+		if err != nil || len(got) != 1 || !got[0].PostedAt.Equal(tc.want) {
+			t.Errorf("%s: %v %v, want posted %v", name, got, err, tc.want)
+		}
+	}
+	for name, f13 := range map[string]string{
+		"string":         `"2026-10-05"`,
+		"empty pair":     `[]`,
+		"three numbers":  `[1,2,3]`,
+		"zero":           `[0,0]`,
+		"negative nanos": `[1791200531,-1]`,
+		"nanos too big":  `[1791200531,1000000000]`,
+		"before 2000":    `[946684799,0]`,
+		"after 2100":     `[4102444800,0]`,
+		"fraction":       `[1791200531.5,0]`,
+	} {
+		s, _ := newSource(map[string]string{u: wrap(`[[` + withTimes(f13) + `], null, 1, 20]`)})
+		if got, err := s.List(context.Background(), board("x")); !errors.Is(err, ErrShape) {
+			t.Errorf("%s: %d postings, err %v; want ErrShape", name, len(got), err)
+		}
 	}
 }
 
