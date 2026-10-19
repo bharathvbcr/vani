@@ -37,6 +37,8 @@ type fakePage struct {
 	Flood    int    `json:"flood,omitempty"`    // unsolicited lines after html's reply
 	Stderr   int    `json:"stderr,omitempty"`   // bytes of stderr written before a crash
 	DelayMs  int    `json:"delayMs,omitempty"`  // goto takes this long
+
+	StopReading bool `json:"stopReading,omitempty"` // after html's reply, never read stdin again
 }
 
 // fakeEvent is one line of the fake's log.
@@ -197,6 +199,9 @@ func fakeMCP(args []string) int {
 			}
 			for range p.Flood {
 				raw(`{"jsonrpc":"2.0","method":"notifications/message"}` + "\n")
+			}
+			if p.StopReading {
+				time.Sleep(time.Hour)
 			}
 		}
 	}
