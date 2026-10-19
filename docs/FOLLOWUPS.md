@@ -451,22 +451,31 @@ flowchart TD
   as another user; keep the socket in a 0700 directory anyway.
 
 - **Lightpanda proxy token is in argv.** The per-run token rides in `--http-proxy` and
-  `--proxy-bearer-token`, so another process of the same user can read it with `ps` while a fetch
-  runs. Bounded: the proxy listens on loopback only, the token is fresh per run and dies with the
-  proxy, and it only forwards to allowlisted hosts on 443. `lightpanda help` lists proxy
-  credentials as flags only (`--http-proxy`, `--proxy-bearer-token`; checked 2026-10-18).
-- **Lightpanda reads robots.txt at the start of every run** (`--obey-robots`; measured
-  2026-10-19, 1.1.0-nightly.10455): a board with N postings asks for its host's robots.txt N+2
-  times per run (Vani's own Crawl-delay read, then once per lightpanda process). Each process's
-  read sits inside that run, so it is paced with the run, but it is not deduplicated: lightpanda's
-  RobotStore is in-memory per process and there is no flag to hand it a robots.txt. Dropping
-  `--obey-robots` would lose robots enforcement on subresources, which `--block-urls` cannot
-  reproduce (no Allow exceptions). Deduplicating needs one long-lived lightpanda per run so its
-  RobotStore is shared: `lightpanda mcp` (JSON-RPC on stdio, no WebSocket) or `serve` (CDP). That
-  replaces `fetch`'s exit-code and stdout contract that ExecRunner and `--fail-on-http-error` rely
-  on, so it waits for the owner. `TestLightpandaRobotsIntegration` pins the current count.
-- **Lightpanda has no `structured_data` dump mode;** JSON-LD is parsed from `--dump html`.
-  Telemetry is on by default and is disabled through `LIGHTPANDA_DISABLE_TELEMETRY=1`.
+  `--proxy-bearer-token`, so another process of the same user can read it with `ps` while a
+  board's browser runs. Bounded: the proxy listens on loopback only, the token is fresh per run and
+  dies with the proxy, and it only forwards to allowlisted hosts on 443. `lightpanda help` lists
+  proxy credentials as flags only (`--http-proxy`, `--proxy-bearer-token`; checked 2026-10-18).
+- **One `lightpanda mcp` process per board** (since 2026-10-19; was one `lightpanda fetch` per
+  page). `page.MCPBrowser` drives it over stdio JSON-RPC (`goto`, then `html`); its RobotStore is
+  shared by the board's pages, so a board asks its host for robots.txt twice per run (Vani's
+  Crawl-delay read, once per run, and lightpanda's, once per board) instead of N+2. Measured on
+  1.1.0-nightly.10455; the proposal, with the failure-mode table and the `serve`/batched-`fetch`
+  alternatives, is `long-lived-lightpanda-proposal.md` in the side-session notes of 2026-10-19.
+  What remains:
+  - A hung page cannot be abandoned inside lightpanda (it ignores `notifications/cancelled` and
+    answers one request at a time), so a load that outlives `lightpandaTimeout` kills the process;
+    the next load starts another, which reads robots.txt again. At most 3 restarts per board.
+  - Within a board the process keeps cookies between pages (each `fetch` started cookie-less).
+    Nothing crosses boards: the board's end resets the process.
+  - The page proxy's tunnel lifetime is `page.BoardTimeout`, since one CONNECT now serves a whole
+    board. Its per-tunnel byte cap (64 MiB each way) can still be reached by a board with many large
+    pages; lightpanda then re-sends the request in flight on a new tunnel, unpaced (measured for a
+    tunnel cut mid-request). Raise `MaxBytes` for the page proxy if a live board hits it.
+  - Not measured: memory over a 52-page board in one process; redirects (whether robots.txt is
+    checked per hop); a tunnel cut while a large body is streaming.
+- **Lightpanda has no `structured_data` dump mode;** JSON-LD is parsed from the `html` tool's
+  document (the mcp `structuredData` tool exists but is unused). Telemetry is on by default and is
+  disabled through `LIGHTPANDA_DISABLE_TELEMETRY=1`.
 - **kbsync shared bullets: fixed in code, not yet run against the real career.db.** 14 rkb
   bullets are listed by more than one entry. Before the fix, every copy kept the bare rkb bullet
   id. DevPrism keys embeddings by `(owner_id, model)` with the bullet id as `owner_id`, so the

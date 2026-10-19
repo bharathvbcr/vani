@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	// UserAgent is what every careers-page request carries: lightpanda's runs
+	// UserAgent is what every careers-page request carries: lightpanda's
 	// (--user-agent) and Vani's own robots.txt read. One identity means the
 	// robots.txt group lightpanda obeys for Allow/Disallow is the group whose
 	// Crawl-delay Paced honours. lightpanda refuses any value containing

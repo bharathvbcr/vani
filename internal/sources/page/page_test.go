@@ -24,21 +24,35 @@ const (
 
 var fixedNow = time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 
-// fakeRunner serves canned pages by the URL in the last argument and records
-// every argv.
-type fakeRunner struct {
-	mu    sync.Mutex
-	pages map[string]string
-	errs  map[string]error
-	calls [][]string
-	hook  func(ctx context.Context, url string) // optional, runs before answering
+// fakeBrowser serves canned pages by URL, records every URL loaded, and
+// counts Resets.
+type fakeBrowser struct {
+	mu       sync.Mutex
+	pages    map[string]string
+	errs     map[string]error
+	calls    []string
+	resets   int
+	resetErr error                                 // returned by Reset
+	hook     func(ctx context.Context, url string) // optional, runs before answering
 }
 
-func (f *fakeRunner) Run(ctx context.Context, args []string) ([]byte, error) {
+func (f *fakeBrowser) Reset() error {
 	f.mu.Lock()
-	f.calls = append(f.calls, append([]string(nil), args...))
+	defer f.mu.Unlock()
+	f.resets++
+	return f.resetErr
+}
+
+func (f *fakeBrowser) resetCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resets
+}
+
+func (f *fakeBrowser) Load(ctx context.Context, u string) ([]byte, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, u)
 	f.mu.Unlock()
-	u := args[len(args)-1]
 	if f.hook != nil {
 		f.hook(ctx, u)
 	}
@@ -59,7 +73,7 @@ func board() sources.Board {
 	return sources.Board{ATS: posting.Page, Token: "Example", Company: "Example Co", URL: listURL, LinkPattern: `^https://careers\.example\.com/jobs/[a-z0-9-]+$`}
 }
 
-func newSrc(r Runner) *source {
+func newSrc(r Browser) *source {
 	return New(r, ProxyInfo{Addr: testAddr, Token: testTok}).(*source).withNow(fixedNow)
 }
 
@@ -79,7 +93,7 @@ func listing(hrefs ...string) string {
 }
 
 func TestListHappyPath(t *testing.T) {
-	r := &fakeRunner{pages: map[string]string{
+	r := &fakeBrowser{pages: map[string]string{
 		listURL: listing("/jobs/eng-1", "/jobs/ops-2#apply", "https://careers.example.com/jobs/eng-1/?utm_source=x", "mailto:hr@example.com", "javascript:void(0)", "/about", "https://other.example.org/jobs/zzz"),
 		"https://careers.example.com/jobs/eng-1": ldPage("Eng page", `{"@context":"https://schema.org","@type":"JobPosting","title":"Staff Engineer",
 			"description":"&lt;p&gt;Build things&lt;/p&gt;","datePosted":"2026-10-01","validThrough":"2026-12-31",
@@ -169,7 +183,7 @@ func TestBaseHrefResolvesRelativeLinks(t *testing.T) {
 			<body><a href="jobs/results/12-ml-engineer?q=llm">ML Engineer</a></body></html>`,
 		post: ldPage("t", `{"@type":"JobPosting","title":"ML Engineer"}`),
 	}
-	got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), baseBoard())
+	got, err := newSrc(&fakeBrowser{pages: pages}).List(context.Background(), baseBoard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +214,7 @@ func TestBaseHrefResolvesRelativeLinks(t *testing.T) {
 	// A hostile base cannot widen what is fetched: links it redirects to
 	// another host still have to match the operator's pattern.
 	pages[list] = `<html><head><base href="https://evil.example.org/"></head><body><a href="jobs/results/12-ml-engineer?q=llm">x</a></body></html>`
-	if got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), baseBoard()); err == nil {
+	if got, err := newSrc(&fakeBrowser{pages: pages}).List(context.Background(), baseBoard()); err == nil {
 		t.Fatalf("a base on another host produced postings: %+v", got)
 	}
 }
@@ -210,7 +224,7 @@ func TestOverCapIsAnErrorNotATruncation(t *testing.T) {
 	for i := 0; i <= MaxLinks; i++ {
 		hrefs = append(hrefs, "/jobs/j"+strconv.Itoa(i))
 	}
-	r := &fakeRunner{pages: map[string]string{listURL: listing(hrefs...)}}
+	r := &fakeBrowser{pages: map[string]string{listURL: listing(hrefs...)}}
 	_, err := newSrc(r).List(context.Background(), board())
 	if err == nil || !strings.Contains(err.Error(), "narrow") {
 		t.Fatalf("err %v, want a narrower-pattern error", err)
@@ -223,14 +237,14 @@ func TestOverCapIsAnErrorNotATruncation(t *testing.T) {
 	for _, h := range hrefs[:MaxLinks] {
 		pages["https://careers.example.com"+h] = ldPage("t", `{"@type":"JobPosting","title":"T"}`)
 	}
-	got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), board())
+	got, err := newSrc(&fakeBrowser{pages: pages}).List(context.Background(), board())
 	if err != nil || len(got) != MaxLinks {
 		t.Fatalf("at the cap: %d postings, err %v", len(got), err)
 	}
 }
 
 func TestNoMatchingLinksIsAnError(t *testing.T) {
-	r := &fakeRunner{pages: map[string]string{listURL: listing("/about", "/contact")}}
+	r := &fakeBrowser{pages: map[string]string{listURL: listing("/about", "/contact")}}
 	if _, err := newSrc(r).List(context.Background(), board()); err == nil {
 		t.Fatal("an unreadable or empty listing must not look like an empty board")
 	}
@@ -284,7 +298,7 @@ func TestJSONLDShapes(t *testing.T) {
 }
 
 func TestFallbackWithoutJobPosting(t *testing.T) {
-	r := &fakeRunner{pages: map[string]string{
+	r := &fakeBrowser{pages: map[string]string{
 		listURL: listing("/jobs/plain-1", "/jobs/badld-2"),
 		"https://careers.example.com/jobs/plain-1": `<html><head><title>Designer &amp; Maker | Example</title><style>p{}</style></head>
 			<body><nav>menu</nav><p>We need a <b>designer</b>.</p><script>evil()</script></body></html>`,
@@ -309,7 +323,7 @@ func TestFallbackWithoutJobPosting(t *testing.T) {
 }
 
 func TestFallbackTitleChain(t *testing.T) {
-	r := &fakeRunner{pages: map[string]string{
+	r := &fakeBrowser{pages: map[string]string{
 		listURL:                                `<a href="/jobs/a-1">Anchor Title</a><a href="/jobs/b-2"></a>`,
 		"https://careers.example.com/jobs/a-1": `<html><body>no title here</body></html>`,
 		"https://careers.example.com/jobs/b-2": `<html><body>nor here</body></html>`,
@@ -327,7 +341,7 @@ func TestExpiredPostingsAreSkipped(t *testing.T) {
 	mk := func(vt string) string {
 		return ldPage("t", `{"@type":"JobPosting","title":"T","validThrough":"`+vt+`"}`)
 	}
-	r := &fakeRunner{pages: map[string]string{
+	r := &fakeBrowser{pages: map[string]string{
 		listURL: listing("/jobs/past-1", "/jobs/today-2", "/jobs/future-3", "/jobs/pastts-4", "/jobs/nots-5"),
 		"https://careers.example.com/jobs/past-1":   mk("2026-10-17"),
 		"https://careers.example.com/jobs/today-2":  mk("2026-10-18"), // valid through the end of the day
@@ -350,7 +364,7 @@ func TestExpiredPostingsAreSkipped(t *testing.T) {
 
 func TestOneFailedPageFailsTheBoard(t *testing.T) {
 	good := ldPage("t", `{"@type":"JobPosting","title":"T"}`)
-	for name, r := range map[string]*fakeRunner{
+	for name, r := range map[string]*fakeBrowser{
 		"runner error": {
 			pages: map[string]string{listURL: listing("/jobs/a-1", "/jobs/b-2", "/jobs/c-3"), "https://careers.example.com/jobs/a-1": good, "https://careers.example.com/jobs/c-3": good},
 			errs:  map[string]error{"https://careers.example.com/jobs/b-2": errors.New("exit status 22")},
@@ -365,7 +379,7 @@ func TestOneFailedPageFailsTheBoard(t *testing.T) {
 }
 
 func TestErrorsNeverCarryTheToken(t *testing.T) {
-	r := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1")},
+	r := &fakeBrowser{pages: map[string]string{listURL: listing("/jobs/a-1")},
 		errs: map[string]error{"https://careers.example.com/jobs/a-1": errors.New("proxy http://vani:" + testTok + "@127.0.0.1 refused")}}
 	_, err := newSrc(r).List(context.Background(), board())
 	if err == nil || strings.Contains(err.Error(), testTok) {
@@ -373,55 +387,140 @@ func TestErrorsNeverCarryTheToken(t *testing.T) {
 	}
 }
 
-func TestArgvSafety(t *testing.T) {
+// Hostile page content reaches the browser only as validated https URLs of
+// the board's own pattern; it never touches the process flags.
+func TestPageContentOnlyReachesTheBrowserAsURLs(t *testing.T) {
 	evil := `--dump-selector=x" ; rm -rf / ; "`
-	r := &fakeRunner{pages: map[string]string{
-		listURL:                                `<a href="/jobs/a-1">` + evil + `</a><a href="/jobs/b-2">$(touch pwned)</a>`,
+	r := &fakeBrowser{pages: map[string]string{
+		listURL:                                `<a href="/jobs/a-1">` + evil + `</a><a href="/jobs/b-2">$(touch pwned)</a><a href="` + evil + `">x</a>`,
 		"https://careers.example.com/jobs/a-1": ldPage(evil, `{"@type":"JobPosting","title":"`+evil+`","description":"--insecure-disable-tls-host-verification"}`),
 		"https://careers.example.com/jobs/b-2": ldPage("`id`", `{"@type":"JobPosting","title":"T"}`),
 	}}
 	if _, err := newSrc(r).List(context.Background(), board()); err != nil {
 		t.Fatal(err)
 	}
-	fixed := map[string]bool{
-		"fetch": true, "--dump": true, "html": true, "--obey-robots": true, "--block-private-networks": true,
-		"--fail-on-http-error": true, "--http-timeout": true, strconv.Itoa(httpTimeoutMs): true, "--http-max-host-open": true, "1": true,
-		"--user-agent": true, UserAgent: true,
-		"--block-cidrs": true, "-127.0.0.1/32": true, "--http-proxy": true, "--proxy-bearer-token": true, testTok: true,
-		"http://vani:" + testTok + "@" + testAddr: true,
-		listURL: true, "https://careers.example.com/jobs/a-1": true, "https://careers.example.com/jobs/b-2": true,
+	want := []string{listURL, "https://careers.example.com/jobs/a-1", "https://careers.example.com/jobs/b-2"}
+	if !slices.Equal(r.calls, want) {
+		t.Fatalf("loaded %q, want %q", r.calls, want)
 	}
-	for _, argv := range r.calls {
-		have := map[string]bool{}
-		for _, a := range argv {
-			if !fixed[a] {
-				t.Errorf("unexpected argument %q in %v", a, argv)
-			}
-			have[a] = true
-		}
-		for _, must := range []string{"--obey-robots", "--block-private-networks", "--http-proxy", "--proxy-bearer-token", "--fail-on-http-error"} {
-			if !have[must] {
-				t.Errorf("argv lacks %s: %v", must, argv)
-			}
-		}
-		// One connection per host per run keeps the proxy's per-host pacing
-		// from queueing several CONNECTs inside one page load.
-		if i := slices.Index(argv, "--http-max-host-open"); i < 0 || i+1 >= len(argv) || argv[i+1] != "1" {
-			t.Errorf("argv lacks --http-max-host-open 1: %v", argv)
-		}
+}
+
+// Flags is the whole process command line apart from "mcp": a fixed set,
+// with the proxy forced and every safety flag present.
+func TestFlags(t *testing.T) {
+	flags, err := Flags(ProxyInfo{Addr: testAddr, Token: testTok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--obey-robots", "--block-private-networks",
+		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1",
+		"--http-max-response-size", strconv.Itoa(MaxStdout), "--watchdog-ms", strconv.Itoa(watchdogMs),
 		// lightpanda obeys the robots.txt group of its own User-Agent's product
 		// token; it must be the one Crawl-delay is read for.
-		if i := slices.Index(argv, "--user-agent"); i < 0 || i+1 >= len(argv) || argv[i+1] != UserAgent {
-			t.Errorf("argv lacks --user-agent %q: %v", UserAgent, argv)
-		}
-		if argv[len(argv)-1][:8] != "https://" {
-			t.Errorf("last argument is not an https URL: %v", argv)
+		"--user-agent", UserAgent,
+		"--block-cidrs", "-127.0.0.1/32",
+		"--http-proxy", "http://vani:" + testTok + "@" + testAddr,
+		"--proxy-bearer-token", testTok,
+	}
+	if !slices.Equal(flags, want) {
+		t.Fatalf("flags\n %q\nwant\n %q", flags, want)
+	}
+	// An IPv6 loopback proxy is exempted as a /128.
+	v6, err := Flags(ProxyInfo{Addr: "[::1]:9", Token: testTok})
+	if err != nil || !slices.Contains(v6, "-::1/128") || !slices.Contains(v6, "http://vani:"+testTok+"@[::1]:9") {
+		t.Fatalf("ipv6 proxy: %q, %v", v6, err)
+	}
+	for name, p := range map[string]ProxyInfo{
+		"not loopback": {Addr: "10.0.0.1:80", Token: testTok},
+		"hostname":     {Addr: "localhost:80", Token: testTok},
+		"no port":      {Addr: "127.0.0.1", Token: testTok},
+		"port zero":    {Addr: "127.0.0.1:0", Token: testTok},
+		"empty addr":   {Token: testTok},
+		"empty token":  {Addr: testAddr},
+		"odd token":    {Addr: testAddr, Token: "short"},
+		"token space":  {Addr: testAddr, Token: testTok + " --x"},
+		"token at":     {Addr: testAddr, Token: testTok + "@evil"},
+	} {
+		if f, err := Flags(p); err == nil {
+			t.Errorf("proxy %s: accepted, flags %q", name, f)
 		}
 	}
 }
 
+// Every board ends by resetting the browser, whether it was read, failed or
+// was cancelled, so the next board starts a fresh process. A board rejected
+// before any page is loaded has nothing to reset.
+func TestListResetsTheBrowserOncePerBoard(t *testing.T) {
+	good := ldPage("t", `{"@type":"JobPosting","title":"T"}`)
+	pages := func() map[string]string {
+		return map[string]string{listURL: listing("/jobs/a-1"), "https://careers.example.com/jobs/a-1": good}
+	}
+	read := &fakeBrowser{pages: pages()}
+	if _, err := newSrc(read).List(context.Background(), board()); err != nil || read.resetCount() != 1 {
+		t.Fatalf("read board: err %v, %d resets", err, read.resetCount())
+	}
+	failed := &fakeBrowser{pages: pages(), errs: map[string]error{"https://careers.example.com/jobs/a-1": ErrHTTPStatus}}
+	if _, err := newSrc(failed).List(context.Background(), board()); !errors.Is(err, ErrHTTPStatus) || failed.resetCount() != 1 {
+		t.Fatalf("failed board: err %v, %d resets", err, failed.resetCount())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelled := &fakeBrowser{pages: pages(), hook: func(context.Context, string) { cancel() }}
+	if _, err := newSrc(cancelled).List(ctx, board()); !errors.Is(err, context.Canceled) || cancelled.resetCount() != 1 {
+		t.Fatalf("cancelled board: err %v, %d resets", err, cancelled.resetCount())
+	}
+	rejected := &fakeBrowser{pages: pages()}
+	b := board()
+	b.LinkPattern = "("
+	if _, err := newSrc(rejected).List(context.Background(), b); err == nil || rejected.resetCount() != 0 || len(rejected.calls) != 0 {
+		t.Fatalf("rejected board: err %v, %d resets, %d loads", err, rejected.resetCount(), len(rejected.calls))
+	}
+
+	// One source, two boards: one Reset each, in order.
+	twice := &fakeBrowser{pages: pages()}
+	s := newSrc(twice)
+	for i := 1; i <= 2; i++ {
+		if _, err := s.List(context.Background(), board()); err != nil || twice.resetCount() != i {
+			t.Fatalf("board %d: err %v, %d resets", i, err, twice.resetCount())
+		}
+	}
+}
+
+// A browser that cannot be ended fails a board that was otherwise read: the
+// postings are not returned, so the reconciler leaves the board unchanged.
+// A board that already failed keeps its own error.
+func TestResetFailureFailsTheBoard(t *testing.T) {
+	boom := errors.New("lightpanda (pid 1) did not exit after a kill")
+	r := &fakeBrowser{resetErr: boom, pages: map[string]string{
+		listURL: listing("/jobs/a-1"), "https://careers.example.com/jobs/a-1": ldPage("t", `{"@type":"JobPosting","title":"T"}`)}}
+	got, err := newSrc(r).List(context.Background(), board())
+	if !errors.Is(err, boom) || got != nil {
+		t.Fatalf("got %d postings, err %v; want none and the reset error", len(got), err)
+	}
+	r.errs = map[string]error{listURL: ErrHTTPStatus}
+	if _, err := newSrc(r).List(context.Background(), board()); !errors.Is(err, ErrHTTPStatus) || errors.Is(err, boom) {
+		t.Fatalf("err %v; want the page's own error", err)
+	}
+}
+
+// A browser error keeps its sentinel through the token redaction, so an
+// empty page is still retried once, and the message never carries the token.
+func TestBrowserErrorsKeepTheirSentinel(t *testing.T) {
+	noEmptyWait(t)
+	const post = "https://careers.example.com/jobs/a-1"
+	r := &fakeBrowser{pages: map[string]string{listURL: listing("/jobs/a-1")},
+		errs: map[string]error{post: fmt.Errorf("via http://vani:%s@127.0.0.1: %w", testTok, ErrEmptyDocument)}}
+	_, err := newSrc(r).List(context.Background(), board())
+	if !errors.Is(err, ErrEmptyDocument) || strings.Contains(err.Error(), testTok) || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("err %v", err)
+	}
+	if n := countRuns(r, post); n != 2 {
+		t.Errorf("empty page loaded %d times, want 2", n)
+	}
+}
+
 func TestBoardAndProxyValidation(t *testing.T) {
-	r := &fakeRunner{pages: map[string]string{}}
+	r := &fakeBrowser{pages: map[string]string{}}
 	good := board()
 	mod := func(f func(*sources.Board)) sources.Board { b := good; f(&b); return b }
 	for name, b := range map[string]sources.Board{
@@ -441,24 +540,11 @@ func TestBoardAndProxyValidation(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	for name, p := range map[string]ProxyInfo{
-		"not loopback": {Addr: "10.0.0.1:80", Token: testTok},
-		"hostname":     {Addr: "localhost:80", Token: testTok},
-		"no port":      {Addr: "127.0.0.1", Token: testTok},
-		"empty token":  {Addr: testAddr},
-		"odd token":    {Addr: testAddr, Token: "short"},
-		"token space":  {Addr: testAddr, Token: testTok + " --x"},
-	} {
-		s := New(r, p).(*source)
-		if _, err := s.List(context.Background(), good); err == nil {
-			t.Errorf("proxy %s: accepted", name)
-		}
-	}
 	if len(r.calls) != 0 {
-		t.Errorf("a rejected board or proxy still ran lightpanda: %v", r.calls)
+		t.Errorf("a rejected board still loaded pages: %v", r.calls)
 	}
 	if _, err := New(nil, ProxyInfo{Addr: testAddr, Token: testTok}).List(context.Background(), good); err == nil {
-		t.Error("nil runner accepted")
+		t.Error("nil browser accepted")
 	}
 	if New(r, ProxyInfo{}).ATS() != posting.Page {
 		t.Error("wrong ATS")
@@ -466,7 +552,7 @@ func TestBoardAndProxyValidation(t *testing.T) {
 }
 
 func TestStdoutOverCapFailsTheBoard(t *testing.T) {
-	big := &bigRunner{n: MaxStdout + 1}
+	big := &bigBrowser{n: MaxStdout + 1}
 	if _, err := newSrc(big).List(context.Background(), board()); !errors.Is(err, ErrOutputTooLarge) {
 		t.Fatalf("err %v, want ErrOutputTooLarge", err)
 	}
@@ -495,14 +581,14 @@ func TestEmptyDocumentFailsTheBoard(t *testing.T) {
 			} else {
 				pages[post] = dump
 			}
-			got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), board())
+			got, err := newSrc(&fakeBrowser{pages: pages}).List(context.Background(), board())
 			if !errors.Is(err, ErrEmptyDocument) {
 				t.Errorf("%s on the %s: got %d postings, err %v; want ErrEmptyDocument", name, where, len(got), err)
 			}
 		}
 	}
 	// An empty dump is asked again exactly once, never more.
-	r := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1"), post: "<!DOCTYPE html>"}}
+	r := &fakeBrowser{pages: map[string]string{listURL: listing("/jobs/a-1"), post: "<!DOCTYPE html>"}}
 	if _, err := newSrc(r).List(context.Background(), board()); !errors.Is(err, ErrEmptyDocument) {
 		t.Fatalf("err %v", err)
 	}
@@ -525,12 +611,12 @@ func noEmptyWait(t *testing.T) {
 	t.Cleanup(func() { emptyRetryWait = old })
 }
 
-func countRuns(r *fakeRunner, u string) int {
+func countRuns(r *fakeBrowser, u string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n := 0
-	for _, argv := range r.calls {
-		if argv[len(argv)-1] == u {
+	for _, c := range r.calls {
+		if c == u {
 			n++
 		}
 	}
@@ -542,7 +628,7 @@ func countRuns(r *fakeRunner, u string) int {
 func TestEmptyDocumentRetrySucceeds(t *testing.T) {
 	noEmptyWait(t)
 	const post = "https://careers.example.com/jobs/a-1"
-	r := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1"), post: "<!DOCTYPE html>"}}
+	r := &fakeBrowser{pages: map[string]string{listURL: listing("/jobs/a-1"), post: "<!DOCTYPE html>"}}
 	r.hook = func(_ context.Context, u string) {
 		if u == post && countRuns(r, post) == 2 {
 			r.mu.Lock()
@@ -555,7 +641,7 @@ func TestEmptyDocumentRetrySucceeds(t *testing.T) {
 		t.Fatalf("got %+v, err %v", got, err)
 	}
 	// A failed run (a bot challenge, a 404) is never retried.
-	r2 := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1")}, errs: map[string]error{post: errors.New("err=BotChallenge")}}
+	r2 := &fakeBrowser{pages: map[string]string{listURL: listing("/jobs/a-1")}, errs: map[string]error{post: errors.New("err=BotChallenge")}}
 	if _, err := newSrc(r2).List(context.Background(), board()); err == nil || countRuns(r2, post) != 1 {
 		t.Fatalf("a failed run was retried: runs=%d err=%v", countRuns(r2, post), err)
 	}
@@ -566,7 +652,7 @@ func TestEmptyDocumentRetryHonoursContext(t *testing.T) {
 	old := emptyRetryWait
 	emptyRetryWait = time.Minute
 	t.Cleanup(func() { emptyRetryWait = old })
-	r := &fakeRunner{pages: map[string]string{listURL: "<!DOCTYPE html>"}}
+	r := &fakeBrowser{pages: map[string]string{listURL: "<!DOCTYPE html>"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -578,13 +664,14 @@ func TestEmptyDocumentRetryHonoursContext(t *testing.T) {
 	}
 }
 
-type bigRunner struct{ n int }
+type bigBrowser struct{ n int }
 
-func (b *bigRunner) Run(context.Context, []string) ([]byte, error) { return make([]byte, b.n), nil }
+func (b *bigBrowser) Load(context.Context, string) ([]byte, error) { return make([]byte, b.n), nil }
+func (b *bigBrowser) Reset() error                                 { return nil }
 
 func TestContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &fakeRunner{
+	r := &fakeBrowser{
 		pages: map[string]string{
 			listURL:                                listing("/jobs/a-1", "/jobs/b-2"),
 			"https://careers.example.com/jobs/a-1": ldPage("t", `{"@type":"JobPosting","title":"T"}`),

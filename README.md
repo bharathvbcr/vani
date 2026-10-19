@@ -91,10 +91,10 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
   public job-board APIs, and the big-employer search sites: amazon.jobs (`az`, its search.json),
   Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`)
   and Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`). All go through [`internal/egress`](file:///Users/bharath/Code/apps/Vani/internal/egress) (https only, host allowlist, private-address
-  block, pinned dialing). Custom careers pages (`pg` boards) are fetched by Lightpanda, run as a
-  separate process whose traffic is forced through a per-run authenticated loopback CONNECT
-  proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](file:///Users/bharath/Code/apps/Vani/docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
-  is read from the HTML dump. Weak keys (`pg`, `x`) dedupe onto the ATS posting they mirror.
+  block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
+  `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
+  authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](file:///Users/bharath/Code/apps/Vani/docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
+  is read from each page's HTML. Weak keys (`pg`, `x`) dedupe onto the ATS posting they mirror.
 - **Triage:** `career.jd_triage` (role_fit, sponsorship, work_mode, seniority) through a router
   over the OpenRouter decision model (`decide.openrouter_model`, e.g. `liquid/d1-ultra`, asked
   through the Decisions API) then the LLM. The model answers under a name derived from its id
@@ -293,16 +293,17 @@ and, where verified, `--filter name=value`: `az --token amazon` (`normalized_cou
 `category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
 posting cap fails rather than being truncated, so pick searches narrow enough. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
-URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page fetch waits until
-a host's interval has passed since the previous fetch to that host ended. The interval is the longer
+URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page load waits until
+a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for
-`Vani` (or `*`), read once per host per run; that read counts as a visit, so the first fetch waits
+`Vani` (or `*`), read once per host per run; that read counts as a visit, so the first load waits
 after it too. A `Crawl-delay` above 10 s, or a `robots.txt` that cannot be read (5xx, timeout,
 refused host, over 512 KiB, malformed `Crawl-delay`), fails that board with a warning; a 4xx means
 no `robots.txt` and no delay. lightpanda runs as `Vani/0.1 (+personal job-listing reader)`, so its
-`--obey-robots` (Allow/Disallow, subresources included) applies the same `Vani` group. The wait
-happens before lightpanda starts, since the egress proxy's own per-host pacing must stay under
-lightpanda's 5 s wait.
+`--obey-robots` (Allow/Disallow, subresources included) applies the same `Vani` group; one process
+serves a whole board, so it reads the host's `robots.txt` once per board. The wait happens before
+each navigation, since lightpanda gives up on a first response after 5 s and the egress proxy's own
+per-host pacing must stay under that.
 
 Config and state default to `~/Library/Application Support/Vani/` (override with `VANI_CONFIG`
 and `VANI_STATE_DIR`). Keys come from the environment: `OPENROUTER_API_KEY` for the OpenRouter model,

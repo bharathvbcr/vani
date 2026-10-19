@@ -130,29 +130,44 @@ func TestPageSourceStartsAndStopsProxy(t *testing.T) {
 	}
 }
 
-// Whatever page_interval_ms is, including off, runs are paced by robots.txt
+// Whatever page_interval_ms is, including off, loads are paced by robots.txt
 // Crawl-delay on top of it; out of range, it is refused rather than clamped.
-func TestPageRunnerInterval(t *testing.T) {
+// A browser is never built for a proxy the flags would not force traffic
+// through.
+func TestPageBrowserInterval(t *testing.T) {
 	c, err := egress.New(egress.Config{AllowedHosts: []string{"careers.example.com"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	proxy := page.ProxyInfo{Addr: "127.0.0.1:9", Token: "0123456789abcdef0123456789abcdef"}
 	for _, d := range []time.Duration{0, 5 * time.Second, page.MaxInterval} {
-		run, err := pageRunner("/opt/lp/lightpanda", d, c)
-		if err != nil {
-			t.Fatal(err)
+		paced, browser, err := pageBrowser("/opt/lp/lightpanda", d, c, proxy)
+		if err != nil || paced == nil || browser == nil {
+			t.Fatalf("interval %s: %v", d, err)
 		}
-		if _, ok := run.(*page.Paced); !ok {
-			t.Fatalf("interval %s: %T, want *page.Paced", d, run)
+		if err := browser.Close(); err != nil { // never started: nothing to end
+			t.Fatal(err)
 		}
 	}
 	for _, d := range []time.Duration{-time.Millisecond, page.MaxInterval + time.Millisecond} {
-		if _, err := pageRunner("/opt/lp/lightpanda", d, c); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
+		if _, _, err := pageBrowser("/opt/lp/lightpanda", d, c, proxy); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
 			t.Errorf("interval %s: %v", d, err)
 		}
 	}
-	if _, err := pageRunner("/opt/lp/lightpanda", 0, nil); err == nil {
-		t.Error("pageRunner without a doer succeeded")
+	if _, _, err := pageBrowser("/opt/lp/lightpanda", 0, nil, proxy); err == nil {
+		t.Error("pageBrowser without a doer succeeded")
+	}
+	if _, _, err := pageBrowser("/opt/lp/lightpanda", 0, c, page.ProxyInfo{Addr: "10.0.0.1:80", Token: proxy.Token}); err == nil {
+		t.Error("pageBrowser accepted a proxy that is not on loopback")
+	}
+	if _, _, err := pageBrowser("lightpanda", 0, c, proxy); err == nil {
+		t.Error("pageBrowser accepted a relative binary")
+	}
+
+	// A board's process keeps its tunnels for the whole board, so the page
+	// proxy's tunnels must be allowed to live that long.
+	if pageProxyConfig.MaxLifetime < page.BoardTimeout {
+		t.Errorf("page proxy tunnel lifetime %s is shorter than a board (%s)", pageProxyConfig.MaxLifetime, page.BoardTimeout)
 	}
 
 	w := &wired{cfg: config.Config{LightpandaBinary: "/opt/lp/lightpanda", PageIntervalMS: 5000}, warn: &bytes.Buffer{}}

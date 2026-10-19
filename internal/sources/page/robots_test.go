@@ -119,7 +119,7 @@ func blockingDoer() *robotsDoer {
 	}}
 }
 
-func mustRobotsPaced(t *testing.T, next Runner, d egress.Doer, floor time.Duration) *Paced {
+func mustRobotsPaced(t *testing.T, next Browser, d egress.Doer, floor time.Duration) *Paced {
 	t.Helper()
 	p, err := NewRobotsPaced(next, d, floor)
 	if err != nil {
@@ -128,7 +128,7 @@ func mustRobotsPaced(t *testing.T, next Runner, d egress.Doer, floor time.Durati
 	return p
 }
 
-func noRuns(t *testing.T, inner *timingRunner) {
+func noRuns(t *testing.T, inner *timingBrowser) {
 	t.Helper()
 	if spans, _ := inner.recorded(); len(spans) != 0 {
 		t.Fatalf("%d runs made, want none", len(spans))
@@ -136,7 +136,7 @@ func noRuns(t *testing.T, inner *timingRunner) {
 }
 
 func TestNewRobotsPacedBounds(t *testing.T) {
-	inner, d := &timingRunner{}, robotsReply(404, "")
+	inner, d := &timingBrowser{}, robotsReply(404, "")
 	for _, f := range []time.Duration{-time.Nanosecond, MaxInterval + time.Nanosecond} {
 		if _, err := NewRobotsPaced(inner, d, f); err == nil {
 			t.Errorf("floor %s accepted", f)
@@ -159,16 +159,16 @@ func TestNewRobotsPacedBounds(t *testing.T) {
 // leaves the delay unknown, so the run is not made.
 func TestRobotsStatus(t *testing.T) {
 	for _, status := range []int{400, 401, 403, 404, 410, 429, 451} {
-		inner := &timingRunner{}
+		inner := &timingBrowser{}
 		p := mustRobotsPaced(t, inner, robotsReply(status, "User-agent: *\nCrawl-delay: 60\n"), 0)
-		if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+		if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err != nil {
 			t.Errorf("status %d: %v", status, err)
 		}
 	}
 	for _, status := range []int{100, 301, 302, 304, 500, 502, 503, 599} {
-		inner := &timingRunner{}
+		inner := &timingBrowser{}
 		p := mustRobotsPaced(t, inner, robotsReply(status, ""), 0)
-		if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err == nil || !strings.Contains(err.Error(), "unknown") {
+		if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err == nil || !strings.Contains(err.Error(), "unknown") {
 			t.Errorf("status %d: %v", status, err)
 		}
 		noRuns(t, inner)
@@ -178,11 +178,11 @@ func TestRobotsStatus(t *testing.T) {
 // One read per host per run, at https://<host>/robots.txt, even after the
 // host's slot was dropped between runs.
 func TestRobotsReadOncePerHost(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	d := robotsReply(200, "User-agent: *\nCrawl-delay: 0\n")
 	p := mustRobotsPaced(t, inner, d, 0)
 	for _, u := range []string{"https://a.example.com/1", "https://A.example.com/2", "https://b.example.com/1", "https://a.example.com/3"} {
-		if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
+		if _, err := p.Load(context.Background(), u); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -198,17 +198,17 @@ func TestRobotsReadOncePerHost(t *testing.T) {
 
 // A failed read is not remembered: the next run to the host reads again.
 func TestRobotsFailureNotCached(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	status := 503
 	d := &robotsDoer{handle: func(_ context.Context, req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 	}}
 	p := mustRobotsPaced(t, inner, d, 0)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err == nil {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err == nil {
 		t.Fatal("503 robots.txt ran")
 	}
 	status = 404
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(d.requests()); n != 2 {
@@ -222,11 +222,11 @@ func TestRobotsDelayAndFloor(t *testing.T) {
 		floor time.Duration
 		delay string
 	}{{150 * time.Millisecond, "0.03"}, {30 * time.Millisecond, "0.15"}} {
-		inner := &timingRunner{hold: 5 * time.Millisecond}
+		inner := &timingBrowser{hold: 5 * time.Millisecond}
 		d := robotsReply(200, "User-agent: Vani\nCrawl-delay: "+c.delay+"\n")
 		p := mustRobotsPaced(t, inner, d, c.floor)
 		for _, u := range []string{"https://careers.example.com/a", "https://careers.example.com/b", "https://careers.example.com/c"} {
-			if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
+			if _, err := p.Load(context.Background(), u); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -242,17 +242,17 @@ func TestRobotsDelayAndFloor(t *testing.T) {
 // does the read after a failed one.
 func TestRobotsReadIsAVisit(t *testing.T) {
 	const floor = 150 * time.Millisecond
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	status := 503
 	d := &robotsDoer{handle: func(_ context.Context, req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 	}}
 	p := mustRobotsPaced(t, inner, d, floor)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err == nil {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err == nil {
 		t.Fatal("503 robots.txt ran")
 	}
 	status = 404
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err != nil {
 		t.Fatal(err)
 	}
 	spans, _ := inner.recorded()
@@ -273,7 +273,7 @@ func TestRobotsUserAgent(t *testing.T) {
 		t.Fatal("lightpanda refuses a User-Agent containing Mozilla")
 	}
 	d := robotsReply(404, "")
-	if _, err := mustRobotsPaced(t, &timingRunner{}, d, 0).Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+	if _, err := mustRobotsPaced(t, &timingBrowser{}, d, 0).Load(context.Background(), "https://careers.example.com/a"); err != nil {
 		t.Fatal(err)
 	}
 	d.mu.Lock()
@@ -286,25 +286,25 @@ func TestRobotsUserAgent(t *testing.T) {
 // A Crawl-delay above the cap is refused, not paced at the cap.
 func TestRobotsDelayAboveCap(t *testing.T) {
 	for _, v := range []string{"10.001", "11", "3600", "99999999999999999999"} {
-		inner := &timingRunner{}
+		inner := &timingBrowser{}
 		p := mustRobotsPaced(t, inner, robotsReply(200, "User-agent: *\nCrawl-delay: "+v+"\n"), time.Second)
-		_, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a"))
+		_, err := p.Load(context.Background(), "https://careers.example.com/a")
 		if !errors.Is(err, ErrCrawlDelayTooLong) || !strings.Contains(err.Error(), "careers.example.com") {
 			t.Errorf("Crawl-delay %s: %v", v, err)
 		}
 		noRuns(t, inner)
 	}
 	// At the cap is accepted (read directly: a Run would rest 10 s first).
-	p := mustRobotsPaced(t, &timingRunner{}, robotsReply(200, "User-agent: *\nCrawl-delay: 10\n"), 0)
+	p := mustRobotsPaced(t, &timingBrowser{}, robotsReply(200, "User-agent: *\nCrawl-delay: 10\n"), 0)
 	if iv, err := p.intervalFor(context.Background(), &hostSlot{}, "careers.example.com"); err != nil || iv != MaxInterval {
 		t.Fatalf("Crawl-delay at the cap: %s, %v", iv, err)
 	}
 }
 
 func TestRobotsMalformedDelay(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustRobotsPaced(t, inner, robotsReply(200, "User-agent: *\nCrawl-delay: soon\n"), 0)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err == nil || !strings.Contains(err.Error(), `"soon"`) {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err == nil || !strings.Contains(err.Error(), `"soon"`) {
 		t.Fatalf("malformed Crawl-delay: %v", err)
 	}
 	noRuns(t, inner)
@@ -312,9 +312,9 @@ func TestRobotsMalformedDelay(t *testing.T) {
 
 // A robots.txt that is not one (a challenge page, binary) sets no delay.
 func TestRobotsGarbageBody(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustRobotsPaced(t, inner, robotsReply(200, "<html>\x00\xff<p>Checking your browser</p></html>"), 0)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -324,12 +324,12 @@ func TestRobotsGarbageBody(t *testing.T) {
 func TestRobotsSizeLimit(t *testing.T) {
 	head := "User-agent: *\nCrawl-delay: 0.01\n"
 	atLimit := head + "#" + strings.Repeat("x", maxRobotsBytes-len(head)-1)
-	inner := &timingRunner{}
-	if _, err := mustRobotsPaced(t, inner, robotsReply(200, atLimit), 0).Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+	inner := &timingBrowser{}
+	if _, err := mustRobotsPaced(t, inner, robotsReply(200, atLimit), 0).Load(context.Background(), "https://careers.example.com/a"); err != nil {
 		t.Fatalf("robots.txt at the limit: %v", err)
 	}
-	inner = &timingRunner{}
-	_, err := mustRobotsPaced(t, inner, robotsReply(200, atLimit+"\n"), 0).Run(context.Background(), fetchArgs("https://careers.example.com/a"))
+	inner = &timingBrowser{}
+	_, err := mustRobotsPaced(t, inner, robotsReply(200, atLimit+"\n"), 0).Load(context.Background(), "https://careers.example.com/a")
 	if !errors.Is(err, ErrRobotsTooLarge) {
 		t.Fatalf("robots.txt over the limit: %v", err)
 	}
@@ -338,11 +338,11 @@ func TestRobotsSizeLimit(t *testing.T) {
 
 // A robots.txt request that does not answer in time fails the run quickly.
 func TestRobotsTimeout(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustRobotsPaced(t, inner, blockingDoer(), 0)
 	p.robotsTimeout = 50 * time.Millisecond
 	begin := time.Now()
-	_, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a"))
+	_, err := p.Load(context.Background(), "https://careers.example.com/a")
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("got %v, want a robots.txt timeout", err)
 	}
@@ -354,11 +354,11 @@ func TestRobotsTimeout(t *testing.T) {
 
 // A caller cancelled during the robots.txt read gets its context's error.
 func TestRobotsCancelled(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustRobotsPaced(t, inner, blockingDoer(), 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(30*time.Millisecond, cancel)
-	if _, err := p.Run(ctx, fetchArgs("https://careers.example.com/a")); !errors.Is(err, context.Canceled) {
+	if _, err := p.Load(ctx, "https://careers.example.com/a"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v, want context.Canceled", err)
 	}
 	noRuns(t, inner)
@@ -371,9 +371,9 @@ func TestRobotsEgressRefusesHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustRobotsPaced(t, inner, c, 0)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); !errors.Is(err, egress.ErrNotAllowed) {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); !errors.Is(err, egress.ErrNotAllowed) {
 		t.Fatalf("got %v, want egress.ErrNotAllowed", err)
 	}
 	noRuns(t, inner)
@@ -382,7 +382,7 @@ func TestRobotsEgressRefusesHost(t *testing.T) {
 // Through the source: a host whose Crawl-delay is above the cap fails the
 // board loudly, with no page fetched.
 func TestListRefusesBoardOverCrawlDelayCap(t *testing.T) {
-	inner := &timingRunner{next: &fakeRunner{pages: map[string]string{listURL: listing("/jobs/eng-1")}}}
+	inner := &timingBrowser{next: &fakeBrowser{pages: map[string]string{listURL: listing("/jobs/eng-1")}}}
 	p := mustRobotsPaced(t, inner, robotsReply(200, "User-agent: *\nCrawl-delay: 30\n"), 0)
 	_, err := newSrc(p).List(context.Background(), board())
 	if err == nil || !strings.Contains(err.Error(), "Crawl-delay") {
