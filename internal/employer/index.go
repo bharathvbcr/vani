@@ -120,19 +120,18 @@ type fileSource struct {
 	Names map[string]attr `json:"names"`
 }
 
+// fileDoc is the index file. Sources is kept as the bytes json.Marshal gave
+// []fileSource: the checksum is of exactly those bytes, so a load hashes what
+// it read instead of re-encoding the whole index to compare.
 type fileDoc struct {
-	Version  int          `json:"version"`
-	Checksum string       `json:"checksum"` // sha256 of the JSON encoding of Sources
-	Sources  []fileSource `json:"sources"`
+	Version  int             `json:"version"`
+	Checksum string          `json:"checksum"` // sha256 of the JSON encoding of Sources
+	Sources  json.RawMessage `json:"sources"`
 }
 
-func checksum(sources []fileSource) (string, error) {
-	b, err := json.Marshal(sources)
-	if err != nil {
-		return "", err
-	}
+func sumOf(b []byte) string {
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // Save writes the index as compact JSON with mode 0600, atomically, then the
@@ -148,12 +147,12 @@ func (x *Index) Save(path string) error {
 		}
 		srcs = append(srcs, fileSource{SourceMeta: p.Source, Names: names})
 	}
-	sum, err := checksum(srcs)
+	b, err := json.Marshal(srcs)
 	if err != nil {
 		x.mu.RUnlock()
 		return fmt.Errorf("employer: encode index: %w", err)
 	}
-	data, err := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: sum, Sources: srcs})
+	data, err := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: sumOf(b), Sources: b})
 	x.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("employer: encode index: %w", err)
@@ -249,11 +248,21 @@ func decodeSources(data []byte) (map[string]Partial, error) {
 	if doc.Version != SchemaVersion {
 		return nil, fmt.Errorf("employer: unsupported index schema version %d (want %d)", doc.Version, SchemaVersion)
 	}
-	if sum, err := checksum(doc.Sources); err != nil || sum != doc.Checksum {
+	// The bytes Save hashed are the bytes on disk, so they are hashed as
+	// read. A sources block re-spaced or re-ordered by hand no longer
+	// matches, where re-encoding it used to.
+	if sumOf(doc.Sources) != doc.Checksum {
 		return nil, errors.New("employer: corrupt index: checksum mismatch")
 	}
-	sources := make(map[string]Partial, len(doc.Sources))
-	for _, s := range doc.Sources {
+	var srcs []fileSource
+	sdec := json.NewDecoder(bytes.NewReader(doc.Sources))
+	sdec.DisallowUnknownFields()
+	if err := sdec.Decode(&srcs); err != nil {
+		return nil, fmt.Errorf("employer: corrupt index: %w", err)
+	}
+	doc.Sources = nil // decoded; let the bytes go
+	sources := make(map[string]Partial, len(srcs))
+	for _, s := range srcs {
 		p := Partial{Source: s.SourceMeta, Names: s.Names}
 		if err := validatePartial(p); err != nil {
 			return nil, fmt.Errorf("employer: corrupt index: %w", err)
