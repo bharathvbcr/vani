@@ -121,6 +121,15 @@ func GetJSON(ctx context.Context, d egress.Doer, rawURL string, v any) error {
 	return DoJSON(ctx, d, http.MethodGet, rawURL, nil, nil, v)
 }
 
+// GetJSONLimit is GetJSON with a body cap of limit bytes (at most MaxBody),
+// for a per-posting request where a whole board's allowance is far too much.
+func GetJSONLimit(ctx context.Context, d egress.Doer, rawURL string, limit int64, v any) error {
+	if limit <= 0 || limit > maxBody {
+		limit = maxBody
+	}
+	return doJSON(ctx, d, http.MethodGet, rawURL, nil, nil, limit, v)
+}
+
 // PostJSON POSTs body, marshalled as JSON, and decodes the reply into v under
 // GetJSON's contract. It is for read-only search endpoints (a Workday
 // listing): a 429 or 503 resends the same body.
@@ -143,6 +152,10 @@ func PostJSON(ctx context.Context, d egress.Doer, rawURL string, body any, heade
 // (seconds or an HTTP date) or retryBackoff; a Retry-After over maxRetryWait,
 // or the last attempt, returns the status error. The wait ends with ctx.
 func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, v any) error {
+	return doJSON(ctx, d, method, rawURL, body, header, maxBody, v)
+}
+
+func doJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, limit int64, v any) error {
 	if d == nil {
 		return errors.New("sources: no http doer configured")
 	}
@@ -168,7 +181,7 @@ func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []by
 			return fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
 		}
 		if resp.StatusCode == http.StatusOK {
-			return decodeBody(resp.Body, req, v)
+			return decodeBody(resp.Body, req, limit, v)
 		}
 		code, hdr := resp.StatusCode, resp.Header
 		// Drain a little so the connection can be reused, then let it go.
@@ -197,14 +210,14 @@ func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []by
 	}
 }
 
-func decodeBody(rc io.ReadCloser, req *http.Request, v any) error {
+func decodeBody(rc io.ReadCloser, req *http.Request, limit int64, v any) error {
 	defer rc.Close()
-	body, err := io.ReadAll(io.LimitReader(rc, maxBody+1))
+	body, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
 		return fmt.Errorf("sources: read %s: %w", req.URL.Redacted(), err)
 	}
-	if int64(len(body)) > maxBody {
-		return fmt.Errorf("%w: over %d bytes from %s", ErrBodyTooLarge, maxBody, req.URL.Redacted())
+	if int64(len(body)) > limit {
+		return fmt.Errorf("%w: over %d bytes from %s", ErrBodyTooLarge, limit, req.URL.Redacted())
 	}
 	if err := json.Unmarshal(body, v); err != nil {
 		return fmt.Errorf("sources: decode %s: %w", req.URL.Redacted(), err)

@@ -27,9 +27,13 @@ const baseURL = "https://boards-api.greenhouse.io/v1/boards/"
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	// pay, when set, fetches structured pay for new and changed postings.
+	pay *payer
 }
 
-// New returns the Greenhouse source, sending requests through d.
+// New returns the Greenhouse source, sending requests through d. It reads
+// only the board list, so its postings carry the pay their text states;
+// NewWithPay adds Greenhouse's structured pay.
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
 
 func (s *source) ATS() posting.ATS { return posting.Greenhouse }
@@ -79,6 +83,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("greenhouse %q: job %d: %w", b.Token, i, err)
 		}
 		out = append(out, p)
+	}
+	if s.pay != nil {
+		if err := s.applyPay(ctx, b, resp.Jobs, out); err != nil {
+			return nil, fmt.Errorf("greenhouse %q: %w", b.Token, err)
+		}
 	}
 	return out, nil
 }

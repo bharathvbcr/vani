@@ -164,8 +164,20 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	gh, err := greenhouse.NewWithPay(d, greenhouse.Pay{
+		Known: func(k posting.Key) (posting.Posting, bool) {
+			r, ok := w.led.Get(k)
+			return r.Posting, ok
+		},
+		Report: func(b sources.Board, st greenhouse.PayStats) {
+			fmt.Fprintf(w.warn, "vani: board %s/%s: pay %+v\n", b.ATS, b.Token, st)
+		},
+	})
+	if err != nil {
+		return err
+	}
 	srcs := map[posting.ATS]sources.Source{
-		posting.Greenhouse: greenhouse.New(d),
+		posting.Greenhouse: gh,
 		posting.Lever:      lever.New(d),
 		posting.Ashby:      ashby.New(d),
 		posting.Workday:    workday.New(d),
