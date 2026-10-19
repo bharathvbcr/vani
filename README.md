@@ -84,7 +84,8 @@ flowchart TD
 
 ```
 board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶ explained ─▶ digested
-                   └─ dead (absent twice) · duplicate (same posting on another board)
+                   └─ dead (absent twice; dropped and duplicate postings are not aged) · duplicate (same posting on another board)
+                      dead ─▶ the status it died in, when the same content is listed again
 ```
 
 - **Sources:** Greenhouse, Lever (US and EU), Ashby and Workday (cxs search, paged by 20)

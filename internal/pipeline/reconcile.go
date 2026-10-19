@@ -22,6 +22,9 @@ const (
 	DescHashKey = "desc_hash"
 	// DuplicateOfKey names the ATS-keyed record a fallback-keyed posting repeats.
 	DuplicateOfKey = "duplicate_of"
+	// DiedFromKey holds the status a posting had when absence killed it, so
+	// relisting the same content restores it instead of running it again.
+	DiedFromKey = "died_from"
 	// MissesToDead is how many consecutive absent listings kill a posting.
 	MissesToDead = 2
 )
@@ -134,6 +137,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		case rec.Posting.DescriptionHash() != hash:
 			ann := staleAnnotations(rec.Annotations)
 			ann[DescHashKey] = hash
+			ann[DiedFromKey] = ""
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
 				Annotations: ann, Reason: "changed"}
 			if err := l.Append(ctx, e); err != nil {
@@ -141,9 +145,15 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 			}
 			s.Changed++
 		case rec.Status == posting.Dead:
-			// Same content, listed again: it is live, and nothing downstream ran for a dead record.
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
-				Annotations: map[string]string{DescHashKey: hash}, Reason: "reappeared"}
+			// Same content, listed again: its annotations still hold, so it goes
+			// back to the status it died in (a digested posting is not triaged or
+			// digested twice). A record with no usable died_from is live again.
+			st := posting.Live
+			if from := posting.Status(rec.Annotations[DiedFromKey]); from.Valid() && !closed(from) {
+				st = from
+			}
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &p,
+				Annotations: map[string]string{DescHashKey: hash, DiedFromKey: ""}, Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
@@ -162,7 +172,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 
 	var absent []ledger.Record
 	for _, r := range existing {
-		if strings.HasPrefix(string(r.Key), prefix) && !r.Status.Terminal() && !seen[r.Key] {
+		if strings.HasPrefix(string(r.Key), prefix) && !closed(r.Status) && !seen[r.Key] {
 			absent = append(absent, r)
 		}
 	}
@@ -172,7 +182,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 			return s, err
 		}
 		cur, ok := l.Get(r.Key)
-		if !ok || cur.Status.Terminal() {
+		if !ok || closed(cur.Status) {
 			continue
 		}
 		misses := cur.MissedRuns + 1
@@ -181,6 +191,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 			Reason:      fmt.Sprintf("absent from board (%d)", misses)}
 		if misses >= MissesToDead {
 			e.Status = posting.Dead
+			e.Annotations[DiedFromKey] = string(cur.Status)
 			e.Reason = "absent from board twice"
 			s.Dead++
 		} else {
@@ -191,6 +202,13 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		}
 	}
 	return s, nil
+}
+
+// closed reports whether a record has left the board's lifecycle, so absence
+// no longer ages it. This is narrower than Status.Terminal: a digested posting
+// runs no further stage but is still listed, and must die when its board drops it.
+func closed(s posting.Status) bool {
+	return s == posting.Dead || s == posting.Duplicate || s == posting.Dropped
 }
 
 // weakKey reports whether k identifies a posting by something other than an

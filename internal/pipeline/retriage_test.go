@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -85,5 +87,51 @@ func TestRetriageUnread(t *testing.T) {
 	}
 	if keys, _ := RetriageUnread(ctx, l2, t0.Add(time.Hour), false); len(keys) != 0 {
 		t.Errorf("an answered record was retriaged: %v", keys)
+	}
+}
+
+// failingAppend is a ledger whose Append fails from the n-th call on.
+type failingAppend struct {
+	ledger.Ledger
+	n, calls int
+}
+
+var errAppend = errors.New("disk full")
+
+func (f *failingAppend) Append(ctx context.Context, e ledger.Event) error {
+	f.calls++
+	if f.calls >= f.n {
+		return errAppend
+	}
+	return f.Ledger.Append(ctx, e)
+}
+
+// When an append fails part-way, the keys returned are exactly the records
+// that were returned to live, so the printed count matches the ledger.
+func TestRetriageUnreadReportsOnlyWrittenKeys(t *testing.T) {
+	l := openLedger(t)
+	unread := map[string]string{"triage.remote.reading": "unavailable"}
+	for _, id := range []string{"1", "2", "3"} {
+		p := ghPost(t, id, "d")
+		if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: p.Key, Status: posting.Unsure, Posting: &p, Annotations: unread}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := &failingAppend{Ledger: l, n: 2}
+	keys, err := RetriageUnread(ctx, f, t0.Add(time.Hour), false)
+	if !errors.Is(err, errAppend) {
+		t.Fatalf("err = %v, want the append error", err)
+	}
+	live := 0
+	for _, r := range l.All() {
+		if r.Status == posting.Live {
+			live++
+		}
+	}
+	if len(keys) != 1 || live != 1 {
+		t.Fatalf("keys %v, %d record(s) live; want exactly the one written", keys, live)
+	}
+	if r := rec(t, l, keys[0]); r.Status != posting.Live {
+		t.Fatalf("returned key %s is %s, not live", keys[0], r.Status)
 	}
 }

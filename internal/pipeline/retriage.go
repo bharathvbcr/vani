@@ -43,8 +43,8 @@ func RetriageUnread(ctx context.Context, l ledger.Ledger, now time.Time, dryRun 
 		if !retriageable[r.Status] || !Unread(r) {
 			continue
 		}
-		keys = append(keys, r.Key)
 		if dryRun {
+			keys = append(keys, r.Key)
 			continue
 		}
 		forget := map[string]string{
@@ -59,6 +59,7 @@ func RetriageUnread(ctx context.Context, l ledger.Ledger, now time.Time, dryRun 
 			Annotations: forget, Reason: "retriage: no decision backend could read it"}); err != nil {
 			return keys, err
 		}
+		keys = append(keys, r.Key)
 	}
 	return keys, nil
 }
