@@ -330,6 +330,39 @@ flowchart TD
       `TestJobsInsightScalesTo5000Postings`).
     - `ggml-org/vllm-d3-flash-GGUF` (9B, about 9.5 GB at Q8_0) is the stretch candidate. It
       has not been downloaded.
+  - **RSI-Jev v6.0 and decider-2b on the same 382 postings (2026-10-19, `vani bench local
+    --endpoint`).** Neither loads in llama.cpp, so each ran behind its own `/v1/systemone`
+    server on loopback, measured with the run's exact request. The population is the ledger as
+    it stood before 09:00 (`build/rsi-bench-state/`, events before 2026-10-19T09:00), which
+    gives the same 382 eligible postings, all `jev` primary, as the d1-3B and d3-mini runs. The
+    bench does not print keys, so the identical set is inferred, not checked key by key.
+
+    | model | answered | role_fit | seniority | sponsorship | work_mode | p50 / p95 per posting |
+    |---|---|---|---|---|---|---|
+    | d3-mini (above) | 382/382 | 77.5% | 79.3% | 88.0% | 57.1% | 3.2 / 4.5 s |
+    | d1-3B (above) | 382/382 | 61.8% | 52.9% | 90.6% | 61.0% | 0.74 / 0.96 s |
+    | RSI-Jev v6.0-VL 4B, `--effort auto`, fp32 MPS | 192 of 212 tried (partial) | 69.8% | 59.4% | 97.9% | 42.7% | 26.9 / 60.0 s |
+    | decider-2b v11, fp16 MPS, `DECIDER_SHARED=0` | 381/382 | 16.5% | 62.5% | 86.4% | 29.4% | 7.8 / 16.3 s |
+
+    Each cell is agreement with d1-ultra; agreement is not accuracy.
+    - **decider-2b is broken for this task:** role_fit calls almost everything strong_fit
+      (mismatch_domain → strong_fit 106, adjacent → strong_fit 81), and work_mode answers
+      not_stated where d1-ultra read onsite (111) or hybrid (95). Its JevArena lead over Lappi
+      does not carry over. Report `build/bench-decider-2b.json`.
+    - **RSI-Jev is a partial run, on a different subset.** 20 postings passed the bench's 60 s cap,
+      then memguard stopped the server (its osascript notice at 11:54:19), so its rows are the 192
+      answered among the first 212 postings, not the 382. Its latency is transformers' reference
+      DeltaNet path on MPS (fla is CUDA-only), not the model; its card's 23-40 ms is a GB10 with fla.
+      It leads on sponsorship and trails on work_mode (hybrid → remote 34, onsite → not_stated 38).
+      Report `build/bench-rsi-jev-v6.json`. The same-subset runs of the others were stopped on the
+      owner's word (machine under load), so the subset comparison was not made.
+    - **decider-ai 1.8.2's shared-prefix path grows memory on MPS:** footprint 6 → 22 GB over about
+      110 postings, then an MPS OOM in `shared_prefix.py:205` under
+      `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.4`; uncapped, memguard stopped it at 12:00:17. With
+      `DECIDER_SHARED=0` it stayed at 10-20 GB for all 382, at about 7× the latency of the shared
+      path (p50 1.1-1.9 s on the postings it reached).
+    - The owner chose cloud models for now (2026-10-19). The RSI-Jev venv is
+      `research/external/RSI-Jev-v6.0-src/.venv` (gitignored there).
   - The owner decided on 2026-10-18 to port d1 natively to tessl only if it beats Jev. Jev runs
     only with `OPENROUTER_API_KEY` exported, and its `daily_usd` cap is 0.5. The promotion table has
     one row per primary backend (d1 vs `jev`, d1 vs `llm`), each needing its own 30 labels. A day
