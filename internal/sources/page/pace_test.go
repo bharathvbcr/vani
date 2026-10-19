@@ -19,10 +19,11 @@ type span struct {
 // timingRunner records when each run starts and ends, fails on two
 // overlapping runs to one host, and delegates to next (or answers a stub page).
 type timingRunner struct {
-	next  Runner
-	hold  time.Duration // how long each run takes
-	block chan struct{} // if set, each run waits for a receive from it
-	err   error         // if set, returned by every run
+	next    Runner
+	hold    time.Duration // how long each run takes
+	block   chan struct{} // if set, each run waits for a receive from it
+	entered chan struct{} // if set (buffered), signalled as each run starts
+	err     error         // if set, returned by every run
 
 	mu       sync.Mutex
 	spans    []span
@@ -43,6 +44,12 @@ func (r *timingRunner) Run(ctx context.Context, args []string) ([]byte, error) {
 	}
 	r.mu.Unlock()
 	start := time.Now()
+	if r.entered != nil {
+		select {
+		case r.entered <- struct{}{}:
+		default:
+		}
+	}
 
 	if r.hold > 0 {
 		time.Sleep(r.hold)
@@ -270,14 +277,14 @@ func TestPacedCancelMidWait(t *testing.T) {
 // Cancelling a caller queued behind a run in flight returns without waiting
 // for that run.
 func TestPacedCancelWhileHostBusy(t *testing.T) {
-	inner := &timingRunner{block: make(chan struct{})}
+	inner := &timingRunner{block: make(chan struct{}), entered: make(chan struct{}, 1)}
 	p := mustPaced(t, inner, 10*time.Millisecond)
 	done := make(chan error, 1)
 	go func() {
 		_, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/slow"))
 		done <- err
 	}()
-	time.Sleep(30 * time.Millisecond)
+	<-inner.entered // the slow run holds the host
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
