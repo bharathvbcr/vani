@@ -34,5 +34,10 @@ let package = Package(
         // Reads extension/test/vectors/classify.json in place, so the Swift and
         // TypeScript classifiers are held to one set of vectors.
         .testTarget(name: "VaniApplyKitTests", dependencies: ["VaniApplyKit"]),
+        // Drives the Jobs tab's own controls in a second process (this bundle,
+        // re-run as a host) through the accessibility API: SwiftPM builds no UI
+        // test bundles, and XCUIApplication refuses to run in a unit test bundle.
+        // The runner must be trusted for accessibility, or these tests skip.
+        .testTarget(name: "VaniApplyUITests", dependencies: ["VaniApply", "VaniApplyKit"]),
     ]
 )
