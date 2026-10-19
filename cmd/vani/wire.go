@@ -250,6 +250,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 	w.advance = &rep
 	w.mu.Unlock()
 	w.warnShadowErrors(runner)
+	w.warnShadowSample(runner)
 	return err
 }
 
@@ -703,6 +704,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	}
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow
+	gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
 
 	rules := make([]pipeline.DropRule, 0, len(w.cfg.DropRules))
 	for _, r := range w.cfg.DropRules {

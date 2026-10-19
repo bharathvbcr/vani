@@ -136,6 +136,13 @@ type Decide struct {
 	// "local"). Disagreements feed the labelling queue. It costs a second
 	// call per posting (nothing for lappi or local, which run on this Mac).
 	Shadow string `json:"shadow,omitempty"`
+	// ShadowEvery asks the shadow about one posting in this many, picked by a
+	// hash of the posting key so a posting is always in or out of the sample.
+	// An unsampled posting has no shadow reading, which `vani eval` reads as
+	// not asked. The primary waits for the shadow only on sampled postings.
+	// Zero means DefaultShadowEvery; 1 asks it about every posting; at most
+	// MaxShadowEvery.
+	ShadowEvery int `json:"shadow_every,omitempty"`
 	// Lappi configures the local Lappi agent. It runs as the shadow until
 	// `vani eval` reports it promotable; Primary then puts it first in the
 	// chain, ahead of the OpenRouter model and the LLM.
@@ -145,6 +152,22 @@ type Decide struct {
 	// only: if `vani eval` finds it promotable, it is served through Lappi's
 	// socket rather than promoted here (owner decision 2026-10-18).
 	Local *Local `json:"local,omitempty"`
+}
+
+// Shadow sampling bounds (Decide.ShadowEvery). One in 12 (owner's choice,
+// 2026-10-19) keeps a parallel-1 local shadow at about the rate it can serve
+// while four postings advance at a time.
+const (
+	DefaultShadowEvery = 12
+	MaxShadowEvery     = 1000
+)
+
+// ShadowSampleEvery is ShadowEvery with zero read as the default.
+func (d Decide) ShadowSampleEvery() int {
+	if d.ShadowEvery == 0 {
+		return DefaultShadowEvery
+	}
+	return d.ShadowEvery
 }
 
 // MaxLocalTimeoutMS bounds one local decision call.
@@ -696,6 +719,9 @@ func (c Config) Validate() error {
 	}
 	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
 		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)
+	}
+	if c.Decide.ShadowEvery < 0 || c.Decide.ShadowEvery > MaxShadowEvery {
+		add("decide.shadow_every %d must be within 0..%d (0 means %d)", c.Decide.ShadowEvery, MaxShadowEvery, DefaultShadowEvery)
 	}
 	if c.AdvanceConcurrency < 0 || c.AdvanceConcurrency > MaxAdvanceConcurrency {
 		add("advance_concurrency %d must be within 0..%d (0 means %d)", c.AdvanceConcurrency, MaxAdvanceConcurrency, DefaultAdvanceConcurrency)

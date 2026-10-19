@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
@@ -27,7 +28,7 @@ const (
 	benchShadow   = 3200 * time.Millisecond / benchScale
 	benchNotes    = 350 * time.Millisecond / benchScale
 	benchScore    = 20 * time.Millisecond / benchScale
-	benchPostings = 32
+	benchPostings = 96
 )
 
 // sleepBackend answers every slot with its first option after a fixed delay.
@@ -181,35 +182,44 @@ func benchLedger(tb testing.TB, n int) *eventLedger {
 }
 
 // benchRunner is the run's Runner over fakes: a real Router, so the wait on
-// the shadow in compareShadow is the real one.
-func benchRunner(l ledger.Ledger, shadow bool) *pipeline.Runner {
+// the shadow in compareShadow is the real one. every is the shadow sample:
+// 0 no shadow, 1 the ungated shadow on every posting (the run before
+// decide.shadow_every), above 1 the gate the run wires, one call in flight
+// as on a parallel-1 llama-server.
+func benchRunner(l ledger.Ledger, every, slots int) (*pipeline.Runner, *shadowGate) {
 	rt := decide.NewRouter(&sleepBackend{name: "d1-ultra", delay: benchPrimary})
-	if shadow {
+	var g *shadowGate
+	if every > 0 {
 		rt.Shadow = &sleepBackend{name: "local-vllm-d3-mini-combined", delay: benchShadow, serial: true}
+	}
+	if every > 1 {
+		g = gateShadow(rt, every, slots)
 	}
 	return &pipeline.Runner{
 		Ledger:    l,
 		Triager:   &jdtriage.Triager{D: rt},
 		Scorer:    &sleepScorer{delay: benchScore},
 		Explainer: sleepExplainer{delay: benchNotes},
-	}
+	}, g
 }
 
 // BenchmarkAdvance times the advance phase of a run over benchPostings live
 // postings and reports seconds per posting at the measured (unscaled)
-// latencies.
+// latencies, and for a gated shadow how many postings per run it read and
+// how many sampled ones it skipped while busy.
 func BenchmarkAdvance(b *testing.B) {
-	for _, c := range []struct {
-		workers int
-		shadow  bool
-	}{{1, false}, {1, true}, {4, false}, {4, true}} {
-		workers, shadow := c.workers, c.shadow
-		b.Run(fmt.Sprintf("workers=%d/shadow=%v", workers, shadow), func(b *testing.B) {
+	for _, c := range []struct{ workers, every, slots int }{
+		{1, 0, 1}, {1, 1, 1}, {1, config.DefaultShadowEvery, 2},
+		{4, 0, 1}, {4, 1, 1}, {4, config.DefaultShadowEvery, 1}, {4, config.DefaultShadowEvery, 2}, {4, 4, 2},
+	} {
+		workers, every, slots := c.workers, c.every, c.slots
+		b.Run(fmt.Sprintf("workers=%d/shadow_every=%d/slots=%d", workers, every, slots), func(b *testing.B) {
 			var total time.Duration
+			var asked, busy int64
 			for range b.N {
 				b.StopTimer()
 				l := benchLedger(b, benchPostings)
-				r := benchRunner(l, shadow)
+				r, g := benchRunner(l, every, slots)
 				b.StartTimer()
 				start := time.Now()
 				rep, err := advanceAll(context.Background(), l.All(), nil, benchPostings, workers, r.Advance, func(string, ...any) {})
@@ -217,9 +227,17 @@ func BenchmarkAdvance(b *testing.B) {
 				if err != nil || rep.Attempted != benchPostings || rep.Failed != 0 || rep.Unread != 0 {
 					b.Fatalf("err %v report %+v", err, rep)
 				}
+				if g != nil {
+					asked += g.asked.Load()
+					busy += g.busy.Load()
+				}
 			}
 			perPosting := total / time.Duration(b.N*benchPostings)
 			b.ReportMetric((perPosting * benchScale).Seconds(), "real-s/posting")
+			if every > 1 {
+				b.ReportMetric(float64(asked)/float64(b.N), "shadowed/run")
+				b.ReportMetric(float64(busy)/float64(b.N), "busy-skips/run")
+			}
 		})
 	}
 }

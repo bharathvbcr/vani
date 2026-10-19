@@ -313,7 +313,14 @@ scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Ant
 request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
 
 Each run triages, scores and explains at most `advance_per_run` postings (default 300, at most
-5000), which bounds its spend and duration. The rest stay `live` for the next run. Only triaged
+5000), which bounds its spend and duration. They go highest title rank first, then the freshest:
+the posted date when the board gives one, else when Vani first saw a posting that appeared after
+its board's first crawl; undated postings from a board's first crawl go last. `advance_concurrency`
+postings advance at a time (default 4, at most 16; 1 is strictly one by one). With a shadow
+configured, `decide.shadow_every` asks it about one posting in that many (default 12, picked by a
+hash of the posting key; 1 asks it about every posting), and a local shadow takes at most its
+server's `parallel` calls plus one waiting; the run's warnings say how many postings it read and
+how many sampled ones it skipped while busy. The rest stay `live` for the next run. Only triaged
 postings are listed in Jobs, so `jobs list`/`jobs stats` (`pending` in `--json`), the digest
 footer and the Jobs tab footer say how many are still awaiting triage. `status --json` shows
 the last run's `advance` report (eligible, attempted, unread, deferred, why it stopped) and
