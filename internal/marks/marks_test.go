@@ -1,6 +1,8 @@
 package marks
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -247,14 +249,62 @@ func TestBusyIsStillBounded(t *testing.T) {
 	}
 }
 
+// A store whose live marks fill it refuses the write, even after the
+// compaction a full store gets first, and is left exactly as it was.
 func TestFullStoreRefusesWrites(t *testing.T) {
+	dir := Dir(t.TempDir())
+	SetMark(dir, k1, Saved, t0)
+	path := filepath.Join(dir, fileName)
+	full := fillWithLiveNotes(t, path)
+	k, _ := posting.GreenhouseKey("zzz", "000000") // the same line length as the fill
+	if _, err := SetNote(dir, k, strings.Repeat("n", MaxNoteBytes), t0); !errors.Is(err, ErrFull) {
+		t.Fatalf("err = %v, want ErrFull", err)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, full) {
+		t.Fatal("a refused write changed the store")
+	}
+}
+
+// A file padded to the cap with bytes that are not marks is corrupt, not
+// full: it is refused as corrupt and never compacted.
+func TestPaddedStoreAtTheCapIsCorrupt(t *testing.T) {
 	dir := Dir(t.TempDir())
 	SetMark(dir, k1, Saved, t0)
 	path := filepath.Join(dir, fileName)
 	f, _ := os.OpenFile(path, os.O_WRONLY, 0)
 	f.Truncate(MaxFileBytes) // a sparse file at the limit
 	f.Close()
-	if _, err := SetMark(dir, k1, Applied, t0); !errors.Is(err, ErrFull) {
-		t.Fatalf("err = %v, want ErrFull", err)
+	if _, err := SetMark(dir, k1, Applied, t0); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("err = %v, want ErrCorrupt", err)
 	}
+	if st, _ := os.Stat(path); st.Size() != MaxFileBytes {
+		t.Fatalf("the corrupt store was rewritten: %d bytes", st.Size())
+	}
+}
+
+// fillWithLiveNotes appends, in key order, one maximal note for each of
+// enough distinct postings that one more such line would pass the cap,
+// and returns the file's bytes. Every line is live, so compaction keeps
+// them all.
+func fillWithLiveNotes(t *testing.T, path string) []byte {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := strings.Repeat("n", MaxNoteBytes)
+	var size int64
+	for i := 0; ; i++ {
+		k, _ := posting.GreenhouseKey("aaa", fmt.Sprintf("%06d", i))
+		line, _ := json.Marshal(event{V: Version, At: t0, Key: k, Note: &note})
+		line = append(line, '\n')
+		if size+int64(len(line)) > MaxFileBytes {
+			break
+		}
+		f.Write(line)
+		size += int64(len(line))
+	}
+	f.Close()
+	b, _ := os.ReadFile(path)
+	return b
 }

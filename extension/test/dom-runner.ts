@@ -1,6 +1,6 @@
 // In-browser DOM tests for extract, fill and the capture tracker, run by opening
 // test/dom.html. Writes PASS/FAIL lines into #results and sets document.title.
-import { collectFields, scanForm } from "../src/extract";
+import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, scanForm } from "../src/extract";
 import { clearMarks, fillAll, fillRef, insertDraft } from "../src/fill";
 import { currentText, draftable, suggest } from "../src/suggest";
 import { readJobInfo } from "../src/jobinfo";
@@ -635,8 +635,44 @@ async function notQuestions(): Promise<void> {
   frame.remove();
 }
 
+// ownText walks the text in place; it must read exactly what the old
+// clone-and-delete version read, on every element of this page and on
+// adversarial shapes.
+function clonedOwnText(el: Element): string {
+  const clone = el.cloneNode(true) as Element;
+  clone.querySelectorAll(OWN_TEXT_SKIP).forEach(n => n.remove());
+  return (clone.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL); // as clean() does
+}
+
+async function ownTextParity(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = `
+    <label id="ot1">Name <input value="x"> <span>first</span><!-- a comment --></label>
+    <button id="ot2">Press <b>me</b> <span aria-hidden="true">hidden</span></button>
+    <div id="ot3">Q <select><option>one</option><option>two</option></select> <span aria-hidden="TRUE">kept: the value is case-sensitive</span>
+      <div><textarea>t</textarea><p>deep <script>s()</script><style>.a{}</style>text</p></div></div>
+    <fieldset id="ot4"><legend>Legend <em>here</em></legend><input type="radio"> Yes</fieldset>
+    <span id="ot5" aria-hidden="true">root is hidden but is the element asked about</span>
+    <div id="ot6"></div>`;
+  document.body.appendChild(box);
+  let mismatches = 0, compared = 0;
+  const detail: string[] = [];
+  for (const el of [...document.querySelectorAll("*")]) {
+    compared++;
+    const want = clonedOwnText(el), got = ownText(el);
+    if (got !== want) {
+      mismatches++;
+      if (detail.length < 3) detail.push(`${el.localName}#${el.id}: got ${JSON.stringify(got.slice(0, 80))} want ${JSON.stringify(want.slice(0, 80))}`);
+    }
+  }
+  check(`ownText matches the clone-based read on all ${compared} elements of the page`, mismatches === 0 && compared > 100, detail.join(" | "));
+  check("ownText skips controls, options, scripts and aria-hidden parts", ownText(box.querySelector("#ot3")!) === "Q kept: the value is case-sensitive deep text", ownText(box.querySelector("#ot3")!));
+  check("ownText reads an element that itself matches what it skips", ownText(box.querySelector("#ot2")!) === "Press me" && ownText(box.querySelector("#ot5")!) !== "");
+  box.remove();
+}
+
 async function main(): Promise<void> {
-  for (const [name, fn] of [["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal], ["not questions", notQuestions]] as const) {
+  for (const [name, fn] of [["own text", ownTextParity], ["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal], ["not questions", notQuestions]] as const) {
     try { await fn(); } catch (e) { check(`${name} crashed`, false, e instanceof Error ? `${e.message}\n${e.stack}` : String(e)); }
   }
   check("nothing in the whole run submitted a form or pressed a submit button", anySubmit === 0 && submitClicks === 0 && submits === 0, `submit ${anySubmit} clicks ${submitClicks}`);

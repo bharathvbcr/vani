@@ -41,7 +41,7 @@ export const MAX_FIELDS = 500;
 export const MAX_SCAN_NODES = 40_000;
 const MAX_SCAN_MS = 1500;
 const MAX_DEPTH = 6;
-const MAX_LABEL = 300;
+export const MAX_LABEL = 300;
 const CANDIDATE = "input, select, textarea, button[aria-haspopup=listbox], [contenteditable], [role=combobox], [role=listbox], [role=radio], [role=checkbox], [role=switch]";
 const PLACEHOLDER_TEXT = /^(select|choose|please select|pick|none selected|search|type to search|-+)\b/i;
 const SINGLE = "[class*=single-value i], [class*=singlevalue i]";
@@ -55,11 +55,27 @@ function clean(s: string | null | undefined): string {
   return (s ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL);
 }
 
-/** Text of an element without the text of controls or select options inside it. */
-function ownText(el: Element): string {
-  const clone = el.cloneNode(true) as Element;
-  clone.querySelectorAll("input, select, textarea, option, button, script, style, [aria-hidden=true]").forEach(n => n.remove());
-  return clean(clone.textContent);
+/** What ownText leaves out, with everything inside it. */
+export const OWN_TEXT_SKIP = "input, select, textarea, option, button, script, style, [aria-hidden=true]";
+
+/**
+ * Text of an element without the text of controls or select options inside it.
+ * It walks the text in place: cloning the subtree to delete those parts cost a
+ * deep copy per field, up to five container levels each, on every scan. The
+ * element itself is never skipped, as the clone's querySelectorAll never
+ * matched it.
+ */
+export function ownText(el: Element): string {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT | NodeFilter.SHOW_CDATA_SECTION, {
+    acceptNode: n => n !== el && n.nodeType === Node.ELEMENT_NODE && (n as Element).matches(OWN_TEXT_SKIP)
+      ? NodeFilter.FILTER_REJECT // the element and all it holds
+      : NodeFilter.FILTER_ACCEPT,
+  });
+  let text = "";
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType !== Node.ELEMENT_NODE) text += (n as CharacterData).data;
+  }
+  return clean(text);
 }
 
 /** An element's parent, stepping out of a shadow root to its host. */

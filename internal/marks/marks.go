@@ -21,11 +21,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -200,24 +202,33 @@ func cutBack(f *os.File, good int64, cause error) error {
 	return cause
 }
 
-// replay folds src. It returns the end of the last intact line and whether a
-// torn last line (no newline, or not JSON at all) was skipped; a bad line
-// before the last is ErrCorrupt. So is a last line that is whole JSON but not
-// a valid event, such as one from a newer writer: cutting it as torn would
-// erase a mark that was really made.
-func replay(src io.Reader) (map[posting.Key]Entry, int64, bool, error) {
-	out := map[posting.Key]Entry{}
+// replayed is what replay read: the folded state, the end of the last intact
+// line, how many intact lines there were, and whether a torn last line was
+// skipped.
+type replayed struct {
+	m     map[posting.Key]Entry
+	good  int64
+	lines int
+	torn  bool
+}
+
+// replay folds src. A torn last line (no newline, or not JSON at all) is
+// skipped and reported; a bad line before the last is ErrCorrupt. So is a
+// last line that is whole JSON but not a valid event, such as one from a
+// newer writer: cutting it as torn would erase a mark that was really made.
+func replay(src io.Reader) (replayed, error) {
+	out := replayed{m: map[posting.Key]Entry{}}
 	r := bufio.NewReaderSize(src, 16*1024)
-	var good int64
 	for n := 1; ; n++ {
 		line, err := r.ReadSlice('\n')
 		switch {
 		case errors.Is(err, bufio.ErrBufferFull) || len(line) > maxLineBytes:
-			return nil, good, false, fmt.Errorf("%w: line %d is over %d bytes", ErrCorrupt, n, maxLineBytes)
+			return replayed{}, fmt.Errorf("%w: line %d is over %d bytes", ErrCorrupt, n, maxLineBytes)
 		case errors.Is(err, io.EOF):
-			return out, good, len(line) > 0, nil
+			out.torn = len(line) > 0
+			return out, nil
 		case err != nil:
-			return nil, good, false, fmt.Errorf("marks: read: %w", err)
+			return replayed{}, fmt.Errorf("marks: read: %w", err)
 		}
 		var e event
 		dec := json.NewDecoder(bytes.NewReader(line))
@@ -228,12 +239,14 @@ func replay(src io.Reader) (map[posting.Key]Entry, int64, bool, error) {
 		}
 		if perr != nil {
 			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) && !json.Valid(line) {
-				return out, good, true, nil
+				out.torn = true
+				return out, nil
 			}
-			return nil, good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
+			return replayed{}, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
 		}
-		fold(out, e)
-		good += int64(len(line))
+		fold(out.m, e)
+		out.good += int64(len(line))
+		out.lines++
 	}
 }
 
@@ -320,6 +333,10 @@ func flock(dir string, exclusive, create bool, deadline time.Time) (*os.File, er
 	}
 }
 
+// afterNoLock runs when Read finds no lock file; a variable only so a test can
+// land a first write in that moment.
+var afterNoLock = func() {}
+
 // Read returns every posting's marks. A store that was never written is empty.
 func Read(dir string) (map[posting.Key]Entry, error) {
 	l, err := lock(dir, false, false)
@@ -327,14 +344,22 @@ func Read(dir string) (map[posting.Key]Entry, error) {
 		return nil, err
 	}
 	if l == nil {
+		afterNoLock()
 		// No lock file: the store was never written, unless the data file is
 		// there anyway (the lock was removed, or only marks.jsonl was copied
 		// back). That is not an empty store; reading it as one would drop
-		// every mark.
-		if _, err := os.Lstat(filepath.Join(dir, fileName)); !errors.Is(err, os.ErrNotExist) {
+		// every mark. A first write creates the lock before the data file, so
+		// a data file found after the lock was missing may be that write
+		// landing in between: the lock is looked for once more first.
+		if _, err := os.Lstat(filepath.Join(dir, fileName)); errors.Is(err, os.ErrNotExist) {
+			return map[posting.Key]Entry{}, nil
+		}
+		if l, err = lock(dir, false, false); err != nil {
+			return nil, err
+		}
+		if l == nil {
 			return nil, fmt.Errorf("%w: %s exists without its lock file", ErrCorrupt, fileName)
 		}
-		return map[posting.Key]Entry{}, nil
 	}
 	defer l.Close()
 	f, err := os.Open(filepath.Join(dir, fileName))
@@ -350,8 +375,8 @@ func Read(dir string) (map[posting.Key]Entry, error) {
 	} else if st.Size() > MaxFileBytes {
 		return nil, fmt.Errorf("%w: %d bytes, over %d", ErrCorrupt, st.Size(), MaxFileBytes)
 	}
-	m, _, _, err := replay(f)
-	return m, err
+	r, err := replay(f)
+	return r.m, err
 }
 
 // ReadMarks returns every marked posting's mark and nothing else: notes are
@@ -398,27 +423,50 @@ func write(dir string, e event) (Entry, error) {
 		return Entry{}, err
 	}
 	defer l.Close()
-	f, err := os.OpenFile(filepath.Join(dir, fileName), os.O_RDWR|os.O_CREATE, 0o600)
+	path := filepath.Join(dir, fileName)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return Entry{}, fmt.Errorf("marks: open: %w", err)
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
+	defer func() { f.Close() }()
+	if st, err := f.Stat(); err != nil {
 		return Entry{}, fmt.Errorf("marks: stat: %w", err)
+	} else if st.Size() > MaxFileBytes {
+		return Entry{}, fmt.Errorf("%w: %d bytes, over %d", ErrCorrupt, st.Size(), MaxFileBytes)
 	}
-	if st.Size()+int64(len(line)) > MaxFileBytes {
-		return Entry{}, ErrFull
-	}
-	m, good, torn, err := replay(f)
+	// The replay is the store's check: a write never lands on a store that
+	// does not read cleanly. Compaction keeps its cost to the live marks.
+	r, err := replay(f)
 	if err != nil {
 		return Entry{}, err
 	}
-	if torn {
+	good := r.good
+	if needsCompaction(r, int64(len(line))) {
+		// Closed first: Windows cannot rename over an open file.
+		if err := f.Close(); err != nil {
+			return Entry{}, fmt.Errorf("marks: close: %w", err)
+		}
+		if err := writeCompacted(path, r.m); err != nil {
+			return Entry{}, err
+		}
+		if f, err = os.OpenFile(path, os.O_RDWR, 0o600); err != nil {
+			return Entry{}, fmt.Errorf("marks: reopen after compaction: %w", err)
+		}
+		st, err := f.Stat()
+		if err != nil {
+			return Entry{}, fmt.Errorf("marks: stat: %w", err)
+		}
+		good = st.Size()
+	} else if r.torn {
 		// A writer died mid-line; cut it so this line starts on a clean boundary.
 		if err := f.Truncate(good); err != nil {
 			return Entry{}, fmt.Errorf("marks: truncate torn tail: %w", err)
 		}
+	}
+	// Only when the marks themselves, one or two lines a posting, fill the
+	// store is a write refused.
+	if good+int64(len(line)) > MaxFileBytes {
+		return Entry{}, ErrFull
 	}
 	// A failed write or fsync is cut back to the last good line. If the cut
 	// fails too, the line may still be in the file and take effect on the
@@ -429,9 +477,117 @@ func write(dir string, e event) (Entry, error) {
 	if err := f.Sync(); err != nil {
 		return Entry{}, cutBack(f, good, fmt.Errorf("marks: fsync: %w", err))
 	}
-	fold(m, e)
-	if out, ok := m[e.Key]; ok {
+	fold(r.m, e)
+	if out, ok := r.m[e.Key]; ok {
 		return out, nil
 	}
 	return Entry{Key: e.Key}, nil
+}
+
+// compactAt is the size past which a store that is mostly superseded history
+// is compacted on the next write, so a write's replay stays proportional to
+// the live marks rather than to every change ever made.
+const compactAt = 1 << 20
+
+// needsCompaction reports whether a store is compacted before a line of n
+// bytes is appended: when the line would pass the cap, or when the store is
+// past compactAt and more than half its lines are superseded.
+func needsCompaction(r replayed, n int64) bool {
+	if r.good+n > MaxFileBytes {
+		return true
+	}
+	return r.good > compactAt && r.lines > 2*liveLines(r.m)
+}
+
+// liveLines is how many lines the folded state compacts to.
+func liveLines(m map[posting.Key]Entry) int {
+	n := 0
+	for _, e := range m {
+		if e.Mark != None {
+			n++
+		}
+		if e.Note != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// Compact rewrites the store as its folded state: one line for each set mark
+// and one for each set note, each at the time it was made, sorted by key.
+// Superseded lines and cleared postings are dropped, so Read returns exactly
+// what it did before. The new file replaces the old one atomically (a reader
+// sees one or the other), under the writers' lock. A store that does not read
+// cleanly is refused and left as it is; a torn last line is dropped, as every
+// reader already drops it. A store that was never written is left alone.
+// Writes compact on their own (needsCompaction); Compact is for doing it now.
+func Compact(dir string) error {
+	l, err := lock(dir, true, false)
+	if err != nil {
+		return err
+	}
+	if l == nil {
+		return nil
+	}
+	defer l.Close()
+	path := filepath.Join(dir, fileName)
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("marks: %w", err)
+	}
+	r, err := func() (replayed, error) {
+		defer f.Close() // before the rename, which Windows requires
+		if st, err := f.Stat(); err != nil {
+			return replayed{}, fmt.Errorf("marks: stat: %w", err)
+		} else if st.Size() > MaxFileBytes {
+			return replayed{}, fmt.Errorf("%w: %d bytes, over %d", ErrCorrupt, st.Size(), MaxFileBytes)
+		}
+		return replay(f)
+	}()
+	if err != nil {
+		return fmt.Errorf("marks: not compacted: %w", err)
+	}
+	return writeCompacted(path, r.m)
+}
+
+// writeCompacted replaces path with the lines that fold to m, through
+// atomicfile (temp file, fsync, rename, directory fsync).
+func writeCompacted(path string, m map[posting.Key]Entry) error {
+	keys := make([]posting.Key, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var buf bytes.Buffer
+	put := func(e event) error {
+		line, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("marks: compact: %w", err)
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+		return nil
+	}
+	for _, k := range keys {
+		en := m[k]
+		if en.Mark != None {
+			mark := en.Mark
+			if err := put(event{V: Version, At: en.MarkedAt, Key: k, Mark: &mark}); err != nil {
+				return err
+			}
+		}
+		if en.Note != "" {
+			note := en.Note
+			if err := put(event{V: Version, At: en.NoteAt, Key: k, Note: &note}); err != nil {
+				return err
+			}
+		}
+	}
+	if err := atomicfile.Write(path, buf.Bytes()); err != nil {
+		return fmt.Errorf("marks: compact: %w", err)
+	}
+	return nil
 }
