@@ -62,8 +62,9 @@ type Config struct {
 	// Empty means look up "lightpanda" on PATH when a page board exists.
 	LightpandaBinary string `json:"lightpanda_binary,omitempty"`
 	// PageIntervalMS spaces careers-page fetches to one host: a lightpanda run
-	// starts only this long after the previous run to that host ended (e.g. a
-	// robots Crawl-delay). Zero is off. At most page.MaxInterval.
+	// starts only this long after the previous run to that host ended. It is a
+	// floor: a longer Crawl-delay in the host's robots.txt wins. Zero leaves
+	// Crawl-delay alone. At most page.MaxInterval.
 	PageIntervalMS int `json:"page_interval_ms,omitempty"`
 }
 

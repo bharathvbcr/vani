@@ -130,33 +130,31 @@ func TestPageSourceStartsAndStopsProxy(t *testing.T) {
 	}
 }
 
-// page_interval_ms off runs lightpanda directly; set, it wraps the runner in
-// the per-host wait; out of range, it is refused rather than clamped.
+// Whatever page_interval_ms is, including off, runs are paced by robots.txt
+// Crawl-delay on top of it; out of range, it is refused rather than clamped.
 func TestPageRunnerInterval(t *testing.T) {
-	run, err := pageRunner("/opt/lp/lightpanda", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if er, ok := run.(page.ExecRunner); !ok || er.Binary != "/opt/lp/lightpanda" || er.Timeout != lightpandaTimeout {
-		t.Fatalf("interval 0: %#v", run)
-	}
-	run, err = pageRunner("/opt/lp/lightpanda", 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := run.(*page.Paced); !ok {
-		t.Fatalf("interval 5s: %T, want *page.Paced", run)
-	}
-	for _, d := range []time.Duration{-time.Millisecond, page.MaxInterval + time.Millisecond} {
-		if _, err := pageRunner("/opt/lp/lightpanda", d); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
-			t.Errorf("interval %s: %v", d, err)
-		}
-	}
-
 	c, err := egress.New(egress.Config{AllowedHosts: []string{"careers.example.com"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, d := range []time.Duration{0, 5 * time.Second, page.MaxInterval} {
+		run, err := pageRunner("/opt/lp/lightpanda", d, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := run.(*page.Paced); !ok {
+			t.Fatalf("interval %s: %T, want *page.Paced", d, run)
+		}
+	}
+	for _, d := range []time.Duration{-time.Millisecond, page.MaxInterval + time.Millisecond} {
+		if _, err := pageRunner("/opt/lp/lightpanda", d, c); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
+			t.Errorf("interval %s: %v", d, err)
+		}
+	}
+	if _, err := pageRunner("/opt/lp/lightpanda", 0, nil); err == nil {
+		t.Error("pageRunner without a doer succeeded")
+	}
+
 	w := &wired{cfg: config.Config{LightpandaBinary: "/opt/lp/lightpanda", PageIntervalMS: 5000}, warn: &bytes.Buffer{}}
 	_, stop, err := w.pageSource(context.Background(), c)
 	if err != nil {

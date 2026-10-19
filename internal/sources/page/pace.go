@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/egress"
 )
 
 // MaxInterval is the longest per-host wait Paced accepts. One board runs up to
@@ -27,16 +29,26 @@ const MaxInterval = 10 * time.Second
 // 5 s. With --http-max-host-open 1 and a gap of at least the proxy's
 // per-host interval, the proxy then has nothing left to wait for.
 //
+// Built by NewRobotsPaced, a host's interval is the longer of the configured
+// one and the Crawl-delay its robots.txt sets for Vani, read once per host for
+// the life of the Paced (one run). A host whose robots.txt cannot be read, or
+// whose Crawl-delay is above MaxInterval, gets no run: the error fails its
+// board rather than pacing it faster than the site asked.
+//
 // The host is that of the last argument, which fetch always sets to the
 // validated page URL. A last argument that is not an https URL with a host is
 // an error: the run is never made unpaced.
 type Paced struct {
 	next     Runner
-	interval time.Duration
+	interval time.Duration // the fixed interval, or the floor under Crawl-delay
 	now      func() time.Time
 
-	mu    sync.Mutex
-	hosts map[string]*hostSlot
+	robots        egress.Doer // nil: interval alone
+	robotsTimeout time.Duration
+
+	mu        sync.Mutex
+	hosts     map[string]*hostSlot
+	intervals map[string]time.Duration // per host, once its robots.txt is read
 }
 
 // hostSlot is one host's schedule. token holds one value while a run to the
@@ -60,6 +72,23 @@ func NewPaced(next Runner, interval time.Duration) (*Paced, error) {
 	return &Paced{next: next, interval: interval, now: time.Now, hosts: map[string]*hostSlot{}}, nil
 }
 
+// NewRobotsPaced wraps next so runs to one host are spaced by the longer of
+// floor and the host's robots.txt Crawl-delay, which is fetched through d.
+// floor must be within [0, MaxInterval]; zero leaves Crawl-delay alone.
+func NewRobotsPaced(next Runner, d egress.Doer, floor time.Duration) (*Paced, error) {
+	if next == nil {
+		return nil, errors.New("page: NewRobotsPaced needs a runner")
+	}
+	if d == nil {
+		return nil, errors.New("page: NewRobotsPaced needs an egress doer")
+	}
+	if floor < 0 || floor > MaxInterval {
+		return nil, fmt.Errorf("page: per-host interval %s must be within [0, %s]", floor, MaxInterval)
+	}
+	return &Paced{next: next, interval: floor, now: time.Now, hosts: map[string]*hostSlot{},
+		robots: d, robotsTimeout: robotsTimeout, intervals: map[string]time.Duration{}}, nil
+}
+
 // Run waits for the target host's turn, then runs next. A context cancelled
 // while waiting returns its error without starting a run and without
 // delaying the callers behind it.
@@ -78,6 +107,11 @@ func (p *Paced) Run(ctx context.Context, args []string) ([]byte, error) {
 	}
 	defer func() { <-slot.token }()
 
+	// Under the token, so one host's robots.txt is fetched by one caller.
+	interval, err := p.intervalFor(ctx, host)
+	if err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	wait := slot.free.Sub(p.now())
 	p.mu.Unlock()
@@ -94,9 +128,39 @@ func (p *Paced) Run(ctx context.Context, args []string) ([]byte, error) {
 	out, err := p.next.Run(ctx, args)
 	// Ended, successfully or not: the host gets its rest either way.
 	p.mu.Lock()
-	slot.free = p.now().Add(p.interval)
+	slot.free = p.now().Add(interval)
 	p.mu.Unlock()
 	return out, err
+}
+
+// intervalFor is host's interval: the fixed one, or the longer of the floor
+// and the host's Crawl-delay. A successful read is kept apart from the host's
+// slot, which join may drop between runs; a failed one is not kept.
+func (p *Paced) intervalFor(ctx context.Context, host string) (time.Duration, error) {
+	if p.robots == nil {
+		return p.interval, nil
+	}
+	p.mu.Lock()
+	iv, ok := p.intervals[host]
+	p.mu.Unlock()
+	if ok {
+		return iv, nil
+	}
+	secs, err := crawlDelay(ctx, p.robots, host, p.robotsTimeout)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return 0, cerr
+		}
+		return 0, err
+	}
+	if secs > MaxInterval.Seconds() {
+		return 0, fmt.Errorf("%w: %s asks %gs, the cap is %s; its pages are not fetched", ErrCrawlDelayTooLong, host, secs, MaxInterval)
+	}
+	iv = max(p.interval, delayDuration(secs))
+	p.mu.Lock()
+	p.intervals[host] = iv
+	p.mu.Unlock()
+	return iv, nil
 }
 
 // join returns host's slot, creating it if needed, and counts the caller.
