@@ -129,7 +129,7 @@ func TestLinkExtractionAndPattern(t *testing.T) {
 		<A HREF=/jobs/1>one</A> <a class=x href='/jobs/2'>two</a> <a href="/jobs/1#frag">dup</a>
 		<a href="/jobs/3?utm_campaign=a&amp;utm_medium=b">three</a> <a name="x">noref</a>
 		<a href="tel:123">tel</a><a href="data:text/html,hi">d</a><a href="//cdn.example.net/jobs/5">proto-relative</a>`).links
-	got, err := postingURLs(links, listURL, re)
+	got, err := postingURLs(links, listURL, listURL, re)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +148,60 @@ func TestLinkExtractionAndPattern(t *testing.T) {
 	}
 	if got[0].text != "one" {
 		t.Errorf("anchor text %q", got[0].text)
+	}
+}
+
+// Relative links resolve against the page's first <base href>, as in a
+// browser. Google's careers results set one and link postings as
+// "jobs/results/<id>-<slug>"; against the listing URL they would resolve one
+// directory too deep and the board would read as empty.
+func TestBaseHrefResolvesRelativeLinks(t *testing.T) {
+	const list = "https://careers.example.com/about/careers/applications/jobs/results?q=llm"
+	baseBoard := func() sources.Board {
+		b := board()
+		b.URL = list
+		b.LinkPattern = `^https://careers\.example\.com/about/careers/applications/jobs/results/[0-9]+-[a-z-]+(\?q=llm)?$`
+		return b
+	}
+	post := "https://careers.example.com/about/careers/applications/jobs/results/12-ml-engineer?q=llm"
+	pages := map[string]string{
+		list: `<html><head><base href="https://careers.example.com/about/careers/applications/"><base href="https://evil.example.org/"></head>
+			<body><a href="jobs/results/12-ml-engineer?q=llm">ML Engineer</a></body></html>`,
+		post: ldPage("t", `{"@type":"JobPosting","title":"ML Engineer"}`),
+	}
+	got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), baseBoard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].URL != post || got[0].Title != "ML Engineer" {
+		t.Fatalf("got %+v, want the one posting at %s", got, post)
+	}
+
+	// Only the first <base> with an href counts; later ones and bases that
+	// are not absolute http(s) URLs leave the listing URL in charge.
+	for name, tc := range map[string]struct {
+		head string
+		want string
+	}{
+		"no base":            {``, list},
+		"first wins":         {`<base target="_top"><base href="/a/"><base href="/b/">`, "https://careers.example.com/a/"},
+		"relative base":      {`<base href="../x/">`, "https://careers.example.com/about/careers/applications/x/"},
+		"javascript base":    {`<base href="javascript:alert(1)">`, list},
+		"empty-host base":    {`<base href="https:">`, list},
+		"entity in href":     {`<base href="https://careers.example.com/a/?x=1&amp;y=2">`, "https://careers.example.com/a/?x=1&y=2"},
+		"base inside script": {`<script>"<base href='/s/'>"</script>`, list},
+	} {
+		got, err := documentBase(list, scanHTML(`<html><head>`+tc.head+`</head><body></body></html>`))
+		if err != nil || got != tc.want {
+			t.Errorf("%s: base %q, %v; want %q", name, got, err, tc.want)
+		}
+	}
+
+	// A hostile base cannot widen what is fetched: links it redirects to
+	// another host still have to match the operator's pattern.
+	pages[list] = `<html><head><base href="https://evil.example.org/"></head><body><a href="jobs/results/12-ml-engineer?q=llm">x</a></body></html>`
+	if got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), baseBoard()); err == nil {
+		t.Fatalf("a base on another host produced postings: %+v", got)
 	}
 }
 
@@ -417,6 +471,7 @@ func TestStdoutOverCapFailsTheBoard(t *testing.T) {
 // on the listing or on any posting page, fails the board: it must never
 // become an empty posting or an empty listing.
 func TestEmptyDocumentFailsTheBoard(t *testing.T) {
+	noEmptyWait(t)
 	const post = "https://careers.example.com/jobs/a-1"
 	for name, dump := range map[string]string{
 		"lightpanda's empty dump": "<!DOCTYPE html>",
@@ -440,11 +495,80 @@ func TestEmptyDocumentFailsTheBoard(t *testing.T) {
 			}
 		}
 	}
+	// An empty dump is asked again exactly once, never more.
+	r := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1"), post: "<!DOCTYPE html>"}}
+	if _, err := newSrc(r).List(context.Background(), board()); !errors.Is(err, ErrEmptyDocument) {
+		t.Fatalf("err %v", err)
+	}
+	if n := countRuns(r, post); n != 2 {
+		t.Errorf("empty posting page fetched %d times, want 2 (one retry)", n)
+	}
+
 	// The smallest real document still passes.
 	for _, doc := range []string{"<!DOCTYPE html><html><head></head><body></body></html>", "<html></html>", "<p>x</p>"} {
 		if !hasElement(doc) {
 			t.Errorf("hasElement(%q) = false", doc)
 		}
+	}
+}
+
+func noEmptyWait(t *testing.T) {
+	t.Helper()
+	old := emptyRetryWait
+	emptyRetryWait = 0
+	t.Cleanup(func() { emptyRetryWait = old })
+}
+
+func countRuns(r *fakeRunner, u string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, argv := range r.calls {
+		if argv[len(argv)-1] == u {
+			n++
+		}
+	}
+	return n
+}
+
+// A page whose first load dumped an empty document but whose retry loads is
+// read normally: one slow response must not fail a whole board.
+func TestEmptyDocumentRetrySucceeds(t *testing.T) {
+	noEmptyWait(t)
+	const post = "https://careers.example.com/jobs/a-1"
+	r := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1"), post: "<!DOCTYPE html>"}}
+	r.hook = func(_ context.Context, u string) {
+		if u == post && countRuns(r, post) == 2 {
+			r.mu.Lock()
+			r.pages[post] = ldPage("t", `{"@type":"JobPosting","title":"Second Try"}`)
+			r.mu.Unlock()
+		}
+	}
+	got, err := newSrc(r).List(context.Background(), board())
+	if err != nil || len(got) != 1 || got[0].Title != "Second Try" {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+	// A failed run (a bot challenge, a 404) is never retried.
+	r2 := &fakeRunner{pages: map[string]string{listURL: listing("/jobs/a-1")}, errs: map[string]error{post: errors.New("err=BotChallenge")}}
+	if _, err := newSrc(r2).List(context.Background(), board()); err == nil || countRuns(r2, post) != 1 {
+		t.Fatalf("a failed run was retried: runs=%d err=%v", countRuns(r2, post), err)
+	}
+}
+
+// Cancelling during the retry pause returns promptly with the context error.
+func TestEmptyDocumentRetryHonoursContext(t *testing.T) {
+	old := emptyRetryWait
+	emptyRetryWait = time.Minute
+	t.Cleanup(func() { emptyRetryWait = old })
+	r := &fakeRunner{pages: map[string]string{listURL: "<!DOCTYPE html>"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := newSrc(r).List(ctx, board()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err %v, want deadline exceeded", err)
+	}
+	if time.Since(start) > 5*time.Second || countRuns(r, listURL) != 1 {
+		t.Fatalf("took %v with %d runs", time.Since(start), countRuns(r, listURL))
 	}
 }
 

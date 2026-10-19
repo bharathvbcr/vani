@@ -23,6 +23,10 @@ type scanned struct {
 	title string
 	// bodyStart is the offset just past the <body ...> tag, or 0.
 	bodyStart int
+	// baseHref is the raw, unescaped href of the first <base> that has one,
+	// as HTML uses it: relative links resolve against it, not the page URL.
+	baseHref string
+	hasBase  bool
 }
 
 const (
@@ -69,6 +73,10 @@ func scanHTML(doc string) scanned {
 		case "body":
 			if out.bodyStart == 0 {
 				out.bodyStart = end
+			}
+		case "base":
+			if href, found := attrs["href"]; found && !out.hasBase {
+				out.baseHref, out.hasBase = html.UnescapeString(href), true
 			}
 		case "a":
 			if href, found := attrs["href"]; found {

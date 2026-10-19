@@ -97,7 +97,12 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err != nil {
 		return nil, err
 	}
-	urls, err := postingURLs(scanHTML(doc).links, listURL, pattern)
+	sc := scanHTML(doc)
+	base, err := documentBase(listURL, sc)
+	if err != nil {
+		return nil, err
+	}
+	urls, err := postingURLs(sc.links, listURL, base, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -172,8 +177,32 @@ func firstNonEmpty(ss ...string) string {
 	return ""
 }
 
+// emptyRetryWait is the pause before the one retry of a fetch that dumped an
+// empty document. A variable only so tests need not wait in real time.
+var emptyRetryWait = 2 * time.Second
+
 // fetch runs `lightpanda fetch --dump html` on rawURL, which the caller has
-// already validated.
+// already validated. An empty dump (the page's first response missed
+// lightpanda's --wait-ms) is retried once after emptyRetryWait; Apple's
+// careers pages did this on one posting in nine on a live run. A second empty
+// dump fails with ErrEmptyDocument. Errors and exit statuses are not retried:
+// a bot challenge or a 404 must not be asked again.
+func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
+	doc, err := s.fetchOnce(ctx, proxyArgs, rawURL)
+	if !errors.Is(err, ErrEmptyDocument) {
+		return doc, err
+	}
+	t := time.NewTimer(emptyRetryWait)
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+		t.Stop()
+		return "", fmt.Errorf("page: fetching %s: %w", rawURL, ctx.Err())
+	}
+	return s.fetchOnce(ctx, proxyArgs, rawURL)
+}
+
+// fetchOnce is one lightpanda run.
 //
 // --http-max-host-open 1 makes one run open one connection, so one proxy
 // CONNECT, per host. The egress proxy paces CONNECTs per host; with
@@ -181,7 +210,7 @@ func firstNonEmpty(ss ...string) string {
 // scripts would queue several paced CONNECTs inside a single run, and any
 // that outlast lightpanda's connect timeout are dropped without failing the
 // fetch (measured 2026-10-18, lightpanda 1.1.0-nightly).
-func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
+func (s *source) fetchOnce(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
 	args := []string{"fetch", "--dump", "html", "--obey-robots", "--block-private-networks", "--fail-on-http-error",
 		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1"}
 	args = append(args, proxyArgs...)
@@ -288,16 +317,41 @@ type target struct {
 	text  string // anchor text, a title fallback
 }
 
-// postingURLs resolves each link against base, keeps the http(s) ones whose
-// canonical URL matches pattern, drops duplicates and the listing page itself,
-// and enforces the cap and the non-empty rule.
-func postingURLs(links []link, base string, pattern *regexp.Regexp) ([]target, error) {
+// documentBase is the URL relative links on the listing resolve against: the
+// listing URL, or the page's first <base href> resolved against it, as a
+// browser does (Google's careers results use one). Page content picks the
+// base, so it only shapes candidate URLs: each still has to match the
+// operator's pattern, be a clean https URL and pass the egress allowlist. A
+// base that does not resolve to an absolute http(s) URL is ignored.
+func documentBase(listing string, sc scanned) (string, error) {
+	listURL, err := url.Parse(listing)
+	if err != nil {
+		return "", fmt.Errorf("page: board url: %w", err)
+	}
+	if !sc.hasBase {
+		return listing, nil
+	}
+	ref, err := url.Parse(strings.TrimSpace(sc.baseHref))
+	if err != nil {
+		return listing, nil
+	}
+	abs := listURL.ResolveReference(ref)
+	if (abs.Scheme != "https" && abs.Scheme != "http") || abs.Host == "" {
+		return listing, nil
+	}
+	return abs.String(), nil
+}
+
+// postingURLs resolves each link against base (see documentBase), keeps the
+// http(s) ones whose canonical URL matches pattern, drops duplicates and the
+// listing page itself, and enforces the cap and the non-empty rule.
+func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]target, error) {
 	baseURL, err := url.Parse(base)
 	if err != nil {
 		return nil, fmt.Errorf("page: board url: %w", err)
 	}
 	var out []target
-	seen := map[string]bool{base: true}
+	seen := map[string]bool{listing: true}
 	for _, l := range links {
 		ref, err := url.Parse(strings.TrimSpace(l.href))
 		if err != nil {
