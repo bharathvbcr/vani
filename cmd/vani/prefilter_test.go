@@ -108,6 +108,55 @@ func TestPrefilterDryRun(t *testing.T) {
 	}
 }
 
+// A title drop comes back through `retriage --title-drops` only once the
+// configured rules no longer drop it.
+func TestRetriageTitleDropsCommand(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DropRules = []config.DropRule{{Slot: "seniority", Values: []string{"staff_plus"}, MinOpenRouterProb: 0.9}}
+	cfg.TitleSignals.Read = []config.TitleRead{{Slot: "seniority", Value: "staff_plus", Match: []string{"Staff"}}}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	l, err := ledger.Open(filepath.Join(stateDir, "ledger"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := posting.Posting{Key: "gh:acme:1", ATS: "gh", Company: "Acme", Title: "Staff Engineer", Description: "jd"}
+	ann := map[string]string{"triage.backend": "title", "triage.seniority": "staff_plus", "triage.seniority.reading": "answered"}
+	if err := l.Append(context.Background(), ledger.Event{V: 1, At: jobsT0, Key: p.Key, Status: posting.Dropped, Posting: &p, Annotations: ann}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	out, _ := mustCode(t, 0, "retriage", "--title-drops", "--dry-run")
+	if !strings.Contains(out, "0 posting(s) would return to live") {
+		t.Fatalf("rules still drop it: %q", out)
+	}
+	// The unread retriage leaves it alone.
+	if out, _ = mustCode(t, 0, "retriage"); !strings.Contains(out, "0 posting(s) returned to live") {
+		t.Fatalf("unread retriage: %q", out)
+	}
+	cfg.TitleSignals.Read = nil
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ = mustCode(t, 0, "retriage", "--title-drops", "--dry-run"); !strings.Contains(out, "1 posting(s) would return to live") {
+		t.Fatalf("dry run: %q", out)
+	}
+	if out, _ = mustCode(t, 0, "retriage", "--title-drops"); !strings.Contains(out, "1 posting(s) returned to live") {
+		t.Fatalf("run: %q", out)
+	}
+	snap, err := ledger.ReadSnapshot(filepath.Join(stateDir, "ledger"))
+	if err != nil || len(snap.Records) != 1 || snap.Records[0].Status != posting.Live || snap.Records[0].Annotations["triage.backend"] != "" {
+		t.Fatalf("after: %+v (%v)", snap.Records, err)
+	}
+}
+
 func TestPrefilterSaysWhenNothingWasReadByAModel(t *testing.T) {
 	rep := prefilterReport{ByReason: map[string]int{}, RoleFit: map[string]int{}}
 	var b strings.Builder

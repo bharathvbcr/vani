@@ -75,7 +75,10 @@ commands:
                              record what you did with a role (state dir marks/, never the ledger)
   jobs note [--json] KEY TEXT
                              a private note on a role ("" clears it); never sent to a model
-  retriage [--dry-run]       return postings triaged with no backend reading to live
+  retriage [--dry-run] [--title-drops]
+                             return postings triaged with no backend reading to live; with
+                             --title-drops, postings dropped on a title the current
+                             title_signals.read and drop rules no longer drop
   prefilter [--list]         dry run of the title prefilter (title_signals.read with the drop
                              rules): how many live postings it would drop before triage, and how
                              the decision model read the ones it already read (never writes)

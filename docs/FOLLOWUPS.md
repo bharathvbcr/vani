@@ -94,6 +94,13 @@ flowchart TD
   partial_fit 0. `Principal` (43 live) and `Distinguished` have no model reading in the ledger.
   They are kept on what the words mean, unmeasured. Re-run `vani prefilter` after a change to the
   lists; any strong_fit or partial_fit it lists is a false drop.
+- **Reversal.** `vani retriage --title-drops` returns the title drops that the current rules no
+  longer drop.
+- **The track deciders have no `read` entries yet.** `drafts/deciders` is personal and outside git,
+  and this session's write gate could not edit it. If the owner runs `vani track use ai-engineer`
+  or `ml-inference-systems` without them, the config's `read` entries are cleared, since
+  `title_signals` is copied as is. To fix, paste the `read` block from TRACKS.md into each file's
+  `title_signals` and run `vani track show <id>`, which checks it.
 - **Outage detection.** A title drop is no backend reading. It does not reset the unread
   breaker, and it does not stop a phase in which no backend read anything from failing
   (`advanceAll`'s `titleDrop`).

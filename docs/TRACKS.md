@@ -162,3 +162,9 @@ the per-run cap (`advance_per_run`).
 `vani prefilter [--list]` is a dry run: it counts the live postings the readings would drop. For
 the postings it would drop that a model has already read, it shows how the model rated `role_fit`.
 Any strong_fit or partial_fit there is a false drop. It never writes the ledger.
+
+A title drop is reversible. After narrowing a list, removing a value from a drop rule, or removing
+the `read` entries, run `vani retriage --title-drops` (add `--dry-run` to see the count first). It
+returns to live every posting dropped on a title that the current rules no longer drop, and
+forgets its title reading. The next run triages those postings with the models. A posting the
+current rules still drop stays dropped, and a posting a model dropped is never touched.
