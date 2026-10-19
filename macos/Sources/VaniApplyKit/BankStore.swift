@@ -59,10 +59,34 @@ public final class BankStore: @unchecked Sendable {
 
     /// Activity log size at which it is rotated to activity.1.jsonl.
     let maxActivityBytes: Int
+    /// How long a lock may be waited for. A writer holds it for one small file
+    /// write, so five seconds of contention means something is stuck.
+    let lockWait: TimeInterval
 
-    public init(directory: URL, maxActivityBytes: Int = 512 * 1024) {
+    public init(directory: URL, maxActivityBytes: Int = 512 * 1024, lockWait: TimeInterval = 5) {
         self.directory = directory
         self.maxActivityBytes = maxActivityBytes
+        self.lockWait = lockWait
+    }
+
+    /// What identifies the activity log's contents without reading it: each
+    /// file's size and modification time. A changed stamp means
+    /// recentActivity() would return something new. The log is appended by
+    /// every process without changing the bank's revision, so the revision
+    /// alone cannot say that.
+    public struct ActivityStamp: Equatable, Sendable {
+        var sizes: [Int64?]
+        var modified: [Date?]
+    }
+
+    public func activityStamp() -> ActivityStamp {
+        var stamp = ActivityStamp(sizes: [], modified: [])
+        for url in [activityURL, directory.appendingPathComponent("activity.1.jsonl")] {
+            let a = try? FileManager.default.attributesOfItem(atPath: url.path)
+            stamp.sizes.append((a?[.size] as? NSNumber)?.int64Value)
+            stamp.modified.append(a?[.modificationDate] as? Date)
+        }
+        return stamp
     }
 
     /// The store in the App Group container shared by the app and both browser extensions.
@@ -214,15 +238,19 @@ public final class BankStore: @unchecked Sendable {
         let fd = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         if fd < 0 { throw BankError("cannot open the bank lock: \(String(cString: strerror(errno)))") }
         defer { close(fd) }
-        // Bounded wait: a writer holds the lock for one small file write, so
-        // five seconds of contention means something is stuck.
-        let deadline = Date().addingTimeInterval(5)
+        // Bounded wait (lockWait). The retry starts at 1 ms, for the usual sub-millisecond write, and
+        // doubles to 64 ms, so a longer hold costs a few wake-ups rather than
+        // one every 10 ms; no sleep runs past the deadline.
+        let deadline = Date().addingTimeInterval(lockWait)
+        var backoff: TimeInterval = 0.001
         while flock(fd, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 {
             if errno != EWOULDBLOCK && errno != EINTR {
                 throw BankError("cannot lock the answer bank: \(String(cString: strerror(errno)))")
             }
-            if Date() >= deadline { throw BankError("the answer bank is locked by another process") }
-            usleep(10_000)
+            let left = deadline.timeIntervalSinceNow
+            if left <= 0 { throw BankError("the answer bank is locked by another process") }
+            usleep(useconds_t(min(backoff, left) * 1_000_000))
+            backoff = min(backoff * 2, 0.064)
         }
         defer { flock(fd, LOCK_UN) }
         return try body()

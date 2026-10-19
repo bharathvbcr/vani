@@ -324,6 +324,7 @@ func TestDigestDateAndStatus(t *testing.T) {
 	mustCode(t, 0, "init")
 	l := fixture()
 	wire(t, l, &fakeNotifier{}, nil)
+	seedLedger(t, stateDir, l) // status reads the ledger file, not the app's
 
 	o, _ := mustCode(t, 0, "status")
 	for _, want := range []string{"postings: 4", "explained  1", "unsure     1", "boards: 0"} {

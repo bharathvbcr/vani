@@ -209,11 +209,7 @@ func (e *env) cmdDigest(args []string) error {
 	return e.publishDigest(ctx, app, date, loc)
 }
 
-func (e *env) printStatus(app *App, cfg config.Config) error {
-	if app.Ledger == nil {
-		return errors.New("app has no ledger")
-	}
-	recs := app.Ledger.All()
+func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	by := statusCounts(recs)
 	statuses := make([]string, 0, len(by))
 	for s := range by {
