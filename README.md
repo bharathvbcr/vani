@@ -20,6 +20,7 @@ flowchart TD
         LV["Lever US & EU API"]
         AB["Ashby API"]
         WD["Workday CXS API"]
+        SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX)"]
         PG["Custom Pages (Lightpanda)"]
     end
 
@@ -59,7 +60,7 @@ flowchart TD
         end
     end
 
-    GH & LV & AB & WD --> EP
+    GH & LV & AB & WD & SS --> EP
     PG --> EP
     EP --> AL & PB --> RAW
     RAW --> DEDUP
@@ -87,7 +88,9 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
 ```
 
 - **Sources:** Greenhouse, Lever (US and EU), Ashby and Workday (cxs search, paged by 20)
-  public job-board APIs, through [`internal/egress`](file:///Users/bharath/Code/apps/Vani/internal/egress) (https only, host allowlist, private-address
+  public job-board APIs, and the big-employer search sites: amazon.jobs (`az`, its search.json),
+  Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`)
+  and Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`). All go through [`internal/egress`](file:///Users/bharath/Code/apps/Vani/internal/egress) (https only, host allowlist, private-address
   block, pinned dialing). Custom careers pages (`pg` boards) are fetched by Lightpanda, run as a
   separate process whose traffic is forced through a per-run authenticated loopback CONNECT
   proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](file:///Users/bharath/Code/apps/Vani/docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
@@ -219,7 +222,11 @@ build/vani launchd plist --binary /absolute/path/to/vani
 ```
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
---search "query"`. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
+--search "query"`. Search sites take repeated `--search` (up to 10 terms; the board lists their union)
+and, where verified, `--filter name=value`: `az --token amazon` (`normalized_country_code[]`,
+`category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
+`ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
+posting cap fails rather than being truncated, so pick searches narrow enough. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH.
 
 Config and state default to `~/Library/Application Support/Vani/` (override with `VANI_CONFIG`

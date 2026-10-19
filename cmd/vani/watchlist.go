@@ -111,7 +111,7 @@ func (e *env) watchlistAdd(args []string) error {
 
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd or pg")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef or pg")
 	token := fs.String("token", "", "board token")
 	if err := parse(fs, args); err != nil {
 		return err

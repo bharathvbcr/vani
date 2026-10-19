@@ -31,7 +31,11 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resume"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/amazon"
+	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
+	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
@@ -159,12 +163,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	srcs := map[posting.ATS]sources.Source{
-		posting.Greenhouse: greenhouse.New(d),
-		posting.Lever:      lever.New(d),
-		posting.Ashby:      ashby.New(d),
-		posting.Workday:    workday.New(d),
-	}
+	srcs := apiSources(d)
 	if w.hasPageBoard() {
 		src, stop, err := w.pageSource(ctx, d)
 		if err != nil {
@@ -217,6 +216,21 @@ func (w *wired) titleRank() func(posting.Posting) int {
 		return nil
 	}
 	return func(p posting.Posting) int { return s.Rank(p.Title) }
+}
+
+// apiSources are the adapters for every board kind but careers pages, which
+// need a per-run proxy and browser.
+func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
+	return map[posting.ATS]sources.Source{
+		posting.Greenhouse: greenhouse.New(d),
+		posting.Lever:      lever.New(d),
+		posting.Ashby:      ashby.New(d),
+		posting.Workday:    workday.New(d),
+		posting.Amazon:     amazon.New(d),
+		posting.Google:     google.New(d),
+		posting.Apple:      apple.New(d),
+		posting.Eightfold:  eightfold.New(d),
+	}
 }
 
 // maxConsecutiveUnread stops a run's advance phase once this many postings in
