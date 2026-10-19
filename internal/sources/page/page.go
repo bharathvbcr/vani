@@ -174,9 +174,16 @@ func firstNonEmpty(ss ...string) string {
 
 // fetch runs `lightpanda fetch --dump html` on rawURL, which the caller has
 // already validated.
+//
+// --http-max-host-open 1 makes one run open one connection, so one proxy
+// CONNECT, per host. The egress proxy paces CONNECTs per host; with
+// lightpanda's default of 6 parallel connections, one page with same-host
+// scripts would queue several paced CONNECTs inside a single run, and any
+// that outlast lightpanda's connect timeout are dropped without failing the
+// fetch (measured 2026-10-18, lightpanda 1.1.0-nightly).
 func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
 	args := []string{"fetch", "--dump", "html", "--obey-robots", "--block-private-networks", "--fail-on-http-error",
-		"--http-timeout", strconv.Itoa(httpTimeoutMs)}
+		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1"}
 	args = append(args, proxyArgs...)
 	args = append(args, rawURL)
 	out, err := s.run.Run(ctx, args)
@@ -189,7 +196,30 @@ func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (
 	if len(out) > MaxStdout {
 		return "", fmt.Errorf("page: fetching %s: %w", rawURL, ErrOutputTooLarge)
 	}
-	return string(out), nil
+	doc := string(out)
+	if !hasElement(doc) {
+		return "", fmt.Errorf("page: fetching %s: %w", rawURL, ErrEmptyDocument)
+	}
+	return doc, nil
+}
+
+// ErrEmptyDocument is a fetch that exited 0 but dumped no element. Lightpanda
+// does this when the page's first response has not arrived by its --wait-ms
+// (5 s by default): it prints a bare "<!DOCTYPE html>" and succeeds. Accepting
+// that would turn a posting into an empty one, so it fails the board.
+var ErrEmptyDocument = errors.New("page: lightpanda dumped an empty document (the page did not load in time)")
+
+// hasElement reports whether doc holds any markup past a leading doctype.
+func hasElement(doc string) bool {
+	rest := strings.TrimSpace(doc)
+	if len(rest) >= 9 && strings.EqualFold(rest[:9], "<!doctype") {
+		end := strings.IndexByte(rest, '>')
+		if end < 0 {
+			return false
+		}
+		rest = rest[end+1:]
+	}
+	return strings.Contains(rest, "<")
 }
 
 func (s *source) redact(msg string) string {

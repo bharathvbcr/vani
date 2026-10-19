@@ -46,9 +46,11 @@ type ProxyConfig struct {
 
 // Proxy is an authenticated, loopback-only CONNECT proxy for a child process
 // that opens its own sockets (a headless browser). It applies the Client's
-// rules to every tunnel: only port 443, only allowlisted hosts, only vetted
-// addresses, via the Client's own pinned dial. The tunnel carries the child's
-// TLS end to end; the proxy never sees plaintext and never forwards http://.
+// rules to every tunnel: only port 443, only allowlisted hosts, tunnels to one
+// host spaced by PerHostInterval, only vetted addresses, via the Client's own
+// pinned dial. A child opens one tunnel per host connection, not per request.
+// The tunnel carries the child's TLS end to end; the proxy never sees
+// plaintext and never forwards http://.
 type Proxy struct {
 	c   *Client
 	cfg ProxyConfig
@@ -258,13 +260,19 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The lifetime bounds the pacing wait as well as the tunnel: a CONNECT
+	// parked behind a long PerHostInterval holds a slot only until the child
+	// gives up (its connection closes, which ends r.Context) or this lapses.
 	ctx, cancel := context.WithTimeout(r.Context(), p.cfg.MaxLifetime)
 	defer cancel()
 	up, err := p.c.dialVetted(ctx, host, port)
 	if err != nil {
 		code := http.StatusBadGateway
-		if errors.Is(err, ErrNotAllowed) || errors.Is(err, ErrBlockedAddress) {
+		switch {
+		case errors.Is(err, ErrNotAllowed) || errors.Is(err, ErrBlockedAddress):
 			code = http.StatusForbidden
+		case errors.Is(err, context.DeadlineExceeded):
+			code = http.StatusGatewayTimeout
 		}
 		// The status carries the policy outcome; the error text names a host
 		// and address, which the child may see, and never the token.

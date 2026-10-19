@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -330,7 +331,7 @@ func TestArgvSafety(t *testing.T) {
 	}
 	fixed := map[string]bool{
 		"fetch": true, "--dump": true, "html": true, "--obey-robots": true, "--block-private-networks": true,
-		"--fail-on-http-error": true, "--http-timeout": true, strconv.Itoa(httpTimeoutMs): true,
+		"--fail-on-http-error": true, "--http-timeout": true, strconv.Itoa(httpTimeoutMs): true, "--http-max-host-open": true, "1": true,
 		"--block-cidrs": true, "-127.0.0.1/32": true, "--http-proxy": true, "--proxy-bearer-token": true, testTok: true,
 		"http://vani:" + testTok + "@" + testAddr: true,
 		listURL: true, "https://careers.example.com/jobs/a-1": true, "https://careers.example.com/jobs/b-2": true,
@@ -347,6 +348,11 @@ func TestArgvSafety(t *testing.T) {
 			if !have[must] {
 				t.Errorf("argv lacks %s: %v", must, argv)
 			}
+		}
+		// One connection per host per run keeps the proxy's per-host pacing
+		// from queueing several CONNECTs inside one page load.
+		if i := slices.Index(argv, "--http-max-host-open"); i < 0 || i+1 >= len(argv) || argv[i+1] != "1" {
+			t.Errorf("argv lacks --http-max-host-open 1: %v", argv)
 		}
 		if argv[len(argv)-1][:8] != "https://" {
 			t.Errorf("last argument is not an https URL: %v", argv)
@@ -403,6 +409,42 @@ func TestStdoutOverCapFailsTheBoard(t *testing.T) {
 	big := &bigRunner{n: MaxStdout + 1}
 	if _, err := newSrc(big).List(context.Background(), board()); !errors.Is(err, ErrOutputTooLarge) {
 		t.Fatalf("err %v, want ErrOutputTooLarge", err)
+	}
+}
+
+// Lightpanda exits 0 with a bare doctype when the first response misses its
+// --wait-ms (reproduced by holding the proxy CONNECT past 5 s). Such a dump,
+// on the listing or on any posting page, fails the board: it must never
+// become an empty posting or an empty listing.
+func TestEmptyDocumentFailsTheBoard(t *testing.T) {
+	const post = "https://careers.example.com/jobs/a-1"
+	for name, dump := range map[string]string{
+		"lightpanda's empty dump": "<!DOCTYPE html>",
+		"with newline":            "<!DOCTYPE html>\n",
+		"lower case":              "  <!doctype html>  ",
+		"nothing":                 "",
+		"whitespace":              " \n\t ",
+		"unterminated doctype":    "<!DOCTYPE html",
+		"text only":               "Navigation failed",
+	} {
+		for _, where := range []string{"listing", "posting"} {
+			pages := map[string]string{listURL: listing("/jobs/a-1"), post: ldPage("t", `{"@type":"JobPosting","title":"T"}`)}
+			if where == "listing" {
+				pages[listURL] = dump
+			} else {
+				pages[post] = dump
+			}
+			got, err := newSrc(&fakeRunner{pages: pages}).List(context.Background(), board())
+			if !errors.Is(err, ErrEmptyDocument) {
+				t.Errorf("%s on the %s: got %d postings, err %v; want ErrEmptyDocument", name, where, len(got), err)
+			}
+		}
+	}
+	// The smallest real document still passes.
+	for _, doc := range []string{"<!DOCTYPE html><html><head></head><body></body></html>", "<html></html>", "<p>x</p>"} {
+		if !hasElement(doc) {
+			t.Errorf("hasElement(%q) = false", doc)
+		}
 	}
 }
 
