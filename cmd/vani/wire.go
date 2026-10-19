@@ -328,6 +328,10 @@ func (w *wired) pageSource(ctx context.Context, c *egress.Client) (sources.Sourc
 	if err != nil {
 		return nil, nil, err
 	}
+	run, err := pageRunner(bin, w.cfg.PageInterval(), c)
+	if err != nil {
+		return nil, nil, err
+	}
 	p, err := egress.NewProxy(c, egress.ProxyConfig{})
 	if err != nil {
 		return nil, nil, err
@@ -342,7 +346,19 @@ func (w *wired) pageSource(ctx context.Context, c *egress.Client) (sources.Sourc
 			w.warnf("egress proxy close: %v", err)
 		}
 	}
-	return page.New(page.ExecRunner{Binary: bin, Timeout: lightpandaTimeout}, page.ProxyInfo{Addr: addr, Token: token}), stop, nil
+	return page.New(run, page.ProxyInfo{Addr: addr, Token: token}), stop, nil
+}
+
+// pageRunner runs lightpanda at bin, spacing runs to one host, before each
+// process starts, by the longer of interval (config page_interval_ms) and the
+// Crawl-delay in that host's robots.txt, which is read through d.
+func pageRunner(bin string, interval time.Duration, d egress.Doer) (page.Runner, error) {
+	run := page.ExecRunner{Binary: bin, Timeout: lightpandaTimeout}
+	paced, err := page.NewRobotsPaced(run, d, interval)
+	if err != nil {
+		return nil, fmt.Errorf("page_interval_ms: %w", err)
+	}
+	return paced, nil
 }
 
 // lightpandaBinary resolves the configured binary, or "lightpanda" on PATH,

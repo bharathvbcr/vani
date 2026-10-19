@@ -1,13 +1,16 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 )
 
 func valid() Config {
@@ -78,6 +81,9 @@ func TestValidateRules(t *testing.T) {
 		{"absurd price", func(c *Config) { c.LLM.InputNanoUSDPerToken = 2_000_000 }, "per-token price above"},
 		{"negative price", func(c *Config) { c.LLM.OutputNanoUSDPerToken = -1 }, "needs input_nano_usd_per_token"},
 		{"drop rule", func(c *Config) { c.DropRules = []DropRule{{Slot: "", MinOpenRouterProb: 2}} }, "drop_rules[0]"},
+		{"negative page interval", func(c *Config) { c.PageIntervalMS = -1 }, "page_interval_ms -1"},
+		{"page interval over max", func(c *Config) { c.PageIntervalMS = 10_001 }, "page_interval_ms 10001 must be within 0..10000"},
+		{"huge page interval", func(c *Config) { c.PageIntervalMS = math.MaxInt }, "page_interval_ms"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,6 +163,44 @@ func TestLoadRejectsUnknownFieldAndTrailing(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(dir, "missing.json")); err == nil {
 		t.Fatal("missing file accepted")
+	}
+}
+
+// page_interval_ms is off by default, accepts 1..page.MaxInterval in ms, and
+// survives a save and load.
+func TestPageInterval(t *testing.T) {
+	c := valid()
+	if c.PageIntervalMS != 0 || c.PageInterval() != 0 {
+		t.Fatalf("default page interval %d", c.PageIntervalMS)
+	}
+	for _, ms := range []int{0, 1, 5000, int(page.MaxInterval / time.Millisecond)} {
+		c.PageIntervalMS = ms
+		if err := c.Validate(); err != nil {
+			t.Errorf("page_interval_ms %d: %v", ms, err)
+		}
+	}
+	c.PageIntervalMS = 5000
+	if c.PageInterval() != 5*time.Second {
+		t.Fatalf("PageInterval %s", c.PageInterval())
+	}
+	p := filepath.Join(t.TempDir(), "c.json")
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.Contains(string(data), `"page_interval_ms": 5000`) {
+		t.Fatalf("saved config lacks page_interval_ms:\n%s", data)
+	}
+	got, err := Load(p)
+	if err != nil || got.PageIntervalMS != 5000 {
+		t.Fatalf("loaded %d, %v", got.PageIntervalMS, err)
+	}
+	over := strings.Replace(string(data), `"page_interval_ms": 5000`, `"page_interval_ms": 60000`, 1)
+	if err := os.WriteFile(p, []byte(over), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
+		t.Fatalf("over-max interval loaded: %v", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -18,6 +19,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -125,6 +127,43 @@ func TestPageSourceStartsAndStopsProxy(t *testing.T) {
 	w.cfg.LightpandaBinary = ""
 	if _, _, err := w.pageSource(context.Background(), c); err == nil {
 		t.Fatal("pageSource with no lightpanda binary succeeded")
+	}
+}
+
+// Whatever page_interval_ms is, including off, runs are paced by robots.txt
+// Crawl-delay on top of it; out of range, it is refused rather than clamped.
+func TestPageRunnerInterval(t *testing.T) {
+	c, err := egress.New(egress.Config{AllowedHosts: []string{"careers.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []time.Duration{0, 5 * time.Second, page.MaxInterval} {
+		run, err := pageRunner("/opt/lp/lightpanda", d, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := run.(*page.Paced); !ok {
+			t.Fatalf("interval %s: %T, want *page.Paced", d, run)
+		}
+	}
+	for _, d := range []time.Duration{-time.Millisecond, page.MaxInterval + time.Millisecond} {
+		if _, err := pageRunner("/opt/lp/lightpanda", d, c); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
+			t.Errorf("interval %s: %v", d, err)
+		}
+	}
+	if _, err := pageRunner("/opt/lp/lightpanda", 0, nil); err == nil {
+		t.Error("pageRunner without a doer succeeded")
+	}
+
+	w := &wired{cfg: config.Config{LightpandaBinary: "/opt/lp/lightpanda", PageIntervalMS: 5000}, warn: &bytes.Buffer{}}
+	_, stop, err := w.pageSource(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	w.cfg.PageIntervalMS = 60_000 // a config that skipped Validate
+	if _, _, err := w.pageSource(context.Background(), c); err == nil {
+		t.Fatal("pageSource accepted an out-of-range interval")
 	}
 }
 

@@ -386,6 +386,7 @@ func TestArgvSafety(t *testing.T) {
 	fixed := map[string]bool{
 		"fetch": true, "--dump": true, "html": true, "--obey-robots": true, "--block-private-networks": true,
 		"--fail-on-http-error": true, "--http-timeout": true, strconv.Itoa(httpTimeoutMs): true, "--http-max-host-open": true, "1": true,
+		"--user-agent": true, UserAgent: true,
 		"--block-cidrs": true, "-127.0.0.1/32": true, "--http-proxy": true, "--proxy-bearer-token": true, testTok: true,
 		"http://vani:" + testTok + "@" + testAddr: true,
 		listURL: true, "https://careers.example.com/jobs/a-1": true, "https://careers.example.com/jobs/b-2": true,
@@ -407,6 +408,11 @@ func TestArgvSafety(t *testing.T) {
 		// from queueing several CONNECTs inside one page load.
 		if i := slices.Index(argv, "--http-max-host-open"); i < 0 || i+1 >= len(argv) || argv[i+1] != "1" {
 			t.Errorf("argv lacks --http-max-host-open 1: %v", argv)
+		}
+		// lightpanda obeys the robots.txt group of its own User-Agent's product
+		// token; it must be the one Crawl-delay is read for.
+		if i := slices.Index(argv, "--user-agent"); i < 0 || i+1 >= len(argv) || argv[i+1] != UserAgent {
+			t.Errorf("argv lacks --user-agent %q: %v", UserAgent, argv)
 		}
 		if argv[len(argv)-1][:8] != "https://" {
 			t.Errorf("last argument is not an https URL: %v", argv)
