@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -87,8 +88,17 @@ func (e *env) cmdLabel(args []string) error {
 func (e *env) cmdEval(args []string) error {
 	fs := e.newFlags("eval")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
+	heldOut := fs.String("held-out", "", "also report Promotion over a registered held-out split ("+strings.Join(eval.SplitNames(), ", ")+")")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	var split eval.Split
+	if *heldOut != "" {
+		sp, err := eval.LookupSplit(*heldOut)
+		if err != nil {
+			return usagef("eval: %v", err)
+		}
+		split = sp
 	}
 	s, err := e.openEvalStore(*labels)
 	if err != nil {
@@ -103,7 +113,18 @@ func (e *env) cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(e.stdout, eval.BuildReport(l.All(), s, names).Markdown())
+	recs := l.All()
+	if *heldOut == "" {
+		fmt.Fprint(e.stdout, eval.BuildReport(recs, s, names).Markdown())
+		return nil
+	}
+	// The held-out table is built before anything is printed, so a label file
+	// it refuses yields an error and no figures at all.
+	all, h, err := eval.BuildHeldOut(recs, s, names, split)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(e.stdout, all.Markdown()+h.Markdown())
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // Thresholds are the OpenRouter model's probability cut-offs of the precision table.
@@ -149,8 +150,14 @@ func ratio(num, den int) (float64, bool) {
 // names maps primary readings filed under the OpenRouter model's old name to
 // its current one (see Names); rep.LegacyPrimary counts how many were.
 func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
-	rep := Report{Records: len(recs), ProbabilityBackend: names.probability()}
 	labels, bad, err := s.Labels()
+	return buildReport(recs, labels, bad, err, names)
+}
+
+// buildReport is BuildReport over an already-read label set. BuildHeldOut
+// calls it with the held-out subset, so both reports share one arithmetic.
+func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, err error, names Names) Report {
+	rep := Report{Records: len(recs), ProbabilityBackend: names.probability()}
 	rep.MalformedLines = bad
 	if err != nil {
 		rep.LoadError = err.Error()
@@ -384,12 +391,17 @@ func (r Report) Markdown() string {
 	if len(r.Promotions) > 0 {
 		b.WriteString("\n## Promotion\n\n")
 		fmt.Fprintf(&b, "Shadow vs each primary backend on the labeled postings the shadow was asked about and that backend held. A verdict needs at least %d of them per row; promotion is a config change you make (decide.lappi.primary), never automatic.\n\n", MinPromotionLabels)
-		b.WriteString("| slot | shadow | primary | asked | shadow precision | shadow coverage | primary precision | primary coverage | verdict |\n|---|---|---|---|---|---|---|---|---|\n")
-		for _, p := range r.Promotions {
-			fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %s | %s | %s | %s |\n", p.Slot, p.Shadow, p.Primary, p.Asked,
-				pct(p.ShadowCorrect, p.ShadowAnswered), pct(p.ShadowAnswered, p.Asked),
-				pct(p.PrimaryCorrect, p.PrimaryAnswered), pct(p.PrimaryAnswered, p.Asked), p.Verdict())
-		}
+		writePromotions(&b, r.Promotions)
 	}
 	return b.String()
+}
+
+// writePromotions writes the Promotion table rows.
+func writePromotions(b *strings.Builder, ps []Promotion) {
+	b.WriteString("| slot | shadow | primary | asked | shadow precision | shadow coverage | primary precision | primary coverage | verdict |\n|---|---|---|---|---|---|---|---|---|\n")
+	for _, p := range ps {
+		fmt.Fprintf(b, "| %s | %s | %s | %d | %s | %s | %s | %s | %s |\n", p.Slot, p.Shadow, p.Primary, p.Asked,
+			pct(p.ShadowCorrect, p.ShadowAnswered), pct(p.ShadowAnswered, p.Asked),
+			pct(p.PrimaryCorrect, p.PrimaryAnswered), pct(p.PrimaryAnswered, p.Asked), p.Verdict())
+	}
 }
