@@ -28,6 +28,8 @@ func TestParseCrawlDelay(t *testing.T) {
 		{"agent lines share a group", "User-agent: googlebot\nUser-agent: VANI\nCrawl-delay: 4\nUser-agent: *\nCrawl-delay: 1", 4},
 		{"agent after a rule starts a group", "User-agent: vani\nDisallow: /\nUser-agent: other\nCrawl-delay: 9\n", 0},
 		{"groups and lines merge to the longest", "User-agent: vani\nCrawl-delay: 1\nCrawl-delay: 3\nUser-agent: x\nCrawl-delay: 50\nUser-agent: vani\nCrawl-delay: 2", 3},
+		{"sitemap does not split a group", "User-agent: vani\nSitemap: https://x.example/s.xml\nUser-agent: *\nCrawl-delay: 9", 9},
+		{"unknown key does not split a group", "User-agent: vani\nHost: x.example\nUser-agent: *\nCrawl-delay: 6", 6},
 		{"other product token", "User-agent: Vanilla\nCrawl-delay: 9\nUser-agent: *\nCrawl-delay: 1", 1},
 		{"leading dot", "User-agent: *\nCrawl-delay: .5", 0.5},
 		{"trailing dot", "User-agent: *\nCrawl-delay: 5.", 5},

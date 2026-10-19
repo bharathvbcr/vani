@@ -135,7 +135,12 @@ func parseCrawlDelay(body []byte, agent string) (float64, error) {
 			}
 			continue
 		}
-		inAgents = false
+		switch key {
+		case "allow", "disallow", "crawl-delay":
+			inAgents = false // a rule: the next user-agent line starts a new group
+		default:
+			continue // a record outside groups (Sitemap) or unknown: skipped, the group goes on
+		}
 		if key != "crawl-delay" || (!curNamed && !curStar) {
 			continue
 		}
