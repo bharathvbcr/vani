@@ -91,6 +91,10 @@ commands:
                              on stdout (spends from the daily llm budget)
   suggest                    triage a form's new fields with the decision model and draft the
                              essays: JSON request on stdin, JSON reply on stdout
+  migrate rekey-fallback [--dry-run]
+                             one-time: move fallback-keyed (x:) postings, and their marks, to the
+                             keys titles that keep C++/C#/.NET apart give them (backs up first;
+                             refuses a second run; takes the ledger lock)
   launchd plist [--binary P] [--label L]
                              print a launchd agent plist (never installs it); it pins the
                              config and state dir this command resolved
@@ -184,6 +188,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdRetriage(args[1:])
 	case "prefilter":
 		cmdErr = e.cmdPrefilter(args[1:])
+	case "migrate":
+		cmdErr = e.cmdMigrate(args[1:])
 	case "bench":
 		cmdErr = e.cmdBench(args[1:])
 	default:
