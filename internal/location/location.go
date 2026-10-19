@@ -5,10 +5,11 @@
 // It is display-only: `vani jobs`, the Mac app and the digest read it, and no
 // engine rule does. The input is untrusted board text; it is bounded before it
 // is read and only ever produces strings, never anything that is followed or
-// executed. There is deliberately no city, metro or world-country table: an
-// area is the place as the board wrote it, and only US states (which the board
-// abbreviates and spells inconsistently) and a short remote-scope vocabulary
-// are normalised.
+// executed. There is no city or metro table: an area is the place as the board
+// wrote it, and only US states (which the board abbreviates and spells
+// inconsistently) and a short remote-scope vocabulary are normalised. The one
+// exception is a short list of foreign cities, used only to tell a country from
+// a state written the same way ("Tbilisi, Georgia", "Berlin, DE").
 package location
 
 import (
@@ -305,12 +306,22 @@ func parseSegment(seg string, remote bool) (Place, bool, string) {
 		if len(parts) == 1 {
 			if i := strings.LastIndexByte(parts[0], ' '); i > 0 && (len(parts[0])-i-1 == 2 || strings.HasPrefix(parts[0][i+1:], "D.C")) {
 				if code, ok := stateOf(parts[0][i+1:]); ok {
+					if scope != "US" && isCountryCity(code, parts[0][i+1:], parts[0][:i]) {
+						return Place{Area: bounded(parts[0][:i]), Region: bounded(parts[0][i+1:])}, true, scope
+					}
 					return Place{Area: bounded(parts[0][:i]), State: code}, true, scopeOr(scope, "US")
 				}
 			}
 		}
 		if code, ok := stateOf(parts[len(parts)-1]); ok {
 			area := strings.Join(parts[:len(parts)-1], ", ")
+			// A country written like the state ("Tbilisi, Georgia", "Berlin, DE",
+			// "Munich, Bavaria, DE"), unless the location also says US
+			// ("Berlin, DE, USA"). The city is the first part.
+			if scope != "US" && len(parts) > 1 && isCountryCity(code, parts[len(parts)-1], parts[0]) {
+				rest := append(slices.Clone(parts[1:]), region...)
+				return Place{Area: bounded(parts[0]), Region: bounded(strings.Join(rest, ", "))}, true, scope
+			}
 			// A board's bare "New York" is the city, not the state.
 			if len(parts) == 1 && code == "NY" && NormArea(parts[0]) == "new york" {
 				area = "New York"
@@ -368,12 +379,19 @@ func stripWorkMode(part string) string {
 	}
 	var keep []piece
 	strong, dropped := 0, false
-	for _, field := range strings.Fields(part) {
+	fields := strings.Fields(part)
+	for fi, field := range fields {
 		first := true
 		for _, s := range strings.Split(field, "-") {
 			w := words(s)
 			switch {
 			case len(w) == 0:
+			case fi == len(fields)-1 && isStateCode(s):
+				// "Portland, OR", "Evansville IN": a trailing code in capitals is
+				// the state, not the word it spells.
+				keep = append(keep, piece{s, false, !first})
+				first = false
+				strong++
 			case allIn(w, workModeWords):
 				dropped = true
 			case allIn(w, weakWords):
@@ -440,6 +458,13 @@ func bounded(s string) string {
 	return string(r[:maxPartRunes]) + "…"
 }
 
+// isStateCode reports whether s is a USPS code written in capitals ("OR", not "or").
+func isStateCode(s string) bool {
+	s = strings.TrimSuffix(strings.TrimSpace(s), ".")
+	_, ok := stateNames[s]
+	return len(s) == 2 && ok
+}
+
 // stateOf reads a part as a US state: a two-letter USPS code written in
 // capitals ("TX", so "in", "or" and "me" are not states), or a state name in
 // any case ("Texas", "new mexico", "Washington D.C.").
@@ -454,6 +479,62 @@ func stateOf(part string) (string, bool) {
 	}
 	c, ok := stateByName[strings.Join(words(part), " ")]
 	return c, ok
+}
+
+// A state written by name or code can be a country's: "Tbilisi, Georgia",
+// "Berlin, DE" (ISO 3166 Germany, USPS Delaware). The invariant: with no listed
+// city of that country it is the state ("Smallville, Georgia", "Smallville,
+// DE"), because these are US-centred boards and a US city needs no table; and a
+// US token in the same location makes it the state whatever the city. Each
+// list holds the country's main tech-office cities, none of them a well-known
+// US city of the colliding state.
+
+// countryByName: state names a country shares. Georgia is the only one
+// ("Jersey" is not "New Jersey").
+var countryByName = map[string]map[string]bool{
+	"GA": set("tbilisi", "batumi", "kutaisi", "rustavi", "zugdidi", "gori", "poti", "telavi"),
+}
+
+// countryByCode: USPS codes that are also ISO 3166-1 alpha-2 codes, for the
+// countries with tech offices. Gabon (GA), Laos (LA), Niger (NE), Sudan (SD),
+// Seychelles (SC), Tunisia (TN), Montenegro (ME), Cayman (KY), Montserrat
+// (MS), Macao (MO), New Caledonia (NC) and the Holy See (VA) are left out, so
+// they read as the state; PR is Puerto Rico either way.
+var countryByCode = map[string]map[string]bool{
+	"DE": set("berlin", "munich", "münchen", "hamburg", "frankfurt", "frankfurt am main", "cologne", "köln",
+		"stuttgart", "düsseldorf", "dusseldorf", "leipzig", "karlsruhe"),
+	"IN": set("bangalore", "bengaluru", "hyderabad", "pune", "chennai", "mumbai", "new delhi", "gurgaon",
+		"gurugram", "noida", "kolkata", "ahmedabad"),
+	"CA": set("toronto", "vancouver", "montreal", "montréal", "ottawa", "calgary", "edmonton", "waterloo",
+		"kitchener", "mississauga"),
+	"IL": set("tel aviv", "tel aviv yafo", "haifa", "jerusalem", "herzliya", "ramat gan", "petah tikva", "beer sheva"),
+	"AR": set("buenos aires", "córdoba", "cordoba"),
+	"CO": set("bogotá", "bogota", "medellín", "medellin"),
+	"MA": set("casablanca", "rabat"),
+	"MD": set("chișinău", "chisinau"),
+	"MT": set("valletta", "sliema", "st julian s"),
+	"PA": set("panama city", "ciudad de panamá"),
+	"ID": set("jakarta"),
+	"MN": set("ulaanbaatar"),
+	"AL": set("tirana"),
+	"AZ": set("baku"),
+}
+
+func set(names ...string) map[string]bool {
+	m := make(map[string]bool, len(names))
+	for _, n := range names {
+		m[NormArea(n)] = true
+	}
+	return m
+}
+
+// isCountryCity reports whether city, with the state written as written (a
+// name or a two-letter code), is a listed city of the country written that way.
+func isCountryCity(code, written, city string) bool {
+	if len(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(written), "."))) == 2 {
+		return countryByCode[code][NormArea(city)]
+	}
+	return countryByName[code][NormArea(city)]
 }
 
 // scopeOf reads a part as a remote scope or country from the short vocabulary.

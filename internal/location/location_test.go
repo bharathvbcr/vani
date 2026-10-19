@@ -57,6 +57,14 @@ func TestParse(t *testing.T) {
 		{raw: "Non-remote, Austin, TX", places: []Place{{Area: "Austin", State: "TX"}}, show: "Austin, TX"},
 		// "or" offers both, so remote is allowed.
 		{raw: "Remote or hybrid, Denver, CO", remote: true, places: []Place{{Area: "Denver", State: "CO"}}, show: "Denver, CO · Remote"},
+		// A trailing code in capitals is the state even when it spells a
+		// work-mode or weak word ("or", "in"); in the middle it stays the word.
+		{raw: "Portland, OR", places: []Place{{Area: "Portland", State: "OR"}}, show: "Portland, OR"},
+		{raw: "Portland OR", places: []Place{{Area: "Portland", State: "OR"}}, show: "Portland, OR"},
+		{raw: "Hybrid - Portland, OR", places: []Place{{Area: "Portland", State: "OR"}}, show: "Portland, OR"},
+		{raw: "Evansville IN", places: []Place{{Area: "Evansville", State: "IN"}}, show: "Evansville, IN"},
+		{raw: "Office in Austin, TX", places: []Place{{Area: "Austin", State: "TX"}}, show: "Austin, TX"},
+		{raw: "Remote OR Denver, CO", remote: true, scope: "US", places: []Place{{Area: "Denver", State: "CO"}}, show: "Denver, CO · Remote (US)"},
 		{raw: "On-site, Austin, TX", places: []Place{{Area: "Austin", State: "TX"}}, show: "Austin, TX"},
 		{raw: "In office - Chicago, IL", places: []Place{{Area: "Chicago", State: "IL"}}, show: "Chicago, IL"},
 		// Shapes seen on real boards (2026-10-18 nonprofit run).
@@ -88,6 +96,43 @@ func TestParse(t *testing.T) {
 		{raw: "n/a", boardRemote: true, remote: true, show: "Remote"},
 		{raw: "TBD", show: ""},
 		{raw: " — ", show: ""},
+		// Georgia the country: one of its own cities says so. A US token in the
+		// same location wins, and with neither it is the state.
+		{raw: "Tbilisi, Georgia", places: []Place{{Area: "Tbilisi", Region: "Georgia"}}, show: "Tbilisi, Georgia"},
+		{raw: "Batumi, GEORGIA", places: []Place{{Area: "Batumi", Region: "GEORGIA"}}, show: "Batumi, GEORGIA"},
+		{raw: "Tbilisi/Kutaisi, Georgia", places: []Place{{Area: "Tbilisi", Region: "Georgia"}, {Area: "Kutaisi", Region: "Georgia"}},
+			show: "Tbilisi, Georgia; Kutaisi, Georgia"},
+		{raw: "Tbilisi, Georgia; Atlanta, GA", places: []Place{{Area: "Tbilisi", Region: "Georgia"}, {Area: "Atlanta", State: "GA"}},
+			show: "Tbilisi, Georgia; Atlanta, GA"},
+		{raw: "Remote - Tbilisi, Georgia", remote: true, places: []Place{{Area: "Tbilisi", Region: "Georgia"}}, show: "Tbilisi, Georgia · Remote"},
+		{raw: "Tbilisi, Georgia, USA", places: []Place{{Area: "Tbilisi", State: "GA"}}, show: "Tbilisi, GA"},
+		{raw: "Tbilisi, GA", places: []Place{{Area: "Tbilisi", State: "GA"}}, show: "Tbilisi, GA"},
+		{raw: "Atlanta, Georgia", places: []Place{{Area: "Atlanta", State: "GA"}}, show: "Atlanta, GA"},
+		{raw: "Alpharetta, Georgia", places: []Place{{Area: "Alpharetta", State: "GA"}}, show: "Alpharetta, GA"},
+		{raw: "Atlanta, Georgia, United States", places: []Place{{Area: "Atlanta", State: "GA"}}, show: "Atlanta, GA"},
+		{raw: "Georgia", places: []Place{{State: "GA"}}, show: "GA"},
+		{raw: "Remote - Georgia", remote: true, scope: "US", places: []Place{{State: "GA"}}, show: "GA · Remote (US)"},
+		// Two-letter codes that are both USPS and ISO 3166 (D13).
+		{raw: "Berlin, DE", places: []Place{{Area: "Berlin", Region: "DE"}}, show: "Berlin, DE"},
+		{raw: "Munich, Bavaria, DE", places: []Place{{Area: "Munich", Region: "Bavaria, DE"}}, show: "Munich, Bavaria, DE"},
+		{raw: "Bangalore, IN", places: []Place{{Area: "Bangalore", Region: "IN"}}, show: "Bangalore, IN"},
+		{raw: "Bengaluru IN", places: []Place{{Area: "Bengaluru", Region: "IN"}}, show: "Bengaluru, IN"},
+		{raw: "Toronto, CA", places: []Place{{Area: "Toronto", Region: "CA"}}, show: "Toronto, CA"},
+		{raw: "Tel Aviv, IL", places: []Place{{Area: "Tel Aviv", Region: "IL"}}, show: "Tel Aviv, IL"},
+		{raw: "Remote - Montréal, CA", remote: true, places: []Place{{Area: "Montréal", Region: "CA"}}, show: "Montréal, CA · Remote"},
+		{raw: "Berlin, DE, USA", places: []Place{{Area: "Berlin", State: "DE"}}, show: "Berlin, DE"},
+		{raw: "Toronto, CA, United States", places: []Place{{Area: "Toronto", State: "CA"}}, show: "Toronto, CA"},
+		{raw: "Smallville, DE", places: []Place{{Area: "Smallville", State: "DE"}}, show: "Smallville, DE"},
+		{raw: "Wilmington, DE", places: []Place{{Area: "Wilmington", State: "DE"}}, show: "Wilmington, DE"},
+		{raw: "Indianapolis, IN", places: []Place{{Area: "Indianapolis", State: "IN"}}, show: "Indianapolis, IN"},
+		{raw: "Chicago, IL", places: []Place{{Area: "Chicago", State: "IL"}}, show: "Chicago, IL"},
+		{raw: "Berlin, Delaware", places: []Place{{Area: "Berlin", State: "DE"}}, show: "Berlin, DE"},
+		{raw: "Libreville, GA", places: []Place{{Area: "Libreville", State: "GA"}}, show: "Libreville, GA"},
+		{raw: "Berlin, DE; Austin, TX", places: []Place{{Area: "Berlin", Region: "DE"}, {Area: "Austin", State: "TX"}},
+			show: "Berlin, DE; Austin, TX"},
+		// No other state name is a country's: Jersey is not New Jersey.
+		{raw: "St Helier, Jersey", places: []Place{{Area: "St Helier", Region: "Jersey"}}, show: "St Helier, Jersey"},
+		{raw: "Jersey City, New Jersey", places: []Place{{Area: "Jersey City", State: "NJ"}}, show: "Jersey City, NJ"},
 	}
 	for _, c := range cases {
 		got := Parse(c.raw, c.boardRemote)
@@ -162,5 +207,68 @@ func TestStatesAndNormArea(t *testing.T) {
 	}
 	if NormArea("  El   Paso ") != NormArea("el paso") || NormArea("El Paso") == NormArea("Paso") {
 		t.Error("NormArea")
+	}
+}
+
+// Invariant: with no listed city of the country, a state name or code is the
+// state, for every state ("Smallville, DE" is Delaware).
+func TestNoCountrySignalIsTheState(t *testing.T) {
+	for code, name := range stateNames {
+		for _, raw := range []string{"Smallville, " + code, "Smallville " + code, "Smallville, " + name} {
+			if got := Parse(raw, false).Places; len(got) != 1 || got[0].State != code || got[0].Region != "" {
+				t.Errorf("Parse(%q) = %+v, want the state %s", raw, got, code)
+			}
+		}
+	}
+}
+
+// Invariant: every listed city reads as its country, and a US token in the
+// same location makes it the state whatever the city.
+func TestCountryCitiesAndTheUSToken(t *testing.T) {
+	check := func(code, written string, cities map[string]bool) {
+		if len(cities) == 0 {
+			t.Errorf("%s: empty city list", code)
+		}
+		for city := range cities {
+			raw := city + ", " + written
+			if got := Parse(raw, false).Places; len(got) != 1 || got[0].State != "" || got[0].Region != written {
+				t.Errorf("Parse(%q) = %+v, want the country %s", raw, got, written)
+			}
+			for _, us := range []string{", USA", ", United States", " (US)"} {
+				if got := Parse(raw+us, false).Places; len(got) != 1 || got[0].State != code {
+					t.Errorf("Parse(%q) = %+v, want the state %s", raw+us, got, code)
+				}
+			}
+		}
+	}
+	for code, cities := range countryByCode {
+		if _, ok := stateNames[code]; !ok {
+			t.Errorf("countryByCode %s is not a USPS code", code)
+		}
+		check(code, code, cities)
+	}
+	for code, cities := range countryByName {
+		check(code, stateNames[code], cities)
+	}
+}
+
+// Invariant: places split on ";" or "/" are read on their own, so a US place
+// beside a country's city changes neither.
+func TestSegmentsStayIndependent(t *testing.T) {
+	for code, cities := range countryByCode {
+		for city := range cities {
+			for _, raw := range []string{city + ", " + code + "; Smallville, " + code, "Smallville, " + code + " / " + city + ", " + code} {
+				got := Parse(raw, false).Places
+				if len(got) != 2 {
+					t.Errorf("Parse(%q) = %+v, want two places", raw, got)
+					continue
+				}
+				for _, p := range got {
+					if want := NormArea(p.Area) == "smallville"; (p.State == code) != want || (p.Region == code) == want {
+						t.Errorf("Parse(%q): %+v read with its neighbour", raw, p)
+					}
+				}
+			}
+		}
 	}
 }
