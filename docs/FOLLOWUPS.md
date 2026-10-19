@@ -301,6 +301,23 @@ flowchart TD
   - The qd.sock scoping session recommends about 80 labels: 50 to fit calibration and 30 held out.
     Labelling disagreements first means precision is measured on harder cases than a random sample,
     but the shadow and the primary are scored on the same postings.
+  - **Held-out verdict in Vani (2026-10-19, needs the owner's approval before merge).**
+    `vani eval --held-out d1-vani-jdtriage-2026-10-18` prints the usual report unchanged, then a
+    Promotion table over the pre-registration's held-out postings only. The split ranks every
+    labelled key by sha256(salt || 0x00 || key) ascending and holds out the first 30
+    (`internal/eval/heldout.go`, `Splits`). It uses the same Promotion arithmetic and the same
+    `jev` alias as the all-labels table. Salt and size come from the registered name and are not
+    flags. The rule is tested against a digest computed with `shasum`, and the code is tested to
+    reproduce the all-labels rows when every posting is held out (`heldout_test.go`). If any label
+    line is unreadable, the held-out run refuses, because a missing key could move the split.
+    - **Owner decision: what counts as "labelled".** The flag ranks every distinct key in
+      `labels.jsonl` (latest line per key). That includes a key whose labels are all `skip` and a
+      key with no ledger record. This keeps the split a function of the label file alone. If such a
+      key ranks in the first 30, it takes a held-out place but adds nothing to the asked count. The
+      registration's rule text does not say whether such keys count. Excluding all-skip keys is a
+      one-line filter in `BuildHeldOut`, and it must be decided before any label is read.
+    - The flag does not print the labels.jsonl sha256 that the registration's ledger row needs. Run
+      `shasum -a 256` on the file at the verdict run.
 - **whisper.cpp after the llama.cpp 0.7.0 upgrade:** `whisper-cli --help` runs; no transcription
   was made, because no whisper model is on this Mac.
 
