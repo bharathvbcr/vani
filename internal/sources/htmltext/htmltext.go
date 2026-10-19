@@ -30,7 +30,6 @@ func Text(s string, max int) string {
 	// Entities only shrink text, but whitespace collapsing and unescaping
 	// run after this loop, so keep a margin and stop reading once it is full.
 	budget := 4*max + 64
-	lower := asciiLower(s)
 	var b strings.Builder
 	noGT := false
 	space := false // a pending single space between words
@@ -42,7 +41,7 @@ func Text(s string, max int) string {
 				noGT = true // no ">" anywhere after i, so none after any later "<"
 			} else {
 				end += i
-				i = handleTag(s, lower, i, end, &b, &space)
+				i = handleTag(s, i, end, &b, &space)
 				continue
 			}
 		}
@@ -111,35 +110,32 @@ func Truncate(s string, max int) string {
 
 // handleTag consumes the tag spanning s[start..end] (end is the '>') and
 // returns the index to continue from.
-func handleTag(s, lower string, start, end int, b *strings.Builder, space *bool) int {
+func handleTag(s string, start, end int, b *strings.Builder, space *bool) int {
 	next := end + 1
-	if strings.HasPrefix(lower[start:], "<!--") {
+	if strings.HasPrefix(s[start:], "<!--") {
 		// A comment ends at the first "-->", which may sit before this '>'
 		// would have if the comment contains '>' itself.
-		if k := strings.Index(lower[start+4:], "-->"); k >= 0 {
+		if k := strings.Index(s[start+4:], "-->"); k >= 0 {
 			return start + 4 + k + 3
 		}
 		return len(s)
 	}
-	name, closing := tagName(lower[start+1 : end])
-	switch name {
-	case "script", "style":
+	t, closing := tagOf(s[start+1 : end])
+	switch t.kind {
+	case dropContent:
 		if closing {
 			return next
 		}
 		// Skip to the matching close tag; an unclosed element drops the rest.
-		if k := strings.Index(lower[next:], "</"+name); k >= 0 {
-			if e := strings.IndexByte(lower[next+k:], '>'); e >= 0 {
+		if k := IndexFold(s[next:], t.close); k >= 0 {
+			if e := strings.IndexByte(s[next+k:], '>'); e >= 0 {
 				return next + k + e + 1
 			}
 		}
 		return len(s)
-	case "td", "th":
+	case cell:
 		*space = true
-	case "br", "li", "p", "div", "ul", "ol", "dl", "dt", "dd", "tr", "table",
-		"h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header",
-		"footer", "blockquote", "pre", "hr", "nav", "aside", "form", "fieldset",
-		"figure", "figcaption", "main", "address", "details", "summary":
+	case block:
 		// One break per run of block tags, and none at the start: nested
 		// lists and adjacent paragraphs must not stack blank lines.
 		if n := b.Len(); n > 0 && b.String()[n-1] != '\n' {
@@ -150,18 +146,62 @@ func handleTag(s, lower string, start, end int, b *strings.Builder, space *bool)
 	return next
 }
 
-// tagName returns the lower-case element name of the tag body (the text
-// between '<' and '>') and whether it is a closing tag.
-func tagName(body string) (name string, closing bool) {
-	if strings.HasPrefix(body, "/") {
-		closing = true
+// tagKind is what Text does with a tag; other tags are dropped, keeping
+// their text.
+type tagKind uint8
+
+const (
+	other       tagKind = iota
+	dropContent         // script, style: dropped with everything up to the close tag
+	cell                // td, th: a space
+	block               // a line break
+)
+
+type tagInfo struct {
+	kind  tagKind
+	close string // for dropContent: the lower-case close-tag prefix ("</script")
+}
+
+// tags is every element Text acts on, by lower-case name.
+var tags = func() map[string]tagInfo {
+	m := map[string]tagInfo{
+		"script": {dropContent, "</script"},
+		"style":  {dropContent, "</style"},
+		"td":     {kind: cell},
+		"th":     {kind: cell},
+	}
+	for _, n := range []string{"br", "li", "p", "div", "ul", "ol", "dl", "dt", "dd", "tr", "table",
+		"h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header",
+		"footer", "blockquote", "pre", "hr", "nav", "aside", "form", "fieldset",
+		"figure", "figcaption", "main", "address", "details", "summary"} {
+		m[n] = tagInfo{kind: block}
+	}
+	return m
+}()
+
+// maxTagName is the longest name in tags ("blockquote", "figcaption").
+const maxTagName = 10
+
+// tagOf looks up the element named by the tag body (the text between '<' and
+// '>') and reports whether it is a closing tag. The name is ASCII-folded in a
+// stack buffer, so an upper-case tag costs no allocation.
+func tagOf(body string) (tagInfo, bool) {
+	closing := strings.HasPrefix(body, "/")
+	if closing {
 		body = body[1:]
 	}
 	n := 0
-	for n < len(body) && (isAlnum(body[n])) {
+	for n < len(body) && isAlnum(lowerByte(body[n])) {
 		n++
 	}
-	return body[:n], closing
+	if n > maxTagName {
+		return tagInfo{}, closing
+	}
+	var buf [maxTagName]byte
+	for i := 0; i < n; i++ {
+		buf[i] = lowerByte(body[i])
+	}
+	return tags[string(buf[:n])], closing
 }
 
 func isTagStart(c byte) bool {
@@ -176,16 +216,71 @@ func isSpaceByte(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'
 }
 
-// asciiLower lower-cases ASCII only, so byte offsets match the input (a
-// Unicode-aware ToLower can change the length of a string).
-func asciiLower(s string) string {
+func lowerByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
+}
+
+// LowerASCII lower-cases ASCII letters only, so byte offsets match the input
+// (a Unicode-aware ToLower can change the length of a string). It is meant for
+// short names (a tag, an attribute); a string with no upper-case letter is
+// returned as is, without a copy.
+func LowerASCII(s string) string {
+	i := 0
+	for i < len(s) && (s[i] < 'A' || s[i] > 'Z') {
+		i++
+	}
+	if i == len(s) {
+		return s
+	}
 	buf := []byte(s)
-	for i, c := range buf {
-		if c >= 'A' && c <= 'Z' {
-			buf[i] = c + 'a' - 'A'
-		}
+	for ; i < len(buf); i++ {
+		buf[i] = lowerByte(buf[i])
 	}
 	return string(buf)
+}
+
+// IndexFold is strings.Index(LowerASCII(s), sub) for a lower-case sub,
+// without copying s: a match ignores ASCII case only, as the markup scanners
+// need, so a document's offsets are the offsets it returns. A sub that starts
+// with a non-letter ("</script", every caller's case) is found with
+// strings.IndexByte.
+func IndexFold(s, sub string) int {
+	n := len(sub)
+	if n == 0 {
+		return 0
+	}
+	c0 := sub[0]
+	letter := c0 >= 'a' && c0 <= 'z'
+	for i := 0; i+n <= len(s); i++ {
+		if letter {
+			if lowerByte(s[i]) != c0 {
+				continue
+			}
+		} else {
+			j := strings.IndexByte(s[i:len(s)-n+1], c0)
+			if j < 0 {
+				return -1
+			}
+			i += j
+		}
+		if equalFold(s[i:i+n], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+// equalFold reports whether a, ASCII-lowered, equals the lower-case b.
+func equalFold(a, b string) bool {
+	for k := 0; k < len(b); k++ {
+		if lowerByte(a[k]) != b[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func dropControl(r rune) rune {

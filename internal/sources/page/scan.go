@@ -41,7 +41,6 @@ const (
 // scan rather than being guessed at. Work is linear in len(doc).
 func scanHTML(doc string) scanned {
 	var out scanned
-	lower := asciiLower(doc)
 	for i := 0; i < len(doc); {
 		j := strings.IndexByte(doc[i:], '<')
 		if j < 0 {
@@ -64,8 +63,8 @@ func scanHTML(doc string) scanned {
 		for k < len(doc) && isNameByte(doc[k]) {
 			k++
 		}
-		name := lower[i+1 : k]
-		attrs, end, ok := parseAttrs(doc, lower, k)
+		name := htmltext.LowerASCII(doc[i+1 : k])
+		attrs, end, ok := parseAttrs(doc, k, name == "a" || name == "base" || name == "script")
 		if !ok {
 			break // unterminated tag or quote: stop rather than guess
 		}
@@ -85,13 +84,13 @@ func scanHTML(doc string) scanned {
 					stop = len(doc)
 				}
 				text := doc[end:stop]
-				if c := strings.Index(lower[end:stop], "</a"); c >= 0 {
+				if c := htmltext.IndexFold(doc[end:stop], "</a"); c >= 0 {
 					text = doc[end : end+c]
 				}
 				out.links = append(out.links, link{href: html.UnescapeString(href), text: htmltext.Text(text, 200)})
 			}
 		case "script", "style", "textarea", "title":
-			closeAt := strings.Index(lower[end:], "</"+name)
+			closeAt := htmltext.IndexFold(doc[end:], "</"+name)
 			if closeAt < 0 {
 				return out
 			}
@@ -113,9 +112,13 @@ func scanHTML(doc string) scanned {
 
 // parseAttrs reads attributes from pos up to the tag's ">", returning them by
 // lowercase name (first occurrence wins, as in HTML) and the offset just past
-// the ">". ok is false when the tag or a quoted value never ends.
-func parseAttrs(doc, lower string, pos int) (attrs map[string]string, end int, ok bool) {
-	attrs = map[string]string{}
+// the ">". ok is false when the tag or a quoted value never ends. With keep
+// false the tag is only skipped: attrs is nil and nothing is allocated, since
+// most tags carry no attribute the scan reads.
+func parseAttrs(doc string, pos int, keep bool) (attrs map[string]string, end int, ok bool) {
+	if keep {
+		attrs = map[string]string{}
+	}
 	i := pos
 	for i < len(doc) {
 		for i < len(doc) && (isSpace(doc[i]) || doc[i] == '/') {
@@ -135,7 +138,7 @@ func parseAttrs(doc, lower string, pos int) (attrs map[string]string, end int, o
 			i++
 			continue
 		}
-		key := lower[start:i]
+		key := doc[start:i]
 		for i < len(doc) && isSpace(doc[i]) {
 			i++
 		}
@@ -163,6 +166,10 @@ func parseAttrs(doc, lower string, pos int) (attrs map[string]string, end int, o
 				val = doc[s:i]
 			}
 		}
+		if !keep {
+			continue
+		}
+		key = htmltext.LowerASCII(key)
 		if _, dup := attrs[key]; !dup {
 			attrs[key] = val
 		}
@@ -175,15 +182,3 @@ func isNameByte(c byte) bool {
 	return isLetter(c) || c >= '0' && c <= '9' || c == '-' || c == ':' || c == '_'
 }
 func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
-
-// asciiLower lowercases ASCII only, so byte offsets match the original (the
-// Unicode-aware strings.ToLower can change a string's length).
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
-}
