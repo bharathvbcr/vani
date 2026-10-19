@@ -16,6 +16,13 @@ const (
 	StatusUnchanged         = "unchanged"
 	StatusBlocked           = "blocked"
 	StatusNeedsConfirmation = "needs_confirmation"
+	// StatusConfirmed: DevPrism asked, the overwrite was confirmed and accepted.
+	StatusConfirmed = "confirmed"
+	// StatusConfirmRejected: DevPrism refused the confirmation (-32002).
+	StatusConfirmRejected = "confirm_rejected"
+	// StatusStale: DevPrism's copy changed after the run read it, so the
+	// confirmation was not sent.
+	StatusStale = "stale"
 )
 
 // Outcome is what happened to one block.
@@ -34,6 +41,9 @@ type Result struct {
 	Unchanged         int
 	Blocked           int
 	NeedsConfirmation int
+	Confirmed         int
+	ConfirmRejected   int
+	Stale             int
 	Orphaned          []string
 }
 
@@ -46,10 +56,17 @@ type Result struct {
 //
 // DevPrism answers an overwrite that would drop bullets/facts or rewrite a
 // locked bullet with an inputRequired confirmation request
-// (tools_career.rs:926-959). Apply does not confirm it: no request_state or
-// input_responses is ever sent. The block is reported as needs_confirmation
-// with the server's message and the sync continues with the others.
-func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncState) (res Result, err error) {
+// (tools_career.rs:926-959). With a nil Confirmer, Apply does not confirm it:
+// no request_state or input_responses is ever sent, the block is reported as
+// needs_confirmation with the server's message, and the sync continues with
+// the others. With a Confirmer, each such block, and only such a block, goes
+// through confirm (confirm.go): what it would lose is read from DevPrism's
+// requestState and shown to the Confirmer, DevPrism's copy is re-read and
+// must be the one this plan was built from, and then that block's own
+// requestState is sent back with {confirm:true}. A refusal or a change is
+// reported for the block and the sync continues; DevPrism down or timing out
+// stops it as any other call does.
+func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncState, confirmer Confirmer) (res Result, err error) {
 	res = Result{Orphaned: plan.Orphaned}
 	if state == nil {
 		return res, fmt.Errorf("%w: Apply needs a state", ErrState)
@@ -72,6 +89,12 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 			res.Blocked++
 		case StatusNeedsConfirmation:
 			res.NeedsConfirmation++
+		case StatusConfirmed:
+			res.Confirmed++
+		case StatusConfirmRejected:
+			res.ConfirmRejected++
+		case StatusStale:
+			res.Stale++
 		}
 	}
 	for _, it := range plan.Items {
@@ -102,13 +125,36 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 			InputRequests map[string]struct {
 				Message string `json:"message"`
 			} `json:"inputRequests"`
-			Success *bool  `json:"success"`
-			BlockID string `json:"blockId"`
+			RequestState string `json:"requestState"`
+			Success      *bool  `json:"success"`
+			BlockID      string `json:"blockId"`
 		}
 		if err := json.Unmarshal(raw, &ans); err != nil {
 			return res, fmt.Errorf("%w: career_upsert_block %s: answer is not an object", ErrDevPrism, it.ID)
 		}
+		accepted := func(st string) error {
+			state.record(it.ID, it.Hash, time.Now())
+			if state.unsaved >= flushEvery {
+				if err := state.flush(); err != nil {
+					return err
+				}
+			}
+			add(Outcome{ID: it.ID, Status: st})
+			return nil
+		}
 		switch {
+		case ans.ResultType == "inputRequired" && confirmer != nil:
+			c, err := confirm(ctx, caller, it, ans.RequestState, confirmer)
+			if err != nil {
+				return res, err
+			}
+			if c.status == StatusConfirmed {
+				if err := accepted(StatusConfirmed); err != nil {
+					return res, err
+				}
+				continue
+			}
+			add(Outcome{ID: it.ID, Status: c.status, Reason: c.reason})
 		case ans.ResultType == "inputRequired":
 			msg := "DevPrism asked for confirmation"
 			if c, ok := ans.InputRequests["confirm"]; ok && c.Message != "" {
@@ -116,17 +162,13 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 			}
 			add(Outcome{ID: it.ID, Status: StatusNeedsConfirmation, Reason: msg})
 		case ans.Success != nil && *ans.Success && ans.BlockID == it.ID:
-			state.record(it.ID, it.Hash, time.Now())
-			if state.unsaved >= flushEvery {
-				if err := state.flush(); err != nil {
-					return res, err
-				}
-			}
 			st := StatusUpdated
 			if it.Action == ActionAdd {
 				st = StatusAdded
 			}
-			add(Outcome{ID: it.ID, Status: st})
+			if err := accepted(st); err != nil {
+				return res, err
+			}
 		default:
 			return res, fmt.Errorf("%w: career_upsert_block %s: unexpected answer %s", ErrDevPrism, it.ID, truncate(string(raw), 200))
 		}
@@ -166,6 +208,11 @@ func DryRun(w io.Writer, plan SyncPlan) error {
 
 // Summary is a one-line account of a Result.
 func (r Result) Summary() string {
-	return fmt.Sprintf("%d added, %d updated, %d unchanged, %d blocked, %d need confirmation, %d orphaned",
+	s := fmt.Sprintf("%d added, %d updated, %d unchanged, %d blocked, %d need confirmation, %d orphaned",
 		r.Added, r.Updated, r.Unchanged, r.Blocked, r.NeedsConfirmation, len(r.Orphaned))
+	if r.Confirmed+r.ConfirmRejected+r.Stale > 0 {
+		s += fmt.Sprintf("; %d confirmed, %d confirmation refused, %d changed in DevPrism (not confirmed)",
+			r.Confirmed, r.ConfirmRejected, r.Stale)
+	}
+	return s
 }

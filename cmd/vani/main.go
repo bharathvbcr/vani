@@ -50,7 +50,7 @@ commands:
   track show ID              show and check one track (docs/TRACKS.md)
   track use [--dry-run] ID   copy a track's target summary, drop rules and employer
                              preferences into the config; other rules are kept
-  kb sync [--dry-run] [--bank P] [--rkb P] [--code-root D]
+  kb sync [--dry-run | --confirm] [--bank P] [--rkb P] [--code-root D]
                              copy rkb's bank one way into DevPrism (never deletes)
   reasons draft [--force]    have the llm draft, once, the catalog notes are picked from
                              (spends from the daily llm budget; never overwrites without --force)

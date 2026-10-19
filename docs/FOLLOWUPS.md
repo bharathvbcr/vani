@@ -676,6 +676,29 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **Lightpanda has no `structured_data` dump mode;** JSON-LD is parsed from the `html` tool's
   document (the mcp `structuredData` tool exists but is unused). Telemetry is on by default and is
   disabled through `LIGHTPANDA_DISABLE_TELEMETRY=1`.
+- **`kb sync --confirm`: built 2026-10-19 on the owner's "Build confirm flow" (audit card 12),
+  tested on fakes only, not run against DevPrism.** Without the flag nothing changed: an overwrite
+  DevPrism asks about is reported as `needs_confirmation` and skipped. With it, each block DevPrism
+  answers `inputRequired` for in that run, and only such a block, has its loss read from
+  DevPrism's `requestState` (the dropped bullet and fact ids and the rewritten locked bullets,
+  `tools_career.rs:945-952`), printed with the old text, and is confirmed by resending the same
+  block bytes with that `requestState` and `{confirm:true}` (`internal/kbsync/confirm.go`).
+  `--dry-run --confirm` is refused. The flag is the consent; there is no per-block prompt.
+  - The confirmation has to happen in the same run: DevPrism keeps the token in its process's
+    memory for 5 minutes, single use, bound to `blockId:sha1(block)` (`elicitation.rs:39`,
+    `145-166`; `tools_career.rs:144-148`).
+  - DevPrism does not bind the token to the block it replaces (`tools_career.rs:879-911`), so a
+    block edited in DevPrism after the run read it would lose the edit unseen. Vani re-reads the
+    block just before confirming and reports `stale` if it changed. A window remains between that
+    re-read and DevPrism's write. Closing it is a DevPrism change: put a digest of the prior block in
+    the subject. Not done; DevPrism was read, not changed.
+  - A `requestState` Vani cannot read (not base64 or JSON, a list missing, nothing named, over
+    64 KiB) is not confirmed: what would be lost could not be shown.
+  - A refusal (`-32002`, e.g. DevPrism restarted between the two calls) is reported as
+    `confirm_rejected` and the sync goes on; DevPrism down or timing out stops it with the error.
+  - The fakes mirror DevPrism's checks from its source; the wire shape (`requestState` field names,
+    base64 of JSON) has not been checked against a running DevPrism.
+  - Tests: `internal/kbsync/confirm_test.go`, `cmd/vani/kb_test.go` (`TestKBSync*Confirm*`).
 - **kbsync shared bullets: fixed in code, not yet run against the real career.db.** 14 rkb
   bullets are listed by more than one entry. Before the fix, every copy kept the bare rkb bullet
   id. DevPrism keys embeddings by `(owner_id, model)` with the bullet id as `owner_id`, so the
@@ -700,9 +723,10 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     bullet and does not duplicate its text.
   - DevPrism's overwrite gate counts the vanished bare id as a dropped bullet. It answers
     `inputRequired`, which `kb sync` reports as `needs_confirmation`.
-  - The sync never confirms. It records no hash, and it asks again on every run.
-  - Way out: the owner deletes that block in DevPrism. The next sync then adds it fresh with
-    scoped ids, because `Plan` adds any block DevPrism lacks.
+  - A plain sync never confirms. It records no hash, and it asks again on every run.
+  - Ways out: `vani kb sync --confirm` prints the dropped bare ids and confirms the rename (see
+    "kb sync --confirm" below), or the owner deletes that block in DevPrism and the next sync adds
+    it fresh with scoped ids, because `Plan` adds any block DevPrism lacks.
   - No real sync has run, so only the Phase 0 copy of career.db has bare ids.
   - Tests: `internal/kbsync/scoped_test.go`.
 - **Employer lists need a yearly re-import** (IRS eo1-eo4 and IPEDS HD2024 imported 2026-10-18 into

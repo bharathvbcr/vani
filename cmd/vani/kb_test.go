@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,10 @@ type fakeDevPrism struct {
 	confirm map[string]bool
 	upserts []string
 	closed  bool
+	// state, when set, is the requestState an inputRequired answer carries;
+	// an upsert carrying a request_state is then accepted.
+	state     string
+	confirmed []string
 }
 
 func (f *fakeDevPrism) CallTool(_ context.Context, name string, args any) (json.RawMessage, error) {
@@ -70,6 +75,13 @@ func (f *fakeDevPrism) CallTool(_ context.Context, name string, args any) (json.
 			return nil, err
 		}
 		f.upserts = append(f.upserts, b.ID)
+		if m["request_state"] != nil {
+			f.confirmed = append(f.confirmed, b.ID)
+			return json.Marshal(map[string]any{"success": true, "blockId": b.ID})
+		}
+		if f.confirm[b.ID] && f.state != "" {
+			return json.Marshal(map[string]any{"resultType": "inputRequired", "inputRequests": map[string]any{"confirm": map[string]any{"message": "would drop bullets"}}, "requestState": f.state})
+		}
 		if f.confirm[b.ID] {
 			return json.RawMessage(`{"resultType":"inputRequired","inputRequests":{"confirm":{"message":"would drop bullets"}}}`), nil
 		}
@@ -201,5 +213,60 @@ func TestKBSyncDevPrismStartFailure(t *testing.T) {
 	_, e := mustCode(t, 1, "kb", "sync", "--bank", bank, "--rkb", rkb)
 	if !strings.Contains(e, "devprism: boom") {
 		t.Fatalf("stderr %q", e)
+	}
+}
+
+// lockedAlpha is DevPrism's synthetic copy of alpha-job: its one bullet is
+// locked with wording rkb would replace, so DevPrism asks before overwriting.
+const lockedAlpha = `{"id":"alpha-job","kind":"work","title":"Engineer","org":"Acme","dateRange":{"start":"2020-01","end":null},"personas":[],"domains":[],"skills":[],"seniorityLevel":"ic","updatedAt":"1","facts":[],
+  "bullets":[{"id":"alpha-job/b1","canonical":"synthetic old wording","variants":{},"metrics":[],"evidenceRefs":[],"locked":true}]}`
+
+// lockedAlphaState is the requestState DevPrism would issue for it
+// (tools_career.rs:945-952, protocol.rs:305-330).
+var lockedAlphaState = base64.StdEncoding.EncodeToString([]byte(`{"tool":"career_upsert_block","blockId":"alpha-job","droppedBulletIds":[],"droppedFactIds":[],"modifiedLockedBullets":["alpha-job/b1"],"timestamp":1,"__nonce":"n1"}`))
+
+func TestKBSyncConfirm(t *testing.T) {
+	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	f := &fakeDevPrism{confirm: map[string]bool{"alpha-job": true}, state: lockedAlphaState, blocks: []json.RawMessage{json.RawMessage(lockedAlpha)}}
+	fakeStart(t, f)
+	o, _ := mustCode(t, 0, "kb", "sync", "--confirm", "--bank", bank, "--rkb", rkb)
+	show := strings.Index(o, "confirming alpha-job; DevPrism will discard:\n  locked bullet rewritten, was alpha-job/b1: \"synthetic old wording\"\n")
+	sum := strings.Index(o, "kb sync: 1 added, 0 updated")
+	if show < 0 || sum < show || !strings.Contains(o, "1 confirmed, 0 confirmation refused") {
+		t.Fatalf("sync output %q", o)
+	}
+	if strings.Join(f.confirmed, ",") != "alpha-job" {
+		t.Fatalf("confirmed %v, want only alpha-job", f.confirmed)
+	}
+	// The confirmed block is remembered: the next run sends nothing.
+	f2 := &fakeDevPrism{confirm: map[string]bool{"alpha-job": true}, state: lockedAlphaState, blocks: f.blocksFor(t, "alpha-job", "beta-proj")}
+	fakeStart(t, f2)
+	o, _ = mustCode(t, 0, "kb", "sync", "--confirm", "--bank", bank, "--rkb", rkb)
+	if len(f2.upserts) != 0 || strings.Contains(o, "confirming") {
+		t.Fatalf("second sync upserted %v; output %q", f2.upserts, o)
+	}
+}
+
+// Without --confirm the run is unchanged: reported, skipped, nothing sent back.
+func TestKBSyncWithoutConfirmSendsNoConfirmation(t *testing.T) {
+	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	f := &fakeDevPrism{confirm: map[string]bool{"alpha-job": true}, state: lockedAlphaState, blocks: []json.RawMessage{json.RawMessage(lockedAlpha)}}
+	fakeStart(t, f)
+	o, _ := mustCode(t, 0, "kb", "sync", "--bank", bank, "--rkb", rkb)
+	if len(f.confirmed) != 0 || strings.Contains(o, "confirming") || !strings.Contains(o, "needs_confirmation") {
+		t.Fatalf("confirmed %v; output %q", f.confirmed, o)
+	}
+}
+
+// --dry-run never confirms: with --confirm it is refused before anything runs.
+func TestKBSyncDryRunNeverConfirms(t *testing.T) {
+	bank, rkb, fk := kbSetup(t, "/opt/devprism/devprism")
+	starts := fakeStart(t, &fakeDevPrism{})
+	_, e := mustCode(t, 2, "kb", "sync", "--dry-run", "--confirm", "--bank", bank, "--rkb", rkb)
+	if !strings.Contains(e, "--confirm cannot be used with --dry-run") {
+		t.Fatalf("stderr %q", e)
+	}
+	if *starts != 0 || fk.calls != 0 {
+		t.Fatalf("started DevPrism %d times, rkb %d times", *starts, fk.calls)
 	}
 }

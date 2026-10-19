@@ -273,7 +273,7 @@ func TestPlanNeverPlansDeletes(t *testing.T) {
 		t.Fatalf("plan = %+v", p)
 	}
 	f := newFake()
-	res, err := Apply(context.Background(), f, p, NewSyncState(filepath.Join(t.TempDir(), "s.json")))
+	res, err := Apply(context.Background(), f, p, NewSyncState(filepath.Join(t.TempDir(), "s.json")), nil)
 	if err != nil || len(f.calls) != 0 || len(res.Orphaned) != 2 {
 		t.Fatalf("apply on orphans only: %v calls=%d %+v", err, len(f.calls), res)
 	}
@@ -369,7 +369,7 @@ func applyAll(t *testing.T, f *fakeDevPrism, r Resolved, st *SyncState) (SyncPla
 		t.Fatal(err)
 	}
 	p := Plan(r, cur, *st, fixedNow)
-	res, err := Apply(context.Background(), f, p, st)
+	res, err := Apply(context.Background(), f, p, st, nil)
 	return p, res, err
 }
 
