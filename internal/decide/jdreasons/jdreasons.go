@@ -19,12 +19,14 @@ import (
 	"io/fs"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/sources/htmltext"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -308,21 +310,36 @@ func (c Catalog) slots() []decide.Slot {
 	return out
 }
 
+// maxMissingBytes bounds the missing-requirements line. The names come from
+// the posting text by way of DevPrism, so the ledger holds them unbounded.
+const maxMissingBytes = 1 << 10
+
 // question renders the posting as the triage question does (target summary,
-// title, location, description; never the company or employer badges) and
-// adds the pipeline's own trusted facts ahead of it.
+// title, location, description; never the company or employer badges), with
+// the gap analysis ahead of it. The whole context stays within
+// jdtriage.MaxContextBytes: the posting body is cut to what the facts leave.
+//
+// The question goes to Jev only (the notes picker), whose state is data to
+// judge against the per-slot instructions, with no untrusted-content frame
+// for the facts to sit inside. Of the two lines, only the coverage figure is
+// the pipeline's own, and it is written only when it is a percentage; the
+// missing names are posting text and are labelled so.
 func (c Catalog) question(r ledger.Record, summary string) decide.Question {
 	var facts strings.Builder
-	if v := r.Annotations[ledger.AnnCoverage]; v != "" {
-		fmt.Fprintf(&facts, "Pipeline fact: the job seeker's knowledge base covers %s%% of this posting's must-have requirements.\n", v)
+	if v, err := strconv.ParseFloat(r.Annotations[ledger.AnnCoverage], 64); err == nil && v >= 0 && v <= 100 {
+		fmt.Fprintf(&facts, "Pipeline fact: the job seeker's knowledge base covers %s%% of this posting's must-have requirements.\n",
+			strconv.FormatFloat(v, 'f', -1, 64))
 	}
-	if v := r.Annotations[ledger.AnnMissing]; v != "" {
-		fmt.Fprintf(&facts, "Requirement names taken from the posting text that the knowledge base does not cover: %s\n", v)
+	if v := strings.Join(strings.Fields(r.Annotations[ledger.AnnMissing]), " "); v != "" {
+		fmt.Fprintf(&facts, "Requirement names taken from the posting text that the knowledge base does not cover: %s\n", htmltext.Truncate(v, maxMissingBytes))
 	}
 	if facts.Len() > 0 {
 		facts.WriteString("\n")
 	}
 	body, truncated := jdtriage.Render(r.Posting.Title, r.Posting.Location, r.Posting.Description, summary)
+	if room := jdtriage.MaxContextBytes - facts.Len(); len(body) > room {
+		body, truncated = []byte(htmltext.Truncate(string(body), room)), true
+	}
 	return decide.Question{
 		Task:     Task,
 		Prompt:   Prompt,

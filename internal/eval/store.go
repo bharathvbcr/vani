@@ -173,8 +173,13 @@ func (s *Store) Put(l Entry) error {
 
 // Labels reads labels.jsonl; the latest line per key wins. Lines that are not
 // valid labels (a torn tail, a hand edit) are skipped and counted, never
-// silently merged. A missing file is an empty set.
+// silently merged. A missing file is an empty set; a missing store is an
+// error, so a report built without one says its labels could not be read
+// rather than showing an empty, valid-looking table.
 func (s *Store) Labels() (map[posting.Key]Entry, int, error) {
+	if s == nil {
+		return nil, 0, errors.New("eval: no label store")
+	}
 	f, err := os.Open(s.labelsPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return map[posting.Key]Entry{}, 0, nil
