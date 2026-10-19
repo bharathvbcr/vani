@@ -61,7 +61,9 @@ func Normalize(raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("%w: empty", ErrInvalid)
 	}
-	if strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) || r == '<' || r == '>' || r == '\\' }) {
+	if strings.ContainsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || r == '<' || r == '>' || r == '\\'
+	}) {
 		return "", fmt.Errorf("%w: whitespace, control or markup characters", ErrInvalid)
 	}
 	u, err := url.Parse(raw)

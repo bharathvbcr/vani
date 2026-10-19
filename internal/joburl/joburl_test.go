@@ -68,8 +68,8 @@ func TestApplyBase(t *testing.T) {
 		{"https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Austin/Engineer_JR1/apply/applyManually", "https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Austin/Engineer_JR1"},
 		{"https://acme.example/jobs/Apply/start", "https://acme.example/jobs"},
 		{"https://acme.example/careers/open?gh_jid=5", ""}, // no apply segment
-		{"https://acme.example/apply", ""},                 // nothing would remain
-		{"https://acme.example/applynow/1", ""},            // a segment, not a prefix
+		{"https://acme.example/apply", ""},      // nothing would remain
+		{"https://acme.example/applynow/1", ""}, // a segment, not a prefix
 		{"https://acme.example/jobs/1/application?gh_jid=5", "https://acme.example/jobs/1?gh_jid=5"},
 		{"not a url", ""},
 	}

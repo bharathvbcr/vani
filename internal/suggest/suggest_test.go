@@ -57,7 +57,9 @@ func (f *fakeDrafter) Draft(_ context.Context, r draft.Request) (draft.Result, e
 	return draft.Result{Draft: "draft for " + r.Question, Model: "claude-test", EvidenceItems: 2}, nil
 }
 
-func answered(v string) decide.SlotReading { return decide.SlotReading{Reading: decide.Answered, Value: v} }
+func answered(v string) decide.SlotReading {
+	return decide.SlotReading{Reading: decide.Answered, Value: v}
+}
 
 var job = draft.Job{Company: "Acme", Title: "Engineer", Description: strings.Repeat("Build reliable systems. ", 5)}
 

@@ -59,16 +59,16 @@ func TestGuardPinsPrivateAndConsentLabels(t *testing.T) {
 	cases := map[string]string{
 		"Will you now or in the future require employment visa sponsorship?": WorkAuth,
 		"Are you legally authorized to work in the US?":                      WorkAuth,
-		"Gender":                         SelfID,
-		"Are you Hispanic/Latino?":       SelfID,
-		"Veteran Status":                 SelfID,
-		"Agreement to Arbitrate":         Consent,
-		"AI Policy for Application":      Consent,
+		"Gender":                           SelfID,
+		"Are you Hispanic/Latino?":         SelfID,
+		"Veteran Status":                   SelfID,
+		"Agreement to Arbitrate":           Consent,
+		"AI Policy for Application":        Consent,
 		"I acknowledge the privacy notice": Consent,
-		"Why Anthropic?":                 "",
-		"Additional Information":         "",
-		"LinkedIn Profile":               "",
-		"How do you pronounce your name?": "",
+		"Why Anthropic?":                   "",
+		"Additional Information":           "",
+		"LinkedIn Profile":                 "",
+		"How do you pronounce your name?":  "",
 	}
 	for label, want := range cases {
 		if got := Guard(label); got != want {

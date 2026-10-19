@@ -148,4 +148,3 @@ func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 	backends = append(backends, logErrors(lb, w.warnf, nil))
 	return decide.NewRouter(backends...), nil
 }
-
