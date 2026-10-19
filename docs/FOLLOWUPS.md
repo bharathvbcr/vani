@@ -105,6 +105,42 @@ flowchart TD
   breaker, and it does not stop a phase in which no backend read anything from failing
   (`advanceAll`'s `titleDrop`).
 
+## Run speed (applied 2026-10-19, measured on fakes only)
+
+- **Why:** a run advanced postings one at a time and waited for the d3-mini shadow on each:
+  about 4.5 s per posting on 2026-10-19 against about 1 s on 2026-10-18 without it.
+- **Owner's choices:** option A, `decide.shadow_every` = 12; `decide.Router.ShadowSample` added
+  in the decide module; up to 3 calls past the OpenRouter daily cap with 4 workers is acceptable
+  (`DailyCap.Allow` and `Charge` are separate steps; `TestAdvanceConcurrentSpendCapHolds`).
+- **What changed:**
+  - `advance_concurrency` (default 4): `advanceAll` starts postings in rank order and counts
+    results on one goroutine. A stop starts nothing new and waits for the postings in flight.
+    The unread streak can admit up to workers-1 extra attempts.
+  - `decide.shadow_every` (default 12): hash sample by posting key (`cmd/vani/shadowsample.go`).
+    A local shadow allows server `parallel` + 1 calls, and a sampled posting is skipped while
+    that is full. Unsampled and skipped postings carry no shadow keys, which `vani eval` reads as
+    not asked. `TestGatedShadowChangesNoDecision` checks that statuses and triage annotations
+    match a run with no shadow.
+  - Ordering: title rank, then freshness, then ledger order (`cmd/vani/advanceorder.go`).
+- **BenchmarkAdvance** (fakes at 1/100 of measured latencies: d1-ultra triage 0.65 s, d3-mini
+  3.2 s at parallel 1, notes 0.35 s, scoring 0.02 s assumed; 96 postings; M5 Pro; real s/posting):
+
+  | run | s/posting | shadowed / busy-skipped per 96 |
+  |---|---|---|
+  | before: 1 worker, shadow every posting | 3.76-3.82 | 96 / - |
+  | before: 1 worker, no shadow | 1.17-1.25 | - |
+  | 4 workers, no shadow | 0.30-0.43 | - |
+  | 4 workers, shadow every posting | 3.29-3.88 | 96 / - |
+  | 4 workers, one in 12, 1 slot | 0.32 | 5 / 2 |
+  | 4 workers, one in 12, 2 slots (shipped) | 0.34-0.35 | 7 / 0 |
+  | 4 workers, one in 4, 2 slots | 0.48-0.49 | 14 / 10 |
+
+  The 1-slot row is why the limit is parallel + 1: at about 80% shadow load a no-queue slot loses
+  a large share of the sample (Erlang-B), and a waiting call costs about 0.01 s per posting. The
+  sample is 7 postings per run, so the busy-skip rate is a small-sample figure.
+- **Not verified:** no live run (not to be run against the live config by this work); the
+  live d1-ultra and llama-server latencies under concurrency, and DevPrism's scoring time.
+
 ## Shadow evaluation (applied 2026-10-19, not yet measured on the live ledger)
 
 - **Three gaps in what `vani eval` could tell you, fixed on the owner's go-ahead ("apply all",

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -110,6 +108,7 @@ type wired struct {
 	stateDir string
 	led      *ledger.File
 	warn     io.Writer
+	warnMu   sync.Mutex // serialises writes to warn
 
 	mu     sync.Mutex
 	scorer *lazyScorer
@@ -144,7 +143,15 @@ func (w *wired) close() error {
 	return errors.Join(errs...)
 }
 
-func (w *wired) warnf(format string, a ...any) { fmt.Fprintf(w.warn, "vani: "+format+"\n", a...) }
+// warnf prints one warning line. Postings advance concurrently and their
+// backends warn from their own goroutines, so lines are written under warnMu,
+// whole.
+func (w *wired) warnf(format string, a ...any) {
+	line := fmt.Sprintf("vani: "+format+"\n", a...)
+	w.warnMu.Lock()
+	defer w.warnMu.Unlock()
+	_, _ = io.WriteString(w.warn, line)
+}
 
 // runOnce lists every board, reconciles it, then advances postings. It fails
 // as a whole only when no board could be read or the ledger fails; a single
@@ -190,7 +197,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			return r.Posting, ok
 		},
 		Report: func(b sources.Board, st greenhouse.PayStats) {
-			fmt.Fprintf(w.warn, "vani: board %s/%s: pay %+v\n", b.ATS, b.Token, st)
+			w.warnf("board %s/%s: pay %+v", b.ATS, b.Token, st)
 		},
 	})
 	if err != nil {
@@ -232,17 +239,18 @@ func (w *wired) runOnce(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("reconcile %s/%s: %w", b.ATS, b.Token, err)
 		}
-		fmt.Fprintf(w.warn, "vani: board %s/%s: %+v\n", b.ATS, b.Token, sum)
+		w.warnf("board %s/%s: %+v", b.ATS, b.Token, sum)
 	}
 	if len(w.cfg.Watchlist) > 0 && read == 0 {
 		return errors.New("no board could be read")
 	}
 
-	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), titleDropper(runner.Policy), runner.Advance, w.warnf)
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf)
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()
 	w.warnShadowErrors(runner)
+	w.warnShadowSample(runner)
 	return err
 }
 
@@ -322,10 +330,10 @@ const maxUnreadExamples = 3
 // one by one; later new causes are only counted.
 const maxDistinctCauses = 20
 
-// advanceAll advances up to limit postings (config advance_per_run). With a
-// rank they go highest rank first, ties in ledger order, so the cap spends
-// itself on the titles the active track wants; a nil rank keeps ledger order.
-// Rank only orders: every eligible posting is still advanced, this run or a
+// advanceAll advances up to limit postings (config advance_per_run). They go
+// highest title rank first, then freshest first (orderAdvance), ties in
+// ledger order, so the cap spends itself on new postings with the titles the
+// active track wants. Order only orders: every eligible posting is still advanced, this run or a
 // later one. A posting no backend could read stays Live for the next run. The
 // run fails, so a shell loop stops and no empty digest is published, when no
 // backend read maxConsecutiveUnread postings in a row, or none of the postings
@@ -334,13 +342,25 @@ const maxDistinctCauses = 20
 // The report says what happened however the phase ended, so the run record
 // can show what the cap or a stop left waiting.
 //
+// Up to workers postings (config advance_concurrency) are advanced at a time.
+// They start in rank order; their results are counted in the order they
+// finish, on this goroutine, so the report, the warnings and the stop rules
+// need no lock. The ledger serialises its own writes, and each posting is
+// advanced by one goroutine only. A stop (unread streak, cancellation) starts
+// no further posting but waits for those in flight, so nothing is written to
+// the ledger after advanceAll returns; with workers above 1 the streak can
+// therefore admit up to workers-1 attempts past maxConsecutiveUnread.
+//
 // titleDrop, when set, reports whether advancing r drops it by its title
 // without asking any backend. Such a posting counts toward limit, but it is no
 // backend reading: it neither ends an unread streak nor keeps the phase from
 // failing when no backend read anything.
-func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit int, titleDrop func(ledger.Record) bool, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
+func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit, workers int, titleDrop func(ledger.Record) bool, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
 	if limit <= 0 {
 		return advanceReport{}, fmt.Errorf("advance limit %d must be above 0", limit)
+	}
+	if workers <= 0 {
+		return advanceReport{}, fmt.Errorf("advance concurrency %d must be above 0", workers)
 	}
 	var todo []ledger.Record
 	for _, r := range recs {
@@ -349,13 +369,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 			todo = append(todo, r)
 		}
 	}
-	if rank != nil {
-		ranks := make(map[posting.Key]int, len(todo))
-		for _, r := range todo {
-			ranks[r.Key] = rank(r.Posting)
-		}
-		slices.SortStableFunc(todo, func(a, b ledger.Record) int { return cmp.Compare(ranks[b.Key], ranks[a.Key]) })
-	}
+	orderAdvance(todo, recs, rank)
 	rep := advanceReport{Eligible: len(todo), Limit: limit}
 	done := func(stopped string) advanceReport {
 		rep.Deferred = rep.Eligible - rep.Attempted
@@ -370,50 +384,114 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	causes := map[string]*cause{}
 	var order []string
 	uncounted, byTitle := 0, 0
-	for _, r := range todo {
-		if rep.Attempted >= limit {
-			warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
-			break
-		}
-		rep.Attempted++
-		free := titleDrop != nil && titleDrop(r)
-		err := advance(ctx, r.Key)
+	// count folds one finished posting into the report and the stop rules.
+	// free: the posting was dropped by its title, so no backend was asked.
+	stopped := ""
+	var cancelErr error
+	count := func(key posting.Key, free bool, err error) {
 		if err != nil && ctx.Err() != nil {
-			return done(stopCancelled), ctx.Err()
+			// Cut short by cancellation: neither unread nor failed.
+			if stopped == "" {
+				stopped, cancelErr = stopCancelled, ctx.Err()
+			}
+			return
 		}
 		if err == nil && free {
 			byTitle++
-			continue
+			return
 		}
 		if errors.Is(err, pipeline.ErrTriageUnavailable) {
 			rep.Unread++
 			streak++
 			if rep.Unread <= maxUnreadExamples {
-				warnf("advance %s: %v", r.Key, err)
+				warnf("advance %s: %v", key, err)
 			}
-			if streak >= maxConsecutiveUnread {
-				return done(stopUnreadStreak), fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
-					streak, rep.Attempted, pipeline.ErrTriageUnavailable)
+			if streak >= maxConsecutiveUnread && stopped == "" {
+				stopped = stopUnreadStreak
 			}
-			continue
+			return
 		}
 		streak = 0
 		if err == nil {
-			continue
+			return
 		}
 		rep.Failed++
-		key := errorKey(strings.ReplaceAll(err.Error(), string(r.Key), "<posting>"))
-		if c, ok := causes[key]; ok {
+		ek := errorKey(strings.ReplaceAll(err.Error(), string(key), "<posting>"))
+		if c, ok := causes[ek]; ok {
 			c.more++
-			continue
+			return
 		}
 		if len(causes) >= maxDistinctCauses {
 			uncounted++
+			return
+		}
+		causes[ek] = &cause{first: key}
+		order = append(order, ek)
+		warnf("advance %s: %v", key, err)
+	}
+
+	type result struct {
+		key      posting.Key
+		free     bool
+		err      error
+		panicked bool
+		value    any
+	}
+	n := min(len(todo), limit)
+	// Buffered to workers, so a finished posting never blocks its goroutine.
+	results := make(chan result, workers)
+	next, inflight := 0, 0
+	var panicked *result
+	for {
+		for stopped == "" && panicked == nil && next < n && inflight < workers {
+			if err := ctx.Err(); err != nil {
+				stopped, cancelErr = stopCancelled, err
+				break
+			}
+			key := todo[next].Key
+			// Decided here, before the posting advances and its status moves.
+			free := titleDrop != nil && titleDrop(todo[next])
+			next++
+			inflight++
+			rep.Attempted++
+			go func() {
+				// A panic is carried back and re-raised on the caller's
+				// goroutine, where the daemon contains it as it did before
+				// postings ran concurrently.
+				defer func() {
+					if p := recover(); p != nil {
+						results <- result{key: key, panicked: true, value: p}
+					}
+				}()
+				err := advance(ctx, key)
+				results <- result{key: key, free: free, err: err}
+			}()
+		}
+		if inflight == 0 {
+			break
+		}
+		r := <-results
+		inflight--
+		if r.panicked {
+			if panicked == nil {
+				panicked = &r
+			}
 			continue
 		}
-		causes[key] = &cause{first: r.Key}
-		order = append(order, key)
-		warnf("advance %s: %v", r.Key, err)
+		count(r.key, r.free, r.err)
+	}
+	if panicked != nil {
+		panic(fmt.Sprintf("advance %s: %v", panicked.key, panicked.value))
+	}
+	switch stopped {
+	case stopCancelled:
+		return done(stopCancelled), cancelErr
+	case stopUnreadStreak:
+		return done(stopUnreadStreak), fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
+			maxConsecutiveUnread, rep.Attempted, pipeline.ErrTriageUnavailable)
+	}
+	if len(todo) > limit {
+		warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
 	}
 	for _, k := range order {
 		if c := causes[k]; c.more > 0 {
@@ -679,6 +757,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	}
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow
+	gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
 
 	explainer, skipExplain := w.notes(d, spend)
 	r := &pipeline.Runner{

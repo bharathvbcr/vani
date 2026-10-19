@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -25,7 +26,7 @@ func everyOther(r ledger.Record) bool {
 // postings, and the title drops still count toward the attempts.
 func TestAdvanceTitleDropsDoNotHideAnOutage(t *testing.T) {
 	asked := 0
-	rep, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, everyOther, func(_ context.Context, k posting.Key) error {
+	rep, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, 1, everyOther, func(_ context.Context, k posting.Key) error {
 		if everyOther(ledger.Record{Key: k}) {
 			return nil // dropped by title, no backend asked
 		}
@@ -42,7 +43,7 @@ func TestAdvanceTitleDropsDoNotHideAnOutage(t *testing.T) {
 	// Below the breaker: every posting a backend was asked about was unread,
 	// so the phase fails, whatever the title drops.
 	var warn strings.Builder
-	_, err = advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, everyOther, func(_ context.Context, k posting.Key) error {
+	_, err = advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, 1, everyOther, func(_ context.Context, k posting.Key) error {
 		if everyOther(ledger.Record{Key: k}) {
 			return nil
 		}
@@ -56,20 +57,52 @@ func TestAdvanceTitleDropsDoNotHideAnOutage(t *testing.T) {
 	}
 }
 
+// With postings advanced concurrently, a title drop is still decided per
+// posting and still no backend reading: the breaker trips and a phase in which
+// every asked posting was unread fails, as with one worker.
+func TestAdvanceTitleDropsConcurrent(t *testing.T) {
+	const workers = 4
+	var asked atomic.Int64
+	adv := func(_ context.Context, k posting.Key) error {
+		if everyOther(ledger.Record{Key: k}) {
+			return nil
+		}
+		asked.Add(1)
+		return unread(k)
+	}
+	rep, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, workers, everyOther, adv, func(string, ...any) {})
+	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep.Stopped != stopUnreadStreak {
+		t.Fatalf("err = %v, report %+v", err, rep)
+	}
+	if n := asked.Load(); n < maxConsecutiveUnread || n > maxConsecutiveUnread+workers-1 || int(n) != rep.Unread {
+		t.Fatalf("asked %d, report %+v", n, rep)
+	}
+
+	var warn strings.Builder
+	asked.Store(0)
+	rep, err = advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, workers, everyOther, adv, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
+	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep.Stopped != stopNoneRead || !strings.Contains(err.Error(), "3 of 6") {
+		t.Fatalf("err = %v, report %+v", err, rep)
+	}
+	if !strings.Contains(warn.String(), "3 posting(s) dropped by title before triage") {
+		t.Fatalf("warnings:\n%s", warn.String())
+	}
+}
+
 // Title drops alone, or with working backends, are a normal run, and they
 // count toward the cap (advance_per_run) as the owner decided.
 func TestAdvanceTitleDropsCountTowardTheCap(t *testing.T) {
 	calls := 0
-	rep, err := advanceAll(context.Background(), liveRecs(10), nil, 4, everyOther, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {})
+	rep, err := advanceAll(context.Background(), liveRecs(10), nil, 4, 1, everyOther, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {})
 	if err != nil || calls != 4 || rep.Attempted != 4 || rep.Deferred != 6 {
 		t.Fatalf("err %v calls %d report %+v", err, calls, rep)
 	}
 	all := func(ledger.Record) bool { return true }
-	if _, err := advanceAll(context.Background(), liveRecs(5), nil, 10, all, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {}); err != nil {
+	if _, err := advanceAll(context.Background(), liveRecs(5), nil, 10, 1, all, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {}); err != nil {
 		t.Fatalf("all title drops: %v", err)
 	}
 	// A title drop that fails to record is an ordinary failure, not a drop.
-	rep, err = advanceAll(context.Background(), liveRecs(2), nil, 10, all, func(context.Context, posting.Key) error { return errors.New("ledger full") }, func(string, ...any) {})
+	rep, err = advanceAll(context.Background(), liveRecs(2), nil, 10, 1, all, func(context.Context, posting.Key) error { return errors.New("ledger full") }, func(string, ...any) {})
 	if err != nil || rep.Failed != 2 {
 		t.Fatalf("err %v report %+v", err, rep)
 	}

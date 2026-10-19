@@ -484,3 +484,47 @@ func TestAdvanceLimit(t *testing.T) {
 		}
 	}
 }
+
+// decide.shadow_every: zero reads as the default, the bounds themselves are
+// valid, anything outside them is refused.
+func TestShadowSampleEvery(t *testing.T) {
+	for _, tc := range []struct{ set, want int }{{0, DefaultShadowEvery}, {1, 1}, {MaxShadowEvery, MaxShadowEvery}} {
+		c := valid()
+		c.Decide.ShadowEvery = tc.set
+		if err := c.Validate(); err != nil {
+			t.Fatalf("shadow_every %d: %v", tc.set, err)
+		}
+		if got := c.Decide.ShadowSampleEvery(); got != tc.want {
+			t.Fatalf("shadow_every %d: every %d, want %d", tc.set, got, tc.want)
+		}
+	}
+	for _, bad := range []int{-1, MaxShadowEvery + 1, math.MaxInt} {
+		c := valid()
+		c.Decide.ShadowEvery = bad
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "decide.shadow_every") {
+			t.Fatalf("shadow_every %d: err %v", bad, err)
+		}
+	}
+}
+
+// advance_concurrency: zero reads as the default, the bounds themselves are
+// valid, anything outside them is refused.
+func TestAdvanceWorkers(t *testing.T) {
+	for _, tc := range []struct{ set, want int }{{0, DefaultAdvanceConcurrency}, {1, 1}, {MaxAdvanceConcurrency, MaxAdvanceConcurrency}} {
+		c := valid()
+		c.AdvanceConcurrency = tc.set
+		if err := c.Validate(); err != nil {
+			t.Fatalf("advance_concurrency %d: %v", tc.set, err)
+		}
+		if got := c.AdvanceWorkers(); got != tc.want {
+			t.Fatalf("advance_concurrency %d: workers %d, want %d", tc.set, got, tc.want)
+		}
+	}
+	for _, bad := range []int{-1, MaxAdvanceConcurrency + 1, math.MaxInt} {
+		c := valid()
+		c.AdvanceConcurrency = bad
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "advance_concurrency") {
+			t.Fatalf("advance_concurrency %d: err %v", bad, err)
+		}
+	}
+}
