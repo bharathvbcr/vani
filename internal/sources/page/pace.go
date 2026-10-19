@@ -13,37 +13,37 @@ import (
 )
 
 // MaxInterval is the longest per-host wait Paced accepts. One board makes up
-// to MaxLinks+2 visits to its host in sequence within boardTimeout (15 min):
+// to MaxLinks+2 visits to its host in sequence within BoardTimeout (15 min):
 // the robots.txt read, the listing and MaxLinks postings. A 10 s gap leaves
-// those 52 visits 8.5 min of waiting, with room for the runs themselves. A
+// those 52 visits 8.5 min of waiting, with room for the loads themselves. A
 // longer gap would time large boards out.
 const MaxInterval = 10 * time.Second
 
-// Paced is a Runner that spaces lightpanda runs per host: a run to a host
+// Paced is a Browser that spaces page loads per host: a load from a host
 // starts only once the previous visit to that host has ended and the host's
-// interval has passed since. Runs to different hosts do not wait on each
+// interval has passed since. Loads from different hosts do not wait on each
 // other.
 //
 // A host's interval is the longer of the configured floor and the
 // Crawl-delay its robots.txt sets for Vani, which Paced reads itself, through
 // egress, once per host for its own life (one run). That read is a visit too:
-// the first run to the host waits the interval after it. A host whose
+// the first load from the host waits the interval after it. A host whose
 // robots.txt cannot be read, or whose Crawl-delay is above MaxInterval, gets
-// no run: the error fails its board rather than pacing it faster than the
-// site asked.
+// no load: the error fails its board rather than pacing it faster than the
+// site asked. lightpanda's own robots.txt read happens inside each process's
+// first load from the host, so it is paced with that load.
 //
-// The wait happens here, before the process starts, rather than in the egress
-// proxy's CONNECT: lightpanda gives up on a first CONNECT that waits past its
-// --wait-ms (5 s) and exits 0 with a bare doctype (ErrEmptyDocument), so the
-// proxy's own pacing cannot honour a gap as long as a robots Crawl-delay of
-// 5 s. With --http-max-host-open 1 and a gap of at least the proxy's
-// per-host interval, the proxy then has nothing left to wait for.
+// The wait happens here, before the navigation, rather than in the egress
+// proxy's CONNECT: lightpanda gives up on a first response that takes longer
+// than its goto timeout (5 s) and reports an empty page (ErrEmptyDocument),
+// so the proxy's own pacing cannot honour a gap as long as a robots
+// Crawl-delay of 5 s. A long-lived process also opens one CONNECT per host
+// and reuses it, so the proxy sees far fewer CONNECTs than visits.
 //
-// The host is that of the last argument, which fetch always sets to the
-// validated page URL. A last argument that is not an https URL with a host is
-// an error: the run is never made unpaced.
+// A URL that is not https with a host is an error: the load is never made
+// unpaced.
 type Paced struct {
-	next     Runner
+	next     Browser
 	interval time.Duration // the floor under Crawl-delay
 	now      func() time.Time
 
@@ -63,12 +63,12 @@ type hostSlot struct {
 	users int // callers holding or queued for token; guarded by Paced.mu
 }
 
-// NewRobotsPaced wraps next so runs to one host are spaced by the longer of
+// NewRobotsPaced wraps next so loads from one host are spaced by the longer of
 // floor and the host's robots.txt Crawl-delay, which is fetched through d.
 // floor must be within [0, MaxInterval]; zero leaves Crawl-delay alone.
-func NewRobotsPaced(next Runner, d egress.Doer, floor time.Duration) (*Paced, error) {
+func NewRobotsPaced(next Browser, d egress.Doer, floor time.Duration) (*Paced, error) {
 	if next == nil {
-		return nil, errors.New("page: NewRobotsPaced needs a runner")
+		return nil, errors.New("page: NewRobotsPaced needs a browser")
 	}
 	if d == nil {
 		return nil, errors.New("page: NewRobotsPaced needs an egress doer")
@@ -80,11 +80,11 @@ func NewRobotsPaced(next Runner, d egress.Doer, floor time.Duration) (*Paced, er
 		robots: d, robotsTimeout: robotsTimeout, intervals: map[string]time.Duration{}}, nil
 }
 
-// Run waits for the target host's turn, then runs next. A context cancelled
-// while waiting returns its error without starting a run and without
-// delaying the callers behind it.
-func (p *Paced) Run(ctx context.Context, args []string) ([]byte, error) {
-	host, err := targetHost(args)
+// Load waits for rawURL's host's turn, then loads it through next. A context
+// cancelled while waiting returns its error without starting a load and
+// without delaying the callers behind it.
+func (p *Paced) Load(ctx context.Context, rawURL string) ([]byte, error) {
+	host, err := targetHost(rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +111,15 @@ func (p *Paced) Run(ctx context.Context, args []string) ([]byte, error) {
 		return nil, err
 	}
 
-	out, err := p.next.Run(ctx, args)
+	out, err := p.next.Load(ctx, rawURL)
 	// Ended, successfully or not: the host gets its rest either way.
 	p.visited(slot, interval)
 	return out, err
 }
+
+// Reset resets next. The per-host schedule and Crawl-delays are kept: they
+// belong to the run, not to a browser process.
+func (p *Paced) Reset() error { return p.next.Reset() }
 
 // rest waits until slot is free or ctx ends.
 func (p *Paced) rest(ctx context.Context, slot *hostSlot) error {
@@ -200,14 +204,11 @@ func (p *Paced) leave(s *hostSlot) {
 	s.users--
 }
 
-// targetHost is the lower-cased host of args' last element.
-func targetHost(args []string) (string, error) {
-	if len(args) == 0 {
-		return "", errors.New("page: paced run has no target url")
-	}
-	u, err := url.Parse(args[len(args)-1])
+// targetHost is the lower-cased host of rawURL.
+func targetHost(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
 	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" {
-		return "", errors.New("page: paced run's last argument is not an https url")
+		return "", errors.New("page: paced load's url is not an https url")
 	}
 	return strings.ToLower(u.Hostname()), nil
 }

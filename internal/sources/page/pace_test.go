@@ -16,10 +16,11 @@ type span struct {
 	start, end time.Time
 }
 
-// timingRunner records when each run starts and ends, fails on two
-// overlapping runs to one host, and delegates to next (or answers a stub page).
-type timingRunner struct {
-	next    Runner
+// timingBrowser records when each load starts and ends, fails on two
+// overlapping loads from one host, counts Resets, and delegates to next (or
+// answers a stub page).
+type timingBrowser struct {
+	next    Browser
 	hold    time.Duration // how long each run takes
 	block   chan struct{} // if set, each run waits for a receive from it
 	entered chan struct{} // if set (buffered), signalled as each run starts
@@ -29,11 +30,21 @@ type timingRunner struct {
 	spans    []span
 	inflight map[string]int
 	overlap  bool
+	resets   int
 }
 
-func (r *timingRunner) Run(ctx context.Context, args []string) ([]byte, error) {
-	u := args[len(args)-1]
-	host, _ := targetHost(args)
+func (r *timingBrowser) Reset() error {
+	r.mu.Lock()
+	r.resets++
+	r.mu.Unlock()
+	if r.next != nil {
+		return r.next.Reset()
+	}
+	return nil
+}
+
+func (r *timingBrowser) Load(ctx context.Context, u string) ([]byte, error) {
+	host, _ := targetHost(u)
 	r.mu.Lock()
 	if r.inflight == nil {
 		r.inflight = map[string]int{}
@@ -65,7 +76,7 @@ func (r *timingRunner) Run(ctx context.Context, args []string) ([]byte, error) {
 	var out []byte
 	if err == nil {
 		if r.next != nil {
-			out, err = r.next.Run(ctx, args)
+			out, err = r.next.Load(ctx, u)
 		} else {
 			out = []byte("<html></html>")
 		}
@@ -79,7 +90,7 @@ func (r *timingRunner) Run(ctx context.Context, args []string) ([]byte, error) {
 	return out, err
 }
 
-func (r *timingRunner) recorded() ([]span, bool) {
+func (r *timingBrowser) recorded() ([]span, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.spans), r.overlap
@@ -97,23 +108,21 @@ func checkGaps(t *testing.T, spans []span, interval time.Duration) {
 	}
 }
 
-func fetchArgs(u string) []string { return []string{"fetch", "--dump", "html", u} }
-
 // mustPaced paces by interval alone: every host's robots.txt is missing.
-func mustPaced(t *testing.T, next Runner, interval time.Duration) *Paced {
+func mustPaced(t *testing.T, next Browser, interval time.Duration) *Paced {
 	t.Helper()
 	return mustRobotsPaced(t, next, robotsReply(404, ""), interval)
 }
 
-// A run the wrapper cannot attribute to a host is refused, never made
+// A load the wrapper cannot attribute to a host is refused, never made
 // unpaced.
-func TestPacedRefusesUntargetedArgs(t *testing.T) {
-	inner := &timingRunner{}
+func TestPacedRefusesUntargetedURLs(t *testing.T) {
+	inner := &timingBrowser{}
 	p := mustPaced(t, inner, time.Second)
-	for _, args := range [][]string{nil, {}, {"fetch", "--dump"}, fetchArgs("http://careers.example.com/x"),
-		fetchArgs("https://"), fetchArgs("careers.example.com/jobs"), fetchArgs("%zz")} {
-		if _, err := p.Run(context.Background(), args); err == nil {
-			t.Errorf("args %q ran", args)
+	for _, u := range []string{"", "--dump", "http://careers.example.com/x",
+		"https://", "careers.example.com/jobs", "%zz", "file:///etc/passwd"} {
+		if _, err := p.Load(context.Background(), u); err == nil {
+			t.Errorf("url %q loaded", u)
 		}
 	}
 	if spans, _ := inner.recorded(); len(spans) != 0 {
@@ -125,10 +134,10 @@ func TestPacedRefusesUntargetedArgs(t *testing.T) {
 // run's end.
 func TestPacedSpacesOneHost(t *testing.T) {
 	const interval = 80 * time.Millisecond
-	inner := &timingRunner{hold: 20 * time.Millisecond}
+	inner := &timingBrowser{hold: 20 * time.Millisecond}
 	p := mustPaced(t, inner, interval)
 	for _, u := range []string{"https://careers.example.com/a", "https://CAREERS.example.com/b", "https://careers.example.com:443/c"} {
-		if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
+		if _, err := p.Load(context.Background(), u); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,7 +152,7 @@ func TestPacedSpacesOneHost(t *testing.T) {
 // one's rest.
 func TestPacedSameHostConcurrently(t *testing.T) {
 	const interval = 40 * time.Millisecond
-	inner := &timingRunner{hold: 10 * time.Millisecond}
+	inner := &timingBrowser{hold: 10 * time.Millisecond}
 	p := mustPaced(t, inner, interval)
 	var wg sync.WaitGroup
 	errs := make(chan error, 5)
@@ -151,7 +160,7 @@ func TestPacedSameHostConcurrently(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/"+strings.Repeat("x", i+1)))
+			_, err := p.Load(context.Background(), "https://careers.example.com/"+strings.Repeat("x", i+1))
 			errs <- err
 		}()
 	}
@@ -175,7 +184,7 @@ func TestPacedSameHostConcurrently(t *testing.T) {
 // A host resting holds up no other host.
 func TestPacedHostsDoNotWaitOnEachOther(t *testing.T) {
 	const interval = 400 * time.Millisecond
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustPaced(t, inner, interval)
 	begin := time.Now()
 	var wg sync.WaitGroup
@@ -184,7 +193,7 @@ func TestPacedHostsDoNotWaitOnEachOther(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := p.Run(context.Background(), fetchArgs(u))
+			_, err := p.Load(context.Background(), u)
 			errs <- err
 		}()
 	}
@@ -204,7 +213,7 @@ func TestPacedHostsDoNotWaitOnEachOther(t *testing.T) {
 	// a.example.com itself is still resting: a second run must wait.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := p.Run(ctx, fetchArgs("https://a.example.com/again")); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := p.Load(ctx, "https://a.example.com/again"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second run to a resting host: %v", err)
 	}
 	if spans, _ := inner.recorded(); len(spans) != 3 {
@@ -216,22 +225,22 @@ func TestPacedHostsDoNotWaitOnEachOther(t *testing.T) {
 // does not hold up the caller queued behind it.
 func TestPacedCancelMidWait(t *testing.T) {
 	const interval = 300 * time.Millisecond
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustPaced(t, inner, interval)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/1")); err != nil {
+	if _, err := p.Load(context.Background(), "https://careers.example.com/1"); err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
 	go func() {
-		_, err := p.Run(ctx, fetchArgs("https://careers.example.com/cancelled"))
+		_, err := p.Load(ctx, "https://careers.example.com/cancelled")
 		first <- err
 	}()
 	time.Sleep(30 * time.Millisecond) // let it take the host's token and start resting
 	second := make(chan error, 1)
 	go func() {
-		_, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/2"))
+		_, err := p.Load(context.Background(), "https://careers.example.com/2")
 		second <- err
 	}()
 	time.Sleep(30 * time.Millisecond)
@@ -272,18 +281,18 @@ func TestPacedCancelMidWait(t *testing.T) {
 // Cancelling a caller queued behind a run in flight returns without waiting
 // for that run.
 func TestPacedCancelWhileHostBusy(t *testing.T) {
-	inner := &timingRunner{block: make(chan struct{}), entered: make(chan struct{}, 1)}
+	inner := &timingBrowser{block: make(chan struct{}), entered: make(chan struct{}, 1)}
 	p := mustPaced(t, inner, 10*time.Millisecond)
 	done := make(chan error, 1)
 	go func() {
-		_, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/slow"))
+		_, err := p.Load(context.Background(), "https://careers.example.com/slow")
 		done <- err
 	}()
 	<-inner.entered // the slow run holds the host
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := p.Run(ctx, fetchArgs("https://careers.example.com/queued")); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := p.Load(ctx, "https://careers.example.com/queued"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queued caller: %v", err)
 	}
 	close(inner.block)
@@ -301,10 +310,10 @@ func TestPacedCancelWhileHostBusy(t *testing.T) {
 func TestPacedFailedRunStillRests(t *testing.T) {
 	const interval = 60 * time.Millisecond
 	boom := errors.New("boom")
-	inner := &timingRunner{err: boom}
+	inner := &timingBrowser{err: boom}
 	p := mustPaced(t, inner, interval)
 	for range 2 {
-		if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/x")); !errors.Is(err, boom) {
+		if _, err := p.Load(context.Background(), "https://careers.example.com/x"); !errors.Is(err, boom) {
 			t.Fatalf("got %v, want the inner error", err)
 		}
 	}
@@ -315,12 +324,12 @@ func TestPacedFailedRunStillRests(t *testing.T) {
 // Hosts whose rest is over and that nobody is using are forgotten, so the
 // schedule does not grow with every host ever fetched.
 func TestPacedForgetsIdleHosts(t *testing.T) {
-	inner := &timingRunner{}
+	inner := &timingBrowser{}
 	p := mustPaced(t, inner, 50*time.Millisecond)
 	t0 := time.Now()
 	p.now = func() time.Time { return t0 } // every host stays within its rest
 	for _, u := range []string{"https://a.example.com/", "https://b.example.com/", "https://c.example.com/"} {
-		if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
+		if _, err := p.Load(context.Background(), u); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -331,7 +340,7 @@ func TestPacedForgetsIdleHosts(t *testing.T) {
 	if n != 3 {
 		t.Fatalf("%d hosts tracked during their rest, want 3", n)
 	}
-	if _, err := p.Run(context.Background(), fetchArgs("https://d.example.com/")); err != nil {
+	if _, err := p.Load(context.Background(), "https://d.example.com/"); err != nil {
 		t.Fatal(err)
 	}
 	p.mu.Lock()
@@ -342,15 +351,16 @@ func TestPacedForgetsIdleHosts(t *testing.T) {
 }
 
 // Through the source: the listing page and each posting page on one host are
-// spaced by the interval, and every fetch still carries the page URL last.
-func TestListThroughPacedRunner(t *testing.T) {
+// spaced by the interval, and the board's end resets the browser through
+// Paced.
+func TestListThroughPacedBrowser(t *testing.T) {
 	const interval = 50 * time.Millisecond
-	pages := &fakeRunner{pages: map[string]string{
+	pages := &fakeBrowser{pages: map[string]string{
 		listURL:                                  listing("/jobs/eng-1", "/jobs/ops-2"),
 		"https://careers.example.com/jobs/eng-1": ldPage("Eng", `{"@type":"JobPosting","title":"Eng"}`),
 		"https://careers.example.com/jobs/ops-2": ldPage("Ops", `{"@type":"JobPosting","title":"Ops"}`),
 	}}
-	inner := &timingRunner{next: pages}
+	inner := &timingBrowser{next: pages}
 	got, err := newSrc(mustPaced(t, inner, interval)).List(context.Background(), board())
 	if err != nil {
 		t.Fatal(err)
@@ -363,4 +373,27 @@ func TestListThroughPacedRunner(t *testing.T) {
 		t.Fatalf("%d runs, overlap %v", len(spans), overlap)
 	}
 	checkGaps(t, spans, interval)
+	if inner.resets != 1 || pages.resetCount() != 1 {
+		t.Errorf("resets: Paced's inner %d, browser %d; want 1 each", inner.resets, pages.resetCount())
+	}
+}
+
+// Reset reaches the wrapped browser and keeps the run's schedule: a host
+// still resting after a Reset still waits.
+func TestPacedResetKeepsTheSchedule(t *testing.T) {
+	const interval = 300 * time.Millisecond
+	boom := errors.New("cannot end it")
+	inner := &timingBrowser{next: &fakeBrowser{pages: map[string]string{"https://careers.example.com/a": "<p>x</p>"}, resetErr: boom}}
+	p := mustPaced(t, inner, interval)
+	if _, err := p.Load(context.Background(), "https://careers.example.com/a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Reset(); !errors.Is(err, boom) {
+		t.Fatalf("Reset: %v, want the browser's error", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := p.Load(ctx, "https://careers.example.com/a"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("load right after a Reset: %v; the host's rest must survive the Reset", err)
+	}
 }

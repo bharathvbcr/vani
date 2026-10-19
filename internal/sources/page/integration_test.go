@@ -3,6 +3,7 @@ package page
 import (
 	"context"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,29 +18,37 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
-// localOnlyRunner is TEST-ONLY. The httptest server lives on 127.0.0.1 with a
+// localBrowser is TEST-ONLY. The httptest server lives on 127.0.0.1 with a
 // self-signed certificate, which production flags forbid by design, so this
-// wrapper drops the proxy and private-network flags the source adds and trusts
-// the test certificate instead. Production code never builds a runner like
-// this: it is defined in a _test file on purpose.
-type localOnlyRunner struct {
-	inner  Runner
-	caPath string
-}
-
-func (l localOnlyRunner) Run(ctx context.Context, args []string) ([]byte, error) {
-	var out []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
+// browser runs the production Flags minus the proxy and private-network ones
+// and trusts the test certificate instead. Production code never builds a
+// browser like this: it is defined in a _test file on purpose.
+func localBrowser(t *testing.T, bin, caPath string) *MCPBrowser {
+	t.Helper()
+	flags, err := Flags(ProxyInfo{Addr: "127.0.0.1:1", Token: testTok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []string{"--ca-cert", caPath}
+	for i := 0; i < len(flags); i++ {
+		switch flags[i] {
 		case "--block-private-networks":
 		case "--http-proxy", "--proxy-bearer-token", "--block-cidrs":
 			i++ // drop the flag and its value
 		default:
-			out = append(out, args[i])
+			out = append(out, flags[i])
 		}
 	}
-	out = append([]string{out[0], "--ca-cert", l.caPath}, out[1:]...)
-	return l.inner.Run(ctx, out)
+	b, err := NewMCPBrowser(bin, out, 60*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := b.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return b
 }
 
 // TestLightpandaIntegration runs the real binary against a local HTTPS server.
@@ -82,8 +91,7 @@ func TestLightpandaIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := localOnlyRunner{inner: ExecRunner{Binary: bin, Timeout: 60 * time.Second}, caPath: ca}
-	src := New(run, ProxyInfo{Addr: "127.0.0.1:1", Token: testTok})
+	src := New(localBrowser(t, bin, ca), ProxyInfo{Addr: "127.0.0.1:1", Token: testTok})
 	b := sources.Board{ATS: posting.Page, Token: "testco", Company: "Fallback Co", URL: srv.URL + "/jobs", LinkPattern: `/jobs/p\d$`}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -112,8 +120,8 @@ func TestLightpandaIntegration(t *testing.T) {
 	// A page that fails to load fails the board.
 	// (/about is linked from the listing but the server answers 404 for it.)
 	b.LinkPattern = `/jobs/p1$|/about$`
-	if got, err := src.List(ctx, b); err == nil {
-		t.Fatalf("a 404 posting page must fail the whole board, got %d postings", len(got))
+	if got, err := src.List(ctx, b); !errors.Is(err, ErrHTTPStatus) {
+		t.Fatalf("a 404 posting page must fail the whole board: %d postings, err %v", len(got), err)
 	}
 }
 
@@ -182,18 +190,15 @@ func TestLightpandaRobotsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newBoardSource := func() sources.Source {
-		run := localOnlyRunner{inner: ExecRunner{Binary: bin, Timeout: 60 * time.Second}, caPath: ca}
-		paced, err := NewRobotsPaced(run, loopbackDoer{c: srv.Client(), addr: srv.Listener.Addr().String()}, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return New(paced, ProxyInfo{Addr: "127.0.0.1:1", Token: testTok})
+	paced, err := NewRobotsPaced(localBrowser(t, bin, ca), loopbackDoer{c: srv.Client(), addr: srv.Listener.Addr().String()}, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
+	src := New(paced, ProxyInfo{Addr: "127.0.0.1:1", Token: testTok})
 	b := sources.Board{ATS: posting.Page, Token: "testco", Company: "Testco", URL: srv.URL + "/jobs", LinkPattern: `/jobs/p\d$`}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	got, err := newBoardSource().List(ctx, b)
+	got, err := src.List(ctx, b)
 	if err != nil {
 		t.Fatalf("List (a Lightpanda Disallow: / must not apply to Vani): %v", err)
 	}
@@ -225,9 +230,10 @@ func TestLightpandaRobotsIntegration(t *testing.T) {
 	if len(docs) != 3 {
 		t.Fatalf("%d page requests, want the listing and 2 postings: %v", len(docs), seen)
 	}
-	// Vani's read, then lightpanda's own at the start of each of its 3 runs.
-	if robots != 1+len(docs) {
-		t.Errorf("%d robots.txt requests, want %d", robots, 1+len(docs))
+	// Vani's read, then lightpanda's own once: one process serves the whole
+	// board, so its RobotStore is shared by every page.
+	if robots != 2 {
+		t.Errorf("%d robots.txt requests for %d pages, want 2 (Vani's and lightpanda's)", robots, len(docs))
 	}
 	first := seen[0]
 	if first.path != "/robots.txt" {
@@ -241,9 +247,26 @@ func TestLightpandaRobotsIntegration(t *testing.T) {
 		prev = at
 	}
 
+	// The next board gets a fresh process, which reads robots.txt once more;
+	// Vani's own Crawl-delay read is kept for the run.
+	if _, err := src.List(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	robots = 0
+	for _, h := range hits {
+		if h.path == "/robots.txt" {
+			robots++
+		}
+	}
+	mu.Unlock()
+	if robots != 3 {
+		t.Errorf("%d robots.txt requests after two boards, want 3 (Vani's once, lightpanda's once per board)", robots)
+	}
+
 	// A posting the Vani group disallows fails the board: lightpanda refuses it.
 	b.LinkPattern = `/jobs/(p1|blocked)$`
-	if got, err := newBoardSource().List(ctx, b); err == nil || !strings.Contains(err.Error(), "RobotsBlocked") {
+	if got, err := src.List(ctx, b); err == nil || !strings.Contains(err.Error(), "RobotsBlocked") {
 		t.Fatalf("disallowed posting: %d postings, err %v", len(got), err)
 	}
 }

@@ -30,9 +30,15 @@ const (
 	// reconciler mark them dead.
 	MaxLinks = 50
 
+	// BoardTimeout bounds one whole List call, and with it the life of the
+	// board's lightpanda process and of its proxy tunnels.
+	BoardTimeout = 15 * time.Minute
+
 	httpTimeoutMs = 20000
-	// boardTimeout bounds one whole List call.
-	boardTimeout = 15 * time.Minute
+	// watchdogMs ends a page script that keeps the browser busy this long. It
+	// is lightpanda's default, pinned so a change of default cannot slow
+	// every board.
+	watchdogMs = 30000
 
 	maxPatternLen = 512
 	proxyUser     = "vani"
@@ -42,7 +48,7 @@ const (
 // argument list free of anything that needs escaping.
 var tokenRE = regexp.MustCompile(`^[A-Za-z0-9._~-]{16,128}$`)
 
-// ProxyInfo is the egress proxy every lightpanda run is pointed at.
+// ProxyInfo is the egress proxy every lightpanda process is pointed at.
 type ProxyInfo struct {
 	// Addr is the proxy's loopback "ip:port" (egress.Proxy.Start's addr).
 	Addr string
@@ -51,14 +57,15 @@ type ProxyInfo struct {
 }
 
 type source struct {
-	run   Runner
+	run   Browser
 	proxy ProxyInfo
 	now   func() time.Time
 }
 
-// New returns the careers-page source. run executes lightpanda; proxy names the
-// egress proxy that must carry all of its traffic.
-func New(run Runner, proxy ProxyInfo) sources.Source {
+// New returns the careers-page source. run loads pages; proxy names the
+// egress proxy its lightpanda was started with (Flags), whose token is kept
+// out of error messages.
+func New(run Browser, proxy ProxyInfo) sources.Source {
 	return &source{run: run, proxy: proxy, now: time.Now}
 }
 
@@ -68,7 +75,11 @@ func (*source) ATS() posting.ATS { return posting.Page }
 // be loaded fails the whole board: a partial listing would make the
 // reconciler mark healthy postings dead. For the same reason a listing with no
 // matching links is an error, not an empty board.
-func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+//
+// One lightpanda process serves all of the board's pages, so it reads the
+// host's robots.txt once; the board's end resets it, so no cookie or page
+// state reaches the next board.
+func (s *source) List(ctx context.Context, b sources.Board) (listed []posting.Posting, err error) {
 	if err := srcutil.CheckBoard(b, posting.Page); err != nil {
 		return nil, err
 	}
@@ -76,7 +87,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("page: board token %q contains ':'", b.Token)
 	}
 	if s.run == nil {
-		return nil, errors.New("page: no runner configured")
+		return nil, errors.New("page: no browser configured")
 	}
 	listURL, err := fetchableURL("board url", b.URL)
 	if err != nil {
@@ -86,14 +97,20 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err != nil {
 		return nil, err
 	}
-	proxyArgs, err := s.proxyArgs()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, boardTimeout)
+	ctx, cancel := context.WithTimeout(ctx, BoardTimeout)
 	defer cancel()
+	defer func() {
+		// A browser that cannot be ended may still hold this board's pages
+		// or state; the board is not reported read.
+		if rerr := s.run.Reset(); rerr != nil && err == nil {
+			listed, err = nil, fmt.Errorf("page: ending the board's browser: %w", rerr)
+		}
+	}()
+	return s.list(ctx, b, listURL, pattern)
+}
 
-	doc, err := s.fetch(ctx, proxyArgs, listURL)
+func (s *source) list(ctx context.Context, b sources.Board, listURL string, pattern *regexp.Regexp) ([]posting.Posting, error) {
+	doc, err := s.fetch(ctx, listURL)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +131,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		doc, err := s.fetch(ctx, proxyArgs, u.canon)
+		doc, err := s.fetch(ctx, u.canon)
 		if err != nil {
 			return nil, err
 		}
@@ -181,14 +198,13 @@ func firstNonEmpty(ss ...string) string {
 // empty document. A variable only so tests need not wait in real time.
 var emptyRetryWait = 2 * time.Second
 
-// fetch runs `lightpanda fetch --dump html` on rawURL, which the caller has
-// already validated. An empty dump (the page's first response missed
-// lightpanda's --wait-ms) is retried once after emptyRetryWait; Apple's
-// careers pages did this on one posting in nine on a live run. A second empty
-// dump fails with ErrEmptyDocument. Errors and exit statuses are not retried:
-// a bot challenge or a 404 must not be asked again.
-func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
-	doc, err := s.fetchOnce(ctx, proxyArgs, rawURL)
+// fetch loads rawURL, which the caller has already validated. An empty page
+// (its first response missed lightpanda's goto timeout) is loaded again once
+// after emptyRetryWait; Apple's careers pages did this on one posting in nine
+// on a live run. A second empty page fails with ErrEmptyDocument. Other
+// failures are not retried: a bot challenge or a 404 must not be asked again.
+func (s *source) fetch(ctx context.Context, rawURL string) (string, error) {
+	doc, err := s.fetchOnce(ctx, rawURL)
 	if !errors.Is(err, ErrEmptyDocument) {
 		return doc, err
 	}
@@ -199,34 +215,17 @@ func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (
 		t.Stop()
 		return "", fmt.Errorf("page: fetching %s: %w", rawURL, ctx.Err())
 	}
-	return s.fetchOnce(ctx, proxyArgs, rawURL)
+	return s.fetchOnce(ctx, rawURL)
 }
 
-// fetchOnce is one lightpanda run.
-//
-// --user-agent UserAgent makes lightpanda identify as Vani, so --obey-robots
-// applies the same robots.txt group whose Crawl-delay Paced honours:
-// lightpanda picks the group by its own User-Agent's product token, and by
-// default that is "Lightpanda" (measured 2026-10-19, lightpanda
-// 1.1.0-nightly.10455).
-//
-// --http-max-host-open 1 makes one run open one connection, so one proxy
-// CONNECT, per host. The egress proxy paces CONNECTs per host; with
-// lightpanda's default of 6 parallel connections, one page with same-host
-// scripts would queue several paced CONNECTs inside a single run, and any
-// that outlast lightpanda's connect timeout are dropped without failing the
-// fetch (measured 2026-10-18, lightpanda 1.1.0-nightly).
-func (s *source) fetchOnce(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
-	args := []string{"fetch", "--dump", "html", "--obey-robots", "--block-private-networks", "--fail-on-http-error",
-		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1", "--user-agent", UserAgent}
-	args = append(args, proxyArgs...)
-	args = append(args, rawURL)
-	out, err := s.run.Run(ctx, args)
+// fetchOnce is one page load.
+func (s *source) fetchOnce(ctx context.Context, rawURL string) (string, error) {
+	out, err := s.run.Load(ctx, rawURL)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return "", fmt.Errorf("page: fetching %s: %w", rawURL, cerr)
 		}
-		return "", fmt.Errorf("page: fetching %s: %s", rawURL, s.redact(err.Error()))
+		return "", fmt.Errorf("page: fetching %s: %w", rawURL, redacted{err: err, token: s.proxy.Token})
 	}
 	if len(out) > MaxStdout {
 		return "", fmt.Errorf("page: fetching %s: %w", rawURL, ErrOutputTooLarge)
@@ -238,11 +237,11 @@ func (s *source) fetchOnce(ctx context.Context, proxyArgs []string, rawURL strin
 	return doc, nil
 }
 
-// ErrEmptyDocument is a fetch that exited 0 but dumped no element. Lightpanda
-// does this when the page's first response has not arrived by its --wait-ms
-// (5 s by default): it prints a bare "<!DOCTYPE html>" and succeeds. Accepting
-// that would turn a posting into an empty one, so it fails the board.
-var ErrEmptyDocument = errors.New("page: lightpanda dumped an empty document (the page did not load in time)")
+// ErrEmptyDocument is a page with no element. Lightpanda's goto reports one
+// when the page's first response has not arrived within its timeout (its page
+// is then a bare "<!DOCTYPE html>"). Accepting that would turn a posting into
+// an empty one, so it fails the board.
+var ErrEmptyDocument = errors.New("page: lightpanda loaded an empty document (the page did not load in time)")
 
 // hasElement reports whether doc holds any markup past a leading doctype.
 func hasElement(doc string) bool {
@@ -257,32 +256,63 @@ func hasElement(doc string) bool {
 	return strings.Contains(rest, "<")
 }
 
-func (s *source) redact(msg string) string {
-	if s.proxy.Token == "" {
-		return msg
-	}
-	return strings.ReplaceAll(msg, s.proxy.Token, "[redacted]")
+// redacted is err with the proxy token taken out of its message. It still
+// unwraps to err, so ErrEmptyDocument and the other sentinels stay testable.
+type redacted struct {
+	err   error
+	token string
 }
 
-// proxyArgs validates the proxy and returns the flags that force traffic
-// through it. Lightpanda sends --proxy-bearer-token on plain-HTTP proxying
-// only, not on CONNECT (docs/PHASE0-lightpanda.md), so the token also rides as
-// the proxy URL's Basic password, which the egress proxy accepts. The
-// loopback proxy address is exempted from --block-private-networks, which
-// would otherwise refuse to connect to the proxy itself.
-func (s *source) proxyArgs() ([]string, error) {
-	ap, err := netip.ParseAddrPort(s.proxy.Addr)
-	if err != nil || !ap.Addr().IsLoopback() || ap.Port() == 0 {
-		return nil, fmt.Errorf("page: proxy address %q is not a loopback ip:port", s.proxy.Addr)
+func (r redacted) Error() string {
+	if r.token == "" {
+		return r.err.Error()
 	}
-	if !tokenRE.MatchString(s.proxy.Token) {
+	return strings.ReplaceAll(r.err.Error(), r.token, "[redacted]")
+}
+
+func (r redacted) Unwrap() error { return r.err }
+
+// Flags returns the lightpanda process flags for a browser whose traffic
+// all goes through proxy.
+//
+// --user-agent UserAgent makes lightpanda identify as Vani, so --obey-robots
+// applies the same robots.txt group whose Crawl-delay Paced honours:
+// lightpanda picks the group by its own User-Agent's product token, and by
+// default that is "Lightpanda" (measured 2026-10-19, lightpanda
+// 1.1.0-nightly.10455).
+//
+// --http-max-host-open 1 makes the process open one connection, so one proxy
+// CONNECT, per host. The egress proxy paces CONNECTs per host; with
+// lightpanda's default of 6 parallel connections, one page with same-host
+// scripts would queue several paced CONNECTs, and any that outlast
+// lightpanda's connect timeout are dropped without failing the page
+// (measured 2026-10-18, lightpanda 1.1.0-nightly).
+//
+// --http-max-response-size MaxStdout fails a page whose response is larger
+// than Vani would read, before it is read.
+//
+// Lightpanda sends --proxy-bearer-token on plain-HTTP proxying only, not on
+// CONNECT (docs/PHASE0-lightpanda.md), so the token also rides as the proxy
+// URL's Basic password, which the egress proxy accepts. The loopback proxy
+// address is exempted from --block-private-networks, which would otherwise
+// refuse to connect to the proxy itself.
+func Flags(proxy ProxyInfo) ([]string, error) {
+	ap, err := netip.ParseAddrPort(proxy.Addr)
+	if err != nil || !ap.Addr().IsLoopback() || ap.Port() == 0 {
+		return nil, fmt.Errorf("page: proxy address %q is not a loopback ip:port", proxy.Addr)
+	}
+	if !tokenRE.MatchString(proxy.Token) {
 		return nil, errors.New("page: proxy token is empty or has unexpected characters")
 	}
 	exempt := netip.PrefixFrom(ap.Addr().Unmap(), ap.Addr().Unmap().BitLen())
 	return []string{
+		"--obey-robots", "--block-private-networks",
+		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1",
+		"--http-max-response-size", strconv.Itoa(MaxStdout), "--watchdog-ms", strconv.Itoa(watchdogMs),
+		"--user-agent", UserAgent,
 		"--block-cidrs", "-" + exempt.String(),
-		"--http-proxy", "http://" + proxyUser + ":" + s.proxy.Token + "@" + ap.String(),
-		"--proxy-bearer-token", s.proxy.Token,
+		"--http-proxy", "http://" + proxyUser + ":" + proxy.Token + "@" + ap.String(),
+		"--proxy-bearer-token", proxy.Token,
 	}, nil
 }
 
