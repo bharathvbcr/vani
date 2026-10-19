@@ -26,7 +26,11 @@ export type ToBackground =
   | { type: "appliedSignal"; url: string; tabId?: number }
   | { type: "appliedPending"; tabId?: number }
   | { type: "appliedMark"; tabId?: number }
-  | { type: "appliedDismiss"; tabId?: number };
+  | { type: "appliedDismiss"; tabId?: number }
+  /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
+  | { type: "frameReady" }
+  /** The registered frames of a tab; the popup names the active tab, a content script gets its own. */
+  | { type: "frames"; tabId?: number };
 
 export type DraftResponse = DraftReply;
 
@@ -37,9 +41,78 @@ export type ToContent =
   /** To the top frame only: a form in a frame found a job to ask about, so show the question here. */
   | { type: "appliedShow" };
 
+// Messages arrive as `unknown` (a buggy or stale script can send anything): each
+// receiver checks the shape here before acting, and answers anything else with
+// `{ error }`, never with nothing.
+
+export const UNKNOWN_MESSAGE = "unknown message type";
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+const optBool = (x: unknown) => x === undefined || typeof x === "boolean";
+const optTab = (m: Record<string, unknown>) => m.tabId === undefined || typeof m.tabId === "number";
+
+/** One check per message type; the mapped type makes a new message type fail to compile until it has one. */
+const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>) => boolean } = {
+  getBank: () => true,
+  capture: m => Array.isArray(m.fields) && typeof m.host === "string",
+  filled: m => Array.isArray(m.keys) && m.keys.every(k => typeof k === "string"),
+  setSettings: m => isRecord(m.settings),
+  deleteAnswer: m => typeof m.key === "string",
+  editAnswer: m => typeof m.key === "string" && Array.isArray(m.value),
+  replaceBank: m => typeof m.json === "string",
+  draft: m => typeof m.question === "string",
+  jobStart: m => m.kind === "suggest" || m.kind === "draft",
+  jobPoll: m => typeof m.job === "string",
+  appliedSignal: m => optTab(m),
+  appliedPending: optTab,
+  appliedMark: optTab,
+  appliedDismiss: optTab,
+  frameReady: () => true,
+  frames: optTab,
+};
+
+const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {
+  scan: () => true,
+  fill: m => optBool(m.overwrite) && optBool(m.typeahead),
+  capture: () => true,
+  appliedShow: () => true,
+};
+
+function check<M>(table: Record<string, (m: Record<string, unknown>) => boolean>, m: unknown): { msg: M } | { error: string } {
+  if (!isRecord(m) || typeof m.type !== "string" || !Object.hasOwn(table, m.type)) return { error: UNKNOWN_MESSAGE };
+  return table[m.type]!(m) ? { msg: m as M } : { error: `malformed ${m.type} message` };
+}
+
+export function checkToBackground(m: unknown): { msg: ToBackground } | { error: string } {
+  return check<ToBackground>(TO_BACKGROUND, m);
+}
+
+export function checkToContent(m: unknown): { msg: ToContent } | { error: string } {
+  return check<ToContent>(TO_CONTENT, m);
+}
+
 /** `fields`/`matched` are kept for older callers; `coverage` is the full breakdown. */
 export interface ScanReply { fields: number; matched: number; host: string; disabled: boolean; coverage?: Coverage }
 export interface FillReply { outcomes: FillOutcome[] }
 /** `unchanged` counts answers the bank already held, which a repeat save skips. */
 export type CaptureReply = Omit<CaptureResult, "bank"> & { unchanged?: number };
 export type BankReply = { bank: Bank; mode: "mac-app" | "browser"; note: string | null } | { error: string };
+
+const COUNTS = ["added", "updated", "skippedSecret", "skippedSelfId", "skippedEmpty"] as const;
+const isCount = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x) && x >= 0;
+
+export function isFillReply(r: unknown): r is FillReply {
+  return isRecord(r) && Array.isArray(r.outcomes) && r.outcomes.every(o => isRecord(o) && typeof o.filled === "boolean");
+}
+
+export function isCaptureReply(r: unknown): r is CaptureReply {
+  return isRecord(r) && COUNTS.every(k => isCount(r[k])) && (r.unchanged === undefined || isCount(r.unchanged));
+}
+
+export function isScanReply(r: unknown): r is ScanReply {
+  return isRecord(r) && isCount(r.fields) && isCount(r.matched) && typeof r.host === "string" && typeof r.disabled === "boolean" &&
+    (r.coverage === undefined || isRecord(r.coverage));
+}

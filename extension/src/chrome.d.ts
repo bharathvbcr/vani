@@ -6,8 +6,8 @@ declare namespace chrome {
     interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number }
     const lastError: { message?: string } | undefined;
     function sendMessage<T = unknown>(message: unknown): Promise<T>;
-    /** Callback form only: Chrome does not return a promise from this call. The reply is whatever JSON the host sent. */
-    function sendNativeMessage(application: string, message: object, cb: (response: any) => void): void;
+    /** Callback form only: Chrome does not return a promise from this call. The reply is whatever JSON the host sent: check it before use. */
+    function sendNativeMessage(application: string, message: object, cb: (response: unknown) => void): void;
     /** A long-lived native port. While it is open Chrome keeps the service worker alive (Chrome 105+). */
     interface Port {
       postMessage(message: object): void;
@@ -16,8 +16,12 @@ declare namespace chrome {
       onDisconnect: { addListener(cb: () => void): void };
     }
     function connectNative(application: string): Port;
+    /**
+     * `message` is whatever another part of the extension sent: check it (messages.ts) before use. Return true only when
+     * sendResponse will be called later; Chrome then holds the sender's port open until it is.
+     */
     const onMessage: {
-      addListener(cb: (message: any, sender: MessageSender, sendResponse: (response?: unknown) => void) => boolean | void): void;
+      addListener(cb: (message: unknown, sender: MessageSender, sendResponse: (response?: unknown) => void) => boolean): void;
     };
   }
   namespace storage {
@@ -36,6 +40,7 @@ declare namespace chrome {
     /** `url` is present for the active tab once the user has opened the popup (activeTab) or on a matched host. */
     interface Tab { id?: number; url?: string }
     function query(q: { active: boolean; currentWindow: boolean }): Promise<Tab[]>;
+    /** Without `frameId` every frame with a listener receives it and the promise takes the first reply; frames.ts always names one. */
     function sendMessage<T = unknown>(tabId: number, message: unknown, options?: { frameId?: number }): Promise<T>;
     const onUpdated: { addListener(cb: (tabId: number, changeInfo: { status?: string }) => void): void };
     const onRemoved: { addListener(cb: (tabId: number) => void): void };

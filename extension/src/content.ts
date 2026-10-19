@@ -7,7 +7,8 @@
 // owns each page and nothing is counted twice. A cross-origin frame (an iCIMS
 // or Greenhouse embed on a company site) runs its own copy where the manifest
 // matches its host or the popup injected it. On a host the manifest does not
-// match, the extension cannot enter a cross-origin frame at all.
+// match, the extension cannot enter a cross-origin frame at all. The popup asks
+// each frame that runs a copy on its own and adds the answers up (frames.ts).
 import type { Bank } from "./types";
 import { type FieldRef, scanForm } from "./extract";
 import { type FillOutcome, clearMarks, fillAll, fillRef, insertDraft } from "./fill";
@@ -22,15 +23,8 @@ import {
   DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, SUGGEST_TIMEOUT_MS, type SuggestField,
   buildSuggestRequest, parseSuggestReply, runJob,
 } from "./suggestjob";
-import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground, ToContent } from "./messages";
-
-declare global {
-  interface Window {
-    __vaniApply?: boolean;
-    /** Set by the frame that owns a page; the popup calls it in every frame to read each frame's own coverage. */
-    __vaniScan?: () => Promise<ScanReply>;
-  }
-}
+import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
+import { contentListener } from "./frames";
 
 const MIN_FORM_FIELDS = 3;
 const PANEL_LIST = 8;
@@ -492,7 +486,6 @@ const appliedUi: AppliedUi = {
 
 if (!window.__vaniApply && !coveredByParent()) {
   window.__vaniApply = true;
-  window.__vaniScan = scan;
   tracker = createTracker({
     doc: document,
     host: location.hostname,
@@ -507,23 +500,16 @@ if (!window.__vaniApply && !coveredByParent()) {
   });
   applied = createAppliedFlow({ send, ui: appliedUi, href: () => location.href });
   if (window.top === window) void applied.resume();
-  chrome.runtime.onMessage.addListener((msg: ToContent, _sender, sendResponse) => {
-    if (msg.type === "appliedShow") {
-      // Only the top frame is asked; answering "shown" is what lets the frame stay quiet.
-      if (window.top !== window || !applied) return false;
-      void applied.resume().then(() => sendResponse({ shown: true }), () => sendResponse({ shown: false }));
-      return true;
-    }
-    const run: Promise<unknown> = msg.type === "scan" ? scan() : msg.type === "fill" ? fill(msg.overwrite, msg.typeahead) : capture("saved");
-    // A sub-frame with nothing to say stays silent so it cannot win the reply race against the frame that has the form.
-    const silent = (r: unknown): boolean => {
-      if (window.top === window) return false;
-      if (msg.type === "scan") return (r as ScanReply).fields === 0;
-      if (msg.type === "fill") return (r as FillReply).outcomes.length === 0;
-      return (r as CaptureReply).unchanged === 0 && (r as CaptureReply).added + (r as CaptureReply).updated === 0;
-    };
-    run.then(r => { if (!silent(r)) sendResponse(r); }, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
-    return true;
-  });
+  // Every frame running this answers every message, an empty result included: the
+  // popup asks each frame on its own and adds the answers up (frames.ts).
+  const flow = applied;
+  chrome.runtime.onMessage.addListener(contentListener({
+    scan,
+    fill,
+    capture: () => capture("saved"),
+    appliedShow: window.top === window ? () => flow.resume() : null,
+  }));
+  // The popup cannot list a cross-origin frame it may not script; this frame tells the background it is here.
+  void send({ type: "frameReady" }).catch(() => undefined);
   void scheduleScan();
 }
