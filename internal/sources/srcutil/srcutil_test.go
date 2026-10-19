@@ -280,7 +280,9 @@ func TestCheckBoard(t *testing.T) {
 	if err := CheckBoard(good, posting.Ashby); err == nil {
 		t.Error("wrong ats accepted")
 	}
-	for _, tok := range []string{"", "   ", "\t\n"} {
+	// ':' would collide with the key separator: "acme:x" cannot key a posting
+	// and makes the board's key prefix ambiguous.
+	for _, tok := range []string{"", "   ", "\t\n", "acme:x", ":", "acme:"} {
 		if err := CheckBoard(sources.Board{ATS: posting.Lever, Token: tok}, posting.Lever); err == nil {
 			t.Errorf("token %q accepted", tok)
 		}
@@ -299,7 +301,8 @@ func TestCheckCountAndURLAndTime(t *testing.T) {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "//a.test/x", "/relative", "https://", "http://[::1"} {
+	for _, bad := range []string{"javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "//a.test/x", "/relative", "https://", "http://[::1",
+		"https://jobs.acme.test@evil.test/x", "https://u:p@a.test/x", "https://@a.test/x"} {
 		if err := CheckURL("f", bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}

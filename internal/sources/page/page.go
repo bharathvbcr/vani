@@ -83,9 +83,6 @@ func (s *source) List(ctx context.Context, b sources.Board) (listed []posting.Po
 	if err := srcutil.CheckBoard(b, posting.Page); err != nil {
 		return nil, err
 	}
-	if strings.Contains(b.Token, ":") { // PageKey would refuse it only after the first fetch
-		return nil, fmt.Errorf("page: board token %q contains ':'", b.Token)
-	}
 	if s.run == nil {
 		return nil, errors.New("page: no browser configured")
 	}
@@ -106,16 +103,18 @@ func (s *source) List(ctx context.Context, b sources.Board) (listed []posting.Po
 			listed, err = nil, fmt.Errorf("page: ending the board's browser: %w", rerr)
 		}
 	}()
-	return s.list(ctx, b, listURL, pattern)
+	// Relative links resolve against the URL as written: the canonical form
+	// drops a trailing "/", which moves "job-1" on ".../eng/" up a directory.
+	return s.list(ctx, b, listURL, strings.TrimSpace(b.URL), pattern)
 }
 
-func (s *source) list(ctx context.Context, b sources.Board, listURL string, pattern *regexp.Regexp) ([]posting.Posting, error) {
+func (s *source) list(ctx context.Context, b sources.Board, listURL, docURL string, pattern *regexp.Regexp) ([]posting.Posting, error) {
 	doc, err := s.fetch(ctx, listURL)
 	if err != nil {
 		return nil, err
 	}
 	sc := scanHTML(doc)
-	base, err := documentBase(listURL, sc)
+	base, err := documentBase(docURL, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +353,8 @@ type target struct {
 }
 
 // documentBase is the URL relative links on the listing resolve against: the
-// listing URL, or the page's first <base href> resolved against it, as a
+// listing URL as the operator wrote it (trailing "/" kept), or the page's
+// first <base href> resolved against it, as a
 // browser does (Google's careers results use one). Page content picks the
 // base, so it only shapes candidate URLs: each still has to match the
 // operator's pattern, be a clean https URL and pass the egress allowlist. A
@@ -378,9 +378,10 @@ func documentBase(listing string, sc scanned) (string, error) {
 	return abs.String(), nil
 }
 
-// postingURLs resolves each link against base (see documentBase), keeps the
-// http(s) ones whose canonical URL matches pattern, drops duplicates and the
-// listing page itself, and enforces the cap and the non-empty rule.
+// postingURLs resolves each link against base (see documentBase), upgrades
+// http to https (see upgradeHTTP), keeps the links whose canonical URL matches
+// pattern, drops duplicates and the listing page itself, and enforces the cap
+// and the non-empty rule.
 func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]target, error) {
 	baseURL, err := url.Parse(base)
 	if err != nil {
@@ -397,6 +398,7 @@ func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]
 		if abs.Scheme != "https" && abs.Scheme != "http" { // javascript:, mailto:, tel:, data: ...
 			continue
 		}
+		upgradeHTTP(abs)
 		canon, err := posting.CanonicalURL(abs.String())
 		if err != nil || !pattern.MatchString(canon) || seen[canon] {
 			continue
@@ -416,4 +418,24 @@ func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]
 		return nil, errors.New("page: no link on the page matched link_pattern; refusing to report an empty board")
 	}
 	return out, nil
+}
+
+// upgradeHTTP rewrites an http link on the default port to https, as a
+// browser in HTTPS-first mode does. Older career sites still link postings as http;
+// Vani fetches only https, so those links either failed the board or, under an
+// https pattern, never matched and the board read as empty. A link on another
+// port is left alone: its https form is a guess, and it fails the board as an
+// unfetchable posting rather than being fetched somewhere else.
+func upgradeHTTP(u *url.URL) {
+	if u.Scheme != "http" {
+		return
+	}
+	switch u.Port() {
+	case "":
+	case "80":
+		u.Host = strings.TrimSuffix(u.Host, ":80")
+	default:
+		return
+	}
+	u.Scheme = "https"
 }

@@ -219,6 +219,63 @@ func TestBaseHrefResolvesRelativeLinks(t *testing.T) {
 	}
 }
 
+// A board URL written with a trailing "/" is a directory: "job-1" on it is
+// ".../eng/job-1". The canonical form drops the "/", and resolving against it
+// moved every relative link up a directory, so the board read as empty.
+func TestRelativeLinksResolveAgainstTheBoardURLAsWritten(t *testing.T) {
+	b := board()
+	b.URL = "https://careers.example.com/teams/eng/"
+	b.LinkPattern = `^https://careers\.example\.com/teams/eng/job-[0-9]+$`
+	post := "https://careers.example.com/teams/eng/job-1"
+	r := &fakeBrowser{pages: map[string]string{
+		"https://careers.example.com/teams/eng": listing("job-1", "./job-1"),
+		post:                                    ldPage("t", `{"@type":"JobPosting","title":"Eng"}`),
+	}}
+	got, err := newSrc(r).List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].URL != post {
+		t.Fatalf("got %+v, want the one posting at %s", got, post)
+	}
+}
+
+// Posting links written as http are fetched as https on the default port.
+// They used to fail the board (unfetchable) or, under an https pattern, not
+// match at all, so the board read as empty.
+func TestHTTPLinksAreUpgraded(t *testing.T) {
+	re := mustPattern(t, `^https://careers\.example\.com/jobs/[a-z0-9-]+$`)
+	links := scanHTML(listing("http://careers.example.com/jobs/a-1", "HTTP://careers.example.com:80/jobs/b-2",
+		"https://careers.example.com/jobs/a-1")).links
+	got, err := postingURLs(links, listURL, listURL, re)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var urls []string
+	for _, g := range got {
+		urls = append(urls, g.canon)
+	}
+	if want := "https://careers.example.com/jobs/a-1 https://careers.example.com/jobs/b-2"; strings.Join(urls, " ") != want {
+		t.Fatalf("got %v, want %s (the https duplicate folded in)", urls, want)
+	}
+
+	// The whole board, through List: an http-only listing still yields postings.
+	r := &fakeBrowser{pages: map[string]string{
+		listURL:                                listing("http://careers.example.com/jobs/a-1"),
+		"https://careers.example.com/jobs/a-1": ldPage("t", `{"@type":"JobPosting","title":"A"}`),
+	}}
+	if got, err := newSrc(r).List(context.Background(), board()); err != nil || len(got) != 1 {
+		t.Fatalf("got %+v, %v; want one posting", got, err)
+	}
+
+	// On another port the https form is a guess: the link is left as http and
+	// a pattern that selects it fails the board instead of fetching elsewhere.
+	links = scanHTML(listing("http://careers.example.com:8080/jobs/c-3")).links
+	if got, err := postingURLs(links, listURL, listURL, mustPattern(t, `/jobs/c-3$`)); err == nil {
+		t.Fatalf("an http link on port 8080 was accepted: %+v", got)
+	}
+}
+
 func TestOverCapIsAnErrorNotATruncation(t *testing.T) {
 	var hrefs []string
 	for i := 0; i <= MaxLinks; i++ {
@@ -267,6 +324,15 @@ func TestJSONLDShapes(t *testing.T) {
 		{"nulls and missing", `{"@type":"JobPosting","title":null,"description":null,"hiringOrganization":null,"jobLocation":null,"datePosted":null}`, jobPosting{}},
 		{"string address", `{"@type":"JobPosting","title":"S","jobLocation":{"@type":"Place","address":"Paris, France"}}`, jobPosting{title: "S", location: "Paris, France"}},
 		{"bad dates ignored", `{"@type":"JobPosting","title":"D","datePosted":"yesterday","validThrough":"soon"}`, jobPosting{title: "D"}},
+		// Full type URIs and compact IRIs name the same type as the bare word.
+		{"https type uri", `{"@type":"https://schema.org/JobPosting","title":"U"}`, jobPosting{title: "U"}},
+		{"http type uri in list", `{"@type":["http://schema.org/Thing","HTTP://SCHEMA.ORG/JobPosting"],"title":"L"}`, jobPosting{title: "L"}},
+		{"compact iri in graph", `{"@graph":[{"@type":"schema:JobPosting","title":"C"}]}`, jobPosting{title: "C"}},
+		// A PostalAddress given directly as the jobLocation, with no Place around it.
+		{"postal address location", `{"@type":"JobPosting","title":"P","jobLocation":{"@type":"PostalAddress","addressLocality":"Austin","addressRegion":"TX","addressCountry":"US"}}`,
+			jobPosting{title: "P", location: "Austin, TX, US"}},
+		{"postal address list", `{"@type":"JobPosting","title":"Q","jobLocation":[{"@type":"PostalAddress","addressLocality":"Austin"},{"address":{"addressLocality":"Austin"}}]}`,
+			jobPosting{title: "Q", location: "Austin"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -286,6 +352,9 @@ func TestJSONLDShapes(t *testing.T) {
 		"scalar":        `42`,
 		"too deep":      strings.Repeat(`{"@graph":`, 20) + `{"@type":"JobPosting"}` + strings.Repeat(`}`, 20),
 		"type in value": `{"name":"JobPosting"}`,
+		"other vocab":   `{"@type":"https://example.org/JobPosting"}`,
+		"prefix only":   `{"@type":"https://schema.org/"}`,
+		"other suffix":  `{"@type":"https://schema.org/JobPostingX"}`,
 	} {
 		if _, ok := findJobPosting([]string{ld}); ok {
 			t.Errorf("%s: found a JobPosting", name)

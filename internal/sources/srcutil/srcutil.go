@@ -52,6 +52,11 @@ func CheckBoard(b sources.Board, want posting.ATS) error {
 	if strings.TrimSpace(b.Token) == "" {
 		return errors.New("sources: board token is empty")
 	}
+	// ':' separates key parts. The key builders refuse it, but only after the
+	// board's first fetch, and Board.KeyPrefix would already be ambiguous.
+	if strings.Contains(b.Token, ":") {
+		return fmt.Errorf("sources: board token %q contains ':'", b.Token)
+	}
 	return nil
 }
 
@@ -65,7 +70,8 @@ func CheckCount(n int) error {
 
 // CheckURL accepts an empty string or an absolute http(s) URL. Posting URLs
 // come from untrusted payloads and later reach a digest, so other schemes
-// (javascript:, file:, data:) are refused here.
+// (javascript:, file:, data:) are refused here, and so is userinfo:
+// "https://jobs.acme.com@evil.test/" reads as acme's but opens evil.test.
 func CheckURL(field, raw string) error {
 	if raw == "" {
 		return nil
@@ -73,6 +79,9 @@ func CheckURL(field, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("sources: %s is not an absolute http(s) url", field)
+	}
+	if u.User != nil {
+		return fmt.Errorf("sources: %s carries userinfo", field)
 	}
 	return nil
 }
