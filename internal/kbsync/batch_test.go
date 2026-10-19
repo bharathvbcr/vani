@@ -41,7 +41,7 @@ func TestApplyBatchesStateSaves(t *testing.T) {
 	const n = 40
 	path := filepath.Join(t.TempDir(), "kbsync.json")
 	st := NewSyncState(path)
-	res, err := Apply(context.Background(), &acceptCaller{}, addPlan(n), st)
+	res, err := Apply(context.Background(), &acceptCaller{}, addPlan(n), st, nil)
 	if err != nil || res.Added != n {
 		t.Fatalf("apply: %v %+v", err, res)
 	}
@@ -59,7 +59,7 @@ func TestApplyStopSavesTheAcceptedBatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kbsync.json")
 	st := NewSyncState(path)
 	const failAt = flushEvery + 5 // past one full batch, inside the next
-	res, err := Apply(context.Background(), &acceptCaller{failAt: failAt}, addPlan(40), st)
+	res, err := Apply(context.Background(), &acceptCaller{failAt: failAt}, addPlan(40), st, nil)
 	if err == nil {
 		t.Fatal("a failed upsert did not stop the apply")
 	}
@@ -86,7 +86,7 @@ func TestApplyReportsAFailedFinalSave(t *testing.T) {
 	if err := NewSyncState(filepath.Dir(st.path)).Save(); err != nil {
 		t.Fatal(err)
 	}
-	res, err := Apply(context.Background(), &acceptCaller{}, addPlan(3), st)
+	res, err := Apply(context.Background(), &acceptCaller{}, addPlan(3), st, nil)
 	if !errors.Is(err, ErrState) {
 		t.Fatalf("err %v, want the failed save", err)
 	}

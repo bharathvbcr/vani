@@ -292,8 +292,12 @@ flowchart TD
   keeping sponsorship and other track-independent rules ([`docs/TRACKS.md`](docs/TRACKS.md)).
 - **Knowledge base:** `vani kb sync` copies rkb's `bank.json` (claims resolved by
   `rkb claims export`) one way into DevPrism with `career_upsert_block`. Hash-tracked, never
-  deletes, never confirms an overwrite DevPrism asks about. `--dry-run` reads no live DevPrism
-  state and sends nothing.
+  deletes. An overwrite that would drop bullets or facts, or rewrite a locked bullet, is reported
+  as `needs_confirmation` and skipped. `--confirm` confirms those overwrites for the blocks
+  DevPrism asks about in that run: it prints each dropped or rewritten bullet and fact first, and
+  skips a block that changed in DevPrism since the run read it (`stale`). Passing the flag is the
+  consent; there is no prompt. `--dry-run` reads no live DevPrism state, sends nothing and cannot
+  be combined with `--confirm`.
 
 - **Applying (browser extension):** [`extension/`](extension/) saves your answers when you submit an
   application and fills the next form's known questions, marked green or yellow. It never submits

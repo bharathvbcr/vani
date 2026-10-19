@@ -45,7 +45,7 @@ func TestReplayedBatchIsByteIdentical(t *testing.T) {
 		t.Fatal(err)
 	}
 	lost := NewSyncState("") // never saved: the crash
-	if _, err := Apply(context.Background(), f, Plan(r, cur, *lost, t1), &SyncState{Blocks: map[string]string{}, Synced: map[string]string{}, path: t.TempDir() + "/s.json"}); err != nil {
+	if _, err := Apply(context.Background(), f, Plan(r, cur, *lost, t1), &SyncState{Blocks: map[string]string{}, Synced: map[string]string{}, path: t.TempDir() + "/s.json"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	first := sentBlocks(t, f, 0)
@@ -93,7 +93,7 @@ func TestChangedBlockGetsANewStamp(t *testing.T) {
 	r := fixtureResolved(t)
 	st := NewSyncState(t.TempDir() + "/s.json")
 	cur, _ := FetchState(context.Background(), f)
-	if _, err := Apply(context.Background(), f, Plan(r, cur, *st, fixedNow), st); err != nil {
+	if _, err := Apply(context.Background(), f, Plan(r, cur, *st, fixedNow), st, nil); err != nil {
 		t.Fatal(err)
 	}
 	changed := strings.Replace(fixtureBank, "Handled {{clmQps}} requests.", "Handled {{clmQps}} requests daily.", 1)

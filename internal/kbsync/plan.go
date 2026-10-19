@@ -80,6 +80,10 @@ type Item struct {
 	// Payload is the exact ExperienceBlock JSON career_upsert_block receives
 	// (add and update only).
 	Payload json.RawMessage
+	// Prior is DevPrism's copy of the block the plan was built against, as
+	// career_get_profile listed it; nil when DevPrism had none. A confirmation
+	// is sent only while DevPrism still holds exactly this copy.
+	Prior json.RawMessage
 }
 
 // SyncPlan is the full plan. Items are sorted by block id.
@@ -120,6 +124,7 @@ func Plan(res Resolved, current DevPrismState, state SyncState, now time.Time) S
 			continue
 		}
 		existing, has := current.Blocks[b.ID]
+		it.Prior = existing
 		switch {
 		case !has:
 			it.Action = ActionAdd

@@ -46,8 +46,12 @@ func (e *env) kbSync(args []string) error {
 	bank := fs.String("bank", "", "rkb bank.json (default kb.bank)")
 	rkb := fs.String("rkb", "", "rkb binary (default kb.rkb)")
 	codeRoot := fs.String("code-root", "", "folder holding career/ (default kb.code_root)")
+	confirm := fs.Bool("confirm", false, "confirm the overwrites DevPrism asks about in this run, after printing what each drops or rewrites")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *dry && *confirm {
+		return usagef("kb sync: --confirm cannot be used with --dry-run, which sends nothing")
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
@@ -108,12 +112,44 @@ func (e *env) kbSync(args []string) error {
 		return err
 	}
 	plan := kbsync.Plan(res, current, *state, time.Now())
-	out, err := kbsync.Apply(ctx, c, plan, state)
+	var confirmer kbsync.Confirmer
+	if *confirm {
+		confirmer = e.showLoss
+	}
+	out, err := kbsync.Apply(ctx, c, plan, state, confirmer)
 	fmt.Fprintln(e.stdout, "kb sync: "+out.Summary())
 	for _, o := range out.Outcomes {
-		if o.Status == kbsync.StatusNeedsConfirmation || o.Status == kbsync.StatusBlocked {
+		switch o.Status {
+		case kbsync.StatusNeedsConfirmation, kbsync.StatusBlocked, kbsync.StatusConfirmRejected, kbsync.StatusStale:
 			fmt.Fprintf(e.stdout, "  %-18s %s: %s\n", o.Status, o.ID, o.Reason)
 		}
 	}
 	return err
+}
+
+// maxLossText caps each bullet or fact text showLoss prints.
+const maxLossText = 160
+
+// showLoss is the --confirm Confirmer: it prints exactly what DevPrism says
+// the overwrite of one block would drop or rewrite, then confirms it. The
+// flag is the consent; it covers only the blocks DevPrism asks about in this
+// run, and each is printed before its confirmation is sent.
+func (e *env) showLoss(id string, loss kbsync.Loss) bool {
+	fmt.Fprintf(e.stdout, "confirming %s; DevPrism will discard:\n", id)
+	show := func(what string, items []kbsync.LostItem) {
+		for _, it := range items {
+			text := it.Text
+			if text == "" {
+				text = "(no text in DevPrism's copy)"
+			}
+			if r := []rune(text); len(r) > maxLossText {
+				text = string(r[:maxLossText]) + "..."
+			}
+			fmt.Fprintf(e.stdout, "  %s %s: %q\n", what, it.ID, text)
+		}
+	}
+	show("dropped bullet", loss.DroppedBullets)
+	show("dropped fact", loss.DroppedFacts)
+	show("locked bullet rewritten, was", loss.LockedRewritten)
+	return true
 }
