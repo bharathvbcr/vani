@@ -79,6 +79,51 @@ flowchart TD
 - **Title drops count toward `advance_per_run`.** A title drop asks no backend, so leaving it out
   of the cap would let a run triage more postings for the same spend. The owner kept it counted
   when approving `title_signals.read` (2026-10-19). Changing that needs their go-ahead.
+- **`kb sync` has no way to confirm a restructuring (audit card 12).** When an update would drop
+  bullets or facts from a DevPrism block, or rewrite a locked bullet, DevPrism answers
+  `inputRequired`; `kbsync.Apply` reports the block as `needs_confirmation` with DevPrism's message
+  and carries on with the others (`internal/kbsync/apply.go`). It never deadlocks, but such a block
+  never lands. A `--confirm` path would let a sync knowingly drop or rewrite career data, and needs
+  DevPrism's `request_state` / `input_responses` protocol (`tools_career.rs:926-959`), which has not
+  been read. The owner's decision, put to them on 2026-10-19.
+
+## Audit 2026-10-19: criteria not built as written
+
+Each was decided on evidence; the cards' other criteria were built and tested.
+
+- **Card 13: marks writes still read the store first.** The criterion asked `marks.write` to
+  append without re-reading earlier lines. The read is what refuses to append to a corrupt store,
+  and it folds the entry a write returns, so it stays. Its cost is bounded instead: a write
+  compacts the store once it passes 1 MiB with more than half its lines superseded, or when its
+  line would pass the 8 MiB cap (`internal/marks`). Interleaved A/B, min of 5, per mark: 1 MiB of
+  history 16.6 -> 12.3 ms, 4 MiB 46.2 -> 12.4 ms, 7 MiB 77.9 -> 12.9 ms. If the live marks alone
+  grow past a few MiB, the next step is a faster line decoder, not dropping the check.
+- **Card 12: only the reasoning headroom is clamped.** `llmbackend.Shape` keeps the headroom from
+  lifting `MaxTokens` past the model's output ceiling. A request already over the ceiling is not
+  lowered: Manvi refuses it before sending, which is louder than a silently smaller budget.
+- **Card 12: no untrusted-content frame to move the reasons facts across.** The
+  `career.jd_reasons` question goes only to Jev (`cmd/vani/reasonscmd.go`), whose state carries no
+  BEGIN/END UNTRUSTED markers. The context is now capped at `jdtriage.MaxContextBytes` with the
+  facts kept; only the coverage percentage is the pipeline's own fact, and the missing
+  requirement names are posting text and are labelled so.
+- **Card 12: no shadow over-count found.** Unsampled questions write no shadow keys, and the live
+  ledger had 2,176 records with shadow keys, none left over from an earlier triage. The one path
+  that could leave one (a dead posting with no `died_from` coming back live) is closed: a triage
+  now replaces every earlier `triage.*` key.
+- **Card 11: the Mac app's models were not moved into `VaniApplyKit`.** They are already testable
+  through `@testable import VaniApply` (`VaniApplyUITests`), and moving `AppModel` would link
+  SafariServices and ServiceManagement into the Safari appex and the native host. `JobsModel`
+  gained unit tests that need no accessibility trust; `AppModel` has none, since its init reaches
+  the App Group container, SMAppService and a timer. Splitting those behind injected seams is the
+  route to testing it.
+- **Card 6: eval labels do not follow a re-keyed posting.** `vani migrate rekey-fallback` moves
+  ledger events and marks. Labels (`labels.jsonl`, keyed by posting) can live in the repository's
+  `eval/jd_triage` rather than the state directory, so the migration cannot find them all. No
+  fallback-keyed posting exists today, so none is labelled; if one ever is, re-point its label by
+  the old -> new map in `ledger/rekey-fallback-title.json`.
+- **`TestJobsInsightScalesTo5000Postings` has a tight bound under load.** It ran 5.7-6.5 s under
+  `-race` on a quiet machine and passed its 10 s bound, but crossed it twice while a Swift build
+  ran alongside. Not a code fault; raise the bound or skip it under `-race` if it recurs.
 
 ## Title prefilter (built 2026-10-19, not yet enabled in the live config)
 
