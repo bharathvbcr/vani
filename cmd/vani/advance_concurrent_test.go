@@ -309,18 +309,23 @@ func TestAdvanceConcurrentPrimaryFailsMidRun(t *testing.T) {
 			if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep.Stopped != stopUnreadStreak {
 				t.Fatalf("err %v report %+v", err, rep)
 			}
-			explained := 0
+			explained, lastRead := 0, -1
 			for _, rec := range l.All() {
 				switch rec.Status {
 				case posting.Explained:
 					explained++
+					lastRead = max(lastRead, indexOf(t, rec.Key))
 				case posting.Live:
 				default:
 					t.Fatalf("%s is %s after an outage", rec.Key, rec.Status)
 				}
 			}
-			if explained != ok || rep.Attempted-rep.Unread != ok || rep.Unread < maxConsecutiveUnread || rep.Attempted > ok+maxConsecutiveUnread+3 {
-				t.Fatalf("%d explained, report %+v", explained, rep)
+			// The server's first ok requests need not be the first ok postings
+			// dispatched (arrival order, retries), so the bound is from the
+			// last posting read: at most maxConsecutiveUnread after it, plus
+			// the 3 others in flight.
+			if explained != ok || rep.Attempted-rep.Unread != ok || rep.Unread < maxConsecutiveUnread || rep.Attempted > lastRead+1+maxConsecutiveUnread+3 {
+				t.Fatalf("%d explained, last read %d, report %+v", explained, lastRead, rep)
 			}
 			seen := map[posting.Key]posting.Status{}
 			pipelineOrder := []posting.Status{posting.Live, posting.Triaged, posting.Scored, posting.Explained}
