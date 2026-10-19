@@ -9,9 +9,9 @@ watch, drops dead and duplicate postings without spending anything, triages the 
 decision model, ranks them against your career knowledge base with DevPrism's deterministic
 resume tools, and writes a Markdown digest.
 
-Plan: `/Users/bharath/Code/vani-plan.md`. Follow-ups: [`docs/FOLLOWUPS.md`](file:///Users/bharath/Code/apps/Vani/docs/FOLLOWUPS.md).
+Plan: [`docs/PLAN.md`](docs/PLAN.md). Follow-ups: [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
 
-## How a posting moves
+## Ingestion & Pipeline Architecture
 
 ```mermaid
 flowchart TD
@@ -55,7 +55,7 @@ flowchart TD
         end
 
         subgraph Output["5. Synthesis & Export"]
-            EXP["Picked Note\n(the OpenRouter model picks from the reasons catalog)"]
+            EXP["Picked Note\n(OpenRouter model picks from reasons catalog)"]
             DIGEST["Daily Markdown Digest"]
         end
     end
@@ -82,19 +82,47 @@ flowchart TD
     EXP --> DIGEST
 ```
 
-```
-board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶ explained ─▶ digested
-                   └─ dead (absent twice; dropped and duplicate postings are not aged) · duplicate (same posting on another board)
-                      dead ─▶ the status it died in, when the same content is listed again
+## Posting Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Discovered: Board Scrape / ATS API / Lightpanda
+    Discovered --> Duplicate: Identical payload or weak key match
+    Discovered --> Live: Unique posting verified
+    
+    Live --> Dead: Absent across 2 consecutive runs
+    Live --> Triage: Advance per-run queue
+    
+    state Triage {
+        [*] --> DecisionRouter
+        DecisionRouter --> Lappi: 1. Local unix socket (free)
+        DecisionRouter --> OpenRouter: 2. d1-ultra Decision API
+        DecisionRouter --> ManviLLM: 3. Structured Claude/Gemini
+        
+        Lappi --> CalibrateDrop: Slot probabilities
+        OpenRouter --> CalibrateDrop: Slot probabilities
+        ManviLLM --> CalibrateDrop: Slot readings
+    }
+    
+    CalibrateDrop --> Dropped: Hard rule matched (e.g. no sponsorship, bad fit)
+    CalibrateDrop --> Unsure: Low confidence or backend abstention
+    CalibrateDrop --> Triaged: Role fit confirmed
+    
+    Triaged --> Enriched: Add DOL LCA certified counts & IRS employer badges
+    Unsure --> Enriched: Add DOL LCA certified counts & IRS employer badges
+    
+    Enriched --> Ranked: DevPrism MCP (resume_gap_analysis must-haves)
+    Ranked --> Explained: OpenRouter picks reason from catalog
+    Explained --> Digested: Daily Markdown report & Mac UI
 ```
 
 - **Sources:** Greenhouse, Lever (US and EU), Ashby and Workday (cxs search, paged by 20)
   public job-board APIs, and the big-employer search sites: amazon.jobs (`az`, its search.json),
   Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`)
-  and Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`). All go through [`internal/egress`](file:///Users/bharath/Code/apps/Vani/internal/egress) (https only, host allowlist, private-address
+  and Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
   block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
   `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
-  authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](file:///Users/bharath/Code/apps/Vani/docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
+  authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
   is read from each page's HTML. Weak keys (`pg`, `x`) dedupe onto the ATS posting they mirror.
 - **Triage:** `career.jd_triage` (role_fit, sponsorship, work_mode, seniority) through a router
   over the OpenRouter decision model (`decide.openrouter_model`, e.g. `liquid/d1-ultra`, asked
@@ -127,12 +155,57 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
   states none), its link, must-have coverage, triage answers and the note. Every posting field is
   escaped so it cannot add links, headings or lines.
 - **Decision clients** live in the shared module `~/Code/devtools/decide` (types, router, budget
-  caps, the Jev and Lappi clients). The question itself is [`internal/decide/jdtriage/fixture.json`](file:///Users/bharath/Code/apps/Vani/internal/decide/jdtriage/fixture.json):
+  caps, the Jev and Lappi clients). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
   task, exact question text, context layout and options, plus one single-slot Lappi family per
   slot with its own exact question (Lappi trains one slot per example). The OpenRouter model and the LLM get all
   slots in one request; Lappi gets one request per slot, and an absent or hung agent costs one
   timeout per posting. The target-roles summary is rendered into the context, so question text
   never varies.
+
+## Decision Tier & Shadow Evaluation
+
+```mermaid
+flowchart TD
+    subgraph Input["Input Posting"]
+        P["Triaged Posting Context\n(Target summary + Job description)"]
+    end
+
+    subgraph PrimaryChain["Primary Decision Chain"]
+        direction TB
+        LAP["1. Lappi (Local Unix Socket)\nq/d-metal-serve, zero-cost"]
+        OR["2. OpenRouter Decisions API\nliquid/d1-ultra (calibrated probabilities)"]
+        LLM["3. Manvi LLM Loop\nClaude / Gemini (Structured output)"]
+        
+        LAP -->|Socket missing / untrained| OR
+        OR -->|Cap reached / timeout| LLM
+    end
+
+    subgraph ShadowSystem["Shadow & Evaluation Pipeline"]
+        SHADOW["Shadow Backend (decide.shadow)\nSampled 1-in-N postings"]
+        DISAGREE{"Disagreement\nDetected?"}
+        LABEL["vani label\n(Human ground truth labels)"]
+        EVAL["vani eval\n(Precision & promotion gate)"]
+        PROMOTE["Config Promotion\n(e.g. decide.lappi.primary: true)"]
+        
+        SHADOW --> DISAGREE
+        DISAGREE -->|Disagreements prioritized| LABEL
+        LABEL --> EVAL
+        EVAL -->|Lower bound >= 0.4 on N >= 30| PROMOTE
+    end
+
+    subgraph Outcomes["Triage Outcome"]
+        DROP_RULE{"Drop Rule Triggered?"}
+        DROP["Dropped (calibrated probability)"]
+        UNSURE["Unsure (kept, highlighted in digest)"]
+        FIT["Fit (advanced to ranking)"]
+    end
+
+    P --> PrimaryChain
+    P -.->|Sampled| ShadowSystem
+    PrimaryChain --> DROP_RULE
+    DROP_RULE --> DROP & UNSURE & FIT
+```
+
 - **Shadow, eval and promotion:** `decide.shadow` (`openrouter`, `llm`, `lappi` or `local`) asks a second backend
   alongside the chain and records its reading, backend and any disagreement; it never decides.
   `vani label` labels postings (disagreements first) and `vani eval` reports per-backend precision
@@ -210,7 +283,7 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
   shadow 382/382. It reports per-slot agreement with the primary, the confusion between them,
   agreement by probability, and latency. Metal only, no key, never writes the ledger. Agreement
   is not accuracy; that is still `vani label` and `vani eval` ([`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)).
-- **Sponsorship badge:** `vani lca import` loads DOL LCA disclosure CSVs ([`docs/LCA.md`](file:///Users/bharath/Code/apps/Vani/docs/LCA.md)); each
+- **Sponsorship badge:** `vani lca import` loads DOL LCA disclosure CSVs ([`docs/LCA.md`](docs/LCA.md)); each
   posting gets a certified-H-1B-history badge. A badge, never a filter.
 - **Employer badge:** `vani employer import` loads the IRS exempt-organizations list and the IPEDS
   directory ([`docs/EMPLOYER.md`](docs/EMPLOYER.md)); each posting gets a "likely cap-exempt" /
@@ -222,11 +295,11 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
   deletes, never confirms an overwrite DevPrism asks about. `--dry-run` reads no live DevPrism
   state and sends nothing.
 
-- **Applying (browser extension):** [`extension/`](file:///Users/bharath/Code/apps/Vani/extension) saves your answers when you submit an
+- **Applying (browser extension):** [`extension/`](extension/) saves your answers when you submit an
   application and fills the next form's known questions, marked green or yellow. It never submits
-  ([`extension/README.md`](file:///Users/bharath/Code/apps/Vani/extension/README.md)). Chrome and Safari share one answer bank through the Vani Apply Mac app
-  ([`macos/`](file:///Users/bharath/Code/apps/Vani/macos): SwiftUI, a Chrome native messaging host and a Safari app extension), which is also
-  where answers are viewed, added, edited and deleted ([`macos/README.md`](file:///Users/bharath/Code/apps/Vani/macos/README.md)). Without the app,
+  ([`extension/README.md`](extension/README.md)). Chrome and Safari share one answer bank through the Vani Apply Mac app
+  ([`macos/`](macos/): SwiftUI, a Chrome native messaging host and a Safari app extension), which is also
+  where answers are viewed, added, edited and deleted ([`macos/README.md`](macos/README.md)). Without the app,
   answers stay in the browser.
 - **Drafting:** `vani draft` reads one JSON request on stdin (question, posting, word limit) and
   writes one JSON reply. It drafts a free-text answer with one bounded LLM turn from the posting and

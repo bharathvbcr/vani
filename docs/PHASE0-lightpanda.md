@@ -5,8 +5,8 @@ Lightpanda is AGPL; Vani only ever executes it as a separate process.
 
 Method: a scratch logging CONNECT proxy (`build/spike/main.go`, gitignored) that prints the method,
 target and `Proxy-Authorization` scheme of every request, then tunnels. Telemetry was disabled with
-`LIGHTPANDA_DISABLE_TELEMETRY=1` (see finding 5). Afterwards the real [`egress.Proxy`](file:///Users/bharath/Code/apps/Vani/internal/egress) and
-[`page.Source`](file:///Users/bharath/Code/apps/Vani/internal/sources/page) were run end to end (`build/spike2`).
+`LIGHTPANDA_DISABLE_TELEMETRY=1` (see finding 5). Afterwards the real [`egress.Proxy`](../internal/egress) and
+[`page.Source`](../internal/sources/page) were run end to end (`build/spike2`).
 
 ```mermaid
 sequenceDiagram

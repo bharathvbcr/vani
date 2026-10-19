@@ -10,3 +10,6 @@
 /macos/build/
 # Personal track deciders drawn from the owner's knowledge base; never committed.
 /drafts/
+.DS_Store
+.gocache*
+tmp/

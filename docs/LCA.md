@@ -3,7 +3,7 @@
 Vani can show a badge beside a posting such as
 `142 certified H-1B LCAs FY2023–FY2025 (exact match)`. It comes from the US
 Department of Labor's public LCA disclosure data (Form ETA-9035: H-1B, H-1B1
-and E-3), imported locally by [`internal/lca`](file:///Users/bharath/Code/apps/Vani/internal/lca).
+and E-3), imported locally by [`internal/lca`](../internal/lca).
 
 ```mermaid
 flowchart TD

@@ -47,7 +47,7 @@ flowchart TD
 
 ## Needs the owner's go-ahead
 
-- **Converge egress with Manvi.** [`internal/egress`](file:///Users/bharath/Code/apps/Vani/internal/egress) re-implements manvi/fetch's rules because
+- **Converge egress with Manvi.** [`internal/egress`](../internal/egress) re-implements manvi/fetch's rules because
   manvi/fetch is GET-only, reduces bodies to prose and caps them for model context, so it cannot
   carry ATS JSON or Workday POSTs. Fix: Manvi exports its vetting + pinned dialer as a reusable
   policy; Vani wraps it and deletes its copy. A Manvi change plus a Jarvis pin bump.

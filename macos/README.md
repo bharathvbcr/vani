@@ -57,17 +57,17 @@ Safari extension ──sendNativeMessage─▶ Safari appex ────┼─�
 Vani Apply.app (SwiftUI) ───────────────────────────────┘     (+ activity.jsonl, no answer text)
 ```
 
-- **[`VaniApplyKit`](file:///Users/bharath/Code/apps/Vani/macos/Sources/VaniApplyKit)** (library): bank model, validation (a port of the extension's `parseBank`, including
-  dropping secret-looking answers), and [`BankStore`](file:///Users/bharath/Code/apps/Vani/macos/Sources/VaniApplyKit/BankStore.swift), a revisioned compare-and-swap store under an
+- **[`VaniApplyKit`](Sources/VaniApplyKit)** (library): bank model, validation (a port of the extension's `parseBank`, including
+  dropping secret-looking answers), and [`BankStore`](Sources/VaniApplyKit/BankStore.swift), a revisioned compare-and-swap store under an
   advisory lock with atomic writes. It also holds the native protocol, Chrome framing, the Chrome
   connector and the app's editing rules.
-- **[`vani-apply-host`](file:///Users/bharath/Code/apps/Vani/macos/Sources/vani-apply-host)**: the Chrome native messaging host (`dev.vbcr.vani_apply`), in
+- **[`vani-apply-host`](Sources/vani-apply-host)**: the Chrome native messaging host (`dev.vbcr.vani_apply`), in
   `Contents/Helpers`.
-- **[`VaniApplyExtension`](file:///Users/bharath/Code/apps/Vani/macos/Sources/VaniApplyExtension)**: the Safari web extension's native app extension (sandboxed appex, entry
+- **[`VaniApplyExtension`](Sources/VaniApplyExtension)**: the Safari web extension's native app extension (sandboxed appex, entry
   point `NSExtensionMain`), in `Contents/PlugIns`. Its resources are `extension/dist-safari`.
-- **[`VaniApply`](file:///Users/bharath/Code/apps/Vani/macos/Sources/VaniApply)**: the control app.
+- **[`VaniApply`](Sources/VaniApply)**: the control app.
 
-There is no Xcode project. SwiftPM builds the binaries and [`scripts/bundle.sh`](file:///Users/bharath/Code/apps/Vani/macos/scripts/bundle.sh) assembles and signs the
+There is no Xcode project. SwiftPM builds the binaries and [`scripts/bundle.sh`](scripts/bundle.sh) assembles and signs the
 bundle.
 
 ## Protocol
