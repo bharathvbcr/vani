@@ -35,6 +35,11 @@
     <label title="Search-as-you-type fields are only typed into if this is on; the site may run its own search when they are."><input type="checkbox" id="typeahead"> type into search fields</label>
   </div>
   <div id="status" class="muted"></div>
+  <div id="applied" hidden><div class="row">
+    <span id="applied-text"></span>
+    <button id="applied-yes" class="primary">Mark Applied</button>
+    <button id="applied-no">Not now</button>
+  </div></div>
   <div id="framebox" hidden><strong>By frame</strong><ul id="frames"></ul></div>
   <div id="coverage" hidden><strong>New questions on this page</strong> (no saved answer yet)<ul id="unknown"></ul></div>
   <div class="muted">Green = confident, yellow = review before submitting. Vani never submits.</div>

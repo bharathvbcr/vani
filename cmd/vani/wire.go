@@ -62,10 +62,16 @@ func (w *wired) openRouterName() string {
 }
 
 // shadowName maps decide.shadow to the backend name it selects: the role
-// "openrouter" answers under the model's name; the others are their names.
+// "openrouter" answers under the model's name, "local" under the model and
+// question mode (config.Local.BackendName); the others are their names.
 func (w *wired) shadowName() string {
-	if w.cfg.Decide.Shadow == config.ShadowOpenRouter {
+	switch w.cfg.Decide.Shadow {
+	case config.ShadowOpenRouter:
 		return w.openRouterName()
+	case "local":
+		if l := w.cfg.Decide.Local; l != nil {
+			return l.BackendName()
+		}
 	}
 	return w.cfg.Decide.Shadow
 }
@@ -143,6 +149,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 		srv, err := localserver.Start(ctx, localserver.Config{
 			Binary: l.Server.Binary, Model: l.Server.ModelPath, ContextSize: l.Server.ContextSize,
 			StartTimeout: time.Duration(l.Server.StartTimeoutMS) * time.Millisecond,
+			BatchSize:    l.Server.BatchSize, Parallel: l.Server.Parallel,
 		})
 		if err != nil {
 			w.warnf("local decision model not started; running without the shadow: %v", err)
@@ -204,7 +211,9 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return errors.New("no board could be read")
 	}
 
-	return advanceAll(ctx, w.led.All(), runner.Advance, w.warnf)
+	err = advanceAll(ctx, w.led.All(), runner.Advance, w.warnf)
+	w.warnShadowErrors(runner)
+	return err
 }
 
 // maxConsecutiveUnread stops a run's advance phase once this many postings in
@@ -354,7 +363,20 @@ func lightpandaBinary(configured string) (string, error) {
 // all slots, the same option descriptions), so `vani eval` compares models,
 // not prompts; questions "per_slot" asks each slot its fixture family's own
 // question instead. llama.cpp's /v1/systemone takes the state as a plain string.
+//
+// The backend is named after the model and the question mode
+// (config.Local.BackendName), so two candidate models are two shadow backends in
+// the ledger and `vani eval` and never pool.
 func localBackend(l *config.Local, endpoint string) (decide.Backend, error) {
+	return localBackendNamed(l, endpoint, l.BackendName())
+}
+
+// localBackendNamed is localBackend under an explicit backend name, for callers
+// (`vani bench`) whose backend name never reaches the ledger.
+func localBackendNamed(l *config.Local, endpoint, name string) (decide.Backend, error) {
+	if name == "" {
+		return nil, errors.New("the local model leaves no shadow backend name")
+	}
 	if endpoint == "" {
 		return nil, errors.New("no endpoint: the local server was not started this run")
 	}
@@ -374,7 +396,7 @@ func localBackend(l *config.Local, endpoint string) (decide.Backend, error) {
 		}
 	}
 	return jev.New(jev.Config{
-		Name:         "local",
+		Name:         name,
 		Endpoint:     endpoint,
 		Model:        l.Model,
 		Timeout:      timeout,
@@ -519,6 +541,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		w.warnf("employer_preferences set but no employer lists imported; no rank boost (docs/EMPLOYER.md)")
 	}
 	if w.cfg.DevPrism.Binary == "" {
+		w.warnf("devprism.binary empty; scoring disabled, the digest will not be ranked (docs/FOLLOWUPS.md)")
 		r.SkipScoring = true
 	} else {
 		r.Scorer = w.lazyScorer()

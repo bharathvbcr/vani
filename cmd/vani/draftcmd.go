@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/draft"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 )
@@ -63,8 +64,9 @@ func (e *env) cmdDraft(args []string) error {
 	return nil
 }
 
-// errAlreadyReported exits 1 without a second message: the JSON reply carried it.
-var errAlreadyReported = errors.New("draft failed (reported on stdout)")
+// errAlreadyReported exits 1 without a second message: the JSON reply carried
+// it. `vani draft` and `vani suggest` share it.
+var errAlreadyReported = errors.New("failed (reported on stdout as JSON)")
 
 func (e *env) draftOnce() (draft.Result, string, error) {
 	raw, err := io.ReadAll(io.LimitReader(draftInput, maxDraftInput+1))
@@ -94,29 +96,14 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	var evidence []draft.Evidence
-	if cfg.KB.Bank != "" && cfg.KB.RKB != "" {
-		b, err := kbsync.Load(cfg.KB.Bank)
-		if err != nil {
-			return draft.Result{}, codeKB, err
-		}
-		claims, err := kbsync.RKB{Binary: cfg.KB.RKB, CodeRoot: cfg.KB.CodeRoot, Runner: rkbRunner}.Claims(ctx)
-		if err != nil {
-			return draft.Result{}, codeKB, err
-		}
-		evidence = draft.FromResolved(kbsync.ResolveBank(b, claims))
-	} else {
-		fmt.Fprintln(e.stderr, "vani: draft: kb.bank and kb.rkb are not configured; drafting without knowledge-base evidence")
-	}
-
 	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
 	p, err := draftProvider(ctx, w)
 	if err != nil {
 		return draft.Result{}, codeConfig, err
 	}
-	d, err := draft.New(p, draft.Config{Model: cfg.LLM.Model, TargetSummary: cfg.TargetSummary}, evidence)
+	d, code, err := e.newDrafter(ctx, cfg, p)
 	if err != nil {
-		return draft.Result{}, codeConfig, err
+		return draft.Result{}, code, err
 	}
 	res, err := d.Draft(ctx, req)
 	if err != nil {
@@ -128,4 +115,28 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 		return draft.Result{}, code, err
 	}
 	return res, "", nil
+}
+
+// newDrafter loads the knowledge-base evidence (when configured) and builds a
+// drafter on p. On failure it returns the reply code to report.
+func (e *env) newDrafter(ctx context.Context, cfg config.Config, p llm.Provider) (*draft.Drafter, string, error) {
+	var evidence []draft.Evidence
+	if cfg.KB.Bank != "" && cfg.KB.RKB != "" {
+		b, err := kbsync.Load(cfg.KB.Bank)
+		if err != nil {
+			return nil, codeKB, err
+		}
+		claims, err := kbsync.RKB{Binary: cfg.KB.RKB, CodeRoot: cfg.KB.CodeRoot, Runner: rkbRunner}.Claims(ctx)
+		if err != nil {
+			return nil, codeKB, err
+		}
+		evidence = draft.FromResolved(kbsync.ResolveBank(b, claims))
+	} else {
+		fmt.Fprintln(e.stderr, "vani: draft: kb.bank and kb.rkb are not configured; drafting without knowledge-base evidence")
+	}
+	d, err := draft.New(p, draft.Config{Model: cfg.LLM.Model, TargetSummary: cfg.TargetSummary}, evidence)
+	if err != nil {
+		return nil, codeConfig, err
+	}
+	return d, "", nil
 }

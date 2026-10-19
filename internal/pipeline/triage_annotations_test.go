@@ -3,6 +3,7 @@ package pipeline
 import (
 	"testing"
 
+	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/decide"
 )
@@ -63,6 +64,44 @@ func TestTriageAnnotationsCalibrationAndShadow(t *testing.T) {
 		if k == "triage.remote.shadow" || k == "triage.remote.disagree" {
 			t.Errorf("shadow key %s without shadow", k)
 		}
+	}
+}
+
+// A shadow that failed or timed out is recorded as asked-and-unavailable, with
+// its backend name, so the eval counts the posting as asked and the shadow's
+// coverage is honest. It leaves no value and no disagreement, does not touch the
+// primary's annotations, and does not make the record "unread".
+func TestUnavailableShadowIsRecordedAsAsked(t *testing.T) {
+	a := decide.Answer{
+		Backend: "d1-ultra",
+		Slots:   map[string]decide.SlotReading{"remote": tagged(jev("remote", 0.9), "d1-ultra")},
+		Shadow: map[string]decide.SlotReading{
+			"remote": {Reading: decide.Unavailable, Detail: "deadline;backend=local-d1-3b-q8_0-combined"},
+		},
+	}
+	ann := triageAnnotations(a)
+	for k, v := range map[string]string{
+		"triage.remote.shadow_reading": "unavailable",
+		"triage.remote.shadow_backend": "local-d1-3b-q8_0-combined",
+		"triage.remote":                "remote",
+		"triage.remote.reading":        "answered",
+		"triage.remote.backend":        "d1-ultra",
+	} {
+		if ann[k] != v {
+			t.Errorf("%s = %q, want %q", k, ann[k], v)
+		}
+	}
+	for _, k := range []string{"triage.remote.shadow", "triage.remote.disagree"} {
+		if v, ok := ann[k]; ok {
+			t.Errorf("unexpected %s = %q for an unavailable shadow", k, v)
+		}
+	}
+	if st, why := policy.Evaluate(a); st != posting.Triaged {
+		t.Fatalf("an unavailable shadow changed the policy: %s (%s)", st, why)
+	}
+	rec := ledger.Record{Annotations: ann}
+	if Unread(rec) {
+		t.Error("an unavailable shadow made the record count as unread")
 	}
 }
 

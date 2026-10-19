@@ -156,11 +156,43 @@ func TestConfigRefused(t *testing.T) {
 		{Binary: "/bin/true", Model: m, ContextSize: MaxContextSize + 1},
 		{Binary: "/bin/true", Model: m, StartTimeout: -time.Second},
 		{Binary: "/bin/true", Model: m, StartTimeout: MaxStartTimeout + time.Second},
+		{Binary: "/bin/true", Model: m, BatchSize: 16},
+		{Binary: "/bin/true", Model: m, BatchSize: DefaultContextSize + 1},
+		{Binary: "/bin/true", Model: m, ContextSize: 4096, BatchSize: 8192},
+		{Binary: "/bin/true", Model: m, Parallel: -1},
+		{Binary: "/bin/true", Model: m, Parallel: MaxParallel + 1},
 	} {
 		if _, err := Start(context.Background(), c); err == nil {
 			t.Errorf("%+v accepted", c)
 		}
 	}
+}
+
+func TestArgs(t *testing.T) {
+	base := "-m /m.gguf --host 127.0.0.1 --port 9 -c 8192 --device MTL0 -ngl all"
+	for _, c := range []struct {
+		cfg  Config
+		want string
+	}{
+		{Config{Model: "/m.gguf", ContextSize: 8192}, base},
+		{Config{Model: "/m.gguf", ContextSize: 8192, BatchSize: 8192}, base + " -b 8192 -ub 8192"},
+		{Config{Model: "/m.gguf", ContextSize: 8192, Parallel: 1}, base + " -np 1"},
+		{Config{Model: "/m.gguf", ContextSize: 8192, BatchSize: 4096, Parallel: 2}, base + " -b 4096 -ub 4096 -np 2"},
+	} {
+		if got := strings.Join(args(c.cfg, 9), " "); got != c.want {
+			t.Errorf("args(%+v)\n got %s\nwant %s", c.cfg, got, c.want)
+		}
+	}
+}
+
+// The batch and slot flags reach a real start, and the Metal-only flags stay.
+func TestStartsWithBatchAndParallel(t *testing.T) {
+	s, err := Start(context.Background(), Config{Binary: fakeBinary(t, "ok"), Model: model(t),
+		StartTimeout: 20 * time.Second, BatchSize: 4096, Parallel: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
 }
 
 func TestStderrKeepsTheTail(t *testing.T) {

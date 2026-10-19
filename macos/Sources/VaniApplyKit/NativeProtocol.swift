@@ -11,25 +11,42 @@ import Foundation
 //   {"op":"log","entry":{"event":...,"host"?:...,"counts"?:{...}}} -> {"ok":true}
 //   {"op":"draft","request":{"question":...,"job":{...},"max_words"?:N}}
 //                                         -> {"draft","model","evidence_items"} | {"error","code"}
+//   {"op":"jobStart","kind":"draft"|"suggest","request":{...}}
+//                                         -> {"job":id} | {"error","code"}
+//   {"op":"jobResult","job":id}           -> {"pending":true} | {"done":true,"reply":{...}} | {"error","code"}
+//   {"op":"jobFind","url":"https://..."}  -> {"found":bool,"url","matches":N,"ambiguous"?,"job"?:{key,company,title,status,mark?,closed?,matchedOn}}
+//                                          | {"error","code"}
+//   {"op":"jobMark","key":"gh:acme:123"}  -> {"ok":true,"key","mark":"applied"} | {"error","code"}
 //   anything refused                      -> {"error":"..."}
 //
 // Merging stays in the extension (one implementation); this side is a
-// validated compare-and-swap store. Drafting runs `vani draft` and is offered
-// only where a DraftRunner is passed (the Chrome host); the sandboxed Safari
-// extension cannot start it and answers code "unsupported".
+// validated compare-and-swap store. The synchronous "draft" op runs
+// `vani draft` and is offered only where a DraftRunner is passed (the Chrome
+// host). Jobs run in the Vani Apply agent (Agent.swift), which both browsers
+// reach over XPC: that is how the sandboxed Safari extension gets drafts and
+// suggestions, since it cannot start `vani` itself.
+//
+// "jobFind" and "jobMark" (JobApplied.swift) connect the extension to the Jobs
+// tab: find reads which tracked posting a page is, mark records Applied after
+// the user's click. They run `vani jobs`: in the Chrome host through the JobsBackend
+// it passes, and for Safari (whose appex cannot start `vani`) through the agent's
+// XPC calls, since XPCAgentClient is a JobsBackend. With neither they answer code
+// "unsupported".
 
 public enum NativeProtocol {
     public static let version = 1
 
-    public static func handle(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner? = nil) -> [String: Any] {
+    public static func handle(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner? = nil,
+                              agent: AgentClient? = nil, jobs: JobsBackend? = nil) -> [String: Any] {
         do {
-            return try dispatch(request, store: store, source: source, drafter: drafter)
+            return try dispatch(request, store: store, source: source, drafter: drafter, agent: agent, jobs: jobs)
         } catch {
             return ["error": String(describing: error)]
         }
     }
 
-    private static func dispatch(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner?) throws -> [String: Any] {
+    private static func dispatch(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner?,
+                                 agent: AgentClient?, jobs: JobsBackend?) throws -> [String: Any] {
         guard let req = request as? [String: Any], let op = req["op"] as? String else {
             throw BankError("request is not an object with an op")
         }
@@ -54,6 +71,44 @@ public enum NativeProtocol {
         case "log":
             try store.log(try activityEntry(req["entry"], source: source))
             return ["ok": true]
+        case "jobStart":
+            guard let agent else { return ["error": "jobs are not available here", "code": "unsupported"] }
+            guard let kind = req["kind"] as? String, JobKind(rawValue: kind) != nil else {
+                return ["error": "jobStart needs a known kind", "code": "bad_request"]
+            }
+            guard let body = req["request"], JSONSerialization.isValidJSONObject(body),
+                  let data = try? JSONSerialization.data(withJSONObject: body) else {
+                return ["error": "jobStart needs a request object", "code": "bad_request"]
+            }
+            let reply = agent.start(kind: kind, request: data)
+            // Only an event and a count reach the log: never a label, a posting or a draft.
+            if reply["job"] != nil { try? store.log(ActivityEntry(source: source, event: .draft, counts: ["started": 1])) }
+            return reply
+        case "jobResult":
+            guard let agent else { return ["error": "jobs are not available here", "code": "unsupported"] }
+            guard let job = req["job"] as? String, !job.isEmpty, job.utf8.count <= 64 else {
+                return ["error": "jobResult needs a job id", "code": "bad_request"]
+            }
+            return agent.result(job: job)
+        case "jobFind":
+            guard let jobs = jobs ?? (agent as? JobsBackend) else { return ["error": "jobs are not available here", "code": "unsupported"] }
+            guard let url = JobLinks.checkedURL(req["url"]) else {
+                return ["error": "jobFind needs an http(s) url of at most \(JobLinks.maxURLBytes) bytes", "code": "bad_request"]
+            }
+            // Nothing about the page reaches the log: not its URL, not what it matched.
+            do { return try jobs.find(url: url).asJSONObject } catch {
+                return ["error": String(describing: error), "code": "jobs"]
+            }
+        case "jobMark":
+            guard let jobs = jobs ?? (agent as? JobsBackend) else { return ["error": "jobs are not available here", "code": "unsupported"] }
+            guard let key = JobLinks.checkedKey(req["key"]) else {
+                return ["error": "jobMark needs a posting key", "code": "bad_request"]
+            }
+            // Applied is the only mark a browser can set. Clearing or hiding a job stays in the app.
+            do { try jobs.markApplied(key: key) } catch {
+                return ["error": String(describing: error), "code": "jobs"]
+            }
+            return ["ok": true, "key": key, "mark": JobMark.applied.rawValue]
         case "draft":
             guard let drafter else {
                 return ["error": "drafting is not available here; use Draft in the Vani Apply app", "code": "unsupported"]

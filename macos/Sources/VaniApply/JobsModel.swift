@@ -12,11 +12,24 @@ final class JobsModel {
         didSet { if oldValue != view { selection = nil; reload() } }
     }
     var query = ""
+    var sort: JobSort = .standard {
+        didSet { if oldValue != sort { reload() } }
+    }
+    var filter = JobFilter() {
+        didSet { if oldValue != filter { reload() } }
+    }
+    /// The Insights pane (charts over the current selection) is open.
+    var showInsights = false {
+        didSet { if showInsights, !oldValue { reload() } }
+    }
     var selection: String? {
         didSet { if oldValue != selection { loadDetail() } }
     }
 
     private(set) var page: JobsPage?
+    /// Distributions over the selection, loaded with the list while Insights is open.
+    private(set) var stats: JobsStats?
+    private(set) var statsError: String?
     private(set) var loading = false
     private(set) var error: String?
     /// The selected job as `vani jobs show` returned it (with its description).
@@ -46,12 +59,24 @@ final class JobsModel {
         Task { await refresh() }
     }
 
+    /// The app came to the front: a mark may have been written meanwhile (the browser
+    /// extension marks a job Applied through `vani jobs mark`), so re-read the list and
+    /// the open job rather than show the state from before.
+    func reloadAfterActivation() {
+        reload()
+        if selection != nil { loadDetail() }
+    }
+
     func refresh() async {
         listGeneration += 1
         let gen = listGeneration
         loading = true
-        let c = client(), v = view, q = query
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.list(v, query: q) } }.value
+        let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights
+        async let listed = Task.detached(priority: .userInitiated) { Result { try c.list(v, query: q, sort: s, filter: f) } }.value
+        async let counted: Result<JobsStats, Error>? = wantStats
+            ? Task.detached(priority: .utility) { Result { try c.stats(v, query: q, filter: f) } }.value
+            : nil
+        let (result, statsResult) = await (listed, counted)
         guard gen == listGeneration else { return } // a newer list superseded this one
         loading = false
         switch result {
@@ -61,7 +86,19 @@ final class JobsModel {
         case let .failure(err):
             error = String(describing: err)
         }
+        switch statsResult {
+        case let .success(st)?:
+            stats = st
+            statsError = nil
+        case let .failure(err)?:
+            statsError = String(describing: err)
+        case nil:
+            break
+        }
     }
+
+    /// Turn every filter off.
+    func clearFilter() { filter.clear() }
 
     private func loadDetail() {
         detailGeneration += 1

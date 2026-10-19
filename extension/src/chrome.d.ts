@@ -2,7 +2,8 @@
 // instead of adding @types/chrome as a dependency.
 declare namespace chrome {
   namespace runtime {
-    interface MessageSender { tab?: { id?: number; url?: string } }
+    /** `tab` is absent for an extension page such as the popup; `frameId` is 0 for a tab's top frame. */
+    interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number }
     const lastError: { message?: string } | undefined;
     function sendMessage<T = unknown>(message: unknown): Promise<T>;
     /** Callback form only: Chrome does not return a promise from this call. The reply is whatever JSON the host sent. */
@@ -25,12 +26,25 @@ declare namespace chrome {
       set(items: Record<string, unknown>): Promise<void>;
       remove(keys: string | string[]): Promise<void>;
     };
+    /** In memory for the browser session, kept across the worker being stopped. Absent in older browsers. */
+    const session: {
+      get(keys: string | string[]): Promise<Record<string, unknown>>;
+      set(items: Record<string, unknown>): Promise<void>;
+    } | undefined;
   }
   namespace tabs {
+    /** `url` is present for the active tab once the user has opened the popup (activeTab) or on a matched host. */
     interface Tab { id?: number; url?: string }
     function query(q: { active: boolean; currentWindow: boolean }): Promise<Tab[]>;
-    function sendMessage<T = unknown>(tabId: number, message: unknown): Promise<T>;
+    function sendMessage<T = unknown>(tabId: number, message: unknown, options?: { frameId?: number }): Promise<T>;
+    const onUpdated: { addListener(cb: (tabId: number, changeInfo: { status?: string }) => void): void };
+    const onRemoved: { addListener(cb: (tabId: number) => void): void };
   }
+  /** The toolbar button; a badge marks a tab with a question waiting. May be absent (Safari). */
+  const action: {
+    setBadgeText(d: { tabId: number; text: string }): Promise<void>;
+    setBadgeBackgroundColor(d: { tabId: number; color: string }): Promise<void>;
+  } | undefined;
   namespace scripting {
     /** One entry per frame the script ran in; `result` is the function's return value (a returned promise is awaited). */
     interface InjectionResult<T> { frameId: number; result?: T }

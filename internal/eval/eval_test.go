@@ -395,7 +395,9 @@ func TestReportMath(t *testing.T) {
 		t.Fatalf("shadow rows: %+v", rep.Shadow)
 	}
 	sh := rep.Shadow[0]
-	if sh.Labeled != 4 || sh.ShadowAnswered != 3 || sh.ShadowCorrect != 2 || sh.BothAnswered != 3 ||
+	// jevRec records no shadow backend, and D has no shadow annotation at all, so
+	// the row is the "unknown" shadow's over the three postings it was asked about.
+	if sh.Shadow != UnknownBackend || sh.Labeled != 3 || sh.ShadowAnswered != 3 || sh.ShadowCorrect != 2 || sh.BothAnswered != 3 ||
 		sh.Agree != 1 || sh.Disagree != 2 || sh.PrimaryRight != 1 || sh.ShadowRight != 1 {
 		t.Errorf("shadow: %+v", sh)
 	}
@@ -406,7 +408,7 @@ func TestReportMath(t *testing.T) {
 		"| sponsorship | llm | 1 | 0 | 0 | n/a (0/0) | 0.0% (0/1) |",
 		"| 0.90 | 1 | 1 | 100.0% (1/1) | 25.0% (1/4) |",
 		"| 0.50 | 3 | 2 | 66.7% (2/3) | 75.0% (3/4) |",
-		"| work_mode | 4 | 3 | 66.7% (2/3) | 3 | 33.3% (1/3) | 2 | 1 | 1 |",
+		"| work_mode | unknown | 3 | 3 | 66.7% (2/3) | 3 | 33.3% (1/3) | 2 | 1 | 1 |",
 		"labeled postings: 8, matched to a ledger record: 7",
 		"sample",
 	} {
@@ -452,12 +454,24 @@ func TestPromotionVerdicts(t *testing.T) {
 		want string
 	}{
 		{Promotion{Asked: 29, ShadowAnswered: 29, ShadowCorrect: 29, PrimaryAnswered: 1, PrimaryCorrect: 0}, "insufficient labels (29/30)"},
-		{Promotion{Asked: 30, ShadowAnswered: 28, ShadowCorrect: 27, PrimaryAnswered: 28, PrimaryCorrect: 26}, "promotable"},
-		{Promotion{Asked: 30, ShadowAnswered: 30, ShadowCorrect: 27, PrimaryAnswered: 30, PrimaryCorrect: 27}, "promotable"}, // a tie promotes
-		{Promotion{Asked: 30, ShadowAnswered: 28, ShadowCorrect: 20, PrimaryAnswered: 28, PrimaryCorrect: 26}, "not promotable: precision"},
-		{Promotion{Asked: 30, ShadowAnswered: 20, ShadowCorrect: 20, PrimaryAnswered: 28, PrimaryCorrect: 26}, "not promotable: coverage 20/30 < primary 28/30"},
-		{Promotion{Asked: 30, ShadowAnswered: 0, PrimaryAnswered: 28, PrimaryCorrect: 26}, "not promotable: the shadow answered none"},
-		{Promotion{Asked: 30, ShadowAnswered: 10, ShadowCorrect: 10}, "no primary baseline"},
+		// 15 of 20 disagreements to the shadow: lower bound 0.544 >= 0.4.
+		{Promotion{Asked: 30, ShadowAnswered: 30, PrimaryAnswered: 30, Paired: 30, PrimaryOnly: 5, ShadowOnly: 15}, "promotable"},
+		// The boundary of the disagreement floor: 10 of 10 to the shadow.
+		{Promotion{Asked: 30, ShadowAnswered: 30, PrimaryAnswered: 30, Paired: 30, ShadowOnly: 10}, "promotable"},
+		// A tie on 20 disagreements proves too little: lower bound 0.302 < 0.4.
+		{Promotion{Asked: 30, ShadowAnswered: 30, PrimaryAnswered: 30, Paired: 30, PrimaryOnly: 10, ShadowOnly: 10},
+			"not promotable: shadow right in 10 of 20 disagreements, lower bound 0.30 < 0.40"},
+		// 12 of 20: point estimate 60%, lower bound 0.394 < 0.4.
+		{Promotion{Asked: 30, ShadowAnswered: 30, PrimaryAnswered: 30, Paired: 30, PrimaryOnly: 8, ShadowOnly: 12},
+			"not promotable: shadow right in 12 of 20 disagreements, lower bound 0.39 < 0.40"},
+		// Nine disagreements are never enough, however lopsided.
+		{Promotion{Asked: 30, ShadowAnswered: 30, PrimaryAnswered: 30, Paired: 30, ShadowOnly: 9}, "insufficient disagreements (9/10)"},
+		{Promotion{Asked: 30, ShadowAnswered: 30, PrimaryAnswered: 30, Paired: 30}, "insufficient disagreements (0/10)"},
+		// Paired postings are what the comparison rests on: 29 are too few.
+		{Promotion{Asked: 30, ShadowAnswered: 29, PrimaryAnswered: 28, Paired: 27, ShadowOnly: 10}, "insufficient paired labels (27/30)"},
+		{Promotion{Asked: 30, ShadowAnswered: 20, PrimaryAnswered: 28, Paired: 20, ShadowOnly: 20}, "not promotable: coverage 20/30 < primary 28/30"},
+		{Promotion{Asked: 30, ShadowAnswered: 0, PrimaryAnswered: 28}, "not promotable: the shadow answered none"},
+		{Promotion{Asked: 30, ShadowAnswered: 10}, "no primary baseline"},
 	} {
 		if got := tc.p.Verdict(); !strings.HasPrefix(got, tc.want) {
 			t.Errorf("%+v: verdict %q, want prefix %q", tc.p, got, tc.want)
@@ -496,7 +510,10 @@ func TestPromotionIsPerPrimaryBackend(t *testing.T) {
 		t.Fatalf("promotions: %+v", rep.Promotions)
 	}
 	jev, llm := rep.Promotions[0], rep.Promotions[1]
-	if jev.Primary != "jev" || jev.Asked != 30 || jev.PrimaryCorrect != 27 || jev.ShadowCorrect != 28 || jev.Verdict() != "promotable" {
+	// The shadow beat Jev on one posting (i=2) and never lost to it: a single
+	// disagreement, so no verdict however clean the record.
+	if jev.Primary != "jev" || jev.Asked != 30 || jev.PrimaryCorrect != 27 || jev.ShadowCorrect != 28 ||
+		jev.Paired != 30 || jev.PrimaryOnly != 0 || jev.ShadowOnly != 1 || jev.Verdict() != "insufficient disagreements (1/10)" {
 		t.Fatalf("jev row %+v: %s", jev, jev.Verdict())
 	}
 	// Ten LLM postings: too few for a verdict on their own, however badly the
@@ -552,7 +569,7 @@ func TestReportPromotion(t *testing.T) {
 	if v := p.Verdict(); !strings.HasPrefix(v, "not promotable: coverage") {
 		t.Fatalf("verdict %q", v)
 	}
-	if md := rep.Markdown(); !strings.Contains(md, "| work_mode | lappi | jev | 32 | 100.0% (31/31) | 96.9% (31/32) | 93.8% (30/32) | 100.0% (32/32) | not promotable: coverage 31/32 < primary 32/32 |") {
+	if md := rep.Markdown(); !strings.Contains(md, "| work_mode | lappi | jev | 32 | 100.0% (31/31) | 96.9% (31/32) | 93.8% (30/32) | 100.0% (32/32) | 0 | 31 | 0 | 2 | not promotable: coverage 31/32 < primary 32/32 |") {
 		t.Fatalf("markdown lacks the promotion row:\n%s", md)
 	}
 }

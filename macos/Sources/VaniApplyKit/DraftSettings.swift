@@ -58,13 +58,23 @@ public struct DraftSettings: Codable, Equatable, Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
     }
 
+    /// `vani jobs` with the same config and state folder as drafting, so the app's Jobs
+    /// tab, the Chrome host and the agent all read and write one set of marks. It reads no key.
+    public func jobsClient(vaniBinary: URL, timeout: TimeInterval = JobsClient.timeout) -> JobsClient {
+        JobsClient(vaniBinary: vaniBinary,
+                   configPath: vaniConfig.isEmpty ? nil : vaniConfig,
+                   stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,
+                   timeout: timeout)
+    }
+
     /// A runner for the vani binary beside `helpers` (the app's Contents/Helpers).
     public func runner(vaniBinary: URL,
-                       key: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.anthropicService) }) -> DraftRunner {
+                       key: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.anthropicService) },
+                       decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) -> DraftRunner {
         DraftRunner(vaniBinary: vaniBinary,
                     configPath: vaniConfig.isEmpty ? nil : vaniConfig,
                     stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,
                     workspace: anthropicWorkspace.isEmpty ? nil : anthropicWorkspace,
-                    key: key)
+                    key: key, decisionKey: decisionKey)
     }
 }

@@ -5,6 +5,18 @@ import Foundation
 /// The one place the app and the Chrome host start `vani`; `vani draft` and
 /// `vani jobs` both go through it.
 public enum VaniProcess {
+    /// The folder holding this process's executable (the app's Contents/Helpers
+    /// for the host and the agent), where the bundled `vani` lives. It never
+    /// trusts argv[0]: launchd starts an SMAppService agent with argv[0] set to
+    /// the plist's relative BundleProgram, which would resolve against "/".
+    public static func helpersDirectory(argv0: String = CommandLine.arguments.first ?? "",
+                                        executable: URL? = Bundle.main.executableURL) -> URL {
+        if let executable, executable.path.hasPrefix("/") {
+            return executable.resolvingSymlinksInPath().deletingLastPathComponent()
+        }
+        return URL(fileURLWithPath: argv0).resolvingSymlinksInPath().deletingLastPathComponent()
+    }
+
     public struct Outcome: Sendable {
         /// The exit status, or nil when the process could not start or timed out.
         public var status: Int32?

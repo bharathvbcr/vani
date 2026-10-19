@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -40,20 +42,53 @@ func (a *App) close() {
 var buildApp = wireApp
 
 // dailyJob is what the daemon and run-once execute: run the pipeline, then
-// publish the digest.
+// publish the digest. Each run is written to the run record (runrecord.go) when
+// it starts and again when it ends, however it ends.
 func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 	return func(ctx context.Context) error {
-		if app.RunOnce == nil {
-			return errors.New("app has no pipeline runner")
+		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning}
+		if app.Ledger != nil {
+			rec.CountsBefore = statusCounts(app.Ledger.All())
 		}
-		if err := app.RunOnce(ctx); err != nil {
-			return fmt.Errorf("pipeline: %w", err)
+		e.saveRunRecord(rec)
+		stage, err := e.dailySteps(ctx, app, cfg)
+		rec.FinishedAt = now()
+		if app.Ledger != nil {
+			rec.CountsAfter = statusCounts(app.Ledger.All())
 		}
-		loc, err := scheduleLoc(cfg)
-		if err != nil {
-			return err
+		switch {
+		case err == nil:
+			rec.Outcome = outcomeOK
+		case errors.Is(err, context.Canceled):
+			rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
+		default:
+			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
 		}
-		return e.publishDigest(ctx, app, now().In(loc), loc)
+		e.saveRunRecord(rec)
+		return err
+	}
+}
+
+// dailySteps is the run itself; stage names where it stopped when it fails.
+func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config) (stage string, err error) {
+	if app.RunOnce == nil {
+		return stagePipeline, errors.New("app has no pipeline runner")
+	}
+	if err := app.RunOnce(ctx); err != nil {
+		return stagePipeline, fmt.Errorf("pipeline: %w", err)
+	}
+	loc, err := scheduleLoc(cfg)
+	if err != nil {
+		return stageDigest, err
+	}
+	return stageDigest, e.publishDigest(ctx, app, now().In(loc), loc)
+}
+
+// saveRunRecord writes the record; a failure is a warning, never a failed run:
+// the run's work is in the ledger either way.
+func (e *env) saveRunRecord(r runRecord) {
+	if err := writeRunRecord(e.stateDir, r); err != nil {
+		fmt.Fprintf(e.stderr, "vani: could not record the run: %v\n", err)
 	}
 }
 
@@ -65,12 +100,28 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 // publishDigest writes the digest for date and marks the included postings
 // Digested, in that order: a crash between the two re-lists them tomorrow
 // rather than losing them.
+//
+// The digest honours the Jobs marks (marks only, never notes). When they
+// cannot be read the digest is held back: no file and no Digested event, and
+// the error is returned and announced. Listing everything instead would show,
+// and then consume, roles the user hid. The pipeline's results are already in
+// the ledger, so the roles are listed once the store reads again.
 func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location) error {
 	if app.Ledger == nil {
 		return errors.New("app has no ledger")
 	}
+	dir := marks.Dir(e.stateDir)
+	m, err := marks.ReadMarks(dir)
+	if err != nil {
+		if app.Notifier != nil {
+			if nerr := app.Notifier.Notify(ctx, "Vani digest held back", "Your Jobs marks could not be read; see vani's log"); nerr != nil {
+				fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", nerr)
+			}
+		}
+		return fmt.Errorf("digest held back: read the Jobs marks in %s: %w", dir, err)
+	}
 	recs := app.Ledger.All()
-	path, keys, err := digest.Write(e.stateDir, date, recs, countsFor(recs, date, loc))
+	path, keys, err := digest.Write(e.stateDir, date, recs, m, countsFor(recs, date, loc))
 	if err != nil {
 		return err
 	}
@@ -155,18 +206,15 @@ func (e *env) printStatus(app *App, cfg config.Config) error {
 		return errors.New("app has no ledger")
 	}
 	recs := app.Ledger.All()
-	by := map[posting.Status]int{}
-	for _, r := range recs {
-		by[r.Status]++
-	}
+	by := statusCounts(recs)
 	statuses := make([]string, 0, len(by))
 	for s := range by {
-		statuses = append(statuses, string(s))
+		statuses = append(statuses, s)
 	}
 	sort.Strings(statuses)
 	fmt.Fprintf(e.stdout, "boards: %d\npostings: %d\n", len(cfg.Watchlist), len(recs))
 	for _, s := range statuses {
-		fmt.Fprintf(e.stdout, "  %-10s %d\n", s, by[posting.Status(s)])
+		fmt.Fprintf(e.stdout, "  %-10s %d\n", s, by[s])
 	}
 	fmt.Fprintf(e.stdout, "schedule: %s %s\nstate dir: %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone, e.stateDir)
 	return nil

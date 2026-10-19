@@ -36,8 +36,7 @@ if let i = args.firstIndex(of: "--store-dir"), i + 1 < args.count {
 // Drafting runs the vani binary bundled beside this host, with the paths the
 // app saved in the group folder. `--vani <absolute path>` overrides the binary
 // (the process tests use it); Chrome never passes it.
-let helpers = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
-var vaniBinary = helpers.appendingPathComponent("vani")
+var vaniBinary = VaniProcess.helpersDirectory().appendingPathComponent("vani")
 if let i = args.firstIndex(of: "--vani"), i + 1 < args.count {
     guard args[i + 1].hasPrefix("/") else { fail("--vani needs an absolute path") }
     vaniBinary = URL(fileURLWithPath: args[i + 1])
@@ -45,8 +44,12 @@ if let i = args.firstIndex(of: "--vani"), i + 1 < args.count {
 // `--no-keychain` (tests only) supplies no key instead of reading the login Keychain.
 let settings = DraftSettings.load(from: store.directory)
 let drafter = args.contains("--no-keychain")
-    ? settings.runner(vaniBinary: vaniBinary, key: { nil })
+    ? settings.runner(vaniBinary: vaniBinary, key: { nil }, decisionKey: { nil })
     : settings.runner(vaniBinary: vaniBinary)
+// The extension's find/mark ops read and write the Jobs marks through `vani jobs`.
+// Each is bounded under the extension's own 10 s wait, so a hung vani is a coded
+// error there instead of a host that never answers.
+let jobs = settings.jobsClient(vaniBinary: vaniBinary, timeout: 8)
 
 // Exit after 60 s with no request, but never while one is being answered: a
 // draft can take up to DraftRunner.timeout.
@@ -81,7 +84,7 @@ while true {
 
     let reply: [String: Any]
     if let obj = try? JSONSerialization.jsonObject(with: request) {
-        reply = NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter)
+        reply = NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter, agent: XPCAgentClient(), jobs: jobs)
     } else {
         reply = ["error": "request is not JSON"]
     }

@@ -77,15 +77,94 @@ flowchart TD
   four slots in one request. The generators are being written in Lappi-decision; the training run
   waits for the owner.
 
+## Shadow evaluation (applied 2026-10-19, not yet measured on the live ledger)
+
+- **Three gaps in what `vani eval` could tell you, fixed on the owner's go-ahead ("apply all",
+  T = 0.4).** Found by a read-only audit and re-verified in code. Use `vani bench local` to compare
+  candidate models offline; this section is about the live shadow's record. Context and the 382/382
+  reproduction: "d1-3B against your own labels" under Unverified.
+  - **Run output.** `runOnce` prints `vani: shadow "<name>": N call(s) or slot(s) failed, timed out
+    or came back unusable this run` after the advance phase when `Router.ShadowErrors()` is nonzero
+    (`cmd/vani/shadowerrors.go`). The count is per run and includes slots the shadow left out.
+  - **1. A failed shadow is recorded.** `decide/router.go` `compareShadow` now sets every slot of
+    `RouterAnswer.Shadow` to `Unavailable` (detail `auth`, `deadline` or `error`, tagged
+    `;backend=<shadow>`) when the shadow errors, panics or times out, so `Shadow` non-nil means
+    "was asked". `OnDisagree` fires only for a shadow that read the slot (`Answered` or
+    `Abstained`): an outage, a refusal or a `Failed` reading is not a disagreement (the last is a
+    narrowing: a shadow value outside the slot's options used to fire it). No new annotation keys:
+    `triage.<slot>.shadow_reading=unavailable` and `shadow_backend` are the existing ones,
+    `pipeline.Unread` ignores them, and nothing validates the value set. `vani eval` now counts
+    those postings as asked, shows them in a "shadow unavailable" column, and the existing
+    no-worse-coverage rule applies to them. Tests: `decide/router_test.go`
+    (`TestFailedShadowIsRecordedUnavailable`: error, auth, panic, timeout; `OnDisagree` silent, one
+    `ShadowErrors` per failed call; `TestOnDisagreeNeedsAShadowThatRead`; the two old assertions
+    that `Shadow` stays nil were rewritten), `pipeline/triage_annotations_test.go`,
+    `eval/paired_test.go`. Failures from runs before this change are not in the ledger and cannot
+    be recovered; the report says so.
+  - **2. The shadow is named after its model.** `config.Local.BackendName()` gives
+    `local-<model>-<combined|per_slot>`, where `<model>` is the GGUF file name without `.gguf` when
+    Vani starts the server (the file is what differs between quantisations) or `decide.local.model`
+    otherwise, normalised like `config.BackendName`. It is `shadow_backend` in the ledger and keys
+    the eval, so two models, or one model asked two ways, are separate Promotion and Shadow rows,
+    each needing its own 30 labels (the Shadow table was keyed by slot only and pooled them too).
+    **Limit: 32 bytes** (`jev.MaxNameBytes`); `config.Validate` rejects a longer name instead of
+    truncating. `local-vllm-d3-mini-q8_0-combined` is exactly 32, so a longer GGUF file name
+    (a version suffix, say) fails `vani config check`; shorten the file name. An OpenRouter model
+    named `local-...` is refused. `vani bench` names its backend `local-bench`. Rows recorded
+    before this stay `local` (append-only): the 382 d1-3B Q8_0 combined postings; the report labels
+    that row as recorded before the model was named. `benchCases` skips any primary that is a local
+    shadow (`config.IsLocalShadow`). Alternative not taken: separate `shadow_model` /
+    `shadow_questions` keys (no length limit, two more contract keys).
+  - **3. The verdict is paired.** `eval/report.go` `Promotion.Verdict`: the 30-label floor and the
+    no-worse-coverage rule are unchanged, then a comparison on the postings both answered (at least
+    30), counting those where exactly one matched the label (`PrimaryOnly`, `ShadowOnly`). It needs
+    at least 10 such postings (`MinDiscordant`) and a one-sided 95% exact (Clopper-Pearson) lower
+    bound on `ShadowOnly / (PrimaryOnly + ShadowOnly)` of at least `T = 0.4`
+    (`PromotionBound`), computed with stdlib `math`. Reference bounds, computed independently of
+    the code and checked in `TestLowerBound`: 15 of 20 gives 0.544 (promotable), 12 of 20 gives
+    0.394, 10 of 20 gives 0.302, 25 of 50 gives 0.376 (all not), 10 of 10 gives 0.741. Consequence
+    to know: a shadow that matches the primary on nearly everything has few disagreements and
+    reads "insufficient disagreements", never "promotable"; and a tie on 20 disagreements no
+    longer promotes.
+  - **Verification (2026-10-19).** `go build ./...`, `go vet ./...` and
+    `go test -count=1 ./cmd/... ./internal/...` in Vani pass, and
+    `go test -count=1 github.com/bharathvbcr/decide/...` passes (decide, jev, lappi; the router
+    tests also under `-race`). Not done: a live `vani eval` over the real ledger, a live run with a
+    failing shadow, and `vani config check` against the live config (its GGUF file name must fit
+    the 32-byte limit above).
+
 ## Structural
 
 - **Decide module location.** `decide` is local-only (no remote, nothing committed); Vani reaches
   it by `replace => ../../devtools/decide`.
 - **Manvi pin.** `go.work` uses the local Manvi checkout (main at ccbe4ed on 2026-10-18), while
   Jarvis pins 5dbf47c. Add a lock file and a check.
+- **`vani status --json` re-reads decide's spend file.** `decide.DailyCap` has no reader (only
+  `Allow` and `Charge`), so `readOpenRouterSpend` (`cmd/vani/statuscmd.go`) parses the
+  `{"version":1,"days":{day:{key:usd}}}` format itself. A test writes the file with the real
+  `DailyCap`, so a format change fails there. The fix is a `DailyCap.Spent(key)` accessor in
+  `decide`, then delete the parser.
+- **Skipped daily runs are not in the run record.** `daemon.Run` logs a run it skips for starting
+  more than 6 h late (and one that runs late) but does not record it, so Vani Apply's Pipeline tab
+  shows "No run in over a day" rather than why. A hook from `daemon.Run` into the run record
+  (`cmd/vani/runrecord.go`) would say "skipped: 7 h late".
+- **`JobsClient.call` and `PipelineClient.status` are the same twelve lines** (run vani, bound,
+  decode `{"error"}`). Extract one `VaniJSONCall` in `VaniApplyKit` when `Jobs.swift` is next
+  touched.
 
 ## Unverified (Phase 0)
 
+- **Jobs tab controls reach the model: not driven by automation (2026-10-19).** An in-process
+  harness (the Jobs tab in a plain window over the live state, no Login Items agent) verified the
+  Insights toolbar button through its AppKit control. Setting the model as each control does,
+  round-tripped through the real `vani`, verified: the fit filter (20 `strong_fit` shown, matching
+  `jobs stats`), sort by freshness and by priority (ordered), and selection loading the detail.
+  Not verified: that the Sort picker, the Filter menu items, a fit-row tap and a scatter click
+  call those setters. SwiftUI's toolbar menus came back empty to `NSMenu`. The Insights panel was
+  absent from the in-process accessibility tree (603 elements, none with these labels). Synthetic
+  `NSEvent` clicks did not reach SwiftUI tap gestures. Screen control was declined. The scatter's
+  nearest-dot rule is unit-tested as `ChartHit.nearest`. Closing this needs an XCUITest target,
+  or a 30-second manual check: Sort > Newest first, click a fit row, click a dot.
 - **Picked notes have not run live (2026-10-18).** Notes are now reasons that d1-ultra picks from
   `<state dir>/reasons.json` (`internal/decide/jdreasons`), replacing a Claude turn per posting.
   The live catalog (14 fit, 14 gap, 13 check) was drafted in a Claude Code session on 2026-10-18
@@ -114,10 +193,90 @@ flowchart TD
   process. Nothing reads Lappi until an R2 cap is ruled and the four families are pooled, trained,
   calibrated and served.
 - **d1-3B against your own labels.** `.state/config.json` runs d1 (`decide.local.server`) as the
-  shadow, but agent shells have no API keys, so no real run has recorded a shadow reading yet. The
-  measurement is `vani run-once` with the chain's keys exported (300 postings per run), then
-  `vani label` and `vani eval`. The verdict needs at least 30 labeled postings that d1 was
-  asked about. The 12-slot synthetic check below is not evidence for promotion.
+  shadow. The ledger holds d1 shadow readings for 382 postings that d1-ultra read (all four
+  slots answered by both). The verdict is `vani label` then `vani eval`, and it needs at least 30
+  labeled postings that d1 was asked about. Neither the 12-slot synthetic check below nor the
+  agreement numbers that follow are evidence for promotion.
+  - **Agreement with d1-ultra on real postings (2026-10-19, `vani bench local`, 382 postings, no
+    labels).** `vani bench local` replays postings the primary read through a local model with the
+    run's exact request. It reproduced the recorded shadow 382/382 on every slot, so the request
+    matches production. d1-3B Q8_0 agreed with d1-ultra on:
+
+    | slot | agreement |
+    |---|---|
+    | sponsorship | 346/382 (90.6%) |
+    | role_fit | 236/382 (61.8%) |
+    | work_mode | 233/382 (61.0%) |
+    | seniority | 202/382 (52.9%) |
+
+    Latency was p50 735 ms and p95 956 ms per posting (four combined questions, Metal), and the
+    server started in 5.0 s. The synthetic 0.3 s does not hold on real posting lengths.
+    - Where d1-3B disagrees:
+      - It reads senior roles as mid (88 times).
+      - On role_fit, the costly direction is mismatch_seniority → strong_fit (21 times).
+      - It answers not_stated where d1-ultra read onsite (78) or a sponsorship stance (35). Those
+        misses are conservative.
+    - Where d1-ultra was confident (p ≥ 0.9), d1-3B agreed on role_fit 77/78 and on seniority
+      43/46. Most disagreement is on postings d1-ultra itself was unsure of (role_fit p < 0.5:
+      58/172 agree).
+    - Agreement is not accuracy. Either side can be wrong.
+    - The JSON report is `build/bench-d1-3b.json` (gitignored).
+  - **vllm-d3-mini against the same 382 postings (2026-10-19, `vani bench local --batch 8192
+    --parallel 1`).** The model is `ggml-org/vllm-d3-mini-GGUF` `vllm-d3-mini-Q8_0.gguf`
+    (5,157,835,200 bytes, sha256 `214d44cc…793f93d`, matching Hugging Face). It is 4B, built on
+    Qwen3.5-4B, and Apache-2.0. The owner approved the download. It is at
+    `build/models/ggml-org-vllm-d3-mini-GGUF/` (gitignored) because the workspace gate refuses
+    writes outside the repo. llama.cpp 0.7.0 served it over `/v1/systemone`, with no failed
+    posting.
+
+    | slot | d1-3B | d3-mini |
+    |---|---|---|
+    | role_fit | 236 (61.8%) | 296 (77.5%) |
+    | seniority | 202 (52.9%) | 303 (79.3%) |
+    | sponsorship | 346 (90.6%) | 336 (88.0%) |
+    | work_mode | 233 (61.0%) | 218 (57.1%) |
+
+    Each cell is agreement with d1-ultra out of 382.
+
+    - **Latency:** d3-mini runs at p50 3.2 s and p95 4.5 s per posting, against d1-3B's
+      0.74 s and 0.96 s, so about 4.4× slower. The flags also differ: d1-3B ran with `-np` auto
+      and the default batch, d3-mini with `-np 1 -b/-ub 8192`.
+    - **The costly error mostly goes:**
+      - role_fit mismatch_seniority → strong_fit falls from 21 to 6.
+      - seniority senior → mid falls from 88 to 27.
+    - **Its own probability separates its errors from cloud agreement.** With local p ≥ 0.5:
+      - role_fit agreed 148/148;
+      - sponsorship 298/299;
+      - seniority 176/185;
+      - work_mode 108/112.
+
+      Below 0.5, role_fit agreed 148/234.
+    - **Where it trails:** its losses on work_mode and sponsorship are not_stated answers where
+      d1-ultra read a stance: onsite → not_stated 92, hybrid → not_stated 45, sponsors_visa →
+      not_stated 28. These misses are conservative.
+    - Report: `build/bench-d3-mini.json`. Agreement is not accuracy. `vani label` and
+      `vani eval` decide, and d3 is a new candidate under Lappi-decision's pre-registration,
+      which names d1-3B only.
+    - **d3-mini is the run's shadow since 2026-10-19 (owner's go-ahead).**
+      - `decide.local.server` gained `batch_size` and `parallel`, and the run passes them to
+        llama-server (`TestLocalServerGetsBatchAndParallel`).
+      - `.state/config.json` now runs `vllm-d3-mini-Q8_0.gguf` with `batch_size` 8192 and
+        `parallel` 1, and passes `vani config check`. Its deprecated `jev_*` keys were renamed to
+        `openrouter_*` in the same edit.
+      - A bare `vani bench local -n 20` started exactly that server, on Metal, and answered 20 of
+        20 postings across four companies (p50 2.9 s).
+      - Shadow readings recorded before the switch are d1-3B's. Until the per-model shadow id
+        lands, `vani eval` pools them with d3's.
+      - The model file lives in the gitignored `build/models/`. Moving it to
+        `~/Code/research/models/` means updating `model_path`.
+    - `vani bench local -n N` with N below the population now takes postings round-robin across
+      companies (`TestBenchCasesSpreadAcrossCompanies`). It used to take the first N in key
+      order, which is one company's.
+    - Insight cost: one `vani jobs list` (keywords for every browsable posting, blurb learning,
+      scores, sort) took 0.48 s for 5,000 postings of 6 KiB (`BenchmarkJobsInsight5000`,
+      `TestJobsInsightScalesTo5000Postings`).
+    - `ggml-org/vllm-d3-flash-GGUF` (9B, about 9.5 GB at Q8_0) is the stretch candidate. It
+      has not been downloaded.
   - The owner decided on 2026-10-18 to port d1 natively to tessl only if it beats Jev. Jev runs
     only with `OPENROUTER_API_KEY` exported, and its `daily_usd` cap is 0.5. The promotion table has
     one row per primary backend (d1 vs `jev`, d1 vs `llm`), each needing its own 30 labels. A day
@@ -215,7 +374,10 @@ flowchart TD
     OpenRouter model's name (`DropPolicy.calibrated`, `internal/pipeline/runner.go`); `local` is
     only ever the shadow and never drops.
   - **Prompt variant measured:** each option goes out with its fixture description
-    (`jdtriage.Descriptions()`), in fixture order, and the target summary is in the state. The
+    (`jdtriage.Descriptions()`), and the target summary is in the state. The options are in
+    alphabetical order, not fixture order: `decide/jev` builds `criteria` as a Go map, and
+    encoding/json sorts map keys (`decide/jev/jev.go`, `body`). Cloud and local get the same order,
+    so the comparison stays fair. The
     qd.sock scoping session found that the bare option strings change 3 of 12 choices and that a
     reordering can move a probability by up to 0.36. A shadow verdict therefore holds only for this
     variant; an adapter that serves d1 has to send the same descriptions in the same order.
@@ -237,6 +399,30 @@ flowchart TD
     (5073 tokens) was refused with HTTP 400 ("exceeds the available context size (2048 tokens)").
 
 ## Known limits
+
+- **Pay is read from text, by fixed rules (`internal/jobinsight/pay.go`).** Display and browse
+  filters only; no engine rule reads it.
+  - Lever and Ashby now carry their pay into the description (owner's call, 2026-10-19). That
+    changed every Lever and Ashby posting's description hash. On the first run after it,
+    `Reconcile` (`internal/pipeline/reconcile.go`, the `DescriptionHash() != hash` case) marks each
+    one Live with reason `changed` and clears its triage, score, rank and explanation. Each is then
+    re-triaged, re-scored and re-explained (decision and LLM spend, under the daily caps), and every
+    one not hidden in Jobs is listed in the next digest again. Marks and notes are kept (they live
+    in `internal/marks`). A posting dropped before is re-triaged too, and may come back.
+  - Greenhouse's job-board API returns structured pay (`pay_input_ranges`) only from the
+    single-job endpoint with `pay_transparency=true`, not from the list Vani reads
+    (docs.greenhouse.io/job-board.html, checked 2026-10-19). Fetching it would be one request per
+    posting, so Greenhouse pay is whatever the posting's own text says. Workday and page boards are
+    the same.
+  - A bare "$" reads as USD. A Canadian or Australian posting that writes "$" without "CAD"/"AUD"
+    near the amount is read as USD and compared as USD.
+  - No exchange rates: `--min-salary` leaves out a job that states pay only in another currency.
+  - Several ranges in one currency (location bands) become one envelope, so `--min-salary` keeps a
+    role if any band reaches the floor. A range that would stretch the envelope past 3× (an intern
+    band, a variable-pay range) is left out and the earlier ranges stand.
+  - Bounds: 128 KiB of text, 8 KiB of text around currency signs, 4,000 amounts. Measured on this
+    Mac (`BenchmarkParsePay`, min of 3): about 0.12 ms for a 64 KiB posting with one range, and
+    about 2.5 ms for 64 KiB dense with currency signs (the window cap's worst case).
 
 - **llama-server on a Unix socket leaves the socket file behind** (llama.cpp 0.7.0, `--host
   <path>.sock`). It does so even after a clean SIGTERM (exit 0), and the next start on that path
@@ -344,5 +530,24 @@ flowchart TD
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers
     `unsupported`. Fixing that means XPC to the app, or a request queue in the group folder that the
     app serves.
+  - **Mark Applied from the extension (2026-10-19).** The extension offers to mark a tracked job
+    Applied after a final Submit, or from the popup on any page (`jobFind`/`jobMark` native ops,
+    `vani jobs find --url`; `extension/README.md`), in Chrome (native host) and Safari (agent XPC).
+    Done: gh_jid and other job-naming parameters, Greenhouse embeds, apply sub-pages, frames,
+    offers kept in `chrome.storage.session`, a toolbar badge, the Jobs tab reloading when the app
+    comes to the front. Checked end to end with the built `vani-apply-host` and a real `vani` against
+    a seeded ledger (finds, mark, refusals, no shell). Not done or not checked:
+    - **Not run in a live browser.** Loading the unpacked extension in Chrome, the Safari appex, and
+      the agent over a real launchd Mach service (Login Items) were not exercised; the XPC calls were
+      tested over an in-process connection and the extension through `bun test` and `test/dom.html`.
+    - **Submit is not watched on hosts the manifest does not list** (a company careers page). Widening
+      the content-script hosts widens what the extension can read, which is the owner's call; the popup
+      row covers those pages on demand.
+    - **A fixed set of job-naming parameters** (`internal/joburl.IDParams`, mirrored in
+      `extension/src/applied.ts`). A board that tells jobs apart by another parameter is "ambiguous" or
+      unmatched, never guessed; add the name to both lists and the shared vectors.
+    - **Form submitted by script with no Submit button** gives no offer; the popup row still works.
+    - **A frame the top frame cannot reach** (no content script there) shows the question inside the
+      frame, which may be small.
   - **The host's Keychain read has no timeout.** An unanswered macOS prompt leaves a Chrome draft
     waiting until the extension's own timeout fires.

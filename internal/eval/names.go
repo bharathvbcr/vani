@@ -7,6 +7,12 @@ package eval
 // slot's primary backend.
 const LegacyOpenRouterName = "jev"
 
+// LegacyLocalShadow is the shadow backend name every local decision model
+// recorded under until the model was named in it (config.Local.BackendName,
+// "local-<model>-<mode>"). Rows filed under it are read as written: they may
+// pool more than one local model.
+const LegacyLocalShadow = "local"
+
 // Names tells the eval which backend is the configured OpenRouter model, so
 // that old rows filed under LegacyOpenRouterName are read as that model's.
 // The ledger is append-only and never rewritten; this mapping is applied on

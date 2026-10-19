@@ -2,9 +2,10 @@
 // keyboard shortcut. It makes no network requests.
 import type { Bank } from "./types";
 import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, parseBank } from "./bank";
-import { logActivity, loadBank, migrationNote, replaceBank, storageMode, updateBank } from "./store";
+import { logActivity, loadBank, migrationNote, nativeTransport, replaceBank, storageMode, updateBank } from "./store";
 import type { ToBackground, ToContent } from "./messages";
 import { DRAFT_HELP, createDrafter } from "./draft";
+import { type OfferStore, type StoredOffer, createBroker } from "./applied";
 
 const draft = createDrafter();
 
@@ -26,7 +27,71 @@ async function update(fn: (b: Bank) => Bank): Promise<Bank> {
   return locked(() => updateBank(fn));
 }
 
-async function handle(msg: ToBackground): Promise<unknown> {
+/** Job calls answer at once (the agent runs the job), so each is bounded short. */
+const JOB_CALL_MS = 10_000;
+
+/** One bounded native call; an unreachable host is a coded reply, never a throw. */
+async function native(msg: object): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      nativeTransport(msg),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), JOB_CALL_MS); }),
+    ]);
+  } catch {
+    return { error: "the Vani Apply Mac app isn't reachable", code: "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Offers to mark a job Applied are kept per tab in chrome.storage.session, so a stopped
+// worker still has them when the confirmation page loads (memory only where that API is
+// missing). Nothing is ever marked unasked.
+const OFFERS_KEY = "vani.appliedOffers";
+const offerStore: OfferStore | undefined = chrome.storage.session
+  ? {
+    load: async () => {
+      const r = (await chrome.storage.session!.get(OFFERS_KEY))[OFFERS_KEY];
+      return typeof r === "object" && r !== null && !Array.isArray(r) ? r as Record<string, StoredOffer> : {};
+    },
+    save: offers => chrome.storage.session!.set({ [OFFERS_KEY]: offers }),
+  }
+  : undefined;
+const applied = createBroker({ native, store: offerStore });
+
+/** The tab a message acts for. A content script is always its own tab, whatever it claims; the popup is no tab and names one. */
+function actingTab(sender: chrome.runtime.MessageSender, named: unknown): number | undefined {
+  if (sender.tab) return sender.tab.id;
+  return typeof named === "number" && Number.isInteger(named) ? named : undefined;
+}
+
+/** A "✓?" on the toolbar button marks a tab that has a question waiting, for pages the content script does not run on. */
+async function badge(tabId: number | undefined, show: boolean): Promise<void> {
+  if (tabId === undefined || !chrome.action) return;
+  try {
+    await chrome.action.setBadgeText({ tabId, text: show ? "✓?" : "" });
+    if (show) await chrome.action.setBadgeBackgroundColor({ tabId, color: "#2e8b57" });
+  } catch { /* the tab is gone */ }
+}
+
+/** Ask the top frame to show the question for a form that is in a frame. False when it cannot (no script there). */
+async function askTopToShow(tabId: number): Promise<boolean> {
+  try {
+    const r = await chrome.tabs.sendMessage<{ shown?: boolean } | undefined>(tabId, { type: "appliedShow" } satisfies ToContent, { frameId: 0 });
+    return r?.shown === true;
+  } catch {
+    return false;
+  }
+}
+
+// Navigation clears a tab's badge; put it back while the question waits, and forget a closed tab's.
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "complete") void applied.pending(tabId).then(o => { if (o) return badge(tabId, true); }, () => undefined);
+});
+chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); });
+
+async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.type) {
     case "getBank": {
       const bank = await loadBank();
@@ -90,6 +155,41 @@ async function handle(msg: ToBackground): Promise<unknown> {
       if (!r.ok && r.code !== "provider" && r.code !== "bad_request") return { ...r, error: DRAFT_HELP[r.code] };
       return r;
     }
+    case "jobStart": {
+      if (msg.kind !== "suggest" && msg.kind !== "draft") return { error: "unknown job kind", code: "bad_request" };
+      if (typeof msg.request !== "object" || msg.request === null || Array.isArray(msg.request)) return { error: "bad job request", code: "bad_request" };
+      return native({ op: "jobStart", kind: msg.kind, request: msg.request });
+    }
+    case "jobPoll":
+      if (typeof msg.job !== "string" || msg.job.length === 0 || msg.job.length > 64) return { error: "bad job id", code: "bad_request" };
+      return native({ op: "jobResult", job: msg.job });
+    case "appliedSignal": {
+      const tabId = actingTab(sender, msg.tabId);
+      const frame = sender.tab ? sender.frameId ?? 0 : 0;
+      let r = await applied.signal(tabId, msg.url);
+      // A form in a frame has a URL of its own (a Greenhouse embed maps to its posting); the page around it may
+      // be the one Vani tracks. The tab's URL is known only where the extension has access to the page.
+      if ("offer" in r && r.offer === null && frame !== 0 && sender.tab?.url) r = await applied.signal(tabId, sender.tab.url);
+      if ("offer" in r && r.offer && tabId !== undefined) {
+        if (sender.tab) void badge(tabId, true); // the popup is open: no need to flag the button
+        if (frame !== 0) r = { ...r, shownInTop: await askTopToShow(tabId) };
+      }
+      return r;
+    }
+    case "appliedPending":
+      return { offer: await applied.pending(actingTab(sender, msg.tabId)) };
+    case "appliedMark": {
+      const tabId = actingTab(sender, msg.tabId);
+      const r = await applied.mark(tabId);
+      if ("ok" in r) void badge(tabId, false);
+      return r;
+    }
+    case "appliedDismiss": {
+      const tabId = actingTab(sender, msg.tabId);
+      await applied.dismiss(tabId);
+      void badge(tabId, false);
+      return { ok: true };
+    }
     case "replaceBank": {
       const { bank, droppedSecret } = parseBank(msg.json); // throws on a malformed file
       await locked(() => replaceBank(bank));
@@ -100,8 +200,8 @@ async function handle(msg: ToBackground): Promise<unknown> {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg: ToBackground, _sender, sendResponse) => {
-  handle(msg).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+chrome.runtime.onMessage.addListener((msg: ToBackground, sender, sendResponse) => {
+  handle(msg, sender).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
   return true; // reply asynchronously
 });
 

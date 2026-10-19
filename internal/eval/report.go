@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,12 +50,13 @@ type Threshold struct {
 	Rows []ThresholdRow
 }
 
-// ShadowRow compares the shadow backend with the primary and the labels for
-// one slot. Only postings whose shadow answered (it records nothing otherwise)
-// are visible, so Labeled is carried to show how many were not.
+// ShadowRow compares one shadow backend with the primary and the labels for
+// one slot. Labeled counts the labeled postings that backend was asked about,
+// including ones where it was unavailable.
 type ShadowRow struct {
 	Slot           string
-	Labeled        int // labeled postings with triage for the slot
+	Shadow         string // shadow backend name
+	Labeled        int    // labeled postings this shadow was asked about for the slot
 	ShadowAnswered int
 	ShadowCorrect  int
 	BothAnswered   int // primary and shadow both answered
@@ -90,26 +92,95 @@ type Promotion struct {
 	ShadowCorrect   int
 	PrimaryAnswered int // of the same postings, the primary answered
 	PrimaryCorrect  int
+	// ShadowUnavailable counts postings where the shadow was asked and recorded
+	// as unavailable (it errored or timed out). Rows recorded before the router
+	// wrote that reading cannot show their failures.
+	ShadowUnavailable int
+	// Paired counts postings where both the primary and the shadow answered.
+	// PrimaryOnly and ShadowOnly split the paired postings where exactly one of
+	// them matched the label: the only postings that separate the two.
+	Paired      int
+	PrimaryOnly int // primary right, shadow wrong
+	ShadowOnly  int // shadow right, primary wrong
 }
 
-// Verdict is the promotion decision and its reason, with counts.
+const (
+	// MinDiscordant is the fewest paired postings on which the primary and the
+	// shadow differ in correctness before a verdict is given.
+	MinDiscordant = 10
+	// PromotionBound is T: the shadow is promotable only when the one-sided 95%
+	// exact lower bound of ShadowOnly/(PrimaryOnly+ShadowOnly) is at least this.
+	// 0.5 would demand the shadow be shown at least as good; 0.4 allows it to be
+	// a little worse (owner's choice, 2026-10-19).
+	PromotionBound = 0.4
+	// promotionAlpha is the one-sided error rate of that bound.
+	promotionAlpha = 0.05
+)
+
+// Discordant is the number of paired postings where exactly one of the primary
+// and the shadow matched the label.
+func (p Promotion) Discordant() int { return p.PrimaryOnly + p.ShadowOnly }
+
+// ShadowLowerBound is the one-sided 95% exact (Clopper-Pearson) lower bound of
+// the share of discordant postings the shadow got right.
+func (p Promotion) ShadowLowerBound() float64 {
+	return lowerBound(p.ShadowOnly, p.Discordant(), promotionAlpha)
+}
+
+// Verdict is the promotion decision and its reason, with counts. It needs the
+// 30-label floor, the existing no-worse-coverage rule, and then a paired
+// comparison on the postings both answered: at least MinDiscordant of them where
+// exactly one was right, and a lower bound on the shadow's share of those of at
+// least PromotionBound. Never "promotable" on too few disagreements.
 func (p Promotion) Verdict() string {
 	if p.Asked < MinPromotionLabels {
 		return fmt.Sprintf("insufficient labels (%d/%d)", p.Asked, MinPromotionLabels)
 	}
-	pp, okP := ratio(p.PrimaryCorrect, p.PrimaryAnswered)
-	sp, okS := ratio(p.ShadowCorrect, p.ShadowAnswered)
 	switch {
-	case !okP:
+	case p.PrimaryAnswered == 0:
 		return "no primary baseline (the chain answered none of these)"
-	case !okS:
+	case p.ShadowAnswered == 0:
 		return "not promotable: the shadow answered none of these"
-	case sp < pp:
-		return fmt.Sprintf("not promotable: precision %.1f%% < primary %.1f%%", sp*100, pp*100)
 	case p.ShadowAnswered < p.PrimaryAnswered:
 		return fmt.Sprintf("not promotable: coverage %d/%d < primary %d/%d", p.ShadowAnswered, p.Asked, p.PrimaryAnswered, p.Asked)
+	case p.Paired < MinPromotionLabels:
+		return fmt.Sprintf("insufficient paired labels (%d/%d)", p.Paired, MinPromotionLabels)
+	case p.Discordant() < MinDiscordant:
+		return fmt.Sprintf("insufficient disagreements (%d/%d)", p.Discordant(), MinDiscordant)
+	}
+	if lb := p.ShadowLowerBound(); lb < PromotionBound {
+		return fmt.Sprintf("not promotable: shadow right in %d of %d disagreements, lower bound %.2f < %.2f",
+			p.ShadowOnly, p.Discordant(), lb, PromotionBound)
 	}
 	return "promotable"
+}
+
+// lowerBound is the one-sided exact (Clopper-Pearson) lower confidence bound at
+// level 1-alpha for a binomial proportion with k successes in n trials: the p
+// at which P(X >= k) = alpha. It is 0 when k is 0 or n is not positive.
+func lowerBound(k, n int, alpha float64) float64 {
+	if k <= 0 || n <= 0 || k > n {
+		return 0
+	}
+	lg := func(x float64) float64 { v, _ := math.Lgamma(x); return v }
+	tail := func(p float64) float64 {
+		var sum float64
+		for i := k; i <= n; i++ {
+			sum += math.Exp(lg(float64(n)+1) - lg(float64(i)+1) - lg(float64(n-i)+1) +
+				float64(i)*math.Log(p) + float64(n-i)*math.Log1p(-p))
+		}
+		return sum
+	}
+	lo, hi := 0.0, 1.0
+	for i := 0; i < 60; i++ {
+		mid := (lo + hi) / 2
+		if tail(mid) < alpha {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return lo
 }
 
 // Report is the evaluation of ledger records against the label set.
@@ -160,7 +231,8 @@ func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
 	type ck struct{ slot, backend string }
 	cells := map[ck]*Cell{}
 	thr := map[string][]ThresholdRow{}
-	shadow := map[string]*ShadowRow{}
+	type sk struct{ slot, shadow string }
+	shadow := map[sk]*ShadowRow{}
 	type pk struct{ slot, shadow, primary string }
 	promo := map[pk]*Promotion{}
 
@@ -248,21 +320,45 @@ func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
 						p.PrimaryCorrect++
 					}
 				}
+				if shReading == "unavailable" {
+					p.ShadowUnavailable++
+				}
 				if shReading == "answered" {
 					p.ShadowAnswered++
-					if r.Annotations[pre+ledger.AnnTriageSuffixShadow] == want {
+					shadowRight := r.Annotations[pre+ledger.AnnTriageSuffixShadow] == want
+					if shadowRight {
 						p.ShadowCorrect++
+					}
+					if answered {
+						primaryRight := got == want
+						p.Paired++
+						switch {
+						case primaryRight && !shadowRight:
+							p.PrimaryOnly++
+						case shadowRight && !primaryRight:
+							p.ShadowOnly++
+						}
 					}
 				}
 			}
 
-			sr := shadow[sl.Name]
+			// One row per shadow backend: two candidate models never pool.
+			_, asked := r.Annotations[pre+ledger.AnnTriageSuffixShadowReading]
+			sh, answeredShadow := r.Annotations[pre+ledger.AnnTriageSuffixShadow]
+			if !asked && !answeredShadow {
+				continue
+			}
+			sb := r.Annotations[pre+ledger.AnnTriageSuffixShadowBackend]
+			if sb == "" {
+				sb = UnknownBackend
+			}
+			sr := shadow[sk{sl.Name, sb}]
 			if sr == nil {
-				sr = &ShadowRow{Slot: sl.Name}
-				shadow[sl.Name] = sr
+				sr = &ShadowRow{Slot: sl.Name, Shadow: sb}
+				shadow[sk{sl.Name, sb}] = sr
 			}
 			sr.Labeled++
-			if sh, ok := r.Annotations[pre+ledger.AnnTriageSuffixShadow]; ok {
+			if answeredShadow {
 				sr.ShadowAnswered++
 				if sh == want {
 					sr.ShadowCorrect++
@@ -299,8 +395,15 @@ func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
 		if rows, ok := thr[sl.Name]; ok {
 			rep.Thresholds = append(rep.Thresholds, Threshold{Slot: sl.Name, Rows: rows})
 		}
-		if sr, ok := shadow[sl.Name]; ok && sr.ShadowAnswered > 0 {
-			rep.Shadow = append(rep.Shadow, *sr)
+		var shadows []string
+		for k, sr := range shadow {
+			if k.slot == sl.Name && sr.ShadowAnswered > 0 {
+				shadows = append(shadows, k.shadow)
+			}
+		}
+		sort.Strings(shadows)
+		for _, s := range shadows {
+			rep.Shadow = append(rep.Shadow, *shadow[sk{sl.Name, s}])
 		}
 		var rows []pk
 		for k := range promo {
@@ -372,10 +475,10 @@ func (r Report) Markdown() string {
 
 	if len(r.Shadow) > 0 {
 		b.WriteString("\n## Shadow backend\n\n")
-		b.WriteString("Shadow readings are recorded only when the shadow answered, so \"labeled\" is the sample size the shadow was measured against.\n\n")
-		b.WriteString("| slot | labeled | shadow answered | shadow precision | both answered | agreement | disagree | primary right | shadow right |\n|---|---|---|---|---|---|---|---|---|\n")
+		b.WriteString("One row per shadow backend; \"labeled\" is the labeled postings that backend was asked about, including ones where it was unavailable.\n\n")
+		b.WriteString("| slot | shadow | labeled | shadow answered | shadow precision | both answered | agreement | disagree | primary right | shadow right |\n|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, s := range r.Shadow {
-			fmt.Fprintf(&b, "| %s | %d | %d | %s | %d | %s | %d | %d | %d |\n", s.Slot, s.Labeled, s.ShadowAnswered,
+			fmt.Fprintf(&b, "| %s | %s | %d | %d | %s | %d | %s | %d | %d | %d |\n", s.Slot, s.Shadow, s.Labeled, s.ShadowAnswered,
 				pct(s.ShadowCorrect, s.ShadowAnswered), s.BothAnswered, pct(s.Agree, s.BothAnswered),
 				s.Disagree, s.PrimaryRight, s.ShadowRight)
 		}
@@ -383,12 +486,21 @@ func (r Report) Markdown() string {
 
 	if len(r.Promotions) > 0 {
 		b.WriteString("\n## Promotion\n\n")
-		fmt.Fprintf(&b, "Shadow vs each primary backend on the labeled postings the shadow was asked about and that backend held. A verdict needs at least %d of them per row; promotion is a config change you make (decide.lappi.primary), never automatic.\n\n", MinPromotionLabels)
-		b.WriteString("| slot | shadow | primary | asked | shadow precision | shadow coverage | primary precision | primary coverage | verdict |\n|---|---|---|---|---|---|---|---|---|\n")
+		fmt.Fprintf(&b, "Shadow vs each primary backend on the labeled postings the shadow was asked about and that backend held. A verdict needs at least %d of them per row, a shadow that answers at least as often as the primary, and then a paired comparison on the postings both answered: at least %d where exactly one was right, and a one-sided 95%% exact lower bound on the shadow's share of those of at least %.2f. Promotion is a config change you make (decide.lappi.primary), never automatic.\n\n", MinPromotionLabels, MinDiscordant, PromotionBound)
+		b.WriteString("| slot | shadow | primary | asked | shadow precision | shadow coverage | primary precision | primary coverage | shadow unavailable | paired | primary only | shadow only | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		legacy := false
 		for _, p := range r.Promotions {
-			fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %s | %s | %s | %s |\n", p.Slot, p.Shadow, p.Primary, p.Asked,
+			if p.Shadow == LegacyLocalShadow {
+				legacy = true
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %s | %s | %s | %d | %d | %d | %d | %s |\n", p.Slot, p.Shadow, p.Primary, p.Asked,
 				pct(p.ShadowCorrect, p.ShadowAnswered), pct(p.ShadowAnswered, p.Asked),
-				pct(p.PrimaryCorrect, p.PrimaryAnswered), pct(p.PrimaryAnswered, p.Asked), p.Verdict())
+				pct(p.PrimaryCorrect, p.PrimaryAnswered), pct(p.PrimaryAnswered, p.Asked),
+				p.ShadowUnavailable, p.Paired, p.PrimaryOnly, p.ShadowOnly, p.Verdict())
+		}
+		b.WriteString("\n\"primary only\" and \"shadow only\" are paired postings where only that side matched the label. Postings recorded before the router wrote an unavailable shadow reading cannot show shadow failures.\n")
+		if legacy {
+			fmt.Fprintf(&b, "Shadow %q is a row recorded before the model was named in the backend (it pools whichever local model ran then; see docs/FOLLOWUPS.md).\n", LegacyLocalShadow)
 		}
 	}
 	return b.String()

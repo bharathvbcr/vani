@@ -15,7 +15,13 @@ import { type Coverage, bucketOf, coverageLine, coverageOf } from "./coverage";
 import { type FlushResult, type Tracker, createTracker } from "./tracker";
 import { currentText, draftable, suggest } from "./suggest";
 import { readJobInfo } from "./jobinfo";
-import type { JobInfo } from "./draft";
+import { type DraftReply, type JobInfo, buildDraftRequest, parseDraftReply } from "./draft";
+import { classify } from "./classify";
+import { type AppliedFlow, type AppliedUi, createAppliedFlow, offerSubject } from "./applied";
+import {
+  DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, SUGGEST_TIMEOUT_MS, type SuggestField,
+  buildSuggestRequest, parseSuggestReply, runJob,
+} from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground, ToContent } from "./messages";
 
 declare global {
@@ -114,6 +120,8 @@ function ensurePanel(): void {
       .r{display:flex;gap:8px;align-items:center}
       button{font:inherit;border:0;border-radius:6px;padding:5px 9px;cursor:pointer;background:#2e8b57;color:#fff}
       button.s{background:#444}
+      button.g{background:#6b4f9e}
+      button:disabled{opacity:.5;cursor:default}
       .x{background:transparent;color:#aaa;padding:2px 6px}
       .t{flex:1}
       .u{margin:8px 0 0;padding-left:16px;max-height:300px;overflow:auto;color:#ddd}
@@ -126,11 +134,12 @@ function ensurePanel(): void {
       .dr textarea{font:12px system-ui,sans-serif;width:100%;box-sizing:border-box;min-height:110px;background:#1d1d1d;color:#eee;border:1px solid #444;border-radius:6px;padding:6px}
       .m{color:#aaa;font-size:12px}
     </style>
-    <div class="p"><div class="r"><span class="t">Vani</span><button class="f">Fill</button><button class="s">Save answers</button><button class="x" title="Hide">×</button></div>
+    <div class="p"><div class="r"><span class="t">Vani</span><button class="f">Fill</button><button class="g" title="Ask the decision model about the new free-text questions and have Claude draft the essays (labels and the posting only)">Suggest</button><button class="s">Save answers</button><button class="x" title="Hide">×</button></div>
     <ul class="u" hidden></ul></div>`;
   statusEl = panel.querySelector(".t");
   listEl = panel.querySelector(".u");
   panel.querySelector(".f")!.addEventListener("click", () => { void fill(); });
+  panel.querySelector(".g")!.addEventListener("click", () => { void suggestAll(); });
   panel.querySelector(".s")!.addEventListener("click", () => { void capture("saved"); });
   panel.querySelector(".x")!.addEventListener("click", () => host.remove());
   statusEl!.addEventListener("click", () => { if (listEl && listEl.childElementCount > 0) listEl.hidden = !listEl.hidden; });
@@ -209,6 +218,8 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement): Promise
     r = { ok: false, code: "unreachable", error: e instanceof Error ? e.message : String(e) };
   }
   if (!r || typeof r !== "object" || !("ok" in r)) r = { ok: false, code: "bad_reply", error: "No reply from the extension." };
+  // Safari's extension cannot start vani: the same draft runs as a job in the agent.
+  if (!r.ok && r.code === "unsupported") r = await draftJob(ref.info.label, job);
   if (!r.ok) {
     meta.textContent = r.error;
     const ok = btn("s", "Close");
@@ -243,6 +254,92 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement): Promise
   box.append(ta, row);
 }
 
+/** One draft through the agent (Safari's path). Never throws. */
+async function draftJob(question: string, job: JobInfo): Promise<DraftReply> {
+  let request: object;
+  try {
+    request = buildDraftRequest(question, job).request;
+  } catch (e) {
+    return { ok: false, code: "bad_request", error: e instanceof Error ? e.message : String(e) };
+  }
+  const r = await runJob({
+    start: () => send({ type: "jobStart", kind: "draft", request }),
+    poll: id => send({ type: "jobPoll", job: id }),
+  }, DRAFT_JOB_TIMEOUT_MS);
+  if (!r.ok) return { ok: false, code: "unreachable", error: r.error };
+  return parseDraftReply(r.reply);
+}
+
+// --- suggest ----------------------------------------------------------------------
+// One click for the whole page: the new free-text questions (labels only) go
+// to the decision model, Claude drafts the ones it reads as essays, and each
+// draft is inserted yellow, for review, into a field that is still empty. The
+// rest are listed with the reason they are left to you.
+
+/** Per question label: what Suggest said about it, shown in the panel list. */
+const suggestNotes = new Map<string, FieldSuggestion>();
+let suggesting = false;
+
+function suggestButton(): HTMLButtonElement | null {
+  return panel?.querySelector<HTMLButtonElement>("button.g") ?? null;
+}
+
+async function suggestAll(): Promise<void> {
+  if (suggesting || helpBusy) return;
+  const job = jobInfo();
+  // Only empty free-text fields that are neither secret nor self-identification.
+  const refs = lastUnknown.filter(r => draftable(r) && classify(r.info) === "standard");
+  const fields: SuggestField[] = refs.map((r, i) => ({ id: `f${i}`, label: labelOf(r), kind: r.info.kind === "text" ? "text" : "textarea" }));
+  let request: object;
+  try {
+    request = buildSuggestRequest(fields, job);
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e));
+    return;
+  }
+  const byId = new Map(refs.map((r, i) => [`f${i}`, r]));
+  suggesting = true;
+  helpBusy = true;
+  const b = suggestButton();
+  if (b) b.disabled = true;
+  toast(`Asking Vani about ${fields.length} questions…`);
+  try {
+    const r = await runJob({
+      start: () => send({ type: "jobStart", kind: "suggest", request }),
+      poll: id => send({ type: "jobPoll", job: id }),
+      onTick: ms => toast(`Vani is reading ${fields.length} questions and drafting the essays… ${Math.round(ms / 1000)} s`),
+    }, SUGGEST_TIMEOUT_MS);
+    const parsed = r.ok ? parseSuggestReply(r.reply, new Set(byId.keys())) : r;
+    if (!parsed.ok) {
+      toast(parsed.error);
+      return;
+    }
+    let inserted = 0, review = 0, left = 0;
+    for (const s of parsed.fields) {
+      const ref = byId.get(s.id);
+      if (!ref) continue;
+      suggestNotes.set(labelOf(ref), s);
+      if (s.status === "drafted") {
+        // Never over text typed while Suggest ran.
+        const o = insertDraft(ref, s.draft, { overwrite: false });
+        if (o.filled) inserted++;
+        else review++;
+      } else {
+        left++;
+      }
+    }
+    const choices = lastUnknown.length - refs.length;
+    toast(`Suggest: ${inserted} drafted for review (yellow)` + (review ? `, ${review} drafts not inserted (the field has text)` : "") +
+      (left ? `, ${left} for you to answer` : "") + (choices > 0 ? `, ${choices} choice questions for you` : "") +
+      ". Click for why. Read every draft before you submit.");
+  } finally {
+    suggesting = false;
+    helpBusy = false;
+    if (b) b.disabled = false;
+    void scheduleScan();
+  }
+}
+
 /** The questions with no saved answer, with live help for each. */
 function renderUnknown(c: Coverage): void {
   if (!listEl || helpBusy) return;
@@ -254,6 +351,13 @@ function renderUnknown(c: Coverage): void {
     const q = document.createElement("div");
     q.textContent = labelOf(ref);
     li.append(q);
+    const note = suggestNotes.get(labelOf(ref));
+    if (note && note.status !== "drafted") {
+      const m = document.createElement("div");
+      m.className = "m";
+      m.textContent = note.reason || "Left for you to answer.";
+      li.append(m);
+    }
     const row = document.createElement("div");
     row.className = "h";
     if (lastBank && !ref.manual) {
@@ -295,6 +399,85 @@ async function scheduleScan(): Promise<void> {
   }
 }
 
+// --- mark Applied ---------------------------------------------------------------------
+// After a final Submit on a page Vani tracks as a job, ask whether to mark it
+// Applied in the Jobs tab. It only asks: the mark is written when you click, never
+// before. A confirmation page is a new document, so the question can also appear
+// there (the background holds it for the tab). A form in a frame asks the top
+// frame to show the question and shows it itself only if the top frame cannot.
+// Posting text goes into the bar as text, never as markup.
+
+let applied: AppliedFlow | null = null;
+let appliedBar: { host: HTMLElement; text: HTMLElement; yes: HTMLButtonElement; no: HTMLButtonElement } | null = null;
+let appliedHide: ReturnType<typeof setTimeout> | undefined;
+
+function offerText(o: Parameters<typeof offerSubject>[0]): string {
+  return `Did your application go through? Mark ${offerSubject(o)} as Applied in Vani?`;
+}
+
+function ensureAppliedBar(): NonNullable<typeof appliedBar> {
+  if (appliedBar?.host.isConnected) return appliedBar;
+  const host = document.createElement("div");
+  host.setAttribute("data-vani-applied", "");
+  host.style.cssText = "position:fixed;right:16px;top:16px;z-index:2147483647;";
+  const root = host.attachShadow({ mode: "closed" });
+  root.innerHTML = `
+    <style>
+      .p{font:13px system-ui,sans-serif;background:#111;color:#eee;border-radius:10px;padding:10px 12px;box-shadow:0 4px 16px #0006;max-width:340px}
+      .t{margin:0 0 8px}
+      .r{display:flex;gap:8px;justify-content:flex-end}
+      button{font:inherit;border:0;border-radius:6px;padding:5px 9px;cursor:pointer;background:#2e8b57;color:#fff}
+      button.n{background:#444}
+      button:disabled{opacity:.5;cursor:default}
+      [hidden]{display:none}
+    </style>
+    <div class="p" role="status" aria-live="polite"><p class="t"></p><div class="r"><button class="y">Mark Applied</button><button class="n">Not now</button></div></div>`;
+  const bar = {
+    host,
+    text: root.querySelector<HTMLElement>(".t")!,
+    yes: root.querySelector<HTMLButtonElement>(".y")!,
+    no: root.querySelector<HTMLButtonElement>(".n")!,
+  };
+  bar.yes.addEventListener("click", () => { void applied?.accept(); });
+  bar.no.addEventListener("click", () => { void applied?.dismiss(); });
+  document.documentElement.appendChild(host);
+  appliedBar = bar;
+  return bar;
+}
+
+const appliedUi: AppliedUi = {
+  offer(o) {
+    clearTimeout(appliedHide);
+    const b = ensureAppliedBar();
+    b.text.textContent = offerText(o);
+    b.yes.textContent = "Mark Applied";
+    b.yes.disabled = b.no.disabled = false;
+    b.yes.hidden = b.no.hidden = false;
+  },
+  working() {
+    if (appliedBar) { appliedBar.yes.disabled = appliedBar.no.disabled = true; appliedBar.text.textContent = "Marking Applied…"; }
+  },
+  done(o) {
+    const b = ensureAppliedBar();
+    b.text.textContent = `Marked ${offerSubject(o)} as Applied.`;
+    b.yes.hidden = b.no.hidden = true;
+    clearTimeout(appliedHide);
+    appliedHide = setTimeout(() => appliedUi.hide(), 4000);
+  },
+  failed(_o, message) {
+    const b = ensureAppliedBar();
+    b.text.textContent = `Could not mark it Applied: ${preview(message, 160)}`;
+    b.yes.textContent = "Try again";
+    b.yes.disabled = b.no.disabled = false;
+    b.yes.hidden = b.no.hidden = false;
+  },
+  hide() {
+    clearTimeout(appliedHide);
+    appliedBar?.host.remove();
+    appliedBar = null;
+  },
+};
+
 // --- wiring -------------------------------------------------------------------
 
 if (!window.__vaniApply && !coveredByParent()) {
@@ -310,8 +493,17 @@ if (!window.__vaniApply && !coveredByParent()) {
     },
     onDom: () => { void scheduleScan(); },
     onResult: r => announce(r),
+    onSubmit: () => { void applied?.submitted(); },
   });
+  applied = createAppliedFlow({ send, ui: appliedUi, href: () => location.href });
+  if (window.top === window) void applied.resume();
   chrome.runtime.onMessage.addListener((msg: ToContent, _sender, sendResponse) => {
+    if (msg.type === "appliedShow") {
+      // Only the top frame is asked; answering "shown" is what lets the frame stay quiet.
+      if (window.top !== window || !applied) return false;
+      void applied.resume().then(() => sendResponse({ shown: true }), () => sendResponse({ shown: false }));
+      return true;
+    }
     const run: Promise<unknown> = msg.type === "scan" ? scan() : msg.type === "fill" ? fill(msg.overwrite, msg.typeahead) : capture("saved");
     // A sub-frame with nothing to say stays silent so it cannot win the reply race against the frame that has the form.
     const silent = (r: unknown): boolean => {

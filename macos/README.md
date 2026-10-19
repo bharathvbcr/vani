@@ -30,7 +30,7 @@ flowchart TD
     end
 
     subgraph AppBundle["Vani Apply.app"]
-        UI["SwiftUI UI (VaniApply)\nJobs, Answers, Browsers, Activity, Settings"]
+        UI["SwiftUI UI (VaniApply)\nJobs, Pipeline, Answers, Browsers, Activity, Settings"]
         KIT["VaniApplyKit Framework"]
         VAL["BankValidator & Sanitizer\n(Drops secret-looking answers)"]
         STORE["BankStore (CAS Store)\nAdvisory Lock (flock) + Atomic Temp-Rename"]
@@ -158,8 +158,21 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
    - Set the config and state paths in Settings ▸ Claude drafting. Empty means Vani's default
      folder.
    - A saved draft is always marked for review, so forms fill it yellow.
-   - The Chrome extension can ask for a draft through the native host (op `draft`). Safari can't,
-     because its sandboxed appex cannot start `vani`; it answers `unsupported`.
+   - The Chrome extension can ask for a draft through the native host (op `draft`). Safari's
+     sandboxed appex cannot start `vani`, so it answers `unsupported` to that op. Instead, both
+     browsers run drafts and page-wide suggestions as jobs in the agent (below).
+6. **The Vani Apply agent.**
+   - A login item that the app registers with `SMAppService` each time it opens. Approve it in
+     System Settings ▸ General ▸ Login Items; Settings ▸ Browser suggestions shows its state.
+   - launchd starts it on demand when a browser connects to its Mach service,
+     `HAUHVD8M37.dev.vbcr.vani.agent`. The name is prefixed by the App Group id, which is what lets
+     the sandboxed appex look it up. The agent exits after 5 idle minutes.
+   - It runs one job at a time: `vani draft` or `vani suggest`, with the same Keychain key, config
+     and minimal environment as drafting.
+   - Browsers call `jobStart`, then poll `jobResult`. A result nobody fetches is dropped after
+     10 minutes.
+   - It accepts XPC connections only from code signed by team `HAUHVD8M37`, so another process
+     running as you cannot spend your model budget through it.
 
 ## Claude drafting: what is sent and where the key comes from
 

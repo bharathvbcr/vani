@@ -1,0 +1,222 @@
+# Skill and technology terms the keyword extractor looks for in posting text.
+# One term per line: <category> <canonical term>[|alias|alias...]
+# Terms and aliases are matched as whole token sequences, case-insensitively.
+# A canonical term marked with a leading "=" is matched case-sensitively and
+# never as the first word of a sentence: it is also a plain English word
+# ("Go", "Swift", "React"). Its aliases stay case-insensitive.
+# Display casing comes from the canonical term as written here. Company names
+# are left out on purpose: they match the employer's own boilerplate.
+# Category "!" lists stop phrases: they consume their words and count as no
+# term, so "Spark Capital" (an investor) is not Apache Spark.
+
+! Spark Capital
+! Go-to-market|go to market|go-to market
+! Ray Dalio
+
+lang =Go|golang
+lang Rust
+lang Python
+lang TypeScript|ts
+lang JavaScript|js
+lang Java
+lang Kotlin
+lang =Swift
+lang C++|cpp
+lang C#|csharp
+lang Scala
+lang =R
+lang =Ruby
+lang PHP
+lang Elixir
+lang Haskell
+lang OCaml
+lang =Julia
+lang Zig
+lang SQL
+lang Bash|shell scripting
+lang Lua
+lang Dart
+lang Solidity
+lang Verilog|SystemVerilog
+lang VHDL
+lang MATLAB
+
+llm LLM|LLMs|large language model|large language models
+llm RAG|retrieval-augmented generation|retrieval augmented generation
+llm agents|AI agents|agentic|agent loops
+llm tool calling|tool-calling|function calling|tool use
+llm prompt engineering
+llm fine-tuning|fine tuning|finetuning
+llm RLHF
+llm DPO
+llm LoRA|QLoRA
+llm embeddings
+llm vector database|vector databases|vector search|vector store
+llm reranking|rerankers|reranker
+llm evals|LLM evaluation|model evaluation|evaluation harness
+llm guardrails
+llm inference
+llm vLLM
+llm TensorRT|TensorRT-LLM
+llm llama.cpp
+llm Triton|Triton Inference Server
+llm quantization|low-bit quantization|int8|int4
+llm speculative decoding
+llm KV cache
+llm transformers|transformer
+llm diffusion models|diffusion model
+llm multimodal
+llm LangChain
+llm LlamaIndex
+llm MCP|Model Context Protocol
+llm Hugging Face|HuggingFace
+
+ml machine learning|ML
+ml deep learning
+ml PyTorch
+ml TensorFlow
+ml JAX
+ml scikit-learn|sklearn
+ml XGBoost
+ml computer vision
+ml NLP|natural language processing
+ml reinforcement learning
+ml recommender systems|recommendation systems
+ml MLOps
+ml distributed training
+ml model serving
+ml CUDA
+ml =Metal
+ml GPU|GPUs
+ml GPU kernels|CUDA kernels|kernels
+ml ONNX
+ml MLX
+ml Core ML|CoreML
+ml TPU|TPUs
+ml NCCL
+ml DeepSpeed
+ml FSDP
+ml =Ray
+ml MLflow
+ml Weights & Biases|wandb
+ml statistics
+ml A/B testing|experimentation
+
+data =Spark|Apache Spark|PySpark
+data Kafka
+data Flink
+data Airflow
+data dbt
+data Snowflake
+data BigQuery
+data Redshift
+data Databricks
+data data pipelines|data pipeline|ETL|ELT
+data data warehouse|data warehousing
+data Pandas
+data Polars
+data NumPy
+data Postgres|PostgreSQL
+data MySQL
+data SQLite
+data MongoDB
+data Redis
+data Cassandra
+data DynamoDB
+data Elasticsearch|OpenSearch
+data ClickHouse
+data DuckDB
+data Parquet
+data Tableau
+data Looker
+
+infra Kubernetes|k8s
+infra Docker|containers
+infra Terraform
+infra AWS|Amazon Web Services
+infra GCP|Google Cloud
+infra Azure
+infra Linux
+infra CI/CD|continuous integration
+infra GitHub Actions
+infra observability
+infra Prometheus
+infra Grafana
+infra OpenTelemetry
+infra SRE|site reliability
+infra distributed systems
+infra microservices
+infra gRPC
+infra =REST|REST APIs|RESTful
+infra GraphQL
+infra Protobuf|protocol buffers
+infra serverless
+infra Nginx
+infra =Envoy
+infra load balancing
+
+systems performance engineering|performance optimization|performance tuning
+systems profiling
+systems benchmarking
+systems concurrency
+systems low latency|low-latency
+systems high throughput|high-throughput
+systems memory management
+systems compilers|compiler
+systems LLVM
+systems operating systems
+systems embedded systems
+systems firmware
+systems FPGA
+systems SIMD
+systems WebAssembly|Wasm
+systems cgo|FFI
+
+web =React|React.js|ReactJS
+web Next.js|NextJS
+web Vue|Vue.js
+web Angular
+web Svelte
+web Node.js|NodeJS
+web Deno
+web Django
+web Flask
+web FastAPI
+web =Rails|Ruby on Rails
+web Spring Boot|Spring Framework
+web .NET|dotnet|ASP.NET
+web HTML
+web CSS
+web Tailwind
+web frontend|front-end
+web backend|back-end
+web full stack|full-stack|fullstack
+
+mobile iOS
+mobile Android
+mobile SwiftUI
+mobile Jetpack Compose
+mobile React Native
+mobile Flutter
+mobile macOS
+
+security security engineering|application security|AppSec
+security cryptography
+security OAuth
+security penetration testing|pentesting
+security threat modeling
+security zero trust
+security SOC 2|SOC2
+security IAM
+
+practice system design
+practice API design
+practice code review
+practice unit testing|integration testing|test automation
+practice open source|open-source
+practice technical writing
+practice research engineering|research engineer
+practice publications|NeurIPS|ICML|ICLR
+practice mentoring
+practice on-call|oncall
+practice agile|Scrum

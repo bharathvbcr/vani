@@ -39,7 +39,7 @@ func TestSelectIncludeExcludeAndOrder(t *testing.T) {
 		// Unsure at triage, then scored and explained: still belongs with the unsure ones.
 		rec("gh:a:10", posting.Explained, "WasUnsure", map[string]string{"rank": "99", "triage.unsure": `slot "sponsorship" abstained`}),
 	}
-	md, keys := Render(recs, day, Counts{New: 5, Dropped: 2, Dead: 1})
+	md, keys := Render(recs, nil, day, Counts{New: 5, Dropped: 2, Dead: 1})
 	want := []posting.Key{"gh:a:6", "gh:a:5", "gh:a:7", "gh:a:8", "gh:a:10", "gh:a:9"}
 	if len(keys) != len(want) {
 		t.Fatalf("keys %v, want %v", keys, want)
@@ -62,8 +62,44 @@ func TestSelectIncludeExcludeAndOrder(t *testing.T) {
 	}
 }
 
+// A run with scoring off (no devprism.binary) explains postings that carry no
+// rank. They must not be headed as ranked: that is a skipped stage passing for
+// a ranking.
+func TestUnscoredRolesAreNotHeadedRanked(t *testing.T) {
+	unscored := []ledger.Record{
+		rec("gh:a:1", posting.Explained, "One", map[string]string{"explanation": "x"}),
+		rec("gh:a:2", posting.Explained, "Two", map[string]string{"rank": "", "explanation": "y"}),
+	}
+	md, keys := Render(unscored, nil, day, Counts{})
+	if len(keys) != 2 {
+		t.Fatalf("keys %v, want both unscored roles", keys)
+	}
+	if strings.Contains(md, "Ranked roles") {
+		t.Errorf("unscored roles headed as ranked:\n%s", md)
+	}
+	if !strings.Contains(md, "## Not ranked (2)") {
+		t.Errorf("missing not-ranked heading:\n%s", md)
+	}
+
+	mixed := append(unscored, rec("gh:a:3", posting.Explained, "Three", map[string]string{"rank": "70"}))
+	md, keys = Render(mixed, nil, day, Counts{})
+	want := []posting.Key{"gh:a:3", "gh:a:1", "gh:a:2"}
+	for i := range want {
+		if len(keys) != len(want) || keys[i] != want[i] {
+			t.Fatalf("keys %v, want %v", keys, want)
+		}
+	}
+	ranked, notRanked := strings.Index(md, "## Ranked roles (1)"), strings.Index(md, "## Not ranked (2)")
+	if ranked < 0 || notRanked < 0 || ranked > notRanked {
+		t.Errorf("want Ranked roles (1) before Not ranked (2):\n%s", md)
+	}
+	if strings.Index(md, "Three") > notRanked {
+		t.Errorf("ranked role rendered under the not-ranked heading:\n%s", md)
+	}
+}
+
 func TestEmptyDigest(t *testing.T) {
-	md, keys := Render(nil, day, Counts{})
+	md, keys := Render(nil, nil, day, Counts{})
 	if len(keys) != 0 || !strings.Contains(md, "No new roles today.") {
 		t.Fatalf("empty digest wrong: %q %v", md, keys)
 	}
@@ -74,7 +110,7 @@ func TestEscapingMaliciousTitle(t *testing.T) {
 		"explanation": "Great.\n\n# Injected\n[click](javascript:alert(1)) ![img](http://x/y.png)",
 	})
 	r.Posting.Company = "Co [x](http://y)"
-	md, _ := Render([]ledger.Record{r}, day, Counts{})
+	md, _ := Render([]ledger.Record{r}, nil, day, Counts{})
 	for _, bad := range []string{"[evil](", "\n# heading", "\n# Injected", "](javascript", "<script>", "![img]("} {
 		if strings.Contains(md, bad) {
 			t.Errorf("unescaped %q in:\n%s", bad, md)
@@ -105,7 +141,7 @@ func TestBadURLsNotLinked(t *testing.T) {
 	for _, u := range []string{"javascript:alert(1)", "data:text/html,x", "https://a.com/x> [y](z)", "", "https://a.com/ b"} {
 		r := rec("gh:a:1", posting.Explained, "T", nil)
 		r.Posting.URL = u
-		md, _ := Render([]ledger.Record{r}, day, Counts{})
+		md, _ := Render([]ledger.Record{r}, nil, day, Counts{})
 		if !strings.Contains(md, "(no valid link)") {
 			t.Errorf("url %q was linked:\n%s", u, md)
 		}
@@ -122,12 +158,12 @@ func TestUnsureReasonsAndTriage(t *testing.T) {
 		"gap.coverage_pct":           "60",
 	})
 	r.Posting.Remote = true
-	md, _ := Render([]ledger.Record{r}, day, Counts{})
+	md, _ := Render([]ledger.Record{r}, nil, day, Counts{})
 	for _, want := range []string{
 		"Why unsure: sponsorship read as unclear; work\\_mode read as maybe hybrid",
 		// Coverage is gap.coverage_pct, not the rank (which may carry an
 		// employer-preference boost).
-		"- role_fit: good", "- seniority: senior", "Must-have coverage: 60%", "Berlin (remote)",
+		"- role_fit: good", "- seniority: senior", "Must-have coverage: 60%", "- Where: Berlin · Remote",
 		"<https://example.com/jobs/gh:a:1>",
 	} {
 		if !strings.Contains(md, want) {
@@ -135,7 +171,7 @@ func TestUnsureReasonsAndTriage(t *testing.T) {
 		}
 	}
 	empty := rec("gh:a:2", posting.Unsure, "X", nil)
-	md, _ = Render([]ledger.Record{empty}, day, Counts{})
+	md, _ = Render([]ledger.Record{empty}, nil, day, Counts{})
 	if !strings.Contains(md, "no triage reading recorded") {
 		t.Errorf("unsure without readings must say so:\n%s", md)
 	}
@@ -154,7 +190,7 @@ func TestEscapeBounds(t *testing.T) {
 func TestWriteAtomicPathAndKeys(t *testing.T) {
 	dir := t.TempDir()
 	recs := []ledger.Record{rec("gh:a:1", posting.Explained, "T", nil), rec("gh:a:2", posting.Live, "L", nil)}
-	path, keys, err := Write(dir, day, recs, Counts{New: 1})
+	path, keys, err := Write(dir, day, recs, nil, Counts{New: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +209,7 @@ func TestWriteAtomicPathAndKeys(t *testing.T) {
 		t.Errorf("temp files left: %v", entries)
 	}
 	// Same day again with new roles: the first file is kept, a -2 file is added.
-	p2, k2, err := Write(dir, day, []ledger.Record{rec("gh:a:3", posting.Explained, "Later", nil)}, Counts{})
+	p2, k2, err := Write(dir, day, []ledger.Record{rec("gh:a:3", posting.Explained, "Later", nil)}, nil, Counts{})
 	if err != nil || p2 != filepath.Join(dir, "digests", "2026-10-18-2.md") || len(k2) != 1 {
 		t.Fatalf("second digest: %s %v %v", p2, k2, err)
 	}
@@ -181,14 +217,14 @@ func TestWriteAtomicPathAndKeys(t *testing.T) {
 		t.Error("first digest was overwritten")
 	}
 	// Same day with nothing new: nothing written, existing path returned.
-	p3, k3, err := Write(dir, day, nil, Counts{})
+	p3, k3, err := Write(dir, day, nil, nil, Counts{})
 	if err != nil || p3 != path || len(k3) != 0 {
 		t.Fatalf("empty rerun: %s %v %v", p3, k3, err)
 	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 2 {
 		t.Errorf("files: %v", entries)
 	}
-	if _, _, err := Write("", day, nil, Counts{}); err == nil {
+	if _, _, err := Write("", day, nil, nil, Counts{}); err == nil {
 		t.Error("empty state dir accepted")
 	}
 }

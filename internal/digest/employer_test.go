@@ -20,7 +20,7 @@ func TestEmployerBadgeShownAndBoostExplained(t *testing.T) {
 	unscored := rec("gh:a:3", posting.Explained, "Unscored", map[string]string{
 		ledger.AnnEmployer: "likely non-profit (IRS exempt organizations list) (exact name match)",
 	})
-	md, keys := Render([]ledger.Record{plain, boosted, unscored}, day, Counts{})
+	md, keys := Render([]ledger.Record{plain, boosted, unscored}, nil, day, Counts{})
 	if len(keys) != 3 || keys[0] != "gh:a:1" || keys[1] != "gh:a:2" {
 		t.Fatalf("order %v: the boosted rank must sort first", keys)
 	}
@@ -42,7 +42,7 @@ func TestEmployerBadgeIsEscaped(t *testing.T) {
 	r := rec("gh:a:1", posting.Explained, "X", map[string]string{
 		ledger.AnnEmployer: "likely non-profit [click](javascript:alert(1))\n# heading",
 	})
-	md, _ := Render([]ledger.Record{r}, day, Counts{})
+	md, _ := Render([]ledger.Record{r}, nil, day, Counts{})
 	if strings.Contains(md, "[click](") || strings.Contains(md, "\n# heading") {
 		t.Fatalf("badge not escaped:\n%s", md)
 	}

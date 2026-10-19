@@ -36,7 +36,9 @@ commands:
   daemon                     run the scheduler in the foreground
   run-once                   run the pipeline once and write the digest
   digest [--date YYYY-MM-DD] write the digest for pending roles
-  status                     show ledger counts by status
+  status [--json]            show ledger counts by status; --json adds the last run's outcome,
+                             today's spend against each cap and the decision-model setup
+                             (reads the ledger without its lock)
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
@@ -55,15 +57,34 @@ commands:
                              check and install a catalog drafted elsewhere ({drafted_by?,fit,gap,check})
   reasons check              validate the catalog against the current target summary
   jobs list [--json] [--view new|saved|applied|hidden|all] [--q TEXT] [--limit N]
-                             browse retrieved roles (reads the ledger without its lock)
+            [--sort default|priority|relevance|fresh|company] [--fit LIST]
+            [--work-mode LIST] [--sponsorship LIST] [--max-age DAYS] [--open] [--half-life DAYS]
+            [--state LIST] [--area LIST] [--remote | --or-remote]
+                             browse retrieved roles (reads the ledger without its lock), with
+                             freshness, display-only relevance/priority scores, keywords, and the
+                             places and remote listing the board's location names (--or-remote:
+                             in those states/areas, or listed as remote)
+  jobs stats [--json] [same selection flags as list]
+                             distributions over the selection: fit, age, scores, companies, keywords,
+                             US states, areas and remote listings
   jobs show [--json] KEY     one role with its description
+  jobs find [--json] --url URL
+                             which tracked role a page is (scheme, host and path against url and
+                             apply_url; query and fragment ignored); read-only, never fetches
   jobs mark [--json] KEY saved|applied|hidden|clear
                              record what you did with a role (state dir marks/, never the ledger)
   jobs note [--json] KEY TEXT
                              a private note on a role ("" clears it); never sent to a model
   retriage [--dry-run]       return postings triaged with no backend reading to live
+  bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
+              [--parallel N] [--json]
+                             replay postings the primary already read through local decision
+                             models; per-slot agreement, confusion, calibration and latency
+                             (Metal only, no API key, never writes the ledger)
   draft                      draft one application answer: JSON request on stdin, JSON reply
                              on stdout (spends from the daily llm budget)
+  suggest                    triage a form's new fields with the decision model and draft the
+                             essays: JSON request on stdin, JSON reply on stdout
   launchd plist [--binary P] [--label L]
                              print a launchd agent plist (never installs it)
 
@@ -146,12 +167,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdKB(args[1:])
 	case "draft":
 		cmdErr = e.cmdDraft(args[1:])
+	case "suggest":
+		cmdErr = e.cmdSuggest(args[1:])
 	case "reasons":
 		cmdErr = e.cmdReasons(args[1:])
 	case "jobs":
 		cmdErr = e.cmdJobs(args[1:])
 	case "retriage":
 		cmdErr = e.cmdRetriage(args[1:])
+	case "bench":
+		cmdErr = e.cmdBench(args[1:])
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}
@@ -284,8 +309,13 @@ func (e *env) cmdRunOnce(args []string) error {
 }
 
 func (e *env) cmdStatus(args []string) error {
-	if err := parse(e.newFlags("status"), args); err != nil {
+	fs := e.newFlags("status")
+	asJSON := fs.Bool("json", false, "one JSON object on stdout: last run, ledger, spend, configuration")
+	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *asJSON {
+		return e.statusReport()
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {

@@ -72,6 +72,8 @@ public typealias KeyLookup = @Sendable () throws -> String?
 
 public enum Keychain {
     public static let anthropicService = "anthropic-api-key"
+    /// The decision model's key (OpenRouter), passed to `vani suggest` as OPENROUTER_API_KEY.
+    public static let openRouterService = "openrouter-api-key"
 
     /// The generic password for (service, current user), or nil when there is none.
     /// macOS asks the user the first time a new binary reads the item.
@@ -108,18 +110,27 @@ public struct DraftRunner: Sendable {
     /// The Anthropic workspace for a key not scoped to one (ANTHROPIC_WORKSPACE_ID).
     public let workspace: String?
     let key: KeyLookup
+    /// The OpenRouter key for the decision model, read only for `vani suggest`.
+    let decisionKey: KeyLookup
     let timeout: TimeInterval
+    /// Ceiling on each Keychain read, prompt included.
+    public static let keychainTimeout: TimeInterval = 60
+    let keychainTimeout: TimeInterval
 
     public init(vaniBinary: URL, configPath: String? = nil, stateDir: String? = nil,
                 workspace: String? = nil,
                 timeout: TimeInterval = DraftRunner.timeout,
-                key: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.anthropicService) }) {
+                keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
+                key: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.anthropicService) },
+                decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) {
         self.vaniBinary = vaniBinary
         self.configPath = configPath
         self.stateDir = stateDir
         self.workspace = workspace
         self.timeout = timeout
+        self.keychainTimeout = keychainTimeout
         self.key = key
+        self.decisionKey = decisionKey
     }
 
     /// Validate a request given as Foundation JSON objects (from a browser) into a DraftRequest.
@@ -137,30 +148,88 @@ public struct DraftRunner: Sendable {
 
     /// Run one draft. Never throws: every failure is a reply with a code.
     public func run(_ request: DraftRequest) -> DraftReply {
-        guard FileManager.default.isExecutableFile(atPath: vaniBinary.path) else {
-            return .failure("config", "the vani binary is missing at \(vaniBinary.path)")
-        }
-        let apiKey: String?
-        do { apiKey = try key() } catch {
-            return .failure("keychain", String(describing: error))
-        }
         let input: Data
         do { input = try JSONEncoder().encode(request) } catch {
             return .failure("bad_request", "could not encode the request")
         }
+        switch invoke("draft", input: input, timeout: timeout) {
+        case let .failure(f):
+            return f
+        case let .output(data):
+            guard let reply = try? JSONDecoder().decode(DraftReply.self, from: data),
+                  reply.draft != nil || reply.error != nil else {
+                return .failure("provider", "vani draft exited without a reply")
+            }
+            return reply
+        }
+    }
 
+    /// Run `vani <kind>` on a JSON request for the agent and return the reply
+    /// as JSON bytes: vani's own object when it wrote one (it always has
+    /// "error" on failure), else a {"error","code"} object. Never throws.
+    public func runJob(_ kind: JobKind, input: Data) -> Data {
+        let failure: DraftReply
+        switch invoke(kind.rawValue, input: input, timeout: kind == .draft ? timeout : kind.timeout, withDecisionKey: kind == .suggest) {
+        case let .failure(f):
+            failure = f
+        case let .output(data):
+            if (try? JSONSerialization.jsonObject(with: data)) is [String: Any] { return data }
+            failure = .failure("provider", "vani \(kind.rawValue) exited without a reply")
+        }
+        return (try? JSONSerialization.data(withJSONObject: failure.asJSONObject)) ?? Data(#"{"error":"encoding failed","code":"provider"}"#.utf8)
+    }
+
+    enum Invocation {
+        case output(Data)
+        case failure(DraftReply)
+    }
+
+    /// A Keychain read can block on a macOS "allow access" prompt that nobody
+    /// answers; the agent has one job slot, so the wait is capped. A read that
+    /// outlives the cap is abandoned (its thread ends when the prompt does).
+    static func bounded(_ lookup: @escaping KeyLookup, seconds: TimeInterval) throws -> String? {
+        let done = DispatchSemaphore(value: 0)
+        let box = KeyBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.set(Result { try lookup() })
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + seconds) == .success, let r = box.get() else {
+            throw BankError("the Keychain prompt was not answered within \(Int(seconds)) s; allow Vani Apply to read the key, then try again")
+        }
+        return try r.get()
+    }
+
+    /// Start `vani <subcommand>` with the keys in its environment only. The
+    /// decision key is optional: without it (no Keychain item, or access
+    /// denied) vani skips the OpenRouter model and asks Claude instead.
+    func invoke(_ subcommand: String, input: Data, timeout: TimeInterval, withDecisionKey: Bool = false) -> Invocation {
+        guard FileManager.default.isExecutableFile(atPath: vaniBinary.path) else {
+            return .failure(.failure("config", "the vani binary is missing at \(vaniBinary.path)"))
+        }
+        let apiKey: String?
+        do { apiKey = try Self.bounded(key, seconds: keychainTimeout) } catch {
+            return .failure(.failure("keychain", String(describing: error)))
+        }
         var env = VaniProcess.environment(configPath: configPath, stateDir: stateDir)
         if let apiKey, !apiKey.isEmpty { env["ANTHROPIC_API_KEY"] = apiKey }
         if let workspace, !workspace.isEmpty { env["ANTHROPIC_WORKSPACE_ID"] = workspace }
-
-        let out = VaniProcess.run(vaniBinary, arguments: ["draft"], environment: env, input: input,
-                                  timeout: timeout, maxOutputBytes: Self.maxOutputBytes)
-        if let launchError = out.launchError { return .failure("config", launchError) }
-        if out.timedOut { return .failure("timeout", "vani draft did not finish within \(Int(timeout)) s") }
-        guard let reply = try? JSONDecoder().decode(DraftReply.self, from: out.stdout),
-              reply.draft != nil || reply.error != nil else {
-            return .failure("provider", "vani draft exited \(out.status ?? -1) without a reply")
+        if withDecisionKey, let k = try? Self.bounded(decisionKey, seconds: keychainTimeout), !k.isEmpty {
+            env["OPENROUTER_API_KEY"] = k
         }
-        return reply
+
+        let out = VaniProcess.run(vaniBinary, arguments: [subcommand], environment: env, input: input,
+                                  timeout: timeout, maxOutputBytes: Self.maxOutputBytes)
+        if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
+        if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(timeout)) s")) }
+        return .output(out.stdout)
     }
+}
+
+/// One Keychain result crossing threads.
+private final class KeyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<String?, Error>?
+    func set(_ v: Result<String?, Error>) { lock.lock(); value = v; lock.unlock() }
+    func get() -> Result<String?, Error>? { lock.lock(); defer { lock.unlock() }; return value }
 }

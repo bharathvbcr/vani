@@ -45,7 +45,17 @@ type Config struct {
 	Model        string
 	ContextSize  int           // zero means DefaultContextSize
 	StartTimeout time.Duration // zero means DefaultStartTimeout
+	// BatchSize sets llama.cpp's logical and physical batch (-b, -ub). Zero
+	// keeps llama.cpp's default. Decision models that read the whole prompt in
+	// one batch (vllm-d3) need it at least as large as the longest prompt.
+	BatchSize int
+	// Parallel sets -np. Zero keeps llama.cpp's auto (unified KV pool); an
+	// explicit value splits ContextSize across that many slots.
+	Parallel int
 }
+
+// MaxParallel bounds Config.Parallel.
+const MaxParallel = 16
 
 // Server is a running server. Endpoint is its decision URL.
 type Server struct {
@@ -55,6 +65,24 @@ type Server struct {
 	exited chan struct{}
 	stderr *capped
 	once   sync.Once
+}
+
+// args is the llama-server command line for a validated cfg.
+// Metal only, every layer: CPU is never a fallback. Without MTL0 llama.cpp
+// exits at once ("invalid device"), so the run goes on without the shadow
+// rather than measuring a different numeric path. -np stays on auto unless
+// Parallel is set, which keeps the KV pool unified (an explicit -np splits -c
+// across slots).
+func args(cfg Config, port int) []string {
+	a := []string{"-m", cfg.Model, "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+		"-c", strconv.Itoa(cfg.ContextSize), "--device", "MTL0", "-ngl", "all"}
+	if cfg.BatchSize > 0 {
+		a = append(a, "-b", strconv.Itoa(cfg.BatchSize), "-ub", strconv.Itoa(cfg.BatchSize))
+	}
+	if cfg.Parallel > 0 {
+		a = append(a, "-np", strconv.Itoa(cfg.Parallel))
+	}
+	return a
 }
 
 // Start launches the server and returns once /health answers ok. On any
@@ -78,6 +106,12 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	case cfg.StartTimeout < 0 || cfg.StartTimeout > MaxStartTimeout:
 		return nil, fmt.Errorf("localserver: start timeout %s outside (0, %s]", cfg.StartTimeout, MaxStartTimeout)
 	}
+	if cfg.BatchSize != 0 && (cfg.BatchSize < 32 || cfg.BatchSize > cfg.ContextSize) {
+		return nil, fmt.Errorf("localserver: batch size %d outside 32..%d (the context size)", cfg.BatchSize, cfg.ContextSize)
+	}
+	if cfg.Parallel < 0 || cfg.Parallel > MaxParallel {
+		return nil, fmt.Errorf("localserver: parallel %d outside 0..%d", cfg.Parallel, MaxParallel)
+	}
 	port, err := freePort()
 	if err != nil {
 		return nil, err
@@ -86,12 +120,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 
 	// Not exec.CommandContext: the server must outlive Start's context and be
 	// stopped by Stop, gracefully.
-	// Metal only, every layer: CPU is never a fallback. Without MTL0 llama.cpp
-	// exits at once ("invalid device"), so the run goes on without the shadow
-	// rather than measuring a different numeric path. -np stays on auto, which
-	// keeps the KV pool unified (an explicit -np splits -c across slots).
-	cmd := exec.Command(cfg.Binary, "-m", cfg.Model, "--host", "127.0.0.1", "--port", strconv.Itoa(port),
-		"-c", strconv.Itoa(cfg.ContextSize), "--device", "MTL0", "-ngl", "all")
+	cmd := exec.Command(cfg.Binary, args(cfg, port)...)
 	cmd.Env = minimalEnv()
 	cmd.Stdout = io.Discard
 	s := &Server{Endpoint: base + Path, cmd: cmd, exited: make(chan struct{}), stderr: &capped{limit: maxStderr}}

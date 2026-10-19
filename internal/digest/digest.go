@@ -3,6 +3,11 @@
 // Every field that came from a job board (title, company, location,
 // explanation, URL) is untrusted: it is escaped so it cannot add links,
 // headings, HTML or extra lines to the digest.
+//
+// The digest also honours the user's Jobs marks (internal/marks), and only the
+// marks: it is handed a key-to-mark map, never a note. A hidden role is left
+// out and its key is not returned, so it stays pending rather than Digested;
+// saved roles are listed again under Saved until the user moves on.
 package digest
 
 import (
@@ -19,6 +24,8 @@ import (
 	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/location"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -28,6 +35,7 @@ const (
 	maxFieldRunes = 300
 	maxExplainLen = 2000
 	maxSameDay    = 50
+	maxSaved      = 50
 )
 
 // TriageSlots are the triage annotations shown for every role, in order.
@@ -41,15 +49,35 @@ type Counts struct {
 }
 
 // Select returns the records that belong in a digest, in digest order:
-// Explained by score descending (missing score last), then Unsure by the same
-// order. Digested and every other status are excluded.
-func Select(recs []ledger.Record) []ledger.Record {
+// Explained by rank descending (unranked last, by key), then Unsure by the
+// same order. Digested and every other status are excluded, and so is every
+// role the user hid in Jobs.
+func Select(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
-		if r.Status == posting.Explained || r.Status == posting.Unsure {
+		if (r.Status == posting.Explained || r.Status == posting.Unsure) && m[r.Key] != marks.Hidden {
 			out = append(out, r)
 		}
 	}
+	sortDigest(out)
+	return out
+}
+
+// Saved returns the roles the user saved in Jobs whose posting is still
+// listed (not dead, not a duplicate), whatever their pipeline status, in
+// digest order.
+func Saved(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record {
+	var out []ledger.Record
+	for _, r := range recs {
+		if m[r.Key] == marks.Saved && r.Status != posting.Dead && r.Status != posting.Duplicate {
+			out = append(out, r)
+		}
+	}
+	sortDigest(out)
+	return out
+}
+
+func sortDigest(out []ledger.Record) {
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if IsUnsure(a) != IsUnsure(b) {
@@ -65,7 +93,6 @@ func Select(recs []ledger.Record) []ledger.Record {
 		}
 		return a.Key < b.Key
 	})
-	return out
 }
 
 // IsUnsure reports whether triage could not decide this posting. The pipeline
@@ -96,19 +123,27 @@ func Coverage(r ledger.Record) (float64, bool) {
 	return v, true
 }
 
-// Render builds the Markdown for date and returns the keys it includes, in
-// order, so the caller can mark them Digested after the file is written.
-func Render(recs []ledger.Record, date time.Time, c Counts) (string, []posting.Key) {
-	sel := Select(recs)
+// Render builds the Markdown for date and returns the keys of the new roles it
+// includes, in order, so the caller can mark them Digested after the file is
+// written. m is the user's Jobs marks: hidden roles are left out and their
+// keys not returned; saved roles are listed again under Saved, and that list
+// adds no keys (a saved role is Digested only when it is listed as new).
+func Render(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, c Counts) (string, []posting.Key) {
+	sel := Select(recs, m)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Vani digest %s\n\n", date.Format("2006-01-02"))
 
-	var explained, unsure []ledger.Record
+	// Select puts ranked roles before unranked ones, so splitting keeps order.
+	var ranked, unranked, unsure []ledger.Record
 	for _, r := range sel {
-		if !IsUnsure(r) {
-			explained = append(explained, r)
-		} else {
+		_, ok := Rank(r)
+		switch {
+		case IsUnsure(r):
 			unsure = append(unsure, r)
+		case ok:
+			ranked = append(ranked, r)
+		default:
+			unranked = append(unranked, r)
 		}
 	}
 	keys := make([]posting.Key, 0, len(sel))
@@ -116,9 +151,20 @@ func Render(recs []ledger.Record, date time.Time, c Counts) (string, []posting.K
 	if len(sel) == 0 {
 		b.WriteString("No new roles today.\n\n")
 	}
-	if len(explained) > 0 {
-		fmt.Fprintf(&b, "## Ranked roles (%d)\n\n", len(explained))
-		for _, r := range explained {
+	if len(ranked) > 0 {
+		fmt.Fprintf(&b, "## Ranked roles (%d)\n\n", len(ranked))
+		for _, r := range ranked {
+			writeRole(&b, r)
+			keys = append(keys, r.Key)
+		}
+	}
+	// A posting explained without a rank was never scored (scoring off, or
+	// a record from before it was on). Heading it as ranked would let a
+	// skipped stage pass for a ranking.
+	if len(unranked) > 0 {
+		fmt.Fprintf(&b, "## Not ranked (%d)\n\n", len(unranked))
+		b.WriteString("DevPrism did not score these, so they are in no particular order.\n\n")
+		for _, r := range unranked {
 			writeRole(&b, r)
 			keys = append(keys, r.Key)
 		}
@@ -131,26 +177,42 @@ func Render(recs []ledger.Record, date time.Time, c Counts) (string, []posting.K
 			keys = append(keys, r.Key)
 		}
 	}
+	if saved := Saved(recs, m); len(saved) > 0 {
+		fmt.Fprintf(&b, "## Saved (%d)\n\n", len(saved))
+		b.WriteString("Roles you saved in Jobs and have not applied to or hidden yet.\n\n")
+		for i, r := range saved {
+			if i == maxSaved {
+				fmt.Fprintf(&b, "- …and %d more in Jobs\n", len(saved)-maxSaved)
+				break
+			}
+			fmt.Fprintf(&b, "- %s at %s: %s\n", Escape(r.Posting.Title, maxFieldRunes), Escape(r.Posting.Company, maxFieldRunes), linkLine(r.Posting.URL))
+		}
+		b.WriteString("\n")
+	}
 
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "New today: %d | Dropped today: %d | Dead today: %d\n", c.New, c.Dropped, c.Dead)
 	return b.String(), keys
 }
 
+// Where is a posting's location for the digest, escaped: the places and
+// remote scope the board's location names ("El Paso, TX · Remote (US)"), or
+// the board's text as written when nothing in it is recognised.
+func Where(p posting.Posting) string {
+	if s := location.Parse(p.Location, p.Remote).String(); s != "" {
+		return Escape(s, maxFieldRunes)
+	}
+	if s := Escape(p.Location, maxFieldRunes); s != "" {
+		return s
+	}
+	return "location not listed"
+}
+
 func writeRole(b *strings.Builder, r ledger.Record) {
 	p := r.Posting
 	fmt.Fprintf(b, "### %s at %s\n\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes))
 
-	where := Escape(p.Location, maxFieldRunes)
-	switch {
-	case p.Remote && where != "":
-		where += " (remote)"
-	case p.Remote:
-		where = "Remote"
-	case where == "":
-		where = "location not listed"
-	}
-	fmt.Fprintf(b, "- Where: %s\n", where)
+	fmt.Fprintf(b, "- Where: %s\n", Where(p))
 	fmt.Fprintf(b, "- Link: %s\n", linkLine(p.URL))
 
 	if cov, ok := Coverage(r); ok {
@@ -261,12 +323,13 @@ func Escape(s string, maxRunes int) string {
 }
 
 // Write renders the digest and writes stateDir/digests/YYYY-MM-DD.md
-// atomically. It returns the path and the keys the file includes.
-func Write(stateDir string, date time.Time, recs []ledger.Record, c Counts) (string, []posting.Key, error) {
+// atomically. It returns the path and the keys of the new roles the file
+// includes; m is the user's Jobs marks, as for Render.
+func Write(stateDir string, date time.Time, recs []ledger.Record, m map[posting.Key]marks.Mark, c Counts) (string, []posting.Key, error) {
 	if stateDir == "" {
 		return "", nil, errors.New("digest: empty state dir")
 	}
-	md, keys := Render(recs, date, c)
+	md, keys := Render(recs, m, date, c)
 	dir := filepath.Join(stateDir, "digests")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("digest: %w", err)

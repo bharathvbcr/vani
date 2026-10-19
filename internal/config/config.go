@@ -124,6 +124,13 @@ type LocalServer struct {
 	ModelPath      string `json:"model_path"`                 // absolute path of the GGUF
 	ContextSize    int    `json:"context_size,omitempty"`     // zero means 8192
 	StartTimeoutMS int    `json:"start_timeout_ms,omitempty"` // zero means 90 s; at most 300000
+	// BatchSize sets llama.cpp's batch and micro-batch (-b, -ub). Zero keeps
+	// llama.cpp's default (512). A model that reads the whole prompt in one
+	// batch (vllm-d3) needs it at least as large as the longest prompt: 8192.
+	BatchSize int `json:"batch_size,omitempty"`
+	// Parallel sets -np; zero keeps llama.cpp's auto (a unified KV pool). An
+	// explicit value splits context_size across that many slots.
+	Parallel int `json:"parallel,omitempty"`
 }
 
 // MaxLappiTimeoutMS is the caller contract's batch ceiling (10 s).
@@ -580,6 +587,16 @@ func (c Config) Validate() error {
 		if s.StartTimeoutMS < 0 || s.StartTimeoutMS > 300_000 {
 			add("decide.local.server.start_timeout_ms %d must be within 0..300000", s.StartTimeoutMS)
 		}
+		ctxSize := s.ContextSize
+		if ctxSize == 0 {
+			ctxSize = 8192 // localserver.DefaultContextSize
+		}
+		if s.BatchSize != 0 && (s.BatchSize < 32 || s.BatchSize > ctxSize) {
+			add("decide.local.server.batch_size %d must be 0 or within 32..%d (the context size)", s.BatchSize, ctxSize)
+		}
+		if s.Parallel < 0 || s.Parallel > 16 {
+			add("decide.local.server.parallel %d must be within 0..16", s.Parallel)
+		}
 	}
 	if l := c.Decide.Local; l != nil {
 		u, err := url.Parse(l.Endpoint)
@@ -604,6 +621,11 @@ func (c Config) Validate() error {
 		}
 		if l.Questions != "" && l.Questions != "combined" && l.Questions != "per_slot" {
 			add("decide.local.questions %q is not combined or per_slot", l.Questions)
+		}
+		if strings.TrimSpace(l.Model) != "" || l.Server != nil {
+			if err := checkLocalShadowName(*l); err != nil {
+				add("decide.local: %v", err)
+			}
 		}
 		if c.Decide.Shadow != "local" {
 			add("decide.local is configured but unused: set decide.shadow to local")

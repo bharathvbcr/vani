@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/digest"
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -76,6 +76,25 @@ type jobJSON struct {
 	Note        string            `json:"note,omitempty"`
 	NoteAt      time.Time         `json:"note_at,omitzero"`
 	Description string            `json:"description,omitempty"` // `jobs show` only
+
+	// Display-only insight (jobsinsight.go): freshness, scores, keywords and
+	// the note split into reasons. No engine rule reads them.
+	FreshAt        time.Time            `json:"fresh_at,omitzero"`
+	FreshSrc       string               `json:"fresh_src,omitempty"` // posted or seen
+	AgeDays        *int                 `json:"age_days,omitempty"`
+	Relevance      float64              `json:"relevance"`
+	RelevanceBasis jobinsight.Basis     `json:"relevance_basis,omitempty"`
+	Priority       float64              `json:"priority"`
+	Keywords       []jobinsight.Keyword `json:"keywords,omitempty"`
+	Reasons        []reasonJSON         `json:"reasons,omitempty"`
+	// Places, RemoteListed and RemoteScope are what the board's location says
+	// (internal/location), not triage's work_mode reading.
+	Places       []placeJSON `json:"places,omitempty"`
+	RemoteListed bool        `json:"remote_listed,omitempty"`
+	RemoteScope  string      `json:"remote_scope,omitempty"`
+	// Pay is the pay the posting's text states (jobinsight.ParsePay), at most
+	// one range per currency.
+	Pay []jobinsight.Pay `json:"pay,omitempty"`
 }
 
 type jobsListJSON struct {
@@ -89,23 +108,29 @@ type jobsListJSON struct {
 	Torn bool `json:"torn,omitempty"`
 	// Ledger is the directory read and Records how many postings it holds, so
 	// an empty list from the wrong state folder does not pass for "no jobs".
-	Ledger  string `json:"ledger"`
-	Records int    `json:"records"`
+	Ledger  string      `json:"ledger"`
+	Records int         `json:"records"`
+	Sort    string      `json:"sort"`
+	Insight insightJSON `json:"insight"`
 }
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, show, mark or note")
+		return usagef("jobs: expected list, stats, show, find, mark or note")
 	}
 	switch args[0] {
 	case "list":
 		return e.jobsList(args[1:])
+	case "stats":
+		return e.jobsStatsCmd(args[1:])
 	case "show":
 		return e.jobsShow(args[1:])
 	case "mark":
 		return e.jobsMark(args[1:])
 	case "note":
 		return e.jobsNote(args[1:])
+	case "find":
+		return e.jobsFind(args[1:])
 	}
 	return usagef("jobs: unknown subcommand %q", args[0])
 }
@@ -141,27 +166,30 @@ func (e *env) jobsReply(asJSON bool, v any, err error, text func()) error {
 func (e *env) jobsList(args []string) error {
 	fs := e.newFlags("jobs list")
 	asJSON := fs.Bool("json", false, "one JSON object on stdout")
-	view := fs.String("view", "new", "new, saved, applied, hidden or all")
-	query := fs.String("q", "", "only jobs whose title, company, location, team or note contains this")
+	var o jobsOpts
+	addSelectFlags(fs, &o)
+	fs.StringVar(&o.sort, "sort", "default", "default, priority, relevance, fresh, company or salary (top of the stated range in --currency)")
 	limit := fs.Int("limit", defaultJobsLimit, fmt.Sprintf("at most this many jobs (1-%d)", maxJobsLimit))
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	var out jobsListJSON
 	err := func() error {
-		switch {
-		case !contains(jobViews, *view):
-			return usagef("jobs list: --view must be one of %s", strings.Join(jobViews, ", "))
-		case *limit < 1 || *limit > maxJobsLimit:
+		if *limit < 1 || *limit > maxJobsLimit {
 			return usagef("jobs list: --limit must be 1-%d", maxJobsLimit)
-		case len(*query) > maxQueryBytes || !utf8.ValidString(*query):
-			return usagef("jobs list: --q must be UTF-8 and at most %d bytes", maxQueryBytes)
+		}
+		if err := o.check("jobs list", true); err != nil {
+			return err
 		}
 		snap, m, err := e.jobsState()
 		if err != nil {
 			return err
 		}
-		out = listJobs(snap, m, *view, *query, *limit)
+		in, err := e.newInsight(o.halfLife, snap, m)
+		if err != nil {
+			return err
+		}
+		out = listJobs(snap, m, &o, in, *limit)
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		return nil
 	}()
@@ -175,9 +203,78 @@ func (e *env) jobsList(args []string) error {
 			if mark == "" {
 				mark = "-"
 			}
-			fmt.Fprintf(e.stdout, "%s  %-7s  %s: %s  [%s]\n", rank, mark, j.Company, j.Title, j.Key)
+			age := "   ?"
+			if j.AgeDays != nil {
+				age = fmt.Sprintf("%3dd", *j.AgeDays)
+			}
+			pay := payNote(j, o.more.currency)
+			if pay != "" {
+				pay = "  " + pay
+			}
+			fmt.Fprintf(e.stdout, "%s  %5.1f  %s  %-7s  %s: %s%s%s  [%s]\n", rank, j.Priority, age, mark, j.Company, j.Title, pay, whereText(j), j.Key)
 		}
 		fmt.Fprintf(e.stdout, "%s: %d of %d shown\n", out.View, out.Shown, out.Total)
+		if out.Insight.Warning != "" {
+			fmt.Fprintf(e.stdout, "note: %s\n", out.Insight.Warning)
+		}
+	})
+}
+
+// jobsStatsCmd aggregates the same selection `jobs list` would show, for the
+// app's Insights charts: distributions, not rows, so the app need not fetch
+// every job to draw them.
+func (e *env) jobsStatsCmd(args []string) error {
+	fs := e.newFlags("jobs stats")
+	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	var o jobsOpts
+	addSelectFlags(fs, &o)
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	var out jobsStatsJSON
+	err := func() error {
+		if err := o.check("jobs stats", false); err != nil {
+			return err
+		}
+		snap, m, err := e.jobsState()
+		if err != nil {
+			return err
+		}
+		in, err := e.newInsight(o.halfLife, snap, m)
+		if err != nil {
+			return err
+		}
+		sel, _ := selectJobs(snap, m, &o, in, 0)
+		out = jobsStats(sel, in)
+		out.Salary = payStats(sel, o.more.currency)
+		out.View, out.Query, out.Torn = o.view, o.query, snap.Torn
+		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
+		return nil
+	}()
+	return e.jobsReply(*asJSON, out, err, func() {
+		fmt.Fprintf(e.stdout, "%s: %d jobs\nrole fit:", out.View, out.Total)
+		for _, v := range roleFitOrder {
+			fmt.Fprintf(e.stdout, " %s %d,", v, out.Fit[v])
+		}
+		fmt.Fprintf(e.stdout, " none %d\nage:", out.Fit["none"])
+		for _, b := range out.Age {
+			fmt.Fprintf(e.stdout, " %s %d,", b.Label, b.Posted+b.Seen)
+		}
+		fmt.Fprintf(e.stdout, " (board-dated %d, first-seen %d)\n", out.FreshSource["posted"], out.FreshSource["seen"])
+		fmt.Fprintf(e.stdout, "where: remote %d,%s\n", out.RemoteListed, stateLine(out.State))
+		s := out.Salary
+		fmt.Fprintf(e.stdout, "pay (%s, middle of range):", s.Currency)
+		for _, b := range s.Buckets {
+			fmt.Fprintf(e.stdout, " %s %d,", b.Label, b.N)
+		}
+		fmt.Fprintf(e.stdout, " median %s (stated %d, other currency %d, none %d)\nkeywords:", shortMoney(s.Median), s.Listed, s.Other, s.Unlisted)
+		for _, k := range out.Keywords {
+			fmt.Fprintf(e.stdout, " %s %d,", k.Term, k.N)
+		}
+		fmt.Fprintln(e.stdout)
+		if out.Insight.Warning != "" {
+			fmt.Fprintf(e.stdout, "note: %s\n", out.Insight.Warning)
+		}
 	})
 }
 
@@ -204,7 +301,12 @@ func (e *env) jobsShow(args []string) error {
 		if !ok {
 			return fmt.Errorf("jobs show: no posting %q in the ledger", k)
 		}
+		in, err := e.newInsight(jobinsight.DefaultHalfLifeDays, snap, m)
+		if err != nil {
+			return err
+		}
 		out = toJob(r, m[k])
+		in.enrich(&out, r, showKeywords)
 		out.Description = cleanText(r.Posting.Description, maxDescRunes, true)
 		return nil
 	}()
@@ -276,11 +378,16 @@ func (e *env) jobsWrite(raw string, out *jobJSON, set func(string, posting.Key) 
 	if !ok {
 		return fmt.Errorf("jobs: no posting %q in the ledger", k)
 	}
+	in, err := e.newInsight(jobinsight.DefaultHalfLifeDays, snap, nil)
+	if err != nil {
+		return err
+	}
 	entry, err := set(marks.Dir(e.stateDir), k)
 	if err != nil {
 		return err
 	}
 	*out = toJob(r, entry)
+	in.enrich(out, r, showKeywords)
 	return nil
 }
 
@@ -323,51 +430,18 @@ func inView(view string, r ledger.Record, mark marks.Mark) bool {
 	return string(mark) == view
 }
 
-func listJobs(snap ledger.Snapshot, m map[posting.Key]marks.Entry, view, query string, limit int) jobsListJSON {
-	out := jobsListJSON{View: view, Query: query, Counts: map[string]int{}, Torn: snap.Torn, Jobs: []jobJSON{}}
-	q := strings.ToLower(strings.TrimSpace(query))
-	var sel []jobJSON
-	for _, r := range snap.Records {
-		entry := m[r.Key]
-		for _, v := range jobViews {
-			if inView(v, r, entry.Mark) {
-				out.Counts[v]++
-			}
-		}
-		if !inView(view, r, entry.Mark) {
-			continue
-		}
-		j := toJob(r, entry)
-		if q != "" && !strings.Contains(strings.ToLower(strings.Join([]string{j.Title, j.Company, j.Location, j.Department, j.Note}, "\n")), q) {
-			continue
-		}
-		sel = append(sel, j)
-	}
-	byMarkTime := view == "saved" || view == "applied" || view == "hidden"
-	sort.SliceStable(sel, func(i, j int) bool {
-		a, b := sel[i], sel[j]
-		if byMarkTime && !a.MarkedAt.Equal(b.MarkedAt) {
-			return a.MarkedAt.After(b.MarkedAt)
-		}
-		if (a.Rank != nil) != (b.Rank != nil) {
-			return a.Rank != nil
-		}
-		if a.Rank != nil && *a.Rank != *b.Rank {
-			return *a.Rank > *b.Rank
-		}
-		if fa, fb := fitOrder(a), fitOrder(b); fa != fb {
-			return fa < fb
-		}
-		if !a.FirstSeen.Equal(b.FirstSeen) {
-			return a.FirstSeen.After(b.FirstSeen)
-		}
-		return a.Key < b.Key
-	})
+func listJobs(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobsOpts, in *insight, limit int) jobsListJSON {
+	out := jobsListJSON{View: o.view, Query: o.query, Sort: o.sort, Torn: snap.Torn, Jobs: []jobJSON{}, Insight: in.info}
+	sel, counts := selectJobs(snap, m, o, in, listKeywords)
+	out.Counts = counts
+	sortJobs(sel, o.view, o.sort)
 	out.Total = len(sel)
 	if len(sel) > limit {
 		sel = sel[:limit]
 	}
-	out.Jobs = append(out.Jobs, sel...)
+	for _, s := range sel {
+		out.Jobs = append(out.Jobs, s.job)
+	}
 	out.Shown = len(out.Jobs)
 	return out
 }

@@ -11,12 +11,15 @@ let package = Package(
         .library(name: "VaniApplyKit", targets: ["VaniApplyKit"]),
         .executable(name: "VaniApply", targets: ["VaniApply"]),
         .executable(name: "vani-apply-host", targets: ["vani-apply-host"]),
+        .executable(name: "vani-apply-agent", targets: ["vani-apply-agent"]),
         .executable(name: "VaniApplyExtension", targets: ["VaniApplyExtension"]),
     ],
     targets: [
         .target(name: "VaniApplyKit"),
         .executableTarget(name: "VaniApply", dependencies: ["VaniApplyKit"]),
         .executableTarget(name: "vani-apply-host", dependencies: ["VaniApplyKit"]),
+        // The login-item agent both browsers reach over XPC for `vani` jobs.
+        .executableTarget(name: "vani-apply-agent", dependencies: ["VaniApplyKit"]),
         // The Safari appex: its entry point is Foundation's NSExtensionMain,
         // which loads the principal class named in the bundle's Info.plist.
         .executableTarget(

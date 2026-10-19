@@ -71,6 +71,8 @@ func checkBackendName(n string) error {
 		return fmt.Errorf("backend name %q is longer than %d bytes", n, MaxBackendName)
 	case slices.Contains(reservedBackendNames, n):
 		return fmt.Errorf("backend name %q is taken by another backend", n)
+	case strings.HasPrefix(n, LocalShadowPrefix):
+		return fmt.Errorf("backend name %q starts with %q, which the local shadow's names use", n, LocalShadowPrefix)
 	}
 	return nil
 }

@@ -547,8 +547,33 @@ async function oncePerPage(): Promise<void> {
   box.remove();
 }
 
+// The tracker tells the page script when a button that sends the application is pressed, so it can
+// offer to mark the job Applied. Steps along the way (Next, Save, Review) and Apply do not count.
+// The buttons are type=button: nothing here may submit a form.
+async function submitSignal(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = '<button type="button" id="ss-next">Next</button><button type="button" id="ss-save">Save and continue</button>' +
+    '<button type="button" id="ss-review">Review and submit</button><button type="button" id="ss-apply">Apply</button>' +
+    '<button type="button" id="ss-submit"><span id="ss-inner">Submit application</span></button>' +
+    '<div role="button" id="ss-send">Send application</div>';
+  document.body.append(box);
+  let signals = 0;
+  const t = createTracker({ doc: document, host: "x.example", getBank: async () => emptyBank(), send: async () => null, onSubmit: () => { signals++; } });
+  for (const id of ["ss-next", "ss-save", "ss-review", "ss-apply"]) q<HTMLElement>(box, `#${id}`).click();
+  await sleep(30);
+  check("Next, Save, Review and Apply are not a submit", signals === 0, `signals ${signals}`);
+  q<HTMLElement>(box, "#ss-inner").click();
+  check("a click inside a Submit application button is a submit", signals === 1, `signals ${signals}`);
+  q<HTMLElement>(box, "#ss-send").click();
+  check("Send application is a submit", signals === 2, `signals ${signals}`);
+  t.dispose();
+  q<HTMLElement>(box, "#ss-submit").click();
+  check("a disposed tracker stays silent about submits", signals === 2, `signals ${signals}`);
+  box.remove();
+}
+
 async function main(): Promise<void> {
-  for (const [name, fn] of [["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage]] as const) {
+  for (const [name, fn] of [["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal]] as const) {
     try { await fn(); } catch (e) { check(`${name} crashed`, false, e instanceof Error ? `${e.message}\n${e.stack}` : String(e)); }
   }
   check("nothing in the whole run submitted a form or pressed a submit button", anySubmit === 0 && submitClicks === 0 && submits === 0, `submit ${anySubmit} clicks ${submitClicks}`);

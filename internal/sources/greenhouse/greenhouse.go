@@ -43,9 +43,12 @@ type job struct {
 	Title       string      `json:"title"`
 	AbsoluteURL string      `json:"absolute_url"`
 	UpdatedAt   string      `json:"updated_at"`
-	CompanyName string      `json:"company_name"`
-	Content     string      `json:"content"`
-	Location    struct {
+	// FirstPublished is when the posting first went live; updated_at moves on
+	// every edit, so it is no posted date.
+	FirstPublished string `json:"first_published"`
+	CompanyName    string `json:"company_name"`
+	Content        string `json:"content"`
+	Location       struct {
 		Name string `json:"name"`
 	} `json:"location"`
 	Departments []struct {
@@ -98,6 +101,10 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 	if err != nil {
 		return posting.Posting{}, err
 	}
+	posted, err := srcutil.ParseTime("first_published", j.FirstPublished)
+	if err != nil {
+		return posting.Posting{}, err
+	}
 	company := j.CompanyName
 	if company == "" {
 		company = b.Company
@@ -110,6 +117,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		Location:  strings.TrimSpace(j.Location.Name),
 		URL:       j.AbsoluteURL,
 		UpdatedAt: updated,
+		PostedAt:  posted,
 		// content is HTML that was itself HTML-escaped: undo one level of
 		// escaping to get markup, then reduce the markup to text.
 		Description: htmltext.Text(html.UnescapeString(j.Content), srcutil.MaxDescription),

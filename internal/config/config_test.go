@@ -310,10 +310,18 @@ func TestLocalConfigRules(t *testing.T) {
 		"server.model_path":       {Binary: "/b", ModelPath: "d1.gguf"},
 		"server.context_size":     {Binary: "/b", ModelPath: "/m", ContextSize: 100},
 		"server.start_timeout_ms": {Binary: "/b", ModelPath: "/m", StartTimeoutMS: 300_001},
+		"server.batch_size":       {Binary: "/b", ModelPath: "/m", BatchSize: 16},
+		"within 32..8192":         {Binary: "/b", ModelPath: "/m", BatchSize: 8193},
+		"within 32..4096":         {Binary: "/b", ModelPath: "/m", ContextSize: 4096, BatchSize: 8192},
+		"server.parallel":         {Binary: "/b", ModelPath: "/m", Parallel: 17},
+		"parallel -1":             {Binary: "/b", ModelPath: "/m", Parallel: -1},
 	} {
 		c.Decide.Local = &Local{Model: "m", Server: s}
 		check(c, frag)
 	}
+	// vllm-d3 as the shadow: the whole prompt in one 8192-token batch, one slot.
+	c.Decide.Local = &Local{Model: "m", Server: &LocalServer{Binary: "/b", ModelPath: "/m/d3.gguf", BatchSize: 8192, Parallel: 1}}
+	check(c, "")
 	c.Decide.Local = good
 	c.Decide.Shadow = ""
 	check(c, "decide.local is configured but unused")

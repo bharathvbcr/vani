@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SafariServices
+import ServiceManagement
 import VaniApplyKit
 
 /// The app's view of the shared bank. Every change goes through BankStore
@@ -36,6 +37,7 @@ final class AppModel {
         reload()
         refreshChrome()
         refreshSafari()
+        registerAgent()
         // Re-read when a browser writes. A read is one small file under a shared lock.
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reloadIfChanged() }
@@ -51,11 +53,61 @@ final class AppModel {
 
     /// `vani jobs` for the Jobs tab, with the same Vani config and state folder as drafting.
     /// It reads no key: listing and marking spend nothing.
-    var jobsClient: JobsClient {
+    var jobsClient: JobsClient { draftSettings.jobsClient(vaniBinary: vaniBinary) }
+
+    /// `vani status --json` for the Pipeline tab: local files only, no key.
+    var pipelineClient: PipelineClient {
         let s = draftSettings
-        return JobsClient(vaniBinary: vaniBinary,
-                          configPath: s.vaniConfig.isEmpty ? nil : s.vaniConfig,
-                          stateDir: s.vaniStateDir.isEmpty ? nil : s.vaniStateDir)
+        return PipelineClient(vaniBinary: vaniBinary,
+                              configPath: s.vaniConfig.isEmpty ? nil : s.vaniConfig,
+                              stateDir: s.vaniStateDir.isEmpty ? nil : s.vaniStateDir)
+    }
+
+    // MARK: - Agent
+
+    /// The login-item agent that runs drafts and suggestions for both browsers.
+    private let agentService = SMAppService.agent(plistName: AgentConstants.plistName)
+    private(set) var agentStatus: SMAppService.Status = .notRegistered
+    private(set) var agentError: String?
+
+    /// Register the agent, and repair a stale registration. macOS may ask for
+    /// approval in Login Items. Replacing the app bundle (every rebuild) makes
+    /// launchd's copy of the job stale while SMAppService still says .enabled,
+    /// so an enabled agent that does not answer is unregistered and registered
+    /// again. `repair` forces that (Settings > Register again).
+    func registerAgent(repair: Bool = false) {
+        agentError = nil
+        Task {
+            let failure: String? = await Task.detached(priority: .utility) {
+                // Its own handle: SMAppService is not Sendable across actors.
+                let service = SMAppService.agent(plistName: AgentConstants.plistName)
+                do {
+                    if service.status == .enabled, repair || !XPCAgentClient().reachable() {
+                        try await service.unregister()
+                    }
+                    if service.status != .enabled { try service.register() }
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            agentError = failure
+            agentStatus = agentService.status
+        }
+    }
+
+    func openLoginItems() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    var agentSummary: String {
+        switch agentStatus {
+        case .enabled: return "Running on demand: Safari and Chrome can ask for drafts and suggestions."
+        case .requiresApproval: return "Waiting for approval in System Settings > General > Login Items."
+        case .notFound: return "Not found in this copy of the app; rebuild it with scripts/bundle.sh."
+        case .notRegistered: return "Not registered" + (agentError.map { ": \($0)" } ?? ".")
+        @unknown default: return "Unknown state."
+        }
     }
 
     // MARK: - Drafting

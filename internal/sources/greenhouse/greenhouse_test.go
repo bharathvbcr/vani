@@ -49,12 +49,14 @@ func TestFixture(t *testing.T) {
 			Title: "Associate Renewals Manager", Location: "Remote Ireland; Remote, Israel",
 			Department: "Renewals", URL: "https://job-boards.greenhouse.io/gitlab/jobs/8785825002",
 			UpdatedAt: time.Date(2026, 10, 15, 19, 24, 46, 0, time.UTC), SeenAt: fixedNow,
+			PostedAt: time.Date(2026, 9, 9, 15, 28, 46, 0, time.UTC),
 		},
 		{
 			Key: "gh:gitlab:8586667002", ATS: posting.Greenhouse, Company: "GitLab",
 			Title: "Engineering Manager, Build", Location: "Remote, United Kingdom",
 			Department: "Platforms Engineering", URL: "https://job-boards.greenhouse.io/gitlab/jobs/8586667002",
 			UpdatedAt: time.Date(2026, 10, 15, 19, 24, 46, 0, time.UTC), SeenAt: fixedNow,
+			PostedAt: time.Date(2026, 8, 19, 15, 33, 14, 0, time.UTC),
 		},
 	}
 	for i := range want {
@@ -64,7 +66,11 @@ func TestFixture(t *testing.T) {
 		if !g.UpdatedAt.Equal(want[i].UpdatedAt) {
 			t.Errorf("posting %d UpdatedAt %v, want %v", i, g.UpdatedAt, want[i].UpdatedAt)
 		}
+		if !g.PostedAt.Equal(want[i].PostedAt) {
+			t.Errorf("posting %d PostedAt %v, want %v", i, g.PostedAt, want[i].PostedAt)
+		}
 		g.UpdatedAt, want[i].UpdatedAt = time.Time{}, time.Time{}
+		g.PostedAt, want[i].PostedAt = time.Time{}, time.Time{}
 		if !strings.HasPrefix(want[i].URL, "https://") || g != want[i] {
 			t.Errorf("posting %d\n got %+v\nwant %+v", i, g, want[i])
 		}
@@ -119,22 +125,23 @@ func TestServerErrorIsAnError(t *testing.T) {
 
 func TestMalformedPayloadsAreErrors(t *testing.T) {
 	bad := map[string]string{
-		"not json":           `<html>`,
-		"truncated":          `{"jobs":[{"id":1`,
-		"array not object":   `[]`,
-		"no jobs key":        `{}`,
-		"null jobs":          `{"jobs":null}`,
-		"wrong job type":     `{"jobs":[1]}`,
-		"missing id":         `{"jobs":[{"title":"T","absolute_url":"https://x.test/1"}]}`,
-		"id with separator":  `{"jobs":[{"id":"a:b","title":"T","absolute_url":"https://x.test/1"}]}`,
-		"missing title":      `{"jobs":[{"id":1,"absolute_url":"https://x.test/1"}]}`,
-		"missing url":        `{"jobs":[{"id":1,"title":"T"}]}`,
-		"javascript url":     `{"jobs":[{"id":1,"title":"T","absolute_url":"javascript:alert(1)"}]}`,
-		"bad updated_at":     `{"jobs":[{"id":1,"title":"T","absolute_url":"https://x.test/1","updated_at":"soon"}]}`,
-		"trailing garbage":   `{"jobs":[]} x`,
-		"empty body":         ``,
-		"jobs is an object":  `{"jobs":{}}`,
-		"departments string": `{"jobs":[{"id":1,"title":"T","absolute_url":"https://x.test/1","departments":"x"}]}`,
+		"not json":            `<html>`,
+		"truncated":           `{"jobs":[{"id":1`,
+		"array not object":    `[]`,
+		"no jobs key":         `{}`,
+		"null jobs":           `{"jobs":null}`,
+		"wrong job type":      `{"jobs":[1]}`,
+		"missing id":          `{"jobs":[{"title":"T","absolute_url":"https://x.test/1"}]}`,
+		"id with separator":   `{"jobs":[{"id":"a:b","title":"T","absolute_url":"https://x.test/1"}]}`,
+		"missing title":       `{"jobs":[{"id":1,"absolute_url":"https://x.test/1"}]}`,
+		"missing url":         `{"jobs":[{"id":1,"title":"T"}]}`,
+		"javascript url":      `{"jobs":[{"id":1,"title":"T","absolute_url":"javascript:alert(1)"}]}`,
+		"bad updated_at":      `{"jobs":[{"id":1,"title":"T","absolute_url":"https://x.test/1","updated_at":"soon"}]}`,
+		"bad first_published": `{"jobs":[{"id":1,"title":"T","absolute_url":"https://x.test/1","first_published":"last week"}]}`,
+		"trailing garbage":    `{"jobs":[]} x`,
+		"empty body":          ``,
+		"jobs is an object":   `{"jobs":{}}`,
+		"departments string":  `{"jobs":[{"id":1,"title":"T","absolute_url":"https://x.test/1","departments":"x"}]}`,
 	}
 	for name, body := range bad {
 		t.Run(name, func(t *testing.T) {

@@ -2,8 +2,9 @@
 // saved it, applied, or hid it, plus a private note. It is kept apart from the
 // ledger on purpose. The ledger is the pipeline's record and is locked for the
 // length of a run; marks are the user's, written from the app at any time, and
-// nothing in the pipeline, the decision backends or the digest reads them, so
-// a note never reaches a model, a log line or an annotation.
+// nothing in the pipeline or the decision backends reads them, so a note never
+// reaches a model, a log line or an annotation. The digest reads the marks
+// alone, through ReadMarks, which drops every note before it returns.
 //
 // The store is an append-only JSONL file folded on read, like the ledger:
 // every change keeps its time, a crashed write loses at most that one line,
@@ -263,8 +264,18 @@ func lock(dir string, how int, create bool) (*os.File, error) {
 // Read returns every posting's marks. A store that was never written is empty.
 func Read(dir string) (map[posting.Key]Entry, error) {
 	l, err := lock(dir, syscall.LOCK_SH, false)
-	if err != nil || l == nil {
-		return map[posting.Key]Entry{}, err
+	if err != nil {
+		return nil, err
+	}
+	if l == nil {
+		// No lock file: the store was never written, unless the data file is
+		// there anyway (the lock was removed, or only marks.jsonl was copied
+		// back). That is not an empty store; reading it as one would drop
+		// every mark.
+		if _, err := os.Lstat(filepath.Join(dir, fileName)); !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s exists without its lock file", ErrCorrupt, fileName)
+		}
+		return map[posting.Key]Entry{}, nil
 	}
 	defer l.Close()
 	f, err := os.Open(filepath.Join(dir, fileName))
@@ -282,6 +293,23 @@ func Read(dir string) (map[posting.Key]Entry, error) {
 	}
 	m, _, _, err := replay(f)
 	return m, err
+}
+
+// ReadMarks returns every marked posting's mark and nothing else: notes are
+// dropped here, so a reader that must never see one (the digest) cannot. A
+// posting with only a note is absent. Errors are Read's.
+func ReadMarks(dir string) (map[posting.Key]Mark, error) {
+	m, err := Read(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[posting.Key]Mark, len(m))
+	for k, e := range m {
+		if e.Mark != None {
+			out[k] = e.Mark
+		}
+	}
+	return out, nil
 }
 
 // SetMark records mark for k at now (None clears it) and returns the entry.

@@ -1,0 +1,144 @@
+// Package jobinsight derives display-only facts about a retrieved posting for
+// `vani jobs`: how fresh it is, a relevance and a priority score to sort and
+// plot by, and the skill keywords its text mentions. Everything here is
+// deterministic and local: no model, no network, and nothing is written back
+// to the ledger. No engine rule reads these values (Rule 7: they only help a
+// person browse; dropping a posting stays an engine rule on triage readings).
+package jobinsight
+
+import (
+	"math"
+	"time"
+)
+
+// FreshSource says which date Fresh used.
+type FreshSource string
+
+const (
+	// FromPosted is the board's own posted date.
+	FromPosted FreshSource = "posted"
+	// FromSeen is when Vani first saw the posting: an upper bound on its age
+	// for boards that give no posted date (or a date that cannot be right).
+	FromSeen FreshSource = "seen"
+)
+
+// clockSkew is how far in the future a board's posted date may be before it is
+// treated as wrong (time zones, a board stamping the end of the day).
+const clockSkew = 36 * time.Hour
+
+// earliest is the oldest posted date believed; anything earlier is a
+// placeholder (Go's zero time, Unix 0, 1900-01-01).
+var earliest = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// Fresh returns the date a posting's age is measured from. The board's posted
+// date wins when it is plausible: after 2000, not later than firstSeen (plus
+// clock skew) and not in the future. Otherwise the first-seen date is used,
+// and with neither the zero time and FromSeen.
+func Fresh(posted, firstSeen, now time.Time) (time.Time, FreshSource) {
+	limit := now
+	if !firstSeen.IsZero() && firstSeen.Before(limit) {
+		limit = firstSeen
+	}
+	if !posted.IsZero() && posted.After(earliest) && !posted.After(limit.Add(clockSkew)) {
+		return posted, FromPosted
+	}
+	return firstSeen, FromSeen
+}
+
+// AgeDays is whole days from at to now, never negative. A zero at gives -1:
+// the age is unknown.
+func AgeDays(at, now time.Time) int {
+	if at.IsZero() {
+		return -1
+	}
+	d := now.Sub(at)
+	if d < 0 {
+		return 0
+	}
+	return int(d / (24 * time.Hour))
+}
+
+// Basis says what a relevance score rests on.
+type Basis string
+
+const (
+	// BasisRank is DevPrism's must-have coverage (the ledger's rank).
+	BasisRank Basis = "rank"
+	// BasisFit is triage's role_fit reading.
+	BasisFit Basis = "fit"
+	// BasisNone means neither: only keyword overlap, at a neutral base.
+	BasisNone Basis = "none"
+)
+
+// fitBase maps the jdtriage fixture's role_fit options to a base relevance.
+// The order matches cmd/vani's roleFitOrder; the spacing is a display choice.
+var fitBase = map[string]float64{
+	"strong_fit":         0.85,
+	"partial_fit":        0.65,
+	"adjacent":           0.45,
+	"mismatch_seniority": 0.20,
+	"mismatch_domain":    0.10,
+}
+
+const (
+	neutralBase   = 0.35 // no rank, no fit reading
+	keywordWeight = 0.25 // share of relevance that target-keyword overlap can move
+	keywordScale  = 3.0  // overlap of this many target terms gives ~63% of the keyword share
+	// DefaultHalfLifeDays is how many days of age halve a posting's freshness
+	// bonus in Priority.
+	DefaultHalfLifeDays = 14.0
+	// MaxHalfLifeDays bounds the half-life a caller may ask for.
+	MaxHalfLifeDays = 365.0
+)
+
+// Relevance is a 0-100 display score: 75% from DevPrism's rank when the
+// posting has one, otherwise from triage's role_fit, and 25% from how many of
+// the target summary's terms the posting mentions. rank is clamped to 0-100
+// (an employer boost can push the ledger's rank past 100).
+func Relevance(rank *float64, roleFit string, targetHits int) (float64, Basis) {
+	base, basis := neutralBase, BasisNone
+	switch b, ok := fitBase[roleFit]; {
+	case rank != nil && !math.IsNaN(*rank):
+		base, basis = clamp01(*rank/100), BasisRank
+	case ok:
+		base, basis = b, BasisFit
+	}
+	if targetHits < 0 {
+		targetHits = 0
+	}
+	kw := 1 - math.Exp(-float64(targetHits)/keywordScale)
+	return round1(100 * ((1-keywordWeight)*base + keywordWeight*kw)), basis
+}
+
+// Priority discounts relevance by age: a posting loses up to half its score
+// as it ages, halving that freshness bonus every halfLife days. An unknown age
+// (ageDays < 0) gets the floor, so an undated posting never outranks a dated
+// one of the same relevance. halfLife outside (0, MaxHalfLifeDays] means
+// DefaultHalfLifeDays.
+func Priority(relevance float64, ageDays int, halfLife float64) float64 {
+	if !(halfLife > 0 && halfLife <= MaxHalfLifeDays) {
+		halfLife = DefaultHalfLifeDays
+	}
+	fresh := 0.0
+	if ageDays >= 0 {
+		fresh = math.Exp2(-float64(ageDays) / halfLife)
+	}
+	return round1(clamp(relevance, 0, 100) * (0.5 + 0.5*fresh))
+}
+
+func clamp01(v float64) float64 { return clamp(v, 0, 1) }
+
+func clamp(v, lo, hi float64) float64 {
+	switch {
+	case math.IsNaN(v) || v < lo:
+		return lo
+	case v > hi:
+		return hi
+	}
+	return v
+}
+
+// round1 rounds to one decimal, half up. The nudge absorbs binary
+// representation error (0.75*0.85*100 is 63.7499...), far below display
+// precision.
+func round1(v float64) float64 { return math.Round(v*10+1e-9) / 10 }

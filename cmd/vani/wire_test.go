@@ -227,12 +227,12 @@ func TestLocalModelIsAShadowOverLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := r.Triager.(*jdtriage.Triager).D.(*decide.Router)
-	if got := strings.Join(rt.Backends(), ","); got != "llm" || rt.Shadow == nil || rt.Shadow.Name() != "local" {
+	if got := strings.Join(rt.Backends(), ","); got != "llm" || rt.Shadow == nil || rt.Shadow.Name() != "local-test-d1-per_slot" {
 		t.Fatalf("chain %q shadow %v", got, rt.Shadow)
 	}
 	q := jdtriage.Question(posting.Posting{Key: "k", Title: "Engineer", Description: "Fully remote."})
 	a, err := rt.Shadow.Decide(context.Background(), q)
-	if err != nil || a.Backend != "local" || a.Slots["work_mode"].Value != "remote" {
+	if err != nil || a.Backend != "local-test-d1-per_slot" || a.Slots["work_mode"].Value != "remote" {
 		t.Fatalf("answer %+v err %v", a, err)
 	}
 	var sent struct {
@@ -292,7 +292,7 @@ func TestLocalServerModeUsesTheStartedEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := r.Triager.(*jdtriage.Triager).D.(*decide.Router)
-	if rt.Shadow == nil || rt.Shadow.Name() != "local" {
+	if rt.Shadow == nil || rt.Shadow.Name() != "local-d1-combined" {
 		t.Fatalf("shadow %v", rt.Shadow)
 	}
 	q := jdtriage.Question(posting.Posting{Key: "k", Title: "Engineer", Description: "Fully remote."})
@@ -325,7 +325,7 @@ func TestRunOnceGoesOnWhenTheLocalServerFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no board could be read") {
 		t.Fatalf("err = %v", err)
 	}
-	for _, want := range []string{"local decision model not started", `shadow "local" unavailable`} {
+	for _, want := range []string{"local decision model not started", `shadow "local-d1-combined" unavailable`} {
 		if !strings.Contains(warn.String(), want) {
 			t.Fatalf("warnings lack %q:\n%s", want, warn.String())
 		}

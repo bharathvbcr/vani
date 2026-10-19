@@ -12,6 +12,7 @@ import { classify } from "./classify";
 import { scanForm } from "./extract";
 import { fieldDigest, pendingDiff } from "./capture";
 import type { CaptureReply } from "./messages";
+import { isFinalSubmit } from "./applied";
 
 const MAX_PENDING = 1000;
 /** The background refuses a capture message with more fields than this. */
@@ -29,6 +30,8 @@ export interface TrackerDeps {
   /** The page changed shape (debounced, with a maximum wait so a mutation storm cannot starve it). */
   onDom?: () => void;
   onResult?: (r: FlushResult) => void;
+  /** A button that sends the application was clicked (applied.isFinalSubmit); not Next, Continue, Save or Review. */
+  onSubmit?: () => void;
   commitMs?: number;
   domMs?: number;
   domMaxWaitMs?: number;
@@ -60,8 +63,12 @@ export interface Tracker {
   dispose(): void;
 }
 
+function controlLabel(t: Element): string {
+  return (t.textContent || (t as HTMLInputElement).value || t.getAttribute("aria-label") || "").trim();
+}
+
 function isAdvance(t: Element): boolean {
-  const text = (t.textContent || (t as HTMLInputElement).value || t.getAttribute("aria-label") || "").trim();
+  const text = controlLabel(t);
   if (text.length <= 40 && ADVANCE.test(text)) return true;
   if (t.getAttribute("type") === "submit") return true;
   return ADVANCE_ID.test(t.getAttribute("data-automation-id") ?? "");
@@ -231,7 +238,11 @@ export function createTracker(d: TrackerDeps): Tracker {
     const t = ev.composedPath()[0] as Element | undefined;
     if (!t?.closest) return;
     const adv = t.closest("button, input[type=submit], [role=button], a[role=button]");
-    if (adv && isAdvance(adv)) { void flush((adv.textContent || "advance").trim().toLowerCase().slice(0, 40)); return; }
+    if (adv && isAdvance(adv)) {
+      void flush((adv.textContent || "advance").trim().toLowerCase().slice(0, 40));
+      if (isFinalSubmit(controlLabel(adv))) d.onSubmit?.();
+      return;
+    }
     if (t.closest("[role=option], [role=radio], [role=checkbox], [role=switch], input[type=radio], input[type=checkbox], label")) commitSoon(150);
   }
 

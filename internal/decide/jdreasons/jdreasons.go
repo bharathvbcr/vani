@@ -134,6 +134,16 @@ const Prompt = "For each category, pick the one listed reason this job posting m
 
 var idPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 
+// Headings are the labels a note's reasons start with ("Fits: …"), in note
+// order, so a reader can split a note without its own copy of them.
+func Headings() []string {
+	out := make([]string, len(categories))
+	for i, c := range categories {
+		out[i] = c.heading
+	}
+	return out
+}
+
 // TargetHash identifies a target summary by its normalized text.
 func TargetHash(summary string) string {
 	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(summary), " ")))

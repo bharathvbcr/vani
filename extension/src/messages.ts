@@ -15,14 +15,27 @@ export type ToBackground =
   | { type: "editAnswer"; key: string; value: string[] }
   | { type: "replaceBank"; json: string }
   /** Only the question label and the posting as shown on the page: never field values or bank content. */
-  | { type: "draft"; question: string; job: JobInfo; maxWords?: number };
+  | { type: "draft"; question: string; job: JobInfo; maxWords?: number }
+  /** A job in the Vani Apply agent: a request built by buildSuggestRequest or buildDraftRequest (labels and the posting only). */
+  | { type: "jobStart"; kind: "suggest" | "draft"; request: object }
+  | { type: "jobPoll"; job: string }
+  // Offering to mark a job Applied (applied.ts). The page sends its URL without the query or fragment;
+  // the background asks the Mac app which tracked job it is, keeps the offer for the sender's tab, and marks only on appliedMark.
+  // A content script is always acting for its own tab. The popup is not in a tab, so it names the active one in `tabId`
+  // (and sends its URL: opening the popup on a tracked page offers the same question, on any host).
+  | { type: "appliedSignal"; url: string; tabId?: number }
+  | { type: "appliedPending"; tabId?: number }
+  | { type: "appliedMark"; tabId?: number }
+  | { type: "appliedDismiss"; tabId?: number };
 
 export type DraftResponse = DraftReply;
 
 export type ToContent =
   | { type: "scan" }
   | { type: "fill"; overwrite?: boolean; typeahead?: boolean }
-  | { type: "capture" };
+  | { type: "capture" }
+  /** To the top frame only: a form in a frame found a job to ask about, so show the question here. */
+  | { type: "appliedShow" };
 
 /** `fields`/`matched` are kept for older callers; `coverage` is the full breakdown. */
 export interface ScanReply { fields: number; matched: number; host: string; disabled: boolean; coverage?: Coverage }

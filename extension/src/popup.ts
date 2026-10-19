@@ -3,6 +3,7 @@ import type { Answer, Bank } from "./types";
 import { MAX_BANK_BYTES, bankBytes, exportBank } from "./bank";
 import type { ScanReply, ToBackground, ToContent } from "./messages";
 import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
+import { type Offer, offerSubject } from "./applied";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -143,10 +144,50 @@ function renderFrames(t: TabCoverage): void {
   $("#framebox").hidden = list.childElementCount === 0;
 }
 
+/**
+ * A page Vani tracks as a job: offer to mark it Applied, on any host (the popup is the one place the
+ * extension is allowed to look at the page's URL whether or not a content script runs there). Also shows
+ * the question a Submit left for this tab. Posting text is set as text; nothing is marked until the click.
+ */
+async function appliedRow(tabId: number, url: string | undefined): Promise<void> {
+  const row = $("#applied");
+  const text = $("#applied-text");
+  const yes = $("#applied-yes") as HTMLButtonElement;
+  const no = $("#applied-no") as HTMLButtonElement;
+  let offer = (await bg<{ offer?: Offer | null }>({ type: "appliedPending", tabId }).catch(() => undefined))?.offer ?? null;
+  if (!offer && url) {
+    const r = await bg<{ offer?: Offer | null }>({ type: "appliedSignal", url, tabId }).catch(() => undefined);
+    offer = r?.offer ?? null;
+  }
+  if (!offer) return;
+  const subject = offerSubject(offer);
+  text.textContent = `Tracked job on this page: ${subject}.`;
+  yes.hidden = no.hidden = false;
+  yes.disabled = no.disabled = false;
+  row.hidden = false;
+  yes.onclick = async () => {
+    yes.disabled = no.disabled = true;
+    const r: { ok?: boolean; error?: string } | undefined = await bg<{ ok?: boolean; error?: string }>({ type: "appliedMark", tabId })
+      .catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+    if (r?.ok) {
+      text.textContent = `Marked ${subject} as Applied.`;
+      yes.hidden = no.hidden = true;
+    } else {
+      text.textContent = `Could not mark it Applied: ${r?.error ?? "no reply"}`;
+      yes.disabled = no.disabled = false;
+    }
+  };
+  no.onclick = async () => {
+    await bg({ type: "appliedDismiss", tabId }).catch(() => undefined);
+    row.hidden = true;
+  };
+}
+
 async function init(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   host = tab?.url ? new URL(tab.url).hostname : "";
   $("#host").textContent = host || "(no page)";
+  if (tab?.id !== undefined) void appliedRow(tab.id, tab.url);
   await refresh();
   try {
     const t = await scanTab();

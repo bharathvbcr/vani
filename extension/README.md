@@ -44,15 +44,67 @@ each one:
 - **Use: …** buttons offer your saved answers to *similar* questions, which are too different to
   fill automatically. One click fills that answer, outlined yellow. No model is involved, and
   nothing leaves the browser.
-- **Draft** (free-text fields, Chrome, with the Vani Apply Mac app installed) asks the Mac app to
+- **Suggest** (panel button, with the Vani Apply Mac app and its agent running) handles the whole
+  page in one click. It sends the new free-text questions (labels and field type only, never a
+  value or a saved answer) and the posting to `vani suggest`:
+  - The decision model (the configured OpenRouter model, then Claude) sorts each question as an
+    essay, a fact about you, work authorization, an agreement, self-identification or other.
+  - Claude, through Manvi, drafts the essays, at most three per page. Each draft is inserted
+    yellow, for review, into a field that is still empty.
+  - Every other question is listed with the reason it is left to you.
+  - Visa/sponsorship, consent and self-identification labels are pinned by a fixed rule, so no
+    model is ever asked about them.
+  - Choice questions (selects, radios) are never sent. They come from your saved answers only.
+  - It runs as a job in the Vani Apply agent: the extension starts it, then polls every 2 s for up
+    to about 6 minutes. This works the same in Safari and Chrome.
+- **Draft** (free-text fields, with the Vani Apply Mac app installed) asks the Mac app to
   draft an answer from the job description on the page. The request carries only the question
   label and the posting (company, title, description), never your saved answers or what you
   typed. The draft appears in the panel to edit. **Insert for review** puts it in the field,
   outlined yellow. It never overwrites text you typed unless you click again to confirm, and only
   one draft runs at a time. A kept draft is saved for review, so it is never filled as a confident
-  answer later, however short it is. In Safari, use Draft in the Vani Apply app instead.
+  answer later, however short it is. In Safari, the draft runs as a job in the Vani Apply agent,
+  because Safari's sandboxed extension cannot start `vani` itself.
   Failures say why: the budget is spent, the Mac app isn't reachable, no key is configured, or the
   draft timed out.
+
+### Marking a job Applied
+
+When you press **Submit** (or **Send application**) on a page that is one of the postings Vani
+tracks, the extension offers to mark it Applied in the Vani Apply Jobs tab: a small bar at the top
+right asks "Did your application go through? Mark … as Applied in Vani?" with **Mark Applied** and
+**Not now**. **It never marks without that click.**
+
+- Only a final Submit counts. Next, Continue, Save, Review, "Review and submit" and Apply do not.
+- The page is matched on scheme, host and path against each posting's link and apply link
+  (`vani jobs find`). The query and fragment are dropped in the browser before anything is sent,
+  so tokens in them never reach the Mac app, except the few parameters that name a job (`gh_jid`,
+  `jid`, `job_id`, `jobid`, `req_id`, with a plain identifier as the value): Greenhouse boards on
+  a company's own careers page tell postings apart by `gh_jid`. A Greenhouse embedded form
+  (`boards.greenhouse.io/embed/job_app?for=…&token=…`) is the posting it embeds, and
+  `job-boards.greenhouse.io` is the same site as `boards.greenhouse.io`. When no link matches
+  exactly, an application sub-page (`…/apply`, `…/application`, Workday's `…/apply/applyManually`)
+  is matched to the posting it belongs to. A page that two postings share is not guessed at and
+  gets no offer; neither does a job already marked Applied.
+- Many boards load a confirmation page after Submit. The question follows you there: the background
+  worker keeps it for the tab for 10 minutes in `chrome.storage.session` (so a stopped worker still
+  has it; where that API is missing it is held in memory only), and the toolbar button shows "✓?"
+  on that tab. If the confirmation page is on a host the extension does not run on, the bar
+  does not appear; open the popup instead.
+- **The popup does the same on any site.** Opening it on a page Vani tracks (the popup may read the
+  active tab's address) shows "Tracked job on this page: … Mark Applied / Not now", whether or not a
+  content script runs there. That is also the way in on a company careers page the extension does not
+  watch for Submit. Opening the popup sends the page's address, reduced as above, to the Mac app
+  (local, not logged).
+- Chrome through the native host, and Safari through the Vani Apply agent (the same `jobFind` and
+  `jobMark` ops over XPC, since Safari's sandboxed extension cannot start `vani`). Unreachable app,
+  untracked page: the extension stays silent.
+- A form inside a frame (a Greenhouse embed on a company page) asks the top frame to show the
+  question, and shows it inside the frame only if the top frame has no content script. The frame's
+  own address is tried first, then the tab's, where the browser gives it.
+- Submit is detected from the click on a button labelled Submit / Send application, which also
+  covers Enter in a field and keyboard activation (the browser clicks the button). A form submitted
+  by script with no such button gives no offer.
 
 It runs automatically on Greenhouse, Lever, Ashby, Workday, SmartRecruiters, Workable, iCIMS,
 BambooHR and Jobvite pages. On any other site, open the popup: it runs on that page for that click
@@ -223,8 +275,8 @@ flowchart LR
   patterns and a fixture page only.
 - Labels come from ARIA, `<label>`, fieldset legends and question containers. A form with no
   readable label for a field falls back to the field's name.
-- Not yet connected to Vani: no Greenhouse question-schema prefetch, and no application packet from
-  the digest (plan §9).
+- Connected to Vani only for drafts, Suggest and marking a job Applied (above): no Greenhouse
+  question-schema prefetch, and no application packet from the digest (plan §9).
 
 ## Develop
 

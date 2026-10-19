@@ -127,23 +127,80 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
 - **Shadow, eval and promotion:** `decide.shadow` (`openrouter`, `llm`, `lappi` or `local`) asks a second backend
   alongside the chain and records its reading, backend and any disagreement; it never decides.
   `vani label` labels postings (disagreements first) and `vani eval` reports per-backend precision
-  and coverage, plus a promotion verdict per slot: the shadow is promotable when, on at least 30
-  labeled postings it was asked about, its precision meets the primary's at no worse coverage.
+  and coverage, plus a promotion verdict per slot and primary. A shadow that errored or timed out
+  is recorded as `unavailable` (so it still counts as asked, and shows in a "shadow unavailable"
+  column), and each shadow backend, which for a local model includes the model and question
+  mode, is its own row. The shadow is promotable when, on at least 30 labeled postings it was
+  asked about, it answers at least as often as the primary, and then, on the postings both
+  answered (at least 30), there are at least 10 where exactly one was right and a one-sided 95%
+  exact lower bound on the shadow's share of those is at least 0.4. A shadow that agrees with the
+  primary almost everywhere reads "insufficient disagreements", never "promotable".
   Promotion is a config change (`decide.lappi.primary: true` puts Lappi first), never automatic.
 - **Lappi** (`decide.lappi`, socket default `~/Library/Caches/qd/qd.sock`): local and free. With no
   agent running every ask reads `unavailable/socket_not_found` and the chain carries on; the first
   `task_not_trained` refusal stops Vani asking for the rest of the process.
 - **Local decision model** (`decide.local`, shadow only; config refuses it anywhere else): a
   llama.cpp server's `/v1/systemone` (for example LiquidAI d1-3B, llama.cpp ≥ 0.7.0), asked
-  through the Jev client under the name `local` with no key, over `egress.Loopback`, which dials
+  through the Jev client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
+  without `.gguf` when Vani starts the server; at most 32 bytes in all, which `vani config
+  check` enforces; rows recorded earlier are filed as plain `local`) with no key, over `egress.Loopback`, which dials
   only loopback addresses. Either `endpoint` (a server you keep running) or `server` (`binary`,
-  `model_path`, optional `context_size`, `start_timeout_ms`): Vani then starts `llama-server` on
+  `model_path`, optional `context_size`, `start_timeout_ms`, and `batch_size`/`parallel` for -b/-ub
+  and -np, which a vllm-d3 model needs at 8192 and 1): Vani then starts `llama-server` on
   a free 127.0.0.1 port for each run, Metal only (`--device MTL0 -ngl all`; no CPU fallback), with
   only `PATH`/`HOME`/`TMPDIR`, waits for `/health`, and
   stops it when the run ends. A server that does not come up costs the run its shadow, never the
   run. `questions: per_slot` sends each slot its Lappi family's question; the default `combined`
   measured better on d1. Measuring d1 is `vani run-once` (with the chain's keys), then
   `vani label -n 30` and `vani eval`.
+- **Pipeline health (`vani status --json`, the Mac app's Pipeline tab):** every run, from the
+  daemon or `run-once`, writes `<state dir>/runs/last.json` when it starts and when it ends:
+  outcome (`ok`, `failed`, `cancelled`), the stage it stopped at (pipeline or digest), a one-line
+  error, and the ledger's counts by status before and after. `status --json` adds the ledger, the
+  schedule, today's spend and remaining cap per paid backend (UTC day), and the decision-model
+  setup. It reads without the ledger lock, so it answers while the daemon runs. Each section has
+  its own `ok` and `reason`: a section that could not be read is reported as unknown with the
+  reason, never as zero or fine. A record that started but never ended is `running` only while its
+  process lives and is under a day old, otherwise `interrupted`. The app flags a failed or
+  interrupted run, an unreadable section, a spent budget and a run older than 36 hours in its
+  sidebar. A run the daemon skips for starting too late is logged but not recorded.
+- **Browsing aids (`vani jobs`, the Mac app's Jobs tab):** every role carries a freshness date
+  and a relevance score with its basis. Display-only: they sort and plot, and never drop a role.
+  - Freshness is the board's posted date. Greenhouse's comes from `first_published`. A board with
+    no date falls back to when Vani first saw the role, and that fallback is marked approximate.
+  - Relevance (0-100) comes from DevPrism's rank, or triage's role_fit when there is no rank,
+    plus overlap with the target summary's terms.
+  - Priority is relevance at most halved by age (`--half-life`, default 14 days).
+  - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
+    It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at
+    least 90% of one company's postings repeat is that company's blurb, and is left out.
+  - Each keyword is marked when the target summary names it, or when DevPrism found it missing.
+  - `jobs list` adds `--sort priority|relevance|fresh|company|salary` and filters for fit, work
+    mode, sponsorship, seniority, age and closed roles, plus `--company` / `--exclude-company`
+    (exact names), `--exclude` (title words) and `--min-relevance`. `jobs stats` returns the
+    distributions the app's Insights charts draw.
+  - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): each job's description is
+    read for stated pay by fixed rules (currency, range, period, a pay word, plausible yearly
+    bounds; "$100/month budget" or "$50M raised" is not pay), at most one range per currency, as
+    `pay` with yearly figures. `--min-salary 150k` compares the top of the range in `--currency`
+    (default USD, no exchange rates): a job stating no pay stays unless `--salary-listed`, and a
+    job stating pay only in another currency is left out. `--sort salary` and the stats' `salary`
+    buckets use the same currency. A bare "$" reads as USD. The Lever adapter adds the board's
+    closing text (`additionalPlain`, where Lever boards state pay), `salaryDescriptionPlain` and
+    `salaryRange`; Ashby is fetched with `includeCompensation=true` and its salary component leads
+    the description unless the company hides pay on its postings.
+  - Location ([`internal/location`](internal/location)): each job's board location is read into
+    `places` (area plus US state code, or area plus the region as written) and `remote_listed` /
+    `remote_scope` ("Remote (US)"). That is what the board says, not triage's `work_mode` reading.
+    `--state TX,new mexico|none`, `--area "El Paso"|none` and `--remote` filter on it
+    (`--or-remote` with a state or area keeps remote roles too: "remote, or in Texas"), `jobs stats`
+    counts states, areas and remote listings, and the digest's "Where:" line uses it, falling back
+    to the board's text. There is no home area or city table: an area is the place as written.
+- **Local-model bench:** `vani bench local` replays postings the primary already read through
+  one or more local GGUF models. It uses the run's exact request and reproduced the recorded
+  shadow 382/382. It reports per-slot agreement with the primary, the confusion between them,
+  agreement by probability, and latency. Metal only, no key, never writes the ledger. Agreement
+  is not accuracy; that is still `vani label` and `vani eval` ([`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)).
 - **Sponsorship badge:** `vani lca import` loads DOL LCA disclosure CSVs ([`docs/LCA.md`](file:///Users/bharath/Code/apps/Vani/docs/LCA.md)); each
   posting gets a certified-H-1B-history badge. A badge, never a filter.
 - **Employer badge:** `vani employer import` loads the IRS exempt-organizations list and the IPEDS
@@ -214,6 +271,10 @@ build/vani employer import /absolute/path/HD2024.csv
 build/vani track use ml-research
 build/vani label -n 20
 build/vani eval
+build/vani jobs list --sort priority --fit strong_fit,partial_fit --max-age 14
+build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager --sort salary
+build/vani jobs stats --view all
+build/vani bench local --model /abs/candidate.gguf --model /abs/d1-3B-Q8_0.gguf
 build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code
 build/vani launchd plist --binary /absolute/path/to/vani
 ```

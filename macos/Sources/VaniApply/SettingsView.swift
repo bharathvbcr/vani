@@ -60,6 +60,17 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Browser suggestions (Vani Apply agent)") {
+                LabeledContent("Agent", value: model.agentSummary)
+                HStack {
+                    Spacer()
+                    Button("Register again") { model.registerAgent(repair: true) }
+                    Button("Open Login Items") { model.openLoginItems() }
+                }
+                Text("Suggest in the browser panel sends the page's new free-text questions (labels only) to the decision model, then has Claude draft the ones it reads as essays, using the config above. Visa, consent and self-identification questions never reach a model. Safari can only reach Vani through this agent.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Bank") {
                 LabeledContent("Answers", value: "\(model.answers.count) · \(model.bankBytes / 1000) of 900 KB")
                 LabeledContent("Revision", value: "\(model.snapshot.rev)")

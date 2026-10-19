@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Vani Apply agent, registered by the app with SMAppService.agent(plistName:).
+     launchd starts it when a browser looks up its Mach service; the name is
+     prefixed by the App Group id so the sandboxed Safari appex may reach it. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.vbcr.vani.apply.agent</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/vani-apply-agent</string>
+	<key>MachServices</key>
+	<dict>
+		<key>HAUHVD8M37.dev.vbcr.vani.agent</key>
+		<true/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
