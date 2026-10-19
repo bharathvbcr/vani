@@ -327,6 +327,11 @@ const maxConsecutiveUnread = 20
 // posting, and the run fails rather than publish a digest that hides it.
 const maxConsecutiveFailed = 20
 
+// testHookCounted, set only by tests, is called on advanceAll's goroutine
+// after each finished posting is counted, with whether the phase has decided
+// to stop. A test uses it to finish postings in an exact order.
+var testHookCounted func(key posting.Key, stopped bool)
+
 // errAdvanceFailing marks a run stopped because postings kept failing a stage
 // other than triage.
 var errAdvanceFailing = errors.New("advance: postings keep failing a stage")
@@ -353,14 +358,18 @@ const maxDistinctCauses = 20
 // can show what the cap or a stop left waiting.
 //
 // Up to workers postings (config advance_concurrency) are advanced at a time.
-// They start in rank order; their results are counted in the order they
-// finish, on this goroutine, so the report, the warnings and the stop rules
-// need no lock. The ledger serialises its own writes, and each posting is
-// advanced by one goroutine only. A stop (unread or failure streak, cancellation) starts
-// no further posting but waits for those in flight, so nothing is written to
-// the ledger after advanceAll returns; with workers above 1 the streak can
-// therefore admit up to workers-1 attempts past maxConsecutiveUnread or
-// maxConsecutiveFailed.
+// They start in rank order and their results are counted on this goroutine,
+// so the report, the warnings and the stop rules need no lock. The ledger
+// serialises its own writes, and each posting is advanced by one goroutine
+// only. The streaks are counted in rank (dispatch) order, not finishing
+// order: a posting that ends a streak resets only the postings dispatched
+// before it. A stop (unread or failure streak, cancellation) starts no
+// further posting but waits for those in flight, so nothing is written to
+// the ledger after advanceAll returns. A streak stop therefore attempts at
+// most maxConsecutiveUnread (or maxConsecutiveFailed) postings after the
+// last posting that ended the streak, plus workers-1 in flight, plus any
+// postings dropped by title among them (they count as attempted but end and
+// extend no streak).
 //
 // titleDrop, when set, reports whether advancing r drops it by its title
 // without asking any backend. Such a posting counts toward limit, but it is no
@@ -387,7 +396,47 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		rep.Stopped = stopped
 		return rep
 	}
-	streak, failStreak := 0, 0
+	n := min(len(todo), limit)
+	// The stop rules count in dispatch (rank) order, not finishing order. A
+	// streak counts the finished postings of its kind dispatched after the
+	// last finished posting that ends it (since), so a posting dispatched
+	// before an outage that finishes after postings dispatched behind it
+	// cannot reset their count. A stop therefore comes once maxConsecutive*
+	// postings dispatched after that posting have finished, with at most
+	// workers-1 others in flight: Attempted <= since+1+maxConsecutive*+
+	// workers-1, plus the title drops among them, which are attempted but
+	// neutral.
+	const (
+		pending byte = iota
+		wasRead
+		wasUnread
+		wasFailed
+		neutral // dropped by title or cut short by cancellation: ends nothing
+	)
+	outcomes := make([]byte, n)
+	type streakOf struct {
+		kind         byte
+		since, count int
+	}
+	unreadRun, failRun := streakOf{kind: wasUnread, since: -1}, streakOf{kind: wasFailed, since: -1}
+	next := 0 // postings dispatched so far
+	fold := func(s *streakOf, i int) {
+		switch c := outcomes[i]; {
+		case c == s.kind:
+			if i > s.since {
+				s.count++
+			}
+		case c == wasRead || c == wasUnread || c == wasFailed:
+			if i > s.since {
+				s.since, s.count = i, 0
+				for j := i + 1; j < next; j++ {
+					if outcomes[j] == s.kind {
+						s.count++
+					}
+				}
+			}
+		}
+	}
 	type cause struct {
 		first posting.Key
 		more  int
@@ -406,41 +455,34 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 			warnf("%d more posting(s) failed with other errors (more than %d distinct causes); they wait for the next run", uncounted, maxDistinctCauses)
 		}
 	}
-	// count folds one finished posting into the report and the stop rules.
-	// free: the posting was dropped by its title, so no backend was asked.
 	stopped := ""
 	var cancelErr error
-	count := func(key posting.Key, free bool, err error) {
+	// classify counts one finished posting into the report and says what it
+	// was for the stop rules. free: the posting was dropped by its title, so
+	// no backend was asked.
+	classify := func(key posting.Key, free bool, err error) byte {
 		if err != nil && ctx.Err() != nil {
 			// Cut short by cancellation: neither unread nor failed.
 			if stopped == "" {
 				stopped, cancelErr = stopCancelled, ctx.Err()
 			}
-			return
+			return neutral
 		}
 		if err == nil && free {
 			byTitle++
-			return
+			return neutral
 		}
 		if errors.Is(err, pipeline.ErrTriageUnavailable) {
 			rep.Unread++
-			streak++
-			failStreak = 0
 			if rep.Unread <= maxUnreadExamples {
 				warnf("advance %s: %v", key, err)
 			}
-			if streak >= maxConsecutiveUnread && stopped == "" {
-				stopped = stopUnreadStreak
-			}
-			return
+			return wasUnread
 		}
-		streak = 0
 		if err == nil {
-			failStreak = 0
-			return
+			return wasRead
 		}
 		rep.Failed++
-		failStreak++
 		ek := errorKey(strings.ReplaceAll(err.Error(), string(key), "<posting>"))
 		switch c, seen := causes[ek]; {
 		case seen:
@@ -452,22 +494,35 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 			order = append(order, ek)
 			warnf("advance %s: %v", key, err)
 		}
-		if failStreak >= maxConsecutiveFailed && stopped == "" {
+		return wasFailed
+	}
+	// count folds the posting dispatched i-th into the report and the stop rules.
+	count := func(i int, key posting.Key, free bool, err error) {
+		outcomes[i] = classify(key, free, err)
+		fold(&unreadRun, i)
+		fold(&failRun, i)
+		if stopped != "" {
+			return
+		}
+		switch {
+		case unreadRun.count >= maxConsecutiveUnread:
+			stopped = stopUnreadStreak
+		case failRun.count >= maxConsecutiveFailed:
 			stopped = stopFailStreak
 		}
 	}
 
 	type result struct {
+		idx      int
 		key      posting.Key
 		free     bool
 		err      error
 		panicked bool
 		value    any
 	}
-	n := min(len(todo), limit)
 	// Buffered to workers, so a finished posting never blocks its goroutine.
 	results := make(chan result, workers)
-	next, inflight := 0, 0
+	inflight := 0
 	var panicked *result
 	for {
 		for stopped == "" && panicked == nil && next < n && inflight < workers {
@@ -475,7 +530,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 				stopped, cancelErr = stopCancelled, err
 				break
 			}
-			key := todo[next].Key
+			idx, key := next, todo[next].Key
 			// Decided here, before the posting advances and its status moves.
 			free := titleDrop != nil && titleDrop(todo[next])
 			next++
@@ -487,11 +542,11 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 				// postings ran concurrently.
 				defer func() {
 					if p := recover(); p != nil {
-						results <- result{key: key, panicked: true, value: p}
+						results <- result{idx: idx, key: key, panicked: true, value: p}
 					}
 				}()
 				err := advance(ctx, key)
-				results <- result{key: key, free: free, err: err}
+				results <- result{idx: idx, key: key, free: free, err: err}
 			}()
 		}
 		if inflight == 0 {
@@ -505,7 +560,10 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 			}
 			continue
 		}
-		count(r.key, r.free, r.err)
+		count(r.idx, r.key, r.free, r.err)
+		if testHookCounted != nil {
+			testHookCounted(r.key, stopped != "")
+		}
 	}
 	if panicked != nil {
 		panic(fmt.Sprintf("advance %s: %v", panicked.key, panicked.value))
