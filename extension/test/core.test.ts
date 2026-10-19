@@ -41,6 +41,26 @@ describe("normalize", () => {
     expect(signature("x.io", { name: "", automationId: "" })).toBe("");
     expect(siteKey("acme.wd5.myworkdayjobs.com")).toBe("myworkdayjobs.com");
   });
+  test("site keys keep the company under a two-part country suffix", () => {
+    // Two companies under .co.uk used to share the key "co.uk", so one's
+    // learned field signatures filled the other's forms.
+    expect(siteKey("jobs.acme.co.uk")).toBe("acme.co.uk");
+    expect(siteKey("careers.other.co.uk")).toBe("other.co.uk");
+    expect(signature("jobs.acme.co.uk", { name: "first_name", automationId: "" })).not.toBe(
+      signature("careers.other.co.uk", { name: "first_name", automationId: "" }),
+    );
+    expect(siteKey("apply.example.com.au")).toBe("example.com.au");
+    expect(siteKey("Jobs.Example.CO.JP.")).toBe("example.co.jp");
+    expect(siteKey("x.ac.uk")).toBe("x.ac.uk");
+    expect(siteKey("acme.co.uk")).toBe("acme.co.uk");
+    // The suffix alone, and ordinary hosts, are unchanged.
+    expect(siteKey("co.uk")).toBe("co.uk");
+    expect(siteKey("boards.greenhouse.io")).toBe("greenhouse.io");
+    expect(siteKey("jobs.lever.co")).toBe("lever.co");
+    expect(siteKey("www.acme.de")).toBe("acme.de");
+    // Only a two-letter country code takes three labels.
+    expect(siteKey("jobs.acme.co.com")).toBe("co.com");
+  });
 });
 
 describe("classify", () => {
