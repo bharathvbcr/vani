@@ -40,15 +40,22 @@ var ErrBank = errors.New("kbsync: bank.json")
 var idRe = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 
 // Entry is the part of rkb's BankEntry this sync reads (rkb/bank.go:124).
-// Fields rkb has and DevPrism cannot represent (stack, group, layout, members,
-// links, origin, sub, lead) are ignored here by design.
+// Stack becomes DevPrism skills (tags.go). Origin lists the entry ids rkb's
+// importer derived this one from (rkb/importtex.go:345-365): an entry whose
+// origin names another entry is a variant of it. Fields DevPrism cannot
+// represent (group, layout, members, links, sub, lead) are ignored by design.
 type Entry struct {
 	Title    string   `json:"title"`
 	Org      string   `json:"org"`
 	Dates    string   `json:"dates"`
 	Location string   `json:"location"`
+	Stack    string   `json:"stack"`
+	Origin   []string `json:"origin"`
 	Bullets  []string `json:"bullets"`
 }
+
+// maxOrigins caps an entry's origin list.
+const maxOrigins = 64
 
 // Bullet is the part of rkb's Bullet this sync reads (rkb/bank.go:49). Text
 // still carries {{clm...}} tokens until Resolve.
@@ -115,6 +122,14 @@ func Parse(raw []byte) (Bank, error) {
 		}
 		if e == nil {
 			return Bank{}, fmt.Errorf("%w: entry %q is null", ErrBank, id)
+		}
+		if len(e.Origin) > maxOrigins {
+			return Bank{}, fmt.Errorf("%w: entry %q lists more than %d origins", ErrBank, id, maxOrigins)
+		}
+		for _, o := range e.Origin {
+			if err := checkID("origin of an entry", o); err != nil {
+				return Bank{}, err
+			}
 		}
 		seen := map[string]bool{}
 		for _, bid := range e.Bullets {

@@ -2,15 +2,17 @@
   "block": {
     "bullets": [],
     "dateRange": {
-      "start": "AUG 2018",
-      "end": "MAY 2020"
+      "start": "2018-08",
+      "end": "2020-05"
     },
     "domains": [],
     "facts": [],
     "id": "gamma-edu",
     "kind": "education",
     "org": "Example University",
-    "personas": [],
+    "personas": [
+      "ai"
+    ],
     "seniorityLevel": "ic",
     "skills": [],
     "title": "Master of Science in Things",

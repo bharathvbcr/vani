@@ -23,6 +23,8 @@ const (
 	// StatusStale: DevPrism's copy changed after the run read it, so the
 	// confirmation was not sent.
 	StatusStale = "stale"
+	// StatusVariant: an rkb variant entry, not sent (ActionVariant).
+	StatusVariant = "variant"
 )
 
 // Outcome is what happened to one block.
@@ -44,6 +46,8 @@ type Result struct {
 	Confirmed         int
 	ConfirmRejected   int
 	Stale             int
+	Variants          int
+	VariantOnly       int // bullets only variants list; not synced
 	Orphaned          []string
 }
 
@@ -67,7 +71,7 @@ type Result struct {
 // reported for the block and the sync continues; DevPrism down or timing out
 // stops it as any other call does.
 func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncState, confirmer Confirmer) (res Result, err error) {
-	res = Result{Orphaned: plan.Orphaned}
+	res = Result{Orphaned: plan.Orphaned, VariantOnly: plan.VariantOnly}
 	if state == nil {
 		return res, fmt.Errorf("%w: Apply needs a state", ErrState)
 	}
@@ -95,6 +99,8 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 			res.ConfirmRejected++
 		case StatusStale:
 			res.Stale++
+		case StatusVariant:
+			res.Variants++
 		}
 	}
 	for _, it := range plan.Items {
@@ -104,6 +110,9 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 			continue
 		case ActionBlocked:
 			add(Outcome{ID: it.ID, Status: StatusBlocked, Reason: it.Reason})
+			continue
+		case ActionVariant:
+			add(Outcome{ID: it.ID, Status: StatusVariant, Reason: it.Reason})
 			continue
 		case ActionAdd, ActionUpdate:
 		default:
@@ -188,7 +197,7 @@ func DryRun(w io.Writer, plan SyncPlan) error {
 	pf("kbsync plan (dry run, nothing sent): %d add, %d update, %d unchanged, %d blocked, %d orphaned\n",
 		plan.Count(ActionAdd), plan.Count(ActionUpdate), plan.Count(ActionUnchanged), plan.Count(ActionBlocked), len(plan.Orphaned))
 	for _, it := range plan.Items {
-		if it.Action == ActionBlocked {
+		if it.Action == ActionBlocked || it.Action == ActionVariant {
 			pf("  %-9s %s (%d bullets): %s\n", it.Action, it.ID, it.Bullets, it.Reason)
 			continue
 		}
@@ -199,6 +208,9 @@ func DryRun(w io.Writer, plan SyncPlan) error {
 	}
 	if plan.Unattached > 0 {
 		pf("  note: %d rkb bullets belong to no entry and are not synced\n", plan.Unattached)
+	}
+	if n := plan.Count(ActionVariant); n > 0 {
+		pf("  note: %d rkb variant entries are not synced; %d bullets appear only in them\n", n, plan.VariantOnly)
 	}
 	if len(plan.Cautioned) > 0 {
 		pf("  note: synced bullets use CAUTION claims: %v\n", plan.Cautioned)
@@ -213,6 +225,9 @@ func (r Result) Summary() string {
 	if r.Confirmed+r.ConfirmRejected+r.Stale > 0 {
 		s += fmt.Sprintf("; %d confirmed, %d confirmation refused, %d changed in DevPrism (not confirmed)",
 			r.Confirmed, r.ConfirmRejected, r.Stale)
+	}
+	if r.Variants > 0 {
+		s += fmt.Sprintf("; %d rkb variants not synced (%d bullets appear only in them)", r.Variants, r.VariantOnly)
 	}
 	return s
 }
