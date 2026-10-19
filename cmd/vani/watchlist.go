@@ -161,7 +161,18 @@ func (e *env) cmdLaunchd(args []string) error {
 	if !filepath.IsAbs(bin) {
 		return usagef("--binary must be an absolute path, got %q", bin)
 	}
-	logDir := filepath.Join(e.stateDir, "logs")
-	_, err := e.stdout.Write(daemon.PlistXML(*label, bin, []string{"daemon"}, logDir))
+	// The agent runs against the config and state this process resolved
+	// (VANI_CONFIG / VANI_STATE_DIR, else the defaults). launchd starts it
+	// from / with no shell environment, so a relative path would point
+	// somewhere else.
+	for _, p := range []struct{ name, path string }{
+		{"config path (VANI_CONFIG)", e.configPath},
+		{"state dir (VANI_STATE_DIR)", e.stateDir},
+	} {
+		if !filepath.IsAbs(p.path) {
+			return usagef("%s must be an absolute path for a launchd agent, got %q", p.name, p.path)
+		}
+	}
+	_, err := e.stdout.Write(daemon.PlistXML(*label, bin, []string{"daemon"}, e.configPath, e.stateDir))
 	return err
 }

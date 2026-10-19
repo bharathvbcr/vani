@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -149,16 +151,142 @@ func TestWatchlistLifecycle(t *testing.T) {
 }
 
 func TestLaunchdPlistPrintsAndInstallsNothing(t *testing.T) {
-	_, stateDir := setup(t)
+	cfgPath, stateDir := setup(t)
+	// Secrets in the invoking shell never reach the plist.
+	const secret = "sk-ant-not-a-real-key-0000"
+	t.Setenv("ANTHROPIC_API_KEY", secret)
+	t.Setenv("OPENROUTER_API_KEY", secret)
 	o, _ := mustCode(t, 0, "launchd", "plist", "--binary", "/opt/v&v/vani", "--label", "dev.test")
 	for _, want := range []string{"<string>dev.test</string>", "/opt/v&amp;v/vani", "<string>daemon</string>", filepath.Join(stateDir, "logs", "vani.err.log")} {
 		if !strings.Contains(o, want) {
 			t.Errorf("plist missing %q:\n%s", want, o)
 		}
 	}
+	if got, want := plistEnv(t, o), envBlock(cfgPath, stateDir); got != want {
+		t.Errorf("EnvironmentVariables:\n%s\nwant:\n%s", got, want)
+	}
+	for _, bad := range []string{secret, "ANTHROPIC", "OPENROUTER"} {
+		if strings.Contains(o, bad) {
+			t.Errorf("plist carries %q:\n%s", bad, o)
+		}
+	}
 	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
 		t.Error("launchd plist touched the state dir")
 	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Error("launchd plist touched the config path")
+	}
+}
+
+// With neither variable set, the plist pins the platform defaults, so an agent
+// installed from it keeps using them even if the shell later sets the variables.
+func TestLaunchdPlistPinsDefaultPaths(t *testing.T) {
+	t.Setenv("VANI_CONFIG", "")
+	t.Setenv("VANI_STATE_DIR", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath, stateDir := config.Paths(os.Getenv, home)
+	o, _ := mustCode(t, 0, "launchd", "plist", "--binary", "/opt/vani")
+	if got, want := plistEnv(t, o), envBlock(cfgPath, stateDir); got != want {
+		t.Errorf("EnvironmentVariables:\n%s\nwant:\n%s", got, want)
+	}
+	if !strings.Contains(o, filepath.Join(stateDir, "logs", "vani.out.log")) {
+		t.Errorf("logs not under the default state dir:\n%s", o)
+	}
+}
+
+// launchd starts the agent from / with no shell environment, so a relative
+// path would name a different file. Refused like a relative --binary.
+func TestLaunchdPlistRefusesRelativePaths(t *testing.T) {
+	for name, tc := range map[string]struct{ cfg, state, want string }{
+		"relative config": {"Vani/.state/config.json", "/abs/state", "VANI_CONFIG"},
+		"relative state":  {"/abs/config.json", ".state/state", "VANI_STATE_DIR"},
+		"dot config":      {"./config.json", "/abs/state", "VANI_CONFIG"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("VANI_CONFIG", tc.cfg)
+			t.Setenv("VANI_STATE_DIR", tc.state)
+			code, o, e := do(t, "launchd", "plist", "--binary", "/opt/vani")
+			if code != 2 {
+				t.Fatalf("exit %d, want 2 (stderr %q)", code, e)
+			}
+			if o != "" {
+				t.Errorf("printed a plist on refusal:\n%s", o)
+			}
+			if !strings.Contains(e, tc.want) || !strings.Contains(e, "absolute") {
+				t.Errorf("stderr %q does not name %s as not absolute", e, tc.want)
+			}
+		})
+	}
+}
+
+// XML-special characters in the pinned paths are escaped, and the result is
+// still a property list plutil accepts and reads back unchanged.
+func TestLaunchdPlistEscapesPinnedPaths(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, `v&v`, `<cfg>'"x".json`)
+	stateDir := filepath.Join(dir, `s&<t>`)
+	t.Setenv("VANI_CONFIG", cfgPath)
+	t.Setenv("VANI_STATE_DIR", stateDir)
+	o, _ := mustCode(t, 0, "launchd", "plist", "--binary", "/opt/vani")
+	if strings.Contains(o, "v&v") || strings.Contains(o, "<cfg>") || strings.Contains(o, "s&<t>") {
+		t.Errorf("unescaped path in:\n%s", o)
+	}
+	if got, want := plistEnv(t, o), envBlock(cfgPath, stateDir); got != want {
+		t.Errorf("EnvironmentVariables:\n%s\nwant:\n%s", got, want)
+	}
+
+	plutil, err := exec.LookPath("plutil")
+	if err != nil {
+		t.Skip("plutil not available on this system")
+	}
+	p := filepath.Join(dir, "dev.vani.daemon.plist")
+	if err := os.WriteFile(p, []byte(o), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(plutil, "-lint", p).CombinedOutput(); err != nil || !strings.HasSuffix(strings.TrimSpace(string(out)), ": OK") {
+		t.Fatalf("plutil -lint: %v\n%s", err, out)
+	}
+	for k, want := range map[string]string{"EnvironmentVariables.VANI_CONFIG": cfgPath, "EnvironmentVariables.VANI_STATE_DIR": stateDir} {
+		got, err := exec.Command(plutil, "-extract", k, "raw", "-o", "-", p).Output()
+		if err != nil {
+			t.Fatalf("plutil -extract %s: %v", k, err)
+		}
+		if g := strings.TrimSuffix(string(got), "\n"); g != want {
+			t.Errorf("plutil reads %s as %q, want %q", k, g, want)
+		}
+	}
+}
+
+// plistEnv returns the EnvironmentVariables dict of a generated plist, from its
+// key through the dict's closing tag.
+func plistEnv(t *testing.T, plist string) string {
+	t.Helper()
+	i := strings.Index(plist, "<key>EnvironmentVariables</key>")
+	if i < 0 {
+		t.Fatalf("no EnvironmentVariables in:\n%s", plist)
+	}
+	j := strings.Index(plist[i:], "</dict>")
+	if j < 0 {
+		t.Fatalf("EnvironmentVariables dict not closed in:\n%s", plist)
+	}
+	return plist[i : i+j+len("</dict>")]
+}
+
+// envBlock is the exact EnvironmentVariables dict the plist must carry: these
+// two keys and nothing else.
+func envBlock(cfgPath, stateDir string) string {
+	esc := func(s string) string {
+		var b strings.Builder
+		_ = xml.EscapeText(&b, []byte(s))
+		return b.String()
+	}
+	return "<key>EnvironmentVariables</key>\n\t<dict>\n" +
+		"\t\t<key>VANI_CONFIG</key>\n\t\t<string>" + esc(cfgPath) + "</string>\n" +
+		"\t\t<key>VANI_STATE_DIR</key>\n\t\t<string>" + esc(stateDir) + "</string>\n" +
+		"\t</dict>"
 }
 
 // TestRealWiring drives the real buildApp (wire.go) on a temp state dir with
