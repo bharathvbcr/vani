@@ -136,6 +136,33 @@ func TestWhitespaceOnlyWithPayLineIsUnchanged(t *testing.T) {
 	}
 }
 
+// A dropped posting re-rendered gets no event: its last event dates the drop
+// the digest footer counts, and it is shown nowhere. A real edit still brings
+// it back to triage.
+func TestDroppedRerenderedWritesNothing(t *testing.T) {
+	l := openLedger(t)
+	p := ghPost(t, "1", "Build the thing.")
+	Reconcile(ctx, l, board, []posting.Posting{p}, t0)
+	if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: p.Key, Status: posting.Dropped,
+		Annotations: derived, Reason: "rule"}); err != nil {
+		t.Fatal(err)
+	}
+	before := rec(t, l, p.Key).LastEvent
+	p2 := p
+	p2.Description = "Pay range: USD 1 – 2 per year\n\nBuild the thing."
+	s, _ := Reconcile(ctx, l, board, []posting.Posting{p2}, t0.Add(time.Hour))
+	r := rec(t, l, p.Key)
+	if s.Unchanged != 1 || s.Rerendered != 0 || r.Status != posting.Dropped || !r.LastEvent.Equal(before) {
+		t.Fatalf("dropped re-render wrote an event: %+v %+v", s, r)
+	}
+	p3 := p
+	p3.Description = "Pay range: USD 1 – 2 per year\n\nBuild another thing."
+	s, _ = Reconcile(ctx, l, board, []posting.Posting{p3}, t0.Add(2*time.Hour))
+	if r := rec(t, l, p.Key); s.Changed != 1 || r.Status != posting.Live {
+		t.Fatalf("dropped real edit: %+v %s", s, r.Status)
+	}
+}
+
 // A dead posting relisted with only a new rendering goes back to the status it
 // died in, carrying the new rendering, as a relist of the same content does.
 func TestDeadRelistedRerenderedRestoresStatus(t *testing.T) {

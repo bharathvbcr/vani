@@ -175,9 +175,11 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 				return s, err
 			}
 			s.Reappeared++
-		case rendered:
+		case rendered && rec.Status != posting.Dropped:
 			// Same board text in a new rendering: the stored posting takes it
 			// (so the digest shows it) and keeps its status and annotations.
+			// A dropped posting is shown nowhere and gets no event: its last
+			// event dates the drop the digest footer counts.
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
 				Annotations: map[string]string{DescHashKey: hash}, Reason: "re-rendered"}
 			if err := l.Append(ctx, e); err != nil {
