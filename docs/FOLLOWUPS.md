@@ -79,6 +79,14 @@ flowchart TD
 - **Title drops count toward `advance_per_run`.** A title drop asks no backend, so leaving it out
   of the cap would let a run triage more postings for the same spend. The owner kept it counted
   when approving `title_signals.read` (2026-10-19). Changing that needs their go-ahead.
+- **Card 13's extension `ownText` change is not on main yet (split 2026-10-19, owner).** The
+  card's Go half (benchmarks, the htmltext/scanHTML copy cuts, marks compaction) merged without
+  it. The extension part (the `ownText` TreeWalker, `OWN_TEXT_SKIP`, `MAX_LABEL` and the
+  `ownTextParity` DOM checks, in `extension/src/extract.ts` and `extension/test/dom-runner.ts`,
+  +60/−8) is commit 72340ec on `worktree-w4-bench-marks` (`git diff fdf890f 72340ec --
+  extension/`, also written to the ignored `build/card13-extension.patch`). It waits for the
+  Greenhouse session's single commit of all of `extension/`, which is to fold it in once the
+  extension type-checks.
 
 ## Title prefilter (built 2026-10-19, not yet enabled in the live config)
 
