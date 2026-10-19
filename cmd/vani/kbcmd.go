@@ -120,7 +120,7 @@ func (e *env) kbSync(args []string) error {
 	fmt.Fprintln(e.stdout, "kb sync: "+out.Summary())
 	for _, o := range out.Outcomes {
 		switch o.Status {
-		case kbsync.StatusNeedsConfirmation, kbsync.StatusBlocked, kbsync.StatusConfirmRejected, kbsync.StatusStale:
+		case kbsync.StatusNeedsConfirmation, kbsync.StatusBlocked, kbsync.StatusConfirmRejected, kbsync.StatusStale, kbsync.StatusVariant:
 			fmt.Fprintf(e.stdout, "  %-18s %s: %s\n", o.Status, o.ID, o.Reason)
 		}
 	}

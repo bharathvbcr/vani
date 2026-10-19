@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -192,10 +193,11 @@ func TestParseDatesAndKind(t *testing.T) {
 		end   *string
 		bad   bool
 	}{
-		{"AUG 2023 – APR 2025", "AUG 2023", str("APR 2025"), false},
-		{"FEB 2026 – Present", "FEB 2026", nil, false},
-		{"SEP 2025 to Present", "SEP 2025", nil, false},
-		{"MAY 2022", "MAY 2022", str("MAY 2022"), false},
+		// ISO out (hashVersion 3): DevPrism's recency reads a leading year.
+		{"AUG 2023 – APR 2025", "2023-08", str("2025-04"), false},
+		{"FEB 2026 – Present", "2026-02", nil, false},
+		{"SEP 2025 to Present", "2025-09", nil, false},
+		{"MAY 2022", "2022-05", str("2022-05"), false},
 		{"", "", nil, false},
 		{"A – B – C", "", nil, true},
 		{"2020 –", "", nil, true},
@@ -311,10 +313,14 @@ func TestUpdatePreservesDevPrismOwnedFields(t *testing.T) {
 	if err := json.Unmarshal(it.Payload, &got); err != nil {
 		t.Fatal(err)
 	}
+	// By value: skills are re-encoded with sorted keys so a replay is byte
+	// stable. rkb's "Go" matches DevPrism's "go", and "ai" is already there,
+	// so the union adds nothing.
 	for _, k := range []string{"personas", "domains", "skills", "seniorityLevel", "notes", "facts"} {
 		var old map[string]json.RawMessage
 		_ = json.Unmarshal([]byte(existing), &old)
-		if string(got[k]) != string(old[k]) {
+		var a, b any
+		if json.Unmarshal(got[k], &a) != nil || json.Unmarshal(old[k], &b) != nil || !reflect.DeepEqual(a, b) {
 			t.Errorf("%s changed: %s", k, got[k])
 		}
 	}

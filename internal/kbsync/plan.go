@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"time"
 )
@@ -20,6 +21,9 @@ const (
 	// unresolved claim token, no title, unparseable dates, an oversized or
 	// unreadable payload). It is reported and never sent.
 	ActionBlocked = "blocked"
+	// ActionVariant marks an rkb variant entry (Block.VariantOf). It is
+	// reported and never sent.
+	ActionVariant = "variant"
 )
 
 // maxPayloadBytes stays under DevPrism's 1 MiB block cap
@@ -93,6 +97,8 @@ type SyncPlan struct {
 	Unattached int      // rkb bullets with no entry
 	Unresolved int      // distinct claim tokens without a value
 	Cautioned  []string // CAUTION claim ids used by synced bullets
+	// VariantOnly counts bullets only variants list, which are not synced.
+	VariantOnly int
 }
 
 // Count returns how many items have the action.
@@ -113,11 +119,18 @@ func (p SyncPlan) Count(action string) int {
 // synced (the user deleted it there), and a block DevPrism has but the state
 // has never recorded is updated, merging into the existing block.
 func Plan(res Resolved, current DevPrismState, state SyncState, now time.Time) SyncPlan {
-	plan := SyncPlan{Unattached: res.Unattached, Unresolved: res.Unresolved, Cautioned: res.Cautioned}
+	plan := SyncPlan{Unattached: res.Unattached, Unresolved: res.Unresolved, Cautioned: res.Cautioned, VariantOnly: res.VariantOnly}
 	known := map[string]bool{}
 	for _, b := range res.Blocks {
 		known[b.ID] = true
 		it := Item{ID: b.ID, Bullets: len(b.Bullets), Hash: b.Hash}
+		if b.VariantOf != "" {
+			// A variant DevPrism already holds (synced before hashVersion 3)
+			// is left there, as an orphan would be.
+			it.Action, it.Reason = ActionVariant, "variant of "+b.VariantOf+" in rkb; not synced"
+			plan.Items = append(plan.Items, it)
+			continue
+		}
 		if b.Blocked != "" {
 			it.Action, it.Reason = ActionBlocked, b.Blocked
 			plan.Items = append(plan.Items, it)
@@ -180,6 +193,70 @@ func newWireBullet(b BlockBullet) map[string]any {
 
 func stamp(now time.Time) string { return now.UTC().Format(time.RFC3339) }
 
+// newWireSkill is a SkillTag (career_db/mod.rs SkillTag) as a map, so it
+// encodes with sorted keys as the skills buildUpdate carries over do.
+func newWireSkill(name string) map[string]any {
+	return map[string]any{"name": name, "level": skillLevel}
+}
+
+func newWireSkills(names []string) []map[string]any {
+	out := []map[string]any{}
+	for _, n := range names {
+		out = append(out, newWireSkill(n))
+	}
+	return out
+}
+
+// unionSkills keeps every skill on DevPrism's copy (its level and years
+// included) and appends rkb's skills whose name it lacks, ignoring case and
+// spacing. rkb never removes a skill: one dropped from the stack stays in
+// DevPrism until removed there. Each skill is a map, so the result encodes
+// the same bytes whatever key order DevPrism answered with: a replayed update
+// must be byte for byte the first one.
+func unionSkills(existing json.RawMessage, names []string) ([]any, string) {
+	var old []map[string]json.RawMessage
+	if len(existing) > 0 && string(existing) != "null" {
+		if err := json.Unmarshal(existing, &old); err != nil {
+			return nil, "the existing DevPrism block has unreadable skills"
+		}
+	}
+	have := map[string]bool{}
+	out := make([]any, 0, len(old)+len(names))
+	for _, s := range old {
+		var name string
+		if s == nil || json.Unmarshal(s["name"], &name) != nil {
+			return nil, "the existing DevPrism block has a skill without a name"
+		}
+		have[skillKey(name)] = true
+		out = append(out, s)
+	}
+	for _, n := range names {
+		if have[skillKey(n)] {
+			continue
+		}
+		have[skillKey(n)] = true
+		out = append(out, newWireSkill(n))
+	}
+	return out, ""
+}
+
+// unionPersonas keeps DevPrism's personas and appends rkb's it lacks.
+func unionPersonas(existing json.RawMessage, add []string) ([]string, string) {
+	var old []string
+	if len(existing) > 0 && string(existing) != "null" {
+		if err := json.Unmarshal(existing, &old); err != nil {
+			return nil, "the existing DevPrism block has unreadable personas"
+		}
+	}
+	out := append([]string{}, old...)
+	for _, p := range add {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out, ""
+}
+
 // buildAdd renders a new ExperienceBlock (career_db/mod.rs:82-118). Every
 // field DevPrism requires is present; the ones rkb has no source for take
 // neutral values.
@@ -194,9 +271,9 @@ func buildAdd(b Block, now time.Time) (json.RawMessage, string) {
 		"title":          b.Title,
 		"org":            b.Org,
 		"dateRange":      wireRange{Start: b.Start, End: b.End},
-		"personas":       []string{},
+		"personas":       nonNilStrings(b.Personas),
 		"domains":        []string{},
-		"skills":         []string{},
+		"skills":         newWireSkills(b.Skills),
 		"seniorityLevel": defaultSeniority,
 		"bullets":        bullets,
 		"facts":          []string{},
@@ -248,9 +325,10 @@ func unchangedStamp(existing json.RawMessage, blk map[string]json.RawMessage) (j
 }
 
 // buildUpdate merges rkb's fields into DevPrism's existing block. The upsert
-// replaces the whole document, so everything DevPrism owns (facts, skills,
-// personas, notes, seniority, per-bullet locked/variants/metrics) is carried
-// over, and DevPrism bullets rkb does not list are kept after rkb's. Bullets
+// replaces the whole document, so everything DevPrism owns (facts, notes,
+// seniority, domains, per-bullet locked/variants/metrics) is carried over,
+// and DevPrism bullets rkb does not list are kept after rkb's. Skills and
+// personas are a union: DevPrism's stay, rkb's are added when missing. Bullets
 // match by scoped id; a bullet stored under its bare rkb id (hashVersion 1) is
 // renamed to the scoped id. The only content changes left are ones DevPrism
 // itself gates with a confirmation request: a locked bullet whose text
@@ -327,12 +405,21 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 			merged = append(merged, byID[id])
 		}
 	}
+	skills, reason := unionSkills(blk["skills"], b.Skills)
+	if reason != "" {
+		return nil, reason
+	}
+	personas, reason := unionPersonas(blk["personas"], b.Personas)
+	if reason != "" {
+		return nil, reason
+	}
 	for _, kv := range []struct {
 		k string
 		v any
 	}{
 		{"kind", kind}, {"title", b.Title}, {"org", b.Org},
 		{"dateRange", wireRange{Start: b.Start, End: b.End}},
+		{"skills", skills}, {"personas", personas},
 		{"bullets", merged}, {"updatedAt", stamp(now)},
 	} {
 		if err := set(kv.k, kv.v); err != nil {

@@ -24,7 +24,7 @@
       }
     ],
     "dateRange": {
-      "start": "JAN 2020",
+      "start": "2020-01",
       "end": null
     },
     "domains": [],
@@ -32,9 +32,16 @@
     "id": "alpha-job",
     "kind": "work",
     "org": "Acme",
-    "personas": [],
+    "personas": [
+      "ai"
+    ],
     "seniorityLevel": "ic",
-    "skills": [],
+    "skills": [
+      {
+        "level": 3,
+        "name": "Go"
+      }
+    ],
     "title": "Engineer",
     "updatedAt": "2026-01-02T03:04:05Z"
   }

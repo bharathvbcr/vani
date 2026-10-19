@@ -40,6 +40,10 @@
       {
         "level": 4,
         "name": "go"
+      },
+      {
+        "level": 3,
+        "name": "Rust"
       }
     ],
     "title": "Widget",
