@@ -32,7 +32,8 @@ func sample() Decider {
 		},
 		EmployerPreferences: EmployerPreferences{Prefer: []string{"cap_exempt_likely"}, Use: "badge_and_rank", Drops: ptr(false)},
 		Evidence:            []Evidence{{Area: "kernels", KBEntries: []string{"entry-a"}, Strength: "strong"}},
-		TitleSignals:        TitleSignals{Include: []string{"Inference", "GPU"}, Exclude: []string{"Sales"}},
+		TitleSignals: TitleSignals{Include: []string{"Inference", "GPU"}, Exclude: []string{"Sales"},
+			Read: []config.TitleRead{{Slot: "seniority", Value: "staff_plus", Match: []string{"Staff"}, Unless: []string{"Member of Technical Staff"}}}},
 	}
 }
 
@@ -170,6 +171,11 @@ func TestCheckFindsProblems(t *testing.T) {
 		{"preference use", func(d *Decider) { d.EmployerPreferences.Use = "filter" }, "never drops"},
 		{"evidence", func(d *Decider) { d.Evidence[0].KBEntries = []string{"ghost"} }, `"ghost"`},
 		{"list bound", func(d *Decider) { d.WatchlistSearch = make([]string, maxListLen+1) }, "watchlist_search"},
+		{"title read sponsorship", func(d *Decider) {
+			d.TitleSignals.Read = append(d.TitleSignals.Read, config.TitleRead{Slot: "sponsorship", Value: "no_sponsorship", Match: []string{"Citizen"}})
+		}, "never read from a title"},
+		{"title read bad value", func(d *Decider) { d.TitleSignals.Read[0].Value = "lead" }, `"lead" is not a seniority value`},
+		{"title read no match", func(d *Decider) { d.TitleSignals.Read[0].Match = nil }, "match is empty"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -267,6 +273,16 @@ func TestApplyKeepsTrackIndependentRules(t *testing.T) {
 	if !reflect.DeepEqual(out.TitleSignals, sample().TitleSignals) {
 		t.Fatalf("title signals %+v", out.TitleSignals)
 	}
+	// The config gets its own copy of the title readings.
+	src := sample()
+	own, _, err := Apply(cfg, src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.TitleSignals.Read[0].Match[0] = "changed"
+	if own.TitleSignals.Read[0].Match[0] != "Staff" {
+		t.Fatal("Apply shares the track's title readings with the config")
+	}
 
 	// Applying another track with no preferences clears them, and the
 	// sponsorship rule is still byte-identical.
@@ -278,7 +294,7 @@ func TestApplyKeepsTrackIndependentRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out2.TitleSignals.Include != nil || out2.TitleSignals.Exclude != nil {
+	if out2.TitleSignals.Include != nil || out2.TitleSignals.Exclude != nil || out2.TitleSignals.Read != nil {
 		t.Fatalf("second apply kept the previous track's title signals: %+v", out2.TitleSignals)
 	}
 	if out2.EmployerPreferences != nil || !reflect.DeepEqual(out2.DropRules[0], sponsorship) {

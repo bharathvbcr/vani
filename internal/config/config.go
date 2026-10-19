@@ -56,7 +56,9 @@ type Config struct {
 	// status, and never enter a model prompt: they imply work authorization.
 	EmployerPreferences []string `json:"employer_preferences,omitempty"`
 	// TitleSignals order each run's triage: postings whose titles match the
-	// active track's include signals go first, excluded ones last.
+	// active track's include signals go first, excluded ones last. Their read
+	// entries read triage slots from the title before any model is asked; a
+	// drop rule for the slot and value read drops the posting unasked.
 	TitleSignals TitleSignals `json:"title_signals,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
