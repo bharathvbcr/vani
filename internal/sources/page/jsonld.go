@@ -63,10 +63,21 @@ func findTyped(v any, typ string, depth int) (map[string]any, bool) {
 	return nil, false
 }
 
+// schemaPrefixes are the forms a schema.org type is written in besides its
+// bare name: "https://schema.org/JobPosting", "schema:JobPosting" and so on.
+var schemaPrefixes = []string{"https://schema.org/", "http://schema.org/", "https://www.schema.org/", "http://www.schema.org/", "schema:"}
+
 func hasType(v any, typ string) bool {
 	switch t := v.(type) {
 	case string:
-		return strings.EqualFold(strings.TrimSpace(t), typ)
+		t = strings.TrimSpace(t)
+		for _, p := range schemaPrefixes {
+			if len(t) > len(p) && strings.EqualFold(t[:len(p)], p) {
+				t = t[len(p):]
+				break
+			}
+		}
+		return strings.EqualFold(t, typ)
 	case []any:
 		for _, e := range t {
 			if hasType(e, typ) {
@@ -186,8 +197,17 @@ func place(v any) string {
 		if s := str(m["address"]); s != "" {
 			return s
 		}
+		// Some sites give the PostalAddress itself as the jobLocation.
+		if s := address(m); s != "" {
+			return s
+		}
 		return str(m["name"])
 	}
+	return address(addr)
+}
+
+// address renders a PostalAddress as "Locality, Region, Country".
+func address(addr map[string]any) string {
 	var parts []string
 	have := map[string]bool{}
 	for _, part := range []string{nameOf(addr["addressLocality"]), nameOf(addr["addressRegion"]), nameOf(addr["addressCountry"])} {

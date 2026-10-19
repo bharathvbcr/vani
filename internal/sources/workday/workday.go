@@ -30,6 +30,15 @@ import (
 // ErrBoardNotFound is returned when Workday has no such tenant/site.
 var ErrBoardNotFound = srcutil.ErrBoardNotFound
 
+// errDetailGone is a posting detail answering 404 under a listing that
+// answered: the posting closed after it was listed.
+var errDetailGone = errors.New("detail is gone (HTTP 404)")
+
+// maxGone is how many of n listed postings may come back gone before the board
+// fails: a tenth, at least one. A posting closing mid-run is ordinary; a
+// tenth of the board closing in the minutes a listing takes is not.
+func maxGone(n int) int { return max(1, n/10) }
+
 const (
 	// MaxPostings is the most postings one board may list. Each posting costs a
 	// detail request, so the cap is far below the other adapters'.
@@ -128,8 +137,19 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(rows))
 	keys := make(map[posting.Key]bool, len(rows))
+	gone, allowed := 0, maxGone(len(rows))
 	for _, row := range rows {
 		p, err := s.detail(ctx, base, host, tenant, site, row, b, seen)
+		if errors.Is(err, errDetailGone) {
+			// The posting closed between the listing and its detail; leaving it
+			// out is the truth. Many at once is the detail endpoint failing, not
+			// postings closing, and would empty a healthy board.
+			if gone++; gone > allowed || gone == len(rows) {
+				return nil, fmt.Errorf("workday %q: %d of %d posting details are gone (HTTP 404); the detail endpoint is not answering",
+					b.Token, gone, len(rows))
+			}
+			continue
+		}
 		if err != nil {
 			// A partial listing would make the reconciler age healthy postings
 			// as absent, so one bad posting fails the whole board.
@@ -205,7 +225,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	if err := srcutil.GetJSON(ctx, s.d, base+path, &d); err != nil {
 		if errors.Is(err, srcutil.ErrBoardNotFound) {
 			// The board exists (its listing answered); only this posting is gone.
-			return posting.Posting{}, fmt.Errorf("detail is gone (HTTP 404)")
+			return posting.Posting{}, errDetailGone
 		}
 		return posting.Posting{}, err
 	}

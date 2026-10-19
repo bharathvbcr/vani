@@ -301,21 +301,83 @@ func TestRepeatedRowAcrossPagesIsOnePosting(t *testing.T) {
 }
 
 func TestDetailFailureFailsBoard(t *testing.T) {
-	for _, status := range []int{404, 500} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			h := fixtureHandler(t)
+	h := fixtureHandler(t)
+	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if strings.HasSuffix(r.URL, "CAD-Engineer_JR2014480-1") {
+			return srctest.Reply{Status: 500}, true
+		}
+		return h(r)
+	})
+	got, err := s.List(context.Background(), board)
+	if err == nil || got != nil {
+		t.Fatalf("got %v, %v; want an error and no postings", got, err)
+	}
+	if errors.Is(err, ErrBoardNotFound) {
+		t.Errorf("a failed detail must not read as a missing board: %v", err)
+	}
+}
+
+// A posting that closes between the listing and its detail answers 404. It
+// used to fail the whole board, so one closed posting hid every open one for
+// the run; now it is left out, up to maxGone.
+func TestGoneDetailIsLeftOut(t *testing.T) {
+	h := fixtureHandler(t)
+	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if strings.HasSuffix(r.URL, "CAD-Engineer_JR2014480-1") {
+			return srctest.Reply{Status: 404}, true
+		}
+		return h(r)
+	})
+	got, err := s.List(context.Background(), board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].URL, "JR2027047") {
+		t.Fatalf("got %+v, want only the posting whose detail answered", got)
+	}
+}
+
+// Many gone details at once is the detail endpoint failing, not postings
+// closing: leaving them all out would empty a healthy board.
+func TestGoneDetailsAreBounded(t *testing.T) {
+	for _, tc := range []struct {
+		total, gone int
+		wantErr     bool
+	}{
+		{50, 5, false}, // a tenth of the board
+		{50, 6, true},
+		{50, 50, true},
+		{1, 1, true}, // the only posting gone is indistinguishable from a dead endpoint
+		{5, 1, false},
+		{5, 2, true},
+	} {
+		t.Run(fmt.Sprintf("%d_of_%d", tc.gone, tc.total), func(t *testing.T) {
+			var offsets []int
+			h := pagedHandler(tc.total, &offsets, func(int) int { return tc.total }, detailTmpl)
 			s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
-				if strings.HasSuffix(r.URL, "CAD-Engineer_JR2014480-1") {
-					return srctest.Reply{Status: status}, true
+				if r.Method == "GET" {
+					var i int
+					if _, err := fmt.Sscanf(r.URL[strings.LastIndex(r.URL, "_JR")+3:], "%d", &i); err == nil && i < tc.gone {
+						return srctest.Reply{Status: 404}, true
+					}
 				}
 				return h(r)
 			})
 			got, err := s.List(context.Background(), board)
-			if err == nil || got != nil {
-				t.Fatalf("got %v, %v; want an error and no postings", got, err)
+			if tc.wantErr {
+				if err == nil || got != nil {
+					t.Fatalf("got %d postings, %v; want an error", len(got), err)
+				}
+				if errors.Is(err, ErrBoardNotFound) {
+					t.Errorf("gone details must not read as a missing board: %v", err)
+				}
+				return
 			}
-			if errors.Is(err, ErrBoardNotFound) {
-				t.Errorf("a missing detail must not read as a missing board: %v", err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != tc.total-tc.gone {
+				t.Errorf("got %d postings, want %d", len(got), tc.total-tc.gone)
 			}
 		})
 	}
