@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -21,6 +22,11 @@ const (
 
 // Logf receives the scheduler's decisions. Tests replace it.
 var Logf = log.Printf
+
+// ErrFatal marks a job error the process cannot outlive, such as a ledger
+// left unusable by a failed write: Run returns it, and the daemon exits
+// non-zero, instead of logging it and failing every later run the same way.
+var ErrFatal = errors.New("daemon: fatal job error")
 
 // Job is the unit of work run once per day.
 type Job func(ctx context.Context) error
@@ -86,7 +92,8 @@ func sameDay(t time.Time, y int, m time.Month, d int) bool {
 // overlap: a job that overruns delays the next run and runs are not stacked.
 // A run that starts late (sleep/wake, or after an overrun) runs once if it is
 // within MissedRunWindow of its slot and is skipped, with a log line, if not.
-// A job error is logged and the schedule continues.
+// A job error is logged and the schedule continues, except one wrapping
+// ErrFatal, which Run returns after logging it.
 func Run(ctx context.Context, sched config.Schedule, job Job, clock Clock) error {
 	hour, minute, loc, err := sched.Parsed()
 	if err != nil {
@@ -114,7 +121,9 @@ func Run(ctx context.Context, sched config.Schedule, job Job, clock Clock) error
 			Logf("daemon: missed run scheduled %s, running once now (%s late)",
 				next.In(loc).Format(time.RFC3339), late.Round(time.Second))
 		}
-		runJob(ctx, job)
+		if err := runJob(ctx, job); errors.Is(err, ErrFatal) {
+			return err
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -139,13 +148,18 @@ func waitUntil(ctx context.Context, clock Clock, t time.Time) bool {
 	}
 }
 
-func runJob(ctx context.Context, job Job) {
+func runJob(ctx context.Context, job Job) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			Logf("daemon: job panicked: %v", r)
 		}
 	}()
-	if err := job(ctx); err != nil {
-		Logf("daemon: job failed: %v", err)
+	if err = job(ctx); err != nil {
+		if errors.Is(err, ErrFatal) {
+			Logf("daemon: job failed, exiting: %v", err)
+		} else {
+			Logf("daemon: job failed: %v", err)
+		}
 	}
+	return err
 }

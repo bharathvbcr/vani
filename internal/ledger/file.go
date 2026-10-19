@@ -297,6 +297,15 @@ func (f *File) Append(ctx context.Context, e Event) error {
 	return nil
 }
 
+// Broken returns the error that poisoned this ledger, or nil. A broken ledger
+// refuses every Append until it is reopened, so a long-lived holder (the
+// daemon) should exit on it rather than fail every later run.
+func (f *File) Broken() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.broken
+}
+
 func cloneRecord(r *Record) Record {
 	c := *r
 	c.Annotations = make(map[string]string, len(r.Annotations))

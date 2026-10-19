@@ -79,6 +79,9 @@ func TestUncutFailedWritePoisonsTheHandle(t *testing.T) {
 	if err := f.Append(ctx, ev("gh:p:3", posting.Live, t0)); !errors.Is(err, errBroken) {
 		t.Fatalf("append after poisoning: %v, want errBroken", err)
 	}
+	if err := f.Broken(); !errors.Is(err, errBroken) {
+		t.Fatalf("Broken() = %v, want the poison", err)
+	}
 	if _, ok := f.Get("gh:p:1"); !ok || len(f.All()) != 1 {
 		t.Fatalf("memory should still hold the one acknowledged event: %v", f.All())
 	}
@@ -88,6 +91,9 @@ func TestUncutFailedWritePoisonsTheHandle(t *testing.T) {
 
 	g := mustOpen(t, dir)
 	defer g.Close()
+	if err := g.Broken(); err != nil {
+		t.Fatalf("a reopened ledger is still broken: %v", err)
+	}
 	if len(g.All()) != 1 {
 		t.Fatalf("reopened: %d records, want 1", len(g.All()))
 	}

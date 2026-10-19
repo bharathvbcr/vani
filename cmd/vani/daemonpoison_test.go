@@ -1,0 +1,108 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/daemon"
+)
+
+// brokenLedger is a memLedger that can be poisoned, as a *ledger.File is
+// after a write it could not cut back.
+type brokenLedger struct {
+	*memLedger
+	mu     sync.Mutex
+	broken error
+}
+
+func (b *brokenLedger) poison(err error) { b.mu.Lock(); b.broken = err; b.mu.Unlock() }
+func (b *brokenLedger) Broken() error    { b.mu.Lock(); defer b.mu.Unlock(); return b.broken }
+
+// jumpClock fires every wait at once by moving its time forward.
+type jumpClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *jumpClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *jumpClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.t
+	return ch
+}
+
+func wireDaemon(t *testing.T, l *brokenLedger, run func(context.Context) error) {
+	t.Helper()
+	old, oldNow, oldClock := buildApp, now, daemonClock
+	t.Cleanup(func() { buildApp, now, daemonClock = old, oldNow, oldClock })
+	clock := &jumpClock{t: time.Date(2026, 10, 18, 6, 0, 0, 0, time.UTC)}
+	daemonClock, now = clock, clock.Now
+	buildApp = func(config.Config, string, io.Writer) (*App, error) {
+		return &App{Ledger: l, Notifier: &fakeNotifier{}, RunOnce: run}, nil
+	}
+}
+
+// A run that leaves the ledger poisoned ends the daemon: exit status 1 with
+// the write error on stderr, instead of a daemon that fails every later run
+// until someone restarts it.
+func TestPoisonedLedgerEndsTheDaemon(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	l := &brokenLedger{memLedger: fixture()}
+	runs := 0
+	wireDaemon(t, l, func(context.Context) error {
+		runs++
+		l.poison(errors.New("ledger: fsync failed: input/output error"))
+		return errors.New("pipeline: append: ledger: fsync failed")
+	})
+	_, stderr := mustCode(t, exitRuntime, "daemon")
+	if runs != 1 {
+		t.Errorf("%d runs, want the daemon to stop after the one that poisoned the ledger", runs)
+	}
+	if !strings.Contains(stderr, "fsync failed: input/output error") {
+		t.Errorf("stderr does not name the write failure:\n%s", stderr)
+	}
+}
+
+// A ledger already poisoned when a run comes due ends the daemon without
+// running the pipeline against it.
+func TestAlreadyPoisonedLedgerRunsNothing(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l := &brokenLedger{memLedger: fixture()}
+	l.poison(errors.New("ledger: fsync failed: input/output error"))
+	runs := 0
+	wireDaemon(t, l, func(context.Context) error { runs++; return nil })
+	mustCode(t, exitRuntime, "daemon")
+	if runs != 0 {
+		t.Errorf("the pipeline ran %d times against a poisoned ledger", runs)
+	}
+	rec, err := readRunRecord(stateDir)
+	if err != nil || rec == nil || rec.Outcome != outcomeFailed || !strings.Contains(rec.Error, "fsync failed") {
+		t.Fatalf("run record %+v, %v; want a failed run naming the poison", rec, err)
+	}
+}
+
+func TestLedgerBrokenIsFatal(t *testing.T) {
+	if err := ledgerBroken(fixture()); err != nil {
+		t.Fatalf("a ledger without Broken: %v", err)
+	}
+	l := &brokenLedger{memLedger: fixture()}
+	if err := ledgerBroken(l); err != nil {
+		t.Fatalf("a healthy ledger: %v", err)
+	}
+	cause := errors.New("cut failed")
+	l.poison(cause)
+	if err := ledgerBroken(l); !errors.Is(err, daemon.ErrFatal) || !errors.Is(err, cause) {
+		t.Fatalf("%v, want daemon.ErrFatal wrapping the cause", err)
+	}
+}
