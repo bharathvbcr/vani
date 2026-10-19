@@ -266,6 +266,9 @@ private struct JobList: View {
             if page.torn == true {
                 Text("· a run is writing; refresh soon").foregroundStyle(.orange)
             }
+            if let pending = page.pending, let note = pending.footerNote {
+                Text(verbatim: note).help(pending.footerHelp)
+            }
             if let err = jobs.error {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(err)
             }
@@ -296,8 +299,9 @@ private struct JobList: View {
     }
 
     private var emptyText: String {
-        if !jobs.filter.isEmpty { return "No role in this view passes the filters. Clear them from the Filter menu." }
-        if !jobs.query.isEmpty { return "No role in this view matches “\(jobs.query)”." }
+        let waiting = jobs.page?.pending?.emptySearchNote(query: jobs.query).map { " " + $0 } ?? ""
+        if !jobs.filter.isEmpty { return "No role in this view passes the filters. Clear them from the Filter menu." + waiting }
+        if !jobs.query.isEmpty { return "No role in this view matches “\(jobs.query)”." + waiting }
         switch jobs.view {
         case .new: return "Every role Vani kept has been saved, applied to or hidden. New ones arrive with the daily run."
         case .saved: return "Save a role (⌘S) to keep it here."

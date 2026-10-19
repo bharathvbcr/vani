@@ -373,6 +373,32 @@ final class JobsTests: XCTestCase {
         XCTAssertEqual(try c.list(.new).jobs.count, 1)
     }
 
+    /// The pending contract end to end: a posting awaiting triage is not
+    /// listed, and the real vani's count of it decodes here.
+    func testPendingAgainstTheRealVani() throws {
+        let vani = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("build/vani")
+        guard FileManager.default.isExecutableFile(atPath: vani.path) else {
+            throw XCTSkip("no Go vani at \(vani.path); build it to run the contract test")
+        }
+        let state = try tempDir(self)
+        let ledger = state.appendingPathComponent("ledger")
+        try FileManager.default.createDirectory(at: ledger, withIntermediateDirectories: true)
+        let lines = [
+            #"{"v":1,"at":"2026-10-18T12:00:00Z","key":"gh:anthropic:1","status":"live","reason":"new","posting":{"key":"gh:anthropic:1","ats":"gh","company":"Anthropic","title":"Performance Engineer","seen_at":"2026-10-18T12:00:00Z"}}"#,
+            #"{"v":1,"at":"2026-10-18T12:00:00Z","key":"gh:acme:1","status":"digested","posting":{"key":"gh:acme:1","ats":"gh","company":"Acme","title":"Inference Engineer","seen_at":"2026-10-18T12:00:00Z"},"annotations":{"triage.role_fit":"strong_fit"}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: ledger.appendingPathComponent("events.jsonl"))
+
+        let c = JobsClient(vaniBinary: vani, stateDir: state.path)
+        let page = try c.list(.new, query: "anthropic")
+        XCTAssertEqual(page.jobs.count, 0, "a posting awaiting triage is not listed")
+        XCTAssertEqual(page.pending, PendingTriage(total: 1, matching: 1, companies: [.init(company: "Anthropic", n: 1)]))
+        XCTAssertNotNil(page.pending?.emptySearchNote(query: "anthropic"))
+        XCTAssertEqual(try c.list(.new).jobs.map(\.key), ["gh:acme:1"])
+    }
+
     /// The location contract end to end: the places Go reads decode here, and
     /// the Location filters the app sends are flags the real vani accepts.
     func testLocationAgainstTheRealVani() throws {

@@ -60,6 +60,43 @@ type runRecord struct {
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`
 	CountsAfter  map[string]int `json:"counts_after,omitempty"`
+	runDetail
+}
+
+// runDetail is what the pipeline itself reports about a run (App.RunReport).
+type runDetail struct {
+	// Advance is the triage/score/explain phase; nil when the run ended
+	// before it (no board could be read, the stages could not be built).
+	Advance *advanceReport `json:"advance,omitempty"`
+	// BackendErrors are the decision backends' failed calls, by cause. A
+	// backend error becomes an "unavailable" reading that keeps no text, so
+	// this is the only place a refused key or an outage is written down.
+	BackendErrors *backendErrorReport `json:"backend_errors,omitempty"`
+}
+
+// Why an advance phase ended before it had worked through every eligible
+// posting (advanceReport.Stopped).
+const (
+	stopCap          = "cap"           // advance_per_run reached
+	stopUnreadStreak = "unread_streak" // maxConsecutiveUnread unread in a row
+	stopNoneRead     = "none_read"     // no backend read any posting
+	stopCancelled    = "cancelled"
+)
+
+// advanceReport is what one run's advance phase did. Deferred postings were
+// not attempted this run and wait, still listed, for the next one.
+type advanceReport struct {
+	// Eligible postings were waiting for a stage when the phase started.
+	Eligible int `json:"eligible"`
+	// Limit is the per-run cap (config advance_per_run).
+	Limit     int `json:"limit"`
+	Attempted int `json:"attempted"`
+	// Unread postings no decision backend could read; they stay live.
+	Unread int `json:"unread"`
+	// Failed postings hit another stage error; they wait for the next run.
+	Failed   int    `json:"failed"`
+	Deferred int    `json:"deferred"`
+	Stopped  string `json:"stopped,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {

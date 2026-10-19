@@ -204,5 +204,5 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 		w.warnf("notes paused: %v", err)
 		return nil, false
 	}
-	return jdreasons.Picker{D: decide.NewRouter(logErrors(jb, w.warnf)), Catalog: *c, TargetSummary: w.cfg.TargetSummary}, false
+	return jdreasons.Picker{D: decide.NewRouter(logErrors(jb, w.warnf, w.backendErrs)), Catalog: *c, TargetSummary: w.cfg.TargetSummary}, false
 }

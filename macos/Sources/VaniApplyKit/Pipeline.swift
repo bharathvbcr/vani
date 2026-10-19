@@ -72,9 +72,15 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var postingsAfter: Int?
         public var countsBefore: [String: Int]?
         public var countsAfter: [String: Int]?
+        /// The triage/score/explain phase; nil when the run ended before it,
+        /// or from a vani that does not report it.
+        public var advance: Advance?
+        /// The decision backends' failed calls by cause; nil when none failed,
+        /// or from a vani that does not report them.
+        public var backendErrors: BackendErrors?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, state, stage, error
+            case ok, reason, state, stage, error, advance
             case startedAt = "started_at"
             case finishedAt = "finished_at"
             case durationSec = "duration_sec"
@@ -82,6 +88,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             case postingsAfter = "postings_after"
             case countsBefore = "counts_before"
             case countsAfter = "counts_after"
+            case backendErrors = "backend_errors"
         }
 
         public init(from decoder: Decoder) throws {
@@ -98,11 +105,16 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             postingsAfter = try c.decodeIfPresent(Int.self, forKey: .postingsAfter)
             countsBefore = try c.decodeIfPresent([String: Int].self, forKey: .countsBefore)
             countsAfter = try c.decodeIfPresent([String: Int].self, forKey: .countsAfter)
+            advance = try c.decodeIfPresent(Advance.self, forKey: .advance)
+            backendErrors = try c.decodeIfPresent(BackendErrors.self, forKey: .backendErrors)
         }
 
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
                     durationSec: Double? = nil, stage: String? = nil, error: String? = nil,
-                    postingsBefore: Int? = nil, postingsAfter: Int? = nil) {
+                    postingsBefore: Int? = nil, postingsAfter: Int? = nil,
+                    advance: Advance? = nil, backendErrors: BackendErrors? = nil) {
+            self.advance = advance
+            self.backendErrors = backendErrors
             self.ok = ok
             self.reason = reason
             self.state = state
@@ -128,6 +140,178 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             return Set(before.keys).union(after.keys).sorted().compactMap { s in
                 let d = (after[s] ?? 0) - (before[s] ?? 0)
                 return d == 0 ? nil : (s, d)
+            }
+        }
+
+        /// What one run's advance phase did (advanceReport in cmd/vani/runrecord.go).
+        /// Eligible is every posting waiting for a stage (live, triaged, unsure,
+        /// scored), so it is more than the Jobs tab's "awaiting triage" count.
+        public struct Advance: Decodable, Equatable, Sendable {
+            public enum Stop: Equatable, Sendable {
+                /// The per-run cap (config advance_per_run) was reached.
+                case cap
+                /// No decision backend read several postings in a row.
+                case unreadStreak
+                /// No decision backend read any posting.
+                case noneRead
+                case cancelled
+                /// A reason a newer vani adds: shown as written, never as finished.
+                case unknown(String)
+
+                init(raw: String) {
+                    switch raw {
+                    case "cap": self = .cap
+                    case "unread_streak": self = .unreadStreak
+                    case "none_read": self = .noneRead
+                    case "cancelled": self = .cancelled
+                    default: self = .unknown(raw)
+                    }
+                }
+            }
+
+            public var eligible: Int
+            /// The per-run cap.
+            public var limit: Int
+            public var attempted: Int
+            /// Attempted postings no decision backend could read; they stay live.
+            public var unread: Int
+            /// Attempted postings that hit another stage error; they wait.
+            public var failed: Int
+            /// Not attempted this run; they wait for the next one.
+            public var deferred: Int
+            /// Nil when the phase worked through every eligible posting.
+            public var stopped: Stop?
+
+            enum CodingKeys: String, CodingKey {
+                case eligible, limit, attempted, unread, failed, deferred, stopped
+            }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                eligible = try c.decode(Int.self, forKey: .eligible)
+                limit = try c.decode(Int.self, forKey: .limit)
+                attempted = try c.decode(Int.self, forKey: .attempted)
+                unread = try c.decode(Int.self, forKey: .unread)
+                failed = try c.decode(Int.self, forKey: .failed)
+                deferred = try c.decode(Int.self, forKey: .deferred)
+                stopped = try c.decodeIfPresent(String.self, forKey: .stopped).flatMap { $0.isEmpty ? nil : Stop(raw: $0) }
+            }
+
+            public init(eligible: Int, limit: Int, attempted: Int, unread: Int = 0, failed: Int = 0, deferred: Int, stopped: Stop? = nil) {
+                self.eligible = eligible
+                self.limit = limit
+                self.attempted = attempted
+                self.unread = unread
+                self.failed = failed
+                self.deferred = deferred
+                self.stopped = stopped
+            }
+
+            /// Attempted postings that moved on: neither unread nor failed.
+            public var advanced: Int { max(attempted - unread - failed, 0) }
+
+            /// "300 of 2639 eligible postings attempted this run; 2339 wait for the next run"
+            public var summary: String {
+                if eligible == 0 { return "No posting was waiting for a stage" }
+                let head = "\(attempted) of \(PipelineStatus.postings(eligible, "eligible")) attempted this run"
+                return deferred > 0 ? head + "; \(deferred) wait for the next run" : head
+            }
+
+            /// How the attempted postings went, or nil when every one advanced.
+            public var outcome: String? {
+                guard unread > 0 || failed > 0 else { return nil }
+                var parts = ["\(advanced) advanced"]
+                if unread > 0 { parts.append("\(unread) unread by every decision backend") }
+                if failed > 0 { parts.append("\(failed) failed a stage") }
+                return parts.joined(separator: ", ") + "; those stay for the next run"
+            }
+
+            /// Why the phase ended early, or nil when it worked through everything.
+            public var stopNote: String? {
+                switch stopped {
+                case nil: nil
+                case .cap?: "Stopped at the per-run cap of \(limit) (advance_per_run)."
+                case .unreadStreak?: "Stopped early: no decision backend could read several postings in a row."
+                case .noneRead?: "Stopped: no decision backend read any posting."
+                case .cancelled?: "Stopped: the run was cancelled."
+                case .unknown(let raw)?: "Stopped: \(PipelineStatus.bounded(raw, max: 60))."
+                }
+            }
+        }
+
+        /// The decision backends' failed calls in one run, most frequent cause
+        /// first (backendErrorReport in cmd/vani/backendlog.go).
+        public struct BackendErrors: Decodable, Equatable, Sendable {
+            public struct Cause: Decodable, Equatable, Sendable {
+                public var backend: String
+                /// Calls that failed this way in the run.
+                public var count: Int
+                /// The first such error as the provider worded it: untrusted
+                /// text. Show it through `lines`, which bounds it.
+                public var example: String
+
+                public init(backend: String, count: Int, example: String) {
+                    self.backend = backend
+                    self.count = count
+                    self.example = example
+                }
+            }
+
+            /// A cause ready to show: names and example bounded, one line each.
+            public struct Line: Equatable, Sendable {
+                public var backend: String
+                public var count: Int
+                public var example: String
+            }
+
+            /// Longest example shown, in characters.
+            public static let maxExample = 240
+
+            public var causes: [Cause]
+            /// Failed calls whose cause vani did not keep (it keeps at most 20).
+            public var unrecorded: Int
+
+            enum CodingKeys: String, CodingKey { case causes, unrecorded }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                causes = try c.decodeIfPresent([Cause].self, forKey: .causes) ?? []
+                unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
+            }
+
+            public init(causes: [Cause], unrecorded: Int = 0) {
+                self.causes = causes
+                self.unrecorded = unrecorded
+            }
+
+            /// Every failed call, recorded cause or not.
+            public var totalCalls: Int { causes.reduce(0) { $0 + $1.count } + unrecorded }
+
+            /// "22 failed calls to decision backends"
+            public var summary: String {
+                "\(totalCalls) failed call\(totalCalls == 1 ? "" : "s") to decision backends"
+            }
+
+            /// The first `limit` causes, in vani's order (most frequent first).
+            public func lines(limit: Int = 3) -> [Line] {
+                causes.prefix(max(limit, 0)).map {
+                    Line(backend: PipelineStatus.bounded($0.backend, max: 60), count: $0.count,
+                         example: PipelineStatus.bounded($0.example, max: Self.maxExample))
+                }
+            }
+
+            /// What `lines(limit:)` left out, or nil when it shows everything.
+            public func moreNote(limit: Int = 3) -> String? {
+                var parts: [String] = []
+                let hidden = causes.dropFirst(max(limit, 0))
+                if !hidden.isEmpty {
+                    let calls = hidden.reduce(0) { $0 + $1.count }
+                    parts.append("\(hidden.count) more cause\(hidden.count == 1 ? "" : "s") (\(calls) call\(calls == 1 ? "" : "s"))")
+                }
+                if unrecorded > 0 {
+                    parts.append("\(unrecorded) call\(unrecorded == 1 ? "" : "s") with causes not recorded")
+                }
+                return parts.isEmpty ? nil : parts.joined(separator: "; ")
             }
         }
     }
@@ -282,6 +466,36 @@ extension PipelineStatus {
         case ..<172_800: return "\(Int((s / 3600).rounded())) h"
         default: return "\(Int((s / 86400).rounded())) days"
         }
+    }
+
+    /// "1 eligible posting", "2639 eligible postings": plain numbers, as the
+    /// Ledger section and the Jobs tab print them.
+    static func postings(_ n: Int, _ adjective: String) -> String {
+        "\(n) \(adjective) posting\(n == 1 ? "" : "s")"
+    }
+
+    /// Untrusted text made fit for one line: whitespace, control and format
+    /// characters (newlines, bidi overrides) become single spaces, and anything
+    /// past `max` characters is cut with an ellipsis.
+    static func bounded(_ s: String, max: Int) -> String {
+        var out = ""
+        var space = false
+        for ch in s {
+            let blank = ch.isWhitespace || ch.unicodeScalars.contains {
+                switch $0.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator: true
+                default: false
+                }
+            }
+            if blank {
+                space = !out.isEmpty
+                continue
+            }
+            if space { out.append(" "); space = false }
+            out.append(ch)
+        }
+        guard out.count > max else { return out }
+        return String(out.prefix(Swift.max(max - 1, 0))) + "…"
     }
 }
 

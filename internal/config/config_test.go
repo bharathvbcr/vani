@@ -86,6 +86,9 @@ func TestValidateRules(t *testing.T) {
 		{"negative page interval", func(c *Config) { c.PageIntervalMS = -1 }, "page_interval_ms -1"},
 		{"page interval over max", func(c *Config) { c.PageIntervalMS = 10_001 }, "page_interval_ms 10001 must be within 0..10000"},
 		{"huge page interval", func(c *Config) { c.PageIntervalMS = math.MaxInt }, "page_interval_ms"},
+		{"negative advance per run", func(c *Config) { c.AdvancePerRun = -1 }, "advance_per_run -1 must be within 0..5000"},
+		{"advance per run over max", func(c *Config) { c.AdvancePerRun = 5001 }, "advance_per_run 5001"},
+		{"huge advance per run", func(c *Config) { c.AdvancePerRun = math.MaxInt }, "advance_per_run"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -465,5 +468,19 @@ func TestWorkdayAndPageBoardsValid(t *testing.T) {
 	c.AllowedHosts = append(c.AllowedHosts, "acme.wd5.myworkdayjobs.com", "careers.initech.example")
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// advance_per_run: zero reads as the default, the bounds themselves are valid.
+func TestAdvanceLimit(t *testing.T) {
+	for _, tc := range []struct{ set, want int }{{0, DefaultAdvancePerRun}, {1, 1}, {MaxAdvancePerRun, MaxAdvancePerRun}} {
+		c := valid()
+		c.AdvancePerRun = tc.set
+		if err := c.Validate(); err != nil {
+			t.Fatalf("advance_per_run %d: %v", tc.set, err)
+		}
+		if got := c.AdvanceLimit(); got != tc.want {
+			t.Fatalf("advance_per_run %d: limit %d, want %d", tc.set, got, tc.want)
+		}
 	}
 }

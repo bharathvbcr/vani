@@ -554,6 +554,16 @@ flowchart TD
     `NewForWorkspace` as Manvi's CLI does, and Vani Apply has a Settings ▸ Claude drafting
     workspace field that it passes to `vani draft`. Either export `ANTHROPIC_WORKSPACE_ID` with
     the key, or replace the Keychain key with one created inside a workspace.
+  - **Postings awaiting triage were invisible (2026-10-19).** The app's ledger held 3,027 postings,
+    but only the 283 that reached a digest were listed. All 656 Anthropic postings and 1,983
+    others were still `live`, because each run triages at most 300 and no view lists untriaged
+    postings. The LLM budget file showed 1,098 refused attempts, but no record of why: only the LLM
+    backend's errors were printed (to stderr), and the run kept none of them. Now:
+    `advance_per_run` sets the cap (default 300, at most 5000). The run record and
+    `status --json` carry the `advance` report and `backend_errors` from every decision backend
+    (OpenRouter, LLM, Lappi, local, and the notes picker). `jobs list`/`stats` report `pending`,
+    and the digest and the Jobs tab footer show the count. Draining 2,639 postings at 300 a run
+    takes 9 runs. Raising the cap is the owner's spend decision.
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers
     `unsupported`. Fixing that means XPC to the app, or a request queue in the group folder that the
     app serves.

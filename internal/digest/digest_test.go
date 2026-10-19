@@ -60,6 +60,20 @@ func TestSelectIncludeExcludeAndOrder(t *testing.T) {
 	if strings.Index(md, "High") > strings.Index(md, "UnsureHigh") {
 		t.Error("explained must precede unsure regardless of score")
 	}
+	if strings.Contains(md, "Awaiting triage") {
+		t.Error("footer names a backlog that is not there")
+	}
+}
+
+// Postings still awaiting triage are not in the digest, so the footer says
+// how many there are, under the empty-digest line too.
+func TestFooterSaysWhatAwaitsTriage(t *testing.T) {
+	for _, recs := range [][]ledger.Record{nil, {rec("gh:a:1", posting.Explained, "One", map[string]string{"rank": "50"})}} {
+		md, _ := Render(recs, nil, day, Counts{New: 3027, AwaitingTriage: 2639})
+		if !strings.Contains(md, "Awaiting triage: 2639 (not in this digest") {
+			t.Fatalf("footer:\n%s", md)
+		}
+	}
 }
 
 // A run with scoring off (no devprism.binary) explains postings that carry no

@@ -112,6 +112,8 @@ type jobsListJSON struct {
 	Records int         `json:"records"`
 	Sort    string      `json:"sort"`
 	Insight insightJSON `json:"insight"`
+	// Pending is what no view lists yet: postings awaiting triage.
+	Pending pendingJSON `json:"pending"`
 }
 
 func (e *env) cmdJobs(args []string) error {
@@ -191,6 +193,7 @@ func (e *env) jobsList(args []string) error {
 		}
 		out = listJobs(snap, m, &o, in, *limit)
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
+		out.Pending = pendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.query)))
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
@@ -214,6 +217,7 @@ func (e *env) jobsList(args []string) error {
 			fmt.Fprintf(e.stdout, "%s  %5.1f  %s  %-7s  %s: %s%s%s  [%s]\n", rank, j.Priority, age, mark, j.Company, j.Title, pay, whereText(j), j.Key)
 		}
 		fmt.Fprintf(e.stdout, "%s: %d of %d shown\n", out.View, out.Shown, out.Total)
+		e.printPending(out.Pending, out.Query)
 		if out.Insight.Warning != "" {
 			fmt.Fprintf(e.stdout, "note: %s\n", out.Insight.Warning)
 		}
@@ -249,10 +253,13 @@ func (e *env) jobsStatsCmd(args []string) error {
 		out.Salary = payStats(sel, o.more.currency)
 		out.View, out.Query, out.Torn = o.view, o.query, snap.Torn
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
+		out.Pending = pendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.query)))
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
-		fmt.Fprintf(e.stdout, "%s: %d jobs\nrole fit:", out.View, out.Total)
+		fmt.Fprintf(e.stdout, "%s: %d jobs\n", out.View, out.Total)
+		e.printPending(out.Pending, out.Query)
+		fmt.Fprint(e.stdout, "role fit:")
 		for _, v := range roleFitOrder {
 			fmt.Fprintf(e.stdout, " %s %d,", v, out.Fit[v])
 		}

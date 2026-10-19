@@ -47,6 +47,11 @@ type Counts struct {
 	New     int
 	Dropped int
 	Dead    int
+	// AwaitingTriage is every posting read from a board but not triaged yet
+	// (status live), whenever it was first seen. They are not in the digest,
+	// so the footer says they exist: otherwise "No new roles today" above
+	// "New today: 3027" reads as nothing to look at.
+	AwaitingTriage int
 }
 
 // Select returns the records that belong in a digest, in digest order:
@@ -193,6 +198,9 @@ func Render(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, 
 
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "New today: %d | Dropped today: %d | Dead today: %d\n", c.New, c.Dropped, c.Dead)
+	if c.AwaitingTriage > 0 {
+		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
+	}
 	return b.String(), keys
 }
 

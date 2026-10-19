@@ -30,7 +30,7 @@ func unread(key posting.Key) error { return fmt.Errorf("%w: %s", pipeline.ErrTri
 func TestAdvanceStopsWhenNoBackendCanRead(t *testing.T) {
 	var warn strings.Builder
 	calls := 0
-	err := advanceAll(context.Background(), liveRecs(300), nil, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		calls++
 		return unread(k)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
@@ -48,7 +48,7 @@ func TestAdvanceStopsWhenNoBackendCanRead(t *testing.T) {
 
 // Fewer postings than the breaker: still a failure when none could be read.
 func TestAdvanceFailsWhenEveryPostingWasUnread(t *testing.T) {
-	err := advanceAll(context.Background(), liveRecs(4), nil, func(_ context.Context, k posting.Key) error { return unread(k) },
+	_, err := advanceAll(context.Background(), liveRecs(4), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error { return unread(k) },
 		func(string, ...any) {})
 	if !errors.Is(err, pipeline.ErrTriageUnavailable) || !strings.Contains(err.Error(), "4 of 4") {
 		t.Fatalf("err = %v", err)
@@ -60,7 +60,7 @@ func TestAdvanceFailsWhenEveryPostingWasUnread(t *testing.T) {
 func TestAdvanceToleratesScatteredUnread(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	err := advanceAll(context.Background(), liveRecs(100), nil, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(100), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%(maxConsecutiveUnread) == 0 { // one success every 20th posting
 			return nil
@@ -79,16 +79,16 @@ func TestAdvanceToleratesScatteredUnread(t *testing.T) {
 func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 	var warn strings.Builder
 	calls := 0
-	recs := liveRecs(maxAdvancePerRun + 10)
+	recs := liveRecs(config.DefaultAdvancePerRun + 10)
 	recs[0].Status = posting.Dead
-	err := advanceAll(context.Background(), recs, nil, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), recs, nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		calls++
 		if calls == 2 {
 			return errors.New("score: devprism down")
 		}
 		return nil
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
-	if err != nil || calls != maxAdvancePerRun {
+	if err != nil || calls != config.DefaultAdvancePerRun {
 		t.Fatalf("err %v calls %d", err, calls)
 	}
 	for _, want := range []string{"advance gh:acme:002: score: devprism down", "advance cap 300 reached"} {
@@ -104,7 +104,7 @@ func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	err := advanceAll(context.Background(), liveRecs(50), nil, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(50), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		i++
 		return fmt.Errorf("pipeline: explain %s: anthropic: http 400 (request req_%04d): not scoped to a workspace", k, i)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
@@ -124,7 +124,7 @@ func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 func TestAdvanceReportsEachDistinctCause(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	err := advanceAll(context.Background(), liveRecs(6), nil, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%2 == 0 {
 			return fmt.Errorf("pipeline: score %s: devprism down", k)
@@ -150,7 +150,7 @@ func TestAdvanceOrdersByTitleSignals(t *testing.T) {
 		Include: []string{"LLM", "Inference"}, Exclude: []string{"Sales"},
 	}}}
 	rank := w.titleRank()
-	recs := liveRecs(maxAdvancePerRun + 5)
+	recs := liveRecs(config.DefaultAdvancePerRun + 5)
 	for i := range recs {
 		recs[i].Posting.Title = "Software Engineer"
 	}
@@ -161,11 +161,11 @@ func TestAdvanceOrdersByTitleSignals(t *testing.T) {
 	recs[300].Posting.Title = "LLM Inference Engineer"
 	recs[304].Posting.Title = "Inference Runtime Engineer"
 	var got []posting.Key
-	err := advanceAll(context.Background(), recs, rank, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), recs, rank, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		got = append(got, k)
 		return nil
 	}, func(string, ...any) {})
-	if err != nil || len(got) != maxAdvancePerRun {
+	if err != nil || len(got) != config.DefaultAdvancePerRun {
 		t.Fatalf("err %v, %d advanced", err, len(got))
 	}
 	want := []posting.Key{recs[300].Key, recs[200].Key, recs[304].Key, recs[2].Key, recs[3].Key}
@@ -176,12 +176,12 @@ func TestAdvanceOrdersByTitleSignals(t *testing.T) {
 		t.Fatal("excluded posting ran before the cap, or a dead one ran")
 	}
 	// Unmatched postings keep ledger order behind the matches.
-	if got[5] != recs[4].Key || got[len(got)-1] != recs[maxAdvancePerRun-1].Key {
+	if got[5] != recs[4].Key || got[len(got)-1] != recs[config.DefaultAdvancePerRun-1].Key {
 		t.Fatalf("ties out of ledger order: %v ... %v", got[5], got[len(got)-1])
 	}
 
 	got = nil
-	if err := advanceAll(context.Background(), recs[:10], rank, func(_ context.Context, k posting.Key) error {
+	if _, err := advanceAll(context.Background(), recs[:10], rank, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		got = append(got, k)
 		return nil
 	}, func(string, ...any) {}); err != nil {
@@ -194,6 +194,78 @@ func TestAdvanceOrdersByTitleSignals(t *testing.T) {
 	// No signals configured: ledger order, as before.
 	if (&wired{}).titleRank() != nil {
 		t.Fatal("rank without signals")
+	}
+}
+
+// The report says what the cap left waiting: before it, a run that hit the cap
+// only printed a stderr line, and the postings it left read as nothing at all.
+func TestAdvanceReportCountsWhatTheCapLeft(t *testing.T) {
+	recs := liveRecs(310)
+	recs[0].Status = posting.Digested // not eligible
+	calls := 0
+	rep, err := advanceAll(context.Background(), recs, nil, 300, func(_ context.Context, k posting.Key) error {
+		calls++
+		if calls == 3 {
+			return errors.New("score: devprism down")
+		}
+		return nil
+	}, func(string, ...any) {})
+	want := advanceReport{Eligible: 309, Limit: 300, Attempted: 300, Failed: 1, Deferred: 9, Stopped: stopCap}
+	if err != nil || rep != want {
+		t.Fatalf("err %v\nreport %+v\nwant   %+v", err, rep, want)
+	}
+}
+
+// advance_per_run is honoured, and a queue shorter than the cap is no stop.
+func TestAdvanceHonoursTheConfiguredLimit(t *testing.T) {
+	calls := 0
+	rep, err := advanceAll(context.Background(), liveRecs(12), nil, 5, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {})
+	if err != nil || calls != 5 || rep.Deferred != 7 || rep.Stopped != stopCap {
+		t.Fatalf("err %v calls %d report %+v", err, calls, rep)
+	}
+	rep, err = advanceAll(context.Background(), liveRecs(3), nil, 5, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
+	if err != nil || rep != (advanceReport{Eligible: 3, Limit: 5, Attempted: 3}) {
+		t.Fatalf("short queue: err %v report %+v", err, rep)
+	}
+	rep, err = advanceAll(context.Background(), nil, nil, 5, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
+	if err != nil || rep != (advanceReport{Limit: 5}) {
+		t.Fatalf("empty ledger: err %v report %+v", err, rep)
+	}
+	for _, bad := range []int{0, -1} {
+		calls = 0
+		if _, err := advanceAll(context.Background(), liveRecs(3), nil, bad, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {}); err == nil || calls != 0 {
+			t.Fatalf("limit %d: err %v, %d calls; want a refusal before any call", bad, err, calls)
+		}
+	}
+}
+
+// A stop (unread streak, nothing read, cancellation) still reports how far it
+// got and what it left.
+func TestAdvanceReportOnEveryStop(t *testing.T) {
+	rep, err := advanceAll(context.Background(), liveRecs(300), nil, 300, func(_ context.Context, k posting.Key) error { return unread(k) }, func(string, ...any) {})
+	want := advanceReport{Eligible: 300, Limit: 300, Attempted: maxConsecutiveUnread, Unread: maxConsecutiveUnread, Deferred: 300 - maxConsecutiveUnread, Stopped: stopUnreadStreak}
+	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep != want {
+		t.Fatalf("streak: err %v\nreport %+v\nwant   %+v", err, rep, want)
+	}
+
+	rep, err = advanceAll(context.Background(), liveRecs(4), nil, 300, func(_ context.Context, k posting.Key) error { return unread(k) }, func(string, ...any) {})
+	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep.Stopped != stopNoneRead || rep.Unread != 4 || rep.Deferred != 0 {
+		t.Fatalf("none read: err %v report %+v", err, rep)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	rep, err = advanceAll(ctx, liveRecs(10), nil, 300, func(ctx context.Context, k posting.Key) error {
+		calls++
+		if calls == 4 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}, func(string, ...any) {})
+	if !errors.Is(err, context.Canceled) || rep.Stopped != stopCancelled || rep.Attempted != 4 || rep.Deferred != 6 {
+		t.Fatalf("cancelled: err %v report %+v", err, rep)
 	}
 }
 

@@ -472,6 +472,62 @@ func TestRunOnceRecordsACancelledRun(t *testing.T) {
 	}
 }
 
+// What the pipeline reports about itself (the cap, backend refusals) reaches
+// the record and status, on a failed run too: that is when it matters.
+func TestRunRecordKeepsAdvanceReportAndBackendErrors(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l := fixture()
+	wire(t, l, &fakeNotifier{}, nil)
+	sink := newBackendErrors()
+	sink.add("anthropic", "http 429", "anthropic: http 429 (request req_1): rate_limit_error")
+	sink.add("anthropic", "http 429", "anthropic: http 429 (request req_2): rate_limit_error")
+	adv := advanceReport{Eligible: 3027, Limit: 300, Attempted: 20, Unread: 20, Deferred: 3007, Stopped: stopUnreadStreak}
+	old := buildApp
+	buildApp = func(config.Config, string, io.Writer) (*App, error) {
+		return &App{Ledger: l, Notifier: &fakeNotifier{},
+			RunOnce:   func(context.Context) error { return errors.New("no decision backend read 20 postings in a row") },
+			RunReport: func() runDetail { return runDetail{Advance: &adv, BackendErrors: sink.report()} },
+		}, nil
+	}
+	t.Cleanup(func() { buildApp = old })
+	mustCode(t, 1, "run-once")
+
+	r, err := readRunRecord(stateDir)
+	if err != nil || r == nil || r.Outcome != outcomeFailed {
+		t.Fatalf("record %+v, %v", r, err)
+	}
+	if r.Advance == nil || *r.Advance != adv {
+		t.Errorf("advance %+v, want %+v", r.Advance, adv)
+	}
+	if r.BackendErrors == nil || len(r.BackendErrors.Causes) != 1 || r.BackendErrors.Causes[0].Count != 2 {
+		t.Errorf("backend errors %+v", r.BackendErrors)
+	}
+	s := statusOf(t).LastRun
+	if s.Advance == nil || s.Advance.Deferred != 3007 || s.BackendErrors == nil || s.BackendErrors.Causes[0].Backend != "anthropic" {
+		t.Errorf("status last run %+v", s)
+	}
+}
+
+// A ledger with postings but no run record is not "nothing has run".
+func TestStatusJSONNoRunRecordWithPostingsSaysSo(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l, err := ledger.Open(filepath.Join(stateDir, "ledger"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := posting.Posting{Key: "gh:acme:1", Company: "Acme", Title: "Engineer"}
+	if err := l.Append(context.Background(), ledger.Event{V: 1, At: time.Now(), Key: p.Key, Status: posting.Live, Posting: &p, Reason: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	s := statusOf(t).LastRun
+	if s.State != "none" || !strings.Contains(s.Reason, "ledger holds 1 postings") {
+		t.Errorf("last run %+v", s)
+	}
+}
+
 func TestRunRecordIsWrittenBeforeTheRunEnds(t *testing.T) {
 	_, stateDir := setup(t)
 	mustCode(t, 0, "init")

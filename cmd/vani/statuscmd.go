@@ -93,6 +93,9 @@ type lastRunFacet struct {
 	PostingsAfter  *int           `json:"postings_after,omitempty"`
 	CountsBefore   map[string]int `json:"counts_before,omitempty"`
 	CountsAfter    map[string]int `json:"counts_after,omitempty"`
+	// Advance and BackendErrors: what the cap left waiting, and why decision
+	// backends failed (runDetail).
+	runDetail
 }
 
 type scheduleFacet struct {
@@ -156,6 +159,12 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	out.Ledger = e.ledgerFacet()
 	out.LastRun = e.lastRunFacet(at)
+	if out.LastRun.State == "none" && out.Ledger.Total > 0 {
+		// "Nothing has run" would be false: the postings came from runs
+		// that kept no record (a vani from before run records) or from
+		// another tool writing this ledger.
+		out.LastRun.Reason = fmt.Sprintf("no run record, but the ledger holds %d postings from earlier runs that kept none", out.Ledger.Total)
+	}
 	out.Schedule = scheduleOf(cfg, cfgErr, at)
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
@@ -189,6 +198,7 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 	f := lastRunFacet{
 		facet: facet{OK: true}, State: runState(*r, at), StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 		Stage: r.Stage, Error: r.Error, CountsBefore: r.CountsBefore, CountsAfter: r.CountsAfter,
+		runDetail: r.runDetail,
 	}
 	if !r.FinishedAt.IsZero() {
 		d := math.Max(r.FinishedAt.Sub(r.StartedAt).Seconds(), 0)

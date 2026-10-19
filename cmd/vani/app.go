@@ -25,6 +25,9 @@ type App struct {
 	// RunOnce runs the whole pipeline once: list boards, triage, score,
 	// explain. It returns an error only when the run as a whole failed.
 	RunOnce func(ctx context.Context) error
+	// RunReport returns what the last RunOnce reported about itself (the
+	// advance phase, backend errors) for the run record. Nil means none.
+	RunReport func() runDetail
 	// Notifier announces a finished digest. Nil means no notification.
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
@@ -53,6 +56,9 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 		e.saveRunRecord(rec)
 		stage, err := e.dailySteps(ctx, app, cfg)
 		rec.FinishedAt = now()
+		if app.RunReport != nil {
+			rec.runDetail = app.RunReport()
+		}
 		if app.Ledger != nil {
 			rec.CountsAfter = statusCounts(app.Ledger.All())
 		}
@@ -157,6 +163,8 @@ func countsFor(recs []ledger.Record, date time.Time, loc *time.Location) digest.
 			c.New++
 		}
 		switch r.Status {
+		case posting.Live:
+			c.AwaitingTriage++
 		case posting.Dropped:
 			if same(r.LastEvent) {
 				c.Dropped++

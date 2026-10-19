@@ -45,11 +45,6 @@ import (
 	"github.com/bharathvbcr/decide/lappi"
 )
 
-// maxAdvancePerRun bounds how many postings one run triages, scores and
-// explains, which bounds a run's spend and duration. Postings beyond it wait
-// for the next run; nothing is lost.
-const maxAdvancePerRun = 300
-
 // The OpenRouter model's daily cap lives in <state dir>/budget/jev.json under
 // spend key "jev": the names it had before the backend was named after its
 // model. Keeping them carries a day's spend across the rename.
@@ -102,10 +97,11 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 	}
 	w := &wired{cfg: cfg, stateDir: stateDir, led: led, warn: warn}
 	return &App{
-		Ledger:   led,
-		RunOnce:  w.runOnce,
-		Notifier: notify.New(nil),
-		Closer:   w.close,
+		Ledger:    led,
+		RunOnce:   w.runOnce,
+		RunReport: w.runReport,
+		Notifier:  notify.New(nil),
+		Closer:    w.close,
 	}, nil
 }
 
@@ -121,6 +117,19 @@ type wired struct {
 	// localEndpoint is the address of the local decision model's server when
 	// runOnce started one; empty otherwise.
 	localEndpoint string
+
+	// backendErrs collects the current run's decision-backend errors; runOnce
+	// replaces it at the start of every run. advance is the last run's
+	// advance report. Both are read by runReport, under mu.
+	backendErrs *backendErrors
+	advance     *advanceReport
+}
+
+// runReport is what the last runOnce left for the run record.
+func (w *wired) runReport() runDetail {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report()}
 }
 
 func (w *wired) close() error {
@@ -151,6 +160,10 @@ func (w *wired) runOnce(ctx context.Context) error {
 	// endpoint lives exactly as long as its server: a daemon reuses w, and a
 	// failed start must never inherit the last run's stopped address.
 	w.localEndpoint = ""
+	errs := newBackendErrors()
+	w.mu.Lock()
+	w.backendErrs, w.advance = errs, nil
+	w.mu.Unlock()
 	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
 		srv, err := localserver.Start(ctx, localserver.Config{
 			Binary: l.Server.Binary, Model: l.Server.ModelPath, ContextSize: l.Server.ContextSize,
@@ -225,7 +238,10 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return errors.New("no board could be read")
 	}
 
-	err = advanceAll(ctx, w.led.All(), w.titleRank(), runner.Advance, w.warnf)
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), runner.Advance, w.warnf)
+	w.mu.Lock()
+	w.advance = &rep
+	w.mu.Unlock()
 	w.warnShadowErrors(runner)
 	return err
 }
@@ -269,16 +285,21 @@ const maxUnreadExamples = 3
 // one by one; later new causes are only counted.
 const maxDistinctCauses = 20
 
-// advanceAll advances up to maxAdvancePerRun postings. With a rank they go
-// highest rank first, ties in ledger order, so the cap spends itself on the
-// titles the active track wants; a nil rank keeps ledger order. Rank only
-// orders: every eligible posting is still advanced, this run or a later one.
-// A posting no backend could read stays Live for the next run. The run fails,
-// so a shell loop stops and no empty digest is published, when no backend
-// read maxConsecutiveUnread postings in a row, or none of the postings it
-// tried. Any other stage failure is printed once per cause (the posting key
+// advanceAll advances up to limit postings (config advance_per_run). With a
+// rank they go highest rank first, ties in ledger order, so the cap spends
+// itself on the titles the active track wants; a nil rank keeps ledger order.
+// Rank only orders: every eligible posting is still advanced, this run or a
+// later one. A posting no backend could read stays Live for the next run. The
+// run fails, so a shell loop stops and no empty digest is published, when no
+// backend read maxConsecutiveUnread postings in a row, or none of the postings
+// it tried. Any other stage failure is printed once per cause (the posting key
 // and provider request id are not part of the cause) and counted after that.
-func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) error {
+// The report says what happened however the phase ended, so the run record
+// can show what the cap or a stop left waiting.
+func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit int, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
+	if limit <= 0 {
+		return advanceReport{}, fmt.Errorf("advance limit %d must be above 0", limit)
+	}
 	var todo []ledger.Record
 	for _, r := range recs {
 		switch r.Status {
@@ -293,7 +314,13 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		}
 		slices.SortStableFunc(todo, func(a, b ledger.Record) int { return cmp.Compare(ranks[b.Key], ranks[a.Key]) })
 	}
-	advanced, unreadN, streak := 0, 0, 0
+	rep := advanceReport{Eligible: len(todo), Limit: limit}
+	done := func(stopped string) advanceReport {
+		rep.Deferred = rep.Eligible - rep.Attempted
+		rep.Stopped = stopped
+		return rep
+	}
+	streak := 0
 	type cause struct {
 		first posting.Key
 		more  int
@@ -302,24 +329,24 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	var order []string
 	uncounted := 0
 	for _, r := range todo {
-		if advanced >= maxAdvancePerRun {
-			warnf("advance cap %d reached; the rest wait for the next run", maxAdvancePerRun)
+		if rep.Attempted >= limit {
+			warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
 			break
 		}
-		advanced++
+		rep.Attempted++
 		err := advance(ctx, r.Key)
 		if err != nil && ctx.Err() != nil {
-			return ctx.Err()
+			return done(stopCancelled), ctx.Err()
 		}
 		if errors.Is(err, pipeline.ErrTriageUnavailable) {
-			unreadN++
+			rep.Unread++
 			streak++
-			if unreadN <= maxUnreadExamples {
+			if rep.Unread <= maxUnreadExamples {
 				warnf("advance %s: %v", r.Key, err)
 			}
 			if streak >= maxConsecutiveUnread {
-				return fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
-					streak, advanced, pipeline.ErrTriageUnavailable)
+				return done(stopUnreadStreak), fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
+					streak, rep.Attempted, pipeline.ErrTriageUnavailable)
 			}
 			continue
 		}
@@ -327,6 +354,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		if err == nil {
 			continue
 		}
+		rep.Failed++
 		key := errorKey(strings.ReplaceAll(err.Error(), string(r.Key), "<posting>"))
 		if c, ok := causes[key]; ok {
 			c.more++
@@ -348,14 +376,17 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	if uncounted > 0 {
 		warnf("%d more posting(s) failed with other errors (more than %d distinct causes); they wait for the next run", uncounted, maxDistinctCauses)
 	}
-	if unreadN > 0 {
-		if unreadN == advanced {
-			return fmt.Errorf("no decision backend read any posting: %d of %d unread (they stay live; see the backend errors above): %w",
-				unreadN, advanced, pipeline.ErrTriageUnavailable)
+	if rep.Unread > 0 {
+		if rep.Unread == rep.Attempted {
+			return done(stopNoneRead), fmt.Errorf("no decision backend read any posting: %d of %d unread (they stay live; see the backend errors above): %w",
+				rep.Unread, rep.Attempted, pipeline.ErrTriageUnavailable)
 		}
-		warnf("%d posting(s) could not be read by any decision backend; they stay live for the next run", unreadN)
+		warnf("%d posting(s) could not be read by any decision backend; they stay live for the next run", rep.Unread)
 	}
-	return nil
+	if rep.Attempted >= limit && rep.Attempted < rep.Eligible {
+		return done(stopCap), nil
+	}
+	return done(""), nil
 }
 
 // lightpandaTimeout bounds one lightpanda fetch, start to exit.
@@ -500,7 +531,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		if err != nil {
 			w.warnf("openrouter (%s) disabled: %v", w.cfg.Decide.OpenRouterModel, err)
 		} else {
-			backends = append(backends, jb)
+			backends = append(backends, logErrors(jb, w.warnf, w.backendErrs))
 		}
 	}
 
@@ -513,7 +544,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 			if err != nil {
 				return nil, fmt.Errorf("llm backend: %w", err)
 			}
-			backends = append(backends, logErrors(lb, w.warnf))
+			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
 		}
 	}
 	// Lappi is local and free. It is the shadow until `vani eval` reports it
@@ -535,9 +566,9 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		if err != nil {
 			w.warnf("lappi disabled: %v", err)
 		} else if l.Primary {
-			backends = append([]decide.Backend{lb}, backends...)
+			backends = append([]decide.Backend{logErrors(lb, w.warnf, w.backendErrs)}, backends...)
 		} else {
-			backends = append(backends, lb)
+			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
 		}
 	}
 
@@ -553,7 +584,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		if err != nil {
 			w.warnf("local decision model disabled: %v", err)
 		} else {
-			backends = append(backends, lb)
+			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
 		}
 	}
 

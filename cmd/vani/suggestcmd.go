@@ -138,14 +138,14 @@ func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 		if err != nil {
 			w.warnf("openrouter (%s) disabled: %v", w.cfg.Decide.OpenRouterModel, err)
 		} else {
-			backends = append(backends, jb)
+			backends = append(backends, logErrors(jb, w.warnf, nil))
 		}
 	}
 	lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.Model})
 	if err != nil {
 		return nil, fmt.Errorf("llm backend: %w", err)
 	}
-	backends = append(backends, logErrors(lb, w.warnf))
+	backends = append(backends, logErrors(lb, w.warnf, nil))
 	return decide.NewRouter(backends...), nil
 }
 
