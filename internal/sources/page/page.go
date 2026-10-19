@@ -175,6 +175,12 @@ func firstNonEmpty(ss ...string) string {
 // fetch runs `lightpanda fetch --dump html` on rawURL, which the caller has
 // already validated.
 //
+// --user-agent UserAgent makes lightpanda identify as Vani, so --obey-robots
+// applies the same robots.txt group whose Crawl-delay Paced honours:
+// lightpanda picks the group by its own User-Agent's product token, and by
+// default that is "Lightpanda" (measured 2026-10-19, lightpanda
+// 1.1.0-nightly.10455).
+//
 // --http-max-host-open 1 makes one run open one connection, so one proxy
 // CONNECT, per host. The egress proxy paces CONNECTs per host; with
 // lightpanda's default of 6 parallel connections, one page with same-host
@@ -183,7 +189,7 @@ func firstNonEmpty(ss ...string) string {
 // fetch (measured 2026-10-18, lightpanda 1.1.0-nightly).
 func (s *source) fetch(ctx context.Context, proxyArgs []string, rawURL string) (string, error) {
 	args := []string{"fetch", "--dump", "html", "--obey-robots", "--block-private-networks", "--fail-on-http-error",
-		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1"}
+		"--http-timeout", strconv.Itoa(httpTimeoutMs), "--http-max-host-open", "1", "--user-agent", UserAgent}
 	args = append(args, proxyArgs...)
 	args = append(args, rawURL)
 	out, err := s.run.Run(ctx, args)

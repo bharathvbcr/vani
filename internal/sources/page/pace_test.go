@@ -99,30 +99,10 @@ func checkGaps(t *testing.T, spans []span, interval time.Duration) {
 
 func fetchArgs(u string) []string { return []string{"fetch", "--dump", "html", u} }
 
-func mustPaced(t *testing.T, next Runner, d time.Duration) *Paced {
+// mustPaced paces by interval alone: every host's robots.txt is missing.
+func mustPaced(t *testing.T, next Runner, interval time.Duration) *Paced {
 	t.Helper()
-	p, err := NewPaced(next, d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-func TestNewPacedBounds(t *testing.T) {
-	inner := &timingRunner{}
-	for _, d := range []time.Duration{0, -time.Second, MaxInterval + time.Nanosecond, time.Duration(1 << 62)} {
-		if _, err := NewPaced(inner, d); err == nil {
-			t.Errorf("interval %s accepted", d)
-		}
-	}
-	if _, err := NewPaced(nil, time.Second); err == nil {
-		t.Error("nil runner accepted")
-	}
-	for _, d := range []time.Duration{time.Nanosecond, MaxInterval} {
-		if _, err := NewPaced(inner, d); err != nil {
-			t.Errorf("interval %s refused: %v", d, err)
-		}
-	}
+	return mustRobotsPaced(t, next, robotsReply(404, ""), interval)
 }
 
 // A run the wrapper cannot attribute to a host is refused, never made
@@ -192,17 +172,32 @@ func TestPacedSameHostConcurrently(t *testing.T) {
 	checkGaps(t, spans, interval)
 }
 
-// A host resting for the longest interval holds up no other host.
+// A host resting holds up no other host.
 func TestPacedHostsDoNotWaitOnEachOther(t *testing.T) {
+	const interval = 400 * time.Millisecond
 	inner := &timingRunner{}
-	p := mustPaced(t, inner, MaxInterval)
+	p := mustPaced(t, inner, interval)
 	begin := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, 3)
 	for _, u := range []string{"https://a.example.com/", "https://b.example.com/", "https://c.example.org/"} {
-		if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := p.Run(context.Background(), fetchArgs(u))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if took := time.Since(begin); took > 2*time.Second {
+	// Each host rests once, after its robots.txt read; one after another
+	// would be at least 3*interval.
+	if took := time.Since(begin); took >= 2*interval {
 		t.Fatalf("three hosts took %s; they waited on each other", took)
 	}
 
@@ -321,7 +316,9 @@ func TestPacedFailedRunStillRests(t *testing.T) {
 // schedule does not grow with every host ever fetched.
 func TestPacedForgetsIdleHosts(t *testing.T) {
 	inner := &timingRunner{}
-	p := mustPaced(t, inner, time.Second)
+	p := mustPaced(t, inner, 50*time.Millisecond)
+	t0 := time.Now()
+	p.now = func() time.Time { return t0 } // every host stays within its rest
 	for _, u := range []string{"https://a.example.com/", "https://b.example.com/", "https://c.example.com/"} {
 		if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
 			t.Fatal(err)

@@ -76,21 +76,33 @@ func TestDelayDuration(t *testing.T) {
 type robotsDoer struct {
 	handle func(ctx context.Context, req *http.Request) (*http.Response, error)
 
-	mu   sync.Mutex
-	reqs []string
+	mu    sync.Mutex
+	reqs  []string
+	uas   []string
+	spans []span // each request, sent to answered
 }
 
 func (d *robotsDoer) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := d.handle(ctx, req)
 	d.mu.Lock()
 	d.reqs = append(d.reqs, req.Method+" "+req.URL.String())
+	d.uas = append(d.uas, req.Header.Get("User-Agent"))
+	d.spans = append(d.spans, span{url: req.URL.String(), start: start, end: time.Now()})
 	d.mu.Unlock()
-	return d.handle(ctx, req)
+	return resp, err
 }
 
 func (d *robotsDoer) requests() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]string(nil), d.reqs...)
+}
+
+func (d *robotsDoer) recorded() []span {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]span(nil), d.spans...)
 }
 
 func robotsReply(status int, body string) *robotsDoer {
@@ -211,7 +223,8 @@ func TestRobotsDelayAndFloor(t *testing.T) {
 		delay string
 	}{{150 * time.Millisecond, "0.03"}, {30 * time.Millisecond, "0.15"}} {
 		inner := &timingRunner{hold: 5 * time.Millisecond}
-		p := mustRobotsPaced(t, inner, robotsReply(200, "User-agent: Vani\nCrawl-delay: "+c.delay+"\n"), c.floor)
+		d := robotsReply(200, "User-agent: Vani\nCrawl-delay: "+c.delay+"\n")
+		p := mustRobotsPaced(t, inner, d, c.floor)
 		for _, u := range []string{"https://careers.example.com/a", "https://careers.example.com/b", "https://careers.example.com/c"} {
 			if _, err := p.Run(context.Background(), fetchArgs(u)); err != nil {
 				t.Fatal(err)
@@ -221,7 +234,52 @@ func TestRobotsDelayAndFloor(t *testing.T) {
 		if len(spans) != 3 {
 			t.Fatalf("floor %s, delay %s: %d runs", c.floor, c.delay, len(spans))
 		}
-		checkGaps(t, spans, 150*time.Millisecond)
+		checkGaps(t, append(d.recorded(), spans...), 150*time.Millisecond)
+	}
+}
+
+// Vani's own robots.txt read is a visit: the first run rests after it, and so
+// does the read after a failed one.
+func TestRobotsReadIsAVisit(t *testing.T) {
+	const floor = 150 * time.Millisecond
+	inner := &timingRunner{}
+	status := 503
+	d := &robotsDoer{handle: func(_ context.Context, req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	}}
+	p := mustRobotsPaced(t, inner, d, floor)
+	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err == nil {
+		t.Fatal("503 robots.txt ran")
+	}
+	status = 404
+	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+		t.Fatal(err)
+	}
+	spans, _ := inner.recorded()
+	all := append(d.recorded(), spans...)
+	if len(all) != 3 {
+		t.Fatalf("%d visits, want 2 robots reads and 1 run", len(all))
+	}
+	checkGaps(t, all, floor)
+}
+
+// Every robots.txt read and every lightpanda run identifies as UserAgent,
+// whose product token is the group Crawl-delay is read from.
+func TestRobotsUserAgent(t *testing.T) {
+	if got := productToken(UserAgent); got != robotsAgent {
+		t.Fatalf("UserAgent's product token is %q, robots group is %q", got, robotsAgent)
+	}
+	if strings.Contains(UserAgent, "Mozilla") {
+		t.Fatal("lightpanda refuses a User-Agent containing Mozilla")
+	}
+	d := robotsReply(404, "")
+	if _, err := mustRobotsPaced(t, &timingRunner{}, d, 0).Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.uas) != 1 || d.uas[0] != UserAgent {
+		t.Fatalf("robots.txt User-Agent %q, want %q", d.uas, UserAgent)
 	}
 }
 
@@ -236,10 +294,10 @@ func TestRobotsDelayAboveCap(t *testing.T) {
 		}
 		noRuns(t, inner)
 	}
-	inner := &timingRunner{}
-	p := mustRobotsPaced(t, inner, robotsReply(200, "User-agent: *\nCrawl-delay: 10\n"), 0)
-	if _, err := p.Run(context.Background(), fetchArgs("https://careers.example.com/a")); err != nil {
-		t.Fatalf("Crawl-delay at the cap: %v", err)
+	// At the cap is accepted (read directly: a Run would rest 10 s first).
+	p := mustRobotsPaced(t, &timingRunner{}, robotsReply(200, "User-agent: *\nCrawl-delay: 10\n"), 0)
+	if iv, err := p.intervalFor(context.Background(), &hostSlot{}, "careers.example.com"); err != nil || iv != MaxInterval {
+		t.Fatalf("Crawl-delay at the cap: %s, %v", iv, err)
 	}
 }
 

@@ -17,9 +17,14 @@ import (
 )
 
 const (
-	// robotsAgent is the product token whose robots.txt group Vani obeys. It is
-	// the product token of egress's default User-Agent ("Vani/0.1 ..."), which
-	// the robots.txt request itself carries.
+	// UserAgent is what every careers-page request carries: lightpanda's runs
+	// (--user-agent) and Vani's own robots.txt read. One identity means the
+	// robots.txt group lightpanda obeys for Allow/Disallow is the group whose
+	// Crawl-delay Paced honours. lightpanda refuses any value containing
+	// "Mozilla".
+	UserAgent = "Vani/0.1 (+personal job-listing reader)"
+	// robotsAgent is UserAgent's product token, lower-cased: the robots.txt
+	// group Vani obeys.
 	robotsAgent = "vani"
 	// maxRobotsBytes bounds a robots.txt body: RFC 9309's 500 KiB parsing
 	// minimum, rounded up. A longer file is an error rather than read in part:
@@ -66,6 +71,7 @@ func crawlDelay(ctx context.Context, d egress.Doer, host string, timeout time.Du
 	if err != nil {
 		return fail(err)
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	resp, err := d.Do(rctx, req)
 	if err != nil {
 		return fail(err)
