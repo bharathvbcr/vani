@@ -553,6 +553,17 @@ flowchart TD
     through by mistake, the postings it did not reach count as missed. This was an earlier choice,
     kept because a live `total` that overstates would otherwise fail the board on every run.
 
+- **Salesforce is left off the watchlist (owner's call via Fable, D15, 2026-10-19).** Its
+  Workday board is `salesforce/External_Career_Site` on `salesforce.wd12.myworkdayjobs.com`.
+  Search totals from one limit-1 cxs search per term, through Vani's egress on 2026-10-19:
+  "early career" 148, "LLM" 236, "AI engineer" 886, "Agentforce" 1,557. "early career" is the only
+  term seen under the 200-posting cap. "LLM inference", "machine learning engineer" and "new grad"
+  got HTTP 429 at Vani's 1 s per-host pace and again 8 s apart, so their totals are unknown. A
+  148-posting board needs one detail GET per posting on top of the search pages, so at that rate a
+  run would most likely stop on 429 part-way (`srcutil` gives up after 3 attempts) and leave the
+  board unchanged. To revisit: probe again from a quieter moment or IP, and add the board with
+  `--search "early career"` only if a whole listing completes.
+
 - **Pay is read from text, by fixed rules (`internal/jobinsight/pay.go`).** Display and browse
   filters only; no engine rule reads it.
   - Lever and Ashby now carry their pay into the description (owner's call, 2026-10-19). That
