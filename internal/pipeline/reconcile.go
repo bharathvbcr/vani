@@ -141,7 +141,8 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 			}
 			s.Changed++
 		case rec.Status == posting.Dead:
-			// Same content, listed again: it is live, and nothing downstream ran for a dead record.
+			// Same content, listed again: it is live and runs the pipeline afresh,
+			// even if it had been digested before it died.
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
 				Annotations: map[string]string{DescHashKey: hash}, Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
@@ -162,7 +163,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 
 	var absent []ledger.Record
 	for _, r := range existing {
-		if strings.HasPrefix(string(r.Key), prefix) && !r.Status.Terminal() && !seen[r.Key] {
+		if strings.HasPrefix(string(r.Key), prefix) && !closed(r.Status) && !seen[r.Key] {
 			absent = append(absent, r)
 		}
 	}
@@ -172,7 +173,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 			return s, err
 		}
 		cur, ok := l.Get(r.Key)
-		if !ok || cur.Status.Terminal() {
+		if !ok || closed(cur.Status) {
 			continue
 		}
 		misses := cur.MissedRuns + 1
@@ -191,6 +192,13 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		}
 	}
 	return s, nil
+}
+
+// closed reports whether a record has left the board's lifecycle, so absence
+// no longer ages it. This is narrower than Status.Terminal: a digested posting
+// runs no further stage but is still listed, and must die when its board drops it.
+func closed(s posting.Status) bool {
+	return s == posting.Dead || s == posting.Duplicate || s == posting.Dropped
 }
 
 // weakKey reports whether k identifies a posting by something other than an

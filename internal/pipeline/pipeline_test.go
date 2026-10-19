@@ -163,6 +163,120 @@ func TestDeadPostingListedAgainIsLive(t *testing.T) {
 	}
 }
 
+// digestPosting lists p on board and marks it digested, as a published digest does.
+func digestPosting(t *testing.T, l ledger.Ledger, p posting.Posting) {
+	t.Helper()
+	if _, err := Reconcile(ctx, l, board, []posting.Posting{p}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: p.Key, Status: posting.Digested, Reason: "digest"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A digested posting the employer takes down ages like any other listed one:
+// one miss is counted, the second kills it.
+func TestDigestedAbsentTwiceIsDead(t *testing.T) {
+	l := openLedger(t)
+	a := ghPost(t, "1", "a")
+	digestPosting(t, l, a)
+
+	s, err := Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
+	if err != nil || s.Missed != 1 || s.Dead != 0 {
+		t.Fatalf("first miss: %+v %v", s, err)
+	}
+	if r := rec(t, l, a.Key); r.Status != posting.Digested || r.MissedRuns != 1 {
+		t.Fatalf("after one miss: %+v", r)
+	}
+	s, err = Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+	if err != nil || s.Dead != 1 {
+		t.Fatalf("second miss: %+v %v", s, err)
+	}
+	if r := rec(t, l, a.Key); r.Status != posting.Dead || r.MissedRuns != 2 {
+		t.Fatalf("after two misses: %+v", r)
+	}
+}
+
+func TestDigestedReappearanceResetsMissedRuns(t *testing.T) {
+	l := openLedger(t)
+	a := ghPost(t, "1", "a")
+	digestPosting(t, l, a)
+	Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
+	if r := rec(t, l, a.Key); r.MissedRuns != 1 {
+		t.Fatalf("miss not recorded: %+v", r)
+	}
+	s, _ := Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(2*time.Hour))
+	if r := rec(t, l, a.Key); s.Reappeared != 1 || r.Status != posting.Digested || r.MissedRuns != 0 {
+		t.Fatalf("reappearance: %+v %+v", s, r)
+	}
+	Reconcile(ctx, l, board, nil, t0.Add(3*time.Hour))
+	if r := rec(t, l, a.Key); r.Status != posting.Digested || r.MissedRuns != 1 {
+		t.Fatalf("miss count not restarted: %+v", r)
+	}
+}
+
+// A digested posting that died and is listed again with the same content is
+// revived to live like any dead record, so it is triaged and digested again.
+func TestDigestedDeadListedAgainIsLive(t *testing.T) {
+	l := openLedger(t)
+	a := ghPost(t, "1", "a")
+	digestPosting(t, l, a)
+	Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
+	Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+	if rec(t, l, a.Key).Status != posting.Dead {
+		t.Fatal("setup: not dead")
+	}
+	Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(3*time.Hour))
+	if r := rec(t, l, a.Key); r.Status != posting.Live || r.MissedRuns != 0 {
+		t.Fatalf("not revived: %+v", r)
+	}
+}
+
+// A closed record (dead, duplicate, dropped) is not aged by absence: it gets
+// no event at all.
+func TestAbsenceLeavesClosedRecordsAlone(t *testing.T) {
+	for _, st := range []posting.Status{posting.Dead, posting.Duplicate, posting.Dropped} {
+		t.Run(string(st), func(t *testing.T) {
+			l := openLedger(t)
+			a := ghPost(t, "1", "a")
+			Reconcile(ctx, l, board, []posting.Posting{a}, t0)
+			if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: a.Key, Status: st, Reason: "setup"}); err != nil {
+				t.Fatal(err)
+			}
+			before := rec(t, l, a.Key)
+			for i := 1; i <= 3; i++ {
+				s, err := Reconcile(ctx, l, board, nil, t0.Add(time.Duration(i)*time.Hour))
+				if err != nil || s.Missed != 0 || s.Dead != 0 {
+					t.Fatalf("run %d: %+v %v", i, s, err)
+				}
+			}
+			r := rec(t, l, a.Key)
+			if r.Status != st || r.MissedRuns != before.MissedRuns || !r.LastEvent.Equal(before.LastEvent) {
+				t.Fatalf("closed record touched: %+v", r)
+			}
+		})
+	}
+}
+
+// Dedupe still treats a digested weak record as settled: an ATS twin arriving
+// later does not retroactively mark what the user was already shown.
+func TestDigestedWeakRecordIsNotMarkedDuplicate(t *testing.T) {
+	l := openLedger(t)
+	fk, _ := posting.FallbackKey("Acme", "Engineer 1", "Remote")
+	aggBoard := sources.Board{ATS: posting.Other, Token: "aggregator"}
+	Reconcile(ctx, l, aggBoard, []posting.Posting{{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Engineer 1", Location: "Remote", Description: "x"}}, t0)
+	if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: fk, Status: posting.Digested, Reason: "digest"}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Reconcile(ctx, l, board, []posting.Posting{ghPost(t, "1", "d")}, t0.Add(time.Hour))
+	if err != nil || s.Duplicate != 0 {
+		t.Fatalf("dedupe: %+v %v", s, err)
+	}
+	if r := rec(t, l, fk); r.Status != posting.Digested {
+		t.Fatalf("digested weak record re-marked: %+v", r)
+	}
+}
+
 func TestCrossSourceDedupe(t *testing.T) {
 	l := openLedger(t)
 	ats := ghPost(t, "1", "desc")
