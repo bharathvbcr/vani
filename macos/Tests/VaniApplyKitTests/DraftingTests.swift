@@ -152,6 +152,37 @@ final class DraftingTests: XCTestCase {
             .run(DraftRequest(question: "q")).error)
     }
 
+    /// `vani resume` calls no model: it runs vani itself, never through anthropic-account, and
+    /// reads no key, even with an anthropic config and the launcher missing.
+    func testAResumeJobRunsVaniDirectlyWithNoKey() throws {
+        let vani = try fakeVani(self, body: """
+        #!/bin/sh
+        [ "$1" = "resume" ] || { echo '{"error":"wrong subcommand","code":"bad_request"}'; exit 1; }
+        cat > /dev/null
+        printf '{"pdf":"JVBERi0=","name":"Resume_Acme.pdf","bytes":5,"key":"%s"}\\n' "${ANTHROPIC_API_KEY:-unset}"
+        """)
+        let cfg = try vaniConfig(self, provider: "anthropic")
+        let launcher = try fakeLauncher(self)
+        final class Count: @unchecked Sendable { let lock = NSLock(); var n = 0; func bump() { lock.lock(); n += 1; lock.unlock() } }
+        for keys: DraftRunner.KeySource in [.anthropicAccount(nil), .anthropicAccount(launcher.url), .noKey] {
+            let asked = Count()
+            let runner = DraftRunner(vaniBinary: vani, configPath: cfg, keys: keys, key: { asked.bump(); return "should-not-be-read" })
+            let out = runner.runJob(.resume, input: Data(#"{"job":{"description":"d"},"header":{"name":"Test Applicant"}}"#.utf8))
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: out) as? [String: Any])
+            XCTAssertEqual(reply["name"] as? String, "Resume_Acme.pdf", "\(keys): \(reply)")
+            XCTAssertEqual(reply["key"] as? String, "unset", "\(keys): no model key reaches vani resume")
+            XCTAssertEqual(asked.n, 0, "\(keys): the Keychain is not read for a resume")
+        }
+        XCTAssertNil(launcher.recordedArguments, "the launcher never ran")
+        XCTAssertEqual(JobKind.resume.timeout, 180)
+        XCTAssertEqual(JobKind.resume.maxRequestBytes, 128 * 1024)
+        XCTAssertFalse(JobKind.resume.usesModel)
+        // The largest PDF, base64-encoded, fits the reply cap, and the cap fits Chrome's 1 MiB native reply.
+        XCTAssertGreaterThan(JobKind.resume.maxReplyBytes, (ResumeStore.maxBytes + 2) / 3 * 4 + 4096)
+        XCTAssertLessThan(JobKind.resume.maxReplyBytes, NativeMessaging.maxReplyBytes - 4096)
+        XCTAssertTrue(JobKind.draft.usesModel && JobKind.suggest.usesModel)
+    }
+
     func testABadSavedAccountNeverReachesTheLauncher() throws {
         let vani = try fakeVani(self), cfg = try vaniConfig(self, provider: "anthropic")
         for bad in ["--repo", "a b", "../org", "org\n500", String(repeating: "a", count: 65)] {

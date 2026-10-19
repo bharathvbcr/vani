@@ -177,7 +177,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return r;
     }
     case "jobStart": {
-      if (msg.kind !== "suggest" && msg.kind !== "draft") return { error: "unknown job kind", code: "bad_request" };
+      if (msg.kind !== "suggest" && msg.kind !== "draft" && msg.kind !== "resume") return { error: "unknown job kind", code: "bad_request" };
       if (typeof msg.request !== "object" || msg.request === null || Array.isArray(msg.request)) return { error: "bad job request", code: "bad_request" };
       return native({ op: "jobStart", kind: msg.kind, request: msg.request });
     }

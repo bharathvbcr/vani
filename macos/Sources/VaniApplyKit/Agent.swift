@@ -33,14 +33,17 @@ public enum AgentConstants {
 
 /// The kinds of job the agent runs, each one `vani <kind>` with JSON on stdin.
 public enum JobKind: String, CaseIterable, Sendable {
-    case draft, suggest
+    /// `resume` builds a PDF for one job with DevPrism (`vani resume`); it calls no model.
+    case draft, suggest, resume
 
     /// Ceiling on one job. A suggest triages (45 s) and writes up to three
-    /// drafts (90 s each); a draft is DraftRunner.timeout.
+    /// drafts (90 s each); a draft is DraftRunner.timeout; a resume starts
+    /// DevPrism and compiles one Typst document (about a second today).
     public var timeout: TimeInterval {
         switch self {
         case .draft: return DraftRunner.timeout
         case .suggest: return 330
+        case .resume: return 180
         }
     }
 
@@ -49,8 +52,23 @@ public enum JobKind: String, CaseIterable, Sendable {
         switch self {
         case .draft: return 64 * 1024
         case .suggest: return 256 * 1024
+        case .resume: return 128 * 1024
         }
     }
+
+    /// The most `vani <kind>` may write. A resume reply carries the PDF in base64
+    /// (ResumeStore.maxBytes is about 700 KB encoded), and still has to fit Chrome's
+    /// 1 MiB native-messaging reply once wrapped by jobResult.
+    public var maxReplyBytes: Int {
+        switch self {
+        case .draft, .suggest: return DraftRunner.maxOutputBytes
+        case .resume: return 900 * 1024
+        }
+    }
+
+    /// Whether the job spends model budget. One that does not runs `vani` directly:
+    /// no anthropic-account launcher and no Keychain read for a model key.
+    public var usesModel: Bool { self != .resume }
 }
 
 /// The agent's job table: at most one job runs at a time (each spends real

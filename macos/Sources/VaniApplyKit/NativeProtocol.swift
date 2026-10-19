@@ -93,7 +93,10 @@ public enum NativeProtocol {
             }
             let reply = agent.start(kind: kind, request: data)
             // Only an event and a count reach the log: never a label, a posting or a draft.
-            if reply["job"] != nil { try? store.log(ActivityEntry(source: source, event: .draft, counts: ["started": 1])) }
+            if reply["job"] != nil {
+                let event: ActivityEntry.Event = kind == JobKind.resume.rawValue ? .resume : .draft
+                try? store.log(ActivityEntry(source: source, event: event, counts: [kind == JobKind.resume.rawValue ? "building" : "started": 1]))
+            }
             return reply
         case "jobResult":
             guard let agent else { return ["error": "jobs are not available here", "code": "unsupported"] }

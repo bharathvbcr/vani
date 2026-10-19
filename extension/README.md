@@ -68,6 +68,20 @@ chosen for this job, the Mac app isn't reachable (the resume lives only there), 
 missing or damaged, or the page did not take the file. The PDF goes from the Mac app to the tab
 being filled and nowhere else. Its name is never written to the activity log.
 
+When Fill leaves the resume box empty because none is chosen, a bar (bottom left) offers
+**Build and attach**, **Choose PDF…** or **Not now**. Nothing happens without a click.
+- **Build and attach** has the Vani Apply agent run `vani resume`: DevPrism picks blocks from your
+  knowledge base for this posting and renders its own plain two-page layout. It is not one of your
+  LaTeX resumes and calls no model. The header is your name and contact lines from Your basics,
+  so it needs a first and last name there. The page must publish its job description (JSON-LD,
+  as Greenhouse, Lever and Ashby do). Vani's config must name `devprism.binary`
+  (docs/PHASE0-devprism.md); without it the bar shows Vani's reason. What DevPrism picks depends
+  on what `career.db` holds, so open the PDF before you submit.
+- **Choose PDF…** opens a file picker for a PDF you already have.
+
+Either way the PDF is saved for this job, as if chosen in the popup, and attached now, outlined
+yellow. The next Fill on this job attaches it without asking.
+
 ### Live help for new questions
 
 Click the panel's status line to list the questions on the page that have no saved answer. For

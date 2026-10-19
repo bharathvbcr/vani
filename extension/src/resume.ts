@@ -8,8 +8,11 @@
 // The PDF goes from the Mac app to the tab being filled and nowhere else. Its
 // file name (which carries the owner's name) is shown on the page and in the
 // popup, and never logged.
-import type { FieldInfo } from "./types";
+import type { Bank, FieldInfo } from "./types";
+import type { JobInfo } from "./draft";
 import { pageKey } from "./applied";
+import { basicsValues } from "./basics";
+import { JOB_HELP } from "./suggestjob";
 
 /**
  * The largest resume accepted. Native messaging replies are capped at 1 MiB and
@@ -145,6 +148,63 @@ export function resumeOp(m: ResumeMessage): Record<string, unknown> | { error: s
   if (bytes.length > MAX_RESUME_BYTES) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
   if (!isPdf(bytes)) return { error: "that file is not a PDF", code: "bad_request" };
   return { op: "resumePut", key, name, pdf: m.pdf };
+}
+
+// --- building one (the offer on a form with no resume chosen) ---------------------------
+// `vani resume` (run by the Vani Apply agent, job kind "resume") builds a PDF for the job
+// with DevPrism: its own plain layout from the knowledge base, not one of the owner's LaTeX
+// resumes, and no model call. The header is the owner's Your basics, the same name and
+// contact details Fill puts on the form; it goes to the Mac app with the job and nowhere else.
+
+/** The agent allows a resume job 180 s; leave room for start-up and the last poll. */
+export const RESUME_JOB_TIMEOUT_MS = 195_000;
+/** The request is capped at 128 KiB by the agent; a long posting fits well under it. */
+const MAX_JOB_DESCRIPTION = 100_000;
+const MAX_JOB_LINE = 300;
+
+export interface ResumeHeader { name: string; contact_lines: string[] }
+
+/**
+ * The resume header from Your basics: first and last name, then "email | phone | city, country"
+ * and "LinkedIn | GitHub | website" (each line only when something is in it). Null without a name.
+ */
+export function resumeHeader(bank: Bank | null): ResumeHeader | null {
+  const v = basicsValues(bank);
+  const name = [v.first, v.last].map(s => (s ?? "").trim()).filter(Boolean).join(" ");
+  if (!name) return null;
+  const line = (parts: (string | undefined)[]) => parts.map(s => (s ?? "").trim()).filter(Boolean).join(" | ");
+  const place = [v.city, v.country].map(s => (s ?? "").trim()).filter(Boolean).join(", ");
+  const contact_lines = [line([v.email, v.phone, place]), line([v.linkedin, v.github, v.website])].filter(Boolean)
+    .map(l => l.slice(0, 200));
+  return { name: name.slice(0, 200), contact_lines };
+}
+
+/** The `vani resume` request; throws when the page has no job description to build from. */
+export function buildResumeRequest(job: JobInfo, header: ResumeHeader): object {
+  const description = job.description.trim().slice(0, MAX_JOB_DESCRIPTION);
+  if (!description) throw new Error("this page has no job description to build a resume from");
+  const one = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, MAX_JOB_LINE);
+  return { job: { company: one(job.company), title: one(job.title), description }, header };
+}
+
+/** Codes whose text from vani itself says more than the shared job help does. */
+const OWN_TEXT = new Set(["config", "devprism", "render", "pages", "too_large", "no_name", "bad_request"]);
+
+/** A built resume from `vani resume`'s reply (through runJob), checked like a stored one; or why not. */
+export function parseBuiltResume(r: unknown): ResumeFetch {
+  if (!isObj(r)) return unavailable("Vani sent no resume");
+  if (typeof r.error === "string") {
+    const code = typeof r.code === "string" ? r.code : "";
+    return unavailable(!OWN_TEXT.has(code) && JOB_HELP[code] ? JOB_HELP[code]! : r.error);
+  }
+  const name = checkResumeName(r.name);
+  const bytes = fromBase64(r.pdf);
+  if (!name) return unavailable("the built resume's file name was refused");
+  if (!bytes || bytes.length === 0) return unavailable("the built resume arrived damaged");
+  if (bytes.length > MAX_RESUME_BYTES) return unavailable(`the built resume is over ${MAX_RESUME_BYTES / 1024} KB`);
+  if (!isPdf(bytes)) return unavailable("the built resume is not a PDF");
+  if (r.bytes !== bytes.length) return unavailable("the built resume arrived incomplete");
+  return { ok: true, name, bytes, pickedAt: new Date().toISOString() };
 }
 
 /** The Mac app's resumeInfo reply, for the popup. */

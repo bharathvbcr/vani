@@ -3,9 +3,12 @@
 // the bytes pass before they reach a page. No personal data: names are neutral.
 import { describe, expect, test } from "bun:test";
 import {
-  MAX_RESUME_BYTES, checkResumeName, fromBase64, isPdf, isResumeField, parseResumeGet, parseResumeInfo, resumeKey, resumeOp, toBase64,
+  MAX_RESUME_BYTES, buildResumeRequest, checkResumeName, fromBase64, isPdf, isResumeField, parseBuiltResume, parseResumeGet,
+  parseResumeInfo, resumeHeader, resumeKey, resumeOp, toBase64,
 } from "../src/resume";
-import type { FieldInfo } from "../src/types";
+import { type FieldInfo, emptyBank } from "../src/types";
+import { mergeCapture } from "../src/bank";
+import { BASICS_HOST, basicsFields } from "../src/basics";
 
 const field = (label: string, name = "", automationId = "", kind: FieldInfo["kind"] = "file") =>
   ({ kind, label, name, automationId });
@@ -155,6 +158,53 @@ describe("resumeOp", () => {
     for (const [m, code] of cases) {
       const r = resumeOp(m);
       expect("error" in r && r.code === code).toBe(true);
+    }
+  });
+});
+
+describe("building one", () => {
+  const bankWith = (values: Record<string, string>) =>
+    mergeCapture(emptyBank(), basicsFields(values), BASICS_HOST, new Date("2026-10-19T00:00:00Z")).bank;
+
+  test("resumeHeader: the name and contact lines come from Your basics", () => {
+    const b = bankWith({ first: "Test", last: "Applicant", email: "applicant@example.invalid", phone: "555-0100", city: "Testville", country: "Nowhere", linkedin: "https://example.invalid/in/t" });
+    expect(resumeHeader(b)).toEqual({
+      name: "Test Applicant",
+      contact_lines: ["applicant@example.invalid | 555-0100 | Testville, Nowhere", "https://example.invalid/in/t"],
+    });
+  });
+  test("resumeHeader: no name, no header (the offer says to add one)", () => {
+    expect(resumeHeader(null)).toBeNull();
+    expect(resumeHeader(bankWith({ email: "applicant@example.invalid" }))).toBeNull();
+    expect(resumeHeader(bankWith({ first: "Test" }))).toEqual({ name: "Test", contact_lines: [] });
+  });
+
+  const header = { name: "Test Applicant", contact_lines: [] };
+  test("buildResumeRequest: the job, bounded, and the header beside it", () => {
+    const r = buildResumeRequest({ company: " Acme\n AI ", title: "Engineer", description: "  Build tools.  " }, header) as { job: Record<string, string>; header: unknown };
+    expect(r.job).toEqual({ company: "Acme AI", title: "Engineer", description: "Build tools." });
+    expect(r.header).toEqual(header);
+    const long = buildResumeRequest({ company: "A", title: "T", description: "d".repeat(500_000) }, header) as { job: { description: string } };
+    expect(long.job.description.length).toBe(100_000);
+    expect(JSON.stringify(long).length).toBeLessThan(128 * 1024);
+  });
+  test("buildResumeRequest: a page with no description is refused", () => {
+    expect(() => buildResumeRequest({ company: "A", title: "T", description: " " }, header)).toThrow(/no job description/);
+  });
+
+  test("parseBuiltResume: a checked PDF", () => {
+    const r = parseBuiltResume({ pdf: toBase64(PDF), name: "Resume_Acme.pdf", bytes: PDF.length, pages: 2 });
+    expect(r.ok && r.name === "Resume_Acme.pdf" && r.bytes.length === PDF.length).toBe(true);
+  });
+  test("parseBuiltResume: vani's own reason for its codes, the shared help for the agent's", () => {
+    const own = parseBuiltResume({ error: "resume: devprism.binary is not set in Vani's config", code: "config" });
+    expect(!own.ok && own.detail.includes("devprism.binary")).toBe(true);
+    const agent = parseBuiltResume({ error: "x", code: "agent" });
+    expect(!agent.ok && agent.detail.includes("agent isn't running")).toBe(true);
+    for (const bad of [null, {}, { pdf: "%%%", name: "a.pdf", bytes: 1 }, { pdf: toBase64(PDF), name: "a.exe", bytes: PDF.length },
+      { pdf: toBase64(new TextEncoder().encode("<html>")), name: "a.pdf", bytes: 6 }, { pdf: toBase64(PDF), name: "a.pdf", bytes: 1 }]) {
+      const r = parseBuiltResume(bad);
+      expect(r.ok).toBe(false);
     }
   });
 });
