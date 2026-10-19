@@ -526,27 +526,13 @@ public struct PipelineClient: Sendable {
         self.timeout = timeout
     }
 
-    private struct Failure: Decodable { var error: String }
-
     public func status() throws -> PipelineStatus {
-        let args = ["status", "--json"]
-        let out = VaniProcess.run(vaniBinary, arguments: args,
-                                  environment: VaniProcess.environment(configPath: configPath, stateDir: stateDir),
-                                  timeout: timeout, maxOutputBytes: Self.maxOutputBytes)
-        if let launchError = out.launchError { throw BankError(launchError) }
-        if out.timedOut { throw BankError("vani status did not finish within \(Int(timeout)) s") }
-        if out.truncated { throw BankError("vani's status reply was larger than \(Self.maxOutputBytes >> 10) KB") }
-        let decoder = JobsClient.decoder
-        if out.status == 0, let value = try? decoder.decode(PipelineStatus.self, from: out.stdout) {
-            guard value.version == PipelineStatus.supportedVersion else {
-                throw BankError("vani reports status version \(value.version); this app reads version \(PipelineStatus.supportedVersion). Rebuild the app.")
-            }
-            return value
+        let value: PipelineStatus = try VaniProcess.call(vaniBinary, ["status", "--json"], configPath: configPath, stateDir: stateDir,
+                                                         timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: JobsClient.decoder,
+                                                         tooOld: "this vani is too old for the Pipeline tab; rebuild the app")
+        guard value.version == PipelineStatus.supportedVersion else {
+            throw BankError("vani reports status version \(value.version); this app reads version \(PipelineStatus.supportedVersion). Rebuild the app.")
         }
-        if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
-            throw BankError(failure.error)
-        }
-        throw BankError("vani status exited \(out.status ?? -1) without a reply"
-            + (out.status == 2 ? " (this vani is too old for the Pipeline tab; rebuild the app)" : ""))
+        return value
     }
 }

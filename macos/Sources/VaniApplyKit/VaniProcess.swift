@@ -102,6 +102,34 @@ public enum VaniProcess {
     }
 }
 
+extension VaniProcess {
+    private struct Failure: Decodable { var error: String }
+
+    /// Runs a `vani` command that writes one JSON reply on stdout: the value on
+    /// exit 0, or `{"error": ...}` on failure, which is thrown as is. stderr is
+    /// never shown. `tooOld` explains an exit 2 (a usage error: this vani
+    /// predates the command).
+    static func call<T: Decodable>(_ binary: URL, _ args: [String], configPath: String?, stateDir: String?,
+                                   input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int,
+                                   decoder: JSONDecoder = JSONDecoder(), tooOld: String) throws -> T {
+        let out = run(binary, arguments: args, environment: environment(configPath: configPath, stateDir: stateDir),
+                      input: input, timeout: timeout, maxOutputBytes: maxOutputBytes)
+        // The command's name: its leading words, before any flag.
+        let name = "vani \(args.prefix { !$0.hasPrefix("-") }.prefix(2).joined(separator: " "))"
+        if let launchError = out.launchError { throw BankError(launchError) }
+        if out.timedOut { throw BankError("\(name) did not finish within \(Int(timeout)) s") }
+        let cap = maxOutputBytes >= 1 << 20 ? "\(maxOutputBytes >> 20) MB" : "\(maxOutputBytes >> 10) KB"
+        if out.truncated { throw BankError("vani's reply was larger than \(cap)") }
+        if out.status == 0, let value = try? decoder.decode(T.self, from: out.stdout) {
+            return value
+        }
+        if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
+            throw BankError(failure.error)
+        }
+        throw BankError("\(name) exited \(out.status ?? -1) without a reply" + (out.status == 2 ? " (\(tooOld))" : ""))
+    }
+}
+
 /// Each field is written by one reader thread and read only after the group
 /// has finished.
 private final class OutputBox: @unchecked Sendable {

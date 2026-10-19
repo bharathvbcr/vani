@@ -714,24 +714,10 @@ public struct JobsClient: Sendable {
         return try call(["jobs", "note", "--json", key, text])
     }
 
-    private struct Failure: Decodable { var error: String }
-
     func call<T: Decodable>(_ args: [String]) throws -> T {
-        let out = VaniProcess.run(vaniBinary, arguments: args,
-                                  environment: VaniProcess.environment(configPath: configPath, stateDir: stateDir),
-                                  timeout: timeout, maxOutputBytes: Self.maxOutputBytes)
-        if let launchError = out.launchError { throw BankError(launchError) }
-        if out.timedOut { throw BankError("vani \(args.prefix(2).joined(separator: " ")) did not finish within \(Int(timeout)) s") }
-        if out.truncated { throw BankError("vani's reply was larger than \(Self.maxOutputBytes >> 20) MB") }
-        let decoder = Self.decoder
-        if out.status == 0, let value = try? decoder.decode(T.self, from: out.stdout) {
-            return value
-        }
-        if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
-            throw BankError(failure.error)
-        }
-        throw BankError("vani \(args.prefix(2).joined(separator: " ")) exited \(out.status ?? -1) without a reply"
-            + (out.status == 2 ? " (this vani is too old for Jobs; rebuild the app)" : ""))
+        try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir,
+                             timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: Self.decoder,
+                             tooOld: "this vani is too old for Jobs; rebuild the app")
     }
 
     /// Go writes RFC 3339 times with optional fractional seconds and an offset.
