@@ -19,7 +19,7 @@ export const SUGGEST_TIMEOUT_MS = 345_000;
 /** A draft job is bounded at 150 s by the agent. */
 export const DRAFT_JOB_TIMEOUT_MS = 165_000;
 
-export type JobKind = "suggest" | "draft";
+export type JobKind = "suggest" | "draft" | "resume";
 
 export interface SuggestField { id: string; label: string; kind: "text" | "textarea" }
 

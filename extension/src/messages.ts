@@ -17,7 +17,7 @@ export type ToBackground =
   /** Only the question label and the posting as shown on the page: never field values or bank content. */
   | { type: "draft"; question: string; job: JobInfo; maxWords?: number }
   /** A job in the Vani Apply agent: a request built by buildSuggestRequest or buildDraftRequest (labels and the posting only). */
-  | { type: "jobStart"; kind: "suggest" | "draft"; request: object }
+  | { type: "jobStart"; kind: "suggest" | "draft" | "resume"; request: object }
   | { type: "jobPoll"; job: string }
   // Offering to mark a job Applied (applied.ts). The page sends its URL without the query or fragment;
   // the background asks the Mac app which tracked job it is, keeps the offer for the sender's tab, and marks only on appliedMark.
@@ -30,7 +30,14 @@ export type ToBackground =
   /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
   | { type: "frameReady" }
   /** The registered frames of a tab; the popup names the active tab, a content script gets its own. */
-  | { type: "frames"; tabId?: number };
+  | { type: "frames"; tabId?: number }
+  // The resume chosen for a job (resume.ts), keyed by the page's pageKey. A content script asks for the bytes
+  // to fill its own tab; the popup shows, binds and unbinds the one for the active tab's page.
+  | { type: "resumeGet"; url: string }
+  | { type: "resumeInfo"; url: string }
+  /** pdf is base64, at most MAX_RESUME_BYTES decoded; name ends in .pdf. */
+  | { type: "resumePut"; url: string; name: string; pdf: string }
+  | { type: "resumeDelete"; url: string };
 
 export type DraftResponse = DraftReply;
 
@@ -64,7 +71,7 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   editAnswer: m => typeof m.key === "string" && Array.isArray(m.value),
   replaceBank: m => typeof m.json === "string",
   draft: m => typeof m.question === "string",
-  jobStart: m => m.kind === "suggest" || m.kind === "draft",
+  jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume",
   jobPoll: m => typeof m.job === "string",
   appliedSignal: m => optTab(m),
   appliedPending: optTab,
@@ -72,6 +79,10 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   appliedDismiss: optTab,
   frameReady: () => true,
   frames: optTab,
+  resumeGet: m => typeof m.url === "string",
+  resumeInfo: m => typeof m.url === "string",
+  resumePut: m => typeof m.url === "string" && typeof m.name === "string" && typeof m.pdf === "string",
+  resumeDelete: m => typeof m.url === "string",
 };
 
 const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {

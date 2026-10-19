@@ -25,6 +25,9 @@ import {
 } from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
 import { contentListener } from "./frames";
+import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, isResumeField, parseResumeGet } from "./resume";
+import { type OfferAction, type OfferUi, type PickedFile, createResumeOffer } from "./resumeoffer";
+import { emptyBank } from "./types";
 
 const PANEL_LIST = 8;
 
@@ -81,17 +84,31 @@ async function scan(): Promise<ScanReply> {
   return { fields: coverage.found, matched: coverage.known, host: location.hostname, disabled: disabledHere(b), coverage };
 }
 
+/** The resume chosen for this page's job, from the Mac app (through the background); a reason when there is none. */
+async function resumeForThisJob(): Promise<ResumeFetch> {
+  try {
+    return parseResumeGet(await send<unknown>({ type: "resumeGet", url: location.href }));
+  } catch {
+    return parseResumeGet({ error: "the extension's background did not answer", code: "background" });
+  }
+}
+
 async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
   const b = await bank();
   if (!b || disabledHere(b)) return { outcomes: [] };
   clearMarks();
-  const outcomes = await fillAll(scanForm(document).refs, b, location.hostname, { overwrite, typeahead });
+  const outcomes = await fillAll(scanForm(document).refs, b, location.hostname, { overwrite, typeahead, resume: resumeForThisJob });
   const keys = outcomes.filter(o => o.filled && o.key).map(o => o.key!);
   if (keys.length) void send({ type: "filled", keys });
+  const filled = outcomes.filter(o => o.filled).length;
   const review = outcomes.filter(o => o.filled && o.review).length;
   const left = outcomes.filter(o => !o.filled && o.reason === "no_match").length;
   const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
-  toast(`Filled ${keys.length} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") + ". Check, then submit yourself.");
+  const resumeNote = outcomes.find(o => o.reason === "no_resume" || o.reason === "resume_unavailable" || o.reason === "refused");
+  // With no resume chosen for this job, the offer (bottom left) says so; otherwise the reason goes in the toast.
+  const offered = resumeOffer.offerAfterFill(outcomes);
+  toast(`Filled ${filled} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") +
+    (resumeNote?.detail && !offered ? `. Resume not attached: ${resumeNote.detail}` : "") + ". Check, then submit yourself.");
   return { outcomes };
 }
 
@@ -166,6 +183,9 @@ const REASON: Record<NonNullable<FillOutcome["reason"]>, string> = {
   untouchable: "this kind of field is never filled",
   manual: "this widget has to be filled by hand",
   detached: "the field is gone from the page",
+  no_resume: "no resume chosen for this job (choose one in the Vani Apply popup)",
+  resume_unavailable: "the resume could not be had from the Vani Apply Mac app",
+  refused: "this page did not take the file; attach it by hand",
 };
 
 function btn(cls: string, text: string): HTMLButtonElement {
@@ -480,6 +500,117 @@ const appliedUi: AppliedUi = {
     appliedBar = null;
   },
 };
+
+// --- build or choose a resume ---------------------------------------------------------
+// After a Fill that left the resume box empty because no resume is chosen for this job,
+// offer to build one (the agent runs `vani resume`) or choose a PDF. Only on a click; the
+// PDF is then bound to the job and attached, outlined yellow. Text goes in as text.
+
+let resumeBar: { host: HTMLElement; text: HTMLElement; buttons: Record<OfferAction, HTMLButtonElement> } | null = null;
+let resumeHide: ReturnType<typeof setTimeout> | undefined;
+
+function ensureResumeBar(): NonNullable<typeof resumeBar> {
+  if (resumeBar?.host.isConnected) return resumeBar;
+  const host = document.createElement("div");
+  host.setAttribute("data-vani-resume", "");
+  host.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:2147483647;";
+  const root = host.attachShadow({ mode: "closed" });
+  root.innerHTML = `
+    <style>
+      .p{font:13px system-ui,sans-serif;background:#111;color:#eee;border-radius:10px;padding:10px 12px;box-shadow:0 4px 16px #0006;max-width:380px}
+      .t{margin:0 0 8px}
+      .r{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+      button{font:inherit;border:0;border-radius:6px;padding:5px 9px;cursor:pointer;background:#444;color:#fff}
+      button.build{background:#2e8b57}
+      button:disabled{opacity:.5;cursor:default}
+      [hidden]{display:none}
+    </style>
+    <div class="p" role="status" aria-live="polite"><p class="t"></p><div class="r">
+      <button class="build">Build and attach</button><button class="choose">Choose PDF…</button><button class="dismiss">Not now</button></div></div>`;
+  const bar = {
+    host,
+    text: root.querySelector<HTMLElement>(".t")!,
+    buttons: {
+      build: root.querySelector<HTMLButtonElement>(".build")!,
+      choose: root.querySelector<HTMLButtonElement>(".choose")!,
+      dismiss: root.querySelector<HTMLButtonElement>(".dismiss")!,
+    },
+  };
+  bar.buttons.build.addEventListener("click", () => { void resumeOffer.build(); });
+  bar.buttons.choose.addEventListener("click", () => { void resumeOffer.choose(); });
+  bar.buttons.dismiss.addEventListener("click", () => resumeOffer.dismiss());
+  document.documentElement.appendChild(host);
+  resumeBar = bar;
+  return bar;
+}
+
+const resumeUi: OfferUi = {
+  ask(text, actions) {
+    clearTimeout(resumeHide);
+    const b = ensureResumeBar();
+    b.text.textContent = text;
+    for (const [a, btn] of Object.entries(b.buttons) as [OfferAction, HTMLButtonElement][]) { btn.hidden = !actions.includes(a); btn.disabled = false; }
+  },
+  busy(text) {
+    const b = ensureResumeBar();
+    b.text.textContent = text;
+    for (const btn of Object.values(b.buttons)) btn.disabled = true;
+  },
+  done(text) {
+    const b = ensureResumeBar();
+    b.text.textContent = text;
+    for (const btn of Object.values(b.buttons)) btn.hidden = true;
+    clearTimeout(resumeHide);
+    resumeHide = setTimeout(() => resumeUi.hide(), 8000);
+  },
+  hide() {
+    clearTimeout(resumeHide);
+    resumeBar?.host.remove();
+    resumeBar = null;
+  },
+};
+
+/** A file input clicked from the button press (a user gesture), resolved on its choice or Cancel. */
+function pickPdf(): Promise<PickedFile | null> {
+  return new Promise(resolve => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf,.pdf";
+    input.addEventListener("change", async () => {
+      const f = input.files?.[0];
+      if (!f) { resolve(null); return; }
+      // A file over the cap is never read.
+      if (f.size > MAX_RESUME_BYTES) { resolve({ name: f.name, size: f.size, bytes: null }); return; }
+      try { resolve({ name: f.name, size: f.size, bytes: new Uint8Array(await f.arrayBuffer()) }); } catch { resolve(null); }
+    }, { once: true });
+    input.addEventListener("cancel", () => resolve(null), { once: true });
+    input.click();
+  });
+}
+
+const resumeOffer = createResumeOffer({
+  ui: resumeUi,
+  bank,
+  job: () => readJobInfo(document),
+  build: async (request, onTick) => {
+    const r = await runJob({
+      start: () => send({ type: "jobStart", kind: "resume", request }),
+      poll: id => send({ type: "jobPoll", job: id }),
+      onTick,
+    }, RESUME_JOB_TIMEOUT_MS);
+    return r.ok ? r.reply : { error: r.error, code: r.code };
+  },
+  pick: pickPdf,
+  save: async (name, pdf) => {
+    const r = await send<{ ok?: boolean; error?: string } | undefined>({ type: "resumePut", url: location.href, name, pdf });
+    return r?.error ? { error: r.error } : {};
+  },
+  attach: async r => {
+    const refs = scanForm(document).refs.filter(x => x.info.kind === "file" && isResumeField(x.info));
+    // The owner just asked for this file: it replaces one already in the box.
+    return fillAll(refs, emptyBank(), location.hostname, { resume: async () => r, overwrite: true });
+  },
+});
 
 // --- wiring -------------------------------------------------------------------
 

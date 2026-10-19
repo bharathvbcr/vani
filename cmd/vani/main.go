@@ -91,6 +91,8 @@ commands:
                              on stdout (spends from the daily llm budget)
   suggest                    triage a form's new fields with the decision model and draft the
                              essays: JSON request on stdin, JSON reply on stdout
+  resume                     build a resume PDF for one job with DevPrism (no model): JSON
+                             request on stdin, JSON reply with the PDF on stdout
   launchd plist [--binary P] [--label L]
                              print a launchd agent plist (never installs it); it pins the
                              config and state dir this command resolved
@@ -176,6 +178,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdDraft(args[1:])
 	case "suggest":
 		cmdErr = e.cmdSuggest(args[1:])
+	case "resume":
+		cmdErr = e.cmdResume(args[1:])
 	case "reasons":
 		cmdErr = e.cmdReasons(args[1:])
 	case "jobs":

@@ -271,7 +271,8 @@ public struct DraftRunner: Sendable {
     /// "error" on failure), else a {"error","code"} object. Never throws.
     public func runJob(_ kind: JobKind, input: Data) -> Data {
         let failure: DraftReply
-        switch invoke(kind.rawValue, input: input, timeout: kind == .draft ? timeout : kind.timeout, withDecisionKey: kind == .suggest) {
+        switch invoke(kind.rawValue, input: input, timeout: kind == .draft ? timeout : kind.timeout, withDecisionKey: kind == .suggest,
+                      usesModel: kind.usesModel, maxOutputBytes: kind.maxReplyBytes) {
         case let .failure(f):
             failure = f
         case let .output(out):
@@ -299,8 +300,8 @@ public struct DraftRunner: Sendable {
     /// anthropic-account when Vani's config names the anthropic provider, else
     /// vani itself. Both paths are absolute, because the child's PATH is only
     /// the system folders.
-    func command(_ subcommand: String) -> Command {
-        guard case let .anthropicAccount(launcher) = keys,
+    func command(_ subcommand: String, usesModel: Bool = true) -> Command {
+        guard usesModel, case let .anthropicAccount(launcher) = keys,
               VaniConfig.llmProvider(configPath: configPath) == "anthropic" else {
             return .run(vaniBinary, [subcommand])
         }
@@ -333,32 +334,40 @@ public struct DraftRunner: Sendable {
     /// Start `vani <subcommand>` with the minimal environment. No key is added
     /// here: on the anthropic path anthropic-account adds it after this
     /// environment, in the process it replaces itself with.
-    func invoke(_ subcommand: String, input: Data, timeout: TimeInterval? = nil, withDecisionKey: Bool = false) -> Invocation {
+    func invoke(_ subcommand: String, input: Data, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
+                usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes) -> Invocation {
         let program: URL, arguments: [String]
-        switch command(subcommand) {
+        switch command(subcommand, usesModel: usesModel) {
         case let .refused(f): return .failure(f)
         case let .run(p, a): (program, arguments) = (p, a)
         }
         var env = VaniProcess.environment(configPath: configPath, stateDir: stateDir)
+        // A job that calls no model gets no model key, workspace or decision key.
+        if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey) { return .failure(failure) }
+        let t = timeout ?? self.timeout
+        let out = VaniProcess.run(program, arguments: arguments, environment: env, input: input,
+                                  timeout: t, maxOutputBytes: maxOutputBytes)
+        if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
+        if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(t)) s")) }
+        return .output(out)
+    }
+
+    /// The model keys a job that spends budget is given; a reply when the Keychain read failed.
+    private func addKeys(to env: inout [String: String], withDecisionKey: Bool) -> DraftReply? {
         if keys == .noKey {
             do {
                 if let k = try Self.bounded(key, seconds: keychainTimeout), !k.isEmpty {
                     env["ANTHROPIC_API_KEY"] = k
                 }
             } catch {
-                return .failure(.failure("keychain", String(describing: error)))
+                return .failure("keychain", String(describing: error))
             }
         }
         if let workspace, !workspace.isEmpty { env["ANTHROPIC_WORKSPACE_ID"] = workspace }
         if withDecisionKey, let k = (try? Self.bounded(decisionKey, seconds: keychainTimeout)) ?? nil, !k.isEmpty {
             env["OPENROUTER_API_KEY"] = k
         }
-        let t = timeout ?? self.timeout
-        let out = VaniProcess.run(program, arguments: arguments, environment: env, input: input,
-                                  timeout: t, maxOutputBytes: Self.maxOutputBytes)
-        if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
-        if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(t)) s")) }
-        return .output(out)
+        return nil
     }
 }
 

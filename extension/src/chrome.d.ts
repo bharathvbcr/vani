@@ -3,7 +3,7 @@
 declare namespace chrome {
   namespace runtime {
     /** `tab` is absent for an extension page such as the popup; `frameId` is 0 for a tab's top frame. */
-    interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number }
+    interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number; url?: string }
     const lastError: { message?: string } | undefined;
     function sendMessage<T = unknown>(message: unknown): Promise<T>;
     /** Callback form only: Chrome does not return a promise from this call. The reply is whatever JSON the host sent: check it before use. */

@@ -25,7 +25,7 @@ public enum Source: String, Codable, Sendable {
 /// One activity-log line. It never holds answer values or question text.
 public struct ActivityEntry: Codable, Equatable, Sendable {
     public enum Event: String, Codable, CaseIterable, Sendable {
-        case capture, fill, edit, delete, `import`, export, settings, draft
+        case capture, fill, edit, delete, `import`, export, settings, draft, resume
     }
     public var at: String
     public var source: Source
@@ -216,16 +216,7 @@ public final class BankStore: @unchecked Sendable {
         try ensureDirectory()
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let data = try enc.encode(file)
-        let tmp = directory.appendingPathComponent(".bank.\(UUID().uuidString).tmp")
-        guard FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-            throw BankError("cannot write the answer bank")
-        }
-        if rename(tmp.path, bankURL.path) != 0 {
-            let err = errno
-            try? FileManager.default.removeItem(at: tmp)
-            throw BankError("cannot replace the answer bank: \(String(cString: strerror(err)))")
-        }
+        try atomicWrite(try enc.encode(file), to: bankURL, what: "the answer bank")
     }
 
     private func ensureDirectory() throws {
@@ -235,24 +226,43 @@ public final class BankStore: @unchecked Sendable {
 
     private func withLock<T>(exclusive: Bool, _ body: () throws -> T) throws -> T {
         try ensureDirectory()
-        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
-        if fd < 0 { throw BankError("cannot open the bank lock: \(String(cString: strerror(errno)))") }
-        defer { close(fd) }
-        // Bounded wait (lockWait). The retry starts at 1 ms, for the usual sub-millisecond write, and
-        // doubles to 64 ms, so a longer hold costs a few wake-ups rather than
-        // one every 10 ms; no sleep runs past the deadline.
-        let deadline = Date().addingTimeInterval(lockWait)
-        var backoff: TimeInterval = 0.001
-        while flock(fd, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 {
-            if errno != EWOULDBLOCK && errno != EINTR {
-                throw BankError("cannot lock the answer bank: \(String(cString: strerror(errno)))")
-            }
-            let left = deadline.timeIntervalSinceNow
-            if left <= 0 { throw BankError("the answer bank is locked by another process") }
-            usleep(useconds_t(min(backoff, left) * 1_000_000))
-            backoff = min(backoff * 2, 0.064)
+        return try withFileLock(lockURL, exclusive: exclusive, wait: lockWait, what: "the answer bank", body)
+    }
+}
+
+// MARK: - Shared file primitives (the bank and the resume index)
+
+/// Run body under an advisory flock on url, waiting at most `wait` seconds. The retry starts at
+/// 1 ms, for the usual sub-millisecond write, and doubles to 64 ms, so a longer hold costs a few
+/// wake-ups rather than one every 10 ms; no sleep runs past the deadline.
+func withFileLock<T>(_ url: URL, exclusive: Bool, wait: TimeInterval, what: String, _ body: () throws -> T) throws -> T {
+    let fd = open(url.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+    if fd < 0 { throw BankError("cannot open the lock for \(what): \(String(cString: strerror(errno)))") }
+    defer { close(fd) }
+    let deadline = Date().addingTimeInterval(wait)
+    var backoff: TimeInterval = 0.001
+    while flock(fd, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 {
+        if errno != EWOULDBLOCK && errno != EINTR {
+            throw BankError("cannot lock \(what): \(String(cString: strerror(errno)))")
         }
-        defer { flock(fd, LOCK_UN) }
-        return try body()
+        let left = deadline.timeIntervalSinceNow
+        if left <= 0 { throw BankError("\(what) is locked by another process") }
+        usleep(useconds_t(min(backoff, left) * 1_000_000))
+        backoff = min(backoff * 2, 0.064)
+    }
+    defer { flock(fd, LOCK_UN) }
+    return try body()
+}
+
+/// Write data beside dest (mode 0600), then rename it over dest, so a reader never sees half a file.
+func atomicWrite(_ data: Data, to dest: URL, what: String) throws {
+    let tmp = dest.deletingLastPathComponent().appendingPathComponent(".\(dest.lastPathComponent).\(UUID().uuidString).tmp")
+    guard FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+        throw BankError("cannot write \(what)")
+    }
+    if rename(tmp.path, dest.path) != 0 {
+        let err = errno
+        try? FileManager.default.removeItem(at: tmp)
+        throw BankError("cannot replace \(what): \(String(cString: strerror(err)))")
     }
 }
