@@ -316,7 +316,7 @@ func triageAnnotations(a decide.Answer) map[string]string {
 
 // slotBackend names the backend whose reading sr is. The router merges slots
 // answered by different backends and tags each one "backend=<name>" in
-// Detail, so the whole answer's Backend ("jev+llm") cannot be used to pick a
+// Detail, so the whole answer's Backend ("d1-ultra+llm") cannot be used to pick a
 // calibration. Without a tag (a single backend answered directly) the
 // answer's Backend is the slot's.
 func slotBackend(a decide.Answer, sr decide.SlotReading) string {
@@ -332,15 +332,21 @@ func slotBackend(a decide.Answer, sr decide.SlotReading) string {
 // backend whose calibration clears that backend's threshold. A threshold of
 // zero disables dropping on that backend, so an unset field never drops.
 type DropRule struct {
-	Slot          string
-	Values        []string
-	MinJevProb    float64
-	MinLappiScore float64
+	Slot              string
+	Values            []string
+	MinOpenRouterProb float64
+	MinLappiScore     float64
 }
 
 // DropPolicy is Rule 7: decisions annotate, this engine rule decides.
 type DropPolicy struct {
 	Rules []DropRule
+	// OpenRouter names the backend whose probability MinOpenRouterProb is
+	// compared with: the configured OpenRouter decision model
+	// (config.Decide.OpenRouterName). Empty means no backend drops on a
+	// probability. The name is matched exactly, so another backend speaking
+	// the same wire shape (the local shadow) never drops.
+	OpenRouter string
 }
 
 // Evaluate maps an answer to Dropped, Unsure or Triaged with a reason that
@@ -360,7 +366,7 @@ func (p DropPolicy) Evaluate(a decide.Answer) (posting.Status, string) {
 		if !contains(rule.Values, sr.Value) {
 			continue
 		}
-		if why, ok := calibrated(slotBackend(a, sr), sr, rule); ok {
+		if why, ok := p.calibrated(slotBackend(a, sr), sr, rule); ok {
 			return posting.Dropped, fmt.Sprintf("slot %q = %q: %s", rule.Slot, sr.Value, why)
 		}
 	}
@@ -372,14 +378,15 @@ func (p DropPolicy) Evaluate(a decide.Answer) (posting.Status, string) {
 }
 
 // calibrated reports whether the backend's own calibration clears the rule.
-// Only Jev and Lappi can; an LLM answer carries none and never drops.
-func calibrated(backend string, sr decide.SlotReading, rule DropRule) (string, bool) {
-	switch backend {
-	case "jev":
-		if sr.Jev != nil && rule.MinJevProb > 0 && sr.Jev.Probability >= rule.MinJevProb {
-			return fmt.Sprintf("jev p=%.3f >= %.3f", sr.Jev.Probability, rule.MinJevProb), true
+// Only the configured OpenRouter model and Lappi can; an LLM answer carries
+// none and never drops, and neither does any backend not named here.
+func (p DropPolicy) calibrated(backend string, sr decide.SlotReading, rule DropRule) (string, bool) {
+	switch {
+	case p.OpenRouter != "" && backend == p.OpenRouter:
+		if sr.Jev != nil && rule.MinOpenRouterProb > 0 && sr.Jev.Probability >= rule.MinOpenRouterProb {
+			return fmt.Sprintf("%s p=%.3f >= %.3f", backend, sr.Jev.Probability, rule.MinOpenRouterProb), true
 		}
-	case "lappi":
+	case backend == "lappi":
 		if sr.Lappi != nil && rule.MinLappiScore > 0 && sr.Lappi.Score >= rule.MinLappiScore {
 			return fmt.Sprintf("lappi score=%.3f >= %.3f", sr.Lappi.Score, rule.MinLappiScore), true
 		}

@@ -80,7 +80,7 @@ func TestLocalServerEndpointDoesNotOutliveItsRun(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	cfg.Decide.JevModel = ""
+	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d1", Server: &config.LocalServer{
 		Binary: bin, ModelPath: model, StartTimeoutMS: 20000}}
 	cfg.Decide.Shadow = "local"

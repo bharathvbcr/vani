@@ -38,7 +38,7 @@ flowchart TD
 
         subgraph Triage["3. Decision & Triage"]
             TR["career.jd_triage\n(role_fit, sponsorship, work_mode, seniority)"]
-            JEV["Jev (OpenRouter)"]
+            JEV["OpenRouter model (d1-ultra)"]
             LLM["LLM via Manvi (Gemini / Claude)"]
             LAP["Lappi (Local socket, free)"]
             SHADOW["Shadow & Eval (vani label / eval)"]
@@ -54,7 +54,7 @@ flowchart TD
         end
 
         subgraph Output["5. Synthesis & Export"]
-            EXP["Picked Note\n(Jev picks from the reasons catalog)"]
+            EXP["Picked Note\n(the OpenRouter model picks from the reasons catalog)"]
             DIGEST["Daily Markdown Digest"]
         end
     end
@@ -93,28 +93,38 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
   proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](file:///Users/bharath/Code/apps/Vani/docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
   is read from the HTML dump. Weak keys (`pg`, `x`) dedupe onto the ATS posting they mirror.
 - **Triage:** `career.jd_triage` (role_fit, sponsorship, work_mode, seniority) through a router
-  over Jev (OpenRouter decisions API) then the LLM. Answers only annotate; a posting is dropped
-  only by a configured `drop_rules` entry, on a calibrated Jev/Lappi answer. Anything uncertain
-  is kept and marked unsure.
+  over the OpenRouter decision model (`decide.openrouter_model`, e.g. `liquid/d1-ultra`, asked
+  through the Decisions API) then the LLM. The model answers under a name derived from its id
+  (`liquid/d1-ultra` → `d1-ultra`) in routing, ledger annotations, drop reasons and the eval.
+  Answers only annotate; a posting is dropped only by a configured `drop_rules` entry, on a
+  calibrated answer (`min_openrouter_prob` for the OpenRouter model, `min_lappi_score` for
+  Lappi). Anything uncertain is kept and marked unsure.
+- **Renamed keys (2026-10-19):** `jev_model`, `jev_key_env`, `daily_usd.jev`, `min_jev_prob` and
+  `decide.shadow` `jev` are now `openrouter_model`, `openrouter_key_env`, `daily_usd.openrouter`,
+  `min_openrouter_prob` and `openrouter`. Old configs and track files still load, every command
+  says which keys to rename, a file setting an old and a new key to different values is refused,
+  and saving writes the new names. Ledger rows written before the rename name the model `jev`;
+  `vani eval` and `vani label` read those as the configured model's name and say how many they
+  mapped. The daily cap file stays `<state dir>/budget/jev.json`, so the rename kept the day's spend.
 - **Ranking:** DevPrism `resume_gap_analysis` must-have coverage (DevPrism started lazily over
   `--mcp`). Skipped while `devprism.binary` is empty.
 - **Note ("why this role"):** picked, not written. `vani reasons draft` has the LLM draft, once, a
   catalog of short reasons for the target summary in three categories (why it fits, the biggest
   gap, what to check first), written to `<state dir>/reasons.json` for review and editing (`vani reasons import FILE` installs
   one drafted elsewhere, and `vani reasons check` validates a hand edit). For each
-  scored posting Jev picks one reason per category, or none, in one call ([`internal/decide/jdreasons`](internal/decide/jdreasons/jdreasons.go)),
+  scored posting the OpenRouter model picks one reason per category, or none, in one call ([`internal/decide/jdreasons`](internal/decide/jdreasons/jdreasons.go)),
   and its probability is shown as the relevance score. No model writes text per posting. Without
   a catalog, or with one drafted for another target summary, notes are off and scored postings
-  reach the digest without one; with a catalog but no Jev this run, notes pause and the postings
+  reach the digest without one; with a catalog but no OpenRouter model this run, notes pause and the postings
   wait for a run that can pick.
 - **Decision clients** live in the shared module `~/Code/devtools/decide` (types, router, budget
   caps, the Jev and Lappi clients). The question itself is [`internal/decide/jdtriage/fixture.json`](file:///Users/bharath/Code/apps/Vani/internal/decide/jdtriage/fixture.json):
   task, exact question text, context layout and options, plus one single-slot Lappi family per
-  slot with its own exact question (Lappi trains one slot per example). Jev and the LLM get all
+  slot with its own exact question (Lappi trains one slot per example). The OpenRouter model and the LLM get all
   slots in one request; Lappi gets one request per slot, and an absent or hung agent costs one
   timeout per posting. The target-roles summary is rendered into the context, so question text
   never varies.
-- **Shadow, eval and promotion:** `decide.shadow` (`jev`, `llm`, `lappi` or `local`) asks a second backend
+- **Shadow, eval and promotion:** `decide.shadow` (`openrouter`, `llm`, `lappi` or `local`) asks a second backend
   alongside the chain and records its reading, backend and any disagreement; it never decides.
   `vani label` labels postings (disagreements first) and `vani eval` reports per-backend precision
   and coverage, plus a promotion verdict per slot: the shadow is promotable when, on at least 30
@@ -213,7 +223,7 @@ Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.my
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH.
 
 Config and state default to `~/Library/Application Support/Vani/` (override with `VANI_CONFIG`
-and `VANI_STATE_DIR`). Keys come from the environment: `OPENROUTER_API_KEY` for Jev,
+and `VANI_STATE_DIR`). Keys come from the environment: `OPENROUTER_API_KEY` for the OpenRouter model,
 `GEMINI_API_KEY` / `GOOGLE_API_KEY` or `ANTHROPIC_API_KEY` for the LLM. An Anthropic key not
 scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every
 request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.

@@ -72,7 +72,11 @@ func (e *env) cmdLabel(args []string) error {
 		fmt.Fprintln(e.stdout, "nothing to label: no unlabelled triaged postings")
 		return nil
 	}
-	done, err := eval.Label(stdin, e.stdout, queue, s)
+	names, err := e.evalNames()
+	if err != nil {
+		return err
+	}
+	done, err := eval.Label(stdin, e.stdout, queue, s, names)
 	fmt.Fprintf(e.stdout, "labelled %d of %d queued\n", done, len(queue))
 	if errors.Is(err, io.EOF) {
 		return nil
@@ -95,6 +99,25 @@ func (e *env) cmdEval(args []string) error {
 		return err
 	}
 	defer l.Close()
-	fmt.Fprint(e.stdout, eval.BuildReport(l.All(), s).Markdown())
+	names, err := e.evalNames()
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(e.stdout, eval.BuildReport(l.All(), s, names).Markdown())
 	return nil
+}
+
+// evalNames reads the configured OpenRouter backend's name, which the eval
+// files old rows' legacy primary name under. Without the config the numbers
+// would split one backend in two, so a config that cannot load is an error.
+func (e *env) evalNames() (eval.Names, error) {
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return eval.Names{}, fmt.Errorf("eval needs the config to name the OpenRouter backend: %w", err)
+	}
+	var n eval.Names
+	if cfg.OpenRouterConfigured() {
+		n.OpenRouter = cfg.Decide.OpenRouterName()
+	}
+	return n, nil
 }

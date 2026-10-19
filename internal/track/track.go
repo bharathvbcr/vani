@@ -361,8 +361,8 @@ func Check(d Decider, w Words, bank Bank) []string {
 				add("drop_rules[%d]: %q is not a %s value", i, v, r.Slot)
 			}
 		}
-		if !(r.MinJevProb > 0 && r.MinJevProb <= 1) {
-			add("drop_rules[%d]: min_jev_prob %v must be within (0, 1]", i, r.MinJevProb)
+		if !(r.MinOpenRouterProb > 0 && r.MinOpenRouterProb <= 1) {
+			add("drop_rules[%d]: min_openrouter_prob %v must be within (0, 1]", i, r.MinOpenRouterProb)
 		}
 		if !(r.MinLappiScore >= 0) {
 			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
@@ -461,7 +461,7 @@ func Apply(cfg config.Config, d Decider, prev *Decider) (config.Config, Change, 
 		}
 		return slices.ContainsFunc(prev.DropRules, func(p config.DropRule) bool {
 			return p.Slot == r.Slot && slices.Equal(p.Values, r.Values) &&
-				p.MinJevProb == r.MinJevProb && p.MinLappiScore == r.MinLappiScore
+				p.MinOpenRouterProb == r.MinOpenRouterProb && p.MinLappiScore == r.MinLappiScore
 		})
 	}
 	out := cfg

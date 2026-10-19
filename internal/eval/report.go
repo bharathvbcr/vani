@@ -10,7 +10,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
-// Thresholds are the Jev probability cut-offs of the precision table.
+// Thresholds are the OpenRouter model's probability cut-offs of the precision table.
 var Thresholds = []float64{0.5, 0.6, 0.7, 0.8, 0.9, 0.95}
 
 // UnknownBackend names slots whose backend annotation is missing.
@@ -32,10 +32,10 @@ func (c Cell) Precision() (float64, bool) { return ratio(c.Correct, c.Answered) 
 // Coverage is Answered/Labeled; ok is false when nothing was labeled.
 func (c Cell) Coverage() (float64, bool) { return ratio(c.Answered, c.Labeled) }
 
-// ThresholdRow is Jev precision among answers with p >= P for one slot.
+// ThresholdRow is the OpenRouter model's precision among answers with p >= P for one slot.
 type ThresholdRow struct {
 	P        float64
-	Labeled  int // Jev-owned labeled postings for the slot (the coverage denominator)
+	Labeled  int // OpenRouter-owned labeled postings for the slot (the coverage denominator)
 	Answered int // answered with p >= P
 	Correct  int
 }
@@ -43,7 +43,7 @@ type ThresholdRow struct {
 func (t ThresholdRow) Precision() (float64, bool) { return ratio(t.Correct, t.Answered) }
 func (t ThresholdRow) Coverage() (float64, bool)  { return ratio(t.Answered, t.Labeled) }
 
-// Threshold is one slot's Jev precision-at-threshold table.
+// Threshold is one slot's OpenRouter precision-at-threshold table.
 type Threshold struct {
 	Slot string
 	Rows []ThresholdRow
@@ -78,13 +78,13 @@ const MinPromotionLabels = 30
 // labeled postings: those where the shadow was asked (a shadow_reading
 // annotation) and that primary held the slot. Plan §4: a backend takes over a
 // family only when its answered-reading precision meets the primary's at no
-// worse coverage. Primaries are never pooled: when Jev hits its daily cap and
-// the LLM answers the rest, "beats Jev" and "beats the LLM" are separate rows,
+// worse coverage. Primaries are never pooled: when the OpenRouter model hits its daily
+// cap and the LLM answers the rest, "beats d1-ultra" and "beats the LLM" are separate rows,
 // each needing its own MinPromotionLabels.
 type Promotion struct {
 	Slot            string
 	Shadow          string // shadow backend name
-	Primary         string // the backend that held the slot ("jev", "llm", ...)
+	Primary         string // the backend that held the slot ("d1-ultra", "llm", ...)
 	Asked           int    // labeled postings the shadow was asked about
 	ShadowAnswered  int
 	ShadowCorrect   int
@@ -121,6 +121,12 @@ type Report struct {
 	NoTriage       int // matched labels whose record has no triage annotations
 	MalformedLines int // label-file lines skipped as unreadable
 	LoadError      string
+	// LegacyPrimary counts scored slot readings whose primary backend was
+	// recorded as LegacyOpenRouterName and is reported under the configured
+	// OpenRouter name.
+	LegacyPrimary int
+	// ProbabilityBackend is the backend the threshold tables are built from.
+	ProbabilityBackend string
 
 	Cells      []Cell
 	Thresholds []Threshold
@@ -139,8 +145,11 @@ func ratio(num, den int) (float64, bool) {
 // s, per slot x backend. Labeled counts postings the backend was responsible
 // for; precision = correct/answered; coverage = answered/labeled. A "skip"
 // label is excluded from every denominator.
-func BuildReport(recs []ledger.Record, s *Store) Report {
-	rep := Report{Records: len(recs)}
+//
+// names maps primary readings filed under the OpenRouter model's old name to
+// its current one (see Names); rep.LegacyPrimary counts how many were.
+func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
+	rep := Report{Records: len(recs), ProbabilityBackend: names.probability()}
 	labels, bad, err := s.Labels()
 	rep.MalformedLines = bad
 	if err != nil {
@@ -178,7 +187,10 @@ func BuildReport(recs []ledger.Record, s *Store) Report {
 			if !has {
 				continue
 			}
-			backend := r.Annotations[pre+ledger.AnnTriageSuffixBackend]
+			backend, mapped := names.primary(r.Annotations[pre+ledger.AnnTriageSuffixBackend])
+			if mapped {
+				rep.LegacyPrimary++
+			}
 			if backend == "" {
 				backend = UnknownBackend
 			}
@@ -197,7 +209,7 @@ func BuildReport(recs []ledger.Record, s *Store) Report {
 				}
 			}
 
-			if backend == "jev" {
+			if backend == names.probability() {
 				rows := thr[sl.Name]
 				if rows == nil {
 					rows = make([]ThresholdRow, len(Thresholds))
@@ -331,6 +343,10 @@ func (r Report) Markdown() string {
 	if r.LoadError != "" {
 		fmt.Fprintf(&b, "- LABELS COULD NOT BE READ: %s; the figures below are not valid\n", r.LoadError)
 	}
+	if r.LegacyPrimary > 0 {
+		fmt.Fprintf(&b, "- primary readings recorded under the old name %q and counted as %q: %d\n",
+			LegacyOpenRouterName, r.ProbabilityBackend, r.LegacyPrimary)
+	}
 	b.WriteString("- \"skip\" labels are excluded from every denominator; the labeled set is a sample, not the whole ledger\n\n")
 
 	if len(r.Cells) == 0 {
@@ -346,7 +362,7 @@ func (r Report) Markdown() string {
 	}
 
 	for _, t := range r.Thresholds {
-		fmt.Fprintf(&b, "\n## Jev precision at p threshold: %s\n\n", t.Slot)
+		fmt.Fprintf(&b, "\n## %s precision at p threshold: %s\n\n", r.ProbabilityBackend, t.Slot)
 		b.WriteString("| p >= | answered | correct | precision | coverage |\n|---|---|---|---|---|\n")
 		for _, row := range t.Rows {
 			fmt.Fprintf(&b, "| %.2f | %d | %d | %s | %s |\n", row.P, row.Answered, row.Correct,

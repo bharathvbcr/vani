@@ -151,7 +151,7 @@ func printRules(w io.Writer, rules []config.DropRule) {
 		fmt.Fprintln(w, "  (none)")
 	}
 	for _, r := range rules {
-		fmt.Fprintf(w, "  %s in %v (jev p >= %v, lappi >= %v)\n", r.Slot, r.Values, r.MinJevProb, r.MinLappiScore)
+		fmt.Fprintf(w, "  %s in %v (openrouter p >= %v, lappi >= %v)\n", r.Slot, r.Values, r.MinOpenRouterProb, r.MinLappiScore)
 	}
 }
 

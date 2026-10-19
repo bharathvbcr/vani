@@ -182,8 +182,8 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 	case c == nil:
 		w.warnf("notes off: no reasons catalog; run `vani reasons draft` to have one drafted")
 		return nil, true
-	case !w.cfg.JevConfigured():
-		w.warnf("notes off: picking notes needs decide.jev_model")
+	case !w.cfg.OpenRouterConfigured():
+		w.warnf("notes off: picking notes needs decide.openrouter_model")
 		return nil, true
 	}
 	var spend decide.Spend
@@ -191,12 +191,14 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 		spend = capUSD
 	}
 	jb, err := jev.New(jev.Config{
+		Name:         w.cfg.Decide.OpenRouterName(),
 		Endpoint:     notesEndpoint,
-		Model:        w.cfg.Decide.JevModel,
-		KeyEnv:       w.cfg.Decide.JevKeyEnv,
+		Model:        w.cfg.Decide.OpenRouterModel,
+		KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
 		Descriptions: c.Descriptions(),
 		Instructions: jdreasons.Instructions(),
 		Spend:        spend,
+		SpendKey:     openRouterSpendKey,
 	}, d)
 	if err != nil {
 		w.warnf("notes paused: %v", err)

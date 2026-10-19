@@ -264,7 +264,7 @@ func tagged(sr decide.SlotReading, backend string) decide.SlotReading {
 	return sr
 }
 
-var policy = DropPolicy{Rules: []DropRule{{Slot: "remote", Values: []string{"onsite"}, MinJevProb: 0.9, MinLappiScore: 0.5}}}
+var policy = DropPolicy{Rules: []DropRule{{Slot: "remote", Values: []string{"onsite"}, MinOpenRouterProb: 0.9, MinLappiScore: 0.5}}, OpenRouter: "d1-ultra"}
 
 func runnerWith(t *testing.T, ans decide.Answer, terr error) (*Runner, *ledger.File, posting.Key) {
 	t.Helper()
@@ -277,7 +277,7 @@ func runnerWith(t *testing.T, ans decide.Answer, terr error) (*Runner, *ledger.F
 }
 
 func TestAdvanceFullPath(t *testing.T) {
-	ans := decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("remote", 0.99)}}
+	ans := decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("remote", 0.99)}}
 	r, l, k := runnerWith(t, ans, nil)
 	if err := r.Advance(ctx, k); err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func TestAdvanceFullPath(t *testing.T) {
 	if got.Status != posting.Explained {
 		t.Fatalf("status %s", got.Status)
 	}
-	want := map[string]string{"triage.remote": "remote", "triage.remote.reading": "answered", "triage.backend": "jev",
+	want := map[string]string{"triage.remote": "remote", "triage.remote.reading": "answered", "triage.backend": "d1-ultra",
 		"rank": "62.5", "gap.coverage_pct": "62.5", "score.blocks": "2", "explanation": "good fit"}
 	for k, v := range want {
 		if got.Annotations[k] != v {
@@ -314,27 +314,32 @@ func TestDropPolicy(t *testing.T) {
 		want posting.Status
 		sub  string
 	}{
-		{"jev above threshold drops", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.95)}}, posting.Dropped, `"remote" = "onsite"`},
-		{"jev at threshold drops", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.9)}}, posting.Dropped, ""},
-		{"jev below threshold triaged", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.89)}}, posting.Triaged, ""},
+		{"d1-ultra above threshold drops", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.95)}}, posting.Dropped, `"remote" = "onsite"`},
+		{"d1-ultra at threshold drops", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.9)}}, posting.Dropped, ""},
+		{"d1-ultra below threshold triaged", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.89)}}, posting.Triaged, ""},
 		{"lappi above drops", decide.Answer{Backend: "lappi", Slots: map[string]decide.SlotReading{"remote": lappi("onsite", 0.7)}}, posting.Dropped, "lappi"},
 		{"lappi below triaged", decide.Answer{Backend: "lappi", Slots: map[string]decide.SlotReading{"remote": lappi("onsite", 0.2)}}, posting.Triaged, ""},
 		{"jev calibration on lappi backend does not drop", decide.Answer{Backend: "lappi", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.99)}}, posting.Triaged, ""},
 		{"llm never drops", decide.Answer{Backend: "llm", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Answered, Value: "onsite"}}}, posting.Triaged, ""},
 		{"llm with forged calibration never drops", decide.Answer{Backend: "llm", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}, posting.Triaged, ""},
-		{"answered without calibration triaged", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Answered, Value: "onsite"}}}, posting.Triaged, ""},
-		{"value outside drop set", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("hybrid", 0.99)}}, posting.Triaged, ""},
+		{"answered without calibration triaged", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Answered, Value: "onsite"}}}, posting.Triaged, ""},
+		{"value outside drop set", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("hybrid", 0.99)}}, posting.Triaged, ""},
 		{"abstained unsure", decide.Answer{Backend: "lappi", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Abstained}}}, posting.Unsure, `"remote"`},
 		{"refused unsure", decide.Answer{Backend: "lappi", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Refused}}}, posting.Unsure, ""},
-		{"unavailable unsure", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Unavailable}}}, posting.Unsure, ""},
-		{"failed unsure", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Failed}}}, posting.Unsure, ""},
-		{"not asked unsure", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.NotAsked}}}, posting.Unsure, ""},
-		{"missing slot unsure", decide.Answer{Backend: "jev"}, posting.Unsure, "missing"},
-		{"abstain on unruled slot is fine", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("remote", 0.99), "seniority": {Reading: decide.Abstained}}}, posting.Triaged, ""},
-		// Router-merged answers: Backend is "jev+llm", each slot carries its own tag.
-		{"merged answer: jev-tagged slot drops", decide.Answer{Backend: "jev+llm", Slots: map[string]decide.SlotReading{"remote": tagged(jev("onsite", 0.95), "jev")}}, posting.Dropped, "jev"},
-		{"merged answer: llm-tagged slot with jev calibration never drops", decide.Answer{Backend: "jev+llm", Slots: map[string]decide.SlotReading{"remote": tagged(jev("onsite", 1), "llm")}}, posting.Triaged, ""},
-		{"merged answer: untagged slot cannot drop", decide.Answer{Backend: "jev+llm", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}, posting.Triaged, ""},
+		{"unavailable unsure", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Unavailable}}}, posting.Unsure, ""},
+		{"failed unsure", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.Failed}}}, posting.Unsure, ""},
+		{"not asked unsure", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": {Reading: decide.NotAsked}}}, posting.Unsure, ""},
+		{"missing slot unsure", decide.Answer{Backend: "d1-ultra"}, posting.Unsure, "missing"},
+		{"abstain on unruled slot is fine", decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("remote", 0.99), "seniority": {Reading: decide.Abstained}}}, posting.Triaged, ""},
+		// Router-merged answers: Backend is "d1-ultra+llm", each slot carries its own tag.
+		{"merged answer: d1-ultra-tagged slot drops", decide.Answer{Backend: "d1-ultra+llm", Slots: map[string]decide.SlotReading{"remote": tagged(jev("onsite", 0.95), "d1-ultra")}}, posting.Dropped, "d1-ultra"},
+		{"merged answer: llm-tagged slot with d1-ultra calibration never drops", decide.Answer{Backend: "d1-ultra+llm", Slots: map[string]decide.SlotReading{"remote": tagged(jev("onsite", 1), "llm")}}, posting.Triaged, ""},
+		// Only the configured OpenRouter name drops on a probability: the local
+		// shadow speaks the same wire shape, and "jev" is the pre-rename name.
+		{"local with calibration never drops", decide.Answer{Backend: "local", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}, posting.Triaged, ""},
+		{"legacy name jev never drops once renamed", decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}, posting.Triaged, ""},
+		{"merged answer: local-tagged slot never drops", decide.Answer{Backend: "d1-ultra+local", Slots: map[string]decide.SlotReading{"remote": tagged(jev("onsite", 1), "local")}}, posting.Triaged, ""},
+		{"merged answer: untagged slot cannot drop", decide.Answer{Backend: "d1-ultra+llm", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}, posting.Triaged, ""},
 	}
 	for _, c := range cases {
 		st, reason := policy.Evaluate(c.ans)
@@ -347,8 +352,13 @@ func TestDropPolicy(t *testing.T) {
 	}
 	// Zero thresholds never drop.
 	zero := DropPolicy{Rules: []DropRule{{Slot: "remote", Values: []string{"onsite"}}}}
-	if st, _ := zero.Evaluate(decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}); st == posting.Dropped {
+	if st, _ := zero.Evaluate(decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}); st == posting.Dropped {
 		t.Fatal("unset threshold dropped")
+	}
+	// Without a configured OpenRouter name no backend drops on a probability.
+	noName := DropPolicy{Rules: policy.Rules}
+	if st, _ := noName.Evaluate(decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 1)}}); st == posting.Dropped {
+		t.Fatal("dropped on a probability with no OpenRouter backend named")
 	}
 	// Empty policy never drops or flags.
 	if st, _ := (DropPolicy{}).Evaluate(decide.Answer{Backend: "llm"}); st != posting.Triaged {
@@ -357,7 +367,7 @@ func TestDropPolicy(t *testing.T) {
 }
 
 func TestAdvanceDropStops(t *testing.T) {
-	ans := decide.Answer{Backend: "jev", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.99)}}
+	ans := decide.Answer{Backend: "d1-ultra", Slots: map[string]decide.SlotReading{"remote": jev("onsite", 0.99)}}
 	r, l, k := runnerWith(t, ans, nil)
 	if err := r.Advance(ctx, k); err != nil {
 		t.Fatal(err)

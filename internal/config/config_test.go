@@ -46,7 +46,7 @@ func TestValidateRules(t *testing.T) {
 		{"bad time format", func(c *Config) { c.Schedule.DailyAt = "8:30" }, "not HH:MM"},
 		{"bad zone", func(c *Config) { c.Schedule.Timezone = "Mars/Base" }, "timezone"},
 		{"local zone", func(c *Config) { c.Schedule.Timezone = "Local" }, "explicit IANA"},
-		{"negative usd", func(c *Config) { c.Decide.DailyUSD.Jev = -1 }, "daily_usd.jev"},
+		{"negative usd", func(c *Config) { c.Decide.DailyUSD.OpenRouter = -1 }, "daily_usd.openrouter"},
 		{"huge usd", func(c *Config) { c.Decide.DailyUSD.LLM = 20.01 }, "daily_usd.llm"},
 		{"bad provider", func(c *Config) { c.LLM.Provider = "openai" }, "llm.provider"},
 		{"workday without host", func(c *Config) { c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext"}} }, "needs host"},
@@ -72,12 +72,12 @@ func TestValidateRules(t *testing.T) {
 		{"url on ats board", func(c *Config) { c.Watchlist[0].URL = "https://x.example" }, "page boards only"},
 		{"bad shadow", func(c *Config) { c.Decide.Shadow = "lappi" }, "decide.shadow"},
 		{"shadow llm without llm", func(c *Config) { c.LLM.Provider = ""; c.LLM.Model = ""; c.Decide.Shadow = "llm" }, "needs llm.provider"},
-		{"zero jev budget with jev", func(c *Config) { c.Decide.JevModel = "typesafe/jev-1.13"; c.Decide.DailyUSD.Jev = 0 }, "daily_usd.jev must be above 0"},
+		{"zero openrouter budget with openrouter", func(c *Config) { c.Decide.OpenRouterModel = "typesafe/jev-1.13"; c.Decide.DailyUSD.OpenRouter = 0 }, "daily_usd.openrouter must be above 0"},
 		{"zero llm budget with llm", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.Decide.DailyUSD.LLM = 0 }, "daily_usd.llm must be above 0"},
 		{"anthropic without prices", func(c *Config) { c.LLM = LLM{Provider: "anthropic", Model: "m"} }, "needs input_nano_usd_per_token"},
 		{"absurd price", func(c *Config) { c.LLM.InputNanoUSDPerToken = 2_000_000 }, "per-token price above"},
 		{"negative price", func(c *Config) { c.LLM.OutputNanoUSDPerToken = -1 }, "needs input_nano_usd_per_token"},
-		{"drop rule", func(c *Config) { c.DropRules = []DropRule{{Slot: "", MinJevProb: 2}} }, "drop_rules[0]"},
+		{"drop rule", func(c *Config) { c.DropRules = []DropRule{{Slot: "", MinOpenRouterProb: 2}} }, "drop_rules[0]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,8 +93,8 @@ func TestValidateRules(t *testing.T) {
 
 func TestUSDBoundsInclusive(t *testing.T) {
 	c := valid()
-	c.Decide.JevModel = "" // a zero cap is only valid with Jev switched off
-	c.Decide.DailyUSD = DailyUSD{Jev: 0, LLM: 20}
+	c.Decide.OpenRouterModel = "" // a zero cap is only valid with Jev switched off
+	c.Decide.DailyUSD = DailyUSD{OpenRouter: 0, LLM: 20}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("0 and 20 must be valid: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestLeverUSHost(t *testing.T) {
 
 func TestNoJevNoOpenRouterRequirement(t *testing.T) {
 	c := valid()
-	c.Decide.JevModel = ""
+	c.Decide.OpenRouterModel = ""
 	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com"}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("openrouter must not be required without jev: %v", err)
