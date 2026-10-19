@@ -11,12 +11,9 @@
 package workday
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -253,50 +250,10 @@ func postedAt(startDate, phrase string, now time.Time) time.Time {
 	return time.Time{}
 }
 
-// postJSON POSTs body as JSON and decodes the reply. egress.PostJSON cannot be
-// used: Workday wants Accept-Language, and the 404 and body-size contracts
-// match srcutil.GetJSON's.
+// postJSON POSTs the listing search. Workday wants Accept-Language; status,
+// body-cap and retry rules are srcutil's, shared with every adapter's GET.
 func (s *source) postJSON(ctx context.Context, endpoint string, body, v any) error {
-	if s.d == nil {
-		return errors.New("sources: no http doer configured")
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encode request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "en-US")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.d.Do(ctx, req)
-	if err != nil {
-		return fmt.Errorf("post %s: %w", req.URL.Redacted(), err)
-	}
-	if resp == nil || resp.Body == nil {
-		return fmt.Errorf("post %s: empty response", req.URL.Redacted())
-	}
-	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
-	case resp.StatusCode != http.StatusOK:
-		return &egress.StatusError{Code: resp.StatusCode, Method: req.Method, Host: req.URL.Hostname()}
-	}
-	const maxBody = srcutil.MaxBody
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
-	if err != nil {
-		return fmt.Errorf("read %s: %w", req.URL.Redacted(), err)
-	}
-	if len(raw) > maxBody {
-		return fmt.Errorf("%w: over %d bytes from %s", srcutil.ErrBodyTooLarge, maxBody, req.URL.Redacted())
-	}
-	if err := json.Unmarshal(raw, v); err != nil {
-		return fmt.Errorf("decode %s: %w", req.URL.Redacted(), err)
-	}
-	return nil
+	return srcutil.PostJSON(ctx, s.d, endpoint, body, http.Header{"Accept-Language": {"en-US"}}, v)
 }
 
 // parseToken splits "tenant/site" and refuses anything that could change the

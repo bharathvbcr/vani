@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -268,6 +269,29 @@ func TestListing500IsStatusError(t *testing.T) {
 	var se *egress.StatusError
 	if !errors.As(err, &se) || se.Code != 500 {
 		t.Fatalf("err = %v, want StatusError 500", err)
+	}
+}
+
+// A board that rate-limits part-way through (Salesforce's answered 429 on a
+// live run) is retried rather than failed: the listing POST and the detail
+// GETs both go through srcutil's retry.
+func TestRateLimitIsRetried(t *testing.T) {
+	inner := fixtureHandler(t)
+	limited := map[string]bool{}
+	s, d := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		k := r.Method + " " + r.URL
+		if !limited[k] {
+			limited[k] = true
+			return srctest.Reply{Status: 429, Header: http.Header{"Retry-After": {"0"}}}, true
+		}
+		return inner(r)
+	})
+	got, err := s.List(context.Background(), board)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %d postings, err %v; want both after one 429 each", len(got), err)
+	}
+	if n := len(d.Requests()); n != 6 { // 3 distinct requests, each limited once
+		t.Errorf("%d requests, want 6", n)
 	}
 }
 

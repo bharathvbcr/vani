@@ -17,6 +17,8 @@ import (
 type Reply struct {
 	Status int
 	Body   []byte
+	// Header adds response headers (e.g. Retry-After) to Content-Type.
+	Header http.Header
 }
 
 // Request is one request the Doer saw: its method, URL, headers and body.
@@ -74,10 +76,14 @@ func (d *Doer) Do(_ context.Context, req *http.Request) (*http.Response, error) 
 	if !ok {
 		return nil, fmt.Errorf("srctest: unexpected request %s %s", req.Method, u)
 	}
+	hdr := http.Header{"Content-Type": []string{"application/json"}}
+	for k, vs := range r.Header {
+		hdr[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
+	}
 	return &http.Response{
 		StatusCode: r.Status,
 		Status:     http.StatusText(r.Status),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Header:     hdr,
 		Body:       io.NopCloser(bytes.NewReader(r.Body)),
 		Request:    req,
 	}, nil

@@ -4,6 +4,7 @@
 package srcutil
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,33 +89,117 @@ func ParseTime(field, s string) (time.Time, error) {
 	return t, nil
 }
 
+// Retry bounds for a board that asks the caller to slow down. A 429 (or a 503)
+// part-way through a large listing would otherwise fail the whole board; a
+// Retry-After longer than maxRetryWait is honoured by giving up, not by
+// waiting, so one board cannot stall a run.
+const (
+	maxAttempts  = 3
+	maxRetryWait = 30 * time.Second
+)
+
+// retryBackoff is the wait before retry n when the response names none. A
+// variable, with sleep, only so tests need not wait in real time.
+var retryBackoff = [maxAttempts - 1]time.Duration{2 * time.Second, 5 * time.Second}
+
+var sleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // GetJSON issues a GET through d and decodes the JSON body into v. A 404 is
-// ErrBoardNotFound, any other non-200 status is an error, and a body above
-// MaxBody is ErrBodyTooLarge.
+// ErrBoardNotFound, any other non-200 status is an error wrapping
+// *egress.StatusError, and a body above MaxBody is ErrBodyTooLarge. A 429 or
+// 503 is retried (see DoJSON).
 func GetJSON(ctx context.Context, d egress.Doer, rawURL string, v any) error {
+	return DoJSON(ctx, d, http.MethodGet, rawURL, nil, nil, v)
+}
+
+// PostJSON POSTs body, marshalled as JSON, and decodes the reply into v under
+// GetJSON's contract. It is for read-only search endpoints (a Workday
+// listing): a 429 or 503 resends the same body.
+func PostJSON(ctx context.Context, d egress.Doer, rawURL string, body any, header http.Header, v any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("sources: encode request: %w", err)
+	}
+	h := header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
+	h.Set("Content-Type", "application/json")
+	return DoJSON(ctx, d, http.MethodPost, rawURL, payload, h, v)
+}
+
+// DoJSON sends one request through d and decodes the JSON reply into v. It is
+// the one place adapters' HTTP status, body-cap and retry rules live. A 429 or
+// 503 is retried up to maxAttempts in all, after the response's Retry-After
+// (seconds or an HTTP date) or retryBackoff; a Retry-After over maxRetryWait,
+// or the last attempt, returns the status error. The wait ends with ctx.
+func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, v any) error {
 	if d == nil {
 		return errors.New("sources: no http doer configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return fmt.Errorf("sources: build request: %w", err)
+	verb := strings.ToLower(method)
+	for attempt := 0; ; attempt++ {
+		var rd io.Reader
+		if body != nil {
+			rd = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, rd)
+		if err != nil {
+			return fmt.Errorf("sources: build request: %w", err)
+		}
+		for k, vs := range header {
+			req.Header[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
+		}
+		req.Header.Set("Accept", "application/json")
+		resp, err := d.Do(ctx, req)
+		if err != nil {
+			return fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), err)
+		}
+		if resp == nil || resp.Body == nil {
+			return fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
+		}
+		if resp.StatusCode == http.StatusOK {
+			return decodeBody(resp.Body, req, v)
+		}
+		code, hdr := resp.StatusCode, resp.Header
+		// Drain a little so the connection can be reused, then let it go.
+		_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
+		resp.Body.Close()
+		if code == http.StatusNotFound {
+			return fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
+		}
+		se := &egress.StatusError{Code: code, Method: method, Host: req.URL.Hostname()}
+		if code != http.StatusTooManyRequests && code != http.StatusServiceUnavailable {
+			return fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), se)
+		}
+		if attempt+1 >= maxAttempts {
+			return fmt.Errorf("sources: %s %s: %w (gave up after %d attempts)", verb, req.URL.Redacted(), se, maxAttempts)
+		}
+		wait := retryBackoff[attempt]
+		if ra, ok := retryAfter(hdr, time.Now()); ok {
+			if ra > maxRetryWait {
+				return fmt.Errorf("sources: %s %s: %w (asked to retry after %s, over the %s limit)", verb, req.URL.Redacted(), se, ra, maxRetryWait)
+			}
+			wait = ra
+		}
+		if err := sleep(ctx, wait); err != nil {
+			return fmt.Errorf("sources: %s %s: waiting to retry %w: %w", verb, req.URL.Redacted(), se, err)
+		}
 	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := d.Do(ctx, req)
-	if err != nil {
-		return fmt.Errorf("sources: get %s: %w", req.URL.Redacted(), err)
-	}
-	if resp == nil || resp.Body == nil {
-		return fmt.Errorf("sources: get %s: empty response", req.URL.Redacted())
-	}
-	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
-	case resp.StatusCode != http.StatusOK:
-		return fmt.Errorf("sources: get %s: status %d", req.URL.Redacted(), resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+}
+
+func decodeBody(rc io.ReadCloser, req *http.Request, v any) error {
+	defer rc.Close()
+	body, err := io.ReadAll(io.LimitReader(rc, maxBody+1))
 	if err != nil {
 		return fmt.Errorf("sources: read %s: %w", req.URL.Redacted(), err)
 	}
@@ -124,4 +210,30 @@ func GetJSON(ctx context.Context, d egress.Doer, rawURL string, v any) error {
 		return fmt.Errorf("sources: decode %s: %w", req.URL.Redacted(), err)
 	}
 	return nil
+}
+
+// retryAfter reads a Retry-After header: delay-seconds or an HTTP date. ok is
+// false when it is absent or malformed; a date in the past is a zero wait.
+func retryAfter(h http.Header, now time.Time) (time.Duration, bool) {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0, false
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if n < 0 {
+			return 0, false
+		}
+		if n > int64(time.Hour/time.Second) { // keep the multiplication in range
+			n = int64(time.Hour / time.Second)
+		}
+		return time.Duration(n) * time.Second, true
+	}
+	t, err := http.ParseTime(v)
+	if err != nil {
+		return 0, false
+	}
+	if d := t.Sub(now); d > 0 {
+		return d, true
+	}
+	return 0, true
 }
