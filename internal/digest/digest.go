@@ -1,7 +1,7 @@
 // Package digest renders the daily Markdown digest from ledger records.
 //
-// Every field that came from a job board (title, company, location,
-// explanation, URL) is untrusted: it is escaped so it cannot add links,
+// Every field that came from a job board (title, company, location, stated
+// pay, explanation, URL) is untrusted: it is escaped so it cannot add links,
 // headings, HTML or extra lines to the digest.
 //
 // The digest also honours the user's Jobs marks (internal/marks), and only the
@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
 	"github.com/bharathvbcr/Vani/internal/marks"
@@ -213,6 +214,9 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 	fmt.Fprintf(b, "### %s at %s\n\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes))
 
 	fmt.Fprintf(b, "- Where: %s\n", Where(p))
+	if pay := payLine(p.Description); pay != "" {
+		fmt.Fprintf(b, "- Pay: %s\n", pay)
+	}
 	fmt.Fprintf(b, "- Link: %s\n", linkLine(p.URL))
 
 	if cov, ok := Coverage(r); ok {
@@ -244,6 +248,18 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 		fmt.Fprintf(b, "\n%s\n", Escape(ex, maxExplainLen))
 	}
 	b.WriteString("\n")
+}
+
+// payLine is the pay a description states, one short range per currency
+// ("USD 120k–160k/yr; EUR 100k–120k/yr"), or "" when it states none. It is
+// read from posting text, so it is escaped like any other posting field.
+func payLine(desc string) string {
+	pays := jobinsight.ParsePay(desc)
+	parts := make([]string, 0, len(pays))
+	for _, p := range pays {
+		parts = append(parts, p.Short())
+	}
+	return Escape(strings.Join(parts, "; "), maxFieldRunes)
 }
 
 // WhyUnsure names the triage slots that could not decide, from a record's
