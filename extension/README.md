@@ -53,6 +53,21 @@ native-messaging manifest allows. `dist-safari/` is the same code with a Safari-
 3. In the popup you can view, edit and delete answers, turn the extension off for a site, and
    export or import the bank as JSON.
 
+### The resume for each job
+
+Each job gets its own resume. On a job's application page, open the popup and use **Resume for
+this job → Choose PDF** (at most 512 KB). The Vani Apply Mac app keeps a copy in its App Group
+folder, keyed by the page's address (the same reduced URL Mark Applied uses), so Chrome and Safari
+read the same file. On **Fill**, the file input that reads as a resume (Resume/CV, Résumé, CV, or a
+`resume` name) gets that PDF through the browser's drag-and-drop API and is outlined **yellow**,
+with the file name in its tooltip: check it is the version for this job. A cover-letter,
+"other attachments", transcript or portfolio box never gets it.
+
+There is no default resume. A job with none chosen gets no file, and Fill says why: no resume
+chosen for this job, the Mac app isn't reachable (the resume lives only there), the stored copy is
+missing or damaged, or the page did not take the file. The PDF goes from the Mac app to the tab
+being filled and nowhere else. Its name is never written to the activity log.
+
 ### Live help for new questions
 
 Click the panel's status line to list the questions on the page that have no saved answer. For

@@ -6,6 +6,7 @@ import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsValues } from "./basics";
+import { resumeRow } from "./resumerow";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -246,6 +247,7 @@ async function init(): Promise<void> {
   host = tab?.url ? new URL(tab.url).hostname : "";
   $("#host").textContent = host || "(no page)";
   if (tab?.id !== undefined) void appliedRow(tab.id, tab.url);
+  void resumeRow(tab?.url, { row: $("#resume"), name: $("#resume-name"), pick: $("#resume-pick"), remove: $("#resume-remove") }, bg);
   await refresh();
   try {
     const t = await scanTab();

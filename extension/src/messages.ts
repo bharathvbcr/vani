@@ -30,7 +30,14 @@ export type ToBackground =
   /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
   | { type: "frameReady" }
   /** The registered frames of a tab; the popup names the active tab, a content script gets its own. */
-  | { type: "frames"; tabId?: number };
+  | { type: "frames"; tabId?: number }
+  // The resume chosen for a job (resume.ts), keyed by the page's pageKey. A content script asks for the bytes
+  // to fill its own tab; the popup shows, binds and unbinds the one for the active tab's page.
+  | { type: "resumeGet"; url: string }
+  | { type: "resumeInfo"; url: string }
+  /** pdf is base64, at most MAX_RESUME_BYTES decoded; name ends in .pdf. */
+  | { type: "resumePut"; url: string; name: string; pdf: string }
+  | { type: "resumeDelete"; url: string };
 
 export type DraftResponse = DraftReply;
 
@@ -72,6 +79,10 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   appliedDismiss: optTab,
   frameReady: () => true,
   frames: optTab,
+  resumeGet: m => typeof m.url === "string",
+  resumeInfo: m => typeof m.url === "string",
+  resumePut: m => typeof m.url === "string" && typeof m.name === "string" && typeof m.pdf === "string",
+  resumeDelete: m => typeof m.url === "string",
 };
 
 const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {

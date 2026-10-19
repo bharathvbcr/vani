@@ -17,6 +17,12 @@ import Foundation
 //   {"op":"jobFind","url":"https://..."}  -> {"found":bool,"url","matches":N,"ambiguous"?,"job"?:{key,company,title,status,mark?,closed?,matchedOn}}
 //                                          | {"error","code"}
 //   {"op":"jobMark","key":"gh:acme:123"}  -> {"ok":true,"key","mark":"applied"} | {"error","code"}
+//   {"op":"resumePut","key":pageKey,"name":"x.pdf","pdf":base64}
+//                                         -> {"ok":true,"key","name","bytes","sha256","pickedAt"} | {"error","code"}
+//   {"op":"resumeGet","key":pageKey}      -> {"found":false} | {"found":true,"name","bytes","sha256","pickedAt","pdf":base64}
+//                                          | {"error","code"}
+//   {"op":"resumeInfo","key":pageKey}     -> resumeGet without "pdf"
+//   {"op":"resumeDelete","key":pageKey}   -> {"ok":true,"removed":bool} | {"error","code"}
 //   anything refused                      -> {"error":"..."}
 //
 // Merging stays in the extension (one implementation); this side is a
@@ -32,6 +38,11 @@ import Foundation
 // it passes, and for Safari (whose appex cannot start `vani`) through the agent's
 // XPC calls, since XPCAgentClient is a JobsBackend. With neither they answer code
 // "unsupported".
+//
+// The resume ops (ResumeStore.swift) bind one PDF to a job page (its pageKey, the
+// same reduced URL jobFind compares) and hand it to the tab being filled. Both
+// browsers run them in-process: the store is a folder beside the bank in the App
+// Group container. The log gets an event and a count, never the file name or the page.
 
 public enum NativeProtocol {
     public static let version = 1
@@ -109,6 +120,8 @@ public enum NativeProtocol {
                 return ["error": String(describing: error), "code": "jobs"]
             }
             return ["ok": true, "key": key, "mark": JobMark.applied.rawValue]
+        case "resumePut", "resumeGet", "resumeInfo", "resumeDelete":
+            return resumeOp(op, req, store: store, source: source)
         case "draft":
             guard let drafter else {
                 return ["error": "drafting is not available here; use Draft in the Vani Apply app", "code": "unsupported"]
@@ -123,6 +136,51 @@ public enum NativeProtocol {
             return reply.asJSONObject
         default:
             throw BankError("unknown op \(String(op.prefix(40)))")
+        }
+    }
+
+    /// base64 of ResumeStore.maxBytes plus padding slack: a longer string is refused before it is decoded.
+    private static let maxResumeBase64 = (ResumeStore.maxBytes + 2) / 3 * 4 + 8
+
+    private static func resumeOp(_ op: String, _ req: [String: Any], store: BankStore, source: Source) -> [String: Any] {
+        let resumes = ResumeStore(directory: store.directory.appendingPathComponent("resumes", isDirectory: true))
+        guard let key = JobLinks.checkedURL(req["key"]) else {
+            return ["error": "\(op) needs the job page's http(s) key", "code": "bad_request"]
+        }
+        func described(_ e: ResumeStore.Entry) -> [String: Any] {
+            ["found": true, "name": e.name, "bytes": e.bytes, "sha256": e.sha256, "pickedAt": e.pickedAt]
+        }
+        do {
+            switch op {
+            case "resumePut":
+                guard let name = ResumeStore.checkedName(req["name"]) else {
+                    return ["error": "resumePut needs a file name ending in .pdf, at most \(ResumeStore.maxNameChars) characters", "code": "bad_request"]
+                }
+                guard let b64 = req["pdf"] as? String else { return ["error": "resumePut needs the PDF", "code": "bad_request"] }
+                if b64.utf8.count > maxResumeBase64 {
+                    return ["error": "the resume is over \(ResumeStore.maxBytes / 1024) KB", "code": "too_large"]
+                }
+                guard let data = Data(base64Encoded: b64) else { return ["error": "the resume arrived damaged", "code": "bad_request"] }
+                let e = try resumes.put(key: key, name: name, data: data)
+                try? store.log(ActivityEntry(source: source, event: .resume, counts: ["chosen": 1]))
+                return ["ok": true, "key": key, "name": e.name, "bytes": e.bytes, "sha256": e.sha256, "pickedAt": e.pickedAt]
+            case "resumeGet":
+                guard let (e, data) = try resumes.get(key: key) else { return ["found": false] }
+                var out = described(e)
+                out["pdf"] = data.base64EncodedString()
+                return out
+            case "resumeInfo":
+                guard let e = try resumes.info(key: key) else { return ["found": false] }
+                return described(e)
+            default: // resumeDelete
+                let removed = try resumes.delete(key: key)
+                if removed { try? store.log(ActivityEntry(source: source, event: .resume, counts: ["removed": 1])) }
+                return ["ok": true, "removed": removed]
+            }
+        } catch let f as ResumeStore.Failure {
+            return ["error": f.message, "code": f.code]
+        } catch {
+            return ["error": String(describing: error), "code": "io"]
         }
     }
 

@@ -25,6 +25,7 @@ import {
 } from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
 import { contentListener } from "./frames";
+import { type ResumeFetch, parseResumeGet } from "./resume";
 
 const PANEL_LIST = 8;
 
@@ -81,17 +82,29 @@ async function scan(): Promise<ScanReply> {
   return { fields: coverage.found, matched: coverage.known, host: location.hostname, disabled: disabledHere(b), coverage };
 }
 
+/** The resume chosen for this page's job, from the Mac app (through the background); a reason when there is none. */
+async function resumeForThisJob(): Promise<ResumeFetch> {
+  try {
+    return parseResumeGet(await send<unknown>({ type: "resumeGet", url: location.href }));
+  } catch {
+    return parseResumeGet({ error: "the extension's background did not answer", code: "background" });
+  }
+}
+
 async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
   const b = await bank();
   if (!b || disabledHere(b)) return { outcomes: [] };
   clearMarks();
-  const outcomes = await fillAll(scanForm(document).refs, b, location.hostname, { overwrite, typeahead });
+  const outcomes = await fillAll(scanForm(document).refs, b, location.hostname, { overwrite, typeahead, resume: resumeForThisJob });
   const keys = outcomes.filter(o => o.filled && o.key).map(o => o.key!);
   if (keys.length) void send({ type: "filled", keys });
+  const filled = outcomes.filter(o => o.filled).length;
   const review = outcomes.filter(o => o.filled && o.review).length;
   const left = outcomes.filter(o => !o.filled && o.reason === "no_match").length;
   const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
-  toast(`Filled ${keys.length} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") + ". Check, then submit yourself.");
+  const resumeNote = outcomes.find(o => o.reason === "no_resume" || o.reason === "resume_unavailable" || o.reason === "refused");
+  toast(`Filled ${filled} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") +
+    (resumeNote?.detail ? `. Resume not attached: ${resumeNote.detail}` : "") + ". Check, then submit yourself.");
   return { outcomes };
 }
 
@@ -166,6 +179,9 @@ const REASON: Record<NonNullable<FillOutcome["reason"]>, string> = {
   untouchable: "this kind of field is never filled",
   manual: "this widget has to be filled by hand",
   detached: "the field is gone from the page",
+  no_resume: "no resume chosen for this job (choose one in the Vani Apply popup)",
+  resume_unavailable: "the resume could not be had from the Vani Apply Mac app",
+  refused: "this page did not take the file; attach it by hand",
 };
 
 function btn(cls: string, text: string): HTMLButtonElement {

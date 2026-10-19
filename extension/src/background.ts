@@ -7,6 +7,7 @@ import { type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkToBackground }
 import { type FanOut, type FrameStore, createFrameRegistry, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
+import { resumeOp } from "./resume";
 
 const draft = createDrafter();
 
@@ -226,6 +227,23 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "frames": {
       const tabId = actingTab(sender, msg.tabId);
       return { frames: tabId === undefined ? [] : await frameRegistry.list(tabId) };
+    }
+    case "resumeGet":
+    case "resumeInfo":
+    case "resumePut":
+    case "resumeDelete": {
+      // The bytes go only to the content script that asked, for its own tab; the popup gets the name, never the file.
+      if (msg.type === "resumeGet" && !sender.tab) return { error: "only a page being filled gets the resume", code: "bad_request" };
+      const op = resumeOp(msg);
+      if ("error" in op) return op;
+      const r = await native(op);
+      // A form in a frame has a URL of its own; the resume may be bound to the page around it (as for appliedSignal).
+      const frame = sender.tab ? sender.frameId ?? 0 : 0;
+      if (msg.type === "resumeGet" && frame !== 0 && sender.tab?.url && (r as { found?: unknown } | null)?.found === false) {
+        const top = resumeOp({ type: "resumeGet", url: sender.tab.url });
+        if (!("error" in top)) return native(top);
+      }
+      return r;
     }
     default:
       // Unreachable for a message that passed checkToBackground; kept so a missed case answers, never `undefined`.

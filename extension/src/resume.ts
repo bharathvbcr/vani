@@ -1,0 +1,160 @@
+// The resume chosen for one job. The owner binds a PDF to a job's application
+// page from the popup (the Mac app keeps a copy, keyed by the page's pageKey); on
+// Fill, the file input that reads as a resume gets that PDF and nothing else. A
+// job with nothing bound gets no file and a reason: there is no "default" resume,
+// because a resume meant for another job is the wrong one. No DOM here, so
+// `bun test` covers it; fill.ts attaches the bytes.
+//
+// The PDF goes from the Mac app to the tab being filled and nowhere else. Its
+// file name (which carries the owner's name) is shown on the page and in the
+// popup, and never logged.
+import type { FieldInfo } from "./types";
+import { pageKey } from "./applied";
+
+/**
+ * The largest resume accepted. Native messaging replies are capped at 1 MiB and
+ * base64 adds a third, so 512 KiB leaves room for the envelope. ResumeStore.maxBytes
+ * (macos/Sources/VaniApplyKit/ResumeStore.swift) is the same number.
+ */
+export const MAX_RESUME_BYTES = 512 * 1024;
+const MAX_NAME_CHARS = 200;
+const MAX_DETAIL = 200;
+/** Only this much of a label or name is read: a page can put anything in one. */
+const MAX_READ = 300;
+
+export type ResumeFetch =
+  | { ok: true; name: string; bytes: Uint8Array; pickedAt: string }
+  | { ok: false; reason: "no_resume" | "resume_unavailable"; detail: string };
+
+/** What the popup shows for the active job: the bound file, none, or why it cannot say. */
+export type ResumeInfo =
+  | { found: true; name: string; bytes: number; pickedAt: string }
+  | { found: false }
+  | { error: string };
+
+const RESUME_WORDS = new Set(["resume", "resumes", "cv", "cvs"]);
+/** A box for another document, or for several: never given the resume. */
+const OTHER_WORDS = new Set([
+  "cover", "letter", "other", "additional", "transcript", "transcripts", "portfolio", "sample", "samples",
+  "supporting", "reference", "references", "certificate", "certificates", "writing", "photo", "headshot",
+]);
+
+function words(s: string): string[] {
+  return s.slice(0, MAX_READ).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().split(/[^a-z]+/).filter(Boolean);
+}
+
+/** camelCase names (resumeUpload) split before lower-casing. */
+function nameWords(s: string): string[] {
+  return words(s.slice(0, MAX_READ).replace(/([a-z])([A-Z])/g, "$1 $2"));
+}
+
+/**
+ * A file input for the resume: its label, name or test id has the word resume,
+ * résumé, CV or "curriculum vitae", and none of them names another document
+ * (cover letter, other attachments, transcript...). "Resume or cover letter" is
+ * two documents in one box, so it is not filled either.
+ */
+export function isResumeField(info: Pick<FieldInfo, "kind" | "label" | "name" | "automationId">): boolean {
+  if (info.kind !== "file") return false;
+  const all = [...words(info.label), ...nameWords(info.name), ...nameWords(info.automationId)];
+  const resume = all.some(w => RESUME_WORDS.has(w)) || all.some((w, i) => w === "curriculum" && all[i + 1] === "vitae");
+  return resume && !all.some(w => OTHER_WORDS.has(w));
+}
+
+/** The key a resume is bound under: the page's pageKey (applied.ts), or null for a page that has none. */
+export function resumeKey(url: unknown): string | null {
+  return pageKey(url);
+}
+
+export function isPdf(b: Uint8Array): boolean {
+  return b.length >= 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d; // %PDF-
+}
+
+/** A bounded, printable file name ending in .pdf, trimmed; null otherwise. */
+export function checkResumeName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (s.length > MAX_NAME_CHARS || !/\.pdf$/i.test(s) || s.length <= 4) return null;
+  if (/[\u0000-\u001f\u007f-\u009f/\\]/.test(s)) return null;
+  return s;
+}
+
+export function toBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/** Strict base64 (no whitespace, correct padding), or null. */
+export function fromBase64(s: unknown): Uint8Array | null {
+  if (typeof s !== "string" || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) return null;
+  let bin: string;
+  try { bin = atob(s); } catch { return null; }
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+const clip = (s: string) => (s.length > MAX_DETAIL ? `${s.slice(0, MAX_DETAIL - 1)}…` : s);
+const unavailable = (detail: string): ResumeFetch => ({ ok: false, reason: "resume_unavailable", detail: clip(detail) });
+
+/**
+ * The Mac app's resumeGet reply (through the background, which turns an
+ * unreachable app into `{error, code: "unreachable"}`). Anything but a checked
+ * PDF is a reason; nothing is ever passed on unchecked.
+ */
+export function parseResumeGet(r: unknown): ResumeFetch {
+  if (!isObj(r)) return unavailable("the Vani Apply Mac app sent no reply about the resume");
+  if (typeof r.error === "string") {
+    const why = r.code === "unreachable" ? "the Vani Apply Mac app isn't reachable" : `the Vani Apply Mac app could not read the resume: ${r.error}`;
+    return unavailable(why);
+  }
+  if (r.found === false) return { ok: false, reason: "no_resume", detail: "no resume chosen for this job (choose one in the Vani Apply popup)" };
+  if (r.found !== true) return unavailable("the Vani Apply Mac app's resume reply was not understood");
+  const name = checkResumeName(r.name);
+  const bytes = fromBase64(r.pdf);
+  if (!name) return unavailable("the resume's file name was refused");
+  if (!bytes) return unavailable("the resume arrived damaged");
+  if (bytes.length > MAX_RESUME_BYTES) return unavailable(`the resume is over ${MAX_RESUME_BYTES / 1024} KB`);
+  if (!isPdf(bytes)) return unavailable("the resume is not a PDF");
+  if (r.bytes !== bytes.length) return unavailable("the resume arrived incomplete");
+  return { ok: true, name, bytes, pickedAt: typeof r.pickedAt === "string" ? r.pickedAt.slice(0, 40) : "" };
+}
+
+export type ResumeMessage =
+  | { type: "resumeGet" | "resumeInfo" | "resumeDelete"; url: string }
+  | { type: "resumePut"; url: string; name: string; pdf: string };
+
+/** base64 of MAX_RESUME_BYTES plus padding slack: a longer string is refused before it is decoded. */
+const MAX_BASE64 = Math.ceil(MAX_RESUME_BYTES / 3) * 4 + 8;
+
+/**
+ * The native request for a resume message, checked here so a bad file is refused with a
+ * reason before it crosses to the Mac app (which checks it again).
+ */
+export function resumeOp(m: ResumeMessage): Record<string, unknown> | { error: string; code: "bad_request" | "too_large" } {
+  const key = resumeKey(m.url);
+  if (!key) return { error: "this page has no job address a resume can be chosen for", code: "bad_request" };
+  if (m.type !== "resumePut") return { op: m.type, key };
+  const name = checkResumeName(m.name);
+  if (!name) return { error: `choose a .pdf file with a name of at most ${MAX_NAME_CHARS} characters`, code: "bad_request" };
+  if (m.pdf.length > MAX_BASE64) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
+  const bytes = fromBase64(m.pdf);
+  if (!bytes || bytes.length === 0) return { error: "the file could not be read", code: "bad_request" };
+  if (bytes.length > MAX_RESUME_BYTES) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
+  if (!isPdf(bytes)) return { error: "that file is not a PDF", code: "bad_request" };
+  return { op: "resumePut", key, name, pdf: m.pdf };
+}
+
+/** The Mac app's resumeInfo reply, for the popup. */
+export function parseResumeInfo(r: unknown): ResumeInfo {
+  if (!isObj(r)) return { error: "the Vani Apply Mac app sent no reply" };
+  if (typeof r.error === "string") return { error: clip(r.error) };
+  if (r.found === false) return { found: false };
+  const name = checkResumeName(r.name);
+  if (r.found === true && name && typeof r.bytes === "number" && Number.isSafeInteger(r.bytes) && r.bytes >= 0) {
+    return { found: true, name, bytes: r.bytes, pickedAt: typeof r.pickedAt === "string" ? r.pickedAt.slice(0, 40) : "" };
+  }
+  return { error: "the Vani Apply Mac app's reply was not understood" };
+}

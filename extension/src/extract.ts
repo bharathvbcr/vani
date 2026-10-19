@@ -139,6 +139,20 @@ export function labelOf(el: HTMLElement): string {
     clean(((el as HTMLInputElement).name || el.id || "").replace(/[_\-[\].]+/g, " "));
 }
 
+/** The text of an upload button, which names the action and not the document. */
+const UPLOAD_VERB = /^(attach|upload|browse|choose|select|add)( (a |your )?(file|files|document))?$/i;
+
+/**
+ * A file input's question. Upload widgets often label the hidden input with its
+ * button's text ("Attach", job-boards.greenhouse.io); the document it asks for
+ * (Resume/CV, Cover Letter) is the label of the group around it.
+ */
+function fileLabel(el: HTMLElement): string {
+  const own = labelOf(el);
+  if (own && !UPLOAD_VERB.test(own)) return own;
+  return groupLabel([el]) || own;
+}
+
 /** A non-labelable widget (role=checkbox, a div combobox) is usually labelled by its own text. */
 function widgetLabel(el: HTMLElement): string {
   const lb = el.getAttribute("aria-labelledby");
@@ -390,7 +404,7 @@ export function scanForm(root: ParentNode = document): FormScan {
           continue;
         }
         if (full()) continue;
-        const info = base(el, kind, labelOf(el));
+        const info = base(el, kind, kind === "file" ? fileLabel(el) : labelOf(el));
         let manual = "";
         if (t === "select") {
           const s = el as HTMLSelectElement;
