@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -294,10 +292,10 @@ const maxUnreadExamples = 3
 // one by one; later new causes are only counted.
 const maxDistinctCauses = 20
 
-// advanceAll advances up to limit postings (config advance_per_run). With a
-// rank they go highest rank first, ties in ledger order, so the cap spends
-// itself on the titles the active track wants; a nil rank keeps ledger order.
-// Rank only orders: every eligible posting is still advanced, this run or a
+// advanceAll advances up to limit postings (config advance_per_run). They go
+// highest title rank first, then freshest first (orderAdvance), ties in
+// ledger order, so the cap spends itself on new postings with the titles the
+// active track wants. Order only orders: every eligible posting is still advanced, this run or a
 // later one. A posting no backend could read stays Live for the next run. The
 // run fails, so a shell loop stops and no empty digest is published, when no
 // backend read maxConsecutiveUnread postings in a row, or none of the postings
@@ -328,13 +326,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 			todo = append(todo, r)
 		}
 	}
-	if rank != nil {
-		ranks := make(map[posting.Key]int, len(todo))
-		for _, r := range todo {
-			ranks[r.Key] = rank(r.Posting)
-		}
-		slices.SortStableFunc(todo, func(a, b ledger.Record) int { return cmp.Compare(ranks[b.Key], ranks[a.Key]) })
-	}
+	orderAdvance(todo, recs, rank)
 	rep := advanceReport{Eligible: len(todo), Limit: limit}
 	done := func(stopped string) advanceReport {
 		rep.Deferred = rep.Eligible - rep.Attempted
