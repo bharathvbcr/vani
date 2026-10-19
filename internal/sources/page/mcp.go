@@ -388,7 +388,7 @@ func startMCP(ctx context.Context, binary string, flags []string) (*mcpProc, err
 		err = fmt.Errorf("%w: initialize refused: %s", ErrBrowserGone, rerr)
 	}
 	if err == nil {
-		err = p.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+		err = p.send(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	}
 	if err != nil {
 		_ = p.stop(false)
@@ -464,12 +464,40 @@ func (p *mcpProc) dead() bool {
 	}
 }
 
-func (p *mcpProc) send(msg any) error {
+// send writes one message line, bounded by ctx. A process that stops reading
+// stdin fills the pipe, and a request longer than the pipe buffer (a page's
+// href has no length limit) would then block the write past the load's
+// timeout. A write still blocked when ctx ends leaves part of a line on the
+// wire, so the process is killed, which ends the write; the caller discards it.
+func (p *mcpProc) send(ctx context.Context, msg any) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, err := p.stdin.Write(append(b, '\n'))
+		written <- err
+	}()
+	select {
+	case err = <-written:
+	case <-ctx.Done():
+		select {
+		case err = <-written: // finished as ctx ended: the line is whole
+		default:
+			_ = p.cmd.Process.Kill()
+			_ = p.stdin.Close()
+			select {
+			case <-written:
+			case <-time.After(stopWait):
+			}
+			return ctx.Err()
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("%w: writing a request: %v", ErrBrowserGone, err)
 	}
 	return nil
@@ -480,7 +508,7 @@ func (p *mcpProc) send(msg any) error {
 func (p *mcpProc) call(ctx context.Context, method string, params any) (json.RawMessage, *rpcError, error) {
 	p.nextID++
 	id := strconv.FormatInt(p.nextID, 10)
-	if err := p.send(map[string]any{"jsonrpc": "2.0", "id": p.nextID, "method": method, "params": params}); err != nil {
+	if err := p.send(ctx, map[string]any{"jsonrpc": "2.0", "id": p.nextID, "method": method, "params": params}); err != nil {
 		return nil, nil, err
 	}
 	for {
