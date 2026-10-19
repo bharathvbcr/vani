@@ -123,6 +123,11 @@ func fakeMCP(args []string) int {
 				rpcErr(req.ID, -32600, "no")
 			case "hang":
 				time.Sleep(time.Hour)
+			case "stopread":
+				// Answer, then never read stdin again: a request larger
+				// than the pipe buffer can then not be written.
+				reply(req.ID, map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}})
+				time.Sleep(time.Hour)
 			case "crash":
 				fmt.Fprint(os.Stderr, "fake init crash")
 				return 4

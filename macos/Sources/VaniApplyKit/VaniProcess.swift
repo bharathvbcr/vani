@@ -39,9 +39,11 @@ public enum VaniProcess {
 
     /// The environment every `vani` child gets: a fixed PATH, the user's home,
     /// and Vani's config and state locations when set (empty means Vani's default).
+    /// The Homebrew prefixes (Apple silicon, then Intel) come after the system
+    /// folders, so a tool installed there never shadows a system one.
     public static func environment(configPath: String?, stateDir: String?) -> [String: String] {
         var env: [String: String] = [
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
             "HOME": NSHomeDirectory(),
             "USER": NSUserName(),
             "TMPDIR": NSTemporaryDirectory(),
@@ -68,17 +70,26 @@ public enum VaniProcess {
         do { try p.run() } catch {
             return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: "could not start vani: \(error.localizedDescription)")
         }
-        if let inPipe, let input {
-            inPipe.fileHandleForWriting.write(input)
-            try? inPipe.fileHandleForWriting.close()
-        }
-
-        let done = DispatchSemaphore(value: 0)
+        // stdin, stdout and stderr each move on their own thread: any one of
+        // them done in sequence before another lets a child that fills one pipe
+        // while the parent waits on a different one stall until the timeout.
+        let done = DispatchGroup()
         let box = OutputBox()
-        DispatchQueue.global().async {
+        if let inPipe, let input {
+            let writer = inPipe.fileHandleForWriting
+            // A child that exits without reading its input must not raise
+            // SIGPIPE in this process; the write then fails with EPIPE instead.
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+            DispatchQueue.global().async(group: done) {
+                try? writer.write(contentsOf: input)
+                try? writer.close()
+            }
+        }
+        DispatchQueue.global().async(group: done) {
             box.out = outPipe.fileHandleForReading.readData(upTo: maxOutputBytes)
+        }
+        DispatchQueue.global().async(group: done) {
             box.err = errPipe.fileHandleForReading.readData(upTo: 64 * 1024)
-            done.signal()
         }
         if done.wait(timeout: .now() + timeout) == .timedOut {
             p.terminate()
@@ -91,6 +102,8 @@ public enum VaniProcess {
     }
 }
 
+/// Each field is written by one reader thread and read only after the group
+/// has finished.
 private final class OutputBox: @unchecked Sendable {
     var out = Data()
     var err = Data()

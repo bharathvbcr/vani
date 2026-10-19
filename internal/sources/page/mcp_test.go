@@ -393,6 +393,49 @@ func TestMCPStartFailures(t *testing.T) {
 	}
 }
 
+// A lightpanda that stops reading stdin cannot take a request larger than the
+// pipe buffer (a page's href has no length limit). The write must end with
+// the load's timeout or its context, not block the Load forever.
+func TestMCPBlockedRequestWriteIsBounded(t *testing.T) {
+	long := pageA + "?q=" + strings.Repeat("x", 4<<20)
+	loadWithin := func(b *MCPBrowser, ctx context.Context) error {
+		t.Helper()
+		errc := make(chan error, 1)
+		go func() {
+			_, err := b.Load(ctx, long)
+			errc <- err
+		}()
+		select {
+		case err := <-errc:
+			return err
+		case <-time.After(10 * time.Second):
+			_ = b.Close() // closing stdin ends the stuck write so the test can end
+			<-errc
+			t.Fatal("a request write to a lightpanda that stopped reading never returned")
+			return nil
+		}
+	}
+
+	b, log := fakeLP(t, nil, 300*time.Millisecond, "--fake-init=stopread")
+	start := time.Now()
+	if err := loadWithin(b, context.Background()); err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
+		t.Fatalf("blocked write: %v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("blocked write took %s", d)
+	}
+	if starts(t, log) != 1 {
+		t.Fatalf("processes: %d, want 1", starts(t, log))
+	}
+
+	b2, _ := fakeLP(t, nil, time.Minute, "--fake-init=stopread")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	if err := loadWithin(b2, ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled blocked write: %v", err)
+	}
+}
+
 // Reset ends the process gracefully and the next Load starts a fresh one;
 // Close during a hung Load ends it promptly.
 func TestMCPResetAndClose(t *testing.T) {
