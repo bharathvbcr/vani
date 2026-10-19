@@ -87,13 +87,6 @@ flowchart TD
   extension/`, also written to the ignored `build/card13-extension.patch`). It waits for the
   Greenhouse session's single commit of all of `extension/`, which is to fold it in once the
   extension type-checks.
-- **`kb sync` has no way to confirm a restructuring (audit card 12).** When an update would drop
-  bullets or facts from a DevPrism block, or rewrite a locked bullet, DevPrism answers
-  `inputRequired`; `kbsync.Apply` reports the block as `needs_confirmation` with DevPrism's message
-  and carries on with the others (`internal/kbsync/apply.go`). It never deadlocks, but such a block
-  never lands. A `--confirm` path would let a sync knowingly drop or rewrite career data, and needs
-  DevPrism's `request_state` / `input_responses` protocol (`tools_career.rs:926-959`), which has not
-  been read. The owner's decision, put to them on 2026-10-19.
 
 ## Audit 2026-10-19: criteria not built as written
 
