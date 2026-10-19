@@ -110,6 +110,7 @@ type wired struct {
 	stateDir string
 	led      *ledger.File
 	warn     io.Writer
+	warnMu   sync.Mutex // serialises writes to warn
 
 	mu     sync.Mutex
 	scorer *lazyScorer
@@ -144,7 +145,15 @@ func (w *wired) close() error {
 	return errors.Join(errs...)
 }
 
-func (w *wired) warnf(format string, a ...any) { fmt.Fprintf(w.warn, "vani: "+format+"\n", a...) }
+// warnf prints one warning line. Postings advance concurrently and their
+// backends warn from their own goroutines, so lines are written under warnMu,
+// whole.
+func (w *wired) warnf(format string, a ...any) {
+	line := fmt.Sprintf("vani: "+format+"\n", a...)
+	w.warnMu.Lock()
+	defer w.warnMu.Unlock()
+	_, _ = io.WriteString(w.warn, line)
+}
 
 // runOnce lists every board, reconciles it, then advances postings. It fails
 // as a whole only when no board could be read or the ledger fails; a single
@@ -190,7 +199,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			return r.Posting, ok
 		},
 		Report: func(b sources.Board, st greenhouse.PayStats) {
-			fmt.Fprintf(w.warn, "vani: board %s/%s: pay %+v\n", b.ATS, b.Token, st)
+			w.warnf("board %s/%s: pay %+v", b.ATS, b.Token, st)
 		},
 	})
 	if err != nil {
@@ -232,13 +241,13 @@ func (w *wired) runOnce(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("reconcile %s/%s: %w", b.ATS, b.Token, err)
 		}
-		fmt.Fprintf(w.warn, "vani: board %s/%s: %+v\n", b.ATS, b.Token, sum)
+		w.warnf("board %s/%s: %+v", b.ATS, b.Token, sum)
 	}
 	if len(w.cfg.Watchlist) > 0 && read == 0 {
 		return errors.New("no board could be read")
 	}
 
-	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), runner.Advance, w.warnf)
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), runner.Advance, w.warnf)
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()
@@ -296,9 +305,21 @@ const maxDistinctCauses = 20
 // and provider request id are not part of the cause) and counted after that.
 // The report says what happened however the phase ended, so the run record
 // can show what the cap or a stop left waiting.
-func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit int, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
+//
+// Up to workers postings (config advance_concurrency) are advanced at a time.
+// They start in rank order; their results are counted in the order they
+// finish, on this goroutine, so the report, the warnings and the stop rules
+// need no lock. The ledger serialises its own writes, and each posting is
+// advanced by one goroutine only. A stop (unread streak, cancellation) starts
+// no further posting but waits for those in flight, so nothing is written to
+// the ledger after advanceAll returns; with workers above 1 the streak can
+// therefore admit up to workers-1 attempts past maxConsecutiveUnread.
+func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit, workers int, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
 	if limit <= 0 {
 		return advanceReport{}, fmt.Errorf("advance limit %d must be above 0", limit)
+	}
+	if workers <= 0 {
+		return advanceReport{}, fmt.Errorf("advance concurrency %d must be above 0", workers)
 	}
 	var todo []ledger.Record
 	for _, r := range recs {
@@ -328,45 +349,106 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	causes := map[string]*cause{}
 	var order []string
 	uncounted := 0
-	for _, r := range todo {
-		if rep.Attempted >= limit {
-			warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
-			break
-		}
-		rep.Attempted++
-		err := advance(ctx, r.Key)
+	// count folds one finished posting into the report and the stop rules.
+	stopped := ""
+	var cancelErr error
+	count := func(key posting.Key, err error) {
 		if err != nil && ctx.Err() != nil {
-			return done(stopCancelled), ctx.Err()
+			// Cut short by cancellation: neither unread nor failed.
+			if stopped == "" {
+				stopped, cancelErr = stopCancelled, ctx.Err()
+			}
+			return
 		}
 		if errors.Is(err, pipeline.ErrTriageUnavailable) {
 			rep.Unread++
 			streak++
 			if rep.Unread <= maxUnreadExamples {
-				warnf("advance %s: %v", r.Key, err)
+				warnf("advance %s: %v", key, err)
 			}
-			if streak >= maxConsecutiveUnread {
-				return done(stopUnreadStreak), fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
-					streak, rep.Attempted, pipeline.ErrTriageUnavailable)
+			if streak >= maxConsecutiveUnread && stopped == "" {
+				stopped = stopUnreadStreak
 			}
-			continue
+			return
 		}
 		streak = 0
 		if err == nil {
-			continue
+			return
 		}
 		rep.Failed++
-		key := errorKey(strings.ReplaceAll(err.Error(), string(r.Key), "<posting>"))
-		if c, ok := causes[key]; ok {
+		ek := errorKey(strings.ReplaceAll(err.Error(), string(key), "<posting>"))
+		if c, ok := causes[ek]; ok {
 			c.more++
-			continue
+			return
 		}
 		if len(causes) >= maxDistinctCauses {
 			uncounted++
+			return
+		}
+		causes[ek] = &cause{first: key}
+		order = append(order, ek)
+		warnf("advance %s: %v", key, err)
+	}
+
+	type result struct {
+		key      posting.Key
+		err      error
+		panicked bool
+		value    any
+	}
+	n := min(len(todo), limit)
+	// Buffered to workers, so a finished posting never blocks its goroutine.
+	results := make(chan result, workers)
+	next, inflight := 0, 0
+	var panicked *result
+	for {
+		for stopped == "" && panicked == nil && next < n && inflight < workers {
+			if err := ctx.Err(); err != nil {
+				stopped, cancelErr = stopCancelled, err
+				break
+			}
+			key := todo[next].Key
+			next++
+			inflight++
+			rep.Attempted++
+			go func() {
+				// A panic is carried back and re-raised on the caller's
+				// goroutine, where the daemon contains it as it did before
+				// postings ran concurrently.
+				defer func() {
+					if p := recover(); p != nil {
+						results <- result{key: key, panicked: true, value: p}
+					}
+				}()
+				err := advance(ctx, key)
+				results <- result{key: key, err: err}
+			}()
+		}
+		if inflight == 0 {
+			break
+		}
+		r := <-results
+		inflight--
+		if r.panicked {
+			if panicked == nil {
+				panicked = &r
+			}
 			continue
 		}
-		causes[key] = &cause{first: r.Key}
-		order = append(order, key)
-		warnf("advance %s: %v", r.Key, err)
+		count(r.key, r.err)
+	}
+	if panicked != nil {
+		panic(fmt.Sprintf("advance %s: %v", panicked.key, panicked.value))
+	}
+	switch stopped {
+	case stopCancelled:
+		return done(stopCancelled), cancelErr
+	case stopUnreadStreak:
+		return done(stopUnreadStreak), fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
+			maxConsecutiveUnread, rep.Attempted, pipeline.ErrTriageUnavailable)
+	}
+	if len(todo) > limit {
+		warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
 	}
 	for _, k := range order {
 		if c := causes[k]; c.more > 0 {

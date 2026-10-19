@@ -74,12 +74,19 @@ type Config struct {
 	// live (listed, not yet triaged) for the next run. Zero means
 	// DefaultAdvancePerRun; at most MaxAdvancePerRun.
 	AdvancePerRun int `json:"advance_per_run,omitempty"`
+	// AdvanceConcurrency is how many postings one run advances at a time.
+	// Ledger writes stay serialised, and the cap and the stop rules are
+	// unchanged. Zero means DefaultAdvanceConcurrency; 1 is strictly one at a
+	// time; at most MaxAdvanceConcurrency.
+	AdvanceConcurrency int `json:"advance_concurrency,omitempty"`
 }
 
-// Per-run advance bounds (Config.AdvancePerRun).
+// Per-run advance bounds (Config.AdvancePerRun, Config.AdvanceConcurrency).
 const (
-	DefaultAdvancePerRun = 300
-	MaxAdvancePerRun     = 5000
+	DefaultAdvancePerRun      = 300
+	MaxAdvancePerRun          = 5000
+	DefaultAdvanceConcurrency = 4
+	MaxAdvanceConcurrency     = 16
 )
 
 // AdvanceLimit is AdvancePerRun with zero read as the default.
@@ -88,6 +95,14 @@ func (c Config) AdvanceLimit() int {
 		return DefaultAdvancePerRun
 	}
 	return c.AdvancePerRun
+}
+
+// AdvanceWorkers is AdvanceConcurrency with zero read as the default.
+func (c Config) AdvanceWorkers() int {
+	if c.AdvanceConcurrency == 0 {
+		return DefaultAdvanceConcurrency
+	}
+	return c.AdvanceConcurrency
 }
 
 // PageInterval is PageIntervalMS as a duration; zero means no wait.
@@ -681,6 +696,9 @@ func (c Config) Validate() error {
 	}
 	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
 		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)
+	}
+	if c.AdvanceConcurrency < 0 || c.AdvanceConcurrency > MaxAdvanceConcurrency {
+		add("advance_concurrency %d must be within 0..%d (0 means %d)", c.AdvanceConcurrency, MaxAdvanceConcurrency, DefaultAdvanceConcurrency)
 	}
 	switch c.Decide.Shadow {
 	case "":
