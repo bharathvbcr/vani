@@ -21,6 +21,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 )
 
 const (
@@ -60,6 +61,15 @@ type Config struct {
 	// LightpandaBinary is the headless browser used for careers-page boards.
 	// Empty means look up "lightpanda" on PATH when a page board exists.
 	LightpandaBinary string `json:"lightpanda_binary,omitempty"`
+	// PageIntervalMS spaces careers-page fetches to one host: a lightpanda run
+	// starts only this long after the previous run to that host ended (e.g. a
+	// robots Crawl-delay). Zero is off. At most page.MaxInterval.
+	PageIntervalMS int `json:"page_interval_ms,omitempty"`
+}
+
+// PageInterval is PageIntervalMS as a duration; zero means no wait.
+func (c Config) PageInterval() time.Duration {
+	return time.Duration(c.PageIntervalMS) * time.Millisecond
 }
 
 // KB locates rkb and its bank. Paths are absolute.
@@ -520,6 +530,9 @@ func (c Config) Validate() error {
 		if p != "" && !filepath.IsAbs(p) {
 			add("%s %q must be an absolute path", name, p)
 		}
+	}
+	if maxMS := int(page.MaxInterval / time.Millisecond); c.PageIntervalMS < 0 || c.PageIntervalMS > maxMS {
+		add("page_interval_ms %d must be within 0..%d", c.PageIntervalMS, maxMS)
 	}
 	switch c.Decide.Shadow {
 	case "":

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -18,6 +19,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -125,6 +127,45 @@ func TestPageSourceStartsAndStopsProxy(t *testing.T) {
 	w.cfg.LightpandaBinary = ""
 	if _, _, err := w.pageSource(context.Background(), c); err == nil {
 		t.Fatal("pageSource with no lightpanda binary succeeded")
+	}
+}
+
+// page_interval_ms off runs lightpanda directly; set, it wraps the runner in
+// the per-host wait; out of range, it is refused rather than clamped.
+func TestPageRunnerInterval(t *testing.T) {
+	run, err := pageRunner("/opt/lp/lightpanda", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if er, ok := run.(page.ExecRunner); !ok || er.Binary != "/opt/lp/lightpanda" || er.Timeout != lightpandaTimeout {
+		t.Fatalf("interval 0: %#v", run)
+	}
+	run, err = pageRunner("/opt/lp/lightpanda", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := run.(*page.Paced); !ok {
+		t.Fatalf("interval 5s: %T, want *page.Paced", run)
+	}
+	for _, d := range []time.Duration{-time.Millisecond, page.MaxInterval + time.Millisecond} {
+		if _, err := pageRunner("/opt/lp/lightpanda", d); err == nil || !strings.Contains(err.Error(), "page_interval_ms") {
+			t.Errorf("interval %s: %v", d, err)
+		}
+	}
+
+	c, err := egress.New(egress.Config{AllowedHosts: []string{"careers.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &wired{cfg: config.Config{LightpandaBinary: "/opt/lp/lightpanda", PageIntervalMS: 5000}, warn: &bytes.Buffer{}}
+	_, stop, err := w.pageSource(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	w.cfg.PageIntervalMS = 60_000 // a config that skipped Validate
+	if _, _, err := w.pageSource(context.Background(), c); err == nil {
+		t.Fatal("pageSource accepted an out-of-range interval")
 	}
 }
 

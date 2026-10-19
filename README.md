@@ -210,7 +210,10 @@ build/vani launchd plist --binary /absolute/path/to/vani
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
 --search "query"`. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
-URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH.
+URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. `page_interval_ms` (0..10000,
+default off) makes each careers-page fetch wait until that long after the previous fetch to the same
+host ended, e.g. to honour a robots `Crawl-delay`; the wait happens before lightpanda starts, since
+the egress proxy's own per-host pacing must stay under lightpanda's 5 s wait.
 
 Config and state default to `~/Library/Application Support/Vani/` (override with `VANI_CONFIG`
 and `VANI_STATE_DIR`). Keys come from the environment: `OPENROUTER_API_KEY` for Jev,
