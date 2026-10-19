@@ -58,6 +58,36 @@ func TestATSPostingArrivingLaterMarksPageTwin(t *testing.T) {
 	}
 }
 
+// A careers-page "Senior C# Engineer" is a different role from the ATS
+// "Senior C++ Engineer" at the same company and place: it stays live. The
+// same title on both still dedupes, whichever arrives first.
+func TestLanguageTitlesAreDifferentRoles(t *testing.T) {
+	l := openLedger(t)
+	cpp := ghPost(t, "1", "jd")
+	cpp.Title = "Senior C++ Engineer"
+	if _, err := Reconcile(ctx, l, board, []posting.Posting{cpp}, t0); err != nil {
+		t.Fatal(err)
+	}
+	cs := pagePost(t, "https://acme.example/careers/2", "Senior C# Engineer")
+	plainC := pagePost(t, "https://acme.example/careers/3", "Senior C Engineer")
+	twin := pagePost(t, "https://acme.example/careers/1", "senior c++ engineer")
+	s, err := Reconcile(ctx, l, pageBoard, []posting.Posting{cs, plainC, twin}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Duplicate != 1 || s.New != 2 {
+		t.Fatalf("summary %+v, want 2 new and 1 duplicate", s)
+	}
+	for _, k := range []posting.Key{cs.Key, plainC.Key} {
+		if got := rec(t, l, k); got.Status != posting.Live {
+			t.Errorf("%s (%s) is %s %v, want live", k, got.Posting.Title, got.Status, got.Annotations)
+		}
+	}
+	if got := rec(t, l, twin.Key); got.Status != posting.Duplicate || got.Annotations[DuplicateOfKey] != string(cpp.Key) {
+		t.Errorf("the C++ twin: %s %v", got.Status, got.Annotations)
+	}
+}
+
 func TestPostingKeyedUnderAnotherBoardIsInvalid(t *testing.T) {
 	l := openLedger(t)
 	other, _ := posting.GreenhouseKey("globex", "9")

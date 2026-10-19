@@ -97,11 +97,11 @@ func CanonicalURL(rawURL string) (string, error) {
 	return u.String(), nil
 }
 
-// FallbackKey is x:{sha256(norm(company)|norm(title)|norm(location))[:24]},
+// FallbackKey is x:{sha256(norm(company)|normTitle(title)|norm(location))[:24]},
 // for postings with no ATS identity. Location may be empty; company and title
 // may not.
 func FallbackKey(company, title, location string) (Key, error) {
-	c, t := norm(company), norm(title)
+	c, t := norm(company), normTitle(title)
 	if c == "" || t == "" {
 		return "", fmt.Errorf("%w: fallback key needs company and title", ErrKeyPart)
 	}

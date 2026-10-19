@@ -105,19 +105,51 @@ func hashOf(s string) string {
 // norm lowercases, folds every run of non-letter/digit characters to one
 // space, and trims. It is the normalisation the fallback key uses, so it is
 // deliberately simple and stable: changing it re-keys every fallback posting.
-func norm(s string) string {
+func norm(s string) string { return fold(s, false) }
+
+// normTitle is norm for job titles, which keeps the punctuation that names a
+// language: "++" right after a word (C++, G++), "#" right after a one-letter
+// word (C#, F#, J#) and a "." that begins a word before a letter (.NET).
+// Without it "Senior C++ Engineer" and "Senior C# Engineer" fold to one title
+// and dedupe as one role. Every other character folds as in norm: a single "+"
+// is a seniority mark ("Staff+") or a joiner ("Data+AI"), and "Sr. Engineer"
+// still matches "Sr Engineer". Titles that hold none of these keep the key
+// they had before.
+func normTitle(s string) string { return fold(s, true) }
+
+func fold(s string, tech bool) string {
+	rs := []rune(strings.ToLower(s))
+	isAlnum := func(j int) bool { return j >= 0 && j < len(rs) && (unicode.IsLetter(rs[j]) || unicode.IsDigit(rs[j])) }
 	var b strings.Builder
 	space := false
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			if space && b.Len() > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteRune(r)
-			space = false
-			continue
+	word := 0 // runes in the word being written
+	put := func(r rune) {
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+			word = 0
 		}
-		space = true
+		b.WriteRune(r)
+		word++
+		space = false
+	}
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			put(r)
+		case tech && r == '+' && isAlnum(i-1) && i+1 < len(rs) && rs[i+1] == '+':
+			b.WriteString("++")
+			i++
+			for i+1 < len(rs) && rs[i+1] == '+' {
+				i++ // "c+++" is "c++"
+			}
+		case tech && r == '#' && isAlnum(i-1) && word == 1:
+			b.WriteByte('#')
+		case tech && r == '.' && !isAlnum(i-1) && i+1 < len(rs) && unicode.IsLetter(rs[i+1]):
+			put(r)
+		default:
+			space = true
+		}
 	}
 	return b.String()
 }
