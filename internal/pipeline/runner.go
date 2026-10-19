@@ -164,6 +164,15 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 				st, reason = r.Policy.Evaluate(ans)
 			}
 			ann := triageAnnotations(ans)
+			// This triage replaces any earlier one whole: a key it did not set
+			// (a shadow reading from a run that sampled the shadow, a value the
+			// new answer abstained on) is forgotten, so the eval never pairs
+			// this run's primary with another run's shadow.
+			for k := range rec.Annotations {
+				if _, set := ann[k]; !set && strings.HasPrefix(k, ledger.AnnTriagePrefix) {
+					ann[k] = ""
+				}
+			}
 			if r.Badger != nil && rec.Posting.Company != "" {
 				if b := r.Badger.Badge(rec.Posting.Company); b != "" {
 					ann[ledger.AnnLCA] = b

@@ -109,7 +109,8 @@ func KindOf(e Entry) string {
 // ParseDates splits rkb's free-text dates ("AUG 2023 – APR 2025",
 // "SEP 2025 to Present", "MAY 2022") into DevPrism's dateRange. Empty dates
 // give an empty start and an open end (how rkb project entries read). Text it
-// cannot split is reported, not guessed.
+// cannot split is reported, not guessed: so is a range with no start ("Present"
+// alone, "Present – 2024"), which would otherwise store "Present" as a date.
 func ParseDates(s string) (start string, end *string, err error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -122,19 +123,30 @@ func ParseDates(s string) (start string, end *string, err error) {
 			return "", nil, fmt.Errorf("unparseable dates")
 		}
 	}
+	if openEnd(parts[0]) {
+		return "", nil, fmt.Errorf("dates have no start")
+	}
 	switch len(parts) {
 	case 1:
 		p := parts[0]
 		return p, &p, nil
 	case 2:
-		switch strings.ToLower(parts[1]) {
-		case "present", "current", "now":
+		if openEnd(parts[1]) {
 			return parts[0], nil, nil
 		}
 		e := parts[1]
 		return parts[0], &e, nil
 	}
 	return "", nil, fmt.Errorf("unparseable dates")
+}
+
+// openEnd reports whether a date part means "still ongoing".
+func openEnd(p string) bool {
+	switch strings.ToLower(p) {
+	case "present", "current", "now":
+		return true
+	}
+	return false
 }
 
 // ResolveBank turns a bank and the claim values into blocks. Unresolved claim

@@ -199,6 +199,13 @@ func TestParseDatesAndKind(t *testing.T) {
 		{"", "", nil, false},
 		{"A – B – C", "", nil, true},
 		{"2020 –", "", nil, true},
+		// No start: reported, never stored as start "Present".
+		{"Present", "", nil, true},
+		{"  current ", "", nil, true},
+		{"NOW", "", nil, true},
+		{"Present – 2024", "", nil, true},
+		{"Present to Present", "", nil, true},
+		{"2021 – now", "2021", nil, false},
 	}
 	for _, c := range cases {
 		s, e, err := ParseDates(c.in)

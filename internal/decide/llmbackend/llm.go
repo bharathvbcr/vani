@@ -162,7 +162,9 @@ const ReasoningHeadroom = 1024
 // serves req.Model, so every single-turn caller asks each provider the same way.
 // Anthropic's current models reject temperature outright (Manvi refuses the
 // request before sending) and reason on every turn, so they get the lowest
-// effort and headroom for thinking; other providers get temperature 0.
+// effort and headroom for thinking; other providers get temperature 0. The
+// headroom never lifts MaxTokens past the model's output ceiling, which Manvi
+// would refuse; a request already within it keeps at least its own budget.
 func Shape(p llm.Provider, req *llm.Request) {
 	c, ok := p.Capability(req.Model)
 	if ok && c.Provider == "anthropic" {
@@ -172,6 +174,9 @@ func Shape(p llm.Provider, req *llm.Request) {
 				req.Effort = "low"
 			}
 			req.MaxTokens += ReasoningHeadroom
+			if c.MaxOutputTokens > 0 {
+				req.MaxTokens = min(req.MaxTokens, max(c.MaxOutputTokens, req.MaxTokens-ReasoningHeadroom))
+			}
 		}
 		return
 	}
