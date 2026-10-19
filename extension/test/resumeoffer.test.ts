@@ -111,6 +111,15 @@ describe("the offer", () => {
     expect(h.log.at(-1)).toMatch(/^ask: Resume_Acme_AI\.pdf was not attached: this page did not take the file/);
   });
 
+  test("a box that kept its file or vanished says which, never a wrong reason", async () => {
+    const kept = harness({ attach: async () => [{ label: "Resume/CV", filled: false, reason: "has_value" }] });
+    await kept.offer.build();
+    expect(kept.log.at(-1)).toMatch(/was not attached: the resume box already holds a file/);
+    const gone = harness({ attach: async () => [] });
+    await gone.offer.build();
+    expect(gone.log.at(-1)).toMatch(/was not attached: the resume box is gone from the page/);
+  });
+
   test("Choose PDF: a checked PDF is bound and attached; Cancel does nothing; a non-PDF is refused", async () => {
     const h = harness();
     await h.offer.choose();

@@ -607,7 +607,8 @@ const resumeOffer = createResumeOffer({
   },
   attach: async r => {
     const refs = scanForm(document).refs.filter(x => x.info.kind === "file" && isResumeField(x.info));
-    return fillAll(refs, emptyBank(), location.hostname, { resume: async () => r });
+    // The owner just asked for this file: it replaces one already in the box.
+    return fillAll(refs, emptyBank(), location.hostname, { resume: async () => r, overwrite: true });
   },
 });
 

@@ -61,7 +61,9 @@ export function createResumeOffer(d: OfferDeps) {
       d.ui.done(`Attached ${r.name} (yellow): open it and check it before you submit.${saved}`);
       return;
     }
-    const why = out.find(o => o.detail)?.detail ?? "the resume box is gone from the page";
+    const miss = out.find(o => !o.filled);
+    const why = miss?.detail ?? (miss?.reason === "has_value" ? "the resume box already holds a file"
+      : miss?.reason === "detached" || !miss ? "the resume box is gone from the page" : `the resume box was left as it was (${miss.reason})`);
     d.ui.ask(`${r.name} was not attached: ${why}.${saved}`, ["choose", "dismiss"]);
   }
 

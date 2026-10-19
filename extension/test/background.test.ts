@@ -10,6 +10,8 @@ const saved = { chrome: g.chrome, browser: g.browser };
 let listener: Listener | undefined;
 let local: Record<string, unknown> = {};
 const removed: Array<(tabId: number) => void> = [];
+/** What the background asked the (absent) Mac app, in order. */
+const nativeSent: object[] = [];
 
 beforeAll(async () => {
   const on = { addListener() {} };
@@ -18,7 +20,8 @@ beforeAll(async () => {
     runtime: {
       onMessage: { addListener(cb: Listener) { listener = cb; } },
       // No Mac app: the store falls back to chrome.storage.local.
-      sendNativeMessage(_app: string, _m: object, cb: (r: unknown) => void) {
+      sendNativeMessage(_app: string, m: object, cb: (r: unknown) => void) {
+        nativeSent.push(m);
         (g.chrome as { runtime: { lastError?: { message: string } } }).runtime.lastError = { message: "host not found" };
         cb(undefined);
         (g.chrome as { runtime: { lastError?: unknown } }).runtime.lastError = undefined;
@@ -97,6 +100,33 @@ describe("frame registry messages", () => {
     for (const cb of removed) cb(11);
     await new Promise(r => setTimeout(r, 10));
     expect(await ask({ type: "frames", tabId: 11 }, {})).toEqual({ async: true, replies: [{ frames: [] }] });
+  });
+});
+
+describe("resume messages", () => {
+  const own = "https://boards.greenhouse.io/acme/jobs/1";
+  const claimed = "https://boards.greenhouse.io/other/jobs/2";
+  const last = () => nativeSent.at(-1) as { op?: string; key?: string } | undefined;
+
+  test("a content script gets the resume keyed by its own frame's URL, not the one its message claims", async () => {
+    const r = await ask({ type: "resumeGet", url: claimed }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    expect(last()).toEqual({ op: "resumeGet", key: own });
+    // No Mac app here: an unreachable app is a coded reply, which Fill shows as a reason.
+    expect(r.replies).toEqual([{ error: "the Vani Apply Mac app isn't reachable", code: "unreachable" }]);
+  });
+
+  test("a content script's resumePut binds to its own page too", async () => {
+    await ask({ type: "resumePut", url: claimed, name: "Resume_Test.pdf", pdf: btoa("%PDF-1.4\n%%EOF\n") }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    expect(last()).toMatchObject({ op: "resumePut", key: own, name: "Resume_Test.pdf" });
+  });
+
+  test("the popup (no tab) names the page; it can never fetch the bytes", async () => {
+    await ask({ type: "resumeInfo", url: claimed }, {});
+    expect(last()).toEqual({ op: "resumeInfo", key: claimed });
+    const before = nativeSent.length;
+    const r = await ask({ type: "resumeGet", url: claimed }, {});
+    expect(r.replies).toEqual([{ error: "only a page being filled gets the resume", code: "bad_request" }]);
+    expect(nativeSent.length).toBe(before);
   });
 });
 

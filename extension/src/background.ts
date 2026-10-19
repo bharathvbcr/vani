@@ -234,7 +234,9 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "resumeDelete": {
       // The bytes go only to the content script that asked, for its own tab; the popup gets the name, never the file.
       if (msg.type === "resumeGet" && !sender.tab) return { error: "only a page being filled gets the resume", code: "bad_request" };
-      const op = resumeOp(msg);
+      // A content script acts for its own frame: the key is that frame's URL, never the one its message claims.
+      // The popup is in no tab and names the active tab's page.
+      const op = resumeOp({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url });
       if ("error" in op) return op;
       const r = await native(op);
       // A form in a frame has a URL of its own; the resume may be bound to the page around it (as for appliedSignal).
