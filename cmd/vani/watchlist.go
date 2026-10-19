@@ -48,12 +48,28 @@ func (e *env) watchlistList(args []string) error {
 
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd or pg (careers page)")
-	token := fs.String("token", "", "board token (workday: tenant/site; pg: a short slug)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold) or pg (careers page)")
+	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; pg: a short slug)")
 	company := fs.String("company", "", "company display name")
 	region := fs.String("region", "", "regional host (eu, lever only)")
-	host := fs.String("host", "", "workday tenant host, e.g. acme.wd5.myworkdayjobs.com")
-	search := fs.String("search", "", "workday searchText to narrow a large board")
+	host := fs.String("host", "", "workday tenant host (acme.wd5.myworkdayjobs.com) or eightfold careers host")
+	var searches []string
+	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef); the board lists their union", func(s string) error {
+		searches = append(searches, s)
+		return nil
+	})
+	var filters map[string][]string
+	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap)", func(s string) error {
+		k, v, ok := strings.Cut(s, "=")
+		if !ok || k == "" {
+			return fmt.Errorf("filter %q is not name=value", s)
+		}
+		if filters == nil {
+			filters = map[string][]string{}
+		}
+		filters[k] = append(filters[k], v)
+		return nil
+	})
 	pageURL := fs.String("url", "", "careers listing page (pg only, https)")
 	linkPattern := fs.String("link-pattern", "", "regexp a posting link must match (pg only)")
 	allow := fs.Bool("allow-host", false, "also add the board's API host to allowed_hosts")
@@ -64,7 +80,14 @@ func (e *env) watchlistAdd(args []string) error {
 		return usagef("watchlist add: --ats, --token and --company are required")
 	}
 	b := sources.Board{ATS: posting.ATS(*ats), Token: *token, Company: *company, Region: *region,
-		Host: *host, Search: *search, URL: *pageURL, LinkPattern: *linkPattern}
+		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters}
+	switch len(searches) {
+	case 0:
+	case 1:
+		b.Search = searches[0]
+	default:
+		b.Searches = searches
+	}
 	if err := config.ValidBoard(b); err != nil {
 		return usagef("watchlist add: %v", err)
 	}

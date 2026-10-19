@@ -23,18 +23,64 @@ type Board struct {
 	// Region selects a regional API host where one exists ("eu" for Lever).
 	Region string `json:"region,omitempty"`
 
-	// Host is the Workday tenant host, "{tenant}.wd{N}.myworkdayjobs.com".
-	// Workday only; the tenant label must match Token's tenant.
+	// Host is the board's API host where the ATS does not fix one: the
+	// Workday tenant host "{tenant}.wd{N}.myworkdayjobs.com" (its tenant label
+	// must match Token's tenant), or an Eightfold careers host such as
+	// "apply.careers.microsoft.com".
 	Host string `json:"host,omitempty"`
-	// Search narrows a Workday listing (the board's searchText). Large
-	// Workday boards need it, because the listing is capped.
-	Search string `json:"search,omitempty"`
+	// Search narrows a search-based listing (Workday's searchText, or the
+	// query on Amazon, Google, Apple and Eightfold). Searches adds more terms;
+	// the board lists the union of every term's results, each posting once.
+	// Large boards need narrow terms because every listing is capped, and a
+	// term over the cap fails the board rather than being truncated. A posting
+	// that stops matching every term is, to Vani, gone from the board: it ages
+	// out after two runs like any absent posting.
+	Search   string   `json:"search,omitempty"`
+	Searches []string `json:"searches,omitempty"`
+	// Filters are a search site's own query filters, by parameter name, for
+	// the systems that have verified ones (see FilterKeys). Each search term
+	// is run with every filter applied.
+	Filters map[string][]string `json:"filters,omitempty"`
 
 	// URL is a careers listing page (https). Page boards only.
 	URL string `json:"url,omitempty"`
 	// LinkPattern is a Go regexp an absolute link on URL must match to count
 	// as a posting page. Page boards only.
 	LinkPattern string `json:"link_pattern,omitempty"`
+}
+
+// Bounds on a board's search terms and filters.
+const (
+	MaxSearches     = 10
+	MaxSearchLen    = 100
+	MaxFilterValues = 10
+)
+
+// FilterKeys lists, per system, the query filters verified to narrow its
+// search (2026-10-19, by comparing result counts with and without each).
+// A filter not listed here is refused rather than sent unverified.
+var FilterKeys = map[posting.ATS][]string{
+	posting.Google: {"target_level", "location"},
+	posting.Amazon: {"normalized_country_code[]", "category[]"},
+	posting.Apple:  {"location"},
+}
+
+// SearchTerms is the board's distinct search terms in order: Search, then
+// Searches, trimmed, with case-insensitive duplicates and empty terms
+// dropped. A board with none has no terms (Workday then lists everything).
+func (b Board) SearchTerms() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range append([]string{b.Search}, b.Searches...) {
+		s = strings.TrimSpace(s)
+		k := strings.ToLower(s)
+		if s == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // KeyPrefix is the key prefix every posting from this board carries. It is

@@ -295,6 +295,77 @@ func TestRateLimitIsRetried(t *testing.T) {
 	}
 }
 
+// Several search terms list their union: a posting both terms find is fetched
+// and reported once, and each term is its own listing request.
+func TestSearchesListTheUnion(t *testing.T) {
+	inner := fixtureHandler(t)
+	var terms []string
+	s, d := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if r.Method == "POST" {
+			var req listRequest
+			if err := json.Unmarshal(r.Body, &req); err != nil {
+				t.Errorf("listing body: %v", err)
+			}
+			terms = append(terms, req.SearchText)
+		}
+		return inner(r)
+	})
+	b := board
+	b.Search, b.Searches = "TensorRT", []string{"new college grad", "tensorrt", " "}
+	got, err := s.List(context.Background(), b)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %d postings, err %v; want the fixture's 2 once each", len(got), err)
+	}
+	if strings.Join(terms, "|") != "TensorRT|new college grad" {
+		t.Errorf("listing terms %q, want each distinct term once", terms)
+	}
+	gets := 0
+	for _, r := range d.Requests() {
+		if r.Method == "GET" {
+			gets++
+		}
+	}
+	if gets != 2 {
+		t.Errorf("%d detail requests, want 2 (a posting both terms list is fetched once)", gets)
+	}
+}
+
+// Two terms each under the cap whose union is over it fail the board before
+// any detail request is spent, and filters are refused.
+func TestSearchesUnionCap(t *testing.T) {
+	page := func(prefix string, n, offset int) string {
+		var resp listResponse
+		resp.Total = n
+		for i := offset; i < n && i < offset+pageSize; i++ {
+			resp.JobPostings = append(resp.JobPostings, listedJob{Title: "t", ExternalPath: fmt.Sprintf("/job/%s_JR%d", prefix, i)})
+		}
+		raw, _ := json.Marshal(resp)
+		return string(raw)
+	}
+	s, d := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		var req listRequest
+		_ = json.Unmarshal(r.Body, &req)
+		if r.Method != "POST" {
+			return srctest.Reply{}, false
+		}
+		return ok(page(req.SearchText, 150, req.Offset)), true
+	})
+	b := board
+	b.Searches = []string{"a", "b"}
+	if _, err := s.List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) || !strings.Contains(err.Error(), "searches together") {
+		t.Fatalf("err = %v, want the union over the cap", err)
+	}
+	for _, r := range d.Requests() {
+		if r.Method == "GET" {
+			t.Fatal("a detail request was spent on a board over the cap")
+		}
+	}
+	b.Filters = map[string][]string{"locations": {"x"}}
+	if _, err := s.List(context.Background(), b); err == nil || !strings.Contains(err.Error(), "filters") {
+		t.Fatalf("filters accepted: %v", err)
+	}
+}
+
 func TestMalformedJSON(t *testing.T) {
 	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) { return ok(`{"total":`), true })
 	if _, err := s.List(context.Background(), board); err == nil {

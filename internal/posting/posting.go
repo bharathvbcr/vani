@@ -19,6 +19,14 @@ const (
 	Lever      ATS = "lv"
 	Ashby      ATS = "ab"
 	Workday    ATS = "wd"
+	// Amazon is amazon.jobs's own search API.
+	Amazon ATS = "az"
+	// Google is Google's careers site (google.com/about/careers).
+	Google ATS = "gg"
+	// Apple is jobs.apple.com.
+	Apple ATS = "ap"
+	// Eightfold is an Eightfold "PCSX" careers site (Microsoft, Qualcomm).
+	Eightfold ATS = "ef"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

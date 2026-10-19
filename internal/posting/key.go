@@ -44,6 +44,21 @@ func WorkdayKey(tenant, site, reqID string) (Key, error) {
 	return build(Workday, tenant, site, reqID)
 }
 
+// AmazonKey is az:{board}:{id_icims}.
+func AmazonKey(board, id string) (Key, error) { return build(Amazon, board, id) }
+
+// GoogleKey is gg:{board}:{job_id}.
+func GoogleKey(board, id string) (Key, error) { return build(Google, board, id) }
+
+// AppleKey is ap:{board}:{position_id}. The position id, not the job number
+// ("200677962-3760"), is the role: one role posted in several locales keeps
+// one key.
+func AppleKey(board, positionID string) (Key, error) { return build(Apple, board, positionID) }
+
+// EightfoldKey is ef:{domain}:{position_id}; the domain ("microsoft.com") is
+// the board token.
+func EightfoldKey(domain, id string) (Key, error) { return build(Eightfold, domain, id) }
+
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
 // no trailing slash) so cosmetic link differences do not split one posting
@@ -100,7 +115,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Page, Other:
 		return a
 	}
 	return ""
