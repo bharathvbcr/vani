@@ -90,6 +90,12 @@ func runFakeServer() {
 			switch a.JD {
 			case "HANG":
 				continue
+			case "STOPREAD":
+				// Answer, then never read stdin again: the pipe fills and the
+				// client's next large write cannot finish.
+				reply(gapPayload(a.PageBudget, "stopped"))
+				time.Sleep(time.Minute)
+				os.Exit(5)
 			case "SLOW":
 				time.Sleep(500 * time.Millisecond)
 			case "DIE":
@@ -482,6 +488,91 @@ func TestCloseIsBoundedAndIdempotent(t *testing.T) {
 	if _, err := c.Gap(context.Background(), "x", ""); !errors.Is(err, ErrServerGone) {
 		t.Fatalf("after Close: err = %v", err)
 	}
+}
+
+// A DevPrism that stops reading stdin fills the pipe. Writing the next request
+// must give up at the call deadline and kill the process rather than block
+// forever holding c.mu, so Close, Stderr and later calls still answer.
+func TestWriteToServerThatStopsReadingIsBounded(t *testing.T) {
+	cfg := fakeConfig(t)
+	cfg.CallTimeout = 300 * time.Millisecond
+	c, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.p // kept to unwedge the client if the write never returns
+	if _, err := c.Gap(context.Background(), "STOPREAD", ""); err != nil {
+		t.Fatalf("STOPREAD: %v", err)
+	}
+
+	big := strings.Repeat("x", 4<<20) // far more than any pipe buffer holds
+	errc := make(chan error, 1)
+	go func() {
+		_, err := c.Gap(context.Background(), big, "")
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		if !errors.Is(err, ErrCallTimeout) {
+			t.Fatalf("blocked write: err = %v, want ErrCallTimeout", err)
+		}
+	case <-time.After(10 * time.Second):
+		p.cancel() // kill the child so the stuck write fails and the test can end
+		<-errc
+		c.Close()
+		t.Fatal("writing to a server that stopped reading stdin never returned")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_ = c.Stderr()
+		_, err := c.Gap(context.Background(), "after", "")
+		c.Close()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrServerGone) {
+			t.Fatalf("call after the killed process: err = %v, want ErrServerGone", err)
+		}
+	case <-time.After(2*closeGrace + time.Second):
+		t.Fatal("the client lock was still held after the bounded write")
+	}
+}
+
+// A context cancelled while the write is blocked releases it too, without
+// waiting for the call deadline.
+func TestBlockedWriteHonoursCancellation(t *testing.T) {
+	cfg := fakeConfig(t)
+	cfg.CallTimeout = MaxCallTimeout
+	c, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.p
+	if _, err := c.Gap(context.Background(), "STOPREAD", ""); err != nil {
+		t.Fatalf("STOPREAD: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		_, err := c.Gap(ctx, strings.Repeat("x", 4<<20), "")
+		errc <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errc:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled write: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		p.cancel()
+		<-errc
+		c.Close()
+		t.Fatal("cancelling the context did not release a blocked write")
+	}
+	c.Close()
 }
 
 func TestStartFailures(t *testing.T) {

@@ -307,7 +307,7 @@ func (c *Client) handshakeLocked(ctx context.Context) (string, error) {
 	if err != nil && !(errors.As(err, &te) && te.Code == methodNotFoundRPC) {
 		return "", fmt.Errorf("resume: initialize: %w", err)
 	}
-	if err := c.notifyLocked("notifications/initialized"); err != nil {
+	if err := c.notifyLocked(ctx, "notifications/initialized"); err != nil {
 		return "", err
 	}
 	res, err := c.rpcLocked(ctx, "tools/list", map[string]any{})
@@ -347,7 +347,13 @@ func hashTools(res json.RawMessage) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (c *Client) writeLocked(v any) error {
+// writeLocked sends one message line. The pipe write runs in its own goroutine
+// and is bounded by ctx (by CallTimeout when ctx has none): a DevPrism that
+// stops reading stdin fills the pipe, and a bare Write would then block forever
+// while c.mu is held. A write still blocked when ctx ends may have put part of
+// the line on the wire, so the channel is unusable and the process is killed,
+// which also ends the write; later calls see ErrServerGone until Restart.
+func (c *Client) writeLocked(ctx context.Context, method string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -355,14 +361,57 @@ func (c *Client) writeLocked(v any) error {
 	if c.p == nil {
 		return c.goneLocked()
 	}
-	if _, err := c.p.stdin.Write(append(b, '\n')); err != nil {
-		return c.goneLocked()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.CallTimeout)
+		defer cancel()
 	}
-	return nil
+	if ctx.Err() != nil {
+		return ctxErr(ctx, method)
+	}
+	p := c.p
+	written := make(chan error, 1)
+	go func() {
+		_, err := p.stdin.Write(append(b, '\n'))
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			return c.goneLocked()
+		}
+		return nil
+	case <-ctx.Done():
+	}
+	select {
+	case err := <-written: // finished as ctx ended: the line is whole
+		if err != nil {
+			return c.goneLocked()
+		}
+		return nil
+	default:
+	}
+	p.cancel()
+	p.terminate()
+	c.p = nil
+	select {
+	case <-written:
+	case <-time.After(closeGrace):
+	}
+	return ctxErr(ctx, method)
 }
 
-func (c *Client) notifyLocked(method string) error {
-	return c.writeLocked(map[string]any{"jsonrpc": "2.0", "method": method})
+func (c *Client) notifyLocked(ctx context.Context, method string) error {
+	return c.writeLocked(ctx, method, map[string]any{"jsonrpc": "2.0", "method": method})
+}
+
+// ctxErr maps an ended context to the client's error: a deadline is
+// ErrCallTimeout, a cancellation is returned as is.
+func ctxErr(ctx context.Context, method string) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %s", ErrCallTimeout, method)
+	}
+	return ctx.Err()
 }
 
 func (c *Client) goneLocked() error {
@@ -397,7 +446,7 @@ func (c *Client) rpcLocked(ctx context.Context, method string, params any) (json
 	c.nextID++
 	id := c.nextID
 	want := strconv.FormatInt(id, 10)
-	if err := c.writeLocked(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+	if err := c.writeLocked(ctx, method, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
 		return nil, err
 	}
 	for {
@@ -417,10 +466,7 @@ func (c *Client) rpcLocked(ctx context.Context, method string, params any) (json
 		case <-c.p.done:
 			return nil, c.goneLocked()
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, fmt.Errorf("%w: %s", ErrCallTimeout, method)
-			}
-			return nil, ctx.Err()
+			return nil, ctxErr(ctx, method)
 		}
 	}
 }
