@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -18,7 +19,7 @@ import (
 func TestAdvanceStopsOnAStageFailureStreak(t *testing.T) {
 	var warn strings.Builder
 	calls := 0
-	rep, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	rep, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		calls++
 		return fmt.Errorf("pipeline: score %s: devprism down", k)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
@@ -38,7 +39,7 @@ func TestAdvanceStopsOnAStageFailureStreak(t *testing.T) {
 func TestAdvanceFailureStreakResets(t *testing.T) {
 	for name, every := range map[string]error{"success": nil, "unread": unread("x")} {
 		i := 0
-		rep, err := advanceAll(context.Background(), liveRecs(100), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+		rep, err := advanceAll(context.Background(), liveRecs(100), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 			i++
 			if i%maxConsecutiveFailed == 0 {
 				return every
@@ -56,11 +57,32 @@ func TestAdvanceFailureStreakResets(t *testing.T) {
 	}
 }
 
+// Postings dropped by title asked no stage, so they do not hide a stage that
+// failed every posting it was asked about (title_signals.read).
+func TestAdvanceTitleDropsDoNotHideAFailingStage(t *testing.T) {
+	recs := liveRecs(10)
+	byTitle := func(r ledger.Record) bool { return r.Key < recs[5].Key }
+	rep, err := advanceAll(context.Background(), recs, nil, config.DefaultAdvancePerRun, byTitle, func(_ context.Context, k posting.Key) error {
+		if k < recs[5].Key {
+			return nil // dropped by title, no stage asked
+		}
+		return fmt.Errorf("pipeline: score %s: devprism down", k)
+	}, func(string, ...any) {})
+	if !errors.Is(err, errAdvanceFailing) || rep.Stopped != stopNoneAdvanced || rep.Failed != 5 || rep.Attempted != 10 {
+		t.Fatalf("err %v, report %+v", err, rep)
+	}
+	// Title drops alone are a working run.
+	rep, err = advanceAll(context.Background(), recs[:5], nil, config.DefaultAdvancePerRun, byTitle, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
+	if err != nil || rep.Stopped != "" {
+		t.Fatalf("title drops only: err %v, report %+v", err, rep)
+	}
+}
+
 // Fewer postings than either streak, all failed or unread: still a failure,
 // and not reported as a triage outage.
 func TestAdvanceFailsWhenNothingAdvanced(t *testing.T) {
 	i := 0
-	rep, err := advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	rep, err := advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%2 == 0 {
 			return unread(k)

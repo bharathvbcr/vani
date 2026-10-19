@@ -76,6 +76,34 @@ flowchart TD
   fixture v2). Vani's Lappi backend routes each slot to its family; Jev and the LLM still get all
   four slots in one request. The generators are being written in Lappi-decision; the training run
   waits for the owner.
+- **Title drops count toward `advance_per_run`.** A title drop asks no backend, so leaving it out
+  of the cap would let a run triage more postings for the same spend. The owner kept it counted
+  when approving `title_signals.read` (2026-10-19). Changing that needs their go-ahead.
+
+## Title prefilter (built 2026-10-19, not yet enabled in the live config)
+
+- **Enabling it: install the binary first.** `Parse` refuses unknown fields, so a
+  `title_signals.read` in `config.json` makes every older `vani` fail to load the config. That
+  includes `run-once`, the daemon and the Mac app's calls. The order: merge, rebuild and install
+  `vani`, then run `vani prefilter` (it should print "off"). Next, add the `read` entries
+  (docs/TRACKS.md shows them) and run `vani prefilter` again to see the count and false drops. A
+  track's decider can carry them instead; `vani track use` copies them.
+- **Measured precision (dry run on a 10:58 copy of the live ledger, with the approved lists).**
+  1,313 of 2,663 live postings would be dropped. d1-ultra had read role_fit on 270 of the
+  postings it drops: mismatch_domain 232, mismatch_seniority 21, adjacent 17, strong_fit and
+  partial_fit 0. `Principal` (43 live) and `Distinguished` have no model reading in the ledger.
+  They are kept on what the words mean, unmeasured. Re-run `vani prefilter` after a change to the
+  lists; any strong_fit or partial_fit it lists is a false drop.
+- **Reversal.** `vani retriage --title-drops` returns the title drops that the current rules no
+  longer drop.
+- **The track deciders have no `read` entries yet.** `drafts/deciders` is personal and outside git,
+  and this session's write gate could not edit it. If the owner runs `vani track use ai-engineer`
+  or `ml-inference-systems` without them, the config's `read` entries are cleared, since
+  `title_signals` is copied as is. To fix, paste the `read` block from TRACKS.md into each file's
+  `title_signals` and run `vani track show <id>`, which checks it.
+- **Outage detection.** A title drop is no backend reading. It does not reset the unread
+  breaker, and it does not stop a phase in which no backend read anything from failing
+  (`advanceAll`'s `titleDrop`).
 
 ## Shadow evaluation (applied 2026-10-19, not yet measured on the live ledger)
 
@@ -578,8 +606,8 @@ flowchart TD
   - **First-run cost.** With no Jev and no title prefilter, every live posting goes to Opus for
     triage, at roughly $0.01 to $0.03 each. On 9 boards the $10/day cap runs out on day one. Postings
     the cap refuses now stay `live` and are retried the next day (`ErrTriageUnavailable`). Before this
-    change they became `unsure` and were never triaged. A title prefilter, from the track deciders'
-    `title_signals`, would stretch the budget.
+    change they became `unsure` and were never triaged. The title prefilter (`title_signals.read`,
+    built 2026-10-19, see "Title prefilter") stretches the budget once it is enabled.
   - **First `run-once` (2026-10-18 21:15) used a stale `build/vani`,** built before the
     pricedProvider fix. Every LLM call was refused locally, so $0 was spent. 300 postings went
     live → unsure → scored on that non-answer. `vani retriage` (new; `--dry-run` lists) returned

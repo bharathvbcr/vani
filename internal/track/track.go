@@ -82,8 +82,9 @@ type EmployerPreferences struct {
 	Drops  *bool    `json:"drops"`
 }
 
-// TitleSignals are title words for and against the track; Apply copies them
-// into the config, where they order triage.
+// TitleSignals are title words for and against the track, and title readings
+// of triage slots; Apply copies them into the config, where they order triage
+// and, through the drop rules, drop a posting before any model is asked.
 type TitleSignals = config.TitleSignals
 
 // Evidence names the knowledge-base entries behind one strength.
@@ -403,6 +404,9 @@ func Check(d Decider, w Words, bank Bank) []string {
 			}
 		}
 	}
+	for _, p := range d.TitleSignals.ReadProblems() {
+		add("%s", p)
+	}
 	if len(d.Evidence) > maxListLen {
 		add("evidence has more than %d entries", maxListLen)
 	}
@@ -473,7 +477,7 @@ func Apply(cfg config.Config, d Decider, prev *Decider) (config.Config, Change, 
 	if len(d.EmployerPreferences.Prefer) > 0 {
 		out.EmployerPreferences = slices.Clone(d.EmployerPreferences.Prefer)
 	}
-	out.TitleSignals = TitleSignals{Include: slices.Clone(d.TitleSignals.Include), Exclude: slices.Clone(d.TitleSignals.Exclude)}
+	out.TitleSignals = d.TitleSignals.Clone()
 	if err := out.Validate(); err != nil {
 		return cfg, Change{}, err
 	}

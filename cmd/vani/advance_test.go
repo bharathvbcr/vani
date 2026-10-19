@@ -30,7 +30,7 @@ func unread(key posting.Key) error { return fmt.Errorf("%w: %s", pipeline.ErrTri
 func TestAdvanceStopsWhenNoBackendCanRead(t *testing.T) {
 	var warn strings.Builder
 	calls := 0
-	_, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(300), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		calls++
 		return unread(k)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
@@ -48,7 +48,7 @@ func TestAdvanceStopsWhenNoBackendCanRead(t *testing.T) {
 
 // Fewer postings than the breaker: still a failure when none could be read.
 func TestAdvanceFailsWhenEveryPostingWasUnread(t *testing.T) {
-	_, err := advanceAll(context.Background(), liveRecs(4), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error { return unread(k) },
+	_, err := advanceAll(context.Background(), liveRecs(4), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error { return unread(k) },
 		func(string, ...any) {})
 	if !errors.Is(err, pipeline.ErrTriageUnavailable) || !strings.Contains(err.Error(), "4 of 4") {
 		t.Fatalf("err = %v", err)
@@ -60,7 +60,7 @@ func TestAdvanceFailsWhenEveryPostingWasUnread(t *testing.T) {
 func TestAdvanceToleratesScatteredUnread(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	_, err := advanceAll(context.Background(), liveRecs(100), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(100), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%(maxConsecutiveUnread) == 0 { // one success every 20th posting
 			return nil
@@ -81,7 +81,7 @@ func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 	calls := 0
 	recs := liveRecs(config.DefaultAdvancePerRun + 10)
 	recs[0].Status = posting.Dead
-	_, err := advanceAll(context.Background(), recs, nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), recs, nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		calls++
 		if calls == 2 {
 			return errors.New("score: devprism down")
@@ -105,7 +105,7 @@ func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	_, err := advanceAll(context.Background(), liveRecs(50), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(50), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%10 == 0 {
 			return nil
@@ -128,7 +128,7 @@ func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 func TestAdvanceReportsEachDistinctCause(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	_, err := advanceAll(context.Background(), liveRecs(7), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(7), nil, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		i++
 		switch {
 		case i == 7:
@@ -168,7 +168,7 @@ func TestAdvanceOrdersByTitleSignals(t *testing.T) {
 	recs[300].Posting.Title = "LLM Inference Engineer"
 	recs[304].Posting.Title = "Inference Runtime Engineer"
 	var got []posting.Key
-	_, err := advanceAll(context.Background(), recs, rank, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), recs, rank, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		got = append(got, k)
 		return nil
 	}, func(string, ...any) {})
@@ -188,7 +188,7 @@ func TestAdvanceOrdersByTitleSignals(t *testing.T) {
 	}
 
 	got = nil
-	if _, err := advanceAll(context.Background(), recs[:10], rank, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	if _, err := advanceAll(context.Background(), recs[:10], rank, config.DefaultAdvancePerRun, nil, func(_ context.Context, k posting.Key) error {
 		got = append(got, k)
 		return nil
 	}, func(string, ...any) {}); err != nil {
@@ -210,7 +210,7 @@ func TestAdvanceReportCountsWhatTheCapLeft(t *testing.T) {
 	recs := liveRecs(310)
 	recs[0].Status = posting.Digested // not eligible
 	calls := 0
-	rep, err := advanceAll(context.Background(), recs, nil, 300, func(_ context.Context, k posting.Key) error {
+	rep, err := advanceAll(context.Background(), recs, nil, 300, nil, func(_ context.Context, k posting.Key) error {
 		calls++
 		if calls == 3 {
 			return errors.New("score: devprism down")
@@ -226,21 +226,21 @@ func TestAdvanceReportCountsWhatTheCapLeft(t *testing.T) {
 // advance_per_run is honoured, and a queue shorter than the cap is no stop.
 func TestAdvanceHonoursTheConfiguredLimit(t *testing.T) {
 	calls := 0
-	rep, err := advanceAll(context.Background(), liveRecs(12), nil, 5, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {})
+	rep, err := advanceAll(context.Background(), liveRecs(12), nil, 5, nil, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {})
 	if err != nil || calls != 5 || rep.Deferred != 7 || rep.Stopped != stopCap {
 		t.Fatalf("err %v calls %d report %+v", err, calls, rep)
 	}
-	rep, err = advanceAll(context.Background(), liveRecs(3), nil, 5, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
+	rep, err = advanceAll(context.Background(), liveRecs(3), nil, 5, nil, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
 	if err != nil || rep != (advanceReport{Eligible: 3, Limit: 5, Attempted: 3}) {
 		t.Fatalf("short queue: err %v report %+v", err, rep)
 	}
-	rep, err = advanceAll(context.Background(), nil, nil, 5, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
+	rep, err = advanceAll(context.Background(), nil, nil, 5, nil, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {})
 	if err != nil || rep != (advanceReport{Limit: 5}) {
 		t.Fatalf("empty ledger: err %v report %+v", err, rep)
 	}
 	for _, bad := range []int{0, -1} {
 		calls = 0
-		if _, err := advanceAll(context.Background(), liveRecs(3), nil, bad, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {}); err == nil || calls != 0 {
+		if _, err := advanceAll(context.Background(), liveRecs(3), nil, bad, nil, func(context.Context, posting.Key) error { calls++; return nil }, func(string, ...any) {}); err == nil || calls != 0 {
 			t.Fatalf("limit %d: err %v, %d calls; want a refusal before any call", bad, err, calls)
 		}
 	}
@@ -249,13 +249,13 @@ func TestAdvanceHonoursTheConfiguredLimit(t *testing.T) {
 // A stop (unread streak, nothing read, cancellation) still reports how far it
 // got and what it left.
 func TestAdvanceReportOnEveryStop(t *testing.T) {
-	rep, err := advanceAll(context.Background(), liveRecs(300), nil, 300, func(_ context.Context, k posting.Key) error { return unread(k) }, func(string, ...any) {})
+	rep, err := advanceAll(context.Background(), liveRecs(300), nil, 300, nil, func(_ context.Context, k posting.Key) error { return unread(k) }, func(string, ...any) {})
 	want := advanceReport{Eligible: 300, Limit: 300, Attempted: maxConsecutiveUnread, Unread: maxConsecutiveUnread, Deferred: 300 - maxConsecutiveUnread, Stopped: stopUnreadStreak}
 	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep != want {
 		t.Fatalf("streak: err %v\nreport %+v\nwant   %+v", err, rep, want)
 	}
 
-	rep, err = advanceAll(context.Background(), liveRecs(4), nil, 300, func(_ context.Context, k posting.Key) error { return unread(k) }, func(string, ...any) {})
+	rep, err = advanceAll(context.Background(), liveRecs(4), nil, 300, nil, func(_ context.Context, k posting.Key) error { return unread(k) }, func(string, ...any) {})
 	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep.Stopped != stopNoneRead || rep.Unread != 4 || rep.Deferred != 0 {
 		t.Fatalf("none read: err %v report %+v", err, rep)
 	}
@@ -263,7 +263,7 @@ func TestAdvanceReportOnEveryStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	calls := 0
-	rep, err = advanceAll(ctx, liveRecs(10), nil, 300, func(ctx context.Context, k posting.Key) error {
+	rep, err = advanceAll(ctx, liveRecs(10), nil, 300, nil, func(ctx context.Context, k posting.Key) error {
 		calls++
 		if calls == 4 {
 			cancel()

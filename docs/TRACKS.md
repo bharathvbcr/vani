@@ -68,7 +68,8 @@ the repo's ignored `drafts/deciders/`, which `tracks_dir` can point at directly.
   anything else track-independent. If the previous track's file cannot be read, the command says
   so and keeps its rules.
 - `employer_preferences` is set to the track's `employer_preferences.prefer` (cleared when empty).
-- `title_signals` is copied as is (cleared when the track has none). See [Title signals](#title-signals).
+- `title_signals` (include, exclude and read) is copied as is, and cleared when the track has none.
+  See [Title signals](#title-signals).
 - `track` records the id, so `track list` can mark it.
 
 The new config is validated before it is saved. A track that fails any check is not applied and
@@ -101,6 +102,9 @@ Ported from the drafting validator (`build/check-deciders.js`):
   the evidence check was skipped.
 - `title_signals.include` and `exclude` have at most 64 entries each; the config allows each entry
   at most 100 bytes, non-empty.
+- `title_signals.read` has at most 64 entries. Each names a triage slot other than `sponsorship`
+  and one of its values, and has a non-empty `match`; `match` and `unless` phrases have the same
+  bounds as include and exclude.
 
 ## Employer preferences
 
@@ -114,7 +118,53 @@ signals they match, most first; equal ones keep ledger order. Matching ignores c
 whitespace, and is whole words only: a letter or digit on either side is no match, so `Agent` does
 not match `Agents` and `Recruit` does not match `Recruiter`.
 
-The signals only order. Nothing is dropped and no status changes, so a false positive just moves a
-posting forward: "People Specialist, Performance Management" matches `Performance`, and
+Include and exclude only order. They drop nothing and change no status, so a false positive just
+moves a posting forward: "People Specialist, Performance Management" matches `Performance`, and
 "Security Risk & Compliance, Agent Security" matches `Agent`. An exclude signal (`Management`,
 `Security`) moves such titles to the back. A config with no signals keeps ledger order.
+
+### Title readings (`title_signals.read`)
+
+A read entry reads one triage slot from the title alone, before any decision model is asked:
+
+```json
+"read": [
+  {"slot": "seniority", "value": "staff_plus",
+   "match": ["Staff", "Principal", "Distinguished"],
+   "unless": ["Member of Technical Staff", "Technical Staff", "Member of Design Staff", "Senior/Staff"]},
+  {"slot": "seniority", "value": "manager",
+   "match": ["Manager", "Director", "Head of", "VP", "Vice President", "Chief"]},
+  {"slot": "role_fit", "value": "mismatch_domain",
+   "match": ["Sales", "Account Executive", "Recruiter", "Marketing", "Counsel", "..."],
+   "unless": ["Engineer", "Engineering", "Developer", "Scientist", "Science", "Researcher", "Research",
+              "Intern", "Internship"]}
+]
+```
+
+An entry reads its value when a `match` phrase occurs in the title and no `unless` phrase does,
+using the same matching as include and exclude. `unless` is an abstention, never another value: the
+title is left to the model. When several entries read the same slot, the first one that matches
+wins it.
+
+A reading drops a posting only through `drop_rules`. If a rule for that slot lists the value read,
+the posting is dropped without asking the OpenRouter model, the LLM or the shadow. No probability
+threshold applies, because the reading is deterministic. The ledger records it under the backend
+`title` (`triage.backend`, `triage.<slot>`, `triage.<slot>.backend`), and the reason names the
+phrase that matched, for example `slot "seniority" = "staff_plus": title matched "Staff"`. Any
+other title, whether nothing matched, an `unless` phrase matched or no rule drops the value, is
+triaged by the models exactly as without readings. Its title readings are discarded.
+
+To keep a class, take its value out of the drop rule. For example, to keep Engineering Manager
+roles, remove `manager` from the seniority rule's values. The model then reads those postings, and
+its own seniority reading can no longer drop them for `manager` either. A title drop counts toward
+the per-run cap (`advance_per_run`).
+
+`vani prefilter [--list]` is a dry run: it counts the live postings the readings would drop. For
+the postings it would drop that a model has already read, it shows how the model rated `role_fit`.
+Any strong_fit or partial_fit there is a false drop. It never writes the ledger.
+
+A title drop is reversible. After narrowing a list, removing a value from a drop rule, or removing
+the `read` entries, run `vani retriage --title-drops` (add `--dry-run` to see the count first). It
+returns to live every posting dropped on a title that the current rules no longer drop, and
+forgets its title reading. The next run triages those postings with the models. A posting the
+current rules still drop stays dropped, and a posting a model dropped is never touched.
