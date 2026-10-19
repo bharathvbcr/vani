@@ -143,8 +143,30 @@ func PostJSON(ctx context.Context, d egress.Doer, rawURL string, body any, heade
 // (seconds or an HTTP date) or retryBackoff; a Retry-After over maxRetryWait,
 // or the last attempt, returns the status error. The wait ends with ctx.
 func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, v any) error {
+	raw, err := fetch(ctx, d, method, rawURL, body, header, "application/json")
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		u := rawURL
+		if p, perr := url.Parse(rawURL); perr == nil {
+			u = p.Redacted()
+		}
+		return fmt.Errorf("sources: decode %s: %w", u, err)
+	}
+	return nil
+}
+
+// GetBody GETs rawURL and returns the body under DoJSON's status, body-cap
+// and retry rules, for sources that read an HTML page rather than an API.
+func GetBody(ctx context.Context, d egress.Doer, rawURL string) ([]byte, error) {
+	return fetch(ctx, d, http.MethodGet, rawURL, nil, nil, "text/html,application/xhtml+xml")
+}
+
+// fetch is DoJSON's request loop; it returns the 200 body.
+func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string) ([]byte, error) {
 	if d == nil {
-		return errors.New("sources: no http doer configured")
+		return nil, errors.New("sources: no http doer configured")
 	}
 	verb := strings.ToLower(method)
 	for attempt := 0; ; attempt++ {
@@ -154,62 +176,59 @@ func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []by
 		}
 		req, err := http.NewRequestWithContext(ctx, method, rawURL, rd)
 		if err != nil {
-			return fmt.Errorf("sources: build request: %w", err)
+			return nil, fmt.Errorf("sources: build request: %w", err)
 		}
 		for k, vs := range header {
 			req.Header[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
 		}
-		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Accept", accept)
 		resp, err := d.Do(ctx, req)
 		if err != nil {
-			return fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), err)
+			return nil, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), err)
 		}
 		if resp == nil || resp.Body == nil {
-			return fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
+			return nil, fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
 		}
 		if resp.StatusCode == http.StatusOK {
-			return decodeBody(resp.Body, req, v)
+			return readBody(resp.Body, req)
 		}
 		code, hdr := resp.StatusCode, resp.Header
 		// Drain a little so the connection can be reused, then let it go.
 		_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
 		resp.Body.Close()
 		if code == http.StatusNotFound {
-			return fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
+			return nil, fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
 		}
 		se := &egress.StatusError{Code: code, Method: method, Host: req.URL.Hostname()}
 		if code != http.StatusTooManyRequests && code != http.StatusServiceUnavailable {
-			return fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), se)
+			return nil, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), se)
 		}
 		if attempt+1 >= maxAttempts {
-			return fmt.Errorf("sources: %s %s: %w (gave up after %d attempts)", verb, req.URL.Redacted(), se, maxAttempts)
+			return nil, fmt.Errorf("sources: %s %s: %w (gave up after %d attempts)", verb, req.URL.Redacted(), se, maxAttempts)
 		}
 		wait := retryBackoff[attempt]
 		if ra, ok := retryAfter(hdr, time.Now()); ok {
 			if ra > maxRetryWait {
-				return fmt.Errorf("sources: %s %s: %w (asked to retry after %s, over the %s limit)", verb, req.URL.Redacted(), se, ra, maxRetryWait)
+				return nil, fmt.Errorf("sources: %s %s: %w (asked to retry after %s, over the %s limit)", verb, req.URL.Redacted(), se, ra, maxRetryWait)
 			}
 			wait = ra
 		}
 		if err := sleep(ctx, wait); err != nil {
-			return fmt.Errorf("sources: %s %s: waiting to retry %w: %w", verb, req.URL.Redacted(), se, err)
+			return nil, fmt.Errorf("sources: %s %s: waiting to retry %w: %w", verb, req.URL.Redacted(), se, err)
 		}
 	}
 }
 
-func decodeBody(rc io.ReadCloser, req *http.Request, v any) error {
+func readBody(rc io.ReadCloser, req *http.Request) ([]byte, error) {
 	defer rc.Close()
 	body, err := io.ReadAll(io.LimitReader(rc, maxBody+1))
 	if err != nil {
-		return fmt.Errorf("sources: read %s: %w", req.URL.Redacted(), err)
+		return nil, fmt.Errorf("sources: read %s: %w", req.URL.Redacted(), err)
 	}
 	if int64(len(body)) > maxBody {
-		return fmt.Errorf("%w: over %d bytes from %s", ErrBodyTooLarge, maxBody, req.URL.Redacted())
+		return nil, fmt.Errorf("%w: over %d bytes from %s", ErrBodyTooLarge, maxBody, req.URL.Redacted())
 	}
-	if err := json.Unmarshal(body, v); err != nil {
-		return fmt.Errorf("sources: decode %s: %w", req.URL.Redacted(), err)
-	}
-	return nil
+	return body, nil
 }
 
 // retryAfter reads a Retry-After header: delay-seconds or an HTTP date. ok is

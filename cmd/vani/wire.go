@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +31,11 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resume"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/amazon"
+	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
+	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
@@ -164,12 +170,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	srcs := map[posting.ATS]sources.Source{
-		posting.Greenhouse: greenhouse.New(d),
-		posting.Lever:      lever.New(d),
-		posting.Ashby:      ashby.New(d),
-		posting.Workday:    workday.New(d),
-	}
+	srcs := apiSources(d)
 	if w.hasPageBoard() {
 		src, stop, err := w.pageSource(ctx, d)
 		if err != nil {
@@ -211,9 +212,34 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return errors.New("no board could be read")
 	}
 
-	err = advanceAll(ctx, w.led.All(), runner.Advance, w.warnf)
+	err = advanceAll(ctx, w.led.All(), w.titleRank(), runner.Advance, w.warnf)
 	w.warnShadowErrors(runner)
 	return err
+}
+
+// titleRank orders triage by the configured title signals, or is nil (ledger
+// order) when none are configured.
+func (w *wired) titleRank() func(posting.Posting) int {
+	s := w.cfg.TitleSignals
+	if len(s.Include) == 0 && len(s.Exclude) == 0 {
+		return nil
+	}
+	return func(p posting.Posting) int { return s.Rank(p.Title) }
+}
+
+// apiSources are the adapters for every board kind but careers pages, which
+// need a per-run proxy and browser.
+func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
+	return map[posting.ATS]sources.Source{
+		posting.Greenhouse: greenhouse.New(d),
+		posting.Lever:      lever.New(d),
+		posting.Ashby:      ashby.New(d),
+		posting.Workday:    workday.New(d),
+		posting.Amazon:     amazon.New(d),
+		posting.Google:     google.New(d),
+		posting.Apple:      apple.New(d),
+		posting.Eightfold:  eightfold.New(d),
+	}
 }
 
 // maxConsecutiveUnread stops a run's advance phase once this many postings in
@@ -230,13 +256,30 @@ const maxUnreadExamples = 3
 // one by one; later new causes are only counted.
 const maxDistinctCauses = 20
 
-// advanceAll advances up to maxAdvancePerRun postings in ledger order. A
-// posting no backend could read stays Live for the next run. The run fails,
+// advanceAll advances up to maxAdvancePerRun postings. With a rank they go
+// highest rank first, ties in ledger order, so the cap spends itself on the
+// titles the active track wants; a nil rank keeps ledger order. Rank only
+// orders: every eligible posting is still advanced, this run or a later one.
+// A posting no backend could read stays Live for the next run. The run fails,
 // so a shell loop stops and no empty digest is published, when no backend
 // read maxConsecutiveUnread postings in a row, or none of the postings it
 // tried. Any other stage failure is printed once per cause (the posting key
 // and provider request id are not part of the cause) and counted after that.
-func advanceAll(ctx context.Context, recs []ledger.Record, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) error {
+func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) error {
+	var todo []ledger.Record
+	for _, r := range recs {
+		switch r.Status {
+		case posting.Live, posting.Triaged, posting.Unsure, posting.Scored:
+			todo = append(todo, r)
+		}
+	}
+	if rank != nil {
+		ranks := make(map[posting.Key]int, len(todo))
+		for _, r := range todo {
+			ranks[r.Key] = rank(r.Posting)
+		}
+		slices.SortStableFunc(todo, func(a, b ledger.Record) int { return cmp.Compare(ranks[b.Key], ranks[a.Key]) })
+	}
 	advanced, unreadN, streak := 0, 0, 0
 	type cause struct {
 		first posting.Key
@@ -245,15 +288,10 @@ func advanceAll(ctx context.Context, recs []ledger.Record, advance func(context.
 	causes := map[string]*cause{}
 	var order []string
 	uncounted := 0
-	for _, r := range recs {
+	for _, r := range todo {
 		if advanced >= maxAdvancePerRun {
 			warnf("advance cap %d reached; the rest wait for the next run", maxAdvancePerRun)
 			break
-		}
-		switch r.Status {
-		case posting.Live, posting.Triaged, posting.Unsure, posting.Scored:
-		default:
-			continue
 		}
 		advanced++
 		err := advance(ctx, r.Key)

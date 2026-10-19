@@ -17,10 +17,13 @@ bun run "$VANI/extension/build.ts"
 # Assemble and sign in a staging folder; the previous app is replaced only once
 # the new one is complete and verified, so a failed step leaves it working.
 FINAL="$MACOS/build/Vani Apply.app"
-STAGE="$MACOS/build/.stage"
+# A folder of its own per run: two runs at once must not share one, and Finder
+# may drop a .DS_Store into it.
+mkdir -p "$MACOS/build"
+STAGE="$(mktemp -d "$MACOS/build/.stage.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/Vani Apply.app"
 APPEX="$APP/Contents/PlugIns/Vani Apply Extension.appex"
-rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources" "$APPEX/Contents/MacOS" "$APPEX/Contents/Resources"
 
 cp "$MACOS/Support/App-Info.plist" "$APP/Contents/Info.plist"
@@ -49,5 +52,4 @@ sign --entitlements "$MACOS/Support/Group.entitlements" "$APP"
 codesign --verify --deep --strict "$APP"
 rm -rf "$FINAL"
 mv "$APP" "$FINAL"
-rmdir "$STAGE"
 echo "built and signed: $FINAL"

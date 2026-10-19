@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -28,7 +30,7 @@ func unread(key posting.Key) error { return fmt.Errorf("%w: %s", pipeline.ErrTri
 func TestAdvanceStopsWhenNoBackendCanRead(t *testing.T) {
 	var warn strings.Builder
 	calls := 0
-	err := advanceAll(context.Background(), liveRecs(300), func(_ context.Context, k posting.Key) error {
+	err := advanceAll(context.Background(), liveRecs(300), nil, func(_ context.Context, k posting.Key) error {
 		calls++
 		return unread(k)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
@@ -46,7 +48,7 @@ func TestAdvanceStopsWhenNoBackendCanRead(t *testing.T) {
 
 // Fewer postings than the breaker: still a failure when none could be read.
 func TestAdvanceFailsWhenEveryPostingWasUnread(t *testing.T) {
-	err := advanceAll(context.Background(), liveRecs(4), func(_ context.Context, k posting.Key) error { return unread(k) },
+	err := advanceAll(context.Background(), liveRecs(4), nil, func(_ context.Context, k posting.Key) error { return unread(k) },
 		func(string, ...any) {})
 	if !errors.Is(err, pipeline.ErrTriageUnavailable) || !strings.Contains(err.Error(), "4 of 4") {
 		t.Fatalf("err = %v", err)
@@ -58,7 +60,7 @@ func TestAdvanceFailsWhenEveryPostingWasUnread(t *testing.T) {
 func TestAdvanceToleratesScatteredUnread(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	err := advanceAll(context.Background(), liveRecs(100), func(_ context.Context, k posting.Key) error {
+	err := advanceAll(context.Background(), liveRecs(100), nil, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%(maxConsecutiveUnread) == 0 { // one success every 20th posting
 			return nil
@@ -79,7 +81,7 @@ func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 	calls := 0
 	recs := liveRecs(maxAdvancePerRun + 10)
 	recs[0].Status = posting.Dead
-	err := advanceAll(context.Background(), recs, func(_ context.Context, k posting.Key) error {
+	err := advanceAll(context.Background(), recs, nil, func(_ context.Context, k posting.Key) error {
 		calls++
 		if calls == 2 {
 			return errors.New("score: devprism down")
@@ -102,7 +104,7 @@ func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	err := advanceAll(context.Background(), liveRecs(50), func(_ context.Context, k posting.Key) error {
+	err := advanceAll(context.Background(), liveRecs(50), nil, func(_ context.Context, k posting.Key) error {
 		i++
 		return fmt.Errorf("pipeline: explain %s: anthropic: http 400 (request req_%04d): not scoped to a workspace", k, i)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
@@ -122,7 +124,7 @@ func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 func TestAdvanceReportsEachDistinctCause(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	err := advanceAll(context.Background(), liveRecs(6), func(_ context.Context, k posting.Key) error {
+	err := advanceAll(context.Background(), liveRecs(6), nil, func(_ context.Context, k posting.Key) error {
 		i++
 		if i%2 == 0 {
 			return fmt.Errorf("pipeline: score %s: devprism down", k)
@@ -136,6 +138,62 @@ func TestAdvanceReportsEachDistinctCause(t *testing.T) {
 		if !strings.Contains(warn.String(), want) {
 			t.Fatalf("warnings lack %q:\n%s", want, warn.String())
 		}
+	}
+}
+
+// Title signals spend the cap on the titles the track wants: matches go
+// first (more signals first), unmatched keep ledger order, excluded go last,
+// and ineligible postings are never asked. Nothing is dropped: an excluded
+// posting past the cap waits, and is advanced once the queue is short.
+func TestAdvanceOrdersByTitleSignals(t *testing.T) {
+	w := &wired{cfg: config.Config{TitleSignals: config.TitleSignals{
+		Include: []string{"LLM", "Inference"}, Exclude: []string{"Sales"},
+	}}}
+	rank := w.titleRank()
+	recs := liveRecs(maxAdvancePerRun + 5)
+	for i := range recs {
+		recs[i].Posting.Title = "Software Engineer"
+	}
+	recs[0].Posting.Title = "LLM Sales Engineer"
+	recs[1].Posting.Title = "LLM Inference Engineer" // a dead one never runs, whatever its title
+	recs[1].Status = posting.Dead
+	recs[200].Posting.Title = "Inference Engineer"
+	recs[300].Posting.Title = "LLM Inference Engineer"
+	recs[304].Posting.Title = "Inference Runtime Engineer"
+	var got []posting.Key
+	err := advanceAll(context.Background(), recs, rank, func(_ context.Context, k posting.Key) error {
+		got = append(got, k)
+		return nil
+	}, func(string, ...any) {})
+	if err != nil || len(got) != maxAdvancePerRun {
+		t.Fatalf("err %v, %d advanced", err, len(got))
+	}
+	want := []posting.Key{recs[300].Key, recs[200].Key, recs[304].Key, recs[2].Key, recs[3].Key}
+	if !slices.Equal(got[:5], want) {
+		t.Fatalf("first five %v, want %v", got[:5], want)
+	}
+	if slices.Contains(got, recs[0].Key) || slices.Contains(got, recs[1].Key) {
+		t.Fatal("excluded posting ran before the cap, or a dead one ran")
+	}
+	// Unmatched postings keep ledger order behind the matches.
+	if got[5] != recs[4].Key || got[len(got)-1] != recs[maxAdvancePerRun-1].Key {
+		t.Fatalf("ties out of ledger order: %v ... %v", got[5], got[len(got)-1])
+	}
+
+	got = nil
+	if err := advanceAll(context.Background(), recs[:10], rank, func(_ context.Context, k posting.Key) error {
+		got = append(got, k)
+		return nil
+	}, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 9 || got[len(got)-1] != recs[0].Key {
+		t.Fatalf("short queue: %v; want all nine live postings, the excluded one last", got)
+	}
+
+	// No signals configured: ledger order, as before.
+	if (&wired{}).titleRank() != nil {
+		t.Fatal("rank without signals")
 	}
 }
 

@@ -142,6 +142,29 @@ func TestPostJSONRetryResendsBody(t *testing.T) {
 	}
 }
 
+// GetBody returns an HTML body under the same status, cap and retry rules,
+// asking for HTML rather than JSON.
+func TestGetBody(t *testing.T) {
+	noWait(t)
+	d := seq(t, srctest.Reply{Status: 429}, srctest.Reply{Status: 200, Body: []byte("<html>ok</html>")})
+	body, err := GetBody(context.Background(), d, u)
+	if err != nil || string(body) != "<html>ok</html>" {
+		t.Fatalf("body %q, err %v", body, err)
+	}
+	if acc := d.Requests()[0].Header.Get("Accept"); !strings.Contains(acc, "text/html") {
+		t.Errorf("Accept %q, want text/html", acc)
+	}
+	if _, err := GetBody(context.Background(), seq(t, srctest.Reply{Status: 404}), u); !errors.Is(err, ErrBoardNotFound) {
+		t.Errorf("404: %v", err)
+	}
+	old := maxBody
+	maxBody = 8
+	t.Cleanup(func() { maxBody = old })
+	if _, err := GetBody(context.Background(), seq(t, srctest.Reply{Status: 200, Body: []byte("123456789")}), u); !errors.Is(err, ErrBodyTooLarge) {
+		t.Errorf("over cap: %v", err)
+	}
+}
+
 func TestRetryAfterParsing(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	for v, want := range map[string]struct {

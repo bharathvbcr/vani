@@ -1,0 +1,48 @@
+{
+ "positionId": "200677962",
+ "jobNumber": "200677962-3760",
+ "postingTitle": "Sr. Machine Learning Engineer, Foundation Models Inference - Cloud OS & Inference",
+ "transformedPostingTitle": "sr-machine-learning-engineer-foundation-models-inference-cloud-os-inference",
+ "jobSummary": "We are the Foundation Model Inference team within Cloud OS and AI Inference organization. We are on a mission to build the most highly performant, secure and private inference stack that powers Siri AI, Apple Intelligence and Apps that are powered with the largest foundation models.\n\nOur systems serve billions of queries daily across Siri AI, Apple Intelligence, Apple Search, Apple Music, Apple TV, App Store, iMessage, Photos, Camera, Spotlight & Safari, at remarkably low latency with every ounce of compute extracted from the hardware beneath them. We optimize language, vision, and speech models with billions of parameters using state-of-the-art techniques and ship them at Apple scale.\n\nThis is a rare opportunity to directly shape how AI reaches billions of people worldwide.",
+ "description": "You will work at the intersection of research and production, partnering closely with the Foundation Model Research team and our external partners to bring cutting-edge model architectures from prototype to planetary-scale deployment. You will own hard problems in inference efficiency, hardware/software codesign, systems architecture, and tooling, and help set the technical direction for the engineers around you.\n\nThis role sits within CloudOS and Private Cloud Compute (PCC) — Apple's purpose-built, privacy-preserving cloud infrastructure for AI workloads. PCC represents a first-of-its-kind approach to running foundation models in the cloud with verifiable privacy guarantees, and CloudOS is the systems foundation that makes it possible. You will be building and optimizing inference systems on top of this infrastructure, working closely with platform and security teams to deliver both performance and trust at scale.",
+ "responsibilities": "Partner with the Foundation Model Research team and our external partners to optimize inference for the latest model architectures across language, vision, and speech.\nDesign and ship production-grade inference systems serving millions of customers in real time.\nBuild profiling tools and simulators to identify and resolve performance bottlenecks across different hardware configurations and use cases.\nDrive technical decisions on high-throughput, low-latency serving at supercomputing scale.\nMentor and grow engineers across the organization.",
+ "minimumQualifications": "5+ years of experience leading complex, ambiguous technical projects from end to end.\nHands-on experience with LLM inference stacks.\nWorking knowledge of GPU or TPU programming concepts.\nProficiency with PyTorch, JAX, or TensorFlow.\nExperience building and operating high-throughput services at large distributed scale.\nProficiency deploying applications on cloud platforms (AWS, GCP, or equivalent) using Kubernetes and Docker.\nBS in Computer Science, Machine Learning, Artificial Intelligence, Data Science, or a related field.",
+ "preferredQualifications": "Experience building productions systems in Go or Python.\nStrong knowledge of deep learning architectures including Transformers, encoder/decoder models, and multimodal variants.\nExperience with inference optimization frameworks such as TensorRT-LLM, vLLM, SGLang, TGI, or Nvidia Triton Server.\nExperience authoring custom CUDA kernels using CUDA C++ or OpenAI Triton.\nMS in Computer Science, Machine Learning, Artificial Intelligence, Data Science, or a related field.",
+ "highJobTitle": "Machine Learning ICT5",
+ "lowJobTitle": "Machine Learning ICT4",
+ "teamNames": [
+  "Machine Learning and AI"
+ ],
+ "postDateInGMT": "2026-08-13T22:45:49.595+00:00",
+ "homeOffice": false,
+ "employmentType": "Standard",
+ "locations": [
+  {
+   "name": "Santa Clara",
+   "city": "Santa Clara",
+   "stateProvince": "California",
+   "countryName": "United States"
+  },
+  {
+   "name": "Seattle",
+   "city": "Seattle",
+   "stateProvince": "Washington",
+   "countryName": "United States"
+  }
+ ],
+ "postingFooters": [
+  {
+   "postLocationId": "postLocation-SEA",
+   "localizations": {
+    "en_US": [
+     {
+      "displayOrder": 1,
+      "name": "Pay & Benefits",
+      "content": "At Apple, base pay is one part of our total compensation package and is determined within a range. This provides the opportunity to progress as you grow and develop within a role. The base pay range for this role is between $175,000 and $308,500, and your base pay will depend on your skills, qualifications, experience, and location.<br><br>Apple employees also have the opportunity to become an Apple shareholder through participation in Apple’s discretionary employee stock programs. Apple employees are eligible for discretionary restricted stock unit awards, and can purchase Apple stock at a discount if voluntarily participating in Apple’s Employee Stock Purchase Plan. You’ll also receive benefits including: Comprehensive medical and dental coverage, retirement benefits, a range of discounted products and free services, and for formal education related to advancing your career at Apple, reimbursement for certain educational expenses — including tuition. Additionally, this role might be eligible for discretionary bonuses or commission payments as well as relocation. <a href='https://www.apple.com/careers/us/benefits.html' target='_blank' aria-label='Learn more about Apple Benefits (Opens in new window)'>Learn more about Apple Benefits<span class='icon icon-after icon-external' aria-hidden='true'></span></a><br><br>Note: Apple benefit, compensation and employee stock programs are subject to eligibility requirements and other terms of the applicable plan or program.<br>",
+      "label": "Pay & Benefits"
+     }
+    ]
+   }
+  }
+ ]
+}

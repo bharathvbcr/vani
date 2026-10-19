@@ -55,6 +55,9 @@ type Config struct {
 	// active track favours. They boost rank only, never change a posting's
 	// status, and never enter a model prompt: they imply work authorization.
 	EmployerPreferences []string `json:"employer_preferences,omitempty"`
+	// TitleSignals order each run's triage: postings whose titles match the
+	// active track's include signals go first, excluded ones last.
+	TitleSignals TitleSignals `json:"title_signals,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -395,7 +398,13 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "api.lever.co", true
 	case posting.Ashby:
 		return "api.ashbyhq.com", true
-	case posting.Workday:
+	case posting.Amazon:
+		return "www.amazon.jobs", true
+	case posting.Google:
+		return "www.google.com", true
+	case posting.Apple:
+		return "jobs.apple.com", true
+	case posting.Workday, posting.Eightfold:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
@@ -432,12 +441,82 @@ func (c Config) RequiredHosts() []string {
 	return out
 }
 
+// hostname is a DNS name of at least two labels (no IP literal, no port).
+var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// searchATS take a search (Workday optionally; the search sites require one,
+// because their unsearched listing is the whole company).
+func searchATS(a posting.ATS) bool {
+	switch a {
+	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold:
+		return true
+	}
+	return false
+}
+
+// SingleBoardATS are systems with one tenant: two boards of one would key the
+// same posting twice, so a watchlist holds at most one of each.
+func SingleBoardATS(a posting.ATS) bool {
+	return a == posting.Amazon || a == posting.Google || a == posting.Apple
+}
+
+func cleanText(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// validSearches bounds the board's search terms and filters.
+func validSearches(b sources.Board) error {
+	if !searchATS(b.ATS) {
+		if b.Search != "" || len(b.Searches) > 0 {
+			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap and ef only", b.ATS, b.Token)
+		}
+	}
+	if len(b.Searches) > sources.MaxSearches {
+		return fmt.Errorf("board %s/%s: %d searches, more than %d", b.ATS, b.Token, len(b.Searches), sources.MaxSearches)
+	}
+	for _, s := range append([]string{b.Search}, b.Searches...) {
+		if len(s) > sources.MaxSearchLen || !cleanText(s) {
+			return fmt.Errorf("board %s/%s: search %q must be at most %d bytes with no control characters", b.ATS, b.Token, s, sources.MaxSearchLen)
+		}
+	}
+	if b.ATS != posting.Workday && searchATS(b.ATS) && len(b.SearchTerms()) == 0 {
+		return fmt.Errorf("board %s/%s needs at least one search: its unsearched listing is the whole company", b.ATS, b.Token)
+	}
+	if len(b.Filters) == 0 {
+		return nil
+	}
+	allowed := sources.FilterKeys[b.ATS]
+	if len(allowed) == 0 {
+		return fmt.Errorf("board %s/%s: filters are not supported for %s", b.ATS, b.Token, b.ATS)
+	}
+	for k, vs := range b.Filters {
+		if !slices.Contains(allowed, k) {
+			return fmt.Errorf("board %s/%s: filter %q is not one of %s", b.ATS, b.Token, k, strings.Join(allowed, ", "))
+		}
+		if len(vs) == 0 || len(vs) > sources.MaxFilterValues {
+			return fmt.Errorf("board %s/%s: filter %q needs 1..%d values", b.ATS, b.Token, k, sources.MaxFilterValues)
+		}
+		for _, v := range vs {
+			if strings.TrimSpace(v) == "" || len(v) > sources.MaxSearchLen || !cleanText(v) {
+				return fmt.Errorf("board %s/%s: filter %q value %q must be 1..%d bytes with no control characters", b.ATS, b.Token, k, v, sources.MaxSearchLen)
+			}
+		}
+	}
+	return nil
+}
+
 // ValidBoard checks a single watchlist entry.
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
-	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday, posting.Page:
+	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -460,8 +539,19 @@ func ValidBoard(b sources.Board) error {
 	} else if strings.Contains(b.Token, "/") {
 		return fmt.Errorf("board (%s) token %q must not contain '/'", b.ATS, b.Token)
 	}
-	if b.ATS != posting.Workday && (b.Host != "" || b.Search != "") {
-		return fmt.Errorf("board %s/%s: host and search apply to workday only", b.ATS, b.Token)
+	if b.ATS == posting.Eightfold {
+		// The token is the tenant's domain, the host its careers site.
+		if !hostname.MatchString(strings.ToLower(b.Token)) {
+			return fmt.Errorf("eightfold token %q must be the company's domain, e.g. microsoft.com", b.Token)
+		}
+		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
+			return fmt.Errorf("eightfold board %s needs host, its careers site, e.g. apply.careers.microsoft.com; got %q", b.Token, b.Host)
+		}
+	} else if b.ATS != posting.Workday && b.Host != "" {
+		return fmt.Errorf("board %s/%s: host applies to wd and ef only", b.ATS, b.Token)
+	}
+	if err := validSearches(b); err != nil {
+		return err
 	}
 	if b.ATS == posting.Page {
 		u, err := url.Parse(b.URL)
@@ -521,6 +611,12 @@ func (c Config) Validate() error {
 			add("watchlist[%d]: duplicate board %s", i, id)
 		}
 		seen[id] = true
+		if SingleBoardATS(b.ATS) {
+			if seen[string(b.ATS)] {
+				add("watchlist[%d]: a second %s board; list every search on one board", i, b.ATS)
+			}
+			seen[string(b.ATS)] = true
+		}
 	}
 
 	allowed := map[string]bool{}
@@ -710,6 +806,7 @@ func (c Config) Validate() error {
 		}
 		seenPref[p] = true
 	}
+	c.TitleSignals.validate(add)
 
 	if len(errs) == 0 {
 		return nil

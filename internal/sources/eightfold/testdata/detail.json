@@ -1,0 +1,51 @@
+{
+ "status": 200,
+ "error": {
+  "message": "",
+  "body": ""
+ },
+ "data": {
+  "id": 1970393556991825,
+  "displayJobId": "200054445",
+  "name": "Senior Applied Scientist(Agentic RL & LLM Post-Training)",
+  "locations": [
+   "China, Jiangsu, Suzhou",
+   "China, Beijing, Beijing"
+  ],
+  "standardizedLocations": [
+   "Suzhou, Jiangsu, CN",
+   "Beijing, Beijing, CN"
+  ],
+  "postedTs": 1791734400,
+  "stars": 0,
+  "department": "Applied Sciences",
+  "creationTs": 1788975970,
+  "jobDescription": "<b>Overview</b><br><p></p><div>STCA SAI (Strategic AI Incubation) is an applied science team at Microsoft that incubates strategic AI capabilities. We work on post-training for Agentic scenarios. Starting from strong foundation models, we turn them into high-quality, efficient models that power agentic experiences for users. Our scope covers the full post-training lifecycle: RL and Gym infrastructure, synthetic data generation, and evaluation.</div><div>We are looking for a Senior Applied Scientist who is passionate about reinforcement learning for LLM agents. You will build the systems, environments, and training recipes that teach models to plan, use tools, and complete complex, multi-step real-world tasks reliably.</div><br><br><b>Responsibilities</b><br><p></p><div>Agentic Reinforcement Learning (core focus)</div><ul><li>Design and run RL post-training for LLM agents on long-horizon, multi-turn, tool-using tasks, such as productivity and document workflows, information seeking, and other complex tasks.</li><li>Build and scale agentic RL environments, including sandboxed tool execution, task simulators, and trajectory collection that closely reflect real agent behavior.</li><li>Design reward functions, verifiers, and LLM-as-judge methods for outcome and process supervision that are robust to reward hacking and track real task success.</li><li>Advance RL algorithms for LLMs (e.g., PPO, GRPO, SAO and variants), including credit assignment over multi-turn trajectories, off-policy correction, and training stability at scale.</li><li>Explore self-improving agents (e.g., RSI), where models help generate the feedback, data, and tasks that improve them.</li></ul><div>Large-Scale RL Infrastructure</div><ul><li>Build and extend distributed RL training systems for large models, including Mixture-of-Experts architectures.</li><li>Solve challenging systems problems such as:<ul><li>consistency between rollout and training</li><li>efficient weight synchronization</li><li>long-context training</li><li>low-precision and quantization-aware training</li><li>multi-node scaling on large GPU clusters</li></ul></li></ul><div>Data &amp; Evaluation</div><ul><li>Build high-quality agentic training data through trajectory synthesis, rejection sampling, and gap-driven data curation.</li><li>Build rigorous evaluation pipelines and fast iteration loops that connect model improvements to user-facing quality.</li></ul><br><br><b>Qualifications</b><br><p></p><h4>Required Qualifications</h4><ul><li>Master's or PhD in Computer Science, Machine Learning, or a related field, plus 4+ years of hands-on experience with large language models or deep learning (or equivalent experience).</li><li>Hands-on experience with reinforcement learning for LLMs (e.g., RLHF, RLAIF, RL with verifiable rewards) at meaningful scale.</li><li>Strong engineering skills in Python (pytorch), and experience with distributed training on multi-node GPU clusters.</li><li>Solid understanding of the LLM post-training pipeline, from data and SFT through RL, evaluation, and deployment.</li></ul><h4>Preferred Qualifications</h4><ul><li>Experience building agentic RL systems, such as multi-turn tool-use environments, sandboxed execution, and trajectory-level reward design.</li><li>Familiarity with open-source RL and training frameworks (e.g., verl, NeMo, Megatron-LM, DeepSpeed), including adapting them to new model architectures.</li><li>Experience with inference engines (e.g., vLLM, SGLang), low-precision training, or long-context training techniques.</li><li>Experience with reward modeling, verifiers, or LLM-as-judge methods.</li><li>Publications at top venues (e.g., NeurIPS, ICML, ACL), significant open-source contributions, or patents in LLM, agent, or RL areas.</li><li>Comfortable working in a fast-moving incubation environment. You take ownership from idea to production, and you communicate clearly in English with global teams.</li></ul> <br><p>This position will be open for a minimum of 5 days, with applications accepted on an ongoing basis until the position is filled.</p><br><hr><br><p>Microsoft is an equal opportunity employer. All qualified applicants will receive consideration for employment without regard to age, ancestry, citizenship, color, family or medical care leave, gender identity or expression, genetic information, immigration status, marital status, medical condition, national origin, physical or mental disability, political affiliation, protected veteran or military status, race, ethnicity, religion, sex (including pregnancy), sexual orientation, or any other characteristic protected by applicable local laws, regulations and ordinances. If you need assistance with religious accommodations and/or a reasonable accommodation due to a disability during the application process, read more about <a href=\"https://careers.microsoft.com/v2/global/en/accessibility.html\"><b><u>requesting accommodations.</u></b></a></p> ",
+  "location": "China, Jiangsu, Suzhou",
+  "isHot": 0,
+  "workLocationOption": "onsite",
+  "locationFlexibility": null,
+  "atsJobId": "200054445",
+  "positionUrl": "/careers/job/1970393556991825",
+  "publicUrl": "https://apply.careers.microsoft.com/careers/job/1970393556991825",
+  "efcustomTextWorkSite": [
+   "Fully on-site"
+  ],
+  "efcustomTextRequiredTravel": [
+   "Less than 25%"
+  ],
+  "efcustomTextCurrentProfession": [
+   "Research, Applied, & Data Sciences"
+  ],
+  "efcustomTextTaDisciplineName": [
+   "Applied Sciences"
+  ],
+  "efcustomTextRoletype": [
+   "Individual Contributor"
+  ],
+  "efcustomTextEmploymentType": [
+   "Full-Time"
+  ],
+  "jdHighlight": []
+ }
+}

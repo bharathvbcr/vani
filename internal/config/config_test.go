@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +64,7 @@ func TestValidateRules(t *testing.T) {
 		{"workday host missing from allowlist", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext", Host: "acme.wd5.myworkdayjobs.com"}}
 		}, "allowed_hosts is missing: acme.wd5.myworkdayjobs.com"},
-		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "workday only"},
+		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, az, gg, ap and ef only"},
 		{"page http url", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Page, Token: "acme", URL: "http://acme.example/jobs", LinkPattern: "/jobs/"}}
 		}, "needs an https url"},
@@ -390,6 +392,67 @@ func TestToolPathsMustBeAbsolute(t *testing.T) {
 	c.LightpandaBinary = "/a/lightpanda"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("absolute paths rejected: %v", err)
+	}
+}
+
+func TestSearchSiteBoards(t *testing.T) {
+	good := []sources.Board{
+		{ATS: posting.Amazon, Token: "amazon", Company: "Amazon", Searches: []string{"LLM inference", "machine learning"},
+			Filters: map[string][]string{"normalized_country_code[]": {"USA"}, "category[]": {"machine-learning-science"}}},
+		{ATS: posting.Google, Token: "google", Company: "Google", Search: "LLM", Filters: map[string][]string{"target_level": {"EARLY", "MID"}}},
+		{ATS: posting.Apple, Token: "apple", Company: "Apple", Search: `"LLM inference"`, Filters: map[string][]string{"location": {"united-states-USA"}}},
+		{ATS: posting.Eightfold, Token: "qualcomm.com", Company: "Qualcomm", Host: "careers.qualcomm.com", Search: "machine learning"},
+		{ATS: posting.Workday, Token: "nvidia/NVIDIAExternalCareerSite", Company: "NVIDIA", Host: "nvidia.wd5.myworkdayjobs.com",
+			Searches: []string{"TensorRT", "new college grad"}},
+	}
+	c := valid()
+	c.Watchlist = append(c.Watchlist, good...)
+	c.AllowedHosts = append(c.AllowedHosts, "www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "nvidia.wd5.myworkdayjobs.com")
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com"} {
+		if !slices.Contains(c.RequiredHosts(), h) {
+			t.Errorf("RequiredHosts lacks %s", h)
+		}
+	}
+
+	long := strings.Repeat("x", sources.MaxSearchLen+1)
+	many := make([]string, sources.MaxSearches+1)
+	for i := range many {
+		many[i] = fmt.Sprint("term", i)
+	}
+	mod := func(i int, f func(*sources.Board)) sources.Board { b := good[i]; f(&b); return b }
+	for name, tc := range map[string]struct {
+		b    sources.Board
+		want string
+	}{
+		"amazon without search":   {mod(0, func(b *sources.Board) { b.Searches = nil }), "needs at least one search"},
+		"blank searches only":     {mod(1, func(b *sources.Board) { b.Search, b.Searches = " ", []string{""} }), "needs at least one search"},
+		"too many searches":       {mod(1, func(b *sources.Board) { b.Searches = many }), "searches, more than"},
+		"search too long":         {mod(1, func(b *sources.Board) { b.Search = long }), "at most"},
+		"control char in search":  {mod(1, func(b *sources.Board) { b.Search = "a\nb" }), "control"},
+		"unverified filter":       {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"degree": {"MASTERS"}} }), "is not one of"},
+		"unverified eightfold":    {mod(3, func(b *sources.Board) { b.Filters = map[string][]string{"department": {"x"}} }), "is not one of"},
+		"filter on workday":       {mod(4, func(b *sources.Board) { b.Filters = map[string][]string{"x": {"y"}} }), "not supported"},
+		"empty filter values":     {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {}} }), "values"},
+		"blank filter value":      {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {" "}} }), "value"},
+		"search on greenhouse":    {sources.Board{ATS: posting.Greenhouse, Token: "acme", Search: "x"}, "search applies"},
+		"host on amazon":          {mod(0, func(b *sources.Board) { b.Host = "www.amazon.jobs" }), "host applies"},
+		"eightfold without host":  {mod(3, func(b *sources.Board) { b.Host = "" }), "needs host"},
+		"eightfold ip host":       {mod(3, func(b *sources.Board) { b.Host = "10.0.0.1" }), "needs host"},
+		"eightfold token not dns": {mod(3, func(b *sources.Board) { b.Token = "qualcomm" }), "domain"},
+		"unknown ats":             {sources.Board{ATS: "zz", Token: "x"}, "is not one of"},
+	} {
+		if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+
+	// One board per single-tenant site: a second would key postings twice.
+	c.Watchlist = append(c.Watchlist, sources.Board{ATS: posting.Google, Token: "google-2", Company: "Google", Search: "TPU"})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "second gg board") {
+		t.Fatalf("second google board: %v", err)
 	}
 }
 

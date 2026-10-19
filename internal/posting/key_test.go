@@ -49,6 +49,30 @@ func TestFallbackKeyIgnoresPunctuationAndCase(t *testing.T) {
 	}
 }
 
+func TestSearchSiteKeys(t *testing.T) {
+	for _, tc := range []struct {
+		mk   func(string, string) (Key, error)
+		a, b string
+		want Key
+		ats  ATS
+	}{
+		{AmazonKey, "Amazon", "10578742", "az:amazon:10578742", Amazon},
+		{GoogleKey, "google", "124910793232655046", "gg:google:124910793232655046", Google},
+		{AppleKey, "apple", "200677962", "ap:apple:200677962", Apple},
+		{EightfoldKey, "Microsoft.com", "1970393556991825", "ef:microsoft.com:1970393556991825", Eightfold},
+	} {
+		k, err := tc.mk(tc.a, tc.b)
+		if err != nil || k != tc.want || k.ATS() != tc.ats {
+			t.Errorf("%s: %q %v (ATS %q), want %q", tc.want, k, err, k.ATS(), tc.want)
+		}
+		for _, bad := range [][2]string{{"", "1"}, {tc.a, ""}, {"a:b", "1"}, {tc.a, "1:2"}} {
+			if _, err := tc.mk(bad[0], bad[1]); !errors.Is(err, ErrKeyPart) {
+				t.Errorf("%s(%q,%q) err = %v, want ErrKeyPart", tc.ats, bad[0], bad[1], err)
+			}
+		}
+	}
+}
+
 func TestMalformedKeyHasNoATS(t *testing.T) {
 	for _, k := range []Key{"", "nocolon", "zz:a:b"} {
 		if k.ATS() != "" {

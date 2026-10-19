@@ -32,6 +32,7 @@ func sample() Decider {
 		},
 		EmployerPreferences: EmployerPreferences{Prefer: []string{"cap_exempt_likely"}, Use: "badge_and_rank", Drops: ptr(false)},
 		Evidence:            []Evidence{{Area: "kernels", KBEntries: []string{"entry-a"}, Strength: "strong"}},
+		TitleSignals:        TitleSignals{Include: []string{"Inference", "GPU"}, Exclude: []string{"Sales"}},
 	}
 }
 
@@ -263,15 +264,22 @@ func TestApplyKeepsTrackIndependentRules(t *testing.T) {
 		!reflect.DeepEqual(out.EmployerPreferences, []string{"cap_exempt_likely"}) {
 		t.Fatalf("summary/track/prefs: %q %q %v", out.TargetSummary, out.Track, out.EmployerPreferences)
 	}
+	if !reflect.DeepEqual(out.TitleSignals, sample().TitleSignals) {
+		t.Fatalf("title signals %+v", out.TitleSignals)
+	}
 
 	// Applying another track with no preferences clears them, and the
 	// sponsorship rule is still byte-identical.
 	d := sample()
 	d.ID = "other"
 	d.EmployerPreferences.Prefer = nil
+	d.TitleSignals = TitleSignals{}
 	out2, _, err := Apply(out, d, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if out2.TitleSignals.Include != nil || out2.TitleSignals.Exclude != nil {
+		t.Fatalf("second apply kept the previous track's title signals: %+v", out2.TitleSignals)
 	}
 	if out2.EmployerPreferences != nil || !reflect.DeepEqual(out2.DropRules[0], sponsorship) {
 		t.Fatalf("second apply: prefs %v rules %+v", out2.EmployerPreferences, out2.DropRules)

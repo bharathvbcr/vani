@@ -136,7 +136,7 @@ resume_score_and_select -> selectedBlocks (9 at page_budget 2)
 
 DevPrism refuses `jd_text` over `MAX_TEXT_BYTES` (1 MiB, `tools_career.rs:48`) with an error rather
 than truncating. Vani sends `Posting.Description` (`internal/pipeline/runner.go:189,193`), and every
-source caps that at 64 KiB (`srcutil.MaxDescription`: ashby, greenhouse, lever, workday, and page
+source caps that at 64 KiB (`srcutil.MaxDescription`: ashby, greenhouse, lever, workday, amazon, google, apple, eightfold, and page
 including its JSON-LD path), so the refusal cannot be reached.
 
 The payloads are returned bare as the JSON-RPC `result`, which `unwrapToolResult` passes through.

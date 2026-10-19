@@ -95,11 +95,35 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err != nil {
 		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
 	}
+	if len(b.Filters) > 0 {
+		return nil, fmt.Errorf("workday %q: filters are not supported (Workday facets are tenant-specific ids)", b.Token)
+	}
 	base := "https://" + host + "/wday/cxs/" + url.PathEscape(tenant) + "/" + url.PathEscape(site)
 
-	rows, err := s.list(ctx, base+"/jobs", b)
-	if err != nil {
-		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
+	// Each search term is listed in full; the board is their union, each
+	// posting once, under the same cap as a single listing (every posting
+	// costs a detail request).
+	terms := b.SearchTerms()
+	if len(terms) == 0 {
+		terms = []string{""}
+	}
+	var rows []listedJob
+	paths := map[string]bool{}
+	for _, term := range terms {
+		got, err := s.list(ctx, base+"/jobs", term)
+		if err != nil {
+			return nil, fmt.Errorf("workday %q: search %q: %w", b.Token, term, err)
+		}
+		for _, j := range got {
+			if !paths[j.ExternalPath] {
+				paths[j.ExternalPath] = true
+				rows = append(rows, j)
+			}
+		}
+		if len(rows) > MaxPostings {
+			return nil, fmt.Errorf("workday %q: %w: the board's searches together list more than %d postings; narrow them",
+				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
+		}
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(rows))
@@ -120,10 +144,10 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	return out, nil
 }
 
-// list pages the listing endpoint. Workday reports total only on the first
-// page (later pages say 0), so total is read once; an empty page always ends
-// the loop, and the page count is bounded either way.
-func (s *source) list(ctx context.Context, endpoint string, b sources.Board) ([]listedJob, error) {
+// list pages the listing endpoint for one search term. Workday reports total
+// only on the first page (later pages say 0), so total is read once; an empty
+// page always ends the loop, and the page count is bounded either way.
+func (s *source) list(ctx context.Context, endpoint, term string) ([]listedJob, error) {
 	var rows []listedJob
 	paths := map[string]bool{}
 	total, offset := 0, 0
@@ -132,7 +156,7 @@ func (s *source) list(ctx context.Context, endpoint string, b sources.Board) ([]
 			return nil, err
 		}
 		var resp listResponse
-		req := listRequest{AppliedFacets: map[string]any{}, Limit: pageSize, Offset: offset, SearchText: b.Search}
+		req := listRequest{AppliedFacets: map[string]any{}, Limit: pageSize, Offset: offset, SearchText: term}
 		if err := s.postJSON(ctx, endpoint, req, &resp); err != nil {
 			return nil, err
 		}
