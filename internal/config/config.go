@@ -54,6 +54,9 @@ type Config struct {
 	// active track favours. They boost rank only, never change a posting's
 	// status, and never enter a model prompt: they imply work authorization.
 	EmployerPreferences []string `json:"employer_preferences,omitempty"`
+	// TitleSignals order each run's triage: postings whose titles match the
+	// active track's include signals go first, excluded ones last.
+	TitleSignals TitleSignals `json:"title_signals,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -767,6 +770,7 @@ func (c Config) Validate() error {
 		}
 		seenPref[p] = true
 	}
+	c.TitleSignals.validate(add)
 
 	if len(errs) == 0 {
 		return nil

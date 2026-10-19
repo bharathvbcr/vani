@@ -35,13 +35,15 @@ flowchart TD
         VANI_CFG -->|1. Replace target_summary| NEW_TS["target_summary = track.target_summary"]
         VANI_CFG -->|2. Replace role_fit / seniority drop_rules| NEW_DR["drop_rules updated (preserve others)"]
         VANI_CFG -->|3. Set preferred employer attributes| NEW_EP["employer_preferences = track.prefer"]
-        VANI_CFG -->|4. Record active track ID| NEW_TR["track = track.id"]
+        VANI_CFG -->|4. Copy title words| NEW_SIG["title_signals = track.title_signals"]
+        VANI_CFG -->|5. Record active track ID| NEW_TR["track = track.id"]
     end
 
     subgraph PipelineEffect["Runtime Engine Impact"]
         NEW_TS --> TRIAGE_PROMPT["Triage Prompt Context\n(role_fit criteria)"]
         NEW_DR --> DROP_CHECK{"Drop Decision Evaluation\n(Conservative: drop on calibrated answer)"}
         NEW_EP --> RANK_BOOST["Scoring Stage Boost\n(+10 rank for exact employer match)"]
+        NEW_SIG --> TRIAGE_ORDER["Triage Order\n(matching titles first; never a drop)"]
     end
 
     TrackFile --> Validation
@@ -66,6 +68,7 @@ the repo's ignored `drafts/deciders/`, which `tracks_dir` can point at directly.
   anything else track-independent. If the previous track's file cannot be read, the command says
   so and keeps its rules.
 - `employer_preferences` is set to the track's `employer_preferences.prefer` (cleared when empty).
+- `title_signals` is copied as is (cleared when the track has none). See [Title signals](#title-signals).
 - `track` records the id, so `track list` can mark it.
 
 The new config is validated before it is saved. A track that fails any check is not applied and
@@ -96,7 +99,22 @@ Ported from the drafting validator (`build/check-deciders.js`):
   `cap_exempt_likely` and `nonprofit`, without duplicates.
 - Evidence ids exist in the knowledge-base bank when `kb.bank` is set; otherwise the command says
   the evidence check was skipped.
+- `title_signals.include` and `exclude` have at most 64 entries each; the config allows each entry
+  at most 100 bytes, non-empty.
 
 ## Employer preferences
 
 They rank, never drop, and never enter a model prompt. See [EMPLOYER.md](EMPLOYER.md).
+
+## Title signals
+
+Each run triages at most 300 postings. With `title_signals` set, the run orders them before applying
+that cap: titles matching an exclude signal go last, and the rest go by how many distinct include
+signals they match, most first; equal ones keep ledger order. Matching ignores case and runs of
+whitespace, and is whole words only: a letter or digit on either side is no match, so `Agent` does
+not match `Agents` and `Recruit` does not match `Recruiter`.
+
+The signals only order. Nothing is dropped and no status changes, so a false positive just moves a
+posting forward: "People Specialist, Performance Management" matches `Performance`, and
+"Security Risk & Compliance, Agent Security" matches `Agent`. An exclude signal (`Management`,
+`Security`) moves such titles to the back. A config with no signals keeps ledger order.
