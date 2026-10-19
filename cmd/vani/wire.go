@@ -238,7 +238,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return errors.New("no board could be read")
 	}
 
-	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), runner.Advance, w.warnf)
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), titleDropper(runner.Policy), runner.Advance, w.warnf)
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()
@@ -265,6 +265,22 @@ func dropPolicy(cfg config.Config, openRouter string) pipeline.DropPolicy {
 		}
 	}
 	return p
+}
+
+// titleDropper reports whether the runner would drop a record by its title
+// alone (a live posting the policy's title reading drops), or is nil when
+// the policy reads no titles.
+func titleDropper(p pipeline.DropPolicy) func(ledger.Record) bool {
+	if p.ReadTitle == nil {
+		return nil
+	}
+	return func(r ledger.Record) bool {
+		if r.Status != posting.Live {
+			return false
+		}
+		_, _, dropped := p.EvaluateTitle(r.Posting.Title)
+		return dropped
+	}
 }
 
 // titleRank orders triage by the configured title signals, or is nil (ledger
@@ -317,7 +333,12 @@ const maxDistinctCauses = 20
 // and provider request id are not part of the cause) and counted after that.
 // The report says what happened however the phase ended, so the run record
 // can show what the cap or a stop left waiting.
-func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit int, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
+//
+// titleDrop, when set, reports whether advancing r drops it by its title
+// without asking any backend. Such a posting counts toward limit, but it is no
+// backend reading: it neither ends an unread streak nor keeps the phase from
+// failing when no backend read anything.
+func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit int, titleDrop func(ledger.Record) bool, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
 	if limit <= 0 {
 		return advanceReport{}, fmt.Errorf("advance limit %d must be above 0", limit)
 	}
@@ -348,16 +369,21 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	}
 	causes := map[string]*cause{}
 	var order []string
-	uncounted := 0
+	uncounted, byTitle := 0, 0
 	for _, r := range todo {
 		if rep.Attempted >= limit {
 			warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
 			break
 		}
 		rep.Attempted++
+		free := titleDrop != nil && titleDrop(r)
 		err := advance(ctx, r.Key)
 		if err != nil && ctx.Err() != nil {
 			return done(stopCancelled), ctx.Err()
+		}
+		if err == nil && free {
+			byTitle++
+			continue
 		}
 		if errors.Is(err, pipeline.ErrTriageUnavailable) {
 			rep.Unread++
@@ -397,8 +423,11 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	if uncounted > 0 {
 		warnf("%d more posting(s) failed with other errors (more than %d distinct causes); they wait for the next run", uncounted, maxDistinctCauses)
 	}
+	if byTitle > 0 {
+		warnf("%d posting(s) dropped by title before triage (title_signals.read); no backend was asked", byTitle)
+	}
 	if rep.Unread > 0 {
-		if rep.Unread == rep.Attempted {
+		if rep.Unread == rep.Attempted-byTitle {
 			return done(stopNoneRead), fmt.Errorf("no decision backend read any posting: %d of %d unread (they stay live; see the backend errors above): %w",
 				rep.Unread, rep.Attempted, pipeline.ErrTriageUnavailable)
 		}

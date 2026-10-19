@@ -338,7 +338,9 @@ func slotBackend(a decide.Answer, sr decide.SlotReading) string {
 
 // DropRule drops a posting whose Slot is answered with one of Values by a
 // backend whose calibration clears that backend's threshold. A threshold of
-// zero disables dropping on that backend, so an unset field never drops.
+// zero disables dropping on that backend, so an unset field never drops. A
+// title reading (EvaluateTitle) is deterministic and has no threshold: the
+// rule drops it whenever its slot and value are read from the title.
 type DropRule struct {
 	Slot              string
 	Values            []string
