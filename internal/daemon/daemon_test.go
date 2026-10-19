@@ -423,7 +423,6 @@ func TestPlistXMLEscaping(t *testing.T) {
 		"/logs/&lt;d&gt;/vani.out.log",
 		"/logs/&lt;d&gt;/vani.err.log",
 		"<key>RunAtLoad</key>\n\t<true/>",
-		"<key>KeepAlive</key>\n\t<false/>",
 		"<key>ProgramArguments</key>",
 	} {
 		if !strings.Contains(out, want) {

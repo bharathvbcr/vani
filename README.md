@@ -288,6 +288,18 @@ build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /a
 build/vani launchd plist --binary /absolute/path/to/vani
 ```
 
+`launchd plist` prints an agent definition and installs nothing. It runs `vani daemon` at load and
+restarts it only after a failed exit, at most once every 5 minutes (`KeepAlive` with
+`SuccessfulExit` false, `ThrottleInterval` 300). A ledger that can no longer be written safely (a
+failed append that could not be cut back, a failed fsync) ends the daemon with a non-zero exit and
+a line in `vani.err.log`; the restarted daemon reopens the ledger. A clean stop stays down. An
+agent installed from an older plist (`KeepAlive` false) keeps the old behaviour until it is
+replaced: write the new output to `~/Library/LaunchAgents/<label>.plist`, then
+`launchctl bootout gui/$UID ~/Library/LaunchAgents/<label>.plist` and
+`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/<label>.plist`. The plist does not set
+`VANI_CONFIG` or `VANI_STATE_DIR` (docs/FOLLOWUPS.md), so the agent uses the default config and
+state folder.
+
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
 --search "query"`. Search sites take repeated `--search` (up to 10 terms; the board lists their union)
 and, where verified, `--filter name=value`: `az --token amazon` (`normalized_country_code[]`,
