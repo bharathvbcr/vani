@@ -142,6 +142,7 @@ type job struct {
 	id, title, team  string
 	locations        []string
 	about, duties, q string // HTML
+	published        time.Time
 }
 
 const dsMarker = "AF_initDataCallback({key: 'ds:1'"
@@ -203,6 +204,19 @@ const (
 	fLocations    = 9  // [[name, [address...], city, zip, region, country], ...]
 	fAbout        = 10 // [null, html]
 	minFieldCount = 11
+	// fPublished is [unix seconds, nanos]: the time the site's own
+	// sort_by=date orders by (2026-10-19: page 1 of "machine learning" in
+	// the US sorted by date ran strictly newest-first by this field). Field
+	// 12 is earlier, the creation time, and can be months older for a role
+	// that went live today; field 14 trails this one by about a second.
+	// Whether an edit moves this field is not known.
+	fPublished = 13
+)
+
+// Bounds on a published time: anything outside is a misread field.
+var (
+	minPublished = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxPublished = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
 func decodeJob(raw json.RawMessage) (job, error) {
@@ -235,7 +249,36 @@ func decodeJob(raw json.RawMessage) (job, error) {
 	if j.locations, err = locationNames(f[fLocations]); err != nil {
 		return job{}, fmt.Errorf("field %d: %v", fLocations, err)
 	}
+	if len(f) > fPublished {
+		if j.published, err = unixPair(f[fPublished]); err != nil {
+			return job{}, fmt.Errorf("field %d: %v", fPublished, err)
+		}
+	}
 	return j, nil
+}
+
+// unixPair reads [seconds, nanos] (or null, or [seconds]) as a UTC time; null
+// is no time. A time before 2000 or after 2100 is a misread field.
+func unixPair(raw json.RawMessage) (time.Time, error) {
+	if string(raw) == "null" {
+		return time.Time{}, nil
+	}
+	var p []int64
+	if err := json.Unmarshal(raw, &p); err != nil || len(p) == 0 || len(p) > 2 {
+		return time.Time{}, errors.New("not a [seconds, nanos] pair")
+	}
+	var ns int64
+	if len(p) == 2 {
+		ns = p[1]
+	}
+	if ns < 0 || ns >= int64(time.Second) {
+		return time.Time{}, errors.New("nanos out of range")
+	}
+	t := time.Unix(p[0], ns).UTC()
+	if t.Before(minPublished) || !t.Before(maxPublished) {
+		return time.Time{}, fmt.Errorf("time %s is out of range", t.Format(time.RFC3339))
+	}
+	return t, nil
 }
 
 func optString(raw json.RawMessage) (string, error) {
@@ -317,6 +360,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		// in the site's own links is cosmetic.
 		URL:         resultsURL + "/" + j.id,
 		Description: htmltext.Text(strings.Join(desc, "<p></p>"), srcutil.MaxDescription),
+		PostedAt:    j.published,
 		SeenAt:      seen,
 	}
 	for _, l := range j.locations {
