@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -224,10 +225,56 @@ func replay(src io.Reader) (map[posting.Key]Entry, int64, bool, error) {
 	}
 }
 
-// lock takes the store's flock, waiting at most lockWait. It creates the
-// directory (0700) when create is set; a reader of a store that was never
-// written gets (nil, nil).
-func lock(dir string, how int, create bool) (*os.File, error) {
+// turns holds one first-come-first-served turn per store directory, for the
+// callers in this process. The flock alone starves a writer: it polls with
+// LOCK_NB, and readers whose shared locks overlap never leave it a free
+// moment, so it gave up with ErrBusy under load. Taking a turn first means
+// in-process callers reach the flock one at a time, in the order they asked
+// (goroutines blocked sending on a channel are queued in order), and the
+// flock then contends only with other processes.
+var turns sync.Map // cleaned dir -> chan struct{} (capacity 1)
+
+func turn(dir string) chan struct{} {
+	v, _ := turns.LoadOrStore(filepath.Clean(dir), make(chan struct{}, 1))
+	return v.(chan struct{})
+}
+
+// held is a taken lock: the flock and this process's turn. Close gives both
+// back.
+type held struct {
+	f    *os.File
+	turn chan struct{}
+}
+
+func (h *held) Close() error {
+	err := h.f.Close() // closing the descriptor releases the flock
+	<-h.turn
+	return err
+}
+
+// lock takes this process's turn on the store and then its flock, waiting at
+// most lockWait for both together. It creates the directory (0700) when
+// create is set; a reader of a store that was never written gets (nil, nil).
+func lock(dir string, how int, create bool) (*held, error) {
+	deadline := time.Now().Add(lockWait)
+	t := turn(dir)
+	wait := time.NewTimer(lockWait)
+	defer wait.Stop()
+	select {
+	case t <- struct{}{}:
+	case <-wait.C:
+		return nil, ErrBusy
+	}
+	l, err := flock(dir, how, create, deadline)
+	if err != nil || l == nil {
+		<-t
+		return nil, err
+	}
+	return &held{f: l, turn: t}, nil
+}
+
+// flock opens the lock file and takes its flock, polling until deadline.
+func flock(dir string, how int, create bool, deadline time.Time) (*os.File, error) {
 	if create {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("marks: create dir: %w", err)
@@ -244,7 +291,6 @@ func lock(dir string, how int, create bool) (*os.File, error) {
 		}
 		return nil, fmt.Errorf("marks: open lock: %w", err)
 	}
-	deadline := time.Now().Add(lockWait)
 	for {
 		err := syscall.Flock(int(l.Fd()), how|syscall.LOCK_NB)
 		if err == nil {
