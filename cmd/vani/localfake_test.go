@@ -43,31 +43,7 @@ func fakeLlama() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	// A deterministic decision model: every question gets its alphabetically
-	// first option at probability 0.95; a posting whose text says FAILME gets
-	// a server error.
-	mux.HandleFunc("/v1/systemone", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Questions map[string]struct {
-				Criteria map[string]string `json:"criteria"`
-			} `json:"questions"`
-			State string `json:"state"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.Contains(req.State, "FAILME") {
-			w.WriteHeader(500)
-			return
-		}
-		answers := map[string]any{}
-		for name, q := range req.Questions {
-			var opts []string
-			for o := range q.Criteria {
-				opts = append(opts, o)
-			}
-			sort.Strings(opts)
-			answers[name] = map[string]any{"choice": opts[0], "confidence": 0.95, "probabilities": map[string]float64{opts[0]: 0.95}}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers})
-	})
+	mux.HandleFunc("/v1/systemone", fakeSystemOne)
 	srv := &http.Server{Addr: "127.0.0.1:" + port, Handler: mux}
 	go func() {
 		sig := make(chan os.Signal, 1)
@@ -76,6 +52,32 @@ func fakeLlama() {
 		_ = srv.Close()
 	}()
 	_ = srv.ListenAndServe()
+}
+
+// fakeSystemOne is a deterministic decision model: every question gets its
+// alphabetically first option at probability 0.95; a posting whose text says
+// FAILME gets a server error.
+func fakeSystemOne(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Questions map[string]struct {
+			Criteria map[string]string `json:"criteria"`
+		} `json:"questions"`
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.Contains(req.State, "FAILME") {
+		w.WriteHeader(500)
+		return
+	}
+	answers := map[string]any{}
+	for name, q := range req.Questions {
+		var opts []string
+		for o := range q.Criteria {
+			opts = append(opts, o)
+		}
+		sort.Strings(opts)
+		answers[name] = map[string]any{"choice": opts[0], "confidence": 0.95, "probabilities": map[string]float64{opts[0]: 0.95}}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers})
 }
 
 // writeLlama writes an executable at p: this test binary in fake-server mode

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -32,7 +33,9 @@ import (
 // Agreement is not accuracy: the primary can be the one that is wrong.
 // Accuracy needs labels (`vani label`, `vani eval`). The bench reads the
 // ledger as a snapshot, writes nothing, needs no API key and talks only to
-// loopback servers it starts itself (Metal only, as a run does).
+// loopback: llama-server instances it starts itself (Metal only, as a run
+// does), or with --endpoint one /v1/systemone server already running there
+// (a model llama.cpp cannot load, such as RSI-Jev).
 
 const (
 	defaultBenchPostings = 400
@@ -127,6 +130,8 @@ func (e *env) cmdBench(args []string) error {
 	ctxSize := fs.Int("ctx", 0, "context size (0 = the configured one, else 8192)")
 	timeoutMS := fs.Int("timeout-ms", 20000, "per-posting timeout in milliseconds (1000-60000)")
 	binary := fs.String("binary", "", "llama-server binary (default the configured one, else llama-server on PATH)")
+	endpoint := fs.String("endpoint", "", "measure a /v1/systemone server already running on loopback (e.g. http://127.0.0.1:8000/v1/systemone) instead of starting llama-server")
+	name := fs.String("name", "", "with --endpoint: the model name sent in each request and shown in the report (default endpoint)")
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}
@@ -139,6 +144,18 @@ func (e *env) cmdBench(args []string) error {
 		return usagef("bench local: --timeout-ms must be 1000-60000")
 	case len(models) > maxBenchModels:
 		return usagef("bench local: at most %d --model", maxBenchModels)
+	case *name != "" && *endpoint == "":
+		return usagef("bench local: --name needs --endpoint")
+	case *endpoint != "" && (len(models) > 0 || *binary != "" || *batch != 0 || *parallel != 0 || *ctxSize != 0):
+		return usagef("bench local: --endpoint starts no server, so it takes no --model, --binary, --batch, --parallel or --ctx")
+	}
+	if *endpoint != "" {
+		if err := loopbackEndpoint(*endpoint); err != nil {
+			return usagef("bench local: --endpoint: %v", err)
+		}
+		if *name == "" {
+			*name = "endpoint"
+		}
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
@@ -146,6 +163,11 @@ func (e *env) cmdBench(args []string) error {
 	}
 	if strings.TrimSpace(cfg.TargetSummary) == "" {
 		return errors.New("bench local: the config has no target_summary; the run's request includes it, so the bench needs it too")
+	}
+	if *endpoint != "" {
+		return e.runBench(*asJSON, *n, func(ctx context.Context, cases []benchCase) []benchModel {
+			return []benchModel{e.benchServer(ctx, *name, *endpoint, *endpoint, *questions, time.Duration(*timeoutMS)*time.Millisecond, cfg.TargetSummary, cases)}
+		})
 	}
 	srv := localserver.Config{BatchSize: *batch, Parallel: *parallel, ContextSize: *ctxSize}
 	if l := cfg.Decide.Local; l != nil && l.Server != nil {
@@ -187,11 +209,26 @@ func (e *env) cmdBench(args []string) error {
 		}
 	}
 
+	return e.runBench(*asJSON, *n, func(ctx context.Context, cases []benchCase) []benchModel {
+		var out []benchModel
+		for _, path := range models {
+			out = append(out, e.benchModel(ctx, srv, path, *questions, time.Duration(*timeoutMS)*time.Millisecond, cfg.TargetSummary, cases))
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		return out
+	})
+}
+
+// runBench picks the postings, measures them with measure, and reports. Any
+// model that did not run, stopped early or was asked nothing fails the command.
+func (e *env) runBench(asJSON bool, n int, measure func(context.Context, []benchCase) []benchModel) error {
 	snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
 	if err != nil {
 		return fmt.Errorf("bench local: read the ledger: %w", err)
 	}
-	cases, eligible, primary := benchCases(snap, *n)
+	cases, eligible, primary := benchCases(snap, n)
 	if len(cases) == 0 {
 		return errors.New("bench local: no posting in the ledger has all four triage slots answered by a primary backend")
 	}
@@ -200,17 +237,15 @@ func (e *env) cmdBench(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	failed := false
-	for _, path := range models {
-		m := e.benchModel(ctx, srv, path, *questions, time.Duration(*timeoutMS)*time.Millisecond, cfg.TargetSummary, cases)
-		if m.Error != "" || m.Stopped != "" || m.Asked == 0 {
+	rep.Models = measure(ctx, cases)
+	for _, m := range rep.Models {
+		// Errors == Asked: it answered no posting, which a run too short for
+		// the error streak would otherwise report as a pass.
+		if m.Error != "" || m.Stopped != "" || m.Asked == 0 || m.Errors == m.Asked {
 			failed = true
 		}
-		rep.Models = append(rep.Models, m)
-		if ctx.Err() != nil {
-			break
-		}
 	}
-	if *asJSON {
+	if asJSON {
 		enc := json.NewEncoder(e.stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(rep); err != nil {
@@ -302,8 +337,24 @@ func parseProb(s string) (float64, error) {
 	return p, nil
 }
 
-func (e *env) benchModel(ctx context.Context, srvCfg localserver.Config, path, questions string, timeout time.Duration, summary string, cases []benchCase) benchModel {
-	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+// loopbackEndpoint accepts only an http URL on this Mac's loopback with an
+// explicit port: the bench never sends postings anywhere else.
+func loopbackEndpoint(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" || u.Port() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%q is not http://<loopback>:<port>/<path>", s)
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "::1", "localhost":
+		return nil
+	}
+	return fmt.Errorf("%q is not on loopback", s)
+}
+
+func newBenchModel(name, path, questions string) benchModel {
 	m := benchModel{Name: name, Path: path, Questions: questions}
 	for _, slot := range digest.TriageSlots {
 		bs := benchSlot{Slot: slot, Confusion: map[string]map[string]int{}}
@@ -313,19 +364,36 @@ func (e *env) benchModel(ctx context.Context, srvCfg localserver.Config, path, q
 		}
 		m.Slots = append(m.Slots, bs)
 	}
+	return m
+}
+
+// benchModel starts llama-server on the GGUF at path, measures it and stops it.
+func (e *env) benchModel(ctx context.Context, srvCfg localserver.Config, path, questions string, timeout time.Duration, summary string, cases []benchCase) benchModel {
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	srvCfg.Model = path
 	t0 := time.Now()
 	srv, err := localserver.Start(ctx, srvCfg)
-	m.StartMS = time.Since(t0).Milliseconds()
+	startMS := time.Since(t0).Milliseconds()
 	if err != nil {
+		m := newBenchModel(name, path, questions)
+		m.StartMS = startMS
 		m.Error = err.Error()
 		fmt.Fprintf(e.stderr, "bench: %s did not start: %v\n", name, err)
 		return m
 	}
 	defer srv.Stop()
+	m := e.benchServer(ctx, name, path, srv.Endpoint, questions, timeout, summary, cases)
+	m.StartMS = startMS
+	return m
+}
+
+// benchServer asks the decision server at endpoint every case, with the run's
+// shadow request, and tallies agreement with the primary.
+func (e *env) benchServer(ctx context.Context, name, path, endpoint, questions string, timeout time.Duration, summary string, cases []benchCase) benchModel {
+	m := newBenchModel(name, path, questions)
 	// The backend's name never reaches the ledger here, so a long model file
 	// name must not stop a bench that the shadow's 32-byte name limit would.
-	lb, err := localBackendNamed(&config.Local{Model: name, Questions: questions, TimeoutMS: int(timeout / time.Millisecond)}, srv.Endpoint, "local-bench")
+	lb, err := localBackendNamed(&config.Local{Model: name, Questions: questions, TimeoutMS: int(timeout / time.Millisecond)}, endpoint, "local-bench")
 	if err != nil {
 		m.Error = err.Error()
 		return m

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -170,6 +173,22 @@ func TestBenchLocalStopsAModelThatNeverAnswers(t *testing.T) {
 	}
 }
 
+// A model that answered no posting fails the command even when the run is
+// too short for the error streak to stop it.
+func TestBenchLocalModelThatAnsweredNothingFails(t *testing.T) {
+	state, bin, model := benchSetup(t)
+	seedBench(t, state, "gh:f:a", "FAILME", "jev", nil, "", nil)
+	seedBench(t, state, "gh:f:b", "FAILME", "jev", nil, "", nil)
+	o, _ := mustCode(t, 1, "bench", "local", "--json", "--binary", bin, "--model", model)
+	var rep benchReport
+	if err := json.Unmarshal([]byte(o), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if m := rep.Models[0]; m.Asked != 2 || m.Errors != 2 || m.Stopped != "" {
+		t.Fatalf("model %+v", m)
+	}
+}
+
 // A bare `bench local` measures the configured shadow: its model, binary,
 // batch and slots, so the numbers describe the server a run starts.
 func TestBenchLocalUsesTheConfiguredServer(t *testing.T) {
@@ -213,6 +232,57 @@ func TestBenchLocalUsesTheConfiguredServer(t *testing.T) {
 	}
 }
 
+// --endpoint measures a decision server that is already running on loopback
+// (one llama.cpp cannot load), with the same request and the same report, and
+// starts no llama-server.
+func TestBenchLocalMeasuresARunningEndpoint(t *testing.T) {
+	state, _, _ := benchSetup(t)
+	t.Setenv("PATH", t.TempDir()) // no llama-server: the bench must not need one
+	seedBench(t, state, "gh:a:1", "Serve models.", "jev", nil, "", nil)
+	seedBench(t, state, "gh:a:2", "Train models.", "jev", map[string]string{"role_fit": secondOption("role_fit")}, "", nil)
+	var models []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		models = append(models, req.Model)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		fakeSystemOne(w, r)
+	}))
+	defer srv.Close()
+	ep := srv.URL + "/v1/systemone"
+
+	o, _ := mustCode(t, 0, "bench", "local", "--json", "--endpoint", ep, "--name", "rsi-jev-v6")
+	var rep benchReport
+	if err := json.Unmarshal([]byte(o), &rep); err != nil || len(rep.Models) != 1 {
+		t.Fatalf("report %q (%v)", o, err)
+	}
+	m := rep.Models[0]
+	if m.Name != "rsi-jev-v6" || m.Path != ep || m.Asked != 2 || m.Errors != 0 || m.Error != "" || m.StartMS != 0 {
+		t.Fatalf("model %+v", m)
+	}
+	for _, s := range m.Slots {
+		want := 2
+		if s.Slot == "role_fit" {
+			want = 1
+		}
+		if s.N != 2 || s.Agree != want {
+			t.Errorf("%s %+v", s.Slot, s)
+		}
+	}
+	if len(models) != 2 || models[0] != "rsi-jev-v6" {
+		t.Errorf("request model names %v", models)
+	}
+
+	// A server that is not there measures nothing, and that fails the command.
+	srv.Close()
+	if o, _ := mustCode(t, 1, "bench", "local", "--json", "--endpoint", ep); !strings.Contains(o, `"name": "endpoint"`) {
+		t.Errorf("dead endpoint report %q", o)
+	}
+}
+
 // A partial run samples every company, not the first one in key order.
 func TestBenchCasesSpreadAcrossCompanies(t *testing.T) {
 	ann := map[string]string{}
@@ -252,6 +322,14 @@ func TestBenchLocalRefusals(t *testing.T) {
 		{"bench", "local", "--binary", bin, "--model", "/abs/not-a-model.bin"},
 		{"bench", "local", "--binary", bin, "--model", model, "--model", model, "--model", model, "--model", model, "--model", model},
 		{"bench", "local", "extra"},
+		{"bench", "local", "--name", "x"},
+		{"bench", "local", "--endpoint", "http://example.com:8000/v1/systemone"},
+		{"bench", "local", "--endpoint", "https://127.0.0.1:8000/v1/systemone"},
+		{"bench", "local", "--endpoint", "http://127.0.0.1/v1/systemone"},
+		{"bench", "local", "--endpoint", "http://10.0.0.5:8000/v1/systemone"},
+		{"bench", "local", "--endpoint", "http://127.0.0.1:8000/v1/systemone", "--model", model},
+		{"bench", "local", "--endpoint", "http://127.0.0.1:8000/v1/systemone", "--binary", bin},
+		{"bench", "local", "--endpoint", "http://127.0.0.1:8000/v1/systemone", "--batch", "512"},
 	} {
 		mustCode(t, 2, args...)
 	}
