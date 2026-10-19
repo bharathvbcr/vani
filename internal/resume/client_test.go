@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -490,89 +492,213 @@ func TestCloseIsBoundedAndIdempotent(t *testing.T) {
 	}
 }
 
-// A DevPrism that stops reading stdin fills the pipe. Writing the next request
-// must give up at the call deadline and kill the process rather than block
-// forever holding c.mu, so Close, Stderr and later calls still answer.
-func TestWriteToServerThatStopsReadingIsBounded(t *testing.T) {
-	cfg := fakeConfig(t)
-	cfg.CallTimeout = 300 * time.Millisecond
-	c, err := Start(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := c.p // kept to unwedge the client if the write never returns
-	if _, err := c.Gap(context.Background(), "STOPREAD", ""); err != nil {
-		t.Fatalf("STOPREAD: %v", err)
-	}
+// bigRequest is far larger than any pipe buffer, so its write cannot finish
+// while the server is not reading.
+var bigRequest = strings.Repeat("x", 4<<20)
 
-	big := strings.Repeat("x", 4<<20) // far more than any pipe buffer holds
-	errc := make(chan error, 1)
-	go func() {
-		_, err := c.Gap(context.Background(), big, "")
-		errc <- err
-	}()
-	select {
-	case err := <-errc:
-		if !errors.Is(err, ErrCallTimeout) {
-			t.Fatalf("blocked write: err = %v, want ErrCallTimeout", err)
-		}
-	case <-time.After(10 * time.Second):
-		p.cancel() // kill the child so the stuck write fails and the test can end
-		<-errc
-		c.Close()
-		t.Fatal("writing to a server that stopped reading stdin never returned")
-	}
+// watchedStdin wraps a process's stdin and reports when a request of at
+// least min bytes starts to be written, and when that write returns. Tests
+// act on a write known to be in flight instead of on a timer. Every write
+// and Close goes to the real pipe.
+type watchedStdin struct {
+	io.WriteCloser
+	min      int
+	once     sync.Once
+	entered  chan struct{}
+	returned chan struct{}
+}
 
-	done := make(chan error, 1)
-	go func() {
-		_ = c.Stderr()
-		_, err := c.Gap(context.Background(), "after", "")
-		c.Close()
-		done <- err
-	}()
+func (w *watchedStdin) Write(b []byte) (int, error) {
+	if len(b) < w.min {
+		return w.WriteCloser.Write(b)
+	}
+	first := false
+	w.once.Do(func() { first = true; close(w.entered) })
+	n, err := w.WriteCloser.Write(b)
+	if first {
+		close(w.returned)
+	}
+	return n, err
+}
+
+// watchStdin installs a watchedStdin on c's current process.
+func watchStdin(c *Client, min int) *watchedStdin {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := &watchedStdin{WriteCloser: c.p.stdin, min: min, entered: make(chan struct{}), returned: make(chan struct{})}
+	c.p.stdin = w
+	return w
+}
+
+// handDeadline is a context whose deadline the test ends by hand: Done
+// closes on expire and Err is then context.DeadlineExceeded, so a call
+// bounded by a deadline can be ended at a chosen moment, not a raced one.
+type handDeadline struct {
+	context.Context // Background: no values and no real deadline
+	done            chan struct{}
+	once            sync.Once
+}
+
+func newHandDeadline() *handDeadline {
+	return &handDeadline{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (d *handDeadline) Done() <-chan struct{} { return d.done }
+
+func (d *handDeadline) Err() error {
 	select {
-	case err := <-done:
-		if !errors.Is(err, ErrServerGone) {
-			t.Fatalf("call after the killed process: err = %v, want ErrServerGone", err)
-		}
-	case <-time.After(2*closeGrace + time.Second):
-		t.Fatal("the client lock was still held after the bounded write")
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
 
-// A context cancelled while the write is blocked releases it too, without
-// waiting for the call deadline.
-func TestBlockedWriteHonoursCancellation(t *testing.T) {
+func (d *handDeadline) expire() { d.once.Do(func() { close(d.done) }) }
+
+// stoppedServer starts the fake and makes it stop reading stdin. CallTimeout
+// is the maximum so no real timer races the test; each test ends its calls
+// through its own context.
+func stoppedServer(t *testing.T) (*Client, *proc) {
+	t.Helper()
 	cfg := fakeConfig(t)
 	cfg.CallTimeout = MaxCallTimeout
-	c, err := Start(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := c.p
+	c := startFake(t, cfg)
 	if _, err := c.Gap(context.Background(), "STOPREAD", ""); err != nil {
 		t.Fatalf("STOPREAD: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	return c, c.p
+}
+
+// gapAsync runs one Gap call. wait returns its error, or kills p and fails
+// the test if it has not returned within limit: a blocked write must never
+// hang the suite.
+func gapAsync(t *testing.T, c *Client, p *proc, ctx context.Context, jd string) (wait func(limit time.Duration) error) {
 	errc := make(chan error, 1)
 	go func() {
-		_, err := c.Gap(ctx, strings.Repeat("x", 4<<20), "")
+		_, err := c.Gap(ctx, jd, "")
 		errc <- err
 	}()
-	time.Sleep(200 * time.Millisecond)
-	cancel()
-	select {
-	case err := <-errc:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled write: err = %v, want context.Canceled", err)
+	return func(limit time.Duration) error {
+		t.Helper()
+		select {
+		case err := <-errc:
+			return err
+		case <-time.After(limit):
+			p.cancel() // the dead child makes the stuck write fail, so the test can end
+			<-errc
+			t.Fatalf("the call did not return within %s", limit)
+			return nil
 		}
-	case <-time.After(10 * time.Second):
-		p.cancel()
-		<-errc
-		c.Close()
-		t.Fatal("cancelling the context did not release a blocked write")
 	}
-	c.Close()
+}
+
+// waitClosed fails the test if ch is not closed within limit.
+func waitClosed(t *testing.T, ch <-chan struct{}, limit time.Duration, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(limit):
+		t.Fatalf("%s within %s", what, limit)
+	}
+}
+
+// A DevPrism that stops reading stdin fills the pipe. A request write still
+// in flight when the call's deadline ends must return ErrCallTimeout and kill
+// the process rather than block forever holding c.mu: the stuck write
+// returns, the next call sees ErrServerGone, and Restart recovers.
+func TestWriteToServerThatStopsReadingIsBounded(t *testing.T) {
+	c, p := stoppedServer(t)
+	w := watchStdin(c, len(bigRequest))
+	ctx := newHandDeadline()
+	go func() {
+		<-w.entered
+		ctx.expire()
+	}()
+	if err := gapAsync(t, c, p, ctx, bigRequest)(10 * time.Second); !errors.Is(err, ErrCallTimeout) {
+		t.Fatalf("blocked write: err = %v, want ErrCallTimeout", err)
+	}
+	waitClosed(t, w.returned, 2*closeGrace+time.Second, "the stuck write did not return")
+
+	_ = c.Stderr() // the lock is free
+	if _, err := c.Gap(context.Background(), "after", ""); !errors.Is(err, ErrServerGone) {
+		t.Fatalf("call after the killed process: err = %v, want ErrServerGone", err)
+	}
+	if err := c.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart after the kill: %v", err)
+	}
+	if _, err := c.Gap(context.Background(), "alive", ""); err != nil {
+		t.Fatalf("call after Restart: %v", err)
+	}
+}
+
+// A context cancelled while the write is in flight ends it the same way,
+// without waiting for any deadline.
+func TestBlockedWriteHonoursCancellation(t *testing.T) {
+	c, p := stoppedServer(t)
+	w := watchStdin(c, len(bigRequest))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-w.entered
+		cancel()
+	}()
+	if err := gapAsync(t, c, p, ctx, bigRequest)(10 * time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled write: err = %v, want context.Canceled", err)
+	}
+	waitClosed(t, w.returned, 2*closeGrace+time.Second, "the stuck write did not return")
+	if _, err := c.Gap(context.Background(), "after", ""); !errors.Is(err, ErrServerGone) {
+		t.Fatalf("call after the killed process: err = %v, want ErrServerGone", err)
+	}
+}
+
+// A deadline that ended before the request was written leaves nothing on the
+// wire, so the healthy process is kept: the call reports ErrCallTimeout and
+// the next call is answered by the same process.
+func TestDeadlineBeforeWriteKeepsTheProcess(t *testing.T) {
+	cfg := fakeConfig(t)
+	cfg.CallTimeout = MaxCallTimeout
+	c := startFake(t, cfg)
+	w := watchStdin(c, 0)
+	expired := newHandDeadline()
+	expired.expire()
+	if _, err := c.Gap(expired, "never sent", ""); !errors.Is(err, ErrCallTimeout) {
+		t.Fatalf("expired deadline: err = %v, want ErrCallTimeout", err)
+	}
+	select {
+	case <-w.entered:
+		t.Fatal("a request was written after its deadline had ended")
+	default:
+	}
+	c.mu.Lock()
+	kept := c.p != nil && c.p.stdin == io.WriteCloser(w)
+	c.mu.Unlock()
+	if !kept {
+		t.Fatal("the process was replaced although nothing was written")
+	}
+	if g, err := c.Gap(context.Background(), "next", "same"); err != nil || g.MustHaves[0].Requirement != "same" {
+		t.Fatalf("next call on the kept process: %+v %v", g, err)
+	}
+}
+
+// A child that dies while a request is being written fails the call with
+// ErrServerGone (the write breaks), not a timeout, and Restart recovers.
+func TestServerDiesMidWrite(t *testing.T) {
+	c, p := stoppedServer(t)
+	w := watchStdin(c, len(bigRequest))
+	go func() {
+		<-w.entered
+		_ = p.cmd.Process.Kill()
+	}()
+	if err := gapAsync(t, c, p, context.Background(), bigRequest)(10 * time.Second); !errors.Is(err, ErrServerGone) {
+		t.Fatalf("child died mid-write: err = %v, want ErrServerGone", err)
+	}
+	if err := c.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if _, err := c.Gap(context.Background(), "alive", ""); err != nil {
+		t.Fatalf("call after Restart: %v", err)
+	}
 }
 
 func TestStartFailures(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -284,31 +285,70 @@ func TestMCPRestartCap(t *testing.T) {
 // timeout, or the caller's context, kills the process promptly; the next
 // Load starts a new one.
 func TestMCPHungPage(t *testing.T) {
-	b, log := fakeLP(t, map[string]fakePage{pageA: {Hang: true}, pageB: {HTML: "<p>b</p>"}}, 300*time.Millisecond)
+	// The Load's own timeout. Under load the deadline may catch the process
+	// start or the handshake rather than the hung goto, so only what holds on
+	// every path is asserted: the message, a bound, and no process kept.
+	const loadTimeout = 300 * time.Millisecond
+	b, _ := fakeLP(t, map[string]fakePage{pageA: {Hang: true}}, loadTimeout)
 	start := time.Now()
-	if _, err := b.Load(context.Background(), pageA); err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
+	if err := loadWithin(t, b, context.Background(), pageA, 10*time.Second); err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
 		t.Fatalf("hung page: %v", err)
 	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("hung page took %s", d)
+	if d, limit := time.Since(start), loadTimeout+2*stopWait+time.Second; d > limit {
+		t.Fatalf("hung page took %s, limit %s", d, limit)
 	}
-	if got := mustLoad(t, b, pageB); got != "<p>b</p>" {
-		t.Fatalf("after hang: %q", got)
+	b.mu.Lock()
+	kept := b.proc != nil
+	b.mu.Unlock()
+	if kept {
+		t.Fatal("the process of a timed-out Load was kept")
 	}
 
+	// The caller's context, ended once the fake has the goto for the hung
+	// page: the process is proven up and the page proven hung inside it.
 	b2, log2 := fakeLP(t, map[string]fakePage{pageA: {Hang: true}, pageB: {HTML: "<p>b</p>"}}, time.Minute)
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
-	start = time.Now()
-	if _, err := b2.Load(ctx, pageA); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled: %v", err)
-	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("cancel took %s", d)
-	}
 	mustLoad(t, b2, pageB)
-	if starts(t, log) != 2 || starts(t, log2) != 2 {
-		t.Errorf("processes: %d and %d, want 2 each", starts(t, log), starts(t, log2))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() {
+		_, err := b2.Load(ctx, pageA)
+		errc <- err
+	}()
+	waitGoto(t, log2, pageA, 10*time.Second)
+	cancel()
+	select {
+	case err := <-errc:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled: %v", err)
+		}
+	case <-time.After(2*stopWait + time.Second):
+		t.Fatalf("cancel took more than %s", 2*stopWait+time.Second)
+	}
+	if got := mustLoad(t, b2, pageB); got != "<p>b</p>" {
+		t.Fatalf("after cancel: %q", got)
+	}
+	if n := starts(t, log2); n != 2 {
+		t.Errorf("processes: %d, want 2", n)
+	}
+}
+
+// waitGoto polls the fake's log until it has received a goto for rawURL, and
+// fails the test if that takes longer than limit. It orders a test after the
+// fake's own record of an event, never after a sleep.
+func waitGoto(t *testing.T, logPath, rawURL string, limit time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
+	for {
+		for _, c := range toolCalls(t, logPath) {
+			if c == "goto "+rawURL {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fake never received goto %s within %s", rawURL, limit)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -396,43 +436,120 @@ func TestMCPStartFailures(t *testing.T) {
 // A lightpanda that stops reading stdin cannot take a request larger than the
 // pipe buffer (a page's href has no length limit). The write must end with
 // the load's timeout or its context, not block the Load forever.
+//
+// Each case first loads a page normally, so the process is known to be up,
+// and acts on the request write only once it is in flight (watchedStdin):
+// nothing is ordered by a timer, so a loaded machine cannot skip the case.
 func TestMCPBlockedRequestWriteIsBounded(t *testing.T) {
 	long := pageA + "?q=" + strings.Repeat("x", 4<<20)
-	loadWithin := func(b *MCPBrowser, ctx context.Context) error {
-		t.Helper()
-		errc := make(chan error, 1)
-		go func() {
-			_, err := b.Load(ctx, long)
-			errc <- err
-		}()
-		select {
-		case err := <-errc:
-			return err
-		case <-time.After(10 * time.Second):
-			_ = b.Close() // closing stdin ends the stuck write so the test can end
-			<-errc
-			t.Fatal("a request write to a lightpanda that stopped reading never returned")
-			return nil
-		}
-	}
+	pages := map[string]fakePage{pageA: {HTML: "<p>a</p>", StopReading: true}}
 
-	b, log := fakeLP(t, nil, 300*time.Millisecond, "--fake-init=stopread")
-	start := time.Now()
-	if err := loadWithin(b, context.Background()); err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
-		t.Fatalf("blocked write: %v", err)
-	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("blocked write took %s", d)
-	}
-	if starts(t, log) != 1 {
-		t.Fatalf("processes: %d, want 1", starts(t, log))
-	}
-
-	b2, _ := fakeLP(t, nil, time.Minute, "--fake-init=stopread")
+	// Cancelled while the write is in flight: the Load ends with the
+	// context, the stuck write returns, and no other process was started.
+	b, log := fakeLP(t, pages, time.Minute)
+	mustLoad(t, b, pageA)
+	w, _ := watchStdin(b, len(long))
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-	if err := loadWithin(b2, ctx); !errors.Is(err, context.Canceled) {
+	defer cancel()
+	go func() {
+		<-w.entered
+		cancel()
+	}()
+	if err := loadWithin(t, b, ctx, long, 10*time.Second); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled blocked write: %v", err)
+	}
+	waitClosed(t, w.returned, 2*stopWait+time.Second, "the stuck write did not return")
+	if n := starts(t, log); n != 1 {
+		t.Fatalf("processes: %d, want 1", n)
+	}
+
+	// The process dies while the write is in flight: the write breaks and
+	// the Load fails with ErrBrowserGone rather than waiting on anything.
+	b2, _ := fakeLP(t, pages, time.Minute)
+	mustLoad(t, b2, pageA)
+	w2, p2 := watchStdin(b2, len(long))
+	go func() {
+		<-w2.entered
+		_ = p2.cmd.Process.Kill()
+	}()
+	if err := loadWithin(t, b2, context.Background(), long, 10*time.Second); !errors.Is(err, ErrBrowserGone) {
+		t.Fatalf("process died mid-write: %v", err)
+	}
+}
+
+// A lightpanda that stops reading right after the handshake: the Load ends
+// at loadTimeout and says so, whichever step the deadline caught (process
+// start, handshake or the request write), so no process count is asserted.
+func TestMCPStoppedReaderTimesOut(t *testing.T) {
+	b, _ := fakeLP(t, nil, 300*time.Millisecond, "--fake-init=stopread")
+	long := pageA + "?q=" + strings.Repeat("x", 4<<20)
+	if err := loadWithin(t, b, context.Background(), long, 10*time.Second); err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
+		t.Fatalf("stopped reader: %v", err)
+	}
+}
+
+// loadWithin runs one Load. If it has not returned within limit, the browser
+// is closed (closing stdin ends a stuck write) and the test fails: a blocked
+// write must never hang the suite.
+func loadWithin(t *testing.T, b *MCPBrowser, ctx context.Context, rawURL string, limit time.Duration) error {
+	t.Helper()
+	errc := make(chan error, 1)
+	go func() {
+		_, err := b.Load(ctx, rawURL)
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		return err
+	case <-time.After(limit):
+		_ = b.Close()
+		<-errc
+		t.Fatalf("the Load did not return within %s", limit)
+		return nil
+	}
+}
+
+// watchedStdin wraps a process's stdin and reports when a request of at
+// least min bytes starts to be written, and when that write returns. Every
+// write and Close goes to the real pipe.
+type watchedStdin struct {
+	io.WriteCloser
+	min      int
+	once     sync.Once
+	entered  chan struct{}
+	returned chan struct{}
+}
+
+func (w *watchedStdin) Write(p []byte) (int, error) {
+	if len(p) < w.min {
+		return w.WriteCloser.Write(p)
+	}
+	first := false
+	w.once.Do(func() { first = true; close(w.entered) })
+	n, err := w.WriteCloser.Write(p)
+	if first {
+		close(w.returned)
+	}
+	return n, err
+}
+
+// watchStdin installs a watchedStdin on b's live process, between Loads.
+func watchStdin(b *MCPBrowser, min int) (*watchedStdin, *mcpProc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p := b.proc
+	w := &watchedStdin{WriteCloser: p.stdin, min: min, entered: make(chan struct{}), returned: make(chan struct{})}
+	p.stdin = w
+	return w, p
+}
+
+// waitClosed fails the test if ch is not closed within limit.
+func waitClosed(t *testing.T, ch <-chan struct{}, limit time.Duration, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(limit):
+		t.Fatalf("%s within %s", what, limit)
 	}
 }
 
@@ -460,7 +577,7 @@ func TestMCPResetAndClose(t *testing.T) {
 		_, err := b.Load(context.Background(), pageB)
 		done <- err
 	}()
-	time.Sleep(200 * time.Millisecond)
+	waitGoto(t, log, pageB, 10*time.Second) // Close must catch the Load hung, not before it starts
 	start := time.Now()
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
@@ -522,9 +639,9 @@ func TestMCPLoadsAreSerial(t *testing.T) {
 
 // A Load waiting for another to finish gives up when its context ends.
 func TestMCPQueuedLoadHonoursContext(t *testing.T) {
-	b, _ := fakeLP(t, map[string]fakePage{pageA: {Hang: true}}, time.Minute)
+	b, log := fakeLP(t, map[string]fakePage{pageA: {Hang: true}}, time.Minute)
 	go func() { _, _ = b.Load(context.Background(), pageA) }()
-	time.Sleep(200 * time.Millisecond)
+	waitGoto(t, log, pageA, 10*time.Second) // the first Load now holds the browser
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	if _, err := b.Load(ctx, pageB); !errors.Is(err, context.DeadlineExceeded) {
