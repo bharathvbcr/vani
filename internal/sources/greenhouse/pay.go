@@ -34,8 +34,6 @@ const (
 	payRunBudget = 3 * time.Minute
 	// maxPayRanges is the most pay lines one posting carries.
 	maxPayRanges = 16
-	// payLinePrefix starts every line srcutil.PayLine writes.
-	payLinePrefix = "Pay range: "
 )
 
 // Variables only so tests can exercise them without large bodies or waits.
@@ -332,7 +330,7 @@ func reuse(stored, base string) (string, bool) {
 func storedPayLines(desc string) []string {
 	var lines []string
 	for _, line := range strings.SplitN(desc, "\n", maxPayRanges+1) {
-		if !strings.HasPrefix(line, payLinePrefix) {
+		if !strings.HasPrefix(line, srcutil.PayLinePrefix) {
 			break
 		}
 		lines = append(lines, line)
