@@ -18,9 +18,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/draft"
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -50,6 +52,14 @@ type Config struct {
 	DevPrism      DevPrism        `json:"devprism"`
 	DropRules     []DropRule      `json:"drop_rules"`
 	TargetSummary string          `json:"target_summary"`
+	// MotivationNotes is the owner's own note on what they care about in
+	// their work. `vani draft` gives it to motivation questions ("Why
+	// <company>?") as trusted text in the prompt, so it must be
+	// non-identifying like target_summary: no name, contact details,
+	// location, work authorization, or names of people, employers or
+	// schools. At most draft.MaxMotivationNotesBytes after whitespace
+	// collapse. Tracks leave it alone.
+	MotivationNotes string `json:"motivation_notes,omitempty"`
 	// Track is the id of the track decider `vani track use` last applied.
 	Track string `json:"track,omitempty"`
 	// TracksDir holds track decider files (<id>.json). Empty means
@@ -882,6 +892,13 @@ func (c Config) Validate() error {
 		if math.IsNaN(r.MinLappiScore) || r.MinLappiScore < 0 {
 			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
 		}
+	}
+
+	if n := len(strings.Join(strings.Fields(c.MotivationNotes), " ")); n > draft.MaxMotivationNotesBytes {
+		add("motivation_notes is %d bytes after whitespace collapse, max %d", n, draft.MaxMotivationNotesBytes)
+	}
+	if strings.ContainsFunc(c.MotivationNotes, func(r rune) bool { return unicode.IsControl(r) && !unicode.IsSpace(r) }) {
+		add("motivation_notes contains a control character")
 	}
 
 	if c.Track != "" && !ValidTrackID(c.Track) {

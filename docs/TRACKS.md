@@ -71,6 +71,7 @@ the repo's ignored `drafts/deciders/`, which `tracks_dir` can point at directly.
 - `title_signals` (include, exclude and read) is copied as is, and cleared when the track has none.
   See [Title signals](#title-signals).
 - `track` records the id, so `track list` can mark it.
+- `motivation_notes` is left alone: it is about the seeker, not the track.
 
 The new config is validated before it is saved. A track that fails any check is not applied and
 the config is left byte-for-byte unchanged.

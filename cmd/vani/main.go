@@ -29,6 +29,7 @@ const usageText = `usage: vani <command> [flags]
 commands:
   init                       write a default config (refuses to overwrite)
   config check               validate the config
+  config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
   watchlist list             list boards
   watchlist add    --ats gh|lv|ab|wd|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg) [--allow-host]
@@ -266,8 +267,11 @@ func (e *env) cmdInit(args []string) error {
 }
 
 func (e *env) cmdConfig(args []string) error {
+	if len(args) > 0 && args[0] == "motivation" {
+		return e.cmdConfigMotivation(args[1:])
+	}
 	if len(args) == 0 || args[0] != "check" {
-		return usagef("config: expected subcommand \"check\"")
+		return usagef("config: expected subcommand \"check\" or \"motivation\"")
 	}
 	if err := parse(e.newFlags("config check"), args[1:]); err != nil {
 		return err

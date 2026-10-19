@@ -317,6 +317,33 @@ func TestPostingIsSplitIntoCompanyRoleAndDroppedSections(t *testing.T) {
 	}
 }
 
+// A pay sentence mid-section drops itself and the pay lines after it, not the
+// role text that follows.
+func TestPaySentenceInsideARoleSectionDropsOnlyThePay(t *testing.T) {
+	desc := "Responsibilities\nBuild tools for researchers\nThe salary range for this role is $100,000 to $200,000.\n" +
+		"For sales roles the range is On Target Earnings (OTE).\nShip the experiment platform\nMentor engineers"
+	var kept, dropped []string
+	for _, s := range sections(desc) {
+		if s.kind == kindDrop {
+			dropped = append(dropped, s.heading, s.body)
+		} else {
+			kept = append(kept, s.heading, s.body)
+		}
+	}
+	k, d := strings.Join(kept, "\n"), strings.Join(dropped, "\n")
+	for _, s := range []string{"Build tools for researchers", "Ship the experiment platform", "Mentor engineers"} {
+		if !strings.Contains(k, s) {
+			t.Errorf("role line %q was dropped", s)
+		}
+	}
+	if !strings.Contains(d, "$100,000") || !strings.Contains(d, "On Target Earnings") || strings.Contains(k, "$100,000") {
+		t.Errorf("pay lines not dropped: kept %q dropped %q", k, d)
+	}
+	if ps := sections(desc); ps[len(ps)-1].kind != kindRole {
+		t.Errorf("the text after the pay lines is %s, want role", ps[len(ps)-1].kind)
+	}
+}
+
 func TestLargeCompanySectionsLeaveRoomForTheRole(t *testing.T) {
 	big := strings.Repeat("We value craft and care. ", 300)
 	desc := "About Acme\n" + big + "\nOur mission\n" + big + "\nHow we're different\n" + big + "\nAbout the role\nrolemarker: build research tools."
@@ -389,6 +416,66 @@ func TestMotivationEvidenceFavoursTheRoleOverMissionAndBoilerplate(t *testing.T)
 	// Deterministic: the same request renders the same prompt.
 	if _, again := draftPrompt(t, motivationKB(), "Roles building compiler toolchains", r); again != user {
 		t.Error("the prompt is not deterministic")
+	}
+}
+
+// Banks hold rewordings of one bullet for different resumes; a prompt carries one.
+func TestNearDuplicateBulletsAreSentOnce(t *testing.T) {
+	kb := []Evidence{
+		{Title: "AI Engineer", Org: "SofTech", Bullets: []string{
+			"Own inference serving for production LLM features: latency and throughput tuning, provider fallbacks and failure handling",
+			"Own inference serving for production LLM and agent features: latency and throughput tuning, provider fallbacks and bounded failure handling",
+			"Owned inference serving for production LLM features with latency and throughput tuning and provider fallbacks",
+		}},
+		{Title: "AI Engineer", Org: "SofTech", Bullets: []string{
+			"Own inference serving for production LLM features: latency tuning, provider fallbacks and failure handling",
+			"Built a GPU kernel library for low-bit quantization",
+		}},
+	}
+	got := fmt.Sprint(Select(kb, "inference serving latency throughput LLM provider fallbacks failure GPU kernel quantization", MaxEvidenceRunes))
+	if n := strings.Count(got, "inference serving"); n != 1 {
+		t.Errorf("sent %d rewordings of one bullet: %s", n, got)
+	}
+	if !strings.Contains(got, "GPU kernel") {
+		t.Errorf("a distinct bullet was dropped: %s", got)
+	}
+}
+
+func TestOneRoleCannotTakeTheWholeEvidenceList(t *testing.T) {
+	many := []string{
+		"Wrote GPU kernels in Metal", "Shipped quantization for small models", "Doubled throughput of a batch scorer",
+		"Halved latency on the serving path", "Ran inference serving on rented clusters", "Added dynamic batching to a queue",
+	}
+	kb := []Evidence{
+		{Title: "Engineer", Org: "Big Role", Bullets: many[:3]},
+		{Title: "Engineer", Org: "Big Role", Bullets: many[3:]}, // the same role split over two bank blocks
+		{Title: "Intern", Org: "Small Role", Bullets: []string{"Profiled GPU inference once"}},
+	}
+	got := Select(kb, "GPU model inference kernels quantization throughput latency serving batching", MaxEvidenceRunes)
+	n, small := 0, false
+	for _, e := range got {
+		if e.Org == "Big Role" {
+			n += len(e.Bullets)
+		}
+		small = small || e.Org == "Small Role"
+	}
+	if n != maxBulletsPerRole || !small {
+		t.Errorf("big role sent %d bullets (cap %d), small role sent %v: %+v", n, maxBulletsPerRole, small, got)
+	}
+}
+
+// For "this role", the posting's role text outranks the seeker's general target summary.
+func TestMotivationRanksTheRoleAboveTheTargetSummary(t *testing.T) {
+	pad := strings.Repeat(" qqq", MaxEvidenceRunes/7) // long enough that only one of the two fits
+	kb := []Evidence{
+		{Title: "T", Org: "Target", Bullets: []string{"Tuned inference serving latency throughput" + pad}},
+		{Title: "R", Org: "Role", Bullets: []string{"Built experiment orchestration visualization platforms" + pad}},
+	}
+	r := Request{Question: "Why Acme?", Job: Job{Description: "About the role\nBuild experiment orchestration and visualization platforms."}}
+	_, user := draftPrompt(t, kb, "Inference serving latency throughput roles", r)
+	trusted, _ := frame(t, user)
+	if !strings.Contains(trusted, "experiment orchestration") || strings.Contains(trusted, "Tuned inference") {
+		t.Errorf("the target-summary bullet beat the role bullet: %q", trusted)
 	}
 }
 

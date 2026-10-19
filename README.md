@@ -304,7 +304,19 @@ flowchart TD
 - **Drafting:** `vani draft` reads one JSON request on stdin (question, posting, word limit) and
   writes one JSON reply. It drafts a free-text answer with one bounded LLM turn from the posting and
   the most relevant knowledge-base bullets, never personal data, and charges the same daily LLM
-  ledger as the pipeline. Failures carry a code: `bad_request`, `budget_exhausted`, `timeout`,
+  ledger as the pipeline. The posting is split at its headings ("About <company>", "About the role",
+  "Responsibilities", "Logistics", ...): the excerpt sent leads with the company and role sections
+  wherever they sit and leaves out pay, benefits, logistics and legal text. A motivation question
+  ("Why <company>?", "What excites you about this role?") ranks evidence against the role's own work
+  first and the target summary second, and the model is told to tie it to this company's mission and
+  this role, never in an answer another company could receive unchanged. What the seeker values is
+  rarely in resume bullets, so the optional `motivation_notes` in the config (the owner's own words
+  on what they care about, at most 2,048 bytes after whitespace collapse) goes to motivation
+  questions only, as trusted text labelled as the seeker's, and the model may use those reasons
+  where they meet the posting but add none. It enters a prompt, so like `target_summary` it must be
+  non-identifying: no name, contact details, location, work authorization, or names of people,
+  employers or schools. It does not affect which evidence is picked. Every evidence list skips
+  rewordings of a bullet already sent and takes at most three bullets per role. Failures carry a code: `bad_request`, `budget_exhausted`, `timeout`,
   `provider`, `empty_reply`, `config` or `kb`. The Mac app and the Chrome host run it.
 - **Anthropic models:** current Claude models reject `temperature` and always reason.
   `llmbackend.Shape` therefore drops temperature for Anthropic and asks for low effort, with

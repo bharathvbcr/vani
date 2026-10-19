@@ -12,6 +12,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/draft"
 )
 
 type draftStream struct {
@@ -114,6 +115,25 @@ func TestDraftWithoutKnowledgeBaseStillDrafts(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "without knowledge-base evidence") {
 		t.Errorf("stderr = %q", stderr)
+	}
+}
+
+// The stdin cap fits the longest posting the draft package reads, in the
+// worst UTF-8 case, so a long posting is sectioned rather than refused.
+func TestDraftAcceptsTheLongestPostingDraftReads(t *testing.T) {
+	desc := "About the role\n" + strings.Repeat("é", draft.MaxPostingRunes-20)
+	raw, err := json.Marshal(draft.Request{Question: "Why Acme?", Job: draft.Job{Description: desc}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.MaxPostingRunes*4+4096 > maxDraftInput {
+		t.Errorf("maxDraftInput %d cannot carry %d runes of posting", maxDraftInput, draft.MaxPostingRunes)
+	}
+	p := &draftLLM{text: "A draft."}
+	draftSetup(t, string(raw), p, false)
+	stdout, _ := mustCode(t, 0, "draft")
+	if r := draftOut(t, stdout); r.Draft != "A draft." || len(p.reqs) != 1 {
+		t.Errorf("reply = %+v, provider calls %d", r, len(p.reqs))
 	}
 }
 

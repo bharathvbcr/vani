@@ -39,33 +39,74 @@ const (
 
 type section struct{ kind, heading, body string }
 
-// headingKinds classify a normalized heading line. Drop is tried first and
-// role before company, so "About the role" is not read as "About <company>".
+// headingKinds classify a normalized heading line (lower case, straight
+// apostrophes, no trailing ":" or "?"). Every pattern is anchored at both
+// ends: "Salary band design for 40 markets" is a duty, not a heading. Drop is
+// tried first and role before company, so "About the role" is not read as
+// "About <company>". The vocabulary is checked against the real Greenhouse,
+// Lever, Ashby and Workday postings in internal/sources/*/testdata.
 var headingKinds = []struct {
 	kind string
 	re   *regexp.Regexp
 }{
-	// Anchored at both ends: "Salary band design for 40 markets" is a duty, not a heading.
-	{kindDrop, regexp.MustCompile(`^((the )?(annual |us |base )?(compensation|salary|pay|base pay|base salary)( and benefits| range| ranges| transparency)?|(our )?benefits( and perks)?|perks( and benefits)?|what we offer|logistics|eeo|equal (employment )?opportunity( employer)?|your safety( matters( to us)?)?|visa( sponsorship)?|locations?|how to apply|application process|accommodations?|privacy( notice| policy)?|deadline( to apply)?)$`)},
-	{kindRole, regexp.MustCompile(`^((about|in) (the|this) (role|position|job|opportunity|team)|(the|your) (role|team|opportunity|impact|work)|(role|position|job|team) (overview|summary|description|details)|overview|duties|projects|representative projects|key responsibilities|day to day|a day in the life|what you('ll| will) (do|work on|be doing|build)|skills|about you|who you are|you have|you are|ideal candidate|nice to have|bonus points)$|^(responsibilities|requirements|qualifications|minimum qualifications|basic qualifications|preferred qualifications|you may be a good fit|you might be a good fit|you('ll| will) thrive|strong candidates|what we('re| are) looking for|what you('ll| will)? bring)\b`)},
-	{kindCompany, regexp.MustCompile(`^(about (us|the company|our company|[^ ]+( [^ ]+){0,2})|who we are|what we do|our (mission|story|values|culture|company|team|vision)|mission|values|culture|vision|the company|company (overview|description)|how we('re| are) different|why (join|work) .+|why [^ ]+( [^ ]+)?|life at .+|working at .+|come work with us|join us)$`)},
+	{kindDrop, oneOf(
+		`(the )?(annual |us |base )?(compensation|salary|pay|base pay|base salary)( and benefits| range| ranges| transparency)?`,
+		`(our )?benefits( and perks)?`, `perks( and benefits)?`, `what we offer`,
+		`how .+ supports? (its |our )?(full-time )?(employees|team members|people|you)`,
+		`logistics`, `eeo`, `equal (employment )?opportunity( employer)?`, `your safety( matters( to us)?)?`,
+		`visa( sponsorship)?`, `locations?`, `where you('ll| will) (be|work)( based| located| working)?`,
+		`how to apply`, `(the )?(interview|hiring|application|recruiting) process`,
+		`accommodations?`, `privacy( notice| policy)?`, `deadline( to apply)?`,
+	)},
+	{kindRole, oneOf(
+		`(about|in) (the|this) (role|position|job|opportunity|team)`, `(the|your) (role|team|opportunity|impact|work)`,
+		`(job |role |position )?(overview|summary|description|details)`, `why this role( .+)?`,
+		`duties`, `(representative )?projects`, `(key )?responsibilities( .+)?`,
+		`(minimum |basic |preferred )?(requirements|qualifications)( .+)?`,
+		`([^ ]+ ){1,5}(responsibilities|requirements|qualifications)`, // "<job title> Responsibilities"
+		`day to day`, `a day in the life( .+)?`, `what you('ll| will) (do|work on|be doing|build|bring)`, `what you bring`,
+		`skills`, `about you`, `who you are`, `you (have|are)`, `ideal candidate`, `nice to haves?`, `bonus points( for)?`,
+		`you (may|might|could|would) be a (good|great|strong) fit( .+)?`, `you('ll| will) thrive( .+)?`,
+		`strong candidates( .+)?`, `what we('re| are) looking for`,
+		`reasons you should(n't| not) apply`, `this role (may|might) not be (a|the right) fit( .+)?`,
+	)},
+	{kindCompany, oneOf(
+		`about (us|the company|our company|[^ ]+( [^ ]+){0,2})`, `who we are`, `what we do`,
+		`our (mission|story|values|culture|company|team|vision)`, `mission`, `values`, `culture`, `vision`,
+		`the company`, `company (overview|description)`, `how we('re| are) different`,
+		`why (join|work) .+`, `why [^ ]+( [^ ]+)?`, `why .+ at .+`, `life at .+`, `working at .+`,
+		`come work with us`, `join us`,
+	)},
+}
+
+// oneOf compiles alternatives into one pattern anchored at both ends.
+func oneOf(alts ...string) *regexp.Regexp {
+	return regexp.MustCompile(`^(` + strings.Join(alts, "|") + `)$`)
 }
 
 // payLine and payShape open a dropped section at a sentence, not a heading:
 // boards often print "The annual compensation range for this role is listed
 // below." as body text under the last real heading. Both must match, so a duty
 // such as "Compensation range benchmarking for new hires" stays role text.
+// Such a section ends at the first line after it that is not about pay
+// (payish), and the text goes back to the section it interrupted.
 var (
 	payLine  = regexp.MustCompile(`^(the )?(annual |expected |estimated |base )?(compensation|salary|pay)( and benefits)? (range|band|bands|scale)\b`)
 	payShape = regexp.MustCompile(`for this (role|position|job)|listed below|[$€£]|\busd\b`)
+	payish   = regexp.MustCompile(`[$€£¥]|\b(usd|eur|gbp|ote|salary|salaries|compensation|pay|bonus|equity|commission|on target earnings|range)\b`)
 )
 
 var apostrophes = strings.NewReplacer("’", "'", "‘", "'")
 
+func paySentence(line string) bool {
+	l := apostrophes.Replace(strings.ToLower(line))
+	return payLine.MatchString(l) && payShape.MatchString(l)
+}
+
 // headingKind reports the kind of section line opens, or "" when line is not a
 // heading: too long, a sentence, or not one the classifier knows.
 func headingKind(line string) string {
-	if l := apostrophes.Replace(strings.ToLower(line)); payLine.MatchString(l) && payShape.MatchString(l) {
+	if paySentence(line) {
 		return kindDrop
 	}
 	if line == "" || runes(line) > maxHeadingRunes || len(strings.Fields(line)) > maxHeadingWords {
@@ -90,6 +131,10 @@ func headingKind(line string) string {
 func sections(desc string) []section {
 	var out []section
 	var bodies []*strings.Builder
+	open := func(kind, heading string) {
+		out, bodies = append(out, section{kind: kind, heading: heading}), append(bodies, &strings.Builder{})
+	}
+	resume := "" // set while a pay sentence's section is open: the kind it interrupted
 	for _, line := range strings.Split(desc, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -97,12 +142,23 @@ func sections(desc string) []section {
 		}
 		if len(out) < maxSections {
 			if k := headingKind(line); k != "" {
-				out, bodies = append(out, section{kind: k, heading: line}), append(bodies, &strings.Builder{})
+				resume = ""
+				if paySentence(line) {
+					resume = kindOther
+					if len(out) > 0 {
+						resume = out[len(out)-1].kind
+					}
+				}
+				open(k, line)
 				continue
+			}
+			if resume != "" && !payish.MatchString(apostrophes.Replace(strings.ToLower(line))) {
+				open(resume, "")
+				resume = ""
 			}
 		}
 		if len(out) == 0 {
-			out, bodies = append(out, section{kind: kindOther}), append(bodies, &strings.Builder{})
+			open(kindOther, "")
 		}
 		b := bodies[len(bodies)-1]
 		if b.Len() > 0 {
@@ -116,8 +172,8 @@ func sections(desc string) []section {
 	return out
 }
 
-// posting is the excerpt of a job description a draft is written from.
-type posting struct {
+// postingText is the excerpt of a job description a draft is written from.
+type postingText struct {
 	sectioned bool      // false: no heading was recognised and kept holds the first maxRunes
 	kept      []section // in posting order, each body clipped to its share; never kindDrop
 }
@@ -127,9 +183,9 @@ type posting struct {
 // first gets up to maxSectionRunes (company sections up to that much between
 // them, so several cannot crowd out the role), then leftover budget in the
 // same order.
-func excerpt(desc string, maxRunes int) posting {
+func excerpt(desc string, maxRunes int) postingText {
 	ss := sections(desc)
-	var p posting
+	var p postingText
 	for _, s := range ss {
 		p.sectioned = p.sectioned || s.heading != ""
 	}
@@ -171,7 +227,7 @@ func excerpt(desc string, maxRunes int) posting {
 
 // text joins the kept sections of the given kinds (all kept ones when none
 // are given), headings included.
-func (p posting) text(kinds ...string) string {
+func (p postingText) text(kinds ...string) string {
 	var b strings.Builder
 	for _, s := range p.kept {
 		if len(kinds) > 0 && !slices.Contains(kinds, s.kind) {
@@ -185,7 +241,7 @@ func (p posting) text(kinds ...string) string {
 	return b.String()
 }
 
-func (p posting) has(kind string) bool {
+func (p postingText) has(kind string) bool {
 	for _, s := range p.kept {
 		if s.kind == kind {
 			return true

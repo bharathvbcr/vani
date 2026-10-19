@@ -13,6 +13,10 @@ struct SettingsView: View {
     @State private var draftAccount = ""
     @State private var accounts: [String] = []
     @State private var accountsProblem: String?
+    @State private var notes = ""
+    @State private var savedNotes: MotivationNotes?
+    @State private var notesProblem: String?
+    @State private var notesBusy = false
 
     private var editedDraftSettings: DraftSettings {
         DraftSettings(vaniConfig: draftConfig, vaniStateDir: draftState, anthropicAccount: draftAccount)
@@ -66,10 +70,33 @@ struct SettingsView: View {
                     Button("Save") {
                         model.saveDraftSettings(editedDraftSettings)
                         jobs.reload()
+                        loadNotes()
                     }
                         .disabled(editedDraftSettings == model.draftSettings)
                 }
                 Text("Jobs lists the roles in that state folder's ledger and keeps your saved, applied and hidden marks and notes beside it (marks/); it spends nothing. Drafts run Vani's `vani draft` with the model and daily spending cap in that config (llm.model, decide.daily_usd.llm), shared with the daily listings run. Empty means Vani's default in ~/Library/Application Support/Vani. When that config's llm.provider is anthropic, Vani starts through anthropic-account, which reads the chosen account's key (and its workspace id, if listed) from your login Keychain and ~/.anthropic-accounts; this app never sees the key. Default is the first account listed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("What you care about (for \u{201C}Why this company?\u{201D} drafts)") {
+                TextEditor(text: $notes)
+                    .font(.body)
+                    .frame(minHeight: 90)
+                    .disabled(notesBusy || savedNotes == nil)
+                HStack {
+                    if let savedNotes {
+                        Text("\(collapsedBytes(notes)) of \(savedNotes.maxBytes) bytes")
+                            .font(.caption).foregroundStyle(collapsedBytes(notes) > savedNotes.maxBytes ? .red : .secondary)
+                    }
+                    Spacer()
+                    Button("Reload", action: loadNotes).disabled(notesBusy)
+                    Button("Save", action: saveNotes)
+                        .disabled(notesBusy || savedNotes == nil || notes.trimmingCharacters(in: .whitespacesAndNewlines) == savedNotes?.text)
+                }
+                if let notesProblem {
+                    Text(notesProblem).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
+                Text("Your own words on what you care about in your work and why. Drafts use them only for questions like \u{201C}Why <company>?\u{201D}, tying your reasons to what the posting says; the model is told not to add reasons you did not give. This text is sent to the model: do not put your name, contact details, location, work authorization, or names of people, employers or schools in it. Saved as motivation_notes in the Vani config above (saved settings), which Vani checks before it writes.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -113,6 +140,7 @@ struct SettingsView: View {
             draftAccount = s.anthropicAccount
         }
         .task {
+            loadNotes()
             let listed = await model.anthropicAccounts()
             accounts = listed.names
             accountsProblem = listed.problem
@@ -139,6 +167,42 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// The size Vani measures: whitespace runs collapsed to one space.
+    private func collapsedBytes(_ s: String) -> Int {
+        s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").utf8.count
+    }
+
+    private var notesClient: MotivationNotesClient {
+        model.draftSettings.motivationNotesClient(vaniBinary: model.vaniBinary)
+    }
+
+    /// Runs `vani config motivation` off the main thread; the reply replaces
+    /// the editor's text.
+    @MainActor
+    private func runNotes(_ op: @escaping @Sendable (MotivationNotesClient) throws -> MotivationNotes) {
+        let client = notesClient
+        notesBusy = true
+        Task {
+            let result = await Task.detached { Result { try op(client) } }.value
+            notesBusy = false
+            switch result {
+            case let .success(n):
+                savedNotes = n
+                notes = n.text
+                notesProblem = nil
+            case let .failure(err):
+                notesProblem = String(describing: err)
+            }
+        }
+    }
+
+    private func loadNotes() { runNotes { try $0.load() } }
+
+    private func saveNotes() {
+        let text = notes
+        runNotes { try $0.save(text) }
     }
 
     private func addHost() {

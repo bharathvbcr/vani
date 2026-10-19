@@ -15,8 +15,10 @@ import (
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 )
 
-// maxDraftInput caps the request read from stdin.
-const maxDraftInput = 64 << 10
+// maxDraftInput caps the request read from stdin. It carries a posting of
+// draft.MaxPostingRunes in the worst UTF-8 case (4 bytes a rune), the same cap
+// as `vani suggest`.
+const maxDraftInput = 256 << 10
 
 // draftInput is where `vani draft` reads its request. Tests replace it.
 var draftInput io.Reader = os.Stdin
@@ -134,7 +136,7 @@ func (e *env) newDrafter(ctx context.Context, cfg config.Config, p llm.Provider)
 	} else {
 		fmt.Fprintln(e.stderr, "vani: draft: kb.bank and kb.rkb are not configured; drafting without knowledge-base evidence")
 	}
-	d, err := draft.New(p, draft.Config{Model: cfg.LLM.Model, TargetSummary: cfg.TargetSummary}, evidence)
+	d, err := draft.New(p, draft.Config{Model: cfg.LLM.Model, TargetSummary: cfg.TargetSummary, MotivationNotes: cfg.MotivationNotes}, evidence)
 	if err != nil {
 		return nil, codeConfig, err
 	}

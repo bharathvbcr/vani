@@ -157,6 +157,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      (`llm.model`, `decide.daily_usd.llm`). That cap is shared with the daily listings run.
    - Set the config and state paths in Settings ▸ Claude drafting. Empty means Vani's default
      folder.
+   - Settings ▸ What you care about edits `motivation_notes` in that config through
+     `vani config motivation`, so Vani checks it and rewrites the config file whole (as
+     `vani track use` does: keys in Vani's order, deprecated names replaced). "Why <company>?" drafts use the note;
+     it reaches the model, so it must not name you or say where you live or your work status.
    - A saved draft is always marked for review, so forms fill it yellow.
    - The Chrome extension can ask for a draft through the native host (op `draft`). Safari's
      sandboxed appex cannot start `vani`, so it answers `unsupported` to that op. Instead, both
