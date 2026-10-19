@@ -279,6 +279,9 @@ func (e *env) cmdConfig(args []string) error {
 	return nil
 }
 
+// daemonClock drives `vani daemon`'s schedule. Tests replace it.
+var daemonClock daemon.Clock = daemon.SystemClock{}
+
 func (e *env) cmdDaemon(args []string) error {
 	if err := parse(e.newFlags("daemon"), args); err != nil {
 		return err
@@ -295,7 +298,7 @@ func (e *env) cmdDaemon(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
-	return daemon.Run(ctx, cfg.Schedule, e.dailyJob(app, cfg), daemon.SystemClock{})
+	return daemon.Run(ctx, cfg.Schedule, e.dailyJob(app, cfg), daemonClock)
 }
 
 func (e *env) cmdRunOnce(args []string) error {

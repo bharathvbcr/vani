@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"sort"
 	"time"
 )
@@ -205,6 +207,41 @@ func buildAdd(b Block, now time.Time) (json.RawMessage, string) {
 	return raw, ""
 }
 
+// unchangedStamp returns existing's updatedAt when blk holds the same
+// document apart from updatedAt and the derived embeddingText. Equality is
+// by JSON value, not bytes, so key order and spacing in DevPrism's copy do not
+// count as a change.
+func unchangedStamp(existing json.RawMessage, blk map[string]json.RawMessage) (json.RawMessage, bool) {
+	var prev map[string]json.RawMessage
+	if json.Unmarshal(existing, &prev) != nil {
+		return nil, false
+	}
+	stamp, ok := prev["updatedAt"]
+	if !ok {
+		return nil, false
+	}
+	value := func(m map[string]json.RawMessage) (any, bool) {
+		c := maps.Clone(m)
+		delete(c, "updatedAt")
+		delete(c, "embeddingText")
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return nil, false
+		}
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, false
+		}
+		return v, true
+	}
+	a, okA := value(prev)
+	b, okB := value(blk)
+	if !okA || !okB || !reflect.DeepEqual(a, b) {
+		return nil, false
+	}
+	return stamp, true
+}
+
 // buildUpdate merges rkb's fields into DevPrism's existing block. The upsert
 // replaces the whole document, so everything DevPrism owns (facts, skills,
 // personas, notes, seniority, per-bullet locked/variants/metrics) is carried
@@ -305,6 +342,13 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 	// embeddingText is derived from the content just replaced; a stale copy
 	// would mislead search until the next embed backfill.
 	delete(blk, "embeddingText")
+	// An update that changes nothing but the stamp keeps DevPrism's stamp. That
+	// is the replay after a crash between DevPrism accepting a batch and the
+	// state save: the block is re-sent byte for byte as it was first sent, so
+	// the replay changes nothing in DevPrism, updatedAt included.
+	if prev, ok := unchangedStamp(existing, blk); ok {
+		blk["updatedAt"] = prev
+	}
 	raw, err := json.Marshal(blk)
 	if err != nil {
 		return nil, "cannot encode block: " + err.Error()

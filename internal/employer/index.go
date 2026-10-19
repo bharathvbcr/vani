@@ -13,6 +13,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/lca"
 )
 
@@ -158,7 +159,7 @@ func (x *Index) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("employer: encode index: %w", err)
 	}
-	if err := lca.WriteFileAtomic(path, data); err != nil {
+	if err := atomicfile.Write(path, data); err != nil {
 		return err
 	}
 	// The index is written first: a crash before the view lands leaves a view

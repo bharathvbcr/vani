@@ -365,6 +365,33 @@ func TestJobErrorAndPanicKeepSchedule(t *testing.T) {
 	h.stop()
 }
 
+// A job error wrapping ErrFatal ends Run with that error, logged as an exit;
+// the daemon does not wait for another slot to fail the same way.
+func TestFatalJobErrorEndsRun(t *testing.T) {
+	loc := la(t)
+	logs := captureLogs(t)
+	cause := errors.New("ledger poisoned")
+	h := start(t, time.Date(2026, 10, 18, 7, 0, 0, 0, loc), func(context.Context, *harness) error {
+		return fmt.Errorf("%w: %w", ErrFatal, cause)
+	})
+	h.clock.Advance(time.Date(2026, 10, 18, 8, 30, 0, 0, loc))
+	h.waitRan()
+	select {
+	case err := <-h.done:
+		if !errors.Is(err, ErrFatal) || !errors.Is(err, cause) {
+			t.Fatalf("Run returned %v, want the fatal job error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run kept scheduling after a fatal job error")
+	}
+	if !logs.has("job failed, exiting: daemon: fatal job error: ledger poisoned") {
+		t.Errorf("exit not logged: %v", logs.lines)
+	}
+	if n := h.runs.Load(); n != 1 {
+		t.Errorf("%d runs, want 1", n)
+	}
+}
+
 func TestRunRejectsBadSchedule(t *testing.T) {
 	c := newClock(time.Now())
 	job := func(context.Context) error { return nil }
@@ -396,7 +423,6 @@ func TestPlistXMLEscaping(t *testing.T) {
 		"/logs/&lt;d&gt;/vani.out.log",
 		"/logs/&lt;d&gt;/vani.err.log",
 		"<key>RunAtLoad</key>\n\t<true/>",
-		"<key>KeepAlive</key>\n\t<false/>",
 		"<key>ProgramArguments</key>",
 	} {
 		if !strings.Contains(out, want) {

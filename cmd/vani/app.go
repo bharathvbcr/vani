@@ -54,7 +54,13 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 			rec.CountsBefore = statusCounts(app.Ledger.All())
 		}
 		e.saveRunRecord(rec)
-		stage, err := e.dailySteps(ctx, app, cfg)
+		stage, err := stagePipeline, ledgerBroken(app.Ledger)
+		if err == nil {
+			stage, err = e.dailySteps(ctx, app, cfg)
+			if berr := ledgerBroken(app.Ledger); berr != nil {
+				err = errors.Join(err, berr)
+			}
+		}
 		rec.FinishedAt = now()
 		if app.RunReport != nil {
 			rec.runDetail = app.RunReport()
@@ -73,6 +79,20 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 		e.saveRunRecord(rec)
 		return err
 	}
+}
+
+// ledgerBroken reports a ledger a failed write left unusable, as a
+// daemon.ErrFatal: the daemon holds one ledger for its whole life, so without
+// exiting it would fail every later run until someone restarted it.
+func ledgerBroken(l ledger.Ledger) error {
+	b, ok := l.(interface{ Broken() error })
+	if !ok {
+		return nil
+	}
+	if err := b.Broken(); err != nil {
+		return fmt.Errorf("%w: %w", daemon.ErrFatal, err)
+	}
+	return nil
 }
 
 // dailySteps is the run itself; stage names where it stopped when it fails.

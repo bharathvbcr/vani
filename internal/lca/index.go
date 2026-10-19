@@ -9,9 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 )
 
 // SchemaVersion is the on-disk index schema.
@@ -207,39 +208,7 @@ func (x *Index) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("lca: encode index: %w", err)
 	}
-	return WriteFileAtomic(path, data)
-}
-
-// WriteFileAtomic writes data to path with mode 0600: a temp file in the same
-// directory is written, synced and renamed over path, so a crash leaves
-// either the old or the new file. The employer index shares it.
-func WriteFileAtomic(path string, data []byte) (err error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("atomic write %s: create temp file: %w", filepath.Base(path), err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if err = tmp.Chmod(0o600); err != nil {
-		return fmt.Errorf("atomic write %s: chmod temp file: %w", filepath.Base(path), err)
-	}
-	if _, err = tmp.Write(data); err != nil {
-		return fmt.Errorf("atomic write %s: write temp file: %w", filepath.Base(path), err)
-	}
-	if err = tmp.Sync(); err != nil {
-		return fmt.Errorf("atomic write %s: sync temp file: %w", filepath.Base(path), err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("atomic write %s: close temp file: %w", filepath.Base(path), err)
-	}
-	if err = os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("atomic write %s: replace file: %w", filepath.Base(path), err)
-	}
-	return nil
+	return atomicfile.Write(path, data)
 }
 
 // Load reads an index written by Save. A corrupted, truncated, unknown-version

@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
@@ -398,6 +399,11 @@ func Write(stateDir string, date time.Time, recs []ledger.Record, m map[posting.
 		}
 		err := os.Link(name, target)
 		if err == nil {
+			// The link is the digest's only name until this sync: without it a
+			// crash can lose the file after the caller marks its roles digested.
+			if err := atomicfile.SyncDir(dir); err != nil {
+				return "", nil, fmt.Errorf("digest: %s written, but syncing its directory failed: %w", filepath.Base(target), err)
+			}
 			return target, keys, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {

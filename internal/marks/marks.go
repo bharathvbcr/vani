@@ -191,8 +191,20 @@ func fold(m map[posting.Key]Entry, e event) {
 	m[e.Key] = cur
 }
 
+// cutBack truncates f to good after cause; a failed truncate is joined to
+// cause rather than dropped.
+func cutBack(f *os.File, good int64, cause error) error {
+	if err := f.Truncate(good); err != nil {
+		return errors.Join(cause, fmt.Errorf("marks: the line could not be cut back and may still take effect: %w", err))
+	}
+	return cause
+}
+
 // replay folds src. It returns the end of the last intact line and whether a
-// torn last line was skipped; a bad line before the last is ErrCorrupt.
+// torn last line (no newline, or not JSON at all) was skipped; a bad line
+// before the last is ErrCorrupt. So is a last line that is whole JSON but not
+// a valid event, such as one from a newer writer: cutting it as torn would
+// erase a mark that was really made.
 func replay(src io.Reader) (map[posting.Key]Entry, int64, bool, error) {
 	out := map[posting.Key]Entry{}
 	r := bufio.NewReaderSize(src, 16*1024)
@@ -215,7 +227,7 @@ func replay(src io.Reader) (map[posting.Key]Entry, int64, bool, error) {
 			perr = validate(e)
 		}
 		if perr != nil {
-			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) {
+			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) && !json.Valid(line) {
 				return out, good, true, nil
 			}
 			return nil, good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
@@ -407,13 +419,14 @@ func write(dir string, e event) (Entry, error) {
 			return Entry{}, fmt.Errorf("marks: truncate torn tail: %w", err)
 		}
 	}
+	// A failed write or fsync is cut back to the last good line. If the cut
+	// fails too, the line may still be in the file and take effect on the
+	// next replay, so the caller is told it may have been written.
 	if _, err := f.WriteAt(line, good); err != nil {
-		_ = f.Truncate(good)
-		return Entry{}, fmt.Errorf("marks: write: %w", err)
+		return Entry{}, cutBack(f, good, fmt.Errorf("marks: write: %w", err))
 	}
 	if err := f.Sync(); err != nil {
-		_ = f.Truncate(good)
-		return Entry{}, fmt.Errorf("marks: fsync: %w", err)
+		return Entry{}, cutBack(f, good, fmt.Errorf("marks: fsync: %w", err))
 	}
 	fold(m, e)
 	if out, ok := m[e.Key]; ok {

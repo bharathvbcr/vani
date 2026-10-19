@@ -330,9 +330,13 @@ func TestSaveIsAtomic(t *testing.T) {
 	if err := good.Save(blocked); err == nil {
 		t.Fatal("expected error saving over a directory")
 	}
-	// Saving into a missing directory fails cleanly.
-	if err := good.Save(filepath.Join(dir, "nope", "x.json")); err == nil {
-		t.Fatal("expected error for missing directory")
+	// A missing parent directory is created (0700), as every other state
+	// writer does; it used to fail the save.
+	if err := good.Save(filepath.Join(dir, "nope", "x.json")); err != nil {
+		t.Fatalf("save into a missing directory: %v", err)
+	}
+	if _, err := Load(filepath.Join(dir, "nope", "x.json")); err != nil {
+		t.Fatalf("index saved into a new directory: %v", err)
 	}
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
