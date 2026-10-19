@@ -38,9 +38,43 @@ var retriageable = map[posting.Status]bool{posting.Unsure: true, posting.Triaged
 // description hash). The ledger is append-only, so the old events remain as
 // history. With dryRun it only reports. Keys are in ledger order.
 func RetriageUnread(ctx context.Context, l ledger.Ledger, now time.Time, dryRun bool) ([]posting.Key, error) {
+	return reopen(ctx, l, now, dryRun, "retriage: no decision backend could read it", func(r ledger.Record) bool {
+		return retriageable[r.Status] && Unread(r)
+	})
+}
+
+// TitleDropped reports whether r was dropped on its title alone, with no
+// decision backend asked (DropPolicy.EvaluateTitle).
+func TitleDropped(r ledger.Record) bool {
+	return r.Status == posting.Dropped && r.Annotations[ledger.AnnTriagePrefix+"backend"] == TitleBackend
+}
+
+// RetriageTitleDrops returns to Live every record dropped on its title that p
+// would no longer drop on its title: a phrase list or drop rule changed, or
+// title readings were switched off. The next run triages it with the
+// backends. A record p still drops is left alone, since the next run would
+// only drop it again. Annotations are forgotten as RetriageUnread forgets
+// them. With dryRun it only reports. Keys are in ledger order.
+func RetriageTitleDrops(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, dryRun bool) ([]posting.Key, error) {
+	return reopen(ctx, l, now, dryRun, "retriage: the title rules no longer drop it", func(r ledger.Record) bool {
+		if !TitleDropped(r) {
+			return false
+		}
+		_, _, still := p.EvaluateTitle(r.Posting.Title)
+		return !still
+	})
+}
+
+// reopen returns each record match selects to Live, forgetting the triage,
+// scoring and explanation annotations and keeping everything else (badges,
+// description hash).
+func reopen(ctx context.Context, l ledger.Ledger, now time.Time, dryRun bool, reason string, match func(ledger.Record) bool) ([]posting.Key, error) {
 	var keys []posting.Key
 	for _, r := range l.All() {
-		if !retriageable[r.Status] || !Unread(r) {
+		if err := ctx.Err(); err != nil {
+			return keys, err
+		}
+		if !match(r) {
 			continue
 		}
 		if dryRun {
@@ -56,7 +90,7 @@ func RetriageUnread(ctx context.Context, l ledger.Ledger, now time.Time, dryRun 
 			}
 		}
 		if err := l.Append(ctx, ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: posting.Live,
-			Annotations: forget, Reason: "retriage: no decision backend could read it"}); err != nil {
+			Annotations: forget, Reason: reason}); err != nil {
 			return keys, err
 		}
 		keys = append(keys, r.Key)
