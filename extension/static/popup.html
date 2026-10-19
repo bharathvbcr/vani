@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vani Apply</title>
+<style>
+  :root { color-scheme: light dark; --ok: #2e8b57; --rev: #d4a017; }
+  body { font: 13px system-ui, sans-serif; margin: 0; padding: 12px; width: 460px; }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  .muted { opacity: .7; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #8884; cursor: pointer; }
+  button.primary { background: var(--ok); color: #fff; border-color: var(--ok); }
+  #status { min-height: 18px; margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  td { border-top: 1px solid #8883; padding: 4px; vertical-align: top; word-break: break-word; }
+  td:nth-child(3) { white-space: nowrap; opacity: .7; }
+  td button { padding: 2px 6px; font-size: 11px; margin-right: 2px; }
+  td.review { border-left: 3px solid var(--rev); }
+  .scroll { max-height: 300px; overflow: auto; }
+  input[type=search] { flex: 1; padding: 4px 6px; }
+  label { display: inline-flex; gap: 4px; align-items: center; }
+</style>
+</head>
+<body>
+  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+    <img src="icons/icon-32.png" width="22" height="22" alt="Vani Logo" style="border-radius: 4px;">
+    <h1 style="font-size: 14px; margin: 0;">Vani Apply</h1>
+  </div>
+  <div class="muted">This page: <span id="host"></span></div>
+  <div class="row">
+    <button id="fill" class="primary">Fill this form</button>
+    <button id="save">Save answers on this page</button>
+    <label><input type="checkbox" id="overwrite"> overwrite typed values</label>
+    <label title="Search-as-you-type fields are only typed into if this is on; the site may run its own search when they are."><input type="checkbox" id="typeahead"> type into search fields</label>
+  </div>
+  <div id="status" class="muted"></div>
+  <div id="framebox" hidden><strong>By frame</strong><ul id="frames"></ul></div>
+  <div id="coverage" hidden><strong>New questions on this page</strong> (no saved answer yet)<ul id="unknown"></ul></div>
+  <div class="muted">Green = confident, yellow = review before submitting. Vani never submits.</div>
+  <div class="row">
+    <label><input type="checkbox" id="selfid"> Save voluntary self-ID answers (gender, race, veteran, disability)</label>
+    <label><input type="checkbox" id="disabled"> Off on this site</label>
+  </div>
+  <div class="row"><strong id="count"></strong><input type="search" id="filter" placeholder="Filter"></div>
+  <div class="scroll">
+    <table><thead><tr><td>Question</td><td>Answer</td><td>saved/filled</td><td></td></tr></thead><tbody id="answers"></tbody></table>
+  </div>
+  <div class="row">
+    <button id="export">Export answers</button>
+    <label>Import <input type="file" id="import" accept="application/json"></label>
+  </div>
+  <div class="muted"><span id="storage"></span> <span id="size"></span></div>
+  <div class="muted">Passwords, ID, card and bank numbers are never saved.</div>
+  <script src="popup.js"></script>
+</body>
+</html>

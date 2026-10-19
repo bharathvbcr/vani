@@ -1,0 +1,41 @@
+{
+  "block": {
+    "bullets": [
+      {
+        "canonical": "Cut latency by 42% using caching.",
+        "evidenceRefs": [],
+        "id": "alpha-job/b1",
+        "locked": false,
+        "metrics": [
+          {
+            "value": "42%",
+            "kind": "metric"
+          }
+        ],
+        "variants": {}
+      },
+      {
+        "canonical": "Wrote docs (https://example.invalid/d) for it.",
+        "evidenceRefs": [],
+        "id": "alpha-job/b2",
+        "locked": false,
+        "metrics": [],
+        "variants": {}
+      }
+    ],
+    "dateRange": {
+      "start": "JAN 2020",
+      "end": null
+    },
+    "domains": [],
+    "facts": [],
+    "id": "alpha-job",
+    "kind": "work",
+    "org": "Acme",
+    "personas": [],
+    "seniorityLevel": "ic",
+    "skills": [],
+    "title": "Engineer",
+    "updatedAt": "2026-01-02T03:04:05Z"
+  }
+}

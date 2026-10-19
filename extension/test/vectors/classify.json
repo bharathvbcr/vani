@@ -1,0 +1,985 @@
+{
+ "comment": "Generated from extension/src/{classify,normalize}.ts; read by bun test and by macos swift test so the two classifiers cannot drift.",
+ "normalize": [
+  {
+   "in": "First Name *",
+   "want": "first name"
+  },
+  {
+   "in": "Last name (required)",
+   "want": "last name"
+  },
+  {
+   "in": "E-mail address",
+   "want": "e mail address"
+  },
+  {
+   "in": "LinkedIn Profile URL",
+   "want": "linkedin profile url"
+  },
+  {
+   "in": "Phone number†",
+   "want": "phone number"
+  },
+  {
+   "in": "What’s your notice period?",
+   "want": "whats your notice period"
+  },
+  {
+   "in": "Don't you have a website?",
+   "want": "dont you have a website"
+  },
+  {
+   "in": "  Résumé / CV  ",
+   "want": "résumé cv"
+  },
+  {
+   "in": "ＦＵＬＬ　ＮＡＭＥ",
+   "want": "full name"
+  },
+  {
+   "in": "Why do you want to work here?",
+   "want": "why do you want to work here"
+  },
+  {
+   "in": "Are you legally authorized to work in the United States?",
+   "want": "are you legally authorized to work in the united states"
+  },
+  {
+   "in": "Will you now or in the future require sponsorship?",
+   "want": "will you now or in the future require sponsorship"
+  },
+  {
+   "in": "Social Security Number",
+   "want": "social security number"
+  },
+  {
+   "in": "SSN (last 4)",
+   "want": "ssn last 4"
+  },
+  {
+   "in": "ssné",
+   "want": "ssné"
+  },
+  {
+   "in": "Passport number",
+   "want": "passport number"
+  },
+  {
+   "in": "Tax ID",
+   "want": "tax id"
+  },
+  {
+   "in": "Bank account number",
+   "want": "bank account number"
+  },
+  {
+   "in": "Routing #",
+   "want": "routing"
+  },
+  {
+   "in": "IBAN",
+   "want": "iban"
+  },
+  {
+   "in": "SWIFT code",
+   "want": "swift code"
+  },
+  {
+   "in": "Credit card number",
+   "want": "credit card number"
+  },
+  {
+   "in": "CVV",
+   "want": "cvv"
+  },
+  {
+   "in": "Expiry date",
+   "want": "expiry date"
+  },
+  {
+   "in": "Date of Birth",
+   "want": "date of birth"
+  },
+  {
+   "in": "DOB",
+   "want": "dob"
+  },
+  {
+   "in": "Birthdate",
+   "want": "birthdate"
+  },
+  {
+   "in": "Password",
+   "want": "password"
+  },
+  {
+   "in": "PIN",
+   "want": "pin"
+  },
+  {
+   "in": "PIN code",
+   "want": "pin code"
+  },
+  {
+   "in": "Pinterest profile",
+   "want": "pinterest profile"
+  },
+  {
+   "in": "Captcha",
+   "want": "captcha"
+  },
+  {
+   "in": "Security question",
+   "want": "security question"
+  },
+  {
+   "in": "Mother's maiden name",
+   "want": "mothers maiden name"
+  },
+  {
+   "in": "One-time code",
+   "want": "one time code"
+  },
+  {
+   "in": "Verification code",
+   "want": "verification code"
+  },
+  {
+   "in": "Driver's license number",
+   "want": "drivers license number"
+  },
+  {
+   "in": "Driving licence",
+   "want": "driving licence"
+  },
+  {
+   "in": "Gender",
+   "want": "gender"
+  },
+  {
+   "in": "Sex",
+   "want": "sex"
+  },
+  {
+   "in": "Race/Ethnicity",
+   "want": "race ethnicity"
+  },
+  {
+   "in": "Are you Hispanic or Latino?",
+   "want": "are you hispanic or latino"
+  },
+  {
+   "in": "Veteran status",
+   "want": "veteran status"
+  },
+  {
+   "in": "Disability status",
+   "want": "disability status"
+  },
+  {
+   "in": "Sexual orientation",
+   "want": "sexual orientation"
+  },
+  {
+   "in": "Pronouns",
+   "want": "pronouns"
+  },
+  {
+   "in": "Voluntary self-identification",
+   "want": "voluntary self identification"
+  },
+  {
+   "in": "EEO questions",
+   "want": "eeo questions"
+  },
+  {
+   "in": "Essex office location",
+   "want": "essex office location"
+  },
+  {
+   "in": "Racecar experience",
+   "want": "racecar experience"
+  },
+  {
+   "in": "Banking experience",
+   "want": "banking experience"
+  },
+  {
+   "in": "Spinning",
+   "want": "spinning"
+  },
+  {
+   "in": "Tin can",
+   "want": "tin can"
+  },
+  {
+   "in": "1234 56",
+   "want": "1234 56"
+  },
+  {
+   "in": "",
+   "want": ""
+  },
+  {
+   "in": "***",
+   "want": ""
+  },
+  {
+   "in": "日本語 の 名前",
+   "want": "日本語 の 名前"
+  },
+  {
+   "in": "Ünïcödé façade naïve",
+   "want": "ünïcödé façade naïve"
+  },
+  {
+   "in": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "want": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ ],
+ "classify": [
+  {
+   "kind": "text",
+   "label": "First Name *",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Last name (required)",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "E-mail address",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "LinkedIn Profile URL",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Phone number†",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "What’s your notice period?",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Don't you have a website?",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "  Résumé / CV  ",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "ＦＵＬＬ　ＮＡＭＥ",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Why do you want to work here?",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Are you legally authorized to work in the United States?",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Will you now or in the future require sponsorship?",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Social Security Number",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "SSN (last 4)",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "ssné",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Passport number",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Tax ID",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Bank account number",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Routing #",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "IBAN",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "SWIFT code",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Credit card number",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "CVV",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Expiry date",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Date of Birth",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "DOB",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Birthdate",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Password",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "PIN",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "PIN code",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Pinterest profile",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Captcha",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Security question",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Mother's maiden name",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "One-time code",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Verification code",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Driver's license number",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Driving licence",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Gender",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Sex",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Race/Ethnicity",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Are you Hispanic or Latino?",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Veteran status",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Disability status",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Sexual orientation",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Pronouns",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Voluntary self-identification",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "EEO questions",
+   "name": "",
+   "autocomplete": "",
+   "want": "self_id"
+  },
+  {
+   "kind": "text",
+   "label": "Essex office location",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Racecar experience",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Banking experience",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Spinning",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Tin can",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "1234 56",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "***",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "日本語 の 名前",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Ünïcödé façade naïve",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "given-name",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "email",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "cc-number",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "cc-exp",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "current-password",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "new-password",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "one-time-code",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "bday",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "bday-day",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "x cc-name",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "section-a cc-csc",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "tel",
+   "want": "standard"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "given-name",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "email",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "cc-number",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "cc-exp",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "current-password",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "new-password",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "one-time-code",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "bday",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "bday-day",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "x cc-name",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "section-a cc-csc",
+   "want": "secret"
+  },
+  {
+   "kind": "password",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "tel",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "given-name",
+   "want": "standard"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "email",
+   "want": "standard"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "cc-number",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "cc-exp",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "current-password",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "new-password",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "one-time-code",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "bday",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "bday-day",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "x cc-name",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "section-a cc-csc",
+   "want": "secret"
+  },
+  {
+   "kind": "select",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "tel",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "first_name",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "ssn_last4",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "user[password]",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "job_application[answers_attributes][0][text_value]",
+   "autocomplete": "",
+   "want": "standard"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "dob-month",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "pin-code",
+   "autocomplete": "",
+   "want": "secret"
+  },
+  {
+   "kind": "text",
+   "label": "Answer",
+   "name": "spinner",
+   "autocomplete": "",
+   "want": "standard"
+  }
+ ]
+}

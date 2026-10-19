@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Vani Apply DOM tests</title>
+<style>body{font:13px system-ui;margin:16px} form{border:1px solid #ccc;padding:10px;margin:10px 0} .field,.application-question{margin:6px 0} pre{background:#f4f4f4;padding:8px}</style>
+</head>
+<body>
+<h1>Vani Apply DOM tests</h1>
+<pre id="results">running…</pre>
+
+<!-- First application: Greenhouse-shaped form -->
+<form id="gh" action="#">
+  <div class="field"><label for="first_name">First Name *</label><input id="first_name" name="first_name" autocomplete="given-name" required></div>
+  <div class="field"><label for="last_name">Last Name *</label><input id="last_name" name="last_name" autocomplete="family-name"></div>
+  <div class="field"><label for="email">Email</label><input id="email" name="email" type="email"></div>
+  <div class="field"><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+  <div class="field"><label>LinkedIn Profile</label><input name="job_application[answers_attributes][0][text_value]"></div>
+  <fieldset><legend>Will you now or in the future require sponsorship?</legend>
+    <label><input type="radio" name="q_spons" value="1"> Yes</label>
+    <label><input type="radio" name="q_spons" value="0"> No</label>
+  </fieldset>
+  <div class="field"><label for="auth">Are you legally authorized to work in the United States?</label>
+    <select id="auth" name="question_7001234"><option value="">Select...</option><option value="y">Yes</option><option value="n">No</option></select></div>
+  <div class="field"><label for="why">Why do you want to work here?</label><textarea id="why" name="question_7001235"></textarea></div>
+  <div class="field"><label for="pw">Create password</label><input id="pw" type="password" name="password"></div>
+  <div class="field"><label for="ssn">Social Security Number</label><input id="ssn" name="ssn_field"></div>
+  <div class="field"><label for="cv">Resume</label><input id="cv" type="file" name="resume"></div>
+  <div class="field"><label><input type="checkbox" name="privacy"> I agree to the privacy notice</label></div>
+  <div class="field"><label for="gender">Gender</label><select id="gender" name="gender"><option value="">Select</option><option>Male</option><option>Female</option><option>Decline to self-identify</option></select></div>
+  <button type="submit">Submit application</button>
+</form>
+
+<!-- Second application: Lever-shaped form, different wording and markup -->
+<form id="lv" action="#">
+  <div class="application-question"><div class="application-label">Legal first name</div><input name="firstName" data-qa="first-name" autocomplete="given-name"></div>
+  <div class="application-question"><div class="application-label">Email address</div><input name="email" type="email" autocomplete="email"></div>
+  <div class="application-question"><div class="application-label">Mobile phone</div><input name="phone" type="tel"></div>
+  <div class="application-question"><div class="application-label">LinkedIn URL</div><input name="urls[LinkedIn]" id="react-like"></div>
+  <div role="radiogroup" aria-labelledby="sp-q">
+    <div id="sp-q">Do you require visa sponsorship now or in the future?</div>
+    <label><input type="radio" name="cards[spons]" value="a"> Yes, I will</label>
+    <label><input type="radio" name="cards[spons]" value="b"> No, I will not</label>
+  </div>
+  <div class="application-question"><div class="application-label">Are you authorized to work in the US?</div>
+    <select name="cards[auth]"><option value=""></option><option value="1">Yes</option><option value="2">No</option></select></div>
+  <div class="application-question"><div class="application-label">Why do you want to join us?</div><textarea name="comments"></textarea></div>
+  <div class="application-question"><label><input type="checkbox" id="pp"> I agree to the privacy notice</label></div>
+  <div class="application-question"><div class="application-label">Social Security Number</div><input name="ssn2"></div>
+  <div class="application-question"><div class="application-label">Gender</div><select name="eeo[gender]"><option value=""></option><option>Male</option><option>Female</option><option>Decline to self-identify</option></select></div>
+  <button type="submit">Submit application</button>
+</form>
+<!-- ARIA widgets: React-Select-like combobox, radiogroup, switch, contenteditable. "src" is hand-filled, "dst" is the empty second form. -->
+<div id="aria-src">
+  <div class="select-container"><label id="rs1-l">Country of residence</label>
+    <div class="select__control"><div class="select__single-value">United States of America</div>
+      <input id="rs1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="rs1-list" aria-labelledby="rs1-l"></div></div>
+  <div id="rs1-list" role="listbox" hidden></div>
+  <div role="radiogroup" aria-labelledby="rg1-l"><div id="rg1-l">Are you willing to relocate?</div>
+    <div role="radio" aria-checked="false" tabindex="0">Yes</div><div role="radio" aria-checked="true" tabindex="0">No</div></div>
+  <div role="switch" aria-checked="true" aria-label="Email me about similar roles" tabindex="0"></div>
+  <div class="select-container"><label id="rs4s-l">Skills</label><div class="select__control"><div class="select__value-container select__value-container--is-multi"><div class="select__multi-value"><div class="select__multi-value__label">Go</div><div class="select__multi-value__remove" role="button" aria-label="Remove Go">×</div></div><div class="select__multi-value"><div class="select__multi-value__label">Rust</div><div class="select__multi-value__remove" role="button" aria-label="Remove Rust">×</div></div><input id="rs4s" role="combobox" aria-expanded="false" aria-controls="rs4s-list" aria-labelledby="rs4s-l"></div></div></div>
+  <div id="rs4s-list" role="listbox" aria-multiselectable="true" hidden></div>
+  <div class="field"><div id="ce1-l">Notice period</div><div contenteditable="true" role="textbox" aria-labelledby="ce1-l" id="ce1">Two weeks</div></div>
+</div>
+<div id="aria-dst">
+  <div class="select-container"><label id="rs2-l">Country of residence</label>
+    <div class="select__control"><div class="select__single-value"></div>
+      <input id="rs2" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="rs2-list" aria-labelledby="rs2-l"></div></div>
+  <div id="rs2-list" role="listbox" hidden></div>
+  <div role="radiogroup" aria-labelledby="rg2-l"><div id="rg2-l">Are you willing to relocate for this role?</div>
+    <div role="radio" aria-checked="false" tabindex="0">Yes</div><div role="radio" aria-checked="false" tabindex="0">No</div></div>
+  <div role="switch" aria-checked="false" aria-label="Email me about similar roles" tabindex="0"></div>
+  <div class="select-container"><label id="rs4-l">Skills</label><div class="select__control"><div class="select__value-container select__value-container--is-multi"><input id="rs4" role="combobox" aria-expanded="false" aria-controls="rs4-list" aria-labelledby="rs4-l"></div></div></div>
+  <div id="rs4-list" role="listbox" aria-multiselectable="true" hidden></div>
+  <div class="field"><div id="ce2-l">Notice period</div><div contenteditable="true" role="textbox" aria-labelledby="ce2-l" id="ce2"></div></div>
+  <div class="select-container"><label id="rs3-l">Hear about us</label>
+    <div class="select__control"><div class="select__single-value">LinkedIn</div>
+      <input id="rs3" role="combobox" aria-expanded="false" aria-controls="rs3-list" aria-labelledby="rs3-l"></div></div>
+  <div id="rs3-list" role="listbox" hidden></div>
+  <form id="aria-form" action="#"><button type="submit" id="aria-submit">Submit application</button></form>
+</div>
+
+<!-- Workday-like: button dropdown that opens a popup elsewhere in the page, a date split into month/day/year, a split phone number -->
+<div id="wd-src" data-automation-id="applyFlow">
+  <div data-automation-id="formField-country"><label for="wd-c">Country</label>
+    <button id="wd-c" type="button" aria-haspopup="listbox" data-automation-id="countryDropdown">United States of America</button></div>
+  <div data-automation-id="formField-startDate"><label>Start date</label>
+    <div data-automation-id="dateInputWrapper">
+      <input aria-label="Month" data-automation-id="dateSectionMonth-input" value="05"><input aria-label="Day" data-automation-id="dateSectionDay-input" value="01"><input aria-label="Year" data-automation-id="dateSectionYear-input" value="2023"></div></div>
+  <div data-automation-id="formField-endDate"><label>End date</label>
+    <div><select aria-label="Month"><option value="">MM</option><option value="1">January</option><option value="2" selected>February</option><option value="3">March</option></select><input aria-label="Year" placeholder="YYYY" value="2024"></div></div>
+  <div class="field" data-automation-id="formField-phone"><label for="wd-pc">Country Phone Code</label>
+    <select id="wd-pc"><option value="gb">United Kingdom (+44)</option><option value="us" selected>United States (+1)</option></select>
+    <label for="wd-pn">Phone Number</label><input id="wd-pn" type="tel" value="555 0100"></div>
+</div>
+<div id="wd-dst" data-automation-id="applyFlow">
+  <div data-automation-id="formField-country"><label for="wd-c2">Country</label>
+    <button id="wd-c2" type="button" aria-haspopup="listbox" data-automation-id="countryDropdown">Select One</button></div>
+  <div data-automation-id="formField-startDate"><label>Start date</label>
+    <div data-automation-id="dateInputWrapper">
+      <input aria-label="Month" data-automation-id="dateSectionMonth-input"><input aria-label="Day" data-automation-id="dateSectionDay-input"><input aria-label="Year" data-automation-id="dateSectionYear-input"></div></div>
+  <div data-automation-id="formField-endDate"><label>End date</label>
+    <div><select aria-label="Month"><option value="">MM</option><option value="1">January</option><option value="2">February</option><option value="3">March</option></select><input aria-label="Year" placeholder="YYYY"></div></div>
+  <div class="field" data-automation-id="formField-phone"><label for="wd-pc2">Country Phone Code</label>
+    <select id="wd-pc2"><option value="gb">United Kingdom (+44)</option><option value="us">United States (+1)</option></select>
+    <label for="wd-pn2">Phone Number</label><input id="wd-pn2" type="tel"></div>
+  <input type="file" id="wd-file" aria-label="Resume">
+  <div id="wd-nav"><button type="button" id="wd-next" data-automation-id="bottom-navigation-next-button">Save and Continue</button></div>
+</div>
+
+<!-- Open shadow root and same-origin iframes -->
+<div id="sh-src"></div><div id="sh-dst"></div>
+<div id="if-wrap-src"><iframe id="if-src" srcdoc="<label for=g>GitHub URL</label><input id=g name=github value='https://github.example/sam'><label for=nm>Preferred name</label><input id=nm value='Sammy'>"></iframe></div>
+<div id="if-wrap-dst"><iframe id="if-dst" srcdoc="<label for=g>GitHub URL</label><input id=g name=github><label for=nm>Preferred name</label><input id=nm><input type=file id=f aria-label=Resume>"></iframe></div>
+
+<!-- Repeated sections: two work-history entries saved, a third entry on the next form -->
+<div id="wh-src">
+  <fieldset class="job"><legend>Experience</legend><div class="field"><label for="e1">Employer</label><input id="e1" value="Acme"></div><div class="field"><label for="t1">Job title</label><input id="t1" value="Engineer"></div></fieldset>
+  <fieldset class="job"><legend>Experience</legend><div class="field"><label for="e2">Employer</label><input id="e2" value="Globex"></div><div class="field"><label for="t2">Job title</label><input id="t2" value="Lead"></div></fieldset>
+</div>
+<div id="wh-dst">
+  <fieldset class="job"><legend>Experience</legend><div class="field"><label for="e3">Employer</label><input id="e3"></div><div class="field"><label for="t3">Job title</label><input id="t3"></div></fieldset>
+  <fieldset class="job"><legend>Experience</legend><div class="field"><label for="e4">Employer</label><input id="e4"></div><div class="field"><label for="t4">Job title</label><input id="t4"></div></fieldset>
+  <fieldset class="job"><legend>Experience</legend><div class="field"><label for="e5">Employer</label><input id="e5"></div><div class="field"><label for="t5">Job title</label><input id="t5"></div></fieldset>
+</div>
+
+<!-- Capture without a form: a step that is swapped out with no submit and no click we catch -->
+<div id="spa"><div id="spa-step"><div class="field"><label for="sp1">Current company</label><input id="sp1"></div><div class="field"><label for="sp2">Notice period weeks</label><input id="sp2"></div><div class="field"><label for="sp3">Account password</label><input id="sp3" type="password"></div></div></div>
+
+<!-- Multi-select widgets and date inputs. "src" is hand-filled, "dst" is the empty second form. -->
+<div id="ms-src">
+  <label for="ms1">Languages</label><select id="ms1" multiple><option>Go</option><option selected>Rust</option><option>Python</option><option selected>Java</option></select>
+  <div role="listbox" aria-multiselectable="true" aria-label="Certifications" id="ms2">
+    <div role="option" aria-selected="true">AWS</div><div role="option" aria-selected="false">GCP</div><div role="option" aria-selected="true">Azure</div></div>
+  <div class="select-container"><label id="ms3-l">Interests</label><div class="select__control"><div class="select__value-container select__value-container--is-multi"><div class="select__multi-value"><div class="select__multi-value__label">Chess</div></div><div class="select__multi-value"><div class="select__multi-value__label">Climbing</div></div><input id="ms3" role="combobox" aria-labelledby="ms3-l"></div></div></div>
+  <div class="select-container"><label id="ms4-l">Tools</label><div class="mui-ac"><div class="MuiChip-root"><span class="MuiChip-label">Git</span><svg class="MuiChip-deleteIcon"></svg></div><div class="MuiChip-root"><span class="MuiChip-label">Make</span></div><input id="ms4" role="combobox" aria-labelledby="ms4-l"></div></div>
+  <label for="dt1">Available from</label><input type="date" id="dt1" value="2024-05-01">
+  <label for="dt2">Graduation month</label><input type="month" id="dt2" value="2023-06">
+</div>
+<div id="ms-dst">
+  <label for="ms1d">Languages</label><select id="ms1d" multiple><option>Java</option><option>Go</option><option>Python</option><option>Rust</option></select>
+  <div role="listbox" aria-multiselectable="true" aria-label="Certifications" id="ms2d">
+    <div role="option" aria-selected="false">GCP</div><div role="option" aria-selected="false">AWS</div><div role="option" aria-selected="false">Azure</div></div>
+  <div class="select-container"><label id="ms3d-l">Interests</label><div class="select__control"><div class="select__value-container select__value-container--is-multi"><input id="ms3d" role="combobox" aria-labelledby="ms3d-l"></div></div></div>
+  <label for="dt1d">Available from</label><input type="date" id="dt1d">
+  <label for="dt2d">Graduation month</label><input type="month" id="dt2d">
+  <label for="dt3d">Week of arrival</label><input type="week" id="dt3d">
+  <label for="dt4d">Preferred start</label><input id="dt4d" readonly aria-haspopup="dialog">
+</div>
+<!-- A search-as-you-type field: its list stays empty until three characters are typed. -->
+<div id="ta-dst">
+  <div class="select-container"><label id="ta1-l">School</label>
+    <div class="select__control"><div class="select__single-value"></div>
+      <input id="ta1" role="combobox" aria-expanded="false" aria-controls="ta1-list" aria-labelledby="ta1-l"></div></div>
+  <div id="ta1-list" role="listbox" hidden></div>
+</div>
+
+<div id="stress"></div>
+
+<script>
+// Fixture behaviour only: these stand in for React-Select, Workday and friends so the extension has real widgets to drive.
+// minChars: a search-as-you-type list that shows nothing until that many characters are typed.
+function rsInit(input, options, minChars = 0) {
+  const single = input.parentElement.querySelector(".select__single-value");
+  const list = document.getElementById(input.getAttribute("aria-controls"));
+  function render(filter) {
+    list.textContent = "";
+    if ((filter || "").length < minChars) return;
+    options.filter(o => !filter || o.toLowerCase().includes(filter.toLowerCase())).forEach(o => {
+      const d = document.createElement("div"); d.setAttribute("role", "option"); d.textContent = o;
+      d.addEventListener("click", () => { single.textContent = o; input.value = ""; close(); });
+      list.append(d);
+    });
+  }
+  function open() { render(input.value); list.hidden = false; input.setAttribute("aria-expanded", "true"); }
+  function close() { list.hidden = true; list.textContent = ""; input.setAttribute("aria-expanded", "false"); } // like react-select, a closed menu holds no options
+  input.addEventListener("mousedown", open);
+  input.addEventListener("input", () => { render(input.value); list.hidden = false; });
+  input.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
+}
+rsInit(document.getElementById("rs1"), ["Canada", "United States of America", "Mexico"]);
+rsInit(document.getElementById("rs2"), ["Canada", "United States", "Mexico"]);
+rsInit(document.getElementById("rs3"), ["LinkedIn", "Referral"]);
+rsInit(document.getElementById("ta1"), ["Stanford University", "Stanford Law School", "MIT"], 3);
+// react-select with isMulti: chips before the input, chosen options leave the menu, the menu closes after each pick.
+function rsMulti(input, options) {
+  const chips = input.closest(".select__value-container");
+  const list = document.getElementById(input.getAttribute("aria-controls"));
+  const chosen = () => Array.from(chips.querySelectorAll(".select__multi-value__label")).map(n => n.textContent);
+  function open() {
+    list.textContent = "";
+    options.filter(o => !chosen().includes(o)).forEach(o => {
+      const d = document.createElement("div"); d.setAttribute("role", "option"); d.textContent = o;
+      d.addEventListener("click", () => {
+        const chip = document.createElement("div"); chip.className = "select__multi-value";
+        chip.innerHTML = '<div class="select__multi-value__label"></div><div class="select__multi-value__remove" role="button">×</div>';
+        chip.firstChild.textContent = o; chips.insertBefore(chip, input); close();
+      });
+      list.append(d);
+    });
+    list.hidden = false; input.setAttribute("aria-expanded", "true");
+  }
+  function close() { list.hidden = true; list.textContent = ""; input.setAttribute("aria-expanded", "false"); }
+  input.addEventListener("mousedown", open);
+  input.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
+}
+rsMulti(document.getElementById("rs4"), ["Go", "Python", "Rust", "Java"]);
+document.querySelectorAll("#ms-dst [role=listbox] [role=option]").forEach(o => o.addEventListener("click", () => o.setAttribute("aria-selected", String(o.getAttribute("aria-selected") !== "true"))));
+function wdInit(btn, options) {
+  btn.addEventListener("click", () => {
+    const old = document.getElementById(btn.id + "-pop");
+    if (old) { old.remove(); return; }
+    const ul = document.createElement("ul"); ul.id = btn.id + "-pop"; ul.setAttribute("role", "listbox");
+    options.forEach(o => { const li = document.createElement("li"); li.setAttribute("role", "option"); li.textContent = o;
+      li.addEventListener("click", () => { btn.textContent = o; ul.remove(); }); ul.append(li); });
+    document.body.append(ul);
+  });
+}
+wdInit(document.getElementById("wd-c2"), ["Canada", "United States of America", "Mexico"]);
+document.querySelectorAll("[role=radio]").forEach(r => r.addEventListener("click", () => {
+  r.parentElement.querySelectorAll("[role=radio]").forEach(o => o.setAttribute("aria-checked", String(o === r)));
+}));
+document.querySelectorAll("[role=switch]").forEach(s => s.addEventListener("click", () => s.setAttribute("aria-checked", String(s.getAttribute("aria-checked") !== "true"))));
+function shadowField(host, value) {
+  const sr = host.attachShadow({ mode: "open" });
+  sr.innerHTML = '<div class="field"><label for="sf">Preferred pronunciation</label><input id="sf" name="pron"></div>';
+  sr.getElementById("sf").value = value;
+}
+shadowField(document.getElementById("sh-src"), "SAM");
+shadowField(document.getElementById("sh-dst"), "");
+</script>
+<script src="../dist-test/dom-runner.js"></script>
+</body>
+</html>

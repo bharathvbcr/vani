@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- The control app and the Chrome host: not sandboxed (the app writes Chrome's
+     NativeMessagingHosts manifest), but members of the shared App Group. -->
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>HAUHVD8M37.dev.vbcr.vani</string>
+	</array>
+</dict>
+</plist>

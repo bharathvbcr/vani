@@ -1,0 +1,12 @@
+/go.work
+/go.work.sum
+/build/
+/vani
+/.state/
+/extension/dist-chrome/
+/extension/dist-safari/
+/extension/dist-test/
+/macos/.build/
+/macos/build/
+# Personal track deciders drawn from the owner's knowledge base; never committed.
+/drafts/

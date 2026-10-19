@@ -1,0 +1,19 @@
+{
+  "block": {
+    "bullets": [],
+    "dateRange": {
+      "start": "AUG 2018",
+      "end": "MAY 2020"
+    },
+    "domains": [],
+    "facts": [],
+    "id": "gamma-edu",
+    "kind": "education",
+    "org": "Example University",
+    "personas": [],
+    "seniorityLevel": "ic",
+    "skills": [],
+    "title": "Master of Science in Things",
+    "updatedAt": "2026-01-02T03:04:05Z"
+  }
+}

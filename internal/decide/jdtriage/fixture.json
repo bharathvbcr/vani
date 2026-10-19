@@ -1,0 +1,70 @@
+{
+  "fixture_version": 2,
+  "task": "career.jd_triage",
+  "question": "Read the job posting between the content markers and classify it. For role_fit, compare the role with the target roles stated before the title; if none are stated, compare it with early-career software, ML or systems engineering roles. Choose not_stated or the closest option only from what the posting actually says.",
+  "context": {
+    "layout": "{target}Title: {title}\nLocation: {location}\n\n{description}",
+    "target": "Target roles: {summary}\n\n",
+    "target_when_empty": "",
+    "summary_whitespace": "collapse runs of whitespace to one space, trim both ends",
+    "max_summary_bytes": 1024,
+    "max_bytes": 24576,
+    "truncate": "cut at max_bytes, then back to a UTF-8 rune boundary"
+  },
+  "families": [
+    {
+      "task": "career.jd_role_fit",
+      "question": "How well does this job posting fit the target roles stated before the title? If none are stated, compare it with early-career software, ML or systems engineering roles.",
+      "slot": {
+        "name": "role_fit",
+        "options": [
+          {"value": "strong_fit", "description": "The role's core work matches the target roles and its level is appropriate."},
+          {"value": "partial_fit", "description": "Part of the work matches the target roles but a significant part does not."},
+          {"value": "adjacent", "description": "A neighbouring field or function; related skills apply but it is not the target work."},
+          {"value": "mismatch_domain", "description": "The work is in an unrelated domain or function."},
+          {"value": "mismatch_seniority", "description": "The work matches but the required level is far above or below an early-career engineer."}
+        ]
+      }
+    },
+    {
+      "task": "career.jd_sponsorship",
+      "question": "What does this job posting say about visa sponsorship and work authorization?",
+      "slot": {
+        "name": "sponsorship",
+        "options": [
+          {"value": "sponsors_visa", "description": "The posting says it sponsors work visas or supports relocation and immigration."},
+          {"value": "no_sponsorship", "description": "The posting says it does not sponsor visas or requires existing work authorization."},
+          {"value": "citizenship_or_clearance_required", "description": "The posting requires citizenship, permanent residency or a security clearance."},
+          {"value": "not_stated", "description": "The posting says nothing about sponsorship or work authorization."}
+        ]
+      }
+    },
+    {
+      "task": "career.jd_work_mode",
+      "question": "Where does this job posting say the work is done?",
+      "slot": {
+        "name": "work_mode",
+        "options": [
+          {"value": "remote", "description": "The role is fully remote."},
+          {"value": "hybrid", "description": "The role mixes office and remote days."},
+          {"value": "onsite", "description": "The role requires working from an office full time."},
+          {"value": "not_stated", "description": "The posting does not say where the work is done."}
+        ]
+      }
+    },
+    {
+      "task": "career.jd_seniority",
+      "question": "What level of seniority does this job posting ask for?",
+      "slot": {
+        "name": "seniority",
+        "options": [
+          {"value": "intern_or_new_grad", "description": "An internship or new-graduate role."},
+          {"value": "mid", "description": "A mid-level individual contributor role, roughly 2 to 5 years of experience."},
+          {"value": "senior", "description": "A senior individual contributor role, roughly 5 or more years of experience."},
+          {"value": "staff_plus", "description": "A staff, principal or distinguished individual contributor role."},
+          {"value": "manager", "description": "A role managing people: manager, director or head of."}
+        ]
+      }
+    }
+  ]
+}

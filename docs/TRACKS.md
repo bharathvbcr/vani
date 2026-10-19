@@ -1,0 +1,102 @@
+# Track deciders
+
+A track decider tunes Vani's triage for one kind of job: the target summary that `role_fit` is
+judged against, the role-fit and seniority drop rules, and the kinds of employer the track favours.
+One JSON file per track, `<id>.json`, in the tracks directory.
+
+```bash
+vani track list                 # * marks the active track
+vani track show ml-research     # print it and run every check
+vani track use --dry-run ml-research
+vani track use ml-research      # copy it into the config, then validate and save
+```
+
+```mermaid
+flowchart TD
+    subgraph TrackFile["Track Decider File (<id>.json)"]
+        TS["target_summary\n(Prompt framing for role_fit)"]
+        DR["drop_rules\n(role_fit, seniority)"]
+        SEN["seniority partition\n(want, stretch, drop)"]
+        EP["employer_preferences\n(prefer: cap_exempt_likely, nonprofit)"]
+        SIG["title_signals\n(include / exclude keywords)"]
+    end
+
+    subgraph Validation["Track Validation (vani track show / use)"]
+        SANDBOX{"Path Sandboxed?\n(os.OpenInRoot, <= 64KB)"}
+        SCRUB{"PII & Work Auth Filter\n(built-in + identifying-words.txt)"}
+        FIXTURE{"Rule & Schema Conformance\n(jdtriage/fixture.json)"}
+
+        SANDBOX -->|Pass| SCRUB
+        SCRUB -->|Pass| FIXTURE
+    end
+
+    subgraph ConfigApply["Configuration Transition (vani track use)"]
+        VANI_CFG["vani config.json"]
+        VANI_CFG -->|1. Replace target_summary| NEW_TS["target_summary = track.target_summary"]
+        VANI_CFG -->|2. Replace role_fit / seniority drop_rules| NEW_DR["drop_rules updated (preserve others)"]
+        VANI_CFG -->|3. Set preferred employer attributes| NEW_EP["employer_preferences = track.prefer"]
+        VANI_CFG -->|4. Record active track ID| NEW_TR["track = track.id"]
+    end
+
+    subgraph PipelineEffect["Runtime Engine Impact"]
+        NEW_TS --> TRIAGE_PROMPT["Triage Prompt Context\n(role_fit criteria)"]
+        NEW_DR --> DROP_CHECK{"Drop Decision Evaluation\n(Conservative: drop on calibrated answer)"}
+        NEW_EP --> RANK_BOOST["Scoring Stage Boost\n(+10 rank for exact employer match)"]
+    end
+
+    TrackFile --> Validation
+    FIXTURE -->|Validated Byte-for-Byte| ConfigApply
+    ConfigApply --> PipelineEffect
+```
+
+## Where track files live
+
+`tracks_dir` in the config (an absolute path), or `<state dir>/tracks` when unset. Track files are
+personal (drawn from the knowledge base), so they are never committed; the owner's drafts are in
+the repo's ignored `drafts/deciders/`, which `tracks_dir` can point at directly.
+
+## What `track use` changes
+
+- `target_summary` is replaced by the track's. The one it replaces is printed (including on
+  `--dry-run`), with whether a track or a hand set it, so a hand-written summary is never lost.
+- `drop_rules`: a rule on a slot the track has a rule for (role_fit, seniority) is replaced. So is
+  a rule identical to one of the previously active track's (`track` in the config), which removes
+  what that track added on slots the new track does not cover; a rule edited since is kept. Every
+  other rule is kept unchanged and in order: sponsorship (never removed this way), work mode and
+  anything else track-independent. If the previous track's file cannot be read, the command says
+  so and keeps its rules.
+- `employer_preferences` is set to the track's `employer_preferences.prefer` (cleared when empty).
+- `track` records the id, so `track list` can mark it.
+
+The new config is validated before it is saved. A track that fails any check is not applied and
+the config is left byte-for-byte unchanged.
+
+## Checks (`track show` and `track use`)
+
+Ported from the drafting validator (`build/check-deciders.js`):
+
+- `decider_version` is 1; the id matches the file name and is `[a-z0-9][a-z0-9-]{0,63}`, checked
+  before it touches a path. Files are opened inside the tracks directory (`os.OpenInRoot`), so
+  `../x` and symlinks leading out are refused. Files over 64 KiB, unknown fields and trailing data
+  are refused.
+- `target_summary` is non-empty, at most 1024 bytes after whitespace collapse, and contains no
+  identifying term (whole words, case-insensitive):
+  - a built-in list: `@`, linkedin, github, visa, h-1b, opt, citizen and other contact and
+    work-authorization terms, plus cap-exempt and nonprofit (those are employer preferences, and
+    they imply work authorization);
+  - the owner's list, `identifying-words.txt` in the tracks directory: one term per line, `#`
+    comments. It holds names, employers, schools and project names, so it is personal and lives
+    only beside the track files. **Without it, the command prints that personal names were not
+    checked**; it never reports that as a pass.
+- Drop rules name a triage slot and legal values from `internal/decide/jdtriage/fixture.json`;
+  no sponsorship rule (it stays in the main config); one rule per slot; `min_jev_prob` in (0, 1].
+- `seniority` want/stretch/drop partition the seniority levels, and `drop` equals the seniority
+  drop rule's values.
+- `employer_preferences` says `use: badge_and_rank` and `drops: false`; `prefer` holds only
+  `cap_exempt_likely` and `nonprofit`, without duplicates.
+- Evidence ids exist in the knowledge-base bank when `kb.bank` is set; otherwise the command says
+  the evidence check was skipped.
+
+## Employer preferences
+
+They rank, never drop, and never enter a model prompt. See [EMPLOYER.md](EMPLOYER.md).

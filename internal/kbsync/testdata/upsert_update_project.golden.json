@@ -1,0 +1,48 @@
+{
+  "block": {
+    "bullets": [
+      {
+        "canonical": "Handled 1.2M/s requests.",
+        "evidenceRefs": [
+          "kb1"
+        ],
+        "id": "beta-proj/b3",
+        "locked": false,
+        "metrics": [],
+        "variants": {
+          "ai": "spin"
+        }
+      }
+    ],
+    "dateRange": {
+      "start": "",
+      "end": null
+    },
+    "domains": [],
+    "facts": [
+      {
+        "createdAt": "t",
+        "id": "f1",
+        "metrics": [],
+        "skills": [],
+        "source": "manual",
+        "text": "a fact"
+      }
+    ],
+    "id": "beta-proj",
+    "kind": "project",
+    "org": "",
+    "personas": [
+      "ai"
+    ],
+    "seniorityLevel": "senior",
+    "skills": [
+      {
+        "level": 4,
+        "name": "go"
+      }
+    ],
+    "title": "Widget",
+    "updatedAt": "2026-01-02T03:04:05Z"
+  }
+}

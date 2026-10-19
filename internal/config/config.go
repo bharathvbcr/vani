@@ -1,0 +1,660 @@
+// Package config loads, validates and saves Vani's JSON configuration.
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/bharathvbcr/Vani/internal/egress"
+	"github.com/bharathvbcr/Vani/internal/employer"
+	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
+)
+
+const (
+	// Version is the only config schema version this build reads.
+	Version = 1
+	// MaxDailyUSD is the ceiling for any per-day spend cap.
+	MaxDailyUSD = 20.0
+	// maxFileBytes bounds how much of a config file is read.
+	maxFileBytes = 1 << 20
+
+	hostOpenRouter = "openrouter.ai"
+)
+
+// Config is the whole on-disk configuration.
+type Config struct {
+	Version       int             `json:"version"`
+	Watchlist     []sources.Board `json:"watchlist"`
+	AllowedHosts  []string        `json:"allowed_hosts"`
+	Schedule      Schedule        `json:"schedule"`
+	Decide        Decide          `json:"decide"`
+	LLM           LLM             `json:"llm"`
+	DevPrism      DevPrism        `json:"devprism"`
+	DropRules     []DropRule      `json:"drop_rules"`
+	TargetSummary string          `json:"target_summary"`
+	// Track is the id of the track decider `vani track use` last applied.
+	Track string `json:"track,omitempty"`
+	// TracksDir holds track decider files (<id>.json). Empty means
+	// <state dir>/tracks.
+	TracksDir string `json:"tracks_dir,omitempty"`
+	// EmployerPreferences are employer attributes (employer.Attributes) the
+	// active track favours. They boost rank only, never change a posting's
+	// status, and never enter a model prompt: they imply work authorization.
+	EmployerPreferences []string `json:"employer_preferences,omitempty"`
+	// KB locates the canonical career knowledge base (rkb's bank.json) that
+	// `vani kb sync` copies one way into DevPrism.
+	KB KB `json:"kb,omitzero"`
+	// LightpandaBinary is the headless browser used for careers-page boards.
+	// Empty means look up "lightpanda" on PATH when a page board exists.
+	LightpandaBinary string `json:"lightpanda_binary,omitempty"`
+}
+
+// KB locates rkb and its bank. Paths are absolute.
+type KB struct {
+	Bank     string `json:"bank,omitempty"`      // rkb bank.json
+	RKB      string `json:"rkb,omitempty"`       // rkb binary
+	CodeRoot string `json:"code_root,omitempty"` // folder holding career/ (rkb's RKB_CODE_ROOT)
+}
+
+// Schedule says when the daily run fires.
+type Schedule struct {
+	DailyAt  string `json:"daily_at"` // "HH:MM", 24-hour
+	Timezone string `json:"timezone"` // IANA zone name
+}
+
+// Decide configures the decision engines and their daily spend caps.
+type Decide struct {
+	JevModel  string   `json:"jev_model"`
+	JevKeyEnv string   `json:"jev_key_env"`
+	DailyUSD  DailyUSD `json:"daily_usd"`
+	// Shadow names a backend asked alongside the primary chain whose answers
+	// are recorded but never used ("" off, "llm", "jev", "lappi", "local").
+	// Disagreements feed the labelling queue. It costs a second call per
+	// posting (nothing for lappi or local, which run on this Mac).
+	Shadow string `json:"shadow,omitempty"`
+	// Lappi configures the local Lappi agent. It runs as the shadow until
+	// `vani eval` reports it promotable; Primary then puts it first in the
+	// chain, ahead of Jev and the LLM.
+	Lappi *Lappi `json:"lappi,omitempty"`
+	// Local is a third-party decision model served on this Mac by llama.cpp's
+	// /v1/systemone endpoint (e.g. Liquid d1-3B). It is measured as the shadow
+	// only: if `vani eval` finds it promotable, it is served through Lappi's
+	// socket rather than promoted here (owner decision 2026-10-18).
+	Local *Local `json:"local,omitempty"`
+}
+
+// MaxLocalTimeoutMS bounds one local decision call.
+const MaxLocalTimeoutMS = 60_000
+
+// Local locates the local decision server: either Endpoint, http(s) on a
+// loopback host, for a server you keep running, or Server, which Vani starts
+// on a free loopback port for each run and stops afterwards (exactly one of
+// the two). Model is recorded in the request and names the model in use.
+type Local struct {
+	Endpoint  string       `json:"endpoint,omitempty"`
+	Server    *LocalServer `json:"server,omitempty"`
+	Model     string `json:"model"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"` // zero means 20 s
+	// Questions is "combined" (default: the one question Jev gets, so the eval
+	// compares models on identical requests) or "per_slot" (each slot asked
+	// its own fixture family question, as Lappi is). Which suits a given
+	// model is what `vani eval` measures.
+	Questions string `json:"questions,omitempty"`
+}
+
+// LocalServer is a llama-server Vani runs for the length of one run.
+type LocalServer struct {
+	Binary         string `json:"binary"`                     // absolute, e.g. /opt/homebrew/bin/llama-server
+	ModelPath      string `json:"model_path"`                 // absolute path of the GGUF
+	ContextSize    int    `json:"context_size,omitempty"`     // zero means 8192
+	StartTimeoutMS int    `json:"start_timeout_ms,omitempty"` // zero means 90 s; at most 300000
+}
+
+// MaxLappiTimeoutMS is the caller contract's batch ceiling (10 s).
+const MaxLappiTimeoutMS = 10_000
+
+// Lappi locates the agent. Socket empty means LAPPI_SOCKET or
+// ~/Library/Caches/qd/qd.sock; TimeoutMS zero means 5 s.
+type Lappi struct {
+	Socket    string `json:"socket,omitempty"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	Primary   bool   `json:"primary,omitempty"`
+}
+
+// DailyUSD holds the per-engine daily spend caps in US dollars.
+type DailyUSD struct {
+	Jev float64 `json:"jev"`
+	LLM float64 `json:"llm"`
+}
+
+// LLM selects the Manvi provider and model.
+type LLM struct {
+	Provider string `json:"provider"` // "gemini" or "anthropic"
+	Model    string `json:"model"`
+	// Conservative per-token prices in nano-USD, used by Manvi's budget ledger
+	// to reserve before each request. Zero for gemini means the conservative
+	// defaults below; anthropic has no built-in default and must set both.
+	InputNanoUSDPerToken  int64 `json:"input_nano_usd_per_token,omitempty"`
+	OutputNanoUSDPerToken int64 `json:"output_nano_usd_per_token,omitempty"`
+}
+
+// Conservative Gemini Flash rates (the table Jarvis uses for its Gemini
+// campaign ledger, internal/app/ledger.go): over-stating is safe, the ledger
+// only refuses early.
+const (
+	GeminiInputNanoUSD  = 1500
+	GeminiOutputNanoUSD = 7500
+	// maxNanoUSDPerToken bounds a configured price ($1,000 per million tokens).
+	maxNanoUSDPerToken = 1_000_000
+)
+
+// Prices returns the per-token prices to meter the configured provider with.
+func (l LLM) Prices() (input, output int64, err error) {
+	in, out := l.InputNanoUSDPerToken, l.OutputNanoUSDPerToken
+	if l.Provider == "gemini" {
+		if in == 0 {
+			in = GeminiInputNanoUSD
+		}
+		if out == 0 {
+			out = GeminiOutputNanoUSD
+		}
+	}
+	if in <= 0 || out <= 0 {
+		return 0, 0, fmt.Errorf("llm: %s needs input_nano_usd_per_token and output_nano_usd_per_token", l.Provider)
+	}
+	if in > maxNanoUSDPerToken || out > maxNanoUSDPerToken {
+		return 0, 0, fmt.Errorf("llm: per-token price above %d nano-USD", maxNanoUSDPerToken)
+	}
+	return in, out, nil
+}
+
+// DevPrism locates the deterministic resume tools.
+type DevPrism struct {
+	Binary    string `json:"binary"`
+	ToolsHash string `json:"tools_hash"`
+}
+
+// DropRule drops a posting when a triage slot reads one of Values with enough
+// confidence. Dropping is an engine rule keyed on an annotation.
+type DropRule struct {
+	Slot          string   `json:"slot"`
+	Values        []string `json:"values"`
+	MinJevProb    float64  `json:"min_jev_prob"`
+	MinLappiScore float64  `json:"min_lappi_score"`
+}
+
+// Paths resolves the config file and state directory from the environment.
+func Paths(getenv func(string) string, home string) (configPath, stateDir string) {
+	base := filepath.Join(home, "Library", "Application Support", "Vani")
+	configPath = filepath.Join(base, "config.json")
+	stateDir = filepath.Join(base, "state")
+	if v := getenv("VANI_CONFIG"); v != "" {
+		configPath = v
+	}
+	if v := getenv("VANI_STATE_DIR"); v != "" {
+		stateDir = v
+	}
+	return configPath, stateDir
+}
+
+// DefaultPaths resolves Paths against the real environment.
+func DefaultPaths() (configPath, stateDir string, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("config: home directory: %w", err)
+	}
+	c, s := Paths(os.Getenv, home)
+	return c, s, nil
+}
+
+// Default returns an example configuration with an empty watchlist.
+func Default() Config {
+	return Config{
+		Version:      Version,
+		Watchlist:    []sources.Board{},
+		AllowedHosts: []string{hostOpenRouter},
+		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
+		Decide: Decide{
+			JevModel:  "typesafe/jev-1.13",
+			JevKeyEnv: "OPENROUTER_API_KEY",
+			DailyUSD:  DailyUSD{Jev: 0.25, LLM: 1.0},
+		},
+		LLM: LLM{Provider: "gemini", Model: "gemini-3.8-flash"},
+		// Empty until Phase 0 confirms the installed DevPrism answers --mcp
+		// without migrating career.db; scoring is skipped while it is empty.
+		// The installed binary is /Applications/DevPrism.app/Contents/MacOS/claude-prism-desktop.
+		DevPrism:  DevPrism{},
+		DropRules: []DropRule{},
+	}
+}
+
+// Load reads and validates the config at path. Unknown fields are an error.
+func Load(path string) (Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	if err != nil {
+		return Config{}, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	if len(data) > maxFileBytes {
+		return Config{}, fmt.Errorf("config: %s exceeds %d bytes", path, maxFileBytes)
+	}
+	return Parse(data)
+}
+
+// Parse decodes and validates config bytes.
+func Parse(data []byte) (Config, error) {
+	var c Config
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return Config{}, fmt.Errorf("config: decode: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return Config{}, errors.New("config: trailing data after JSON document")
+	}
+	if err := c.Validate(); err != nil {
+		return Config{}, err
+	}
+	return c, nil
+}
+
+// Save validates c and writes it atomically (temp file + rename) with mode 0600.
+func Save(path string, c Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("config: encode: %w", err)
+	}
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	tmpName := tmp.Name()
+	fail := func(err error) error {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("config: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		return fail(err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("config: %w", err)
+	}
+	return nil
+}
+
+// ParseDailyAt parses "HH:MM" (24-hour).
+func ParseDailyAt(s string) (hour, minute int, err error) {
+	t, perr := time.Parse("15:04", s)
+	if perr != nil || len(s) != 5 {
+		return 0, 0, fmt.Errorf("daily_at %q is not HH:MM (24-hour)", s)
+	}
+	return t.Hour(), t.Minute(), nil
+}
+
+// Parsed returns the hour, minute and location of the schedule.
+func (s Schedule) Parsed() (hour, minute int, loc *time.Location, err error) {
+	hour, minute, err = ParseDailyAt(s.DailyAt)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	if s.Timezone == "" || s.Timezone == "Local" {
+		return 0, 0, nil, fmt.Errorf("timezone %q must be an explicit IANA zone", s.Timezone)
+	}
+	loc, err = time.LoadLocation(s.Timezone)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("timezone %q: %w", s.Timezone, err)
+	}
+	return hour, minute, loc, nil
+}
+
+// JevConfigured reports whether the JEV engine is set up.
+func (c Config) JevConfigured() bool { return c.Decide.JevModel != "" }
+
+// BoardHost returns the API host a board is fetched from. Workday hosts are
+// tenant-specific and not derivable from the token, so ok is false for them.
+func BoardHost(b sources.Board) (host string, ok bool) {
+	switch b.ATS {
+	case posting.Greenhouse:
+		return "boards-api.greenhouse.io", true
+	case posting.Lever:
+		if b.Region == "eu" {
+			return "api.eu.lever.co", true
+		}
+		return "api.lever.co", true
+	case posting.Ashby:
+		return "api.ashbyhq.com", true
+	case posting.Workday:
+		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
+			return h, true
+		}
+	case posting.Page:
+		if u, err := url.Parse(b.URL); err == nil && u.Hostname() != "" {
+			return strings.ToLower(u.Hostname()), true
+		}
+	}
+	return "", false
+}
+
+// workdayHost matches "{tenant}.wd{N}.myworkdayjobs.com".
+var workdayHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
+
+// maxLinkPattern bounds a page board's regexp source.
+const maxLinkPattern = 256
+
+// RequiredHosts lists the hosts the config needs allowed, sorted and unique.
+func (c Config) RequiredHosts() []string {
+	set := map[string]bool{}
+	for _, b := range c.Watchlist {
+		if h, ok := BoardHost(b); ok {
+			set[h] = true
+		}
+	}
+	if c.JevConfigured() {
+		set[hostOpenRouter] = true
+	}
+	out := make([]string, 0, len(set))
+	for h := range set {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ValidBoard checks a single watchlist entry.
+func ValidBoard(b sources.Board) error {
+	switch b.ATS {
+	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday, posting.Page:
+	default:
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, pg", b.ATS)
+	}
+	if strings.TrimSpace(b.Token) == "" {
+		return fmt.Errorf("board (%s) has an empty token", b.ATS)
+	}
+	if strings.ContainsAny(b.Token, " \t\r\n?#") || strings.Contains(b.Token, "..") {
+		return fmt.Errorf("board (%s) token %q has unsafe characters", b.ATS, b.Token)
+	}
+	if b.ATS == posting.Workday {
+		if strings.Count(b.Token, "/") != 1 {
+			return fmt.Errorf("workday token %q must be tenant/site", b.Token)
+		}
+		tenant, _, _ := strings.Cut(strings.ToLower(b.Token), "/")
+		m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
+		if m == nil {
+			return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com, got %q", b.Token, b.Host)
+		}
+		if m[1] != tenant {
+			return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
+		}
+	} else if strings.Contains(b.Token, "/") {
+		return fmt.Errorf("board (%s) token %q must not contain '/'", b.ATS, b.Token)
+	}
+	if b.ATS != posting.Workday && (b.Host != "" || b.Search != "") {
+		return fmt.Errorf("board %s/%s: host and search apply to workday only", b.ATS, b.Token)
+	}
+	if b.ATS == posting.Page {
+		u, err := url.Parse(b.URL)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+			return fmt.Errorf("page board %s needs an https url, got %q", b.Token, b.URL)
+		}
+		if b.LinkPattern == "" || len(b.LinkPattern) > maxLinkPattern {
+			return fmt.Errorf("page board %s needs a link_pattern of 1..%d bytes", b.Token, maxLinkPattern)
+		}
+		if _, err := regexp.Compile(b.LinkPattern); err != nil {
+			return fmt.Errorf("page board %s link_pattern: %v", b.Token, err)
+		}
+	} else if b.URL != "" || b.LinkPattern != "" {
+		return fmt.Errorf("board %s/%s: url and link_pattern apply to page boards only", b.ATS, b.Token)
+	}
+	switch b.Region {
+	case "":
+	case "eu":
+		if b.ATS != posting.Lever {
+			return fmt.Errorf("region eu applies to lever only, got %s/%s", b.ATS, b.Token)
+		}
+	default:
+		return fmt.Errorf("board %s/%s region %q is not supported", b.ATS, b.Token, b.Region)
+	}
+	return nil
+}
+
+func badUSD(v float64) bool { return math.IsNaN(v) || v < 0 || v > MaxDailyUSD }
+
+// trackID is a track decider id. It is also the file stem (<id>.json), so it
+// admits no path separator, dot or upper case.
+var trackID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+const trackIDRule = "lower-case letters, digits and '-', 1-64 characters, not starting with '-'"
+
+// ValidTrackID reports whether id is a well-formed track id.
+func ValidTrackID(id string) bool { return trackID.MatchString(id) }
+
+// Validate checks every rule and returns all problems joined, so one run of
+// "config check" shows everything to fix.
+func (c Config) Validate() error {
+	var errs []error
+	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+
+	if c.Version != Version {
+		add("version is %d, want %d", c.Version, Version)
+	}
+
+	seen := map[string]bool{}
+	for i, b := range c.Watchlist {
+		if err := ValidBoard(b); err != nil {
+			add("watchlist[%d]: %v", i, err)
+			continue
+		}
+		id := string(b.ATS) + "/" + strings.ToLower(b.Token)
+		if seen[id] {
+			add("watchlist[%d]: duplicate board %s", i, id)
+		}
+		seen[id] = true
+	}
+
+	allowed := map[string]bool{}
+	for _, h := range c.AllowedHosts {
+		allowed[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+	var missing []string
+	for _, h := range c.RequiredHosts() {
+		if !allowed[h] {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) > 0 {
+		add("allowed_hosts is missing: %s", strings.Join(missing, ", "))
+	}
+
+	if _, _, _, err := c.Schedule.Parsed(); err != nil {
+		add("schedule: %v", err)
+	}
+
+	if badUSD(c.Decide.DailyUSD.Jev) {
+		add("decide.daily_usd.jev %v must be within 0..%v", c.Decide.DailyUSD.Jev, MaxDailyUSD)
+	}
+	if badUSD(c.Decide.DailyUSD.LLM) {
+		add("decide.daily_usd.llm %v must be within 0..%v", c.Decide.DailyUSD.LLM, MaxDailyUSD)
+	}
+	if c.JevConfigured() && c.Decide.JevKeyEnv == "" {
+		add("decide.jev_key_env is required when decide.jev_model is set")
+	}
+	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
+		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir} {
+		if p != "" && !filepath.IsAbs(p) {
+			add("%s %q must be an absolute path", name, p)
+		}
+	}
+	switch c.Decide.Shadow {
+	case "":
+	case "llm":
+		if c.LLM.Provider == "" {
+			add("decide.shadow llm needs llm.provider")
+		}
+	case "jev":
+		if !c.JevConfigured() {
+			add("decide.shadow jev needs decide.jev_model")
+		}
+	case "lappi":
+		if c.Decide.Lappi == nil {
+			add("decide.shadow lappi needs decide.lappi")
+		}
+	case "local":
+		if c.Decide.Local == nil {
+			add("decide.shadow local needs decide.local")
+		}
+	default:
+		add("decide.shadow %q is not llm, jev, lappi or local", c.Decide.Shadow)
+	}
+	if l := c.Decide.Local; l != nil && l.Server != nil {
+		s := l.Server
+		if l.Endpoint != "" {
+			add("decide.local: set endpoint or server, not both (a started server's endpoint is chosen per run)")
+		}
+		for name, p := range map[string]string{"decide.local.server.binary": s.Binary, "decide.local.server.model_path": s.ModelPath} {
+			if !filepath.IsAbs(p) {
+				add("%s %q must be an absolute path", name, p)
+			}
+		}
+		if s.ContextSize != 0 && (s.ContextSize < 512 || s.ContextSize > 65536) {
+			add("decide.local.server.context_size %d must be within 512..65536", s.ContextSize)
+		}
+		if s.StartTimeoutMS < 0 || s.StartTimeoutMS > 300_000 {
+			add("decide.local.server.start_timeout_ms %d must be within 0..300000", s.StartTimeoutMS)
+		}
+	}
+	if l := c.Decide.Local; l != nil {
+		u, err := url.Parse(l.Endpoint)
+		switch {
+		case l.Server != nil:
+			// The endpoint is the started server's; checked above.
+		case err != nil || l.Endpoint == "" || u.Host == "":
+			add("decide.local.endpoint %q must be an absolute URL", l.Endpoint)
+		case u.Scheme != "http" && u.Scheme != "https":
+			add("decide.local.endpoint %q must be http or https", l.Endpoint)
+		case u.User != nil:
+			add("decide.local.endpoint must not carry credentials")
+		case !egress.IsLoopbackHost(u.Hostname()):
+			// Postings stay on this Mac: a remote endpoint belongs in jev_model.
+			add("decide.local.endpoint %q must be on a loopback host (127.0.0.1, ::1, localhost)", l.Endpoint)
+		}
+		if strings.TrimSpace(l.Model) == "" {
+			add("decide.local.model is required (it names the model the eval measures)")
+		}
+		if l.TimeoutMS < 0 || l.TimeoutMS > MaxLocalTimeoutMS {
+			add("decide.local.timeout_ms %d must be within 0..%d", l.TimeoutMS, MaxLocalTimeoutMS)
+		}
+		if l.Questions != "" && l.Questions != "combined" && l.Questions != "per_slot" {
+			add("decide.local.questions %q is not combined or per_slot", l.Questions)
+		}
+		if c.Decide.Shadow != "local" {
+			add("decide.local is configured but unused: set decide.shadow to local")
+		}
+	}
+	if l := c.Decide.Lappi; l != nil {
+		if l.Socket != "" && !filepath.IsAbs(l.Socket) {
+			add("decide.lappi.socket %q must be an absolute path", l.Socket)
+		}
+		if l.TimeoutMS < 0 || l.TimeoutMS > MaxLappiTimeoutMS {
+			add("decide.lappi.timeout_ms %d must be within 0..%d", l.TimeoutMS, MaxLappiTimeoutMS)
+		}
+		switch {
+		case l.Primary && c.Decide.Shadow == "lappi":
+			add("decide.lappi.primary and decide.shadow lappi are exclusive")
+		case !l.Primary && c.Decide.Shadow != "lappi":
+			add("decide.lappi is configured but unused: set decide.shadow to lappi, or decide.lappi.primary after `vani eval` says promotable")
+		}
+	}
+	// A configured backend with a zero cap refuses every call, which would
+	// stall postings silently instead of failing where it can be seen.
+	if c.JevConfigured() && c.Decide.DailyUSD.Jev == 0 {
+		add("decide.daily_usd.jev must be above 0 when decide.jev_model is set")
+	}
+	if c.LLM.Provider != "" && c.Decide.DailyUSD.LLM == 0 {
+		add("decide.daily_usd.llm must be above 0 when llm.provider is set")
+	}
+
+	switch c.LLM.Provider {
+	case "", "gemini", "anthropic":
+	default:
+		add("llm.provider %q is not gemini or anthropic", c.LLM.Provider)
+	}
+	if c.LLM.Provider != "" && c.LLM.Model == "" {
+		add("llm.model is required when llm.provider is set")
+	}
+	if c.LLM.Provider != "" {
+		if _, _, err := c.LLM.Prices(); err != nil {
+			add("%v", err)
+		}
+	}
+
+	for i, r := range c.DropRules {
+		if r.Slot == "" {
+			add("drop_rules[%d]: slot is empty", i)
+		}
+		if len(r.Values) == 0 {
+			add("drop_rules[%d]: values is empty", i)
+		}
+		if math.IsNaN(r.MinJevProb) || r.MinJevProb < 0 || r.MinJevProb > 1 {
+			add("drop_rules[%d]: min_jev_prob %v must be within 0..1", i, r.MinJevProb)
+		}
+		if math.IsNaN(r.MinLappiScore) || r.MinLappiScore < 0 {
+			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
+		}
+	}
+
+	if c.Track != "" && !ValidTrackID(c.Track) {
+		add("track %q is not a track id (%s)", c.Track, trackIDRule)
+	}
+	seenPref := map[string]bool{}
+	for i, p := range c.EmployerPreferences {
+		switch {
+		case !slices.Contains(employer.Attributes, p):
+			add("employer_preferences[%d] %q is not one of %s", i, p, strings.Join(employer.Attributes, ", "))
+		case seenPref[p]:
+			add("employer_preferences[%d]: duplicate %q", i, p)
+		}
+		seenPref[p] = true
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config invalid: %w", errors.Join(errs...))
+}

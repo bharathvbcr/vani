@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Canvas -->
+    <rect id="bgRect" width="512" height="512" fill="#0a0d14" />
+
+    <!-- Brand Duo-Tone Linear Gradient: Violet to Electric Emerald -->
+    <linearGradient id="vaniGrad" x1="0%" y1="20%" x2="100%" y2="80%">
+      <stop offset="0%" stop-color="#818cf8" />
+      <stop offset="35%" stop-color="#6366f1" />
+      <stop offset="70%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+
+    <!-- Arrow Accent Gradient -->
+    <linearGradient id="arrowGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+  </defs>
+
+  <!-- Clean Minimalist Background Tile -->
+  <rect width="512" height="512" rx="96" fill="#0a0d14" />
+
+  <!-- Vani Brand Monogram Mark -->
+  <g transform="translate(0, 0)">
+    <!-- Outer V Geometry -->
+    <path d="M 96 128
+             L 180 128
+             L 256 360
+             L 332 128
+             L 416 128
+             L 282 404
+             C 272 424, 240 424, 230 404
+             Z"
+          fill="url(#vaniGrad)" />
+
+    <!-- Inner Acoustic Resonance Channelling & Directional Arrow -->
+    <!-- Inner Left Groove (Resonance Line) -->
+    <path d="M 160 168
+             L 204 168
+             L 256 324
+             L 234 324
+             Z"
+          fill="#0a0d14" />
+
+    <!-- Inner Career Direction Chevron / Arrow Cutout -->
+    <path d="M 324 160
+             L 360 216
+             L 310 216
+             L 286 288
+             L 260 288
+             L 294 186
+             L 272 186
+             Z"
+          fill="#0a0d14" />
+
+    <!-- Dynamic Forward Arrow Head Nestled in Right Wing -->
+    <polygon points="340,116 388,188 348,188 348,220 316,220 316,188 296,188"
+             fill="url(#arrowGrad)" />
+  </g>
+</svg>

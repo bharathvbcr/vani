@@ -1,0 +1,25 @@
+{
+ "total": 2,
+ "jobPostings": [
+  {
+   "title": "NVIDIA 2027 Ignite Internships: Hardware Engineering",
+   "externalPath": "/job/US-CA-Santa-Clara/NVIDIA-2027-Ignite-Internships--Hardware-Engineering_JR2027047",
+   "locationsText": "US, CA, Santa Clara",
+   "postedOn": "Posted Today",
+   "bulletFields": [
+    "JR2027047"
+   ]
+  },
+  {
+   "title": "CAD Engineer",
+   "externalPath": "/job/India-Bengaluru/CAD-Engineer_JR2014480-1",
+   "locationsText": "India, Bengaluru",
+   "postedOn": "Posted Today",
+   "bulletFields": [
+    "JR2014480"
+   ]
+  }
+ ],
+ "facets": [],
+ "userAuthenticated": false
+}
