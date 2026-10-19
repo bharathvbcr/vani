@@ -154,6 +154,10 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 case unreadStreak
                 /// No decision backend read any posting.
                 case noneRead
+                /// Several postings in a row failed a stage other than triage.
+                case failStreak
+                /// No attempted posting advanced: each failed or went unread.
+                case noneAdvanced
                 case cancelled
                 /// A reason a newer vani adds: shown as written, never as finished.
                 case unknown(String)
@@ -163,6 +167,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     case "cap": self = .cap
                     case "unread_streak": self = .unreadStreak
                     case "none_read": self = .noneRead
+                    case "fail_streak": self = .failStreak
+                    case "none_advanced": self = .noneAdvanced
                     case "cancelled": self = .cancelled
                     default: self = .unknown(raw)
                     }
@@ -233,6 +239,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 case .cap?: "Stopped at the per-run cap of \(limit) (advance_per_run)."
                 case .unreadStreak?: "Stopped early: no decision backend could read several postings in a row."
                 case .noneRead?: "Stopped: no decision backend read any posting."
+                case .failStreak?: "Stopped early: several postings in a row failed a stage (scoring or explaining)."
+                case .noneAdvanced?: "Stopped: no posting advanced; each failed a stage or went unread."
                 case .cancelled?: "Stopped: the run was cancelled."
                 case .unknown(let raw)?: "Stopped: \(PipelineStatus.bounded(raw, max: 60))."
                 }

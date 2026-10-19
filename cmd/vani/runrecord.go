@@ -80,6 +80,8 @@ const (
 	stopCap          = "cap"           // advance_per_run reached
 	stopUnreadStreak = "unread_streak" // maxConsecutiveUnread unread in a row
 	stopNoneRead     = "none_read"     // no backend read any posting
+	stopFailStreak   = "fail_streak"   // maxConsecutiveFailed stage failures in a row
+	stopNoneAdvanced = "none_advanced" // every attempted posting failed or went unread
 	stopCancelled    = "cancelled"
 )
 

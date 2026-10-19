@@ -100,12 +100,16 @@ func TestAdvanceReportsOtherErrorsAndCaps(t *testing.T) {
 
 // The same stage failure on many postings is one line plus a count, not one
 // line per posting: the posting key and the provider request id are not part
-// of the cause.
+// of the cause. (Every tenth posting advances, so this is a working run with a
+// recurring failure, not an outage; the outage cases are below.)
 func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 	var warn strings.Builder
 	i := 0
 	_, err := advanceAll(context.Background(), liveRecs(50), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		i++
+		if i%10 == 0 {
+			return nil
+		}
 		return fmt.Errorf("pipeline: explain %s: anthropic: http 400 (request req_%04d): not scoped to a workspace", k, i)
 	}, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
 	if err != nil {
@@ -115,7 +119,7 @@ func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 	if n := strings.Count(out, "not scoped to a workspace"); n != 1 {
 		t.Fatalf("%d lines name the cause, want 1:\n%s", n, out)
 	}
-	if !strings.Contains(out, "49 more posting(s) failed the same way as gh:acme:000") {
+	if !strings.Contains(out, "44 more posting(s) failed the same way as gh:acme:000") {
 		t.Fatalf("no summary count:\n%s", out)
 	}
 }
@@ -124,9 +128,12 @@ func TestAdvanceCollapsesRepeatedErrors(t *testing.T) {
 func TestAdvanceReportsEachDistinctCause(t *testing.T) {
 	var warn strings.Builder
 	i := 0
-	_, err := advanceAll(context.Background(), liveRecs(6), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
+	_, err := advanceAll(context.Background(), liveRecs(7), nil, config.DefaultAdvancePerRun, func(_ context.Context, k posting.Key) error {
 		i++
-		if i%2 == 0 {
+		switch {
+		case i == 7:
+			return nil
+		case i%2 == 0:
 			return fmt.Errorf("pipeline: score %s: devprism down", k)
 		}
 		return fmt.Errorf("pipeline: explain %s: refused", k)
