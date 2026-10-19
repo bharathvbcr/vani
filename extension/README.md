@@ -248,10 +248,15 @@ flowchart LR
   - Only open shadow roots and same-origin iframes are entered. A cross-origin iframe on a host the
     manifest does not match (a company page embedding an unlisted ATS) is entered only when you open
     the popup on that page (it then injects into every frame, which `activeTab` is meant to cover; not
-    tried against a live cross-origin frame). The popup's counts are the sum over every frame that
-    answers, with a per-frame list; a frame Chrome does not run the scan in is not counted, and
-    cannot be told apart from a page with no such frame. Fill and Save from the popup run in every
-    frame, but the popup shows the result of the first frame to reply.
+    tried against a live cross-origin frame). Scan, Fill and Save from the popup (and the Fill
+    shortcut) ask each frame that runs Vani on its own and add the answers up, so a form inside a
+    frame is counted even when the top frame has no fields; the scan shows a per-frame list. Each
+    frame's content script tells the background worker it is there when it starts (kept per tab in
+    `chrome.storage.session`, memory only where that is missing), because the popup cannot list a
+    cross-origin frame it may not script: Chrome lists only the page activeTab grants, not a
+    Greenhouse iframe the manifest runs in (checked in Chrome 155, `test/live.ts`). A frame that
+    errors or gives no answer within 20 s is reported as not answering and its fields are not
+    counted; a listed frame that has since gone away is skipped.
 - Repeated sections (work history, education): the 2nd, 3rd... occurrence of a question is saved as
   "<question> (vani section n)" and filled from the same entry number; entry 1 keeps its plain key.
   The marker is namespaced so a genuine label ending in "section 2" is not read as entry 2. Keys
@@ -285,6 +290,20 @@ bun test --cwd /Users/bharath/Code/apps/Vani/extension       # core: normalize, 
 bun run /Users/bharath/Code/apps/Vani/extension/build.ts     # dist-chrome/, dist-safari/, dist-test/
 bun run /Users/bharath/Code/apps/Vani/extension/test/serve.ts  # then open http://127.0.0.1:4789/test/dom.html
 ```
+
+```bash
+bun run /Users/bharath/Code/apps/Vani/extension/test/live.ts  # real Chrome, headless, throwaway profile
+```
+
+`test/live.ts` loads the built extension into a headless Chrome (over the DevTools pipe; no
+dependency) with a throwaway profile, and checks what the fake `chrome` in `bun test` cannot:
+Save, Fill and Scan count a form in a cross-origin Greenhouse iframe on a company page; with a
+content script in both frames both are asked; a removed frame is skipped; the frame list survives
+the worker being stopped; the import input takes the same file again; and `test/dom.html` passes.
+Its copy of the extension has no `key` and no `nativeMessaging`, so it never reaches the Mac app
+or your saved answers, and a host permission for `http://127.0.0.1` stands in for the activeTab
+grant the popup gets (automation cannot grant activeTab). It needs Google Chrome (or `--chrome
+PATH`) and `openssl`.
 
 `test/dom.html` runs the DOM tests in a real browser. It captures a hand-filled Greenhouse-style
 form, then fills a reworded Lever-style form, and checks what must and must not be filled. The page

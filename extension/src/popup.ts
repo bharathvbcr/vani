@@ -1,7 +1,8 @@
 // Popup: act on the current page and manage saved answers.
 import type { Answer, Bank } from "./types";
 import { MAX_BANK_BYTES, bankBytes, exportBank } from "./bank";
-import type { ScanReply, ToBackground, ToContent } from "./messages";
+import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
+import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
 
@@ -11,38 +12,20 @@ function bg<T>(msg: ToBackground): Promise<T> {
   return chrome.runtime.sendMessage<T>(msg);
 }
 
-async function toTab<T>(msg: ToContent): Promise<T> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id === undefined) throw new Error("no active tab");
-  try {
-    return await chrome.tabs.sendMessage<T>(tab.id, msg);
-  } catch {
-    // Not an ATS host the content script runs on by default: inject it on
-    // this page only (activeTab grants this tab, for this click).
-    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["content.js"] });
-    return chrome.tabs.sendMessage<T>(tab.id, msg);
-  }
+/** The frames of a tab whose content script registered with the background (frames.ts). */
+async function registered(tabId: number): Promise<number[]> {
+  const r = await bg<{ frames?: unknown }>({ type: "frames", tabId });
+  return Array.isArray(r?.frames) ? r.frames.filter((f): f is number => typeof f === "number") : [];
 }
 
-/**
- * Ask every frame of the tab for its own coverage and add them up. A message to
- * the tab is answered by whichever frame replies first, so a form inside a
- * frame was reported as 0 fields; scripting.executeScript with allFrames
- * returns one result per frame instead (activeTab covers it, no new
- * permission). The content script is injected first where it is not running.
- */
+/** Every frame's own coverage, added up (frames.ts asks each frame on its own; one that does not answer is counted). */
 async function scanTab(): Promise<TabCoverage> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id === undefined) throw new Error("no active tab");
-  const target = { tabId: tab.id, allFrames: true };
-  const ask = () => chrome.scripting.executeScript<ScanReply | null>({ target, func: () => (window.__vaniScan ? window.__vaniScan() : null) });
-  const answers = (rs: Array<{ frameId: number; result?: ScanReply | null }>): FrameAnswer[] => rs.map(r => ({ frameId: r.frameId, result: r.result }));
-  let rs = await ask().catch((): Array<{ frameId: number; result?: ScanReply | null }> => []);
-  if (!rs.some(r => r.result)) {
-    await chrome.scripting.executeScript({ target, files: ["content.js"] });
-    rs = await ask();
-  }
-  return tabCoverage(answers(rs));
+  const r = await toFrames<ScanReply>({ type: "scan" }, { registered });
+  const answers: FrameAnswer[] = [
+    ...r.answered.map(a => ({ frameId: a.frameId, result: a.reply })),
+    ...r.failed.map(f => ({ frameId: f.frameId, result: null })),
+  ];
+  return tabCoverage(answers);
 }
 
 let current: Bank | null = null;
@@ -138,7 +121,7 @@ function renderFrames(t: TabCoverage): void {
   }
   if (unanswered > 0 && t.frames.length > 0) {
     const li = document.createElement("li");
-    li.textContent = `${unanswered} of ${t.asked} frames did not answer (nothing to read, or Vani cannot enter them).`;
+    li.textContent = `${unanswered} of ${t.asked} frames running Vani did not answer in time; their fields are not counted.`;
     list.append(li);
   }
   $("#framebox").hidden = list.childElementCount === 0;
@@ -205,17 +188,20 @@ async function init(): Promise<void> {
 
 $("#fill").onclick = async () => {
   try {
-    const r = await toTab<{ outcomes: Array<{ filled: boolean; review?: boolean; reason?: string }> }>({ type: "fill", overwrite: ($("#overwrite") as HTMLInputElement).checked, typeahead: ($("#typeahead") as HTMLInputElement).checked });
-    const f = r.outcomes.filter(o => o.filled);
-    const manual = r.outcomes.filter(o => o.reason === "manual").length;
-    status(`Filled ${f.length} (${f.filter(o => o.review).length} to review)` + (manual ? `, ${manual} to do by hand` : "") + ". Check the page, then submit yourself.");
+    const r = await toFrames<FillReply>({ type: "fill", overwrite: ($("#overwrite") as HTMLInputElement).checked, typeahead: ($("#typeahead") as HTMLInputElement).checked }, { registered });
+    const outcomes = mergeFill(r);
+    const f = outcomes.filter(o => o.filled);
+    const manual = outcomes.filter(o => o.reason === "manual").length;
+    status(`Filled ${f.length} (${f.filter(o => o.review).length} to review)` + (manual ? `, ${manual} to do by hand` : "") +
+      (r.answered.length > 1 ? ` across ${r.answered.length} frames` : "") + ". Check the page, then submit yourself." + notAnswered(r));
     await refresh();
   } catch (e) { status(String(e)); }
 };
 $("#save").onclick = async () => {
   try {
-    const r = await toTab<{ added?: number; updated?: number; skippedSecret?: number; unchanged?: number }>({ type: "capture" });
-    status(`Saved ${(r.added ?? 0) + (r.updated ?? 0)} answers` + (r.unchanged ? ` (${r.unchanged} already saved)` : "") + (r.skippedSecret ? `; ${r.skippedSecret} sensitive fields not saved.` : "."));
+    const r = await toFrames<CaptureReply>({ type: "capture" }, { registered });
+    const c = sumCaptures(r);
+    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + notAnswered(r));
     await refresh();
   } catch (e) { status(String(e)); }
 };
@@ -240,12 +226,17 @@ $("#export").onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 $("#import").onchange = async ev => {
-  const file = (ev.target as HTMLInputElement).files?.[0];
+  const input = ev.target as HTMLInputElement;
+  const file = input.files?.[0];
+  // Cleared at once, so choosing the same file again (after Cancel, a refusal or an import) fires change again.
+  input.value = "";
   if (!file) return;
   if (!confirm("Replace all saved answers with this file?")) return;
-  const r = await bg<{ ok?: boolean; answers?: number; droppedSecret?: number; error?: string }>({ type: "replaceBank", json: await file.text() });
-  status(r.error ? `Import refused: ${r.error}` : `Imported ${r.answers} answers` + (r.droppedSecret ? `; ${r.droppedSecret} sensitive entries dropped.` : "."));
-  await refresh();
+  try {
+    const r = await bg<{ ok?: boolean; answers?: number; droppedSecret?: number; error?: string }>({ type: "replaceBank", json: await file.text() });
+    status(r.error ? `Import refused: ${r.error}` : `Imported ${r.answers} answers` + (r.droppedSecret ? `; ${r.droppedSecret} sensitive entries dropped.` : "."));
+    await refresh();
+  } catch (e) { status(`Import failed: ${e instanceof Error ? e.message : String(e)}`); }
 };
 
 void init();

@@ -3,7 +3,8 @@
 import type { Bank } from "./types";
 import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, parseBank } from "./bank";
 import { logActivity, loadBank, migrationNote, nativeTransport, replaceBank, storageMode, updateBank } from "./store";
-import type { ToBackground, ToContent } from "./messages";
+import { type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkToBackground } from "./messages";
+import { type FanOut, type FrameStore, createFrameRegistry, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
 
@@ -60,6 +61,25 @@ const offerStore: OfferStore | undefined = chrome.storage.session
   : undefined;
 const applied = createBroker({ native, store: offerStore });
 
+// The frames of each tab whose content script started, for the popup to ask one by one (frames.ts).
+const FRAMES_KEY = "vani.frames";
+const frameRegistry = createFrameRegistry({
+  store: chrome.storage.session
+    ? {
+      load: async () => {
+        const r = (await chrome.storage.session!.get(FRAMES_KEY))[FRAMES_KEY];
+        return typeof r === "object" && r !== null && !Array.isArray(r) ? r as Awaited<ReturnType<FrameStore["load"]>> : {};
+      },
+      save: v => chrome.storage.session!.set({ [FRAMES_KEY]: v }),
+    }
+    : undefined,
+});
+
+/** Send to every frame of the active tab that runs Vani: the keyboard shortcut here, and the live check (test/live-bg.ts). */
+export function toTabFrames<T>(msg: ToContent, timeoutMs?: number): Promise<FanOut<T>> {
+  return toFrames<T>(msg, { registered: tabId => frameRegistry.list(tabId), timeoutMs });
+}
+
 /** The tab a message acts for. A content script is always its own tab, whatever it claims; the popup is no tab and names one. */
 function actingTab(sender: chrome.runtime.MessageSender, named: unknown): number | undefined {
   if (sender.tab) return sender.tab.id;
@@ -89,7 +109,7 @@ async function askTopToShow(tabId: number): Promise<boolean> {
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === "complete") void applied.pending(tabId).then(o => { if (o) return badge(tabId, true); }, () => undefined);
 });
-chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); });
+chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); void frameRegistry.forget(tabId); });
 
 async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.type) {
@@ -197,26 +217,36 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       void logActivity({ event: "import", counts: { answers, droppedSecret } });
       return { ok: true, answers, droppedSecret };
     }
+    case "frameReady": {
+      // Only a content script is in a frame; the popup has no tab and no frameId.
+      if (sender.tab?.id === undefined || sender.frameId === undefined) return { error: "not from a frame", code: "bad_request" };
+      await frameRegistry.add(sender.tab.id, sender.frameId);
+      return { ok: true };
+    }
+    case "frames": {
+      const tabId = actingTab(sender, msg.tabId);
+      return { frames: tabId === undefined ? [] : await frameRegistry.list(tabId) };
+    }
+    default:
+      // Unreachable for a message that passed checkToBackground; kept so a missed case answers, never `undefined`.
+      return { error: UNKNOWN_MESSAGE };
   }
 }
 
-chrome.runtime.onMessage.addListener((msg: ToBackground, sender, sendResponse) => {
-  handle(msg, sender).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
+  const c = checkToBackground(raw);
+  if ("error" in c) {
+    sendResponse({ error: c.error });
+    return false;
+  }
+  handle(c.msg, sender).then(
+    r => sendResponse(r === undefined ? { error: "no result" } : r),
+    (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }),
+  );
   return true; // reply asynchronously
 });
 
-/** Send a command to the active tab, injecting the content script on sites it does not run on by default. */
-export async function toActiveTab(msg: ToContent): Promise<unknown> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id === undefined) throw new Error("no active tab");
-  try {
-    return await chrome.tabs.sendMessage(tab.id, msg);
-  } catch {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["content.js"] });
-    return chrome.tabs.sendMessage(tab.id, msg);
-  }
-}
-
+// The keyboard shortcut fills every frame of the active tab, like the popup's Fill button.
 chrome.commands.onCommand.addListener(command => {
-  if (command === "fill-form") void toActiveTab({ type: "fill" }).catch(() => undefined);
+  if (command === "fill-form") void toTabFrames({ type: "fill" }).catch(() => undefined);
 });
