@@ -247,7 +247,7 @@ func TestLabelScriptedSession(t *testing.T) {
 		"1", "1", "1", "1", // never read
 	}, "\n") + "\n"
 	var out strings.Builder
-	n, err := Label(strings.NewReader(in), &out, []ledger.Record{r1, r2, r3}, s)
+	n, err := Label(strings.NewReader(in), &out, []ledger.Record{r1, r2, r3}, s, Names{})
 	if err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -293,7 +293,7 @@ func TestLabelScriptedSession(t *testing.T) {
 func TestLabelEndOfInputStopsWithoutWriting(t *testing.T) {
 	s, _, _ := newStore(t)
 	var out strings.Builder
-	n, err := Label(strings.NewReader("1\n1\n"), &out, []ledger.Record{mkRec("k", posting.Triaged, nil)}, s)
+	n, err := Label(strings.NewReader("1\n1\n"), &out, []ledger.Record{mkRec("k", posting.Triaged, nil)}, s, Names{})
 	if err != nil || n != 0 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -301,7 +301,7 @@ func TestLabelEndOfInputStopsWithoutWriting(t *testing.T) {
 		t.Errorf("partial posting written: %+v", got)
 	}
 	// Over-long input line is an error, not a hang or a label.
-	_, err = Label(strings.NewReader(strings.Repeat("1", maxInputLine+1)+"\n"), &out, []ledger.Record{mkRec("k", posting.Triaged, nil)}, s)
+	_, err = Label(strings.NewReader(strings.Repeat("1", maxInputLine+1)+"\n"), &out, []ledger.Record{mkRec("k", posting.Triaged, nil)}, s, Names{})
 	if err == nil {
 		t.Error("oversized input line accepted")
 	}
@@ -350,7 +350,7 @@ func TestReportMath(t *testing.T) {
 		mkRec("G", posting.Live, nil),
 		mkRec("unlabeled", posting.Triaged, map[string]string{"triage.work_mode.reading": "answered"}),
 	}
-	rep := BuildReport(recs, s)
+	rep := BuildReport(recs, s, Names{})
 	if rep.Records != 8 || rep.WithTriage != 7 || rep.LabelEntries != 8 || rep.Matched != 7 || rep.NoTriage != 1 {
 		t.Errorf("header: %+v", rep)
 	}
@@ -421,7 +421,7 @@ func TestReportMath(t *testing.T) {
 
 func TestReportEmpty(t *testing.T) {
 	s, _, _ := newStore(t)
-	rep := BuildReport(nil, s)
+	rep := BuildReport(nil, s, Names{})
 	md := rep.Markdown()
 	if !strings.Contains(md, "n/a") || strings.Contains(md, "NaN") {
 		t.Errorf("empty report:\n%s", md)
@@ -430,7 +430,7 @@ func TestReportEmpty(t *testing.T) {
 	if err := s.Put(Entry{Key: "A", Labels: map[string]string{"work_mode": Skip}}); err != nil {
 		t.Fatal(err)
 	}
-	rep = BuildReport([]ledger.Record{jevRec("A", "work_mode", "remote", "0.9", "", true)}, s)
+	rep = BuildReport([]ledger.Record{jevRec("A", "work_mode", "remote", "0.9", "", true)}, s, Names{})
 	if len(rep.Cells) != 0 || strings.Contains(rep.Markdown(), "NaN") {
 		t.Errorf("skip-only: %+v", rep.Cells)
 	}
@@ -441,7 +441,7 @@ func TestReportEmpty(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(s.labelDir, LabelsFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if md := BuildReport(nil, s).Markdown(); !strings.Contains(md, "COULD NOT BE READ") {
+	if md := BuildReport(nil, s, Names{}).Markdown(); !strings.Contains(md, "COULD NOT BE READ") {
 		t.Errorf("load error hidden:\n%s", md)
 	}
 }
@@ -491,7 +491,7 @@ func TestPromotionIsPerPrimaryBackend(t *testing.T) {
 		}
 		recs = append(recs, r)
 	}
-	rep := BuildReport(recs, s)
+	rep := BuildReport(recs, s, Names{})
 	if len(rep.Promotions) != 2 {
 		t.Fatalf("promotions: %+v", rep.Promotions)
 	}
@@ -538,7 +538,7 @@ func TestReportPromotion(t *testing.T) {
 	}
 	recs = append(recs, jevRec("old", "work_mode", "onsite", "0.9000", "", true))
 
-	rep := BuildReport(recs, s)
+	rep := BuildReport(recs, s, Names{})
 	if len(rep.Promotions) != 1 {
 		t.Fatalf("promotions: %+v", rep.Promotions)
 	}

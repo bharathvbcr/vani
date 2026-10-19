@@ -122,9 +122,12 @@ flowchart TD
     only with `OPENROUTER_API_KEY` exported, and its `daily_usd` cap is 0.5. The promotion table has
     one row per primary backend (d1 vs `jev`, d1 vs `llm`), each needing its own 30 labels. A day
     where the LLM answered after Jev's cap therefore never counts as Jev's baseline.
-  - The primary is now `liquid/d1-ultra` (`decide.jev_model`, the owner's choice). It runs through
-    the Decisions API client and is still named `jev` in annotations and eval rows. "Beats Jev"
-    therefore reads as local d1-3B against cloud d1-ultra.
+  - The primary is now `liquid/d1-ultra` (`decide.openrouter_model`, the owner's choice). Since
+    2026-10-19 it answers as `d1-ultra` in annotations and eval rows. The 382 earlier rows name it
+    `jev`; `vani eval` reads those as `d1-ultra` (primary only, never a shadow), so the numbers do
+    not move (`internal/eval/names_test.go`). "Beats Jev" reads as local d1-3B against cloud
+    d1-ultra. Lappi-decision's pre-registration amendment 2 records this rename (draft, for the
+    owner's review).
   - **The first live runs read nothing (2026-10-18, about 22:10).** `OPENROUTER_API_KEY` was unset,
     so d1-ultra was off. Anthropic refused every call with HTTP 400, "This API key is not scoped to
     a workspace", because `ANTHROPIC_WORKSPACE_ID` was unset; Vani sends `anthropic-workspace-id`
@@ -207,9 +210,10 @@ flowchart TD
     - Without the target summary, `per_slot` scored 9/12 and `combined` 10/12.
   - **CPU (`-ngl 0`) and Metal gave the same choice on all 12 slots.** Probabilities differed by at
     most 0.03, and CPU took about 4 s per posting.
-  - A low-probability answer is still read as `answered` (Jev has no abstain). Only a drop rule's
-    `min_jev_prob` turns probability into action (`internal/pipeline/runner.go:379`), and `local` is
-    only ever the shadow.
+  - A low-probability answer is still read as `answered` (the Jev wire shape has no abstain). Only a
+    drop rule's `min_openrouter_prob` turns probability into action, and only for the configured
+    OpenRouter model's name (`DropPolicy.calibrated`, `internal/pipeline/runner.go`); `local` is
+    only ever the shadow and never drops.
   - **Prompt variant measured:** each option goes out with its fixture description
     (`jdtriage.Descriptions()`), in fixture order, and the target summary is in the state. The
     qd.sock scoping session found that the bare option strings change 3 of 12 choices and that a

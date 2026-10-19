@@ -24,13 +24,14 @@ const maxInputLine = 4096
 // re-prompts. Quit, or the end of input, stops the session; a posting whose
 // slots were not all answered is not written. It returns the number of labels
 // written. Posting text is untrusted and is printed as plain text with control
-// characters removed; nothing in it is interpreted.
-func Label(in io.Reader, out io.Writer, recs []ledger.Record, s *Store) (int, error) {
+// characters removed; nothing in it is interpreted. Backend names are shown
+// as the report files them (see Names).
+func Label(in io.Reader, out io.Writer, recs []ledger.Record, s *Store, names Names) (int, error) {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 1024), maxInputLine)
 	written := 0
 	for i, r := range recs {
-		if err := showPosting(out, i+1, len(recs), r); err != nil {
+		if err := showPosting(out, i+1, len(recs), r, names); err != nil {
 			return written, err
 		}
 		labels := make(map[string]string, len(jdtriage.Slots))
@@ -88,7 +89,7 @@ func askSlot(sc *bufio.Scanner, out io.Writer, sl jdtriage.SlotSpec) (choice str
 	}
 }
 
-func showPosting(out io.Writer, i, n int, r ledger.Record) error {
+func showPosting(out io.Writer, i, n int, r ledger.Record, names Names) error {
 	p := r.Posting
 	desc := []rune(plain(p.Description))
 	shown := desc
@@ -102,7 +103,7 @@ func showPosting(out io.Writer, i, n int, r ledger.Record) error {
 	b.WriteString("Current triage:\n")
 	any := false
 	for _, sl := range jdtriage.Slots {
-		if line := triageLine(r, sl.Name); line != "" {
+		if line := triageLine(r, sl.Name, names); line != "" {
 			fmt.Fprintf(&b, "  %s\n", line)
 			any = true
 		}
@@ -114,7 +115,7 @@ func showPosting(out io.Writer, i, n int, r ledger.Record) error {
 	return err
 }
 
-func triageLine(r ledger.Record, slot string) string {
+func triageLine(r ledger.Record, slot string, names Names) string {
 	pre := ledger.AnnTriagePrefix + slot
 	a := r.Annotations
 	val, reading := a[pre], a[pre+ledger.AnnTriageSuffixReading]
@@ -125,7 +126,7 @@ func triageLine(r ledger.Record, slot string) string {
 		val = "-"
 	}
 	line := fmt.Sprintf("%s: %s (%s", slot, plain(val), plain(reading))
-	if b := a[pre+ledger.AnnTriageSuffixBackend]; b != "" {
+	if b, _ := names.primary(a[pre+ledger.AnnTriageSuffixBackend]); b != "" {
 		line += ", " + plain(b)
 	}
 	if p := a[pre+ledger.AnnTriageSuffixP]; p != "" {

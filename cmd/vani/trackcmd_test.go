@@ -45,9 +45,9 @@ func trackSetup(t *testing.T) (cfgPath, tracksDir string) {
 		t.Fatal(err)
 	}
 	cfg.DropRules = []config.DropRule{
-		{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinJevProb: 0.95},
-		{Slot: "role_fit", Values: []string{"adjacent"}, MinJevProb: 0.5},
-		{Slot: "work_mode", Values: []string{"onsite"}, MinJevProb: 0.9},
+		{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.95},
+		{Slot: "role_fit", Values: []string{"adjacent"}, MinOpenRouterProb: 0.5},
+		{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.9},
 	}
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
@@ -81,10 +81,10 @@ func TestTrackListShowUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []config.DropRule{
-		{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinJevProb: 0.95},
-		{Slot: "work_mode", Values: []string{"onsite"}, MinJevProb: 0.9},
-		{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinJevProb: 0.9},
-		{Slot: "seniority", Values: []string{"staff_plus", "manager"}, MinJevProb: 0.9},
+		{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.95},
+		{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.9},
+		{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.9},
+		{Slot: "seniority", Values: []string{"staff_plus", "manager"}, MinOpenRouterProb: 0.9},
 	}
 	if !reflect.DeepEqual(cfg.DropRules, want) {
 		t.Fatalf("drop rules\n got %+v\nwant %+v", cfg.DropRules, want)

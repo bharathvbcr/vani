@@ -44,6 +44,32 @@ import (
 // for the next run; nothing is lost.
 const maxAdvancePerRun = 300
 
+// The OpenRouter model's daily cap lives in <state dir>/budget/jev.json under
+// spend key "jev": the names it had before the backend was named after its
+// model. Keeping them carries a day's spend across the rename.
+const (
+	openRouterBudgetFile = "jev.json"
+	openRouterSpendKey   = "jev"
+)
+
+// openRouterName is the configured OpenRouter model's backend name, or ""
+// when none is configured (then no backend drops on a probability).
+func (w *wired) openRouterName() string {
+	if !w.cfg.OpenRouterConfigured() {
+		return ""
+	}
+	return w.cfg.Decide.OpenRouterName()
+}
+
+// shadowName maps decide.shadow to the backend name it selects: the role
+// "openrouter" answers under the model's name; the others are their names.
+func (w *wired) shadowName() string {
+	if w.cfg.Decide.Shadow == config.ShadowOpenRouter {
+		return w.openRouterName()
+	}
+	return w.cfg.Decide.Shadow
+}
+
 // maxBoardBytes bounds one board listing. Greenhouse returns a whole board,
 // descriptions included, in one response (GitLab's was 3.6 MB on 2026-10-18).
 const maxBoardBytes = 32 << 20
@@ -379,23 +405,27 @@ func localBackend(l *config.Local, endpoint string) (decide.Backend, error) {
 // run so the daily budget ledger rolls over with the date.
 func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, error) {
 	var backends []decide.Backend
-	// One cap for every Jev client this run (triage and notes): two DailyCaps
-	// on one file would each lock only themselves.
+	// One cap for every OpenRouter client this run (triage and notes): two
+	// DailyCaps on one file would each lock only themselves. The file and its
+	// spend key keep their pre-rename name "jev" (jev.Config's default
+	// SpendKey), so renaming the backend did not reset a day's spend.
 	var spend *decide.DailyCap
-	if w.cfg.JevConfigured() {
+	if w.cfg.OpenRouterConfigured() {
 		var err error
-		spend, err = decide.NewDailyCap(filepath.Join(w.stateDir, "budget", "jev.json"), w.cfg.Decide.DailyUSD.Jev)
+		spend, err = decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
-			return nil, fmt.Errorf("jev budget: %w", err)
+			return nil, fmt.Errorf("openrouter budget: %w", err)
 		}
 		jb, err := jev.New(jev.Config{
-			Model:        w.cfg.Decide.JevModel,
-			KeyEnv:       w.cfg.Decide.JevKeyEnv,
+			Name:         w.cfg.Decide.OpenRouterName(),
+			Model:        w.cfg.Decide.OpenRouterModel,
+			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
 			Descriptions: jdtriage.Descriptions(),
 			Spend:        spend,
+			SpendKey:     openRouterSpendKey,
 		}, d)
 		if err != nil {
-			w.warnf("jev disabled: %v", err)
+			w.warnf("openrouter (%s) disabled: %v", w.cfg.Decide.OpenRouterModel, err)
 		} else {
 			backends = append(backends, jb)
 		}
@@ -414,7 +444,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 	// Lappi is local and free. It is the shadow until `vani eval` reports it
-	// promotable; promoted, it goes first so Jev and the LLM only see what it
+	// promotable; promoted, it goes first so the OpenRouter model and the LLM only see what it
 	// abstained on.
 	if l := w.cfg.Decide.Lappi; l != nil {
 		// Lappi trains one slot per family, so each triage slot goes to its
@@ -438,7 +468,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 
-	// A local decision model (llama.cpp /v1/systemone) speaks Jev's wire shape,
+	// A local decision model (llama.cpp /v1/systemone) speaks the Jev wire shape,
 	// so it is a second Jev client under its own name, reaching only this Mac.
 	// It is only ever the shadow (config enforces it): measured, never deciding.
 	if l := w.cfg.Decide.Local; l != nil {
@@ -457,7 +487,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	// The shadow backend is asked alongside the chain and never decides, so it
 	// leaves the chain: asking it twice would pay twice for one answer.
 	var shadow decide.Backend
-	if name := w.cfg.Decide.Shadow; name != "" {
+	if name := w.shadowName(); name != "" {
 		for i, b := range backends {
 			if b.Name() == name {
 				shadow = b
@@ -470,21 +500,21 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 	if len(backends) == 0 {
-		return nil, errors.New("no decision backend is available (configure decide.jev_model or llm)")
+		return nil, errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
 	}
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow
 
 	rules := make([]pipeline.DropRule, 0, len(w.cfg.DropRules))
 	for _, r := range w.cfg.DropRules {
-		rules = append(rules, pipeline.DropRule{Slot: r.Slot, Values: r.Values, MinJevProb: r.MinJevProb, MinLappiScore: r.MinLappiScore})
+		rules = append(rules, pipeline.DropRule{Slot: r.Slot, Values: r.Values, MinOpenRouterProb: r.MinOpenRouterProb, MinLappiScore: r.MinLappiScore})
 	}
 	explainer, skipExplain := w.notes(d, spend)
 	r := &pipeline.Runner{
 		Ledger:      w.led,
 		Triager:     &jdtriage.Triager{D: router, TargetSummary: w.cfg.TargetSummary},
 		Explainer:   explainer,
-		Policy:      pipeline.DropPolicy{Rules: rules},
+		Policy:      pipeline.DropPolicy{Rules: rules, OpenRouter: w.openRouterName()},
 		SkipExplain: skipExplain,
 	}
 	x, err := loadLCA(w.stateDir)

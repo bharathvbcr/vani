@@ -171,7 +171,7 @@ func reasonsConfig(t *testing.T) config.Config {
 	t.Setenv("OPENROUTER_API_KEY", "test-not-a-real-key")
 	cfg := config.Default()
 	cfg.LLM.Provider = "" // no Claude: notes must not depend on it
-	cfg.Decide.JevModel = "liquid/d1-ultra"
+	cfg.Decide.OpenRouterModel = "liquid/d1-ultra"
 	cfg.TargetSummary = reasonsTarget
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func writeCatalog(t *testing.T, stateDir, target string) {
 
 // With a catalog and Jev, notes are picked by Jev alone: no Claude, no
 // shadow, one chain.
-func TestRunnerPicksNotesWithJev(t *testing.T) {
+func TestRunnerPicksNotesWithOpenRouter(t *testing.T) {
 	cfg := reasonsConfig(t)
 	stateDir := t.TempDir()
 	writeCatalog(t, stateDir, reasonsTarget)
@@ -202,7 +202,7 @@ func TestRunnerPicksNotesWithJev(t *testing.T) {
 		t.Fatalf("explainer %T skip %v\n%s", r.Explainer, r.SkipExplain, warn)
 	}
 	rt, ok := pk.D.(*decide.Router)
-	if !ok || strings.Join(rt.Backends(), ",") != "jev" || rt.Shadow != nil {
+	if !ok || strings.Join(rt.Backends(), ",") != cfg.Decide.OpenRouterName() || rt.Shadow != nil {
 		t.Fatalf("notes router %T %v", pk.D, rt)
 	}
 	if len(pk.Catalog.Fit) != 1 || pk.TargetSummary != reasonsTarget {

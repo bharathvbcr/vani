@@ -202,8 +202,17 @@ func parse(fs *flag.FlagSet, args []string) error {
 	return nil
 }
 
+// loadConfig loads the config and warns on stderr about each old key name it
+// still uses (the file keeps working; Save writes the new names).
 func (e *env) loadConfig() (config.Config, error) {
-	return config.Load(e.configPath)
+	cfg, old, err := config.LoadWithDeprecations(e.configPath)
+	if err != nil {
+		return config.Config{}, err
+	}
+	for _, d := range old {
+		fmt.Fprintf(e.stderr, "vani: config %s: %s\n", e.configPath, d)
+	}
+	return cfg, nil
 }
 
 func (e *env) cmdInit(args []string) error {

@@ -89,7 +89,7 @@ Ported from the drafting validator (`build/check-deciders.js`):
     only beside the track files. **Without it, the command prints that personal names were not
     checked**; it never reports that as a pass.
 - Drop rules name a triage slot and legal values from `internal/decide/jdtriage/fixture.json`;
-  no sponsorship rule (it stays in the main config); one rule per slot; `min_jev_prob` in (0, 1].
+  no sponsorship rule (it stays in the main config); one rule per slot; `min_openrouter_prob` in (0, 1] (the old name `min_jev_prob` still loads).
 - `seniority` want/stretch/drop partition the seniority levels, and `drop` equals the seniority
   drop rule's values.
 - `employer_preferences` says `use: badge_and_rank` and `drops: false`; `prefer` holds only

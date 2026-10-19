@@ -22,8 +22,8 @@ func sample() Decider {
 		Label:          "ML systems",
 		TargetSummary:  "Early-career ML systems roles: inference runtimes, GPU kernels and training throughput.",
 		DropRules: []config.DropRule{
-			{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinJevProb: 0.9},
-			{Slot: "seniority", Values: []string{"staff_plus", "manager"}, MinJevProb: 0.9},
+			{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.9},
+			{Slot: "seniority", Values: []string{"staff_plus", "manager"}, MinOpenRouterProb: 0.9},
 		},
 		Seniority: Seniority{
 			Want:    []string{"intern_or_new_grad", "mid"},
@@ -151,11 +151,11 @@ func TestCheckFindsProblems(t *testing.T) {
 		{"unknown value", func(d *Decider) { d.DropRules[0].Values = []string{"meh"} }, `"meh" is not a role_fit value`},
 		{"empty values", func(d *Decider) { d.DropRules[0].Values = nil }, "values is empty"},
 		{"sponsorship rule", func(d *Decider) {
-			d.DropRules = append(d.DropRules, config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinJevProb: 0.9})
+			d.DropRules = append(d.DropRules, config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.9})
 		}, "belong in the main config"},
 		{"duplicate slot", func(d *Decider) { d.DropRules = append(d.DropRules, d.DropRules[0]) }, "second rule"},
-		{"zero jev prob", func(d *Decider) { d.DropRules[0].MinJevProb = 0 }, "min_jev_prob"},
-		{"jev prob over 1", func(d *Decider) { d.DropRules[0].MinJevProb = 1.5 }, "min_jev_prob"},
+		{"zero openrouter prob", func(d *Decider) { d.DropRules[0].MinOpenRouterProb = 0 }, "min_openrouter_prob"},
+		{"openrouter prob over 1", func(d *Decider) { d.DropRules[0].MinOpenRouterProb = 1.5 }, "min_openrouter_prob"},
 		{"negative lappi", func(d *Decider) { d.DropRules[0].MinLappiScore = -1 }, "min_lappi_score"},
 		{"seniority overlap", func(d *Decider) { d.Seniority.Stretch = []string{"mid"} }, "partition"},
 		{"seniority unknown", func(d *Decider) { d.Seniority.Want = []string{"wizard", "mid"} }, `"wizard"`},
@@ -238,9 +238,9 @@ func TestLoadBank(t *testing.T) {
 
 func TestApplyKeepsTrackIndependentRules(t *testing.T) {
 	cfg := config.Default()
-	sponsorship := config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship", "citizenship_or_clearance_required"}, MinJevProb: 0.95, MinLappiScore: 0.5}
-	workMode := config.DropRule{Slot: "work_mode", Values: []string{"onsite"}, MinJevProb: 0.8}
-	oldRoleFit := config.DropRule{Slot: "role_fit", Values: []string{"adjacent", "mismatch_domain"}, MinJevProb: 0.7}
+	sponsorship := config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship", "citizenship_or_clearance_required"}, MinOpenRouterProb: 0.95, MinLappiScore: 0.5}
+	workMode := config.DropRule{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.8}
+	oldRoleFit := config.DropRule{Slot: "role_fit", Values: []string{"adjacent", "mismatch_domain"}, MinOpenRouterProb: 0.7}
 	cfg.DropRules = []config.DropRule{sponsorship, oldRoleFit, workMode}
 	cfg.TargetSummary = "old summary"
 	before, _ := json.Marshal(cfg)
@@ -281,10 +281,10 @@ func TestApplyKeepsTrackIndependentRules(t *testing.T) {
 // Switching tracks removes the previous track's rules on slots the new track
 // does not cover, but only when they are still exactly what that track set.
 func TestApplyRemovesPreviousTrackRules(t *testing.T) {
-	sponsorship := config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinJevProb: 0.95}
+	sponsorship := config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.95}
 	prev := sample()
 	prev.ID = "remote-only"
-	workMode := config.DropRule{Slot: "work_mode", Values: []string{"onsite"}, MinJevProb: 0.9}
+	workMode := config.DropRule{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.9}
 	prev.DropRules = append(prev.DropRules, workMode)
 
 	next := sample()
@@ -316,7 +316,7 @@ func TestApplyRemovesPreviousTrackRules(t *testing.T) {
 	edited.DropRules = slices.Clone(cfg.DropRules)
 	for i, r := range edited.DropRules {
 		if r.Slot == "work_mode" {
-			edited.DropRules[i] = config.DropRule{Slot: "work_mode", Values: []string{"onsite", "hybrid"}, MinJevProb: 0.9}
+			edited.DropRules[i] = config.DropRule{Slot: "work_mode", Values: []string{"onsite", "hybrid"}, MinOpenRouterProb: 0.9}
 		}
 	}
 	out, _, err = Apply(edited, next, &prev)
@@ -343,7 +343,7 @@ func TestApplyRemovesPreviousTrackRules(t *testing.T) {
 
 func TestApplyRefusesSponsorshipAndInvalidResult(t *testing.T) {
 	d := sample()
-	d.DropRules = append(d.DropRules, config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinJevProb: 0.9})
+	d.DropRules = append(d.DropRules, config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.9})
 	if _, _, err := Apply(config.Default(), d, nil); err == nil {
 		t.Fatal("a track sponsorship rule was applied")
 	}

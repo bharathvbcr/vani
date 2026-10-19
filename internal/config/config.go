@@ -88,17 +88,20 @@ type Schedule struct {
 
 // Decide configures the decision engines and their daily spend caps.
 type Decide struct {
-	JevModel  string   `json:"jev_model"`
-	JevKeyEnv string   `json:"jev_key_env"`
-	DailyUSD  DailyUSD `json:"daily_usd"`
+	// OpenRouterModel is the decision model asked through the OpenRouter
+	// Decisions API (e.g. "liquid/d1-ultra"); empty turns it off. It answers
+	// under OpenRouterName.
+	OpenRouterModel  string   `json:"openrouter_model"`
+	OpenRouterKeyEnv string   `json:"openrouter_key_env"`
+	DailyUSD         DailyUSD `json:"daily_usd"`
 	// Shadow names a backend asked alongside the primary chain whose answers
-	// are recorded but never used ("" off, "llm", "jev", "lappi", "local").
-	// Disagreements feed the labelling queue. It costs a second call per
-	// posting (nothing for lappi or local, which run on this Mac).
+	// are recorded but never used ("" off, "llm", "openrouter", "lappi",
+	// "local"). Disagreements feed the labelling queue. It costs a second
+	// call per posting (nothing for lappi or local, which run on this Mac).
 	Shadow string `json:"shadow,omitempty"`
 	// Lappi configures the local Lappi agent. It runs as the shadow until
 	// `vani eval` reports it promotable; Primary then puts it first in the
-	// chain, ahead of Jev and the LLM.
+	// chain, ahead of the OpenRouter model and the LLM.
 	Lappi *Lappi `json:"lappi,omitempty"`
 	// Local is a third-party decision model served on this Mac by llama.cpp's
 	// /v1/systemone endpoint (e.g. Liquid d1-3B). It is measured as the shadow
@@ -117,8 +120,8 @@ const MaxLocalTimeoutMS = 60_000
 type Local struct {
 	Endpoint  string       `json:"endpoint,omitempty"`
 	Server    *LocalServer `json:"server,omitempty"`
-	Model     string `json:"model"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"` // zero means 20 s
+	Model     string       `json:"model"`
+	TimeoutMS int          `json:"timeout_ms,omitempty"` // zero means 20 s
 	// Questions is "combined" (default: the one question Jev gets, so the eval
 	// compares models on identical requests) or "per_slot" (each slot asked
 	// its own fixture family question, as Lappi is). Which suits a given
@@ -147,8 +150,8 @@ type Lappi struct {
 
 // DailyUSD holds the per-engine daily spend caps in US dollars.
 type DailyUSD struct {
-	Jev float64 `json:"jev"`
-	LLM float64 `json:"llm"`
+	OpenRouter float64 `json:"openrouter"`
+	LLM        float64 `json:"llm"`
 }
 
 // LLM selects the Manvi provider and model.
@@ -201,10 +204,12 @@ type DevPrism struct {
 // DropRule drops a posting when a triage slot reads one of Values with enough
 // confidence. Dropping is an engine rule keyed on an annotation.
 type DropRule struct {
-	Slot          string   `json:"slot"`
-	Values        []string `json:"values"`
-	MinJevProb    float64  `json:"min_jev_prob"`
-	MinLappiScore float64  `json:"min_lappi_score"`
+	Slot   string   `json:"slot"`
+	Values []string `json:"values"`
+	// MinOpenRouterProb is the OpenRouter model's probability of the chosen
+	// value at or above which the rule drops; zero never drops on it.
+	MinOpenRouterProb float64 `json:"min_openrouter_prob"`
+	MinLappiScore     float64 `json:"min_lappi_score"`
 }
 
 // Paths resolves the config file and state directory from the environment.
@@ -239,9 +244,9 @@ func Default() Config {
 		AllowedHosts: []string{hostOpenRouter},
 		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
 		Decide: Decide{
-			JevModel:  "typesafe/jev-1.13",
-			JevKeyEnv: "OPENROUTER_API_KEY",
-			DailyUSD:  DailyUSD{Jev: 0.25, LLM: 1.0},
+			OpenRouterModel:  "typesafe/jev-1.13",
+			OpenRouterKeyEnv: "OPENROUTER_API_KEY",
+			DailyUSD:         DailyUSD{OpenRouter: 0.25, LLM: 1.0},
 		},
 		LLM: LLM{Provider: "gemini", Model: "gemini-3.8-flash"},
 		// Empty until Phase 0 confirms the installed DevPrism answers --mcp
@@ -254,22 +259,34 @@ func Default() Config {
 
 // Load reads and validates the config at path. Unknown fields are an error.
 func Load(path string) (Config, error) {
+	c, _, err := LoadWithDeprecations(path)
+	return c, err
+}
+
+// LoadWithDeprecations is Load that also returns the deprecated key names the
+// file still uses (see Deprecations), for the caller to warn about.
+func LoadWithDeprecations(path string) (Config, []string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("config: %w", err)
+		return Config{}, nil, fmt.Errorf("config: %w", err)
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
 	if err != nil {
-		return Config{}, fmt.Errorf("config: read %s: %w", path, err)
+		return Config{}, nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
 	if len(data) > maxFileBytes {
-		return Config{}, fmt.Errorf("config: %s exceeds %d bytes", path, maxFileBytes)
+		return Config{}, nil, fmt.Errorf("config: %s exceeds %d bytes", path, maxFileBytes)
 	}
-	return Parse(data)
+	c, err := Parse(data)
+	if err != nil {
+		return Config{}, nil, err
+	}
+	return c, Deprecations(data), nil
 }
 
-// Parse decodes and validates config bytes.
+// Parse decodes and validates config bytes. Deprecated key names are read as
+// their replacements (legacy.go).
 func Parse(data []byte) (Config, error) {
 	var c Config
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -355,8 +372,8 @@ func (s Schedule) Parsed() (hour, minute int, loc *time.Location, err error) {
 	return hour, minute, loc, nil
 }
 
-// JevConfigured reports whether the JEV engine is set up.
-func (c Config) JevConfigured() bool { return c.Decide.JevModel != "" }
+// OpenRouterConfigured reports whether the OpenRouter decision model is set up.
+func (c Config) OpenRouterConfigured() bool { return c.Decide.OpenRouterModel != "" }
 
 // BoardHost returns the API host a board is fetched from. Workday hosts are
 // tenant-specific and not derivable from the token, so ok is false for them.
@@ -397,7 +414,7 @@ func (c Config) RequiredHosts() []string {
 			set[h] = true
 		}
 	}
-	if c.JevConfigured() {
+	if c.OpenRouterConfigured() {
 		set[hostOpenRouter] = true
 	}
 	out := make([]string, 0, len(set))
@@ -517,14 +534,19 @@ func (c Config) Validate() error {
 		add("schedule: %v", err)
 	}
 
-	if badUSD(c.Decide.DailyUSD.Jev) {
-		add("decide.daily_usd.jev %v must be within 0..%v", c.Decide.DailyUSD.Jev, MaxDailyUSD)
+	if badUSD(c.Decide.DailyUSD.OpenRouter) {
+		add("decide.daily_usd.openrouter %v must be within 0..%v", c.Decide.DailyUSD.OpenRouter, MaxDailyUSD)
 	}
 	if badUSD(c.Decide.DailyUSD.LLM) {
 		add("decide.daily_usd.llm %v must be within 0..%v", c.Decide.DailyUSD.LLM, MaxDailyUSD)
 	}
-	if c.JevConfigured() && c.Decide.JevKeyEnv == "" {
-		add("decide.jev_key_env is required when decide.jev_model is set")
+	if c.OpenRouterConfigured() {
+		if c.Decide.OpenRouterKeyEnv == "" {
+			add("decide.openrouter_key_env is required when decide.openrouter_model is set")
+		}
+		if err := checkBackendName(c.Decide.OpenRouterName()); err != nil {
+			add("decide.openrouter_model %q: %v", c.Decide.OpenRouterModel, err)
+		}
 	}
 	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
 		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir} {
@@ -541,9 +563,9 @@ func (c Config) Validate() error {
 		if c.LLM.Provider == "" {
 			add("decide.shadow llm needs llm.provider")
 		}
-	case "jev":
-		if !c.JevConfigured() {
-			add("decide.shadow jev needs decide.jev_model")
+	case ShadowOpenRouter:
+		if !c.OpenRouterConfigured() {
+			add("decide.shadow openrouter needs decide.openrouter_model")
 		}
 	case "lappi":
 		if c.Decide.Lappi == nil {
@@ -554,7 +576,7 @@ func (c Config) Validate() error {
 			add("decide.shadow local needs decide.local")
 		}
 	default:
-		add("decide.shadow %q is not llm, jev, lappi or local", c.Decide.Shadow)
+		add("decide.shadow %q is not llm, openrouter, lappi or local", c.Decide.Shadow)
 	}
 	if l := c.Decide.Local; l != nil && l.Server != nil {
 		s := l.Server
@@ -585,7 +607,7 @@ func (c Config) Validate() error {
 		case u.User != nil:
 			add("decide.local.endpoint must not carry credentials")
 		case !egress.IsLoopbackHost(u.Hostname()):
-			// Postings stay on this Mac: a remote endpoint belongs in jev_model.
+			// Postings stay on this Mac: a remote model belongs in openrouter_model.
 			add("decide.local.endpoint %q must be on a loopback host (127.0.0.1, ::1, localhost)", l.Endpoint)
 		}
 		if strings.TrimSpace(l.Model) == "" {
@@ -617,8 +639,8 @@ func (c Config) Validate() error {
 	}
 	// A configured backend with a zero cap refuses every call, which would
 	// stall postings silently instead of failing where it can be seen.
-	if c.JevConfigured() && c.Decide.DailyUSD.Jev == 0 {
-		add("decide.daily_usd.jev must be above 0 when decide.jev_model is set")
+	if c.OpenRouterConfigured() && c.Decide.DailyUSD.OpenRouter == 0 {
+		add("decide.daily_usd.openrouter must be above 0 when decide.openrouter_model is set")
 	}
 	if c.LLM.Provider != "" && c.Decide.DailyUSD.LLM == 0 {
 		add("decide.daily_usd.llm must be above 0 when llm.provider is set")
@@ -645,8 +667,8 @@ func (c Config) Validate() error {
 		if len(r.Values) == 0 {
 			add("drop_rules[%d]: values is empty", i)
 		}
-		if math.IsNaN(r.MinJevProb) || r.MinJevProb < 0 || r.MinJevProb > 1 {
-			add("drop_rules[%d]: min_jev_prob %v must be within 0..1", i, r.MinJevProb)
+		if math.IsNaN(r.MinOpenRouterProb) || r.MinOpenRouterProb < 0 || r.MinOpenRouterProb > 1 {
+			add("drop_rules[%d]: min_openrouter_prob %v must be within 0..1", i, r.MinOpenRouterProb)
 		}
 		if math.IsNaN(r.MinLappiScore) || r.MinLappiScore < 0 {
 			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
