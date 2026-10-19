@@ -179,8 +179,7 @@ func boundedDuration(name string, v, def, max time.Duration) (time.Duration, err
 // normalizeAllowed canonicalises one allowlist entry. It returns the host (for
 // a wildcard, the suffix without "*.") and whether the entry was a wildcard.
 func normalizeAllowed(raw string) (host string, wildcard bool, err error) {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	s = strings.TrimRight(s, ".")
+	s := normHost(strings.TrimSpace(raw))
 	bad := func(why string) (string, bool, error) {
 		return "", false, fmt.Errorf("egress: invalid allowlist entry %q: %s", raw, why)
 	}
@@ -265,9 +264,12 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
-func hostKey(u *url.URL) string {
-	return strings.TrimRight(strings.ToLower(u.Hostname()), ".")
-}
+func hostKey(u *url.URL) string { return normHost(u.Hostname()) }
+
+// normHost is the one form of a host name every check uses: lower case and
+// without the root's trailing dot ("Example.com." is example.com), so the
+// allowlist, pacing and the dial all see the same name.
+func normHost(h string) string { return strings.TrimRight(strings.ToLower(h), ".") }
 
 // vetURL applies every rule decidable before a socket opens. It runs on the
 // initial request and again on every redirect hop.
@@ -328,7 +330,7 @@ func (c *Client) dial(ctx context.Context, network, address string) (net.Conn, e
 	if err != nil {
 		return nil, fmt.Errorf("egress: %q is not a dialable address: %w", address, err)
 	}
-	host = strings.ToLower(host)
+	host = normHost(host)
 	if !c.allows(host) {
 		return nil, fmt.Errorf("%w: %q", ErrNotAllowed, host)
 	}
@@ -466,6 +468,7 @@ var reservedPrefixes = []struct {
 	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
 	{netip.MustParsePrefix("::/96"), "IPv4-compatible / unspecified range"},
 	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64 translation of the v4 space"},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64 translation (RFC 8215)"},
 	{netip.MustParsePrefix("2001::/32"), "Teredo tunnel"},
 	{netip.MustParsePrefix("2001:db8::/32"), "documentation range"},
 	{netip.MustParsePrefix("2002::/16"), "6to4 tunnel (embeds a v4 address)"},

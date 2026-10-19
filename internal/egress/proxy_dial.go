@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 )
 
 // dialVetted admits one proxy tunnel and opens its TCP connection under the
@@ -17,7 +16,7 @@ import (
 // so tunnels and Do requests to one host are spaced together. The host is
 // normalised exactly as hostKey does for URLs.
 func (c *Client) dialVetted(ctx context.Context, host, port string) (net.Conn, error) {
-	host = strings.TrimRight(strings.ToLower(host), ".")
+	host = normHost(host)
 	if !c.allows(host) {
 		return nil, fmt.Errorf("%w: %q", ErrNotAllowed, host)
 	}
