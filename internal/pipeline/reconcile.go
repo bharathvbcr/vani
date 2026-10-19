@@ -7,7 +7,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,35 +58,26 @@ func staleAnnotations(a map[string]string) map[string]string {
 	return out
 }
 
-// Reconcile folds one board's full listing into the ledger.
+// Reconcile folds one board's full listing into the ledger. A run with many
+// boards uses a Reconciler, which reads the ledger once for all of them.
 func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+	return NewReconciler(l).Reconcile(ctx, b, listed, now)
+}
+
+// Reconcile folds one board's full listing into the ledger. It sees the
+// ledger as it stands when the board starts, as a fresh scan would: the
+// boards before it included, this board's own writes not.
+func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
-	existing := l.All()
+	idx := rc.index()
+	l := touching{Ledger: rc.l, touched: idx.touched}
 
-	// Company|title|location tuple -> records, for cross-source dedupe. A
-	// weakly keyed posting (fallback or careers page) that repeats an
-	// ATS-keyed one is the duplicate, never the other way round.
-	atsByTuple := map[posting.Key]posting.Key{}
-	weakByTuple := map[posting.Key][]posting.Key{}
-	for _, r := range existing {
-		if r.Posting.Company == "" || r.Posting.Title == "" {
-			continue
-		}
-		fk, err := posting.FallbackKey(r.Posting.Company, r.Posting.Title, r.Posting.Location)
-		if err != nil {
-			continue
-		}
-		if weakKey(r.Key) {
-			if !r.Status.Terminal() {
-				weakByTuple[fk] = append(weakByTuple[fk], r.Key)
-			}
-			continue
-		}
-		if _, dup := atsByTuple[fk]; !dup {
-			atsByTuple[fk] = r.Key
-		}
-	}
+	// Company|title|location tuples, for cross-source dedupe (see
+	// ledgerIndex). A weakly keyed posting (fallback or careers page) that
+	// repeats an ATS-keyed one is the duplicate, never the other way round.
+	// twinned holds the tuples whose weak records this board already marked.
+	twinned := map[posting.Key]bool{}
 
 	seen := map[posting.Key]bool{}
 	for _, p := range listed {
@@ -117,7 +107,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 				Annotations: map[string]string{DescHashKey: hash}, Reason: "new"}
 			if weakKey(p.Key) {
 				if fk, err := posting.FallbackKey(p.Company, p.Title, p.Location); err == nil {
-					if orig, ok := atsByTuple[fk]; ok {
+					if orig, ok := idx.atsFor(fk); ok {
 						e.Status = posting.Duplicate
 						e.Annotations[DuplicateOfKey] = string(orig)
 						e.Reason = "duplicate of " + string(orig)
@@ -132,7 +122,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 				s.New++
 				// An ATS posting may repeat a fallback record seen earlier.
 				if !weakKey(p.Key) {
-					n, err := markWeakTwins(ctx, l, p, weakByTuple, now)
+					n, err := markWeakTwins(ctx, l, p, idx, twinned, now)
 					if err != nil {
 						return s, err
 					}
@@ -191,23 +181,22 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		}
 	}
 
-	var absent []ledger.Record
-	for _, r := range existing {
-		if strings.HasPrefix(string(r.Key), prefix) && !closed(r.Status) && !seen[r.Key] {
-			absent = append(absent, r)
+	var absent []posting.Key
+	for _, k := range idx.board(prefix) { // in key order
+		if !closed(idx.info[k].status) && !seen[k] {
+			absent = append(absent, k)
 		}
 	}
-	sort.Slice(absent, func(i, j int) bool { return absent[i].Key < absent[j].Key })
-	for _, r := range absent {
+	for _, k := range absent {
 		if err := ctx.Err(); err != nil {
 			return s, err
 		}
-		cur, ok := l.Get(r.Key)
+		cur, ok := l.Get(k)
 		if !ok || closed(cur.Status) {
 			continue
 		}
 		misses := cur.MissedRuns + 1
-		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: cur.Status,
+		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: cur.Status,
 			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses)},
 			Reason:      fmt.Sprintf("absent from board (%d)", misses)}
 		if misses >= MissesToDead {
@@ -249,14 +238,15 @@ func weakKey(k posting.Key) bool {
 }
 
 // markWeakTwins marks live weakly keyed records that repeat the ATS posting p
-// as duplicates of it, so arrival order does not matter.
-func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, weak map[posting.Key][]posting.Key, now time.Time) (int, error) {
+// as duplicates of it, so arrival order does not matter. A tuple is marked
+// once per board (twinned).
+func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, idx *ledgerIndex, twinned map[posting.Key]bool, now time.Time) (int, error) {
 	fk, err := posting.FallbackKey(p.Company, p.Title, p.Location)
-	if err != nil {
+	if err != nil || twinned[fk] {
 		return 0, nil
 	}
 	n := 0
-	for _, k := range weak[fk] {
+	for _, k := range idx.weak[fk] {
 		r, ok := l.Get(k)
 		if !ok || r.Status.Terminal() {
 			continue
@@ -268,6 +258,6 @@ func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, weak
 		}
 		n++
 	}
-	delete(weak, fk)
+	twinned[fk] = true
 	return n, nil
 }

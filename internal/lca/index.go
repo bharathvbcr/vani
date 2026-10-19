@@ -170,10 +170,13 @@ type fileSource struct {
 	Employers map[string]map[int]Counts `json:"employers"`
 }
 
+// fileDoc is the index file. Sources is kept as the bytes json.Marshal gave
+// []fileSource: the checksum is of exactly those bytes, so Load hashes what it
+// read instead of re-encoding the whole index to compare.
 type fileDoc struct {
-	Version  int          `json:"version"`
-	Checksum string       `json:"checksum"` // sha256 of the JSON encoding of Sources
-	Sources  []fileSource `json:"sources"`
+	Version  int             `json:"version"`
+	Checksum string          `json:"checksum"` // sha256 of the JSON encoding of Sources
+	Sources  json.RawMessage `json:"sources"`
 }
 
 func encodeSources(sources []fileSource) ([]byte, string, error) {
@@ -181,8 +184,12 @@ func encodeSources(sources []fileSource) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	return b, sumOf(b), nil
+}
+
+func sumOf(b []byte) string {
 	sum := sha256.Sum256(b)
-	return b, hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // Save writes the index as compact JSON (schema version 1) to path with mode
@@ -198,12 +205,12 @@ func (x *Index) Save(path string) error {
 		}
 		srcs = append(srcs, fileSource{SourceMeta: p.Source, Employers: emps})
 	}
-	_, sum, err := encodeSources(srcs)
+	b, sum, err := encodeSources(srcs)
 	if err != nil {
 		x.mu.RUnlock()
 		return fmt.Errorf("lca: encode index: %w", err)
 	}
-	data, err := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: sum, Sources: srcs})
+	data, err := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: sum, Sources: b})
 	x.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("lca: encode index: %w", err)
@@ -238,11 +245,21 @@ func Load(path string) (*Index, error) {
 	if doc.Version != SchemaVersion {
 		return nil, fmt.Errorf("lca: unsupported index schema version %d (want %d)", doc.Version, SchemaVersion)
 	}
-	if _, sum, err := encodeSources(doc.Sources); err != nil || sum != doc.Checksum {
+	// The bytes Save hashed are the bytes on disk, so they are hashed as
+	// read. A sources block re-spaced or re-ordered by hand no longer
+	// matches, where re-encoding it used to.
+	if sumOf(doc.Sources) != doc.Checksum {
 		return nil, errors.New("lca: corrupt index: checksum mismatch")
 	}
+	var sources []fileSource
+	sdec := json.NewDecoder(bytes.NewReader(doc.Sources))
+	sdec.DisallowUnknownFields()
+	if err := sdec.Decode(&sources); err != nil {
+		return nil, fmt.Errorf("lca: corrupt index: %w", err)
+	}
+	doc.Sources = nil // its bytes are decoded; let them go before rebuild
 	idx := &Index{sources: map[string]Partial{}}
-	for _, s := range doc.Sources {
+	for _, s := range sources {
 		if s.SHA256 == "" {
 			return nil, errors.New("lca: corrupt index: source without sha256")
 		}

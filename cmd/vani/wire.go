@@ -215,6 +215,9 @@ func (w *wired) runOnce(ctx context.Context) error {
 		}
 	}
 
+	// One index of the ledger for the whole loop: only Reconcile writes to the
+	// ledger here (the adapters read it), as Reconciler requires.
+	rec := pipeline.NewReconciler(w.led)
 	read := 0
 	for _, b := range w.cfg.Watchlist {
 		src, ok := srcs[b.ATS]
@@ -235,7 +238,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			continue
 		}
 		read++
-		sum, err := pipeline.Reconcile(ctx, w.led, b, listed, time.Now())
+		sum, err := rec.Reconcile(ctx, b, listed, time.Now())
 		if err != nil {
 			return fmt.Errorf("reconcile %s/%s: %w", b.ATS, b.Token, err)
 		}
