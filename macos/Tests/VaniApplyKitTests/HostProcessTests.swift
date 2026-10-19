@@ -122,10 +122,16 @@ final class HostProcessTests: XCTestCase {
     }
 
     func testRefusesToRunWithoutAChromeOrigin() throws {
-        let r = try run([], input: Data())
-        XCTAssertNotEqual(r.status, 0)
-        XCTAssertTrue(r.out.isEmpty, "nothing may reach stdout but replies")
-        XCTAssertTrue(String(decoding: r.err, as: UTF8.self).contains("chrome-extension://"))
+        // No origin, and origins Chrome's allowed_origins could never name: the
+        // host refuses each before reading a request or opening the store.
+        let store = try tempDir(self)
+        for args in [[], ["https://evil.test/"], ["moz-extension://\(ChromeConnector.defaultExtensionID)/"],
+                     ["--store-dir", store.path], [""]] {
+            let r = try run(args, input: Data())
+            XCTAssertNotEqual(r.status, 0, "\(args)")
+            XCTAssertTrue(r.out.isEmpty, "nothing may reach stdout but replies: \(args)")
+            XCTAssertTrue(String(decoding: r.err, as: UTF8.self).contains("chrome-extension://"), "\(args)")
+        }
     }
 
     func testTruncatedInputFailsWithoutAReply() throws {

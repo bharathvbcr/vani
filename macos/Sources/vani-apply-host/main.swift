@@ -18,6 +18,13 @@ if args.count >= 2, args[1] == "--version" {
     exit(0)
 }
 // Chrome passes "chrome-extension://<id>/"; anything else is not Chrome.
+// This check only turns away a hand-run host. The boundary is Chrome's own:
+// it starts this host only for an extension id listed in allowed_origins of
+// the manifest ChromeConnector writes on Connect. The argument comes from
+// whoever launched the process, so matching the id here would add no
+// protection (a same-user process can pass any id), and the id the user
+// chose lives in the app's defaults, which this host cannot read. A 2026-10
+// audit's exact-id check was declined on that ground (Fable D18).
 guard args.count >= 2, args[1].hasPrefix("chrome-extension://") else {
     fail("started without a chrome-extension:// origin; this binary is run by Chrome, not by hand")
 }

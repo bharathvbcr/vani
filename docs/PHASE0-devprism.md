@@ -105,7 +105,7 @@ fn app_support_dir()       -> Option<PathBuf> { home_dir().map(|h| h.join("Libra
 
 and `dirs-sys` 0.4.1 `home_dir()` reads `env::var_os("HOME")` first (empty counts as unset), falling
 back to `getpwuid_r` only when it is unset. Vani's client passes `HOME` through
-(`internal/resume/client.go:178`, `minimalEnv` keeps PATH, HOME and TMPDIR), so `HOME=<dir> vani ...`
+(`internal/childenv`, which every child's environment comes from, keeps PATH, HOME and TMPDIR), so `HOME=<dir> vani ...`
 redirects DevPrism too. Verified live on the installed build: with `HOME` pointing to the throwaway
 dir, the copy went from 43 to 124 blocks (finding 4), while the real `career.db`, `-wal` and `-shm`
 kept their size, mtime and sha256. The installed binary embeds no `dirs` version string, so the

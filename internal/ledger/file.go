@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"syscall"
 
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -77,9 +77,9 @@ func Open(dir string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ledger: open lock: %w", err)
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := filelock.TryLock(lock, true); err != nil {
 		lock.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if errors.Is(err, filelock.ErrWouldBlock) {
 			return nil, ErrLocked
 		}
 		return nil, fmt.Errorf("ledger: lock: %w", err)
@@ -355,7 +355,7 @@ func (f *File) Close() error {
 		errs = append(errs, f.events.Close())
 	}
 	if f.lock != nil {
-		errs = append(errs, f.lock.Close()) // closing drops the flock
+		errs = append(errs, filelock.Unlock(f.lock), f.lock.Close())
 	}
 	return errors.Join(errs...)
 }

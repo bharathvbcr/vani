@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/childenv"
 )
 
 // Resolution decision. rkb owns claim values: Claims.tex is the only place a
@@ -134,7 +136,7 @@ func (k RKB) Claims(ctx context.Context) (Claims, error) {
 	}
 	defer os.RemoveAll(dir)
 	out := filepath.Join(dir, "claims.json")
-	env := minimalEnv()
+	env := childenv.Minimal()
 	if k.CodeRoot != "" {
 		env = append(env, "RKB_CODE_ROOT="+k.CodeRoot)
 	}
@@ -154,16 +156,6 @@ func (k RKB) Claims(ctx context.Context) (Claims, error) {
 		return Claims{}, fmt.Errorf("%w: claims file larger than %d bytes", ErrResolve, MaxClaimsBytes)
 	}
 	return ParseClaims(raw)
-}
-
-func minimalEnv() []string {
-	var env []string
-	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return env
 }
 
 // Claims holds resolved claim values and the ids rkb marked CAUTION.

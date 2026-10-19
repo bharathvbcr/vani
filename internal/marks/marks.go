@@ -22,11 +22,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -259,15 +259,16 @@ type held struct {
 }
 
 func (h *held) Close() error {
-	err := h.f.Close() // closing the descriptor releases the flock
+	uerr := filelock.Unlock(h.f)
+	err := h.f.Close()
 	<-h.turn
-	return err
+	return errors.Join(uerr, err)
 }
 
 // lock takes this process's turn on the store and then its flock, waiting at
 // most lockWait for both together. It creates the directory (0700) when
 // create is set; a reader of a store that was never written gets (nil, nil).
-func lock(dir string, how int, create bool) (*held, error) {
+func lock(dir string, exclusive, create bool) (*held, error) {
 	deadline := time.Now().Add(lockWait)
 	t := turn(dir)
 	wait := time.NewTimer(lockWait)
@@ -277,7 +278,7 @@ func lock(dir string, how int, create bool) (*held, error) {
 	case <-wait.C:
 		return nil, ErrBusy
 	}
-	l, err := flock(dir, how, create, deadline)
+	l, err := flock(dir, exclusive, create, deadline)
 	if err != nil || l == nil {
 		<-t
 		return nil, err
@@ -286,7 +287,7 @@ func lock(dir string, how int, create bool) (*held, error) {
 }
 
 // flock opens the lock file and takes its flock, polling until deadline.
-func flock(dir string, how int, create bool, deadline time.Time) (*os.File, error) {
+func flock(dir string, exclusive, create bool, deadline time.Time) (*os.File, error) {
 	if create {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("marks: create dir: %w", err)
@@ -304,13 +305,13 @@ func flock(dir string, how int, create bool, deadline time.Time) (*os.File, erro
 		return nil, fmt.Errorf("marks: open lock: %w", err)
 	}
 	for {
-		err := syscall.Flock(int(l.Fd()), how|syscall.LOCK_NB)
+		err := filelock.TryLock(l, exclusive)
 		if err == nil {
 			return l, nil
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+		if !errors.Is(err, filelock.ErrWouldBlock) || time.Now().After(deadline) {
 			l.Close()
-			if errors.Is(err, syscall.EWOULDBLOCK) {
+			if errors.Is(err, filelock.ErrWouldBlock) {
 				return nil, ErrBusy
 			}
 			return nil, fmt.Errorf("marks: lock: %w", err)
@@ -321,7 +322,7 @@ func flock(dir string, how int, create bool, deadline time.Time) (*os.File, erro
 
 // Read returns every posting's marks. A store that was never written is empty.
 func Read(dir string) (map[posting.Key]Entry, error) {
-	l, err := lock(dir, syscall.LOCK_SH, false)
+	l, err := lock(dir, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +393,7 @@ func write(dir string, e event) (Entry, error) {
 	if len(line) > maxLineBytes {
 		return Entry{}, fmt.Errorf("%w: line is over %d bytes", ErrInvalid, maxLineBytes)
 	}
-	l, err := lock(dir, syscall.LOCK_EX, true)
+	l, err := lock(dir, true, true)
 	if err != nil {
 		return Entry{}, err
 	}

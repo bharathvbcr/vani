@@ -21,9 +21,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/childenv"
 	"github.com/bharathvbcr/Vani/internal/egress"
 )
 
@@ -68,7 +68,10 @@ type Server struct {
 }
 
 // args is the llama-server command line for a validated cfg.
-// Metal only, every layer: CPU is never a fallback. Without MTL0 llama.cpp
+// Metal only, every layer: CPU is never a fallback. The device is fixed, not
+// configurable, by the owner's rule of 2026-10-18 (the served path is Metal;
+// CPU is never a fallback); a 2026-10 audit's request to make it configurable
+// was declined on that ground (Fable D17). Without MTL0 llama.cpp
 // exits at once ("invalid device"), so the run goes on without the shadow
 // rather than measuring a different numeric path. -np stays on auto unless
 // Parallel is set, which keeps the KV pool unified (an explicit -np splits -c
@@ -121,7 +124,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	// Not exec.CommandContext: the server must outlive Start's context and be
 	// stopped by Stop, gracefully.
 	cmd := exec.Command(cfg.Binary, args(cfg, port)...)
-	cmd.Env = minimalEnv()
+	cmd.Env = childenv.Minimal() // no API keys or other secrets reach the server
 	cmd.Stdout = io.Discard
 	s := &Server{Endpoint: base + Path, cmd: cmd, exited: make(chan struct{}), stderr: &capped{limit: maxStderr}}
 	cmd.Stderr = s.stderr
@@ -183,7 +186,7 @@ func (s *Server) Stop() {
 		if s.cmd.Process == nil {
 			return
 		}
-		_ = s.cmd.Process.Signal(syscall.SIGTERM)
+		_ = terminate(s.cmd.Process)
 		select {
 		case <-s.exited:
 		case <-time.After(stopGrace):
@@ -224,18 +227,6 @@ func freePort() (int, error) {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port, nil
-}
-
-// minimalEnv passes PATH, HOME and TMPDIR only: no API keys or other
-// secrets from this process reach the server.
-func minimalEnv() []string {
-	var env []string
-	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return env
 }
 
 // capped keeps the last limit bytes written: the end of stderr is where a
