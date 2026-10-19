@@ -92,7 +92,8 @@ commands:
   suggest                    triage a form's new fields with the decision model and draft the
                              essays: JSON request on stdin, JSON reply on stdout
   launchd plist [--binary P] [--label L]
-                             print a launchd agent plist (never installs it)
+                             print a launchd agent plist (never installs it); it pins the
+                             config and state dir this command resolved
 
 environment: VANI_CONFIG, VANI_STATE_DIR
 `

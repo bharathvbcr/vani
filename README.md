@@ -369,9 +369,14 @@ a line in `vani.err.log`; the restarted daemon reopens the ledger. A clean stop 
 agent installed from an older plist (`KeepAlive` false) keeps the old behaviour until it is
 replaced: write the new output to `~/Library/LaunchAgents/<label>.plist`, then
 `launchctl bootout gui/$UID ~/Library/LaunchAgents/<label>.plist` and
-`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/<label>.plist`. The plist does not set
-`VANI_CONFIG` or `VANI_STATE_DIR` (docs/FOLLOWUPS.md), so the agent uses the default config and
-state folder.
+`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/<label>.plist`. launchd gives an agent no
+shell environment, so the plist pins the config file and state folder this command resolved: its
+`EnvironmentVariables` holds exactly `VANI_CONFIG` and `VANI_STATE_DIR` (the variables' values when
+set, else the defaults below), and the logs go to that state folder's `logs/`. Run it with the
+variables you want the daemon to use, e.g. `VANI_CONFIG=/abs/config.json VANI_STATE_DIR=/abs/state
+build/vani launchd plist --binary /abs/vani`; a relative value is refused (exit 2). Moving the config
+or state means regenerating the plist and bootstrapping it again. Nothing else from the environment
+is written into the plist, API keys included.
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
 --search "query"`. Search sites take repeated `--search` (up to 10 terms; the board lists their union)

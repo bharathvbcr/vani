@@ -410,8 +410,8 @@ func TestRunRejectsBadSchedule(t *testing.T) {
 }
 
 func TestPlistXMLEscaping(t *testing.T) {
-	out := string(PlistXML(`com.vani"<&>`, `/Applications/V&V/vani`, []string{"daemon", `--x=<a href="y">&'`}, "/logs/<d>"))
-	for _, bad := range []string{`<a href`, `"<&>`, "V&V", "/logs/<d>"} {
+	out := string(PlistXML(`com.vani"<&>`, `/Applications/V&V/vani`, []string{"daemon", `--x=<a href="y">&'`}, `/cfg/a&b/<c>.json`, "/st/<d>"))
+	for _, bad := range []string{`<a href`, `"<&>`, "V&V", "/st/<d>", "a&b", "<c>"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("unescaped %q in:\n%s", bad, out)
 		}
@@ -420,8 +420,10 @@ func TestPlistXMLEscaping(t *testing.T) {
 		"<string>com.vani&#34;&lt;&amp;&gt;</string>",
 		"/Applications/V&amp;V/vani",
 		"&lt;a href=&#34;y&#34;&gt;&amp;&#39;",
-		"/logs/&lt;d&gt;/vani.out.log",
-		"/logs/&lt;d&gt;/vani.err.log",
+		"/st/&lt;d&gt;/logs/vani.out.log",
+		"/st/&lt;d&gt;/logs/vani.err.log",
+		"<key>VANI_CONFIG</key>\n\t\t<string>/cfg/a&amp;b/&lt;c&gt;.json</string>",
+		"<key>VANI_STATE_DIR</key>\n\t\t<string>/st/&lt;d&gt;</string>",
 		"<key>RunAtLoad</key>\n\t<true/>",
 		"<key>ProgramArguments</key>",
 	} {

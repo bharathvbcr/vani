@@ -663,7 +663,6 @@ flowchart TD
   same moment could under-count a Jev charge.
 - DevPrism reports no aggregate score; the rank is must-have coverage until a better definition
   exists.
-- `launchd plist` does not embed `VANI_CONFIG` / `VANI_STATE_DIR`.
 - **Vani Apply Mac app, unverified on a live system** (`macos/README.md`):
   - Safari loading the hand-assembled appex: `pluginkit -m -p com.apple.Safari.web-extension` after
     the app is first opened.
