@@ -154,17 +154,6 @@ flowchart TD
 
 ## Unverified (Phase 0)
 
-- **Jobs tab controls reach the model: not driven by automation (2026-10-19).** An in-process
-  harness (the Jobs tab in a plain window over the live state, no Login Items agent) verified the
-  Insights toolbar button through its AppKit control. Setting the model as each control does,
-  round-tripped through the real `vani`, verified: the fit filter (20 `strong_fit` shown, matching
-  `jobs stats`), sort by freshness and by priority (ordered), and selection loading the detail.
-  Not verified: that the Sort picker, the Filter menu items, a fit-row tap and a scatter click
-  call those setters. SwiftUI's toolbar menus came back empty to `NSMenu`. The Insights panel was
-  absent from the in-process accessibility tree (603 elements, none with these labels). Synthetic
-  `NSEvent` clicks did not reach SwiftUI tap gestures. Screen control was declined. The scatter's
-  nearest-dot rule is unit-tested as `ChartHit.nearest`. Closing this needs an XCUITest target,
-  or a 30-second manual check: Sort > Newest first, click a fit row, click a dot.
 - **Picked notes have not run live (2026-10-18).** Notes are now reasons that d1-ultra picks from
   `<state dir>/reasons.json` (`internal/decide/jdreasons`), replacing a Claude turn per posting.
   The live catalog (14 fit, 14 gap, 13 check) was drafted in a Claude Code session on 2026-10-18
@@ -323,6 +312,31 @@ flowchart TD
 
 ## Verified (Phase 0)
 
+- **Jobs tab controls reach the model (2026-10-19).** `macos/Tests/VaniApplyUITests` drives the
+  real `JobsView` and reads `JobsModel` back. The test bundle re-runs itself as a host process
+  (`JobsTabHost`) showing `NavigationStack { JobsView() }` over a fake `vani` with four made-up
+  roles; it never starts the app, so no Login Items agent is registered.
+  - The driver uses the accessibility API on the host's pid: AXPress on the toolbar Sort and
+    Filter menus and their items. Clicks are mouse events the host sends its own window at a
+    control's accessibility frame; nothing goes to the window server, so the cursor is not used.
+  - The host's app is never activated, so its window is never key; `allowsWindowActivationEvents`
+    (macOS 15) lets a first click through. It needs an accessibility-trusted runner, as this Mac's
+    is; otherwise, and before macOS 15, the tests skip.
+  - The scatter's dots are found from Swift Charts' accessibility bins ("0 to 50", "50 to 100"):
+    the bin from 0 gives the plot's edge and width on the square-root age axis, and every other
+    bin must agree within 1.5 pt. Gamma and alpha are clicked; a plot read upside down picks delta.
+  - On main `fed3ad5` all five pass. Each mutation below fails only its own test:
+    - Sort `Picker` bound to `.constant(jobs.sort)`: "the model never reached sort fresh … sort: "default"".
+    - Filter fit toggle `set: { _ in }`: "never reached fits [strong_fit] … fits: []".
+    - Fit row `.onTapGesture` removed: the click test fails ("fits: []"). The VoiceOver test still passes.
+    - Scatter overlay `.onTapGesture` removed: "never reached selection fx:gamma:3 … selection: nil".
+    - Fit row `.accessibilityAction` removed: only the VoiceOver test fails ("fits [adjacent]").
+  - XCUITest cannot run under SwiftPM ("Device is not configured for UI testing - use of
+    XCUIApplication is not supported … in a unit test bundle"). In-process driving still fails as
+    before: the process's own accessibility tree is a bare application element, and clicks never
+    reach a tap gesture.
+  - One run in about 25 once saw the host's accessibility tree empty for 10 s in the Sort test
+    (cause unknown). An unreadable children list now prints its AXError in the failure.
 - **Lever EU host (2026-10-19).** Vani's real `lever` source and `egress` client
   (`build/phase0-devprism/leverprobe`), free unauthenticated GETs:
   - `quantinuum`, `olx` and `kwalee` (all listed on `jobs.eu.lever.co`) on `api.eu.lever.co`
