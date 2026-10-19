@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -161,6 +162,89 @@ func TestConcurrentWritersLoseNothing(t *testing.T) {
 	}
 	if m, err := Read(dir); err != nil || len(m) != 64 {
 		t.Fatalf("entries %d, %v", len(m), err)
+	}
+}
+
+// Readers that overlap without a gap must not starve a writer. A relay of
+// shared locks, each taken before the last is let go, keeps the store read
+// for longer than lockWait; a writer still gets in, in its turn. (The flock
+// polled with LOCK_NB never saw a moment free of readers, so the writer gave
+// up with ErrBusy: the "store is busy" flake under load.)
+func TestOverlappingReadersDoNotStarveAWriter(t *testing.T) {
+	dir := Dir(t.TempDir())
+	if _, err := SetMark(dir, k1, Saved, t0); err != nil {
+		t.Fatal(err)
+	}
+	type held interface{ Close() error }
+	acquire := func() held {
+		l, err := lock(dir, syscall.LOCK_SH, false)
+		if err != nil || l == nil {
+			t.Errorf("shared lock: %v", err)
+			return nil
+		}
+		return l
+	}
+	stop := make(chan struct{})
+	relayDone := make(chan struct{})
+	first := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		cur := acquire()
+		close(first)
+		deadline := time.Now().Add(lockWait + time.Second)
+		for cur != nil && time.Now().Before(deadline) {
+			select {
+			case <-stop:
+				cur.Close()
+				return
+			default:
+			}
+			next := make(chan held, 1)
+			go func() { next <- acquire() }()
+			select {
+			case n := <-next: // overlap: the next reader is in before this one leaves
+				cur.Close()
+				cur = n
+			case <-time.After(50 * time.Millisecond):
+				cur.Close()
+				cur = <-next
+			}
+		}
+		if cur != nil {
+			cur.Close()
+		}
+	}()
+	<-first
+	start := time.Now()
+	_, err := SetMark(dir, k1, Applied, t0.Add(time.Minute))
+	close(stop)
+	<-relayDone
+	if err != nil {
+		t.Fatalf("writer behind overlapping readers: %v after %v", err, time.Since(start).Round(time.Millisecond))
+	}
+	if m, err := Read(dir); err != nil || m[k1].Mark != Applied {
+		t.Fatalf("after write: %+v %v", m[k1], err)
+	}
+}
+
+// A writer that cannot have the store within lockWait still says so: the
+// in-process turn is bounded like the flock.
+func TestBusyIsStillBounded(t *testing.T) {
+	dir := Dir(t.TempDir())
+	if _, err := SetMark(dir, k1, Saved, t0); err != nil {
+		t.Fatal(err)
+	}
+	l, err := lock(dir, syscall.LOCK_EX, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	start := time.Now()
+	if _, err := SetMark(dir, k1, Applied, t0); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if d := time.Since(start); d < lockWait || d > lockWait+2*time.Second {
+		t.Fatalf("gave up after %v, want about %v", d, lockWait)
 	}
 }
 
