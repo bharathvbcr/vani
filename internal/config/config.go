@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -846,12 +848,25 @@ func (c Config) Validate() error {
 		}
 	}
 
+	// A rule must name a triage slot and that slot's values: an unknown slot
+	// is never in an answer, so the rule would read every posting as missing
+	// it and keep all of them unsure; an unknown value never matches.
+	slotValues := jdtriage.SlotValues()
 	for i, r := range c.DropRules {
-		if r.Slot == "" {
+		legal, known := slotValues[r.Slot]
+		switch {
+		case r.Slot == "":
 			add("drop_rules[%d]: slot is empty", i)
+		case !known:
+			add("drop_rules[%d]: slot %q is not a triage slot (want one of %s)", i, r.Slot, strings.Join(slices.Sorted(maps.Keys(slotValues)), ", "))
 		}
 		if len(r.Values) == 0 {
 			add("drop_rules[%d]: values is empty", i)
+		}
+		for _, v := range r.Values {
+			if known && !slices.Contains(legal, v) {
+				add("drop_rules[%d]: %q is not a %s value (want one of %s)", i, v, r.Slot, strings.Join(legal, ", "))
+			}
 		}
 		if math.IsNaN(r.MinOpenRouterProb) || r.MinOpenRouterProb < 0 || r.MinOpenRouterProb > 1 {
 			add("drop_rules[%d]: min_openrouter_prob %v must be within 0..1", i, r.MinOpenRouterProb)

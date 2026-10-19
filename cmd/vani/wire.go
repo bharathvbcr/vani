@@ -322,6 +322,15 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 // (and the shadow's work) hundreds of times.
 const maxConsecutiveUnread = 20
 
+// maxConsecutiveFailed does the same for any other stage failure (DevPrism
+// down, the explainer refused): that many in a row is an outage, not a bad
+// posting, and the run fails rather than publish a digest that hides it.
+const maxConsecutiveFailed = 20
+
+// errAdvanceFailing marks a run stopped because postings kept failing a stage
+// other than triage.
+var errAdvanceFailing = errors.New("advance: postings keep failing a stage")
+
 // maxUnreadExamples bounds the per-posting lines for unread postings; the rest
 // are counted in one summary line.
 const maxUnreadExamples = 3
@@ -336,8 +345,9 @@ const maxDistinctCauses = 20
 // active track wants. Order only orders: every eligible posting is still advanced, this run or a
 // later one. A posting no backend could read stays Live for the next run. The
 // run fails, so a shell loop stops and no empty digest is published, when no
-// backend read maxConsecutiveUnread postings in a row, or none of the postings
-// it tried. Any other stage failure is printed once per cause (the posting key
+// backend read maxConsecutiveUnread postings in a row, when maxConsecutiveFailed
+// in a row failed another stage, or when none of the postings it tried
+// advanced. Any other stage failure is printed once per cause (the posting key
 // and provider request id are not part of the cause) and counted after that.
 // The report says what happened however the phase ended, so the run record
 // can show what the cap or a stop left waiting.
@@ -346,10 +356,11 @@ const maxDistinctCauses = 20
 // They start in rank order; their results are counted in the order they
 // finish, on this goroutine, so the report, the warnings and the stop rules
 // need no lock. The ledger serialises its own writes, and each posting is
-// advanced by one goroutine only. A stop (unread streak, cancellation) starts
+// advanced by one goroutine only. A stop (unread or failure streak, cancellation) starts
 // no further posting but waits for those in flight, so nothing is written to
 // the ledger after advanceAll returns; with workers above 1 the streak can
-// therefore admit up to workers-1 attempts past maxConsecutiveUnread.
+// therefore admit up to workers-1 attempts past maxConsecutiveUnread or
+// maxConsecutiveFailed.
 //
 // titleDrop, when set, reports whether advancing r drops it by its title
 // without asking any backend. Such a posting counts toward limit, but it is no
@@ -376,7 +387,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		rep.Stopped = stopped
 		return rep
 	}
-	streak := 0
+	streak, failStreak := 0, 0
 	type cause struct {
 		first posting.Key
 		more  int
@@ -384,6 +395,17 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	causes := map[string]*cause{}
 	var order []string
 	uncounted, byTitle := 0, 0
+	// reportCauses prints the counts the first line of each cause left out.
+	reportCauses := func() {
+		for _, k := range order {
+			if c := causes[k]; c.more > 0 {
+				warnf("%d more posting(s) failed the same way as %s; they wait for the next run", c.more, c.first)
+			}
+		}
+		if uncounted > 0 {
+			warnf("%d more posting(s) failed with other errors (more than %d distinct causes); they wait for the next run", uncounted, maxDistinctCauses)
+		}
+	}
 	// count folds one finished posting into the report and the stop rules.
 	// free: the posting was dropped by its title, so no backend was asked.
 	stopped := ""
@@ -403,6 +425,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		if errors.Is(err, pipeline.ErrTriageUnavailable) {
 			rep.Unread++
 			streak++
+			failStreak = 0
 			if rep.Unread <= maxUnreadExamples {
 				warnf("advance %s: %v", key, err)
 			}
@@ -413,21 +436,25 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		}
 		streak = 0
 		if err == nil {
+			failStreak = 0
 			return
 		}
 		rep.Failed++
+		failStreak++
 		ek := errorKey(strings.ReplaceAll(err.Error(), string(key), "<posting>"))
-		if c, ok := causes[ek]; ok {
+		switch c, seen := causes[ek]; {
+		case seen:
 			c.more++
-			return
-		}
-		if len(causes) >= maxDistinctCauses {
+		case len(causes) >= maxDistinctCauses:
 			uncounted++
-			return
+		default:
+			causes[ek] = &cause{first: key}
+			order = append(order, ek)
+			warnf("advance %s: %v", key, err)
 		}
-		causes[ek] = &cause{first: key}
-		order = append(order, ek)
-		warnf("advance %s: %v", key, err)
+		if failStreak >= maxConsecutiveFailed && stopped == "" {
+			stopped = stopFailStreak
+		}
 	}
 
 	type result struct {
@@ -489,18 +516,15 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 	case stopUnreadStreak:
 		return done(stopUnreadStreak), fmt.Errorf("no decision backend read %d postings in a row; stopped advancing after %d (they stay live; see the backend errors above): %w",
 			maxConsecutiveUnread, rep.Attempted, pipeline.ErrTriageUnavailable)
+	case stopFailStreak:
+		reportCauses()
+		return done(stopFailStreak), fmt.Errorf("%d postings in a row failed a stage; stopped advancing after %d (they wait for the next run; see the errors above): %w",
+			maxConsecutiveFailed, rep.Attempted, errAdvanceFailing)
 	}
 	if len(todo) > limit {
 		warnf("advance cap %d reached; %d posting(s) wait for the next run (advance_per_run)", limit, len(todo)-rep.Attempted)
 	}
-	for _, k := range order {
-		if c := causes[k]; c.more > 0 {
-			warnf("%d more posting(s) failed the same way as %s; they wait for the next run", c.more, c.first)
-		}
-	}
-	if uncounted > 0 {
-		warnf("%d more posting(s) failed with other errors (more than %d distinct causes); they wait for the next run", uncounted, maxDistinctCauses)
-	}
+	reportCauses()
 	if byTitle > 0 {
 		warnf("%d posting(s) dropped by title before triage (title_signals.read); no backend was asked", byTitle)
 	}
@@ -510,6 +534,12 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 				rep.Unread, rep.Attempted, pipeline.ErrTriageUnavailable)
 		}
 		warnf("%d posting(s) could not be read by any decision backend; they stay live for the next run", rep.Unread)
+	}
+	// Title drops asked no stage, so like the unread check above they neither
+	// count as advancing nor hide a stage that failed everything else.
+	if asked := rep.Attempted - byTitle; asked > 0 && rep.Unread+rep.Failed == asked {
+		return done(stopNoneAdvanced), fmt.Errorf("no posting advanced: %d failed a stage and %d were unread, of %d attempted (they wait for the next run; see the errors above): %w",
+			rep.Failed, rep.Unread, rep.Attempted, errAdvanceFailing)
 	}
 	if rep.Attempted >= limit && rep.Attempted < rep.Eligible {
 		return done(stopCap), nil
@@ -888,22 +918,69 @@ func (w *wired) lazyScorer() *lazyScorer {
 	return w.scorer
 }
 
-// lazyScorer starts DevPrism on first use, so commands that never score never
-// spawn it. A failed start is remembered for the process: retrying a broken
-// binary on every posting would only repeat the error.
-type lazyScorer struct {
-	cfg    resume.Config
-	once   sync.Once
-	client *resume.Client
-	err    error
+// scorerRetry is how long a failed DevPrism start is remembered before the
+// next use tries again: long enough that one run does not restart a broken
+// binary for every posting, short enough that a daemon's next daily run
+// recovers from a transient failure (a binary being replaced, a reboot race).
+const scorerRetry = 10 * time.Minute
+
+// scorerClient is what lazyScorer uses of a started DevPrism.
+type scorerClient interface {
+	Gap(ctx context.Context, jd, persona string) (resume.Gap, error)
+	Score(ctx context.Context, jd, persona string) (resume.Score, error)
+	Close() error
 }
 
-func (s *lazyScorer) get(ctx context.Context) (*resume.Client, error) {
-	s.once.Do(func() { s.client, s.err = resume.Start(ctx, s.cfg) })
-	if s.err != nil {
+// lazyScorer starts DevPrism on first use, so commands that never score never
+// spawn it. A failed start is remembered for scorerRetry: retrying a broken
+// binary on every posting would only repeat the error, but a daemon must not
+// keep a transient failure for the rest of its life.
+type lazyScorer struct {
+	cfg resume.Config
+	// start and now are resume.Start and time.Now; tests replace them.
+	start func(context.Context, resume.Config) (scorerClient, error)
+	now   func() time.Time
+
+	mu       sync.Mutex
+	client   scorerClient
+	err      error
+	failedAt time.Time
+}
+
+func (s *lazyScorer) get(ctx context.Context) (scorerClient, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client != nil {
+		return s.client, nil
+	}
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	if s.err != nil && now().Sub(s.failedAt) < scorerRetry {
 		return nil, fmt.Errorf("devprism: %w", s.err)
 	}
-	return s.client, nil
+	start := s.start
+	if start == nil {
+		start = func(ctx context.Context, cfg resume.Config) (scorerClient, error) {
+			c, err := resume.Start(ctx, cfg)
+			if err != nil {
+				return nil, err
+			}
+			return c, nil
+		}
+	}
+	c, err := start(ctx, s.cfg)
+	if err != nil {
+		if ctx.Err() != nil {
+			// A cancelled start says nothing about the binary; do not remember it.
+			return nil, fmt.Errorf("devprism: %w", err)
+		}
+		s.err, s.failedAt = err, now()
+		return nil, fmt.Errorf("devprism: %w", err)
+	}
+	s.client, s.err = c, nil
+	return c, nil
 }
 
 func (s *lazyScorer) Gap(ctx context.Context, jd, persona string) (resume.Gap, error) {
@@ -923,8 +1000,12 @@ func (s *lazyScorer) Score(ctx context.Context, jd, persona string) (resume.Scor
 }
 
 func (s *lazyScorer) Close() error {
-	if s.client != nil {
-		return s.client.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client == nil {
+		return nil
 	}
-	return nil
+	c := s.client
+	s.client = nil // a later use starts a fresh DevPrism
+	return c.Close()
 }

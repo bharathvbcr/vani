@@ -163,6 +163,18 @@ func parseFixture(raw []byte) (Fixture, error) {
 	return f, nil
 }
 
+// SlotValues maps each slot to its legal values, in fixture order: what a
+// drop rule may name.
+func SlotValues() map[string][]string {
+	m := make(map[string][]string, len(Slots))
+	for _, s := range Slots {
+		for _, o := range s.Options {
+			m[s.Name] = append(m[s.Name], o.Value)
+		}
+	}
+	return m
+}
+
 // Descriptions returns the table as the slot -> option -> description map the
 // Jev backend's Config takes.
 func Descriptions() map[string]map[string]string {

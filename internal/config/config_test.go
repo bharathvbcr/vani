@@ -83,6 +83,12 @@ func TestValidateRules(t *testing.T) {
 		{"absurd price", func(c *Config) { c.LLM.InputNanoUSDPerToken = 2_000_000 }, "per-token price above"},
 		{"negative price", func(c *Config) { c.LLM.OutputNanoUSDPerToken = -1 }, "needs input_nano_usd_per_token"},
 		{"drop rule", func(c *Config) { c.DropRules = []DropRule{{Slot: "", MinOpenRouterProb: 2}} }, "drop_rules[0]"},
+		{"drop rule slot typo", func(c *Config) {
+			c.DropRules = []DropRule{{Slot: "seniority_level", Values: []string{"manager"}, MinOpenRouterProb: 0.9}}
+		}, `drop_rules[0]: slot "seniority_level" is not a triage slot (want one of `},
+		{"drop rule unknown value", func(c *Config) {
+			c.DropRules = []DropRule{{Slot: "seniority", Values: []string{"manager", "boss"}, MinOpenRouterProb: 0.9}}
+		}, `drop_rules[0]: "boss" is not a seniority value`},
 		{"negative page interval", func(c *Config) { c.PageIntervalMS = -1 }, "page_interval_ms -1"},
 		{"page interval over max", func(c *Config) { c.PageIntervalMS = 10_001 }, "page_interval_ms 10001 must be within 0..10000"},
 		{"huge page interval", func(c *Config) { c.PageIntervalMS = math.MaxInt }, "page_interval_ms"},

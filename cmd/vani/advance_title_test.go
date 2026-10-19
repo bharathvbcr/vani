@@ -101,9 +101,11 @@ func TestAdvanceTitleDropsCountTowardTheCap(t *testing.T) {
 	if _, err := advanceAll(context.Background(), liveRecs(5), nil, 10, 1, all, func(context.Context, posting.Key) error { return nil }, func(string, ...any) {}); err != nil {
 		t.Fatalf("all title drops: %v", err)
 	}
-	// A title drop that fails to record is an ordinary failure, not a drop.
+	// A title drop that fails to record is an ordinary failure, not a drop;
+	// when every posting fails that way nothing advanced and the run fails
+	// (stop none_advanced) rather than publish over a full ledger.
 	rep, err = advanceAll(context.Background(), liveRecs(2), nil, 10, 1, all, func(context.Context, posting.Key) error { return errors.New("ledger full") }, func(string, ...any) {})
-	if err != nil || rep.Failed != 2 {
+	if !errors.Is(err, errAdvanceFailing) || rep.Failed != 2 || rep.Stopped != stopNoneAdvanced {
 		t.Fatalf("err %v report %+v", err, rep)
 	}
 }

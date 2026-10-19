@@ -291,17 +291,6 @@ func LoadBank(path string) (Bank, error) {
 	return b, nil
 }
 
-// slotOptions maps each triage slot to its legal values, from the fixture.
-func slotOptions() map[string][]string {
-	m := make(map[string][]string, len(jdtriage.Slots))
-	for _, s := range jdtriage.Slots {
-		for _, o := range s.Options {
-			m[s.Name] = append(m[s.Name], o.Value)
-		}
-	}
-	return m
-}
-
 // trackIndependentSlots never appear in a track: they encode personal data
 // or preferences that do not change by track, and stay in the main config.
 var trackIndependentSlots = []string{"sponsorship"}
@@ -337,7 +326,7 @@ func Check(d Decider, w Words, bank Bank) []string {
 		}
 	}
 
-	opts := slotOptions()
+	opts := jdtriage.SlotValues()
 	seenSlot := map[string]bool{}
 	var seniorityRule *config.DropRule
 	for i, r := range d.DropRules {

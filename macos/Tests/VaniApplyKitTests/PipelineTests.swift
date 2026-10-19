@@ -239,6 +239,10 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try stop("none_read").stopped, .noneRead)
         XCTAssertEqual(try stop("none_read").stopNote, "Stopped: no decision backend read any posting.")
         XCTAssertEqual(try stop("cancelled").stopNote, "Stopped: the run was cancelled.")
+        XCTAssertEqual(try stop("fail_streak").stopped, .failStreak)
+        XCTAssertEqual(try stop("fail_streak").stopNote, "Stopped early: several postings in a row failed a stage (scoring or explaining).")
+        XCTAssertEqual(try stop("none_advanced").stopped, .noneAdvanced)
+        XCTAssertEqual(try stop("none_advanced").stopNote, "Stopped: no posting advanced; each failed a stage or went unread.")
         // A reason a newer vani adds is shown as written, never as finished.
         XCTAssertEqual(try stop("budget").stopped, .unknown("budget"))
         XCTAssertEqual(try stop("budget").stopNote, "Stopped: budget.")
