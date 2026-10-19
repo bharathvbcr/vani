@@ -13,6 +13,7 @@ import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
 import { matchTailorableQuestion, generateTailoredDraft } from "./tailor";
 import type { JobInfo } from "./draft";
+import { resumeRow } from "./resumerow";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -917,6 +918,7 @@ async function init(): Promise<void> {
   host = tab?.url ? new URL(tab.url).hostname : "";
   $("#host").textContent = host || "(no page)";
   if (tab?.id !== undefined) void appliedRow(tab.id, tab.url);
+  void resumeRow(tab?.url, { row: $("#resume"), name: $("#resume-name"), pick: $("#resume-pick"), remove: $("#resume-remove") }, bg);
   await refresh();
   try {
     const t = await scanTabExtended();

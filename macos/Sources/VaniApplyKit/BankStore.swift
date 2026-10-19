@@ -25,7 +25,7 @@ public enum Source: String, Codable, Sendable {
 /// One activity-log line. It never holds answer values or question text.
 public struct ActivityEntry: Codable, Equatable, Sendable {
     public enum Event: String, Codable, CaseIterable, Sendable {
-        case capture, fill, edit, delete, `import`, export, settings, draft
+        case capture, fill, edit, delete, `import`, export, settings, draft, resume
     }
     public var at: String
     public var source: Source
@@ -229,57 +229,7 @@ public final class BankStore: @unchecked Sendable {
         try ensureDirectory()
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let data = try enc.encode(file)
-        let tmp = directory.appendingPathComponent(".bank.\(UUID().uuidString).tmp")
-        let fd = open(tmp.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
-        if fd < 0 {
-            throw BankError("cannot write the answer bank: \(String(cString: strerror(errno)))")
-        }
-        _ = fchmod(fd, 0o600)
-        var writeErr: Int32 = 0
-        let written = data.withUnsafeBytes { buf -> Int in
-            guard let ptr = buf.baseAddress else { return 0 }
-            var total = 0
-            while total < data.count {
-                let n = write(fd, ptr + total, data.count - total)
-                if n < 0 {
-                    if errno == EINTR { continue }
-                    writeErr = errno
-                    return -1
-                }
-                total += n
-            }
-            return total
-        }
-        if written != data.count {
-            close(fd)
-            unlink(tmp.path)
-            let errStr = writeErr != 0 ? String(cString: strerror(writeErr)) : "short write (\(written) of \(data.count) bytes)"
-            throw BankError("cannot write the answer bank: \(errStr)")
-        }
-        if fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0 {
-            let err = errno
-            close(fd)
-            unlink(tmp.path)
-            throw BankError("cannot sync the answer bank temp file: \(String(cString: strerror(err)))")
-        }
-        if close(fd) != 0 {
-            let err = errno
-            unlink(tmp.path)
-            throw BankError("cannot close the answer bank temp file: \(String(cString: strerror(err)))")
-        }
-        if rename(tmp.path, bankURL.path) != 0 {
-            let err = errno
-            unlink(tmp.path)
-            throw BankError("cannot replace the answer bank: \(String(cString: strerror(err)))")
-        }
-        let dirFd = open(directory.path, O_RDONLY | O_CLOEXEC)
-        if dirFd >= 0 {
-            if fcntl(dirFd, F_FULLFSYNC) != 0 {
-                _ = fsync(dirFd)
-            }
-            close(dirFd)
-        }
+        try atomicWrite(try enc.encode(file), to: bankURL, what: "the answer bank")
     }
 
     private func ensureDirectory() throws {
@@ -290,25 +240,87 @@ public final class BankStore: @unchecked Sendable {
 
     private func withLock<T>(exclusive: Bool, _ body: () throws -> T) throws -> T {
         try ensureDirectory()
-        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
-        if fd < 0 { throw BankError("cannot open the bank lock: \(String(cString: strerror(errno)))") }
-        _ = fchmod(fd, 0o600)
-        defer { close(fd) }
-        // Bounded wait (lockWait). The retry starts at 1 ms, for the usual sub-millisecond write, and
-        // doubles to 64 ms, so a longer hold costs a few wake-ups rather than
-        // one every 10 ms; no sleep runs past the deadline.
-        let deadline = Date().addingTimeInterval(lockWait)
-        var backoff: TimeInterval = 0.001
-        while flock(fd, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 {
-            if errno != EWOULDBLOCK && errno != EINTR {
-                throw BankError("cannot lock the answer bank: \(String(cString: strerror(errno)))")
-            }
-            let left = deadline.timeIntervalSinceNow
-            if left <= 0 { throw BankError("the answer bank is locked by another process") }
-            usleep(useconds_t(min(backoff, left) * 1_000_000))
-            backoff = min(backoff * 2, 0.064)
+        return try withFileLock(lockURL, exclusive: exclusive, wait: lockWait, what: "the answer bank", body)
+    }
+}
+
+// MARK: - Shared file primitives (the bank and the resume index)
+
+/// Run body under an advisory flock on url, waiting at most `wait` seconds. The retry starts at
+/// 1 ms, for the usual sub-millisecond write, and doubles to 64 ms, so a longer hold costs a few
+/// wake-ups rather than one every 10 ms; no sleep runs past the deadline.
+func withFileLock<T>(_ url: URL, exclusive: Bool, wait: TimeInterval, what: String, _ body: () throws -> T) throws -> T {
+    let fd = open(url.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+    if fd < 0 { throw BankError("cannot open the lock for \(what): \(String(cString: strerror(errno)))") }
+    _ = fchmod(fd, 0o600)
+    defer { close(fd) }
+    let deadline = Date().addingTimeInterval(wait)
+    var backoff: TimeInterval = 0.001
+    while flock(fd, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 {
+        if errno != EWOULDBLOCK && errno != EINTR {
+            throw BankError("cannot lock \(what): \(String(cString: strerror(errno)))")
         }
-        defer { flock(fd, LOCK_UN) }
-        return try body()
+        let left = deadline.timeIntervalSinceNow
+        if left <= 0 { throw BankError("\(what) is locked by another process") }
+        usleep(useconds_t(min(backoff, left) * 1_000_000))
+        backoff = min(backoff * 2, 0.064)
+    }
+    defer { flock(fd, LOCK_UN) }
+    return try body()
+}
+
+/// Write data beside dest (mode 0600), fsync it, rename it over dest, and fsync the parent directory,
+/// so a reader never sees half a file and crashes cannot lose the rename.
+func atomicWrite(_ data: Data, to dest: URL, what: String) throws {
+    let directory = dest.deletingLastPathComponent()
+    let tmp = directory.appendingPathComponent(".\(dest.lastPathComponent).\(UUID().uuidString).tmp")
+    let fd = open(tmp.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+    if fd < 0 {
+        throw BankError("cannot write \(what): \(String(cString: strerror(errno)))")
+    }
+    _ = fchmod(fd, 0o600)
+    var writeErr: Int32 = 0
+    let written = data.withUnsafeBytes { buf -> Int in
+        guard let ptr = buf.baseAddress else { return 0 }
+        var total = 0
+        while total < data.count {
+            let n = write(fd, ptr + total, data.count - total)
+            if n < 0 {
+                if errno == EINTR { continue }
+                writeErr = errno
+                return -1
+            }
+            total += n
+        }
+        return total
+    }
+    if written != data.count {
+        close(fd)
+        unlink(tmp.path)
+        let errStr = writeErr != 0 ? String(cString: strerror(writeErr)) : "short write (\(written) of \(data.count) bytes)"
+        throw BankError("cannot write \(what): \(errStr)")
+    }
+    if fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0 {
+        let err = errno
+        close(fd)
+        unlink(tmp.path)
+        throw BankError("cannot sync \(what) temp file: \(String(cString: strerror(err)))")
+    }
+    if close(fd) != 0 {
+        let err = errno
+        unlink(tmp.path)
+        throw BankError("cannot close \(what) temp file: \(String(cString: strerror(err)))")
+    }
+    if rename(tmp.path, dest.path) != 0 {
+        let err = errno
+        unlink(tmp.path)
+        throw BankError("cannot replace \(what): \(String(cString: strerror(err)))")
+    }
+    let dirFd = open(directory.path, O_RDONLY | O_CLOEXEC)
+    if dirFd >= 0 {
+        if fcntl(dirFd, F_FULLFSYNC) != 0 {
+            _ = fsync(dirFd)
+        }
+        close(dirFd)
     }
 }

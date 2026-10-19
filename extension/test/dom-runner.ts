@@ -11,6 +11,7 @@ import { type Bank, type FieldInfo, emptyBank } from "../src/types";
 import { intentOf, motivationEssay } from "../src/intents";
 import { BASICS_HOST, basicsFields } from "../src/basics";
 import { matchField } from "../src/match";
+import type { ResumeFetch } from "../src/resume";
 
 const lines: string[] = [];
 let failed = 0;
@@ -769,8 +770,145 @@ async function ownTextParity(): Promise<void> {
   box.remove();
 }
 
+// The per-job resume: a file input that reads as a resume gets the bound PDF through
+// DataTransfer, outlined yellow; a cover letter or other attachment never does. The
+// bytes are a generated PDF with a neutral name.
+async function resumeAttach(): Promise<void> {
+  const box = q<HTMLElement>(document, "#stress");
+  const pdf = new TextEncoder().encode("%PDF-1.4\n%neutral test file\n%%EOF\n");
+  const bound: ResumeFetch = { ok: true, name: "Resume_Test.pdf", bytes: pdf, pickedAt: "2026-10-19T12:00:00Z" };
+  let asked = 0;
+  const source = (r: ResumeFetch) => async () => { asked++; return r; };
+
+  // The markup of job-boards.greenhouse.io's Resume/CV upload (test/fixtures/greenhouse-anthropic-2026-10.html),
+  // beside a cover-letter upload and an "other attachments" one.
+  box.innerHTML = `
+    <div class="field-wrapper"><div role="group" aria-labelledby="ul-resume" class="file-upload"><div id="ul-resume" class="label upload-label">Resume/CV</div>
+      <div><button type="button">Attach</button><label class="visually-hidden" for="resume">Attach</label><input id="resume" class="visually-hidden" type="file" accept=".pdf,.doc,.docx"></div></div></div>
+    <div class="field-wrapper"><div role="group" aria-labelledby="ul-cover" class="file-upload"><div id="ul-cover" class="label upload-label">Cover Letter</div>
+      <div><button type="button">Attach</button><label class="visually-hidden" for="cover_letter">Attach</label><input id="cover_letter" class="visually-hidden" type="file"></div></div></div>
+    <div class="field"><label for="other-att">Other attachments</label><input id="other-att" type="file" name="other"></div>`;
+  const res = q<HTMLInputElement>(box, "#resume"), cover = q<HTMLInputElement>(box, "#cover_letter"), other = q<HTMLInputElement>(box, "#other-att");
+  let changes = 0, inputs = 0, coverEvents = 0;
+  res.addEventListener("change", () => changes++);
+  res.addEventListener("input", () => inputs++);
+  for (const el of [cover, other]) for (const t of ["change", "input"]) el.addEventListener(t, () => coverEvents++);
+
+  const refs = scanForm(box).refs;
+  const rr = refs.find(r => r.els[0] === res);
+  check("resume upload: labelled by its group (Resume/CV), not by its button (Attach)", rr?.info.label === "Resume/CV", JSON.stringify(refs.map(r => r.info.label)));
+
+  const out = await fillAll(refs, emptyBank(), "x", { resume: source(bound) });
+  const o = out[refs.indexOf(rr!)];
+  check("resume upload: gets the bound PDF through DataTransfer", res.files?.length === 1 && res.files[0]!.name === "Resume_Test.pdf" &&
+    res.files[0]!.size === pdf.length && res.files[0]!.type === "application/pdf", `${res.files?.length} ${res.files?.[0]?.name} ${res.files?.[0]?.size}`);
+  check("resume upload: input and change fire once each, bubbling", changes === 1 && inputs === 1, `change ${changes} input ${inputs}`);
+  check("resume upload: reported filled, for review", o?.filled === true && o.review === true, JSON.stringify(o));
+  const group = res.closest<HTMLElement>("[role=group]")!;
+  check("resume upload: the visible group is outlined yellow and says which file went in",
+    group.getAttribute("data-vani-fill") === "review" && (group.getAttribute("data-vani-why") ?? "").includes("Resume_Test.pdf"), group.outerHTML.slice(0, 200));
+  check("cover letter and other attachments: never given the resume, no events",
+    cover.files?.length === 0 && other.files?.length === 0 && coverEvents === 0 &&
+    out.filter((_, i) => refs[i]!.els[0] === cover || refs[i]!.els[0] === other).every(x => !x.filled && x.reason === "untouchable"), JSON.stringify(out));
+  check("the resume source is asked once per fill", asked === 1, String(asked));
+
+  // A second fill does not replace a file already there, unless asked to overwrite.
+  clearMarks();
+  const again = await fillAll(scanForm(box).refs, emptyBank(), "x", { resume: source({ ...bound, name: "Resume_Other.pdf" }) });
+  check("a resume already attached is left alone", res.files?.[0]?.name === "Resume_Test.pdf" && again.some(x => x.reason === "has_value"), JSON.stringify(again));
+  await fillAll(scanForm(box).refs, emptyBank(), "x", { resume: source({ ...bound, name: "Resume_Other.pdf" }), overwrite: true });
+  check("overwrite replaces it", res.files?.length === 1 && res.files[0]!.name === "Resume_Other.pdf", res.files?.[0]?.name ?? "none");
+
+  // Nothing bound, or the app cannot be asked: a reason on the resume row, nothing attached, nothing counted.
+  for (const [why, r] of [
+    ["no resume chosen for this job", { ok: false, reason: "no_resume", detail: "no resume chosen for this job" }],
+    ["the Mac app unreachable", { ok: false, reason: "resume_unavailable", detail: "the Vani Apply Mac app isn't reachable" }],
+  ] as const) {
+    box.querySelectorAll<HTMLInputElement>("input[type=file]").forEach(i => { i.value = ""; });
+    const got = await fillAll(scanForm(box).refs, emptyBank(), "x", { resume: source(r) });
+    const row = got[scanForm(box).refs.findIndex(x => x.els[0] === res)];
+    check(`${why}: a reason, not a skip, and not filled`, row?.filled === false && row.reason === r.reason && row.detail === r.detail && res.files?.length === 0, JSON.stringify(row));
+  }
+
+  // A page that refuses the file (its files setter does nothing) is caught by reading back.
+  box.innerHTML = '<div class="field"><label for="rz">Resume</label><input id="rz" type="file" name="resume"></div>';
+  const rz = q<HTMLInputElement>(box, "#rz");
+  Object.defineProperty(rz, "files", { configurable: true, get: () => new DataTransfer().files, set: () => undefined });
+  const refused = await fillAll(scanForm(box).refs, emptyBank(), "x", { resume: source(bound) });
+  check("a page that drops the file: reported refused, not filled", refused[0]?.filled === false && refused[0].reason === "refused", JSON.stringify(refused[0]));
+
+  // A form without a resume input never asks the Mac app for the file.
+  asked = 0;
+  box.innerHTML = '<div class="field"><label for="cl2">Cover letter</label><input id="cl2" type="file"></div><label for="t1">City</label><input id="t1">';
+  await fillAll(scanForm(box).refs, emptyBank(), "x", { resume: source(bound) });
+  check("no resume input: the resume is never fetched", asked === 0, String(asked));
+
+  // Detached between the scan and the fill.
+  box.innerHTML = '<div class="field"><label for="rd">CV</label><input id="rd" type="file"></div>';
+  const dRefs = scanForm(box).refs;
+  dRefs[0]!.els[0]!.remove();
+  const det = await fillAll(dRefs, emptyBank(), "x", { resume: source(bound) });
+  check("a resume input removed after the scan: detached", det[0]?.reason === "detached", JSON.stringify(det[0]));
+  box.textContent = "";
+  clearMarks();
+}
+
+// The sanitized real form (test/fixtures/greenhouse-anthropic-2026-10.html), loaded same-origin:
+// its Resume/CV "Attach" input gets the bound PDF and nothing else changes.
+async function greenhouseResumeFixture(): Promise<void> {
+  const frame = document.createElement("iframe");
+  frame.id = "fixture-gh-resume";
+  frame.style.cssText = "width:100%;height:900px;border:1px solid #888";
+  const loaded = new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
+  frame.src = "fixtures/greenhouse-anthropic-2026-10.html";
+  document.body.append(frame);
+  await Promise.race([loaded, sleep(10_000)]);
+  const d = frame.contentDocument;
+  check("fixture: the Greenhouse form loaded", !!d?.getElementById("resume"), d ? d.title : "no document");
+  if (!d) return;
+  const pdf = new TextEncoder().encode("%PDF-1.4\n%neutral test file\n%%EOF\n");
+  const refs = scanForm(d).refs;
+  const before = refs.map(r => r.els.map(e => (e as HTMLInputElement).value ?? "").join("|"));
+  const out = await fillAll(refs, emptyBank(), "job-boards.greenhouse.io", {
+    resume: async () => ({ ok: true, name: "Resume_Test.pdf", bytes: pdf, pickedAt: "2026-10-19T12:00:00Z" }),
+  });
+  const attach = d.getElementById("resume") as HTMLInputElement;
+  const i = refs.findIndex(r => r.els[0] === attach);
+  check("fixture: the Attach input is read as Resume/CV", refs[i]?.info.label === "Resume/CV", JSON.stringify(refs[i]?.info));
+  check("fixture: Attach holds the PDF and is reported filled for review",
+    attach.files?.length === 1 && attach.files[0]!.name === "Resume_Test.pdf" && out[i]?.filled === true && out[i]?.review === true, JSON.stringify(out[i]));
+  check("fixture: the outline is on the visible Resume/CV group",
+    attach.closest("[role=group]")?.getAttribute("data-vani-fill") === "review", attach.closest("[role=group]")?.outerHTML.slice(0, 160) ?? "no group");
+  const others = out.filter((o, j) => j !== i && o.filled);
+  const changed = refs.filter((r, j) => j !== i && r.els.map(e => (e as HTMLInputElement).value ?? "").join("|") !== before[j]);
+  check("fixture: with an empty bank, nothing but the resume is filled or changed", others.length === 0 && changed.length === 0,
+    JSON.stringify({ others, changed: changed.map(r => r.info.label) }));
+  check("fixture: every other file input is untouched", Array.from(d.querySelectorAll<HTMLInputElement>("input[type=file]")).every(f => f === attach || f.files?.length === 0));
+  frame.remove();
+}
+
 async function main(): Promise<void> {
-  for (const [name, fn] of [["own text", ownTextParity], ["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal], ["not questions", notQuestions], ["dial picker", dialPicker], ["greenhouse fixture", greenhouseFixture]] as const) {
+  for (const [name, fn] of [
+    ["resume attach", resumeAttach],
+    ["own text", ownTextParity],
+    ["core", core],
+    ["aria", ariaWidgets],
+    ["workday", workday],
+    ["shadow+frames", shadowAndFrames],
+    ["repeated", repeated],
+    ["tracking", tracking],
+    ["adversarial", adversarial],
+    ["live help", liveHelp],
+    ["multi-select", multiSelect],
+    ["dates", dates],
+    ["typeahead", typeahead],
+    ["once per page", oncePerPage],
+    ["submit signal", submitSignal],
+    ["not questions", notQuestions],
+    ["dial picker", dialPicker],
+    ["greenhouse fixture", greenhouseFixture],
+    ["greenhouse resume", greenhouseResumeFixture],
+  ] as const) {
     try { await fn(); } catch (e) { check(`${name} crashed`, false, e instanceof Error ? `${e.message}\n${e.stack}` : String(e)); }
   }
   check("nothing in the whole run submitted a form or pressed a submit button", anySubmit === 0 && submitClicks === 0 && submits === 0, `submit ${anySubmit} clicks ${submitClicks}`);

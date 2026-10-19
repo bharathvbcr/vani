@@ -1,5 +1,7 @@
-// Write remembered answers into a form. Never submits, never touches file or
-// password inputs, and by default never overwrites what the user already typed.
+// Write remembered answers into a form. Never submits, never touches password
+// inputs, and by default never overwrites what the user already typed. The one
+// file input it fills is the resume, with the PDF the owner chose for this job
+// (resume.ts); every other file input is left alone.
 // ARIA widgets are driven the way a person would: open, click the option whose
 // text maps to the saved answer, and check the widget now shows it. A widget
 // that cannot be driven is reported "manual", never "filled".
@@ -8,6 +10,7 @@ import { type FieldRef, comboOptions, iconSignature, ownedListbox, readWidgetVal
 import { mapChoice, matchField } from "./match";
 import { dialCodeOnly, normalizeLabel } from "./normalize";
 import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
+import { type ResumeFetch, isResumeField } from "./resume";
 
 export interface FillOutcome {
   label: string;
@@ -16,7 +19,11 @@ export interface FillOutcome {
   score?: number;
   review?: boolean;
   key?: string;
-  reason?: "no_match" | "has_value" | "no_option" | "untouchable" | "manual" | "detached";
+  reason?: "no_match" | "has_value" | "no_option" | "untouchable" | "manual" | "detached"
+    /** A resume input: nothing chosen for this job, the file could not be had, or the page dropped it. */
+    | "no_resume" | "resume_unavailable" | "refused";
+  /** Why, in words, for a resume reason. */
+  detail?: string;
 }
 
 const COLORS = { ok: "#2e8b57", review: "#d4a017" } as const;
@@ -352,6 +359,7 @@ function hasValue(ref: FieldRef): boolean {
   const k = ref.info.kind;
   if (k === "radio" || (k === "checkbox" && ref.els.length > 1)) return ref.els.some(e => (e as HTMLInputElement).checked);
   if (k === "checkbox") return (first as HTMLInputElement).checked;
+  if (k === "file") return ((first as HTMLInputElement).files?.length ?? 0) > 0;
   return ((first as HTMLInputElement).value ?? "") !== "";
 }
 
@@ -361,6 +369,8 @@ function mark(ref: FieldRef, review: boolean, title: string): void {
   if (ref.els.length > 1 && ref.widget !== "split-phone") target = (first.closest("fieldset, [role=radiogroup], [role=group]") as HTMLElement | null) ?? first.parentElement ?? first;
   else if (ref.widget === "split-phone" || ref.widget === "split-date") target = first.parentElement ?? first;
   else if (first.localName === "input" && ref.widget === "combobox") target = first.parentElement ?? first;
+  // An upload input is usually hidden behind its button: outline the widget around it.
+  else if (ref.info.kind === "file") target = (first.closest("[role=group], fieldset") as HTMLElement | null) ?? first.parentElement ?? first;
   else target = first;
   target.style.outline = `2px solid ${review ? COLORS.review : COLORS.ok}`;
   target.style.outlineOffset = "2px";
@@ -426,6 +436,11 @@ export interface FillOptions {
   overwrite?: boolean;
   /** Let a search-as-you-type input be typed into when its list has no matching option. Off by default: the site may run its own query. */
   typeahead?: boolean;
+  /**
+   * The resume chosen for this job, asked for only when the form has a resume input, and at most
+   * once per fill. Without it every file input is left alone ("untouchable").
+   */
+  resume?: () => Promise<ResumeFetch>;
 }
 
 export async function fillRef(ref: FieldRef, m: Match, opts: FillOptions = {}): Promise<FillOutcome> {
@@ -468,10 +483,47 @@ export function insertDraft(ref: FieldRef, text: string, opts: { overwrite?: boo
   return { label, filled: true, review: true };
 }
 
+/**
+ * Put the chosen resume into a file input through DataTransfer, the way a drop does, and
+ * read it back: a page that drops the file is "refused", never "filled". Outlined yellow,
+ * with the file name, so the owner checks which version went in before submitting.
+ */
+async function attachResume(ref: FieldRef, get: () => Promise<ResumeFetch>, opts: FillOptions): Promise<FillOutcome> {
+  const label = ref.info.label;
+  const el = ref.els[0] as HTMLInputElement | undefined;
+  if (!el || ref.els.length !== 1) return { label, filled: false, reason: "untouchable" };
+  if (!el.isConnected) return { label, filled: false, reason: "detached" };
+  if (!opts.overwrite && hasValue(ref)) return { label, filled: false, reason: "has_value" };
+  const r = await get();
+  if (!r.ok) return { label, filled: false, reason: r.reason, detail: r.detail };
+  if (!el.isConnected) return { label, filled: false, reason: "detached" };
+  const w = winOf(el);
+  try {
+    const dt = new w.DataTransfer();
+    dt.items.add(new w.File([r.bytes], r.name, { type: "application/pdf" }));
+    el.files = dt.files;
+  } catch {
+    return { label, filled: false, reason: "refused", detail: "this page did not take the file; attach it by hand" };
+  }
+  const got = el.files?.[0];
+  if (el.files?.length !== 1 || !got || got.name !== r.name || got.size !== r.bytes.length) {
+    return { label, filled: false, reason: "refused", detail: "this page did not take the file; attach it by hand" };
+  }
+  fire(el, "input");
+  fire(el, "change");
+  const when = r.pickedAt ? `, chosen ${r.pickedAt.slice(0, 10)}` : "";
+  mark(ref, true, `resume: ${r.name}${when}. Check it is the version for this job`);
+  return { label, filled: true, review: true };
+}
+
 /** Match and fill every field; returns what happened to each, in order. */
 export async function fillAll(refs: FieldRef[], bank: Bank, host: string, opts: FillOptions = {}): Promise<FillOutcome[]> {
   const out: FillOutcome[] = [];
+  // One request for the resume per fill, made only if a resume input is there.
+  let resume: Promise<ResumeFetch> | undefined;
+  const getResume = opts.resume ? () => (resume ??= opts.resume!()) : undefined;
   for (const ref of refs) {
+    if (ref.info.kind === "file" && getResume && isResumeField(ref.info)) { out.push(await attachResume(ref, getResume, opts)); continue; }
     if (ref.info.kind === "file" || ref.info.kind === "password") { out.push({ label: ref.info.label, filled: false, reason: "untouchable" }); continue; }
     const m = matchField(ref.info, bank, host);
     if (!m) { out.push({ label: ref.info.label, filled: false, reason: "no_match" }); continue; }
