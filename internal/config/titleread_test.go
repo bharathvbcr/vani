@@ -56,8 +56,8 @@ func TestTitleReadsApprovedLists(t *testing.T) {
 		// The first entry that reads a slot wins it.
 		"Staff Engineering Manager": "seniority=staff_plus(Staff)",
 		// An engineering word keeps a function title for the model.
-		"Software Engineer, GTM Growth Engineering":          "",
-		"Sales Engineer":                                     "",
+		"Software Engineer, GTM Growth Engineering": "",
+		"Sales Engineer": "",
 		"Software Engineer, Applied Emerging Talent (2027)":  "",
 		"Applied Science Internship, PhD Science Recruiting": "",
 		"Account Executive - Strategic":                      "role_fit=mismatch_domain(Account Executive)",
