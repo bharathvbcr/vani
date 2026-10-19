@@ -131,12 +131,12 @@ func TestShadowModelsDoNotPool(t *testing.T) {
 func TestPairedCounts(t *testing.T) {
 	s, _, _ := newStore(t)
 	recs := []ledger.Record{
-		shadowRec(t, s, "p1", "remote", "remote", "local-m-combined", "answered", "onsite"),     // primary only
-		shadowRec(t, s, "p2", "remote", "onsite", "local-m-combined", "answered", "remote"),     // shadow only
-		shadowRec(t, s, "p3", "remote", "remote", "local-m-combined", "answered", "remote"),     // both right
-		shadowRec(t, s, "p4", "remote", "onsite", "local-m-combined", "answered", "hybrid"),     // both wrong
-		shadowRec(t, s, "p5", "remote", "remote", "local-m-combined", "abstained", ""),          // shadow did not answer
-		shadowRec(t, s, "p6", "remote", "remote", "local-m-combined", "unavailable", ""),        // shadow failed
+		shadowRec(t, s, "p1", "remote", "remote", "local-m-combined", "answered", "onsite"), // primary only
+		shadowRec(t, s, "p2", "remote", "onsite", "local-m-combined", "answered", "remote"), // shadow only
+		shadowRec(t, s, "p3", "remote", "remote", "local-m-combined", "answered", "remote"), // both right
+		shadowRec(t, s, "p4", "remote", "onsite", "local-m-combined", "answered", "hybrid"), // both wrong
+		shadowRec(t, s, "p5", "remote", "remote", "local-m-combined", "abstained", ""),      // shadow did not answer
+		shadowRec(t, s, "p6", "remote", "remote", "local-m-combined", "unavailable", ""),    // shadow failed
 	}
 	rep := BuildReport(recs, s, Names{})
 	if len(rep.Promotions) != 1 {

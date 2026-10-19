@@ -218,9 +218,9 @@ func TestJobsFindMatchesApplicationSubPages(t *testing.T) {
 		{wd + "/apply/applyManually?q=1", "wd:acme:1", "base"},
 		{wd + "/apply", "wd:acme:1", "base"},
 		{"https://jobs.lever.co/acme/uuid-2/apply", "lv:a:2", "base"},
-		{"https://jobs.ashbyhq.com/acme/uuid-3/application", "ab:a:3", "apply_url"}, // exact wins
+		{"https://jobs.ashbyhq.com/acme/uuid-3/application", "ab:a:3", "apply_url"},   // exact wins
 		{"https://jobs.ashbyhq.com/acme/uuid-3/application/thanks", "ab:a:3", "base"}, // a page under the application
-		{"https://jobs.ashbyhq.com/acme/uuid-4", "ab:a:4", "base"},                   // the posting page of a stored apply link
+		{"https://jobs.ashbyhq.com/acme/uuid-4", "ab:a:4", "base"},                    // the posting page of a stored apply link
 		{"https://jobs.ashbyhq.com/acme/uuid-4/application", "ab:a:4", "url"},
 	}
 	for _, c := range cases {
