@@ -189,6 +189,72 @@ func TestEmptyPageStopsLoopWhenTotalOverstates(t *testing.T) {
 	}
 }
 
+// A reply without a jobPostings array is not an empty board: the live service
+// answers a search with no match with "jobPostings":[], so a missing or null
+// array is an error page or a changed shape, and reading it as empty would age
+// every posting on the board as absent.
+func TestMissingJobPostingsIsError(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing":    `{"total":0}`,
+		"null":       `{"total":0,"jobPostings":null}`,
+		"error page": `{"errorCode":"S22","message":"Service unavailable"}`,
+		"empty":      `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+				if r.Method == "POST" && r.URL == jobsURL {
+					return ok(body), true
+				}
+				return srctest.Reply{}, false
+			})
+			if got, err := s.List(context.Background(), board); err == nil {
+				t.Fatalf("read %s as a board of %d postings", body, len(got))
+			}
+		})
+	}
+}
+
+// A later page that loses the array fails the board too; a partial listing
+// would age the postings it did not reach.
+func TestMissingJobPostingsOnLaterPageIsError(t *testing.T) {
+	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if r.Method == "POST" && r.URL == jobsURL {
+			var req struct{ Offset int }
+			json.Unmarshal(r.Body, &req)
+			if req.Offset == 0 {
+				var rows []string
+				for i := range 20 {
+					rows = append(rows, fmt.Sprintf(`{"title":"T%d","externalPath":"/job/X/T%d_JR%d","postedOn":"Posted Today"}`, i, i, i))
+				}
+				return ok(`{"total":40,"jobPostings":[` + strings.Join(rows, ",") + `]}`), true
+			}
+			return ok(`{"total":0}`), true
+		}
+		if r.Method == "GET" && strings.HasPrefix(r.URL, siteURL+"/job/X/T") {
+			id := r.URL[strings.LastIndex(r.URL, "_JR")+3:]
+			return ok(fmt.Sprintf(detailTmpl, id, id)), true
+		}
+		return srctest.Reply{}, false
+	})
+	if got, err := s.List(context.Background(), board); err == nil {
+		t.Fatalf("a listing cut short by a malformed page returned %d postings", len(got))
+	}
+}
+
+// A search that matches nothing is a genuine empty board, not an error.
+func TestEmptyJobPostingsIsEmptyBoard(t *testing.T) {
+	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if r.Method == "POST" && r.URL == jobsURL {
+			return ok(`{"total":0,"jobPostings":[],"facets":[]}`), true
+		}
+		return srctest.Reply{}, false
+	})
+	got, err := s.List(context.Background(), board)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty board: %d postings, %v", len(got), err)
+	}
+}
+
 func TestTotalOverCapNamesSearch(t *testing.T) {
 	var offsets []int
 	s, d := newSource(pagedHandler(500, &offsets, func(int) int { return 201 }, detailTmpl))

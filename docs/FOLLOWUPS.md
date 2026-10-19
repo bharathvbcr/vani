@@ -417,6 +417,22 @@ flowchart TD
 
 ## Known limits
 
+- **Absence ages every open posting, digested ones included (2026-10-19).** `Reconcile`
+  (`internal/pipeline/reconcile.go`) counts a miss for every posting on the board that is not
+  dead, duplicate or dropped. Two misses in a row kill it. When the same content is listed again,
+  the posting goes back to the status it died in (`died_from`), so a digested posting is not
+  triaged or sent in a digest a second time. Dead records written before `died_from` existed come
+  back as live. Absence is only as good as the listing:
+  - By the `sources.Source` contract, an empty listing means the board has no postings, so every
+    posting on it dies after two runs. Each adapter must therefore fail on a response it cannot
+    read, never return an empty list for one. Greenhouse, Lever, Ashby, Amazon, Apple, Google,
+    Eightfold and page boards already did. Workday now fails on a reply with no `jobPostings`
+    array.
+  - Workday stops at the first empty page even when the first page's `total` promised more
+    (`TestEmptyPageStopsLoopWhenTotalOverstates`). If the service returns an empty page part-way
+    through by mistake, the postings it did not reach count as missed. This was an earlier choice,
+    kept because a live `total` that overstates would otherwise fail the board on every run.
+
 - **Pay is read from text, by fixed rules (`internal/jobinsight/pay.go`).** Display and browse
   filters only; no engine rule reads it.
   - Lever and Ashby now carry their pay into the description (owner's call, 2026-10-19). That

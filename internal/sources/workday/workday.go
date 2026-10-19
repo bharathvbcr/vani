@@ -160,6 +160,11 @@ func (s *source) list(ctx context.Context, endpoint, term string) ([]listedJob, 
 		if err := s.postJSON(ctx, endpoint, req, &resp); err != nil {
 			return nil, err
 		}
+		// A search with no match still answers "jobPostings":[]; a reply
+		// without the array is an error page or a new shape, never an empty board.
+		if resp.JobPostings == nil {
+			return nil, fmt.Errorf("listing at offset %d has no jobPostings array", offset)
+		}
 		if page == 0 {
 			total = resp.Total
 			if total > MaxPostings {

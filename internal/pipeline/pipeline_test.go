@@ -215,20 +215,79 @@ func TestDigestedReappearanceResetsMissedRuns(t *testing.T) {
 	}
 }
 
-// A digested posting that died and is listed again with the same content is
-// revived to live like any dead record, so it is triaged and digested again.
-func TestDigestedDeadListedAgainIsLive(t *testing.T) {
+// A posting that died and is listed again with the same content returns to the
+// status it died in, with its annotations, so a digested posting is neither
+// triaged again (tokens) nor sent in a second digest.
+func TestDeadListedAgainRestoresItsStatus(t *testing.T) {
+	for _, st := range []posting.Status{posting.Triaged, posting.Unsure, posting.Scored, posting.Explained, posting.Digested} {
+		t.Run(string(st), func(t *testing.T) {
+			l := openLedger(t)
+			a := ghPost(t, "1", "a")
+			Reconcile(ctx, l, board, []posting.Posting{a}, t0)
+			if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: a.Key, Status: st,
+				Annotations: map[string]string{"triage.remote": "yes"}, Reason: "setup"}); err != nil {
+				t.Fatal(err)
+			}
+			Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
+			Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+			if r := rec(t, l, a.Key); r.Status != posting.Dead || r.Annotations[DiedFromKey] != string(st) {
+				t.Fatalf("setup: %+v", r)
+			}
+			s, err := Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(3*time.Hour))
+			if err != nil || s.Reappeared != 1 {
+				t.Fatalf("relist: %+v %v", s, err)
+			}
+			r := rec(t, l, a.Key)
+			if r.Status != st || r.MissedRuns != 0 || r.Annotations["triage.remote"] != "yes" {
+				t.Fatalf("not restored to %s: %+v", st, r)
+			}
+			if _, ok := r.Annotations[DiedFromKey]; ok {
+				t.Fatalf("%s survived the revival: %v", DiedFromKey, r.Annotations)
+			}
+		})
+	}
+}
+
+// A dead record with no usable died_from (written before it existed, or not a
+// status a listed posting can hold) is revived to live, as before.
+func TestDeadWithoutUsableDiedFromIsLive(t *testing.T) {
+	for name, from := range map[string]string{"none": "", "closed": string(posting.Dead), "unknown": "archived", "duplicate": string(posting.Duplicate)} {
+		t.Run(name, func(t *testing.T) {
+			l := openLedger(t)
+			a := ghPost(t, "1", "a")
+			Reconcile(ctx, l, board, []posting.Posting{a}, t0)
+			ann := map[string]string{}
+			if from != "" {
+				ann[DiedFromKey] = from
+			}
+			if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: a.Key, Status: posting.Dead, Annotations: ann, Reason: "setup"}); err != nil {
+				t.Fatal(err)
+			}
+			Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(time.Hour))
+			if r := rec(t, l, a.Key); r.Status != posting.Live {
+				t.Fatalf("revived to %s, want live: %+v", r.Status, r)
+			}
+		})
+	}
+}
+
+// A dead posting relisted with new content is a changed posting: it goes live
+// and forgets both its derived results and where it died.
+func TestDeadListedAgainChangedIsLive(t *testing.T) {
 	l := openLedger(t)
 	a := ghPost(t, "1", "a")
 	digestPosting(t, l, a)
 	Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
 	Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
-	if rec(t, l, a.Key).Status != posting.Dead {
-		t.Fatal("setup: not dead")
+	a2 := a
+	a2.Description = "rewritten"
+	s, _ := Reconcile(ctx, l, board, []posting.Posting{a2}, t0.Add(3*time.Hour))
+	r := rec(t, l, a.Key)
+	if s.Changed != 1 || r.Status != posting.Live {
+		t.Fatalf("changed relist: %+v %+v", s, r)
 	}
-	Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(3*time.Hour))
-	if r := rec(t, l, a.Key); r.Status != posting.Live || r.MissedRuns != 0 {
-		t.Fatalf("not revived: %+v", r)
+	if _, ok := r.Annotations[DiedFromKey]; ok {
+		t.Fatalf("%s survived a change: %v", DiedFromKey, r.Annotations)
 	}
 }
 
