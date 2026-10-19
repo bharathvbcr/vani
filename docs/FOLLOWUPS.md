@@ -722,6 +722,23 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     it fresh with scoped ids, because `Plan` adds any block DevPrism lacks.
   - No real sync has run, so only the Phase 0 copy of career.db has bare ids.
   - Tests: `internal/kbsync/scoped_test.go`.
+- **kbsync tagging: built, smoke-tested on a copy, real sync still held by the owner.** DevPrism
+  scores synced blocks without embeddings (skills, persona, recency, seniority), so rkb blocks were
+  never picked. `hashVersion` 3 now sends skills from the stack, persona `ai`, plain titles/orgs and
+  ISO dates, skips rkb variants, and unions skills/personas on update (`internal/kbsync/tags.go`,
+  `markdown.go`). On a copy of career.db, Build picked rkb blocks for all three smoke postings, and
+  no `](`, `*` or `[` reached the PDFs. Open, the owner's call:
+  - **Duplicates now print.** DevPrism's own 43 blocks and rkb's copies of the same work both get
+    picked: M.S. Biomedical printed twice (`edu_8eb29acf142a` and `master-of-science-in`), and
+    Research Tools still leads with the deprecated LiquiTask (`pro_154b7ff50102`). rkb also has two
+    entries for one project (`agent-evaluation-harness-manvi`, `agent-harness-evaluation`), not
+    linked by `origin`, so the variant rule does not catch them. Ways out: retire the old DevPrism
+    blocks rkb now covers, and merge the two rkb entries.
+  - Work entries have no `stack`, so rkb work blocks carry no skills.
+  - Bullets: ResolveText strips `**bold**` (as rkb's text renderer does), though DevPrism would
+    render it as bold.
+  - 18 bullets exist only in the 9 variants and are not synced.
+  - Tests: `internal/kbsync/tags_test.go`; goldens in `internal/kbsync/testdata`.
 - **Employer lists need a yearly re-import** (IRS eo1-eo4 and IPEDS HD2024 imported 2026-10-18 into
   `.state/state`, 1.6M names). Recheck the IPEDS codes in each year's dictionary (docs/EMPLOYER.md).
   Runs read the derived `index.view` (0.09 s / 69 MB a lookup, was 3 s / 490 MB). Import still loads
