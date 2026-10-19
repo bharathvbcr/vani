@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -177,15 +176,9 @@ func readRunRecord(stateDir string) (*runRecord, error) {
 	return &r, nil
 }
 
-// pidAlive reports whether a process with this pid exists. Tests replace it.
-// A pid it cannot signal for lack of permission still exists.
-var pidAlive = func(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
+// pidAlive reports whether a process with this pid exists (processExists, per
+// platform). Tests replace it.
+var pidAlive = processExists
 
 // runState is the record's state as the user should read it: the written
 // outcome, except that a record with no end is "running" only while its process

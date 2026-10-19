@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/resume"
@@ -20,18 +21,24 @@ const (
 	exitItemNotFound = 44
 )
 
-// Allowed lists the only keys the vault stores.
-var Allowed = []string{
+// allowed lists the only keys the vault stores. It is unexported so no other
+// package can append a key to it, or empty it, at run time.
+var allowed = []string{
 	"name", "email", "phone", "location",
 	"linkedin_url", "github_url", "portfolio_url",
 	"work_authorization", "requires_sponsorship",
 }
+
+// Allowed returns a copy of the keys the vault stores.
+func Allowed() []string { return slices.Clone(allowed) }
 
 var (
 	// ErrNotFound means the key has no keychain item.
 	ErrNotFound = errors.New("vault: not found")
 	// ErrUnknownKey means the key is not on the allowlist.
 	ErrUnknownKey = errors.New("vault: unknown key")
+	// ErrNoKeychain means this platform has no macOS Keychain to keep values in.
+	ErrNoKeychain = errors.New("vault: the profile vault keeps values in the macOS Keychain")
 )
 
 // Runner runs an external command and returns its stdout. Tests fake it.
@@ -48,19 +55,26 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 }
 
 // Vault reads and writes allowlisted profile values.
-type Vault struct{ r Runner }
+type Vault struct {
+	r   Runner
+	err error // set when the platform has no Keychain: every call returns it
+}
 
-// New returns a Vault backed by /usr/bin/security.
-func New() *Vault { return &Vault{r: execRunner{}} }
+// New returns a Vault backed by /usr/bin/security. Off macOS every call fails
+// with ErrNoKeychain instead of running a security(1) that is not there.
+func New() *Vault { return &Vault{r: execRunner{}, err: platformErr()} }
 
 // NewWithRunner returns a Vault using r (for tests).
 func NewWithRunner(r Runner) *Vault { return &Vault{r: r} }
 
+// noKeychain is ErrNoKeychain naming the platform it was refused on.
+func noKeychain(goos string) error {
+	return fmt.Errorf("%w, which %s does not have", ErrNoKeychain, goos)
+}
+
 func checkKey(key string) error {
-	for _, k := range Allowed {
-		if k == key {
-			return nil
-		}
+	if slices.Contains(allowed, key) {
+		return nil
 	}
 	return fmt.Errorf("%w: %q", ErrUnknownKey, truncate(key))
 }
@@ -79,6 +93,9 @@ type exitCoder interface{ ExitCode() int }
 func (v *Vault) Get(ctx context.Context, key string) (string, error) {
 	if err := checkKey(key); err != nil {
 		return "", err
+	}
+	if v.err != nil {
+		return "", v.err
 	}
 	out, err := v.r.Run(ctx, securityBin, "find-generic-password", "-s", service, "-a", key, "-w")
 	if err != nil {
@@ -105,6 +122,9 @@ func (v *Vault) Set(ctx context.Context, key, value string) error {
 	}
 	if value == "" {
 		return fmt.Errorf("vault: empty value for %s", key)
+	}
+	if v.err != nil {
+		return v.err
 	}
 	if _, err := v.r.Run(ctx, securityBin, "add-generic-password", "-U", "-s", service, "-a", key, "-w", value); err != nil {
 		return failure("write", key, err)

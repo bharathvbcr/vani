@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -284,10 +285,22 @@ type DropRule struct {
 }
 
 // Paths resolves the config file and state directory from the environment.
+// VANI_CONFIG and VANI_STATE_DIR win; otherwise macOS keeps both under
+// ~/Library/Application Support/Vani and Linux follows the XDG base
+// directories: $XDG_CONFIG_HOME/vani/config.json and $XDG_STATE_HOME/vani.
 func Paths(getenv func(string) string, home string) (configPath, stateDir string) {
-	base := filepath.Join(home, "Library", "Application Support", "Vani")
-	configPath = filepath.Join(base, "config.json")
-	stateDir = filepath.Join(base, "state")
+	return pathsFor(runtime.GOOS, getenv, home)
+}
+
+func pathsFor(goos string, getenv func(string) string, home string) (configPath, stateDir string) {
+	if goos == "linux" {
+		configPath = filepath.Join(xdgDir(getenv, "XDG_CONFIG_HOME", home, ".config"), "vani", "config.json")
+		stateDir = filepath.Join(xdgDir(getenv, "XDG_STATE_HOME", home, ".local", "state"), "vani")
+	} else {
+		base := filepath.Join(home, "Library", "Application Support", "Vani")
+		configPath = filepath.Join(base, "config.json")
+		stateDir = filepath.Join(base, "state")
+	}
 	if v := getenv("VANI_CONFIG"); v != "" {
 		configPath = v
 	}
@@ -295,6 +308,16 @@ func Paths(getenv func(string) string, home string) (configPath, stateDir string
 		stateDir = v
 	}
 	return configPath, stateDir
+}
+
+// xdgDir is the XDG variable's value when it is an absolute path, else the
+// spec's default under home. The spec says a relative value is invalid and
+// must be ignored.
+func xdgDir(getenv func(string) string, key, home string, def ...string) string {
+	if v := getenv(key); filepath.IsAbs(v) {
+		return v
+	}
+	return filepath.Join(append([]string{home}, def...)...)
 }
 
 // DefaultPaths resolves Paths against the real environment.

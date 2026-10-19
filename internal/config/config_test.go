@@ -254,7 +254,7 @@ func TestSaveAtomicAndMode(t *testing.T) {
 func TestPathsEnvOverride(t *testing.T) {
 	env := map[string]string{}
 	get := func(k string) string { return env[k] }
-	c, s := Paths(get, "/home/u")
+	c, s := pathsFor("darwin", get, "/home/u")
 	if c != "/home/u/Library/Application Support/Vani/config.json" || s != "/home/u/Library/Application Support/Vani/state" {
 		t.Fatalf("defaults wrong: %s %s", c, s)
 	}
@@ -263,6 +263,33 @@ func TestPathsEnvOverride(t *testing.T) {
 	c, s = Paths(get, "/home/u")
 	if c != "/x/c.json" || s != "/x/state" {
 		t.Fatalf("overrides ignored: %s %s", c, s)
+	}
+}
+
+// Linux used to get the macOS layout (~/Library/Application Support/Vani).
+// It follows the XDG base directories, and the VANI_* overrides still win.
+func TestLinuxPathsFollowXDG(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env          map[string]string
+		config, stat string
+	}{
+		"spec defaults": {map[string]string{}, "/home/u/.config/vani/config.json", "/home/u/.local/state/vani"},
+		"xdg set":       {map[string]string{"XDG_CONFIG_HOME": "/c", "XDG_STATE_HOME": "/s"}, "/c/vani/config.json", "/s/vani"},
+		// The spec: a relative value is invalid and is ignored.
+		"relative xdg ignored": {map[string]string{"XDG_CONFIG_HOME": "rel", "XDG_STATE_HOME": "./s"}, "/home/u/.config/vani/config.json", "/home/u/.local/state/vani"},
+		"vani overrides win": {map[string]string{"XDG_CONFIG_HOME": "/c", "VANI_CONFIG": "/x/c.json", "VANI_STATE_DIR": "/x/state"},
+			"/x/c.json", "/x/state"},
+	} {
+		get := func(k string) string { return tc.env[k] }
+		c, s := pathsFor("linux", get, "/home/u")
+		if c != tc.config || s != tc.stat {
+			t.Errorf("%s: %s %s, want %s %s", name, c, s, tc.config, tc.stat)
+		}
+	}
+	// XDG variables do not move the macOS layout.
+	c, _ := pathsFor("darwin", func(k string) string { return map[string]string{"XDG_CONFIG_HOME": "/c"}[k] }, "/Users/u")
+	if c != "/Users/u/Library/Application Support/Vani/config.json" {
+		t.Errorf("darwin config %s", c)
 	}
 }
 

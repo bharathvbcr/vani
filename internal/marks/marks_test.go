@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -177,7 +176,7 @@ func TestOverlappingReadersDoNotStarveAWriter(t *testing.T) {
 	}
 	type held interface{ Close() error }
 	acquire := func() held {
-		l, err := lock(dir, syscall.LOCK_SH, false)
+		l, err := lock(dir, false, false)
 		if err != nil || l == nil {
 			t.Errorf("shared lock: %v", err)
 			return nil
@@ -234,7 +233,7 @@ func TestBusyIsStillBounded(t *testing.T) {
 	if _, err := SetMark(dir, k1, Saved, t0); err != nil {
 		t.Fatal(err)
 	}
-	l, err := lock(dir, syscall.LOCK_EX, true)
+	l, err := lock(dir, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}

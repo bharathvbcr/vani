@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -102,8 +103,39 @@ func TestUnknownKeyRefusedWithoutRunning(t *testing.T) {
 func TestAllowlistIsExactlyTheSpecifiedKeys(t *testing.T) {
 	want := []string{"name", "email", "phone", "location", "linkedin_url", "github_url",
 		"portfolio_url", "work_authorization", "requires_sponsorship"}
-	if !reflect.DeepEqual(Allowed, want) {
-		t.Fatalf("Allowed = %v", Allowed)
+	if !reflect.DeepEqual(Allowed(), want) {
+		t.Fatalf("Allowed() = %v", Allowed())
+	}
+	// The getter hands out a copy: changing it cannot widen or empty the
+	// allowlist (the exported slice it replaces could be appended to).
+	got := Allowed()
+	got[0] = "ssn"
+	if err := checkKey("ssn"); !errors.Is(err, ErrUnknownKey) {
+		t.Fatalf("a key written into Allowed()'s result was accepted: %v", err)
+	}
+	if err := checkKey("name"); err != nil {
+		t.Fatalf("the allowlist changed under a caller's edit: %v", err)
+	}
+}
+
+// Off macOS the vault says so, and never runs a security(1) that is not there.
+func TestNoKeychainIsAClearErrorAndRunsNothing(t *testing.T) {
+	f := &fakeRunner{}
+	v := &Vault{r: f, err: noKeychain("linux")}
+	if _, err := v.Get(context.Background(), "name"); !errors.Is(err, ErrNoKeychain) || !strings.Contains(err.Error(), "linux") {
+		t.Fatalf("Get: %v, want ErrNoKeychain naming linux", err)
+	}
+	if err := v.Set(context.Background(), "name", "x"); !errors.Is(err, ErrNoKeychain) {
+		t.Fatalf("Set: %v, want ErrNoKeychain", err)
+	}
+	if _, err := v.Get(context.Background(), "ssn"); !errors.Is(err, ErrUnknownKey) {
+		t.Fatalf("an unknown key is still refused first: %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("security ran without a Keychain: %v", f.calls)
+	}
+	if err := New().err; (runtime.GOOS == "darwin") != (err == nil) {
+		t.Fatalf("New on %s: platform error %v", runtime.GOOS, err)
 	}
 }
 

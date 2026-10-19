@@ -306,8 +306,9 @@ serves a whole board, so it reads the host's `robots.txt` once per board. The wa
 each navigation, since lightpanda gives up on a first response after 5 s and the egress proxy's own
 per-host pacing must stay under that.
 
-Config and state default to `~/Library/Application Support/Vani/` (override with `VANI_CONFIG`
-and `VANI_STATE_DIR`). Keys come from the environment: `OPENROUTER_API_KEY` for the OpenRouter model,
+Config and state default to `~/Library/Application Support/Vani/` on macOS, and on Linux to
+`$XDG_CONFIG_HOME/vani/config.json` and `$XDG_STATE_HOME/vani` (`~/.config`, `~/.local/state`
+when unset); override either with `VANI_CONFIG` and `VANI_STATE_DIR`. Keys come from the environment: `OPENROUTER_API_KEY` for the OpenRouter model,
 `GEMINI_API_KEY` / `GOOGLE_API_KEY` or `ANTHROPIC_API_KEY` for the LLM. An Anthropic key not
 scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every
 request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.

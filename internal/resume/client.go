@@ -10,12 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/childenv"
 )
 
 // Framing: DevPrism's stdio transport is newline-delimited JSON, one JSON-RPC
@@ -175,20 +176,10 @@ func (c *Client) Stderr() string {
 	return c.p.stderr.String()
 }
 
-func minimalEnv(extra []string) []string {
-	env := make([]string, 0, 3+len(extra))
-	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return append(env, extra...)
-}
-
 func (c *Client) spawn() (*proc, error) {
 	pctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(pctx, c.cfg.BinaryPath, c.cfg.Args...)
-	cmd.Env = minimalEnv(c.cfg.Env)
+	cmd.Env = childenv.Minimal(c.cfg.Env...)
 	cmd.WaitDelay = closeGrace
 	ring := &ringBuffer{max: stderrRingBytes}
 	cmd.Stderr = ring

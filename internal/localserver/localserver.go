@@ -21,9 +21,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/childenv"
 	"github.com/bharathvbcr/Vani/internal/egress"
 )
 
@@ -121,7 +121,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	// Not exec.CommandContext: the server must outlive Start's context and be
 	// stopped by Stop, gracefully.
 	cmd := exec.Command(cfg.Binary, args(cfg, port)...)
-	cmd.Env = minimalEnv()
+	cmd.Env = childenv.Minimal() // no API keys or other secrets reach the server
 	cmd.Stdout = io.Discard
 	s := &Server{Endpoint: base + Path, cmd: cmd, exited: make(chan struct{}), stderr: &capped{limit: maxStderr}}
 	cmd.Stderr = s.stderr
@@ -183,7 +183,7 @@ func (s *Server) Stop() {
 		if s.cmd.Process == nil {
 			return
 		}
-		_ = s.cmd.Process.Signal(syscall.SIGTERM)
+		_ = terminate(s.cmd.Process)
 		select {
 		case <-s.exited:
 		case <-time.After(stopGrace):
@@ -224,18 +224,6 @@ func freePort() (int, error) {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port, nil
-}
-
-// minimalEnv passes PATH, HOME and TMPDIR only: no API keys or other
-// secrets from this process reach the server.
-func minimalEnv() []string {
-	var env []string
-	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return env
 }
 
 // capped keeps the last limit bytes written: the end of stderr is where a

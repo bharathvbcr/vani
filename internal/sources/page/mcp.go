@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/childenv"
 )
 
 const (
@@ -356,7 +358,7 @@ func startMCP(ctx context.Context, binary string, flags []string) (*mcpProc, err
 		return nil, fmt.Errorf("page: lightpanda working directory: %w", err)
 	}
 	cmd := exec.Command(binary, append([]string{"mcp"}, flags...)...)
-	cmd.Env = minimalEnv()
+	cmd.Env = childenv.Minimal("LIGHTPANDA_DISABLE_TELEMETRY=1")
 	cmd.Dir = dir
 	cmd.WaitDelay = stopWait
 	p := &mcpProc{cmd: cmd, dir: dir, lines: make(chan []byte, maxUnread), exited: make(chan struct{})}
@@ -563,16 +565,6 @@ func (p *mcpProc) stop(graceful bool) error {
 		}
 	}
 	return os.RemoveAll(p.dir)
-}
-
-func minimalEnv() []string {
-	env := []string{"LIGHTPANDA_DISABLE_TELEMETRY=1"}
-	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return env
 }
 
 // tail renders the end of stderr for an error message: bounded, one line, no
