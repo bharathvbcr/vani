@@ -86,14 +86,39 @@ final class HostProcessTests: XCTestCase {
         XCTAssertEqual(got.first?["draft"] as? String, "key=unset cfg=none state=none ws=none inherited=none")
     }
 
-    func testDraftOpForwardsTheSavedWorkspace() throws {
+    func testDraftOpLaunchesThroughTheSavedAccount() throws {
         let store = try tempDir(self)
-        try DraftSettings(anthropicWorkspace: "wrkspc_01Test").save(to: store)
+        let cfg = try vaniConfig(self, provider: "anthropic")
+        try DraftSettings(vaniConfig: cfg, anthropicAccount: "org500").save(to: store)
+        let vani = try fakeVani(self), launcher = try fakeLauncher(self)
         let input = try frames([["op": "draft", "request": ["question": "Why us?"]]])
         let r = try run(["chrome-extension://\(ChromeConnector.defaultExtensionID)/", "--store-dir", store.path,
-                         "--vani", try fakeVani(self).path, "--no-keychain"], input: input)
+                         "--vani", vani.path, "--anthropic-account", launcher.url.path], input: input)
         XCTAssertEqual(r.status, 0, String(decoding: r.err, as: UTF8.self))
-        XCTAssertEqual(try replies(r.out).first?["draft"] as? String, "key=unset cfg=none state=none ws=wrkspc_01Test inherited=none")
+        XCTAssertEqual(try replies(r.out).first?["draft"] as? String, "key=match cfg=\(cfg) state=none ws=none inherited=none")
+        XCTAssertEqual(launcher.recordedArguments, ["exec", "--account", "org500", "--", vani.path, "draft"])
+        XCTAssertEqual(launcher.handedKey, "key=unset ws=unset")
+    }
+
+    func testNoKeychainStartsVaniWithoutTheLauncher() throws {
+        let store = try tempDir(self)
+        let cfg = try vaniConfig(self, provider: "anthropic")
+        try DraftSettings(vaniConfig: cfg, anthropicAccount: "org500").save(to: store)
+        let launcher = try fakeLauncher(self)
+        let input = try frames([["op": "draft", "request": ["question": "Why us?"]]])
+        let r = try run(["chrome-extension://\(ChromeConnector.defaultExtensionID)/", "--store-dir", store.path,
+                         "--vani", try fakeVani(self).path, "--anthropic-account", launcher.url.path, "--no-keychain"], input: input)
+        XCTAssertEqual(r.status, 0, String(decoding: r.err, as: UTF8.self))
+        XCTAssertEqual(try replies(r.out).first?["draft"] as? String, "key=unset cfg=\(cfg) state=none ws=none inherited=none")
+        XCTAssertNil(launcher.recordedArguments)
+    }
+
+    func testRefusesARelativeLauncherPath() throws {
+        let r = try run(["chrome-extension://\(ChromeConnector.defaultExtensionID)/", "--store-dir", try tempDir(self).path,
+                         "--anthropic-account", "anthropic-account"], input: Data())
+        XCTAssertNotEqual(r.status, 0)
+        XCTAssertTrue(r.out.isEmpty)
+        XCTAssertTrue(String(decoding: r.err, as: UTF8.self).contains("--anthropic-account needs an absolute path"))
     }
 
     func testRefusesToRunWithoutAChromeOrigin() throws {

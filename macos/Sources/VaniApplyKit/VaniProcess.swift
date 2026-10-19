@@ -14,6 +14,15 @@ public enum VaniProcess {
         public var launchError: String?
         /// stdout reached the byte ceiling, so it may be cut short.
         public var truncated = false
+        /// The first 64 KB of stderr. Never put in a reply as is: a caller
+        /// picks out only lines it knows carry no secret.
+        public var stderr = Data()
+    }
+
+    /// Vani's own default config file (config.Paths in the Go CLI), used when
+    /// no VANI_CONFIG is set.
+    public static var defaultConfigPath: String {
+        NSHomeDirectory() + "/Library/Application Support/Vani/config.json"
     }
 
     /// The environment every `vani` child gets: a fixed PATH, the user's home,
@@ -56,7 +65,7 @@ public enum VaniProcess {
         let box = OutputBox()
         DispatchQueue.global().async {
             box.out = outPipe.fileHandleForReading.readData(upTo: maxOutputBytes)
-            _ = errPipe.fileHandleForReading.readData(upTo: 64 * 1024)
+            box.err = errPipe.fileHandleForReading.readData(upTo: 64 * 1024)
             done.signal()
         }
         if done.wait(timeout: .now() + timeout) == .timedOut {
@@ -66,12 +75,13 @@ public enum VaniProcess {
         }
         p.waitUntilExit()
         return Outcome(status: p.terminationStatus, stdout: box.out, timedOut: false, launchError: nil,
-                       truncated: box.out.count >= maxOutputBytes)
+                       truncated: box.out.count >= maxOutputBytes, stderr: box.err)
     }
 }
 
 private final class OutputBox: @unchecked Sendable {
     var out = Data()
+    var err = Data()
 }
 
 extension FileHandle {

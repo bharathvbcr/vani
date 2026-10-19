@@ -42,11 +42,18 @@ if let i = args.firstIndex(of: "--vani"), i + 1 < args.count {
     guard args[i + 1].hasPrefix("/") else { fail("--vani needs an absolute path") }
     vaniBinary = URL(fileURLWithPath: args[i + 1])
 }
-// `--no-keychain` (tests only) supplies no key instead of reading the login Keychain.
+// An anthropic draft starts vani through anthropic-account, found where it is
+// installed; `--anthropic-account <absolute path>` overrides it (the process
+// tests use it). `--no-keychain` (tests only) supplies no key at all: vani
+// starts directly, without the launcher. Chrome passes neither.
+var launcher = AnthropicAccount.locate()
+if let i = args.firstIndex(of: "--anthropic-account"), i + 1 < args.count {
+    guard args[i + 1].hasPrefix("/") else { fail("--anthropic-account needs an absolute path") }
+    launcher = URL(fileURLWithPath: args[i + 1])
+}
 let settings = DraftSettings.load(from: store.directory)
-let drafter = args.contains("--no-keychain")
-    ? settings.runner(vaniBinary: vaniBinary, key: { nil })
-    : settings.runner(vaniBinary: vaniBinary)
+let drafter = settings.runner(vaniBinary: vaniBinary,
+                              keys: args.contains("--no-keychain") ? .noKey : .anthropicAccount(launcher))
 
 // Exit after 60 s with no request, but never while one is being answered: a
 // draft can take up to DraftRunner.timeout.

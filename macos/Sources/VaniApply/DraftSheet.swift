@@ -71,7 +71,7 @@ struct DraftSheet: View {
     private func message(for r: DraftReply) -> String {
         switch r.code {
         case "budget_exhausted": "Today's Claude budget is spent (decide.daily_usd.llm in Vani's config). Try again tomorrow."
-        case "keychain": "Keychain access to anthropic-api-key was refused. Allow Vani Apply when macOS asks."
+        case "account": "anthropic-account could not start Vani with an Anthropic key: \(r.error ?? ""). Check the Anthropic account in Settings, or run `anthropic-account doctor`."
         case "config": "Vani is not set up for drafting: \(r.error ?? ""). Check Settings ▸ Claude drafting."
         case "timeout": "Claude did not answer in time. Try again."
         default: r.error ?? "Drafting failed."

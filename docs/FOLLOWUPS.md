@@ -344,5 +344,14 @@ flowchart TD
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers
     `unsupported`. Fixing that means XPC to the app, or a request queue in the group folder that the
     app serves.
+  - **Vani Apply launches anthropic drafts through `anthropic-account` (2026-10-19).** The app and
+    the Chrome host no longer read the Keychain or keep a workspace id. When the config's
+    `llm.provider` is anthropic they start `anthropic-account exec [--account NAME] -- vani …`, and
+    the account comes from a Settings picker fed by `anthropic-account list --json`. That replaces
+    the workspace field above, and it means a Keychain prompt is now the launcher's (`security`, up
+    to 2 min). Two things are open: it has not been run live against the API, and it is not
+    installed in `~/.local/bin` yet. Vani still ignores `ANTHROPIC_API_KEY_FALLBACK`, because
+    `cmd/vani/wire.go` builds the adapter without arming the fallback.
   - **The host's Keychain read has no timeout.** An unanswered macOS prompt leaves a Chrome draft
-    waiting until the extension's own timeout fires.
+    waiting until the extension's own timeout fires. On the anthropic path the read is now the
+    launcher's, inside the draft's own 150 s ceiling.

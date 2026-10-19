@@ -10,10 +10,18 @@ struct SettingsView: View {
     @State private var importing = false
     @State private var draftConfig = ""
     @State private var draftState = ""
-    @State private var draftWorkspace = ""
+    @State private var draftAccount = ""
+    @State private var accounts: [String] = []
+    @State private var accountsProblem: String?
 
     private var editedDraftSettings: DraftSettings {
-        DraftSettings(vaniConfig: draftConfig, vaniStateDir: draftState, anthropicWorkspace: draftWorkspace)
+        DraftSettings(vaniConfig: draftConfig, vaniStateDir: draftState, anthropicAccount: draftAccount)
+    }
+
+    /// The listed accounts, plus a saved one the registry no longer lists, so
+    /// the picker always shows what is saved.
+    private var accountChoices: [String] {
+        accounts.contains(draftAccount) || draftAccount.isEmpty ? accounts : accounts + [draftAccount]
     }
 
     var body: some View {
@@ -46,8 +54,13 @@ struct SettingsView: View {
             Section("Vani (Jobs and Claude drafting)") {
                 PathRow(label: "Vani config", path: $draftConfig, directory: false)
                 PathRow(label: "Vani state folder", path: $draftState, directory: true)
-                TextField("Anthropic workspace", text: $draftWorkspace, prompt: Text("wrkspc_… (only for a key not scoped to a workspace)"))
-                    .autocorrectionDisabled()
+                Picker("Anthropic account", selection: $draftAccount) {
+                    Text(accounts.first.map { "Default (\($0))" } ?? "Default").tag("")
+                    ForEach(accountChoices, id: \.self) { Text($0).tag($0) }
+                }
+                if let accountsProblem {
+                    Text(accountsProblem).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
                 HStack {
                     Spacer()
                     Button("Save") {
@@ -56,7 +69,7 @@ struct SettingsView: View {
                     }
                         .disabled(editedDraftSettings == model.draftSettings)
                 }
-                Text("Jobs lists the roles in that state folder's ledger and keeps your saved, applied and hidden marks and notes beside it (marks/); it spends nothing. Drafts run Vani's `vani draft` with the model and daily spending cap in that config (llm.model, decide.daily_usd.llm), shared with the daily listings run. Empty means Vani's default in ~/Library/Application Support/Vani. The Anthropic key is read from your login Keychain item “anthropic-api-key” only when you draft; macOS asks once. A key made outside any workspace also needs the workspace id from the Claude Console; leave it empty for a workspace key.")
+                Text("Jobs lists the roles in that state folder's ledger and keeps your saved, applied and hidden marks and notes beside it (marks/); it spends nothing. Drafts run Vani's `vani draft` with the model and daily spending cap in that config (llm.model, decide.daily_usd.llm), shared with the daily listings run. Empty means Vani's default in ~/Library/Application Support/Vani. When that config's llm.provider is anthropic, Vani starts through anthropic-account, which reads the chosen account's key (and its workspace id, if listed) from your login Keychain and ~/.anthropic-accounts; this app never sees the key. Default is the first account listed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -86,7 +99,12 @@ struct SettingsView: View {
             let s = model.draftSettings
             draftConfig = s.vaniConfig
             draftState = s.vaniStateDir
-            draftWorkspace = s.anthropicWorkspace
+            draftAccount = s.anthropicAccount
+        }
+        .task {
+            let listed = await model.anthropicAccounts()
+            accounts = listed.names
+            accountsProblem = listed.problem
         }
     }
 

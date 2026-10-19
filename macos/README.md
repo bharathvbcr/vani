@@ -169,17 +169,24 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 - **What it never sees:** your name, contact details, location or work authorization. Vani never
   reads the bank header, and entry locations are dropped. A test checks the prompt for a synthetic
   name and email.
-- **The key.** Vani takes provider keys from the environment only (Manvi's policy). So the app and
-  the Chrome host read the login Keychain item `anthropic-api-key` when you draft, the same item your
-  `manvi` shell function uses, and pass it only into the `vani draft` child process.
-  - That child gets a minimal environment, not the app's.
-  - The key is never logged, stored or put in a reply.
-  - macOS asks once per binary before releasing the item.
-- **The workspace.** A key created outside any workspace needs a workspace id on every request.
-  Enter it (`wrkspc_…`, from the Claude Console) in Settings ▸ Claude drafting; it is saved in
-  `draft-settings.json` and passed to `vani draft` as `ANTHROPIC_WORKSPACE_ID`. It is an
-  identifier, not a secret, and vani refuses a malformed one before sending anything. Leave it
-  empty for a key made inside a workspace.
+- **The key.** Vani takes provider keys from the environment only (Manvi's policy). When the Vani
+  config's `llm.provider` is `anthropic`, the app and the Chrome host start
+  `anthropic-account exec [--account NAME] -- <bundled vani> draft` instead of `vani` itself.
+  `anthropic-account` (Manvi's `cmd/anthropic-account`, installed in `~/.local/bin` or
+  `/opt/homebrew/bin`) is the one place on this Mac that picks the Console organisation. It reads
+  that account's key from the login Keychain (`anthropic-api-key-<name>`), adds it and the account's
+  workspace id (if `~/.anthropic-accounts` lists one) to the environment, and replaces itself with
+  `vani`.
+  - Neither the app nor the host reads, holds or passes an Anthropic key.
+  - The child gets a minimal environment, not the app's; the launcher adds only its own variables.
+  - With any other provider, or a config the app cannot read, `vani` starts directly and reports
+    its own errors. With the anthropic provider and no launcher installed, the draft fails with
+    code `account` rather than running keyless.
+- **The account.** Settings ▸ Vani has an Anthropic account picker fed by
+  `anthropic-account list --json`; it is saved in `draft-settings.json` and passed as `--account`.
+  Default leaves the pick to the launcher (the first line of `~/.anthropic-accounts`). A file from
+  before accounts carried an `anthropicWorkspace`; it is ignored, because the workspace now belongs
+  to the account's registry line.
 - **Spending.** Each draft charges Manvi's budget ledger before the request is sent. When today's
   cap is spent, the reply is `budget_exhausted`, never an empty draft.
 
@@ -195,12 +202,13 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - Secret-looking answers are refused on every write path: capture, put, import and manual add. They
     cover passwords, government ids, card and bank numbers, and date of birth.
   - The activity log records event names, hostnames and counts only, never question or answer text.
-- **The Anthropic workspace id** goes from `draft-settings.json` (0600) into the `vani draft`
-  child's environment and then into the `anthropic-workspace-id` request header. It names a
-  workspace and grants nothing by itself; it is never logged. The child's minimal environment does
-  not carry `ANTHROPIC_BASE_URL`, so the app cannot be pointed at another host. Shell runs of
-  `vani` do honour it, as Manvi does, so whoever controls that shell's environment decides where
-  the key is sent.
+- **The Anthropic account name** goes from `draft-settings.json` (0600) to `anthropic-account` as
+  `--account`. It names an account and grants nothing by itself. Before a name reaches the
+  launcher's argv it is checked against the launcher's rule (letters, digits, `.`, `_`, `-`), plus
+  no leading `-` and at most 64 bytes. The launcher strips every inherited `ANTHROPIC_*` credential variable, and the child's
+  minimal environment does not carry `ANTHROPIC_BASE_URL`, so the app cannot be pointed at another
+  host. Shell runs of `vani` do honour it, as Manvi does, so whoever controls that shell's
+  environment decides where the key is sent.
 - **Who can reach the bank.**
   - In Chrome, only the extension id named in the host manifest (`allowed_origins`). That file is
     written only when you click Connect, and Disconnect removes exactly that file.
