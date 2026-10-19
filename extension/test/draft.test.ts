@@ -39,7 +39,7 @@ describe("parseDraftReply", () => {
   });
 
   test("every host error code is kept; an unknown code reads as provider", () => {
-    for (const code of ["bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "config", "kb", "keychain", "unsupported"]) {
+    for (const code of ["bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "config", "kb", "account", "unsupported"]) {
       const r = parseDraftReply({ error: "x", code });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.code).toBe(code as typeof r.code);

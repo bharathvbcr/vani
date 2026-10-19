@@ -1,13 +1,13 @@
 import Foundation
-import Security
 
 // Runs `vani draft` (Vani's Go CLI) for one answer draft. Vani resolves
-// provider keys from the environment only (Manvi's credential policy), so the
-// launcher supplies the key the way the owner's `manvi` shell function does:
-// read from the login Keychain item "anthropic-api-key" and passed only into
-// the child's environment. The key is never logged, never written to disk and
-// never put in a reply. The child gets a minimal environment, not this
-// process's, so nothing else inherited leaks into it either.
+// provider keys from the environment only (Manvi's credential policy). When
+// Vani's config names the anthropic provider, `vani` is started through
+// `anthropic-account exec`, the one place on this Mac that picks the Console
+// organisation and puts its key (and workspace, if listed) into the child's
+// environment. This process never reads, holds or passes an Anthropic key.
+// The child gets a minimal environment, not this process's, so nothing else
+// inherited leaks into it either.
 
 public struct DraftRequest: Codable, Equatable, Sendable {
     public struct Job: Codable, Equatable, Sendable {
@@ -67,7 +67,88 @@ public struct DraftReply: Codable, Equatable, Sendable {
     }
 }
 
-/// Where the Anthropic key comes from. The default reads the login Keychain.
+/// Manvi's `anthropic-account` launcher: where it is installed, which accounts
+/// it lists, and the argv that starts a command through it. It reads no secret
+/// here; only its `exec` does, inside the child it becomes.
+public enum AnthropicAccount {
+    /// Where the launcher is installed (`go install` / Homebrew), checked in order.
+    public static var candidates: [URL] {
+        [URL(fileURLWithPath: NSHomeDirectory() + "/.local/bin/anthropic-account"),
+         URL(fileURLWithPath: "/opt/homebrew/bin/anthropic-account")]
+    }
+
+    /// The first executable candidate, or nil when the launcher is not installed.
+    public static func locate(candidates: [URL] = AnthropicAccount.candidates) -> URL? {
+        candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    /// The launcher's own account-name rule (anthropic-account's accountName),
+    /// plus no leading "-" so a saved name never reads as a flag, checked here
+    /// so a bad saved name never reaches its argv.
+    public static func isValidName(_ name: String) -> Bool {
+        !name.isEmpty && name.utf8.count <= 64 && !name.hasPrefix("-")
+            && name.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-").contains($0) }
+    }
+
+    /// `anthropic-account exec [--account NAME] -- CMD ARGS…`. An empty account
+    /// leaves the pick to the launcher (its registry's first line by default).
+    public static func execArguments(account: String?, command: URL, arguments: [String]) -> [String] {
+        var argv = ["exec"]
+        if let account, !account.isEmpty { argv += ["--account", account] }
+        return argv + ["--", command.path] + arguments
+    }
+
+    /// The launcher's refusal, from its stderr: only lines it wrote itself
+    /// ("anthropic-account: …"), which name accounts and files but never a key.
+    /// Nil when it wrote none, so the failure is the child's.
+    static func refusal(in stderr: Data) -> String? {
+        let text = String(decoding: stderr.prefix(16 * 1024), as: UTF8.self)
+        guard let first = text.split(separator: "\n").first,
+              first.hasPrefix("anthropic-account: "), !first.hasPrefix("anthropic-account: warning:") else { return nil }
+        return String(text.prefix(1500)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The account names `anthropic-account list --json` reports, in registry
+    /// order (the first is the default). Throws the launcher's own refusal, such
+    /// as no ~/.anthropic-accounts yet.
+    public static func list(launcher: URL, timeout: TimeInterval = 10) throws -> [String] {
+        let out = VaniProcess.run(launcher, arguments: ["list", "--json"],
+                                  environment: VaniProcess.environment(configPath: nil, stateDir: nil),
+                                  timeout: timeout, maxOutputBytes: 64 * 1024)
+        if let launchError = out.launchError { throw BankError(launchError) }
+        if out.timedOut { throw BankError("anthropic-account list did not finish within \(Int(timeout)) s") }
+        guard out.status == 0 else {
+            throw BankError(refusal(in: out.stderr) ?? "anthropic-account list exited \(out.status ?? -1)")
+        }
+        struct Row: Decodable { let name: String }
+        guard let rows = try? JSONDecoder().decode([Row].self, from: out.stdout) else {
+            throw BankError("anthropic-account list --json printed something that is not an account list")
+        }
+        return rows.map(\.name).filter(isValidName)
+    }
+}
+
+/// Which LLM provider Vani's config names (`llm.provider`), read leniently:
+/// only that key matters here, and judging the rest is vani's job. Nil when
+/// the file is missing, unreadable, oversized or names none, so vani runs
+/// without the launcher and reports its own config error.
+public enum VaniConfig {
+    static let maxBytes = 1 << 20
+
+    public static func llmProvider(configPath: String?) -> String? {
+        let path = configPath.flatMap { $0.isEmpty ? nil : $0 } ?? VaniProcess.defaultConfigPath
+        guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? h.close() }
+        guard let data = try? h.read(upToCount: maxBytes + 1), data.count <= maxBytes else { return nil }
+        struct File: Decodable {
+            struct LLM: Decodable { let provider: String? }
+            let llm: LLM?
+        }
+        return (try? JSONDecoder().decode(File.self, from: data))?.llm?.provider
+    }
+}
+
+/// Where an injected key lookup comes from.
 public typealias KeyLookup = @Sendable () throws -> String?
 
 public enum Keychain {
@@ -76,7 +157,6 @@ public enum Keychain {
     public static let openRouterService = "openrouter-api-key"
 
     /// The generic password for (service, current user), or nil when there is none.
-    /// macOS asks the user the first time a new binary reads the item.
     public static func genericPassword(service: String, account: String = NSUserName()) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -107,25 +187,38 @@ public struct DraftRunner: Sendable {
     public let vaniBinary: URL
     public let configPath: String?
     public let stateDir: String?
-    /// The Anthropic workspace for a key not scoped to one (ANTHROPIC_WORKSPACE_ID).
+    public let keys: KeySource
+    /// The account to pass as --account; nil or empty lets the launcher pick.
+    public let account: String?
     public let workspace: String?
     let key: KeyLookup
-    /// The OpenRouter key for the decision model, read only for `vani suggest`.
     let decisionKey: KeyLookup
     let timeout: TimeInterval
-    /// Ceiling on each Keychain read, prompt included.
     public static let keychainTimeout: TimeInterval = 60
     let keychainTimeout: TimeInterval
 
+    /// How vani gets an Anthropic key.
+    public enum KeySource: Sendable, Equatable {
+        /// No key at all: vani starts directly (the host's --no-keychain).
+        case noKey
+        /// Through this `anthropic-account` when the config names the anthropic
+        /// provider; nil when it is not installed, which fails such a run with
+        /// code "account" instead of starting vani keyless.
+        case anthropicAccount(URL?)
+    }
+
     public init(vaniBinary: URL, configPath: String? = nil, stateDir: String? = nil,
+                keys: KeySource = .noKey, account: String? = nil,
                 workspace: String? = nil,
                 timeout: TimeInterval = DraftRunner.timeout,
                 keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
-                key: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.anthropicService) },
+                key: @escaping KeyLookup = { nil },
                 decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) {
         self.vaniBinary = vaniBinary
         self.configPath = configPath
         self.stateDir = stateDir
+        self.keys = keys
+        self.account = account
         self.workspace = workspace
         self.timeout = timeout
         self.keychainTimeout = keychainTimeout
@@ -148,17 +241,23 @@ public struct DraftRunner: Sendable {
 
     /// Run one draft. Never throws: every failure is a reply with a code.
     public func run(_ request: DraftRequest) -> DraftReply {
+        guard FileManager.default.isExecutableFile(atPath: vaniBinary.path) else {
+            return .failure("config", "the vani binary is missing at \(vaniBinary.path)")
+        }
         let input: Data
         do { input = try JSONEncoder().encode(request) } catch {
             return .failure("bad_request", "could not encode the request")
         }
-        switch invoke("draft", input: input, timeout: timeout) {
+        switch invoke("draft", input: input) {
         case let .failure(f):
             return f
-        case let .output(data):
-            guard let reply = try? JSONDecoder().decode(DraftReply.self, from: data),
+        case let .output(out):
+            guard let reply = try? JSONDecoder().decode(DraftReply.self, from: out.stdout),
                   reply.draft != nil || reply.error != nil else {
-                return .failure("provider", "vani draft exited without a reply")
+                if keys != .noKey, let refusal = AnthropicAccount.refusal(in: out.stderr) {
+                    return .failure("account", refusal)
+                }
+                return .failure("provider", "vani draft exited \(out.status ?? -1) without a reply")
             }
             return reply
         }
@@ -167,21 +266,52 @@ public struct DraftRunner: Sendable {
     /// Run `vani <kind>` on a JSON request for the agent and return the reply
     /// as JSON bytes: vani's own object when it wrote one (it always has
     /// "error" on failure), else a {"error","code"} object. Never throws.
+    /// Run `vani <kind>` on a JSON request for the agent and return the reply
+    /// as JSON bytes: vani's own object when it wrote one (it always has
+    /// "error" on failure), else a {"error","code"} object. Never throws.
     public func runJob(_ kind: JobKind, input: Data) -> Data {
         let failure: DraftReply
         switch invoke(kind.rawValue, input: input, timeout: kind == .draft ? timeout : kind.timeout, withDecisionKey: kind == .suggest) {
         case let .failure(f):
             failure = f
-        case let .output(data):
-            if (try? JSONSerialization.jsonObject(with: data)) is [String: Any] { return data }
-            failure = .failure("provider", "vani \(kind.rawValue) exited without a reply")
+        case let .output(out):
+            if (try? JSONSerialization.jsonObject(with: out.stdout)) is [String: Any] { return out.stdout }
+            if keys != .noKey, let refusal = AnthropicAccount.refusal(in: out.stderr) {
+                failure = .failure("account", refusal)
+            } else {
+                failure = .failure("provider", "vani \(kind.rawValue) exited \(out.status ?? -1) without a reply")
+            }
         }
         return (try? JSONSerialization.data(withJSONObject: failure.asJSONObject)) ?? Data(#"{"error":"encoding failed","code":"provider"}"#.utf8)
     }
 
     enum Invocation {
-        case output(Data)
+        case output(VaniProcess.Outcome)
         case failure(DraftReply)
+    }
+
+    enum Command {
+        case run(URL, [String])
+        case refused(DraftReply)
+    }
+
+    /// The program and argv that start `vani <subcommand>`: through
+    /// anthropic-account when Vani's config names the anthropic provider, else
+    /// vani itself. Both paths are absolute, because the child's PATH is only
+    /// the system folders.
+    func command(_ subcommand: String) -> Command {
+        guard case let .anthropicAccount(launcher) = keys,
+              VaniConfig.llmProvider(configPath: configPath) == "anthropic" else {
+            return .run(vaniBinary, [subcommand])
+        }
+        guard let launcher, FileManager.default.isExecutableFile(atPath: launcher.path) else {
+            let looked = launcher.map { [$0] } ?? AnthropicAccount.candidates
+            return .refused(.failure("account", "anthropic-account is not installed (looked at \(looked.map(\.path).joined(separator: ", "))); Vani's config names the anthropic provider, which needs it"))
+        }
+        if let account, !account.isEmpty, !AnthropicAccount.isValidName(account) {
+            return .refused(.failure("account", "the saved Anthropic account name is not valid; choose one in Settings"))
+        }
+        return .run(launcher, AnthropicAccount.execArguments(account: account, command: vaniBinary, arguments: [subcommand]))
     }
 
     /// A Keychain read can block on a macOS "allow access" prompt that nobody
@@ -200,29 +330,35 @@ public struct DraftRunner: Sendable {
         return try r.get()
     }
 
-    /// Start `vani <subcommand>` with the keys in its environment only. The
-    /// decision key is optional: without it (no Keychain item, or access
-    /// denied) vani skips the OpenRouter model and asks Claude instead.
-    func invoke(_ subcommand: String, input: Data, timeout: TimeInterval, withDecisionKey: Bool = false) -> Invocation {
-        guard FileManager.default.isExecutableFile(atPath: vaniBinary.path) else {
-            return .failure(.failure("config", "the vani binary is missing at \(vaniBinary.path)"))
-        }
-        let apiKey: String?
-        do { apiKey = try Self.bounded(key, seconds: keychainTimeout) } catch {
-            return .failure(.failure("keychain", String(describing: error)))
+    /// Start `vani <subcommand>` with the minimal environment. No key is added
+    /// here: on the anthropic path anthropic-account adds it after this
+    /// environment, in the process it replaces itself with.
+    func invoke(_ subcommand: String, input: Data, timeout: TimeInterval? = nil, withDecisionKey: Bool = false) -> Invocation {
+        let program: URL, arguments: [String]
+        switch command(subcommand) {
+        case let .refused(f): return .failure(f)
+        case let .run(p, a): (program, arguments) = (p, a)
         }
         var env = VaniProcess.environment(configPath: configPath, stateDir: stateDir)
-        if let apiKey, !apiKey.isEmpty { env["ANTHROPIC_API_KEY"] = apiKey }
+        if keys == .noKey {
+            do {
+                if let k = try Self.bounded(key, seconds: keychainTimeout), !k.isEmpty {
+                    env["ANTHROPIC_API_KEY"] = k
+                }
+            } catch {
+                return .failure(.failure("keychain", String(describing: error)))
+            }
+        }
         if let workspace, !workspace.isEmpty { env["ANTHROPIC_WORKSPACE_ID"] = workspace }
-        if withDecisionKey, let k = try? Self.bounded(decisionKey, seconds: keychainTimeout), !k.isEmpty {
+        if withDecisionKey, let k = (try? Self.bounded(decisionKey, seconds: keychainTimeout)) ?? nil, !k.isEmpty {
             env["OPENROUTER_API_KEY"] = k
         }
-
-        let out = VaniProcess.run(vaniBinary, arguments: [subcommand], environment: env, input: input,
-                                  timeout: timeout, maxOutputBytes: Self.maxOutputBytes)
+        let t = timeout ?? self.timeout
+        let out = VaniProcess.run(program, arguments: arguments, environment: env, input: input,
+                                  timeout: t, maxOutputBytes: Self.maxOutputBytes)
         if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
-        if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(timeout)) s")) }
-        return .output(out.stdout)
+        if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(t)) s")) }
+        return .output(out)
     }
 }
 

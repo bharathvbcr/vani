@@ -125,8 +125,22 @@ final class AppModel {
         do { try s.save(to: dir) } catch { actionError = String(describing: error) }
     }
 
-    /// Run one draft off the main thread. The Keychain read happens in the runner,
-    /// so macOS asks about it the first time.
+    /// The accounts the account picker offers, from `anthropic-account list
+    /// --json` off the main thread, or why there are none (the launcher not
+    /// installed, no ~/.anthropic-accounts yet). Reads no secret.
+    func anthropicAccounts() async -> (names: [String], problem: String?) {
+        await Task.detached(priority: .userInitiated) { () -> (names: [String], problem: String?) in
+            guard let launcher = AnthropicAccount.locate() else {
+                return ([], "anthropic-account is not installed in ~/.local/bin or /opt/homebrew/bin.")
+            }
+            do { return (try AnthropicAccount.list(launcher: launcher), nil) } catch {
+                return ([], String(describing: error))
+            }
+        }.value
+    }
+
+    /// Run one draft off the main thread. On the anthropic path the runner starts
+    /// vani through anthropic-account, which reads the chosen account's key.
     func draft(_ request: DraftRequest) async -> DraftReply {
         let runner = draftSettings.runner(vaniBinary: vaniBinary)
         let reply = await Task.detached(priority: .userInitiated) { runner.run(request) }.value

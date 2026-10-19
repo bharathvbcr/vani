@@ -26,14 +26,14 @@ export interface JobInfo {
 
 export type DraftCode =
   | "bad_request" | "budget_exhausted" | "timeout" | "provider" | "empty_reply"
-  | "config" | "kb" | "keychain" | "unsupported" | "unreachable" | "bad_reply" | "busy";
+  | "config" | "kb" | "account" | "unsupported" | "unreachable" | "bad_reply" | "busy";
 
 export type DraftReply =
   | { ok: true; draft: string; model: string; evidenceItems: number }
   | { ok: false; code: DraftCode; error: string };
 
 const HOST_CODES: ReadonlySet<string> = new Set([
-  "bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "config", "kb", "keychain", "unsupported",
+  "bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "config", "kb", "account", "unsupported",
 ]);
 
 /** What to tell the user for each failure. */
@@ -45,7 +45,7 @@ export const DRAFT_HELP: Record<DraftCode, string> = {
   empty_reply: "The model returned an empty draft. Try again.",
   config: "Drafting isn't set up: Vani has no model or no Anthropic key configured.",
   kb: "Vani couldn't read your knowledge base for evidence.",
-  keychain: "Keychain access was denied, so Vani couldn't read its API key.",
+  account: "anthropic-account couldn't start Vani with an Anthropic key. Pick an account in the Vani Apply app's Settings, or run anthropic-account doctor.",
   unsupported: "Drafting isn't available in Safari yet. Use Draft in the Vani Apply app.",
   unreachable: "The Vani Apply Mac app isn't reachable, so drafting is unavailable.",
   bad_reply: "The Mac app sent a reply that isn't a draft.",
