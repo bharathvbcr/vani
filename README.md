@@ -117,6 +117,11 @@ board listing ─▶ live ─▶ triaged | unsure | dropped ─▶ scored ─▶
   a catalog, or with one drafted for another target summary, notes are off and scored postings
   reach the digest without one; with a catalog but no OpenRouter model this run, notes pause and the postings
   wait for a run that can pick.
+- **Digest:** `<state dir>/digests/YYYY-MM-DD.md`, ranked roles then unsure ones. Each role shows
+  where it is, its stated pay (`- Pay: USD 120k–160k/yr`, one short range per currency, the form
+  `vani jobs list` prints, read from the description by fixed rules and left out when the posting
+  states none), its link, must-have coverage, triage answers and the note. Every posting field is
+  escaped so it cannot add links, headings or lines.
 - **Decision clients** live in the shared module `~/Code/devtools/decide` (types, router, budget
   caps, the Jev and Lappi clients). The question itself is [`internal/decide/jdtriage/fixture.json`](file:///Users/bharath/Code/apps/Vani/internal/decide/jdtriage/fixture.json):
   task, exact question text, context layout and options, plus one single-slot Lappi family per

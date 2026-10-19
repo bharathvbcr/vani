@@ -231,6 +231,36 @@ func BenchmarkParsePay(b *testing.B) {
 	}
 }
 
+func TestPayShort(t *testing.T) {
+	for _, c := range []struct {
+		p    Pay
+		want string
+	}{
+		{Pay{Currency: "USD", Period: Year, Min: 120000, Max: 160000}, "USD 120k–160k/yr"},
+		{Pay{Currency: "USD", Period: Hour, Min: 70, Max: 90}, "USD 70–90/hr"},
+		{Pay{Currency: "USD", Period: Hour, Min: 72.5, Max: 72.5}, "USD 72.5/hr"},
+		{Pay{Currency: "EUR", Period: Year, Min: 153200, Max: 180000}, "EUR 153.2k–180k/yr"},
+		{Pay{Currency: "INR", Period: Year, Min: 2500000, Max: 4000000}, "INR 2.5M–4M/yr"},
+		{Pay{Currency: "GBP", Period: Month, Min: 5000, Max: 6000}, "GBP 5k–6k/mo"},
+		{Pay{Currency: "SEK", Period: Week, Min: 9000, Max: 9000}, "SEK 9k/wk"},
+		{Pay{Currency: "CAD", Period: Day, Min: 400, Max: 600}, "CAD 400–600/day"},
+	} {
+		if got := c.p.Short(); got != c.want {
+			t.Errorf("%+v.Short() = %q, want %q", c.p, got, c.want)
+		}
+	}
+	// Every range ParsePay returns has a period Short can name.
+	pays := ParsePay("Salary: $50 - $70 per hour. Base salary €90.000 – €110.000 per year.")
+	if len(pays) != 2 {
+		t.Fatalf("pays = %+v, want two", pays)
+	}
+	for _, p := range pays {
+		if s := p.Short(); !strings.Contains(s, "/") {
+			t.Errorf("%+v.Short() = %q has no period", p, s)
+		}
+	}
+}
+
 // BenchmarkParsePayDense is the other extreme: a currency marker every few
 // bytes, so the windows cover the whole text.
 func BenchmarkParsePayDense(b *testing.B) {

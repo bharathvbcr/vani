@@ -4,6 +4,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -371,6 +372,29 @@ func payWindows(text string) [][2]int {
 func isLetterByte(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 func isWordByte(c byte) bool   { return isLetterByte(c) || (c >= '0' && c <= '9') || c == '_' }
 func isNumByte(c byte) bool    { return (c >= '0' && c <= '9') || c == ',' || c == '.' }
+
+var periodSuffix = map[Period]string{Hour: "/hr", Day: "/day", Week: "/wk", Month: "/mo", Year: "/yr"}
+
+// Short is p in one short line for text output: "USD 150k–180k/yr", or
+// "USD 70/hr" when the range is one amount.
+func (p Pay) Short() string {
+	amount := shortMoney(p.Min)
+	if p.Max != p.Min {
+		amount += "–" + shortMoney(p.Max)
+	}
+	return p.Currency + " " + amount + periodSuffix[p.Period]
+}
+
+// shortMoney writes 150000 as 150k and 2500000 as 2.5M.
+func shortMoney(v float64) string {
+	switch {
+	case v >= 1e6:
+		return strconv.FormatFloat(math.Round(v/1e5)/10, 'f', -1, 64) + "M"
+	case v >= 1e3:
+		return strconv.FormatFloat(math.Round(v/1e2)/10, 'f', -1, 64) + "k"
+	}
+	return strconv.FormatFloat(math.Round(v*100)/100, 'f', -1, 64)
+}
 
 // PayIn returns the range pays states in cur.
 func PayIn(pays []Pay, cur string) (Pay, bool) {
