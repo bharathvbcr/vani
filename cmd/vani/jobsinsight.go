@@ -439,6 +439,12 @@ type selected struct {
 	pay  float64 // top annual pay in --currency, -1 for none (the salary sort)
 }
 
+// matchesQuery is the --q rule: q (already lowered and trimmed) is empty or
+// appears in the job's title, company, location, team or note.
+func matchesQuery(j jobJSON, q string) bool {
+	return q == "" || strings.Contains(strings.ToLower(strings.Join([]string{j.Title, j.Company, j.Location, j.Department, j.Note}, "\n")), q)
+}
+
 // selectJobs returns the jobs in o's view that pass its query and filters,
 // unsorted, and the per-view counts (which ignore the query and filters).
 func selectJobs(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobsOpts, in *insight, kwLimit int) ([]selected, map[string]int) {
@@ -456,7 +462,7 @@ func selectJobs(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobsOpts
 			continue
 		}
 		j := toJob(r, entry)
-		if q != "" && !strings.Contains(strings.ToLower(strings.Join([]string{j.Title, j.Company, j.Location, j.Department, j.Note}, "\n")), q) {
+		if !matchesQuery(j, q) {
 			continue
 		}
 		if !inSet(o.fits, j.Triage["role_fit"]) || !inSet(o.workModes, j.Triage["work_mode"]) || !inSet(o.sponsors, j.Triage["sponsorship"]) {
@@ -621,6 +627,8 @@ type jobsStatsJSON struct {
 	Torn         bool           `json:"torn,omitempty"`
 	Ledger       string         `json:"ledger"`
 	Records      int            `json:"records"`
+	// Pending is what no view lists yet: postings awaiting triage.
+	Pending pendingJSON `json:"pending"`
 
 	// Salary is the pay the jobs state in --currency (jobsfilter.go).
 	Salary payStatsJSON `json:"salary"`

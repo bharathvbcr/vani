@@ -312,6 +312,13 @@ and `VANI_STATE_DIR`). Keys come from the environment: `OPENROUTER_API_KEY` for 
 scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every
 request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
 
+Each run triages, scores and explains at most `advance_per_run` postings (default 300, at most
+5000), which bounds its spend and duration. The rest stay `live` for the next run. Only triaged
+postings are listed in Jobs, so `jobs list`/`jobs stats` (`pending` in `--json`), the digest
+footer and the Jobs tab footer say how many are still awaiting triage. `status --json` shows
+the last run's `advance` report (eligible, attempted, unread, deferred, why it stopped) and
+`backend_errors`: every decision-backend call that failed, counted by cause, with one example.
+
 Before setting `devprism.binary` (which enables ranking and a real `kb sync`), run the Phase 0
 check that the installed DevPrism answers `--mcp` without migrating `career.db`.
 

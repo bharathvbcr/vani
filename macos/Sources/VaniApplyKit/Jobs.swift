@@ -342,6 +342,9 @@ public struct JobsPage: Codable, Equatable, Sendable {
     public var records: Int?
     public var sort: String?
     public var insight: JobsInsight?
+    /// Postings read from a board but not triaged yet, which no view lists.
+    /// Optional so a vani from before it still decodes.
+    public var pending: PendingTriage?
 
     public init(view: String, jobs: [Job], total: Int, shown: Int, counts: [String: Int], torn: Bool? = nil) {
         self.view = view
@@ -353,6 +356,49 @@ public struct JobsPage: Codable, Equatable, Sendable {
     }
 
     public func count(_ v: JobView) -> Int { counts[v.rawValue] ?? 0 }
+}
+
+/// Postings vani has read from a board but not triaged (status live). The
+/// Jobs views list only triaged roles, so without this a company whose
+/// postings all wait for triage looks like a company with no jobs.
+public struct PendingTriage: Codable, Equatable, Sendable {
+    public struct Company: Codable, Equatable, Sendable {
+        public var company: String
+        public var n: Int
+    }
+
+    /// Every posting awaiting triage.
+    public var total: Int
+    /// Those the search names (`total` when there is no search).
+    public var matching: Int
+    /// Companies with the most waiting, most first (vani keeps at most 20).
+    public var companies: [Company]
+
+    public init(total: Int, matching: Int, companies: [Company]) {
+        self.total = total
+        self.matching = matching
+        self.companies = companies
+    }
+
+    /// The footer note, or nil when nothing waits.
+    public var footerNote: String? {
+        total > 0 ? "· \(total) awaiting triage" : nil
+    }
+
+    /// The footer note's help: who waits, and why they are not listed.
+    public var footerHelp: String {
+        let top = companies.prefix(5).map { "\($0.company) \($0.n)" }.joined(separator: ", ")
+        return "\(total) postings were read from their boards but not triaged yet, so no view lists them"
+            + (top.isEmpty ? "" : " (\(top))")
+            + ". Each run triages up to the config's advance_per_run of them."
+    }
+
+    /// What an empty search result adds when the search names postings that
+    /// are still waiting, or nil when it names none.
+    public func emptySearchNote(query: String) -> String? {
+        guard matching > 0, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return "\(matching) \(matching == 1 ? "posting" : "postings") matching “\(query)” \(matching == 1 ? "is" : "are") awaiting triage; \(matching == 1 ? "it appears" : "they appear") here once a run triages \(matching == 1 ? "it" : "them")."
+    }
 }
 
 /// What the scores rest on: without a target summary keywords are listed but

@@ -170,6 +170,12 @@ private struct LastRunSection: View {
                 if let e = run.error, !e.isEmpty {
                     Row(label: run.stage.map { "Failed at \($0)" } ?? "Error", value: e)
                 }
+                if let adv = run.advance {
+                    AdvanceRows(advance: adv)
+                }
+                if let errs = run.backendErrors {
+                    BackendErrorRows(errors: errs)
+                }
             }
             if let next = status.schedule.nextRun {
                 Row(label: "Next run", value: next.formatted(date: .abbreviated, time: .shortened)
@@ -196,6 +202,50 @@ private struct LastRunSection: View {
 
     private func duration(_ s: Double) -> String {
         s < 90 ? "\(Int(s.rounded())) s" : "\(Int((s / 60).rounded())) min"
+    }
+}
+
+/// What the run's advance phase got through, and what the per-run cap or an
+/// early stop left waiting for the next run.
+private struct AdvanceRows: View {
+    let advance: PipelineStatus.LastRun.Advance
+
+    var body: some View {
+        Row(label: "Advanced", value: advance.summary)
+            .help("Eligible postings are every one waiting for a stage (triage, score or explain), so this can be more than the Jobs tab's awaiting-triage count.")
+        if let o = advance.outcome {
+            Row(label: "", value: o, secondary: true)
+        }
+        if let s = advance.stopNote {
+            Row(label: "", value: s, secondary: advance.stopped == .cap)
+        }
+    }
+}
+
+/// Why decision backends refused calls this run. The examples are provider
+/// error text: shown verbatim, one bounded line each.
+private struct BackendErrorRows: View {
+    let errors: PipelineStatus.LastRun.BackendErrors
+
+    var body: some View {
+        Row(label: "Backend errors", value: errors.summary)
+        ForEach(Array(errors.lines().enumerated()), id: \.offset) { _, line in
+            HStack(alignment: .firstTextBaseline) {
+                // Not a Spacer: the stack drops its spacing next to one, which
+                // would put the causes left of the other rows' values.
+                Color.clear.frame(width: 130, height: 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: "\(line.backend): \(line.count) call\(line.count == 1 ? "" : "s")").fontWeight(.medium)
+                    Text(verbatim: line.example)
+                        .font(.callout.monospaced()).foregroundStyle(.secondary)
+                        .lineLimit(3).textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        if let more = errors.moreNote() {
+            Row(label: "", value: more, secondary: true)
+        }
     }
 }
 

@@ -185,6 +185,150 @@ final class PipelineTests: XCTestCase {
         }
     }
 
+    // MARK: run detail (advance, backend errors)
+
+    /// The last_run `vani status --json` printed for a run record holding an
+    /// advance report and backend errors (captured from build/vani).
+    private static let runWithDetail = #"{"ok":true,"state":"failed","started_at":"2026-10-19T05:00:00.123456-07:00","finished_at":"2026-10-19T12:04:00Z","duration_sec":240,"stage":"pipeline","error":"pipeline: no decision backend read 20 postings in a row","postings_before":2639,"postings_after":2639,"counts_before":{"live":2639},"counts_after":{"live":2639},"advance":{"eligible":3027,"limit":300,"attempted":20,"unread":20,"failed":0,"deferred":3007,"stopped":"unread_streak"},"backend_errors":{"causes":[{"backend":"anthropic","count":2,"example":"anthropic: http 429 (request req_1): rate_limit_error"}],"unrecorded":3}}"#
+
+    func testDecodesTheAdvanceReportAndBackendErrorsGoPrints() throws {
+        let run = try decode(statusReply(lastRun: Self.runWithDetail)).lastRun
+        let adv = try XCTUnwrap(run.advance)
+        XCTAssertEqual(adv, .init(eligible: 3027, limit: 300, attempted: 20, unread: 20, failed: 0, deferred: 3007, stopped: .unreadStreak))
+        XCTAssertEqual(adv.advanced, 0)
+        XCTAssertEqual(adv.summary, "20 of 3027 eligible postings attempted this run; 3007 wait for the next run")
+        XCTAssertEqual(adv.outcome, "0 advanced, 20 unread by every decision backend; those stay for the next run")
+        XCTAssertEqual(adv.stopNote, "Stopped early: no decision backend could read several postings in a row.")
+
+        let errs = try XCTUnwrap(run.backendErrors)
+        XCTAssertEqual(errs.causes, [.init(backend: "anthropic", count: 2, example: "anthropic: http 429 (request req_1): rate_limit_error")])
+        XCTAssertEqual(errs.unrecorded, 3)
+        XCTAssertEqual(errs.totalCalls, 5)
+        XCTAssertEqual(errs.summary, "5 failed calls to decision backends")
+        XCTAssertEqual(errs.lines().map(\.example), ["anthropic: http 429 (request req_1): rate_limit_error"])
+        XCTAssertEqual(errs.moreNote(), "3 calls with causes not recorded")
+        // The detail annotates the run; it does not change how bad the run looks.
+        XCTAssertEqual(try decode(statusReply(lastRun: Self.runWithDetail)).health(at: now), .problem)
+    }
+
+    func testAReplyWithoutTheRunDetailStillDecodes() throws {
+        // A vani from before advance and backend_errors: the default fixture has neither.
+        let s = try decode(statusReply())
+        XCTAssertNil(s.lastRun.advance)
+        XCTAssertNil(s.lastRun.backendErrors)
+        XCTAssertEqual(s.health(at: now), .healthy)
+        XCTAssertEqual(PipelineStatus.supportedVersion, 1, "the fields are additive: no contract bump")
+    }
+
+    func testTheCapExampleFromTheBrief() {
+        let capped = PipelineStatus.LastRun.Advance(eligible: 2639, limit: 300, attempted: 300, deferred: 2339, stopped: .cap)
+        XCTAssertEqual(capped.summary, "300 of 2639 eligible postings attempted this run; 2339 wait for the next run")
+        XCTAssertNil(capped.outcome, "every attempted posting advanced")
+        XCTAssertEqual(capped.stopNote, "Stopped at the per-run cap of 300 (advance_per_run).")
+    }
+
+    func testEachStopReasonsWording() throws {
+        func stop(_ raw: String?) throws -> PipelineStatus.LastRun.Advance {
+            let field = raw.map { #","stopped":"\#($0)""# } ?? ""
+            let run = #"{"ok":true,"state":"ok","advance":{"eligible":10,"limit":5,"attempted":5,"unread":1,"failed":1,"deferred":5\#(field)}}"#
+            return try XCTUnwrap(try decode(statusReply(lastRun: run)).lastRun.advance)
+        }
+        XCTAssertEqual(try stop("cap").stopped, .cap)
+        XCTAssertEqual(try stop("cap").stopNote, "Stopped at the per-run cap of 5 (advance_per_run).")
+        XCTAssertEqual(try stop("unread_streak").stopNote, "Stopped early: no decision backend could read several postings in a row.")
+        XCTAssertEqual(try stop("none_read").stopped, .noneRead)
+        XCTAssertEqual(try stop("none_read").stopNote, "Stopped: no decision backend read any posting.")
+        XCTAssertEqual(try stop("cancelled").stopNote, "Stopped: the run was cancelled.")
+        // A reason a newer vani adds is shown as written, never as finished.
+        XCTAssertEqual(try stop("budget").stopped, .unknown("budget"))
+        XCTAssertEqual(try stop("budget").stopNote, "Stopped: budget.")
+        XCTAssertEqual(try stop(String(repeating: "z", count: 500)).stopNote?.count, "Stopped: .".count + 60)
+        // Absent (Go omits "") or empty: the phase worked through everything.
+        XCTAssertNil(try stop(nil).stopped)
+        XCTAssertNil(try stop(nil).stopNote)
+        XCTAssertNil(try stop("").stopped)
+        XCTAssertEqual(try stop(nil).outcome, "3 advanced, 1 unread by every decision backend, 1 failed a stage; those stay for the next run")
+    }
+
+    func testAdvanceEdgeCounts() {
+        typealias A = PipelineStatus.LastRun.Advance
+        XCTAssertEqual(A(eligible: 0, limit: 300, attempted: 0, deferred: 0).summary, "No posting was waiting for a stage")
+        XCTAssertEqual(A(eligible: 1, limit: 300, attempted: 1, deferred: 0).summary, "1 of 1 eligible posting attempted this run")
+        XCTAssertEqual(A(eligible: 1, limit: 300, attempted: 1, unread: 3, deferred: 0).advanced, 0, "never negative")
+    }
+
+    func testAMalformedAdvanceFailsTheReadInsteadOfLookingAbsent() {
+        let run = #"{"ok":true,"state":"ok","advance":{"eligible":"many"}}"#
+        XCTAssertThrowsError(try decode(statusReply(lastRun: run)))
+    }
+
+    func testBackendErrorExamplesAreBoundedToOneLine() throws {
+        let long = String(repeating: "x", count: 1000)
+        let errs = PipelineStatus.LastRun.BackendErrors(causes: [
+            .init(backend: "anthropic", count: 9, example: "line one\nline two\r\n\t\u{202E}reversed\u{0007}bell  "),
+            .init(backend: "openrouter", count: 4, example: long),
+            .init(backend: "gemini", count: 1, example: ""),
+            .init(backend: "local", count: 2, example: "connection refused"),
+            .init(backend: "lappi", count: 1, example: "timeout"),
+        ])
+        let lines = errs.lines()
+        XCTAssertEqual(lines.map(\.backend), ["anthropic", "openrouter", "gemini"], "the first three, in vani's order")
+        XCTAssertEqual(lines[0].example, "line one line two reversed bell")
+        XCTAssertEqual(lines[1].example.count, PipelineStatus.LastRun.BackendErrors.maxExample)
+        XCTAssertTrue(lines[1].example.hasSuffix("…"))
+        XCTAssertEqual(lines[2].example, "")
+        XCTAssertEqual(errs.moreNote(), "2 more causes (3 calls)")
+        XCTAssertNil(errs.moreNote(limit: 5))
+        XCTAssertEqual(errs.lines(limit: -1), [])
+        XCTAssertEqual(PipelineStatus.bounded("  \n ", max: 10), "")
+        XCTAssertEqual(PipelineStatus.bounded("abcdef", max: 3), "ab…")
+        XCTAssertEqual(PipelineStatus.bounded("abc", max: 3), "abc")
+    }
+
+    func testBackendErrorsWithOnlyUnrecordedCauses() throws {
+        let run = #"{"ok":true,"state":"ok","backend_errors":{"causes":[],"unrecorded":1}}"#
+        let errs = try XCTUnwrap(try decode(statusReply(lastRun: run)).lastRun.backendErrors)
+        XCTAssertEqual(errs.lines(), [])
+        XCTAssertEqual(errs.summary, "1 failed call to decision backends")
+        XCTAssertEqual(errs.moreNote(), "1 call with causes not recorded")
+        // A cause list a vani leaves out entirely reads as none, not as a failure.
+        let bare = try XCTUnwrap(try decode(statusReply(lastRun: #"{"ok":true,"state":"ok","backend_errors":{"unrecorded":2}}"#)).lastRun.backendErrors)
+        XCTAssertEqual(bare.totalCalls, 2)
+    }
+
+    /// The run-detail contract end to end: a run record holding an advance
+    /// report and backend errors, read back through the real `vani status`.
+    /// Needs Vani/build/vani built from this checkout.
+    func testRunDetailAgainstTheRealVani() throws {
+        let vani = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("build/vani")
+        guard FileManager.default.isExecutableFile(atPath: vani.path) else {
+            throw XCTSkip("no Go vani at \(vani.path); build it to run the contract test")
+        }
+        let state = try tempDir(self)
+        let runs = state.appendingPathComponent("runs")
+        try FileManager.default.createDirectory(at: runs, withIntermediateDirectories: true)
+        // The record shape of cmd/vani/runrecord.go (runRecord).
+        let record = #"{"v":1,"pid":1,"started_at":"2026-10-19T12:00:00Z","finished_at":"2026-10-19T12:04:00Z","outcome":"failed","stage":"pipeline","error":"pipeline: no decision backend read 20 postings in a row","advance":{"eligible":3027,"limit":300,"attempted":20,"unread":20,"failed":0,"deferred":3007,"stopped":"unread_streak"},"backend_errors":{"causes":[{"backend":"anthropic","count":2,"example":"anthropic: http 429 (request req_1): rate_limit_error"}],"unrecorded":3}}"#
+        try Data(record.utf8).write(to: runs.appendingPathComponent("last.json"))
+
+        let s = try PipelineClient(vaniBinary: vani, configPath: state.appendingPathComponent("none.json").path, stateDir: state.path).status()
+        XCTAssertEqual(s.lastRun.state, .failed)
+        XCTAssertEqual(try XCTUnwrap(s.lastRun.advance),
+                       PipelineStatus.LastRun.Advance(eligible: 3027, limit: 300, attempted: 20, unread: 20, failed: 0, deferred: 3007, stopped: .unreadStreak))
+        XCTAssertEqual(try XCTUnwrap(s.lastRun.backendErrors),
+                       PipelineStatus.LastRun.BackendErrors(causes: [.init(backend: "anthropic", count: 2, example: "anthropic: http 429 (request req_1): rate_limit_error")], unrecorded: 3))
+
+        // A record from before the detail: both absent, still read.
+        let old = #"{"v":1,"pid":1,"started_at":"2026-10-19T12:00:00Z","finished_at":"2026-10-19T12:04:00Z","outcome":"ok"}"#
+        try Data(old.utf8).write(to: runs.appendingPathComponent("last.json"))
+        let plain = try PipelineClient(vaniBinary: vani, configPath: state.appendingPathComponent("none.json").path, stateDir: state.path).status()
+        XCTAssertEqual(plain.lastRun.state, .ok)
+        XCTAssertNil(plain.lastRun.advance)
+        XCTAssertNil(plain.lastRun.backendErrors)
+    }
+
     // MARK: client
 
     func testClientReadsStatusAndPassesTheVaniPaths() throws {

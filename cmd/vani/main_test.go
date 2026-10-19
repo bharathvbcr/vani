@@ -372,6 +372,10 @@ func TestCountsForUsesScheduleZone(t *testing.T) {
 	if c.New != 1 || c.Dead != 1 || c.Dropped != 0 {
 		t.Errorf("counts %+v", c)
 	}
+	// Every live posting awaits triage, whichever day it was first seen.
+	if c.AwaitingTriage != 2 {
+		t.Errorf("awaiting triage %d, want 2", c.AwaitingTriage)
+	}
 }
 
 func TestWatchlistAddWorkdayAndPage(t *testing.T) {

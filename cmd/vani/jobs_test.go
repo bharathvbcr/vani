@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ type seedJob struct {
 	key, title, fit, rank, url string
 	status                     posting.Status
 	age                        time.Duration
+	company                    string // "" is Acme
 }
 
 // seedJobs writes a ledger and returns it still open, so every command under
@@ -31,7 +34,11 @@ func seedJobs(t *testing.T, stateDir string, jobs ...seedJob) *ledger.File {
 	}
 	t.Cleanup(func() { l.Close() })
 	for _, j := range jobs {
-		p := posting.Posting{Key: posting.Key(j.key), ATS: "gh", Company: "Acme", Title: j.title, URL: j.url,
+		company := j.company
+		if company == "" {
+			company = "Acme"
+		}
+		p := posting.Posting{Key: posting.Key(j.key), ATS: "gh", Company: company, Title: j.title, URL: j.url,
 			Description: "Build things.\n\nWith people.\x1b[31m"}
 		ann := map[string]string{ledger.AnnExplanation: "Fits: Inference serving and runtimes (88%)."}
 		if j.fit != "" {
@@ -64,6 +71,72 @@ func keys(l jobsListJSON) string {
 		ks = append(ks, string(j.Key))
 	}
 	return strings.Join(ks, " ")
+}
+
+// Postings awaiting triage are not listed, but they are counted: a board whose
+// 656 postings all waited for triage read as "no jobs" in the app.
+func TestJobsReportPostingsAwaitingTriage(t *testing.T) {
+	_, state := setup(t)
+	seedJobs(t, state,
+		seedJob{key: "gh:anthropic:1", title: "Performance Engineer, Inference", status: posting.Live, company: "Anthropic"},
+		seedJob{key: "gh:anthropic:2", title: "Applied AI Engineer", status: posting.Live, company: "Anthropic"},
+		seedJob{key: "gh:anthropic:3", title: "Research Engineer", status: posting.Dead, company: "Anthropic"},
+		seedJob{key: "ab:cohere:1", title: "ML Engineer", status: posting.Live, company: "Cohere"},
+		seedJob{key: "ab:cohere:2", title: "Inference Engineer", fit: "strong_fit", status: posting.Digested, company: "Cohere"},
+	)
+	l := listJSON(t, "--q", "  ANTHROPIC ")
+	if l.Total != 0 || len(l.Jobs) != 0 {
+		t.Fatalf("untriaged postings were listed: %s", keys(l))
+	}
+	want := pendingJSON{Total: 3, Matching: 2, Companies: []pendingCompanyJSON{{"Anthropic", 2}, {"Cohere", 1}}}
+	if !reflect.DeepEqual(l.Pending, want) {
+		t.Fatalf("pending %+v, want %+v", l.Pending, want)
+	}
+	if all := listJSON(t); all.Pending.Matching != 3 || all.Total != 1 {
+		t.Fatalf("no query: pending %+v, total %d", all.Pending, all.Total)
+	}
+
+	o, _ := mustCode(t, 0, "jobs", "stats", "--json", "--q", "inference")
+	var s jobsStatsJSON
+	if err := json.Unmarshal([]byte(o), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Total != 1 || s.Pending.Total != 3 || s.Pending.Matching != 1 {
+		t.Fatalf("stats total %d pending %+v", s.Total, s.Pending)
+	}
+
+	text, _ := mustCode(t, 0, "jobs", "list", "--q", "anthropic")
+	if !strings.Contains(text, `awaiting triage (not listed until a run triages them): 2 matching "anthropic", 3 in all`) {
+		t.Fatalf("text list does not say what waits:\n%s", text)
+	}
+}
+
+// Nothing waiting: zero, an empty list (not null), and no text line.
+func TestJobsPendingEmpty(t *testing.T) {
+	_, state := setup(t)
+	seedJobs(t, state, seedJob{key: "gh:a:1", title: "Engineer", fit: "strong_fit", status: posting.Digested})
+	o, _ := mustCode(t, 0, "jobs", "list", "--json")
+	if !strings.Contains(o, `"pending":{"total":0,"matching":0,"companies":[]}`) {
+		t.Fatalf("reply %s", o)
+	}
+	if text, _ := mustCode(t, 0, "jobs", "list"); strings.Contains(text, "awaiting triage") {
+		t.Fatalf("text names a backlog that is not there:\n%s", text)
+	}
+}
+
+// The company list is bounded and the total still counts every posting.
+func TestJobsPendingCompaniesAreBounded(t *testing.T) {
+	var recs []ledger.Record
+	for i := 0; i < maxPendingCompanies+5; i++ {
+		for j := 0; j <= i; j++ {
+			k := posting.Key(fmt.Sprintf("gh:c%02d:%d", i, j))
+			recs = append(recs, ledger.Record{Key: k, Status: posting.Live, Posting: posting.Posting{Key: k, Company: fmt.Sprintf("C%02d", i)}})
+		}
+	}
+	p := pendingOf(ledger.Snapshot{Records: recs}, nil, "")
+	if len(p.Companies) != maxPendingCompanies || p.Total != len(recs) || p.Companies[0].Company != "C24" {
+		t.Fatalf("%d companies, total %d of %d, first %+v", len(p.Companies), p.Total, len(recs), p.Companies[0])
+	}
 }
 
 func TestJobsListOrdersAndFilters(t *testing.T) {

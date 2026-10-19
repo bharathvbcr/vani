@@ -69,6 +69,25 @@ type Config struct {
 	// floor: a longer Crawl-delay in the host's robots.txt wins. Zero leaves
 	// Crawl-delay alone. At most page.MaxInterval.
 	PageIntervalMS int `json:"page_interval_ms,omitempty"`
+	// AdvancePerRun bounds how many postings one run triages, scores and
+	// explains, which bounds a run's spend and duration. Postings past it stay
+	// live (listed, not yet triaged) for the next run. Zero means
+	// DefaultAdvancePerRun; at most MaxAdvancePerRun.
+	AdvancePerRun int `json:"advance_per_run,omitempty"`
+}
+
+// Per-run advance bounds (Config.AdvancePerRun).
+const (
+	DefaultAdvancePerRun = 300
+	MaxAdvancePerRun     = 5000
+)
+
+// AdvanceLimit is AdvancePerRun with zero read as the default.
+func (c Config) AdvanceLimit() int {
+	if c.AdvancePerRun == 0 {
+		return DefaultAdvancePerRun
+	}
+	return c.AdvancePerRun
 }
 
 // PageInterval is PageIntervalMS as a duration; zero means no wait.
@@ -659,6 +678,9 @@ func (c Config) Validate() error {
 	}
 	if maxMS := int(page.MaxInterval / time.Millisecond); c.PageIntervalMS < 0 || c.PageIntervalMS > maxMS {
 		add("page_interval_ms %d must be within 0..%d", c.PageIntervalMS, maxMS)
+	}
+	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
+		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)
 	}
 	switch c.Decide.Shadow {
 	case "":
