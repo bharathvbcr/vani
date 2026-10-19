@@ -1,0 +1,56 @@
+{
+ "status": 200,
+ "error": {
+  "message": "",
+  "body": ""
+ },
+ "data": {
+  "count": 2,
+  "positions": [
+   {
+    "id": 1970393556991825,
+    "displayJobId": "200054445",
+    "name": "Senior Applied Scientist(Agentic RL & LLM Post-Training)",
+    "locations": [
+     "China, Jiangsu, Suzhou",
+     "China, Beijing, Beijing"
+    ],
+    "standardizedLocations": [
+     "Suzhou, Jiangsu, CN",
+     "Beijing, Beijing, CN"
+    ],
+    "postedTs": 1791734400,
+    "solrScore": null,
+    "stars": 0,
+    "department": "Applied Sciences",
+    "creationTs": 1788975970,
+    "isHot": 0,
+    "workLocationOption": "onsite",
+    "locationFlexibility": null,
+    "atsJobId": "200054445",
+    "positionUrl": "/careers/job/1970393556991825"
+   },
+   {
+    "id": 1970393557002381,
+    "displayJobId": "200057010",
+    "name": "Sr. Software Engineer - AI Inference & Serving",
+    "locations": [
+     "United States, Washington, Redmond"
+    ],
+    "standardizedLocations": [
+     "Redmond, WA, US"
+    ],
+    "postedTs": 1791576133,
+    "solrScore": null,
+    "stars": 0,
+    "department": "Software Engineering",
+    "creationTs": 1789750979,
+    "isHot": 0,
+    "workLocationOption": "onsite",
+    "locationFlexibility": null,
+    "atsJobId": "200057010",
+    "positionUrl": "/careers/job/1970393557002381"
+   }
+  ]
+ }
+}

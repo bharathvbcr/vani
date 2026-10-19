@@ -381,7 +381,7 @@ func TestSearchSiteBoards(t *testing.T) {
 		"search too long":         {mod(1, func(b *sources.Board) { b.Search = long }), "at most"},
 		"control char in search":  {mod(1, func(b *sources.Board) { b.Search = "a\nb" }), "control"},
 		"unverified filter":       {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"degree": {"MASTERS"}} }), "is not one of"},
-		"filter on eightfold":     {mod(3, func(b *sources.Board) { b.Filters = map[string][]string{"location": {"US"}} }), "not supported"},
+		"unverified eightfold":    {mod(3, func(b *sources.Board) { b.Filters = map[string][]string{"department": {"x"}} }), "is not one of"},
 		"filter on workday":       {mod(4, func(b *sources.Board) { b.Filters = map[string][]string{"x": {"y"}} }), "not supported"},
 		"empty filter values":     {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {}} }), "values"},
 		"blank filter value":      {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {" "}} }), "value"},

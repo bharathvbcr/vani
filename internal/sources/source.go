@@ -63,6 +63,8 @@ var FilterKeys = map[posting.ATS][]string{
 	posting.Google: {"target_level", "location"},
 	posting.Amazon: {"normalized_country_code[]", "category[]"},
 	posting.Apple:  {"location"},
+	// "United States": Microsoft 330 -> 179, Qualcomm 359 -> 156.
+	posting.Eightfold: {"location"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then
