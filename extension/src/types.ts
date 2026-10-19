@@ -55,7 +55,7 @@ export interface Bank {
   settings: Settings;
 }
 
-export type MatchVia = "signature" | "autocomplete" | "label" | "fuzzy";
+export type MatchVia = "signature" | "autocomplete" | "label" | "intent" | "fuzzy";
 
 export interface Match {
   answer: Answer;

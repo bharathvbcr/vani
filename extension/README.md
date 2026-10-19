@@ -33,6 +33,23 @@ native-messaging manifest allows. `dist-safari/` is the same code with a Safari-
    Fields you have already typed into are left alone, unless you tick "overwrite typed values".
    Search-as-you-type fields are left alone unless you tick "type into search fields".
    Questions it hasn't seen are left blank. Answer them, and they're saved for next time.
+   **Your basics** in the popup (first and last name, email, phone, city, country, LinkedIn, GitHub,
+   website) fills those on the very first form: they are saved as ordinary answers, under the keys
+   a form's `autocomplete` or question resolves to, and edited or deleted in the answers table like
+   any other. The section opens by itself while no first name or email is saved. Below them are the
+   **questions most forms ask** (`src/intents.ts`): authorized to work, visa sponsorship, relocation,
+   working in person, interviewed or applied before, earliest start date, deadlines or timeline,
+   how you heard, salary expectations, and the AI-use policy. One answer fills every wording of the
+   question ("Do you require visa sponsorship?", "Will you now or in the future require
+   sponsorship…?"), confidently (green), and a question you answered on a form shows in its box.
+   An exact wording you answered by hand still wins over the general answer; among wordings the
+   latest answer wins. A label that reads as two of them (authorized to work *without*
+   sponsorship: opposite answers) fills from neither. The AI-policy answer always fills yellow,
+   to read. With self-ID turned on, gender, Hispanic/Latino, race, veteran and disability get boxes
+   too, and a saved "Decline to self-identify" takes each form's own decline option ("I don't wish to
+   answer", "I do not want to answer").
+   Not offered, on purpose: arbitration and other legal agreements (a waiver is chosen per employer,
+   by you), and why-this-company essays (below).
 3. In the popup you can view, edit and delete answers, turn the extension off for a site, and
    export or import the bank as JSON.
 
@@ -271,7 +288,25 @@ flowchart LR
   option) are held for the page and saved on submit, Next/Continue/Save, Enter, a route change,
   pagehide and the tab being hidden. Saving the same page twice changes nothing: the page keeps
   what each field last sent, so the same value for the same field is not sent again even if the
-  saved answers have not caught up (a refused save is not remembered, so it is retried).
+  saved answers have not caught up (a refused save is not remembered, so it is retried). Only a
+  page that has shown at least 3 questions is saved on its own; on a smaller page (a search page
+  the popup ran Vani on) only **Save answers** saves, so a search query pressed with Enter is never
+  kept as an answer.
+- Why-this-company questions ("Why Anthropic?", "Why do you want to work here?", "What excites you
+  about this role?") are never filled from saved answers, even word for word: such an answer is
+  written for one posting, and every Greenhouse company shares one host, so a saved one cannot tell
+  which company it was for. Fill lists them as new questions, for **Draft** or **Suggest** to write
+  from the posting on the page; the panel's "Use: …" buttons still offer an earlier answer on a click.
+- Not questions, so never read, saved or filled: search boxes (`type=search`, `role=searchbox`,
+  anything inside `role=search` or `<search>`), and a text box hidden from assistive technology and
+  out of the tab order (`aria-hidden=true`, negative `tabindex`). React-Select keeps one beside each
+  required dropdown on job-boards.greenhouse.io until a value is chosen; counting it doubled every
+  dropdown. A hidden select, checkbox or radio is still read: custom widgets keep their value there.
+- A choice is matched with a trailing dialling code set aside: "United States" picks
+  job-boards.greenhouse.io's "United States +1", and an answer saved as "United States +1" fills a
+  plain "United States". That Country box shows only "+1" once a country is chosen, so a bare
+  dialling code never replaces a saved answer that names more; it is kept only where it is the
+  whole answer (a "Country code" question).
 - Coverage: the panel and popup show, for the page, fields found / ready / new / manual / skipped,
   and list the questions with no saved answer. A scan reads at most 500 fields and 40,000 nodes;
   when it stops early the report says how many controls it did not read.

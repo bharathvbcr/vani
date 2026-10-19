@@ -4,6 +4,7 @@ import { autocompleteKey, jaccard, normalizeLabel, signature, siteKey, tokens } 
 import { classify } from "../src/classify";
 import { MAX_ANSWERS, exportBank, mergeCapture, parseBank } from "../src/bank";
 import { mapChoice, matchField } from "../src/match";
+import { pendingDiff } from "../src/capture";
 
 const now = new Date("2026-10-18T12:00:00Z");
 
@@ -100,6 +101,22 @@ describe("capture", () => {
     expect(first.answers["phone number"]!.value).toEqual(["111"]); // the input bank is not mutated
   });
 
+  test("a bare dialling code never replaces a saved country", () => {
+    // job-boards.greenhouse.io's Country shows only "+1" once United States is chosen.
+    const saved = mergeCapture(emptyBank(), [field({ label: "Country", autocomplete: "country-name", value: ["United States"] })], "vani-basics", now).bank;
+    const shown = field({ label: "Country", name: "country", kind: "select", value: ["+1"] });
+    const r = mergeCapture(saved, [shown], "job-boards.greenhouse.io", now);
+    expect(r.added + r.updated).toBe(0);
+    expect(r.bank.answers["country"]!.value).toEqual(["United States"]);
+    // ...and the page does not offer it as a change on every flush.
+    expect(pendingDiff(saved, [shown], "job-boards.greenhouse.io").send).toEqual([]);
+    // A fuller value still replaces it, and a code is kept where it is the only answer there is.
+    expect(mergeCapture(saved, [{ ...shown, value: ["Canada +1"] }], "x", now).bank.answers["country"]!.value).toEqual(["Canada +1"]);
+    const code = mergeCapture(emptyBank(), [field({ label: "Country code", kind: "select", options: ["+1", "+44"], value: ["+1"] })], "x", now);
+    expect(code.bank.answers["country code"]!.value).toEqual(["+1"]);
+    expect(mergeCapture(code.bank, [field({ label: "Country code", kind: "select", value: ["+44"] })], "x", now).bank.answers["country code"]!.value).toEqual(["+44"]);
+  });
+
   test("the bank is capped", () => {
     let b: Bank = emptyBank();
     const many = Array.from({ length: MAX_ANSWERS + 5 }, (_, i) => field({ label: `question ${i} text`, value: ["v"] }));
@@ -134,10 +151,17 @@ describe("match", () => {
   });
 
   test("reworded question: fuzzy match, filled for review", () => {
-    const m = matchField(field({ label: "Do you require visa sponsorship now or in the future?", kind: "select", options: ["Select...", "Yes", "No"] }), bank, "jobs.ashbyhq.com");
+    const m = matchField(field({ label: "I have read and agree to the privacy notice", kind: "checkbox", options: [] }), bank, "jobs.ashbyhq.com");
     expect(m?.via).toBe("fuzzy");
-    expect(m?.value).toEqual(["No"]);
+    expect(m?.value).toEqual(["yes"]);
     expect(m?.review).toBe(true);
+  });
+
+  test("reworded question with a known intent: filled confidently from the other wording", () => {
+    const m = matchField(field({ label: "Do you require visa sponsorship now or in the future?", kind: "select", options: ["Select...", "Yes", "No"] }), bank, "jobs.ashbyhq.com");
+    expect(m?.via).toBe("intent");
+    expect(m?.value).toEqual(["No"]);
+    expect(m?.review).toBe(false);
   });
 
   test("choices map across option wordings", () => {
@@ -146,10 +170,29 @@ describe("match", () => {
     expect(mapChoice("United States", ["Canada", "United States of America"])).toBe("United States of America");
   });
 
+  test("a phone-country picker's dialling code does not hide the country", () => {
+    // job-boards.greenhouse.io's Country list reads "United States +1".
+    const gh = ["United States +1", "United States Minor Outlying Islands +1", "United Kingdom +44", "Antigua & Barbuda (+1 268)"];
+    expect(mapChoice("United States", gh)).toBe("United States +1");
+    expect(mapChoice("USA", gh)).toBe("United States +1");
+    expect(mapChoice("Antigua & Barbuda", gh)).toBe("Antigua & Barbuda (+1 268)");
+    // The reverse: an answer captured from that picker fills a plain list.
+    expect(mapChoice("United States +1", ["Canada", "United States"])).toBe("United States");
+    // Only a trailing "+code" is a dialling code: plain numbers still tell options apart.
+    expect(mapChoice("Level 1", ["Level 1", "Level 2"])).toBe("Level 1");
+    expect(mapChoice("Level 2", ["Level 1", "Level 2"])).toBe("Level 2");
+    expect(mapChoice("Canada", ["United States +1", "United Kingdom +44"])).toBe(null);
+  });
+
   test("long free text is always a draft", () => {
-    const m = matchField(field({ label: "Why do you want to work here?", kind: "textarea" }), bank, "jobs.lever.co");
+    const b = mergeCapture(bank, [field({ label: "Describe a project you are proud of", kind: "textarea", value: ["p".repeat(400)] })], "boards.greenhouse.io", now).bank;
+    const m = matchField(field({ label: "Describe a project you are proud of", kind: "textarea" }), b, "jobs.lever.co");
     expect(m?.via).toBe("label");
     expect(m?.review).toBe(true);
+  });
+
+  test("a company-motivation essay is never filled from a saved answer, even word for word", () => {
+    expect(matchField(field({ label: "Why do you want to work here?", kind: "textarea" }), bank, "jobs.lever.co")).toBe(null);
   });
 
   test("single checkbox follows the yes/no meaning", () => {

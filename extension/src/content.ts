@@ -13,7 +13,7 @@ import type { Bank } from "./types";
 import { type FieldRef, scanForm } from "./extract";
 import { type FillOutcome, clearMarks, fillAll, fillRef, insertDraft } from "./fill";
 import { type Coverage, bucketOf, coverageLine, coverageOf } from "./coverage";
-import { type FlushResult, type Tracker, createTracker } from "./tracker";
+import { type FlushResult, MIN_FORM_FIELDS, type Tracker, createTracker } from "./tracker";
 import { currentText, draftable, suggest } from "./suggest";
 import { readJobInfo } from "./jobinfo";
 import { type DraftReply, type JobInfo, buildDraftRequest, parseDraftReply } from "./draft";
@@ -26,7 +26,6 @@ import {
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
 import { contentListener } from "./frames";
 
-const MIN_FORM_FIELDS = 3;
 const PANEL_LIST = 8;
 
 function send<T>(msg: ToBackground): Promise<T> {

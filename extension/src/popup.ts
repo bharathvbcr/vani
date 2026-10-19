@@ -5,6 +5,7 @@ import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./message
 import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
+import { BASICS, BASICS_HOST, basicsFields, basicsValues } from "./basics";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -72,8 +73,82 @@ function render(): void {
   $("#storage").textContent = (mode === "mac-app" ? "Stored by the Vani Apply Mac app." : "Stored in this browser only.") + (note ? ` ${note}` : "");
   const bytes = bankBytes(current);
   $("#size").textContent = `${Math.round(bytes / 1000)} KB of ${MAX_BANK_BYTES / 1000} KB used.`;
+  renderBasics();
   ($("#selfid") as HTMLInputElement).checked = current.settings.captureSelfId;
   ($("#disabled") as HTMLInputElement).checked = current.settings.disabledHosts.includes(host);
+}
+
+// --- your basics ---------------------------------------------------------------------
+// Typed once here, saved through the same capture as a hand-filled form, so the
+// first application fills them too. A box you have typed into is not refilled
+// from the bank until it is saved.
+
+let basicsTyped = false;
+
+function basicInput(id: string): HTMLInputElement | HTMLSelectElement {
+  return $(`#basic-${id}`) as HTMLInputElement | HTMLSelectElement;
+}
+
+function option(value: string, text = value): HTMLOptionElement {
+  const o = document.createElement("option");
+  o.value = value;
+  o.textContent = text;
+  return o;
+}
+
+/** One row per basic, in its group: a dropdown where the answer is a choice, else a text box. */
+function buildBasics(): void {
+  for (const b of BASICS) {
+    const label = document.createElement("label");
+    label.htmlFor = `basic-${b.id}`;
+    label.textContent = b.label;
+    let box: HTMLInputElement | HTMLSelectElement;
+    if (b.options) {
+      box = document.createElement("select");
+      box.append(option("", "—"), ...b.options.map(o => option(o)));
+      box.onchange = () => { basicsTyped = true; };
+    } else {
+      box = document.createElement("input");
+      box.type = b.kind === "email" || b.kind === "tel" || b.kind === "url" ? b.kind : "text";
+      box.setAttribute("autocomplete", b.autocomplete || "off");
+      box.oninput = () => { basicsTyped = true; };
+    }
+    box.id = `basic-${b.id}`;
+    $(`#basic-${b.group}`).append(label, box);
+  }
+}
+
+function renderBasics(): void {
+  const v = basicsValues(current);
+  if (!basicsTyped) {
+    for (const b of BASICS) {
+      const box = basicInput(b.id);
+      const saved = v[b.id] ?? "";
+      // An answer saved from a form's own wording ("No, I will not") is shown as it is, not lost.
+      if (box instanceof HTMLSelectElement && saved && !Array.from(box.options).some(o => o.value === saved)) box.append(option(saved));
+      box.value = saved;
+    }
+  }
+  $("#basic-selfid-box").hidden = !current?.settings.captureSelfId;
+  // Open while the bank still lacks the basics every form asks for.
+  if (!v.first || !v.email) ($("#basics") as HTMLDetailsElement).open = true;
+}
+
+async function saveBasics(): Promise<void> {
+  const out = $("#basic-status");
+  const values: Record<string, string> = {};
+  for (const b of BASICS) values[b.id] = basicInput(b.id).value;
+  const fields = basicsFields(values, basicsValues(current));
+  if (fields.length === 0) { out.textContent = "Nothing new to save."; return; }
+  try {
+    const r = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
+    if (!r || !("added" in r)) throw new Error((r && "error" in r && r.error) || "no reply from the extension");
+    basicsTyped = false;
+    out.textContent = `Saved ${r.added + r.updated}` + (r.skippedSecret ? `; ${r.skippedSecret} refused as sensitive` : "") + ".";
+    await refresh();
+  } catch (e) {
+    out.textContent = `Could not save: ${e instanceof Error ? e.message : String(e)}`;
+  }
 }
 
 async function refresh(): Promise<void> {
@@ -205,6 +280,7 @@ $("#save").onclick = async () => {
     await refresh();
   } catch (e) { status(String(e)); }
 };
+$("#basic-save").onclick = () => { void saveBasics(); };
 $("#filter").oninput = render;
 $("#selfid").onchange = async () => {
   await bg({ type: "setSettings", settings: { captureSelfId: ($("#selfid") as HTMLInputElement).checked } });
@@ -239,4 +315,5 @@ $("#import").onchange = async ev => {
   } catch (e) { status(`Import failed: ${e instanceof Error ? e.message : String(e)}`); }
 };
 
+buildBasics();
 void init();

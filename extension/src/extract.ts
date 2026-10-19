@@ -82,7 +82,7 @@ function kindOf(el: HTMLElement): FieldKind {
   if (t === "select") return (el as HTMLSelectElement).multiple ? "checkbox" : "select";
   if (t !== "input") return "other";
   switch ((el as HTMLInputElement).type) {
-    case "text": case "search": return "text";
+    case "text": return "text";
     case "email": return "email";
     case "tel": return "tel";
     case "url": return "url";
@@ -106,6 +106,23 @@ function visible(el: HTMLElement): boolean {
   }
   const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
   return cs ? cs.visibility !== "hidden" : true;
+}
+
+/** A site or page search box: what it holds is a query, not an answer to keep. */
+function searchBox(el: HTMLElement): boolean {
+  return (el as HTMLInputElement).type === "search" || el.getAttribute("role") === "searchbox" || el.closest("[role=search], search") !== null;
+}
+
+/**
+ * A text box no person can reach: hidden from assistive technology and out of
+ * the tab order. React-Select keeps one beside each required dropdown until a
+ * value is chosen, only for the browser's required check (job-boards.greenhouse.io);
+ * honeypots look the same. A select or a check/radio input hidden this way is
+ * often the real value holder of a custom widget, so those are still read.
+ */
+function requiredProxy(el: HTMLElement, kind: FieldKind): boolean {
+  if (el.localName === "select" || kind === "checkbox" || kind === "radio") return false;
+  return el.getAttribute("aria-hidden") === "true" && el.tabIndex < 0;
 }
 
 /** The question text for a single control. */
@@ -348,7 +365,9 @@ export function scanForm(root: ParentNode = document): FormScan {
         const i = el as HTMLInputElement;
         if (t === "input" && SKIP_TYPES.has(i.type)) continue;
         if (!visible(el)) continue;
+        if (searchBox(el)) continue;
         const kind = kindOf(el);
+        if (requiredProxy(el, kind)) continue;
         if (kind === "radio" || (kind === "checkbox" && t === "input" && i.name)) {
           const key = `${kind}|${scopeId(i.form ?? el.getRootNode(), scopeIds)}|${i.name}`;
           const g = nativeGroups.get(key);

@@ -1,7 +1,8 @@
 import { type Answer, type Bank, type FieldInfo, type Match, CHOICE_KINDS } from "./types";
-import { autocompleteKey, jaccard, normalizeLabel, signature, tokens } from "./normalize";
+import { autocompleteKey, jaccard, normalizeLabel, signature, tokens, withoutDialCode } from "./normalize";
 import { classify, untouchable } from "./classify";
 import { entryReadings, legacyEntryKey } from "./sections";
+import { intentByKey, intentOf, motivationEssay } from "./intents";
 
 /** Below this a fuzzy label match is not trusted at all. */
 export const MIN_FUZZY = 0.6;
@@ -10,27 +11,41 @@ export const CONFIDENT = 0.85;
 
 const YES = new Set(["yes", "y", "true", "i do", "i am", "i agree", "agree", "checked"]);
 const NO = new Set(["no", "n", "false", "i do not", "i am not", "unchecked"]);
+/** Declining to answer, in the wordings self-identification lists use (on normalized text). */
+const DECLINE = /\b(decline[ds]?|prefer not|rather not|choose not|do not wish|dont wish|not wish|(do not|dont) want to (answer|say|disclose|identify|self identify)|not to (answer|say|disclose|identify|self identify))\b/;
 
 /**
- * Map a remembered choice onto this field's options: exact label first, then
- * yes/no meaning, then the closest option by tokens. A value with no
- * acceptable option maps to nothing, so the field is left alone.
+ * Map a remembered choice onto this field's options: exact label first (then
+ * exact once dialling codes are set aside), then declining (a saved "decline"
+ * takes the form's own decline option, and nothing else), then yes/no meaning,
+ * then the closest option by tokens. A value with no acceptable option maps to
+ * nothing, so the field is left alone.
  */
 export function mapChoice(value: string, options: string[]): string | null {
   const v = normalizeLabel(value);
   const norm = options.map(o => normalizeLabel(o));
   const exact = norm.indexOf(v);
   if (exact >= 0) return options[exact]!;
+  const bare = normalizeLabel(withoutDialCode(value));
+  const bareOptions = options.map(o => normalizeLabel(withoutDialCode(o)));
+  if (bare) {
+    const hits = bareOptions.flatMap((o, i) => (o === bare ? [i] : []));
+    if (hits.length === 1) return options[hits[0]!]!;
+  }
+  if (DECLINE.test(v)) {
+    const declines = norm.flatMap((o, i) => (DECLINE.test(o) ? [i] : []));
+    return declines.length === 1 ? options[declines[0]!]! : null;
+  }
   const polarity = YES.has(v) ? "yes" : NO.has(v) ? "no" : "";
   if (polarity) {
     const set = polarity === "yes" ? YES : NO;
     const i = norm.findIndex(o => set.has(o) || o.startsWith(polarity + " "));
     if (i >= 0) return options[i]!;
   }
-  const vt = tokens(value);
+  const vt = tokens(withoutDialCode(value));
   let best = -1, bestScore = 0;
-  norm.forEach((o, i) => {
-    const s = jaccard(vt, tokens(o));
+  options.forEach((o, i) => {
+    const s = jaccard(vt, tokens(withoutDialCode(o)));
     if (s > bestScore) { best = i; bestScore = s; }
   });
   return best >= 0 && bestScore >= 0.6 ? options[best]! : null;
@@ -72,6 +87,7 @@ export function matchField(field: FieldInfo, bank: Bank, host: string): Match | 
   const sens = classify(field);
   if (sens === "secret") return null;
   if (sens === "self_id" && !bank.settings.captureSelfId) return null;
+  if (motivationEssay(field.label)) return null; // written per posting: Draft and Suggest, never a saved answer
 
   const answers = Object.values(bank.answers);
   const usable = (a: Answer) => a.sensitivity !== "secret" && (a.sensitivity !== "self_id" || bank.settings.captureSelfId);
@@ -110,13 +126,25 @@ export function matchField(field: FieldInfo, bank: Bank, host: string): Match | 
     }
   }
 
-  candidates.sort((x, y) => y.score - x.score || y.a.uses - x.a.uses);
+  // The same question in other words (intents.ts): any answer saved under a wording of it. Below an
+  // exact wording, so a question answered specifically keeps its own answer; among wordings the latest wins.
+  const want = intentOf(field.label);
+  const intent = want ? intentByKey(want) : undefined;
+  if (intent) {
+    for (const a of answers) {
+      if (usable(a) && [a.key, ...a.labels].some(l => intentOf(l) === want)) candidates.push({ a, via: "intent", score: 0.88 });
+    }
+  }
+
+  candidates.sort((x, y) => y.score - x.score ||
+    (x.via === "intent" && y.via === "intent" ? y.a.updatedAt.localeCompare(x.a.updatedAt) : y.a.uses - x.a.uses));
   for (const c of candidates) {
     const value = valueFor(field, c.a);
     if (!value) continue;
     // A multi-select that lost some saved values to options this page lacks is a partial fill: check it.
     const partial = (field.multi === true || (field.kind === "checkbox" && field.options.length > 1)) && value.length < c.a.value.length;
-    return { answer: c.a, via: c.via, score: c.score, value, review: c.score < CONFIDENT || c.a.review || partial };
+    // An acknowledgement (intents.ts review) is always checked by hand, however it matched.
+    return { answer: c.a, via: c.via, score: c.score, value, review: c.score < CONFIDENT || c.a.review || partial || intent?.review === true };
   }
   return null;
 }

@@ -316,6 +316,21 @@ async function main(): Promise<void> {
     await cdp.send("DOM.setFileInputFiles", { nodeId, files: [bankFile] }, pp);
     const again = await until(() => cdp.eval<Json>(pp, `window.__changes === 3 && { changes: __changes, value: document.querySelector("#import").value }`), STEP_MS, "the same file chosen a third time fires change");
     check("import: the same file again after an import fires change again", again.value === "", again);
+    // Your basics: typed in the popup, saved as ordinary answers under the keys Fill looks up.
+    const typedBasics = { first: VALUES.fn, email: VALUES.em, linkedin: "https://www.linkedin.com/in/test-applicant", "visa-sponsorship": "No" };
+    await cdp.eval(pp, `(() => {
+      for (const [id, v] of Object.entries(${JSON.stringify(typedBasics)})) {
+        const i = document.getElementById("basic-" + id);
+        i.value = v; i.dispatchEvent(new Event("input"));
+      }
+      document.getElementById("basic-save").click();
+      return true;
+    })()`);
+    const basics = await until(() => cdp.eval<Json>(pp, `/^(Saved|Could)/.test(document.querySelector("#basic-status").textContent) && { status: document.querySelector("#basic-status").textContent, shown: document.getElementById("basic-first").value }`), STEP_MS, "basics saved");
+    const storedBasics = await cdp.eval<Json>(sw, `chrome.storage.local.get("vaniBank").then(r => Object.fromEntries(["first name", "email", "linkedin", "visa sponsorship", "city"].map(k => [k, r.vaniBank?.answers?.[k]?.value ?? null])))`);
+    check("popup basics are saved under the keys Fill uses, beside what was there",
+      basics.status === "Saved 4." && basics.shown === VALUES.fn && JSON.stringify(storedBasics) === JSON.stringify({ "first name": [VALUES.fn], email: [VALUES.em], linkedin: [typedBasics.linkedin], "visa sponsorship": ["No"], city: ["Testville"] }),
+      { basics, storedBasics });
     // 5. The DOM test page.
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${site.port}/test/dom.html` }, pg);
     const title = await until(() => cdp.eval<string>(pg, `/^(PASS|FAIL)/.test(document.title) && document.title`), 60_000, "test/dom.html result");

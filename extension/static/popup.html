@@ -20,6 +20,12 @@
   .scroll { max-height: 300px; overflow: auto; }
   input[type=search] { flex: 1; padding: 4px 6px; }
   label { display: inline-flex; gap: 4px; align-items: center; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; }
+  .grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 8px; align-items: center; margin-top: 6px; }
+  .grid input, .grid select { padding: 3px 6px; font: inherit; min-width: 0; }
+  .sub { margin-top: 10px; font-weight: 600; }
+  .sub .muted { font-weight: normal; }
 </style>
 </head>
 <body>
@@ -47,6 +53,17 @@
     <label><input type="checkbox" id="selfid"> Save voluntary self-ID answers (gender, race, veteran, disability)</label>
     <label><input type="checkbox" id="disabled"> Off on this site</label>
   </div>
+  <details id="basics">
+    <summary><strong>Your basics</strong> <span class="muted">— contact details and the questions every form asks, filled on every form</span></summary>
+    <div id="basic-contact" class="grid"></div>
+    <div class="sub">Questions most forms ask <span class="muted">(each fills every wording of it; the AI-policy answer always fills yellow, to check)</span></div>
+    <div id="basic-work" class="grid"></div>
+    <div id="basic-selfid-box" hidden>
+      <div class="sub">Voluntary self-identification</div>
+      <div id="basic-self_id" class="grid"></div>
+    </div>
+    <div class="row"><button id="basic-save">Save basics</button><span id="basic-status" class="muted"></span></div>
+  </details>
   <div class="row"><strong id="count"></strong><input type="search" id="filter" placeholder="Filter"></div>
   <div class="scroll">
     <table><thead><tr><td>Question</td><td>Answer</td><td>saved/filled</td><td></td></tr></thead><tbody id="answers"></tbody></table>

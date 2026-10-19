@@ -35,7 +35,7 @@ async function core(): Promise<void> {
   // 1. Extraction on the first form.
   const a = collectFields(gh);
   const byLabel = new Map(a.map(r => [r.info.label, r.info]));
-  check("first form: field count", a.length === 13, `got ${a.length}: ${a.map(r => r.info.label).join(" | ")}`);
+  check("first form: field count", a.length === 14, `got ${a.length}: ${a.map(r => r.info.label).join(" | ")}`);
   check("label via <label for>", byLabel.get("First Name *")?.autocomplete === "given-name");
   check("label via question container", byLabel.has("LinkedIn Profile"));
   const spons = byLabel.get("Will you now or in the future require sponsorship?");
@@ -49,6 +49,7 @@ async function core(): Promise<void> {
   set("input[name='job_application[answers_attributes][0][text_value]']", "https://linkedin.example/in/sam");
   q<HTMLInputElement>(gh, "input[name=q_spons][value='0']").checked = true;
   q<HTMLSelectElement>(gh, "#auth").value = "y";
+  set("#yrs", "6");
   set("#why", "Because ".repeat(50));
   set("#pw", "hunter2"); set("#ssn", "000-00-0000");
   q<HTMLInputElement>(gh, "input[name=privacy]").checked = true;
@@ -78,7 +79,10 @@ async function core(): Promise<void> {
   check("job-specific essay not guessed", val("textarea[name=comments]") === "");
   check("SSN left empty", val("input[name=ssn2]") === "");
   check("self-ID left empty", q<HTMLSelectElement>(lv, "select[name='eeo[gender]']").value === "");
-  check("fuzzy fills marked for review", document.querySelectorAll("[data-vani-fill=review]").length >= 1);
+  check("fuzzy fills marked for review", val("input[name='cards[yrs]']") === "6" && q(lv, "input[name='cards[yrs]']").getAttribute("data-vani-fill") === "review",
+    JSON.stringify(outcomes.find(o => o.label.startsWith("How many years"))));
+  const reworded = outcomes.find(o => o.label.startsWith("Do you require visa sponsorship"));
+  check("a reworded sponsorship question fills from the other wording by intent, confidently", reworded?.filled === true && reworded.via === "intent" && reworded.review === false, JSON.stringify(reworded));
   check("confident fills marked ok", document.querySelectorAll("[data-vani-fill=ok]").length >= 2);
   check("never submitted", submits === 0, `submits ${submits}`);
 
@@ -117,7 +121,7 @@ async function ariaWidgets(): Promise<void> {
   check("combobox filled by choosing the mapped option", shown("#rs2") === "United States", String(shown("#rs2")));
   check("combobox popup closed again", q<HTMLElement>(document, "#rs2-list").hidden);
   const radios = Array.from(dstRoot.querySelectorAll("[role=radio]"));
-  check("aria radio: 'No' chosen, marked for review (fuzzy)", radios[1]!.getAttribute("aria-checked") === "true" && radios[0]!.getAttribute("aria-checked") === "false" && out.find(o => o.label.startsWith("Are you willing"))?.review === true);
+  check("aria radio: 'No' chosen from the other wording's intent, confident", radios[1]!.getAttribute("aria-checked") === "true" && radios[0]!.getAttribute("aria-checked") === "false" && out.find(o => o.label.startsWith("Are you willing"))?.review === false);
   check("aria switch turned on", q(dstRoot, "[role=switch]").getAttribute("aria-checked") === "true");
   check("contenteditable filled", q<HTMLElement>(document, "#ce2").textContent === "Two weeks", String(q<HTMLElement>(document, "#ce2").textContent));
   const chips = () => Array.from(dstRoot.querySelectorAll(".select__multi-value__label")).map(n => n.textContent).join();
@@ -572,8 +576,67 @@ async function submitSignal(): Promise<void> {
   box.remove();
 }
 
+// job-boards.greenhouse.io (React, 2026-10): each react-select dropdown keeps a second
+// <input required tabindex=-1 aria-hidden=true> beside its combobox until a value is
+// chosen, only for the browser's required check. No person answers it: it is not a
+// question, and counting it doubled every dropdown and left "detached" rows after Fill.
+// Search boxes are not questions either.
+async function notQuestions(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML =
+    '<div class="select"><label id="rs-l" for="rs">Have you ever interviewed here before?<span aria-hidden="true">*</span></label>' +
+    '<div class="select-shell"><div class="select__control"><div class="select__value-container"><div class="select__placeholder">Select...</div>' +
+    '<input id="rs" class="select__input" role="combobox" aria-labelledby="rs-l" aria-expanded="false" aria-haspopup="true" aria-required="true" autocomplete="off" value=""></div></div>' +
+    '<input required tabindex="-1" aria-hidden="true" class="x-requiredInput" value="" style="opacity:0;width:100%;height:20px"></div></div>' +
+    '<label><input type="checkbox" name="nq-agree" tabindex="-1" aria-hidden="true"> I agree to the terms</label>' +
+    '<label for="nq-s1">Search jobs</label><input id="nq-s1" type="search">' +
+    '<div role="search"><label for="nq-s2">Find</label><input id="nq-s2"></div>' +
+    '<search><input id="nq-s3" aria-label="Site search"></search>' +
+    '<label for="nq-q">Why this team?</label><input id="nq-q">';
+  document.body.append(box);
+  const got = labels(box);
+  check("react-select's hidden required input is not a field", got.filter(l => l === "" || l.startsWith("Have you ever interviewed")).length === 1, JSON.stringify(got));
+  check("a custom checkbox hidden the same way is still read", got.includes("I agree to the terms"), JSON.stringify(got));
+  check("search boxes are not questions", !got.some(l => /search|find/i.test(l)) && got.includes("Why this team?"), JSON.stringify(got));
+  check("exactly the three questions", JSON.stringify(got) === JSON.stringify(["Have you ever interviewed here before?", "I agree to the terms", "Why this team?"]), JSON.stringify(got));
+  box.remove();
+
+  // A page that is not a form (a search page the popup injected Vani into): pressing Enter, leaving
+  // or hiding it saves nothing. Saving it on purpose still does.
+  const frame = document.createElement("iframe");
+  frame.srcdoc = '<!doctype html><form action="#" onsubmit="return false"><input name="q" aria-label="Search" value=""></form>';
+  document.body.append(frame);
+  await new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
+  const doc = frame.contentDocument!;
+  let mem: Bank = emptyBank();
+  let sends = 0;
+  const t = createTracker({
+    doc, host: "www.search.example", commitMs: 20,
+    getBank: async () => mem,
+    send: async fields => {
+      sends++;
+      const { bank, ...counts } = mergeCapture(mem, fields, "www.search.example", new Date());
+      mem = bank;
+      return counts;
+    },
+  });
+  const qbox = doc.querySelector("input")!;
+  qbox.value = "a private query";
+  qbox.dispatchEvent(new Event("change", { bubbles: true }));
+  qbox.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
+  await sleep(300);
+  frame.contentWindow!.dispatchEvent(new Event("pagehide"));
+  await t.flush("route change");
+  await sleep(50);
+  check("one search box: Enter, route change and pagehide save nothing", sends === 0 && Object.keys(mem.answers).length === 0, `sends ${sends} ${JSON.stringify(Object.keys(mem.answers))}`);
+  await t.flush("saved", true);
+  check("Save on purpose still saves it", sends === 1 && mem.answers["search"]?.value.join() === "a private query", `sends ${sends}`);
+  t.dispose();
+  frame.remove();
+}
+
 async function main(): Promise<void> {
-  for (const [name, fn] of [["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal]] as const) {
+  for (const [name, fn] of [["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal], ["not questions", notQuestions]] as const) {
     try { await fn(); } catch (e) { check(`${name} crashed`, false, e instanceof Error ? `${e.message}\n${e.stack}` : String(e)); }
   }
   check("nothing in the whole run submitted a form or pressed a submit button", anySubmit === 0 && submitClicks === 0 && submits === 0, `submit ${anySubmit} clicks ${submitClicks}`);

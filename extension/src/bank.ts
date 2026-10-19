@@ -1,5 +1,5 @@
 import { type Answer, type Bank, type FieldInfo, type FieldKind, CHOICE_KINDS, emptyBank } from "./types";
-import { autocompleteKey, normalizeLabel, signature } from "./normalize";
+import { autocompleteKey, dialCodeOnly, normalizeLabel, signature } from "./normalize";
 import { classify, untouchable } from "./classify";
 
 // Bounds: the bank lives in chrome.storage.local (10 MB quota) or the Mac app,
@@ -70,6 +70,16 @@ function clip(xs: string[], n: number): string[] {
   return xs.slice(0, n);
 }
 
+/**
+ * A new value that is only dialling codes does not replace a saved answer that
+ * says more. job-boards.greenhouse.io's Country shows just "+1" once United
+ * States is chosen; saving that over "United States" would leave the next form
+ * nothing to choose from. Where "+1" is all there is, it is kept as the answer.
+ */
+export function keepsSaved(saved: readonly string[], value: readonly string[]): boolean {
+  return value.length > 0 && value.every(dialCodeOnly) && !saved.every(dialCodeOnly);
+}
+
 function addUnique(list: string[], item: string, cap: number): string[] {
   if (!item || list.includes(item)) return list;
   const out = [...list, item];
@@ -97,6 +107,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     const key = answerKey(f);
     if (key.length < 2) { res.skippedEmpty++; continue; }
     const prev = out.answers[key];
+    if (prev && keepsSaved(prev.value, value)) continue;
     if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedEmpty++; continue; }
     const label = normalizeLabel(f.label);
     const sig = signature(host, f);

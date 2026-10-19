@@ -2,7 +2,7 @@
 // page state captured twice changes nothing (mergeCapture bumps `uses` on every
 // call). Secrets and unopted self-ID leave the page with their value removed.
 import type { Bank, FieldInfo } from "./types";
-import { MAX_OPTIONS, MAX_VALUE_CHARS, answerKey } from "./bank";
+import { MAX_OPTIONS, MAX_VALUE_CHARS, answerKey, keepsSaved } from "./bank";
 import { classify, untouchable } from "./classify";
 import { normalizeLabel, signature } from "./normalize";
 
@@ -53,8 +53,9 @@ export function pendingDiff(bank: Bank, fields: FieldInfo[], host: string, expli
     const a = key.length >= 2 ? bank.answers[key] : undefined;
     const label = normalizeLabel(f.label);
     const sig = signature(host, f);
-    const same = !!a && a.value.length === value.length && a.value.every((v, i) => v === value[i]) &&
-      (!label || a.labels.includes(label)) && (!sig || a.signatures.includes(sig));
+    // A bare dialling code over a fuller saved answer is never stored (bank.keepsSaved): nothing to send.
+    const same = !!a && (keepsSaved(a.value, value) || (a.value.length === value.length && a.value.every((v, i) => v === value[i]) &&
+      (!label || a.labels.includes(label)) && (!sig || a.signatures.includes(sig))));
     if (same) unchanged++; else changed.push(f);
   }
   const send = changed.length > 0 || explicit ? [...changed, ...sens] : [];

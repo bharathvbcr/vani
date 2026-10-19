@@ -3,7 +3,9 @@
 // choosing an option, never per keystroke) and flushes it when the page is about
 // to go away: submit, an advance click, Enter, a route change, pagehide or the
 // tab being hidden. A flush sends only what the bank does not already hold, so
-// flushing the same page twice saves nothing twice. The DOM and the chrome
+// flushing the same page twice saves nothing twice. Only a page that has shown
+// at least MIN_FORM_FIELDS questions is flushed on its own; on anything smaller
+// (a search page) only an explicit Save saves. The DOM and the chrome
 // messaging are injected so the DOM test page can drive it.
 import type { Bank, FieldInfo } from "./types";
 import { emptyBank } from "./types";
@@ -14,6 +16,12 @@ import { fieldDigest, pendingDiff } from "./capture";
 import type { CaptureReply } from "./messages";
 import { isFinalSubmit } from "./applied";
 
+/**
+ * Fewer questions than this and a page is not treated as an application form:
+ * no panel, and nothing is saved unless you press Save. A search page the popup
+ * ran Vani on must not turn the query into an answer when you press Enter.
+ */
+export const MIN_FORM_FIELDS = 3;
 const MAX_PENDING = 1000;
 /** The background refuses a capture message with more fields than this. */
 const MAX_SEND = 500;
@@ -93,6 +101,8 @@ export function createTracker(d: TrackerDeps): Tracker {
   /** When the current burst of mutations began; null while the page is quiet. */
   let domFirst: number | null = null;
   let disposed = false;
+  /** The most questions one scan of this page has found (see MIN_FORM_FIELDS). */
+  let peak = 0;
   // What each pending field last carried to the background on this page (see capture.fieldDigest).
   const sent = new Map<string, string>();
 
@@ -100,6 +110,7 @@ export function createTracker(d: TrackerDeps): Tracker {
     try {
       const scan = scanForm(d.doc);
       wireRoots(scan.roots);
+      peak = Math.max(peak, scan.refs.length);
       for (const r of scan.refs) {
         const f = r.info;
         if (f.kind === "file" || f.kind === "hidden" || f.kind === "other") continue;
@@ -157,6 +168,7 @@ export function createTracker(d: TrackerDeps): Tracker {
 
   async function run(reason: string, explicit: boolean): Promise<FlushResult | null> {
     if (pending.size === 0) return null;
+    if (!explicit && peak < MIN_FORM_FIELDS) return null; // not a form: only Save keeps it
     const bank = await d.getBank();
     lastBank = bank;
     if (bank?.settings.disabledHosts.includes(d.host)) return null;
@@ -181,7 +193,7 @@ export function createTracker(d: TrackerDeps): Tracker {
    */
   function flushNow(): void {
     snapshot();
-    if (pending.size === 0 || lastBank?.settings.disabledHosts.includes(d.host)) return;
+    if (pending.size === 0 || peak < MIN_FORM_FIELDS || lastBank?.settings.disabledHosts.includes(d.host)) return;
     const base = lastBank ?? emptyBank();
     const selfId = base.settings.captureSelfId;
     const batch = pendingDiff(base, unsent(selfId).fields, d.host, false).send.slice(0, MAX_SEND);

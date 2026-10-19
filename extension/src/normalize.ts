@@ -30,6 +30,24 @@ export function normalizeLabel(s: string): string {
     .slice(0, 200);
 }
 
+/**
+ * A trailing international dialling code. Phone-country pickers append it to
+ * the country ("United States +1", "Antigua & Barbuda (+1 268)"), and some
+ * show only the code once a country is chosen. Only a "+code" counts, so
+ * "Level 1" keeps its number.
+ */
+const DIAL_CODE = /\s*\(?\+\d{1,4}(?:[ -]\d{1,4})?\)?\s*$/;
+
+/** The text with a trailing dialling code removed. */
+export function withoutDialCode(s: string): string {
+  return s.replace(DIAL_CODE, "");
+}
+
+/** Nothing but a dialling code ("+1", "(+44)"). */
+export function dialCodeOnly(s: string): boolean {
+  return s.includes("+") && normalizeLabel(withoutDialCode(s)) === "";
+}
+
 /** Content words of a label, for fuzzy matching. */
 export function tokens(s: string): Set<string> {
   const out = new Set<string>();
