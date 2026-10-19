@@ -31,16 +31,24 @@ final class AppModel {
 
     private var timer: Timer?
 
-    init() {
+    init(store: BankStore? = nil, autoRegisterAgent: Bool = true, autoStartTimer: Bool = true) {
         extensionID = UserDefaults.standard.string(forKey: "chromeExtensionID") ?? ChromeConnector.defaultExtensionID
-        do { store = try BankStore.shared() } catch { storeError = String(describing: error) }
+        if let store {
+            self.store = store
+        } else {
+            do { self.store = try BankStore.shared() } catch { storeError = String(describing: error) }
+        }
         reload()
         refreshChrome()
         refreshSafari()
-        registerAgent()
+        if autoRegisterAgent {
+            registerAgent()
+        }
         // Re-read when a browser writes. A read is one small file under a shared lock.
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reloadIfChanged() }
+        if autoStartTimer {
+            timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.reloadIfChanged() }
+            }
         }
     }
 

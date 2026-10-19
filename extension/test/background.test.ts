@@ -102,10 +102,16 @@ describe("frame registry messages", () => {
 
 describe("message checks", () => {
   test("every content message type is accepted with its own fields, and bad options are refused", () => {
-    for (const m of [{ type: "scan" }, { type: "fill" }, { type: "fill", overwrite: true, typeahead: false }, { type: "capture" }, { type: "appliedShow" }]) {
+    for (const m of [{ type: "scan" }, { type: "fill" }, { type: "fill", overwrite: true, typeahead: false }, { type: "capture" }, { type: "clearMarks" }, { type: "appliedShow" }]) {
       expect(checkToContent(m)).toEqual({ msg: m as never });
     }
     expect(checkToContent({ type: "fill", overwrite: "yes" })).toEqual({ error: "malformed fill message" });
+  });
+
+  test("editAnswer accepts key, value array, and optional review flag", () => {
+    expect(checkToBackground({ type: "editAnswer", key: "phone", value: ["555-0100"] })).toEqual({ msg: { type: "editAnswer", key: "phone", value: ["555-0100"] } as never });
+    expect(checkToBackground({ type: "editAnswer", key: "phone", value: ["555-0100"], review: true })).toEqual({ msg: { type: "editAnswer", key: "phone", value: ["555-0100"], review: true } as never });
+    expect(checkToBackground({ type: "editAnswer", key: "phone", value: ["555-0100"], review: "yes" })).toEqual({ error: "malformed editAnswer message" });
   });
 
   test("background messages: the inherited Object keys are not message types", () => {

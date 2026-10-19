@@ -117,6 +117,37 @@ func TestAbsentOnceThenTwiceIsDead(t *testing.T) {
 	}
 }
 
+func TestAbsentDigestedPostingsBecomeDead(t *testing.T) {
+	l := openLedger(t)
+	a, b := ghPost(t, "1", "a"), ghPost(t, "2", "b")
+	Reconcile(ctx, l, board, []posting.Posting{a, b}, t0)
+	// Progress b to Digested
+	if err := l.Append(ctx, ledger.Event{V: 1, At: t0.Add(time.Minute), Key: b.Key, Status: posting.Digested}); err != nil {
+		t.Fatal(err)
+	}
+	// First run without b: tracks as absent and increments missed runs
+	s, err := Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(time.Hour))
+	if err != nil || s.Missed != 1 {
+		t.Fatalf("first miss: %+v %v", s, err)
+	}
+	rb := rec(t, l, b.Key)
+	if rb.MissedRuns != 1 || rb.Status != posting.Digested {
+		t.Fatalf("after one miss: status=%v missed=%d", rb.Status, rb.MissedRuns)
+	}
+	// Second run without b: transitions to Dead and sets DiedFrom
+	s, err = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(2*time.Hour))
+	if err != nil || s.Dead != 1 {
+		t.Fatalf("second miss: %+v %v", s, err)
+	}
+	rb = rec(t, l, b.Key)
+	if rb.Status != posting.Dead || rb.MissedRuns != 2 {
+		t.Fatalf("after two misses: status=%v missed=%d", rb.Status, rb.MissedRuns)
+	}
+	if rb.Annotations[DiedFromKey] != string(posting.Digested) {
+		t.Fatalf("died from annotation: %q", rb.Annotations[DiedFromKey])
+	}
+}
+
 func TestAbsentIgnoresOtherBoards(t *testing.T) {
 	l := openLedger(t)
 	other := sources.Board{ATS: posting.Greenhouse, Token: "acmecorp"} // shares the "acme" prefix text

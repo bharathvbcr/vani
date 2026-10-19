@@ -94,6 +94,15 @@ export function createStore(opts: StoreOptions = {}) {
   let nativeUntil = 0; // native confirmed reachable until this time
   let migrated = false;
   let note: string | null = null;
+  let pingPromise: Promise<boolean> | null = null;
+  let migratePromise: Promise<void> | null = null;
+
+  let writeQueue = Promise.resolve<unknown>(undefined);
+  function serializeWrite<T>(op: () => Promise<T>): Promise<T> {
+    const next = writeQueue.then(op, op);
+    writeQueue = next.catch(() => undefined);
+    return next;
+  }
 
   /** One bounded request. Throws TransportError (unreachable) or NativeError (host said no). */
   async function call(msg: object): Promise<Record<string, unknown>> {
@@ -137,48 +146,68 @@ export function createStore(opts: StoreOptions = {}) {
   /** Move a bank left in chrome.storage.local into the Mac app, once per worker lifetime. */
   async function migrate(): Promise<void> {
     if (migrated) return;
-    try {
-      const raw = (await local.get(KEY))[KEY];
-      if (raw === undefined) { migrated = true; return; }
-      let localBank: Bank;
+    if (migratePromise) return migratePromise;
+    migratePromise = (async () => {
       try {
-        localBank = parseBank(JSON.stringify(raw)).bank;
-      } catch (e) {
+        const raw = (await local.get(KEY))[KEY];
+        if (raw === undefined) { migrated = true; return; }
+        let localBank: Bank;
+        try {
+          localBank = parseBank(JSON.stringify(raw)).bank;
+        } catch (e) {
+          migrated = true;
+          note = `Answers saved in this browser could not be read and were left in place: ${msgOf(e)}`;
+          console.error(note);
+          return;
+        }
+        await commit(b => mergeBanks(b, localBank));
+        await local.remove(KEY); // only after the put succeeded
         migrated = true;
-        note = `Answers saved in this browser could not be read and were left in place: ${msgOf(e)}`;
+        note = null;
+      } catch (e) {
+        note = `Answers saved in this browser were not moved to the Mac app (left in place): ${msgOf(e)}`;
         console.error(note);
-        return;
+      } finally {
+        migratePromise = null;
       }
-      await commit(b => mergeBanks(b, localBank));
-      await local.remove(KEY); // only after the put succeeded
-      migrated = true;
-      note = null;
-    } catch (e) {
-      note = `Answers saved in this browser were not moved to the Mac app (left in place): ${msgOf(e)}`;
-      console.error(note);
-    }
+    })();
+    return migratePromise;
   }
 
   /** True when the Mac app answers a ping (cached for 30 s). Only an unreachable host means "no". */
   async function useNative(): Promise<boolean> {
     if (now() < nativeUntil) { await migrate(); return true; } // no-op once migrated; retries a failed one
-    let r: Record<string, unknown>;
-    try {
-      r = await call({ op: "ping" });
-    } catch (e) {
-      if (e instanceof TransportError) return false;
-      throw e;
-    }
-    if (r.ok !== true || r.protocol !== 1) throw new NativeError(`unsupported Mac app protocol ${String(r.protocol)}`);
-    nativeUntil = now() + ttl;
-    await migrate();
-    return true;
+    if (pingPromise) return pingPromise;
+    pingPromise = (async () => {
+      try {
+        let r: Record<string, unknown>;
+        try {
+          r = await call({ op: "ping" });
+        } catch (e) {
+          if (e instanceof TransportError) return false;
+          throw e;
+        }
+        if (r.ok !== true || r.protocol !== 1) throw new NativeError(`unsupported Mac app protocol ${String(r.protocol)}`);
+        await migrate();
+        nativeUntil = now() + ttl;
+        return true;
+      } finally {
+        pingPromise = null;
+      }
+    })();
+    return pingPromise;
   }
 
   async function localLoad(): Promise<Bank> {
     const raw = (await local.get(KEY))[KEY];
     if (raw === undefined) return emptyBank();
-    return parseBank(JSON.stringify(raw)).bank;
+    try {
+      return parseBank(JSON.stringify(raw)).bank;
+    } catch (e) {
+      note = `Answers saved in this browser could not be read and were left in place: ${msgOf(e)}`;
+      console.error(note);
+      return emptyBank();
+    }
   }
 
   async function localWrite(bank: Bank): Promise<void> {
@@ -192,20 +221,25 @@ export function createStore(opts: StoreOptions = {}) {
 
   return {
     async loadBank(): Promise<Bank> {
-      return (await useNative()) ? (await getSnapshot()).bank : localLoad();
+      if (await useNative()) return (await getSnapshot()).bank;
+      return serializeWrite(async () => localLoad());
     },
 
     async updateBank(fn: (b: Bank) => Bank): Promise<Bank> {
-      if (await useNative()) return commit(fn);
-      const next = fn(await localLoad());
-      await localWrite(next);
-      return next;
+      return serializeWrite(async () => {
+        if (await useNative()) return commit(fn);
+        const next = fn(await localLoad());
+        await localWrite(next);
+        return next;
+      });
     },
 
     /** Import: replace the whole bank. */
     async replaceBank(bank: Bank): Promise<void> {
-      if (await useNative()) { await commit(() => bank); return; }
-      await localWrite(bank);
+      return serializeWrite(async () => {
+        if (await useNative()) { await commit(() => bank); return; }
+        await localWrite(bank);
+      });
     },
 
     async storageMode(): Promise<StorageMode> {

@@ -260,6 +260,50 @@ describe("store: browser (local) mode", () => {
     await store.logActivity({ event: "edit" });
     expect(host.log).toEqual([]);
   });
+
+  test("concurrent updateBank in browser mode loses no answers", async () => {
+    const { host, store } = setup();
+    host.down = true;
+    expect(await store.storageMode()).toBe("browser");
+    const writers = 10;
+    await Promise.all(
+      Array.from({ length: writers }, (_, i) =>
+        store.updateBank(b => ({
+          ...b,
+          answers: { ...b.answers, [`w${i}`]: answer(`w${i}`, `val${i}`, "2026-01-01") },
+        }))
+      )
+    );
+    const final = await store.loadBank();
+    expect(Object.keys(final.answers).length).toBe(writers);
+    for (let i = 0; i < writers; i++) {
+      expect(final.answers[`w${i}`]?.value).toEqual([`val${i}`]);
+    }
+  });
+
+  test("serializeWrite error does not break subsequent operations", async () => {
+    const { host, store } = setup();
+    host.down = true;
+    await expect(
+      store.updateBank(() => {
+        throw new Error("simulated update failure");
+      })
+    ).rejects.toThrow("simulated update failure");
+
+    // Next operation succeeds cleanly
+    const next = await store.updateBank(addCity);
+    expect(next.answers.city?.value).toEqual(["Berlin"]);
+  });
+
+  test("corrupt local bank in browser mode does not crash loadBank", async () => {
+    const { host, local, store } = setup();
+    host.down = true;
+    local.data.vaniBank = { version: 1, answers: "corrupt_data" };
+    const b = await store.loadBank();
+    expect(b.answers).toEqual({});
+    expect(local.data.vaniBank).toEqual({ version: 1, answers: "corrupt_data" });
+    expect(store.migrationNote()).toMatch(/could not be read/);
+  });
 });
 
 describe("store: migration from chrome.storage.local", () => {

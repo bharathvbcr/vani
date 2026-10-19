@@ -143,6 +143,11 @@ public final class BankStore: @unchecked Sendable {
                 let stamp = isoNow().replacingOccurrences(of: ":", with: "-")
                 let dest = directory.appendingPathComponent("bank.corrupt-\(stamp).json")
                 try FileManager.default.moveItem(at: bankURL, to: dest)
+                let dirFd = open(directory.path, O_RDONLY | O_CLOEXEC)
+                if dirFd >= 0 {
+                    if fcntl(dirFd, F_FULLFSYNC) != 0 { _ = fsync(dirFd) }
+                    close(dirFd)
+                }
                 return dest
             }
         }
@@ -161,16 +166,24 @@ public final class BankStore: @unchecked Sendable {
                 let old = directory.appendingPathComponent("activity.1.jsonl")
                 try? fm.removeItem(at: old)
                 try fm.moveItem(at: activityURL, to: old)
+                _ = chmod(old.path, 0o600)
+                let dirFd = open(directory.path, O_RDONLY | O_CLOEXEC)
+                if dirFd >= 0 {
+                    if fcntl(dirFd, F_FULLFSYNC) != 0 { _ = fsync(dirFd) }
+                    close(dirFd)
+                }
             }
             if !fm.fileExists(atPath: activityURL.path) {
                 guard fm.createFile(atPath: activityURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
                     throw BankError("cannot create \(activityURL.lastPathComponent)")
                 }
             }
+            _ = chmod(activityURL.path, 0o600)
             let h = try FileHandle(forWritingTo: activityURL)
             defer { try? h.close() }
             try h.seekToEnd()
             try h.write(contentsOf: line)
+            try? h.synchronize()
         }
     }
 
@@ -218,25 +231,68 @@ public final class BankStore: @unchecked Sendable {
         enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try enc.encode(file)
         let tmp = directory.appendingPathComponent(".bank.\(UUID().uuidString).tmp")
-        guard FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-            throw BankError("cannot write the answer bank")
+        let fd = open(tmp.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+        if fd < 0 {
+            throw BankError("cannot write the answer bank: \(String(cString: strerror(errno)))")
+        }
+        _ = fchmod(fd, 0o600)
+        var writeErr: Int32 = 0
+        let written = data.withUnsafeBytes { buf -> Int in
+            guard let ptr = buf.baseAddress else { return 0 }
+            var total = 0
+            while total < data.count {
+                let n = write(fd, ptr + total, data.count - total)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    writeErr = errno
+                    return -1
+                }
+                total += n
+            }
+            return total
+        }
+        if written != data.count {
+            close(fd)
+            unlink(tmp.path)
+            let errStr = writeErr != 0 ? String(cString: strerror(writeErr)) : "short write (\(written) of \(data.count) bytes)"
+            throw BankError("cannot write the answer bank: \(errStr)")
+        }
+        if fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0 {
+            let err = errno
+            close(fd)
+            unlink(tmp.path)
+            throw BankError("cannot sync the answer bank temp file: \(String(cString: strerror(err)))")
+        }
+        if close(fd) != 0 {
+            let err = errno
+            unlink(tmp.path)
+            throw BankError("cannot close the answer bank temp file: \(String(cString: strerror(err)))")
         }
         if rename(tmp.path, bankURL.path) != 0 {
             let err = errno
-            try? FileManager.default.removeItem(at: tmp)
+            unlink(tmp.path)
             throw BankError("cannot replace the answer bank: \(String(cString: strerror(err)))")
+        }
+        let dirFd = open(directory.path, O_RDONLY | O_CLOEXEC)
+        if dirFd >= 0 {
+            if fcntl(dirFd, F_FULLFSYNC) != 0 {
+                _ = fsync(dirFd)
+            }
+            close(dirFd)
         }
     }
 
     private func ensureDirectory() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+        _ = chmod(directory.path, 0o700)
     }
 
     private func withLock<T>(exclusive: Bool, _ body: () throws -> T) throws -> T {
         try ensureDirectory()
         let fd = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         if fd < 0 { throw BankError("cannot open the bank lock: \(String(cString: strerror(errno)))") }
+        _ = fchmod(fd, 0o600)
         defer { close(fd) }
         // Bounded wait (lockWait). The retry starts at 1 ms, for the usual sub-millisecond write, and
         // doubles to 64 ms, so a longer hold costs a few wake-ups rather than

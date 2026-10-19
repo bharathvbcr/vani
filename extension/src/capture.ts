@@ -2,7 +2,7 @@
 // page state captured twice changes nothing (mergeCapture bumps `uses` on every
 // call). Secrets and unopted self-ID leave the page with their value removed.
 import type { Bank, FieldInfo } from "./types";
-import { MAX_OPTIONS, MAX_VALUE_CHARS, answerKey, keepsSaved } from "./bank";
+import { MAX_OPTIONS, MAX_VALUE_CHARS, answerKey, bareCodeOutOfPlace, keepsSaved } from "./bank";
 import { classify, untouchable } from "./classify";
 import { normalizeLabel, signature } from "./normalize";
 
@@ -49,6 +49,7 @@ export function pendingDiff(bank: Bank, fields: FieldInfo[], host: string, expli
       if (raw.kind === "password" || classify(raw) !== "standard") sens.push(f);
       continue;
     }
+    if (bareCodeOutOfPlace(f.label, value)) continue; // not an answer (bank.bareCodeOutOfPlace): nothing to send
     const key = answerKey(f);
     const a = key.length >= 2 ? bank.answers[key] : undefined;
     const label = normalizeLabel(f.label);

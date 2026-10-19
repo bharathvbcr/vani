@@ -278,6 +278,18 @@ func TestJobsShowIsSafeToRender(t *testing.T) {
 	}
 }
 
+func TestJobsListNewExcludesDeadPostings(t *testing.T) {
+	_, state := setup(t)
+	seedJobs(t, state,
+		seedJob{key: "gh:a:1", title: "Active Engineer", fit: "strong_fit", status: posting.Digested},
+		seedJob{key: "gh:a:2", title: "Defunct Engineer", fit: "strong_fit", status: posting.Dead},
+	)
+	l := listJSON(t, "--view", "new")
+	if l.Total != 1 || len(l.Jobs) != 1 || l.Jobs[0].Key != "gh:a:1" {
+		t.Fatalf("jobs list --view new included dead posting: %v", keys(l))
+	}
+}
+
 func TestCleanText(t *testing.T) {
 	cases := []struct {
 		in        string

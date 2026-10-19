@@ -41,7 +41,7 @@ export const MAX_FIELDS = 500;
 export const MAX_SCAN_NODES = 40_000;
 const MAX_SCAN_MS = 1500;
 const MAX_DEPTH = 6;
-const MAX_LABEL = 300;
+export const MAX_LABEL = 300;
 const CANDIDATE = "input, select, textarea, button[aria-haspopup=listbox], [contenteditable], [role=combobox], [role=listbox], [role=radio], [role=checkbox], [role=switch]";
 const PLACEHOLDER_TEXT = /^(select|choose|please select|pick|none selected|search|type to search|-+)\b/i;
 const SINGLE = "[class*=single-value i], [class*=singlevalue i]";
@@ -55,11 +55,27 @@ function clean(s: string | null | undefined): string {
   return (s ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL);
 }
 
-/** Text of an element without the text of controls or select options inside it. */
-function ownText(el: Element): string {
-  const clone = el.cloneNode(true) as Element;
-  clone.querySelectorAll("input, select, textarea, option, button, script, style, [aria-hidden=true]").forEach(n => n.remove());
-  return clean(clone.textContent);
+/** What ownText leaves out, with everything inside it. */
+export const OWN_TEXT_SKIP = "input, select, textarea, option, button, script, style, [aria-hidden=true]";
+
+/**
+ * Text of an element without the text of controls or select options inside it.
+ * It walks the text in place: cloning the subtree to delete those parts cost a
+ * deep copy per field, up to five container levels each, on every scan. The
+ * element itself is never skipped, as the clone's querySelectorAll never
+ * matched it.
+ */
+export function ownText(el: Element): string {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT | NodeFilter.SHOW_CDATA_SECTION, {
+    acceptNode: n => n !== el && n.nodeType === Node.ELEMENT_NODE && (n as Element).matches(OWN_TEXT_SKIP)
+      ? NodeFilter.FILTER_REJECT // the element and all it holds
+      : NodeFilter.FILTER_ACCEPT,
+  });
+  let text = "";
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType !== Node.ELEMENT_NODE) text += (n as CharacterData).data;
+  }
+  return clean(text);
 }
 
 /** An element's parent, stepping out of a shadow root to its host. */
@@ -106,6 +122,17 @@ function visible(el: HTMLElement): boolean {
   }
   const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
   return cs ? cs.visibility !== "hidden" : true;
+}
+
+/**
+ * A dropdown's own filter box rather than a question: a search input labelled only "Search" (the
+ * phone picker's country search on job-boards.greenhouse.io), or one inside a site search. A
+ * search-type combobox labelled with a question (a location typeahead) is still a field.
+ */
+function searchCombo(el: HTMLElement): boolean {
+  if (el.closest("[role=search], search") !== null) return true;
+  const searchy = (el as HTMLInputElement).type === "search" || el.getAttribute("role") === "searchbox";
+  return searchy && /^(search|find|filter)\b/.test(normalizeLabel(widgetLabel(el)));
 }
 
 /** A site or page search box: what it holds is a query, not an answer to keep. */
@@ -242,6 +269,25 @@ function valueScope(el: HTMLElement): HTMLElement | null {
     if (has(n)) return n;
   }
   return null;
+}
+
+/**
+ * The class names of an element's empty, icon-like descendants (a flag) as one
+ * comparable string, "" when it has none. job-boards.greenhouse.io's Country shows
+ * only "+1" once chosen; the flag beside it is what tells Canada from the US.
+ */
+export function iconSignature(n: Element | null): string {
+  if (!n) return "";
+  const out: string[] = [];
+  for (const e of Array.from(n.querySelectorAll("*")).slice(0, 20)) {
+    if (!(e.textContent ?? "").trim() && e.classList.length > 0) out.push(Array.from(e.classList).sort().join(" "));
+  }
+  return out.join("|");
+}
+
+/** The icon a dropdown shows beside its chosen value ("" when none). */
+export function widgetValueIcon(el: HTMLElement): string {
+  return iconSignature(valueScope(el)?.querySelector(SINGLE) ?? null);
 }
 
 /** A chip's text without its remove button or a trailing cross. */
@@ -414,6 +460,7 @@ export function scanForm(root: ParentNode = document): FormScan {
 
       if (combo) {
         if (!visible(el)) continue;
+        if (searchCombo(el)) continue;
         if (full()) continue;
         el.querySelectorAll("input, textarea, [role=textbox]").forEach(n => claimed.add(n));
         const info = base(el, "select", widgetLabel(el));

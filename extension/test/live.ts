@@ -246,6 +246,8 @@ async function main(): Promise<void> {
     const sum = save.sum as { added: number };
     const saveFan = save.r as { answered: Array<{ frameId: number }>; failed: unknown[]; asked: number };
     check("Save counts the iframe's answers", sum.added === 4 && saveFan.failed.length === 0 && saveFan.answered.every(a => a.frameId !== 0), save);
+    // Chrome numbers frames as it goes (5 on most runs, 7 on some): the later checks use the id it gave this iframe.
+    const iframeId = saveFan.answered[0]?.frameId ?? -1;
 
     await cdp.eval(fr, setValues(EMPTY));
     const fill = await cdp.eval<Json>(sw, `vaniLive.toFrames({ type: "fill" }).then(r => ({ r, outcomes: vaniLive.mergeFill(r) }))`);
@@ -286,14 +288,14 @@ async function main(): Promise<void> {
     await cdp.send("ServiceWorker.stopAllWorkers", {}, pg);
     await cdp.event(m => m.method === "Target.targetDestroyed" && (m.params as Json).targetId === worker.targetId, STEP_MS, "the worker stopped");
     const kept = await cdp.eval<Json>(fr, `chrome.runtime.sendMessage({ type: "frames" })`, ctxId);
-    check("registered frames survive the worker being stopped", Array.isArray(kept.frames) && (kept.frames as number[]).includes(5), kept);
+    check("registered frames survive the worker being stopped", Array.isArray(kept.frames) && (kept.frames as number[]).includes(iframeId), { kept, iframeId });
     worker = await attachWorker();
     sw = worker.session;
 
     // A frame that went away is dropped as gone, not reported as one that did not answer.
     await cdp.eval(pg, `document.querySelector("iframe").remove(); true`);
     const afterRemove = await cdp.eval<Json>(sw, `vaniLive.toFrames({ type: "scan" })`);
-    check("a removed iframe is gone, not a frame that did not answer", JSON.stringify(afterRemove.gone) === "[5]" && afterRemove.asked === 1 && (afterRemove.failed as unknown[]).length === 0,
+    check("a removed iframe is gone, not a frame that did not answer", JSON.stringify(afterRemove.gone) === JSON.stringify([iframeId]) && afterRemove.asked === 1 && (afterRemove.failed as unknown[]).length === 0,
       { asked: afterRemove.asked, gone: afterRemove.gone, failed: afterRemove.failed });
 
     // 4. The popup's import input: Cancel, then the same file again.

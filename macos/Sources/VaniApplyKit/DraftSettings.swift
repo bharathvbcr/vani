@@ -55,10 +55,59 @@ public struct DraftSettings: Codable, Equatable, Sendable {
     public func save(to directory: URL) throws {
         let checked = try validated()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let data = try JSONEncoder().encode(checked)
+        _ = chmod(directory.path, 0o700)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try enc.encode(checked)
         let target = Self.url(in: directory)
-        try data.write(to: target, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        let tmp = directory.appendingPathComponent(".draft-settings.\(UUID().uuidString).tmp")
+        let fd = open(tmp.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+        if fd < 0 {
+            throw BankError("cannot write draft settings: \(String(cString: strerror(errno)))")
+        }
+        _ = fchmod(fd, 0o600)
+        var writeErr: Int32 = 0
+        let written = data.withUnsafeBytes { buf -> Int in
+            guard let ptr = buf.baseAddress else { return 0 }
+            var total = 0
+            while total < data.count {
+                let n = write(fd, ptr + total, data.count - total)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    writeErr = errno
+                    return -1
+                }
+                total += n
+            }
+            return total
+        }
+        if written != data.count {
+            close(fd)
+            unlink(tmp.path)
+            let errStr = writeErr != 0 ? String(cString: strerror(writeErr)) : "short write"
+            throw BankError("cannot write draft settings: \(errStr)")
+        }
+        if fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0 {
+            let err = errno
+            close(fd)
+            unlink(tmp.path)
+            throw BankError("cannot sync draft settings temp file: \(String(cString: strerror(err)))")
+        }
+        if close(fd) != 0 {
+            let err = errno
+            unlink(tmp.path)
+            throw BankError("cannot close draft settings temp file: \(String(cString: strerror(err)))")
+        }
+        if rename(tmp.path, target.path) != 0 {
+            let err = errno
+            unlink(tmp.path)
+            throw BankError("cannot replace draft settings: \(String(cString: strerror(err)))")
+        }
+        let dirFd = open(directory.path, O_RDONLY | O_CLOEXEC)
+        if dirFd >= 0 {
+            if fcntl(dirFd, F_FULLFSYNC) != 0 { _ = fsync(dirFd) }
+            close(dirFd)
+        }
     }
 
     /// `vani jobs` with the same config and state folder as drafting, so the app's Jobs

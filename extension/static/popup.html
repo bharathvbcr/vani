@@ -4,76 +4,1001 @@
 <meta charset="utf-8">
 <title>Vani Apply</title>
 <style>
-  :root { color-scheme: light dark; --ok: #2e8b57; --rev: #d4a017; }
-  body { font: 13px system-ui, sans-serif; margin: 0; padding: 12px; width: 460px; }
-  h1 { font-size: 14px; margin: 0 0 4px; }
-  .muted { opacity: .7; }
-  .row { display: flex; gap: 6px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
-  button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #8884; cursor: pointer; }
-  button.primary { background: var(--ok); color: #fff; border-color: var(--ok); }
-  #status { min-height: 18px; margin: 6px 0; }
-  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-  td { border-top: 1px solid #8883; padding: 4px; vertical-align: top; word-break: break-word; }
-  td:nth-child(3) { white-space: nowrap; opacity: .7; }
-  td button { padding: 2px 6px; font-size: 11px; margin-right: 2px; }
+  :root {
+    color-scheme: light dark;
+    --ok: #10b981;
+    --ok-bg: rgba(16, 185, 129, 0.12);
+    --rev: #f59e0b;
+    --rev-bg: rgba(245, 158, 11, 0.12);
+    --ai: #8b5cf6;
+    --ai-bg: rgba(139, 92, 246, 0.12);
+    --danger: #ef4444;
+    --danger-bg: rgba(239, 68, 68, 0.12);
+    --bg: #ffffff;
+    --surface: #f8fafc;
+    --surface-hover: #f1f5f9;
+    --surface-active: #e2e8f0;
+    --border: #e2e8f0;
+    --border-hover: #cbd5e1;
+    --text: #0f172a;
+    --muted: #64748b;
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+    --radius: 8px;
+    --radius-lg: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-hover: #283548;
+      --surface-active: #334155;
+      --border: #334155;
+      --border-hover: #475569;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    width: 490px;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .brand img {
+    border-radius: 6px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  }
+  .brand-title {
+    font-size: 15px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .brand-chip {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 9999px;
+    background: var(--ok-bg);
+    color: var(--ok);
+    border: 1px solid var(--ok);
+  }
+  .host-pill {
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--surface-active);
+    padding: 3px 8px;
+    border-radius: 6px;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+  }
+
+  /* Navigation Tabs */
+  .nav-tabs {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 8px;
+    gap: 2px;
+  }
+  .tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 9px 8px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .tab-btn:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  .tab-btn.active {
+    color: var(--ok);
+    border-bottom-color: var(--ok);
+    font-weight: 600;
+  }
+
+  /* Tab Panes */
+  .tab-pane {
+    display: none;
+    padding: 14px 16px;
+    max-height: 520px;
+    overflow-y: auto;
+  }
+  .tab-pane.active {
+    display: block;
+  }
+
+  /* Common UI Elements */
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 8px 0;
+    flex-wrap: wrap;
+  }
+  .row-between {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .badge-ok { background: var(--ok-bg); color: var(--ok); }
+  .badge-rev { background: var(--rev-bg); color: var(--rev); }
+  .badge-muted { background: var(--surface-hover); color: var(--muted); }
+
+  /* Buttons */
+  button {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+  }
+  button:hover:not(:disabled) {
+    background: var(--surface-hover);
+    border-color: var(--border-hover);
+  }
+  button:active:not(:disabled) {
+    background: var(--surface-active);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  button.primary {
+    background: var(--ok);
+    color: #fff;
+    border-color: var(--ok);
+    font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  button.accent {
+    background: var(--ai);
+    color: #fff;
+    border-color: var(--ai);
+  }
+  button.danger {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  button.sm {
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+  }
+
+  /* Shortcut chip inside button */
+  .kbd {
+    font-size: 10px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+  }
+
+  /* Status and Alerts */
+  #status {
+    min-height: 20px;
+    margin: 8px 0;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  #status:empty { display: none; }
+
+  /* Coverage Meter Bar */
+  .meter-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .meter-label-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .meter-bar {
+    height: 8px;
+    width: 100%;
+    background: var(--surface-active);
+    border-radius: 4px;
+    display: flex;
+    overflow: hidden;
+  }
+  .meter-bar .bar-ok { background: var(--ok); transition: width 0.3s ease; }
+  .meter-bar .bar-rev { background: var(--rev); transition: width 0.3s ease; }
+  .meter-bar .bar-unk { background: var(--border-hover); transition: width 0.3s ease; }
+  .meter-stats {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .meter-stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .meter-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  /* Applied Banner */
+  #applied {
+    background: var(--ok-bg);
+    border: 1px solid var(--ok);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    margin: 10px 0;
+  }
+  #applied .row { margin: 0; }
+  #applied-text { font-weight: 600; font-size: 12px; flex: 1; color: var(--text); }
+
+  /* Frame and Coverage Boxes */
+  #framebox, #coverage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    margin: 8px 0;
+    font-size: 12px;
+  }
+  #framebox ul, #coverage ul {
+    margin: 4px 0 0;
+    padding-left: 20px;
+    color: var(--text);
+  }
+  #framebox li, #coverage li { margin-bottom: 4px; }
+
+  /* Checkbox / Label rows */
+  label.toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  input[type=checkbox] {
+    accent-color: var(--ok);
+    cursor: pointer;
+  }
+
+  /* Basics Tab */
+  details#basics {
+    margin: 0;
+    border: none;
+  }
+  details#basics summary {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 0;
+    cursor: pointer;
+    color: var(--text);
+  }
+  .section-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .section-card-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 6px 10px;
+    align-items: center;
+  }
+  .grid label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .grid input, .grid select {
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    outline: none;
+    width: 100%;
+    transition: border-color 0.15s ease;
+  }
+  .grid input:focus, .grid select:focus {
+    border-color: var(--ok);
+    box-shadow: 0 0 0 2px var(--ok-bg);
+  }
+
+  /* Answers Tab */
+  .filter-bar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+    align-items: center;
+  }
+  .filter-input-wrap {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  input[type=search] {
+    width: 100%;
+    padding: 6px 8px 6px 28px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    outline: none;
+  }
+  input[type=search]:focus {
+    border-color: var(--ok);
+    box-shadow: 0 0 0 2px var(--ok-bg);
+  }
+  .search-icon {
+    position: absolute;
+    left: 8px;
+    pointer-events: none;
+    color: var(--muted);
+  }
+  .chips-row {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .chip-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 9999px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .chip-btn.active {
+    background: var(--ok-bg);
+    border-color: var(--ok);
+    color: var(--ok);
+    font-weight: 600;
+  }
+
+  /* Table / Card list for answers */
+  .scroll {
+    max-height: 340px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th {
+    text-align: left;
+    padding: 7px 10px;
+    background: var(--surface-active);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    border-top: 1px solid var(--border);
+    padding: 7px 10px;
+    vertical-align: top;
+    word-break: break-word;
+  }
+  tr:hover td {
+    background: var(--surface-hover);
+  }
+  td:nth-child(1) { font-weight: 600; width: 32%; }
+  td:nth-child(2) { color: var(--text); }
+  td:nth-child(3) { white-space: nowrap; font-size: 11px; color: var(--muted); width: 14%; text-align: center; }
+  td:nth-child(4) { white-space: nowrap; width: 18%; text-align: right; }
   td.review { border-left: 3px solid var(--rev); }
-  .scroll { max-height: 300px; overflow: auto; }
-  input[type=search] { flex: 1; padding: 4px 6px; }
-  label { display: inline-flex; gap: 4px; align-items: center; }
-  details { margin: 8px 0; }
-  summary { cursor: pointer; }
-  .grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 8px; align-items: center; margin-top: 6px; }
-  .grid input, .grid select { padding: 3px 6px; font: inherit; min-width: 0; }
-  .sub { margin-top: 10px; font-weight: 600; }
-  .sub .muted { font-weight: normal; }
+  .answer-val {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Empty State */
+  .empty-state {
+    padding: 32px 16px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .empty-state-icon {
+    font-size: 24px;
+    margin-bottom: 6px;
+  }
+
+  /* Settings Tab */
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .setting-info {
+    flex: 1;
+    padding-right: 12px;
+  }
+  .setting-title {
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 2px;
+  }
+  .setting-desc {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* Quota Bar */
+  .quota-container {
+    margin-top: 10px;
+  }
+  .quota-bar-track {
+    height: 6px;
+    background: var(--surface-active);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 4px 0 6px;
+  }
+  .quota-bar-fill {
+    height: 100%;
+    background: var(--ok);
+    width: 0%;
+    transition: width 0.3s ease;
+  }
+
+  /* Interactive Modal Dialogs */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-overlay[hidden] { display: none; }
+  .modal-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    width: 410px;
+    max-width: 90%;
+    padding: 16px;
+  }
+  .modal-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-field {
+    margin-bottom: 12px;
+  }
+  .modal-field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .modal-field input, .modal-field textarea, .modal-field select {
+    width: 100%;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+  }
+  .modal-field textarea {
+    min-height: 80px;
+    resize: vertical;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  /* Toast Notification */
+  .toast {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0f172a;
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    z-index: 200;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  .toast.show { opacity: 1; }
 </style>
 </head>
 <body>
-  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-    <img src="icons/icon-32.png" width="22" height="22" alt="Vani Logo" style="border-radius: 4px;">
-    <h1 style="font-size: 14px; margin: 0;">Vani Apply</h1>
-  </div>
-  <div class="muted">This page: <span id="host"></span></div>
-  <div class="row">
-    <button id="fill" class="primary">Fill this form</button>
-    <button id="save">Save answers on this page</button>
-    <label><input type="checkbox" id="overwrite"> overwrite typed values</label>
-    <label title="Search-as-you-type fields are only typed into if this is on; the site may run its own search when they are."><input type="checkbox" id="typeahead"> type into search fields</label>
-  </div>
-  <div id="status" class="muted"></div>
-  <div id="applied" hidden><div class="row">
-    <span id="applied-text"></span>
-    <button id="applied-yes" class="primary">Mark Applied</button>
-    <button id="applied-no">Not now</button>
-  </div></div>
-  <div id="framebox" hidden><strong>By frame</strong><ul id="frames"></ul></div>
-  <div id="coverage" hidden><strong>New questions on this page</strong> (no saved answer yet)<ul id="unknown"></ul></div>
-  <div class="muted">Green = confident, yellow = review before submitting. Vani never submits.</div>
-  <div class="row">
-    <label><input type="checkbox" id="selfid"> Save voluntary self-ID answers (gender, race, veteran, disability)</label>
-    <label><input type="checkbox" id="disabled"> Off on this site</label>
-  </div>
-  <details id="basics">
-    <summary><strong>Your basics</strong> <span class="muted">— contact details and the questions every form asks, filled on every form</span></summary>
-    <div id="basic-contact" class="grid"></div>
-    <div class="sub">Questions most forms ask <span class="muted">(each fills every wording of it; the AI-policy answer always fills yellow, to check)</span></div>
-    <div id="basic-work" class="grid"></div>
-    <div id="basic-selfid-box" hidden>
-      <div class="sub">Voluntary self-identification</div>
-      <div id="basic-self_id" class="grid"></div>
+  <!-- Header Bar -->
+  <header class="header">
+    <div class="brand">
+      <img src="icons/icon-32.png" width="22" height="22" alt="Vani Logo">
+      <h1 class="brand-title">Vani Apply</h1>
+      <span class="brand-chip">v1.0</span>
     </div>
-    <div class="row"><button id="basic-save">Save basics</button><span id="basic-status" class="muted"></span></div>
-  </details>
-  <div class="row"><strong id="count"></strong><input type="search" id="filter" placeholder="Filter"></div>
-  <div class="scroll">
-    <table><thead><tr><td>Question</td><td>Answer</td><td>saved/filled</td><td></td></tr></thead><tbody id="answers"></tbody></table>
+    <div class="host-pill" id="host" title="Current host"></div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="nav-tabs">
+    <button class="tab-btn active" data-tab="page">
+      <span>⚡</span> Page & Fill
+    </button>
+    <button class="tab-btn" data-tab="scraper">
+      <span>🔍</span> Job Scraper
+    </button>
+    <button class="tab-btn" data-tab="basics">
+      <span>👤</span> Your Basics
+    </button>
+    <button class="tab-btn" data-tab="answers">
+      <span>📚</span> Saved Answers
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <span>⚙️</span> Settings & Data
+    </button>
+  </nav>
+
+  <!-- TAB 1: Page & Fill -->
+  <main id="tab-page" class="tab-pane active">
+    <!-- Portal Adaptation Banner -->
+    <div id="portal-card" class="section-card" style="display:none;margin-bottom:8px;padding:8px 12px;">
+      <div class="row-between" style="margin:0;">
+        <span style="font-weight:600;display:flex;align-items:center;gap:6px;font-size:12px;">
+          <span id="portal-icon">🏢</span> <span id="portal-name">Portal</span>
+        </span>
+        <span class="badge badge-muted" id="portal-step" style="display:none;"></span>
+      </div>
+      <div id="portal-tips" class="muted" style="margin-top:4px;font-size:11px;"></div>
+    </div>
+
+    <!-- Real-time Relevance Card -->
+    <div id="relevance-card" class="section-card" style="display:none;margin-bottom:8px;">
+      <div class="section-card-title">
+        <span>Job Relevance</span>
+        <span id="rel-score-badge" class="badge badge-ok">0% Match</span>
+      </div>
+      <div class="row-between" style="margin:2px 0 6px;">
+        <strong id="rel-fit-label" style="font-size:12px;"></strong>
+        <span id="rel-workplace" class="badge badge-muted"></span>
+      </div>
+      <div id="rel-skills-row" class="row" style="margin:2px 0;gap:4px;"></div>
+      <div id="rel-dealbreaker" style="display:none;color:var(--danger);font-size:11px;margin-top:4px;"></div>
+    </div>
+
+    <!-- Missed Fillings Alert -->
+    <div id="missed-card" class="section-card" style="display:none;margin-bottom:8px;border-color:var(--rev);background:var(--rev-bg);">
+      <div class="section-card-title" style="color:var(--rev);">
+        <span>⚠️ Missed Required Fields</span>
+        <span id="missed-count-badge" class="badge badge-rev">0 Missed</span>
+      </div>
+      <div class="muted" style="margin-bottom:6px;font-size:11px;">
+        Required or invalid fields to complete before submitting:
+      </div>
+      <ul id="missed-list" style="margin:0;padding-left:18px;font-size:12px;display:flex;flex-direction:column;gap:5px;"></ul>
+    </div>
+
+    <!-- Applied Job Banner -->
+    <div id="applied" hidden>
+      <div class="row">
+        <span id="applied-text"></span>
+        <button id="applied-yes" class="primary sm">Mark Applied</button>
+        <button id="applied-no" class="sm">Not now</button>
+      </div>
+    </div>
+
+    <!-- Visual Page Coverage Meter -->
+    <div id="meter-card" class="meter-card">
+      <div class="meter-label-row">
+        <span>Form Readiness</span>
+        <span id="meter-percent">0%</span>
+      </div>
+      <div class="meter-bar">
+        <div id="bar-ok" class="bar-ok" style="width: 0%;" title="Confident fields"></div>
+        <div id="bar-rev" class="bar-rev" style="width: 0%;" title="Fields to review"></div>
+        <div id="bar-unk" class="bar-unk" style="width: 100%;" title="Unmatched / New fields"></div>
+      </div>
+      <div class="meter-stats">
+        <div class="meter-stat-item">
+          <span class="meter-dot" style="background: var(--ok);"></span>
+          <span id="stat-ok">0 confident</span>
+        </div>
+        <div class="meter-stat-item">
+          <span class="meter-dot" style="background: var(--rev);"></span>
+          <span id="stat-rev">0 review</span>
+        </div>
+        <div class="meter-stat-item">
+          <span class="meter-dot" style="background: var(--border-hover);"></span>
+          <span id="stat-unk">0 new</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="row">
+      <button id="fill" class="primary" style="flex: 1;">
+        Fill this form <span class="kbd">⌥⇧F</span>
+      </button>
+      <button id="save" style="flex: 1;">Save answers</button>
+      <button id="clear-marks" title="Clear visual green/yellow highlights on the form">Clear marks</button>
+    </div>
+
+    <div class="row" style="margin-top: 4px;">
+      <label class="toggle-label">
+        <input type="checkbox" id="overwrite"> overwrite typed values
+      </label>
+      <label class="toggle-label" title="Search-as-you-type fields are only typed into if this is on; the site may run its own search when they are.">
+        <input type="checkbox" id="typeahead"> type into search fields
+      </label>
+    </div>
+
+    <!-- Live Status Banner -->
+    <div id="status"></div>
+
+    <!-- Frame details and Unknown questions -->
+    <div id="framebox" hidden><strong>By frame</strong><ul id="frames"></ul></div>
+    <div id="coverage" hidden>
+      <strong>New questions on this page</strong> (no saved answer yet)
+      <ul id="unknown"></ul>
+    </div>
+
+    <div class="muted" style="margin-top: 10px;">
+      Green outlines = confident match. Yellow outlines = check before submitting. Vani never submits.
+    </div>
+  </main>
+
+  <!-- TAB: Job Scraper -->
+  <section id="tab-scraper" class="tab-pane">
+    <div class="filter-bar">
+      <button id="scrape-page-btn" class="primary" style="flex: 1;">
+        🔍 Scrape Jobs on This Page
+      </button>
+      <button id="export-csv" class="sm" title="Export listings to CSV">CSV</button>
+      <button id="export-json" class="sm" title="Export listings to JSON">JSON</button>
+    </div>
+
+    <div class="row-between" style="margin:6px 0 8px;gap:8px;">
+      <div class="filter-input-wrap" style="flex:1;">
+        <span class="search-icon">🔍</span>
+        <input type="search" id="scraper-filter" placeholder="Search title, company, skills...">
+      </div>
+      <select id="scraper-score-filter" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);">
+        <option value="0">All Scores</option>
+        <option value="50">50%+ Match</option>
+        <option value="70">70%+ Match</option>
+        <option value="85">85%+ Top Match</option>
+      </select>
+    </div>
+
+    <div class="row-between" style="margin:4px 0 8px;">
+      <label class="toggle-label">
+        <input type="checkbox" id="scraper-remote-only"> Remote only
+      </label>
+      <span id="scraper-count" class="muted">0 jobs scraped</span>
+    </div>
+
+    <div id="scraper-list" style="display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto;padding-right:2px;">
+      <div id="scraper-empty" class="empty-state">
+        <div class="empty-icon">📋</div>
+        <div class="empty-title">No Scraped Listings Yet</div>
+        <div class="empty-desc">Open a job board (LinkedIn, Indeed, Ashby, Greenhouse) or company careers page and click "Scrape Jobs on This Page" to extract and rank postings in real time.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 2: Your Basics -->
+  <section id="tab-basics" class="tab-pane">
+    <div class="muted" style="margin-bottom: 10px;">
+      Entered once here, filled on every application. Answered questions on any form update these automatically.
+    </div>
+
+    <details id="basics" open>
+      <summary style="display:none;"></summary>
+      <div class="section-card">
+        <div class="section-card-title">Contact Information</div>
+        <div id="basic-contact" class="grid"></div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-card-title">
+          Questions Most Forms Ask
+          <span class="badge badge-muted" style="text-transform:none;">Matches all wordings</span>
+        </div>
+        <div id="basic-work" class="grid"></div>
+      </div>
+
+      <div id="basic-selfid-box" class="section-card" hidden>
+        <div class="section-card-title">
+          Voluntary Self-Identification
+          <span class="badge badge-rev" style="text-transform:none;">Voluntary</span>
+        </div>
+        <div id="basic-self_id" class="grid"></div>
+      </div>
+
+      <div class="row-between" style="margin-top: 12px;">
+        <button id="basic-save" class="primary">Save basics</button>
+        <span id="basic-status" class="muted"></span>
+      </div>
+    </details>
+  </section>
+
+  <!-- TAB 3: Saved Answers Bank -->
+  <section id="tab-answers" class="tab-pane">
+    <div class="filter-bar">
+      <div class="filter-input-wrap">
+        <span class="search-icon">🔍</span>
+        <input type="search" id="filter" placeholder="Filter questions or answers...">
+      </div>
+      <button id="add-btn" class="primary sm">+ Add answer</button>
+    </div>
+
+    <!-- Category Filter Chips -->
+    <div class="chips-row">
+      <button class="chip-btn active" data-filter="all">All</button>
+      <button class="chip-btn" data-filter="contact">Contact</button>
+      <button class="chip-btn" data-filter="work">Work</button>
+      <button class="chip-btn" data-filter="review">Needs Review</button>
+      <button class="chip-btn" data-filter="self_id">Self-ID</button>
+    </div>
+
+    <div class="row-between" style="margin: 4px 0 8px;">
+      <strong id="count" style="font-size: 12px;">0 saved answers</strong>
+      <select id="sort-answers" style="font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text);">
+        <option value="recent">Recently updated</option>
+        <option value="alpha">Alphabetical</option>
+        <option value="uses">Most filled</option>
+      </select>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Answer</th>
+            <th>Fills</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="answers"></tbody>
+      </table>
+      <div id="empty-answers" class="empty-state" hidden>
+        <div class="empty-state-icon">📋</div>
+        <div>No matching answers found</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 4: Settings & Data -->
+  <section id="tab-settings" class="tab-pane">
+    <div class="section-card">
+      <div class="section-card-title">Site & Privacy Settings</div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-title">Disable on this site</div>
+          <div class="setting-desc">Vani won't scan or auto-fill on this domain.</div>
+        </div>
+        <input type="checkbox" id="disabled">
+      </div>
+      <div class="setting-row" style="border-bottom: none;">
+        <div class="setting-info">
+          <div class="setting-title">Voluntary Self-ID answers</div>
+          <div class="setting-desc">Save and fill demographic questions (gender, race, veteran, disability).</div>
+        </div>
+        <input type="checkbox" id="selfid">
+      </div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-card-title">Storage & Sync</div>
+      <div class="muted"><span id="storage"></span></div>
+      <div class="quota-container">
+        <div class="row-between" style="margin: 4px 0 2px;">
+          <span class="muted">Storage Usage</span>
+          <span id="size" class="muted"></span>
+        </div>
+        <div class="quota-bar-track">
+          <div id="quota-fill" class="quota-bar-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-card-title">Backup & Restore</div>
+      <div class="row">
+        <button id="export">Export answers (JSON)</button>
+        <label class="button" style="display:inline-flex;">
+          <input type="file" id="import" accept="application/json" style="display:none;">
+          <button type="button" onclick="document.getElementById('import').click();">Import answers (JSON)</button>
+        </label>
+      </div>
+    </div>
+
+    <div class="muted" style="text-align: center; margin-top: 14px;">
+      Passwords, Social Security, and card numbers are never saved or sent to any model.
+    </div>
+  </section>
+
+  <!-- Interactive Modal: Edit Answer -->
+  <div id="modal-edit" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <div class="modal-title">
+        <span>Edit Answer</span>
+        <button id="modal-edit-close" class="sm" style="border:none; background:transparent;">✕</button>
+      </div>
+      <div class="modal-field">
+        <label>Question Key</label>
+        <input type="text" id="edit-key" readonly style="opacity: 0.7; cursor: not-allowed;">
+      </div>
+      <div class="modal-field">
+        <label>Answer Value</label>
+        <textarea id="edit-value" placeholder="Enter answer value..."></textarea>
+      </div>
+      <div class="modal-field">
+        <label class="toggle-label">
+          <input type="checkbox" id="edit-review">
+          Flag for review (fills in yellow on forms)
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button id="modal-edit-cancel">Cancel</button>
+        <button id="modal-edit-save" class="primary">Save Changes</button>
+      </div>
+    </div>
   </div>
-  <div class="row">
-    <button id="export">Export answers</button>
-    <label>Import <input type="file" id="import" accept="application/json"></label>
+
+  <!-- Interactive Modal: Add Custom Answer -->
+  <div id="modal-add" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <div class="modal-title">
+        <span>Add Saved Answer</span>
+        <button id="modal-add-close" class="sm" style="border:none; background:transparent;">✕</button>
+      </div>
+      <div class="modal-field">
+        <label>Question or Field Label</label>
+        <input type="text" id="add-label" placeholder="e.g. Portfolio Website, Preferred name, Years of experience">
+      </div>
+      <div class="modal-field">
+        <label>Answer Value</label>
+        <textarea id="add-value" placeholder="e.g. https://myportfolio.com or Yes"></textarea>
+      </div>
+      <div class="modal-field">
+        <label class="toggle-label">
+          <input type="checkbox" id="add-review">
+          Flag for review (fills in yellow)
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button id="modal-add-cancel">Cancel</button>
+        <button id="modal-add-save" class="primary">Add to Bank</button>
+      </div>
+    </div>
   </div>
-  <div class="muted"><span id="storage"></span> <span id="size"></span></div>
-  <div class="muted">Passwords, ID, card and bank numbers are never saved.</div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast"></div>
+
   <script src="popup.js"></script>
 </body>
 </html>

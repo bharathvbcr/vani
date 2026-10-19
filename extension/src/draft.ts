@@ -7,7 +7,7 @@ import type { Transport } from "./store";
 import { NATIVE_HOST } from "./store";
 
 export const MAX_QUESTION_CHARS = 1000;
-export const MAX_DESCRIPTION_CHARS = 12_000;
+export const MAX_DESCRIPTION_CHARS = 60_000; // vani draft and suggest take a posting up to 60,000 runes (draft.MaxPostingRunes)
 export const MAX_COMPANY_CHARS = 200;
 export const MAX_TITLE_CHARS = 300;
 export const MIN_WORDS = 40;

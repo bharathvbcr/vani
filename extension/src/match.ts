@@ -11,6 +11,9 @@ export const CONFIDENT = 0.85;
 
 const YES = new Set(["yes", "y", "true", "i do", "i am", "i agree", "agree", "checked"]);
 const NO = new Set(["no", "n", "false", "i do not", "i am not", "unchecked"]);
+/** An acknowledgement option, and the refusals that read like one (on normalized text). */
+const ACK = /\b(agree|accept|acknowledge|understand|consent|confirm|will read|have read)\b/;
+const REFUSAL = /\b(not|disagree|decline|dont|refuse|reject)\b/;
 /** Declining to answer, in the wordings self-identification lists use (on normalized text). */
 const DECLINE = /\b(decline[ds]?|prefer not|rather not|choose not|do not wish|dont wish|not wish|(do not|dont) want to (answer|say|disclose|identify|self identify)|not to (answer|say|disclose|identify|self identify))\b/;
 
@@ -42,6 +45,11 @@ export function mapChoice(value: string, options: string[]): string | null {
     const i = norm.findIndex(o => set.has(o) || o.startsWith(polarity + " "));
     if (i >= 0) return options[i]!;
   }
+  if (polarity === "yes") {
+    // Agreeing takes the one acknowledgement the form offers ("I will read the agreement below"), never a refusal.
+    const acks = norm.flatMap((o, i) => (ACK.test(o) && !REFUSAL.test(o) ? [i] : []));
+    if (acks.length === 1) return options[acks[0]!]!;
+  }
   const vt = tokens(withoutDialCode(value));
   let best = -1, bestScore = 0;
   options.forEach((o, i) => {
@@ -49,6 +57,22 @@ export function mapChoice(value: string, options: string[]): string | null {
     if (s > bestScore) { best = i; bestScore = s; }
   });
   return best >= 0 && bestScore >= 0.6 ? options[best]! : null;
+}
+
+/**
+ * A saved wording's entry readings with their tokens, by wording: every field of every rescan
+ * compares against every saved wording, and these never change. Bounded; cleared when full.
+ */
+const readings = new Map<string, Array<{ n: number; tokens: Set<string> }>>();
+const MAX_READINGS = 8192;
+
+function savedReadings(label: string): Array<{ n: number; tokens: Set<string> }> {
+  let r = readings.get(label);
+  if (r) return r;
+  r = entryReadings(label, true).map(e => ({ n: e.n, tokens: tokens(e.base) }));
+  if (readings.size >= MAX_READINGS) readings.clear();
+  readings.set(label, r);
+  return r;
 }
 
 export function valueFor(field: FieldInfo, a: Answer): string[] | null {
@@ -120,7 +144,7 @@ export function matchField(field: FieldInfo, bank: Bank, host: string): Match | 
       let best = 0;
       // Entry 2 of a repeated section never borrows entry 1's answer (or the reverse).
       for (const l of [a.key, ...a.labels]) {
-        for (const r of entryReadings(l, true)) if (r.n === page.n) best = Math.max(best, jaccard(ft, tokens(r.base)));
+        for (const r of savedReadings(l)) if (r.n === page.n) best = Math.max(best, jaccard(ft, r.tokens));
       }
       if (best >= MIN_FUZZY) candidates.push({ a, via: "fuzzy", score: 0.5 + 0.35 * best });
     }

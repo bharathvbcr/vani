@@ -40,9 +40,9 @@ describe("buildSuggestRequest", () => {
   });
 
   test("clips the posting", () => {
-    const r = buildSuggestRequest([{ id: "a", label: "Why?", kind: "text" }], { company: "c".repeat(999), title: "t", description: "d".repeat(50_000) }) as Req;
+    const r = buildSuggestRequest([{ id: "a", label: "Why?", kind: "text" }], { company: "c".repeat(999), title: "t", description: "d".repeat(100_000) }) as Req;
     expect(r.job.company.length).toBe(200);
-    expect(r.job.description.length).toBe(12_000);
+    expect(r.job.description.length).toBe(60_000); // draft.MAX_DESCRIPTION_CHARS, the cap vani suggest takes
   });
 });
 

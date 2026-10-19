@@ -4,9 +4,9 @@
 // text maps to the saved answer, and check the widget now shows it. A widget
 // that cannot be driven is reported "manual", never "filled".
 import type { Bank, Match } from "./types";
-import { type FieldRef, comboOptions, ownedListbox, readWidgetValue } from "./extract";
+import { type FieldRef, comboOptions, iconSignature, ownedListbox, readWidgetValue, widgetValueIcon } from "./extract";
 import { mapChoice, matchField } from "./match";
-import { normalizeLabel } from "./normalize";
+import { dialCodeOnly, normalizeLabel } from "./normalize";
 import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
 
 export interface FillOutcome {
@@ -149,9 +149,10 @@ function shown(trigger: HTMLElement, before: ReadonlySet<HTMLElement>): HTMLElem
  * the site run its own autocomplete request) and the open list has no
  * acceptable option; then it is typed into once, and cleared again if that did
  * not help. Returns false, leaving the field as it was, when any step does not
- * happen.
+ * happen; "check" when the choice was made but the widget cannot show which
+ * (fill it for review); "ok" when it shows the chosen option.
  */
-async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => string | null, typed: string, typeahead = false): Promise<boolean> {
+async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => string | null, typed: string, typeahead = false): Promise<false | "ok" | "check"> {
   const isInput = trigger.localName === "input";
   const before = new Set(visibleOptions(trigger.ownerDocument)); // options on screen before this widget is opened are not its own
   const showing = (): HTMLElement[] => shown(trigger, before);
@@ -183,14 +184,28 @@ async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => str
   }
   if (!target) return giveUp();
   const want = normalizeLabel(txt(target));
+  const icon = iconSignature(target);
   realClick(target);
-  const ok = await until(() => readWidgetValue(trigger).some(v => {
-    const n = normalizeLabel(v);
-    return n !== "" && (n === want || n.includes(want) || want.includes(n));
-  }), 600);
-  if (!ok) return giveUp();
+  let verdict: "ok" | "check" | null = null;
+  // What the widget shows must be what was chosen. A box that shows only a dialling code ("+1") could
+  // be any of the countries that share it: the flag beside it must be the chosen option's flag, and
+  // with no flag to compare the fill is only one to review.
+  const judge = (): "ok" | "check" | null => {
+    for (const v of readWidgetValue(trigger)) {
+      const n = normalizeLabel(v);
+      if (n === "") continue;
+      if (n === want || n.includes(want)) return "ok";
+      if (!want.includes(n)) continue;
+      if (!dialCodeOnly(v)) return "ok";
+      const shown = widgetValueIcon(trigger);
+      if (icon && shown) return icon === shown ? "ok" : null;
+      return "check";
+    }
+    return null;
+  };
+  if (!(await until(() => (verdict = judge()) !== null, 600)) || verdict === null) return giveUp();
   if (showing().length > 0 && trigger.getAttribute("role") !== "listbox") key(trigger, "Escape");
-  return true;
+  return verdict;
 }
 
 function pickFrom(values: string[]): (options: string[]) => string | null {
@@ -214,7 +229,7 @@ async function fillMulti(el: HTMLElement, values: string[], typeahead: boolean):
     if (mapChoice(v, readWidgetValue(el)) !== null) { chosen++; continue; }
     const have = new Set(readWidgetValue(el).map(normalizeLabel));
     const ok = await driveCombo(el, opts => mapChoice(v, opts.filter(o => !have.has(normalizeLabel(o)))), v, typeahead);
-    if (ok) chosen++;
+    if (ok !== false) chosen++;
   }
   return chosen === 0 ? { ok: false, reason: "manual" } : { ok: true, review: chosen < values.length };
 }
@@ -306,7 +321,7 @@ async function fillSplitPhone(ref: FieldRef, saved: string): Promise<boolean> {
       ok = !!o;
       if (o) { s.value = o.value; fire(s, "input"); fire(s, "change"); }
     } else if (codeEl.getAttribute("role") === "combobox" || codeEl.getAttribute("aria-haspopup") === "listbox") {
-      ok = await driveCombo(codeEl, opts => opts.find(o => codeDigits(o) === p.cc) ?? null, "", false);
+      ok = (await driveCombo(codeEl, opts => opts.find(o => codeDigits(o) === p.cc) ?? null, "", false)) !== false;
     } else {
       setText(codeEl as HTMLInputElement, `+${p.cc}`);
       ok = true;
@@ -373,8 +388,11 @@ async function fillOne(ref: FieldRef, m: Match, typeahead: boolean): Promise<Res
   const el = ref.els[0]!;
   switch (ref.widget) {
     case "combobox":
+    {
       if (ref.info.multi) return fillMulti(el, m.value, typeahead);
-      return (await driveCombo(el, pickFrom(m.value), m.value[0] ?? "", typeahead)) ? { ok: true } : { ok: false, reason: "manual" };
+      const r = await driveCombo(el, pickFrom(m.value), m.value[0] ?? "", typeahead);
+      return r ? { ok: true, review: r === "check" } : { ok: false, reason: "manual" };
+    }
     case "aria-radio": return (await fillAriaRadio(ref, m.value)) ? { ok: true } : { ok: false, reason: "no_option" };
     case "aria-checkbox": return (await fillAriaCheckbox(el, m.value)) ? { ok: true } : { ok: false, reason: "manual" };
     case "contenteditable": return setEditable(el, m.value[0] ?? "") ? { ok: true } : { ok: false, reason: "manual" };

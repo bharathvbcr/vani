@@ -76,6 +76,18 @@ function clip(xs: string[], n: number): string[] {
  * States is chosen; saving that over "United States" would leave the next form
  * nothing to choose from. Where "+1" is all there is, it is kept as the answer.
  */
+/** A question whose answer may be a bare dialling code: a code, prefix or phone-country picker. */
+const CODE_QUESTION = /\b(code|dial|dialing|dialling|calling|prefix|phone|telephone|mobile|tel)\b/;
+
+/**
+ * A value that is only dialling codes, captured from a question that does not
+ * ask for a code: job-boards.greenhouse.io's Country shows "+1" once a country is
+ * chosen, which says nothing about which one. Never stored or sent.
+ */
+export function bareCodeOutOfPlace(label: string, value: readonly string[]): boolean {
+  return value.length > 0 && value.every(dialCodeOnly) && !CODE_QUESTION.test(normalizeLabel(label));
+}
+
 export function keepsSaved(saved: readonly string[], value: readonly string[]): boolean {
   return value.length > 0 && value.every(dialCodeOnly) && !saved.every(dialCodeOnly);
 }
@@ -106,6 +118,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     if (value.length === 0) { res.skippedEmpty++; continue; }
     const key = answerKey(f);
     if (key.length < 2) { res.skippedEmpty++; continue; }
+    if (bareCodeOutOfPlace(f.label, value)) { res.skippedEmpty++; continue; }
     const prev = out.answers[key];
     if (prev && keepsSaved(prev.value, value)) continue;
     if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedEmpty++; continue; }

@@ -40,17 +40,22 @@ const POSITIVE: Array<[string, string]> = [
   ["Please identify your race", "race"],
   ["Veteran Status", "veteran status"],
   ["Disability Status", "disability status"],
+  ["What is the address from which you plan on working? If you would need to relocate, please type \"relocating\".", "where youll work from"],
+  ["Where are you currently based?", "where youll work from"],
+  ["What is your current location?", "where youll work from"],
+  ["Please read the arbitration agreement below*", "arbitration agreement"],
+  ["Agreement to Arbitrate*", "arbitration agreement"],
 ];
 
 // Each of these must resolve to no intent: a wrong intent fills a confident wrong answer.
 const NEGATIVE = [
-  "What is the address from which you plan on working? If you would need to relocate, please type \"relocating\".",
+  "Street address",
+  "Address line 1",
+  "Which office location would you prefer?",
   "Have you worked with Kubernetes before?",
   "Have you interviewed candidates before?",
   "Have you ever worked for a startup?",
   "Please read our privacy policy",
-  "Please read the arbitration agreement below*",
-  "Agreement to Arbitrate*",
   "Why Anthropic?*",
   "Start date", // a past job's start date in a work-history block
   "(Optional) Personal Preferences",
@@ -120,6 +125,22 @@ describe("intent matching", () => {
     expect(m?.value).toEqual(["Yes"]);
   });
 
+  test("an arbitration agreement is filled only once you opt in, and always for review", () => {
+    const opted = mergeCapture(bank, [field({ label: "Arbitration agreement", kind: "select", value: ["I agree"] })], "vani-basics", now).bank;
+    for (const [label, only] of [
+      ["Please read the arbitration agreement below*", "I will read the arbitration agreement below."],
+      ["Agreement to Arbitrate*", "I understand and agree to the terms of the Agreement to Arbitrate set forth above."],
+    ] as const) {
+      const m = matchField(field({ label, kind: "select", options: [only] }), opted, host);
+      expect({ label, value: m?.value, review: m?.review }).toEqual({ label, value: [only], review: true });
+    }
+  });
+
+  test("where you will work from fills the address question", () => {
+    const b = mergeCapture(bank, [field({ label: "Where youll work from", value: ["Testville, TX"] })], "vani-basics", now).bank;
+    expect(matchField(field({ label: "What is the address from which you plan on working? If you would need to relocate, please type \"relocating\"." }), b, host)?.value).toEqual(["Testville, TX"]);
+  });
+
   test("ambiguous and unrelated questions borrow nothing", () => {
     expect(matchField(field({ label: "Are you legally authorized to work in the US without the need for visa sponsorship?", kind: "select", options: ["Yes", "No"] }), bank, host)).toBe(null);
     expect(matchField(field({ label: "Agreement to Arbitrate*", kind: "select", options: ["I understand and agree to the terms of the Agreement to Arbitrate set forth above."] }), bank, host)).toBe(null);
@@ -150,6 +171,12 @@ describe("declining to answer", () => {
     expect(mapChoice("Decline to self-identify", ["Yes", "No", "Decline To Self Identify"])).toBe("Decline To Self Identify");
     // No decline option on the form: left alone, never mapped to Yes or No.
     expect(mapChoice("Decline to self-identify", ["Yes", "No"])).toBe(null);
+    // Agreeing takes the one acknowledgement a form offers, never a refusal.
+    expect(mapChoice("I agree", ["I will read the arbitration agreement below."])).toBe("I will read the arbitration agreement below.");
+    expect(mapChoice("I agree", ["I acknowledge", "I do not acknowledge"])).toBe("I acknowledge");
+    expect(mapChoice("I agree", ["I agree", "I disagree"])).toBe("I agree");
+    expect(mapChoice("I agree", ["I accept", "I also accept the newsletter"])).toBe(null); // two acknowledgements: ambiguous
+    expect(mapChoice("Yes", ["I am authorized", "I am not authorized"])).toBe(null);
     // A real answer is not read as declining.
     expect(mapChoice("No", ["Yes", "No", "I don't wish to answer"])).toBe("No");
   });

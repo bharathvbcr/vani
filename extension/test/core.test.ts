@@ -132,7 +132,12 @@ describe("capture", () => {
     expect(pendingDiff(saved, [shown], "job-boards.greenhouse.io").send).toEqual([]);
     // A fuller value still replaces it, and a code is kept where it is the only answer there is.
     expect(mergeCapture(saved, [{ ...shown, value: ["Canada +1"] }], "x", now).bank.answers["country"]!.value).toEqual(["Canada +1"]);
+    // With nothing saved yet, a bare code is still not an answer to "Country": nothing is stored or sent.
+    const fresh = mergeCapture(emptyBank(), [shown], "job-boards.greenhouse.io", now);
+    expect([fresh.added, Object.keys(fresh.bank.answers)]).toEqual([0, []]);
+    expect(pendingDiff(emptyBank(), [shown], "job-boards.greenhouse.io").send).toEqual([]);
     const code = mergeCapture(emptyBank(), [field({ label: "Country code", kind: "select", options: ["+1", "+44"], value: ["+1"] })], "x", now);
+    expect(mergeCapture(emptyBank(), [field({ label: "Phone country", kind: "select", value: ["+44"] })], "x", now).bank.answers["phone country"]?.value).toEqual(["+44"]);
     expect(code.bank.answers["country code"]!.value).toEqual(["+1"]);
     expect(mergeCapture(code.bank, [field({ label: "Country code", kind: "select", value: ["+44"] })], "x", now).bank.answers["country code"]!.value).toEqual(["+44"]);
   });

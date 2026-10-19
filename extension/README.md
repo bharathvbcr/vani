@@ -39,19 +39,33 @@ native-messaging manifest allows. `dist-safari/` is the same code with a Safari-
    any other. The section opens by itself while no first name or email is saved. Below them are the
    **questions most forms ask** (`src/intents.ts`): authorized to work, visa sponsorship, relocation,
    working in person, interviewed or applied before, earliest start date, deadlines or timeline,
-   how you heard, salary expectations, and the AI-use policy. One answer fills every wording of the
+   how you heard, salary expectations, where you'll work from (the "address from which you plan on
+   working" question), the AI-use policy and the arbitration agreement. One answer fills every wording of the
    question ("Do you require visa sponsorship?", "Will you now or in the future require
    sponsorship…?"), confidently (green), and a question you answered on a form shows in its box.
    An exact wording you answered by hand still wins over the general answer; among wordings the
    latest answer wins. A label that reads as two of them (authorized to work *without*
-   sponsorship: opposite answers) fills from neither. The AI-policy answer always fills yellow,
-   to read. With self-ID turned on, gender, Hispanic/Latino, race, veteran and disability get boxes
+   sponsorship: opposite answers) fills from neither. The AI-policy and arbitration answers always
+   fill yellow, to read, and arbitration stays empty until you choose "I agree" (a legal waiver is
+   your call): then "I agree" takes the one acknowledgement each form offers ("I will read the
+   arbitration agreement below.", "I understand and agree…"), never a refusal. With self-ID turned on, gender, Hispanic/Latino, race, veteran and disability get boxes
    too, and a saved "Decline to self-identify" takes each form's own decline option ("I don't wish to
    answer", "I do not want to answer").
-   Not offered, on purpose: arbitration and other legal agreements (a waiver is chosen per employer,
-   by you), and why-this-company essays (below).
-3. In the popup you can view, edit and delete answers, turn the extension off for a site, and
-   export or import the bank as JSON.
+   Not offered, on purpose: other legal agreements and consents, and why-this-company essays (below).
+3. In the popup you can:
+   - Track form readiness at a glance with the **visual coverage meter** (confident, review, new).
+   - Switch between **Page & Fill**, **Your Basics**, **Saved Answers**, and **Settings & Data** tabs.
+   - Add new custom answers directly with the **+ Add answer** modal.
+   - Edit saved answers in an **interactive dialog** (with multiline text and review flag toggle) instead of browser prompts.
+   - Filter answers by category chip (**All**, **Contact**, **Work**, **Needs Review**, **Self-ID**) and sort by recency, alphabet, or fill count.
+   - Copy any saved answer to clipboard with one click.
+   - Clear green/yellow field highlights once reviewed via **Clear marks**.
+   - Manage site exclusions, voluntary self-ID capture, and export/import the bank as JSON.
+4. On the page:
+   - The floating panel is **draggable** to any comfortable position on screen.
+   - Click the minimize button (`—`) to collapse it into a compact badge (`⚡ Vani • 4/6`) that never blocks form buttons, and click to restore.
+   - Hover over any outlined field to see an **in-page tooltip** explaining why it matched and its confidence.
+   - Generated and suggested drafts include a **Copy** button to copy drafts to clipboard directly.
 
 ### Live help for new questions
 
@@ -305,8 +319,15 @@ flowchart LR
 - A choice is matched with a trailing dialling code set aside: "United States" picks
   job-boards.greenhouse.io's "United States +1", and an answer saved as "United States +1" fills a
   plain "United States". That Country box shows only "+1" once a country is chosen, so a bare
-  dialling code never replaces a saved answer that names more; it is kept only where it is the
-  whole answer (a "Country code" question).
+  dialling code never replaces a saved answer that names more, and is saved at all only for a
+  question about a code or a phone (a "Country code" question); a "Country" that reads "+1" saves
+  nothing. When Fill chooses a country there and the box then shows only "+1", which several
+  countries share, it checks the flag beside it: the chosen option's flag is a confident fill, a
+  different flag is not a fill, and a box with no flag is filled yellow, to check.
+- Matching a full form against a full bank (2,000 answers, 25 fields) took about 260 ms per
+  rescan before the question reading and saved-wording tokens were cached, and about 9 ms after
+  (min of 7, `bun`, Apple silicon; the timing script is not committed). Both caches are bounded
+  (8,192 entries) and cleared when full.
 - Coverage: the panel and popup show, for the page, fields found / ready / new / manual / skipped,
   and list the questions with no saved answer. A scan reads at most 500 fields and 40,000 nodes;
   when it stops early the report says how many controls it did not read.

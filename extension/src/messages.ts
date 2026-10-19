@@ -6,13 +6,18 @@ import type { FillOutcome } from "./fill";
 import type { Coverage } from "./coverage";
 import type { DraftReply, JobInfo } from "./draft";
 
+import type { ScrapeResult, ScrapedJob } from "./scraper";
+import type { RelevanceResult } from "./relevance";
+import type { PortalInfo } from "./portal";
+import type { FormAuditReport } from "./formaudit";
+
 export type ToBackground =
   | { type: "getBank" }
   | { type: "capture"; host: string; fields: FieldInfo[] }
   | { type: "filled"; keys: string[] }
   | { type: "setSettings"; settings: Partial<Settings> }
   | { type: "deleteAnswer"; key: string }
-  | { type: "editAnswer"; key: string; value: string[] }
+  | { type: "editAnswer"; key: string; value: string[]; review?: boolean }
   | { type: "replaceBank"; json: string }
   /** Only the question label and the posting as shown on the page: never field values or bank content. */
   | { type: "draft"; question: string; job: JobInfo; maxWords?: number }
@@ -30,7 +35,9 @@ export type ToBackground =
   /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
   | { type: "frameReady" }
   /** The registered frames of a tab; the popup names the active tab, a content script gets its own. */
-  | { type: "frames"; tabId?: number };
+  | { type: "frames"; tabId?: number }
+  /** Track a scraped or discovered job posting */
+  | { type: "trackJob"; job: { title: string; company: string; url: string } };
 
 export type DraftResponse = DraftReply;
 
@@ -38,8 +45,17 @@ export type ToContent =
   | { type: "scan" }
   | { type: "fill"; overwrite?: boolean; typeahead?: boolean }
   | { type: "capture" }
+  | { type: "clearMarks" }
   /** To the top frame only: a form in a frame found a job to ask about, so show the question here. */
-  | { type: "appliedShow" };
+  | { type: "appliedShow" }
+  /** Live scrape jobs on the current page */
+  | { type: "scrapeJobs" }
+  /** Real-time relevance check and portal details */
+  | { type: "getRelevance" }
+  /** Scroll and highlight a missed filling */
+  | { type: "jumpToMissed"; index: number }
+  /** Insert a tailored answer into a specific field by label */
+  | { type: "insertTailored"; label: string; text: string };
 
 // Messages arrive as `unknown` (a buggy or stale script can send anything): each
 // receiver checks the shape here before acting, and answers anything else with
@@ -61,7 +77,7 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   filled: m => Array.isArray(m.keys) && m.keys.every(k => typeof k === "string"),
   setSettings: m => isRecord(m.settings),
   deleteAnswer: m => typeof m.key === "string",
-  editAnswer: m => typeof m.key === "string" && Array.isArray(m.value),
+  editAnswer: m => typeof m.key === "string" && Array.isArray(m.value) && (m.review === undefined || typeof m.review === "boolean"),
   replaceBank: m => typeof m.json === "string",
   draft: m => typeof m.question === "string",
   jobStart: m => m.kind === "suggest" || m.kind === "draft",
@@ -72,13 +88,19 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   appliedDismiss: optTab,
   frameReady: () => true,
   frames: optTab,
+  trackJob: m => isRecord(m.job) && typeof (m.job as Record<string, unknown>).title === "string",
 };
 
 const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {
   scan: () => true,
   fill: m => optBool(m.overwrite) && optBool(m.typeahead),
   capture: () => true,
+  clearMarks: () => true,
   appliedShow: () => true,
+  scrapeJobs: () => true,
+  getRelevance: () => true,
+  jumpToMissed: m => typeof m.index === "number",
+  insertTailored: m => typeof m.label === "string" && typeof m.text === "string",
 };
 
 function check<M>(table: Record<string, (m: Record<string, unknown>) => boolean>, m: unknown): { msg: M } | { error: string } {
@@ -95,7 +117,17 @@ export function checkToContent(m: unknown): { msg: ToContent } | { error: string
 }
 
 /** `fields`/`matched` are kept for older callers; `coverage` is the full breakdown. */
-export interface ScanReply { fields: number; matched: number; host: string; disabled: boolean; coverage?: Coverage }
+export interface ScanReply {
+  fields: number;
+  matched: number;
+  host: string;
+  disabled: boolean;
+  coverage?: Coverage;
+  audit?: FormAuditReport;
+  relevance?: RelevanceResult;
+  portal?: PortalInfo;
+  job?: JobInfo;
+}
 export interface FillReply { outcomes: FillOutcome[] }
 /** `unchanged` counts answers the bank already held, which a repeat save skips. */
 export type CaptureReply = Omit<CaptureResult, "bank"> & { unchanged?: number };

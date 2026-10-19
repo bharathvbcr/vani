@@ -25,6 +25,11 @@ import {
 } from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
 import { contentListener } from "./frames";
+import { detectPortal, type PortalInfo } from "./portal";
+import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
+import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
+import { matchTailorableQuestion, generateTailoredDraft } from "./tailor";
+import { scrapePageJobs, type ScrapeResult } from "./scraper";
 
 const PANEL_LIST = 8;
 
@@ -71,14 +76,38 @@ async function capture(reason: string): Promise<CaptureReply> {
 // The last scan's unanswered fields, for the live-help rows in the panel.
 let lastBank: Bank | null = null;
 let lastUnknown: FieldRef[] = [];
+let lastRefs: FieldRef[] = [];
+let lastAudit: FormAuditReport | undefined;
+let lastRelevance: RelevanceResult | undefined;
+let lastPortal: PortalInfo | undefined;
 
 async function scan(): Promise<ScanReply> {
   const b = await bank();
   const s = scanForm(document);
   lastBank = b;
+  lastRefs = s.refs;
   lastUnknown = s.refs.filter(r => bucketOf(r.info, r.manual, b, location.hostname).bucket === "unknown");
   const coverage = coverageOf(s.refs, b, location.hostname, { capped: s.capped, unread: s.unread });
-  return { fields: coverage.found, matched: coverage.known, host: location.hostname, disabled: disabledHere(b), coverage };
+  const audit = auditForm(s.refs);
+  lastAudit = audit;
+  const portal = detectPortal(document, location.href);
+  lastPortal = portal;
+  const job = jobInfo();
+  const profile = targetProfileFromBank(b);
+  const relevance = evaluateRelevance({ title: job.title, company: job.company, description: job.description }, profile);
+  lastRelevance = relevance;
+
+  return {
+    fields: coverage.found,
+    matched: coverage.known,
+    host: location.hostname,
+    disabled: disabledHere(b),
+    coverage,
+    audit,
+    relevance,
+    portal,
+    job,
+  };
 }
 
 async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
@@ -100,43 +129,257 @@ async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
 let panel: ShadowRoot | null = null;
 let statusEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
+let panelHost: HTMLElement | null = null;
+
+function makeDraggable(host: HTMLElement, handle: HTMLElement): void {
+  let isDragging = false;
+  let startX = 0, startY = 0;
+  let initLeft = 0, initTop = 0;
+
+  handle.addEventListener("pointerdown", (e: PointerEvent) => {
+    if ((e.target as HTMLElement).localName === "button") return;
+    isDragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = host.getBoundingClientRect();
+    initLeft = rect.left;
+    initTop = rect.top;
+    try { handle.setPointerCapture(e.pointerId); } catch {}
+  });
+
+  handle.addEventListener("pointermove", (e: PointerEvent) => {
+    if (!isDragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const rect = host.getBoundingClientRect();
+    const maxLeft = Math.max(0, window.innerWidth - rect.width - 8);
+    const maxTop = Math.max(0, window.innerHeight - rect.height - 8);
+    const nextLeft = Math.min(maxLeft, Math.max(8, initLeft + dx));
+    const nextTop = Math.min(maxTop, Math.max(8, initTop + dy));
+    host.style.left = `${nextLeft}px`;
+    host.style.top = `${nextTop}px`;
+    host.style.right = "auto";
+    host.style.bottom = "auto";
+  });
+
+  const endDrag = (e: PointerEvent): void => {
+    if (!isDragging) return;
+    isDragging = false;
+    try { handle.releasePointerCapture(e.pointerId); } catch {}
+  };
+  handle.addEventListener("pointerup", endDrag);
+  handle.addEventListener("pointercancel", endDrag);
+}
 
 function ensurePanel(): void {
   if (panel || window.top !== window) return; // one panel, in the top frame
   const host = document.createElement("div");
+  panelHost = host;
   host.setAttribute("data-vani-panel", "");
   host.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;";
   panel = host.attachShadow({ mode: "closed" });
   panel.innerHTML = `
     <style>
-      .p{font:13px system-ui,sans-serif;background:#111;color:#eee;border-radius:10px;padding:10px 12px;box-shadow:0 4px 16px #0006;max-width:320px}
-      .r{display:flex;gap:8px;align-items:center}
-      button{font:inherit;border:0;border-radius:6px;padding:5px 9px;cursor:pointer;background:#2e8b57;color:#fff}
-      button.s{background:#444}
-      button.g{background:#6b4f9e}
+      .p{font:12px/1.4 system-ui,-apple-system,sans-serif;background:rgba(15,23,42,0.95);backdrop-filter:blur(12px);color:#f1f5f9;border-radius:12px;padding:9px 12px;box-shadow:0 8px 30px rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.12);max-width:350px;user-select:none;transition:all .18s ease}
+      .p.minimized{padding:5px 10px;border-radius:20px;cursor:pointer;max-width:fit-content;background:rgba(15,23,42,0.98);box-shadow:0 4px 16px rgba(0,0,0,0.3)}
+      .p.minimized .full-view{display:none}
+      .p:not(.minimized) .min-view{display:none}
+      .min-view{display:flex;align-items:center;gap:6px;font-weight:600;font-size:11px;color:#10b981}
+      .r{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+      .drag-handle{cursor:grab;color:#64748b;font-size:13px;padding:0 2px;letter-spacing:-1px}
+      .drag-handle:active{cursor:grabbing}
+      button{font:inherit;border:0;border-radius:6px;padding:4px 8px;cursor:pointer;background:#10b981;color:#fff;font-weight:500;transition:all .15s ease}
+      button:hover:not(:disabled){filter:brightness(1.12)}
+      button:active:not(:disabled){filter:brightness(0.94)}
+      button.s{background:#334155}
+      button.g{background:#8b5cf6}
+      button.c{background:#475569}
+      button.b-scrape{background:#0284c7}
       button:disabled{opacity:.5;cursor:default}
-      .x{background:transparent;color:#aaa;padding:2px 6px}
-      .t{flex:1}
-      .u{margin:8px 0 0;padding-left:16px;max-height:300px;overflow:auto;color:#ddd}
+      .ctrl{background:transparent;color:#94a3b8;padding:2px 5px;font-size:12px;border-radius:4px}
+      .ctrl:hover{background:rgba(255,255,255,0.12);color:#fff}
+      .t{flex:1;cursor:pointer;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px}
+      .u{margin:8px 0 0;padding-left:14px;max-height:260px;overflow-y:auto;color:#cbd5e1}
       .u[hidden]{display:none}
-      .u li{margin:0 0 8px}
+      .u li{margin:0 0 8px;font-size:11px}
       .h{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-      .h button{background:#33475b;padding:3px 7px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .h button.d{background:#6b4f9e}
+      .h button{background:#1e293b;border:1px solid #334155;padding:2px 6px;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+      .h button.d{background:#8b5cf6;border-color:#8b5cf6}
       .dr{margin-top:6px;display:flex;flex-direction:column;gap:6px}
-      .dr textarea{font:12px system-ui,sans-serif;width:100%;box-sizing:border-box;min-height:110px;background:#1d1d1d;color:#eee;border:1px solid #444;border-radius:6px;padding:6px}
-      .m{color:#aaa;font-size:12px}
+      .dr textarea{font:11px system-ui,sans-serif;width:100%;box-sizing:border-box;min-height:90px;background:#0f172a;color:#eee;border:1px solid #334155;border-radius:6px;padding:6px;resize:vertical}
+      .m{color:#94a3b8;font-size:11px}
+      .pill{font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;cursor:pointer;white-space:nowrap}
+      .drawer{margin-top:8px;padding:8px;border-radius:6px;font-size:11px}
     </style>
-    <div class="p"><div class="r"><span class="t">Vani</span><button class="f">Fill</button><button class="g" title="Ask the decision model about the new free-text questions and have Claude draft the essays (labels and the posting only)">Suggest</button><button class="s">Save answers</button><button class="x" title="Hide">×</button></div>
-    <ul class="u" hidden></ul></div>`;
+    <div class="p">
+      <div class="min-view">
+        <span>⚡ Vani</span> <span id="min-text" style="color:#cbd5e1;font-weight:normal;">• Active</span>
+      </div>
+      <div class="full-view">
+        <div class="r">
+          <span class="drag-handle" title="Drag to reposition">⋮⋮</span>
+          <span class="t" title="Click to view new questions">Vani</span>
+          <span class="pill" id="portal-badge" style="display:none;background:#334155;color:#93c5fd;" title="Detected portal"></span>
+          <span class="pill" id="rel-badge" style="display:none;background:#065f46;color:#6ee7b7;" title="Real-time Relevance score"></span>
+          <span class="pill" id="missed-badge" style="display:none;background:#78350f;color:#fcd34d;" title="Missed required fields"></span>
+          <button class="f" title="Fill matching questions (Alt+Shift+F)">Fill</button>
+          <button class="g" title="Ask decision model about new free-text questions and draft essays">Suggest</button>
+          <button class="s" title="Save answers on this page">Save</button>
+          <button class="b-scrape" id="scrape-btn" style="display:none;" title="Scrape job listings on this page">Scrape</button>
+          <button class="c" title="Clear highlights from page">Clear</button>
+          <button class="ctrl min-btn" title="Minimize to small badge">—</button>
+          <button class="ctrl x" title="Hide panel">×</button>
+        </div>
+        <div class="drawer" id="rel-drawer" style="display:none;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.3);color:#6ee7b7;"></div>
+        <div class="drawer" id="missed-drawer" style="display:none;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;"></div>
+        <div class="drawer" id="scrape-drawer" style="display:none;background:rgba(2,132,199,0.12);border:1px solid rgba(2,132,199,0.3);color:#7dd3fc;max-height:160px;overflow-y:auto;"></div>
+        <ul class="u" hidden></ul>
+      </div>
+    </div>`;
+
   statusEl = panel.querySelector(".t");
   listEl = panel.querySelector(".u");
+  const panelDiv = panel.querySelector<HTMLElement>(".p")!;
+  const dragHandle = panel.querySelector<HTMLElement>(".drag-handle")!;
+  const minBtn = panel.querySelector<HTMLElement>(".min-btn")!;
+  const minView = panel.querySelector<HTMLElement>(".min-view")!;
+
+  makeDraggable(host, dragHandle);
+
   panel.querySelector(".f")!.addEventListener("click", () => { void fill(); });
   panel.querySelector(".g")!.addEventListener("click", () => { void suggestAll(); });
   panel.querySelector(".s")!.addEventListener("click", () => { void capture("saved"); });
+  panel.querySelector(".c")!.addEventListener("click", () => {
+    clearMarks(document);
+    toast("Highlights cleared.");
+  });
+
+  const relBadge = panel.querySelector<HTMLElement>("#rel-badge")!;
+  const relDrawer = panel.querySelector<HTMLElement>("#rel-drawer")!;
+  relBadge.addEventListener("click", () => {
+    relDrawer.style.display = relDrawer.style.display === "none" ? "block" : "none";
+  });
+
+  const missedBadge = panel.querySelector<HTMLElement>("#missed-badge")!;
+  const missedDrawer = panel.querySelector<HTMLElement>("#missed-drawer")!;
+  missedBadge.addEventListener("click", () => {
+    missedDrawer.style.display = missedDrawer.style.display === "none" ? "block" : "none";
+  });
+
+  const scrapeBtn = panel.querySelector<HTMLElement>("#scrape-btn")!;
+  scrapeBtn.addEventListener("click", () => {
+    const res = scrapePageJobs(document, location.hostname, targetProfileFromBank(lastBank));
+    renderScrapedDrawer(res);
+  });
+
+  minBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    panelDiv.classList.add("minimized");
+  });
+  minView.addEventListener("click", () => {
+    panelDiv.classList.remove("minimized");
+  });
   panel.querySelector(".x")!.addEventListener("click", () => host.remove());
   statusEl!.addEventListener("click", () => { if (listEl && listEl.childElementCount > 0) listEl.hidden = !listEl.hidden; });
   document.documentElement.appendChild(host);
+}
+
+function renderMissedDrawer(audit: FormAuditReport): void {
+  const drawer = panel?.querySelector<HTMLElement>("#missed-drawer");
+  if (!drawer) return;
+  drawer.textContent = "";
+  const header = document.createElement("div");
+  header.style.cssText = "font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;";
+  header.innerHTML = `<span>⚠️ Missed Fillings (${audit.missedCount})</span><span style="cursor:pointer;color:#94a3b8;" title="Close">✕</span>`;
+  header.querySelector("span:last-child")?.addEventListener("click", () => { drawer.style.display = "none"; });
+  drawer.append(header);
+
+  const list = document.createElement("ul");
+  list.style.cssText = "margin:0;padding-left:14px;display:flex;flex-direction:column;gap:4px;";
+  audit.missed.slice(0, 10).forEach(m => {
+    const li = document.createElement("li");
+    li.style.cursor = "pointer";
+    li.title = "Click to jump and focus this field";
+    li.textContent = m.description;
+    li.addEventListener("click", () => {
+      const ref = lastRefs[m.refIndex];
+      if (ref) {
+        jumpToField(ref);
+        toast(`Jumped to "${preview(m.label)}"`);
+      }
+    });
+    list.append(li);
+  });
+  drawer.append(list);
+}
+
+function renderRelDrawer(rel: RelevanceResult): void {
+  const drawer = panel?.querySelector<HTMLElement>("#rel-drawer");
+  if (!drawer) return;
+  drawer.textContent = "";
+  const header = document.createElement("div");
+  header.style.cssText = "font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;";
+  header.innerHTML = `<span>🎯 Relevance: ${rel.fitLabel}</span><span style="cursor:pointer;color:#94a3b8;" title="Close">✕</span>`;
+  header.querySelector("span:last-child")?.addEventListener("click", () => { drawer.style.display = "none"; });
+  drawer.append(header);
+
+  const body = document.createElement("div");
+  body.style.cssText = "display:flex;flex-direction:column;gap:3px;";
+  if (rel.matchedSkills.length > 0) {
+    const s = document.createElement("div");
+    s.innerHTML = `<span style="color:#94a3b8;">Skills:</span> ${rel.matchedSkills.slice(0, 5).join(", ")}`;
+    body.append(s);
+  }
+  if (rel.missingSkills.length > 0) {
+    const m = document.createElement("div");
+    m.innerHTML = `<span style="color:#94a3b8;">JD mentions:</span> ${rel.missingSkills.slice(0, 4).join(", ")}`;
+    body.append(m);
+  }
+  if (rel.dealbreakers.length > 0) {
+    const d = document.createElement("div");
+    d.style.color = "#f87171";
+    d.textContent = `⚠️ ${rel.dealbreakers.join("; ")}`;
+    body.append(d);
+  }
+  drawer.append(body);
+}
+
+function renderScrapedDrawer(res: ScrapeResult): void {
+  const drawer = panel?.querySelector<HTMLElement>("#scrape-drawer");
+  if (!drawer) return;
+  drawer.textContent = "";
+  drawer.style.display = "block";
+  const header = document.createElement("div");
+  header.style.cssText = "font-weight:600;margin-bottom:6px;display:flex;justify-content:space-between;";
+  header.innerHTML = `<span>🔍 Scraped ${res.totalFound} Jobs on this page</span><span style="cursor:pointer;color:#94a3b8;" title="Close">✕</span>`;
+  header.querySelector("span:last-child")?.addEventListener("click", () => { drawer.style.display = "none"; });
+  drawer.append(header);
+
+  if (res.totalFound === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "No job cards detected on this page.";
+    drawer.append(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.style.cssText = "display:flex;flex-direction:column;gap:6px;";
+  res.jobs.slice(0, 6).forEach(j => {
+    const item = document.createElement("div");
+    item.style.cssText = "padding:4px 6px;background:rgba(255,255,255,0.06);border-radius:4px;display:flex;justify-content:space-between;align-items:center;";
+    item.innerHTML = `
+      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">
+        <div style="font-weight:600;color:#fff;">${j.title}</div>
+        <div style="font-size:10px;color:#94a3b8;">${j.company || res.host} • ${j.location || "Remote/Unspecified"}</div>
+      </div>
+      <span style="font-size:10px;font-weight:600;padding:2px 5px;border-radius:3px;background:${j.relevance.score >= 80 ? '#065f46;color:#6ee7b7' : j.relevance.score >= 60 ? '#78350f;color:#fcd34d' : '#334155;color:#94a3b8'};">
+        ${j.relevance.score}%
+      </span>
+    `;
+    list.append(item);
+  });
+  drawer.append(list);
+  toast(`Scraped ${res.totalFound} jobs! Open popup to filter & export.`);
 }
 
 /** How long a message stays up before a rescan may replace it with the coverage line. */
@@ -146,6 +389,8 @@ let heldUntil = 0;
 /** Show a message the user must be able to read; rescans (every DOM change) leave it alone for HOLD_MS. */
 function toast(text: string): void {
   if (statusEl) statusEl.textContent = text;
+  const minText = panel?.querySelector<HTMLElement>("#min-text");
+  if (minText) minText.textContent = `• ${preview(text, 18)}`;
   heldUntil = Date.now() + HOLD_MS;
 }
 
@@ -233,7 +478,16 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement): Promise
   const row = document.createElement("div");
   row.className = "h";
   const insert = btn("f", "Insert for review");
+  const copy = btn("s", "Copy");
   const discard = btn("s", "Discard");
+  copy.addEventListener("click", () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    void navigator.clipboard.writeText(text).then(() => {
+      copy.textContent = "Copied!";
+      setTimeout(() => { copy.textContent = "Copy"; }, 2000);
+    });
+  });
   let overwrite = false;
   insert.addEventListener("click", () => {
     const text = ta.value.trim();
@@ -249,7 +503,7 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement): Promise
     close();
   });
   discard.addEventListener("click", close);
-  row.append(insert, discard);
+  row.append(insert, copy, discard);
   box.append(ta, row);
 }
 
@@ -381,6 +635,22 @@ function renderUnknown(c: Coverage): void {
       d.addEventListener("click", () => { void startDraft(ref, job, li); });
       row.append(d);
     }
+    const tailorable = matchTailorableQuestion(labelOf(ref));
+    if (tailorable) {
+      const tb = btn("d", "✨ Tailor to JD");
+      tb.title = `Generate tailored answer for "${tailorable.title}" using company & role from this JD`;
+      tb.addEventListener("click", () => {
+        const text = generateTailoredDraft(tailorable.kind, job, targetProfileFromBank(lastBank));
+        insertDraft(ref, text, { overwrite: true });
+        void navigator.clipboard.writeText(text).catch(() => {});
+        toast(`Inserted tailored answer for "${preview(labelOf(ref))}" (yellow: review before submit). Copied to clipboard.`);
+      });
+      row.append(tb);
+    }
+    const sb = btn("s", "+ Save");
+    sb.title = `Save your typed answer for "${preview(labelOf(ref))}" into Vani bank`;
+    sb.addEventListener("click", () => { void capture("saved"); });
+    row.append(sb);
     if (row.childElementCount) li.append(row);
     listEl.append(li);
   }
@@ -394,11 +664,53 @@ function renderUnknown(c: Coverage): void {
 async function scheduleScan(): Promise<void> {
   const s = await scan();
   const c = s.coverage;
-  if (s.disabled || !c || c.found < MIN_FORM_FIELDS) return;
+  const isJobPage = s.portal?.isJobBoard || (s.relevance && s.relevance.score > 0 && jobInfo().description.length >= 40);
+  if (s.disabled || (!isJobPage && (!c || c.found < MIN_FORM_FIELDS))) return;
   ensurePanel();
-  renderUnknown(c);
+  if (c && c.found >= MIN_FORM_FIELDS) renderUnknown(c);
+
+  // Update dynamic portal badge
+  const portalBadge = panel?.querySelector<HTMLElement>("#portal-badge");
+  if (portalBadge && s.portal && s.portal.id !== "general") {
+    portalBadge.textContent = s.portal.badge + (s.portal.stepInfo ? ` ${s.portal.stepInfo.currentStep}/${s.portal.stepInfo.totalSteps}` : "");
+    portalBadge.style.display = "inline-block";
+  }
+
+  // Update dynamic relevance pill
+  const relBadge = panel?.querySelector<HTMLElement>("#rel-badge");
+  if (relBadge && s.relevance && (jobInfo().description.length >= 40 || jobInfo().title)) {
+    relBadge.textContent = `🎯 ${s.relevance.score}%`;
+    relBadge.style.display = "inline-block";
+    renderRelDrawer(s.relevance);
+  }
+
+  // Update dynamic missed fillings pill
+  const missedBadge = panel?.querySelector<HTMLElement>("#missed-badge");
+  if (missedBadge && s.audit && s.audit.missedCount > 0) {
+    missedBadge.textContent = `⚠️ ${s.audit.missedCount} Missed`;
+    missedBadge.style.display = "inline-block";
+    renderMissedDrawer(s.audit);
+  } else if (missedBadge) {
+    missedBadge.style.display = "none";
+  }
+
+  // Update scrape button if on a board or job listings found
+  const scrapeBtn = panel?.querySelector<HTMLElement>("#scrape-btn");
+  if (scrapeBtn) {
+    const isBoard = s.portal?.isJobBoard || document.querySelectorAll("a[href*='/job/'], a[href*='/careers/'], [class*='job-card']").length >= 2;
+    scrapeBtn.style.display = isBoard ? "inline-block" : "none";
+  }
+
   if (statusEl && Date.now() >= heldUntil && !statusEl.textContent?.startsWith("Filled") && !statusEl.textContent?.startsWith("Saved")) {
-    statusEl.textContent = `Vani: ${coverageLine(c)}` + (c.unknown ? " Click for the new questions." : "");
+    if (c && c.found >= MIN_FORM_FIELDS) {
+      statusEl.textContent = `Vani: ${coverageLine(c)}` + (c.unknown ? " Click for the new questions." : "");
+      const minText = panel?.querySelector<HTMLElement>("#min-text");
+      if (minText) minText.textContent = `• ${c.known}/${c.found}`;
+    } else if (isJobPage) {
+      statusEl.textContent = `Vani: ${s.relevance ? s.relevance.fitLabel : "Job page"}`;
+      const minText = panel?.querySelector<HTMLElement>("#min-text");
+      if (minText && s.relevance) minText.textContent = `• ${s.relevance.score}%`;
+    }
   }
 }
 
@@ -481,6 +793,96 @@ const appliedUi: AppliedUi = {
   },
 };
 
+// --- field tooltips -------------------------------------------------------------
+
+let tooltipHost: HTMLElement | null = null;
+let tooltipRoot: ShadowRoot | null = null;
+
+function ensureTooltip(): { host: HTMLElement; root: ShadowRoot } {
+  if (tooltipHost && tooltipRoot && tooltipHost.isConnected) return { host: tooltipHost, root: tooltipRoot };
+  const host = document.createElement("div");
+  host.setAttribute("data-vani-tooltip-host", "");
+  host.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;";
+  const root = host.attachShadow({ mode: "closed" });
+  root.innerHTML = `
+    <style>
+      .tip {
+        position: fixed;
+        background: rgba(15, 23, 42, 0.96);
+        backdrop-filter: blur(8px);
+        color: #f8fafc;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        padding: 5px 9px;
+        font: 11px/1.3 system-ui, -apple-system, sans-serif;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(2px);
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        max-width: 280px;
+        z-index: 2147483647;
+      }
+      .tip.show { opacity: 1; transform: translateY(0); }
+      .badge {
+        display: inline-block;
+        font-weight: 700;
+        font-size: 10px;
+        text-transform: uppercase;
+        margin-right: 4px;
+        padding: 1px 5px;
+        border-radius: 4px;
+        letter-spacing: 0.02em;
+      }
+      .badge.ok { background: rgba(16, 185, 129, 0.25); color: #10b981; border: 1px solid #10b981; }
+      .badge.review { background: rgba(245, 158, 11, 0.25); color: #f59e0b; border: 1px solid #f59e0b; }
+      .why { color: #cbd5e1; }
+    </style>
+    <div class="tip"></div>
+  `;
+  document.documentElement.appendChild(host);
+  tooltipHost = host;
+  tooltipRoot = root;
+  return { host, root };
+}
+
+function showFieldTooltip(target: HTMLElement): void {
+  const fillType = target.getAttribute("data-vani-fill");
+  const why = target.getAttribute("data-vani-why");
+  if (!fillType || !why) return;
+  const { root } = ensureTooltip();
+  const tip = root.querySelector<HTMLElement>(".tip")!;
+  const isOk = fillType === "ok";
+  tip.innerHTML = `<span class="badge ${isOk ? "ok" : "review"}">${isOk ? "✓ Confident" : "⚠️ Review"}</span><span class="why">${why}</span>`;
+  const rect = target.getBoundingClientRect();
+  const tipWidth = 260;
+  let left = rect.left;
+  if (left + tipWidth > window.innerWidth) left = window.innerWidth - tipWidth - 10;
+  if (left < 10) left = 10;
+  let top = rect.top - 34;
+  if (top < 10) top = rect.bottom + 6;
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+  tip.classList.add("show");
+}
+
+function hideFieldTooltip(): void {
+  if (!tooltipRoot) return;
+  const tip = tooltipRoot.querySelector<HTMLElement>(".tip");
+  if (tip) tip.classList.remove("show");
+}
+
+function wireTooltips(): void {
+  document.addEventListener("pointerover", (e: PointerEvent) => {
+    const target = (e.target as HTMLElement)?.closest?.("[data-vani-fill]") as HTMLElement | null;
+    if (target) showFieldTooltip(target);
+  }, true);
+  document.addEventListener("pointerout", (e: PointerEvent) => {
+    const target = (e.target as HTMLElement)?.closest?.("[data-vani-fill]");
+    if (target) hideFieldTooltip();
+  }, true);
+}
+
 // --- wiring -------------------------------------------------------------------
 
 if (!window.__vaniApply && !coveredByParent()) {
@@ -506,9 +908,40 @@ if (!window.__vaniApply && !coveredByParent()) {
     scan,
     fill,
     capture: () => capture("saved"),
+    clearMarks: () => clearMarks(document),
     appliedShow: window.top === window ? () => flow.resume() : null,
+    scrapeJobs: () => scrapePageJobs(document, location.hostname, targetProfileFromBank(lastBank)),
+    getRelevance: () => ({
+      relevance: lastRelevance ?? evaluateRelevance(jobInfo(), targetProfileFromBank(lastBank)),
+      job: jobInfo(),
+      portal: lastPortal ?? detectPortal(document),
+    }),
+    jumpToMissed: idx => {
+      const ref = lastRefs[idx];
+      if (ref) jumpToField(ref);
+    },
+    insertTailored: (label, text) => {
+      const norm = (s: string) => s.trim().toLowerCase();
+      const target = norm(label);
+      const ref = lastRefs.find(r => norm(r.info.label) === target || norm(r.info.name) === target || norm(labelOf(r)) === target);
+      if (ref) {
+        insertDraft(ref, text, { overwrite: true });
+        toast(`Inserted tailored draft for "${preview(label)}" (yellow).`);
+      }
+    },
   }));
   // The popup cannot list a cross-origin frame it may not script; this frame tells the background it is here.
   void send({ type: "frameReady" }).catch(() => undefined);
+  wireTooltips();
+
+  // Real-time reactivity as user types or selects options in form controls
+  let liveInputTimer: ReturnType<typeof setTimeout> | undefined;
+  const onLiveInput = (): void => {
+    clearTimeout(liveInputTimer);
+    liveInputTimer = setTimeout(() => { void scheduleScan(); }, 300);
+  };
+  document.addEventListener("input", onLiveInput, true);
+  document.addEventListener("change", onLiveInput, true);
+
   void scheduleScan();
 }

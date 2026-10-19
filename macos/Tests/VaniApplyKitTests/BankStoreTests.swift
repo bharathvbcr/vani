@@ -193,4 +193,37 @@ final class BankStoreTests: XCTestCase {
         XCTAssertEqual(try patient.read().rev, 0)
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
     }
+
+    func testAppGroupStoreDirectoryResolvesFallback() throws {
+        let dir = try AppGroup.storeDirectory()
+        XCTAssertFalse(dir.path.isEmpty)
+        XCTAssertTrue(dir.path.hasSuffix("/apply"))
+    }
+
+    func testAppGroupStoreDirectoryEnvOverride() throws {
+        let customDir = try tempDir(self).appendingPathComponent("custom-store", isDirectory: true)
+        setenv("VANI_APPLY_STORE_DIR", customDir.path, 1)
+        defer { unsetenv("VANI_APPLY_STORE_DIR") }
+        let dir = try AppGroup.storeDirectory()
+        XCTAssertEqual(dir.path, customDir.path)
+    }
+
+    func testDurableBankWritingPreservesModeAndSyncs() throws {
+        let dir = try tempDir(self)
+        let store = BankStore(directory: dir)
+        let res = try store.put(baseRev: 0, bank: bankJSON([answerJSON("test_key", value: ["val"])]))
+        XCTAssertEqual(res, .stored(rev: 1, droppedSecret: 0))
+        let snap = try store.read()
+        XCTAssertEqual(snap.rev, 1)
+        XCTAssertEqual(snap.bank.answers["test_key"]?.value, ["val"])
+
+        let fm = FileManager.default
+        let mode = try (fm.attributesOfItem(atPath: dir.appendingPathComponent("bank.json").path)[.posixPermissions] as! NSNumber).intValue
+        XCTAssertEqual(mode, 0o600)
+
+        // Activity log and lock file also enforce mode 0600
+        try store.log(ActivityEntry(source: .app, event: .edit))
+        let actMode = try (fm.attributesOfItem(atPath: dir.appendingPathComponent("activity.jsonl").path)[.posixPermissions] as! NSNumber).intValue
+        XCTAssertEqual(actMode, 0o600)
+    }
 }

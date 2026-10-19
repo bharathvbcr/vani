@@ -20,9 +20,13 @@ describe("buildDraftRequest", () => {
     expect(req(buildDraftRequest("Why us?", job, 5)).max_words).toBe(MIN_WORDS);
     expect(req(buildDraftRequest("Why us?", job, 10_000)).max_words).toBe(MAX_WORDS);
     expect(req(buildDraftRequest("Why us?", job, Number.NaN)).max_words).toBe(DEFAULT_WORDS);
-    const big = buildDraftRequest("q".repeat(5000), { ...job, description: "d".repeat(50_000), company: "c".repeat(999) });
+    const big = buildDraftRequest("q".repeat(5000), { ...job, description: "d".repeat(100_000), company: "c".repeat(999) });
     expect(req(big).question.length).toBe(MAX_QUESTION_CHARS);
     expect(req(big).job.description.length).toBe(MAX_DESCRIPTION_CHARS);
+    // A long real posting reaches `vani draft` whole: its company and role sections sit past the first
+    // screens (vani draft splits by section and caps at 60,000 runes, draft.MaxPostingRunes).
+    expect(MAX_DESCRIPTION_CHARS).toBe(60_000);
+    expect(req(buildDraftRequest("Why us?", { ...job, description: "d".repeat(50_000) })).job.description.length).toBe(50_000);
     expect(req(big).job.company.length).toBe(200);
   });
 

@@ -161,7 +161,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
         const a = b.answers[msg.key];
         if (!a || !Array.isArray(msg.value)) return b;
         const value = msg.value.slice(0, MAX_OPTIONS).map(v => String(v).slice(0, MAX_VALUE_CHARS)).filter(Boolean);
-        return { ...b, answers: { ...b.answers, [msg.key]: { ...a, value, updatedAt: new Date().toISOString() } } };
+        const review = typeof msg.review === "boolean" ? msg.review : a.review;
+        return { ...b, answers: { ...b.answers, [msg.key]: { ...a, value, review, updatedAt: new Date().toISOString() } } };
       });
       void logActivity({ event: "edit" });
       return { ok: true };
@@ -226,6 +227,9 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "frames": {
       const tabId = actingTab(sender, msg.tabId);
       return { frames: tabId === undefined ? [] : await frameRegistry.list(tabId) };
+    }
+    case "trackJob": {
+      return native({ op: "jobTrack", job: msg.job });
     }
     default:
       // Unreachable for a message that passed checkToBackground; kept so a missed case answers, never `undefined`.

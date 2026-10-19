@@ -49,6 +49,12 @@ export const INTENTS: readonly Intent[] = [
     /\b(open|willing|able|comfortable|happy|commit|agree)\b.*\b(in person|onsite|on site|in office|in the office|in (one of )?(our|the|an|a) offices?|from (our|the) [a-z ]*office|hybrid)\b/,
     /\b(in person|onsite|on site|hybrid)\b.*\b(open|willing|able|comfortable)\b/,
   ]),
+  intent("Where you'll work from", "text", [
+    /\baddress from which you\b/,
+    /\bwhere (youll|you will|will you) (be )?(work|working|based)( from)?\b/,
+    /\bwhere (are|do) you (currently )?(located|based|live|living)\b/,
+    /\b(your|current) (current )?location\b/,
+  ]),
   intent("Interviewed here before", "yesno", [
     /\b(ever|previously|before|past)\b.*\binterviewed (at|with|for|here)\b/,
     /\binterviewed (at|with|for|here)\b.*\b(before|previously|in the past)\b/,
@@ -82,6 +88,8 @@ export const INTENTS: readonly Intent[] = [
     /\bpolic(y|ies)\b.*\bai\b/,
     /\b(use of|using) (ai|artificial intelligence)\b/,
   ], { review: true }),
+  // A legal waiver: opt-in (the box is empty until you choose "I agree"), and always filled yellow, to read.
+  intent("Arbitration agreement", "choice", [/\barbitrat(e|ion|or)\b/], { review: true, options: ["I agree"] }),
   intent("Gender", "choice", [/\bgender\b/], { selfId: true, options: [DECLINE, "Male", "Female", "Non-binary"] }),
   intent("Hispanic or Latino", "choice", [/\bhispanic\b/, /\blatin[oax]\b/], { selfId: true, options: [DECLINE, "Yes", "No"] }),
   intent("Race", "choice", [/\brace\b/, /\bracial\b/], {
@@ -103,8 +111,24 @@ const BY_KEY = new Map(INTENTS.map(i => [i.key, i]));
 /** A later entry of a repeated section ("... (vani section 2)") keeps its own key and never reads as an intent. */
 const SECTION_ENTRY = /\bvani section \d+$/;
 
+/**
+ * Answers already read, by question text: Fill asks for every saved wording on every field of every
+ * rescan (each DOM change), and the answer for a text never changes. Bounded; cleared when full.
+ */
+const seen = new Map<string, string>();
+const MAX_SEEN = 8192;
+
 /** The intent a question asks, or "" when it asks none, or reads as more than one. */
 export function intentOf(question: string): string {
+  const hit = seen.get(question);
+  if (hit !== undefined) return hit;
+  const found = readIntent(question);
+  if (seen.size >= MAX_SEEN) seen.clear();
+  seen.set(question, found);
+  return found;
+}
+
+function readIntent(question: string): string {
   const q = normalizeLabel(question);
   if (!q || SECTION_ENTRY.test(q)) return "";
   let found = "";

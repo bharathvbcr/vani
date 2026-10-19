@@ -1,6 +1,6 @@
 // In-browser DOM tests for extract, fill and the capture tracker, run by opening
 // test/dom.html. Writes PASS/FAIL lines into #results and sets document.title.
-import { collectFields, scanForm } from "../src/extract";
+import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, scanForm } from "../src/extract";
 import { clearMarks, fillAll, fillRef, insertDraft } from "../src/fill";
 import { currentText, draftable, suggest } from "../src/suggest";
 import { readJobInfo } from "../src/jobinfo";
@@ -8,6 +8,9 @@ import { mergeCapture } from "../src/bank";
 import { coverageLine, coverageOf } from "../src/coverage";
 import { createTracker } from "../src/tracker";
 import { type Bank, type FieldInfo, emptyBank } from "../src/types";
+import { intentOf, motivationEssay } from "../src/intents";
+import { BASICS_HOST, basicsFields } from "../src/basics";
+import { matchField } from "../src/match";
 
 const lines: string[] = [];
 let failed = 0;
@@ -592,13 +595,15 @@ async function notQuestions(): Promise<void> {
     '<label for="nq-s1">Search jobs</label><input id="nq-s1" type="search">' +
     '<div role="search"><label for="nq-s2">Find</label><input id="nq-s2"></div>' +
     '<search><input id="nq-s3" aria-label="Site search"></search>' +
+    '<input id="nq-s4" type="search" role="combobox" aria-label="Search" aria-expanded="false">' +
+    '<label for="nq-loc">Location</label><input id="nq-loc" type="search" role="combobox" aria-expanded="false">' +
     '<label for="nq-q">Why this team?</label><input id="nq-q">';
   document.body.append(box);
   const got = labels(box);
   check("react-select's hidden required input is not a field", got.filter(l => l === "" || l.startsWith("Have you ever interviewed")).length === 1, JSON.stringify(got));
   check("a custom checkbox hidden the same way is still read", got.includes("I agree to the terms"), JSON.stringify(got));
   check("search boxes are not questions", !got.some(l => /search|find/i.test(l)) && got.includes("Why this team?"), JSON.stringify(got));
-  check("exactly the three questions", JSON.stringify(got) === JSON.stringify(["Have you ever interviewed here before?", "I agree to the terms", "Why this team?"]), JSON.stringify(got));
+  check("exactly the four questions (a search-type combobox labelled with a question is one)", JSON.stringify(got) === JSON.stringify(["Have you ever interviewed here before?", "I agree to the terms", "Location", "Why this team?"]), JSON.stringify(got));
   box.remove();
 
   // A page that is not a form (a search page the popup injected Vani into): pressing Enter, leaving
@@ -635,8 +640,137 @@ async function notQuestions(): Promise<void> {
   frame.remove();
 }
 
+// job-boards.greenhouse.io's Country (2026-10): options read "United States +1" beside a flag, and once one
+// is chosen the box shows only the flag and "+1", which many countries share. Fill must check the flag:
+// the right one is a confident fill, a different one is not a fill, and no flag at all is a fill to review.
+async function dialPicker(): Promise<void> {
+  const box = document.createElement("div");
+  const opts = [["Canada", "ca", "+1"], ["United States", "us", "+1"], ["United Kingdom", "gb", "+44"]] as const;
+  const mk = (id: string, label: string, flags: boolean, liar: boolean): string =>
+    `<div class="select"><label id="${id}-l" for="${id}">${label}</label><div class="select__control"><div class="select__value-container">` +
+    `<div class="select__single-value"></div><input id="${id}" role="combobox" aria-controls="${id}-list" aria-labelledby="${id}-l" aria-expanded="false"></div></div>` +
+    `<div id="${id}-list" role="listbox" hidden data-flags="${flags ? 1 : 0}" data-liar="${liar ? 1 : 0}"></div></div>`;
+  box.innerHTML = mk("dp1", "Country", true, false) + mk("dp2", "Country of citizenship", true, true) + mk("dp3", "Country code country", false, false);
+  document.body.append(box);
+  for (const id of ["dp1", "dp2", "dp3"]) {
+    const input = q<HTMLInputElement>(box, `#${id}`);
+    const list = q<HTMLElement>(box, `#${id}-list`);
+    const single = input.parentElement!.querySelector<HTMLElement>(".select__single-value")!;
+    const flags = list.dataset.flags === "1", liar = list.dataset.liar === "1";
+    const flag = (cc: string) => (flags ? `<div class="iti__flag iti__${cc}"></div>` : "");
+    input.addEventListener("mousedown", () => {
+      list.innerHTML = opts.map(([name, cc, code]) => `<div role="option" data-cc="${cc}" data-code="${code}">${flag(cc)}${name} ${code}</div>`).join("");
+      list.hidden = false;
+      list.querySelectorAll<HTMLElement>("[role=option]").forEach(o => o.addEventListener("click", () => {
+        single.innerHTML = `${flag(liar ? "ca" : o.dataset.cc!)}<span>${o.dataset.code}</span>`;
+        list.hidden = true; list.textContent = "";
+      }));
+    });
+  }
+  const answer = mergeCapture(emptyBank(), [{ kind: "text", label: "Country", name: "", autocomplete: "", automationId: "", options: [], required: false, value: ["United States"] }], "x", NOW()).bank.answers["country"]!;
+  const m = { answer, via: "label" as const, score: 0.9, value: ["United States"], review: false };
+  const refs = scanForm(box).refs;
+  const ref = (id: string) => refs.find(r => r.els[0]!.id === id)!;
+  const shownFlag = (id: string) => q(box, `#${id}`).parentElement!.querySelector(".iti__flag")?.className ?? "";
+  const honest = await fillRef(ref("dp1"), m);
+  check("dial picker: the flag shown is the one chosen, a confident fill", honest.filled && honest.review === false && shownFlag("dp1").includes("iti__us"), JSON.stringify(honest));
+  const liar = await fillRef(ref("dp2"), m);
+  check("dial picker: a different flag shown is not a fill", !liar.filled, JSON.stringify(liar));
+  const bare = await fillRef(ref("dp3"), m);
+  check("dial picker: only \"+1\" and no flag is a fill to review", bare.filled && bare.review === true, JSON.stringify(bare));
+  box.remove();
+}
+
+// The real job-boards.greenhouse.io application form (test/fixtures, captured 2026-10 from the Anthropic
+// posting: markup only). Static, so React does not run, but what Fill reads is all here: react-select
+// comboboxes with their hidden required proxies, the phone picker with its 244-country list and search
+// box, and the questions as worded. In its own frame so its ids do not meet this page's.
+async function greenhouseFixture(): Promise<void> {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "width:900px;height:600px";
+  frame.srcdoc = "<!doctype html><meta charset=utf-8><body>" + await (await fetch("fixtures/greenhouse-anthropic-2026-10.html")).text();
+  document.body.append(frame);
+  await new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
+  const doc = frame.contentDocument!;
+  const refs = scanForm(doc).refs;
+  const labels = refs.map(r => r.info.label);
+  check("greenhouse form: 25 fields, every one labelled, no hidden proxies or search boxes", refs.length === 25 && !labels.includes("") && !labels.some(l => /^search$/i.test(l)),
+    `${refs.length}: ${labels.join(" | ")}`);
+  const want: Record<string, string> = {
+    "Are you open to working in-person in one of our offices 25% of the time?": "open to working in person",
+    "When is the earliest you would want to start working with us?": "earliest start date",
+    "Do you have any deadlines or timeline considerations we should be aware of?": "deadlines or timeline considerations",
+    "AI Policy for Application": "ai policy for applications",
+    "Do you require visa sponsorship?": "visa sponsorship",
+    "Will you now or will you in the future require employment visa sponsorship": "visa sponsorship",
+    "Are you open to relocation for this role?": "open to relocation",
+    "What is the address from which you plan on working?": "where youll work from",
+    "Have you ever interviewed at Anthropic before?": "interviewed here before",
+    "Please read the arbitration agreement below": "arbitration agreement",
+    "Agreement to Arbitrate": "arbitration agreement",
+  };
+  const wrong: string[] = [];
+  for (const [start, key] of Object.entries(want)) {
+    const l = labels.find(x => x.startsWith(start));
+    if (!l || intentOf(l) !== key) wrong.push(`${start} → ${l ? intentOf(l) || "(none)" : "(no field)"}`);
+  }
+  check("greenhouse form: each recurring question reads as its intent", wrong.length === 0, wrong.join("; "));
+  const whyLabel = labels.find(l => l.startsWith("Why Anthropic"));
+  check("greenhouse form: Why Anthropic is a motivation essay, left to Draft", !!whyLabel && motivationEssay(whyLabel), String(whyLabel));
+
+  // Every basic answered (test values), as the popup saves them.
+  const bank = mergeCapture(emptyBank(), basicsFields({
+    first: "Test", last: "Applicant", email: "applicant@example.invalid", phone: "+1 555 555 0100", country: "United States",
+    linkedin: "https://www.linkedin.com/in/test-applicant", website: "https://example.invalid",
+    "visa-sponsorship": "No", "open-to-relocation": "Yes", "open-to-working-in-person": "Yes", "interviewed-here-before": "No",
+    "earliest-start-date": "In two weeks", "deadlines-or-timeline-considerations": "None", "ai-policy-for-applications": "Yes",
+    "where-youll-work-from": "Testville, TX", "arbitration-agreement": "I agree",
+  }), BASICS_HOST, NOW()).bank;
+  const unmatched = refs.filter(r => r.info.kind !== "file" && !matchField(r.info, bank, "job-boards.greenhouse.io")).map(r => r.info.label);
+  check("greenhouse form: with every basic saved, only the optional, essay and self-ID questions are left",
+    JSON.stringify(unmatched) === JSON.stringify(["(Optional) Personal Preferences", "Why Anthropic?", "Additional Information", "Gender", "Are you Hispanic/Latino?", "Veteran Status"]),
+    JSON.stringify(unmatched));
+  frame.remove();
+}
+
+// ownText walks the text in place; it must read exactly what the old
+// clone-and-delete version read, on every element of this page and on
+// adversarial shapes.
+function clonedOwnText(el: Element): string {
+  const clone = el.cloneNode(true) as Element;
+  clone.querySelectorAll(OWN_TEXT_SKIP).forEach(n => n.remove());
+  return (clone.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL); // as clean() does
+}
+
+async function ownTextParity(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = `
+    <label id="ot1">Name <input value="x"> <span>first</span><!-- a comment --></label>
+    <button id="ot2">Press <b>me</b> <span aria-hidden="true">hidden</span></button>
+    <div id="ot3">Q <select><option>one</option><option>two</option></select> <span aria-hidden="TRUE">kept: the value is case-sensitive</span>
+      <div><textarea>t</textarea><p>deep <script>s()</script><style>.a{}</style>text</p></div></div>
+    <fieldset id="ot4"><legend>Legend <em>here</em></legend><input type="radio"> Yes</fieldset>
+    <span id="ot5" aria-hidden="true">root is hidden but is the element asked about</span>
+    <div id="ot6"></div>`;
+  document.body.appendChild(box);
+  let mismatches = 0, compared = 0;
+  const detail: string[] = [];
+  for (const el of [...document.querySelectorAll("*")]) {
+    compared++;
+    const want = clonedOwnText(el), got = ownText(el);
+    if (got !== want) {
+      mismatches++;
+      if (detail.length < 3) detail.push(`${el.localName}#${el.id}: got ${JSON.stringify(got.slice(0, 80))} want ${JSON.stringify(want.slice(0, 80))}`);
+    }
+  }
+  check(`ownText matches the clone-based read on all ${compared} elements of the page`, mismatches === 0 && compared > 100, detail.join(" | "));
+  check("ownText skips controls, options, scripts and aria-hidden parts", ownText(box.querySelector("#ot3")!) === "Q kept: the value is case-sensitive deep text", ownText(box.querySelector("#ot3")!));
+  check("ownText reads an element that itself matches what it skips", ownText(box.querySelector("#ot2")!) === "Press me" && ownText(box.querySelector("#ot5")!) !== "");
+  box.remove();
+}
+
 async function main(): Promise<void> {
-  for (const [name, fn] of [["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal], ["not questions", notQuestions]] as const) {
+  for (const [name, fn] of [["own text", ownTextParity], ["core", core], ["aria", ariaWidgets], ["workday", workday], ["shadow+frames", shadowAndFrames], ["repeated", repeated], ["tracking", tracking], ["adversarial", adversarial], ["live help", liveHelp], ["multi-select", multiSelect], ["dates", dates], ["typeahead", typeahead], ["once per page", oncePerPage], ["submit signal", submitSignal], ["not questions", notQuestions], ["dial picker", dialPicker], ["greenhouse fixture", greenhouseFixture]] as const) {
     try { await fn(); } catch (e) { check(`${name} crashed`, false, e instanceof Error ? `${e.message}\n${e.stack}` : String(e)); }
   }
   check("nothing in the whole run submitted a form or pressed a submit button", anySubmit === 0 && submitClicks === 0 && submits === 0, `submit ${anySubmit} clicks ${submitClicks}`);

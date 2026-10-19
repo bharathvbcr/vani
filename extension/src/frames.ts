@@ -92,7 +92,12 @@ const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
   scan: isScanReply,
   fill: isFillReply,
   capture: isCaptureReply,
+  clearMarks: () => true,
   appliedShow: r => typeof r === "object" && r !== null && "shown" in r,
+  scrapeJobs: r => typeof r === "object" && r !== null && "jobs" in r,
+  getRelevance: r => typeof r === "object" && r !== null,
+  jumpToMissed: () => true,
+  insertTailored: () => true,
 };
 
 export interface ToFramesOptions {
@@ -230,8 +235,13 @@ export interface ContentHandlers {
   scan(): Promise<ScanReply>;
   fill(overwrite?: boolean, typeahead?: boolean): Promise<FillReply>;
   capture(): Promise<CaptureReply>;
+  clearMarks?(): void | Promise<void>;
   /** Show a pending Applied question; only the top frame has one (null in a sub-frame). */
   appliedShow: (() => Promise<void>) | null;
+  scrapeJobs?(): Promise<unknown> | unknown;
+  getRelevance?(): Promise<unknown> | unknown;
+  jumpToMissed?(index: number): void | Promise<void>;
+  insertTailored?(label: string, text: string): void | Promise<void>;
 }
 
 type Listener = (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean;
@@ -254,6 +264,27 @@ export function contentListener(h: ContentHandlers): Listener {
       // Only the top frame is asked; answering "shown" is what lets the frame stay quiet.
       if (!show) { sendResponse({ shown: false }); return false; }
       void Promise.resolve().then(show).then(() => sendResponse({ shown: true }), () => sendResponse({ shown: false }));
+      return true;
+    }
+    if (msg.type === "clearMarks") {
+      const clear = h.clearMarks;
+      void Promise.resolve().then(() => clear?.()).then(() => sendResponse({ ok: true }), (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+    if (msg.type === "scrapeJobs") {
+      void Promise.resolve().then(() => h.scrapeJobs?.()).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+    if (msg.type === "getRelevance") {
+      void Promise.resolve().then(() => h.getRelevance?.()).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+    if (msg.type === "jumpToMissed") {
+      void Promise.resolve().then(() => h.jumpToMissed?.(msg.index)).then(() => sendResponse({ ok: true }), (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+    if (msg.type === "insertTailored") {
+      void Promise.resolve().then(() => h.insertTailored?.(msg.label, msg.text)).then(() => sendResponse({ ok: true }), (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
     const run = (): Promise<unknown> => msg.type === "scan" ? h.scan() : msg.type === "fill" ? h.fill(msg.overwrite, msg.typeahead) : h.capture();
