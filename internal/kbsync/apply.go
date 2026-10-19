@@ -3,6 +3,7 @@ package kbsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -38,19 +39,26 @@ type Result struct {
 
 // Apply sends every added or updated block through career_upsert_block, in
 // block-id order, and stops at the first error. A block's hash is recorded in
-// state (and the state file saved) only after DevPrism accepted that block,
-// so a stop leaves state and DevPrism in agreement.
+// state only after DevPrism accepted that block, so state never runs ahead of
+// DevPrism. The state file is saved every flushEvery accepted blocks and on
+// every return, error or not, so a stop leaves the two in agreement; a crash
+// between saves leaves state behind, and those blocks are sent again.
 //
 // DevPrism answers an overwrite that would drop bullets/facts or rewrite a
 // locked bullet with an inputRequired confirmation request
 // (tools_career.rs:926-959). Apply does not confirm it: no request_state or
 // input_responses is ever sent. The block is reported as needs_confirmation
 // with the server's message and the sync continues with the others.
-func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncState) (Result, error) {
-	res := Result{Orphaned: plan.Orphaned}
+func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncState) (res Result, err error) {
+	res = Result{Orphaned: plan.Orphaned}
 	if state == nil {
 		return res, fmt.Errorf("%w: Apply needs a state", ErrState)
 	}
+	defer func() {
+		if ferr := state.flush(); ferr != nil {
+			err = errors.Join(err, ferr)
+		}
+	}()
 	add := func(o Outcome) {
 		res.Outcomes = append(res.Outcomes, o)
 		switch o.Status {
@@ -108,8 +116,11 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 			}
 			add(Outcome{ID: it.ID, Status: StatusNeedsConfirmation, Reason: msg})
 		case ans.Success != nil && *ans.Success && ans.BlockID == it.ID:
-			if err := state.record(it.ID, it.Hash, time.Now()); err != nil {
-				return res, err
+			state.record(it.ID, it.Hash, time.Now())
+			if state.unsaved >= flushEvery {
+				if err := state.flush(); err != nil {
+					return res, err
+				}
 			}
 			st := StatusUpdated
 			if it.Action == ActionAdd {

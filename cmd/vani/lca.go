@@ -68,9 +68,6 @@ func (e *env) lcaImport(args []string) error {
 	if err := x.Merge(part); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(lcaIndexPath(e.stateDir)), 0o700); err != nil {
-		return err
-	}
 	if err := x.Save(lcaIndexPath(e.stateDir)); err != nil {
 		return err
 	}

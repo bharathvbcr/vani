@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/employer"
@@ -374,7 +375,8 @@ func Parse(data []byte) (Config, error) {
 	return c, nil
 }
 
-// Save validates c and writes it atomically (temp file + rename) with mode 0600.
+// Save validates c and writes it atomically with mode 0600 (see
+// atomicfile.Write).
 func Save(path string, c Config) error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -383,36 +385,7 @@ func Save(path string, c Config) error {
 	if err != nil {
 		return fmt.Errorf("config: encode: %w", err)
 	}
-	data = append(data, '\n')
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("config: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
-	if err != nil {
-		return fmt.Errorf("config: %w", err)
-	}
-	tmpName := tmp.Name()
-	fail := func(err error) error {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("config: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		return fail(err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("config: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
+	if err := atomicfile.Write(path, append(data, '\n')); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 	return nil

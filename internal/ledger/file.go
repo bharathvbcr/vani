@@ -46,8 +46,10 @@ var (
 // File is the JSONL-backed Ledger. The file is the source of truth; records
 // are folded in memory and rebuilt by Open.
 type File struct {
-	// Recovered is true when Open found and ignored a torn last line. The
-	// bad bytes are cut off the file on the next successful Append.
+	// Recovered is true when Open found and ignored a torn last line: one
+	// with no newline, or one that is not JSON. The bad bytes are cut off the
+	// file on the next successful Append. A whole JSON line that is not a
+	// valid event is never torn; Open refuses it as ErrCorrupt.
 	Recovered bool
 
 	mu       sync.Mutex
@@ -56,7 +58,13 @@ type File struct {
 	recs     map[posting.Key]*Record
 	goodSize int64 // end of the last intact line
 	closed   bool
+	broken   error // set when the file past goodSize is unknown; every later Append returns it
 }
+
+// errBroken is a ledger whose events file can no longer be trusted past the
+// last line it acknowledged. Get and All still answer from memory, which holds
+// only acknowledged events; Close and a fresh Open recover.
+var errBroken = errors.New("ledger: events file is in an unknown state after a failed write; reopen the ledger")
 
 var _ Ledger = (*File)(nil)
 
@@ -123,8 +131,10 @@ func (f *File) replay() error {
 
 // replay folds every intact event line of r into recs. It returns the end of
 // the last intact line and whether a torn last line (no newline, or a final
-// line that does not decode) was ignored; anything bad before the last line
-// is ErrCorrupt.
+// line that is not JSON at all, as a crash mid-write can leave) was ignored.
+// Anything bad before the last line is ErrCorrupt, and so is a last line that
+// is whole JSON but not a valid event: that is a writer's finished line (a
+// newer schema, say), and treating it as torn would cut it off the file.
 func replay(src io.Reader, recs map[posting.Key]*Record) (good int64, torn bool, err error) {
 	r := bufio.NewReaderSize(src, 64*1024)
 	for n := 1; ; n++ {
@@ -144,7 +154,7 @@ func replay(src io.Reader, recs map[posting.Key]*Record) (good int64, torn bool,
 			perr = validate(e)
 		}
 		if perr != nil {
-			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) {
+			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) && !json.Valid(line) {
 				return good, true, nil
 			}
 			return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
@@ -251,6 +261,9 @@ func (f *File) Append(ctx context.Context, e Event) error {
 	if f.closed {
 		return ErrClosed
 	}
+	if f.broken != nil {
+		return f.broken
+	}
 	if f.Recovered {
 		// Cut the torn tail so the new line starts on a clean boundary.
 		if err := f.events.Truncate(f.goodSize); err != nil {
@@ -259,12 +272,25 @@ func (f *File) Append(ctx context.Context, e Event) error {
 		f.Recovered = false
 	}
 	if _, err := f.events.WriteAt(line, f.goodSize); err != nil {
-		_ = f.events.Truncate(f.goodSize) // do not leave a partial line behind
+		// Do not leave a partial line behind. If it cannot be cut, the file
+		// past goodSize is unknown: a later, shorter line written over it
+		// would leave the old line's tail as a complete garbage line, and the
+		// next Open would refuse the whole file.
+		if terr := f.events.Truncate(f.goodSize); terr != nil {
+			f.broken = fmt.Errorf("%w: write failed (%v) and its partial line could not be cut: %v", errBroken, err, terr)
+			return f.broken
+		}
 		return fmt.Errorf("ledger: write: %w", err)
 	}
 	if err := f.events.Sync(); err != nil {
-		_ = f.events.Truncate(f.goodSize)
-		return fmt.Errorf("ledger: fsync: %w", err)
+		// After a failed fsync the kernel may already have dropped the dirty
+		// pages, so a retried fsync can report success for lost data. The file
+		// is no longer known; the next Open replays what it really holds.
+		f.broken = fmt.Errorf("%w: fsync failed: %v", errBroken, err)
+		if terr := f.events.Truncate(f.goodSize); terr != nil {
+			f.broken = fmt.Errorf("%w; cutting the line failed too: %v", f.broken, terr)
+		}
+		return f.broken
 	}
 	f.goodSize += int64(len(line))
 	fold(f.recs, e)

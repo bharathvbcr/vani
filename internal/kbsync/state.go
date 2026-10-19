@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 )
 
 // StateVersion is the sync-state file format.
@@ -28,7 +29,9 @@ type SyncState struct {
 	Blocks  map[string]string `json:"blocks"`
 	Synced  map[string]string `json:"synced_at,omitempty"` // block id -> RFC3339 time of the accepted upsert
 
-	path string
+	path    string
+	unsaved int // records since the last successful save
+	saves   int // successful saves, for tests
 }
 
 // NewSyncState returns an empty state bound to path.
@@ -72,9 +75,8 @@ func LoadState(path string) (*SyncState, error) {
 	return st, nil
 }
 
-// Save writes the state atomically with mode 0600: a temp file in the same
-// directory, fsynced, then renamed over the target, then the directory is
-// fsynced. A crash leaves the old file or the new one, never a torn one.
+// Save writes the state atomically with mode 0600 (see atomicfile.Write): a
+// crash leaves the old file or the new one, never a torn one.
 func (s *SyncState) Save() error {
 	if s.path == "" {
 		return fmt.Errorf("%w: state has no path", ErrState)
@@ -83,50 +85,31 @@ func (s *SyncState) Save() error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrState, err)
 	}
-	raw = append(raw, '\n')
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := atomicfile.Write(s.path, append(raw, '\n')); err != nil {
 		return fmt.Errorf("%w: %v", ErrState, err)
 	}
-	tmp, err := os.CreateTemp(dir, ".kbsync-state-*")
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrState, err)
-	}
-	tmpName := tmp.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			_ = tmp.Close()
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return fmt.Errorf("%w: %v", ErrState, err)
-	}
-	if _, err := tmp.Write(raw); err != nil {
-		return fmt.Errorf("%w: %v", ErrState, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("%w: %v", ErrState, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("%w: %v", ErrState, err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("%w: %v", ErrState, err)
-	}
-	ok = true
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
+	s.unsaved = 0
+	s.saves++
 	return nil
 }
 
-// record notes an accepted upsert and persists it before returning.
-func (s *SyncState) record(id, hash string, at time.Time) error {
+// flushEvery is how many accepted upserts Apply holds in memory before saving.
+// Each save rewrites and fsyncs the whole file; a crash between saves loses
+// at most flushEvery-1 records, whose blocks are then sent again unchanged.
+const flushEvery = 16
+
+// record notes an accepted upsert in memory. flush (or Save) persists it.
+func (s *SyncState) record(id, hash string, at time.Time) {
 	s.Blocks[id] = hash
 	s.Synced[id] = at.UTC().Format(time.RFC3339)
+	s.unsaved++
+}
+
+// flush saves the state if it holds records not yet on disk.
+func (s *SyncState) flush() error {
+	if s.unsaved == 0 {
+		return nil
+	}
 	return s.Save()
 }
 

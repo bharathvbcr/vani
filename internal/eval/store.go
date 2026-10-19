@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -241,28 +242,7 @@ func (s *Store) PutText(text string) (string, error) {
 	if _, err := os.Stat(dst); err == nil {
 		return h, nil
 	}
-	tmp, err := os.CreateTemp(s.textDir, ".tmp-*")
-	if err != nil {
-		return "", fmt.Errorf("eval: cache text: %w", err)
-	}
-	name := tmp.Name()
-	defer os.Remove(name) // no-op after a successful rename
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if _, err := tmp.WriteString(text); err != nil {
-		tmp.Close()
-		return "", fmt.Errorf("eval: cache text: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Rename(name, dst); err != nil {
+	if err := atomicfile.Write(dst, []byte(text)); err != nil {
 		return "", fmt.Errorf("eval: cache text: %w", err)
 	}
 	return h, nil

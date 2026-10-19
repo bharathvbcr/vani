@@ -578,10 +578,12 @@ func TestStateFileAtomicAnd0600(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	path := filepath.Join(dir, "kbsync.json")
 	st := NewSyncState(path)
-	if err := st.record("a", "h1", fixedNow); err != nil {
+	st.record("a", "h1", fixedNow)
+	if err := st.flush(); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.record("b", "h2", fixedNow); err != nil {
+	st.record("b", "h2", fixedNow)
+	if err := st.flush(); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(path)
@@ -611,7 +613,8 @@ func TestStateFileAtomicAnd0600(t *testing.T) {
 		}
 		defer os.Chmod(dir, 0o700)
 		before, _ := os.ReadFile(path)
-		if err := st.record("c", "h3", fixedNow); err == nil {
+		st.record("c", "h3", fixedNow)
+		if err := st.flush(); err == nil {
 			t.Fatal("save into a read-only dir succeeded")
 		}
 		after, _ := os.ReadFile(path)

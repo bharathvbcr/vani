@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
@@ -113,28 +114,7 @@ func writeRunRecord(stateDir string, r runRecord) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(runRecordPath(stateDir))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".last-*") // created 0600
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }() // ENOENT after a successful rename
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, runRecordPath(stateDir))
+	return atomicfile.Write(runRecordPath(stateDir), raw)
 }
 
 // readRunRecord returns the last record. A missing file is (nil, nil): no run

@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bharathvbcr/Vani/internal/lca"
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 )
 
 // ViewVersion is the on-disk lookup-view schema.
@@ -182,7 +182,7 @@ func writeView(path string, v *View, indexSum string, indexBytes int64) error {
 	}
 	data := make([]byte, 0, len(h)+1+len(v.body))
 	data = append(append(append(data, h...), '\n'), v.body...)
-	return lca.WriteFileAtomic(path, data)
+	return atomicfile.Write(path, data)
 }
 
 // errStaleView marks a view derived from other index bytes than the current.
