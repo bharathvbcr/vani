@@ -147,14 +147,22 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if r.Triager == nil {
 				return fmt.Errorf("%w: triager", ErrStageMissing)
 			}
-			ans, err := r.Triager.Triage(ctx, rec.Posting)
-			if err != nil {
-				return fmt.Errorf("pipeline: triage %s: %w", key, err)
+			// A title reading that a drop rule drops ends triage before any
+			// backend is asked; every other title reading is discarded and
+			// the backends read the posting as before.
+			ans, reason, dropped := r.Policy.EvaluateTitle(rec.Posting.Title)
+			st := posting.Dropped
+			if !dropped {
+				var err error
+				ans, err = r.Triager.Triage(ctx, rec.Posting)
+				if err != nil {
+					return fmt.Errorf("pipeline: triage %s: %w", key, err)
+				}
+				if noReading(ans) {
+					return fmt.Errorf("%w: %s", ErrTriageUnavailable, key)
+				}
+				st, reason = r.Policy.Evaluate(ans)
 			}
-			if noReading(ans) {
-				return fmt.Errorf("%w: %s", ErrTriageUnavailable, key)
-			}
-			st, reason := r.Policy.Evaluate(ans)
 			ann := triageAnnotations(ans)
 			if r.Badger != nil && rec.Posting.Company != "" {
 				if b := r.Badger.Badge(rec.Posting.Company); b != "" {
@@ -347,6 +355,44 @@ type DropPolicy struct {
 	// probability. The name is matched exactly, so another backend speaking
 	// the same wire shape (the local shadow) never drops.
 	OpenRouter string
+	// ReadTitle reads triage slot values from a posting's title alone
+	// (config.TitleSignals.Reads); nil reads nothing.
+	ReadTitle func(title string) []TitleReading
+}
+
+// TitleBackend is the backend name a title reading is recorded under.
+const TitleBackend = "title"
+
+// TitleReading is one slot value read from a title, and the phrase matched.
+type TitleReading struct {
+	Slot, Value, Matched string
+}
+
+// EvaluateTitle reads the title and reports whether a rule drops it. A title
+// reading is deterministic, so a rule whose slot and value it matches drops
+// with no calibration threshold; a ruled slot the title does not read is not
+// a reason for Unsure, it is left to the backends. dropped false means the
+// backends must read the posting, and the answer is to be discarded.
+func (p DropPolicy) EvaluateTitle(title string) (a decide.Answer, reason string, dropped bool) {
+	if p.ReadTitle == nil {
+		return decide.Answer{}, "", false
+	}
+	reads := p.ReadTitle(title)
+	if len(reads) == 0 {
+		return decide.Answer{}, "", false
+	}
+	a = decide.Answer{Backend: TitleBackend, Slots: make(map[string]decide.SlotReading, len(reads))}
+	for _, r := range reads {
+		a.Slots[r.Slot] = decide.SlotReading{Reading: decide.Answered, Value: r.Value}
+	}
+	for _, rule := range p.Rules {
+		for _, r := range reads {
+			if r.Slot == rule.Slot && contains(rule.Values, r.Value) {
+				return a, fmt.Sprintf("slot %q = %q: title matched %q", r.Slot, r.Value, r.Matched), true
+			}
+		}
+	}
+	return decide.Answer{}, "", false
 }
 
 // Evaluate maps an answer to Dropped, Unsure or Triaged with a reason that

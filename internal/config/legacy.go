@@ -35,7 +35,8 @@ const MaxBackendName = 32
 // reservedBackendNames are the names other backends and the eval report
 // already use; an OpenRouter model must not answer under one of them, or its
 // readings would be filed as theirs.
-var reservedBackendNames = []string{"llm", "lappi", "local", "unknown"}
+// "title" is the deterministic title reader (title_signals.read).
+var reservedBackendNames = []string{"llm", "lappi", "local", "unknown", "title"}
 
 // OpenRouterName is the name the OpenRouter decision model answers under in
 // routing, ledger annotations, drop reasons and the eval: see BackendName.

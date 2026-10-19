@@ -246,6 +246,27 @@ func (w *wired) runOnce(ctx context.Context) error {
 	return err
 }
 
+// dropPolicy is the configured drop rules, and the title reader that applies
+// them before any backend is asked. The run and `vani prefilter` share it.
+func dropPolicy(cfg config.Config, openRouter string) pipeline.DropPolicy {
+	rules := make([]pipeline.DropRule, 0, len(cfg.DropRules))
+	for _, r := range cfg.DropRules {
+		rules = append(rules, pipeline.DropRule{Slot: r.Slot, Values: r.Values, MinOpenRouterProb: r.MinOpenRouterProb, MinLappiScore: r.MinLappiScore})
+	}
+	p := pipeline.DropPolicy{Rules: rules, OpenRouter: openRouter}
+	if s := cfg.TitleSignals; len(s.Read) > 0 {
+		p.ReadTitle = func(title string) []pipeline.TitleReading {
+			reads := s.Reads(title)
+			out := make([]pipeline.TitleReading, len(reads))
+			for i, r := range reads {
+				out[i] = pipeline.TitleReading{Slot: r.Slot, Value: r.Value, Matched: r.Matched}
+			}
+			return out
+		}
+	}
+	return p
+}
+
 // titleRank orders triage by the configured title signals, or is nil (ledger
 // order) when none are configured.
 func (w *wired) titleRank() func(posting.Posting) int {
@@ -630,16 +651,12 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow
 
-	rules := make([]pipeline.DropRule, 0, len(w.cfg.DropRules))
-	for _, r := range w.cfg.DropRules {
-		rules = append(rules, pipeline.DropRule{Slot: r.Slot, Values: r.Values, MinOpenRouterProb: r.MinOpenRouterProb, MinLappiScore: r.MinLappiScore})
-	}
 	explainer, skipExplain := w.notes(d, spend)
 	r := &pipeline.Runner{
 		Ledger:      w.led,
 		Triager:     &jdtriage.Triager{D: router, TargetSummary: w.cfg.TargetSummary},
 		Explainer:   explainer,
-		Policy:      pipeline.DropPolicy{Rules: rules, OpenRouter: w.openRouterName()},
+		Policy:      dropPolicy(w.cfg, w.openRouterName()),
 		SkipExplain: skipExplain,
 	}
 	x, err := loadLCA(w.stateDir)

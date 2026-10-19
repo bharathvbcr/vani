@@ -203,7 +203,7 @@ func (e *env) trackUse(args []string) error {
 		fmt.Fprintf(w, "target_summary replaced; the previous one (%s) was:\n  %s\n", origin, old)
 	}
 	fmt.Fprintf(w, "employer_preferences = %v\n", out.EmployerPreferences)
-	fmt.Fprintf(w, "title_signals (triage order only, never drop) = %s\n", out.TitleSignals)
+	fmt.Fprintf(w, "title_signals (include/exclude order triage; read drops only through a drop rule) = %s\n", out.TitleSignals)
 	if *dryRun {
 		fmt.Fprintln(w, "dry run: config not saved")
 		return nil
