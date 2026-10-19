@@ -178,23 +178,26 @@ func (p *Proxy) begin() bool {
 	return true
 }
 
-// track records conn so Close can tear it down; false means the proxy closed
-// meanwhile and conn was closed.
-func (p *Proxy) track(conn net.Conn) bool {
+// trackPair records both halves of a tunnel so Close can tear them down, in
+// one step: a Close cannot land between them and leave one half recorded.
+// false means the proxy closed meanwhile and both were closed. release
+// forgets them again.
+func (p *Proxy) trackPair(cli, up net.Conn) (release func(), ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		_ = conn.Close()
-		return false
+		_ = cli.Close()
+		_ = up.Close()
+		return nil, false
 	}
-	p.conns[conn] = struct{}{}
-	return true
-}
-
-func (p *Proxy) untrack(conn net.Conn) {
-	p.mu.Lock()
-	delete(p.conns, conn)
-	p.mu.Unlock()
+	p.conns[cli] = struct{}{}
+	p.conns[up] = struct{}{}
+	return func() {
+		p.mu.Lock()
+		delete(p.conns, cli)
+		delete(p.conns, up)
+		p.mu.Unlock()
+	}, true
 }
 
 // authorized accepts the token as a bearer credential or, because Lightpanda
@@ -292,11 +295,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cli.Close()
 	_ = cli.SetDeadline(time.Time{})
-	if !p.track(cli) || !p.track(up) {
+	release, ok := p.trackPair(cli, up)
+	if !ok {
 		return
 	}
-	defer p.untrack(cli)
-	defer p.untrack(up)
+	defer release()
 
 	if _, err := io.WriteString(cli, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return
