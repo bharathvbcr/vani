@@ -83,8 +83,8 @@ func (c *compensation) payLine() string {
 		}
 	}
 	for _, s := range []string{c.ScrapeableCompensationSalarySummary, c.CompensationTierSummary} {
-		if s = strings.TrimSpace(s); s != "" {
-			return "Compensation: " + s
+		if line := srcutil.CompensationLine(s); line != "" {
+			return line
 		}
 	}
 	return ""

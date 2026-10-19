@@ -425,7 +425,7 @@ func TestRangeCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(got[0].Description, payLinePrefix); n != maxPayRanges {
+	if n := strings.Count(got[0].Description, srcutil.PayLinePrefix); n != maxPayRanges {
 		t.Fatalf("%d pay lines, want %d", n, maxPayRanges)
 	}
 }

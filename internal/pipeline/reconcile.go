@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 const (
@@ -31,8 +32,13 @@ const (
 
 // Summary counts what one Reconcile did.
 type Summary struct {
-	New        int
-	Changed    int
+	New     int
+	Changed int
+	// Rerendered postings carry the same source text in a new rendering (an
+	// adapter now adds, changes or drops a synthesized line such as a pay
+	// range): the stored posting takes the new rendering and keeps its status
+	// and annotations.
+	Rerendered int
 	Unchanged  int
 	Reappeared int // seen again after a miss (or after being marked dead)
 	Missed     int // absent, below the death threshold
@@ -103,6 +109,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		seen[p.Key] = true
 		hash := p.DescriptionHash()
 		rec, known := l.Get(p.Key)
+		rendered := known && rec.Posting.DescriptionHash() != hash
 
 		switch {
 		case !known:
@@ -134,7 +141,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 			}
 		case rec.Status == posting.Duplicate:
 			s.Unchanged++
-		case rec.Posting.DescriptionHash() != hash:
+		case rendered && sourceHash(rec.Posting.Description) != sourceHash(p.Description):
 			ann := staleAnnotations(rec.Annotations)
 			ann[DescHashKey] = hash
 			ann[DiedFromKey] = ""
@@ -161,10 +168,22 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		case rec.MissedRuns > 0:
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
 				Reason: "reappeared"}
+			if rendered {
+				e.Annotations = map[string]string{DescHashKey: hash}
+			}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Reappeared++
+		case rendered:
+			// Same board text in a new rendering: the stored posting takes it
+			// (so the digest shows it) and keeps its status and annotations.
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+				Annotations: map[string]string{DescHashKey: hash}, Reason: "re-rendered"}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Rerendered++
 		default:
 			s.Unchanged++
 		}
@@ -202,6 +221,14 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 		}
 	}
 	return s, nil
+}
+
+// sourceHash identifies the board's own text in a stored or listed
+// description: its DescriptionHash without the lines an adapter synthesized
+// ahead of it (srcutil.SourceText). Only a difference here is a change that
+// re-triages; a difference in the full hash alone is a re-render.
+func sourceHash(desc string) string {
+	return posting.Posting{Description: srcutil.SourceText(desc)}.DescriptionHash()
 }
 
 // closed reports whether a record has left the board's lifecycle, so absence

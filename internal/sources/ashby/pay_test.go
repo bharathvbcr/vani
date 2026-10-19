@@ -53,8 +53,10 @@ func TestCompensationChoices(t *testing.T) {
 		{"company hides pay", `,"shouldDisplayCompensationOnJobPostings":false,"compensation":{"scrapeableCompensationSalarySummary":"$1 - $2"}`, "Body."},
 		{"company shows pay", `,"shouldDisplayCompensationOnJobPostings":true,"compensation":{"scrapeableCompensationSalarySummary":"$1 - $2"}`,
 			"Compensation: $1 - $2\n\nBody."},
-		{"control characters reduced", `,"compensation":{"scrapeableCompensationSalarySummary":"$1\u0007 -\n $2"}`,
-			"Compensation: $1 -\n$2\n\nBody."},
+		// The summary stays one line, so srcutil.SourceText sees all of it as
+		// synthesized and none of it as board text.
+		{"control characters and line breaks reduced", `,"compensation":{"scrapeableCompensationSalarySummary":"$1\u0007 -\n $2"}`,
+			"Compensation: $1 - $2\n\nBody."},
 	}
 	for _, c := range cases {
 		s, _ := newSource(one(200, `{"jobs":[`+job+c.extra+`}]}`))
