@@ -54,17 +54,20 @@ func keptStatus(s posting.Status) bool {
 }
 
 type jobJSON struct {
-	Key         posting.Key       `json:"key"`
-	Company     string            `json:"company"`
-	Title       string            `json:"title"`
-	Location    string            `json:"location,omitempty"`
-	Remote      bool              `json:"remote,omitempty"`
-	Department  string            `json:"department,omitempty"`
-	URL         string            `json:"url,omitempty"` // http(s) only (digest.HTTPURL)
-	ApplyURL    string            `json:"apply_url,omitempty"`
-	Status      posting.Status    `json:"status"`
-	Closed      bool              `json:"closed,omitempty"` // the board no longer lists it
-	Rank        *float64          `json:"rank,omitempty"`
+	Key        posting.Key    `json:"key"`
+	Company    string         `json:"company"`
+	Title      string         `json:"title"`
+	Location   string         `json:"location,omitempty"`
+	Remote     bool           `json:"remote,omitempty"`
+	Department string         `json:"department,omitempty"`
+	URL        string         `json:"url,omitempty"` // http(s) only (digest.HTTPURL)
+	ApplyURL   string         `json:"apply_url,omitempty"`
+	Status     posting.Status `json:"status"`
+	Closed     bool           `json:"closed,omitempty"` // the board no longer lists it
+	Rank       *float64       `json:"rank,omitempty"`
+	// Similar counts the other listings of this title at this company that the
+	// default list folded into this row (jobinsight.Diversify); 0 when none.
+	Similar     int               `json:"similar,omitempty"`
 	Coverage    *float64          `json:"coverage,omitempty"`
 	Explanation string            `json:"explanation,omitempty"`
 	Missing     string            `json:"missing,omitempty"`
@@ -548,6 +551,7 @@ func listJobs(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobsOpts, 
 	sel, counts := selectJobs(snap, m, o, in, listKeywords)
 	out.Counts = counts
 	sortJobs(sel, o.view, o.sort)
+	sel = diversifyJobs(sel, o.view, o.sort)
 	out.Total = len(sel)
 	if len(sel) > limit {
 		sel = sel[:limit]
