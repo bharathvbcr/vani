@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
 // The daemon runs under launchd, where nobody reads stderr, so a run that
@@ -43,9 +45,9 @@ func failureNotice(rec runRecord) (title, body string, ok bool) {
 		return "Vani stopped", "The ledger could not be written safely, so Vani stopped. See vani's log.", true
 	case rec.Cause == causeDigestHeldBack:
 		return "Vani digest held back", "Your Jobs marks could not be read; see vani's log", true
-	case stopped == stopUnreadStreak || stopped == stopNoneRead:
+	case stopped == pipeline.StopUnreadStreak || stopped == pipeline.StopNoneRead:
 		return "Vani run failed", "No decision backend could read the postings; they stay live for the next run." + seeStatus, true
-	case stopped == stopFailStreak || stopped == stopNoneAdvanced:
+	case stopped == pipeline.StopFailStreak || stopped == pipeline.StopNoneAdvanced:
 		return "Vani run failed", "Postings kept failing a stage; they wait for the next run." + seeStatus, true
 	case rec.Stage == stagePipeline:
 		return "Vani run failed", "The pipeline stopped before the digest." + seeStatus, true
@@ -72,7 +74,7 @@ func (e *env) announceFailure(ctx context.Context, app *App, rec runRecord) {
 // digestBody is the digest notification's text: how many roles to review and,
 // when the advance phase left postings it could not read or score, how many
 // wait for the next run.
-func digestBody(roles int, adv *advanceReport) string {
+func digestBody(roles int, adv *pipeline.AdvanceReport) string {
 	body := fmt.Sprintf("%d roles to review", roles)
 	if roles == 1 {
 		body = "1 role to review"

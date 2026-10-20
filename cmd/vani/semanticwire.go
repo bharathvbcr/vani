@@ -203,7 +203,7 @@ func preAdvanceDocs(recs []ledger.Record, drop func(ledger.Record) bool) []seman
 	return docs
 }
 
-// warmBeforeAdvance scores the live postings advanceAll may triage so that
+// warmBeforeAdvance scores the live postings pipeline.Advance may triage so that
 // advanceOrder can put the best matches first. It only orders (Rule 7) and
 // never fails the run: whatever stopped it is in the report kept for the run
 // record, and the advance phase goes on regardless.

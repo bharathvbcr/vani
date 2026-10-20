@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"math"
-	"regexp"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -141,15 +141,6 @@ func (b *breaker) settle(probe bool, o outcome) (opened, closed, say bool) {
 	return opened, closed, say
 }
 
-// requestID matches a provider request id (Anthropic "req_…", OpenRouter
-// "gen-…"), which differs on every call.
-var requestID = regexp.MustCompile(`\b(req|gen)[_-][A-Za-z0-9_-]+`)
-
-// errorKey is the identity of a backend error for de-duplication: the same
-// refusal with a new request id is the same error. The first message is still
-// printed whole, request id included.
-func errorKey(msg string) string { return requestID.ReplaceAllString(msg, "$1_*") }
-
 func logErrors(b decide.Backend, warnf func(format string, a ...any), sink *backendErrors) *errorLogged {
 	return &errorLogged{
 		Backend: b, warnf: warnf, sink: sink, seen: map[string]bool{},
@@ -193,7 +184,7 @@ func (e *errorLogged) Decide(ctx context.Context, q decide.Question) (decide.Ans
 	e.sink.record(name, a, err != nil, o == callCanceled, time.Since(start))
 	if err != nil {
 		msg := truncateRunes(err.Error(), maxBackendErrorRunes)
-		key := errorKey(msg)
+		key := pipeline.ErrorKey(msg)
 		e.sink.add(name, key, msg)
 		e.mu.Lock()
 		first := !e.seen[key] && len(e.seen) < maxLoggedBackendErrors

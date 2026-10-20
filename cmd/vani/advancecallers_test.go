@@ -9,6 +9,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -135,21 +136,32 @@ func TestCharAdvanceCallerShapeRankCapTitleDrop(t *testing.T) {
 // line (which names advance_per_run) is not printed.
 func TestCharAdvanceCallerShapeRescoreSelectorAndQuietCap(t *testing.T) {
 	recs := liveRecs(6)
-	recs[1].Status, recs[3].Status = posting.Explained, posting.Explained
-	pick := func(r ledger.Record) bool { return r.Status == posting.Explained }
+	for _, i := range []int{1, 3} {
+		recs[i].Status = posting.Explained
+		recs[i].Posting.Description = "a described posting"
+	}
+	if !rescorable(recs[1]) || rescorable(recs[0]) {
+		t.Fatal("fixture: records 1 and 3 must be the rescorable ones")
+	}
 	var got []string
 	var warn strings.Builder
-	rep, err := advanceAll(context.Background(), recs, nil, 1, 2, nil, func(_ context.Context, k posting.Key) error {
-		got = append(got, string(k))
-		return nil
-	}, func(f string, a ...any) {
-		if !strings.HasPrefix(f, "advance cap ") {
-			fmt.Fprintf(&warn, f+"\n", a...)
-		}
-	}, withTodo(pick))
+	rep, err := pipeline.Advance(context.Background(), baseAdvancePlan(kindRescore, 1, 2, func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) }),
+		pipeline.AdvanceDeps{Records: recs, Advance: func(_ context.Context, k posting.Key) error {
+			got = append(got, string(k))
+			return nil
+		}})
 	if err != nil || len(got) != 1 || rep.Eligible != 2 || rep.Deferred != 1 || rep.Stopped != stopCap {
 		t.Fatalf("%v %v %+v", err, got, rep)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a rescore prints no cap line, got %q", warn.String())
 	}
 }
 
 func strIdx(s, sub string) int { return strings.Index(s, sub) }
+
+// runPlan is the daily run's advance cap and whether it skips the phase.
+func runPlan(w *wired) (limit int, skip bool) {
+	p := w.advancePlan(kindRun, pipeline.DropPolicy{})
+	return p.Limit, p.Skip
+}
