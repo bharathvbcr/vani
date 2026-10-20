@@ -18,6 +18,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/location"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/semantic"
 )
 
 // The browsing aids `vani jobs` adds to each posting: freshness, a relevance
@@ -310,6 +311,8 @@ type insight struct {
 	// rc is the one ranking context (jobinsight.InputsFor) every job's score
 	// is built from; newInsight fills it.
 	rc jobinsight.RankContext
+	// sem is the cache-only knowledge-base matcher; nil when off or unusable.
+	sem *semantic.Matcher
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -364,6 +367,7 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	if err == nil {
+		in.attachSemantic(cfg, e.stateDir)
 		if s := cfg.TitleSignals; len(s.Include) > 0 || len(s.Exclude) > 0 {
 			in.rc.TitleRank = s.Rank
 		}
@@ -417,6 +421,7 @@ func (in *insight) enrich(j *jobJSON, r ledger.Record, kwLimit int) []jobinsight
 	res := jobinsight.Score(jobinsight.InputsFor(r, in.rc))
 	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
 	j.Reasons = parseReasons(j.Explanation)
+	in.semanticInto(j, r)
 	j.Pay = jobinsight.ParsePay(r.Posting.Description)
 	return hits
 }

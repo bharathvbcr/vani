@@ -88,6 +88,7 @@ type jobJSON struct {
 	ScoreFactors   []jobinsight.Factor  `json:"score_factors,omitempty"`
 	Keywords       []jobinsight.Keyword `json:"keywords,omitempty"`
 	Reasons        []reasonJSON         `json:"reasons,omitempty"`
+	Semantic       *semanticJSON        `json:"semantic,omitempty"` // cached knowledge-base match (semanticwire.go)
 	// Places, RemoteListed and RemoteScope are what the board's location says
 	// (internal/location), not triage's work_mode reading.
 	Places       []placeJSON `json:"places,omitempty"`

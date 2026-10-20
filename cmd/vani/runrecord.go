@@ -60,6 +60,9 @@ type runRecord struct {
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`
 	CountsAfter  map[string]int `json:"counts_after,omitempty"`
+	// Semantic is the knowledge-base warm between the advance phase and the
+	// digest (semanticwire.go); nil when semantic matching is off.
+	Semantic *semanticReport `json:"semantic,omitempty"`
 	runDetail
 }
 

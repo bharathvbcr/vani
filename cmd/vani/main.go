@@ -88,6 +88,9 @@ commands:
                              replay postings the primary already read through local decision
                              models; per-slot agreement, confusion, calibration and latency
                              (Metal only, no API key, never writes the ledger)
+  semantic warm [--max N]    embed the freshest postings against the knowledge base (needs a
+                             -tags tessl build, semantic.snapshot and kb.bank); semantic status
+                             shows the build, config, profile size, cached scores and model
   draft                      draft one application answer: JSON request on stdin, JSON reply
                              on stdout (spends from the daily llm budget)
   suggest                    triage a form's new fields with the decision model and draft the
@@ -197,6 +200,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdMigrate(args[1:])
 	case "bench":
 		cmdErr = e.cmdBench(args[1:])
+	case "semantic":
+		cmdErr = e.cmdSemantic(args[1:])
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}

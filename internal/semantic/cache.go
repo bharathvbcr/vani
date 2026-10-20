@@ -167,7 +167,9 @@ func saveProfile(path, hash, model string, pd *profileData) error {
 
 // loadScores returns the cached scores when the file matches hash and model;
 // a file for another profile or model is ignored (it is replaced on the next
-// save); a malformed one is an error.
+// save); a malformed one is an error. An empty model accepts whichever model
+// the file records for this hash (the cache-only lookup path, which loads no
+// model); the result then carries that model, or "" when nothing is cached.
 func loadScores(path, hash, model string) (*scoreFile, error) {
 	fresh := &scoreFile{Version: CacheVersion, ProfileHash: hash, Model: model, Entries: map[string]*entry{}}
 	var sf scoreFile
@@ -181,7 +183,7 @@ func loadScores(path, hash, model string) (*scoreFile, error) {
 	if sf.Version != CacheVersion {
 		return nil, fmt.Errorf("%w: %s has version %d, want %d", ErrCache, path, sf.Version, CacheVersion)
 	}
-	if sf.ProfileHash != hash || sf.Model != model {
+	if sf.ProfileHash != hash || (model != "" && sf.Model != model) {
 		return fresh, nil
 	}
 	for k, e := range sf.Entries {

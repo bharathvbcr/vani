@@ -444,6 +444,54 @@ the last run's `advance` report (eligible, attempted, unread, deferred, why it s
 Before setting `devprism.binary` (which enables ranking and a real `kb sync`), run the Phase 0
 check that the installed DevPrism answers `--mcp` without migrating `career.db`.
 
+## Knowledge-base matching (semantic)
+
+Postings are also matched to the resume knowledge base by meaning, so "k8s" scores against
+"Kubernetes". It only orders and explains postings (weight 0.25 of the match part of
+`jobinsight.Score`); it never drops one, and a posting with no score takes the ranker's prior, not 0.
+It is on when both keys are set, and off otherwise:
+
+```json
+{
+  "kb": {"bank": "/abs/path/to/rkb/bank.json"},
+  "semantic": {
+    "snapshot": "/Users/<you>/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/<revision>",
+    "warm_per_run": 1000
+  },
+  "target_summary": "Senior platform engineer building Kubernetes and Go infrastructure"
+}
+```
+
+- `kb.bank` is rkb's `bank.json`. The profile is built from role titles, stack terms and bullet text
+  only; organisations, dates, locations and contact fields are never read. `target_summary` is the
+  calibration ceiling and is required.
+- `semantic.snapshot` is the absolute path of a Hugging Face snapshot directory of
+  `google/embeddinggemma-2` (the `snapshots/<revision>` folder, not the repository root).
+  `warm_per_run` (default 1000, at most 5000) bounds the postings one daily run embeds.
+- The model runs in-process on Metal through Tessl, so it needs a build with `-tags tessl` on
+  darwin/arm64 and the Tessl engine archive. Build the archive once with
+  `make -C go engine` in the tessl repo
+  (`/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a` must exist), then
+  `go build -tags tessl -o build/vani ./cmd/vani`. `macos/scripts/bundle.sh` adds the tag by itself
+  when it runs on Apple silicon and finds the archive. Linking prints `ld: warning` lines about a
+  duplicate `-lgusset`; they are harmless.
+- **Without the tag** (or with no snapshot, or a snapshot that will not load) the daily run still
+  succeeds and writes the digest; its run record (`vani status --json`, `last_run.semantic`) and
+  stderr say `semantic matching not run: <reason>`, and `vani jobs` carries no `semantic` field.
+  It is never reported as success.
+- The daily run scores the freshest browsable postings first (the Jobs views' rule), up to
+  `warm_per_run`, within 10 minutes, between the pipeline and the digest. `vani semantic warm
+  [--max N]` does the same on demand (use it for the first big backlog); `vani semantic status`
+  prints whether this binary has Tessl, whether the config is on, the profile's chunk count, the
+  cached scores and the model id. Scores are cached in `<state dir>/semantic/` per
+  (profile, model, posting text); a changed bank, target summary, model or posting rescores.
+  An unreadable cache is rebuilt by the next warm.
+- `vani jobs` and the digest only read that cache (no model is loaded). Each job gets
+  `semantic: {score, evidence: [{snippet, label, cosine}]}` when a score is cached. If the bank or
+  the cache cannot be read, `insight.warning` says so and the score stays unknown.
+- No bank text or posting text is written to a log line, the run record or an error: counts and
+  reasons only.
+
 ## Build and test
 
 The `go.work` file is ignored but required: Manvi's own `go.mod` replaces DevCouncil and gusset

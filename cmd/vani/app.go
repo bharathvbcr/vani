@@ -56,7 +56,7 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 		e.saveRunRecord(rec)
 		stage, err := stagePipeline, ledgerBroken(app.Ledger)
 		if err == nil {
-			stage, err = e.dailySteps(ctx, app, cfg)
+			stage, err = e.dailySteps(ctx, app, cfg, &rec)
 			if berr := ledgerBroken(app.Ledger); berr != nil {
 				err = errors.Join(err, berr)
 			}
@@ -96,7 +96,10 @@ func ledgerBroken(l ledger.Ledger) error {
 }
 
 // dailySteps is the run itself; stage names where it stopped when it fails.
-func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config) (stage string, err error) {
+// Between the pipeline and the digest it warms the knowledge-base scores the
+// digest orders by (semanticwire.go); that never fails the run, and rec carries
+// what it did.
+func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
 	}
@@ -107,7 +110,14 @@ func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config) (stag
 	if err != nil {
 		return stageDigest, err
 	}
-	return stageDigest, e.publishDigest(ctx, app, now().In(loc), loc)
+	if cfg.SemanticOn() && app.Ledger != nil && ctx.Err() == nil {
+		mk, _ := marks.ReadMarks(marks.Dir(e.stateDir)) // unreadable marks: the kept postings only
+		rep := warmSemantic(ctx, cfg, e.stateDir, app.Ledger.All(), mk, cfg.SemanticWarmLimit())
+		rec.Semantic = &rep
+		e.logSemantic(rep)
+	}
+	opts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
+	return stageDigest, e.publishDigest(ctx, app, now().In(loc), loc, opts)
 }
 
 // saveRunRecord writes the record; a failure is a warning, never a failed run:
@@ -132,7 +142,7 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 // the error is returned and announced. Listing everything instead would show,
 // and then consume, roles the user hid. The pipeline's results are already in
 // the ledger, so the roles are listed once the store reads again.
-func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location) error {
+func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) error {
 	if app.Ledger == nil {
 		return errors.New("app has no ledger")
 	}
@@ -147,7 +157,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		return fmt.Errorf("digest held back: read the Jobs marks in %s: %w", dir, err)
 	}
 	recs := app.Ledger.All()
-	path, keys, err := digest.Write(e.stateDir, date, recs, m, countsFor(recs, date, loc))
+	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, countsFor(recs, date, loc), opts)
 	if err != nil {
 		return err
 	}
@@ -226,7 +236,11 @@ func (e *env) cmdDigest(args []string) error {
 	defer app.close()
 	ctx, stop := signalContext()
 	defer stop()
-	return e.publishDigest(ctx, app, date, loc)
+	opts, warning := digestOptions(cfg, e.stateDir)
+	if warning != "" {
+		fmt.Fprintf(e.stderr, "vani: digest: %s\n", warning)
+	}
+	return e.publishDigest(ctx, app, date, loc, opts)
 }
 
 func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
