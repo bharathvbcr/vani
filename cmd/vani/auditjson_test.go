@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -171,6 +172,36 @@ func TestAuditAnswerWritesTheDrawnStratum(t *testing.T) {
 	e2 := readLabels(t, state)[posting.Key(q["key"].(string))]
 	if e2.Labels[eval.WouldApply] != eval.Skip || e2.Source != q["stratum"] || e2.PSelect != q["p_select"] {
 		t.Fatalf("looked-up label %+v vs draw %v", e2, q)
+	}
+}
+
+// The app reads --json replies only: a success is the label written, a failure
+// is {"error"} on stdout with exit 1, never an empty reply.
+func TestAuditAnswerJSONReplies(t *testing.T) {
+	_, state := setup(t)
+	mustCode(t, 0, "init")
+	seedAudit(t, state, 10, 2, 2)
+	o, _ := mustCode(t, 0, "audit", "answer", "--json", "--key", "gh:k:001", "--verdict", "yes", "--source", "decile:3", "--p-select", "0.5")
+	var ok auditAnswerJSON
+	if err := json.Unmarshal([]byte(o), &ok); err != nil || ok.Key != "gh:k:001" || ok.Verdict != "yes" || ok.Stratum != "decile:3" || ok.PSelect != 0.5 {
+		t.Fatalf("reply %q (%v)", o, err)
+	}
+	o, _ = mustCode(t, 1, "audit", "answer", "--json", "--key", "gh:k:001", "--verdict", "no", "--source", "decile:3", "--p-select", "0.5")
+	var fail struct{ Error string }
+	if err := json.Unmarshal([]byte(o), &fail); err != nil || !strings.Contains(fail.Error, "already answered") {
+		t.Fatalf("failure reply %q (%v)", o, err)
+	}
+	// An unreadable label store fails the draw the same way.
+	lf := filepath.Join(state, "eval", "labels", eval.LabelsFile)
+	if err := os.Remove(lf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o, _ = mustCode(t, 1, "audit", "--json")
+	if err := json.Unmarshal([]byte(o), &fail); err != nil || !strings.Contains(fail.Error, "unreadable") {
+		t.Fatalf("draw failure reply %q (%v)", o, err)
 	}
 }
 

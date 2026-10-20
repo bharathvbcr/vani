@@ -36,6 +36,12 @@ banner. Both facets decode leniently and are absent from an older `vani`, which 
 The app keeps its request's time only in memory: after a relaunch a pending request still blocks
 Run Now ("A run request is already waiting") and its run shows from the record once the daemon
 makes it, but a request the daemon then drops is not reported.
+Its **Audit** tab is the weekly "would you apply?" sample: it fetches `vani audit --json --blind`
+(keys, strata and inclusion probabilities, no posting text), shows one card at a time (title, company and
+place from the jobs row contract, `JobRow`, via `vani jobs show`; the description as plain text) and
+answers with one key each, Y / M / N / S, through `vani audit answer`, which writes the would_apply label
+with the pick's stratum and p_select. Vani's own readings and the strata are never shown. A failed write
+leaves the card where it is.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.

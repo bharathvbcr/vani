@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -189,18 +188,21 @@ func (e *env) cmdAudit(args []string) error {
 		return err
 	}
 	d, err := e.drawAudit(*scored, *dropped, *seed, *labels)
+	if *asJSON { // a failure is {"error"} on stdout, as every --json command reports it
+		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}}
+		if err == nil {
+			out.Seed = d.seed
+			for _, p := range d.picks {
+				out.Picks = append(out.Picks, auditPickJSON{Key: p.Key, Stratum: p.Source, PSelect: p.PSelect})
+			}
+			for _, st := range d.plan.Strata {
+				out.Strata = append(out.Strata, auditStratumJSON{Stratum: st.Source, Pool: st.Pool, Taken: st.Taken})
+			}
+		}
+		return e.jobsReply(true, out, err, nil)
+	}
 	if err != nil {
 		return err
-	}
-	if *asJSON {
-		out := auditJSON{Seed: d.seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}}
-		for _, p := range d.picks {
-			out.Picks = append(out.Picks, auditPickJSON{Key: p.Key, Stratum: p.Source, PSelect: p.PSelect})
-		}
-		for _, st := range d.plan.Strata {
-			out.Strata = append(out.Strata, auditStratumJSON{Stratum: st.Source, Pool: st.Pool, Taken: st.Taken})
-		}
-		return json.NewEncoder(e.stdout).Encode(out)
 	}
 	if len(d.picks) == 0 {
 		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored or dropped pool")
@@ -254,6 +256,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	scored := fs.Int("scored", eval.AuditScored, "scored quota of that draw")
 	dropped := fs.Int("dropped", eval.AuditDropped, "dropped quota of that draw")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
+	asJSON := fs.Bool("json", false, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -270,57 +273,72 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	if err := checkAuditDraw(*scored, *dropped, *seed); err != nil {
 		return err
 	}
-	k := posting.Key(*key)
-	src, prob := *source, *p
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, *source, *p, given["source"], *seed, *scored, *dropped, *labels)
+	return e.jobsReply(*asJSON, reply, err, func() {
+		fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
+	})
+}
+
+// auditAnswerJSON is what `audit answer --json` reports: the label written.
+type auditAnswerJSON struct {
+	Key     posting.Key `json:"key"`
+	Verdict string      `json:"verdict"`
+	Stratum string      `json:"stratum"`
+	PSelect float64     `json:"p_select"`
+}
+
+// answerAudit writes one would_apply label (see cmdAuditAnswer). explicit says
+// source and p came from the caller; otherwise they are the draw's.
+func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, scored, dropped int, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var snap ledger.Snapshot
-	if given["source"] {
+	src, prob := source, p
+	if explicit {
 		var err error
-		if s, err = e.openEvalStore(*labels); err != nil {
-			return err
+		if s, err = e.openEvalStore(labels); err != nil {
+			return auditAnswerJSON{}, err
 		}
 		done, _, err := s.Labels()
 		if err != nil {
-			return fmt.Errorf("labels unreadable, refusing to answer: %w", err)
+			return auditAnswerJSON{}, fmt.Errorf("labels unreadable, refusing to answer: %w", err)
 		}
 		if _, ok := done[k].Labels[eval.WouldApply]; ok {
-			return fmt.Errorf("audit answer: %s is already answered", k)
+			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is already answered", k)
 		}
 		b, err := e.browse()
 		if err != nil {
-			return err
+			return auditAnswerJSON{}, err
 		}
 		snap = b.snap
 	} else {
-		d, err := e.drawAudit(*scored, *dropped, *seed, *labels)
+		d, err := e.drawAudit(scored, dropped, seed, labels)
 		if err != nil {
-			return err
+			return auditAnswerJSON{}, err
 		}
 		if _, ok := d.done[k].Labels[eval.WouldApply]; ok {
-			return fmt.Errorf("audit answer: %s is already answered", k)
+			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is already answered", k)
 		}
 		i := slices.IndexFunc(d.picks, func(pk eval.AuditPick) bool { return pk.Key == k })
 		if i < 0 {
-			return fmt.Errorf("audit answer: %s is not in the draw for seed %s; pass --source and --p-select", k, d.seed)
+			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the draw for seed %s; pass --source and --p-select", k, d.seed)
 		}
 		s, snap, src, prob = d.s, d.b.snap, d.picks[i].Source, d.picks[i].PSelect
 	}
 	r, ok := findRecord(snap, k)
 	if !ok {
-		return fmt.Errorf("audit answer: %s is not in the ledger", k)
+		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}
-	entry := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: *verdict}, Source: src, PSelect: prob}
+	entry := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
 	if err := entry.Validate(); err != nil {
-		return fmt.Errorf("audit answer: %w", err)
+		return auditAnswerJSON{}, fmt.Errorf("audit answer: %w", err)
 	}
 	hash, err := s.PutText(r.Posting.Description)
 	if err != nil {
-		return err
+		return auditAnswerJSON{}, err
 	}
 	entry.TextSHA256 = hash
 	if err := s.Put(entry); err != nil {
-		return err
+		return auditAnswerJSON{}, err
 	}
-	fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", k, *verdict, src, strconv.FormatFloat(prob, 'g', 6, 64))
-	return nil
+	return auditAnswerJSON{Key: k, Verdict: verdict, Stratum: src, PSelect: prob}, nil
 }

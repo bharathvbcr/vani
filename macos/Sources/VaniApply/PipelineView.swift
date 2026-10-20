@@ -546,7 +546,7 @@ private struct SpendSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(b.name).fontWeight(.medium)
-                        Text(b.kind == "llm" ? "LLM" : "OpenRouter").font(.caption).foregroundStyle(.secondary)
+                        Text(b.kind == "llm" ? "LLM" : b.kind == "openrouter_notes" ? "OpenRouter notes" : "OpenRouter").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Text(amount(b)).monospacedDigit().foregroundStyle(b.ok ? Color.primary : Color.secondary)
                     }
