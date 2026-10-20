@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -185,6 +187,11 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 	Shape(b.p, &req)
 	text, err := Turn(ctx, b.p, req)
 	if err != nil {
+		if status := requestRejected(err); status != 0 && ctx.Err() == nil {
+			// A reading, not an error: the router turns any error into Unavailable,
+			// which keeps the posting Live to be re-asked every run.
+			return allSlots(b.name, q, decide.SlotReading{Reading: decide.Failed, Detail: fmt.Sprintf("http_%d", status)}), nil
+		}
 		detail := "provider"
 		if ctx.Err() != nil {
 			detail = "deadline"
@@ -192,6 +199,32 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 		return allSlots(b.name, q, decide.SlotReading{Reading: decide.Unavailable, Detail: detail}), err
 	}
 	return parse(b.name, q, text), nil
+}
+
+// requestRejected returns the HTTP status when err is a provider's final refusal
+// of this request's own content, else 0. Only the statuses HTTP defines as about
+// the request entity qualify: 413 (too large) and 422 (unprocessable). The same
+// request cannot succeed on a later run, and no other posting is affected.
+//
+// 400 is deliberately absent. It carries a prompt too long for one JD and also an
+// empty credit balance or a bad parameter, which fail every posting; Manvi keeps
+// the provider's error type only inside Error.Body, and matching that text is not
+// a contract. Misreading the second as Failed would park the whole backlog as
+// Unsure (retriage reopens unread postings, not failed ones). 401/402/403/404 are
+// run-wide, 408/409/429/5xx and transport failures are transient, a budget
+// refusal and a status-0 permanent credential failure are not about the posting,
+// and an in-stream failure arrives as a synthetic status Manvi picked, not one the
+// server sent.
+func requestRejected(err error) int {
+	var te *transport.Error
+	if !errors.As(err, &te) || te.InStream() || te.Retryable() {
+		return 0
+	}
+	switch te.Status {
+	case http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return te.Status
+	}
+	return 0
 }
 
 // ReasoningHeadroom is added to the visible-reply budget for a model that always
