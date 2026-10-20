@@ -3,7 +3,8 @@ import Observation
 import VaniApplyKit
 
 /// State for the Pipeline tab: the last `vani status --json`, re-read on a
-/// timer while the app is open and on demand. A read is local files only (no
+/// timer while the app runs and on demand. Each read is also offered to the
+/// announcer, which posts a finished run's notification once. A read is local files only (no
 /// network, no key), so polling it costs nothing.
 @MainActor
 @Observable
@@ -18,10 +19,13 @@ final class PipelineModel {
     private(set) var checkedAt: Date?
 
     private let client: () -> PipelineClient
+    /// Announces each finished run once (RunNotice); nil posts nothing.
+    private let announcer: RunAnnouncer?
     private var generation = 0
 
-    init(client: @escaping () -> PipelineClient) {
+    init(client: @escaping () -> PipelineClient, announcer: RunAnnouncer? = nil) {
         self.client = client
+        self.announcer = announcer
     }
 
     /// The overall state for the sidebar: a vani that cannot answer is a problem.
@@ -43,9 +47,11 @@ final class PipelineModel {
         case let .success(s):
             status = s
             error = nil
+            announcer?.consider(s.lastRun, stateDir: s.stateDir)
         case let .failure(err):
             // Keep the last good status on screen, marked stale by the error banner.
             error = String(describing: err)
+            announcer?.unreadable(String(describing: err))
         }
     }
 

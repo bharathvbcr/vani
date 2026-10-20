@@ -112,7 +112,10 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
                     durationSec: Double? = nil, stage: String? = nil, error: String? = nil,
                     postingsBefore: Int? = nil, postingsAfter: Int? = nil,
+                    countsBefore: [String: Int]? = nil, countsAfter: [String: Int]? = nil,
                     advance: Advance? = nil, backendErrors: BackendErrors? = nil) {
+            self.countsBefore = countsBefore
+            self.countsAfter = countsAfter
             self.advance = advance
             self.backendErrors = backendErrors
             self.ok = ok

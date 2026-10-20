@@ -177,6 +177,64 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      10 minutes.
    - It accepts XPC connections only from code signed by team `HAUHVD8M37`, so another process
      running as you cannot spend your model budget through it.
+7. **Run notifications.**
+   - While the app runs, with or without its window open, it announces each finished daily run once
+     as a Vani Apply notification. Clicking one opens the app on the Jobs tab.
+   - It reads the run from `vani status --json` (`last_run`), the same read the Pipeline tab makes
+     every 60 seconds. It never reads Vani's state folder itself.
+   - The app asks for notification permission at first launch, and only while you have not
+     answered. Change the answer later in System Settings ▸ Notifications ▸ Vani Apply.
+   - The wording is the daemon's fixed vocabulary (`cmd/vani/runnotice.go`). A run that ended
+     `ok` and digested roles posts **Vani digest**: "N roles to review", plus how many postings
+     could not be read or scored. A `failed` run posts **Vani run failed**, and the body is chosen
+     by the stop reason (`unread_streak`/`none_read`, `fail_streak`/`none_advanced`), then by the
+     stage (`pipeline`, else digest). The run's error text, which can carry fetched URLs or page
+     content, never appears in a notification, and neither does anything personal.
+   - The digest's size is the run's net change in the ledger's `digested` count
+     (`counts_after` minus `counts_before`). A run whose count did not rise posts nothing. This is
+     a net figure, not the digest's size. In the same run, before the digest, reconcile can move
+     earlier digested postings out of `digested`: to `dead` when a board dropped them twice, or
+     to `live` when their description changed. Such a run shows too few roles, or posts nothing
+     on a day that did produce a digest. An exact count needs the digest's size in the run record.
+   - **Posts nothing:** a run that is still going, cancelled, interrupted, in a state this app does
+     not know, or one that finished more than 36 hours ago (a backstop; the lock cutoff below
+     already leaves earlier runs to the daemon). It also
+     posts nothing when no run is recorded, when the record could not be read (corrupt, wrong
+     version), or when `vani status` fails. The announcer keeps the reason (`RunAnnouncer.lastSkip`).
+   - **Once per run.** A run is keyed on its start time. The last key announced is stored in the
+     app's defaults (`lastAnnouncedRun`) *before* the notice is posted, so a relaunch or a re-read
+     never repeats it. A crash at that moment loses one notice rather than posting it twice.
+   - A day's notices share a thread (`vani-run-YYYY-MM-DD`, the run's local finish day), so they
+     group together in Notification Center.
+   - **What the app cannot tell apart.** The daemon's notice also names a fatal ledger error
+     ("Vani stopped"), a digest held back because the Jobs marks could not be read, and a config
+     that could not be re-read. The run record carries no field for these: they show only in the
+     error text, which the app does not read. The app shows them as the stage's default ("The
+     pipeline stopped before the digest." or "The digest could not be finished."). For a stale
+     config that default is false. The run went on with the previous watchlist and wrote the
+     digest, but its outcome is `failed` at stage `digest`. So the app says the digest could not be
+     finished and posts no digest notice. Telling these cases apart needs a cause code in the run
+     record.
+   - **The daemon is the fallback.** While the app runs, it holds an exclusive `flock` on
+     `<state_dir>/app/notifier.lock`, where `state_dir` is the folder `vani status` reports. The
+     daemon's notifier (`notify.UnlessHeld`, wired in `cmd/vani/wire.go`) tests that lock before
+     each notice. While the lock is held it posts nothing, and otherwise it posts through osascript
+     as before. Those fallback notices are attributed to Script Editor, and clicking one opens Script
+     Editor. The lock belongs to the app's open file, so it goes when the app quits or crashes: a
+     stale lock file cannot silence the daemon. A lock the daemon cannot check (an unreadable
+     file, a lock error) counts as not held, so the daemon posts. A duplicate is better than
+     silence. The app's Settings (config and state paths) must point at the state folder that the
+     launchd daemon uses. Otherwise the lock is in a folder the daemon never checks, and both post.
+   - The app announces a run only if the run finished after the app took the lock (its first
+     status read). A run that finished earlier was the daemon's to announce, so the app stays quiet
+     about it. If the app cannot take the lock (another copy holds it, or there is no state folder),
+     it posts nothing and the daemon announces.
+   - **Edge cases.** A run that ends in the same moment the app takes the lock can be announced
+     twice, or not at all. A run that ends while the app holds the lock, followed by the app quitting
+     before its next read (up to 60 seconds), is announced by neither. The next launch treats that
+     run as the daemon's.
+   - A bare `swift run` (no app bundle) has no notification center, so it takes no lock and
+     announces nothing.
 
 ## Claude drafting: what is sent and where the key comes from
 
@@ -246,7 +304,20 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - The appex is sandboxed and every piece carries the App Group entitlement.
   - The appex's `LC_MAIN` entry is the `_NSExtensionMain` stub, and its principal class is
     `SafariWebExtensionHandler`.
+  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage
+    and stop reason maps to a notice, and that error text stays out. They also cover missing,
+    corrupt and unreadable records, and that a run is announced once, including across a
+    relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
+    refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers
+    the daemon's side: it skips while the lock is held, posts when there is no lock, a stale file
+    or an unopenable path, and never creates the file.
+  - That Swift's `flock(LOCK_EX)` and Go's shared probe on the same file exclude each other is
+    inferred: both are BSD `flock` on one path. No test runs the app and the daemon together.
 - **Not verified here:**
+  - A notification shown by the bundled app, its permission prompt, and a click opening the Jobs
+    tab. `UNUserNotificationCenter` needs a signed app bundle, which `swift test` does not run.
+    A click while the app runs with its window closed may activate the app and show no window:
+    the handler brings forward an existing window and does not reopen a closed one.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.

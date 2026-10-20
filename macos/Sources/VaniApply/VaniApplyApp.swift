@@ -3,23 +3,16 @@ import VaniApplyKit
 
 @main
 struct VaniApplyApp: App {
-    @State private var model: AppModel
-    @State private var jobs: JobsModel
-    @State private var pipeline: PipelineModel
-
-    init() {
-        let model = AppModel()
-        _model = State(initialValue: model)
-        _jobs = State(initialValue: JobsModel { model.jobsClient })
-        _pipeline = State(initialValue: PipelineModel { model.pipelineClient })
-    }
+    // The delegate owns the models, so a notification click and the pipeline
+    // poll reach them whether or not the window is open (Notifications.swift).
+    @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
     var body: some Scene {
         Window("Vani Apply", id: "main") {
             ContentView()
-                .environment(model)
-                .environment(jobs)
-                .environment(pipeline)
+                .environment(delegate.model)
+                .environment(delegate.jobs)
+                .environment(delegate.pipeline)
                 .frame(minWidth: 820, minHeight: 520)
         }
         .defaultSize(width: 1180, height: 760)
@@ -47,11 +40,11 @@ enum Pane: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(PipelineModel.self) private var pipeline
-    @State private var section: Pane? = .jobs
 
     var body: some View {
+        @Bindable var model = model
         NavigationSplitView {
-            List(Pane.allCases, selection: $section) { s in
+            List(Pane.allCases, selection: $model.pane) { s in
                 HStack {
                     Label(s.rawValue, systemImage: s.symbol)
                     if s == .pipeline, let badge = pipelineBadge {
@@ -68,7 +61,7 @@ struct ContentView: View {
                 if let err = model.storeError {
                     StoreErrorBanner(message: err)
                 }
-                switch section ?? .jobs {
+                switch model.pane ?? .jobs {
                 case .jobs: JobsView()
                 case .pipeline: PipelineView()
                 case .answers: AnswersView()
@@ -78,9 +71,6 @@ struct ContentView: View {
                 }
             }
         }
-        // Read the pipeline's status while the app is open, so a failed daily run
-        // shows on the sidebar without opening the tab.
-        .task { await pipeline.poll() }
         .alert("Vani Apply", isPresented: Binding(get: { model.actionError != nil }, set: { if !$0 { model.actionError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
