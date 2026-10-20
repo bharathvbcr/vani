@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "state": "failed",
+  "started_at": "2026-10-14T16:41:40Z",
+  "finished_at": "2026-10-14T16:46:40Z",
+  "stage": "digest",
+  "cause": "ledger_fatal",
+  "counts_before": {
+    "digested": 300,
+    "live": 40
+  },
+  "counts_after": {
+    "digested": 312,
+    "live": 28
+  },
+  "notice": {
+    "v": 1,
+    "announce": true,
+    "title": "Vani stopped",
+    "body": "The ledger could not be written safely, so Vani stopped. See vani's log.",
+    "thread_id": "vani-run-2026-10-14",
+    "key": "run-1791996100000"
+  }
+}

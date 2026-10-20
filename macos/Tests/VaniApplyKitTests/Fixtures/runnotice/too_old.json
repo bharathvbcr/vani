@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "state": "ok",
+  "started_at": "2026-10-11T17:45:40Z",
+  "finished_at": "2026-10-11T17:46:40Z",
+  "digest_roles": 1,
+  "counts_before": {
+    "digested": 300,
+    "live": 40
+  },
+  "counts_after": {
+    "digested": 312,
+    "live": 28
+  },
+  "notice": {
+    "v": 1,
+    "announce": false,
+    "reason": "the run finished over 36 h ago"
+  }
+}

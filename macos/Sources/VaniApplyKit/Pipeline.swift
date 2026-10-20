@@ -195,9 +195,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         /// The decision backends' failed calls by cause; nil when none failed,
         /// or from a vani that does not report them.
         public var backendErrors: BackendErrors?
+        /// What vani says to announce for this run (cmd/vani/runnotice.go
+        /// decideNotice); nil from a vani that sends none.
+        public var notice: NoticeWire?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, state, stage, error, cause, boards, advance, trigger, options
+            case ok, reason, state, stage, error, cause, boards, advance, trigger, options, notice
             case digestRoles = "digest_roles"
             case startedAt = "started_at"
             case finishedAt = "finished_at"
@@ -230,6 +233,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             boards = try c.decodeIfPresent(Boards.self, forKey: .boards)
             advance = try c.decodeIfPresent(Advance.self, forKey: .advance)
             backendErrors = try c.decodeIfPresent(BackendErrors.self, forKey: .backendErrors)
+            // Present but not readable is a notice this app cannot trust, not an absent one.
+            notice = c.contains(.notice) ? ((try? c.decode(NoticeWire.self, forKey: .notice)) ?? .unsupported("malformed")) : nil
         }
 
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
@@ -238,7 +243,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     postingsBefore: Int? = nil, postingsAfter: Int? = nil,
                     countsBefore: [String: Int]? = nil, countsAfter: [String: Int]? = nil,
                     boards: Boards? = nil, advance: Advance? = nil, backendErrors: BackendErrors? = nil,
-                    trigger: Trigger? = nil, options: ManualRunOptions? = nil) {
+                    trigger: Trigger? = nil, options: ManualRunOptions? = nil, notice: NoticeWire? = nil) {
+            self.notice = notice
             self.trigger = trigger
             self.options = options
             self.cause = cause
@@ -752,6 +758,9 @@ extension PipelineStatus {
         case .running:
             break
         }
+
+        // A notice this app cannot read is never a quiet day: say so.
+        if case let .unsupported(why)? = lastRun.notice { add(.warning, "Run notices are off", why) }
 
         // A board that failed or was skipped is a warning even on a run that
         // succeeded: its postings silently stop updating otherwise.
