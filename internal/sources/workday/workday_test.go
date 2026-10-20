@@ -167,19 +167,23 @@ func TestPagingThreePages(t *testing.T) {
 	}
 }
 
-func TestEmptyPageStopsLoopWhenTotalIsZero(t *testing.T) {
+func TestShortPageStopsLoopWhenTotalIsZero(t *testing.T) {
 	var offsets []int
-	// Saturated/zero total on every page: only the empty page ends the loop.
+	// A zero total on every page: the short page ends the loop (rows past a
+	// total that lies low are still listed).
 	s, _ := newSource(pagedHandler(45, &offsets, func(int) int { return 0 }, detailTmpl))
 	got, err := s.List(context.Background(), board)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 45 || fmt.Sprint(offsets) != "[0 20 40 45]" {
+	if len(got) != 45 || fmt.Sprint(offsets) != "[0 20 40]" {
 		t.Errorf("got %d postings, offsets %v", len(got), offsets)
 	}
 }
 
+// An empty page ends a query under the window even when its total promised
+// more: a live total that overstates would otherwise fail the board on every
+// run (docs/FOLLOWUPS.md, "Absence ages every open posting").
 func TestEmptyPageStopsLoopWhenTotalOverstates(t *testing.T) {
 	var offsets []int
 	s, _ := newSource(pagedHandler(20, &offsets, func(int) int { return 100 }, detailTmpl))
@@ -255,28 +259,41 @@ func TestEmptyJobPostingsIsEmptyBoard(t *testing.T) {
 	}
 }
 
-func TestTotalOverCapNamesSearch(t *testing.T) {
+// A source without stored postings (New) fetches every row, so a board with
+// more rows than MaxDetails fails, naming the search, before any detail
+// request. The old cap failed it on the listing's total (over 200); the
+// listing is cheap now and only the detail requests are bounded.
+func TestNewFailsBoardOverDetailCapBeforeAnyDetail(t *testing.T) {
 	var offsets []int
-	s, d := newSource(pagedHandler(500, &offsets, func(int) int { return 201 }, detailTmpl))
+	s, d := newSource(pagedHandler(MaxDetails+1, &offsets, func(int) int { return MaxDetails + 1 }, detailTmpl))
 	_, err := s.List(context.Background(), board)
 	if err == nil || !strings.Contains(err.Error(), "search") || !errors.Is(err, srcutil.ErrTooManyPostings) {
 		t.Fatalf("err = %v, want too-many mentioning search", err)
 	}
-	if len(d.Requests()) != 1 {
-		t.Errorf("made %d requests, want only the first listing page", len(d.Requests()))
+	for _, r := range d.Requests() {
+		if r.Method == "GET" {
+			t.Fatal("a detail request was spent on a board over the cap")
+		}
+	}
+	offsets = nil
+	s, _ = newSource(pagedHandler(MaxDetails, &offsets, func(int) int { return MaxDetails }, detailTmpl))
+	if got, err := s.List(context.Background(), board); err != nil || len(got) != MaxDetails {
+		t.Fatalf("a board of exactly MaxDetails: %d, %v", len(got), err)
 	}
 }
 
+// Total claims 0 and the service never runs dry: the window ends the query,
+// and with no count that could size it the board fails rather than keep the
+// first 2000 rows.
 func TestSaturatedListingIsBoundedAndErrors(t *testing.T) {
-	// Total claims 0 and the service never runs dry: the row cap ends it.
 	var offsets []int
 	s, _ := newSource(pagedHandler(100000, &offsets, func(int) int { return 0 }, detailTmpl))
 	_, err := s.List(context.Background(), board)
-	if err == nil || !strings.Contains(err.Error(), "search") {
-		t.Fatalf("err = %v, want over-cap error mentioning search", err)
+	if !errors.Is(err, errIncomplete) {
+		t.Fatalf("err = %v, want an incomplete listing", err)
 	}
-	if len(offsets) > maxPages {
-		t.Errorf("%d pages requested, bound is %d", len(offsets), maxPages)
+	if len(offsets) > window/pageSize {
+		t.Errorf("%d pages requested, bound is %d", len(offsets), window/pageSize)
 	}
 }
 
@@ -458,12 +475,16 @@ func TestSearchesListTheUnion(t *testing.T) {
 	}
 }
 
-// Two terms each under the cap whose union is over it fail the board before
-// any detail request is spent, and filters are refused.
+// Two terms each under the detail cap whose union is over it fail a source
+// without stored postings before any detail request is spent, and filters
+// are refused.
 func TestSearchesUnionCap(t *testing.T) {
+	const each = MaxDetails/2 + 10
 	page := func(prefix string, n, offset int) string {
-		var resp listResponse
-		resp.Total = n
+		resp := struct {
+			Total       int         `json:"total"`
+			JobPostings []listedJob `json:"jobPostings"`
+		}{Total: n, JobPostings: []listedJob{}}
 		for i := offset; i < n && i < offset+pageSize; i++ {
 			resp.JobPostings = append(resp.JobPostings, listedJob{Title: "t", ExternalPath: fmt.Sprintf("/job/%s_JR%d", prefix, i)})
 		}
@@ -476,11 +497,11 @@ func TestSearchesUnionCap(t *testing.T) {
 		if r.Method != "POST" {
 			return srctest.Reply{}, false
 		}
-		return ok(page(req.SearchText, 150, req.Offset)), true
+		return ok(page(req.SearchText, each, req.Offset)), true
 	})
 	b := board
 	b.Searches = []string{"a", "b"}
-	if _, err := s.List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) || !strings.Contains(err.Error(), "searches together") {
+	if _, err := s.List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) || !strings.Contains(err.Error(), "search") {
 		t.Fatalf("err = %v, want the union over the cap", err)
 	}
 	for _, r := range d.Requests() {
@@ -567,7 +588,10 @@ func TestHostMatchIsCaseInsensitive(t *testing.T) {
 }
 
 func TestHostileExternalPath(t *testing.T) {
-	for _, p := range []string{"job/x", "/../admin", "/job//x", "/job/./x", ""} {
+	for _, p := range []string{
+		"job/x", "/../admin", "/job//x", "/job/./x", "", "/job/../../admin", "/jobs/x", "/x/job/y",
+		"/job/%2e%2e/admin", "/job/%2E%2e/x", "/job/a%2fb", "/job/a%5Cb", `/job/a\b`, "/job/" + strings.Repeat("a", maxPathLen),
+	} {
 		s, d := newSource(func(r srctest.Request) (srctest.Reply, bool) {
 			body, _ := json.Marshal(map[string]any{"total": 1, "jobPostings": []map[string]string{{"title": "t", "externalPath": p}}})
 			return ok(string(body)), r.URL == jobsURL

@@ -399,7 +399,10 @@ Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.my
 and, where verified, `--filter name=value`: `az --token amazon` (`normalized_country_code[]`,
 `category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
-posting cap fails rather than being truncated, so pick searches narrow enough. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
+posting cap fails rather than being truncated, so pick searches narrow enough. Workday lists past
+its 2000-row window by splitting the board on its own facets (up to 10,000 postings); stored
+postings are reused, so a run spends at most 300 detail requests per board and a new large board
+fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for
