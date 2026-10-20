@@ -21,7 +21,7 @@ const (
 	AnnTriageModel = ledger.AnnTriagePrefix + "model"
 	// AnnTriageInheritedFrom is the key of the posting whose reading this
 	// posting copied instead of asking a backend.
-	AnnTriageInheritedFrom = ledger.AnnTriagePrefix + "inherited_from"
+	AnnTriageInheritedFrom = ledger.AnnTriageInheritedFrom
 	// AnnTriageSkipped is why the paid triage call was skipped (the posting
 	// was kept, unread).
 	AnnTriageSkipped = ledger.AnnTriagePrefix + "skipped"

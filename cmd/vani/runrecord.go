@@ -92,7 +92,7 @@ type runRecord struct {
 	// Options are a manual run's overrides; nil when it had none.
 	Options *runOptions `json:"options,omitempty"`
 	Stage   string      `json:"stage,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Error   string      `json:"error,omitempty"`
 	// Cause names a failed run's known cause (runCause), so a reader can word
 	// the failure without reading Error; "" when the failure has none of them.
 	Cause string `json:"cause,omitempty"`

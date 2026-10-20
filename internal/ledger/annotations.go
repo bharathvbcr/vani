@@ -43,6 +43,10 @@ const (
 	// and the backend whose reading it is.
 	AnnTriageSuffixReading = ".reading"
 	AnnTriageSuffixBackend = ".backend"
+	// AnnTriageInheritedFrom is the key of the posting whose triage reading this
+	// posting copied instead of asking a backend. A copy is not a second
+	// observation: the evaluation leaves it out of every count.
+	AnnTriageInheritedFrom = AnnTriagePrefix + "inherited_from"
 	// AnnTriageUnsure is the unsure reason ("triage.unsure").
 	AnnTriageUnsure = "triage.unsure"
 	// AnnTriageKept holds the score a posting had when its description changed

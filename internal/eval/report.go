@@ -172,11 +172,15 @@ func lowerBound(k, n int, alpha float64) float64 {
 
 // Report is the evaluation of ledger records against the label set.
 type Report struct {
-	Records        int // ledger records examined
-	WithTriage     int // of those, with any triage annotation
-	LabelEntries   int // distinct keys in the label file
-	Matched        int // label entries that have a ledger record
-	NoTriage       int // matched labels whose record has no triage annotations
+	Records      int // ledger records examined
+	WithTriage   int // of those, with any triage annotation
+	LabelEntries int // distinct keys in the label file
+	Matched      int // label entries that have a ledger record
+	NoTriage     int // matched labels whose record has no triage annotations
+	// Inherited counts records whose reading was copied from another posting
+	// (triage.inherited_from). They are left out of every other count: a copy
+	// is not a second observation, and counting it would inflate n.
+	Inherited      int
 	MalformedLines int // label-file lines skipped as unreadable
 	LoadError      string
 	// LegacyPrimary counts scored slot readings whose primary backend was
@@ -230,6 +234,10 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 	promo := map[pk]*Promotion{}
 
 	for _, r := range recs {
+		if inherited(r) {
+			rep.Inherited++
+			continue
+		}
 		if hasTriage(r) {
 			rep.WithTriage++
 		}
@@ -433,6 +441,9 @@ func (r Report) Markdown() string {
 	fmt.Fprintf(&b, "- ledger records: %d, with triage annotations: %d\n", r.Records, r.WithTriage)
 	fmt.Fprintf(&b, "- labeled postings: %d, matched to a ledger record: %d (%d without triage annotations, not scored)\n",
 		r.LabelEntries, r.Matched, r.NoTriage)
+	if r.Inherited > 0 {
+		fmt.Fprintf(&b, "- records with an inherited reading (copied from an identical posting), left out of every count: %d\n", r.Inherited)
+	}
 	if r.MalformedLines > 0 {
 		fmt.Fprintf(&b, "- label lines skipped as unreadable: %d\n", r.MalformedLines)
 	}

@@ -41,8 +41,8 @@ func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand) []ledger.Recor
 		if r.Status == posting.Dead || r.Status == posting.Duplicate {
 			continue
 		}
-		if _, done := labeled[r.Key]; done {
-			continue
+		if _, done := labeled[r.Key]; done || inherited(r) {
+			continue // a copied reading is not worth a label: it is not counted
 		}
 		seen := hasShadowReading(r)
 		switch {
@@ -77,6 +77,12 @@ func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand) []ledger.Recor
 		out = out[:n]
 	}
 	return out
+}
+
+// inherited reports whether r's triage reading was copied from another
+// posting rather than made for it.
+func inherited(r ledger.Record) bool {
+	return r.Annotations[ledger.AnnTriageInheritedFrom] != ""
 }
 
 func hasDisagree(r ledger.Record) bool {
