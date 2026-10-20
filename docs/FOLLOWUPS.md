@@ -806,6 +806,26 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     (OpenRouter, LLM, Lappi, local, and the notes picker). `jobs list`/`stats` report `pending`,
     and the digest and the Jobs tab footer show the count. Draining 2,639 postings at 300 a run
     takes 9 runs. Raising the cap is the owner's spend decision.
+  - **A board that failed to list was invisible (2026-10-19).** Intel's board (`wd intel/External`
+    on intel.wd1.myworkdayjobs.com, search "LLM") answered total=35 when probed live, yet the
+    ledger held no `wd:intel` record and the run record did not say why. A board whose listing fails
+    (one bad Workday detail fails the whole board, by design: a partial listing would age healthy
+    postings as absent) only reached stderr. Now the run record and `status --json` carry `boards`:
+    the configured, read, failed, skipped and not-reached counts, the postings listed, and one entry
+    per board (ATS, token, company, outcome, listed count, reconcile counts, and a one-line error
+    of at most 300 runes for a failed or skipped board). The entries are bounded at 100 boards and
+    32 KiB; failed and skipped boards are kept before read ones, and the cut is counted
+    (`unrecorded`). The totals are always exact. A cancelled run keeps the boards read before it and
+    the one being listed (failed), and counts the rest as not reached. The record reader's bound went
+    from 64 KiB to 256 KiB. A worst-case record, with every bound full of six-byte-escaped text, is
+    85 KB (`TestWorstCaseRunRecordIsReadable` holds it under half the bound); full backend errors
+    plus full board entries would have passed 64 KiB. The Mac Pipeline tab shows the
+    boards that were not read, and a run that succeeded with one is a warning, not healthy. Not done:
+    - **Why Intel failed is not yet known.** The next run's record will say. If it is one bad
+      detail, a per-posting skip with a bound would need to keep absence tracking honest; that is a
+      separate decision.
+    - **An older installed `vani` reading a new record over 64 KiB reports the last run as unknown.**
+      Rebuild the installed binary with the app.
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers
     `unsupported`. Fixing that means XPC to the app, or a request queue in the group folder that the
     app serves.

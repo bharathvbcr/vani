@@ -170,6 +170,9 @@ private struct LastRunSection: View {
                 if let e = run.error, !e.isEmpty {
                     Row(label: run.stage.map { "Failed at \($0)" } ?? "Error", value: e)
                 }
+                if let boards = run.boards {
+                    BoardRows(boards: boards)
+                }
                 if let adv = run.advance {
                     AdvanceRows(advance: adv)
                 }
@@ -202,6 +205,37 @@ private struct LastRunSection: View {
 
     private func duration(_ s: Double) -> String {
         s < 90 ? "\(Int(s.rounded())) s" : "\(Int((s / 60).rounded())) min"
+    }
+}
+
+/// Which boards the run read, and why any was not: a board that fails to list
+/// leaves its postings as they were, so without this it looks like a quiet board.
+private struct BoardRows: View {
+    let boards: PipelineStatus.LastRun.Boards
+
+    var body: some View {
+        Row(label: "Boards", value: boards.summary)
+        if let o = boards.outcome {
+            Row(label: "", value: o, secondary: true)
+        }
+        ForEach(Array(boards.problems().enumerated()), id: \.offset) { _, line in
+            HStack(alignment: .firstTextBaseline) {
+                // Not a Spacer: see BackendErrorRows.
+                Color.clear.frame(width: 130, height: 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: "\(line.board): \(line.outcome)").fontWeight(.medium)
+                    if !line.error.isEmpty {
+                        Text(verbatim: line.error)
+                            .font(.callout.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(3).textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        if let more = boards.moreNote() {
+            Row(label: "", value: more, secondary: true)
+        }
     }
 }
 
