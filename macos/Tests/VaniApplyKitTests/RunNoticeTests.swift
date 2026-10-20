@@ -139,7 +139,7 @@ final class RunNoticeTests: XCTestCase {
         let raw = Data(#"{"ok":true,"state":"ok","started_at":"not a time"}"#.utf8)
         XCTAssertThrowsError(try JobsClient.decoder.decode(Run.self, from: raw))
         let rec = Recorder()
-        let a = RunAnnouncer(store: MemoryStore(), poster: rec)
+        let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock())
         a.unreadable("vani printed something that is not JSON")
         XCTAssertTrue(rec.posted.isEmpty)
         XCTAssertEqual(a.lastSkip, "vani status could not be read: vani printed something that is not JSON")
@@ -168,54 +168,66 @@ final class RunNoticeTests: XCTestCase {
         XCTAssertEqual(n?.threadID, "vani-run-2026-10-14")
     }
 
-    // MARK: Dedupe
+    // MARK: Announcing once, while the app holds the notifier lock
 
-    func testARunIsAnnouncedOnce() {
+    /// An announcer whose app was already open (lock taken at `lockedAt`) when
+    /// the daemon's run ended.
+    private func announcer(store: AnnouncedRuns = MemoryStore(), poster: NoticePoster, stateDir: String? = nil,
+                           lockedAt: Date = started.addingTimeInterval(-60)) throws -> (RunAnnouncer, NotifierLock, String) {
+        let dir = try stateDir ?? tempDir(self).path
+        let lock = NotifierLock()
+        XCTAssertNil(lock.hold(stateDir: dir, at: lockedAt))
+        return (RunAnnouncer(store: store, poster: poster, lock: lock), lock, dir)
+    }
+
+    func testARunIsAnnouncedOnce() throws {
         let rec = Recorder()
         let store = MemoryStore()
-        let a = RunAnnouncer(store: store, poster: rec)
+        let (a, lock, dir) = try announcer(store: store, poster: rec)
         let r = lastRun(.ok)
-        XCTAssertEqual(rec.posted.count, 0)
-        a.consider(r, at: now, calendar: utc)
-        a.consider(r, at: now, calendar: utc)
-        a.consider(r, at: now.addingTimeInterval(60), calendar: utc)
+        a.consider(r, stateDir: dir, at: now, calendar: utc)
+        a.consider(r, stateDir: dir, at: now, calendar: utc)
+        a.consider(r, stateDir: dir, at: now.addingTimeInterval(60), calendar: utc)
         XCTAssertEqual(rec.posted.count, 1)
         XCTAssertEqual(a.lastSkip, "this run was already announced")
 
-        // A second announcer over the same store (the app relaunched) stays quiet too.
+        // The app relaunched before the run ended (a new lock, the same store): still quiet.
+        lock.release()
         let again = Recorder()
-        RunAnnouncer(store: store, poster: again).consider(r, at: now, calendar: utc)
+        let (b, _, _) = try announcer(store: store, poster: again, stateDir: dir)
+        b.consider(r, stateDir: dir, at: now, calendar: utc)
         XCTAssertTrue(again.posted.isEmpty)
+        XCTAssertEqual(b.lastSkip, "this run was already announced")
     }
 
-    func testTheNextRunIsAnnounced() {
+    func testTheNextRunIsAnnounced() throws {
         let rec = Recorder()
-        let a = RunAnnouncer(store: MemoryStore(), poster: rec)
-        a.consider(lastRun(.ok), at: now, calendar: utc)
+        let (a, _, dir) = try announcer(poster: rec)
+        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
         let next = lastRun(.failed, stage: "pipeline", startedAt: started.addingTimeInterval(86400),
-                       finishedAt: finished.addingTimeInterval(86400))
-        a.consider(next, at: now.addingTimeInterval(86400), calendar: utc)
+                           finishedAt: finished.addingTimeInterval(86400))
+        a.consider(next, stateDir: dir, at: now.addingTimeInterval(86400), calendar: utc)
         XCTAssertEqual(rec.posted.map(\.title), ["Vani digest", "Vani run failed"])
         XCTAssertNotEqual(rec.posted[0].key, rec.posted[1].key)
         XCTAssertEqual(rec.posted[1].threadID, "vani-run-2026-10-15")
     }
 
-    func testARunningRecordThenItsEndAnnouncesTheEnd() {
+    func testARunningRecordThenItsEndAnnouncesTheEnd() throws {
         let rec = Recorder()
-        let a = RunAnnouncer(store: MemoryStore(), poster: rec)
-        a.consider(lastRun(.running, finishedAt: nil), at: now, calendar: utc)
+        let (a, _, dir) = try announcer(poster: rec)
+        a.consider(lastRun(.running, finishedAt: nil), stateDir: dir, at: now, calendar: utc)
         XCTAssertTrue(rec.posted.isEmpty)
         XCTAssertEqual(a.lastSkip, "the run is still going")
-        a.consider(lastRun(.ok), at: now, calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
         XCTAssertEqual(rec.posted.count, 1)
         XCTAssertNil(a.lastSkip)
     }
 
-    func testSkippedReadsLeaveTheStoreAlone() {
+    func testSkippedReadsLeaveTheStoreAlone() throws {
         let store = MemoryStore()
-        let a = RunAnnouncer(store: store, poster: Recorder())
-        a.consider(Run(ok: false, reason: "corrupt", state: .unknown), at: now, calendar: utc)
-        a.consider(Run(state: .never), at: now, calendar: utc)
+        let (a, _, dir) = try announcer(store: store, poster: Recorder())
+        a.consider(Run(ok: false, reason: "corrupt", state: .unknown), stateDir: dir, at: now, calendar: utc)
+        a.consider(Run(state: .never), stateDir: dir, at: now, calendar: utc)
         XCTAssertNil(store.lastAnnounced)
     }
 
@@ -224,8 +236,100 @@ final class RunNoticeTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults(suiteName: name)?.removePersistentDomain(forName: name) }
         let rec = Recorder()
-        RunAnnouncer(store: DefaultsAnnouncedRuns(defaults), poster: rec).consider(lastRun(.ok), at: now, calendar: utc)
-        RunAnnouncer(store: DefaultsAnnouncedRuns(defaults), poster: rec).consider(lastRun(.ok), at: now, calendar: utc)
+        let (a, lock, dir) = try announcer(store: DefaultsAnnouncedRuns(defaults), poster: rec)
+        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        lock.release()
+        let (b, _, _) = try announcer(store: DefaultsAnnouncedRuns(defaults), poster: rec, stateDir: dir)
+        b.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
         XCTAssertEqual(rec.posted.count, 1)
     }
+
+    // MARK: Daemon as the fallback
+
+    func testARunThatEndedBeforeTheAppTookTheLockIsTheDaemons() throws {
+        let rec = Recorder()
+        let store = MemoryStore()
+        // The app opened after the run ended: the daemon saw no lock and posted.
+        let (a, _, dir) = try announcer(store: store, poster: rec, lockedAt: finished.addingTimeInterval(60))
+        let d = a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        XCTAssertEqual(d, .skip("the run finished before this app took over notices, so the daemon announced it"))
+        XCTAssertTrue(rec.posted.isEmpty)
+        XCTAssertNil(store.lastAnnounced)
+    }
+
+    func testTheFirstReadTakesTheLockAndLeavesEarlierRunsToTheDaemon() throws {
+        let dir = try tempDir(self).path
+        let rec = Recorder()
+        let lock = NotifierLock()
+        let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: lock)
+        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        XCTAssertTrue(rec.posted.isEmpty)
+        XCTAssertEqual(lock.heldSince, now)
+        XCTAssertEqual(lock.path, URL(fileURLWithPath: dir).appendingPathComponent("app/notifier.lock").path)
+        // The next day's run ends while the app is up: the app announces it.
+        let next = lastRun(.ok, startedAt: started.addingTimeInterval(86400), finishedAt: finished.addingTimeInterval(86400))
+        a.consider(next, stateDir: dir, at: now.addingTimeInterval(86400), calendar: utc)
+        XCTAssertEqual(rec.posted.count, 1)
+        XCTAssertEqual(lock.heldSince, now, "keeping the lock does not move its start")
+    }
+
+    func testWithoutTheLockTheAppPostsNothing() throws {
+        let rec = Recorder()
+        let (_, holder, dir) = try announcer(poster: Recorder()) // another copy holds it
+        let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock())
+        let d = a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        XCTAssertNotNil(holder.heldSince)
+        XCTAssertEqual(d, .skip("the daemon announces runs, because this app does not hold the notifier lock: another copy of Vani Apply announces runs"))
+        XCTAssertTrue(rec.posted.isEmpty)
+
+        let none = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock())
+        if case let .skip(why) = none.consider(lastRun(.ok), stateDir: "", at: now, calendar: utc) {
+            XCTAssertTrue(why.hasSuffix("vani reported no state folder"), why)
+        } else {
+            XCTFail("posted without a state folder")
+        }
+    }
+
+    // MARK: The lock itself
+
+    func testTheLockExcludesAnotherHolderUntilReleased() throws {
+        let dir = try tempDir(self).path
+        let a = NotifierLock(), b = NotifierLock()
+        XCTAssertNil(a.hold(stateDir: dir))
+        XCTAssertEqual(b.hold(stateDir: dir), "another copy of Vani Apply announces runs")
+        XCTAssertNil(b.heldSince)
+        a.release()
+        XCTAssertNil(b.hold(stateDir: dir))
+        let attrs = try FileManager.default.attributesOfItem(atPath: try XCTUnwrap(b.path))
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testTheLockFollowsTheStateFolder() throws {
+        let one = try tempDir(self).path, two = try tempDir(self).path
+        let lock = NotifierLock(), other = NotifierLock()
+        XCTAssertNil(lock.hold(stateDir: one))
+        XCTAssertNil(lock.hold(stateDir: two))
+        // The first folder's lock was let go when the app moved on.
+        XCTAssertNil(other.hold(stateDir: one))
+    }
+
+    func testTheLockGoesWithItsHolder() throws {
+        let dir = try tempDir(self).path
+        do {
+            let gone = NotifierLock()
+            XCTAssertNil(gone.hold(stateDir: dir))
+        }
+        XCTAssertNil(NotifierLock().hold(stateDir: dir))
+    }
+
+    func testTheLockRefusesASymlink() throws {
+        let dir = try tempDir(self)
+        let app = dir.appendingPathComponent("app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        let target = dir.appendingPathComponent("elsewhere")
+        try Data().write(to: target)
+        try FileManager.default.createSymbolicLink(at: app.appendingPathComponent("notifier.lock"), withDestinationURL: target)
+        XCTAssertNotNil(NotifierLock().hold(stateDir: dir.path))
+    }
 }
+

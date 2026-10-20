@@ -18,6 +18,9 @@ public struct RunNotice: Equatable, Sendable {
     public var threadID: String
     /// Names the run; a run whose key was announced is never announced again.
     public var key: String
+    /// When the run ended: a run that ended before the app held the notifier
+    /// lock was the daemon's to announce.
+    public var finishedAt: Date
 }
 
 /// What the announcer decided for one read of the run.
@@ -60,14 +63,14 @@ extension RunNotice {
 
         if run.state == .failed {
             let (title, body) = failure(run)
-            return .post(RunNotice(title: title, body: body, threadID: thread, key: key))
+            return .post(RunNotice(title: title, body: body, threadID: thread, key: key, finishedAt: finished))
         }
         guard let roles = digestedRoles(run) else {
             return .skip("the run record has no ledger counts, so the digest's size is unknown")
         }
         guard roles > 0 else { return .skip("the digest listed no roles") }
         return .post(RunNotice(title: "Vani digest", body: digestBody(roles: roles, advance: run.advance),
-                               threadID: thread, key: key))
+                               threadID: thread, key: key, finishedAt: finished))
     }
 
     /// failureNotice's text for the cases the run record can tell apart. A run
@@ -148,23 +151,39 @@ public final class RunAnnouncer {
     /// Why the last read posted nothing, or nil after a post.
     public private(set) var lastSkip: String?
 
-    public init(store: AnnouncedRuns, poster: NoticePoster) {
+    private let lock: NotifierLock
+
+    public init(store: AnnouncedRuns, poster: NoticePoster, lock: NotifierLock) {
         self.store = store
         self.poster = poster
+        self.lock = lock
     }
 
-    /// Announces the run if it needs a notice that was never posted. The key
-    /// is stored before posting: a crash in between loses one notice rather
-    /// than posting it twice.
+    /// Announces the run if it needs a notice that was never posted.
+    ///
+    /// Every read first takes (or keeps) the notifier lock in stateDir, so the
+    /// daemon stops posting as soon as the app is up. A run is the app's only
+    /// if it finished after the lock was taken; one that finished before it was
+    /// the daemon's, and the app stays quiet rather than announce it twice.
+    ///
+    /// The key is stored before posting: a crash in between loses one notice
+    /// rather than posting it twice.
     @discardableResult
-    public func consider(_ run: PipelineStatus.LastRun, at now: Date = Date(),
+    public func consider(_ run: PipelineStatus.LastRun, stateDir: String, at now: Date = Date(),
                          calendar: Calendar = .current) -> RunNoticeDecision {
+        let held = lock.hold(stateDir: stateDir, at: now)
         let decision = RunNotice.decide(run, at: now, calendar: calendar)
         switch decision {
         case let .skip(why):
             lastSkip = why
             return decision
         case let .post(notice):
+            if let held {
+                return skip("the daemon announces runs, because this app does not hold the notifier lock: " + held)
+            }
+            if let since = lock.heldSince, notice.finishedAt < since {
+                return skip("the run finished before this app took over notices, so the daemon announced it")
+            }
             if store.lastAnnounced == notice.key {
                 let why = "this run was already announced"
                 lastSkip = why
@@ -175,6 +194,11 @@ public final class RunAnnouncer {
             poster.post(notice)
             return decision
         }
+    }
+
+    private func skip(_ why: String) -> RunNoticeDecision {
+        lastSkip = why
+        return .skip(why)
     }
 
     /// vani could not answer at all: nothing is posted, and the reason is kept.

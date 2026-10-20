@@ -47,7 +47,7 @@ final class PipelineModel {
         case let .success(s):
             status = s
             error = nil
-            announcer?.consider(s.lastRun)
+            announcer?.consider(s.lastRun, stateDir: s.stateDir)
         case let .failure(err):
             // Keep the last good status on screen, marked stale by the error banner.
             error = String(describing: err)

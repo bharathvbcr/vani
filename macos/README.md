@@ -214,10 +214,25 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      digest, but its outcome is `failed` at stage `digest`. So the app says the digest could not be
      finished and posts no digest notice. Telling these cases apart needs a cause code in the run
      record.
-   - **The daemon still notifies as well.** The daemon's own osascript notices
-     (`internal/notify`) are unchanged. macOS attributes them to Script Editor, and clicking one
-     opens Script Editor. While both are on, a run can show twice: once from Script Editor and once
-     from Vani Apply. Which one should remain has not been decided.
+   - **The daemon is the fallback.** While the app runs, it holds an exclusive `flock` on
+     `<state_dir>/app/notifier.lock`, where `state_dir` is the folder `vani status` reports. The
+     daemon's notifier (`notify.UnlessHeld`, wired in `cmd/vani/wire.go`) tests that lock before
+     each notice. While the lock is held it posts nothing, and otherwise it posts through osascript
+     as before. Those fallback notices are attributed to Script Editor, and clicking one opens Script
+     Editor. The lock belongs to the app's open file, so it goes when the app quits or crashes: a
+     stale lock file cannot silence the daemon. A lock the daemon cannot check (an unreadable
+     file, a lock error) counts as not held, so the daemon posts. A duplicate is better than
+     silence.
+   - The app announces a run only if the run finished after the app took the lock (its first
+     status read). A run that finished earlier was the daemon's to announce, so the app stays quiet
+     about it. If the app cannot take the lock (another copy holds it, or there is no state folder),
+     it posts nothing and the daemon announces.
+   - **Edge cases.** A run that ends in the same moment the app takes the lock can be announced
+     twice, or not at all. A run that ends while the app holds the lock, followed by the app quitting
+     before its next read (up to 60 seconds), is announced by neither. The next launch treats that
+     run as the daemon's.
+   - A bare `swift run` (no app bundle) has no notification center, so it takes no lock and
+     announces nothing.
 
 ## Claude drafting: what is sent and where the key comes from
 
@@ -290,7 +305,12 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage
     and stop reason maps to a notice, and that error text stays out. They also cover missing,
     corrupt and unreadable records, and that a run is announced once, including across a
-    relaunch.
+    relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
+    refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers
+    the daemon's side: it skips while the lock is held, posts when there is no lock, a stale file
+    or an unopenable path, and never creates the file.
+  - That Swift's `flock(LOCK_EX)` and Go's shared probe on the same file exclude each other is
+    inferred: both are BSD `flock` on one path. No test runs the app and the daemon together.
 - **Not verified here:**
   - A notification shown by the bundled app, its permission prompt, and a click opening the Jobs
     tab. `UNUserNotificationCenter` needs a signed app bundle, which `swift test` does not run.

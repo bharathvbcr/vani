@@ -17,10 +17,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let model = AppModel()
         self.model = model
         jobs = JobsModel { model.jobsClient }
-        // Without a bundle (a bare `swift run`) there is no notification center.
-        let poster: NoticePoster = Bundle.main.bundleIdentifier == nil ? LogPoster() : UserNotificationPoster()
-        pipeline = PipelineModel(client: { model.pipelineClient },
-                                 announcer: RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: poster))
+        // Without a bundle (a bare `swift run`) there is no notification center,
+        // so the app announces nothing and leaves the notifier lock, and with it
+        // the run notices, to the daemon.
+        let announcer = Bundle.main.bundleIdentifier == nil ? nil
+            : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock())
+        pipeline = PipelineModel(client: { model.pipelineClient }, announcer: announcer)
         super.init()
     }
 
@@ -82,12 +84,5 @@ final class UserNotificationPoster: NoticePoster {
         UNUserNotificationCenter.current().add(request) { error in
             if let error { NSLog("Vani Apply: could not post a notification: %@", String(describing: error)) }
         }
-    }
-}
-
-/// Stands in when the binary runs outside an app bundle.
-final class LogPoster: NoticePoster {
-    func post(_ notice: RunNotice) {
-        NSLog("Vani Apply: (no notification center) %@: %@", notice.title, notice.body)
     }
 }
