@@ -359,7 +359,7 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 		warning += kbWarning
 	}
 	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank, KBMatch: kb,
-		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)}, warning
+		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies), HalfLifeDays: jobinsight.DefaultScoreHalfLifeDays}, warning
 }
 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)
