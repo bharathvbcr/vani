@@ -17,7 +17,7 @@ import (
 )
 
 // cloudShadowRig is the recommended cloud setup on the real wiring: the
-// OpenRouter model decides (a fake Jev reading role_fit mismatch_domain at
+// OpenRouter model decides (a fake Liquid D reading role_fit mismatch_domain at
 // 0.95, a drop candidate), Claude on llm.triage_model is the drop-candidate
 // shadow (decide.shadow "llm", shadow_mode drop_candidates), and llm.model (the
 // expensive tier) is configured but never asked.

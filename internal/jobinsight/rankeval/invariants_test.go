@@ -11,7 +11,7 @@ import (
 
 const eps = 1e-9
 
-// good is a typical, fully observed posting: a partial fit read by Jev, middling
+// good is a typical, fully observed posting: a partial fit read by Liquid D, middling
 // coverage, some keyword and semantic evidence, 10 days old.
 func good() jobinsight.Inputs {
 	return jobinsight.Inputs{

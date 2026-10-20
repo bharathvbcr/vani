@@ -172,7 +172,7 @@ func (w *wired) warnf(format string, a ...any) {
 }
 
 // localBackend builds the shadow client for a decision model served on this
-// Mac. By default it gets exactly the request Jev gets (the combined question,
+// Mac. By default it gets exactly the request Liquid D gets (the combined question,
 // all slots, the same option descriptions), so `vani eval` compares models,
 // not prompts; questions "per_slot" asks each slot its fixture family's own
 // question instead. llama.cpp's /v1/systemone takes the state as a plain string.
@@ -293,8 +293,8 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 
-	// A local decision model (llama.cpp /v1/systemone) speaks the Jev wire shape,
-	// so it is a second Jev client under its own name, reaching only this Mac.
+	// A local decision model (llama.cpp /v1/systemone) speaks the decide/jev wire shape,
+	// so it is a second decide/jev client under its own name, reaching only this Mac.
 	// It is only ever the shadow (config enforces it): measured, never deciding.
 	if l := w.cfg.Decide.Local; l != nil {
 		endpoint := l.Endpoint
