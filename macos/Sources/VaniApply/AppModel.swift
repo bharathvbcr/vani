@@ -41,6 +41,7 @@ final class AppModel {
         reload()
         refreshChrome()
         refreshSafari()
+        agentLeftAlone = !autoRegisterAgent
         if autoRegisterAgent {
             registerAgent()
         }
@@ -77,6 +78,9 @@ final class AppModel {
     private let agentService = SMAppService.agent(plistName: AgentConstants.plistName)
     private(set) var agentStatus: SMAppService.Status = .notRegistered
     private(set) var agentError: String?
+    /// This copy was launched with -VaniApplyNoAgent YES (a screenshot or fixture
+    /// rig): it never registers the agent, which stays with the copy that owns it.
+    private(set) var agentLeftAlone = false
 
     /// Register the agent, and repair a stale registration. macOS may ask for
     /// approval in Login Items. Replacing the app bundle (every rebuild) makes
@@ -84,6 +88,10 @@ final class AppModel {
     /// so an enabled agent that does not answer is unregistered and registered
     /// again. `repair` forces that (Settings > Register again).
     func registerAgent(repair: Bool = false) {
+        guard !agentLeftAlone else {
+            notice = "This copy of Vani Apply was launched with \(AgentLaunch.argument) YES, so it leaves the login agent alone. Relaunch it without that argument to register the agent here."
+            return
+        }
         agentError = nil
         Task {
             let failure: String? = await Task.detached(priority: .utility) {
@@ -109,6 +117,9 @@ final class AppModel {
     }
 
     var agentSummary: String {
+        if agentLeftAlone {
+            return "Left alone on purpose: this copy was launched with \(AgentLaunch.argument) YES, so Safari and Chrome use whichever copy of Vani Apply registered the agent."
+        }
         switch agentStatus {
         case .enabled: return "Running on demand: Safari and Chrome can ask for drafts and suggestions."
         case .requiresApproval: return "Waiting for approval in System Settings > General > Login Items."

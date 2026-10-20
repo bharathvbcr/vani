@@ -8,7 +8,13 @@ struct VaniApplyApp: App {
     @State private var pipeline: PipelineModel
 
     init() {
-        let model = AppModel()
+        // A screenshot or fixture rig passes -VaniApplyNoAgent YES so it does not
+        // take the per-user login agent from the owner's copy (AgentLaunch).
+        let launch = AgentLaunch.from(arguments: CommandLine.arguments)
+        if let problem = launch.problem {
+            FileHandle.standardError.write(Data("Vani Apply: \(problem)\n".utf8))
+        }
+        let model = AppModel(autoRegisterAgent: launch.mode == .register)
         _model = State(initialValue: model)
         _jobs = State(initialValue: JobsModel { model.jobsClient })
         _pipeline = State(initialValue: PipelineModel { model.pipelineClient })

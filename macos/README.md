@@ -134,6 +134,18 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 - **The Chrome extension's id** is fixed by the public key in `extension/static/chrome-key.json`:
   `clhaobdmkmapebgnmpcfmakbfakmgfip`. No private key is kept, because an unpacked extension needs only
   the public one.
+- **Fixture bundles are real bundles.** With `VANI_CLI_BINARY` pointing at a fixture script, `bundle.sh`
+  still builds a bundle with the real bundle id and the real agent plist; only `Contents/Helpers/vani` is
+  the fixture. The login agent (`dev.vbcr.vani.apply.agent`) is one per user, and the last copy to
+  register it owns it, so launching such a bundle makes Safari and Chrome drafts and job marks run the
+  fixture.
+- **Rigs launch with `-VaniApplyNoAgent YES`.** A screenshot or fixture rig opens its copy with
+  `open -n "<rig>/Vani Apply.app" --args -VaniApplyNoAgent YES`. That copy never registers the agent
+  (Register again is refused too), and Settings says the agent was left alone on purpose. Only YES, TRUE
+  or 1 opts out; a missing, empty or unknown value, or a near miss such as `-VaniApplyNoAgent=YES`,
+  registers as usual and prints why on stderr. It is a launch argument only, never a `defaults` key: a
+  rig shares the owner's bundle id, so a stored default would stop the owner's app from registering.
+  Parsed by [`AgentLaunch`](Sources/VaniApplyKit/AgentLaunch.swift).
 
 ## Use
 
