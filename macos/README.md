@@ -262,9 +262,17 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
    - **The daemon is the fallback.** While the app runs, it holds an exclusive `flock` on
      `<state_dir>/app/notifier.lock`, where `state_dir` is the folder `vani status` reports. The
      daemon's notifier (`notify.UnlessHeld`, wired in `cmd/vani/wire.go`) tests that lock before
-     each notice. While the lock is held it posts nothing, and otherwise it posts through osascript
-     as before. Those fallback notices are attributed to Script Editor, and clicking one opens Script
-     Editor. The lock belongs to the app's open file, so it goes when the app quits or crashes: a
+     each notice. While the lock is held it posts nothing. Otherwise it hands the notice to the app
+     (`notify.ViaApp`): it runs `/usr/bin/open -g -j -b dev.vbcr.vani.apply --args -VaniApplyAnnounce
+     YES`, which starts the app hidden in the background, and waits up to 20 seconds for the lock to
+     appear in its own state folder. A launch with that switch (`AnnounceLaunch`) also announces a
+     run that finished up to 10 minutes before the app took the lock, so the run that prompted the
+     launch is posted by the app, as Vani Apply. The app then keeps running and holds the lock. Only
+     if the handoff fails (the app is not installed, `open` fails, or the lock never appears because
+     the app's Settings point at another state folder) does the daemon post through osascript, which
+     macOS attributes to Script Editor; the reason is written to the daemon's log (`vani: notice
+     posted through osascript: …`). A Go test binary runs neither `open` nor osascript
+     (`notify.ErrTestBinary`). The lock belongs to the app's open file, so it goes when the app quits or crashes: a
      stale lock file cannot silence the daemon. A lock the daemon cannot check (an unreadable
      file, a lock error) counts as not held, so the daemon posts. A duplicate is better than
      silence. The app's Settings (config and state paths) must point at the state folder that the

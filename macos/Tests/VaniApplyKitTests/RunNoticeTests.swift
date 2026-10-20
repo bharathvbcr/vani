@@ -331,6 +331,68 @@ final class RunNoticeTests: XCTestCase {
         XCTAssertNil(store.lastAnnounced)
     }
 
+    // MARK: The daemon's handoff (AnnounceLaunch)
+
+    func testAHandoffLaunchAnnouncesTheRunThatJustEnded() throws {
+        let dir = try tempDir(self).path
+        let rec = Recorder()
+        let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock(), handoffGrace: AnnounceLaunch.grace)
+        // The daemon finished the run, then launched the app: it took the lock 30 s later.
+        let d = a.consider(lastRun(.failed, stage: "pipeline"), stateDir: dir, at: finished.addingTimeInterval(30), calendar: utc)
+        guard case .post = d else { return XCTFail("decision \(d)") }
+        XCTAssertEqual(rec.posted.map(\.title), ["Vani run failed"])
+    }
+
+    func testAHandoffLaunchStillLeavesOlderRunsToTheDaemon() throws {
+        let rec = Recorder()
+        let store = MemoryStore()
+        let dir = try tempDir(self).path
+        let a = RunAnnouncer(store: store, poster: rec, lock: NotifierLock(), handoffGrace: AnnounceLaunch.grace)
+        let late = finished.addingTimeInterval(AnnounceLaunch.grace + 1)
+        let d = a.consider(lastRun(.ok), stateDir: dir, at: late, calendar: utc)
+        XCTAssertEqual(d, .skip("the run finished before this app took over notices, so the daemon announced it"))
+        XCTAssertTrue(rec.posted.isEmpty)
+        XCTAssertNil(store.lastAnnounced)
+    }
+
+    func testAHandoffLaunchDoesNotRepeatAnAnnouncedRun() throws {
+        let dir = try tempDir(self).path
+        let rec = Recorder()
+        let store = MemoryStore()
+        let a = RunAnnouncer(store: store, poster: rec, lock: NotifierLock(), handoffGrace: AnnounceLaunch.grace)
+        a.consider(lastRun(.ok), stateDir: dir, at: finished.addingTimeInterval(5), calendar: utc)
+        // The daemon's second notice for the same run (config stale after the
+        // digest) finds the lock held; a relaunch would also find the key.
+        a.consider(lastRun(.ok), stateDir: dir, at: finished.addingTimeInterval(65), calendar: utc)
+        XCTAssertEqual(rec.posted.count, 1)
+    }
+
+    func testOnlyYesMakesAHandoffLaunch() {
+        let exe = "/Applications/Vani Apply.app/Contents/MacOS/VaniApply"
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe, "-VaniApplyAnnounce", "YES"]), AnnounceLaunch.grace)
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe]), 0)
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe, "-VaniApplyAnnounce"]), 0)
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe, "-VaniApplyAnnounce", "NO"]), 0)
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe, "-VaniApplyAnnounce", "yes "]), 0)
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe, "-VaniApplyAnnounce=YES"]), 0)
+        // The executable path is never read as the switch.
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: ["-VaniApplyAnnounce", "YES"]), 0)
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: []), 0)
+        // Last occurrence wins.
+        XCTAssertEqual(AnnounceLaunch.handoffGrace(arguments: [exe, "-VaniApplyAnnounce", "YES", "-VaniApplyAnnounce", "NO"]), 0)
+    }
+
+    func testANegativeGraceIsNoGrace() throws {
+        let dir = try tempDir(self).path
+        let rec = Recorder()
+        let lock = NotifierLock()
+        XCTAssertNil(lock.hold(stateDir: dir, at: finished))
+        let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: lock, handoffGrace: -3600)
+        // Finished exactly at the lock: still the app's, as without a grace.
+        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        XCTAssertEqual(rec.posted.count, 1)
+    }
+
     func testTheFirstReadTakesTheLockAndLeavesEarlierRunsToTheDaemon() throws {
         let dir = try tempDir(self).path
         let rec = Recorder()

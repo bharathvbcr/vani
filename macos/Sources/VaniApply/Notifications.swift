@@ -25,9 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         jobs = JobsModel { model.jobsClient }
         // Without a bundle (a bare `swift run`) there is no notification center,
         // so the app announces nothing and leaves the notifier lock, and with it
-        // the run notices, to the daemon.
+        // the run notices, to the daemon. A launch by the daemon to announce a
+        // run (AnnounceLaunch) also announces the run that just finished.
         let announcer = Bundle.main.bundleIdentifier == nil ? nil
-            : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock())
+            : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock(),
+                           handoffGrace: AnnounceLaunch.handoffGrace(arguments: CommandLine.arguments))
         pipeline = PipelineModel(client: { model.pipelineClient }, launcher: { model.manualRunLauncher }, announcer: announcer)
         super.init()
     }

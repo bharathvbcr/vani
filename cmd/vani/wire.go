@@ -97,6 +97,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		warn = io.Discard
 	}
 	w := &wired{cfg: cfg, stateDir: stateDir, led: led, warn: warn}
+	appLock := notify.AppLockPath(stateDir)
 	return &App{
 		Ledger:    led,
 		RunOnce:   w.runOnce,
@@ -105,9 +106,10 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		PollInbox: w.pollInbox,
 		Rescore:   w.rescore,
 		Tune:      w.tune,
-		// The Vani Apply app posts run notices itself while it runs; the
-		// daemon's are the fallback for when it does not.
-		Notifier: notify.UnlessHeld(notify.AppLockPath(stateDir), notify.New(nil)),
+		// The Vani Apply app posts run notices itself while it runs. When it
+		// does not, the daemon launches it to announce the run, and posts
+		// through osascript only if the app cannot take over.
+		Notifier: notify.UnlessHeld(appLock, notify.ViaApp(appLock, nil, notify.New(nil), warn)),
 		Closer:   w.close,
 	}, nil
 }

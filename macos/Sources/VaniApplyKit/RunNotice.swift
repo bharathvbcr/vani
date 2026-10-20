@@ -165,11 +165,16 @@ public final class RunAnnouncer {
     public private(set) var lastSkip: String?
 
     private let lock: NotifierLock
+    /// How long before taking the lock a run may have finished and still be
+    /// this app's to announce: AnnounceLaunch.grace when the daemon launched the
+    /// app to announce it, else 0.
+    private let handoffGrace: TimeInterval
 
-    public init(store: AnnouncedRuns, poster: NoticePoster, lock: NotifierLock) {
+    public init(store: AnnouncedRuns, poster: NoticePoster, lock: NotifierLock, handoffGrace: TimeInterval = 0) {
         self.store = store
         self.poster = poster
         self.lock = lock
+        self.handoffGrace = max(0, handoffGrace)
     }
 
     /// Announces the run if it needs a notice that was never posted.
@@ -194,7 +199,7 @@ public final class RunAnnouncer {
             if let held {
                 return skip("the daemon announces runs, because this app does not hold the notifier lock: " + held)
             }
-            if let since = lock.heldSince, notice.finishedAt < since {
+            if let since = lock.heldSince, notice.finishedAt < since.addingTimeInterval(-handoffGrace) {
                 return skip("the run finished before this app took over notices, so the daemon announced it")
             }
             if store.lastAnnounced == notice.key {
@@ -217,5 +222,27 @@ public final class RunAnnouncer {
     /// vani could not answer at all: nothing is posted, and the reason is kept.
     public func unreadable(_ error: String) {
         lastSkip = "vani status could not be read: " + PipelineStatus.bounded(error, max: 120)
+    }
+}
+
+/// The daemon's handoff (internal/notify ViaApp). When the app is not running,
+/// the daemon launches it in the background with `-VaniApplyAnnounce YES`
+/// instead of posting through osascript, which macOS attributes to Script
+/// Editor. The run that prompted the launch has often just finished, before the
+/// app could take the notifier lock, so such a launch announces runs that
+/// finished up to `grace` before it. The daemon passes exactly YES; anything
+/// else is an ordinary launch, which leaves earlier runs to the daemon.
+public enum AnnounceLaunch {
+    public static let argument = "-VaniApplyAnnounce"
+    /// Longer than the daemon's wait for the lock (20 s) plus a slow first
+    /// status read, and short enough that an old run is not news.
+    public static let grace: TimeInterval = 10 * 60
+
+    /// The handoff grace for this launch: `grace` when `arguments`
+    /// (CommandLine.arguments, executable first) end the switch with YES, else 0.
+    public static func handoffGrace(arguments: [String]) -> TimeInterval {
+        let args = Array(arguments.dropFirst())
+        guard let i = args.lastIndex(of: argument), i + 1 < args.count, args[i + 1] == "YES" else { return 0 }
+        return grace
     }
 }

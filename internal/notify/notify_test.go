@@ -93,6 +93,19 @@ func TestEmptyAndRunnerError(t *testing.T) {
 	}
 }
 
+// A test binary never reaches the real osascript: tests that wire the real
+// App (a t.TempDir state dir, so no app lock) used to post Script Editor
+// notices to the owner's Notification Center on every `go test`.
+func TestRealRunnerRefusesInATestBinary(t *testing.T) {
+	err := New(nil).Notify(context.Background(), "Vani digest", "1 new role")
+	if !errors.Is(err, ErrTestBinary) {
+		t.Fatalf("err = %v, want ErrTestBinary", err)
+	}
+	if _, err := (execRunner{}).Run(context.Background(), "/usr/bin/true"); !errors.Is(err, ErrTestBinary) {
+		t.Fatalf("execRunner ran a command in a test binary: %v", err)
+	}
+}
+
 func TestNoop(t *testing.T) {
 	var n Notifier = Noop{}
 	if err := n.Notify(context.Background(), "", ""); err != nil {
