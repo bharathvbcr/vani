@@ -216,6 +216,12 @@ type Decide struct {
 	// Zero means DefaultShadowEvery; 1 asks it about every posting; at most
 	// MaxShadowEvery.
 	ShadowEvery int `json:"shadow_every,omitempty"`
+	// ShadowMode picks which postings the shadow reads: ShadowModeSample (the
+	// default, "") is the shadow_every hash sample; ShadowModeDropCandidates
+	// asks it about every slot the drop policy would drop on a calibrated
+	// reading, before the drop is applied. Either way the shadow only
+	// annotates: the drop follows the primary's rule.
+	ShadowMode string `json:"shadow_mode,omitempty"`
 	// Lappi configures the local Lappi agent. It runs as the shadow until
 	// `vani eval` reports it promotable; Primary then puts it first in the
 	// chain, ahead of the OpenRouter model and the LLM.
@@ -227,8 +233,9 @@ type Decide struct {
 	Local *Local `json:"local,omitempty"`
 	// Escalate re-asks the LLM (llm.triage_model) about the slots the primary
 	// chain read with low confidence. Its readings are recorded beside the
-	// primary's, never in place of them. It uses the shadow's recording, so the
-	// two are exclusive. Absent means off.
+	// primary's, never in place of them. It uses the shadow's recording, so it
+	// is exclusive with a sampled shadow; with shadow_mode drop_candidates the
+	// two read disjoint slots and coexist. Absent means off.
 	Escalate *Escalate `json:"escalate,omitempty"`
 }
 
@@ -279,6 +286,16 @@ const (
 	DefaultShadowEvery = 12
 	MaxShadowEvery     = 1000
 )
+
+// Decide.ShadowMode values.
+const (
+	ShadowModeSample         = "sample"
+	ShadowModeDropCandidates = "drop_candidates"
+)
+
+// ShadowOnDropCandidates reports whether the shadow is asked about drop
+// candidates instead of the hash sample.
+func (d Decide) ShadowOnDropCandidates() bool { return d.ShadowMode == ShadowModeDropCandidates }
 
 // ShadowSampleEvery is ShadowEvery with zero read as the default.
 func (d Decide) ShadowSampleEvery() int {
@@ -994,6 +1011,28 @@ func (c Config) Validate() error {
 	if c.AdvanceConcurrency < 0 || c.AdvanceConcurrency > MaxAdvanceConcurrency {
 		add("advance_concurrency %d must be within 0..%d (0 means %d)", c.AdvanceConcurrency, MaxAdvanceConcurrency, DefaultAdvanceConcurrency)
 	}
+	switch c.Decide.ShadowMode {
+	case "", ShadowModeSample:
+	case ShadowModeDropCandidates:
+		if c.Decide.Shadow == "" {
+			add("decide.shadow_mode %s needs decide.shadow", ShadowModeDropCandidates)
+		}
+		if c.Decide.ShadowEvery != 0 {
+			add("decide.shadow_every does not apply with decide.shadow_mode %s (every drop candidate is asked)", ShadowModeDropCandidates)
+		}
+		if c.Decide.EscalateEnabled() {
+			// One slot has one shadow reading: escalation covers p below_p, the
+			// shadow the drop candidates at or above a rule's p, and the two stay
+			// apart only while below_p does not reach a rule's p.
+			for _, r := range c.DropRules {
+				if r.MinOpenRouterProb > 0 && c.Decide.EscalateBelowP() > r.MinOpenRouterProb {
+					add("decide.escalate.below_p %v exceeds the min_openrouter_prob %v of the %q drop rule: escalation and the drop-candidate shadow would claim the same slots", c.Decide.EscalateBelowP(), r.MinOpenRouterProb, r.Slot)
+				}
+			}
+		}
+	default:
+		add("decide.shadow_mode %q is not %q or %q", c.Decide.ShadowMode, ShadowModeSample, ShadowModeDropCandidates)
+	}
 	switch c.Decide.Shadow {
 	case "":
 	case "llm":
@@ -1156,7 +1195,7 @@ func (c Config) Validate() error {
 			if c.LLM.Provider != "" && (c.LLM.TriageModel == "" || c.LLM.TriageModel == c.LLM.Model) {
 				add("decide.escalate needs llm.triage_model set to a model other than llm.model (%q): it would escalate on the expensive tier", c.LLM.Model)
 			}
-			if c.Decide.Shadow != "" {
+			if c.Decide.Shadow != "" && !c.Decide.ShadowOnDropCandidates() {
 				add("decide.escalate and decide.shadow are exclusive (escalated readings are recorded as the shadow's)")
 			}
 		}

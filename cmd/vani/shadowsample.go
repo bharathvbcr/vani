@@ -127,6 +127,9 @@ func (w *wired) warnShadowSample(r *pipeline.Runner) {
 	if note := shadowSampleNote(r); note != "" {
 		w.warnf("%s", note)
 	}
+	if note := dropShadowNote(r); note != "" {
+		w.warnf("%s", note)
+	}
 }
 
 // shadowSampleNote says how much of the run the shadow read, or "" with no

@@ -43,7 +43,7 @@ func (w *wired) escalateBackend(p llm.Provider) (decide.Backend, error) {
 
 // escalating is the Decider the triager asks: router itself unless
 // decide.escalate is on, so a disabled run is exactly the plain router.
-func (w *wired) escalating(router *decide.Router, esc decide.Backend) decide.Decider {
+func (w *wired) escalating(router decide.Decider, esc decide.Backend) decide.Decider {
 	if !w.cfg.Decide.EscalateEnabled() {
 		return router
 	}

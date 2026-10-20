@@ -48,9 +48,12 @@ func (e *env) cmdRelevance(args []string) error {
 	if rep := eval.BuildRelevance(done, nil, nil, nil, eval.Names{}); rep.Judged == 0 {
 		rep.Malformed = bad
 		fmt.Fprint(e.stdout, rep.Markdown())
+		// The drop-candidate agreement needs no labels, only the ledger. If it
+		// cannot be read the section says so: that is not "no data".
+		fmt.Fprint(e.stdout, e.dropAgreementMarkdown(done))
 		return nil
 	}
-	names, err := e.evalNames()
+	names, specs, err := e.namesAndDropRules()
 	if err != nil {
 		return err
 	}
@@ -80,5 +83,39 @@ func (e *env) cmdRelevance(args []string) error {
 	rep := eval.BuildRelevance(done, b.snap.Records, orderings, kk, names)
 	rep.Malformed = bad
 	fmt.Fprint(e.stdout, rep.Markdown())
+	fmt.Fprint(e.stdout, eval.BuildDropAgreement(done, b.snap.Records, specs, names).Markdown())
 	return nil
+}
+
+// dropAgreementMarkdown is the drop-candidate agreement section for a run that
+// has not read the ledger yet; a ledger or config that cannot be read gives a
+// line saying so, never an empty table.
+func (e *env) dropAgreementMarkdown(done map[posting.Key]eval.Entry) string {
+	names, specs, err := e.namesAndDropRules()
+	if err != nil {
+		return fmt.Sprintf("\n## Drop candidates\n\nnot computed: %v\n", err)
+	}
+	b, err := e.browse()
+	if err != nil {
+		return fmt.Sprintf("\n## Drop candidates\n\nnot computed: ledger unreadable: %v\n", err)
+	}
+	return eval.BuildDropAgreement(done, b.snap.Records, specs, names).Markdown()
+}
+
+// namesAndDropRules loads the config once for the OpenRouter backend's name
+// (see evalNames) and the drop rules the agreement report reads.
+func (e *env) namesAndDropRules() (eval.Names, []eval.DropRuleSpec, error) {
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return eval.Names{}, nil, fmt.Errorf("relevance needs the config to name the OpenRouter backend and read the drop rules: %w", err)
+	}
+	var n eval.Names
+	if cfg.OpenRouterConfigured() {
+		n.OpenRouter = cfg.Decide.OpenRouterName()
+	}
+	specs := make([]eval.DropRuleSpec, 0, len(cfg.DropRules))
+	for _, r := range cfg.DropRules {
+		specs = append(specs, eval.DropRuleSpec{Slot: r.Slot, Values: r.Values, MinP: r.MinOpenRouterProb})
+	}
+	return n, specs, nil
 }
