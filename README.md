@@ -505,6 +505,12 @@ build/vani employer import /absolute/path/HD2024.csv
 build/vani track use ml-research
 build/vani label -n 20
 build/vani eval
+build/vani audit --list                    # this week's draw: stratum, p_select, key (writes nothing)
+build/vani audit                           # judge the draw on the terminal: would you apply? 1-3, s, q
+build/vani audit answer --key KEY --verdict yes --source STRATUM --p-select P
+build/vani relevance                       # would_apply rates, precision at K, shadow agreement on drop candidates
+build/vani labels --json                   # the label vocabularies the screens show
+build/vani impressions log --surface jobs --slate new-20261020 < rows.json   # {"rows":[{"key","position"}]}
 build/vani jobs list --sort priority --fit strong_fit,partial_fit --max-age 14
 build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager --sort salary
 build/vani jobs stats --view all
@@ -636,6 +642,40 @@ Digested postings are counted and left alone. If DevPrism fails, or the call tim
 cancelled, nothing is written for that posting. 20 failures in a row, or a pass where every
 posting it tried failed, fail the command. A second pass finds only what the first left, and
 does nothing once none are left.
+
+## Measuring the ranking
+
+Three things measure the ranking against the owner's judgement; none changes a ranking or a drop
+(the plan and each finding's status are in [docs/RANKING_PLAN.md](docs/RANKING_PLAN.md)).
+
+- **Impressions** (`<state dir>/feedback/impressions.jsonl`, `internal/feedback`): which postings a
+  screen showed, where, and in which slate. A posting is seen-and-passed only when an impression
+  says it was shown; unmarked is not negative. A row holds the key, surface (`digest`, `jobs`,
+  `audit`), section, 1-based position and a `slate_id`; digest rows add the priority, relevance and
+  known Score parts, and an Explore row its stratum and `p_select`. Never a title, company, text or
+  note. A key is logged once per slate, and the log rotates at 16 MiB (two files at most). The
+  digest records what it wrote (a failure is printed and kept in the run record as
+  `impressions_error`), the terminal audit the cards it showed, and the Mac app reports the top 20
+  Jobs rows after each refresh and each Audit card through `vani impressions log --surface
+  jobs|audit --slate ID [--section S] [--json]`, with `{"rows":[{"key","position"}]}` on stdin.
+- **Digest sections.** `digest.top_open` (default 20, at most 50) lists the best roles listed before
+  and still open, by the age-free relevance. `digest.explore_below_fold` (default 2) and
+  `digest.explore_dropped` (default 1), at most 10 each, list unmarked roles picked at random from
+  those ranked lower and from those dropped, so Vani learns what it misses; each row carries the
+  stratum and `p_select` that `vani audit answer` takes. `0` turns a section off; none changes a
+  posting's status.
+- **The weekly audit.** `vani audit` draws 15 postings (5 scored by priority decile, 10 dropped by
+  drop class; unmarked roles only; stable within an ISO week; `--scored` and `--dropped` set the
+  quotas) and asks one question: would you apply (1 yes, 2 maybe, 3 no, `s` can't tell, `q`
+  quit). Each answer is a `would_apply` label carrying the stratum and the inclusion probability.
+  `--json` prints the draw as keys, strata and `p_select` with no posting text, `--blind` hides the
+  model's readings, and `--list` and `--json` write nothing. `vani audit answer` records one
+  verdict; the Mac app's Audit tab is the same draw, one card at a time. `vani relevance` reports
+  the labels: would_apply rates with 95% Wilson intervals, precision at K, drop misses, backend
+  reliability, and the shadow's agreement on drop candidates. `vani labels --json` is the label
+  vocabulary the screens read once at launch.
+
+A calibration needs about 100 judged labels and the weight fit 150; both refuse to run below that.
 
 ## Knowledge-base matching (semantic)
 

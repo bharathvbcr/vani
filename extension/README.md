@@ -131,6 +131,21 @@ each one:
   Failures say why: the budget is spent, the Mac app isn't reachable, no key is configured, or the
   draft timed out.
 
+### The relevance badge: Vani's row or an estimate
+
+The score pill on a job page is one of two different numbers, and its label says which.
+
+- **Relevance (Vani's row).** When the page's posting is in Vani's ledger, the extension asks the
+  Mac app for Vani's own jobs row (`jobRow`, `src/jobrow.ts`; one answer is kept for a minute per
+  URL). The pill then shows the row's age-free relevance and fit, with the priority in the label
+  (for example "Strong fit (priority 62)"). This is the number the Jobs tab and the digest rank by.
+- **Estimate.** A posting Vani has not read (not in the ledger, no Mac app, or a `vani` too old to
+  answer) is scored in the page from its text against your bank's target profile
+  (`src/relevance.ts`, a heuristic that falls back to a generic profile). It is labelled "Estimate"
+  and is not the ranking: it can differ from the row Vani gives the same posting once it has read
+  it. A row Vani has but cannot be read says why next to the estimate instead of passing the estimate
+  off as Vani's.
+
 ### Crawling a whole listing into Vani
 
 In the scrape drawer, **Crawl all pages → Vani** reads every page of the listing you are on, not

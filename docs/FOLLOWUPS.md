@@ -45,6 +45,40 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Remaining after the final landing (2026-10-20)
+
+The ranking and filtering audit and its status per finding are in
+[RANKING_PLAN.md](RANKING_PLAN.md). What is done there is not repeated here; this is what is left.
+
+- **The semantic floor before Liquid D** (Phase 3). Pick it from the live distribution once the
+  owner has seen it. Without a local model, a posting under the floor would wait for the paid
+  call, so the floor only defers.
+- **Calibration (≥100 judged labels) and the weight fit (≥150).** Nothing to build until the weekly
+  `vani audit` has produced them (about 150 a month at the planned cadence). Both must refuse below
+  their threshold with a "could not run" result, never a quiet fit.
+- **Owner config, not code:** a location `exclude` (RANKING_PLAN F3), `advance_per_run` 750 (the
+  default stays 300), the cloud shadow (README, "Cloud shadow"), and the Engineering Manager
+  question (TRACKS.md).
+- **DevPrism upstream:** report `coveragePercentage: null` for a JD with no must-have skills
+  (`jd.rs:559`, `gap.rs:246` under `/Users/bharath/Code/devtools/DevPrism`). Vani already reads
+  both the old `0` and the new `null` as "no must-haves" and nothing else as a measurement
+  (`internal/resume/tools.go`), so this is not blocking.
+- **Jobs-tab impressions carry no scores.** `vani impressions log` takes keys and positions, so a
+  fitter that wants a Jobs row's Score parts joins the key to the ledger at read time. Digest rows
+  carry their parts as shown. The Jobs and Audit models keep `impressionsError`, but no screen
+  shows it yet: a failed report is kept, not displayed.
+- **The Mac app's UI-automation tests are skipped without accessibility trust** (the test runner
+  must be trusted); `swift test` reports them as skipped, not passed. Run them once on a trusted
+  session before a release that touches the Jobs tab.
+- **The extension keeps a second scorer for postings Vani has not read** (`extension/src/relevance.ts`,
+  a heuristic with a generic profile). It shows Vani's own row when the posting is in the ledger and
+  a pill labelled "Estimate" otherwise (extension README); the two can differ. Retiring the estimate
+  means asking Vani to score a page it has not ingested, which is a contract change.
+- **`internal/decide/kbmatch/jev.go`** holds the option descriptions and could be renamed
+  `descriptions.go` the next time that package is touched.
+- **Findings N1–N10 and D1–D11** of the later audit are not recorded in this repository. Add them
+  to RANKING_PLAN.md from the owner's copy.
+
 ## Needs the owner's go-ahead
 
 - **Converge egress with Manvi.** [`internal/egress`](../internal/egress) re-implements manvi/fetch's rules because
@@ -118,7 +152,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   `-race` on a quiet machine and passed its 10 s bound, but crossed it twice while a Swift build
   ran alongside. Not a code fault; raise the bound or skip it under `-race` if it recurs.
 
-## Title prefilter (built 2026-10-19, not yet enabled in the live config)
+## Title prefilter (built 2026-10-19; live since the 2026-10-20 ranking audit, per RANKING_PLAN)
 
 - **Enabling it: install the binary first.** `Parse` refuses unknown fields, so a
   `title_signals.read` in `config.json` makes every older `vani` fail to load the config. That
@@ -1007,11 +1041,14 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - Postings that went through the pipeline while `devprism.binary` was empty were marked Scored
     with "scoring disabled" and no rank or coverage, and nothing re-scores them now that DevPrism
     is configured. Every posting in the live top 20 takes the coverage prior (0.4), so the largest
-    signal is missing from the live ranking until they are re-scored.
+    signal is missing from the live ranking until they are re-scored. **Stale (2026-10-20):** a
+    fold of the live ledger found 2,287 of 2,301 digested postings with coverage and rank
+    (RANKING_PLAN R2), and `vani rescore` repairs the rest.
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
   - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
     mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
+    Resolved 2026-10-20 as policy: the digest's Top open ranks by age-free relevance (RANKING_PLAN R3).
   - Closed on this branch: displayed `relevance` rests on the known parts (`relevance_known`);
     `vani jobs mark`/`note` rank with the marks as written; the digest ranks with the same drop-rule
     penalties, rank penalties and title signals as `vani jobs` (`cmd/vani/rankconfig.go`); the

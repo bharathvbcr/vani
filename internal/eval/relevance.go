@@ -279,7 +279,7 @@ func (r Relevance) Markdown() string {
 	}
 	b.WriteString("- wanted = yes or maybe. Raw counts with 95% Wilson intervals; nothing is weighted by p_select. The labelled postings are a stratified sample of the pool, so a rate here describes those postings, not the whole ledger.\n\n")
 	if r.Judged == 0 {
-		b.WriteString("no data: no judged would_apply labels yet (run `vani audit-sample`)\n")
+		b.WriteString("no data: no judged would_apply labels yet (run `vani audit`)\n")
 		return b.String()
 	}
 
