@@ -11,7 +11,7 @@ const (
 	// characters is too thin for a model to read (a title restated, a "see
 	// careers page" stub). The paid triage call is skipped and the posting is
 	// kept as unsure, never dropped.
-	DefaultMinDescriptionRunes = 20
+	DefaultMinDescriptionRunes = 40
 	// MaxMinDescriptionRunes bounds the setting.
 	MaxMinDescriptionRunes = 5000
 	// DefaultNotesMinRelevance is the relevance floor for a "why this role" note.

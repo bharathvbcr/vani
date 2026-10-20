@@ -58,7 +58,7 @@ func triageReply(pick map[string]string) string {
 
 func liveEvent(key posting.Key) ledger.Event {
 	return ledger.Event{V: ledger.SchemaVersion, At: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), Key: key, Status: posting.Live, Reason: "listed",
-		Posting: &posting.Posting{Key: key, Company: "Acme", Title: "Engineer", Description: "Build inference systems. Fully remote."}}
+		Posting: &posting.Posting{Key: key, Company: "Acme", Title: "Engineer", Description: "Build and operate large-scale inference systems for production models. Fully remote within the US."}}
 }
 
 // `vani status --json` carries what each decision backend did in the last real
