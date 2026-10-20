@@ -1243,9 +1243,14 @@ private struct JobDetailContent: View {
 
     /// The factor's share of the blend, or what a multiplier did to it.
     private func factorNote(_ f: ScoreFactor, ageKnown: Bool) -> String {
+        // An undated posting is assumed to be as old as Vani's first sighting plus a prior (the
+        // value shown is that assumption); a vani from before that reports the floor as known.
+        if f.name == "fresh" && !ageKnown {
+            return f.known ? "age unknown: held at the floor"
+                : "age unknown: ×" + String(format: "%.2f", f.fraction) + " assumed from when Vani first saw it"
+        }
         // Score counts an unknown component at a neutral prior, so say that, not "left out".
         if !f.known { return [f.weightLabel, "no signal: a neutral prior stands in"].compactMap { $0 }.joined(separator: ", ") }
-        if f.name == "fresh" && !ageKnown { return "age unknown: held at the floor" }
         if let w = f.weightLabel { return w }
         if f.isMultiplier { return f.fraction >= 0.995 ? "no effect" : (f.fraction < 1 ? "lowers the score" : "raises the score") }
         return ""

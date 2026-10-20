@@ -1011,9 +1011,23 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     edit re-embeds every posting (posting vectors are not kept).
   - Similarity breaks title-rank ties in `advance` order but drops nothing, so it saves triage
     tokens only through ordering under `advance_per_run`.
-  - An undated posting from its board's first crawl has unknown age and the freshness floor for
-    good; rankeval's 60%-undated world stays the weakest (NDCG@10 about 0.45) and no weight
-    setting tried helped.
+  - An undated posting from its board's first crawl has unknown age. It no longer takes the floor
+    (0.25) for good: Score reads it as first seen `SeenDays` ago plus `UnknownAgeDays` (1.5
+    half-lives when unset), so freshness is about 0.5 on the day it is seen and falls from there
+    (2026-10-20, owner's request: a strong Google posting scored 19 for relevance 75.9, now 39.1).
+    This retires the invariant "a known age never scores below an unknown one"; `rankeval` does
+    not model `SeenKnown`, so its 60%-undated world (NDCG@10 about 0.45) was not re-measured. The
+    live ledger's dated postings average freshness 0.34, so the prior leans toward surfacing: 5 of
+    the live top 20 are now undated, 0 before. Google's adapter has read `posted_at` since
+    2026-10-19 10:58, after its first crawl; `reconcile.go:219` backfills it on the next crawl, which
+    makes these postings dated.
+  - Meaning leads, keywords tie-break (2026-10-20, owner's request): `DefaultWeights` now has
+    Semantic 0.35 (was 0.25) and Keyword 0.03 (was 0.10); fit, coverage, title and employer are
+    unchanged. A keyword-rich posting distant in meaning (semantic .55) used to outrank a close
+    one (.80) with no keywords. rankeval's NDCG@10 is flat across these weights (0.7341 → 0.7346),
+    so this rests on the principle. Live, the top 15 all read semantic 0.72 or more (69 of 1,682
+    postings are at 0.95 or more), so among the best the embedding barely separates them and fit and
+    freshness decide the order.
   - Lappi's calibrated score is not used for confidence (an answered Lappi reading counts as
     `AnsweredConf` 0.7): Lappi's score is a top-two margin, not a probability, and decide keeps
     the two apart on purpose.

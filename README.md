@@ -263,7 +263,9 @@ flowchart TD
     `[{"slot": "seniority", "values": ["senior"]}]` to keep senior roles but list them lower.
     `vani jobs` and the digest apply the same rules and title signals.
   - Priority is relevance scaled by freshness (`--half-life`, default 10 days). A posting listed
-    in its board's first crawl with no posted date has an unknown age and gets the floor.
+    in its board's first crawl with no posted date has an unknown age: it is scored as one first
+    seen 1.5 half-lives old (freshness about 0.5 when first seen today) and ages from the day Vani
+    first saw it, instead of taking the floor of a very old posting.
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
     It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at
     least 90% of one company's postings repeat is that company's blurb, and is left out.

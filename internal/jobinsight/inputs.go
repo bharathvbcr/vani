@@ -169,6 +169,9 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 
 	if at, _, known := FreshAge(r.Posting.PostedAt, r.FirstSeen, c.FirstCrawl[BoardOf(string(r.Key))], c.Now); known {
 		in.AgeDays, in.AgeKnown = AgeDays(at, c.Now), true
+	} else if !at.IsZero() {
+		// Age unknown, but the first sighting bounds it from below (Score).
+		in.SeenDays, in.SeenKnown = AgeDays(at, c.Now), true
 	}
 
 	seen := map[string]bool{}

@@ -91,6 +91,13 @@ type Inputs struct {
 	// AgeDays is whole days since the posting's freshness date, read only when
 	// AgeKnown. A known negative age (clock skew) counts as today.
 	AgeDays int
+	// SeenKnown is true when SeenDays holds the days since Vani first saw the
+	// posting. It is read only when AgeKnown is false: an undated posting from
+	// its board's first crawl may be arbitrarily old, but it is no older than
+	// that first sighting plus what a listed posting typically already is
+	// (Weights.UnknownAgeDays), and it keeps ageing from then on.
+	SeenKnown bool
+	SeenDays  int
 
 	// Unsure is true when triage could not decide and kept the posting.
 	Unsure bool
@@ -168,6 +175,14 @@ type Weights struct {
 	// FreshFloor is the freshness of a very old posting and of one whose
 	// age is unknown; HalfLifeDays halves the rest.
 	FreshFloor, HalfLifeDays float64
+	// UnknownAgeDays is the age an undated posting is assumed to have had when
+	// Vani first saw it; the days since then are added (Inputs.SeenDays). Zero or
+	// unusable means unknownAgeHalfLives half-lives, so it follows the half-life
+	// setting. A posting of unknown age first seen today thereby scores a
+	// freshness of about 0.5, what the pre-Score priority gave an undated
+	// posting, not the floor reserved for very old ones; the live ledger's dated
+	// postings average 0.34, so this is a deliberate lean toward surfacing.
+	UnknownAgeDays float64
 	// CompanyMinMarks is the marks a company needs before its factor moves,
 	// CompanySmoothing the pseudo-count. CompanySpan is how far liked marks
 	// lift the factor above 1, CompanyDown how far hidden marks sink it below:
@@ -260,7 +275,13 @@ func Score(in Inputs) Result { return ScoreWith(in, DefaultWeights()) }
 // DefaultWeights are the shipped constants.
 func DefaultWeights() Weights {
 	return Weights{
-		Fit: 0.30, Coverage: 0.20, Semantic: 0.25, Keyword: 0.10, Title: 0.10, Employer: 0.05,
+		// Meaning leads: role fit, the knowledge-base embedding match and DevPrism's
+		// coverage carry the blend. Keyword overlap is a surface string, so it only
+		// breaks ties (it was 0.10 against semantic's 0.25, and a keyword-rich
+		// posting distant in meaning outranked a close one). On rankeval's worlds
+		// keyword 0.03 / semantic 0.35 scores NDCG@10 0.7346 against 0.7341 before:
+		// the metric is flat here, so the choice rests on the principle, not the gain.
+		Fit: 0.30, Coverage: 0.20, Semantic: 0.35, Keyword: 0.03, Title: 0.10, Employer: 0.05,
 		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
 		PenaltyStrength: 0.80, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
 		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays,
@@ -268,6 +289,11 @@ func DefaultWeights() Weights {
 		OrdinalFit: true, KnownMatch: true, MatchShrink: 0.10,
 	}
 }
+
+// unknownAgeHalfLives is the age, in half-lives, an undated posting is assumed
+// to have when first seen (Weights.UnknownAgeDays unset): 2^-1.5 puts its
+// freshness at 0.25 + 0.75*0.354 = 0.52 at the default floor.
+const unknownAgeHalfLives = 1.5
 
 // finite reports whether v is neither NaN nor infinite.
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -419,15 +445,25 @@ func ScoreWith(in Inputs, w Weights) Result {
 
 	floor := clamp01(w.FreshFloor)
 	fresh := floor
-	if in.AgeKnown {
-		half := in.HalfLifeDays
+	half := in.HalfLifeDays
+	if !(half > 0 && half <= MaxHalfLifeDays) {
+		half = w.HalfLifeDays
 		if !(half > 0 && half <= MaxHalfLifeDays) {
-			half = w.HalfLifeDays
-			if !(half > 0 && half <= MaxHalfLifeDays) {
-				half = DefaultScoreHalfLifeDays
-			}
+			half = DefaultScoreHalfLifeDays
 		}
+	}
+	switch {
+	case in.AgeKnown:
 		fresh = floor + (1-floor)*math.Exp2(-float64(max(in.AgeDays, 0))/half)
+	case in.SeenKnown:
+		// An undated posting is no older than when Vani first saw it plus what a
+		// listed posting typically already is: a lower bound and a prior, so it
+		// ages from there instead of sitting at the very-old floor.
+		assumed := w.UnknownAgeDays
+		if !(assumed > 0 && assumed <= MaxHalfLifeDays) {
+			assumed = unknownAgeHalfLives * half
+		}
+		fresh = floor + (1-floor)*math.Exp2(-(float64(max(in.SeenDays, 0))+assumed)/half)
 	}
 	fresh = clamp01(fresh)
 
@@ -462,7 +498,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 	}
 	r.Factors = append(r.Factors,
 		Factor{Name: "gate", Value: gate, Known: true},
-		Factor{Name: "fresh", Value: fresh, Known: true},
+		Factor{Name: "fresh", Value: fresh, Known: in.AgeKnown},
 		Factor{Name: "company", Value: company, Known: true})
 	return r
 }

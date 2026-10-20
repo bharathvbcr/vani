@@ -280,8 +280,12 @@ func TestScoreFactors(t *testing.T) {
 			}
 			if i < 6 {
 				share += f.Weight
-			} else if f.Weight != 0 || !f.Known {
+			} else if f.Weight != 0 {
 				t.Errorf("multiplier %+v", f)
+			} else if wantKnown := f.Name != "fresh" || in.AgeKnown; f.Known != wantKnown {
+				// gate and company are always known; fresh is known only when
+				// the age is, not when it is a guess (unknown age).
+				t.Errorf("multiplier %+v: known %v, want %v", f, f.Known, wantKnown)
 			}
 		}
 		if math.Abs(share-1) > 1e-9 {

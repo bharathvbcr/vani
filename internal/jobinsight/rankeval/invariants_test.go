@@ -44,7 +44,11 @@ func invariantViolations(w jobinsight.Weights) []string {
 	bad := func(format string, a ...any) { v = append(v, fmt.Sprintf(format, a...)) }
 	s := func(in jobinsight.Inputs) float64 { return jobinsight.ScoreWith(in, w).Score }
 
-	// A known age never scores below an unknown one, however old.
+	// A known age never scores below an unknown one, however old. This is the
+	// nothing-known case (no SeenKnown). Where InputsFor knows when Vani first
+	// saw an undated posting, Score deliberately scores it as that old plus
+	// UnknownAgeDays, so a known age older than that does lose to it
+	// (jobinsight/unknownage_test.go).
 	for _, age := range []int{0, 1, 10, 60, 180, 1000} {
 		k, u := good(), good()
 		k.AgeDays, u.AgeKnown, u.AgeDays = age, false, -1
