@@ -919,12 +919,12 @@ func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("llm budget: %w", err)
 	}
-	prices := budget.Prices{Rates: budget.Rates{Input: in, Output: out, CacheWrite: in, CacheRead: in}}
-	return &budget.Provider{Inner: pricedProvider{Provider: inner, prices: prices}, Ledger: l}, nil
+	return &budget.Provider{Inner: newPricedProvider(inner, w.cfg.LLM.Model, in, out), Ledger: l}, nil
 }
 
-// pricedProvider meters the adapter at the configured prices (the operator's
-// conservative figures, which win over any table the adapter publishes).
+// pricedProvider meters the adapter at the configured prices for the configured
+// model (the operator's conservative figures, which win over any table the
+// adapter publishes) and at the adapter's table for any other model (pricing.go).
 //
 // Embedding llm.Provider exposes only that interface, so every optional
 // contract budget.Provider looks for on its inner provider is forwarded here
@@ -933,9 +933,8 @@ func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
 type pricedProvider struct {
 	llm.Provider
 	prices budget.Prices
+	model  string // the configured model; empty meters every model at prices
 }
-
-func (p pricedProvider) PriceOf(string) (budget.Prices, bool) { return p.prices, true }
 
 // AttemptGateSupported is true only when the adapter itself makes that promise.
 func (p pricedProvider) AttemptGateSupported() bool {
