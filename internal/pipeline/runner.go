@@ -279,7 +279,7 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 		ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
 		AnnCoverageUnknown: "",
 	}
-	if m :=missingRequirements(gap); m != "" {
+	if m := missingRequirements(gap); m != "" {
 		ann[ledger.AnnMissing] = m
 	}
 	return ann, nil
