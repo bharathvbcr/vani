@@ -27,6 +27,7 @@ import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } 
 import { contentListener } from "./frames";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
+import { type JobRow, applyVaniRow, scoreWord, withRowError } from "./jobrow";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
@@ -107,6 +108,30 @@ let lastPortal: PortalInfo | undefined;
 // The matches the last scan computed, with the bank they came from, for fill to reuse (see fill()).
 let lastScan: { refs: FieldRef[]; matches: Map<FieldRef, Match | null>; bank: Bank | null } | undefined;
 
+const VANI_ROW_TTL_MS = 60_000;
+let vaniRow: { url: string; at: number; result: { row: JobRow | null } | { error: string } } | undefined;
+
+/**
+ * Vani's own row for this page's posting in place of the page-text estimate. Only the top frame
+ * asks, and one answer is kept a minute per URL: scans run on page activity, and each ask runs `vani`.
+ * No row, no Mac app, or an older vani leaves the labelled estimate; an unreadable row says why.
+ */
+async function vaniRelevance(estimate: RelevanceResult): Promise<RelevanceResult> {
+  if (window.top !== window) return estimate;
+  const url = location.href;
+  if (!vaniRow || vaniRow.url !== url || Date.now() - vaniRow.at > VANI_ROW_TTL_MS) {
+    try {
+      const r = await send<{ row: JobRow | null } | { error: string }>({ type: "jobRow", url });
+      vaniRow = { url, at: Date.now(), result: r && typeof r === "object" ? r : { row: null } };
+    } catch {
+      return estimate; // the worker is not there: not cached, so the next scan asks again
+    }
+  }
+  const r = vaniRow.result;
+  if ("error" in r) return withRowError(estimate, r.error);
+  return r.row ? applyVaniRow(estimate, r.row) : estimate;
+}
+
 /** `cached`: a scan the page's own activity triggered may use a bank read under 2 s ago; a scan someone asked for reads it afresh. */
 async function scan(cached = false): Promise<ScanReply> {
   const b = await (cached ? scanBank() : bank());
@@ -126,9 +151,10 @@ async function scan(cached = false): Promise<ScanReply> {
   lastPortal = portal;
   const job = jobInfo();
   // Only a posting actually read from this page is rated: a score for an empty or half-rendered read would look like a verdict.
-  const relevance = isReadableJob(job)
+  const estimate = isReadableJob(job)
     ? evaluateRelevance({ title: job.title, company: job.company, description: job.description }, targetProfileFromBank(b))
     : undefined;
+  const relevance = estimate ? await vaniRelevance(estimate) : undefined;
   lastRelevance = relevance;
 
   return {
@@ -824,7 +850,7 @@ function showRelevance(rel: RelevanceResult | undefined): void {
   const relBadge = panel?.querySelector<HTMLElement>("#rel-badge");
   if (!relBadge) return;
   if (rel) {
-    relBadge.textContent = `🎯 ${rel.score}%`;
+    relBadge.textContent = `🎯 ${scoreWord(rel)} ${rel.score}%`;
     relBadge.style.display = "inline-block";
     renderRelDrawer(rel);
     return;

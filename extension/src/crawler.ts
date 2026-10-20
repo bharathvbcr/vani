@@ -14,7 +14,7 @@
 // Page content is untrusted: it only ever becomes data in an ingest batch, bounded by ingest.ts.
 
 import { type IngestOutcome, type IngestPage, type IngestSource, MAX_INGEST_JOBS, MAX_SNIPPET, buildIngestBatch, describeIngest, isIngestReply, leftOutText } from "./ingest";
-import { type UserTargetProfile, evaluateRelevance } from "./relevance";
+import { type UserTargetProfile, rankListing } from "./relevance";
 
 export const WORKDAY_PAGE = 20;
 /** The most rows one Workday listing query serves; offsets at or past it return page 1 again. */
@@ -626,7 +626,7 @@ export async function crawlWorkday(b: WorkdayBoard, options: CrawlOptions = {}, 
 
   const maxDetails = Math.max(0, Math.min(options.maxDetails ?? MAX_INGEST_JOBS, options.maxJobs ?? MAX_ROWS));
   const ranked = [...seen.values()]
-    .map(r => ({ r, score: evaluateRelevance({ title: r.title, company, description: r.location, location: r.location }, options.profile).score }))
+    .map(r => ({ r, score: rankListing(r, options.profile) }))
     .sort((a, b2) => b2.score - a.score)
     .map(x => x.r);
   const slots: Array<IngestSource | undefined> = [];

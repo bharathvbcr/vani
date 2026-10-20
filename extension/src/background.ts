@@ -20,6 +20,7 @@ import { type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkToBackground }
 import { type FanOut, type FrameStore, createFrameRegistry, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
+import { parseFindRow } from "./jobrow";
 import { resumeKey, runResume } from "./resume";
 
 const draft = createDrafter();
@@ -268,6 +269,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     }
     case "appliedPending":
       return { offer: await applied.pending(actingTab(sender, msg.tabId)) };
+    case "jobRow":
+      return parseFindRow(await native({ op: "jobFind", url: msg.url }));
     case "appliedMark": {
       const tabId = actingTab(sender, msg.tabId);
       const r = await applied.mark(tabId);

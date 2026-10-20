@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
@@ -116,6 +117,8 @@ type jobJSON struct {
 	// Logo is the absolute path of the company's cached icon (internal/logo),
 	// set only when the file is there; the app shows the monogram otherwise.
 	Logo string `json:"logo,omitempty"`
+	// Row is the versioned contract every surface reads (internal/jobview).
+	Row *jobview.Row `json:"row,omitempty"`
 }
 
 type jobsListJSON struct {
