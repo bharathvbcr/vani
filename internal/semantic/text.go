@@ -135,8 +135,10 @@ type unit struct {
 // lines of four or more words. Lines under requirements, qualifications or
 // responsibilities headings are taken before the rest, and lines under
 // benefits, EEO or company-blurb headings last; chosen lines keep document
-// order. HTML and markdown are stripped. The result is deterministic and
-// depends only on the two arguments.
+// order. Lines that ask the same of any candidate (a degree, years of
+// experience, communication skills: genericLine) are left out. HTML and
+// markdown are stripped. The result is deterministic and depends only on the
+// two arguments.
 func ChunkPosting(title, description string) []Chunk {
 	var out []Chunk
 	seen := map[string]bool{}
@@ -175,7 +177,7 @@ func ChunkPosting(title, description string) []Chunk {
 			if len(units) >= maxUnits {
 				break
 			}
-			if wordCount(s) < 4 {
+			if wordCount(s) < 4 || genericLine(s) {
 				continue
 			}
 			t := tier
