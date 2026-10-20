@@ -80,18 +80,18 @@ func TestNotesSpendIsSeparateFromTriageSpend(t *testing.T) {
 
 func TestBuildFunnel(t *testing.T) {
 	cfg := config.Default()
-	f := buildFunnel(cfg, true, nil)
+	f := buildFunnel(cfg, true, nil, nil)
 	if f.FailOpen == nil || f.Cache == nil || f.ModelID == "" || !f.ScoreFirst || f.Notes == nil || f.MinDescriptionRunes != config.DefaultMinDescriptionRunes {
 		t.Fatalf("defaults: %+v", f)
 	}
-	if f.Notes.MinRank != config.DefaultNotesMinRank || f.Notes.Spend != nil {
+	if f.Notes.MinRelevance != config.DefaultNotesMinRelevance || f.Notes.Spend != nil {
 		t.Fatalf("notes gate: %+v", f.Notes)
 	}
-	if off := buildFunnel(cfg, false, nil); off.Notes != nil || off.ScoreFirst {
-		t.Fatal("with scoring off the notes gate would defer every note for good")
+	if off := buildFunnel(cfg, false, nil, nil); off.Notes == nil || off.ScoreFirst {
+		t.Fatal("with scoring off the gate stays on (role_fit gives relevance) and nothing is scored first")
 	}
 	cfg.Funnel.ScoreAfterTriage = true
-	if buildFunnel(cfg, true, nil).ScoreFirst {
+	if buildFunnel(cfg, true, nil, nil).ScoreFirst {
 		t.Fatal("score_after_triage ignored")
 	}
 }
@@ -99,7 +99,7 @@ func TestBuildFunnel(t *testing.T) {
 func TestFillFunnelReport(t *testing.T) {
 	var warns []string
 	warnf := func(f string, a ...any) { warns = append(warns, fmt.Sprintf(f, a...)) }
-	r := &pipeline.Runner{Funnel: buildFunnel(config.Default(), true, nil)}
+	r := &pipeline.Runner{Funnel: buildFunnel(config.Default(), true, nil, nil)}
 	var rep advanceReport
 	fillFunnelReport(&rep, r, warnf)
 	if rep.FailOpen.Total() != 0 || len(warns) != 0 {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -44,12 +43,17 @@ type NotesCounts struct {
 }
 
 // NotesGate decides, before the paid notes call, whether a scored posting gets
-// a note. Notes run only for relevance (the rank annotation) at or above
-// MinRank, and draw on their own daily budget so they cannot starve triage.
+// a note. Notes run only for relevance at or above MinRelevance, and draw on
+// their own daily budget so they cannot starve triage.
 type NotesGate struct {
-	// MinRank is the relevance floor: rank is gap coverage, 0-100, plus the
-	// preferred-employer boost.
-	MinRank float64
+	// MinRelevance is the relevance floor, 0-100.
+	MinRelevance float64
+	// Relevance reads the age-free relevance the Jobs ranking uses
+	// (jobinsight.Relevance); ok false means it cannot be computed. nil reads
+	// every posting as unknown, so a gate built without one defers rather
+	// than guesses. DevPrism coverage is not read here: a coverage of 0 is
+	// only an input to relevance, never "unknown".
+	Relevance func(ledger.Record) (v float64, ok bool)
 	// Spend is the notes' own daily cap, checked before each call. nil means
 	// the notes backend meters itself.
 	Spend decide.Spend
@@ -79,12 +83,14 @@ const (
 	notesDefer                     // stays scored, asked again later
 )
 
-// relevance reads the posting's rank. Absent, unparseable, non-finite,
-// negative or exactly zero reads as unknown: a zero coverage is what a failed
-// or empty scoring looks like, so it is held back, not treated as a poor match.
-func relevance(r ledger.Record) (float64, bool) {
-	v, err := strconv.ParseFloat(r.Annotations[ledger.AnnRank], 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+// relevance reads r's relevance through the gate's reader; a missing reader or
+// a non-finite value reads as unknown.
+func (g *NotesGate) relevance(r ledger.Record) (float64, bool) {
+	if g.Relevance == nil {
+		return 0, false
+	}
+	v, ok := g.Relevance(r)
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false
 	}
 	return v, true
@@ -93,16 +99,16 @@ func relevance(r ledger.Record) (float64, bool) {
 // check returns the verdict for r and the reason to record. An error means the
 // budget could not be read: the note is not asked for and the stage fails.
 func (g *NotesGate) check(ctx context.Context, r ledger.Record) (notesVerdict, string, error) {
-	rank, known := relevance(r)
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	rel, known := g.relevance(r)
 	switch {
 	case !known:
 		g.c.UnknownRelevance++
 		return notesDefer, DeferUnknownRelevance, nil
-	case rank < g.MinRank:
+	case rel < g.MinRelevance:
 		g.c.Below++
-		return notesBelow, fmt.Sprintf("relevance %.1f below notes floor %.1f", rank, g.MinRank), nil
+		return notesBelow, fmt.Sprintf("relevance %.1f below notes floor %.1f", rel, g.MinRelevance), nil
 	case g.exhausted:
 		g.c.BudgetSpent++
 		return notesDefer, DeferBudget, nil

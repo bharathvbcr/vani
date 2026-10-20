@@ -1067,7 +1067,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	if err := w.scoring(r); err != nil {
 		return nil, err
 	}
-	r.Funnel = buildFunnel(w.cfg, !r.SkipScoring, nspend)
+	r.Funnel = buildFunnel(w.cfg, !r.SkipScoring, nspend, notesRelevance(w.cfg, w.stateDir, w.led.All, w.warnf))
 	return r, nil
 }
 

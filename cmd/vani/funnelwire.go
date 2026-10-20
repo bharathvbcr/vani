@@ -56,27 +56,6 @@ func notesSpend(stateDir string, cfg config.Config, triageSpend *decide.DailyCap
 	return c, nil
 }
 
-// buildFunnel assembles the runner's funnel hooks. scoring is whether DevPrism
-// is on: with it off, relevance is never known, so the notes gate is left off
-// (every scored posting would otherwise be deferred for good).
-func buildFunnel(cfg config.Config, scoring bool, notes *decide.DailyCap) pipeline.Funnel {
-	f := pipeline.Funnel{
-		FailOpen:            &pipeline.FailOpen{},
-		Cache:               pipeline.NewReadCache(),
-		ModelID:             triageModelID(cfg),
-		MinDescriptionRunes: cfg.Funnel.DescriptionMin(),
-		ScoreFirst:          scoring && !cfg.Funnel.ScoreAfterTriage,
-	}
-	if scoring {
-		g := &pipeline.NotesGate{MinRank: cfg.Funnel.NotesFloor(), SpendKey: openRouterSpendKey}
-		if notes != nil {
-			g.Spend = notes
-		}
-		f.Notes = g
-	}
-	return f
-}
-
 // fillFunnelReport copies the run's fail-open and notes-gate counts into the
 // advance report and says so when any check could not run.
 func fillFunnelReport(rep *advanceReport, r *pipeline.Runner, warnf func(string, ...any)) {

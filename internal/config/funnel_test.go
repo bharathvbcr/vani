@@ -8,7 +8,7 @@ import (
 
 func TestFunnelDefaultsAndBounds(t *testing.T) {
 	var f Funnel
-	if f.DescriptionMin() != DefaultMinDescriptionRunes || f.NotesFloor() != DefaultNotesMinRank || f.NotesCapUSD() != DefaultNotesDailyUSD {
+	if f.DescriptionMin() != DefaultMinDescriptionRunes || f.NotesFloor() != DefaultNotesMinRelevance || f.NotesCapUSD() != DefaultNotesDailyUSD {
 		t.Fatalf("defaults wrong: %d %v %v", f.DescriptionMin(), f.NotesFloor(), f.NotesCapUSD())
 	}
 	zero, neg, nan, big, tiny := 0.0, -1.0, math.NaN(), MaxDailyUSD+1, 0.0
@@ -19,8 +19,8 @@ func TestFunnelDefaultsAndBounds(t *testing.T) {
 	}{
 		{"negative min description", Funnel{MinDescriptionRunes: -1}, "min_description_runes"},
 		{"huge min description", Funnel{MinDescriptionRunes: MaxMinDescriptionRunes + 1}, "min_description_runes"},
-		{"negative floor", Funnel{NotesMinRank: &neg}, "notes_min_rank"},
-		{"NaN floor", Funnel{NotesMinRank: &nan}, "notes_min_rank"},
+		{"negative floor", Funnel{NotesMinRelevance: &neg}, "notes_min_relevance"},
+		{"NaN floor", Funnel{NotesMinRelevance: &nan}, "notes_min_relevance"},
 		{"zero notes cap", Funnel{NotesDailyUSD: &tiny}, "notes_daily_usd"},
 		{"NaN notes cap", Funnel{NotesDailyUSD: &nan}, "notes_daily_usd"},
 		{"over max notes cap", Funnel{NotesDailyUSD: &big}, "notes_daily_usd"},
@@ -32,8 +32,8 @@ func TestFunnelDefaultsAndBounds(t *testing.T) {
 		}
 	}
 	var got []string
-	Funnel{NotesMinRank: &zero}.validate(func(format string, a ...any) { got = append(got, format) })
-	if len(got) != 0 || (Funnel{NotesMinRank: &zero}).NotesFloor() != 0 {
+	Funnel{NotesMinRelevance: &zero}.validate(func(format string, a ...any) { got = append(got, format) })
+	if len(got) != 0 || (Funnel{NotesMinRelevance: &zero}).NotesFloor() != 0 {
 		t.Fatalf("an explicit zero floor is valid and kept: %v", got)
 	}
 }

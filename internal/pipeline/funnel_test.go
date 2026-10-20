@@ -390,7 +390,7 @@ func scoredRunner(t *testing.T, cov float64, g *NotesGate) (*Runner, *countExpla
 }
 
 func TestNotesBelowFloorMakeNoCall(t *testing.T) {
-	g := &NotesGate{MinRank: 40}
+	g := &NotesGate{MinRelevance: 40, Relevance: fromRank}
 	r, ex, l, k := scoredRunner(t, 20, g)
 	if err := r.Advance(ctx, k); err != nil {
 		t.Fatal(err)
@@ -405,7 +405,7 @@ func TestNotesBelowFloorMakeNoCall(t *testing.T) {
 }
 
 func TestNotesAtOrAboveFloorAsk(t *testing.T) {
-	r, ex, l, k := scoredRunner(t, 40, &NotesGate{MinRank: 40})
+	r, ex, l, k := scoredRunner(t, 40, &NotesGate{MinRelevance: 40, Relevance: fromRank})
 	if err := r.Advance(ctx, k); err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestNotesAtOrAboveFloorAsk(t *testing.T) {
 
 func TestNotesUnknownRelevanceDeferredNotDone(t *testing.T) {
 	for _, cov := range []float64{0} { // zero coverage is the failed-scoring signature
-		g := &NotesGate{MinRank: 40}
+		g := &NotesGate{MinRelevance: 40, Relevance: fromRank}
 		r, ex, l, k := scoredRunner(t, cov, g)
 		if err := r.Advance(ctx, k); err != nil {
 			t.Fatal(err)
@@ -442,7 +442,7 @@ func TestNotesUnknownRelevanceDeferredNotDone(t *testing.T) {
 	p := dupPost(t, "1", "Remote", longDesc)
 	reconcileFunnel(t, l, p)
 	ex := &countExplainer{}
-	r := newRunner(l, &seqTriager{answers: []decide.Answer{okAns("remote", 0.99)}}, Funnel{Notes: &NotesGate{MinRank: 1}})
+	r := newRunner(l, &seqTriager{answers: []decide.Answer{okAns("remote", 0.99)}}, Funnel{Notes: &NotesGate{MinRelevance: 1, Relevance: fromRank}})
 	r.SkipScoring, r.Explainer = true, ex
 	if err := r.Advance(ctx, p.Key); err != nil {
 		t.Fatal(err)
@@ -453,7 +453,7 @@ func TestNotesUnknownRelevanceDeferredNotDone(t *testing.T) {
 }
 
 func TestNotesBudgetSpentDefersAndTriageStillRuns(t *testing.T) {
-	g := &NotesGate{MinRank: 10, Spend: fakeSpend{err: decide.ErrBudget}, SpendKey: "notes"}
+	g := &NotesGate{MinRelevance: 10, Relevance: fromRank, Spend: fakeSpend{err: decide.ErrBudget}, SpendKey: "notes"}
 	l := openLedger(t)
 	a, b := dupPost(t, "1", "Remote", longDesc), dupPost(t, "2", "Remote", longDesc+" two")
 	reconcileFunnel(t, l, a, b)
@@ -478,7 +478,7 @@ func TestNotesBudgetSpentDefersAndTriageStillRuns(t *testing.T) {
 		t.Fatalf("counts %+v", g.Counts())
 	}
 	// Budget back (a new day): the deferred note is asked for and clears the mark.
-	r.Notes = &NotesGate{MinRank: 10, Spend: fakeSpend{}, SpendKey: "notes"}
+	r.Notes = &NotesGate{MinRelevance: 10, Relevance: fromRank, Spend: fakeSpend{}, SpendKey: "notes"}
 	if err := r.Advance(ctx, a.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestNotesBudgetSpentDefersAndTriageStillRuns(t *testing.T) {
 
 func TestNotesBudgetErrorFailsTheStageNotTheGate(t *testing.T) {
 	boom := errors.New("budget file unreadable")
-	r, ex, l, k := scoredRunner(t, 80, &NotesGate{MinRank: 10, Spend: fakeSpend{err: boom}})
+	r, ex, l, k := scoredRunner(t, 80, &NotesGate{MinRelevance: 10, Relevance: fromRank, Spend: fakeSpend{err: boom}})
 	if err := r.Advance(ctx, k); !errors.Is(err, boom) {
 		t.Fatalf("got %v", err)
 	}
