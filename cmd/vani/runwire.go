@@ -39,7 +39,8 @@ const (
 // baseAdvancePlan is the plan every caller starts from: the cap and
 // concurrency it was given and the fixed differences of its kind.
 //
-//   - kindRun fills the run record's funnel counts.
+//   - kindRun and kindInbox fill the funnel counts (fail-open and notes gate) and
+//     warn when a check could not run; the run keeps them in its record.
 //   - kindRescore advances exactly the rescorable records and never prints the
 //     advance_per_run cap line (its cap is --limit).
 func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...any)) pipeline.AdvancePlan {
@@ -48,7 +49,7 @@ func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...
 		Order: func(todo, all []ledger.Record) { orderAdvance(todo, all, nil) },
 	}
 	switch kind {
-	case kindRun:
+	case kindRun, kindInbox:
 		p.FillFunnel = true
 	case kindRescore:
 		p.Select, p.QuietCap = rescorable, true
@@ -65,7 +66,7 @@ func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...
 //	Skip        the tuned --list-only            never
 //	Order       title rank, then the semantic    title rank only
 //	            knowledge-base order when on
-//	FillFunnel  yes (the run record)             no (it keeps no report)
+//	FillFunnel  yes (the run record + warnings)    yes (warnings; it keeps no record)
 func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeline.AdvancePlan {
 	w.mu.Lock()
 	limit, workers := w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers()
@@ -129,8 +130,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			w.mu.Lock()
 			w.advance = &rep
 			w.mu.Unlock()
-			w.warnShadowErrors(runner)
-			w.warnShadowSample(runner)
+			w.warnShadowNotes(runner)
 		},
 	})
 }
@@ -300,6 +300,7 @@ func (w *wired) pollInbox(ctx context.Context) error {
 	}
 	defer stop()
 	_, err = pipeline.Advance(ctx, w.advancePlan(kindInbox, runner.Policy), pipeline.AdvanceDeps{Records: recs, Advance: runner.Advance, Runner: runner})
+	w.warnShadowNotes(runner)
 	return err
 }
 
