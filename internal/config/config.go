@@ -95,6 +95,38 @@ type Config struct {
 	// unchanged. Zero means DefaultAdvanceConcurrency; 1 is strictly one at a
 	// time; at most MaxAdvanceConcurrency.
 	AdvanceConcurrency int `json:"advance_concurrency,omitempty"`
+	// Semantic matches postings against the knowledge base (kb.bank) with
+	// EmbeddingGemma 2 on Tessl. It only orders and explains postings, never
+	// drops one. Off when snapshot or kb.bank is empty.
+	Semantic Semantic `json:"semantic,omitzero"`
+}
+
+// Semantic configures embedding-based matching against the knowledge base.
+type Semantic struct {
+	// Snapshot is the absolute path of a google/embeddinggemma-2 Hugging Face
+	// snapshot directory. Only a vani built with -tags tessl can use it.
+	Snapshot string `json:"snapshot,omitempty"`
+	// WarmPerRun bounds how many postings one daily run embeds. Zero means
+	// DefaultSemanticWarmPerRun; at most MaxSemanticWarmPerRun.
+	WarmPerRun int `json:"warm_per_run,omitempty"`
+}
+
+// Semantic warm bounds (Semantic.WarmPerRun).
+const (
+	DefaultSemanticWarmPerRun = 1000
+	MaxSemanticWarmPerRun     = 5000
+)
+
+// SemanticOn reports whether semantic matching is configured: a snapshot and
+// a bank to build the profile from.
+func (c Config) SemanticOn() bool { return c.Semantic.Snapshot != "" && c.KB.Bank != "" }
+
+// SemanticWarmLimit is WarmPerRun with zero read as the default.
+func (c Config) SemanticWarmLimit() int {
+	if c.Semantic.WarmPerRun == 0 {
+		return DefaultSemanticWarmPerRun
+	}
+	return c.Semantic.WarmPerRun
 }
 
 // Per-run advance bounds (Config.AdvancePerRun, Config.AdvanceConcurrency).
@@ -731,13 +763,20 @@ func (c Config) Validate() error {
 		}
 	}
 	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
-		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir} {
+		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir,
+		"semantic.snapshot": c.Semantic.Snapshot} {
 		if p != "" && !filepath.IsAbs(p) {
 			add("%s %q must be an absolute path", name, p)
 		}
 	}
 	if maxMS := int(page.MaxInterval / time.Millisecond); c.PageIntervalMS < 0 || c.PageIntervalMS > maxMS {
 		add("page_interval_ms %d must be within 0..%d", c.PageIntervalMS, maxMS)
+	}
+	if c.Semantic.WarmPerRun < 0 || c.Semantic.WarmPerRun > MaxSemanticWarmPerRun {
+		add("semantic.warm_per_run %d must be within 0..%d (0 means %d)", c.Semantic.WarmPerRun, MaxSemanticWarmPerRun, DefaultSemanticWarmPerRun)
+	}
+	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
+		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
 	}
 	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
 		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)
