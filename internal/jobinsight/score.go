@@ -27,7 +27,17 @@ type Slot struct {
 	HasP bool
 	// Disagree is true when the shadow backend answered a different value.
 	Disagree bool
+	// ShadowBackend names the shadow that was asked ("" when none was).
+	ShadowBackend string
 }
+
+// ShadowEscalate is the escalation backend's name in the ledger. It is asked
+// only when the primary's p is already under the escalation threshold, so the
+// primary's confidence already carries that doubt, and DisagreeConf was tuned
+// on Lappi shadow pairs, not on escalation: its disagreement does not lower
+// the confidence again. A promoted escalation is to bring its own measured
+// confidence when it comes.
+const ShadowEscalate = "escalate"
 
 // Penalty is a drop rule whose slot value matched a posting the policy kept
 // (the rule's confidence threshold was not met). It softens the score in
@@ -143,7 +153,7 @@ type Weights struct {
 	// AnsweredConf is the confidence of an answered reading with no Jev p.
 	AnsweredConf float64
 	// DisagreeConf multiplies a reading's confidence when the shadow
-	// backend disagreed.
+	// backend disagreed, unless that shadow was ShadowEscalate.
 	DisagreeConf float64
 	// PenaltyStrength is how much a fully confident kept-by drop rule
 	// removes: gate x (1 - PenaltyStrength*conf).
@@ -271,7 +281,7 @@ func (w Weights) conf(s Slot) float64 {
 	case s.Answered:
 		c = clamp01(w.AnsweredConf)
 	}
-	if s.Disagree {
+	if s.Disagree && s.ShadowBackend != ShadowEscalate {
 		c *= clamp01(w.DisagreeConf)
 	}
 	return c

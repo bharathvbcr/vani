@@ -513,7 +513,13 @@ use (
 )
 
 replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => /Users/bharath/Code/devtools/Manvi/manvi
+replace github.com/bharathvbcr/decide v0.0.0 => /Users/bharath/Code/devtools/decide
+replace github.com/bharathvbcr/tessl/go v0.0.0 => /Users/bharath/Code/research/tessl/go
 ```
+
+The decide and tessl replaces are absolute so the same file works in a worktree, where the
+relative replaces in `go.mod` point outside the tree. The default build leaves tessl out; only
+`-tags tessl` (darwin/arm64, with the engine archive) links it.
 
 ```bash
 go -C /Users/bharath/Code/apps/Vani vet ./...

@@ -113,6 +113,8 @@ func SlotOf(ann map[string]string, slot string) Slot {
 		Value:    strings.TrimSpace(ann[pre]),
 		Answered: strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixReading]) == "answered",
 		Disagree: strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixDisagree]) == "true",
+
+		ShadowBackend: strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixShadowBackend]),
 	}
 	if s.Answered {
 		if p, ok := parseFloat(ann[pre+ledger.AnnTriageSuffixP]); ok && p >= 0 && p <= 1 {

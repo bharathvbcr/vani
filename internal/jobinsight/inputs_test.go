@@ -1,6 +1,8 @@
 package jobinsight
 
 import (
+	"maps"
+	"math"
 	"reflect"
 	"strconv"
 	"testing"
@@ -67,6 +69,8 @@ func TestInputsForSlots(t *testing.T) {
 			Slot{Value: "adjacent", Answered: true, Disagree: true}},
 		{"disagree other text", ann("triage.role_fit", "adjacent", "triage.role_fit.reading", "answered", "triage.role_fit.disagree", "yes"),
 			Slot{Value: "adjacent", Answered: true}},
+		{"shadow backend", ann("triage.role_fit", "adjacent", "triage.role_fit.reading", "answered", "triage.role_fit.disagree", "true", "triage.role_fit.shadow_backend", " escalate "),
+			Slot{Value: "adjacent", Answered: true, Disagree: true, ShadowBackend: "escalate"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := InputsFor(rec("gh:a:1", "Acme", time.Hour, c.ann), RankContext{Now: inT0}).RoleFit
@@ -74,6 +78,42 @@ func TestInputsForSlots(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, c.want)
 			}
 		})
+	}
+}
+
+// A Lappi shadow's disagreement halves the reading's confidence; an
+// escalation's does not, since escalation runs only under an already low p.
+// The records differ only in the shadow backend, and Disagree stays as the
+// ledger recorded it either way.
+func TestDisagreeConfSkipsEscalation(t *testing.T) {
+	base := map[string]string{"triage.role_fit": "adjacent", "triage.role_fit.reading": "answered", "triage.role_fit.p": "0.6"}
+	with := func(kv ...string) map[string]string {
+		m := maps.Clone(base)
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	w := DefaultWeights()
+	conf := func(ann map[string]string) (float64, Slot) {
+		s := InputsFor(rec("gh:a:1", "Acme", time.Hour, ann), RankContext{Now: inT0}).RoleFit
+		return w.conf(s), s
+	}
+	baseline, _ := conf(base)
+	lappi, ls := conf(with("triage.role_fit.disagree", "true", "triage.role_fit.shadow_backend", "lappi"))
+	esc, es := conf(with("triage.role_fit.disagree", "true", "triage.role_fit.shadow_backend", "escalate"))
+	if !ls.Disagree || !es.Disagree {
+		t.Fatalf("disagree not read: lappi %+v, escalate %+v", ls, es)
+	}
+	if math.Abs(lappi-baseline*w.DisagreeConf) > 1e-12 || w.DisagreeConf != 0.5 {
+		t.Fatalf("lappi disagreement conf %v, want half of %v", lappi, baseline)
+	}
+	if esc != baseline {
+		t.Fatalf("escalation disagreement conf %v, want the baseline %v", esc, baseline)
+	}
+	if a, b := Score(InputsFor(rec("gh:a:1", "Acme", time.Hour, with("triage.role_fit.disagree", "true", "triage.role_fit.shadow_backend", "escalate")), RankContext{Now: inT0})).Score,
+		Score(InputsFor(rec("gh:a:1", "Acme", time.Hour, base), RankContext{Now: inT0})).Score; a != b {
+		t.Fatalf("escalation disagreement score %v, want the agreeing score %v", a, b)
 	}
 }
 
