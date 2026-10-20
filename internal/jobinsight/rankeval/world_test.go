@@ -427,11 +427,11 @@ func (w *world) grades(u utility) []int {
 	for i, p := range w.postings {
 		v := p.adj * recency(p.age, u.halfLife)
 		switch {
-		case v >= 0.55:
+		case v >= 0.45:
 			g[i] = 3
-		case v >= 0.38:
+		case v >= 0.30:
 			g[i] = 2
-		case v >= 0.2:
+		case v >= 0.15:
 			g[i] = 1
 		}
 	}

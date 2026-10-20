@@ -175,26 +175,59 @@ func legacyRanker(name string, less func(a, b legacyRec) bool) ranker {
 
 func scoreRanker(name string, w jobinsight.Weights) ranker {
 	return ranker{name: name, order: func(os []obs) []int {
-		type sc struct {
-			id int
-			s  float64
+		return scoreRankerFunc(os, func(in jobinsight.Inputs) float64 { return jobinsight.ScoreWith(in, w).Score })
+	}}
+}
+
+// scoreRankerFunc orders os by f descending, ties by id.
+func scoreRankerFunc(os []obs, f func(jobinsight.Inputs) float64) []int {
+	type sc struct {
+		id int
+		s  float64
+	}
+	xs := make([]sc, len(os))
+	for i, o := range os {
+		xs[i] = sc{o.id, f(o.in)}
+	}
+	sort.SliceStable(xs, func(i, j int) bool {
+		if xs[i].s != xs[j].s {
+			return xs[i].s > xs[j].s
 		}
-		xs := make([]sc, len(os))
+		return xs[i].id < xs[j].id
+	})
+	ids := make([]int, len(xs))
+	for i, x := range xs {
+		ids[i] = x.id
+	}
+	return ids
+}
+
+// referenceRankers are context rows in the table, never asserted: arrival
+// order (random with respect to quality) and a freshest-first sort.
+var referenceRankers = []ranker{
+	{name: "ref-arrival", order: func(os []obs) []int {
+		ids := make([]int, len(os))
 		for i, o := range os {
-			xs[i] = sc{o.id, jobinsight.ScoreWith(o.in, w).Score}
+			ids[i] = o.id
 		}
-		sort.SliceStable(xs, func(i, j int) bool {
-			if xs[i].s != xs[j].s {
-				return xs[i].s > xs[j].s
+		return ids
+	}},
+	{name: "ref-freshest", order: func(os []obs) []int {
+		type ag struct{ id, age int }
+		xs := make([]ag, len(os))
+		for i, o := range os {
+			xs[i] = ag{o.id, o.in.AgeDays}
+			if o.in.AgeDays < 0 {
+				xs[i].age = 1 << 20
 			}
-			return xs[i].id < xs[j].id
-		})
+		}
+		sort.SliceStable(xs, func(i, j int) bool { return xs[i].age < xs[j].age })
 		ids := make([]int, len(xs))
 		for i, x := range xs {
 			ids[i] = x.id
 		}
 		return ids
-	}}
+	}},
 }
 
 var legacyRankers = []ranker{
