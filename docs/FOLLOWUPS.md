@@ -759,7 +759,22 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     `devtools/gusset` checkout; tessl's frame-version check fails the load on drift.
   - `extension/src/relevance.ts` still scores pages with its own in-page algorithm, not Score.
   - A generic text-vector cache in `internal/semantic` (for answer dedup and near-duplicate
-    postings) belongs to the "Embedding unification" session.
+    postings) belongs to the "Embedding unification" session. Until then scores are keyed by
+    posting key and text hash: the same JD under several keys is embedded once per key, and a KB
+    edit re-embeds every posting (posting vectors are not kept).
+  - The semantic warm runs after triage, so it orders postings but saves no triage tokens. Warming
+    live postings first and ordering `advance` by similarity would, at the cost of embedding
+    postings that a title rule may drop.
+  - `semantic.OpenLookup` trusts the model that wrote the score file: after a snapshot change,
+    `vani jobs` shows the old model's scores until the next warm re-keys the cache (at most a day).
+    There is no inter-process lock on the score file: a manual warm racing the daemon loses one
+    writer's update (each write is atomic).
+  - An undated posting from its board's first crawl has unknown age and the freshness floor for
+    good; rankeval's 60%-undated world stays the weakest (NDCG@10 about 0.45) and no weight
+    setting tried helped.
+  - Lappi's calibrated score is not used for confidence (an answered Lappi reading counts as
+    `AnsweredConf` 0.7): Lappi's score is a top-two margin, not a probability, and decide keeps
+    the two apart on purpose.
 - **Employer lists need a yearly re-import** (IRS eo1-eo4 and IPEDS HD2024 imported 2026-10-18 into
   `.state/state`, 1.6M names). Recheck the IPEDS codes in each year's dictionary (docs/EMPLOYER.md).
   Runs read the derived `index.view` (0.09 s / 69 MB a lookup, was 3 s / 490 MB). Import still loads

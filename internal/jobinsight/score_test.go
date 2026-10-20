@@ -137,10 +137,23 @@ func TestScoreOrderings(t *testing.T) {
 				prevL = s
 			}
 		}
-		few := baseIn()
-		few.Company.Hidden = 2 // below CompanyMinMarks
-		if got := Score(few).Company; got != 1 {
-			t.Errorf("2 marks moved the factor to %v", got)
+		// From any starting counts, not only from zero: a liked mark never
+		// lowers the factor and a hidden one never raises it (no cliff at a
+		// minimum mark count).
+		at := func(l, h int) float64 {
+			in := baseIn()
+			in.Company = CompanyMarks{Liked: l, Hidden: h}
+			return Score(in).Company
+		}
+		for l := 0; l <= 12; l++ {
+			for h := 0; h <= 12; h++ {
+				if at(l+1, h) < at(l, h) {
+					t.Fatalf("liked %d->%d with %d hidden lowered the factor %v -> %v", l, l+1, h, at(l, h), at(l+1, h))
+				}
+				if at(l, h+1) > at(l, h) {
+					t.Fatalf("hidden %d->%d with %d liked raised the factor %v -> %v", h, h+1, l, at(l, h), at(l, h+1))
+				}
+			}
 		}
 	})
 

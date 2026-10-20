@@ -178,9 +178,9 @@ func DefaultWeights() Weights {
 	return Weights{
 		Fit: 0.30, Coverage: 0.20, Semantic: 0.25, Keyword: 0.10, Title: 0.10, Employer: 0.05,
 		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
-		PenaltyStrength: 0.60, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
+		PenaltyStrength: 0.80, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
 		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays,
-		CompanyMinMarks: 3, CompanySmoothing: 5, CompanySpan: 0.10, CompanyDown: 0.40,
+		CompanyMinMarks: 0, CompanySmoothing: 8, CompanySpan: 0.10, CompanyDown: 0.40,
 	}
 }
 

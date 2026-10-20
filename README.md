@@ -254,7 +254,7 @@ flowchart TD
     order): triage's role_fit, DevPrism's coverage, title signals, target-term overlap and
     marks on the company, each unknown part taking a prior below "known good". `score_factors`
     in the JSON lists the parts.
-  - Priority is relevance scaled by freshness (`--half-life`, default 7 days). A posting listed
+  - Priority is relevance scaled by freshness (`--half-life`, default 10 days). A posting listed
     in its board's first crawl with no posted date has an unknown age and gets the floor.
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
     It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at

@@ -197,7 +197,9 @@ func semanticRank(m *semantic.Matcher) func(ledger.Record) (float64, bool) {
 	}
 	return func(r ledger.Record) (float64, bool) {
 		mt, ok := semanticScore(m, r)
-		return mt.Score, ok
+		// A thin match rests on too little text to rank by: unknown, so the
+		// ranker takes its prior rather than a confident number.
+		return mt.Score, ok && !mt.Thin
 	}
 }
 
@@ -205,6 +207,8 @@ func semanticRank(m *semantic.Matcher) func(ledger.Record) (float64, bool) {
 type semanticJSON struct {
 	Score    float64             `json:"score"`
 	Evidence []semantic.Evidence `json:"evidence,omitempty"`
+	// Thin: the posting had too little text; the ranker treated it as unknown.
+	Thin bool `json:"thin,omitempty"`
 }
 
 // digestOptions are the digest's ranking inputs for cfg; the warning is for the
@@ -235,6 +239,6 @@ func (in *insight) semanticInto(j *jobJSON, r ledger.Record) {
 		return
 	}
 	if mt, ok := semanticScore(in.sem, r); ok {
-		j.Semantic = &semanticJSON{Score: mt.Score, Evidence: mt.Evidence}
+		j.Semantic = &semanticJSON{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
 	}
 }

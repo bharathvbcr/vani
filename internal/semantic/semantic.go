@@ -73,7 +73,7 @@ var (
 const (
 	// Version is folded into Profile.Hash. Bump it when chunking, the anchors
 	// or the scoring change, so cached scores are recomputed.
-	Version = 1
+	Version = 2
 
 	// MaxBatch is the most texts one Embed call takes.
 	MaxBatch = 32
@@ -98,6 +98,11 @@ const (
 	titleWeight  = 2.0
 	minSpread    = 0.02 // smallest ceiling-floor gap calibration accepts
 	maxConsecBad = 3    // consecutive failed Embed calls before Warm stops
+	// nearDupCos is the cosine at or above which two posting chunks count as
+	// one in the top-m mean; minDistinctChunks is the fewest distinct chunks
+	// a match needs before it is more than thin.
+	nearDupCos        = 0.92
+	minDistinctChunks = 2
 )
 
 // Doc is a posting to score. Key is the caller's identity for it (posting.Key).
@@ -121,6 +126,10 @@ type Match struct {
 	Raw      float64 // aggregate cosine before calibration
 	Evidence []Evidence
 	Model    string
+	// Thin is true when the posting gave fewer than minDistinctChunks
+	// distinct chunks (a title alone, text the chunker cannot split): the
+	// score rests on too little to rank by, and callers treat it as unknown.
+	Thin bool
 }
 
 // Report says what a Warm call did. Scored + Cached + Failed + Skipped covers

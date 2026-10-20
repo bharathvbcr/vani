@@ -97,7 +97,7 @@ func (m *Matcher) Lookup(key string, textHash string) (Match, bool) {
 	if !ok || e.TextHash != textHash {
 		return Match{}, false
 	}
-	return Match{Score: e.Score, Raw: e.Raw, Evidence: append([]Evidence(nil), e.Evidence...), Model: m.model}, true
+	return Match{Score: e.Score, Raw: e.Raw, Evidence: append([]Evidence(nil), e.Evidence...), Model: m.model, Thin: e.Thin}, true
 }
 
 // Len is the number of scored postings held.
@@ -239,8 +239,8 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 				rep.note(fmt.Errorf("%w: a row is the wrong width, non-finite or zero", ErrEmbed))
 				continue
 			}
-			raw, ev := m.rawScore(p.chunks, vecs, pd)
-			m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.calibrate(raw), Evidence: ev})
+			raw, ev, thin := m.rawScore(p.chunks, vecs, pd)
+			m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.calibrate(raw), Evidence: ev, Thin: thin})
 			rep.Scored++
 		}
 		i = j
@@ -324,7 +324,7 @@ func (m *Matcher) ensureProfile(ctx context.Context) (*profileData, error) {
 	var floorSum float64
 	off := 0
 	for i, a := range anchors {
-		raw, _ := m.rawScore(a, rows[off:off+len(a)], pd)
+		raw, _, _ := m.rawScore(a, rows[off:off+len(a)], pd)
 		off += len(a)
 		if i < len(offDomainAnchors) {
 			floorSum += raw
@@ -346,7 +346,7 @@ func (m *Matcher) ensureProfile(ctx context.Context) (*profileData, error) {
 // rawScore is the weight-aware mean of the top m=min(8,n) chunk maxima, where
 // a chunk's maximum is its best cosine over the profile chunks, and the
 // evidence for the best three chunks.
-func (m *Matcher) rawScore(chunks []Chunk, vecs [][]float32, pd *profileData) (float64, []Evidence) {
+func (m *Matcher) rawScore(chunks []Chunk, vecs [][]float32, pd *profileData) (float64, []Evidence, bool) {
 	type best struct {
 		idx   int
 		cos   float64
@@ -363,16 +363,34 @@ func (m *Matcher) rawScore(chunks []Chunk, vecs [][]float32, pd *profileData) (f
 		bs[i] = b
 	}
 	sort.SliceStable(bs, func(i, j int) bool { return bs[i].cos > bs[j].cos })
-	n := min(topChunks, len(bs))
+	// Take the best chunks that say something new: a chunk nearly identical
+	// to one already taken (a line repeated, or reworded keyword stuffing)
+	// counts once, so repetition cannot fill the top-m mean.
+	var taken []best
+	for _, b := range bs {
+		if len(taken) == topChunks {
+			break
+		}
+		dup := false
+		for _, t := range taken {
+			if dot(vecs[b.idx], vecs[t.idx]) >= nearDupCos {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			taken = append(taken, b)
+		}
+	}
 	var num, den float64
-	for _, b := range bs[:n] {
+	for _, b := range taken {
 		w := chunks[b.idx].Weight
 		num += w * b.cos
 		den += w
 	}
 	var ev []Evidence
-	for _, b := range bs[:min(evidenceN, len(bs))] {
+	for _, b := range taken[:min(evidenceN, len(taken))] {
 		ev = append(ev, Evidence{Snippet: truncRunes(chunks[b.idx].Text, snippetRunes), Label: b.label, Cosine: b.cos})
 	}
-	return num / den, ev
+	return num / den, ev, len(taken) < minDistinctChunks
 }

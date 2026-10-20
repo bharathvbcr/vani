@@ -18,8 +18,9 @@ import (
 
 func def(in jobinsight.Inputs) jobinsight.Result { return jobinsight.Score(in) }
 
-// knownFailure fails the test when ok is false and the case is still expected
-// to hold; here the ranker is known not to hold it, so it skips with detail.
+// knownFailure skips with detail while the ranker is known not to hold a
+// case. Once the case holds, replace the call with a hard assertion: a fixed
+// case left on knownFailure would skip silently if it regressed.
 func knownFailure(t *testing.T, ok bool, format string, a ...any) {
 	t.Helper()
 	if !ok {
@@ -66,7 +67,9 @@ func TestRTConfidentMismatchRescuedBySignals(t *testing.T) {
 	p := solid(3)
 	sm, sp := def(m).Score, def(p).Score
 	t.Logf("mismatch_domain p=.95 with every other signal maxed, today: %.1f; ordinary partial_fit p=.8, 3 days old: %.1f", sm, sp)
-	knownFailure(t, sm < sp, "confident mismatch_domain %.1f outranks a solid partial_fit %.1f (inputs: %+v vs %+v)", sm, sp, m, p)
+	if !(sm < sp) {
+		t.Fatalf("confident mismatch_domain %.1f outranks a solid partial_fit %.1f (inputs: %+v vs %+v)", sm, sp, m, p)
+	}
 }
 
 // A company the owner hid ten postings of only loses 1-(1-0.1*10/15) = 6.7%,
@@ -77,7 +80,9 @@ func TestRTHiddenCompanyFloodStillLeads(t *testing.T) {
 	u := solid(2)
 	sh, su := def(h).Score, def(u).Score
 	t.Logf("company with 10 hidden marks, today: %.1f; unmarked identical posting, 2 days old: %.1f; company factor %.3f", sh, su, def(h).Company)
-	knownFailure(t, sh < su, "10 hidden marks (%.1f, factor %.3f) still outrank an identical unmarked posting 2 days older (%.1f)", sh, def(h).Company, su)
+	if !(sh < su) {
+		t.Fatalf("10 hidden marks (%.1f, factor %.3f) still outrank an identical unmarked posting 2 days older (%.1f)", sh, def(h).Company, su)
+	}
 }
 
 // ExcludedTitle gates by only 0.5: a fresh, strongly matching posting with an
@@ -94,7 +99,9 @@ func TestRTExcludedTitleInTopTen(t *testing.T) {
 		}
 	}
 	t.Logf("excluded-title strong fit today: %.1f; ordinary partial fits at least as high: %d of 21", def(ex).Score, better)
-	knownFailure(t, better >= 10, "an excluded title (%.1f) ranks #%d among 21 ordinary partial fits, inside the top 10", def(ex).Score, better+1)
+	if !(better >= 10) {
+		t.Fatalf("an excluded title (%.1f) ranks #%d among 21 ordinary partial fits, inside the top 10", def(ex).Score, better+1)
+	}
 }
 
 // Inputs{} is "nothing is known": a caller that forgets the age must not get
@@ -201,7 +208,9 @@ func TestRTWeightOverflowKeepsOrder(t *testing.T) {
 	a.RoleFit = fit("strong_fit", 0.9)
 	b.RoleFit = fit("mismatch_domain", 0.9)
 	sa, sb := jobinsight.ScoreWith(a, w), jobinsight.ScoreWith(b, w)
-	knownFailure(t, sa.Score > sb.Score, "weights summing past MaxFloat64 give match %.3f and %.3f, scores %.1f and %.1f: a strong fit no longer beats a mismatch", sa.Match, sb.Match, sa.Score, sb.Score)
+	if !(sa.Score > sb.Score) {
+		t.Fatalf("weights summing past MaxFloat64 give match %.3f and %.3f, scores %.1f and %.1f: a strong fit no longer beats a mismatch", sa.Match, sb.Match, sa.Score, sb.Score)
+	}
 }
 
 // TestRTSumZeroWeightsOrderByFreshness: with no match weights Score falls back

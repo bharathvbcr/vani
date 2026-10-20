@@ -42,7 +42,8 @@ type entry struct {
 	Raw      float64    `json:"raw"`
 	Score    float64    `json:"score"`
 	Evidence []Evidence `json:"evidence,omitempty"`
-	Seq      uint64     `json:"seq"` // write order; the smallest is evicted first
+	Thin     bool       `json:"thin,omitempty"` // fewer than minDistinctChunks distinct chunks
+	Seq      uint64     `json:"seq"`            // write order; the smallest is evicted first
 }
 
 // scoreFile holds scored postings for one (profile hash, model).
