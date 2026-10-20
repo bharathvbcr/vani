@@ -91,6 +91,9 @@ commands:
   semantic warm [--max N]    embed the freshest postings against the knowledge base (needs a
                              -tags tessl build, semantic.snapshot and kb.bank); semantic status
                              shows the build, config, profile size, cached scores and model
+  answers similar [--json]   which question wordings read alike, by embedding: {"texts":[...],
+                             "min_cos"?} on stdin, {"available","pairs":[{a,b,cos,tier}]} on
+                             stdout; wordings only, never answer values (-h lists the bounds)
   draft                      draft one application answer: JSON request on stdin, JSON reply
                              on stdout (spends from the daily llm budget)
   suggest                    triage a form's new fields with the decision model and draft the
@@ -202,6 +205,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdBench(args[1:])
 	case "semantic":
 		cmdErr = e.cmdSemantic(args[1:])
+	case "answers":
+		cmdErr = e.cmdAnswers(args[1:])
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}
