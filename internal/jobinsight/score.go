@@ -164,6 +164,65 @@ type Weights struct {
 	// hiding is the stronger signal, so it may move the factor further.
 	CompanyMinMarks                            int
 	CompanySmoothing, CompanySpan, CompanyDown float64
+	// OrdinalFit reads role_fit as ordered: the probability the model did not
+	// put on its chosen option is spread over the other options by how often
+	// readings that far apart are confused (fitConfusion), not put on a flat
+	// prior, so a strong_fit at a typical calibrated p of 0.44 still reads as
+	// a fit leaning toward partial_fit.
+	OrdinalFit bool
+	// FitValues are the role_fit options' values in fitOrder (strong_fit
+	// first); the zero value means fitBase's.
+	FitValues [5]float64
+	// KnownMatch orders by the match of the known additive parts, shrunk
+	// toward UnknownPrior by MatchShrink pseudo-weight, instead of letting
+	// every unknown part take the prior inside the match. Unknown parts then
+	// stop compressing the known ones' differences (with coverage and
+	// similarity missing, the prior filled 70% of every match and freshness
+	// decided the order); the shrink keeps an unknown posting below a known
+	// good one.
+	KnownMatch  bool
+	MatchShrink float64
+}
+
+// fitOrder is role_fit's options from best to worst; fitBase gives each a
+// value in this order.
+var fitOrder = [...]string{"strong_fit", "partial_fit", "adjacent", "mismatch_seniority", "mismatch_domain"}
+
+// fitConfusion weighs another option by its distance from the chosen one in
+// fitOrder, by how often two backends' role_fit readings of one posting
+// were that far apart when they disagreed: in the owner's ledger on
+// 2026-10-19, 644 disagreeing pairs fell 54% at distance 1, 33% at 2, 12% at
+// 3 and 1% at 4 (uniform errors would give 40/30/20/10).
+var fitConfusion = [...]float64{1: 0.54, 2: 0.33, 3: 0.12, 4: 0.01}
+
+// fitValue is option v's value under w and, for an ordinal reading, the
+// confusion-weighted value of the other options: where the probability the
+// model did not put on v most likely sits. ok is false for an unknown option.
+func (w Weights) fitValue(v string) (val, rest float64, ok bool) {
+	idx := -1
+	for i, o := range fitOrder {
+		if o == v {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return 0, 0, false
+	}
+	var vals [len(fitOrder)]float64
+	for i, o := range fitOrder {
+		vals[i] = fitBase[o]
+		if w.FitValues != ([5]float64{}) && finite(w.FitValues[i]) {
+			vals[i] = clamp01(w.FitValues[i])
+		}
+	}
+	var s, n float64
+	for j := range fitOrder {
+		if d := max(idx-j, j-idx); d > 0 {
+			s += fitConfusion[d] * vals[j]
+			n += fitConfusion[d]
+		}
+	}
+	return vals[idx], s / n, true
 }
 
 // BasisSemantic is the knowledge-base similarity.
@@ -196,6 +255,7 @@ func DefaultWeights() Weights {
 		PenaltyStrength: 0.80, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
 		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays,
 		CompanyMinMarks: 0, CompanySmoothing: 8, CompanySpan: 0.10, CompanyDown: 0.40,
+		OrdinalFit: true, KnownMatch: true, MatchShrink: 0.10,
 	}
 }
 
@@ -231,11 +291,15 @@ func ScoreWith(in Inputs, w Weights) Result {
 	var parts [6]part
 
 	fitConf := w.conf(in.RoleFit)
-	base, ok := fitBase[in.RoleFit.Value]
+	base, ordinalRest, ok := w.fitValue(in.RoleFit.Value)
 	if !ok {
 		fitConf = 0
 	}
-	parts[0] = part{"fit", w.Fit, fitConf*base + (1-fitConf)*prior, fitConf > 0}
+	rest := prior
+	if w.OrdinalFit && ok {
+		rest = ordinalRest
+	}
+	parts[0] = part{"fit", w.Fit, fitConf*base + (1-fitConf)*rest, fitConf > 0}
 
 	parts[1] = part{"coverage", w.Coverage, prior, false}
 	if in.HasCoverage && finite(in.Coverage) {
@@ -316,6 +380,9 @@ func ScoreWith(in Inputs, w Weights) Result {
 		// below a known mismatch, while well-evidenced postings barely move.
 		relMatch = clamp01((knownVal + relevanceShrink*prior) / (knownSum + relevanceShrink))
 		relKnown = clamp01(knownSum)
+		if shrink := w.MatchShrink; w.KnownMatch && finite(shrink) && shrink > 0 {
+			match = clamp01((knownVal + shrink*prior) / (knownSum + shrink))
+		}
 	}
 
 	basis, best := BasisNone, 0.0

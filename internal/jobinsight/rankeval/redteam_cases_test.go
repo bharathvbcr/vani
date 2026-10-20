@@ -239,8 +239,8 @@ func TestRTProbabilityExtremes(t *testing.T) {
 		t.Error("p=1 strong_fit not above unknown fit")
 	}
 	f := def(one).Factors[0]
-	if math.Abs(f.Value-0.85) > 1e-12 {
-		t.Errorf("p=1 strong_fit value %v, want 0.85", f.Value)
+	if math.Abs(f.Value-0.90) > 1e-12 { // fitBase's strong_fit: p=1 leaves nothing to the other options
+		t.Errorf("p=1 strong_fit value %v, want 0.90", f.Value)
 	}
 }
 

@@ -32,19 +32,58 @@ func TestRelevanceFromKnownPartsOnly(t *testing.T) {
 	}
 }
 
-// The prior still decides the order: Score and Match are what they were, and a
-// fit-only posting still scores below the same posting with everything known.
-func TestRelevanceLeavesScoreAndMatchOnThePrior(t *testing.T) {
-	in := Inputs{RoleFit: sl("strong_fit", 0.95), AgeKnown: true, AgeDays: 2}
-	r := Score(in)
-	// match = 0.30*fit + prior(0.40) x (0.20+0.25+0.10+0.10) + 0.05*0
-	fit := 0.95*0.85 + 0.05*0.40
-	wantMatch := (0.30*fit + 0.40*0.65) / 1.0
-	if math.Abs(r.Match-wantMatch) > 1e-9 {
-		t.Errorf("Match %v, want %v (the prior must still fill unknown parts)", r.Match, wantMatch)
+// Under KnownMatch (the default) the order rests on the known parts shrunk
+// toward the prior; with it off, every unknown part takes the prior inside
+// the match, as before. Either way an unknown posting ranks below a known
+// good one.
+func TestMatchModes(t *testing.T) {
+	in := Inputs{RoleFit: Slot{Value: "strong_fit", Answered: true, P: 0.95, HasP: true}, AgeKnown: true, AgeDays: 2}
+	w := DefaultWeights()
+	fitVal, rest, _ := w.fitValue("strong_fit")
+	fit := 0.95*fitVal + 0.05*rest // ordinal: the rest leans on the neighbours
+	known := Score(in)
+	if want := (0.30*fit + 0.10*0.40) / (0.30 + 0.10); math.Abs(known.Match-want) > 1e-9 {
+		t.Errorf("KnownMatch: Match %v, want %v", known.Match, want)
 	}
-	if r.Relevance <= round1(100*r.Match*r.Gate*r.Company) {
-		t.Errorf("Relevance %v should lift above the prior-filled %v", r.Relevance, round1(100*r.Match*r.Gate*r.Company))
+	w.KnownMatch = false
+	diluted := ScoreWith(in, w)
+	// 0.30*fit + prior(0.40) x (0.20+0.25+0.10+0.10) + 0.05*0
+	if want := 0.30*fit + 0.40*0.65; math.Abs(diluted.Match-want) > 1e-9 {
+		t.Errorf("prior-filled: Match %v, want %v", diluted.Match, want)
+	}
+	if !(known.Score > diluted.Score) {
+		t.Errorf("a confident strong fit should rank higher without dilution: %v vs %v", known.Score, diluted.Score)
+	}
+	unknown := Score(Inputs{AgeKnown: true, AgeDays: 2})
+	partial := Score(Inputs{RoleFit: Slot{Value: "partial_fit", Answered: true}, AgeKnown: true, AgeDays: 2})
+	if !(unknown.Score < partial.Score) {
+		t.Errorf("unknown %v must rank below a known partial fit %v", unknown.Score, partial.Score)
+	}
+}
+
+// Read as ordinal, role_fit stays monotone: at any confidence a better option
+// is worth at least as much as a worse one, more confidence in a good option
+// never lowers the fit and more confidence in a bad one never raises it.
+func TestOrdinalFitMonotone(t *testing.T) {
+	fitOf := func(v string, p float64) float64 {
+		return Score(Inputs{RoleFit: Slot{Value: v, Answered: true, P: p, HasP: true}}).Factors[0].Value
+	}
+	for _, p := range []float64{0.05, 0.2, 0.44, 0.7, 1} {
+		for i := 1; i < len(fitOrder); i++ {
+			if better, worse := fitOf(fitOrder[i-1], p), fitOf(fitOrder[i], p); better < worse {
+				t.Errorf("p %.2f: %s %.3f below %s %.3f", p, fitOrder[i-1], better, fitOrder[i], worse)
+			}
+		}
+	}
+	for _, v := range []string{"strong_fit", "partial_fit"} {
+		if fitOf(v, 0.9) < fitOf(v, 0.3) {
+			t.Errorf("more confidence in %s lowered its fit", v)
+		}
+	}
+	for _, v := range []string{"mismatch_seniority", "mismatch_domain"} {
+		if fitOf(v, 0.9) > fitOf(v, 0.3) {
+			t.Errorf("more confidence in %s raised its fit", v)
+		}
 	}
 }
 

@@ -107,13 +107,18 @@ const (
 )
 
 // fitBase maps the jdtriage fixture's role_fit options to a base relevance.
-// The order matches cmd/vani's roleFitOrder; the spacing is a display choice.
+// The order matches cmd/vani's roleFitOrder. The spacing was measured, not
+// picked: widening it from 0.85/0.65/0.45/0.20/0.10 raised rankeval's
+// hidden-truth NDCG@10 in 8 of 10 scenario cells, held the red-team worlds
+// within noise, and on the owner's real ledger stopped fresh adjacent roles
+// (which the target summary calls "adjacent rather than a fit") from
+// outnumbering strong fits in the top 20.
 var fitBase = map[string]float64{
-	"strong_fit":         0.85,
+	"strong_fit":         0.90,
 	"partial_fit":        0.65,
-	"adjacent":           0.45,
-	"mismatch_seniority": 0.20,
-	"mismatch_domain":    0.10,
+	"adjacent":           0.30,
+	"mismatch_seniority": 0.10,
+	"mismatch_domain":    0.05,
 }
 
 // MaxHalfLifeDays bounds the half-life a caller may ask for.

@@ -152,10 +152,11 @@ func TestJobsListOrdersAndFilters(t *testing.T) {
 		seedJob{key: "gh:a:live", title: "Untriaged", status: posting.Live},
 	)
 	l := listJSON(t)
-	// By priority (jobinsight.Score): a strong fit leads an adjacent one with
-	// 71% coverage, then partial and domain mismatch; dropped, dead and
-	// untriaged are not "new".
-	if got, want := keys(l), "gh:a:strong gh:a:ranked gh:a:partial gh:a:dom"; got != want {
+	// By priority (jobinsight.Score): a strong fit leads, then the partial fit
+	// ahead of an adjacent role with 71% coverage (adjacent is "not the
+	// target work"; coverage does not make it a fit), then domain mismatch;
+	// dropped, dead and untriaged are not "new".
+	if got, want := keys(l), "gh:a:strong gh:a:partial gh:a:ranked gh:a:dom"; got != want {
 		t.Fatalf("order %q, want %q", got, want)
 	}
 	if l.Total != 4 || l.Shown != 4 || l.Counts["new"] != 4 || l.Counts["saved"] != 0 {
