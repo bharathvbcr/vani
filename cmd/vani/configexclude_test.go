@@ -247,7 +247,7 @@ func TestPrefilterReportsExclusions(t *testing.T) {
 func TestRunOnceAppliesExclusionsBeforeAdvancing(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.AdvancePerRun = -1
 	cfg.Exclude = config.Exclude{Titles: []string{"data engineer"}}

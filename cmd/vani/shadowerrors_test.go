@@ -37,7 +37,7 @@ func shadowRunner(t *testing.T, h http.HandlerFunc, timeoutMS int) (*pipeline.Ru
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Endpoint: srv.URL + "/v1/systemone", Model: "test-d1", TimeoutMS: timeoutMS}
 	cfg.Decide.Shadow = "local"

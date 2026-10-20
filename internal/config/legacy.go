@@ -15,13 +15,17 @@ import (
 // deciders written before then still load: each old key is read as its new
 // name, a file that sets both with different values is refused, and
 // Deprecations lists the old names a file uses so callers can say so. Save
-// writes only the new names.
+// writes only the new names. kbmatch.backend "jev" followed on 2026-10-20 the
+// same way.
 const (
 	legacyModelKey    = "jev_model"
 	legacyKeyEnvKey   = "jev_key_env"
 	legacyDailyKey    = "jev"
 	legacyMinProbKey  = "min_jev_prob"
 	legacyShadowValue = "jev"
+	// legacyKBMatchBackend is kbmatch.backend's name for KBMatchOpenRouter
+	// until 2026-10-20.
+	legacyKBMatchBackend = "jev"
 )
 
 // ShadowOpenRouter is the decide.shadow value that makes the OpenRouter
@@ -146,6 +150,20 @@ func (d *Decide) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// UnmarshalJSON reads KBMatch, accepting the old backend "jev".
+func (k *KBMatch) UnmarshalJSON(data []byte) error {
+	type plain KBMatch
+	var w plain
+	if err := strictDecode(data, &w); err != nil {
+		return err
+	}
+	if w.Backend == legacyKBMatchBackend {
+		w.Backend = KBMatchOpenRouter
+	}
+	*k = KBMatch(w)
+	return nil
+}
+
 // UnmarshalJSON reads DailyUSD, accepting the old "jev" cap.
 func (u *DailyUSD) UnmarshalJSON(data []byte) error {
 	var w struct {
@@ -200,6 +218,9 @@ func Deprecations(data []byte) []string {
 		DropRules []struct {
 			MinProb json.RawMessage `json:"min_jev_prob"`
 		} `json:"drop_rules"`
+		KBMatch *struct {
+			Backend *string `json:"backend"`
+		} `json:"kbmatch"`
 	}
 	if json.Unmarshal(data, &p) != nil {
 		return nil
@@ -227,6 +248,9 @@ func Deprecations(data []byte) []string {
 	}
 	if n > 0 {
 		out = append(out, fmt.Sprintf("drop_rules min_jev_prob is now min_openrouter_prob (%d rule(s))", n))
+	}
+	if k := p.KBMatch; k != nil && k.Backend != nil && *k.Backend == legacyKBMatchBackend {
+		out = append(out, fmt.Sprintf("kbmatch.backend %q is now %q", legacyKBMatchBackend, KBMatchOpenRouter))
 	}
 	return out
 }

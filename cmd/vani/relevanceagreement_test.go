@@ -40,6 +40,9 @@ func TestRelevanceReportsDropCandidateAgreementWithoutLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The seeded readings were recorded by jev-1-13: name it the primary, not
+	// whatever model config.Default() names.
+	cfg.Decide.OpenRouterModel = "typesafe/jev-1.13"
 	cfg.DropRules = []config.DropRule{{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.9}}
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)

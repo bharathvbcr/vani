@@ -125,7 +125,7 @@ func (e *env) cmdBench(args []string) error {
 	var models stringList
 	fs.Var(&models, "model", "an absolute GGUF path to measure (repeatable; default the configured local model)")
 	n := fs.Int("n", defaultBenchPostings, fmt.Sprintf("at most this many postings (1-%d)", maxBenchPostings))
-	questions := fs.String("questions", "combined", "combined (the request Jev gets) or per_slot")
+	questions := fs.String("questions", "combined", "combined (the request the OpenRouter decision model gets) or per_slot")
 	batch := fs.Int("batch", 0, "llama.cpp batch and micro-batch size (0 = its default; vllm-d3 needs the longest prompt)")
 	parallel := fs.Int("parallel", 0, fmt.Sprintf("llama.cpp -np (0 = auto, up to %d)", localserver.MaxParallel))
 	ctxSize := fs.Int("ctx", 0, "context size (0 = the configured one, else 8192)")

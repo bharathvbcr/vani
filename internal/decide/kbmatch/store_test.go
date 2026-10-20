@@ -54,6 +54,35 @@ func TestStoreRoundTripAndCurrency(t *testing.T) {
 	}
 }
 
+// Answers recorded before kbmatch.backend "jev" became "openrouter" (2026-10-20)
+// still read, keep their recorded backend, and sit beside new ones.
+func TestStoreReadsAnswersFromTheJevBackend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	at := `"model":"liquid/d1-ultra","kb":"` + h64a + `","text":"` + h64b + `","at":"2026-10-19T01:00:00Z","p":0.8`
+	raw := `{"version":1,"entries":{` +
+		`"gh:a:1":{"value":"core",` + at + `,"backend":"jev","mode":"focused"},` +
+		`"gh:a:2":{"value":"partial",` + at + `,"backend":"openrouter","mode":"full"}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("a store with jev answers was refused: %v", err)
+	}
+	for key, want := range map[string]Entry{"gh:a:1": {Value: "core", Backend: "jev"}, "gh:a:2": {Value: "partial", Backend: "openrouter"}} {
+		e, ok := s.Lookup(key, h64a, h64b)
+		if !ok || e.Value != want.Value || e.Backend != want.Backend || e.P != 0.8 {
+			t.Errorf("%s: %+v %v, want %s from %s", key, e, ok, want.Value, want.Backend)
+		}
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := OpenStore(path); err != nil || r.Len() != 2 {
+		t.Fatalf("resaved store: %v", err)
+	}
+}
+
 func TestStoreRefusesWhatItCannotTrust(t *testing.T) {
 	dir := t.TempDir()
 	good := `"value":"core","model":"m","kb":"` + h64a + `","text":"` + h64b + `","at":"2026-10-20T01:00:00Z"`

@@ -58,15 +58,15 @@ func (w *wired) escalating(router decide.Decider, esc decide.Backend) decide.Dec
 // the primary's low-confidence readings (decide.escalate). MEASURE MODE: it only
 // ever adds to Answer.Shadow, which decide/types.go defines as "informational
 // and never authoritative: nothing may act on them, and DropPolicy must ignore
-// them". The primary Slots, their Jev calibration (the .p annotation) and the
+// them". The primary Slots, their decision-model calibration (the .p annotation) and the
 // error return are the primary's, untouched; whatever goes wrong on the
 // escalation side is recorded in the shadow reading and the backend meter, never
 // in the answer.
 //
-// Which slots: those the primary chain Answered with a Jev calibration whose
-// probability is below belowP. An outage reading (Unavailable, Failed, NotAsked)
-// is not a low-confidence answer, and the posting is read again on a later run;
-// a slot the LLM answered itself carries no Jev calibration; Lappi readings
+// Which slots: those the primary chain Answered with a decision-model
+// calibration whose probability is below belowP. An outage reading (Unavailable,
+// Failed, NotAsked) is not a low-confidence answer, and the posting is read again
+// on a later run; a slot the LLM answered itself carries no such calibration; Lappi readings
 // carry a Lappi one. Neither is a candidate.
 //
 // MEASURE MODE FOR DROPS AND FOR RANKING: DropPolicy ignores Shadow, so

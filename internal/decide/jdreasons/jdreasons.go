@@ -319,7 +319,7 @@ const maxMissingBytes = 1 << 10
 // the gap analysis ahead of it. The whole context stays within
 // jdtriage.MaxContextBytes: the posting body is cut to what the facts leave.
 //
-// The question goes to Jev only (the notes picker), whose state is data to
+// The question goes to the OpenRouter decision model only (the notes picker), whose state is data to
 // judge against the per-slot instructions, with no untrusted-content frame
 // for the facts to sit inside. Of the two lines, only the coverage figure is
 // the pipeline's own, and it is written only when it is a percentage; the

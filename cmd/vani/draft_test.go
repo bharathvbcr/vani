@@ -64,6 +64,7 @@ func draftSetup(t *testing.T, input string, p *draftLLM, withKB bool) {
 		cfg.KB.Bank, cfg.KB.RKB = bank, rkb
 	}
 	cfg.TargetSummary = "ML inference roles"
+	cfg.LLM = testLLM
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}

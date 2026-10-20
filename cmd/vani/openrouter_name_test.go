@@ -43,7 +43,7 @@ func TestRunNamesTheOpenRouterBackendAfterItsModel(t *testing.T) {
 		t.Fatalf("policy %+v", r.Policy)
 	}
 
-	cfg.LLM = config.Default().LLM
+	cfg.LLM = testLLM
 	cfg.Decide.DailyUSD.LLM = 1
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	cfg.Decide.Shadow = config.ShadowOpenRouter

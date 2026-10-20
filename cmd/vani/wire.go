@@ -46,9 +46,13 @@ import (
 	"github.com/bharathvbcr/decide/lappi"
 )
 
-// The OpenRouter model's daily cap lives in <state dir>/budget/jev.json under
-// spend key "jev": the names it had before the backend was named after its
-// model. Keeping them carries a day's spend across the rename.
+// The OpenRouter decision model's (Liquid D's) daily cap lives in
+// <state dir>/budget/jev.json under spend key "jev": the names it had before
+// the backend was named after its model, and jev.Config's default SpendKey.
+// They stay on purpose. decide.DailyCap re-reads its file on every call, reads
+// a missing file as nothing spent, and takes no lock across processes, so a
+// renamed file could not be migrated safely: a daemon or older binary still on
+// the old path would start the day at zero again, a second full cap.
 const (
 	openRouterBudgetFile = "jev.json"
 	openRouterSpendKey   = "jev"
@@ -926,7 +930,8 @@ func lightpandaBinary(configured string) (string, error) {
 }
 
 // localBackend builds the shadow client for a decision model served on this
-// Mac. By default it gets exactly the request Jev gets (the combined question,
+// Mac. By default it gets exactly the request the OpenRouter decision model
+// gets (the combined question,
 // all slots, the same option descriptions), so `vani eval` compares models,
 // not prompts; questions "per_slot" asks each slot its fixture family's own
 // question instead. llama.cpp's /v1/systemone takes the state as a plain string.
@@ -1047,8 +1052,9 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 
-	// A local decision model (llama.cpp /v1/systemone) speaks the Jev wire shape,
-	// so it is a second Jev client under its own name, reaching only this Mac.
+	// A local decision model (llama.cpp /v1/systemone) speaks the Jev wire shape
+	// (the OpenRouter Decisions API), so it is a second jev client under its own
+	// name, reaching only this Mac.
 	// It is only ever the shadow (config enforces it): measured, never deciding.
 	if l := w.cfg.Decide.Local; l != nil {
 		endpoint := l.Endpoint
