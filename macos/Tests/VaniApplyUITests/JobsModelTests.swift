@@ -22,6 +22,39 @@ final class JobsModelTests: XCTestCase {
         }
     }
 
+    /// The label table is read once from `vani labels --json` and then drives
+    /// every menu and chart; the built-in table is not shown as vani's.
+    func testLabelsAreReadFromVaniOnce() async throws {
+        Labels.useFallback()
+        defer { Labels.useFallback() }
+        let f = try JobsFixture(self)
+        let m = model(f)
+        XCTAssertNotNil(m.labelsNote, "before the read, the fallback is declared")
+        await m.refresh()
+        await m.refresh()
+        XCTAssertNil(m.labelsNote)
+        XCTAssertEqual(Labels.source, .vani)
+        XCTAssertEqual(Job.label(for: "strong_fit"), "Best fit", "the menus read vani's words, not the built-in ones")
+        XCTAssertEqual(f.calls().filter { $0 == "labels --json" }.count, 1, "\(f.calls())")
+        XCTAssertEqual(m.jobs.map(\.key), JobsFixture.standardOrder)
+    }
+
+    func testUnreadableLabelsShowFallbackVisiblyAndRetry() async throws {
+        Labels.useFallback()
+        defer { Labels.useFallback() }
+        let f = try JobsFixture(self, labels: false)
+        let m = model(f)
+        await m.refresh()
+        let note = try XCTUnwrap(m.labelsNote, "a fallback must not look like vani's table")
+        XCTAssertTrue(note.contains("built-in"), note)
+        XCTAssertEqual(Labels.source, .fallback)
+        XCTAssertEqual(Job.label(for: "strong_fit"), "Strong fit")
+        XCTAssertNil(m.error, "the list still loads without labels")
+        XCTAssertEqual(m.jobs.map(\.key), JobsFixture.standardOrder)
+        await m.refresh()
+        XCTAssertEqual(f.calls().filter { $0 == "labels --json" }.count, 2, "an unread table is retried at the next refresh")
+    }
+
     func testRefreshListsInStandardOrder() async throws {
         let m = model(try JobsFixture(self))
         await m.refresh()

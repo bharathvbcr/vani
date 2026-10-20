@@ -85,6 +85,8 @@ commands:
                              the target summary and a bounded digest of the bank to the provider;
                              the answers only order and explain)
   kbmatch status             how many answers are kept and current
+  labels [--json]            the label vocabularies (fit, status, category, triage options) as
+                             value and display string in display order; reads no state
   jobs list [--json] [--view new|saved|applied|hidden|all] [--q TEXT] [--limit N]
             [--sort default|priority|relevance|fresh|company] [--fit LIST]
             [--work-mode LIST] [--sponsorship LIST] [--max-age DAYS] [--open] [--half-life DAYS]
@@ -244,6 +246,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":
 		cmdErr = e.cmdJobs(args[1:])
+	case "labels":
+		cmdErr = e.cmdLabels(args[1:])
 	case "retriage":
 		cmdErr = e.cmdRetriage(args[1:])
 	case "rescore":

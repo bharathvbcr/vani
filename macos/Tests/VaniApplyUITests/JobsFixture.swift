@@ -29,7 +29,7 @@ struct JobsFixture {
 
     let dir: URL
 
-    init(_ t: XCTestCase) throws {
+    init(_ t: XCTestCase, labels: Bool = true) throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vani-apply-ui-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dir = dir
@@ -46,6 +46,7 @@ struct JobsFixture {
             *" --sort fresh "*) exec cat "$d/list-fresh.json" ;;
             *) exec cat "$d/list.json" ;;
             esac ;;
+        "labels --json") exec cat "$d/labels.json" ;;
         "jobs stats") exec cat "$d/stats.json" ;;
         "jobs gaps") exec cat "$d/gaps.json" ;;
         "jobs show")
@@ -64,6 +65,14 @@ struct JobsFixture {
         try write("list-fresh.json", page(Self.freshOrder.compactMap { byKey[$0] }))
         try write("list-strong.json", page(Self.strongOrder.compactMap { byKey[$0] }))
         try write("stats.json", stats())
+        if labels {
+            // Go's own table, with one word changed so a test can tell it from the built-in one.
+            let golden = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("internal/jobview/testdata/labels.golden.json")
+            let text = try String(contentsOf: golden, encoding: .utf8).replacingOccurrences(of: "\"Strong fit\"", with: "\"Best fit\"")
+            try Data(text.utf8).write(to: dir.appendingPathComponent("labels.json"))
+        }
         try Data(Self.gapsReply.utf8).write(to: dir.appendingPathComponent("gaps.json"))
         for r in Self.roles { try write("show-\(r.key).json", job(r)) }
     }
