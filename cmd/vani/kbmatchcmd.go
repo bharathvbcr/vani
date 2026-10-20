@@ -37,7 +37,7 @@ import (
 //   - the embedding model (EmbeddingGemma, on this machine) picks, for each
 //     posting, the knowledge-base lines closest to it, so the question carries
 //     the evidence that bears on that posting and is shorter;
-//   - the decision model (Jev, kbmatch.backend "jev") or the llm (kbmatch.backend
+//   - the decision model (OpenRouter, kbmatch.backend "openrouter") or the llm (kbmatch.backend
 //     "llm", on kbmatch.model, else llm.triage_model, else llm.model) reads the
 //     duties and answers.
 
@@ -56,14 +56,14 @@ const (
 var (
 	// kbmatchProvider builds the metered llm provider.
 	kbmatchProvider = func(ctx context.Context, w *wired) (llm.Provider, error) { return w.provider(ctx) }
-	// kbmatchEndpoint points the Jev client at a test server; empty is Jev's own.
+	// kbmatchEndpoint points the decision-model client at a test server; empty is the client's own.
 	kbmatchEndpoint string
-	// kbmatchDoer is the egress client the Jev backend uses.
+	// kbmatchDoer is the egress client the OpenRouter backend uses.
 	kbmatchDoer = func(cfg config.Config) (egress.Doer, error) {
 		return egress.New(egress.Config{AllowedHosts: cfg.AllowedHosts})
 	}
 	// kbmatchDecider builds the decision chain for backend (config.KBMatchLLM or
-	// config.KBMatchJev).
+	// config.KBMatchOpenRouter).
 	kbmatchDecider = func(ctx context.Context, w *wired, backend string) (decide.Decider, error) {
 		switch backend {
 		case config.KBMatchLLM:
@@ -76,7 +76,7 @@ var (
 				return nil, fmt.Errorf("llm backend: %w", err)
 			}
 			return decide.NewRouter(logErrors(lb, w.warnf, nil)), nil
-		case config.KBMatchJev:
+		case config.KBMatchOpenRouter:
 			spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 			if err != nil {
 				return nil, fmt.Errorf("openrouter budget: %w", err)
@@ -240,7 +240,7 @@ func (e *env) kbmatchRun(args []string) error {
 	fs := e.newFlags("kbmatch run")
 	top := fs.Int("top", defaultKBMatchTop, fmt.Sprintf("ask about at most this many postings, best first by priority (1-%d)", maxKBMatchTop))
 	dry := fs.Bool("dry-run", false, "say what would be sent and the most it could cost, and ask nothing")
-	backendFlag := fs.String("backend", "", "llm or jev (default kbmatch.backend, else llm)")
+	backendFlag := fs.String("backend", "", "llm or openrouter (default kbmatch.backend, else llm)")
 	modelFlag := fs.String("model", "", "the llm model that answers (default kbmatch.model, else llm.triage_model, else llm.model)")
 	noRetrieve := fs.Bool("no-retrieve", false, "do not have the embedding model pick the closest knowledge-base lines; send the full digest")
 	if err := parse(fs, args); err != nil {
@@ -254,8 +254,9 @@ func (e *env) kbmatchRun(args []string) error {
 		return err
 	}
 	if *backendFlag != "" {
-		if *backendFlag != config.KBMatchLLM && *backendFlag != config.KBMatchJev {
-			return usagef("kbmatch run: --backend must be %q or %q", config.KBMatchLLM, config.KBMatchJev)
+		*backendFlag = config.NormalizeKBMatchBackend(*backendFlag) // "jev" is the pre-2026-10-20 spelling
+		if *backendFlag != config.KBMatchLLM && *backendFlag != config.KBMatchOpenRouter {
+			return usagef("kbmatch run: --backend must be %q or %q", config.KBMatchLLM, config.KBMatchOpenRouter)
 		}
 		cfg.KBMatch.Backend = *backendFlag
 	}
@@ -269,10 +270,10 @@ func (e *env) kbmatchRun(args []string) error {
 	switch backend {
 	case config.KBMatchLLM:
 		if cfg.LLM.Provider == "" || cfg.LLM.Model == "" {
-			return errors.New("kbmatch: no llm provider is configured (or use --backend jev)")
+			return errors.New("kbmatch: no llm provider is configured (or use --backend openrouter)")
 		}
 		model = cfg.KBMatchModel()
-	case config.KBMatchJev:
+	case config.KBMatchOpenRouter:
 		model = cfg.Decide.OpenRouterModel
 	}
 
@@ -310,7 +311,7 @@ func (e *env) kbmatchRun(args []string) error {
 	retrieve := !*noRetrieve && cfg.SemanticOn()
 	fmt.Fprintf(e.stdout, "kbmatch: %d postings to ask about (left out: %d mismatch readings, %d too thin, %d already answered)\n", len(cands), mismatch, thin, current)
 	where := cfg.LLM.Provider + " model " + model
-	if backend == config.KBMatchJev {
+	if backend == config.KBMatchOpenRouter {
 		where = "openrouter.ai decision model " + model
 	}
 	view := fmt.Sprintf("a %d-byte digest of your knowledge base", len(digest.Text))
@@ -319,7 +320,7 @@ func (e *env) kbmatchRun(args []string) error {
 	}
 	fmt.Fprintf(e.stdout, "kbmatch: each question carries the posting, your target summary and %s (titles, stack terms and bullets, with employers, dates, places and contact details already removed), sent to %s\n", view, where)
 	switch backend {
-	case config.KBMatchJev:
+	case config.KBMatchOpenRouter:
 		fmt.Fprintf(e.stdout, "kbmatch: about %d input tokens at most (focused questions are shorter); charged to the openrouter cap ($%.2f a day)\n", inTok, cfg.Decide.DailyUSD.OpenRouter)
 	default:
 		pin, pout, source, perr := kbmatchPrices(cfg, model)

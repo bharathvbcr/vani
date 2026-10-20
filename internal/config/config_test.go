@@ -113,11 +113,11 @@ func TestValidateRules(t *testing.T) {
 				c.AgeNeutralCompanies[i] = "Company"
 			}
 		}, "age_neutral_companies has 65 entries, max 64"},
-		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "jev"`},
-		{"kbmatch jev without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchJev }, "needs decide.openrouter_model"},
-		{"kbmatch model on jev", func(c *Config) {
+		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "openrouter"`},
+		{"kbmatch openrouter backend without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchOpenRouter }, "needs decide.openrouter_model"},
+		{"kbmatch model on openrouter backend", func(c *Config) {
 			c.Decide.OpenRouterModel = "m/x"
-			c.KBMatch = KBMatch{Backend: KBMatchJev, Model: "claude-haiku-5-5"}
+			c.KBMatch = KBMatch{Backend: KBMatchOpenRouter, Model: "claude-haiku-5-5"}
 		}, `applies to the "llm" backend only`},
 		{"kbmatch model without provider", func(c *Config) { c.LLM = LLM{}; c.KBMatch.Model = "claude-haiku-5-5" }, "kbmatch.model needs llm.provider"},
 		{"kbmatch model with space", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.KBMatch.Model = "a b" }, "kbmatch.model"},
@@ -146,7 +146,7 @@ func TestValidateRules(t *testing.T) {
 
 func TestUSDBoundsInclusive(t *testing.T) {
 	c := valid()
-	c.Decide.OpenRouterModel = "" // a zero cap is only valid with Jev switched off
+	c.Decide.OpenRouterModel = "" // a zero cap is only valid with the OpenRouter model switched off
 	c.Decide.DailyUSD = DailyUSD{OpenRouter: 0, LLM: 20}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("0 and 20 must be valid: %v", err)
@@ -255,12 +255,12 @@ func TestLeverUSHost(t *testing.T) {
 	}
 }
 
-func TestNoJevNoOpenRouterRequirement(t *testing.T) {
+func TestNoOpenRouterModelNoOpenRouterRequirement(t *testing.T) {
 	c := valid()
 	c.Decide.OpenRouterModel = ""
 	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com"}
 	if err := c.Validate(); err != nil {
-		t.Fatalf("openrouter must not be required without jev: %v", err)
+		t.Fatalf("openrouter must not be required without an openrouter model: %v", err)
 	}
 }
 
@@ -367,9 +367,9 @@ func TestKBMatchSettingsRoundTripAndModel(t *testing.T) {
 		t.Errorf("round trip: model %q, triage %q, backend %q", got.KBMatchModel(), got.LLM.TriageModel, got.KBMatch.EffectiveBackend())
 	}
 	c.Decide.OpenRouterModel = "liquid/d1-ultra"
-	c.KBMatch = KBMatch{Backend: KBMatchJev}
+	c.KBMatch = KBMatch{Backend: KBMatchOpenRouter}
 	if err := Save(p, c); err != nil {
-		t.Fatalf("a jev kbmatch with openrouter configured should save: %v", err)
+		t.Fatalf("an openrouter kbmatch with openrouter configured should save: %v", err)
 	}
 }
 
