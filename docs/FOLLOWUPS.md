@@ -740,19 +740,25 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - 18 bullets exist only in the 9 variants and are not synced.
   - Tests: `internal/kbsync/tags_test.go`; goldens in `internal/kbsync/testdata`.
 - **Ranking and KB matching (branch `rank-relevance`, 2026-10-19), open items:**
-  - Off until configured: `kb.bank`, `semantic.snapshot` (a google/embeddinggemma-2 snapshot) and
-    `target_summary` are empty in the live config, and `devprism.binary` too, so coverage is absent.
-    Without them Score runs on the decision model's readings and age alone (rankeval
-    "this-machine": NDCG@10 0.53 vs 0.74 with every signal).
-  - Displayed `relevance` compresses when parts are unknown (each takes the 0.40 prior): a
-    confident strong fit shows about 50 on a machine with no coverage, semantic or target. Order is
-    unaffected (priority = Score); consider renormalizing the display over known parts only.
+  - The live config (`.state/config.json`) has `kb.bank` and `target_summary`; `semantic.snapshot`
+    is not set yet, because the installed binary predates the key and rejects it. Add it once the
+    merged build is installed, then run `vani semantic warm`. Without it Score runs without the
+    embedding part (rankeval "this-machine": NDCG@10 0.53 vs 0.74 with every signal).
+  - Owner decision: `rank_penalties` (demote only, Rule 7) with
+    `[{"slot": "seniority", "values": ["senior"]}]` suits the early-career target. On a copy of the
+    real ledger it takes senior readings in the top 20 from 13 to 4 (proxy NDCG@20 0.792 → 0.924;
+    the proxy does not read seniority, so its gain comes from the fit mix and ages). Not in the
+    live config.
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
   - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
     mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
-  - `vani jobs mark` builds its insight with nil marks, so its priority can differ slightly from
-    the list's.
+  - Closed on this branch: displayed `relevance` rests on the known parts (`relevance_known`);
+    `vani jobs mark`/`note` rank with the marks as written; the digest ranks with the same drop-rule
+    penalties, rank penalties and title signals as `vani jobs` (`cmd/vani/rankconfig.go`); the
+    semantic warm runs before triage too; the score file is keyed by model and the warm holds an
+    inter-process lock; an escalation shadow's disagreement does not lower confidence (only a
+    Lappi-style shadow's does, as DisagreeConf was tuned on those pairs).
   - Checked 2026-10-19: a `-tags tessl` binary signed as bundle.sh signs the helper (hardened
     runtime, Apple Development, identifier dev.vbcr.vani.cli, no entitlements) runs EmbeddingGemma 2
     on Metal with the same results as unsigned. The full app bundle itself was not rebuilt.
@@ -763,13 +769,8 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     postings) belongs to the "Embedding unification" session. Until then scores are keyed by
     posting key and text hash: the same JD under several keys is embedded once per key, and a KB
     edit re-embeds every posting (posting vectors are not kept).
-  - The semantic warm runs after triage, so it orders postings but saves no triage tokens. Warming
-    live postings first and ordering `advance` by similarity would, at the cost of embedding
-    postings that a title rule may drop.
-  - `semantic.OpenLookup` trusts the model that wrote the score file: after a snapshot change,
-    `vani jobs` shows the old model's scores until the next warm re-keys the cache (at most a day).
-    There is no inter-process lock on the score file: a manual warm racing the daemon loses one
-    writer's update (each write is atomic).
+  - Similarity breaks title-rank ties in `advance` order but drops nothing, so it saves triage
+    tokens only through ordering under `advance_per_run`.
   - An undated posting from its board's first crawl has unknown age and the freshness floor for
     good; rankeval's 60%-undated world stays the weakest (NDCG@10 about 0.45) and no weight
     setting tried helped.
