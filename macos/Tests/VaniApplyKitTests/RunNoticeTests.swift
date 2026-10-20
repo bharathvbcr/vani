@@ -255,7 +255,7 @@ final class RunNoticeTests: XCTestCase {
         let rec = Recorder()
         let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock(), handoffGrace: AnnounceLaunch.grace)
         // The daemon finished the run, then launched the app: it took the lock 30 s later.
-        let d = a.consider(lastRun(.failed, stage: "pipeline"), stateDir: dir, at: finished.addingTimeInterval(30), calendar: utc)
+        let d = a.consider(lastRun(.failed, stage: "pipeline"), stateDir: dir, at: finished.addingTimeInterval(30))
         guard case .post = d else { return XCTFail("decision \(d)") }
         XCTAssertEqual(rec.posted.map(\.title), ["Vani run failed"])
     }
@@ -266,7 +266,7 @@ final class RunNoticeTests: XCTestCase {
         let dir = try tempDir(self).path
         let a = RunAnnouncer(store: store, poster: rec, lock: NotifierLock(), handoffGrace: AnnounceLaunch.grace)
         let late = finished.addingTimeInterval(AnnounceLaunch.grace + 1)
-        let d = a.consider(lastRun(.ok), stateDir: dir, at: late, calendar: utc)
+        let d = a.consider(lastRun(.ok), stateDir: dir, at: late)
         XCTAssertEqual(d, .skip("the run finished before this app took over notices, so the daemon announced it"))
         XCTAssertTrue(rec.posted.isEmpty)
         XCTAssertNil(store.lastAnnounced)
@@ -277,10 +277,10 @@ final class RunNoticeTests: XCTestCase {
         let rec = Recorder()
         let store = MemoryStore()
         let a = RunAnnouncer(store: store, poster: rec, lock: NotifierLock(), handoffGrace: AnnounceLaunch.grace)
-        a.consider(lastRun(.ok), stateDir: dir, at: finished.addingTimeInterval(5), calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: finished.addingTimeInterval(5))
         // The daemon's second notice for the same run (config stale after the
         // digest) finds the lock held; a relaunch would also find the key.
-        a.consider(lastRun(.ok), stateDir: dir, at: finished.addingTimeInterval(65), calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: finished.addingTimeInterval(65))
         XCTAssertEqual(rec.posted.count, 1)
     }
 
@@ -306,7 +306,7 @@ final class RunNoticeTests: XCTestCase {
         XCTAssertNil(lock.hold(stateDir: dir, at: finished))
         let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: lock, handoffGrace: -3600)
         // Finished exactly at the lock: still the app's, as without a grace.
-        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: now)
         XCTAssertEqual(rec.posted.count, 1)
     }
 
