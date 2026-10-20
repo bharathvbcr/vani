@@ -125,12 +125,12 @@ func (e *env) cmdJobs(args []string) error {
 		return e.jobsList(args[1:])
 	case "stats":
 		return e.jobsStatsCmd(args[1:])
-	case "gaps":
-		return e.jobsGapsCmd(args[1:])
 	case "show":
 		return e.jobsShow(args[1:])
 	case "mark":
 		return e.jobsMark(args[1:])
+	case "gaps":
+		return e.jobsGapsCmd(args[1:])
 	case "note":
 		return e.jobsNote(args[1:])
 	case "find":

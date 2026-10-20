@@ -25,6 +25,17 @@ type jobsGapsJSON struct {
 	Records int         `json:"records"`
 }
 
+// plural is "1 role", "2 roles"; a noun ending in a consonant and y takes ies.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	if len(noun) > 1 && strings.HasSuffix(noun, "y") && !strings.ContainsRune("aeiou", rune(noun[len(noun)-2])) {
+		return fmt.Sprintf("%d %sies", n, noun[:len(noun)-1])
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 func (e *env) jobsGapsCmd(args []string) error {
 	fs := e.newFlags("jobs gaps")
 	asJSON := fs.Bool("json", false, "one JSON object on stdout")
@@ -79,7 +90,7 @@ func (e *env) jobsGapsCmd(args []string) error {
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
-		fmt.Fprintf(e.stdout, "%s: %d roles, %d with a DevPrism gap analysis\n", oneLine(out.View, 40), out.Roles, out.WithMissing)
+		fmt.Fprintf(e.stdout, "%s: %s, %d with a DevPrism gap analysis\n", oneLine(out.View, 40), plural(out.Roles, "role"), out.WithMissing)
 		switch {
 		case out.Roles > 0 && !out.TargetKnown && out.WithMissing == 0:
 			fmt.Fprintln(e.stdout, "no gaps could be judged: no role has a DevPrism gap analysis and the target summary was not read")
@@ -88,11 +99,16 @@ func (e *env) jobsGapsCmd(args []string) error {
 		case len(out.Gaps) == 0 && out.Roles > 0:
 			fmt.Fprintln(e.stdout, "no gaps found")
 		case len(out.Gaps) > 0:
-			fmt.Fprintln(e.stdout, "skills to build (weight = sum of role priority):")
+			fmt.Fprintln(e.stdout, "skills to build (DevPrism-found gaps first, by the priority of the roles they block):")
 		}
 		for i, g := range out.Gaps {
-			fmt.Fprintf(e.stdout, "%2d. %s [%s]  %d roles (%d found missing by DevPrism), %d companies, weight %.1f\n",
-				i+1, oneLine(g.Term, jobFieldRunes), oneLine(g.Category, 40), g.Roles, g.Missing, g.Companies, g.Weight)
+			found := "not named by your target summary"
+			if g.Missing > 0 {
+				found = fmt.Sprintf("%d found missing by DevPrism, weight %.1f", g.Missing, g.MissingWeight)
+			}
+			fmt.Fprintf(e.stdout, "%2d. %s [%s]  %s (%s), %s, weight %.1f\n",
+				i+1, oneLine(g.Term, jobFieldRunes), oneLine(g.Category, 40), plural(g.Roles, "role"), found,
+				plural(g.Companies, "company"), g.Weight)
 			var ex []string
 			for _, x := range g.Examples {
 				ex = append(ex, oneLine(x.Company, jobFieldRunes)+": "+oneLine(x.Title, jobFieldRunes))

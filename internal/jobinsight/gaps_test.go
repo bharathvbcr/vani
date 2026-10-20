@@ -64,6 +64,43 @@ func TestGapsRankingByWeight(t *testing.T) {
 	}
 }
 
+// A skill DevPrism flagged in one modest role outranks a keyword-only skill
+// that many high-priority roles name: the summary not naming a skill is weak
+// evidence the seeker lacks it.
+func TestGapsDevPrismOutranksKeywordOnly(t *testing.T) {
+	v := gapVocab(t)
+	jobs := []GapJob{
+		{Key: "a", Priority: 95, Hits: []Hit{hit("Docker", "infra")}},
+		{Key: "b", Priority: 90, Hits: []Hit{hit("Docker", "infra")}},
+		{Key: "c", Priority: 85, Hits: []Hit{hit("Docker", "infra")}},
+		{Key: "d", Priority: 20, Missing: "PyTorch (weak)", Hits: []Hit{hit("PyTorch", "ml")}},
+	}
+	r := Gaps(jobs, v, map[string]bool{}, GapOptions{})
+	if len(r.Gaps) != 2 || r.Gaps[0].Term != "PyTorch" || r.Gaps[1].Term != "Docker" {
+		t.Fatalf("order = %+v", r.Gaps)
+	}
+	if g := r.Gaps[0]; g.MissingWeight != 20 || g.Weight != 20 || g.Missing != 1 {
+		t.Errorf("pytorch = %+v", g)
+	}
+	if g := r.Gaps[1]; g.MissingWeight != 0 || g.Weight != 270 {
+		t.Errorf("docker = %+v", g)
+	}
+	// MissingWeight counts only the flagged roles; Weight counts all.
+	jobs = append(jobs, GapJob{Key: "e", Priority: 50, Hits: []Hit{hit("PyTorch", "ml")}})
+	r = Gaps(jobs, v, map[string]bool{}, GapOptions{})
+	if g, _ := gapByTerm(r, "PyTorch"); g.MissingWeight != 20 || g.Weight != 70 || g.Roles != 2 || g.Missing != 1 {
+		t.Errorf("pytorch with an unflagged role = %+v", g)
+	}
+	// Priority 0 everywhere: no MissingWeight, so it ranks by Weight like the rest.
+	r = Gaps([]GapJob{
+		{Key: "a", Priority: 0, Missing: "PyTorch"},
+		{Key: "b", Priority: 10, Hits: []Hit{hit("Docker", "infra")}},
+	}, v, map[string]bool{}, GapOptions{})
+	if r.Gaps[0].Term != "Docker" {
+		t.Errorf("zero-priority DevPrism gap: %+v", r.Gaps)
+	}
+}
+
 func TestGapsTieBreaks(t *testing.T) {
 	v := gapVocab(t)
 	// Equal weight: more roles first; then more DevPrism-missing; then term.

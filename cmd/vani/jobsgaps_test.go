@@ -80,12 +80,16 @@ func TestJobsGapsRanksDevPrismGaps(t *testing.T) {
 		t.Fatalf("Kubernetes should lead with two roles at two companies: %+v", r.Gaps)
 	}
 	for i := 1; i < len(r.Gaps); i++ {
-		if r.Gaps[i].Weight > r.Gaps[i-1].Weight {
-			t.Fatalf("gaps not ordered by weight: %+v", r.Gaps)
+		a, b := r.Gaps[i-1], r.Gaps[i]
+		if b.MissingWeight > a.MissingWeight || (b.MissingWeight == a.MissingWeight && b.Weight > a.Weight) {
+			t.Fatalf("gaps not ordered by DevPrism weight, then weight: %+v", r.Gaps)
 		}
 	}
+	if r.Gaps[0].MissingWeight <= 0 || r.Gaps[0].MissingWeight != r.Gaps[0].Weight {
+		t.Fatalf("Kubernetes is DevPrism-flagged in both its roles: %+v", r.Gaps[0])
+	}
 	text, _ := mustCode(t, 0, "jobs", "gaps", "--view", "all")
-	for _, want := range []string{"all: 3 roles, 2 with a DevPrism gap analysis", "skills to build", " 1. Kubernetes [", "2 roles (2 found missing by DevPrism), 2 companies", "e.g. "} {
+	for _, want := range []string{"all: 3 roles, 2 with a DevPrism gap analysis", "skills to build", " 1. Kubernetes [", "2 roles (2 found missing by DevPrism, weight ", "), 2 companies, weight ", "e.g. "} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
@@ -155,6 +159,41 @@ func TestJobsGapsDevPrismOnlyCleanSaysKeywordsUnjudged(t *testing.T) {
 	text, _ := mustCode(t, 0, "jobs", "gaps", "--view", "all")
 	if !strings.Contains(text, "no DevPrism gaps found (keyword gaps were not judged)") || strings.Contains(text, "no gaps found") {
 		t.Fatalf("a DevPrism-only check read as a full one:\n%s", text)
+	}
+}
+
+func TestPlural(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		noun string
+		want string
+	}{
+		{1, "role", "1 role"}, {0, "role", "0 roles"}, {2, "role", "2 roles"},
+		{1, "company", "1 company"}, {3, "company", "3 companies"}, {2, "day", "2 days"}, {2, "y", "2 ys"},
+	} {
+		if got := plural(c.n, c.noun); got != c.want {
+			t.Errorf("plural(%d, %q) = %q, want %q", c.n, c.noun, got, c.want)
+		}
+	}
+}
+
+// A keyword-only gap says so instead of "0 found missing by DevPrism".
+func TestJobsGapsKeywordOnlyLine(t *testing.T) {
+	cfgPath, state := setup(t)
+	fixedNow(t)
+	writeTarget(t, cfgPath, "Inference in Go and Rust.")
+	docker := gapSeeds[2]
+	docker.key, docker.desc = "gh:d:ops", "Ship Docker images."
+	seedInsight(t, state, gapSeeds[1], docker)
+	text, _ := mustCode(t, 0, "jobs", "gaps", "--view", "all")
+	if strings.Contains(text, "0 found missing") || strings.Contains(text, "1 roles") || strings.Contains(text, "1 companies") {
+		t.Fatalf("awkward counts:\n%s", text)
+	}
+	for _, want := range []string{"all: 2 roles, 1 with", "1 role (1 found missing by DevPrism, weight ", "1 company, weight ",
+		"Docker [infra]  1 role (not named by your target summary), 1 company, weight "} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
 	}
 }
 

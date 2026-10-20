@@ -20,6 +20,14 @@ import (
 // Keyword gaps need the target summary; without one (target == nil) only
 // DevPrism gaps are counted and the report says so, so an unjudged set never
 // reads as "no gaps".
+//
+// The two kinds are not equally strong. DevPrism compared the role's
+// must-haves with the knowledge base; a keyword gap only means a short summary
+// does not name the skill, which the seeker may well have. So gaps rank by
+// MissingWeight (the priority of the roles DevPrism flagged it in) first, and
+// only then by Weight: a keyword-only gap never outranks a DevPrism one from a
+// role with any priority. (A DevPrism gap whose roles all have priority 0 has
+// MissingWeight 0 and ranks with the keyword gaps by Weight.)
 
 // GapJob is one role's input to Gaps.
 type GapJob struct {
@@ -53,13 +61,16 @@ type GapExample struct {
 
 // Gap is one skill the roles ask for that the seeker does not show.
 type Gap struct {
-	Term      string       `json:"term"`
-	Category  string       `json:"cat"`
-	Roles     int          `json:"roles"`     // roles where it is a gap
-	Missing   int          `json:"missing"`   // of those, roles where DevPrism found it missing
-	Weight    float64      `json:"weight"`    // sum of those roles' priority, one decimal
-	Companies int          `json:"companies"` // distinct companies among those roles
-	Examples  []GapExample `json:"examples"`
+	Term     string  `json:"term"`
+	Category string  `json:"cat"`
+	Roles    int     `json:"roles"`   // roles where it is a gap
+	Missing  int     `json:"missing"` // of those, roles where DevPrism found it missing
+	Weight   float64 `json:"weight"`  // sum of those roles' priority, one decimal
+	// MissingWeight is the sum of the priority of the roles DevPrism flagged
+	// it in, one decimal; the first ranking key.
+	MissingWeight float64      `json:"missing_weight"`
+	Companies     int          `json:"companies"` // distinct companies among those roles
+	Examples      []GapExample `json:"examples"`
 }
 
 // GapReport is the result of Gaps.
@@ -194,14 +205,17 @@ func Gaps(jobs []GapJob, vocab *Vocab, target map[string]bool, opt GapOptions) G
 	}
 
 	type ranked struct {
-		gap    Gap
-		weight float64
+		gap            Gap
+		weight, missed float64
 	}
 	out := make([]ranked, 0, len(accs))
 	for term, a := range accs {
-		var w float64
+		var w, mw float64
 		for _, r := range a.roles { // key order
 			w += r.priority
+			if r.devprism[term] {
+				mw += r.priority
+			}
 		}
 		sort.Slice(a.roles, func(i, j int) bool {
 			x, y := a.roles[i], a.roles[j]
@@ -219,14 +233,16 @@ func Gaps(jobs []GapJob, vocab *Vocab, target map[string]bool, opt GapOptions) G
 		for _, r := range a.roles[:min(examples, len(a.roles))] {
 			ex = append(ex, GapExample{Key: r.key, Company: r.company, Title: r.title})
 		}
-		out = append(out, ranked{weight: w, gap: Gap{
+		out = append(out, ranked{weight: w, missed: mw, gap: Gap{
 			Term: term, Category: a.category, Roles: len(a.roles), Missing: a.missing,
-			Weight: round1(w), Companies: len(a.companies), Examples: ex,
+			Weight: round1(w), MissingWeight: round1(mw), Companies: len(a.companies), Examples: ex,
 		}})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		x, y := out[i], out[j]
 		switch {
+		case x.missed != y.missed:
+			return x.missed > y.missed
 		case x.weight != y.weight:
 			return x.weight > y.weight
 		case x.gap.Roles != y.gap.Roles:
