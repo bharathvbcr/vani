@@ -15,6 +15,13 @@ struct DraftSheet: View {
     @State private var running = false
     @State private var status: String?
 
+    /// Opens with the job's fields filled in (the Apply kit); no arguments opens it empty.
+    init(company: String = "", title: String = "", posting: String = "") {
+        _company = State(initialValue: company)
+        _title = State(initialValue: title)
+        _posting = State(initialValue: posting)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Draft an answer with Claude").font(.headline)

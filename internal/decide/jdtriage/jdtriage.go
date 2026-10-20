@@ -257,6 +257,9 @@ type Triager struct {
 	// roles"). It is rendered at the top of the context; never put personal
 	// data in it.
 	TargetSummary string
+	// ExtraSlots, when non-empty, are appended to the question's slots so
+	// additional decisions (e.g. category) are answered in one single flow.
+	ExtraSlots []decide.Slot
 }
 
 // Triage asks D about p.
@@ -268,5 +271,9 @@ func (t Triager) Triage(ctx context.Context, p posting.Posting) (decide.Answer, 
 	if err != nil {
 		return decide.Answer{}, err
 	}
-	return t.D.Decide(ctx, build(p, s))
+	q := build(p, s)
+	if len(t.ExtraSlots) > 0 {
+		q.Slots = append(append([]decide.Slot(nil), q.Slots...), t.ExtraSlots...)
+	}
+	return t.D.Decide(ctx, q)
 }

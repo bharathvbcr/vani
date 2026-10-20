@@ -42,6 +42,33 @@ func TestPagePostingDuplicatesATSPosting(t *testing.T) {
 	}
 }
 
+// A careers-page posting found after its ATS twin died is the job, not a
+// duplicate of a dead record: marking it would hide it for good.
+func TestPagePostingIsNotADuplicateOfADeadATSPosting(t *testing.T) {
+	l := openLedger(t)
+	gh := ghPost(t, "1", "jd") // Title "Engineer 1"
+	other := ghPost(t, "2", "jd")
+	if _, err := Reconcile(ctx, l, board, []posting.Posting{gh, other}, t0); err != nil {
+		t.Fatal(err)
+	}
+	for range MissesToDead {
+		if _, err := Reconcile(ctx, l, board, []posting.Posting{other}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st := rec(t, l, gh.Key).Status; st != posting.Dead {
+		t.Fatalf("setup: the ATS posting is %s, want dead", st)
+	}
+	pg := pagePost(t, "https://acme.example/careers/1", "Engineer 1")
+	s, err := Reconcile(ctx, l, pageBoard, []posting.Posting{pg}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec(t, l, pg.Key); s.Duplicate != 0 || got.Status != posting.Live || got.Annotations[DuplicateOfKey] != "" {
+		t.Fatalf("summary %+v, page posting %s %v", s, got.Status, got.Annotations)
+	}
+}
+
 func TestATSPostingArrivingLaterMarksPageTwin(t *testing.T) {
 	l := openLedger(t)
 	pg := pagePost(t, "https://acme.example/careers/1", "Engineer 1")

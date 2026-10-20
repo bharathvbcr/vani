@@ -15,7 +15,7 @@ import { type FillOutcome, clearMarks, fillAll, fillRef, insertDraft } from "./f
 import { type Coverage, bucketOf, coverageLine, coverageOf } from "./coverage";
 import { type FlushResult, MIN_FORM_FIELDS, type Tracker, createTracker } from "./tracker";
 import { currentText, draftable, suggest } from "./suggest";
-import { readJobInfo } from "./jobinfo";
+import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
 import { type DraftReply, type JobInfo, buildDraftRequest, parseDraftReply } from "./draft";
 import { classify } from "./classify";
 import { type AppliedFlow, type AppliedUi, createAppliedFlow, offerSubject } from "./applied";
@@ -28,11 +28,15 @@ import { contentListener } from "./frames";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
-import { matchTailorableQuestion, generateTailoredDraft } from "./tailor";
+import { templateTailoring, generateTailoredDraft } from "./tailor";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
-import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, isResumeField, parseResumeGet } from "./resume";
+import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, fromBase64, isPdf, isResumeField, parseResumeGet, toBase64 } from "./resume";
 import { type OfferAction, type OfferUi, type PickedFile, createResumeOffer } from "./resumeoffer";
-import { emptyBank } from "./types";
+import { emptyBank, type Match } from "./types";
+import { createBankMemo } from "./bankcache";
+import { describeIngest, prepareIngest } from "./ingest";
+import { crawlRow } from "./crawlrun";
+import { QUIET_MS, carryMatches, observeRoots, runRounds, waitForQuiet } from "./rounds";
 
 const PANEL_LIST = 8;
 
@@ -40,13 +44,29 @@ function send<T>(msg: ToBackground): Promise<T> {
   return chrome.runtime.sendMessage<T>(msg);
 }
 
+interface BankRead { bank: Bank; rev?: number }
+
+async function readBank(): Promise<BankRead> {
+  const r = await send<{ bank?: Bank; rev?: number; error?: string }>({ type: "getBank" });
+  if (!r?.bank) throw new Error(r?.error ?? "no bank");
+  return { bank: r.bank, rev: typeof r.rev === "number" ? r.rev : undefined };
+}
+
+// The last bank read, kept for the 2 s a scan may reuse it (bankcache.ts). A read with the same revision
+// keeps the held object, so "the same bank" can be asked with ===. A failed read is never kept.
+const bankMemo = createBankMemo<BankRead>({
+  fetch: readBank,
+  reuse: (held, next) => (held.rev !== undefined && held.rev === next.rev ? held : next),
+});
+
+/** The bank as the background has it now (it may serve its own memo): fill, save and the popup's scan use this. */
 async function bank(): Promise<Bank | null> {
-  try {
-    const r = await send<{ bank?: Bank; error?: string }>({ type: "getBank" });
-    return r.bank ?? null;
-  } catch {
-    return null;
-  }
+  try { return (await bankMemo.fresh()).bank; } catch { return null; }
+}
+
+/** The bank for a scan the page triggered itself, which fires on every input: a copy under 2 s old will do. */
+async function scanBank(): Promise<Bank | null> {
+  try { return (await bankMemo.get()).bank; } catch { return null; }
 }
 
 function disabledHere(b: Bank | null): boolean {
@@ -84,20 +104,31 @@ let lastAudit: FormAuditReport | undefined;
 let lastRelevance: RelevanceResult | undefined;
 let lastPortal: PortalInfo | undefined;
 
-async function scan(): Promise<ScanReply> {
-  const b = await bank();
+// The matches the last scan computed, with the bank they came from, for fill to reuse (see fill()).
+let lastScan: { refs: FieldRef[]; matches: Map<FieldRef, Match | null>; bank: Bank | null } | undefined;
+
+/** `cached`: a scan the page's own activity triggered may use a bank read under 2 s ago; a scan someone asked for reads it afresh. */
+async function scan(cached = false): Promise<ScanReply> {
+  const b = await (cached ? scanBank() : bank());
   const s = scanForm(document);
   lastBank = b;
   lastRefs = s.refs;
-  lastUnknown = s.refs.filter(r => bucketOf(r.info, r.manual, b, location.hostname).bucket === "unknown");
-  const coverage = coverageOf(s.refs, b, location.hostname, { capped: s.capped, unread: s.unread });
+  const matches = new Map<FieldRef, Match | null>();
+  const coverage = coverageOf(s.refs, b, location.hostname, { capped: s.capped, unread: s.unread }, matches);
+  lastScan = { refs: s.refs, matches, bank: b };
+  // A field is "unknown" exactly when it was matched (not skipped) and nothing matched; without a bank nothing is matched, so ask bucketOf.
+  lastUnknown = b
+    ? s.refs.filter(r => matches.has(r) && matches.get(r) === null && !r.manual)
+    : s.refs.filter(r => bucketOf(r.info, r.manual, b, location.hostname).bucket === "unknown");
   const audit = auditForm(s.refs);
   lastAudit = audit;
   const portal = detectPortal(document, location.href);
   lastPortal = portal;
   const job = jobInfo();
-  const profile = targetProfileFromBank(b);
-  const relevance = evaluateRelevance({ title: job.title, company: job.company, description: job.description }, profile);
+  // Only a posting actually read from this page is rated: a score for an empty or half-rendered read would look like a verdict.
+  const relevance = isReadableJob(job)
+    ? evaluateRelevance({ title: job.title, company: job.company, description: job.description }, targetProfileFromBank(b))
+    : undefined;
   lastRelevance = relevance;
 
   return {
@@ -113,6 +144,11 @@ async function scan(): Promise<ScanReply> {
   };
 }
 
+/** Watches the page, and every open shadow root the last scan walked, for elements being added or removed (not attributes, which marks and widgets churn constantly). */
+function observeDom(roots: readonly Node[]): (onChange: () => void) => () => void {
+  return onChange => observeRoots(roots.length ? roots : [document], onChange);
+}
+
 /** The resume chosen for this page's job, from the Mac app (through the background); a reason when there is none. */
 async function resumeForThisJob(): Promise<ResumeFetch> {
   try {
@@ -126,9 +162,25 @@ async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
   const b = await bank();
   if (!b || disabledHere(b)) return { outcomes: [] };
   clearMarks();
-  const outcomes = await fillAll(scanForm(document).refs, b, location.hostname, { overwrite, typeahead, resume: resumeForThisJob });
+  // Taken now: filling fires input events, whose scans replace lastScan while this runs.
+  const prior = lastScan?.bank === b ? lastScan : undefined;
+  // Round 1 fills the page; later rounds fill what the first made appear (rounds.ts). Only round 1 may overwrite.
+  let roots: readonly Node[] = [document]; // the roots the latest scan walked: the settle watches all of them
+  const outcomes = await runRounds<FieldRef, FillOutcome>({
+    scan: () => { const s = scanForm(document); roots = s.roots; return s.refs; },
+    fill: (refs, round) => fillAll(refs, b, location.hostname, {
+      overwrite: overwrite && round === 1,
+      typeahead,
+      resume: resumeForThisJob,
+      // The scan made new field objects: the earlier scan's matches carry over only to fields provably unchanged (same bank, same elements).
+      ...(round === 1 && prior ? { matches: carryMatches(refs, prior) } : {}),
+    }),
+    settle: ms => waitForQuiet(observeDom(roots), QUIET_MS, ms),
+    now: Date.now,
+  });
+  bankMemo.invalidate(); // the fill counts below change the bank's revision
   const keys = outcomes.filter(o => o.filled && o.key).map(o => o.key!);
-  if (keys.length) void send({ type: "filled", keys });
+  if (keys.length) void send({ type: "filled", keys }).catch(() => undefined);
   const filled = outcomes.filter(o => o.filled).length;
   const review = outcomes.filter(o => o.filled && o.review).length;
   const left = outcomes.filter(o => !o.filled && o.reason === "no_match").length;
@@ -285,7 +337,7 @@ function ensurePanel(): void {
 
   const scrapeBtn = panel.querySelector<HTMLElement>("#scrape-btn")!;
   scrapeBtn.addEventListener("click", () => {
-    const res = scrapePageJobs(document, location.hostname, targetProfileFromBank(lastBank));
+    const res = scrapePageJobs(document, location.hostname, targetProfileFromBank(lastBank), location.href, loadedHref());
     renderScrapedDrawer(res);
   });
 
@@ -307,8 +359,14 @@ function renderMissedDrawer(audit: FormAuditReport): void {
   drawer.textContent = "";
   const header = document.createElement("div");
   header.style.cssText = "font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;";
-  header.innerHTML = `<span>⚠️ Missed Fillings (${audit.missedCount})</span><span style="cursor:pointer;color:#94a3b8;" title="Close">✕</span>`;
-  header.querySelector("span:last-child")?.addEventListener("click", () => { drawer.style.display = "none"; });
+  const titleSpan = document.createElement("span");
+  titleSpan.textContent = `⚠️ Missed Fillings (${audit.missedCount})`;
+  const closeSpan = document.createElement("span");
+  closeSpan.style.cssText = "cursor:pointer;color:#94a3b8;";
+  closeSpan.title = "Close";
+  closeSpan.textContent = "✕";
+  closeSpan.addEventListener("click", () => { drawer.style.display = "none"; });
+  header.append(titleSpan, closeSpan);
   drawer.append(header);
 
   const list = document.createElement("ul");
@@ -336,20 +394,32 @@ function renderRelDrawer(rel: RelevanceResult): void {
   drawer.textContent = "";
   const header = document.createElement("div");
   header.style.cssText = "font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;";
-  header.innerHTML = `<span>🎯 Relevance: ${rel.fitLabel}</span><span style="cursor:pointer;color:#94a3b8;" title="Close">✕</span>`;
-  header.querySelector("span:last-child")?.addEventListener("click", () => { drawer.style.display = "none"; });
+  const titleSpan = document.createElement("span");
+  titleSpan.textContent = `🎯 Relevance: ${rel.fitLabel}`;
+  const closeSpan = document.createElement("span");
+  closeSpan.style.cssText = "cursor:pointer;color:#94a3b8;";
+  closeSpan.title = "Close";
+  closeSpan.textContent = "✕";
+  closeSpan.addEventListener("click", () => { drawer.style.display = "none"; });
+  header.append(titleSpan, closeSpan);
   drawer.append(header);
 
   const body = document.createElement("div");
   body.style.cssText = "display:flex;flex-direction:column;gap:3px;";
   if (rel.matchedSkills.length > 0) {
     const s = document.createElement("div");
-    s.innerHTML = `<span style="color:#94a3b8;">Skills:</span> ${rel.matchedSkills.slice(0, 5).join(", ")}`;
+    const label = document.createElement("span");
+    label.style.color = "#94a3b8";
+    label.textContent = "Skills: ";
+    s.append(label, document.createTextNode(rel.matchedSkills.slice(0, 5).join(", ")));
     body.append(s);
   }
   if (rel.missingSkills.length > 0) {
     const m = document.createElement("div");
-    m.innerHTML = `<span style="color:#94a3b8;">JD mentions:</span> ${rel.missingSkills.slice(0, 4).join(", ")}`;
+    const label = document.createElement("span");
+    label.style.color = "#94a3b8";
+    label.textContent = "JD mentions: ";
+    m.append(label, document.createTextNode(rel.missingSkills.slice(0, 4).join(", ")));
     body.append(m);
   }
   if (rel.dealbreakers.length > 0) {
@@ -368,8 +438,14 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   drawer.style.display = "block";
   const header = document.createElement("div");
   header.style.cssText = "font-weight:600;margin-bottom:6px;display:flex;justify-content:space-between;";
-  header.innerHTML = `<span>🔍 Scraped ${res.totalFound} Jobs on this page</span><span style="cursor:pointer;color:#94a3b8;" title="Close">✕</span>`;
-  header.querySelector("span:last-child")?.addEventListener("click", () => { drawer.style.display = "none"; });
+  const titleSpan = document.createElement("span");
+  titleSpan.textContent = `🔍 Scraped ${res.totalFound} Jobs on this page`;
+  const closeSpan = document.createElement("span");
+  closeSpan.style.cssText = "cursor:pointer;color:#94a3b8;";
+  closeSpan.title = "Close";
+  closeSpan.textContent = "✕";
+  closeSpan.addEventListener("click", () => { drawer.style.display = "none"; });
+  header.append(titleSpan, closeSpan);
   drawer.append(header);
 
   if (res.totalFound === 0) {
@@ -384,19 +460,71 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   res.jobs.slice(0, 6).forEach(j => {
     const item = document.createElement("div");
     item.style.cssText = "padding:4px 6px;background:rgba(255,255,255,0.06);border-radius:4px;display:flex;justify-content:space-between;align-items:center;";
-    item.innerHTML = `
-      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">
-        <div style="font-weight:600;color:#fff;">${j.title}</div>
-        <div style="font-size:10px;color:#94a3b8;">${j.company || res.host} • ${j.location || "Remote/Unspecified"}</div>
-      </div>
-      <span style="font-size:10px;font-weight:600;padding:2px 5px;border-radius:3px;background:${j.relevance.score >= 80 ? '#065f46;color:#6ee7b7' : j.relevance.score >= 60 ? '#78350f;color:#fcd34d' : '#334155;color:#94a3b8'};">
-        ${j.relevance.score}%
-      </span>
-    `;
+
+    const textCol = document.createElement("div");
+    textCol.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;";
+
+    const titleEl = document.createElement("div");
+    titleEl.style.cssText = "font-weight:600;color:#fff;";
+    titleEl.textContent = j.title;
+
+    const subEl = document.createElement("div");
+    subEl.style.cssText = "font-size:10px;color:#94a3b8;";
+    subEl.textContent = `${j.company || res.host} • ${j.location || "Remote/Unspecified"}`;
+
+    textCol.append(titleEl, subEl);
+
+    const scoreBadge = document.createElement("span");
+    scoreBadge.style.cssText = `font-size:10px;font-weight:600;padding:2px 5px;border-radius:3px;background:${j.relevance.score >= 80 ? '#065f46;color:#6ee7b7' : j.relevance.score >= 60 ? '#78350f;color:#fcd34d' : '#334155;color:#94a3b8'};`;
+    scoreBadge.textContent = `${j.relevance.score}%`;
+
+    item.append(textCol, scoreBadge);
     list.append(item);
   });
   drawer.append(list);
+
+  const saveRow = document.createElement("div");
+  saveRow.style.cssText = "margin-top:6px;display:flex;flex-direction:column;gap:4px;";
+  const again = document.createElement("label");
+  again.style.cssText = "display:flex;gap:4px;align-items:center;";
+  const againBox = document.createElement("input");
+  againBox.type = "checkbox";
+  againBox.checked = true;
+  again.append(againBox, document.createTextNode("Search this page again daily"));
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Save to Vani";
+  const result = document.createElement("div");
+  result.setAttribute("role", "status");
+  saveBtn.addEventListener("click", () => {
+    saveBtn.disabled = true;
+    result.textContent = "Sending…";
+    void saveScrapeToVani(res, againBox.checked).then(t => { result.textContent = t; }).finally(() => { saveBtn.disabled = false; });
+  });
+  // The drawer shows one page; this walks every page of the listing (crawlrun.ts) and sends it the same way.
+  const crawl = crawlRow(document, () => ({
+    doc: document,
+    pageUrl: location.href,
+    pageTitle: document.title,
+    profile: targetProfileFromBank(lastBank),
+    send: m => send<unknown>(m as ToBackground),
+  }), () => againBox.checked, toast);
+  saveRow.append(again, saveBtn, result, crawl);
+  drawer.append(saveRow);
   toast(`Scraped ${res.totalFound} jobs! Open popup to filter & export.`);
+}
+
+/** Send every scraped job to Vani and say what Vani answered; a failure is reported, never swallowed. */
+async function saveScrapeToVani(res: ScrapeResult, saveSearch: boolean): Promise<string> {
+  const p = prepareIngest(res, saveSearch);
+  if ("error" in p) return p.error;
+  let reply: unknown;
+  try {
+    reply = await send<unknown>(p.req);
+  } catch (e) {
+    return `Could not reach Vani: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  return `${describeIngest(reply).text}${p.leftOut ? `. ${p.leftOut}` : ""}`;
 }
 
 /** How long a message stays up before a rescan may replace it with the coverage line. */
@@ -450,10 +578,20 @@ function labelOf(ref: FieldRef): string {
   return ref.info.label.trim() || ref.info.name || "(unlabelled)";
 }
 
-/** Rescans happen on every DOM change; the posting is read once per page URL. */
-let jobCache: { href: string; job: JobInfo } | null = null;
+/** The URL this document was loaded at; a single-page board's <head> still describes it after in-app navigation. */
+const INJECTED_HREF = location.href;
+function loadedHref(): string {
+  return navigationHref() ?? INJECTED_HREF; // no navigation timing: where this script started
+}
+
+/** Rescans happen on every DOM change; the posting is re-read only when something it is read from changed (postingKey). */
+let jobCache: { key: string; job: JobInfo } | null = null;
 function jobInfo(): JobInfo {
-  if (jobCache?.href !== location.href) jobCache = { href: location.href, job: readJobInfo(document) };
+  const key = postingKey(document, location.href);
+  if (jobCache?.key !== key) {
+    const ctx = { href: location.href, loadedHref: loadedHref(), portal: detectPortal(document, location.href).id };
+    jobCache = { key, job: readJobInfo(document, ctx) };
+  }
   return jobCache.job;
 }
 
@@ -655,7 +793,7 @@ function renderUnknown(c: Coverage): void {
       d.addEventListener("click", () => { void startDraft(ref, job, li); });
       row.append(d);
     }
-    const tailorable = matchTailorableQuestion(labelOf(ref));
+    const tailorable = templateTailoring(labelOf(ref), job.company);
     if (tailorable) {
       const tb = btn("d", "✨ Tailor to JD");
       tb.title = `Generate tailored answer for "${tailorable.title}" using company & role from this JD`;
@@ -681,11 +819,31 @@ function renderUnknown(c: Coverage): void {
   }
 }
 
+/** The panel's relevance pill and drawer: shown for a rated posting, hidden otherwise. */
+function showRelevance(rel: RelevanceResult | undefined): void {
+  const relBadge = panel?.querySelector<HTMLElement>("#rel-badge");
+  if (!relBadge) return;
+  if (rel) {
+    relBadge.textContent = `🎯 ${rel.score}%`;
+    relBadge.style.display = "inline-block";
+    renderRelDrawer(rel);
+    return;
+  }
+  relBadge.style.display = "none";
+  const drawer = panel?.querySelector<HTMLElement>("#rel-drawer");
+  if (drawer) drawer.style.display = "none";
+}
+
 async function scheduleScan(): Promise<void> {
-  const s = await scan();
+  const s = await scan(true);
   const c = s.coverage;
-  const isJobPage = s.portal?.isJobBoard || (s.relevance && s.relevance.score > 0 && jobInfo().description.length >= 40);
-  if (s.disabled || (!isJobPage && (!c || c.found < MIN_FORM_FIELDS))) return;
+  // relevance is present only for a posting read from this page (scan()); the score bar is home.ts's looksLikeJob's.
+  const isJobPage = s.portal?.isJobBoard || (s.relevance !== undefined && s.relevance.score > 0);
+  if (s.disabled || (!isJobPage && (!c || c.found < MIN_FORM_FIELDS))) {
+    // An in-app navigation away from a posting: its score must not stay on a panel left open.
+    showRelevance(undefined);
+    return;
+  }
   ensurePanel();
   if (c && c.found >= MIN_FORM_FIELDS) renderUnknown(c);
 
@@ -696,13 +854,7 @@ async function scheduleScan(): Promise<void> {
     portalBadge.style.display = "inline-block";
   }
 
-  // Update dynamic relevance pill
-  const relBadge = panel?.querySelector<HTMLElement>("#rel-badge");
-  if (relBadge && s.relevance && (jobInfo().description.length >= 40 || jobInfo().title)) {
-    relBadge.textContent = `🎯 ${s.relevance.score}%`;
-    relBadge.style.display = "inline-block";
-    renderRelDrawer(s.relevance);
-  }
+  showRelevance(s.relevance);
 
   // Update dynamic missed fillings pill
   const missedBadge = panel?.querySelector<HTMLElement>("#missed-badge");
@@ -717,7 +869,9 @@ async function scheduleScan(): Promise<void> {
   // Update scrape button if on a board or job listings found
   const scrapeBtn = panel?.querySelector<HTMLElement>("#scrape-btn");
   if (scrapeBtn) {
-    const isBoard = s.portal?.isJobBoard || document.querySelectorAll("a[href*='/job/'], a[href*='/careers/'], [class*='job-card']").length >= 2;
+    const isBoard = s.portal?.isJobBoard || document.querySelectorAll(
+      "a[href*='/jobs/'], a[href*='/job/'], a[href*='/careers/'], a[href*='/positions/'], [class*='job-card'], [class*='job-post'], tr.job-post, .opening, .posting"
+    ).length >= 2;
     scrapeBtn.style.display = isBoard ? "inline-block" : "none";
   }
 
@@ -873,7 +1027,14 @@ function showFieldTooltip(target: HTMLElement): void {
   const { root } = ensureTooltip();
   const tip = root.querySelector<HTMLElement>(".tip")!;
   const isOk = fillType === "ok";
-  tip.innerHTML = `<span class="badge ${isOk ? "ok" : "review"}">${isOk ? "✓ Confident" : "⚠️ Review"}</span><span class="why">${why}</span>`;
+  tip.textContent = "";
+  const badge = document.createElement("span");
+  badge.className = `badge ${isOk ? "ok" : "review"}`;
+  badge.textContent = isOk ? "✓ Confident" : "⚠️ Review";
+  const whySpan = document.createElement("span");
+  whySpan.className = "why";
+  whySpan.textContent = why;
+  tip.append(badge, whySpan);
   const rect = target.getBoundingClientRect();
   const tipWidth = 260;
   let left = rect.left;
@@ -974,17 +1135,36 @@ const resumeUi: OfferUi = {
 /** A file input clicked from the button press (a user gesture), resolved on its choice or Cancel. */
 function pickPdf(): Promise<PickedFile | null> {
   return new Promise(resolve => {
+    let resolved = false;
+    const finish = (result: PickedFile | null) => {
+      if (resolved) return;
+      resolved = true;
+      window.removeEventListener("focus", onWindowFocus);
+      resolve(result);
+    };
+
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "application/pdf,.pdf";
     input.addEventListener("change", async () => {
       const f = input.files?.[0];
-      if (!f) { resolve(null); return; }
+      if (!f) { finish(null); return; }
       // A file over the cap is never read.
-      if (f.size > MAX_RESUME_BYTES) { resolve({ name: f.name, size: f.size, bytes: null }); return; }
-      try { resolve({ name: f.name, size: f.size, bytes: new Uint8Array(await f.arrayBuffer()) }); } catch { resolve(null); }
+      if (f.size > MAX_RESUME_BYTES) { finish({ name: f.name, size: f.size, bytes: null }); return; }
+      try { finish({ name: f.name, size: f.size, bytes: new Uint8Array(await f.arrayBuffer()) }); } catch { finish(null); }
     }, { once: true });
-    input.addEventListener("cancel", () => resolve(null), { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
+
+    // Fallback for Safari < 17.4 where cancel event is not fired on file inputs
+    const onWindowFocus = () => {
+      setTimeout(() => {
+        if (!resolved && (!input.files || input.files.length === 0)) {
+          finish(null);
+        }
+      }, 500);
+    };
+    window.addEventListener("focus", onWindowFocus, { once: true });
+
     input.click();
   });
 }
@@ -992,7 +1172,7 @@ function pickPdf(): Promise<PickedFile | null> {
 const resumeOffer = createResumeOffer({
   ui: resumeUi,
   bank,
-  job: () => readJobInfo(document),
+  job: () => jobInfo(),
   build: async (request, onTick) => {
     const r = await runJob({
       start: () => send({ type: "jobStart", kind: "resume", request }),
@@ -1007,9 +1187,21 @@ const resumeOffer = createResumeOffer({
     return r?.error ? { error: r.error } : {};
   },
   attach: async r => {
-    const refs = scanForm(document).refs.filter(x => x.info.kind === "file" && isResumeField(x.info));
-    // The owner just asked for this file: it replaces one already in the box.
-    return fillAll(refs, emptyBank(), location.hostname, { resume: async () => r, overwrite: true });
+    const localRefs = scanForm(document).refs.filter(x => x.info.kind === "file" && isResumeField(x.info));
+    if (localRefs.length > 0) {
+      return fillAll(localRefs, emptyBank(), location.hostname, { resume: async () => r, overwrite: true });
+    }
+    // If not found in current frame, route across frames via background
+    try {
+      const res = await send<{ outcomes?: FillOutcome[] }>({
+        type: "attachResume",
+        name: r.name,
+        pdf: toBase64(r.bytes),
+        pickedAt: r.pickedAt,
+      });
+      if (res?.outcomes && res.outcomes.length > 0) return res.outcomes;
+    } catch {}
+    return [];
   },
 });
 
@@ -1023,6 +1215,7 @@ if (!window.__vaniApply && !coveredByParent()) {
     getBank: bank,
     send: async fields => {
       const r = await send<CaptureReply | { error: string }>({ type: "capture", host: location.hostname, fields });
+      bankMemo.invalidate(); // the scan that follows must see what was just saved
       return r && "added" in r ? r : null;
     },
     onDom: () => { void scheduleScan(); },
@@ -1040,9 +1233,9 @@ if (!window.__vaniApply && !coveredByParent()) {
     capture: () => capture("saved"),
     clearMarks: () => clearMarks(document),
     appliedShow: window.top === window ? () => flow.resume() : null,
-    scrapeJobs: () => scrapePageJobs(document, location.hostname, targetProfileFromBank(lastBank)),
+    scrapeJobs: () => scrapePageJobs(document, location.hostname, targetProfileFromBank(lastBank), location.href, loadedHref()),
     getRelevance: () => ({
-      relevance: lastRelevance ?? evaluateRelevance(jobInfo(), targetProfileFromBank(lastBank)),
+      relevance: lastRelevance ?? (isReadableJob(jobInfo()) ? evaluateRelevance(jobInfo(), targetProfileFromBank(lastBank)) : undefined),
       job: jobInfo(),
       portal: lastPortal ?? detectPortal(document),
     }),
@@ -1058,6 +1251,17 @@ if (!window.__vaniApply && !coveredByParent()) {
         insertDraft(ref, text, { overwrite: true });
         toast(`Inserted tailored draft for "${preview(label)}" (yellow).`);
       }
+    },
+    attachResume: async (name, pdf, pickedAt) => {
+      const bytes = fromBase64(pdf);
+      if (!bytes || !isPdf(bytes)) return { outcomes: [] };
+      const refs = scanForm(document).refs.filter(x => x.info.kind === "file" && isResumeField(x.info));
+      if (refs.length === 0) return { outcomes: [] };
+      const outcomes = await fillAll(refs, emptyBank(), location.hostname, {
+        resume: async () => ({ ok: true, name, bytes, pickedAt }),
+        overwrite: true,
+      });
+      return { outcomes };
     },
   }));
   // The popup cannot list a cross-origin frame it may not script; this frame tells the background it is here.

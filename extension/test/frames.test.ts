@@ -300,6 +300,19 @@ describe("content script replies", () => {
     expect(await ask(broken, { type: "appliedShow" })).toEqual({ async: true, replies: [{ shown: false }] });
   });
 
+  test("attachResume passes resume details through to the sub-frame handler", async () => {
+    let received: unknown[] = [];
+    const l = subframe({
+      attachResume: async (name, pdf, pickedAt) => {
+        received = [name, pdf, pickedAt];
+        return { outcomes: [{ label: "Resume", filled: true }] };
+      },
+    });
+    const reply = await ask(l, { type: "attachResume", name: "test.pdf", pdf: "JVBERi0=", pickedAt: "2026-10-19" });
+    expect(received).toEqual(["test.pdf", "JVBERi0=", "2026-10-19"]);
+    expect(reply.replies).toEqual([{ outcomes: [{ label: "Resume", filled: true }] }]);
+  });
+
   test("a message that is not one of ours is answered with an error and runs nothing", async () => {
     let ran = 0;
     const l = subframe({ fill: async () => { ran++; return EMPTY_FILL; }, scan: async () => { ran++; return NO_FIELDS; } });

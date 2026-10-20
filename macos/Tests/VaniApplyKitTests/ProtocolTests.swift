@@ -62,4 +62,114 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(logged.first?.host, "boards.greenhouse.io")
         XCTAssertEqual(logged.first?.source, .chrome)
     }
+
+    func testChunkedGetAndGetChunk() throws {
+        let store = BankStore(directory: try tempDir(self))
+        // Create a bank that exceeds chunkThreshold (750 KB)
+        var answers: [String: Answer] = [:]
+        for i in 0..<100 {
+            let key = "question_\(i)"
+            answers[key] = Answer(key: key, labels: ["label"], kind: .text, value: [String(repeating: "a", count: 8_000)], sensitivity: .standard, signatures: [], uses: 0, fills: 0, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        }
+        let largeBank = Bank(answers: answers)
+        _ = try store.put(baseRev: 0, bank: largeBank)
+
+        let first = try roundTrip(["op": "get"], store)
+        XCTAssertEqual(first["chunked"] as? Bool, true)
+        XCTAssertEqual(first["rev"] as? Int, 1)
+        XCTAssertEqual(first["chunkIndex"] as? Int, 0)
+        guard let count = first["chunkCount"] as? Int else {
+            XCTFail("missing chunkCount")
+            return
+        }
+        XCTAssertGreaterThan(count, 1)
+        var allChunks: [String] = [first["chunk"] as! String]
+
+        for i in 1..<count {
+            let next = try roundTrip(["op": "getChunk", "rev": 1, "chunkIndex": i], store)
+            XCTAssertEqual(next["rev"] as? Int, 1)
+            XCTAssertEqual(next["chunkIndex"] as? Int, i)
+            allChunks.append(next["chunk"] as! String)
+        }
+
+        let fullJSON = allChunks.joined()
+        let parsed = try JSONSerialization.jsonObject(with: Data(fullJSON.utf8)) as? [String: Any]
+        XCTAssertNotNil(parsed)
+        let parsedAnswers = parsed?["answers"] as? [String: Any]
+        XCTAssertEqual(parsedAnswers?.count, 100)
+    }
+
+    func testGranularPatchAndCandidatesQuery() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let a1: [String: Any] = [
+            "key": "first_name",
+            "kind": "text",
+            "value": ["Ada"],
+            "labels": ["first name", "given name"],
+            "signatures": ["gh:fn:1"]
+        ]
+        let a2: [String: Any] = [
+            "key": "email",
+            "kind": "email",
+            "value": ["ada@example.com"],
+            "labels": ["email address"],
+            "signatures": ["gh:em:2"]
+        ]
+
+        let patchRes = try roundTrip(["op": "patch", "upsert": [a1, a2], "delete": []], store)
+        XCTAssertEqual(patchRes["ok"] as? Bool, true)
+        XCTAssertEqual(patchRes["rev"] as? Int, 1)
+
+        // Query candidates by signature
+        let sigQuery = try roundTrip(["op": "queryCandidates", "signatures": ["gh:fn:1"]], store)
+        let candidates = sigQuery["candidates"] as? [[String: Any]]
+        XCTAssertEqual(candidates?.count, 1)
+        XCTAssertEqual(candidates?.first?["key"] as? String, "first_name")
+        XCTAssertEqual(candidates?.first?["value"] as? [String], ["Ada"])
+
+        // Query candidates by label
+        let lblQuery = try roundTrip(["op": "queryCandidates", "labels": ["email address"]], store)
+        let emailCandidates = lblQuery["candidates"] as? [[String: Any]]
+        XCTAssertEqual(emailCandidates?.count, 1)
+        XCTAssertEqual(emailCandidates?.first?["key"] as? String, "email")
+
+        // Patch delete
+        let delRes = try roundTrip(["op": "patch", "upsert": [], "delete": ["first_name"]], store)
+        XCTAssertEqual(delRes["ok"] as? Bool, true)
+        XCTAssertEqual(delRes["rev"] as? Int, 2)
+
+        let afterDel = try roundTrip(["op": "queryCandidates", "signatures": ["gh:fn:1"]], store)
+        XCTAssertEqual((afterDel["candidates"] as? [[String: Any]])?.count, 0)
+    }
+
+    func testListAnswersPaginationAndSearch() throws {
+        let store = BankStore(directory: try tempDir(self))
+        var upsert: [[String: Any]] = []
+        for i in 0..<10 {
+            upsert.append([
+                "key": "key_\(i)",
+                "kind": "text",
+                "value": ["val_\(i)"],
+                "labels": ["lbl_\(i)"]
+            ])
+        }
+        _ = try roundTrip(["op": "patch", "upsert": upsert, "delete": []], store)
+
+        // First page
+        let page1 = try roundTrip(["op": "listAnswers", "offset": 0, "limit": 4], store)
+        XCTAssertEqual(page1["total"] as? Int, 10)
+        let ans1 = page1["answers"] as? [[String: Any]]
+        XCTAssertEqual(ans1?.count, 4)
+
+        // Second page
+        let page2 = try roundTrip(["op": "listAnswers", "offset": 4, "limit": 4], store)
+        let ans2 = page2["answers"] as? [[String: Any]]
+        XCTAssertEqual(ans2?.count, 4)
+
+        // Search
+        let searchRes = try roundTrip(["op": "listAnswers", "offset": 0, "limit": 10, "search": "key_3"], store)
+        XCTAssertEqual(searchRes["total"] as? Int, 1)
+        let found = searchRes["answers"] as? [[String: Any]]
+        XCTAssertEqual(found?.first?["key"] as? String, "key_3")
+    }
 }

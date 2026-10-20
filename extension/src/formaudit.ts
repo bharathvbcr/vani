@@ -11,6 +11,7 @@ export interface MissedFilling {
   reason: MissedReason;
   description: string;
   refIndex: number;
+  frameId?: number;
 }
 
 export interface FormAuditReport {
@@ -56,12 +57,15 @@ export function hasValue(ref: FieldRef): boolean {
     const input = el as HTMLInputElement;
     if (input.files && input.files.length > 0) return true;
     if (el.getAttribute("data-file-attached")) return true;
-    // Check if container shows an uploaded file pill / preview
+    // Check if immediate container shows an uploaded file pill / preview
     const container = typeof el.closest === "function"
-      ? el.closest(".file-upload, [data-automation-id*='file'], [class*='upload'], [class*='dropzone'], form, div")
-      : null;
-    if (container && container.querySelector(".attached-document, .file-name, [data-automation-id*='file-upload-item'], [class*='uploaded'], [class*='file-preview']")) {
-      return true;
+      ? (el.closest(".file-upload, [data-automation-id*='file'], [class*='upload'], [class*='dropzone'], fieldset, [role='group']") ?? el.parentElement)
+      : el.parentElement;
+    if (container) {
+      const otherInputs = container.querySelectorAll("input[type='file']");
+      if (otherInputs.length <= 1 && container.querySelector(".attached-document, .file-name, [data-automation-id*='file-upload-item'], [class*='uploaded'], [class*='file-preview']")) {
+        return true;
+      }
     }
     return false;
   }
@@ -175,6 +179,13 @@ export function auditForm(refs: FieldRef[]): FormAuditReport {
   };
 }
 
+const activePulses = new WeakMap<HTMLElement, {
+  timer: ReturnType<typeof setTimeout>;
+  origOutline: string;
+  origBoxShadow: string;
+  origTransition: string;
+}>();
+
 /** Smoothly scroll to a field and apply a temporary visual pulse to locate it. */
 export function jumpToField(ref: FieldRef): void {
   const el = ref.els[0];
@@ -197,18 +208,29 @@ export function jumpToField(ref: FieldRef): void {
     target.scrollIntoView();
   }
 
-  // Visual pulse highlight
-  const origOutline = target.style.outline;
-  const origBoxShadow = target.style.boxShadow;
-  const origTransition = target.style.transition;
+  // Visual pulse highlight with state tracking to avoid stuck outline on rapid clicks
+  const existing = activePulses.get(target);
+  let origOutline = target.style.outline;
+  let origBoxShadow = target.style.boxShadow;
+  let origTransition = target.style.transition;
+
+  if (existing) {
+    clearTimeout(existing.timer);
+    origOutline = existing.origOutline;
+    origBoxShadow = existing.origBoxShadow;
+    origTransition = existing.origTransition;
+  }
 
   target.style.transition = "all 0.2s ease";
   target.style.outline = "3px solid #f59e0b";
   target.style.boxShadow = "0 0 16px rgba(245, 158, 11, 0.6)";
 
-  setTimeout(() => {
+  const timer = setTimeout(() => {
     target.style.outline = origOutline;
     target.style.boxShadow = origBoxShadow;
     target.style.transition = origTransition;
+    activePulses.delete(target);
   }, 2200);
+
+  activePulses.set(target, { timer, origOutline, origBoxShadow, origTransition });
 }

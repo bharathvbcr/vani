@@ -4,18 +4,21 @@
 //	POST https://{host}/wday/cxs/{tenant}/{site}/jobs        (paged listing)
 //	GET  https://{host}/wday/cxs/{tenant}/{site}{externalPath} (one posting)
 //
-// The listing carries no description, so every posting costs one detail
-// request. Workday refuses a page larger than 20 rows, reports its total only
-// on the first page, and has no stable cursor, so the adapter caps a board at
-// MaxPostings and asks the user to narrow a larger board with `search`.
+// Workday refuses a page larger than 20 rows and serves at most 2000 rows of
+// one query (crawl.go), so a larger board is listed by splitting it on its
+// own facets. The listing carries no description, so a posting costs one
+// detail request; a source built with NewWith reuses the postings an earlier
+// run stored and spends at most MaxDetails detail requests per board per run.
 package workday
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -40,36 +43,102 @@ var errDetailGone = errors.New("detail is gone (HTTP 404)")
 func maxGone(n int) int { return max(1, n/10) }
 
 const (
-	// MaxPostings is the most postings one board may list. Each posting costs a
-	// detail request, so the cap is far below the other adapters'.
-	MaxPostings = 200
+	// MaxPostings is the most postings one board may list (the union of its
+	// search terms) unless the board sets max_postings, which may go up to
+	// sources.MaxPostingsCeiling. It fits the largest board seen (NVIDIA,
+	// about 2,750) with room to grow. Listing costs a request per 20 rows;
+	// detail requests are bounded separately by MaxDetails.
+	MaxPostings = 5000
+	// MaxDetails is the most detail requests one board spends in one run.
+	// A source from New fails a board that would need more; one from NewWith
+	// reuses stored postings and defers new ones past it to the next run.
+	MaxDetails = 300
+	// refreshDays is how many runs it takes to re-read every stored posting:
+	// each run re-reads the stored postings whose path falls in that day's
+	// share, so a description edited on the board is seen within this many
+	// days (budget permitting).
+	refreshDays = 30
 	// pageSize is Workday's largest page: a larger limit returns zero rows.
 	pageSize = 20
-	// maxPages bounds the listing loop even when total is wrong: the cap plus
-	// the one empty page that ends a listing, plus one spare.
-	maxPages = MaxPostings/pageSize + 2
 )
+
+// capFor is the board's listing limit: its max_postings, or MaxPostings.
+func capFor(b sources.Board) (int, error) {
+	switch {
+	case b.MaxPostings == 0:
+		return MaxPostings, nil
+	case b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling:
+		return 0, fmt.Errorf("max_postings %d outside 1..%d", b.MaxPostings, sources.MaxPostingsCeiling)
+	}
+	return b.MaxPostings, nil
+}
 
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	opt *Options
 }
 
-// New returns the Workday source, sending requests through d.
+// New returns the Workday source, sending requests through d. Every listed
+// posting costs a detail request, and a board needing more than MaxDetails
+// fails.
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+
+// Options turn on the bounded detail step (NewWith).
+type Options struct {
+	// Stored returns the postings an earlier run stored for b: every record
+	// under b.KeyPrefix(), whatever its status. A listed row whose stored
+	// posting has the row's path (read from its URL) is returned as stored,
+	// with no detail request. Required.
+	Stored func(b sources.Board) []posting.Posting
+	// DropTitle reports whether the engine's title rule drops a posting with
+	// this title. A listed row with no stored posting that DropTitle drops is
+	// neither fetched nor returned (it would be dropped before triage anyway).
+	// Nil drops nothing.
+	DropTitle func(title string) bool
+	// Report, when set, receives each listed board's counts.
+	Report func(sources.Board, Stats)
+}
+
+// Stats counts what one List did. Every listed row is counted once, in
+// Reused, Fetched, Refreshed, TitleDropped, Deferred or Gone.
+type Stats struct {
+	Listed   int `json:"listed"`
+	Queries  int `json:"queries"`  // listing queries; a split board has one per bucket
+	Requests int `json:"requests"` // listing requests
+	// Reused rows were returned as stored, with no request.
+	Reused int `json:"reused"`
+	// Fetched rows were new and got a detail request; Refreshed rows were
+	// stored and were re-read in their turn.
+	Fetched   int `json:"fetched"`
+	Refreshed int `json:"refreshed,omitempty"`
+	// TitleDropped rows were new and dropped by title without a request.
+	TitleDropped int `json:"title_dropped,omitempty"`
+	// Deferred rows were new but past MaxDetails: they are fetched on a later
+	// run. Not being stored, their absence ages nothing.
+	Deferred int `json:"deferred,omitempty"`
+	// Gone rows answered their detail with 404: closed since listing.
+	Gone int `json:"gone,omitempty"`
+}
+
+// NewWith returns the Workday source with the bounded detail step: stored
+// postings are reused (a share of them re-read each run), new ones are
+// title-prefiltered, and at most MaxDetails detail requests go out per board
+// per run.
+func NewWith(d egress.Doer, o Options) (sources.Source, error) {
+	if o.Stored == nil {
+		return nil, errors.New("workday: the bounded detail step needs the stored postings (Options.Stored)")
+	}
+	return &source{d: d, now: time.Now, opt: &o}, nil
+}
 
 func (s *source) ATS() posting.ATS { return posting.Workday }
 
 type listRequest struct {
-	AppliedFacets map[string]any `json:"appliedFacets"`
-	Limit         int            `json:"limit"`
-	Offset        int            `json:"offset"`
-	SearchText    string         `json:"searchText"`
-}
-
-type listResponse struct {
-	Total       int         `json:"total"`
-	JobPostings []listedJob `json:"jobPostings"`
+	AppliedFacets map[string][]string `json:"appliedFacets"`
+	Limit         int                 `json:"limit"`
+	Offset        int                 `json:"offset"`
+	SearchText    string              `json:"searchText"`
 }
 
 type listedJob struct {
@@ -110,111 +179,193 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	base := "https://" + host + "/wday/cxs/" + url.PathEscape(tenant) + "/" + url.PathEscape(site)
 
 	// Each search term is listed in full; the board is their union, each
-	// posting once, under the same cap as a single listing (every posting
-	// costs a detail request).
+	// posting once. A listing that cannot account for every job it counts
+	// fails the board: a partial one would age healthy postings as absent.
 	terms := b.SearchTerms()
 	if len(terms) == 0 {
 		terms = []string{""}
 	}
-	var rows []listedJob
-	paths := map[string]bool{}
+	limit, err := capFor(b)
+	if err != nil {
+		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
+	}
+	w := newWalker(s, base+"/jobs", limit)
 	for _, term := range terms {
-		got, err := s.list(ctx, base+"/jobs", term)
-		if err != nil {
+		w.term = term
+		if _, err := w.walk(ctx, map[string][]string{}, 0); err != nil {
 			return nil, fmt.Errorf("workday %q: search %q: %w", b.Token, term, err)
 		}
-		for _, j := range got {
-			if !paths[j.ExternalPath] {
-				paths[j.ExternalPath] = true
-				rows = append(rows, j)
+	}
+	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests}
+	out, err := s.details(ctx, b, base, host, tenant, site, w.rows, &st)
+	if err != nil {
+		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
+	}
+	if s.opt != nil && s.opt.Report != nil {
+		s.opt.Report(b, st)
+	}
+	return out, nil
+}
+
+// fetch is one row that gets a detail request, and whether it was stored.
+type fetch struct {
+	row    listedJob
+	stored bool
+}
+
+// details turns listed rows into postings. Without Options every row is
+// fetched, and a board needing more than MaxDetails fails. With Options, a
+// row whose posting is stored is reused, except the stored rows whose turn it
+// is to be re-read; new rows dropped by title are skipped; new rows are
+// fetched first, then the re-reads, up to MaxDetails, and the new rows past
+// it are deferred. Results keep listing order.
+func (s *source) details(ctx context.Context, b sources.Board, base, host, tenant, site string, rows []listedJob, st *Stats) ([]posting.Posting, error) {
+	seen := s.now()
+	stored := map[string]posting.Posting{}
+	storedKeys := map[posting.Key]bool{}
+	unmatched := 0 // stored postings whose URL names no path on this site
+	if s.opt != nil {
+		prefix := b.KeyPrefix()
+		for _, p := range s.opt.Stored(b) {
+			if !strings.HasPrefix(string(p.Key), prefix) {
+				continue // another board's posting is never this board's row
+			}
+			storedKeys[p.Key] = true
+			if path, ok := storedPath(p.URL, host, site); ok {
+				stored[path] = p
+			} else {
+				unmatched++
 			}
 		}
-		if len(rows) > MaxPostings {
-			return nil, fmt.Errorf("workday %q: %w: the board's searches together list more than %d postings; narrow them",
-				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
+	}
+	slot := make([]*posting.Posting, len(rows))
+	var fresh, refresh []int
+	day := int(seen.UTC().Unix() / 86400)
+	for i, row := range rows {
+		p, ok := stored[row.ExternalPath]
+		switch {
+		case ok && refreshTurn(row.ExternalPath, day):
+			refresh = append(refresh, i)
+		case ok:
+			p.SeenAt = seen
+			slot[i] = &p
+			st.Reused++
+		case s.opt != nil && s.opt.DropTitle != nil && s.opt.DropTitle(strings.TrimSpace(row.Title)):
+			st.TitleDropped++
+		default:
+			fresh = append(fresh, i)
 		}
 	}
-	seen := s.now()
-	out := make([]posting.Posting, 0, len(rows))
-	keys := make(map[posting.Key]bool, len(rows))
-	gone, allowed := 0, maxGone(len(rows))
-	for _, row := range rows {
-		p, err := s.detail(ctx, base, host, tenant, site, row, b, seen)
+	if s.opt == nil && len(fresh) > MaxDetails {
+		// Without stored postings a deferred row cannot be told from a stored
+		// one, and leaving out a stored one would age it as absent.
+		return nil, fmt.Errorf("%w: the board lists %d postings and each costs a detail request, over the %d limit; set the board's search to narrow it",
+			srcutil.ErrTooManyPostings, len(fresh), MaxDetails)
+	}
+	if len(fresh) > MaxDetails {
+		// Deferring is safe only for rows the ledger does not hold. A stored
+		// posting whose URL could not be matched to a path may be one of the
+		// rows about to be deferred, and leaving it out would age it.
+		if unmatched > 0 {
+			return nil, fmt.Errorf("%d stored postings have a URL that names no path on site %q, so the %d new rows past the %d-request cap cannot be deferred safely",
+				unmatched, site, len(fresh)-MaxDetails, MaxDetails)
+		}
+		st.Deferred = len(fresh) - MaxDetails
+		fresh = fresh[:MaxDetails]
+	}
+	if room := MaxDetails - len(fresh); len(refresh) > room {
+		// A stored row whose re-read does not fit is reused as stored.
+		for _, i := range refresh[room:] {
+			p := stored[rows[i].ExternalPath]
+			p.SeenAt = seen
+			slot[i] = &p
+			st.Reused++
+		}
+		refresh = refresh[:room]
+	}
+	jobs := make([]fetch, 0, len(fresh)+len(refresh))
+	for _, i := range fresh {
+		jobs = append(jobs, fetch{row: rows[i]})
+	}
+	for _, i := range refresh {
+		jobs = append(jobs, fetch{row: rows[i], stored: true})
+	}
+	order := append(append([]int{}, fresh...), refresh...)
+	allowed := maxGone(len(jobs))
+	for n, j := range jobs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		p, err := s.detail(ctx, base, host, tenant, site, j.row, b, seen)
 		if errors.Is(err, errDetailGone) {
 			// The posting closed between the listing and its detail; leaving it
 			// out is the truth. Many at once is the detail endpoint failing, not
-			// postings closing, and would empty a healthy board.
-			if gone++; gone > allowed || gone == len(rows) {
-				return nil, fmt.Errorf("workday %q: %d of %d posting details are gone (HTTP 404); the detail endpoint is not answering",
-					b.Token, gone, len(rows))
+			// postings closing, and would empty a healthy board. With every
+			// other row reused, one new posting gone is only that posting.
+			if st.Gone++; st.Gone > allowed || (st.Gone == len(jobs) && st.Reused == 0) {
+				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404); the detail endpoint is not answering",
+					st.Gone, len(jobs))
 			}
 			continue
 		}
 		if err != nil {
 			// A partial listing would make the reconciler age healthy postings
 			// as absent, so one bad posting fails the whole board.
-			return nil, fmt.Errorf("workday %q: posting %q: %w", b.Token, row.ExternalPath, err)
+			return nil, fmt.Errorf("posting %q: %w", j.row.ExternalPath, err)
 		}
-		if keys[p.Key] {
+		if j.stored {
+			st.Refreshed++
+		} else {
+			st.Fetched++
+			// A "new" row that turns out to be stored means its URL and the
+			// listing's path disagree: other stored rows may be among the
+			// deferred, so a deferring listing cannot be trusted.
+			if storedKeys[p.Key] && st.Deferred > 0 {
+				return nil, fmt.Errorf("posting %s is stored under a URL that does not match its listed path %q, so the %d deferred rows may hold stored postings",
+					p.Key, j.row.ExternalPath, st.Deferred)
+			}
+		}
+		slot[order[n]] = &p
+	}
+	out := make([]posting.Posting, 0, len(rows))
+	keys := make(map[posting.Key]bool, len(rows))
+	for _, p := range slot {
+		if p == nil || keys[p.Key] {
 			continue
 		}
 		keys[p.Key] = true
-		out = append(out, p)
+		out = append(out, *p)
 	}
 	return out, nil
 }
 
-// list pages the listing endpoint for one search term. Workday reports total
-// only on the first page (later pages say 0), so total is read once; an empty
-// page always ends the loop, and the page count is bounded either way.
-func (s *source) list(ctx context.Context, endpoint, term string) ([]listedJob, error) {
-	var rows []listedJob
-	paths := map[string]bool{}
-	total, offset := 0, 0
-	for page := 0; page < maxPages; page++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		var resp listResponse
-		req := listRequest{AppliedFacets: map[string]any{}, Limit: pageSize, Offset: offset, SearchText: term}
-		if err := s.postJSON(ctx, endpoint, req, &resp); err != nil {
-			return nil, err
-		}
-		// A search with no match still answers "jobPostings":[]; a reply
-		// without the array is an error page or a new shape, never an empty board.
-		if resp.JobPostings == nil {
-			return nil, fmt.Errorf("listing at offset %d has no jobPostings array", offset)
-		}
-		if page == 0 {
-			total = resp.Total
-			if total > MaxPostings {
-				return nil, fmt.Errorf("%w: board lists %d postings, over the %d limit; set the board's search to narrow it",
-					srcutil.ErrTooManyPostings, total, MaxPostings)
-			}
-		}
-		if len(resp.JobPostings) == 0 {
-			return rows, nil
-		}
-		for _, j := range resp.JobPostings {
-			// Paging shifts under a board that changes mid-listing; a repeat
-			// is the same posting, not a second one.
-			if paths[j.ExternalPath] {
-				continue
-			}
-			paths[j.ExternalPath] = true
-			rows = append(rows, j)
-		}
-		if len(rows) > MaxPostings {
-			return nil, fmt.Errorf("%w: board lists more than %d postings; set the board's search to narrow it",
-				srcutil.ErrTooManyPostings, MaxPostings)
-		}
-		offset += len(resp.JobPostings)
-		if total > 0 && offset >= total {
-			return rows, nil
-		}
-	}
-	return nil, fmt.Errorf("listing did not end within %d pages", maxPages)
+// refreshTurn reports whether the stored posting at path is re-read on day:
+// each path's turn comes once every refreshDays days.
+func refreshTurn(path string, day int) bool {
+	h := fnv.New32a()
+	h.Write([]byte(path))
+	return int(h.Sum32()%refreshDays) == day%refreshDays
 }
+
+// storedPath is the listing externalPath a stored posting's URL carries: the
+// path after the site segment (and an optional locale before it) on host.
+// ok is false for a URL of another host or site, which is then never reused.
+func storedPath(raw, host, site string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Hostname(), host) {
+		return "", false
+	}
+	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(segs) > 1 && !strings.EqualFold(segs[0], site) && locale.MatchString(segs[0]) {
+		segs = segs[1:]
+	}
+	if len(segs) < 2 || !strings.EqualFold(segs[0], site) {
+		return "", false
+	}
+	return "/" + strings.Join(segs[1:], "/"), true
+}
+
+var locale = regexp.MustCompile(`^[a-z]{2}(-[A-Za-z]{2,4})?$`)
 
 func (s *source) detail(ctx context.Context, base, host, tenant, site string, row listedJob, b sources.Board, seen time.Time) (posting.Posting, error) {
 	path, err := escapePath(row.ExternalPath)
@@ -349,10 +500,15 @@ func checkHost(host, tenant string) (string, error) {
 }
 
 // escapePath validates an externalPath from the (untrusted) listing and
-// escapes each segment, so it can only extend the site path.
+// escapes each segment, so it can only extend the site path: under /job/,
+// with no dot segment, empty segment, backslash or encoded separator or dot
+// (a server that decodes "%2e%2e" or "%2f" before routing would climb out).
 func escapePath(p string) (string, error) {
-	if !strings.HasPrefix(p, "/") {
-		return "", fmt.Errorf("externalPath %q is not absolute", p)
+	if !strings.HasPrefix(p, "/job/") || len(p) > maxPathLen {
+		return "", fmt.Errorf("externalPath %q is not a job path", p)
+	}
+	if strings.ContainsRune(p, '\\') || encodedDotOrSlash.MatchString(p) {
+		return "", fmt.Errorf("externalPath %q has an encoded separator", p)
 	}
 	segs := strings.Split(p[1:], "/")
 	for i, seg := range segs {
@@ -363,3 +519,8 @@ func escapePath(p string) (string, error) {
 	}
 	return "/" + strings.Join(segs, "/"), nil
 }
+
+// maxPathLen bounds one externalPath.
+const maxPathLen = 1000
+
+var encodedDotOrSlash = regexp.MustCompile(`(?i)%(2e|2f|5c)`)

@@ -75,6 +75,41 @@ final class HostProcessTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.appendingPathComponent("bank.json").path))
     }
 
+    /// The extension's persistent port matches replies to requests by position alone, so this is the
+    /// contract it leans on: pipelined requests are answered one each, in order, and the host stays up
+    /// until its input ends.
+    func testPipelinedFramesGetOneReplyEachInOrderAndHostExitsOnlyAtEndOfInput() throws {
+        let store = try tempDir(self)
+        let p = Process()
+        p.executableURL = try hostBinary()
+        p.arguments = ["chrome-extension://\(ChromeConnector.defaultExtensionID)/", "--store-dir", store.path]
+        let inPipe = Pipe(), outPipe = Pipe()
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = Pipe()
+        try p.run()
+        // A hung host must fail the test, not stall it.
+        let watchdog = DispatchWorkItem { p.terminate() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: watchdog)
+        defer { watchdog.cancel() }
+
+        // Each put is accepted only at the revision the previous one produced, so the reply's rev
+        // identifies which request it answers.
+        let n = 50
+        let input = try frames((0..<n).map { ["op": "put", "baseRev": $0, "bank": bankJSON([])] as [String: Any] })
+        inPipe.fileHandleForWriting.write(input)
+        for i in 0..<n {
+            let m = try XCTUnwrap(try NativeMessaging.readMessage(from: outPipe.fileHandleForReading), "no reply for frame \(i)")
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: m) as? [String: Any])
+            XCTAssertEqual(reply["rev"] as? Int, i + 1, "reply \(i) answered a different request")
+        }
+        XCTAssertTrue(p.isRunning, "the host exited before its input ended")
+        try inPipe.fileHandleForWriting.close()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        XCTAssertNil(try NativeMessaging.readMessage(from: outPipe.fileHandleForReading), "extra frames after the last reply")
+    }
+
     func testDraftOpRunsVaniAndOutlivesTheIdleWatchdogLogic() throws {
         let store = try tempDir(self)
         let vani = try fakeVani(self)

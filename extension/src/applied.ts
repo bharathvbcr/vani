@@ -7,6 +7,8 @@
 //                    (the rest of the query and the fragment are dropped before the URL
 //                    leaves the browser; internal/joburl is the Go twin, and
 //                    test/vectors/joburl.json holds the cases both must agree on)
+//   postingKey       pageKey with one key per Workday posting across its routes (the per-job
+//                    resume's key; pageKey itself stays what jobFind sends to Go)
 //   isFinalSubmit    the button label that means "send the application"
 //   parseFind        the host's jobFind reply -> an offer, or nothing to offer
 //   createBroker     the background's side: find on a submit signal (or the popup being
@@ -66,6 +68,35 @@ export function pageKey(raw: unknown): string | null {
     if (v !== null && ID_VALUE.test(v)) kept.push(`${name}=${v}`);
   }
   return `${u.protocol}//${hostPort}${path}${kept.length ? `?${kept.join("&")}` : ""}`;
+}
+
+const WORKDAY_HOST = /\.myworkdayjobs\.com$/;
+/** Workday's language-region path prefix (en-US, fr-CA). A site called "ext" or "careers" never has this shape. */
+const WORKDAY_LOCALE = /^[a-z]{2}-[A-Z]{2}$/;
+
+/**
+ * One key per posting. Same as pageKey except on Workday, where one posting has several routes
+ * (/site/job/Location/Title_ID, /en-US/site/job/..., /en-US/site/details/Title_ID from a search,
+ * and its /apply/... pages, whose location may be encoded differently): they fold to
+ * scheme://host/site/job/Title_ID, so a per-job resume chosen on one is found on the others.
+ *
+ * pageKey itself stays route-specific: it is what jobFind sends to internal/joburl, which compares
+ * it with the ledger's own URLs, so changing it is a change to that shared contract.
+ */
+export function postingKey(raw: unknown): string | null {
+  const page = pageKey(raw);
+  if (page === null) return null;
+  const u = new URL(page);
+  if (!WORKDAY_HOST.test(u.hostname)) return page;
+  const segs = u.pathname.split("/").filter(Boolean);
+  if (segs.length > 0 && WORKDAY_LOCALE.test(segs[0]!)) segs.shift();
+  const [site, kind, ...rest] = segs;
+  if (site === undefined || (kind !== "job" && kind !== "details")) return page;
+  const apply = rest.findIndex(s => s.toLowerCase() === "apply");
+  const posting = apply < 0 ? rest : rest.slice(0, apply);
+  const slug = posting.at(-1);
+  if (slug === undefined) return page;
+  return `${u.protocol}//${u.host}/${site}/job/${slug}`;
 }
 
 /**

@@ -1,6 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { generateTailoredDraft, matchTailorableQuestion } from "../src/tailor";
+import { generateTailoredDraft, matchTailorableQuestion, templateTailoring } from "../src/tailor";
 import type { JobInfo } from "../src/draft";
+
+describe("templateTailoring: why-company and why-role questions are Draft's", () => {
+  test("no template for a motivation question, in any wording the matchers know", () => {
+    for (const label of [
+      "Why do you want to work at Acme?",
+      "What attracts you to our company and mission?",
+      "Why are you interested in this position?",
+      "Why Anthropic?",
+      "Why Anthropic",
+      "Why us?",
+    ]) {
+      expect(templateTailoring(label, "Anthropic")).toBeNull();
+      expect(templateTailoring(label)).toBeNull();
+    }
+    // The company-name matcher alone would have called this why_company.
+    expect(matchTailorableQuestion("Why at Anthropic, specifically?", "Anthropic")?.kind).toBe("why_company");
+    expect(templateTailoring("Why at Anthropic, specifically?", "Anthropic")).toBeNull();
+  });
+
+  test("other tailorable questions keep their templates", () => {
+    expect(templateTailoring("What makes you a strong fit for this team?")?.kind).toBe("role_fit");
+    expect(templateTailoring("Cover letter or note to the hiring manager")?.kind).toBe("cover_letter");
+    expect(templateTailoring("What are your salary expectations?")?.kind).toBe("salary_expectations");
+    expect(templateTailoring("")).toBeNull();
+    expect(templateTailoring("What is your phone number?")).toBeNull();
+  });
+});
 
 describe("tailored repeated questions engine", () => {
   test("matchTailorableQuestion categorizes repeated questions correctly", () => {
@@ -138,5 +165,24 @@ describe("tailored repeated questions engine", () => {
 
     const diversityDraft = generateTailoredDraft("diversity_perspective", jobWithComp);
     expect(diversityDraft).toContain("diverse viewpoints");
+  });
+
+  test("matchTailorableQuestion matches company-specific prompts", () => {
+    // Direct company questions
+    const qAnthropic = matchTailorableQuestion("Why Anthropic?");
+    expect(qAnthropic?.kind).toBe("why_company");
+
+    const qStripe = matchTailorableQuestion("Why Stripe?");
+    expect(qStripe?.kind).toBe("why_company");
+
+    const qWithCompany = matchTailorableQuestion("Why at OpenAI?", "OpenAI");
+    expect(qWithCompany?.kind).toBe("why_company");
+
+    const qJoin = matchTailorableQuestion("What makes you want to join our team?");
+    expect(qJoin?.kind).toBe("why_company");
+
+    // Negative lookahead check: ensure "Why this role?" stays why_role
+    const qRole = matchTailorableQuestion("Why this role?");
+    expect(qRole?.kind).toBe("why_role");
   });
 });

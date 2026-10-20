@@ -59,6 +59,10 @@ func AppleKey(board, positionID string) (Key, error) { return build(Apple, board
 // the board token.
 func EightfoldKey(domain, id string) (Key, error) { return build(Eightfold, domain, id) }
 
+// JibeKey is jb:{client_code}:{req_id}; the client code ("amd") is the board
+// token.
+func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, reqID) }
+
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
 // no trailing slash) so cosmetic link differences do not split one posting
@@ -115,7 +119,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Page, Other:
 		return a
 	}
 	return ""

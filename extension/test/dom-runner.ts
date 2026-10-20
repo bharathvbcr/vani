@@ -4,6 +4,7 @@ import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, scanForm } from "../s
 import { clearMarks, fillAll, fillRef, insertDraft } from "../src/fill";
 import { currentText, draftable, suggest } from "../src/suggest";
 import { readJobInfo } from "../src/jobinfo";
+import { scrapePageJobs } from "../src/scraper";
 import { mergeCapture } from "../src/bank";
 import { coverageLine, coverageOf } from "../src/coverage";
 import { createTracker } from "../src/tracker";
@@ -11,6 +12,7 @@ import { type Bank, type FieldInfo, emptyBank } from "../src/types";
 import { intentOf, motivationEssay } from "../src/intents";
 import { BASICS_HOST, basicsFields } from "../src/basics";
 import { matchField } from "../src/match";
+import { observeRoots, runRounds, waitForQuiet } from "../src/rounds";
 import type { ResumeFetch } from "../src/resume";
 
 const lines: string[] = [];
@@ -887,6 +889,158 @@ async function greenhouseResumeFixture(): Promise<void> {
   frame.remove();
 }
 
+async function greenhouseScraperFixture(): Promise<void> {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "width:900px;height:400px";
+  frame.srcdoc = `<!doctype html>
+    <meta charset=utf-8>
+    <title>Jobs at Anthropic</title>
+    <meta property="og:title" content="Anthropic">
+    <div class="image-container"><img alt="Anthropic Logo" src="logo.png"></div>
+    <h1 class="page-header">Open Roles</h1>
+    <div class="job-posts">
+      <div class="job-posts--table--department">
+        <h3 class="section-header">AI Research & Engineering</h3>
+        <table class="job-posts--table">
+          <tbody>
+            <tr class="job-post">
+              <td class="cell">
+                <a href="https://job-boards.greenhouse.io/anthropic/jobs/5183044008">
+                  <p class="body body--medium">Anthropic Fellows Program, AI Safety & Security</p>
+                  <p class="body body__secondary body--metadata">London, UK; San Francisco, CA</p>
+                </a>
+              </td>
+            </tr>
+            <tr class="job-post">
+              <td class="cell">
+                <a href="https://job-boards.greenhouse.io/anthropic/jobs/5183053008">
+                  <p class="body body--medium">Anthropic Fellows Program, The Anthropic Institute (Economics & Policy)</p>
+                  <p class="body body__secondary body--metadata">San Francisco, CA; Remote</p>
+                </a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  document.body.append(frame);
+  await new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
+  const doc = frame.contentDocument!;
+  const res = scrapePageJobs(doc, "job-boards.greenhouse.io");
+  check("greenhouse board scraper: extracts both jobs", res.totalFound === 2, `got ${res.totalFound}`);
+  check("greenhouse board scraper: company is Anthropic", res.jobs.every(j => j.company === "Anthropic"), res.jobs[0]?.company ?? "");
+  check("greenhouse board scraper: clean title", res.jobs.some(j => j.title === "Anthropic Fellows Program, AI Safety & Security"), res.jobs.map(j => j.title).join("; "));
+  check("greenhouse board scraper: policy role is kept", res.jobs.some(j => j.title.includes("Economics & Policy")), "policy role missing");
+  frame.remove();
+}
+
+/** Waits follow the page (MutationObserver), and plain fields are filled before widgets, in a real browser. */
+async function fillWaits(): Promise<void> {
+  type Ref = Parameters<typeof fillRef>[0];
+  const box = document.createElement("div");
+  box.innerHTML = `<input id="fw-t" type="text"><button id="fw-b" role="combobox" aria-haspopup="listbox" aria-controls="fw-l">Select</button><div id="fw-l" role="listbox"></div>`;
+  document.body.appendChild(box);
+  const btn = q<HTMLButtonElement>(box, "#fw-b"), list = q<HTMLElement>(box, "#fw-l"), txt = q<HTMLInputElement>(box, "#fw-t");
+  let renderedAt = 0;
+  btn.addEventListener("click", () => setTimeout(() => {
+    renderedAt = performance.now();
+    list.innerHTML = `<div role="option">Yes</div><div role="option">No</div>`;
+    for (const o of Array.from(list.children)) o.addEventListener("click", () => { btn.textContent = o.textContent; });
+  }, 30));
+  const fi = (label: string, kind: FieldInfo["kind"]): FieldInfo => ({ kind, label, name: "", autocomplete: "", automationId: "", options: [], required: false, value: [] });
+  const refs: Ref[] = [
+    { info: fi("Relocate fw", "select"), els: [btn], widget: "combobox", manual: "" },
+    { info: fi("City fw", "text"), els: [txt], widget: "native", manual: "" },
+  ];
+  const answer = (key: string, value: string[]) => ({ key, labels: [], kind: "text" as const, value, sensitivity: "standard" as const, signatures: [], uses: 1, fills: 0, updatedAt: "2025-01-01T00:00:00Z", review: false });
+  const m = (key: string, value: string[]) => ({ answer: answer(key, value), via: "label" as const, score: 0.9, value, review: false });
+  const matches = new Map([[refs[0]!, m("relocate", ["Yes"])], [refs[1]!, m("city", ["Oslo"])]]);
+  let btnSeenWhenTextFilled: string | null = null;
+  txt.addEventListener("input", () => { btnSeenWhenTextFilled = btn.textContent; });
+  const t0 = performance.now();
+  const out = await fillAll(refs, emptyBank(), "x.example", { matches });
+  const done = performance.now();
+  const took = done - t0;
+  // Headless Chrome throttles page timers by hundreds of ms, and by different amounts per timer, so
+  // total time says little. What the fill controls is how soon it acts once the options exist: the
+  // old code polled every 25 ms behind a 500 ms open wait and a 600 ms verdict wait.
+  const afterRender = renderedAt > 0 ? done - renderedAt : Infinity;
+  check("fill waits: outcomes come back in the original field order", out[0]?.label === "Relocate fw" && out[1]?.label === "City fw", JSON.stringify(out));
+  check("fill waits: a list that renders 30 ms after the click is chosen, and the plain field is filled first", out.every(o => o.filled) && btn.textContent === "Yes" && txt.value === "Oslo" && btnSeenWhenTextFilled === "Select", `${JSON.stringify(out)} btn ${btn.textContent} seen ${btnSeenWhenTextFilled}`);
+  check("fill waits: the fill acts on the options as soon as they render", afterRender < 150, `${Math.round(afterRender)} ms after render (${Math.round(took)} ms in all)`);
+  box.remove();
+}
+
+// A state list that exists only 40 ms after the country is typed in: round 2 of the fill finds and fills it.
+async function dependentFields(): Promise<void> {
+  const tpl = document.createElement("div");
+  tpl.innerHTML = `<label for="dpt-c">Country dp</label><input id="dpt-c" type="text" value="Germany"><label for="dpt-s">State dp</label><select id="dpt-s"><option value="">Select</option><option selected>Bavaria</option><option>Hesse</option></select>`;
+  document.body.appendChild(tpl);
+  const bank = learn(tpl);
+  tpl.remove();
+
+  const box = document.createElement("div");
+  box.innerHTML = `<label for="dp-c">Country dp</label><input id="dp-c" type="text"><div id="dp-slot"></div>`;
+  document.body.appendChild(box);
+  const slot = q<HTMLElement>(box, "#dp-slot");
+  q<HTMLInputElement>(box, "#dp-c").addEventListener("input", () => setTimeout(() => {
+    slot.innerHTML = `<label for="dp-s">State dp</label><select id="dp-s"><option value="">Select</option><option>Bavaria</option><option>Hesse</option></select>`;
+  }, 40));
+  const observe = (onChange: () => void): (() => void) => {
+    const mo = new MutationObserver(onChange);
+    mo.observe(box, { childList: true, subtree: true }); // this form only: the rest of the test page keeps moving
+    return () => mo.disconnect();
+  };
+  const seen: number[] = [];
+  const t0 = performance.now();
+  const out = await runRounds<ReturnType<typeof scanForm>["refs"][number], Awaited<ReturnType<typeof fillAll>>[number]>({
+    scan: () => scanForm(box).refs,
+    fill: (refs, round) => { seen.push(round); return fillAll(refs, bank, "x.example", { overwrite: false }); },
+    settle: ms => waitForQuiet(observe, 250, ms),
+    now: () => performance.now(),
+  });
+  const took = performance.now() - t0;
+  const state = box.querySelector<HTMLSelectElement>("#dp-s");
+  check("rounds: the state list that appeared after the country was filled in round 2", seen.join() === "1,2" && state?.value === "Bavaria", `rounds ${seen.join()} state ${state?.value} ${JSON.stringify(out)}`);
+  check("rounds: the country is filled once and counted once", out.filter(o => o.filled).length === 2, JSON.stringify(out));
+  check("rounds: a settled page finishes within the 6 s budget", took < 6000, `${Math.round(took)} ms`);
+  box.remove();
+}
+
+// The same, inside a real open shadow root: a document-level observer never hears the state list arrive, observers on the scan's roots do.
+async function dependentFieldsInShadow(): Promise<void> {
+  const tpl = document.createElement("div");
+  tpl.innerHTML = `<label for="dps-c">Country dps</label><input id="dps-c" type="text" value="Germany"><label for="dps-s">State dps</label><select id="dps-s"><option value="">Select</option><option selected>Bavaria</option><option>Hesse</option></select>`;
+  document.body.appendChild(tpl);
+  const bank = learn(tpl);
+  tpl.remove();
+
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const sr = host.attachShadow({ mode: "open" });
+  sr.innerHTML = `<label for="dps-c">Country dps</label><input id="dps-c" type="text"><div id="dps-slot"></div>`;
+  q<HTMLInputElement>(sr, "#dps-c").addEventListener("input", () => setTimeout(() => {
+    q<HTMLElement>(sr, "#dps-slot").innerHTML = `<label for="dps-s">State dps</label><select id="dps-s"><option value="">Select</option><option>Bavaria</option><option>Hesse</option></select>`;
+  }, 40));
+  let docHeard = 0;
+  const docOnly = new MutationObserver(() => { docHeard++; });
+  docOnly.observe(host, { childList: true, subtree: true }); // what the old settle watched: the light tree, not the shadow root
+  let roots: readonly Node[] = [];
+  const seen: number[] = [];
+  const out = await runRounds<ReturnType<typeof scanForm>["refs"][number], Awaited<ReturnType<typeof fillAll>>[number]>({
+    scan: () => { const s = scanForm(host); roots = s.roots; return s.refs; },
+    fill: (refs, round) => { seen.push(round); return fillAll(refs, bank, "x.example", { overwrite: false }); },
+    settle: ms => waitForQuiet(onChange => observeRoots(roots, onChange), 250, ms),
+    now: () => performance.now(),
+  });
+  docOnly.disconnect();
+  const state = sr.getElementById("dps-s") as HTMLSelectElement | null;
+  check("shadow rounds: the scan walked the shadow root", roots.includes(sr), `${roots.length} roots`);
+  check("shadow rounds: a document-level observer never heard the shadow insertion", docHeard === 0, `heard ${docHeard}`);
+  check("shadow rounds: the state list added inside the shadow root was filled in round 2", seen.join() === "1,2" && state?.value === "Bavaria", `rounds ${seen.join()} state ${state?.value} ${JSON.stringify(out)}`);
+  host.remove();
+}
+
 async function main(): Promise<void> {
   for (const [name, fn] of [
     ["resume attach", resumeAttach],
@@ -908,6 +1062,10 @@ async function main(): Promise<void> {
     ["dial picker", dialPicker],
     ["greenhouse fixture", greenhouseFixture],
     ["greenhouse resume", greenhouseResumeFixture],
+    ["greenhouse scraper", greenhouseScraperFixture],
+    ["fill waits", fillWaits],
+    ["dependent fields", dependentFields],
+    ["dependent fields in a shadow root", dependentFieldsInShadow],
   ] as const) {
     try { await fn(); } catch (e) { check(`${name} crashed`, false, e instanceof Error ? `${e.message}\n${e.stack}` : String(e)); }
   }

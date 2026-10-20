@@ -46,6 +46,7 @@ private struct ErrorBanner: View {
     let title: String
     let message: String
     let stale: Bool
+    @State private var copied = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -56,6 +57,21 @@ private struct ErrorBanner: View {
                 if stale { Text("What is shown below is from the last successful read.").foregroundStyle(.secondary) }
             }
             Spacer(minLength: 0)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("\(title)\n\(message)", forType: .string)
+                copied = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    copied = false
+                }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .foregroundStyle(copied ? .green : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Copy error details to clipboard")
         }
         .padding(10)
         .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))

@@ -64,13 +64,12 @@ describe("bank size cap", () => {
     for (let i = 0; i < n; i++) b.answers[`key${i}`] = answer(`key${i}`, "v".repeat(valueChars), "2026-01-01");
     return b;
   }
-  test("parseBank refuses a bank over MAX_BANK_BYTES and accepts one under it", () => {
-    const over = bigBank(9_000, 110);
-    expect(bankBytes(over)).toBeGreaterThan(MAX_BANK_BYTES);
-    expect(() => parseBank(JSON.stringify(over))).toThrow(/max 900000/);
-    const ok = bigBank(9_000, 90);
-    expect(bankBytes(ok)).toBeLessThan(MAX_BANK_BYTES);
-    expect(Object.keys(parseBank(JSON.stringify(ok)).bank.answers).length).toBe(90);
+  test("parseBank accepts a bank over 1 MB and enforces MAX_BANK_BYTES", () => {
+    const big = bigBank(9_000, 110);
+    expect(bankBytes(big)).toBeGreaterThan(1_000_000);
+    expect(Object.keys(parseBank(JSON.stringify(big)).bank.answers).length).toBe(110);
+    const huge = { ...emptyBank(), answers: { big: answer("big", "x".repeat(MAX_BANK_BYTES + 1), "2026-01-01") } };
+    expect(() => parseBank(JSON.stringify(huge))).toThrow(/larger than 50000000 bytes/);
   });
 });
 
@@ -107,6 +106,49 @@ class FakeHost {
         return { rev: this.rev, droppedSecret: 0 };
       }
       case "log": this.log.push(m.entry as object); return { ok: true };
+      case "patch": {
+        if (m.baseRev !== undefined && m.baseRev !== this.rev) return { conflict: true, rev: this.rev };
+        const upsert = Array.isArray(m.upsert) ? (m.upsert as Answer[]) : [];
+        const del = Array.isArray(m.delete) ? (m.delete as string[]) : [];
+        let dropped = 0;
+        const answers = { ...this.bank.answers };
+        for (const k of del) delete answers[k];
+        for (const a of upsert) {
+          if (a.sensitivity === "secret") { dropped++; continue; }
+          answers[a.key] = a;
+        }
+        this.rev++;
+        this.bank = { ...this.bank, answers };
+        return { op: "patch", rev: this.rev, droppedSecret: dropped };
+      }
+      case "queryCandidates": {
+        const sigs = new Set(Array.isArray(m.signatures) ? (m.signatures as string[]) : []);
+        const keys = new Set(Array.isArray(m.keys) ? (m.keys as string[]) : []);
+        const labels = new Set(Array.isArray(m.labels) ? (m.labels as string[]) : []);
+        const matches = Object.values(this.bank.answers).filter(a =>
+          keys.has(a.key) ||
+          a.signatures.some(s => sigs.has(s)) ||
+          a.labels.some(l => labels.has(l))
+        );
+        return { ok: true, candidates: matches };
+      }
+      case "listAnswers": {
+        const offset = typeof m.offset === "number" ? m.offset : 0;
+        const limit = typeof m.limit === "number" ? m.limit : 50;
+        const s = typeof m.search === "string" ? m.search.toLowerCase() : "";
+        let list = Object.values(this.bank.answers);
+        if (s) {
+          list = list.filter(a =>
+            a.key.toLowerCase().includes(s) ||
+            a.value.some(v => v.toLowerCase().includes(s)) ||
+            a.labels.some(l => l.toLowerCase().includes(s))
+          );
+        }
+        list.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+        const total = list.length;
+        const slice = list.slice(offset, offset + limit);
+        return { op: "answersList", answers: slice, total, rev: this.rev };
+      }
       default: return { error: "unknown op" };
     }
   };
@@ -219,6 +261,98 @@ describe("store: native mode", () => {
     await store.loadBank();
     expect(host.calls.filter(c => c.op === "ping").length).toBe(2);
   });
+
+  test("handles chunked get transparently across multiple parts", async () => {
+    const local = new FakeLocal();
+    const testBank: Bank = {
+      ...emptyBank(),
+      answers: { testKey: answer("testKey", "chunkedValue", "2026-01-01") },
+    };
+    const fullJSON = JSON.stringify(testBank);
+    const mid = Math.floor(fullJSON.length / 2);
+    const chunk0 = fullJSON.slice(0, mid);
+    const chunk1 = fullJSON.slice(mid);
+
+    const transport: Transport = async msg => {
+      const m = msg as Record<string, unknown>;
+      if (m.op === "ping") return { ok: true, protocol: 1, rev: 3 };
+      if (m.op === "get") {
+        return {
+          rev: 3,
+          chunked: true,
+          totalBytes: fullJSON.length,
+          chunkIndex: 0,
+          chunkCount: 2,
+          chunk: chunk0,
+        };
+      }
+      if (m.op === "getChunk") {
+        expect(m.rev).toBe(3);
+        expect(m.chunkIndex).toBe(1);
+        return {
+          rev: 3,
+          chunkIndex: 1,
+          chunkCount: 2,
+          chunk: chunk1,
+        };
+      }
+      return { error: "unexpected" };
+    };
+
+    const store = createStore({ transport, local });
+    const loaded = await store.loadBank();
+    expect(loaded.answers.testKey?.value).toEqual(["chunkedValue"]);
+  });
+
+  test("patchAnswers updates and deletes answers atomically", async () => {
+    const { host, store } = setup();
+    host.bank = bankOf(answer("toDelete", "del", "2026-01-01"), answer("toKeep", "keep", "2026-01-01"));
+    const patchRes = await store.patchAnswers(
+      [answer("newAnswer", "val", "2026-06-01"), answer("secretField", "pass", "2026-06-01", { sensitivity: "secret" })],
+      ["toDelete"]
+    );
+    expect(patchRes.rev).toBe(1);
+    expect(patchRes.droppedSecret).toBe(1);
+    expect(host.bank.answers.toDelete).toBeUndefined();
+    expect(host.bank.answers.toKeep).toBeDefined();
+    expect(host.bank.answers.newAnswer?.value).toEqual(["val"]);
+    expect(host.bank.answers.secretField).toBeUndefined();
+  });
+
+  test("queryCandidates filters candidate answers by signature, key, or label", async () => {
+    const { host, store } = setup();
+    host.bank = bankOf(
+      answer("firstName", "John", "2026-01-01", { signatures: ["gh|first_name"] }),
+      answer("lastName", "Doe", "2026-01-01", { labels: ["family name"] }),
+      answer("unrelated", "something", "2026-01-01")
+    );
+    const candidates = await store.queryCandidates({
+      signatures: ["gh|first_name"],
+      labels: ["family name"],
+      keys: ["otherKey"],
+    });
+    expect(candidates.length).toBe(2);
+    const keys = candidates.map(c => c.key).sort();
+    expect(keys).toEqual(["firstName", "lastName"]);
+  });
+
+  test("listAnswers returns paginated and searched answers", async () => {
+    const { host, store } = setup();
+    host.bank = bankOf(
+      answer("apple", "pie", "2026-01-01"),
+      answer("banana", "split", "2026-02-01"),
+      answer("cherry", "tart", "2026-03-01")
+    );
+    const page = await store.listAnswers(0, 2);
+    expect(page.total).toBe(3);
+    expect(page.answers.length).toBe(2);
+    expect(page.answers[0]?.key).toBe("cherry");
+    expect(page.answers[1]?.key).toBe("banana");
+
+    const searchRes = await store.listAnswers(0, 10, "pie");
+    expect(searchRes.total).toBe(1);
+    expect(searchRes.answers[0]?.key).toBe("apple");
+  });
 });
 
 describe("store: browser (local) mode", () => {
@@ -303,6 +437,58 @@ describe("store: browser (local) mode", () => {
     expect(b.answers).toEqual({});
     expect(local.data.vaniBank).toEqual({ version: 1, answers: "corrupt_data" });
     expect(store.migrationNote()).toMatch(/could not be read/);
+  });
+
+  test("patchAnswers in browser mode updates and deletes in local storage", async () => {
+    const { host, store, local } = setup();
+    host.down = true;
+    local.data.vaniBank = bankOf(answer("toDelete", "del", "2026-01-01"), answer("toKeep", "keep", "2026-01-01"));
+    const patchRes = await store.patchAnswers(
+      [answer("newAnswer", "val", "2026-06-01"), answer("secretField", "pass", "2026-06-01", { sensitivity: "secret" })],
+      ["toDelete"]
+    );
+    expect(patchRes.droppedSecret).toBe(1);
+    const stored = (await store.loadBank()).answers;
+    expect(stored.toDelete).toBeUndefined();
+    expect(stored.toKeep).toBeDefined();
+    expect(stored.newAnswer?.value).toEqual(["val"]);
+    expect(stored.secretField).toBeUndefined();
+  });
+
+  test("queryCandidates in browser mode filters local bank", async () => {
+    const { host, store, local } = setup();
+    host.down = true;
+    local.data.vaniBank = bankOf(
+      answer("firstName", "John", "2026-01-01", { signatures: ["gh|first_name"] }),
+      answer("lastName", "Doe", "2026-01-01", { labels: ["family name"] }),
+      answer("unrelated", "something", "2026-01-01")
+    );
+    const candidates = await store.queryCandidates({
+      signatures: ["gh|first_name"],
+      labels: ["family name"],
+    });
+    expect(candidates.length).toBe(2);
+    const keys = candidates.map(c => c.key).sort();
+    expect(keys).toEqual(["firstName", "lastName"]);
+  });
+
+  test("listAnswers in browser mode paginates and filters local bank", async () => {
+    const { host, store, local } = setup();
+    host.down = true;
+    local.data.vaniBank = bankOf(
+      answer("apple", "pie", "2026-01-01"),
+      answer("banana", "split", "2026-02-01"),
+      answer("cherry", "tart", "2026-03-01")
+    );
+    const page = await store.listAnswers(0, 2);
+    expect(page.total).toBe(3);
+    expect(page.answers.length).toBe(2);
+    expect(page.answers[0]?.key).toBe("cherry");
+    expect(page.answers[1]?.key).toBe("banana");
+
+    const searchRes = await store.listAnswers(0, 10, "pie");
+    expect(searchRes.total).toBe(1);
+    expect(searchRes.answers[0]?.key).toBe("apple");
   });
 });
 
@@ -393,5 +579,216 @@ describe("shared classifier vectors", () => {
       const got = classify({ kind: v.kind as Answer["kind"], label: v.label, name: v.name, autocomplete: v.autocomplete });
       expect({ label: v.label, got }).toEqual({ label: v.label, got: v.want });
     }
+  });
+});
+
+describe("store: queryCandidates reply shape", () => {
+  test("reads the candidates key the macOS host replies with", async () => {
+    const wanted = answer("firstName", "John", "2026-01-01");
+    const transport: Transport = async msg => {
+      const m = msg as Record<string, unknown>;
+      if (m.op === "ping") return { ok: true, protocol: 1, rev: 1 };
+      if (m.op === "queryCandidates") return { ok: true, candidates: [wanted] };
+      return { error: "unexpected op" };
+    };
+    const store = createStore({ transport, local: new FakeLocal(), timeoutMs: 50, now: () => 1_000 });
+    expect(await store.queryCandidates({ keys: ["firstName"] })).toEqual([wanted]);
+  });
+});
+
+describe("store: the bank memo and patch with a baseRev", () => {
+  const gets = (host: FakeHost): number => host.calls.filter(c => c.op === "get").length;
+
+  async function seeded() {
+    const s = setup();
+    s.host.rev = 5;
+    s.host.bank = bankOf(answer("city", "Berlin", "2026-05-01T00:00:00Z"), answer("zip", "10115", "2026-05-01T00:00:00Z"));
+    return s;
+  }
+
+  test("ten reads inside the window make one native get; the first read after it makes one more", async () => {
+    const { host, store, clock } = await seeded();
+    for (let i = 0; i < 10; i++) expect((await store.loadSnapshot()).rev).toBe(5);
+    expect(gets(host)).toBe(1);
+    clock.t += 1_999;
+    await store.loadSnapshot();
+    expect(gets(host)).toBe(1);
+    clock.t += 1;
+    await store.loadBank();
+    expect(gets(host)).toBe(2);
+  });
+
+  test("concurrent reads share one get", async () => {
+    const { host, store } = await seeded();
+    const all = await Promise.all(Array.from({ length: 8 }, () => store.loadSnapshot()));
+    expect(gets(host)).toBe(1);
+    expect(new Set(all.map(r => r.rev))).toEqual(new Set([5]));
+  });
+
+  test("fresh always asks", async () => {
+    const { host, store } = await seeded();
+    await store.loadSnapshot();
+    await store.loadSnapshot({ fresh: true });
+    expect(gets(host)).toBe(2);
+  });
+
+  test("a write drops the memo, so the next read sees it", async () => {
+    const { host, store } = await seeded();
+    await store.loadSnapshot();
+    await store.updateBank(addCity);
+    const after = await store.loadSnapshot();
+    expect(after.rev).toBe(6);
+    expect(after.bank.answers.city!.value).toEqual(["Berlin"]);
+    expect(gets(host)).toBe(3); // read, the update's own read, read after
+  });
+
+  test("a patch against the held revision updates the memo without another get", async () => {
+    const { host, store } = await seeded();
+    const { bank, rev } = await store.loadSnapshot();
+    const row = { ...bank.answers.city!, fills: 1 };
+    const out = await store.patchAnswers([row], [], rev!);
+    expect(out).toEqual({ rev: 6, droppedSecret: 0 });
+    const again = await store.loadSnapshot();
+    expect(gets(host)).toBe(1);
+    expect(again.rev).toBe(6);
+    expect(again.bank.answers.city!.fills).toBe(1);
+    expect(again.bank.answers.zip).toEqual(bank.answers.zip);
+    expect(host.bank.answers.city!.fills).toBe(1);
+    expect(host.calls.filter(c => c.op === "patch").map(c => c.upsert as Answer[]).flat().map(a => a.key)).toEqual(["city"]); // only the affected row
+  });
+
+  test("a patch against a stale revision writes nothing, reports the conflict, and drops the memo", async () => {
+    const { host, store } = await seeded();
+    const { bank } = await store.loadSnapshot();
+    host.rev = 9; // the Mac app moved on
+    const out = await store.patchAnswers([{ ...bank.answers.city!, fills: 1 }], [], 5);
+    expect(out).toEqual({ rev: 9, droppedSecret: 0, conflict: true });
+    expect(host.bank.answers.city!.fills).toBe(0);
+    expect((await store.loadSnapshot()).rev).toBe(9);
+    expect(gets(host)).toBe(2);
+  });
+
+  test("a patch that drops a secret row is not trusted to equal the held bank", async () => {
+    const { host, store } = await seeded();
+    const { bank, rev } = await store.loadSnapshot();
+    const out = await store.patchAnswers([{ ...bank.answers.city!, sensitivity: "secret" }], [], rev!);
+    expect(out.droppedSecret).toBe(1);
+    await store.loadSnapshot();
+    expect(gets(host)).toBe(2);
+  });
+
+  test("a failed read is not memoised", async () => {
+    const { host, store } = await seeded();
+    await store.storageMode();
+    host.errorOn = "get";
+    await expect(store.loadSnapshot()).rejects.toThrow();
+    host.errorOn = null;
+    expect((await store.loadSnapshot()).rev).toBe(5);
+  });
+
+  test("in the browser there is no revision and nothing is served from a memo", async () => {
+    const { host, store, local } = setup();
+    host.down = true;
+    local.data.vaniBank = bankOf(answer("city", "Berlin", "2026-05-01T00:00:00Z"));
+    const first = await store.loadSnapshot();
+    expect(first.rev).toBeNull();
+    local.data.vaniBank = bankOf(answer("city", "Paris", "2026-05-01T00:00:00Z"));
+    expect((await store.loadSnapshot()).bank.answers.city!.value).toEqual(["Paris"]);
+  });
+});
+
+describe("store: native transport selection", () => {
+  const g = globalThis as Record<string, unknown>;
+  let n = 0;
+  // The choice is made when the module loads, so each case loads a fresh copy under its own query string.
+  async function load(env: { chrome?: unknown; browser?: unknown }) {
+    const saved = { chrome: g.chrome, browser: g.browser };
+    g.chrome = env.chrome;
+    g.browser = env.browser;
+    try {
+      return await import(`../src/store.ts?selection-${n++}`) as typeof import("../src/store");
+    } finally {
+      g.chrome = saved.chrome;
+      g.browser = saved.browser;
+    }
+  }
+
+  test("without chrome.runtime.connectNative it sends one message per call", async () => {
+    const m = await load({ chrome: { runtime: { sendNativeMessage() {} } } });
+    expect(m.nativeTransport).toBe(m.spawnTransport);
+  });
+
+  test("Safari's promise API wins over connectNative", async () => {
+    const m = await load({
+      chrome: { runtime: { connectNative() { throw new Error("must not connect"); } } },
+      browser: { runtime: { sendNativeMessage: async () => ({ ok: true }) } },
+    });
+    expect(m.nativeTransport).toBe(m.spawnTransport);
+  });
+
+  test("Chrome with connectNative keeps one port for bank ops and sends slow ops per message", async () => {
+    const connected: string[] = [];
+    const sent: unknown[] = [];
+    let onMsg: (m: unknown) => void = () => {};
+    const chromeStub = {
+      runtime: {
+        lastError: undefined,
+        connectNative(host: string) {
+          connected.push(host);
+          return {
+            postMessage: (msg: { op: string }) => queueMicrotask(() => onMsg({ ok: true, echo: msg.op })),
+            disconnect() {},
+            onMessage: { addListener: (cb: (m: unknown) => void) => { onMsg = cb; } },
+            onDisconnect: { addListener() {} },
+          };
+        },
+        sendNativeMessage(_host: string, msg: unknown, cb: (r: unknown) => void) { sent.push(msg); cb({ via: "spawn" }); },
+      },
+    };
+    g.chrome = chromeStub; // the transport reads the global when it runs, not only when the module loads
+    const m = await load({ chrome: chromeStub });
+    try {
+      expect(m.nativeTransport).not.toBe(m.spawnTransport);
+      expect(await m.nativeTransport({ op: "ping" })).toEqual({ ok: true, echo: "ping" });
+      expect(await m.nativeTransport({ op: "get" })).toEqual({ ok: true, echo: "get" });
+      expect(connected).toEqual(["dev.vbcr.vani_apply"]);
+      expect(await m.nativeTransport({ op: "jobFind" })).toEqual({ via: "spawn" });
+      expect(sent).toEqual([{ op: "jobFind" }]);
+    } finally {
+      delete g.chrome;
+    }
+  });
+});
+
+// A Mac app built before the patch op answers "unknown op patch": the store makes the same change
+// with get + put, so captures and fill counts still land.
+describe("store: a host without the patch op", () => {
+  function oldHost() {
+    const host = new FakeHost();
+    const inner = host.transport;
+    const transport: Transport = async msg => ((msg as Record<string, unknown>).op === "patch" ? (host.calls.push(msg as Record<string, unknown>), { error: "unknown op patch" }) : inner(msg));
+    const store = createStore({ transport, local: new FakeLocal(), timeoutMs: 50, now: () => 1_000 });
+    return { host, store };
+  }
+  test("an upsert and a delete land through one put", async () => {
+    const { host, store } = oldHost();
+    host.bank = { ...host.bank, answers: { gone: answer("gone", "x", "2026-01-01") } };
+    const out = await store.patchAnswers([answer("city", "Berlin", "2026-05-01T00:00:00Z")], ["gone"]);
+    expect(out.conflict).toBeUndefined();
+    expect(out.rev).toBe(1);
+    expect(Object.keys(host.bank.answers)).toEqual(["city"]);
+    expect(host.puts()).toBe(1);
+  });
+  test("a moved bank is a conflict when a baseRev is given, and nothing is written", async () => {
+    const { host, store } = oldHost();
+    host.rev = 5;
+    const out = await store.patchAnswers([answer("city", "Berlin", "2026-05-01T00:00:00Z")], [], 4);
+    expect(out).toEqual({ rev: 5, droppedSecret: 0, conflict: true });
+    expect(host.puts()).toBe(0);
+  });
+  test("any other host error is still an error", async () => {
+    const { host, store } = oldHost();
+    host.errorOn = "get";
+    await expect(store.patchAnswers([answer("city", "Berlin", "2026-05-01T00:00:00Z")], [])).rejects.toThrow();
   });
 });

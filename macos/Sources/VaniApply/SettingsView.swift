@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var draftConfig = ""
     @State private var draftState = ""
     @State private var draftAccount = ""
+    @State private var draftHalfLife = JobsClient.defaultHalfLifeDays
     @State private var accounts: [String] = []
     @State private var accountsProblem: String?
     @State private var notes = ""
@@ -19,7 +20,8 @@ struct SettingsView: View {
     @State private var notesBusy = false
 
     private var editedDraftSettings: DraftSettings {
-        DraftSettings(vaniConfig: draftConfig, vaniStateDir: draftState, anthropicAccount: draftAccount)
+        DraftSettings(vaniConfig: draftConfig, vaniStateDir: draftState, anthropicAccount: draftAccount,
+                      jobsHalfLifeDays: draftHalfLife == JobsClient.defaultHalfLifeDays ? nil : draftHalfLife)
     }
 
     /// The listed accounts, plus a saved one the registry no longer lists, so
@@ -65,6 +67,12 @@ struct SettingsView: View {
                 if let accountsProblem {
                     Text(accountsProblem).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
+                Stepper(value: $draftHalfLife, in: 1...JobsClient.maxHalfLifeDays, step: 1) {
+                    LabeledContent("Freshness half-life") {
+                        Text(verbatim: "\(draftHalfLife.formatted()) days").monospacedDigit()
+                    }
+                }
+                .help("Days of age that halve a job's freshness bonus in the Jobs priority. Vani's default is 10. Display only: it reorders roles, never drops one.")
                 HStack {
                     Spacer()
                     Button("Save") {
@@ -112,7 +120,7 @@ struct SettingsView: View {
             }
 
             Section("Bank") {
-                LabeledContent("Answers", value: "\(model.answers.count) · \(model.bankBytes / 1000) of 900 KB")
+                LabeledContent("Answers", value: "\(model.answers.count) · \(model.bankBytes / 1000) KB")
                 LabeledContent("Revision", value: "\(model.snapshot.rev)")
                 HStack {
                     Button("Export…", action: export)
@@ -138,6 +146,7 @@ struct SettingsView: View {
             draftConfig = s.vaniConfig
             draftState = s.vaniStateDir
             draftAccount = s.anthropicAccount
+            draftHalfLife = s.jobsHalfLifeDays ?? JobsClient.defaultHalfLifeDays
         }
         .task {
             loadNotes()

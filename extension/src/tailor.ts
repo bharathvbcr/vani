@@ -3,6 +3,7 @@
 // and dynamically tailors answers using extracted company name, role title, and tech stack requirements.
 
 import type { JobInfo } from "./draft";
+import { motivationEssay } from "./intents";
 import { extractSalaryRange, extractSkills, type UserTargetProfile } from "./relevance";
 
 export type TailoredKind =
@@ -28,9 +29,12 @@ const WHY_COMPANY_PATTERNS = [
   /\bwhy (at|with)?\s*(this company|our company|us|our team)\b/i,
   /\bwhat (attracts|interests|excites) you (about|to) (this company|our company|us|our mission)\b/i,
   /\bwhy do you want to work here\b/i,
+  /\bwhat makes you want to join\b/i,
+  /\bwhy\s+(?!role|this\s+role|the\s+role|position|this\s+position|apply|applying)[A-Z][A-Za-z0-9&.,'-]+(?:\s+[A-Za-z0-9&.,'-]+){0,3}\??$/i,
 ];
 
 const WHY_ROLE_PATTERNS = [
+  /\bwhy (this|the) (role|position|job|opportunity)\b/i,
   /\bwhy (are you interested in|do you want) (this|the) (role|position|job|opportunity)\b/i,
   /\bwhat (interests|excites|appeals to) you about this (role|position|job)\b/i,
   /\bwhy (apply|applying) for this (role|position)\b/i,
@@ -83,9 +87,36 @@ const DIVERSITY_PATTERNS = [
   /\bcontribute to (our )?(culture|diversity|inclusive environment)\b/i,
 ];
 
+/**
+ * Why this company and why this role are written for one posting by `vani draft`, from the JD and
+ * the owner's profile (the Draft button): a template never answers them.
+ */
+export const DRAFT_KINDS: ReadonlySet<TailoredKind> = new Set<TailoredKind>(["why_company", "why_role"]);
+
+/**
+ * The question a template may answer, or null. A why-company or why-role question, or any wording
+ * intents.ts reads as a motivation essay ("Why Anthropic?"), is left to Draft.
+ */
+export function templateTailoring(label: string, companyName?: string): TailoredQuestionMatch | null {
+  if (motivationEssay(label)) return null;
+  const m = matchTailorableQuestion(label, companyName);
+  return m && !DRAFT_KINDS.has(m.kind) ? m : null;
+}
+
 /** Check if a field label is a repeated question that can be tailored to the JD. */
-export function matchTailorableQuestion(label: string): TailoredQuestionMatch | null {
+export function matchTailorableQuestion(label: string, companyName?: string): TailoredQuestionMatch | null {
   const l = label.trim();
+
+  if (companyName && companyName.trim().length > 1) {
+    const esc = companyName.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\bwhy\\s+(at\\s+|with\\s+)?${esc}\\b`, "i").test(l)) {
+      return {
+        kind: "why_company",
+        title: "Why This Company",
+        templateSnippet: "I am drawn to the mission and engineering culture here...",
+      };
+    }
+  }
 
   for (const p of WHY_COMPANY_PATTERNS) {
     if (p.test(l)) {

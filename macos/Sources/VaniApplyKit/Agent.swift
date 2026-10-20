@@ -29,6 +29,47 @@ public enum AgentConstants {
     func find(url: String, reply: @escaping (Data?, String?) -> Void)
     /// Mark a posting Applied (the only mark a browser may set). Replies an error, or nil.
     func markApplied(key: String, reply: @escaping (String?) -> Void)
+    /// `vani jobs ingest --json`: queue scraped jobs. Takes the request JSON, replies (vani's JSON, error).
+    func ingest(payload: Data, reply: @escaping (Data?, String?) -> Void)
+    /// The app bundle this agent runs from (AgentIdentity.bundlePath), whose `vani` it starts.
+    func identity(reply: @escaping (String) -> Void)
+}
+
+/// Which copy of Vani Apply the agent belongs to. The launchd job is one per user
+/// (AgentConstants.plistName), so any copy of the app that registers it, such as a
+/// screenshot rig's copy with a fixture `vani`, takes it over from the app the owner
+/// uses, and an agent that merely answers says nothing about whose `vani` it runs.
+public enum AgentIdentity {
+    /// The `.app` that holds `helpers` (its Contents/Helpers folder), symlinks resolved;
+    /// the folder itself when it is not inside a bundle (a `swift build` product).
+    public static func bundlePath(helpers: URL) -> String {
+        let dir = helpers.resolvingSymlinksInPath().standardizedFileURL
+        let contents = dir.deletingLastPathComponent()
+        let app = contents.deletingLastPathComponent()
+        if dir.lastPathComponent == "Helpers", contents.lastPathComponent == "Contents", app.pathExtension == "app" {
+            return app.path
+        }
+        return dir.path
+    }
+
+    /// Why an enabled registration must be replaced by this app's own, or nil to keep it.
+    public enum Reregister: Equatable, Sendable {
+        /// Settings > Register again.
+        case repair
+        /// The agent does not answer (or predates `identity`): launchd's copy of the job is stale.
+        case unreachable
+        /// The agent answers from another copy of the app, at this path.
+        case foreign(String)
+    }
+
+    /// `agentBundle` is the agent's `identity` reply, nil when it did not answer.
+    public static func reregister(repair: Bool, agentBundle: String?, ownBundle: URL) -> Reregister? {
+        if repair { return .repair }
+        guard let agentBundle else { return .unreachable }
+        let own = ownBundle.resolvingSymlinksInPath().standardizedFileURL.path
+        let theirs = URL(fileURLWithPath: agentBundle).resolvingSymlinksInPath().standardizedFileURL.path
+        return own == theirs ? nil : .foreign(String(agentBundle.prefix(512)))
+    }
 }
 
 /// The kinds of job the agent runs, each one `vani <kind>` with JSON on stdin.
@@ -169,6 +210,8 @@ public protocol AgentClient: Sendable {
 /// not registered, not approved or not answering reads as code "agent".
 public struct XPCAgentClient: AgentClient {
     public static let callTimeout: TimeInterval = 5
+    /// Room for `vani jobs ingest` (JobsClient.ingestTimeout) plus the hop.
+    public static let ingestCallTimeout: TimeInterval = JobsClient.ingestTimeout + 5
     let serviceName: String
 
     public init(serviceName: String = AgentConstants.machService) {
@@ -180,7 +223,7 @@ public struct XPCAgentClient: AgentClient {
         "code": "agent",
     ] }
 
-    func call(_ body: (AgentXPC, DispatchSemaphore, Box) -> Void) -> [String: Any] {
+    func call(timeout: TimeInterval = XPCAgentClient.callTimeout, _ body: (AgentXPC, DispatchSemaphore, Box) -> Void) -> [String: Any] {
         let conn = NSXPCConnection(machServiceName: serviceName, options: [])
         conn.remoteObjectInterface = NSXPCInterface(with: AgentXPC.self)
         conn.resume()
@@ -193,7 +236,7 @@ public struct XPCAgentClient: AgentClient {
         }
         guard let agent = proxy as? AgentXPC else { return Self.unreachable }
         body(agent, done, box)
-        if done.wait(timeout: .now() + Self.callTimeout) == .timedOut { return Self.unreachable }
+        if done.wait(timeout: .now() + timeout) == .timedOut { return Self.unreachable }
         return box.get() ?? Self.unreachable
     }
 
@@ -207,6 +250,19 @@ public struct XPCAgentClient: AgentClient {
             }
         }
         return r["alive"] as? Bool == true
+    }
+
+    /// The app bundle the agent runs from, or nil when it does not answer. An agent
+    /// built before `identity` existed fails the call, and reads as not answering.
+    public func identity() -> String? {
+        let r = call { agent, done, box in
+            agent.identity { path in
+                box.set(["bundle": path])
+                done.signal()
+            }
+        }
+        guard let path = r["bundle"] as? String, path.hasPrefix("/"), path.utf8.count <= 4096 else { return nil }
+        return path
     }
 
     public func start(kind: String, request: Data) -> [String: Any] {

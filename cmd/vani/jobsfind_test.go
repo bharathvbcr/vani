@@ -240,6 +240,75 @@ func TestJobsFindMatchesApplicationSubPages(t *testing.T) {
 	}
 }
 
+// One Workday posting is served on several routes: with or without the locale,
+// under another location encoding, as /details/<slug>, and as its apply pages.
+// The ledger holds the sourcing form, https://host/<site>/job/<loc>/<slug>; every
+// route finds that posting, and another requisition, site or host does not.
+func TestJobsFindFoldsWorkdayRoutesToOnePosting(t *testing.T) {
+	_, state := setup(t)
+	seedFind(t, state,
+		findSeed{key: "wd:acme:1", url: "https://acme.wd5.myworkdayjobs.com/careers/job/Austin/Engineer_JR1", status: posting.Digested},
+		findSeed{key: "wd:acme:2", url: "https://acme.wd5.myworkdayjobs.com/careers/job/Austin/Engineer_JR2", status: posting.Digested},
+		findSeed{key: "wd:other:1", url: "https://acme.wd5.myworkdayjobs.com/external/job/Austin/Engineer_JR1", status: posting.Digested},
+		findSeed{key: "lv:a:9", url: "https://jobs.lever.co/careers/job/Austin/Engineer_JR1", status: posting.Digested},
+	)
+	const host = "https://acme.wd5.myworkdayjobs.com"
+	found := []string{
+		host + "/en-US/careers/job/Austin/Engineer_JR1",
+		host + "/careers/job/Austin-TX-United-States/Engineer_JR1",
+		host + "/fr-FR/careers/job/Remote%2C-US/Engineer_JR1?source=x#top",
+		host + "/en-US/careers/details/Engineer_JR1",
+		host + "/careers/details/Engineer_JR1/",
+		host + "/en-US/careers/job/Austin/Engineer_JR1/apply",
+		host + "/en-US/careers/job/Austin/Engineer_JR1/apply/applyManually",
+		host + "/en-US/careers/details/Engineer_JR1/apply/useMyLastApplication",
+		host + "/careers/job/Austin/Engineer_JR1", // the ledger's own form still matches exactly
+	}
+	for _, page := range found {
+		out := findJSON(t, page)
+		if out.Job == nil || out.Job.Key != "wd:acme:1" || out.Matches != 1 || out.Ambiguous {
+			t.Errorf("%s: %+v job %+v", page, out, out.Job)
+		}
+	}
+	// The reply still names the page as compared, not the folded key.
+	if out := findJSON(t, host+"/en-US/careers/details/Engineer_JR1"); out.URL != host+"/en-US/careers/details/Engineer_JR1" {
+		t.Errorf("url is the literal page: %+v", out)
+	}
+	notFound := []string{
+		host + "/en-US/careers/job/Austin/Engineer_JR3",       // another requisition
+		host + "/en-US/careers/details/Engineer_JR",           // a prefix of one
+		host + "/en-US/careers/job/Austin/Engineer_JR1/other", // not the posting's slug
+		host + "/en-US/careers/job/apply",                     // no slug
+		host + "/en-US/careers/job",                           // no slug
+		host + "/en-US/internal/job/Austin/Engineer_JR1",      // a site with no such posting
+		"https://acme.wd5.myworkdayjobs.com.evil.example/careers/job/Austin/Engineer_JR1",
+		"https://evil.example/en-US/careers/job/Austin/Engineer_JR1",
+		"http://acme.wd5.myworkdayjobs.com/en-US/careers/job/Austin/Engineer_JR1", // another scheme is another page
+	}
+	for _, page := range notFound {
+		if out := findJSON(t, page); out.Job != nil || out.Ambiguous {
+			t.Errorf("%s matched %+v (%+v)", page, out.Job, out)
+		}
+	}
+	// A different site on the same host is a different posting: the two JR1s
+	// are told apart by site, not guessed between.
+	if out := findJSON(t, host+"/en-US/external/details/Engineer_JR1"); out.Job == nil || out.Job.Key != "wd:other:1" {
+		t.Errorf("site tells postings apart: %+v", out)
+	}
+}
+
+// Two ledger rows that fold to the same posting are ambiguous, not the first one.
+func TestJobsFindWorkdayFoldDoesNotGuess(t *testing.T) {
+	_, state := setup(t)
+	seedFind(t, state,
+		findSeed{key: "wd:a:1", url: "https://acme.wd5.myworkdayjobs.com/careers/job/Austin/Engineer_JR1", status: posting.Digested},
+		findSeed{key: "wd:b:1", url: "https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Remote/Engineer_JR1", status: posting.Digested},
+	)
+	if out := findJSON(t, "https://acme.wd5.myworkdayjobs.com/de-DE/careers/details/Engineer_JR1"); out.Job != nil || !out.Ambiguous || out.Matches != 2 {
+		t.Fatalf("%+v", out)
+	}
+}
+
 func TestJobsFindSubPageFallbackDoesNotGuess(t *testing.T) {
 	_, state := setup(t)
 	seedFind(t, state,

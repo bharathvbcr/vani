@@ -29,6 +29,15 @@ private let listReply = """
 """
 
 final class JobsTests: XCTestCase {
+    /// New leads with the highest priority (the number on each row's badge); the marked
+    /// views keep the standard order, which lists them by when they were marked.
+    func testDefaultSortPerView() {
+        XCTAssertEqual(JobSort.defaultSort(for: .new), .priority)
+        for view in JobView.allCases where view != .new {
+            XCTAssertEqual(JobSort.defaultSort(for: view), .standard, "\(view)")
+        }
+    }
+
     func testDecodesAListWithGoTimes() throws {
         let c = JobsClient(vaniBinary: try fakeJobsVani(self, reply: listReply))
         let page = try c.list(.new)
@@ -89,6 +98,23 @@ final class JobsTests: XCTestCase {
         let bare = try JobsClient.decoder.decode(Job.self, from: Data(#"{"key":"k:a:1","company":"A","title":"T","status":"live"}"#.utf8))
         XCTAssertNil(bare.ageLabel)
         XCTAssertEqual(bare.keywordList, [])
+    }
+
+    func testDecodesCategoryAndFolder() throws {
+        let reply = """
+        {"key":"gh:a:1","company":"A","title":"T","status":"digested","category":"ai-engineer"}
+        """
+        let j = try JobsClient.decoder.decode(Job.self, from: Data(reply.utf8))
+        XCTAssertEqual(j.category, "ai-engineer")
+        XCTAssertEqual(j.categoryLabel, "AI Engineer")
+
+        var filter = JobFilter()
+        XCTAssertTrue(filter.isEmpty)
+        XCTAssertEqual(filter.activeCount, 0)
+        filter.categories = ["ai-engineer"]
+        XCTAssertFalse(filter.isEmpty)
+        XCTAssertEqual(filter.activeCount, 1)
+        XCTAssertEqual(filter.arguments, ["--category", "ai-engineer"])
     }
 
     func testAgeLabels() {
@@ -265,6 +291,26 @@ final class JobsTests: XCTestCase {
             XCTAssertNil(Job.httpURL(bad), bad)
         }
         XCTAssertNotNil(Job.httpURL("http://example.com/x"))
+    }
+
+    func testShareLinkAndSubject() {
+        var j = Job(key: "gh:a:1", company: "Anthropic", title: "Prompt Engineer")
+        j.url = "https://jobs.lever.co/anthropic/123"
+        XCTAssertEqual(j.shareLink?.absoluteString, "https://jobs.lever.co/anthropic/123")
+        XCTAssertEqual(j.shareSubject, "Prompt Engineer at Anthropic")
+
+        // Falls back to applyURL when url is absent or not an http(s) link.
+        j.url = "javascript:alert(1)"
+        j.applyURL = "https://boards.greenhouse.io/anthropic/jobs/123#apply"
+        XCTAssertEqual(j.shareLink?.absoluteString, "https://boards.greenhouse.io/anthropic/jobs/123#apply")
+
+        // Empty company omits the "at" separator.
+        j.company = ""
+        XCTAssertEqual(j.shareSubject, "Prompt Engineer")
+
+        // No valid links returns nil shareLink.
+        j.applyURL = "not a valid url"
+        XCTAssertNil(j.shareLink)
     }
 
     func testPassesArgumentsAndStateDirOnly() throws {
@@ -451,5 +497,98 @@ final class JobsTests: XCTestCase {
         XCTAssertEqual(stats.remoteListed, 1)
         XCTAssertEqual(stats.remoteScope?["US"], 1)
         XCTAssertEqual(Set(stats.area?.map(\.label) ?? []), ["Las Cruces, NM", "El Paso, TX", "London"])
+    }
+
+    // MARK: near-duplicates
+
+    private func decodeJob(_ extra: String) throws -> Job {
+        try JobsClient.decoder.decode(Job.self, from: Data(#"{"key":"k:b:2","company":"B","title":"T","status":"digested"\#(extra)}"#.utf8))
+    }
+
+    func testDecodesDuplicateFields() throws {
+        let j = try decodeJob(#","dup_of":"k:a:1","dup_candidate_of":"k:a:2","dup_sibling_of":"k:a:3","dup_score":0.87"#)
+        XCTAssertEqual(j.dupOf, "k:a:1")
+        XCTAssertEqual(j.dupCandidateOf, "k:a:2")
+        XCTAssertEqual(j.dupSiblingOf, "k:a:3")
+        XCTAssertEqual(j.dupScore, 0.87)
+    }
+
+    func testDecodesRowsWithoutDuplicateFields() throws {
+        let j = try decodeJob("")
+        XCTAssertNil(j.dupOf); XCTAssertNil(j.dupCandidateOf); XCTAssertNil(j.dupSiblingOf); XCTAssertNil(j.dupScore)
+        XCTAssertTrue(j.duplicateBadges(loaded: [:]).isEmpty)
+        let nulls = try decodeJob(#","dup_candidate_of":null,"dup_score":null"#)
+        XCTAssertNil(nulls.dupCandidateOf); XCTAssertNil(nulls.dupScore)
+    }
+
+    func testWrongTypedDuplicateFieldsDecodeAsNilAndKeepTheList() throws {
+        let page = try JobsClient.decoder.decode(JobsPage.self, from: Data(#"""
+        {"view":"new","jobs":[
+          {"key":"k:a:1","company":"A","title":"T","status":"digested","dup_score":"high","dup_candidate_of":7,"dup_sibling_of":{"x":1}},
+          {"key":"k:a:2","company":"A","title":"T","status":"digested","dup_score":[0.5],"dup_candidate_of":"k:a:1"},
+          {"key":"k:a:3","company":"A","title":"T","status":"digested","dup_score":1.7,"dup_candidate_of":"k:a:1"}],
+         "total":3,"shown":3,"counts":{}}
+        """#.utf8))
+        XCTAssertEqual(page.jobs.count, 3, "a bad dup field never fails the list")
+        XCTAssertNil(page.jobs[0].dupScore); XCTAssertNil(page.jobs[0].dupCandidateOf); XCTAssertNil(page.jobs[0].dupSiblingOf)
+        XCTAssertNil(page.jobs[1].dupScore)
+        XCTAssertEqual(page.jobs[1].dupCandidateOf, "k:a:1")
+        XCTAssertNil(page.jobs[2].dupScore, "outside 0...1 is not a score")
+    }
+
+    func testDecodesTheCachedLogo() throws {
+        let path = "/Users/me/Library/Application Support/Vani/logos/www.acme.com.png"
+        XCTAssertEqual(try decodeJob(#","logo":"\#(path)""#).logoPath, path)
+        XCTAssertEqual(try decodeJob(#","logo":"/s/logos/www.acme.com.ico""#).logoPath, "/s/logos/www.acme.com.ico")
+        XCTAssertNil(try decodeJob("").logoPath, "no logo: the monogram")
+        XCTAssertNil(try decodeJob(#","logo":null"#).logoPath)
+    }
+
+    func testUnusableLogosReadAsAbsentAndKeepTheList() throws {
+        let page = try JobsClient.decoder.decode(JobsPage.self, from: Data(#"""
+        {"view":"new","jobs":[
+          {"key":"k:a:1","company":"A","title":"T","status":"digested","logo":7},
+          {"key":"k:a:2","company":"A","title":"T","status":"digested","logo":{"path":"/x.png"}},
+          {"key":"k:a:3","company":"A","title":"T","status":"digested","logo":"logos/www.a.com.png"},
+          {"key":"k:a:4","company":"A","title":"T","status":"digested","logo":"/s/logos/../../etc/x.png"},
+          {"key":"k:a:5","company":"A","title":"T","status":"digested","logo":"/s/logos/www.a.com.svg"},
+          {"key":"k:a:6","company":"A","title":"T","status":"digested","logo":""},
+          {"key":"k:a:7","company":"A","title":"T","status":"digested","logo":"/s//logos/www.a.com.png"}],
+         "total":7,"shown":7,"counts":{}}
+        """#.utf8))
+        XCTAssertEqual(page.jobs.count, 7, "a bad logo never fails the list")
+        for j in page.jobs { XCTAssertNil(j.logoPath, "\(j.key) must draw the monogram") }
+        XCTAssertNil(Job.usableLogoPath("/" + String(repeating: "a", count: 1100) + ".png"), "oversized path")
+    }
+
+    func testDuplicateBadgesNameTheTargetOrFallBackToTheKey() throws {
+        var target = Job(key: "k:a:1", company: "Acme", title: "Engineer")
+        target.dupScore = nil
+        let j = try decodeJob(#","dup_candidate_of":"k:a:1","dup_sibling_of":"k:a:1","dup_score":0.874"#)
+        let known = j.duplicateBadges(loaded: ["k:a:1": target])
+        XCTAssertEqual(known.map(\.text), ["Possible duplicate of Acme — Engineer (87%)", "Same role, other location"])
+        XCTAssertEqual(known.map(\.kind), [.candidate, .sibling])
+        let unknown = j.duplicateBadges(loaded: [:])
+        XCTAssertEqual(unknown.first?.text, "Possible duplicate of k:a:1 (87%)", "a target not in the list shows its key")
+        let noScore = try decodeJob(#","dup_candidate_of":"k:zz:9""#)
+        XCTAssertEqual(noScore.duplicateBadges(loaded: [:]).map(\.text), ["Possible duplicate of k:zz:9"])
+        let long = try decodeJob(#","dup_candidate_of":"\#(String(repeating: "x", count: 500))""#)
+        XCTAssertLessThan(try XCTUnwrap(long.duplicateBadges(loaded: [:]).first).text.count, 140, "an oversized key is cut")
+    }
+
+    func testHidingPossibleDuplicatesKeepsEverythingElse() throws {
+        let plain = try decodeJob("")
+        var dupe = plain; dupe.key = "k:b:3"; dupe.dupCandidateOf = "k:b:2"
+        var sibling = plain; sibling.key = "k:b:4"; sibling.dupSiblingOf = "k:b:2"
+        XCTAssertEqual(Job.hidingPossibleDuplicates([plain, dupe, sibling]).map(\.key), ["k:b:2", "k:b:4"])
+        XCTAssertEqual(Job.hidingPossibleDuplicates([]), [])
+    }
+
+    func testDuplicateFieldsRoundTrip() throws {
+        var j = try decodeJob("")
+        j.dupCandidateOf = "k:a:2"; j.dupScore = 0.5
+        let back = try JobsClient.decoder.decode(Job.self, from: JSONEncoder().encode(j))
+        XCTAssertEqual(back.dupCandidateOf, "k:a:2")
+        XCTAssertEqual(back.dupScore, 0.5)
     }
 }

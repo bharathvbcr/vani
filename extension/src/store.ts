@@ -1,8 +1,10 @@
 // The answer bank's storage. When the Vani Apply Mac app is installed and
 // answers a native-messaging ping, it holds the bank (one file shared with
 // Safari); otherwise the bank stays in chrome.storage.local.
-import { type Bank, emptyBank } from "./types";
+import { type Answer, type Bank, emptyBank } from "./types";
 import { MAX_BANK_BYTES, bankBytes, mergeBanks, parseBank } from "./bank";
+import { createBankMemo } from "./bankcache";
+import { createPortTransport } from "./nativeport";
 
 export const NATIVE_HOST = "dev.vbcr.vani_apply";
 const KEY = "vaniBank";
@@ -11,6 +13,25 @@ const MODE_TTL_MS = 30_000;
 const MAX_ATTEMPTS = 3;
 
 export type StorageMode = "mac-app" | "browser";
+
+export interface CandidateQuery {
+  signatures?: string[];
+  keys?: string[];
+  labels?: string[];
+}
+
+export interface PatchOutcome {
+  rev: number;
+  droppedSecret: number;
+  /** Set only when a `baseRev` was given and the Mac app's bank had moved on: nothing was written, `rev` is its current one. */
+  conflict?: boolean;
+}
+
+export interface AnswerListResult {
+  answers: Answer[];
+  total: number;
+  rev: number;
+}
 
 export interface LogEntry {
   event: "capture" | "fill" | "edit" | "delete" | "import" | "settings";
@@ -33,8 +54,8 @@ class TransportError extends Error {}
 /** The host answered `{"error": ...}`. Never a reason to fall back: the bank lives there. */
 class NativeError extends Error {}
 
-/** Production transport: Safari's promise API when present, else Chrome's callback API. */
-export const nativeTransport: Transport = msg =>
+/** One host process per message: Safari's promise API when present, else Chrome's callback API. */
+export const spawnTransport: Transport = msg =>
   new Promise((resolve, reject) => {
     if (globalThis.browser?.runtime?.sendNativeMessage) {
       globalThis.browser.runtime.sendNativeMessage(NATIVE_HOST, msg).then(resolve, reject);
@@ -46,6 +67,12 @@ export const nativeTransport: Transport = msg =>
       else resolve(response);
     });
   });
+
+/** Production transport: Safari and a Chrome without connectNative go per message; Chrome keeps one port for the bank ops. */
+export const nativeTransport: Transport =
+  globalThis.browser?.runtime?.sendNativeMessage || typeof chrome === "undefined" || !chrome.runtime?.connectNative
+    ? spawnTransport
+    : createPortTransport({ connect: () => chrome.runtime.connectNative(NATIVE_HOST), spawn: spawnTransport });
 
 const chromeLocal: LocalArea = {
   get: k => chrome.storage.local.get(k),
@@ -81,6 +108,8 @@ export interface StoreOptions {
   local?: LocalArea;
   timeoutMs?: number;
   modeTtlMs?: number;
+  /** How long a bank read from the Mac app is served again without asking (default BANK_FRESH_MS). */
+  freshMs?: number;
   now?: () => number;
 }
 
@@ -90,6 +119,10 @@ export function createStore(opts: StoreOptions = {}) {
   const timeoutMs = opts.timeoutMs ?? CALL_TIMEOUT_MS;
   const ttl = opts.modeTtlMs ?? MODE_TTL_MS;
   const now = opts.now ?? Date.now;
+
+  // The Mac app's bank as last read, for loadSnapshot(). Every write below invalidates it (the write's
+  // result is not known exactly, or the host may have changed what it stored), and so does any failed call.
+  const memo = createBankMemo<Snapshot>({ fetch: () => getSnapshot(), now, freshMs: opts.freshMs });
 
   let nativeUntil = 0; // native confirmed reachable until this time
   let migrated = false;
@@ -115,17 +148,67 @@ export function createStore(opts: StoreOptions = {}) {
       ]);
     } catch (e) {
       nativeUntil = 0;
+      memo.invalidate();
       throw new TransportError(`Mac app unreachable: ${msgOf(e)}`);
     } finally {
       clearTimeout(timer);
     }
-    if (!isObj(reply)) { nativeUntil = 0; throw new TransportError("Mac app sent no reply"); }
+    if (!isObj(reply)) { nativeUntil = 0; memo.invalidate(); throw new TransportError("Mac app sent no reply"); }
     if (typeof reply.error === "string") throw new NativeError(reply.error);
     return reply;
   }
 
   async function getSnapshot(): Promise<Snapshot> {
-    return snapshot(await call({ op: "get" }));
+    const r = await call({ op: "get" });
+    if (r.chunked === true) {
+      const rev = r.rev;
+      if (!isRev(rev)) throw new NativeError("chunked get reply has no valid rev");
+      const chunkCount = typeof r.chunkCount === "number" ? r.chunkCount : 1;
+      const chunks: string[] = [typeof r.chunk === "string" ? r.chunk : ""];
+      for (let i = 1; i < chunkCount; i++) {
+        const next = await call({ op: "getChunk", rev, chunkIndex: i });
+        if (next.conflict === true) {
+          return getSnapshot();
+        }
+        if (next.rev !== rev || typeof next.chunk !== "string") {
+          throw new NativeError("chunked transfer rev mismatch or missing chunk");
+        }
+        chunks.push(next.chunk);
+      }
+      return { rev, bank: parseBank(chunks.join("")).bank };
+    }
+    return snapshot(r);
+  }
+
+  /**
+   * A patch as one put, for a Mac app that has no patch op. With a baseRev it is one rev-checked
+   * attempt (a moved bank is a conflict, as a patch's would be: the rows were computed from that
+   * revision); without one, it retries on the current bank like commit.
+   */
+  async function patchByPut(upsert: Answer[], deleteKeys: string[], baseRev?: number): Promise<PatchOutcome> {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const snap = await getSnapshot();
+      if (baseRev !== undefined && snap.rev !== baseRev) return { rev: snap.rev, droppedSecret: 0, conflict: true };
+      const answers = { ...snap.bank.answers };
+      for (const k of deleteKeys) delete answers[k];
+      for (const a of upsert) answers[a.key] = a;
+      const next: Bank = { ...snap.bank, answers };
+      const bytes = bankBytes(next);
+      if (bytes > MAX_BANK_BYTES) throw tooBig(bytes);
+      let r: Record<string, unknown>;
+      try {
+        r = await call({ op: "put", baseRev: snap.rev, bank: next });
+      } finally {
+        memo.invalidate();
+      }
+      if (r.conflict === true) {
+        if (baseRev !== undefined) return { rev: isRev(r.rev) ? r.rev : snap.rev, droppedSecret: 0, conflict: true };
+        continue;
+      }
+      if (!isRev(r.rev)) throw new NativeError("native put reply has no valid rev");
+      return { rev: r.rev, droppedSecret: typeof r.droppedSecret === "number" ? r.droppedSecret : 0 };
+    }
+    throw new Error("answer bank changed concurrently; try again");
   }
 
   /** get -> fn -> put(baseRev), re-running fn on the current snapshot after each conflict. */
@@ -135,8 +218,20 @@ export function createStore(opts: StoreOptions = {}) {
       const next = fn(snap.bank);
       const bytes = bankBytes(next);
       if (bytes > MAX_BANK_BYTES) throw tooBig(bytes);
-      const r = await call({ op: "put", baseRev: snap.rev, bank: next });
-      if (r.conflict === true) { snap = snapshot(r); continue; }
+      let r: Record<string, unknown>;
+      try {
+        r = await call({ op: "put", baseRev: snap.rev, bank: next });
+      } finally {
+        memo.invalidate(); // even a timed-out put may have landed
+      }
+      if (r.conflict === true) {
+        if (r.chunked === true || !r.bank) {
+          snap = await getSnapshot();
+        } else {
+          snap = snapshot(r);
+        }
+        continue;
+      }
       if (!isRev(r.rev)) throw new NativeError("native put reply has no valid rev");
       return next;
     }
@@ -219,10 +314,26 @@ export function createStore(opts: StoreOptions = {}) {
     migrated = false;
   }
 
+  /**
+   * The bank and, from the Mac app, its revision (null: kept in this browser, which has none). A bank
+   * read from the Mac app in the last `freshMs` is served again without a native call, and concurrent
+   * reads share one; `fresh` always asks (use it before a read-modify-write that sends no baseRev).
+   */
+  async function loadSnapshot(o: { fresh?: boolean } = {}): Promise<{ bank: Bank; rev: number | null }> {
+    if (!o.fresh) {
+      // Held only because the Mac app answered moments ago. Not while a migration is owed: useNative() retries it.
+      const held = migrated ? memo.peek() : undefined;
+      if (held) return held;
+    }
+    if (await useNative()) return o.fresh ? memo.fresh() : memo.get();
+    return { bank: await serializeWrite(async () => localLoad()), rev: null };
+  }
+
   return {
-    async loadBank(): Promise<Bank> {
-      if (await useNative()) return (await getSnapshot()).bank;
-      return serializeWrite(async () => localLoad());
+    loadSnapshot,
+
+    async loadBank(o: { fresh?: boolean } = {}): Promise<Bank> {
+      return (await loadSnapshot(o)).bank;
     },
 
     async updateBank(fn: (b: Bank) => Bank): Promise<Bank> {
@@ -254,13 +365,123 @@ export function createStore(opts: StoreOptions = {}) {
       if (now() >= nativeUntil) return Promise.resolve();
       return call({ op: "log", entry }).then(() => undefined, () => undefined);
     },
+
+    /**
+     * Granular row-level delta update without full bank transfer. With `baseRev` (Mac app only) the
+     * host refuses the patch when its bank has moved on: nothing is written and `conflict` is set.
+     */
+    async patchAnswers(upsert: Answer[], deleteKeys: string[] = [], baseRev?: number): Promise<PatchOutcome> {
+      return serializeWrite(async () => {
+        if (await useNative()) {
+          const held = baseRev === undefined ? undefined : memo.peek();
+          let r: Record<string, unknown>;
+          try {
+            r = await call({ op: "patch", upsert, delete: deleteKeys, ...(baseRev === undefined ? {} : { baseRev }) });
+          } catch (e) {
+            // A Mac app built before the patch op answers "unknown op": make the same change with get + put.
+            if (e instanceof NativeError && /^unknown op\b/.test(e.message)) return patchByPut(upsert, deleteKeys, baseRev);
+            throw e;
+          } finally {
+            memo.invalidate(); // even a timed-out patch may have landed
+          }
+          if (r.conflict === true) return { rev: isRev(r.rev) ? r.rev : 0, droppedSecret: 0, conflict: true };
+          if (!isRev(r.rev)) throw new NativeError("native patch reply has no valid rev");
+          const droppedSecret = typeof r.droppedSecret === "number" ? r.droppedSecret : 0;
+          // The held bank plus exactly this patch is the host's bank now, provided the host stored every row
+          // and moved one revision; otherwise the next read asks.
+          if (held && baseRev !== undefined && held.rev === baseRev && r.rev === baseRev + 1 && droppedSecret === 0) {
+            const answers = { ...held.bank.answers };
+            for (const k of deleteKeys) delete answers[k];
+            for (const a of upsert) answers[a.key] = a;
+            memo.set({ rev: r.rev, bank: { ...held.bank, answers } });
+          }
+          return { rev: r.rev, droppedSecret };
+        }
+        const current = await localLoad();
+        const answers = { ...current.answers };
+        for (const k of deleteKeys) {
+          delete answers[k];
+        }
+        let droppedSecret = 0;
+        for (const a of upsert) {
+          if (a.sensitivity === "secret") {
+            droppedSecret++;
+            continue;
+          }
+          answers[a.key] = a;
+        }
+        const updated: Bank = { ...current, answers };
+        await localWrite(updated);
+        return { rev: 0, droppedSecret };
+      });
+    },
+
+    /** Granular indexed candidate lookup for form matching without transferring the full bank. */
+    async queryCandidates(query: CandidateQuery): Promise<Answer[]> {
+      if (await useNative()) {
+        const r = await call({
+          op: "queryCandidates",
+          signatures: query.signatures ?? [],
+          keys: query.keys ?? [],
+          labels: query.labels ?? [],
+        });
+        if (Array.isArray(r.candidates)) {
+          return r.candidates as Answer[];
+        }
+        return [];
+      }
+      const current = await localLoad();
+      const sigSet = new Set(query.signatures ?? []);
+      const keySet = new Set(query.keys ?? []);
+      const labelSet = new Set(query.labels ?? []);
+      return Object.values(current.answers).filter(a => {
+        if (keySet.has(a.key)) return true;
+        if (a.signatures.some(s => sigSet.has(s))) return true;
+        if (a.labels.some(l => labelSet.has(l))) return true;
+        return false;
+      });
+    },
+
+    /** Paginated listing and search for UI tables without transferring the full bank. */
+    async listAnswers(offset = 0, limit = 50, search?: string): Promise<AnswerListResult> {
+      if (await useNative()) {
+        const r = await call({
+          op: "listAnswers",
+          offset,
+          limit,
+          search: search ?? "",
+        });
+        const answers = Array.isArray(r.answers) ? (r.answers as Answer[]) : [];
+        const total = typeof r.total === "number" ? r.total : answers.length;
+        const rev = isRev(r.rev) ? r.rev : 0;
+        return { answers, total, rev };
+      }
+      const current = await localLoad();
+      let all = Object.values(current.answers);
+      if (search && search.trim().length > 0) {
+        const s = search.toLowerCase();
+        all = all.filter(a =>
+          a.key.toLowerCase().includes(s) ||
+          a.value.some(v => v.toLowerCase().includes(s)) ||
+          a.labels.some(l => l.toLowerCase().includes(s))
+        );
+      }
+      all.sort((x, y) => (y.updatedAt ?? "").localeCompare(x.updatedAt ?? ""));
+      const total = all.length;
+      const slice = all.slice(offset, offset + limit);
+      return { answers: slice, total, rev: 0 };
+    },
   };
 }
 
 const store = createStore();
 export const loadBank = store.loadBank;
+export const loadSnapshot = store.loadSnapshot;
 export const updateBank = store.updateBank;
 export const replaceBank = store.replaceBank;
 export const storageMode = store.storageMode;
 export const migrationNote = store.migrationNote;
 export const logActivity = store.logActivity;
+export const patchAnswers = store.patchAnswers;
+export const queryCandidates = store.queryCandidates;
+export const listAnswers = store.listAnswers;

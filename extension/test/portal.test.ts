@@ -107,6 +107,11 @@ describe("portal detection & adaptation", () => {
     const docCustom = makeDoc('<div><form id="application_form"></form></div>');
     const p2 = detectPortal(docCustom, "https://careers.company.com/apply");
     expect(p2.id).toBe("greenhouse");
+
+    const docBoard = makeDoc('<div data-qa="greenhouse-job-board"><table class="job-posts--table"><tbody><tr class="job-post"><td><a href="/jobs/1">Dev</a></td></tr></tbody></table></div>');
+    const pBoard = detectPortal(docBoard, "https://job-boards.greenhouse.io/anthropic");
+    expect(pBoard.id).toBe("greenhouse");
+    expect(pBoard.isJobBoard).toBe(true);
   });
 
   test("detects Lever portal", () => {
@@ -133,6 +138,26 @@ describe("portal detection & adaptation", () => {
     expect(p.stepInfo?.currentStep).toBe(2);
     expect(p.stepInfo?.totalSteps).toBe(4);
     expect(p.stepInfo?.stepName).toBe("My Experience");
+  });
+
+  test("Workday search pages are job boards whatever the site is called; posting and apply pages are not", () => {
+    const H = "https://utaustin.wd1.myworkdayjobs.com";
+    const empty = makeDoc("");
+    const board = (path: string) => detectPortal(empty, `${H}${path}`).isJobBoard;
+    expect(board("/UTstaff?q=engineer")).toBe(true);
+    expect(board("/en-US/UTstaff")).toBe(true);
+    expect(board("/en-US/External_Careers")).toBe(true);
+    expect(board("/en-US/UTstaff/job/AUSTIN-TX/Forward-Deployed-Engineer_R_1")).toBe(false);
+    expect(board("/en-US/UTstaff/details/Forward-Deployed-Engineer_R_1?q=engineer")).toBe(false);
+    expect(board("/en-US/UTstaff/job/AUSTIN-TX/Forward-Deployed-Engineer_R_1/apply")).toBe(false);
+    expect(board("/en-US/UTstaff/login")).toBe(false);
+    // A "search" in a posting's slug is not a search page.
+    expect(board("/en-US/UTstaff/details/Search-Engine-Engineer_R_1")).toBe(false);
+  });
+
+  test("a Workday page that lists jobTitle anchors is a job board even on a /details/ path", () => {
+    const doc = makeDoc('<a data-automation-id="jobTitle" href="/en-US/UTstaff/details/Other_R_2">Other</a>');
+    expect(detectPortal(doc, "https://utaustin.wd1.myworkdayjobs.com/en-US/UTstaff/details/Forward-Deployed-Engineer_R_1").isJobBoard).toBe(true);
   });
 
   test("detects Ashby portal", () => {

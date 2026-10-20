@@ -17,13 +17,17 @@ import (
 // fetched. Pages are matched on scheme, host and path (plus the few query
 // parameters that name a job, joburl.IDParams) against each posting's url and
 // apply_url. When nothing matches exactly, an application sub-page
-// (/apply, /application) is matched to the posting it belongs to.
+// (/apply, /application) is matched to the posting it belongs to, and then a
+// Workday page is matched across its routes (joburl.WorkdayPosting).
 
 // Which stored link a page matched.
 const (
 	matchedURL      = "url"
 	matchedApplyURL = "apply_url"
 	matchedBase     = "base" // an application sub-page of the posting's link
+	// matchedPosting: another route to the same Workday posting (locale, location,
+	// /details, apply pages) than the stored link.
+	matchedPosting = "posting"
 )
 
 // jobRef is the slice of a job the extension needs to ask its question.
@@ -104,17 +108,23 @@ func matchPageURL(snap ledger.Snapshot, m map[posting.Key]marks.Entry, page stri
 	if !pageIsSub {
 		pageBase = page
 	}
-	var exact, sub []pageHit
+	pageFold, pageIsWorkday := joburl.WorkdayPosting(page)
+	var exact, sub, fold []pageHit
 	for _, r := range snap.Records {
 		if on := exactLink(r.Posting, page); on != "" {
 			exact = append(exact, pageHit{r, on})
 		} else if baseLink(r.Posting, pageBase, pageIsSub) {
 			sub = append(sub, pageHit{r, matchedBase})
+		} else if pageIsWorkday && workdayLink(r.Posting, pageFold) {
+			fold = append(fold, pageHit{r, matchedPosting})
 		}
 	}
 	hits := exact
 	if len(hits) == 0 {
 		hits = sub
+	}
+	if len(hits) == 0 {
+		hits = fold
 	}
 	out.Matches = len(hits)
 	var firm, dup []pageHit
@@ -151,6 +161,22 @@ func exactLink(p posting.Posting, page string) string {
 		return matchedApplyURL
 	}
 	return ""
+}
+
+// workdayLink reports whether one of the posting's links is the same Workday
+// posting as the page once both are folded across routes (locale, location
+// encoding, /job vs /details, apply tail; joburl.WorkdayPosting).
+func workdayLink(p posting.Posting, pageFold string) bool {
+	for _, link := range []string{p.URL, p.ApplyURL} {
+		n, err := joburl.Normalize(link)
+		if err != nil {
+			continue
+		}
+		if f, ok := joburl.WorkdayPosting(n); ok && f == pageFold {
+			return true
+		}
+	}
+	return false
 }
 
 // baseLink reports whether one of the posting's links and the page are the

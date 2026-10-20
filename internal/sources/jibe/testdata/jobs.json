@@ -1,0 +1,295 @@
+{
+  "totalCount": 3,
+  "count": 3,
+  "jobs": [
+    {
+      "data": {
+        "slug": "91170",
+        "language": "en-us",
+        "languages": [
+          "en-us"
+        ],
+        "req_id": "91170",
+        "title": "2027 Undergrad Machine Learning (ML)/ Artificial Intelligence (AI) intern/co-op",
+        "description": "ADVANCE YOUR CAREER. ADVANCE THE WORLD. At AMD, we believe technology has the power to solve the world’s most important challenges. From advancing healthcare and scientific discovery to powering AI and the technologies people rely on every day, innovation at AMD is shaping the future. Whether you’re designing next-gen processors, enabling AI breakthroughs, or bringing leading edge products to market, every role at AMD contributes to something bigger — technology that moves the world forward. Join us and, together, we’ll advance your career. As an AMD Co-op, you’ll be placed at the epicenter of the AI ecosystem, working alongside experts and industry pioneers. You’ll do important work, learn new skills, expand your network, and gain real-world experience on projects that impact millions of end-users worldwide. Whether you’re an undergrad or a PhD student, your contributions matter—and your experience here will be a launchpad for what comes next. Job Details: Locations: Austin, TX, Boxborough, MA, Fort Collins, CO, Longmont, CO, Fishkill, NY, Rochester, NY Onsite/Hybrid: This role requires the student to work full time (40 hours a week), in either a hybrid or onsite work structure throughout the duration of the co-op/intern term Duration: Spring/Summer Co-op: January 25, 2027 - August 13, 2027 Summer Internship: Semester Students: May 24, 2027 - August 13, 2027 Quarter Students: June 21, 2027 - September 10, 2027 Summer/Fall Co-op: Semester Students: May 24, 2027 - December 10, 2027 Quarter Students: June 21, 2027 - December 10, 2027 WHAT YOU WILL BE DOING: We are seeking a highly motivated Machine Learning (ML)/ Artificial Intelligence (AI) intern/co-op to join our team and participate in research and development of next-generation product differentiation features with extraordinary ML/AI engineers. In this role – We will help you learn innovative new technologies in Machine Learning | AI | High Performance Compute We will train you to analyze and implement changes to algorithms to improve AI performance and user experiences We may assign you to one or more of the following project work - Work on machine learning techniques to build applications for source code analysis and Image Corruption Detection Research, development, and deployment in machine learning-based and computer vision products on AMD’s current and future products Fixing and addressing problems with deployed AI to improve user experience Support AI software teams with roadmap planning, collateral development, and customer engagements WHO WE ARE LOOKING FOR: You are currently enrolled in a US based University in a Undergraduate's degree program majoring in computer science, computer engineering, data science / analytics, or a related field If you have knowledge / experience with any of the following technical skills (or related areas) and are enthusiastic about this role, we strongly encourage you to apply – Machine learning, data science, computer vision, statistics, and mathematics Programming in Python, C/C++ Relational (SQL) and no-SQL databases Machine learning algorithms and frameworks Deep learning / AI framework like Pytorch, Tensorflow, Caffe. Familiarity with cloud (e.g., AWS, GCP, Azure) Note: By submitting your application, you are indicating your interest in AMD intern positions. We are recruiting for multiple positions, and if your experience aligns with any of our intern opportunities, a recruiter will contact you. This role is not eligible for visa sponsorship. Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries are equal opportunity, inclusive employers and will consider all applicants without regard to age, ancestry, color, marital status, medical condition, mental or physical disability, national origin, race, religion, political and/or third-party affiliation, sex, pregnancy, sexual orientation, gender identity, military or veteran status, or any other characteristic protected by law. We encourage applications from all qualified candidates and will accommodate applicants’ needs under the respective laws throughout all stages of the recruitment and selection process. AMD may use Artificial Intelligence to help screen, assess or select applicants for this position. AMD’s “Responsible AI Policy” is available here. This posting is for an existing vacancy.",
+        "location_name": "US,TX,Austin",
+        "street_address": "7171 Southwest Parkway",
+        "city": "Austin",
+        "state": "Texas",
+        "country": "United States",
+        "country_code": "US",
+        "postal_code": "78735",
+        "location_type": "LAT_LNG",
+        "latitude": 30.25086,
+        "longitude": -97.8619569,
+        "additional_locations": [
+          {
+            "location_name": "US,MA,Boxborough",
+            "street_address": "90 Central Street",
+            "city": "Boxborough",
+            "state": "Massachusetts",
+            "country": "United States",
+            "country_code": "US",
+            "postal_code": "01719-1200",
+            "latitude": 42.4997008,
+            "longitude": -71.4785696
+          },
+          {
+            "location_name": "US,CO,Ft Collins",
+            "street_address": "2950 East Harmony Road",
+            "city": "Fort Collins",
+            "state": "Colorado",
+            "country": "United States",
+            "country_code": "US",
+            "postal_code": "80528",
+            "latitude": 40.5245695,
+            "longitude": -105.0221913
+          },
+          {
+            "location_name": "US,CO,Longmont",
+            "street_address": "3100 Logic Dr",
+            "city": "Longmont",
+            "state": "Colorado",
+            "country": "United States",
+            "country_code": "US",
+            "latitude": 40.1334148,
+            "longitude": -105.1438042
+          },
+          {
+            "location_name": "US,NY,Rochester",
+            "street_address": "Linden Oaks Office Park, 350 Linden Oaks, Suite 210",
+            "city": "Rochester",
+            "state": "New York",
+            "country": "United States",
+            "country_code": "US",
+            "postal_code": "14625",
+            "latitude": 43.119772,
+            "longitude": -77.511781
+          },
+          {
+            "location_name": "US,NY,Fishkill",
+            "street_address": "300 Westage Business Centre Drive, Ste 200",
+            "city": "Fishkill",
+            "state": "New York",
+            "country": "United States",
+            "country_code": "US",
+            "postal_code": "12524",
+            "latitude": 41.5252235,
+            "longitude": -73.89509749999999
+          }
+        ],
+        "categories": [
+          {
+            "name": "Student / Intern / Temp"
+          }
+        ],
+        "tags1": [
+          "No"
+        ],
+        "tags2": [
+          "USD $60,320.00/Yr."
+        ],
+        "tags3": [
+          "USD $73,840.00/Yr."
+        ],
+        "tags4": [
+          "Campus US"
+        ],
+        "tags5": [
+          "USD $59,072.00/Yr."
+        ],
+        "tags6": [
+          "USD $88,608.00/Yr."
+        ],
+        "tags7": [
+          "59072"
+        ],
+        "tags8": [
+          "88608"
+        ],
+        "promotion_value": 0,
+        "qualifications": "Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries are equal opportunity, inclusive employers and will consider all applicants without regard to age, ancestry, color, marital status, medical condition, mental or physical disability, national origin, race, religion, political and/or third-party affiliation, sex, pregnancy, sexual orientation, gender identity, military or veteran status, or any other characteristic protected by law. We encourage applications from all qualified candidates and will accommodate applicants’ needs under the respective laws throughout all stages of the recruitment and selection process. AMD may use Artificial Intelligence to help screen, assess or select applicants for this position. AMD’s “Responsible AI Policy” is available here. This posting is for an existing vacancy.",
+        "hiring_organization": "Advanced Micro Devices, Inc",
+        "hiring_organization_logo": "https://www.amd.com/content/dam/code/images/header/amd-header-logo.svg",
+        "responsibilities": "As an AMD Co-op, you’ll be placed at the epicenter of the AI ecosystem, working alongside experts and industry pioneers. You’ll do important work, learn new skills, expand your network, and gain real-world experience on projects that impact millions of end-users worldwide. Whether you’re an undergrad or a PhD student, your contributions matter—and your experience here will be a launchpad for what comes next. Job Details: Locations: Austin, TX, Boxborough, MA, Fort Collins, CO, Longmont, CO, Fishkill, NY, Rochester, NY Onsite/Hybrid: This role requires the student to work full time (40 hours a week), in either a hybrid or onsite work structure throughout the duration of the co-op/intern term Duration: Spring/Summer Co-op: January 25, 2027 - August 13, 2027 Summer Internship: Semester Students: May 24, 2027 - August 13, 2027 Quarter Students: June 21, 2027 - September 10, 2027 Summer/Fall Co-op: Semester Students: May 24, 2027 - December 10, 2027 Quarter Students: June 21, 2027 - December 10, 2027 WHAT YOU WILL BE DOING: We are seeking a highly motivated Machine Learning (ML)/ Artificial Intelligence (AI) intern/co-op to join our team and participate in research and development of next-generation product differentiation features with extraordinary ML/AI engineers. In this role – We will help you learn innovative new technologies in Machine Learning | AI | High Performance Compute We will train you to analyze and implement changes to algorithms to improve AI performance and user experiences We may assign you to one or more of the following project work - Work on machine learning techniques to build applications for source code analysis and Image Corruption Detection Research, development, and deployment in machine learning-based and computer vision products on AMD’s current and future products Fixing and addressing problems with deployed AI to improve user experience Support AI software teams with roadmap planning, collateral development, and customer engagements WHO WE ARE LOOKING FOR: You are currently enrolled in a US based University in a Undergraduate's degree program majoring in computer science, computer engineering, data science / analytics, or a related field If you have knowledge / experience with any of the following technical skills (or related areas) and are enthusiastic about this role, we strongly encourage you to apply – Machine learning, data science, computer vision, statistics, and mathematics Programming in Python, C/C++ Relational (SQL) and no-SQL databases Machine learning algorithms and frameworks Deep learning / AI framework like Pytorch, Tensorflow, Caffe. Familiarity with cloud (e.g., AWS, GCP, Azure) Note: By submitting your application, you are indicating your interest in AMD intern positions. We are recruiting for multiple positions, and if your experience aligns with any of our intern opportunities, a recruiter will contact you. This role is not eligible for visa sponsorship.",
+        "posted_date": "2026-08-20T23:28:00+0000",
+        "apply_url": "https://campus-amd.icims.com/jobs/91170/login",
+        "internal": false,
+        "external": false,
+        "searchable": true,
+        "applyable": true,
+        "li_easy_applyable": true,
+        "ats_code": "icims",
+        "isFrontLineAIJob": false,
+        "isApplyFlowJob": false,
+        "meta_data": {
+          "canonical_url": "https://careers.amd.com/jobs/91170?lang=en-us"
+        },
+        "update_date": "2026-10-07T11:42:26+0000",
+        "create_date": "2026-08-20T23:31:08+0000",
+        "category": [
+          " Student / Intern / Temp"
+        ],
+        "full_location": "Austin, Texas; Boxborough, Massachusetts; Fort Collins, Colorado; Longmont, Colorado; Rochester, New York; Fishkill, New York",
+        "short_location": "Austin, Texas",
+        "multipleLocations": true
+      }
+    },
+    {
+      "data": {
+        "slug": "91613",
+        "language": "en-us",
+        "languages": [
+          "en-us"
+        ],
+        "req_id": "91613",
+        "title": "AI Research Scientist, Reinforcement Learning (LLM) and Post-Training",
+        "description": "ADVANCE YOUR CAREER. ADVANCE THE WORLD. At AMD, we believe technology has the power to solve the world’s most important challenges. From advancing healthcare and scientific discovery to powering AI and the technologies people rely on every day, innovation at AMD is shaping the future. Whether you’re designing next-gen processors, enabling AI breakthroughs, or bringing leading edge products to market, every role at AMD contributes to something bigger — technology that moves the world forward. Join us and, together, we’ll advance your career. THE ROLE: We are hiring a AI Research Scientist, Reinforcement Learning (LLM) and Post-Training, specializing in reinforcement learning to advance post-training and interactive learning for large generative models applied to demanding engineering and hardware-adjacent tasks (code, optimization, tool use, and long-horizon decision making). You will invent and analyze RL algorithms—policy optimization, preference-based methods, exploration, credit assignment, and reward modeling—run rigorous empirical studies, and partner with infra and product teams to land methods that improve measurable task success without sacrificing stability or safety. THE PERSON: You publish and ship. You are fluent in both RL theory and the practical path from ablation to production-scale training. You care about reward misspecification, variance reduction, and evaluation that reflects real constraints—not only toy environments. KEY RESPONSIBILITIES: Research and develop RL methods for post-training LLMs and code models on structured engineering tasks with verifiable or preference-based feedback Design reward models, curricula, and off-policy or on-policy training recipes suited to sparse, noisy, or expensive labels from experts and simulators Characterize failure modes (reward hacking, degenerate policies, instability) and propose mitigations grounded in experiments Collaborate with RL infra engineers to scale training; define interfaces for rollout generation, logging, and reproducibility Publish at top venues (e.g. NeurIPS, ICML, ICLR) and contribute internal technical leadership on the RL roadmap PREFERRED EXPERIENCE: Strong publication record in reinforcement learning or closely related machine learning areas. Hands-on experience training RL or preference-optimized models at non-trivial scale (GPUs, distributed jobs) Experience with LLM post-training, RLHF/RLAIF, or policy optimization for language or code agents Familiarity with compilers, kernels, EDA-style workflows, or large-scale codebases is a plus ACADEMIC CREDENTIALS: PhD in Computer Science, Machine Learning, or related field strongly preferred. #LI-BM1 #LI-Hybrid Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries are equal opportunity, inclusive employers and will consider all applicants without regard to age, ancestry, color, marital status, medical condition, mental or physical disability, national origin, race, religion, political and/or third-party affiliation, sex, pregnancy, sexual orientation, gender identity, military or veteran status, or any other characteristic protected by law. We encourage applications from all qualified candidates and will accommodate applicants’ needs under the respective laws throughout all stages of the recruitment and selection process. AMD may use Artificial Intelligence to help screen, assess or select applicants for this position. AMD’s “Responsible AI Policy” is available here. This posting is for an existing vacancy.",
+        "location_name": "US,CA,Santa Clara",
+        "street_address": "2485 Augustine Drive",
+        "city": "Santa Clara",
+        "state": "California",
+        "country": "United States",
+        "country_code": "US",
+        "postal_code": "95054",
+        "location_type": "LAT_LNG",
+        "latitude": 37.3829498,
+        "longitude": -121.9703754,
+        "categories": [
+          {
+            "name": "Engineering"
+          }
+        ],
+        "tags1": [
+          "No"
+        ],
+        "tags2": [
+          "USD $178,500.00/Yr."
+        ],
+        "tags3": [
+          "USD $255,000.00/Yr."
+        ],
+        "tags4": [
+          "US Careers (External)"
+        ],
+        "tags5": [
+          "USD $204,000.00/Yr."
+        ],
+        "tags6": [
+          "USD $306,000.00/Yr."
+        ],
+        "tags7": [
+          "204000"
+        ],
+        "tags8": [
+          "306000"
+        ],
+        "promotion_value": 0,
+        "employment_type": "FULL_TIME",
+        "qualifications": "Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries are equal opportunity, inclusive employers and will consider all applicants without regard to age, ancestry, color, marital status, medical condition, mental or physical disability, national origin, race, religion, political and/or third-party affiliation, sex, pregnancy, sexual orientation, gender identity, military or veteran status, or any other characteristic protected by law. We encourage applications from all qualified candidates and will accommodate applicants’ needs under the respective laws throughout all stages of the recruitment and selection process. AMD may use Artificial Intelligence to help screen, assess or select applicants for this position. AMD’s “Responsible AI Policy” is available here. This posting is for an existing vacancy.",
+        "hiring_organization": "Advanced Micro Devices, Inc",
+        "hiring_organization_logo": "https://www.amd.com/content/dam/code/images/header/amd-header-logo.svg",
+        "responsibilities": "THE ROLE: We are hiring a AI Research Scientist, Reinforcement Learning (LLM) and Post-Training, specializing in reinforcement learning to advance post-training and interactive learning for large generative models applied to demanding engineering and hardware-adjacent tasks (code, optimization, tool use, and long-horizon decision making). You will invent and analyze RL algorithms—policy optimization, preference-based methods, exploration, credit assignment, and reward modeling—run rigorous empirical studies, and partner with infra and product teams to land methods that improve measurable task success without sacrificing stability or safety. THE PERSON: You publish and ship. You are fluent in both RL theory and the practical path from ablation to production-scale training. You care about reward misspecification, variance reduction, and evaluation that reflects real constraints—not only toy environments. KEY RESPONSIBILITIES: Research and develop RL methods for post-training LLMs and code models on structured engineering tasks with verifiable or preference-based feedback Design reward models, curricula, and off-policy or on-policy training recipes suited to sparse, noisy, or expensive labels from experts and simulators Characterize failure modes (reward hacking, degenerate policies, instability) and propose mitigations grounded in experiments Collaborate with RL infra engineers to scale training; define interfaces for rollout generation, logging, and reproducibility Publish at top venues (e.g. NeurIPS, ICML, ICLR) and contribute internal technical leadership on the RL roadmap PREFERRED EXPERIENCE: Strong publication record in reinforcement learning or closely related machine learning areas. Hands-on experience training RL or preference-optimized models at non-trivial scale (GPUs, distributed jobs) Experience with LLM post-training, RLHF/RLAIF, or policy optimization for language or code agents Familiarity with compilers, kernels, EDA-style workflows, or large-scale codebases is a plus ACADEMIC CREDENTIALS: PhD in Computer Science, Machine Learning, or related field strongly preferred. #LI-BM1 #LI-Hybrid",
+        "posted_date": "2026-09-01T23:33:00+0000",
+        "apply_url": "https://careers-amd.icims.com/jobs/91613/login",
+        "internal": false,
+        "external": false,
+        "searchable": true,
+        "applyable": true,
+        "li_easy_applyable": true,
+        "ats_code": "icims",
+        "isFrontLineAIJob": false,
+        "isApplyFlowJob": false,
+        "meta_data": {
+          "canonical_url": "https://careers.amd.com/jobs/91613?lang=en-us"
+        },
+        "update_date": "2026-10-16T11:49:12+0000",
+        "create_date": "2026-09-01T23:34:04+0000",
+        "category": [
+          " Engineering"
+        ],
+        "full_location": "Santa Clara, California",
+        "short_location": "Santa Clara, California",
+        "multipleLocations": false
+      }
+    },
+    {
+      "data": {
+        "slug": "93266",
+        "language": "en-us",
+        "languages": [
+          "en-us"
+        ],
+        "req_id": "93266",
+        "title": "Sr. Compiler Software Development Engineer",
+        "description": "ADVANCE YOUR CAREER. ADVANCE THE WORLD. At AMD, we believe technology has the power to solve the world’s most important challenges. From advancing healthcare and scientific discovery to powering AI and the technologies people rely on every day, innovation at AMD is shaping the future. Whether you’re designing next-gen processors, enabling AI breakthroughs, or bringing leading edge products to market, every role at AMD contributes to something bigger — technology that moves the world forward. Join us and, together, we’ll advance your career. THE ROLE: AMD is looking for a motivated engineer to join a core team of incredibly talented industry specialists working on developing a cutting-edge machine learning model compiler targeting AMD AIE in Ryzen AI PC and embedded FPGA devices. The compiler needs to take a model in ONNX or PyTorch and produce optimized control and executable code for AIE VLIW processor array. Additionally, the compiler needs to handle partitioning between x86/embedded processor/FPGA fabric and AIE and generate code to interface with AMD AIE specific runtime and driver. THE PERSON: The ideal candidate should be passionate about software development. The candidate should be able to communicate effectively and work optimally with different teams across AMD. KEY RESPONSIBILITIES: Integrate compiler and compiled model with ML Frameworks (such as ONNX and PyTorch) Implement model partitioning in ML Frameworks and/or MLIR Implement runtime to distribute work to and collect results from x86 cores and AIE cores Design and develop new groundbreaking AMD technologies Debug and fix existing issues and research alternative, more efficient ways to accomplish the same work PREFERRED EXPERIENCE: Strong object-oriented programming background, C/C++ and Python ML Compiler and Runtime technologies such as MLIR, LLVM Compiler building skills Code generation for a ML hardware accelerator Machine Learning concepts and model development experience Understanding of ONNX, PyTorch, etc. Ability to write high quality code with a keen attention to detail Experience with modern concurrent programming and threading APIs Experience with software development processes and tools such as debuggers, source code control systems (GitHub) and profilers is a plus Effective communication and problem-solving skills ACADEMIC CREDENTIALS: Bachelor’s or Master’s degree in Computer/Software Engineering, Computer Science, or related technical discipline This role is not eligible for visa sponsorship. #LI-JG1 Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries are equal opportunity, inclusive employers and will consider all applicants without regard to age, ancestry, color, marital status, medical condition, mental or physical disability, national origin, race, religion, political and/or third-party affiliation, sex, pregnancy, sexual orientation, gender identity, military or veteran status, or any other characteristic protected by law. We encourage applications from all qualified candidates and will accommodate applicants’ needs under the respective laws throughout all stages of the recruitment and selection process. AMD may use Artificial Intelligence to help screen, assess or select applicants for this position. AMD’s “Responsible AI Policy” is available here. This posting is for an existing vacancy.",
+        "location_name": "US,CA,San Jose",
+        "street_address": "2100 Logic Drive",
+        "city": "San Jose",
+        "state": "California",
+        "country": "United States",
+        "country_code": "US",
+        "postal_code": "95124",
+        "location_type": "LAT_LNG",
+        "latitude": 37.25306399999999,
+        "longitude": -121.9362806,
+        "categories": [
+          {
+            "name": "Engineering"
+          }
+        ],
+        "tags1": [
+          "No"
+        ],
+        "tags2": [
+          "USD $178,500.00/Yr."
+        ],
+        "tags3": [
+          "USD $255,000.00/Yr."
+        ],
+        "tags4": [
+          "US Careers (External)"
+        ],
+        "tags5": [
+          "USD $204,000.00/Yr."
+        ],
+        "tags6": [
+          "USD $306,000.00/Yr."
+        ],
+        "tags7": [
+          "204000"
+        ],
+        "tags8": [
+          "306000"
+        ],
+        "promotion_value": 0,
+        "employment_type": "FULL_TIME",
+        "qualifications": "Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries are equal opportunity, inclusive employers and will consider all applicants without regard to age, ancestry, color, marital status, medical condition, mental or physical disability, national origin, race, religion, political and/or third-party affiliation, sex, pregnancy, sexual orientation, gender identity, military or veteran status, or any other characteristic protected by law. We encourage applications from all qualified candidates and will accommodate applicants’ needs under the respective laws throughout all stages of the recruitment and selection process. AMD may use Artificial Intelligence to help screen, assess or select applicants for this position. AMD’s “Responsible AI Policy” is available here. This posting is for an existing vacancy.",
+        "hiring_organization": "Advanced Micro Devices, Inc",
+        "hiring_organization_logo": "https://www.amd.com/content/dam/code/images/header/amd-header-logo.svg",
+        "responsibilities": "THE ROLE: AMD is looking for a motivated engineer to join a core team of incredibly talented industry specialists working on developing a cutting-edge machine learning model compiler targeting AMD AIE in Ryzen AI PC and embedded FPGA devices. The compiler needs to take a model in ONNX or PyTorch and produce optimized control and executable code for AIE VLIW processor array. Additionally, the compiler needs to handle partitioning between x86/embedded processor/FPGA fabric and AIE and generate code to interface with AMD AIE specific runtime and driver. THE PERSON: The ideal candidate should be passionate about software development. The candidate should be able to communicate effectively and work optimally with different teams across AMD. KEY RESPONSIBILITIES: Integrate compiler and compiled model with ML Frameworks (such as ONNX and PyTorch) Implement model partitioning in ML Frameworks and/or MLIR Implement runtime to distribute work to and collect results from x86 cores and AIE cores Design and develop new groundbreaking AMD technologies Debug and fix existing issues and research alternative, more efficient ways to accomplish the same work PREFERRED EXPERIENCE: Strong object-oriented programming background, C/C++ and Python ML Compiler and Runtime technologies such as MLIR, LLVM Compiler building skills Code generation for a ML hardware accelerator Machine Learning concepts and model development experience Understanding of ONNX, PyTorch, etc. Ability to write high quality code with a keen attention to detail Experience with modern concurrent programming and threading APIs Experience with software development processes and tools such as debuggers, source code control systems (GitHub) and profilers is a plus Effective communication and problem-solving skills ACADEMIC CREDENTIALS: Bachelor’s or Master’s degree in Computer/Software Engineering, Computer Science, or related technical discipline This role is not eligible for visa sponsorship. #LI-JG1",
+        "posted_date": "2026-10-16T21:10:00+0000",
+        "apply_url": "https://careers-amd.icims.com/jobs/93266/login",
+        "internal": false,
+        "external": false,
+        "searchable": true,
+        "applyable": true,
+        "li_easy_applyable": true,
+        "ats_code": "icims",
+        "isFrontLineAIJob": false,
+        "isApplyFlowJob": false,
+        "meta_data": {
+          "canonical_url": "https://careers.amd.com/jobs/93266?lang=en-us"
+        },
+        "update_date": "2026-10-19T11:48:09+0000",
+        "create_date": "2026-10-16T21:11:04+0000",
+        "category": [
+          " Engineering"
+        ],
+        "full_location": "San Jose, California",
+        "short_location": "San Jose, California",
+        "multipleLocations": false
+      }
+    }
+  ]
+}

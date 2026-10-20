@@ -23,6 +23,10 @@ const (
 	SchemaVersion = 1
 	// MaxLineBytes bounds one serialised event, newline included.
 	MaxLineBytes = 1 << 20
+	// MaxBatchEvents bounds the events in one AppendBatch.
+	MaxBatchEvents = 4096
+	// MaxBatchBytes bounds the serialised size of one AppendBatch.
+	MaxBatchBytes = 16 << 20
 	// MissedRunsKey is the reserved annotation that carries Record.MissedRuns.
 	MissedRunsKey = "missed_runs"
 
@@ -35,6 +39,8 @@ var (
 	ErrLocked = errors.New("ledger: directory is locked by another process")
 	// ErrLineTooLong means an event serialises past MaxLineBytes.
 	ErrLineTooLong = errors.New("ledger: event line exceeds size limit")
+	// ErrBatchTooLarge means a batch exceeds MaxBatchEvents or MaxBatchBytes.
+	ErrBatchTooLarge = errors.New("ledger: batch exceeds size limit")
 	// ErrInvalidEvent means an event failed validation.
 	ErrInvalidEvent = errors.New("ledger: invalid event")
 	// ErrCorrupt means the file holds invalid data before its last line.
@@ -294,6 +300,79 @@ func (f *File) Append(ctx context.Context, e Event) error {
 	}
 	f.goodSize += int64(len(line))
 	fold(f.recs, e)
+	return nil
+}
+
+// AppendBatch validates every event of evs, writes them as one buffer with one
+// fsync, then folds them in order (the same key twice: the later wins). Any
+// validation, size or context failure writes nothing; a failed write or fsync
+// is handled exactly as in Append. An empty batch does no I/O.
+//
+// Crash semantics match sequential Appends: a crash between the write and the
+// fsync may leave a prefix of the batch on disk, whole lines of which replay
+// folds and a torn last line of which it ignores. The batch is atomic against
+// errors, not against a crash, so callers batch only events that are each
+// valid on their own.
+func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
+	if len(evs) == 0 {
+		return nil
+	}
+	if len(evs) > MaxBatchEvents {
+		return ErrBatchTooLarge
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for _, e := range evs {
+		if err := validate(e); err != nil {
+			return err
+		}
+		line, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("ledger: marshal: %w", err)
+		}
+		if len(line)+1 > MaxLineBytes {
+			return ErrLineTooLong
+		}
+		if buf.Len()+len(line)+1 > MaxBatchBytes {
+			return ErrBatchTooLarge
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return ErrClosed
+	}
+	if f.broken != nil {
+		return f.broken
+	}
+	if f.Recovered {
+		if err := f.events.Truncate(f.goodSize); err != nil {
+			return fmt.Errorf("ledger: truncate torn tail: %w", err)
+		}
+		f.Recovered = false
+	}
+	if _, err := f.events.WriteAt(buf.Bytes(), f.goodSize); err != nil {
+		if terr := f.events.Truncate(f.goodSize); terr != nil {
+			f.broken = fmt.Errorf("%w: write failed (%v) and its partial batch could not be cut: %v", errBroken, err, terr)
+			return f.broken
+		}
+		return fmt.Errorf("ledger: write: %w", err)
+	}
+	if err := f.events.Sync(); err != nil {
+		f.broken = fmt.Errorf("%w: fsync failed: %v", errBroken, err)
+		if terr := f.events.Truncate(f.goodSize); terr != nil {
+			f.broken = fmt.Errorf("%w; cutting the batch failed too: %v", f.broken, terr)
+		}
+		return f.broken
+	}
+	f.goodSize += int64(buf.Len())
+	for _, e := range evs {
+		fold(f.recs, e)
+	}
 	return nil
 }
 

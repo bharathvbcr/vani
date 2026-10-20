@@ -302,6 +302,9 @@ func triageAnnotations(a decide.Answer) map[string]string {
 	for name, sr := range a.Slots {
 		if sr.Value != "" {
 			ann[ledger.AnnTriagePrefix+name] = sr.Value
+			if name == "category" {
+				ann[ledger.AnnCategory] = sr.Value
+			}
 		}
 		ann[ledger.AnnTriagePrefix+name+".reading"] = string(sr.Reading)
 		if b := slotBackend(a, sr); b != "" {

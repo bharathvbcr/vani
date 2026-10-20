@@ -71,13 +71,20 @@ let idleSeconds = 60.0
 let lastActivity = NSLock()
 nonisolated(unsafe) var lastRequest = Date()
 nonisolated(unsafe) var busy = false
+/// Whether bytes are waiting on stdin right now (poll with no wait).
+@Sendable func inputPending() -> Bool {
+    var fd = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+    return poll(&fd, 1, 0) > 0
+}
 Thread.detachNewThread {
     while true {
         Thread.sleep(forTimeInterval: 5)
         lastActivity.lock()
         let idle = busy ? 0 : Date().timeIntervalSince(lastRequest)
         lastActivity.unlock()
-        if idle > idleSeconds { exit(0) }
+        // A persistent port (Chrome's connectNative) can send a request at the moment the idle
+        // time runs out: a frame already waiting on stdin is not idle, so it is answered first.
+        if idle > idleSeconds && !inputPending() { exit(0) }
     }
 }
 

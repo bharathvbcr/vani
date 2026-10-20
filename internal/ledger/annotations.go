@@ -45,6 +45,15 @@ const (
 	AnnTriageSuffixBackend = ".backend"
 	// AnnTriageUnsure is the unsure reason ("triage.unsure").
 	AnnTriageUnsure = "triage.unsure"
+	// AnnTriageKept holds the score a posting had when its description changed
+	// in a near-identical way and its triage was kept ("triage.kept_across_edit").
+	// It starts with AnnTriagePrefix, so the next real change forgets it.
+	AnnTriageKept = "triage.kept_across_edit"
+	// AnnTriageKeptEdits counts the consecutive kept edits since the triage last
+	// read the text; AnnTriageBasisHash is the description hash of the version
+	// it read. Both start with AnnTriagePrefix, so a re-ask forgets them.
+	AnnTriageKeptEdits = "triage.kept_edits"
+	AnnTriageBasisHash = "triage.basis_hash"
 	// AnnLCA is the sponsorship-history badge from DOL LCA data. A badge, never
 	// a filter: no engine rule reads it.
 	AnnLCA = "lca.badge"
@@ -54,4 +63,6 @@ const (
 	AnnEmployer = "employer.badge"
 	// AnnDescHash is the normalised description hash used for change detection.
 	AnnDescHash = "desc_hash"
+	// AnnCategory is the job category folder / career track classification.
+	AnnCategory = "category"
 )

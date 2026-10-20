@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 		{ATS: posting.Page, Token: "acmepage", Company: "Acme", URL: "https://careers.acme.test/jobs"},
 		{ATS: posting.Lever, Token: "beta", Company: "Beta"},
 		{ATS: posting.Greenhouse, Token: "acme2", Company: "Acme"},
+		// The same company on a second ATS: rule 2 of twinOf. Its links repeat
+		// board 2's, a different company, so only the link ties them: rule 1.
+		{ATS: posting.Lever, Token: "acmelv", Company: "Acme"},
 	}
 	titles := []string{"Engineer", "ML Engineer", "Data Scientist"}
 	locs := []string{"Remote", "Austin"}
@@ -39,7 +43,16 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 		for _, title := range titles {
 			for _, loc := range locs {
 				n++
-				p := posting.Posting{Company: bd.Company, Title: title, Location: loc, URL: fmt.Sprintf("https://careers.acme.test/jobs/%d-%d", b, n)}
+				// Three digits or more, so the link names a posting. Boards 0 and 1
+				// share links, as do boards 2 and 4.
+				link := b
+				switch b {
+				case 1:
+					link = 0
+				case 4:
+					link = 2
+				}
+				p := posting.Posting{Company: bd.Company, Title: title, Location: loc, URL: fmt.Sprintf("https://careers.acme.test/jobs/%d%03d", link, n)}
 				var key posting.Key
 				var err error
 				switch bd.ATS {
@@ -80,17 +93,24 @@ func indexEqual(t *testing.T, got, want *ledgerIndex) {
 	if !reflect.DeepEqual(got.ats, want.ats) || !reflect.DeepEqual(got.weak, want.weak) {
 		t.Fatalf("index tuples\ngot  ats %v weak %v\nwant ats %v weak %v", got.ats, got.weak, want.ats, want.weak)
 	}
+	if !reflect.DeepEqual(got.byURL, want.byURL) {
+		t.Fatalf("index links\ngot  %v\nwant %v", got.byURL, want.byURL)
+	}
 }
 
 // Reconciler, which reads the ledger once per run, must leave exactly the
 // ledger the per-board fresh scan leaves, board after board, run after run.
 func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 	var total Summary
+	var viaURL, viaRole int // duplicates the link rule and the cross-ATS tuple rule made
 	defer func() {
+		if viaURL == 0 || viaRole == 0 {
+			t.Errorf("the seeds did not reach both identity rules: %d by link, %d by role", viaURL, viaRole)
+		}
 		// Every outcome reconcile can reach was reached, so parity was checked
 		// on each path and not only on the easy ones.
-		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Reappeared == 0 ||
-			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 {
+		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Redated == 0 || total.Reappeared == 0 ||
+			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 || total.Revived == 0 {
 			t.Errorf("the seeds did not cover every outcome: %+v", total)
 		}
 	}()
@@ -129,6 +149,11 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						default:
 							p.Description = "The role description."
 						}
+						// Some listings carry a posted date, some do not, so a
+						// posting stored undated is re-dated on a later run.
+						if rng.IntN(2) == 0 {
+							p.PostedAt = start.Add(-time.Duration(rng.IntN(30)) * 24 * time.Hour)
+						}
 						listed = append(listed, p)
 					}
 					rng.Shuffle(len(listed), func(i, j int) { listed[i], listed[j] = listed[j], listed[i] })
@@ -144,11 +169,24 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.New += got.New
 					total.Changed += got.Changed
 					total.Rerendered += got.Rerendered
+					total.Redated += got.Redated
 					total.Reappeared += got.Reappeared
 					total.Missed += got.Missed
 					total.Dead += got.Dead
 					total.Duplicate += got.Duplicate
 					total.Unchanged += got.Unchanged
+					total.Revived += got.Revived
+				}
+			}
+			for _, r := range subject.All() {
+				orig, ok := subject.Get(posting.Key(r.Annotations[DuplicateOfKey]))
+				if r.Status != posting.Duplicate || !ok || weakKey(r.Key) || weakKey(orig.Key) {
+					continue
+				}
+				if slices.ContainsFunc(urlKeys(r.Posting), func(u string) bool { return slices.Contains(urlKeys(orig.Posting), u) }) {
+					viaURL++
+				} else {
+					viaRole++
 				}
 			}
 		})

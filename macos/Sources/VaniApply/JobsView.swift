@@ -11,13 +11,10 @@ struct JobsView: View {
     var body: some View {
         @Bindable var jobs = jobs
         VStack(spacing: 0) {
-            Picker("View", selection: $jobs.view) {
-                ForEach(JobView.allCases) { v in
-                    Text(label(v)).tag(v)
-                }
+            HStack {
+                ViewSwitcher()
+                Spacer(minLength: 0)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
@@ -25,6 +22,8 @@ struct JobsView: View {
                 InsightsPanel()
                 Divider()
             }
+            SavedSearchesSection()
+            ActiveFiltersBar()
             HSplitView {
                 JobList()
                     .frame(minWidth: 300, idealWidth: 380, maxWidth: 560)
@@ -50,17 +49,23 @@ struct JobsView: View {
                     }
                     .pickerStyle(.inline)
                 } label: {
+                    // The title stays "Sort": the active order is spelled out in
+                    // words above the list, and in this tooltip.
                     Label("Sort", systemImage: "arrow.up.arrow.down")
                 }
                 .help("Sort: \(jobs.sort.title)")
+                .labelStyle(.titleAndIcon)
                 FilterMenu()
+                    .labelStyle(.titleAndIcon)
                 Toggle(isOn: $jobs.showInsights) {
                     Label("Insights", systemImage: "chart.dots.scatter")
                 }
                 .keyboardShortcut("i")
+                .labelStyle(.titleAndIcon)
                 .help("Charts over the roles in this list (⌘I)")
                 Button { jobs.reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
+                    .labelStyle(.titleAndIcon)
                     .help("Reload the list (⌘R)")
             }
         }
@@ -71,10 +76,122 @@ struct JobsView: View {
             Text(verbatim: jobs.actionError ?? "")
         }
     }
+}
 
-    private func label(_ v: JobView) -> String {
-        guard let page = jobs.page else { return v.title }
-        return "\(v.title)  \(page.count(v))"
+/// The boards Vani searches (`vani watchlist list --json`), including pages saved from the
+/// browser extension. Closed until opened; a failed read shows its reason, not an empty list.
+/// A page board's URL came from a browser page, so only an https one gets an Open button.
+private struct SavedSearchesSection: View {
+    @Environment(JobsModel.self) private var jobs
+
+    var body: some View {
+        @Bindable var jobs = jobs
+        VStack(spacing: 0) {
+            DisclosureGroup(isExpanded: $jobs.showSearches) {
+                content
+                    .padding(.top, 4)
+            } label: {
+                Label(title, systemImage: "magnifyingglass")
+                    .font(.callout.weight(.medium))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            Divider()
+        }
+    }
+
+    private var title: String {
+        jobs.showSearches && jobs.searchesError == nil && !jobs.searchesLoading
+            ? "Saved searches (\(jobs.searches.count))" : "Saved searches"
+    }
+
+    @ViewBuilder private var content: some View {
+        if let message = jobs.searchesError {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(verbatim: "Couldn't read the saved searches: \(message)")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+                Button("Retry") { jobs.reloadSearches() }.controlSize(.small)
+            }
+        } else if jobs.searchesLoading && jobs.searches.isEmpty {
+            ProgressView().controlSize(.small)
+        } else if jobs.searches.isEmpty {
+            Text("Nothing saved yet. Save a listing page from the browser extension, or add a board with `vani watchlist add`.")
+                .font(.callout).foregroundStyle(.secondary)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(jobs.searches) { row($0) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 140)
+        }
+    }
+
+    private func row(_ s: WatchlistEntry) -> some View {
+        HStack(spacing: 8) {
+            Text(verbatim: s.title).font(.callout.weight(.medium)).lineLimit(1)
+            Text(verbatim: s.kind)
+                .font(.caption2.weight(.medium))
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.16), in: Capsule())
+            Text(verbatim: s.terms.isEmpty ? "no search terms" : s.terms.joined(separator: ", "))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .help(s.terms.joined(separator: "\n"))
+            Spacer(minLength: 0)
+            if let url = s.openURL {
+                Button("Open") { NSWorkspace.shared.open(url) }
+                    .controlSize(.small)
+                    .help(url.absoluteString)
+            }
+        }
+    }
+}
+
+/// New / Saved / Applied / Hidden / All with a count beside each. An empty view
+/// is dimmed, and a count vani did not send is left off rather than shown as 0.
+private struct ViewSwitcher: View {
+    @Environment(JobsModel.self) private var jobs
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(JobView.allCases) { v in tab(v) }
+        }
+        .padding(2)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+    }
+
+    private func tab(_ v: JobView) -> some View {
+        let selected = jobs.view == v
+        let n = JobListPresentation.count(jobs.page, v)
+        let empty = n == 0
+        return Button {
+            jobs.view = v
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: JobBadge.symbol(for: v)).font(.caption)
+                Text(v.title)
+                if let n {
+                    Text(n.formatted())
+                        .font(.caption2.weight(.medium).monospacedDigit())
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(selected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.16), in: Capsule())
+                }
+            }
+            .foregroundStyle(selected ? Color.primary : (empty ? Color.secondary.opacity(0.55) : Color.secondary))
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background {
+                if selected { Capsule().fill(.background).shadow(color: .black.opacity(0.12), radius: 1, y: 0.5) }
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(n.map { "\(v.title): \($0) \($0 == 1 ? "role" : "roles")" } ?? v.title)
+        .accessibilityLabel(n.map { "\(v.title), \($0)" } ?? v.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -82,9 +199,13 @@ struct JobsView: View {
 /// flag; the view counts above ignore them, the list and Insights do not.
 private struct FilterMenu: View {
     @Environment(JobsModel.self) private var jobs
+    @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false
 
     var body: some View {
         Menu {
+            Section("Category folder") {
+                ForEach(Job.categoryOptions + ["none"], id: \.self) { toggle(\.categories, $0) }
+            }
             Section("Role fit") {
                 ForEach(Job.roleFitOrder + ["none"], id: \.self) { toggle(\.fits, $0) }
             }
@@ -161,6 +282,7 @@ private struct FilterMenu: View {
             }
             Divider()
             Toggle("Hide closed roles", isOn: Binding(get: { jobs.filter.openOnly }, set: { jobs.filter.openOnly = $0 }))
+            Toggle("Hide possible duplicates", isOn: $hideDuplicates)
             Button("Clear Filters") { jobs.clearFilter() }
                 .disabled(jobs.filter.isEmpty)
         } label: {
@@ -205,14 +327,145 @@ private struct FilterMenu: View {
     }
 }
 
+/// Interactive horizontal bar of chips for each active filter.
+private struct ActiveFiltersBar: View {
+    @Environment(JobsModel.self) private var jobs
+
+    var body: some View {
+        if !jobs.filter.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    Text("Filters:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(filterChips) { chip in
+                        HStack(spacing: 4) {
+                            Text(chip.label)
+                            Button {
+                                chip.remove()
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Remove filter: \(chip.label)")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.quaternary.opacity(0.6), in: Capsule())
+                    }
+                    Button("Clear All") {
+                        jobs.clearFilter()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+                    .help("Clear all active filters")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            Divider()
+        }
+    }
+
+    private struct ChipItem: Identifiable {
+        let id: String
+        let label: String
+        let remove: () -> Void
+    }
+
+    private var filterChips: [ChipItem] {
+        var chips: [ChipItem] = []
+        let f = jobs.filter
+        for code in f.categories.sorted() {
+            chips.append(ChipItem(id: "category:\(code)", label: Job.label(for: code)) {
+                jobs.filter.categories.remove(code)
+            })
+        }
+        for code in f.fits.sorted() {
+            chips.append(ChipItem(id: "fit:\(code)", label: Job.label(for: code)) {
+                jobs.filter.fits.remove(code)
+            })
+        }
+        for code in f.workModes.sorted() {
+            chips.append(ChipItem(id: "workMode:\(code)", label: Job.label(for: code)) {
+                jobs.filter.workModes.remove(code)
+            })
+        }
+        for code in f.sponsorships.sorted() {
+            chips.append(ChipItem(id: "sponsorship:\(code)", label: Job.label(for: code)) {
+                jobs.filter.sponsorships.remove(code)
+            })
+        }
+        for code in f.seniorities.sorted() {
+            chips.append(ChipItem(id: "seniority:\(code)", label: Job.label(for: code)) {
+                jobs.filter.seniorities.remove(code)
+            })
+        }
+        for code in f.states.sorted() {
+            chips.append(ChipItem(id: "state:\(code)", label: code == "none" ? "No state" : "State: \(code)") {
+                jobs.filter.states.remove(code)
+            })
+        }
+        for area in f.areas.sorted() {
+            chips.append(ChipItem(id: "area:\(area)", label: area) {
+                jobs.filter.areas.remove(area)
+            })
+        }
+        if f.remoteOnly {
+            chips.append(ChipItem(id: "remoteOnly", label: "Remote only") {
+                jobs.filter.remoteOnly = false
+            })
+        }
+        if f.widensToRemote {
+            chips.append(ChipItem(id: "orRemote", label: "Or remote") {
+                jobs.filter.orRemote = false
+            })
+        }
+        if let s = f.minSalary {
+            chips.append(ChipItem(id: "minSalary", label: "≥ \(Job.Pay.short(Double(s)))/yr") {
+                jobs.filter.minSalary = nil
+            })
+        }
+        if f.salaryListed {
+            chips.append(ChipItem(id: "salaryListed", label: "Stating pay") {
+                jobs.filter.salaryListed = false
+            })
+        }
+        if let r = f.minRelevance {
+            chips.append(ChipItem(id: "minRelevance", label: "Relevance ≥ \(r)") {
+                jobs.filter.minRelevance = nil
+            })
+        }
+        if let d = f.maxAgeDays {
+            chips.append(ChipItem(id: "maxAge", label: "≤ \(d) days") {
+                jobs.filter.maxAgeDays = nil
+            })
+        }
+        if f.openOnly {
+            chips.append(ChipItem(id: "openOnly", label: "Hide closed") {
+                jobs.filter.openOnly = false
+            })
+        }
+        return chips
+    }
+}
+
 // MARK: - List
 
 private struct JobList: View {
     @Environment(JobsModel.self) private var jobs
+    static let hideDuplicatesKey = "jobs.hidePossibleDuplicates"
+    /// Off by default: duplicates are noted on their rows, not removed.
+    @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false
 
     var body: some View {
         @Bindable var jobs = jobs
         VStack(spacing: 0) {
+            if let page = jobs.page, !jobs.jobs.isEmpty {
+                listHeader(page)
+            }
             if let err = jobs.error, jobs.page == nil {
                 ContentUnavailableView {
                     Label("Couldn't load jobs", systemImage: "exclamationmark.triangle")
@@ -232,11 +485,37 @@ private struct JobList: View {
                     Text("If Vani runs with another state folder (VANI_STATE_DIR), choose it under Settings › Vani, or run `vani run-once` to retrieve roles here.")
                 }
             } else if jobs.jobs.isEmpty {
-                ContentUnavailableView(emptyTitle, systemImage: emptySymbol, description: Text(emptyText))
+                ContentUnavailableView {
+                    Label(emptyTitle, systemImage: emptySymbol)
+                } description: {
+                    Text(emptyText)
+                } actions: {
+                    if !jobs.filter.isEmpty {
+                        Button("Clear Filters") { jobs.clearFilter() }
+                    }
+                    if !jobs.query.isEmpty {
+                        Button("Clear Search") { jobs.query = "" }
+                    }
+                }
+            } else if hideDuplicates && Job.hidingPossibleDuplicates(jobs.jobs).isEmpty {
+                ContentUnavailableView {
+                    Label("Only possible duplicates here", systemImage: "square.on.square")
+                } description: {
+                    Text("Every role in this list may repeat another one, and “Hide possible duplicates” is on.")
+                } actions: {
+                    Button("Show Them") { hideDuplicates = false }
+                }
             } else {
+                // Rows stay one per posting, so selection and the ⌘S / ⇧⌘A / ⌘⌫
+                // shortcuts keep acting on a single job key; a repost is noted
+                // on its rows and listed in the detail.
+                let postings = PostingGroups(jobs.jobs)
+                let shown = hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
+                // Targets are named from the whole loaded list, hidden rows included.
+                let loaded = Dictionary(jobs.jobs.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
                 ScrollViewReader { proxy in
-                    List(jobs.jobs, selection: $jobs.selection) { job in
-                        JobRow(job: job)
+                    List(shown, selection: $jobs.selection) { job in
+                        JobRow(job: job, others: postings.others(of: job.key), duplicates: job.duplicateBadges(loaded: loaded))
                             .tag(job.key)
                             .contextMenu { JobMenu(job: job) }
                     }
@@ -253,28 +532,56 @@ private struct JobList: View {
         }
     }
 
+    /// What the list is ordered by, and the states that change what it holds:
+    /// postings waiting for triage, a capped list, a run still writing.
+    @ViewBuilder
+    private func listHeader(_ page: JobsPage) -> some View {
+        let triage = JobListPresentation.triageBanner(page.pending)
+        let cap = JobListPresentation.capNotice(shown: page.shown, total: page.total)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(JobListPresentation.sortCaption(jobs.sort))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if triage != nil || cap != nil || page.torn == true {
+                WrapLayout(spacing: 6) {
+                    if let triage, let pending = page.pending {
+                        StatePill(symbol: "hourglass", text: triage, tint: .orange)
+                            .help(pending.footerHelp)
+                    }
+                    if let cap {
+                        StatePill(symbol: "line.3.horizontal.decrease", text: cap + " · search for more", tint: .blue)
+                            .help("The list is capped at \(page.shown) roles; \(page.total) match. Search or filter to see the rest.")
+                    }
+                    if page.torn == true {
+                        StatePill(symbol: "arrow.triangle.2.circlepath", text: "A run is writing: refresh soon", tint: .yellow)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        Divider()
+    }
+
     @ViewBuilder
     private func footer(_ page: JobsPage) -> some View {
         Divider()
         HStack(spacing: 6) {
             if jobs.loading { ProgressView().controlSize(.small) }
             if page.shown < page.total {
-                Text("Showing \(page.shown) of \(page.total). Search to narrow the list.")
+                Text("\(page.shown) of \(page.total) roles")
             } else {
                 Text("\(page.total) \(page.total == 1 ? "role" : "roles")")
-            }
-            if page.torn == true {
-                Text("· a run is writing; refresh soon").foregroundStyle(.orange)
-            }
-            if let pending = page.pending, let note = pending.footerNote {
-                Text(verbatim: note).help(pending.footerHelp)
             }
             if let err = jobs.error {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(err)
             }
             Spacer()
             if let ledger = page.ledger {
-                Image(systemName: "externaldrive").help("Reading \(ledger) (\(page.records ?? 0) postings)")
+                // A count vani did not send is unknown, not zero postings.
+                Image(systemName: "externaldrive")
+                    .help(page.records.map { "Reading \(ledger) (\($0) postings)" } ?? "Reading \(ledger)")
             }
         }
         .font(.caption)
@@ -315,49 +622,89 @@ private struct JobList: View {
 private struct JobRow: View {
     @Environment(JobsModel.self) private var jobs
     let job: Job
+    /// The other postings of this role in the list (same company and title).
+    var others: [Job] = []
+    /// Possible-duplicate and same-role-elsewhere notes (Job.duplicateBadges).
+    var duplicates: [DuplicateBadge] = []
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            JobBadge(mark: job.mark)
-                .frame(width: 16)
+        let score = JobScore.forRow(job, sort: jobs.sort)
+        HStack(alignment: .top, spacing: 10) {
+            CompanyAvatar(company: job.company, logo: job.logoPath, size: 34)
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: job.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                Text(verbatim: subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    if let mark = job.mark { JobBadge(mark: mark) }
+                    Text(verbatim: job.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                }
                 HStack(spacing: 4) {
-                    if let fit = job.fitLabel { Chip(text: fit, tint: fitTint(job)) }
-                    if let rank = job.rank { Chip(text: "Rank \(Int(rank.rounded()))", tint: .accentColor) }
-                    if let pay = job.payLabel(preferring: jobs.filter.currency) { Chip(text: pay, tint: .teal) }
-                    if job.closed == true { Chip(text: "Closed", tint: .red) }
-                    ForEach(targetKeywords, id: \.term) { Chip(text: $0.term, tint: .green) }
-                    if let first = job.reasons.first, first.kind != .other {
-                        Text(verbatim: "\(first.kind.label): \(first.text)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    Text(verbatim: job.company)
+                        .lineLimit(1)
+                    if let w = job.whereLabel {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(verbatim: w).lineLimit(1)
                     }
+                    // Plain text, never wrapped mid-range; the place truncates first.
+                    if let pay = job.payLabel(preferring: jobs.filter.currency) {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(verbatim: pay)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .layoutPriority(1)
+                            .help("Pay as the posting states it")
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                WrapLayout(spacing: 4) {
+                    if let cat = job.categoryLabel { Chip(text: cat, tint: .indigo) }
+                    // The strongest fit is the expectation, so it gets no chip.
+                    if let fit = job.fitLabel, job.triage?["role_fit"] != Job.roleFitOrder.first {
+                        Chip(text: fit, tint: fitTint(job))
+                    }
+                    if let rank = job.rank { Chip(text: "Rank \(Int(rank.rounded()))", tint: .accentColor) }
+                    if job.closed == true { Chip(text: "Closed", tint: .red) }
+                    ForEach(targetKeywords, id: \.term) { Chip(text: $0.term, tint: .secondary) }
+                }
+                if let first = job.reasons.first, first.kind != .other {
+                    Text(verbatim: "\(first.kind.label): \(first.text)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if let note = JobListPresentation.alsoPosted(others) {
+                    Label(note, systemImage: "square.on.square")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("The same company and title is listed \(others.count == 1 ? "once" : "\(others.count) times") more; open the role to see where")
+                }
+                ForEach(duplicates, id: \.text) { d in
+                    Label {
+                        Text(verbatim: d.text)
+                    } icon: {
+                        Image(systemName: d.kind == .candidate ? "exclamationmark.square" : "mappin.and.ellipse")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(d.kind == .candidate ? Color.orange : Color.secondary)
+                    .lineLimit(1)
+                    .help(d.help)
                 }
             }
             Spacer(minLength: 4)
-            VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: .trailing, spacing: 4) {
+                if let score { ScoreBadge(score: score) }
                 if let age = job.ageLabel {
                     Text(verbatim: age)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(freshTint)
                         .help(ageHelp)
                 }
-                if let p = job.priority {
-                    ScoreBar(value: p)
-                        .frame(width: 34, height: 4)
-                        .help("Priority \(Int(p.rounded())) of 100: relevance discounted by age")
-                }
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
+        .opacity(job.closed == true ? 0.72 : 1.0)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
     }
@@ -389,7 +736,8 @@ private struct JobRow: View {
         if let fit = job.fitLabel { parts.append(fit) }
         if let pay = job.payLabel(preferring: jobs.filter.currency) { parts.append("pay " + pay) }
         if let age = job.ageDays { parts.append(job.freshSource == .seen ? "first seen \(age) days ago" : "posted \(age) days ago") }
-        if let p = job.priority { parts.append("priority \(Int(p.rounded()))") }
+        if let p = JobScore.display(job.priority) { parts.append("priority \(p)") }
+        if let also = JobListPresentation.alsoPosted(others) { parts.append(also) }
         if let mark = job.mark { parts.append(mark.rawValue) }
         if job.closed == true { parts.append("closed") }
         return parts.joined(separator: ", ")
@@ -402,6 +750,29 @@ private struct JobRow: View {
     }
 }
 
+/// Format job details for clipboard copying.
+func copyJobDetailsToPasteboard(job: Job, description: String? = nil) {
+    var lines: [String] = []
+    var heading = job.title
+    if !job.company.isEmpty {
+        heading += " at \(job.company)"
+    }
+    lines.append(heading)
+    if let whereLabel = job.whereLabel, !whereLabel.isEmpty {
+        lines.append(whereLabel)
+    }
+    if let link = job.shareLink ?? job.postingLink {
+        lines.append(link.absoluteString)
+    }
+    let desc = description ?? job.description ?? ""
+    if !desc.isEmpty {
+        lines.append("")
+        lines.append(desc)
+    }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+}
+
 /// The mark actions, shared by the row's context menu and the detail pane.
 private struct JobMenu: View {
     @Environment(JobsModel.self) private var jobs
@@ -412,11 +783,25 @@ private struct JobMenu: View {
         Button(job.mark == .applied ? "Unmark Applied" : "Mark Applied", systemImage: "checkmark.seal") { act(.applied) }
         Button(job.mark == .hidden ? "Unhide" : "Hide", systemImage: "eye.slash") { act(.hidden) }
         Divider()
-        if let link = job.postingLink {
-            Button("Open Posting", systemImage: "safari") { NSWorkspace.shared.open(link) }
+        Button("Copy Job Details", systemImage: "doc.on.doc") {
+            copyJobDetailsToPasteboard(job: job, description: jobs.detail?.key == job.key ? jobs.detail?.description : nil)
+        }
+        Button("Copy Job Title", systemImage: "character.cursor.ibeam") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(job.title, forType: .string)
+        }
+        if let link = job.shareLink ?? job.postingLink {
             Button("Copy Link", systemImage: "link") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(link.absoluteString, forType: .string)
+            }
+        }
+        if let posting = job.postingLink {
+            Button("Open Posting", systemImage: "safari") { NSWorkspace.shared.open(posting) }
+        }
+        if let link = job.shareLink {
+            ShareLink(item: link, subject: Text(job.title), message: Text(job.shareSubject)) {
+                Label("Share…", systemImage: "square.and.arrow.up")
             }
         }
     }
@@ -447,50 +832,174 @@ private struct JobDetailContent: View {
     let job: Job
     @State private var noteDraft = ""
     @State private var savingNote = false
-    @State private var showDescription = false
+    @State private var saveStatusMessage: String?
+    @State private var showDescription = true
+    @State private var noteOpen = false
+    @State private var copiedDetails = false
+    @State private var copiedTitle = false
+    @State private var copiedDescription = false
     // While the note has focus, ⌘⌫ and ⌘S belong to the note, not to Hide and Save.
     @FocusState private var noteFocused: Bool
 
     private var noteBytes: Int { noteDraft.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count }
     private var noteChanged: Bool { noteDraft.trimmingCharacters(in: .whitespacesAndNewlines) != (job.note ?? "") }
 
+    /// Other postings in the list of the same company and title.
+    private var otherPostings: [Job] {
+        guard let mine = JobListPresentation.groupKey(company: job.company, title: job.title) else { return [] }
+        return jobs.jobs.filter {
+            $0.key != job.key && JobListPresentation.groupKey(company: $0.company, title: $0.title) == mine
+        }
+    }
+
+    private func otherPostingsCard(_ others: [Job]) -> some View {
+        section("Also posted", caption: "same company and title") {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(others) { o in
+                    Button {
+                        jobs.selection = o.key
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(verbatim: o.ageLabel ?? "age unknown")
+                                .monospacedDigit()
+                                .frame(minWidth: 56, alignment: .leading)
+                            Text(verbatim: o.whereLabel ?? "no location listed")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            if let mark = o.mark { JobBadge(mark: mark) }
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open this posting")
+                }
+            }
+        }
+    }
+    private var currentDescription: String? {
+        jobs.detail?.key == job.key ? jobs.detail?.description : job.description
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                header
-                actions
-                scores
+                headerCard
+                ApplyKitView(job: job, description: currentDescription)
                 if !job.reasons.isEmpty { reasons }
+                if let ranking = job.rankingBreakdown { rankingCard(ranking) }
                 if !job.keywordList.isEmpty { keywords }
+                let others = otherPostings
+                if !others.isEmpty { otherPostingsCard(others) }
                 facts
                 note
                 description
+                    .cardStyle()
             }
             .padding(20)
             .frame(maxWidth: 760, alignment: .leading)
         }
         .onAppear { noteDraft = job.note ?? "" }
+        .onChange(of: job.key) { oldKey, newKey in
+            if noteChanged && noteBytes <= JobsClient.maxNoteBytes && !savingNote {
+                let key = oldKey
+                let text = noteDraft
+                Task { await jobs.saveNote(key, text) }
+            }
+            noteDraft = job.note ?? ""
+            saveStatusMessage = nil
+        }
+        .onChange(of: noteFocused) { _, isFocused in
+            if !isFocused && noteChanged && noteBytes <= JobsClient.maxNoteBytes && !savingNote {
+                saveNoteAction()
+            }
+        }
+    }
+
+    private func saveNoteAction() {
+        savingNote = true
+        Task {
+            let success = await jobs.saveNote(job.key, noteDraft)
+            savingNote = false
+            if success {
+                saveStatusMessage = "Saved"
+                try? await Task.sleep(for: .seconds(2))
+                saveStatusMessage = nil
+            }
+        }
+    }
+
+    private func copyDetailsAction() {
+        copyJobDetailsToPasteboard(job: job, description: currentDescription)
+        copiedDetails = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(1500))
+            copiedDetails = false
+        }
+    }
+
+    /// The header card: who and what, the three metrics across the card, then the
+    /// actions. Anything that belongs right under it (the apply kit) goes
+    /// directly after `headerCard` in `body`.
+    private var headerCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                CompanyAvatar(company: job.company, logo: job.logoPath, size: 52)
+                header
+            }
+            if job.relevance != nil || job.ageDays != nil {
+                Divider()
+                scores
+            }
+            Divider()
+            actions
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardStyle(padding: 16)
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(verbatim: job.title)
-                .font(.title2.bold())
-                .textSelection(.enabled)
+            HStack(alignment: .firstTextBaseline) {
+                Text(verbatim: job.title)
+                    .font(.title2.bold())
+                    .textSelection(.enabled)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(job.title, forType: .string)
+                    copiedTitle = true
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(1500))
+                        copiedTitle = false
+                    }
+                } label: {
+                    Image(systemName: copiedTitle ? "checkmark" : "doc.on.doc")
+                        .foregroundStyle(copiedTitle ? .green : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Copy job title")
+            }
             Text(verbatim: [job.company, job.whereLabel ?? "", job.department ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-            ForEach(job.pay ?? [], id: \.self) { p in
-                Label {
-                    Text(verbatim: p.label)
-                } icon: {
-                    Image(systemName: "banknote")
+            if let pay = job.pay, !pay.isEmpty {
+                WrapLayout(spacing: 12) {
+                    ForEach(pay, id: \.self) { p in
+                        Label {
+                            Text(verbatim: p.label)
+                        } icon: {
+                            Image(systemName: "banknote")
+                        }
+                        .font(.callout)
+                        .help(p.text.map { "Read from the posting: “\($0)”" } ?? "")
+                    }
                 }
-                .font(.callout)
-                .help(p.text.map { "Read from the posting: “\($0)”" } ?? "")
             }
             FlowChips(job: job)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Full labels when they fit, icons (with help tags) when the pane is narrow.
@@ -503,27 +1012,75 @@ private struct JobDetailContent: View {
 
     private var actionRow: some View {
         HStack(spacing: 8) {
+            // One prominent action: the posting. With no posting link the
+            // application form takes its place.
+            if let link = job.postingLink {
+                Button("Open Posting", systemImage: "safari") { NSWorkspace.shared.open(link) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("o")
+                    .help("Open the posting in your browser (⌘O)")
+            }
+            if let apply = job.applyLink, apply != job.postingLink {
+                if job.postingLink == nil {
+                    applyButton(apply).buttonStyle(.borderedProminent)
+                } else {
+                    applyButton(apply).buttonStyle(.bordered)
+                }
+            }
             markButton(.saved, on: "Saved", off: "Save", symbol: "bookmark")
                 .keyboardShortcut(noteFocused ? nil : KeyboardShortcut("s"))
                 .help("Save to come back to it (⌘S)")
             markButton(.applied, on: "Applied", off: "Mark Applied", symbol: "checkmark.seal")
                 .keyboardShortcut(noteFocused ? nil : KeyboardShortcut("a", modifiers: [.command, .shift]))
                 .help("Record that you applied, with the date (⇧⌘A)")
-            markButton(.hidden, on: "Hidden", off: "Hide", symbol: "eye.slash")
+            Spacer(minLength: 8)
+            Menu {
+                Button(job.mark == .hidden ? "Unhide" : "Hide", systemImage: "eye.slash") {
+                    Task { await jobs.toggle(job, .hidden) }
+                }
                 .keyboardShortcut(noteFocused ? nil : KeyboardShortcut(.delete))
                 .help("Not interested: move it out of New (⌘⌫)")
-            Spacer(minLength: 8)
-            if let link = job.postingLink {
-                Button("Open Posting", systemImage: "safari") { NSWorkspace.shared.open(link) }
-                    .keyboardShortcut("o")
-                    .help("Open the posting in your browser (⌘O)")
+                Divider()
+                Button("Copy Job Details", systemImage: "doc.on.doc") {
+                    copyDetailsAction()
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                Button("Copy Title", systemImage: "character.cursor.ibeam") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(job.title, forType: .string)
+                }
+                if let desc = currentDescription, !desc.isEmpty {
+                    Button("Copy Description", systemImage: "text.alignleft") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(desc, forType: .string)
+                    }
+                }
+                if let link = job.shareLink ?? job.postingLink {
+                    Button("Copy Link", systemImage: "link") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(link.absoluteString, forType: .string)
+                    }
+                }
+                if let link = job.shareLink {
+                    Divider()
+                    ShareLink(item: link, subject: Text(job.title), message: Text(job.shareSubject)) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                }
+            } label: {
+                Image(systemName: copiedDetails ? "checkmark.circle.fill" : "ellipsis.circle")
+                    .foregroundStyle(copiedDetails ? .green : .primary)
             }
-            if let apply = job.applyLink, apply != job.postingLink {
-                Button("Apply", systemImage: "paperplane") { NSWorkspace.shared.open(apply) }
-                    .help("Open the application form; Vani Apply fills it from your answers")
-            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More: Hide (⌘⌫), Copy Details (⇧⌘C), Copy Title, Description or Link, Share")
         }
         .controlSize(.large)
+    }
+
+    private func applyButton(_ apply: URL) -> some View {
+        Button("Apply", systemImage: "paperplane") { NSWorkspace.shared.open(apply) }
+            .help("Open the application form; Vani Apply fills it from your answers")
     }
 
     private func markButton(_ mark: JobMark, on: String, off: String, symbol: String) -> some View {
@@ -541,7 +1098,8 @@ private struct JobDetailContent: View {
     @ViewBuilder
     private var scores: some View {
         if job.relevance != nil || job.ageDays != nil {
-            HStack(alignment: .top, spacing: 20) {
+            // The three metrics share the card's width equally.
+            HStack(alignment: .top, spacing: 0) {
                 if let r = job.relevance {
                     score("Relevance", r, detail: basisText)
                 }
@@ -555,6 +1113,7 @@ private struct JobDetailContent: View {
                         Text(job.freshSource == .seen ? "since first seen (no board date)" : "since the board posted it")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .accessibilityElement(children: .combine)
@@ -570,20 +1129,44 @@ private struct JobDetailContent: View {
     }
 
     private func score(_ title: String, _ value: Double, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let shown = JobScore.display(value)
+        return VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 6) {
-                Text("\(Int(value.rounded()))").font(.title3.monospacedDigit())
-                ScoreBar(value: value).frame(width: 60, height: 5)
+            HStack(spacing: 8) {
+                if let shown {
+                    Text("\(shown)")
+                        .font(.title2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(gradeTint(JobScore.grade(shown)))
+                    ScoreBar(value: value).frame(width: 60, height: 5)
+                } else {
+                    Text("not available").foregroundStyle(.secondary)
+                }
             }
-            Text(detail).font(.caption2).foregroundStyle(.secondary)
+            Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .help("\(title) \(Int(value.rounded())) of 100, \(detail). Display only: it sorts and plots, never drops a role.")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help("\(title) \(shown.map(String.init) ?? "unavailable") of 100, \(detail). Display only: it sorts and plots, never drops a role.")
+    }
+
+    /// A titled card in the Home style; `caption` sits at the trailing edge.
+    private func section<C: View>(_ title: String, caption: String? = nil, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.headline)
+                Spacer()
+                if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardStyle()
     }
 
     private var reasons: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 6) {
+        // The percentage is jdreasons' Jev probability for the pick, in percent
+        // (internal/decide/jdreasons): how sure the decision model is of it.
+        section("Why this role", caption: job.reasons.contains { $0.pct != nil } ? "% = how sure the model is of each pick" : nil) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(job.reasons.enumerated()), id: \.offset) { _, r in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         if r.kind != .other {
@@ -595,47 +1178,110 @@ private struct JobDetailContent: View {
                         Text(verbatim: r.text).textSelection(.enabled)
                         if let pct = r.pct {
                             Spacer(minLength: 4)
-                            Text("\(pct)%")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .help("The decision model's probability for this pick")
+                            HStack(spacing: 5) {
+                                ScoreBar(value: Double(pct)).frame(width: 34, height: 4)
+                                Text("\(min(max(pct, 0), 100))%")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .help("How sure the decision model is of this pick: its probability, in percent")
                         }
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            Text("Why this role")
         }
     }
 
+    /// Why the role sits where it does: each component of the priority, then
+    /// the posting lines that matched your roles best. Display only.
+    private func rankingCard(_ ranking: RankingBreakdown) -> some View {
+        section("Why it ranks here", caption: "display only: orders roles, never drops one") {
+            VStack(alignment: .leading, spacing: 10) {
+                if !ranking.factors.isEmpty {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+                        ForEach(ranking.ordered, id: \.name) { f in
+                            GridRow {
+                                Text(f.title).font(.callout)
+                                factorValue(f)
+                                Text(verbatim: factorNote(f, ageKnown: ranking.ageKnown))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .help(f.explanation)
+                        }
+                    }
+                }
+                if !ranking.evidence.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Closest to your résumé").font(.subheadline.weight(.semibold))
+                            if let s = ranking.semanticScore, s.isFinite {
+                                Text("match \(Int((min(max(s, 0), 1) * 100).rounded()))%")
+                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                        ForEach(Array(ranking.evidence.enumerated()), id: \.offset) { _, e in
+                            evidenceRow(e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func factorValue(_ f: ScoreFactor) -> some View {
+        if !f.known {
+            Text("not known").font(.callout).foregroundStyle(.tertiary)
+        } else {
+            HStack(spacing: 6) {
+                Text(f.valueLabel).font(.callout.monospacedDigit())
+                if !f.isMultiplier { ScoreBar(value: f.fraction * 100).frame(width: 44, height: 4) }
+            }
+        }
+    }
+
+    /// The factor's share of the blend, or what a multiplier did to it.
+    private func factorNote(_ f: ScoreFactor, ageKnown: Bool) -> String {
+        // Score counts an unknown component at a neutral prior, so say that, not "left out".
+        if !f.known { return [f.weightLabel, "no signal: a neutral prior stands in"].compactMap { $0 }.joined(separator: ", ") }
+        if f.name == "fresh" && !ageKnown { return "age unknown: held at the floor" }
+        if let w = f.weightLabel { return w }
+        if f.isMultiplier { return f.fraction >= 0.995 ? "no effect" : (f.fraction < 1 ? "lowers the score" : "raises the score") }
+        return ""
+    }
+
+    private func evidenceRow(_ e: SemanticMatch.Evidence) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(verbatim: "“\(e.snippet)”").textSelection(.enabled)
+            Text("↔").foregroundStyle(.secondary)
+            Text(verbatim: e.label.isEmpty ? "your résumé" : e.label).fontWeight(.medium)
+            Spacer(minLength: 4)
+            Text(verbatim: String(format: "%.2f", e.cosine))
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .help("Cosine similarity of the posting line and that part of your résumé")
+        }
+        .font(.callout)
+    }
+
     private var keywords: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 6) {
+        section("Keywords") {
+            VStack(alignment: .leading, spacing: 8) {
                 WrapLayout(spacing: 4) {
                     ForEach(job.keywordList, id: \.term) { k in
                         Chip(text: k.n > 1 ? "\(k.term) ×\(k.n)" : k.term, tint: keywordTint(k))
                             .help(keywordHelp(k))
                     }
                 }
-                HStack(spacing: 12) {
-                    legend(.green, "in your target summary")
-                    legend(.orange, "DevPrism: missing or weak")
-                    legend(.secondary, "mentioned")
+                // The legend shows the chip colours themselves.
+                WrapLayout(spacing: 4) {
+                    Text("Key").font(.caption2).foregroundStyle(.tertiary)
+                    Chip(text: "in your target summary", tint: .green)
+                    Chip(text: "DevPrism: missing or weak", tint: .orange)
+                    Chip(text: "mentioned", tint: .secondary)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .opacity(0.85)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            Text("Keywords")
-        }
-    }
-
-    private func legend(_ tint: Color, _ text: String) -> some View {
-        HStack(spacing: 3) {
-            Circle().fill(tint).frame(width: 6, height: 6)
-            Text(text)
         }
     }
 
@@ -654,6 +1300,7 @@ private struct JobDetailContent: View {
 
     private var facts: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+            if let cat = job.categoryLabel { row("Category folder", cat) }
             if let missing = job.missing, !missing.isEmpty { row("Missing", missing) }
             if let unsure = job.unsure, !unsure.isEmpty { row("Unsure", unsure) }
             if let cov = job.coverage { row("Coverage", "\(Int(cov.rounded()))% of must-haves") }
@@ -675,16 +1322,48 @@ private struct JobDetailContent: View {
         }
     }
 
+    /// A one-line prompt until there is a note or you start one; then the editor.
+    @ViewBuilder
     private var note: some View {
-        GroupBox {
+        if noteOpen || noteFocused || !noteDraft.isEmpty {
+            noteEditor
+        } else {
+            HStack(spacing: 8) {
+                Button {
+                    noteOpen = true
+                } label: {
+                    Label("Add a private note", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Write a note for this role. It stays on this Mac and is never sent to a model.")
+                Text("Kept on this Mac; never sent to a model.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var noteEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Private note").font(.headline)
             VStack(alignment: .leading, spacing: 6) {
                 TextEditor(text: $noteDraft)
                     .focused($noteFocused)
                     .font(.body)
-                    .frame(minHeight: 70, maxHeight: 160)
+                    .frame(minHeight: 56, maxHeight: 160)
                     .scrollContentBackground(.hidden)
+                    .onAppear { if noteOpen { noteFocused = true } }
+                    .onChange(of: noteFocused) { _, isFocused in
+                        // An empty note that lost focus folds back to the prompt.
+                        if !isFocused && noteDraft.isEmpty { noteOpen = false }
+                    }
                 HStack {
-                    if let at = job.noteAt, !noteChanged {
+                    if let msg = saveStatusMessage {
+                        Label(msg, systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else if let at = job.noteAt, !noteChanged {
                         Text("Saved \(at.formatted(date: .abbreviated, time: .shortened)). Kept on this Mac; never sent to a model.")
                     } else {
                         Text("Kept on this Mac in Vani's state folder. Never sent to a model.")
@@ -693,12 +1372,8 @@ private struct JobDetailContent: View {
                     Text("\(noteBytes) / \(JobsClient.maxNoteBytes)")
                         .monospacedDigit()
                         .foregroundStyle(noteBytes > JobsClient.maxNoteBytes ? .red : .secondary)
-                    Button("Save Note") {
-                        savingNote = true
-                        Task {
-                            await jobs.saveNote(job.key, noteDraft)
-                            savingNote = false
-                        }
+                    Button(savingNote ? "Saving…" : "Save Note") {
+                        saveNoteAction()
                     }
                     .disabled(!noteChanged || noteBytes > JobsClient.maxNoteBytes || savingNote)
                     .keyboardShortcut(noteFocused ? KeyboardShortcut("s") : nil)
@@ -707,23 +1382,58 @@ private struct JobDetailContent: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-        } label: {
-            Text("Private note")
         }
+        .cardStyle(padding: 12)
     }
 
     @ViewBuilder
     private var description: some View {
-        DisclosureGroup("Job description", isExpanded: $showDescription) {
-            if let text = jobs.detail?.key == job.key ? jobs.detail?.description : nil {
-                Text(verbatim: text.isEmpty ? "The board gave no description." : text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 6)
+        DisclosureGroup(isExpanded: $showDescription) {
+            if let text = currentDescription {
+                // Posting text is shown verbatim, a paragraph at a time.
+                let paragraphs = JobListPresentation.paragraphs(text)
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if paragraphs.isEmpty {
+                        Text("The board gave no description.").foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, p in
+                        Text(verbatim: p)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.top, 8)
             } else if let err = jobs.detailError {
                 Text(verbatim: err).foregroundStyle(.red)
             } else {
                 ProgressView().controlSize(.small)
+            }
+        } label: {
+            HStack {
+                Text("Job description")
+                if let text = currentDescription, !text.isEmpty {
+                    let words = text.split(whereSeparator: \.isWhitespace).count
+                    Text("· \(words) words")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let text = currentDescription, !text.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                        copiedDescription = true
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(1500))
+                            copiedDescription = false
+                        }
+                    } label: {
+                        Label(copiedDescription ? "Copied" : "Copy", systemImage: copiedDescription ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Copy job description to clipboard")
+                }
             }
         }
     }
@@ -742,7 +1452,9 @@ private struct FlowChips: View {
     let job: Job
 
     var body: some View {
-        HStack(spacing: 4) {
+        WrapLayout(spacing: 4) {
+            if job.mark == .hidden { Chip(text: "Hidden", tint: .secondary) }
+            if let cat = job.categoryLabel { Chip(text: cat, tint: .indigo) }
             if let fit = job.fitLabel { Chip(text: fit, tint: fitTint(job)) }
             ForEach(job.triageLabels, id: \.self) { Chip(text: $0, tint: .secondary) }
             // The board's remote listing only when triage read no work mode, so
@@ -759,14 +1471,124 @@ private struct FlowChips: View {
 private struct Chip: View {
     let text: String
     let tint: Color
+    // On a selected list row the system paints the accent colour behind the
+    // row; a tinted chip would wash out there, so it turns white.
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
+        let selected = prominence == .increased
         Text(verbatim: text)
             .font(.caption)
+            .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
+            .background(selected ? Color.white.opacity(0.22) : tint.opacity(0.14), in: Capsule())
+            .foregroundStyle(selected ? Color.white : (tint == .secondary ? Color.secondary : tint))
+    }
+}
+
+/// A company's icon, cached by Vani (Job.logoPath), on a light tile; without
+/// one, its rounded monogram, coloured by a stable hash of the name.
+private struct CompanyAvatar: View {
+    let company: String
+    var logo: String? = nil
+    var size: CGFloat = 34
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+        Group {
+            if let image = logo.flatMap(CompanyLogoImages.image) {
+                shape.fill(Color.white)
+                    .overlay {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                            .padding(size * 0.1)
+                    }
+                    .clipShape(shape)
+                    .overlay { shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5) }
+            } else {
+                let m = CompanyMonogram(company: company)
+                shape.fill(Color(hue: m.hue, saturation: 0.5, brightness: 0.66))
+                    .overlay {
+                        Text(verbatim: m.initials)
+                            .font(.system(size: size * 0.4, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Decoded company icons by file path, so a list of a thousand rows reads each
+/// file once. A file that does not decode is remembered as absent. Icons are
+/// refetched monthly at the same path; a running app keeps the one it read.
+@MainActor
+private enum CompanyLogoImages {
+    private static var cache: [String: NSImage?] = [:]
+    private static let maxEntries = 512
+
+    static func image(_ path: String) -> NSImage? {
+        if let hit = cache[path] { return hit }
+        var image = NSImage(contentsOf: URL(fileURLWithPath: path))
+        if let i = image, !i.isValid || i.size.width <= 0 || i.size.height <= 0 { image = nil }
+        if cache.count >= maxEntries { cache.removeAll() }
+        cache[path] = image
+        return image
+    }
+}
+
+/// The 0-100 score as a number, graded by colour like Home's badge.
+private struct ScoreBadge: View {
+    let score: JobScore
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        let selected = prominence == .increased
+        Text("\(score.value)")
+            .font(.callout.weight(.semibold)).monospacedDigit()
+            .frame(minWidth: 24)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(selected ? Color.white.opacity(0.22) : gradeTint(score.grade).opacity(0.16), in: Capsule())
+            .foregroundStyle(selected ? Color.white : gradeTint(score.grade))
+            .help(score.helpText)
+            .accessibilityHidden(true)
+    }
+}
+
+private func gradeTint(_ g: JobScore.Grade) -> Color {
+    switch g {
+    case .high: .green
+    case .medium: .accentColor
+    case .low: .secondary
+    }
+}
+
+/// A state line above the list ("1,186 awaiting triage"), not fine print.
+private struct StatePill: View {
+    let symbol: String
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        Label(text, systemImage: symbol)
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 3)
             .background(tint.opacity(0.14), in: Capsule())
-            .foregroundStyle(tint == .secondary ? Color.secondary : tint)
+            .foregroundStyle(tint)
+    }
+}
+
+private extension View {
+    /// The rounded secondary card Home uses.
+    func cardStyle(padding: CGFloat = 14) -> some View {
+        self.padding(padding)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
     }
 }
 

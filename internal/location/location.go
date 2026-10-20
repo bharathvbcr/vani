@@ -2,8 +2,11 @@
 // names (an area and a US state, or an area and the region after it as the
 // board wrote it) and whether it lists the role as remote, and where remote.
 //
-// It is display-only: `vani jobs`, the Mac app and the digest read it, and no
-// engine rule does. The input is untrusted board text; it is bounded before it
+// `vani jobs`, the Mac app and the digest read it for display. One engine rule
+// reads it too: near-duplicate detection (internal/pipeline/neardup.go) uses
+// Parse and NormArea to decide whether two postings name the same place, so a
+// change here can turn a Duplicate into a sibling or back. The input is
+// untrusted board text; it is bounded before it
 // is read and only ever produces strings, never anything that is followed or
 // executed. There is no city or metro table: an area is the place as the board
 // wrote it, and only US states (which the board abbreviates and spells

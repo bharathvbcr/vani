@@ -109,6 +109,13 @@ type reasons struct {
 	got []string
 }
 
+func (r *reasons) AppendBatch(ctx context.Context, evs []ledger.Event) error {
+	for _, e := range evs {
+		r.got = append(r.got, e.Reason)
+	}
+	return r.File.AppendBatch(ctx, evs)
+}
+
 func (r *reasons) Append(ctx context.Context, e ledger.Event) error {
 	r.got = append(r.got, e.Reason)
 	return r.File.Append(ctx, e)

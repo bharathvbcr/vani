@@ -13,6 +13,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/decide/jdreasons"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
@@ -280,6 +281,9 @@ func optionSet(cmd, flagName, slot, raw string) (map[string]bool, error) {
 		return nil, nil
 	}
 	valid := jdtriage.Descriptions()[slot]
+	if slot == "category" {
+		valid = jobcategory.Descriptions()
+	}
 	out := map[string]bool{}
 	for _, v := range strings.Split(raw, ",") {
 		v = strings.TrimSpace(v)
@@ -649,6 +653,7 @@ type jobsStatsJSON struct {
 	WorkMode    map[string]int    `json:"work_mode"`
 	Sponsorship map[string]int    `json:"sponsorship"`
 	Seniority   map[string]int    `json:"seniority"`
+	Category    map[string]int    `json:"category,omitempty"`
 	Basis       map[string]int    `json:"basis"`
 	FreshSource map[string]int    `json:"fresh_source"`
 	Age         []ageBucketJSON   `json:"age"`
@@ -690,7 +695,7 @@ func bucket10(v float64) int {
 func jobsStats(sel []selected, in *insight) jobsStatsJSON {
 	out := jobsStatsJSON{
 		Total: len(sel), Fit: map[string]int{}, WorkMode: map[string]int{}, Sponsorship: map[string]int{},
-		Seniority: map[string]int{}, Basis: map[string]int{}, FreshSource: map[string]int{},
+		Seniority: map[string]int{}, Category: map[string]int{}, Basis: map[string]int{}, FreshSource: map[string]int{},
 		Relevance: make([]int, 10), Priority: make([]int, 10), Companies: []companyStatJSON{}, Keywords: []keywordStatJSON{},
 		State: map[string]int{}, Area: []areaStatJSON{}, RemoteScope: map[string]int{},
 		Insight: in.info,
@@ -718,6 +723,11 @@ func jobsStats(sel []selected, in *insight) jobsStatsJSON {
 		out.WorkMode[or(j.Triage["work_mode"])]++
 		out.Sponsorship[or(j.Triage["sponsorship"])]++
 		out.Seniority[or(j.Triage["seniority"])]++
+		cat := j.Category
+		if cat == "" && j.Triage != nil {
+			cat = j.Triage["category"]
+		}
+		out.Category[or(cat)]++
 		out.Basis[string(j.RelevanceBasis)]++
 		out.Relevance[bucket10(j.Relevance)]++
 		out.Priority[bucket10(j.Priority)]++

@@ -1,6 +1,6 @@
 // Messages between the content script, the popup and the background worker.
 // The background worker is the only writer to storage.
-import type { Bank, FieldInfo, Settings } from "./types";
+import type { Answer, Bank, FieldInfo, Settings } from "./types";
 import type { CaptureResult } from "./bank";
 import type { FillOutcome } from "./fill";
 import type { Coverage } from "./coverage";
@@ -10,6 +10,7 @@ import type { ScrapeResult, ScrapedJob } from "./scraper";
 import type { RelevanceResult } from "./relevance";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
+import { type IngestJob, type IngestPage, ingestJobsProblem } from "./ingest";
 
 export type ToBackground =
   | { type: "getBank" }
@@ -36,15 +37,20 @@ export type ToBackground =
   | { type: "frameReady" }
   /** The registered frames of a tab; the popup names the active tab, a content script gets its own. */
   | { type: "frames"; tabId?: number }
-  /** Track a scraped or discovered job posting */
-  | { type: "trackJob"; job: { title: string; company: string; url: string } }
+  /** Scraped jobs for Vani (docs/EXTENSION_INGEST.md); `saveSearch` also saves the page as a daily search. Bounds: ingest.ts. */
+  | { type: "ingestJobs"; page: IngestPage; saveSearch: boolean; jobs: IngestJob[] }
+  /** Granular operations without transferring the full bank */
+  | { type: "queryCandidates"; query: { signatures?: string[]; keys?: string[]; labels?: string[] } }
+  | { type: "listAnswers"; offset?: number; limit?: number; search?: string }
+  | { type: "patchAnswers"; upsert?: Answer[]; delete?: string[] }
   // The resume chosen for a job (resume.ts), keyed by the page's pageKey. A content script asks for the bytes
   // to fill its own tab; the popup shows, binds and unbinds the one for the active tab's page.
   | { type: "resumeGet"; url: string }
   | { type: "resumeInfo"; url: string }
   /** pdf is base64, at most MAX_RESUME_BYTES decoded; name ends in .pdf. */
   | { type: "resumePut"; url: string; name: string; pdf: string }
-  | { type: "resumeDelete"; url: string };
+  | { type: "resumeDelete"; url: string }
+  | { type: "attachResume"; name: string; pdf: string; pickedAt: string; tabId?: number };
 
 export type DraftResponse = DraftReply;
 
@@ -62,7 +68,9 @@ export type ToContent =
   /** Scroll and highlight a missed filling */
   | { type: "jumpToMissed"; index: number }
   /** Insert a tailored answer into a specific field by label */
-  | { type: "insertTailored"; label: string; text: string };
+  | { type: "insertTailored"; label: string; text: string }
+  /** Attach a resume PDF to the resume file input across frames */
+  | { type: "attachResume"; name: string; pdf: string; pickedAt: string };
 
 // Messages arrive as `unknown` (a buggy or stale script can send anything): each
 // receiver checks the shape here before acting, and answers anything else with
@@ -95,11 +103,15 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   appliedDismiss: optTab,
   frameReady: () => true,
   frames: optTab,
-  trackJob: m => isRecord(m.job) && typeof (m.job as Record<string, unknown>).title === "string",
+  ingestJobs: m => ingestJobsProblem(m) === null,
+  queryCandidates: m => isRecord(m.query),
+  listAnswers: m => (m.offset === undefined || typeof m.offset === "number") && (m.limit === undefined || typeof m.limit === "number") && (m.search === undefined || typeof m.search === "string"),
+  patchAnswers: m => (m.upsert === undefined || Array.isArray(m.upsert)) && (m.delete === undefined || Array.isArray(m.delete)),
   resumeGet: m => typeof m.url === "string",
   resumeInfo: m => typeof m.url === "string",
   resumePut: m => typeof m.url === "string" && typeof m.name === "string" && typeof m.pdf === "string",
   resumeDelete: m => typeof m.url === "string",
+  attachResume: m => typeof m.name === "string" && typeof m.pdf === "string" && typeof m.pickedAt === "string" && optTab(m),
 };
 
 const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {
@@ -112,6 +124,7 @@ const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => bo
   getRelevance: () => true,
   jumpToMissed: m => typeof m.index === "number",
   insertTailored: m => typeof m.label === "string" && typeof m.text === "string",
+  attachResume: m => typeof m.name === "string" && typeof m.pdf === "string" && typeof m.pickedAt === "string",
 };
 
 function check<M>(table: Record<string, (m: Record<string, unknown>) => boolean>, m: unknown): { msg: M } | { error: string } {
@@ -142,7 +155,8 @@ export interface ScanReply {
 export interface FillReply { outcomes: FillOutcome[] }
 /** `unchanged` counts answers the bank already held, which a repeat save skips. */
 export type CaptureReply = Omit<CaptureResult, "bank"> & { unchanged?: number };
-export type BankReply = { bank: Bank; mode: "mac-app" | "browser"; note: string | null } | { error: string };
+/** `rev` is the Mac app's revision of `bank`; absent when the bank is kept in the browser (which has none). */
+export type BankReply = { bank: Bank; mode: "mac-app" | "browser"; note: string | null; rev?: number } | { error: string };
 
 const COUNTS = ["added", "updated", "skippedSecret", "skippedSelfId", "skippedEmpty"] as const;
 const isCount = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x) && x >= 0;

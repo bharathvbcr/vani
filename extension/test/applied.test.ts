@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DISMISS_QUIET_MS, ID_PARAMS, MAX_URL_BYTES, type AppliedUi, type Offer,
-  createAppliedFlow, isFinalSubmit, offerSubject, pageKey, parseFind,
+  createAppliedFlow, isFinalSubmit, offerSubject, pageKey, parseFind, postingKey,
 } from "../src/applied";
 import type { ToBackground } from "../src/messages";
 import vectors from "./vectors/joburl.json";
@@ -37,6 +37,81 @@ describe("pageKey", () => {
 
   test("the job-naming parameters are the ones internal/joburl keeps", () => {
     expect(ID_PARAMS).toEqual(["gh_jid", "jid", "job_id", "jobid", "req_id"]);
+  });
+
+  // pageKey is what jobFind sends to internal/joburl, so it stays route-specific on Workday;
+  // postingKey (below) is the one-per-posting key the per-job resume is stored under.
+  test("keeps Workday's routes apart: it is the Go twin, and Go compares it with the ledger's own URL", () => {
+    const H = "https://utaustin.wd1.myworkdayjobs.com";
+    const keys = new Set([`${H}/UTstaff/job/AUSTIN-TX/FDE_R_1`, `${H}/en-US/UTstaff/job/AUSTIN-TX/FDE_R_1`, `${H}/en-US/UTstaff/details/FDE_R_1?q=x`].map(pageKey));
+    expect(keys.size).toBe(3);
+  });
+});
+
+describe("postingKey", () => {
+  const H = "https://utaustin.wd1.myworkdayjobs.com";
+  const SLUG = "Forward-Deployed-Engineer_R_00049483";
+  const ONE = `${H}/UTstaff/job/${SLUG}`;
+
+  test("one key for one Workday posting: direct, locale-prefixed, details and search-result routes", () => {
+    const shapes = [
+      `${H}/UTstaff/job/AUSTIN-TX/${SLUG}`,
+      `${H}/en-US/UTstaff/job/AUSTIN-TX/${SLUG}`,
+      `${H}/en-US/UTstaff/details/${SLUG}?q=Forward+Deployed+Engineer`,
+      `${H}/en-US/UTstaff/details/${SLUG}`,
+      `${H}/fr-FR/UTstaff/job/AUSTIN-TX/${SLUG}/`,
+      `${H}/UTstaff/job/${SLUG}`,
+      `${H.toUpperCase().replace("HTTPS", "https")}/UTstaff/job/AUSTIN-TX/${SLUG}#x`,
+    ];
+    for (const s of shapes) expect(postingKey(s)).toBe(ONE);
+  });
+
+  test("the apply pages share the posting's key, however the location is encoded", () => {
+    const apply = [
+      `${H}/en-US/UTstaff/job/AUSTIN%2C-TX/${SLUG}/apply/applyManually`,
+      `${H}/en-US/UTstaff/job/AUSTIN-TX/${SLUG}/apply`,
+      `${H}/en-US/UTstaff/job/AUSTIN-TX/${SLUG}/apply/autofillWithResume`,
+      `${H}/UTstaff/job/AUSTIN-TX/${SLUG}/Apply/applyManually?source=x`,
+    ];
+    for (const s of apply) expect(postingKey(s)).toBe(ONE);
+  });
+
+  test("a different requisition, site or tenant is a different posting", () => {
+    const k = postingKey(`${H}/UTstaff/job/AUSTIN-TX/${SLUG}`);
+    expect(postingKey(`${H}/UTstaff/job/AUSTIN-TX/Forward-Deployed-Engineer_R_00049484`)).not.toBe(k);
+    expect(postingKey(`${H}/Other/job/AUSTIN-TX/${SLUG}`)).not.toBe(k);
+    expect(postingKey(`https://other.wd1.myworkdayjobs.com/UTstaff/job/AUSTIN-TX/${SLUG}`)).not.toBe(k);
+    expect(postingKey(`${H}/en-US/UTstaff/job/${SLUG}`)).toBe(k); // no location segment
+  });
+
+  test("a Workday page that is not a posting keeps its pageKey", () => {
+    for (const s of [`${H}/UTstaff?q=engineer`, `${H}/en-US/UTstaff`, `${H}/en-US/UTstaff/login`, `${H}/en-US/Jobs`, `${H}/UTstaff/job`, `${H}/UTstaff/job/apply`, `${H}/en-US/UTstaff/details`, H]) {
+      expect(postingKey(s)).toBe(pageKey(s));
+    }
+  });
+
+  test("a site that merely looks like a locale or a segment name is not stripped", () => {
+    expect(postingKey(`${H}/ext/job/NY/${SLUG}`)).toBe(`${H}/ext/job/${SLUG}`);
+    expect(postingKey(`${H}/details/job/NY/${SLUG}`)).toBe(`${H}/details/job/${SLUG}`);
+  });
+
+  test("is never longer than the page's own key allows, and refuses what pageKey refuses", () => {
+    for (const x of [undefined, null, 42, {}, "", "file:///x", "https://", "x".repeat(MAX_URL_BYTES + 1)]) expect(postingKey(x)).toBeNull();
+    const long = `${H}/UTstaff/job/AUSTIN-TX/${"a".repeat(MAX_URL_BYTES)}`;
+    expect(postingKey(long)).toBeNull();
+  });
+
+  test("Greenhouse, Lever, Ashby and every other board keep the pageKey the vectors pin", () => {
+    for (const c of vectors.cases) expect(postingKey(c.in)).toBe(c.out);
+    expect(postingKey("https://jobs.lever.co/acme/abc-1/apply")).toBe("https://jobs.lever.co/acme/abc-1/apply");
+    expect(postingKey("https://jobs.ashbyhq.com/acme/uuid/application")).toBe("https://jobs.ashbyhq.com/acme/uuid/application");
+  });
+
+  test("a host that only contains myworkdayjobs.com is not Workday", () => {
+    for (const h of ["https://myworkdayjobs.com.evil.example", "https://evilmyworkdayjobs.com", "https://x.myworkdayjobs.com.evil.example"]) {
+      const u = `${h}/en-US/UTstaff/job/AUSTIN-TX/${SLUG}`;
+      expect(postingKey(u)).toBe(pageKey(u));
+    }
   });
 });
 

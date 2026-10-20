@@ -9,10 +9,21 @@ import VaniApplyKit
 @Observable
 final class JobsModel {
     var view: JobView = .new {
-        didSet { if oldValue != view { selection = nil; reload() } }
+        didSet {
+            guard oldValue != view else { return }
+            selection = nil
+            // A sort still at the old view's default follows the view; one the owner
+            // picked stays. Setting `sort` relists, so only one list is asked for.
+            let next = JobSort.defaultSort(for: view)
+            if sort == JobSort.defaultSort(for: oldValue), sort != next {
+                sort = next
+            } else {
+                reload()
+            }
+        }
     }
     var query = ""
-    var sort: JobSort = .standard {
+    var sort: JobSort = JobSort.defaultSort(for: .new) {
         didSet { if oldValue != sort { reload() } }
     }
     var filter = JobFilter() {
@@ -38,7 +49,17 @@ final class JobsModel {
     /// The last failed mark or note, shown as an alert.
     var actionError: String?
 
+    /// The "Saved searches" section is open. It reads the watchlist when opened.
+    var showSearches = false {
+        didSet { if showSearches, !oldValue { reloadSearches() } }
+    }
+    private(set) var searches: [WatchlistEntry] = []
+    /// Why the watchlist could not be read; shown in place of the list, never as an empty list.
+    private(set) var searchesError: String?
+    private(set) var searchesLoading = false
+
     private let client: () -> JobsClient
+    private var searchesGeneration = 0
     private var listGeneration = 0
     private var detailGeneration = 0
 
@@ -64,6 +85,7 @@ final class JobsModel {
     /// the open job rather than show the state from before.
     func reloadAfterActivation() {
         reload()
+        if showSearches { reloadSearches() }
         if selection != nil { loadDetail() }
     }
 
@@ -94,6 +116,30 @@ final class JobsModel {
             statsError = String(describing: err)
         case nil:
             break
+        }
+    }
+
+    func reloadSearches() {
+        Task { await refreshSearches() }
+    }
+
+    /// Read `vani watchlist list --json`. A failure keeps the message and clears the list, so
+    /// stale boards are not shown beside the reason they could not be refreshed.
+    func refreshSearches() async {
+        searchesGeneration += 1
+        let gen = searchesGeneration
+        searchesLoading = true
+        let c = client()
+        let result = await Task.detached(priority: .userInitiated) { Result { try c.watchlist() } }.value
+        guard gen == searchesGeneration else { return }
+        searchesLoading = false
+        switch result {
+        case let .success(list):
+            searches = list
+            searchesError = nil
+        case let .failure(err):
+            searches = []
+            searchesError = String(describing: err)
         }
     }
 

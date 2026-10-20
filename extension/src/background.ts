@@ -1,13 +1,26 @@
 // Background service worker: the single writer to the answer bank, and the
 // keyboard shortcut. It makes no network requests.
-import type { Bank } from "./types";
-import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, parseBank } from "./bank";
-import { logActivity, loadBank, migrationNote, nativeTransport, replaceBank, storageMode, updateBank } from "./store";
+import type { Answer, Bank } from "./types";
+import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
+import {
+  type CandidateQuery,
+  listAnswers,
+  logActivity,
+  loadBank,
+  loadSnapshot,
+  migrationNote,
+  nativeTransport,
+  patchAnswers,
+  queryCandidates,
+  replaceBank,
+  storageMode,
+  updateBank,
+} from "./store";
 import { type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkToBackground } from "./messages";
 import { type FanOut, type FrameStore, createFrameRegistry, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
-import { resumeOp } from "./resume";
+import { resumeKey, runResume } from "./resume";
 
 const draft = createDrafter();
 
@@ -31,14 +44,17 @@ async function update(fn: (b: Bank) => Bank): Promise<Bank> {
 
 /** Job calls answer at once (the agent runs the job), so each is bounded short. */
 const JOB_CALL_MS = 10_000;
+/** jobsIngest runs `vani jobs ingest`, which the host bounds at 30 s (35 s over the agent's XPC); this
+ *  outlasts both, so the host's own timeout answer arrives instead of a false "unreachable". */
+const INGEST_CALL_MS = 40_000;
 
 /** One bounded native call; an unreachable host is a coded reply, never a throw. */
-async function native(msg: object): Promise<unknown> {
+async function native(msg: object, ms = JOB_CALL_MS): Promise<unknown> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       nativeTransport(msg),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), JOB_CALL_MS); }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), ms); }),
     ]);
   } catch {
     return { error: "the Vani Apply Mac app isn't reachable", code: "unreachable" };
@@ -112,30 +128,68 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 });
 chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); void frameRegistry.forget(tabId); });
 
+/**
+ * Count one more fill on each answer used (once per occurrence in `keys`). With the Mac app that is a
+ * patch of just those rows against the revision they were read at; if the bank moved on, read it once
+ * more and try once more. In the browser it is the ordinary read-modify-write.
+ */
+async function bumpFills(keys: string[]): Promise<void> {
+  const tally = new Map<string, number>();
+  for (const k of keys) tally.set(k, (tally.get(k) ?? 0) + 1);
+  const inBrowser = () => update(b => {
+    const answers = { ...b.answers };
+    for (const [k, n] of tally) if (answers[k]) answers[k] = { ...answers[k]!, fills: answers[k]!.fills + n };
+    return { ...b, answers };
+  });
+  if (await storageMode() !== "mac-app") { await inBrowser(); return; }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { bank, rev } = await loadSnapshot({ fresh: attempt > 0 });
+    if (rev === null) { await inBrowser(); return; } // the Mac app went away since the mode check
+    const upsert: Answer[] = [];
+    for (const [k, n] of tally) {
+      const a = bank.answers[k];
+      if (a) upsert.push({ ...a, fills: a.fills + n });
+    }
+    if (upsert.length === 0) return;
+    if (!(await patchAnswers(upsert, [], rev)).conflict) return;
+  }
+  throw new Error("answer bank changed concurrently");
+}
+
 async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.type) {
     case "getBank": {
-      const bank = await loadBank();
-      return { bank, mode: await storageMode(), note: migrationNote() };
+      const { bank, rev } = await loadSnapshot();
+      return { bank, mode: rev === null ? "browser" : "mac-app", note: migrationNote(), ...(rev === null ? {} : { rev }) };
     }
     case "capture": {
       if (!Array.isArray(msg.fields) || msg.fields.length > 500 || typeof msg.host !== "string") return { error: "bad capture" };
       let result: Omit<CaptureResult, "bank"> | undefined;
-      await update(b => {
-        const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
-        result = counts;
-        return bank;
-      });
+      if (await storageMode() === "mac-app") {
+        const b = await loadBank({ fresh: true }); // the delta is computed against this: never a window-old copy
+        const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date());
+        result = delta.counts;
+        await patchAnswers(delta.upsert, delta.deleteKeys);
+      } else {
+        await update(b => {
+          const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
+          result = counts;
+          return bank;
+        });
+      }
       if (result) void logActivity({ event: "capture", host: msg.host, counts: { ...result } });
       return result;
     }
     case "filled": {
       const keys = msg.keys.slice(0, 500);
-      await update(b => {
-        const answers = { ...b.answers };
-        for (const k of keys) if (answers[k]) answers[k] = { ...answers[k]!, fills: answers[k]!.fills + 1 };
-        return { ...b, answers };
-      });
+      try {
+        await bumpFills(keys);
+      } catch (e) {
+        // The page does not wait on this and must not see a rejection: say what was lost (counts only) and carry on.
+        console.error(`Vani: fill counts for ${keys.length} answers were not saved: ${e instanceof Error ? e.message : String(e)}`);
+        void logActivity({ event: "fill", counts: { filled: keys.length, countsLost: keys.length } });
+        return { ok: false, error: "fill counts were not saved" };
+      }
       void logActivity({ event: "fill", counts: { filled: keys.length } });
       return { ok: true };
     }
@@ -150,13 +204,27 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       void logActivity({ event: "settings" });
       return { ok: true };
     case "deleteAnswer":
-      await update(b => {
-        const answers = { ...b.answers };
-        delete answers[msg.key];
-        return { ...b, answers };
-      });
+      await patchAnswers([], [msg.key]);
       void logActivity({ event: "delete" });
       return { ok: true };
+    case "queryCandidates": {
+      const query = typeof msg.query === "object" && msg.query !== null ? msg.query : {};
+      const candidates = await queryCandidates(query as CandidateQuery);
+      return { candidates };
+    }
+    case "listAnswers": {
+      const offset = typeof msg.offset === "number" ? msg.offset : 0;
+      const limit = typeof msg.limit === "number" ? msg.limit : 50;
+      const search = typeof msg.search === "string" ? msg.search : undefined;
+      const res = await listAnswers(offset, limit, search);
+      return res;
+    }
+    case "patchAnswers": {
+      const upsert = Array.isArray(msg.upsert) ? (msg.upsert as Answer[]) : [];
+      const del = Array.isArray(msg.delete) ? (msg.delete as string[]) : [];
+      const res = await patchAnswers(upsert, del);
+      return res;
+    }
     case "editAnswer":
       await update(b => {
         const a = b.answers[msg.key];
@@ -229,9 +297,17 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       const tabId = actingTab(sender, msg.tabId);
       return { frames: tabId === undefined ? [] : await frameRegistry.list(tabId) };
     }
-    case "trackJob": {
-      return native({ op: "jobTrack", job: msg.job });
-    }
+    case "ingestJobs":
+      // Only the contract's fields go to the host, whatever else the message carried.
+      return native({
+        op: "jobsIngest",
+        page: { url: msg.page.url, title: msg.page.title },
+        save_search: msg.saveSearch,
+        jobs: msg.jobs.map(j => ({
+          title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.snippet,
+          ...(j.posted === undefined ? {} : { posted: j.posted }),
+        })),
+      }, INGEST_CALL_MS);
     case "resumeGet":
     case "resumeInfo":
     case "resumePut":
@@ -240,16 +316,25 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       if (msg.type === "resumeGet" && !sender.tab) return { error: "only a page being filled gets the resume", code: "bad_request" };
       // A content script acts for its own frame: the key is that frame's URL, never the one its message claims.
       // The popup is in no tab and names the active tab's page.
-      const op = resumeOp({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url });
-      if ("error" in op) return op;
-      const r = await native(op);
+      const r = await runResume({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url }, native);
       // A form in a frame has a URL of its own; the resume may be bound to the page around it (as for appliedSignal).
       const frame = sender.tab ? sender.frameId ?? 0 : 0;
-      if (msg.type === "resumeGet" && frame !== 0 && sender.tab?.url && (r as { found?: unknown } | null)?.found === false) {
-        const top = resumeOp({ type: "resumeGet", url: sender.tab.url });
-        if (!("error" in top)) return native(top);
+      if (msg.type === "resumeGet" && frame !== 0 && sender.tab?.url && (r as { found?: unknown } | null)?.found === false && resumeKey(sender.tab.url)) {
+        return runResume({ type: "resumeGet", url: sender.tab.url }, native);
       }
       return r;
+    }
+    case "attachResume": {
+      const tabId = actingTab(sender, msg.tabId);
+      if (tabId === undefined) return { error: "no tab" };
+      const r = await toFrames<{ outcomes?: unknown[] }>({
+        type: "attachResume",
+        name: msg.name,
+        pdf: msg.pdf,
+        pickedAt: msg.pickedAt,
+      }, { registered: tid => frameRegistry.list(tid), tabId });
+      const outcomes = r.answered.flatMap(a => (Array.isArray(a.reply.outcomes) ? a.reply.outcomes : []));
+      return { outcomes };
     }
     default:
       // Unreachable for a message that passed checkToBackground; kept so a missed case answers, never `undefined`.

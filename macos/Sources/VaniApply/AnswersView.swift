@@ -8,6 +8,7 @@ struct AnswersView: View {
     @State private var editing: Answer?
     @State private var adding = false
     @State private var drafting = false
+    @State private var deduping = false
     @State private var confirmDelete = false
 
     private var rows: [Answer] {
@@ -60,16 +61,26 @@ struct AnswersView: View {
             if model.answers.isEmpty && model.storeError == nil {
                 ContentUnavailableView("No answers yet", systemImage: "text.bubble",
                                        description: Text("Submit an application with the browser extension, or add an answer here."))
+            } else if rows.isEmpty && !search.isEmpty {
+                ContentUnavailableView {
+                    Label("No matching answers", systemImage: "magnifyingglass")
+                } description: {
+                    Text("No questions or answers match “\(search)”.")
+                } actions: {
+                    Button("Clear Search") { search = "" }
+                }
             }
         }
         .toolbar {
             ToolbarItemGroup {
-                Text("\(model.answers.count) answers · \(model.bankBytes / 1000) of 900 KB")
+                Text("\(model.answers.count) answers · \(model.bankBytes / 1000) KB")
                     .foregroundStyle(.secondary).font(.callout)
                 Button { drafting = true } label: { Label("Draft with Claude", systemImage: "sparkles") }
                     .disabled(model.storeError != nil)
                 Button { adding = true } label: { Label("Add Answer", systemImage: "plus") }
                     .disabled(model.storeError != nil)
+                Button { deduping = true } label: { Label("Find duplicates", systemImage: "rectangle.on.rectangle") }
+                    .disabled(model.storeError != nil || model.answers.count < 2)
                 Button { confirmDelete = true } label: { Label("Delete", systemImage: "trash") }
                     .disabled(selection.isEmpty || model.storeError != nil)
             }
@@ -85,6 +96,7 @@ struct AnswersView: View {
         .sheet(item: $editing) { a in AnswerEditor(answer: a) }
         .sheet(isPresented: $adding) { AddAnswerSheet() }
         .sheet(isPresented: $drafting) { DraftSheet() }
+        .sheet(isPresented: $deduping) { DuplicatesSheet() }
         .navigationTitle("Answers")
     }
 }
@@ -149,6 +161,13 @@ struct AddAnswerSheet: View {
         Classifier.classify(kind: kind, label: question, name: "", autocomplete: "")
     }
 
+    /// A sibling wording's row that already holds this question (not the same key, which is "edit it").
+    private var existing: Answer? {
+        guard sensitivity != .secret, let a = Editing.owner(of: question, kind: kind, in: model.snapshot.bank),
+              a.key != Classifier.normalizeLabel(question) else { return nil }
+        return a
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add an answer").font(.headline)
@@ -170,6 +189,16 @@ struct AddAnswerSheet: View {
             default:
                 Text("Matching uses the question's wording; the extension also learns other wordings when you submit.")
                     .foregroundStyle(.secondary).font(.caption)
+            }
+            if let existing {
+                HStack {
+                    Label("“\(existing.key)” already answers this question.", systemImage: "doc.on.doc")
+                        .font(.callout).foregroundStyle(.orange)
+                    Spacer()
+                    Button("Add as a wording of “\(existing.key)”") {
+                        if model.addWording(question, to: existing.key) { dismiss() }
+                    }
+                }
             }
             HStack {
                 Spacer()
