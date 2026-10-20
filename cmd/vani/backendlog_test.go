@@ -35,7 +35,7 @@ func TestBackendErrorsAreLoggedOnceEachAndBounded(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		errs = append(errs, fmt.Errorf("distinct %d", i))
 	}
-	b := logErrors(&failingBackend{errs: errs}, warnf, nil)
+	b := withoutBreaker(logErrors(&failingBackend{errs: errs}, warnf, nil))
 	for i := 0; i < len(errs); i++ {
 		if _, err := b.Decide(context.Background(), decide.Question{}); err == nil {
 			t.Fatal("the error must pass through unchanged")
@@ -67,7 +67,7 @@ func TestBackendErrorsAreCountedForTheRunRecord(t *testing.T) {
 		errs = append(errs, fmt.Errorf("anthropic: http 429 (request req_%06d): rate_limit_error", i))
 	}
 	errs = append(errs, errors.New("openrouter: http 402: insufficient credits"))
-	llm := logErrors(&failingBackend{errs: errs}, func(string, ...any) {}, sink)
+	llm := withoutBreaker(logErrors(&failingBackend{errs: errs}, func(string, ...any) {}, sink))
 	for range errs {
 		llm.Decide(context.Background(), decide.Question{})
 	}
@@ -90,7 +90,7 @@ func TestBackendErrorCausesAreBounded(t *testing.T) {
 	for i := 0; i < maxRecordedBackendErrors+7; i++ {
 		errs = append(errs, fmt.Errorf("cause %d", i))
 	}
-	b := logErrors(&failingBackend{errs: errs}, func(string, ...any) {}, sink)
+	b := withoutBreaker(logErrors(&failingBackend{errs: errs}, func(string, ...any) {}, sink))
 	for range errs {
 		b.Decide(context.Background(), decide.Question{})
 	}
@@ -129,7 +129,7 @@ func TestBackendErrorsCountConcurrentCalls(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b := logErrors(&failingBackend{errs: []error{errors.New("down")}}, func(string, ...any) {}, sink)
+			b := withoutBreaker(logErrors(&failingBackend{errs: []error{errors.New("down")}}, func(string, ...any) {}, sink))
 			for i := 0; i < 100; i++ {
 				b.Decide(context.Background(), decide.Question{})
 			}
