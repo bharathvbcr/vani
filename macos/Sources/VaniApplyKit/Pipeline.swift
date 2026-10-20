@@ -20,12 +20,97 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
     public var schedule: Schedule
     public var backends: Backends
     public var decide: Decide
+    /// Whether a daemon holds the ledger; nil from a vani that does not report it.
+    public var daemon: Daemon?
+    /// The manual run asked of the daemon; nil from a vani that does not report it.
+    public var runRequest: RunRequest?
 
     enum CodingKeys: String, CodingKey {
-        case version, config, ledger, schedule, backends, decide
+        case version, config, ledger, schedule, backends, decide, daemon
         case generatedAt = "generated_at"
         case stateDir = "state_dir"
         case lastRun = "last_run"
+        case runRequest = "run_request"
+    }
+
+    /// The daemon as daemon.json and the process table show it. A facet that
+    /// does not decode reads as not ok, never fails the status read.
+    public struct Daemon: Decodable, Equatable, Sendable {
+        public var ok: Bool
+        public var reason: String?
+        /// A daemon is running: a manual run goes through `vani run-request`.
+        public var running: Bool
+        public var pid: Int?
+        public var since: Date?
+
+        enum CodingKeys: String, CodingKey { case ok, reason, running, pid, since }
+
+        public init(ok: Bool = true, reason: String? = nil, running: Bool, pid: Int? = nil, since: Date? = nil) {
+            self.ok = ok
+            self.reason = reason
+            self.running = running
+            self.pid = pid
+            self.since = since
+        }
+
+        public init(from decoder: Decoder) throws {
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+                self.init(ok: false, reason: "vani's daemon section did not decode", running: false)
+                return
+            }
+            self.init(ok: (try? c.decode(Bool.self, forKey: .ok)) ?? false,
+                      reason: try? c.decodeIfPresent(String.self, forKey: .reason),
+                      running: (try? c.decode(Bool.self, forKey: .running)) ?? false,
+                      pid: try? c.decodeIfPresent(Int.self, forKey: .pid),
+                      since: try? c.decodeIfPresent(Date.self, forKey: .since))
+        }
+    }
+
+    /// A manual run waiting for the daemon (`pending`) or being made by it
+    /// (`claimed`, while the run record shows its progress).
+    public struct RunRequest: Decodable, Equatable, Sendable {
+        public var ok: Bool
+        public var reason: String?
+        public var pending: Bool
+        /// A pending request past its hour: the daemon will drop it unrun.
+        public var stale: Bool
+        public var requestedAt: Date?
+        public var options: ManualRunOptions?
+        public var claimed: Bool
+        public var claimedRequestedAt: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case ok, reason, pending, stale, options, claimed
+            case requestedAt = "requested_at"
+            case claimedRequestedAt = "claimed_requested_at"
+        }
+
+        public init(ok: Bool = true, reason: String? = nil, pending: Bool = false, stale: Bool = false, requestedAt: Date? = nil,
+                    options: ManualRunOptions? = nil, claimed: Bool = false, claimedRequestedAt: Date? = nil) {
+            self.ok = ok
+            self.reason = reason
+            self.pending = pending
+            self.stale = stale
+            self.requestedAt = requestedAt
+            self.options = options
+            self.claimed = claimed
+            self.claimedRequestedAt = claimedRequestedAt
+        }
+
+        public init(from decoder: Decoder) throws {
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+                self.init(ok: false, reason: "vani's run request section did not decode")
+                return
+            }
+            self.init(ok: (try? c.decode(Bool.self, forKey: .ok)) ?? false,
+                      reason: try? c.decodeIfPresent(String.self, forKey: .reason),
+                      pending: (try? c.decode(Bool.self, forKey: .pending)) ?? false,
+                      stale: (try? c.decodeIfPresent(Bool.self, forKey: .stale)) ?? false,
+                      requestedAt: try? c.decodeIfPresent(Date.self, forKey: .requestedAt),
+                      options: try? c.decodeIfPresent(ManualRunOptions.self, forKey: .options),
+                      claimed: (try? c.decode(Bool.self, forKey: .claimed)) ?? false,
+                      claimedRequestedAt: try? c.decodeIfPresent(Date.self, forKey: .claimedRequestedAt))
+        }
     }
 
     public struct ConfigFacet: Decodable, Equatable, Sendable {
@@ -765,5 +850,26 @@ public struct PipelineClient: Sendable {
             throw BankError("vani reports status version \(value.version); this app reads version \(PipelineStatus.supportedVersion). Rebuild the app.")
         }
         return value
+    }
+
+    /// Ask the running daemon for a manual run (`vani run-request --json`).
+    /// No key is read: the daemon makes the run with its own.
+    public func requestRun(_ options: ManualRunOptions) throws -> RunRequestReply {
+        try VaniProcess.call(vaniBinary, options.arguments(command: "run-request") + ["--json"], configPath: configPath, stateDir: stateDir,
+                             timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: JobsClient.decoder,
+                             tooOld: "this vani cannot hand a run to the daemon; rebuild the app")
+    }
+}
+
+/// `vani run-request --json`'s reply.
+public struct RunRequestReply: Decodable, Equatable, Sendable {
+    public var requestedAt: Date
+    public var options: ManualRunOptions
+    public var daemonPID: Int
+
+    enum CodingKeys: String, CodingKey {
+        case options
+        case requestedAt = "requested_at"
+        case daemonPID = "daemon_pid"
     }
 }

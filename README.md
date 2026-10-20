@@ -262,6 +262,22 @@ flowchart TD
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
   writes its output to `<state dir>/runs/manual.log`, follows it through `vani status --json`, and
   can stop a run it started (SIGTERM; recorded `cancelled`), never one the daemon started.
+- **Run requests (`vani run-request`, Run Now while the daemon runs):** the daemon holds the ledger
+  for its whole life, so a manual run is asked of it instead. `vani run-request [--json]` takes
+  run-once's flags, checks them, and writes them with the time to `<state dir>/runs/request.json`.
+  It refuses when no daemon is running (the daemon writes `runs/daemon.json`, its pid and start
+  time, once it holds the ledger, and removes it when it exits) or when a request is already
+  waiting. The daemon looks for a request every 3 seconds; under the same lock as its scheduled
+  run and inbox poll, so never beside them, it claims it (renames it to `request.claimed.json`,
+  removed when the run ends) and makes the run as a `manual` run with those options, its own keys
+  and its own run record. A request it has not picked up within an hour is dropped unrun, as is one
+  that is corrupt, oversized, not a regular file (a symlink is never followed) or from a newer vani;
+  each drop is a line in the daemon's log (`vani.err.log` under launchd). A board removed from the
+  watchlist since the request is a recorded, failed run. A claim left by a daemon that died is
+  removed at the next start and never re-run, and a manual run that leaves the ledger unusable ends
+  the daemon as a scheduled one does. `status --json` adds `daemon` (`running`, `pid`, `since`) and
+  `run_request` (`pending`, `stale`, `requested_at`, `options`; `claimed`, `claimed_requested_at`).
+  A pid reused after a crash can make a dead daemon look alive; a request made then goes stale.
 - **Browsing aids (`vani jobs`, the Mac app's Jobs tab):** every role carries a freshness date
   and a relevance score with its basis. Display-only: they sort and plot, and never drop a role.
   - Freshness is the board's posted date. Greenhouse's comes from `first_published`. A board with
@@ -407,6 +423,7 @@ build/vani watchlist add --ats gh --token <board> --company <Name> --allow-host 
 build/vani config check
 build/vani run-once
 build/vani run-once --board gh:<board> --advance 25 --no-digest
+build/vani run-request --board gh:<board> --advance 25   # the same, made by the running daemon
 build/vani status
 build/vani lca import /absolute/path/LCA_FY2025.csv
 build/vani employer import /absolute/path/HD2024.csv

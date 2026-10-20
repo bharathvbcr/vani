@@ -8,7 +8,10 @@ import VaniApplyKit
 /// network, no key), so polling it costs nothing.
 ///
 /// It also starts a run by hand (`vani run-once` with the chosen overrides) and
-/// follows it through the same status read, faster while it is going.
+/// follows it through the same status read, faster while it is going. While the
+/// daemon runs (it holds the ledger, so run-once would be refused) the run is
+/// asked of the daemon instead (`vani run-request`), and followed the same way
+/// once the daemon picks it up.
 @MainActor
 @Observable
 final class PipelineModel {
@@ -33,6 +36,8 @@ final class PipelineModel {
     private(set) var runError: String?
     /// The log of the last run this app started.
     private(set) var lastLog: URL?
+    /// When this app asked the daemon for a run that has not started yet.
+    private(set) var requestedAt: Date?
 
     private let client: () -> PipelineClient
     private let launcher: () -> ManualRunLauncher?
@@ -63,11 +68,19 @@ final class PipelineModel {
         manualRun?.isRunning == true || status?.lastRun.state == .running
     }
 
+    /// A daemon holds the ledger: Run Now asks it rather than start run-once.
+    var daemonRunning: Bool { status?.daemon?.running == true }
+
+    /// This app's run request is waiting for the daemon to pick it up.
+    var waitingForDaemon: Bool { requestedAt != nil }
+
     /// Why Run Now is off, or nil when a run can start.
     var runBlocker: String? {
         if startingRun { return "A run is starting." }
+        if waitingForDaemon { return "Your run is waiting for the daemon." }
         if runInProgress { return "A run is going." }
         if status == nil { return "Vani has not reported its status yet." }
+        if let r = status?.runRequest, r.pending, !r.stale { return "A run request is already waiting for the daemon." }
         return nil
     }
 
@@ -91,6 +104,7 @@ final class PipelineModel {
         case let .success(s):
             status = s
             error = nil
+            settleRequest(s)
             announcer?.consider(s.lastRun, stateDir: s.stateDir)
         case let .failure(err):
             // Keep the last good status on screen, marked stale by the error banner.
@@ -108,11 +122,16 @@ final class PipelineModel {
         }
     }
 
-    /// Start `vani run-once` with these options. vani refuses a run while
-    /// another holds the ledger (the daemon); that refusal reaches `runError`.
+    /// Start `vani run-once` with these options, or, while the daemon runs,
+    /// ask it for the run. vani refuses a run-once while another holds the
+    /// ledger; that refusal, like a refused request, reaches `runError`.
     func startRun(_ options: ManualRunOptions) async {
         guard runBlocker == nil, let stateDir = status?.stateDir else { return }
         runError = nil
+        if daemonRunning {
+            await requestRun(options)
+            return
+        }
         guard let launcher = launcher() else {
             runError = "This copy of the app cannot start vani."
             return
@@ -145,12 +164,63 @@ final class PipelineModel {
     }
 
     /// SIGTERM to the run this app started; vani records it as cancelled.
-    /// A run started elsewhere (the daemon, a shell) is never signalled.
+    /// A run started elsewhere (the daemon, a shell) is never signalled, nor
+    /// is one this app asked the daemon for.
     func stopRun() {
         manualRun?.stop()
     }
 
-    /// Re-read every few seconds while a run is going, then once more.
+    /// Ask the daemon for the run (`vani run-request`), then follow it.
+    private func requestRun(_ options: ManualRunOptions) async {
+        startingRun = true
+        if let data = try? JSONEncoder().encode(options) { defaults.set(data, forKey: Self.optionsKey) }
+        let c = client()
+        let result = await Task.detached(priority: .userInitiated) { Result { try c.requestRun(options) } }.value
+        startingRun = false
+        switch result {
+        case let .success(reply):
+            requestedAt = reply.requestedAt
+            follow()
+        case let .failure(err):
+            runError = String(describing: err)
+        }
+    }
+
+    /// How far a run record's start may precede the request's time and still
+    /// be its run (the two times are written by one clock, to the millisecond).
+    static let requestSlack: TimeInterval = 1
+
+    /// Settle this app's pending request against a fresh status: picked up
+    /// (a manual run recorded since it was made), still waiting, or gone
+    /// without a run (the daemon dropped it, or stopped).
+    private func settleRequest(_ s: PipelineStatus) {
+        guard let at = requestedAt else { return }
+        let since = at.addingTimeInterval(-Self.requestSlack)
+        if s.lastRun.trigger == .manual, let started = s.lastRun.startedAt, started >= since {
+            requestedAt = nil // the run record follows it from here
+            return
+        }
+        let r = s.runRequest
+        let mine: (Date?) -> Bool = { d in d.map { abs($0.timeIntervalSince(at)) <= Self.requestSlack } ?? false }
+        if r?.claimed == true, mine(r?.claimedRequestedAt) {
+            return // the daemon is starting it: the record comes next
+        }
+        if r?.pending == true, mine(r?.requestedAt) {
+            if r?.stale == true {
+                runError = "The daemon did not pick up your run within an hour, so it will not run. Ask again."
+                requestedAt = nil
+            } else if s.daemon?.running != true {
+                runError = "The daemon stopped before it picked up your run. The request waits up to an hour for it to start again."
+                requestedAt = nil
+            }
+            return
+        }
+        runError = "The daemon dropped your run request without running it; its log (vani.err.log) says why."
+        requestedAt = nil
+    }
+
+    /// Re-read every few seconds while a run is going or a request waits,
+    /// then once more.
     private func follow() {
         watchTask?.cancel()
         watchTask = Task { [weak self] in
@@ -158,7 +228,7 @@ final class PipelineModel {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refresh()
-                if !self.runInProgress { return }
+                if !self.runInProgress && !self.waitingForDaemon { return }
                 try? await Task.sleep(for: Self.runningPollInterval)
             }
         }

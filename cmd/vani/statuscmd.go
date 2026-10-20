@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
@@ -60,6 +61,34 @@ type statusJSON struct {
 	Schedule    scheduleFacet `json:"schedule"`
 	Backends    backendsFacet `json:"backends"`
 	Decide      decideFacet   `json:"decide"`
+	// Daemon and RunRequest are additive (an older reader ignores them): is a
+	// daemon holding the ledger, and is a manual run waiting for it.
+	Daemon     daemonFacet     `json:"daemon"`
+	RunRequest runRequestFacet `json:"run_request"`
+}
+
+// daemonFacet is daemon.json as checked against the process table. Running is
+// false when no daemon announced itself or its process is gone.
+type daemonFacet struct {
+	facet
+	Running bool      `json:"running"`
+	PID     int       `json:"pid,omitempty"`
+	Since   time.Time `json:"since,omitzero"`
+}
+
+// runRequestFacet is the manual run asked of the daemon (runrequest.go).
+// Pending is a request it has not picked up; Claimed is one whose run it is
+// making now (the run record shows its progress). Stale is a pending request
+// past runRequestMaxAge, which the daemon will drop without running.
+type runRequestFacet struct {
+	facet
+	Pending     bool        `json:"pending"`
+	Stale       bool        `json:"stale,omitempty"`
+	RequestedAt time.Time   `json:"requested_at,omitzero"`
+	Options     *runOptions `json:"options,omitempty"`
+	Claimed     bool        `json:"claimed"`
+	// ClaimedRequestedAt is when the claimed request was made.
+	ClaimedRequestedAt time.Time `json:"claimed_requested_at,omitzero"`
 }
 
 type configFacet struct {
@@ -174,7 +203,49 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	out.Schedule = scheduleOf(cfg, cfgErr, at)
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
+	out.Daemon = e.daemonFacet()
+	out.RunRequest = e.runRequestFacet(at)
 	return out
+}
+
+func (e *env) daemonFacet() daemonFacet {
+	d, err := readDaemonRecord(e.stateDir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return daemonFacet{facet: facet{OK: true, Reason: "no daemon has announced itself"}}
+	case err != nil:
+		return daemonFacet{facet: unknown(err)}
+	case !pidAlive(d.PID):
+		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: d.StartedAt}
+	}
+	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: d.StartedAt}
+}
+
+// runRequestFacet reads the pending and the claimed request; it removes
+// neither (the daemon owns them).
+func (e *env) runRequestFacet(at time.Time) runRequestFacet {
+	f := runRequestFacet{facet: facet{OK: true}}
+	var problems []string
+	switch r, err := readRunRequest(runsPath(e.stateDir, runRequestFile), at); {
+	case err == nil, errors.Is(err, errRequestStale):
+		f.Pending, f.Stale, f.RequestedAt = true, err != nil, r.RequestedAt
+		f.Options = r.Options.recorded()
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		problems = append(problems, "pending request: "+err.Error())
+	}
+	// A claimed request's run may outlast runRequestMaxAge: its age is no fault.
+	switch r, err := readRunRequest(runsPath(e.stateDir, runClaimedFile), at); {
+	case err == nil, errors.Is(err, errRequestStale):
+		f.Claimed, f.ClaimedRequestedAt = true, r.RequestedAt
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		problems = append(problems, "claimed request: "+err.Error())
+	}
+	if len(problems) > 0 {
+		f.facet = facet{Reason: oneLine(strings.Join(problems, "; "), 300)}
+	}
+	return f
 }
 
 func (e *env) ledgerFacet() ledgerFacet {
