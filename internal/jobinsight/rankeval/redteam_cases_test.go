@@ -142,18 +142,20 @@ func TestRTNumericAbuse(t *testing.T) {
 		return w
 	}
 	cases := map[string]jobinsight.Weights{
-		"zero":         {},
-		"all-nan":      {Fit: nan, Coverage: nan, Semantic: nan, Keyword: nan, Title: nan, Employer: nan, UnknownPrior: nan, AnsweredConf: nan, DisagreeConf: nan, PenaltyStrength: nan, ExcludedTitle: nan, UnsureGate: nan, FreshFloor: nan, HalfLifeDays: nan, CompanySpan: nan, CompanySmoothing: nan},
-		"all-inf":      {Fit: inf, Coverage: inf, Semantic: inf, Keyword: inf, Title: inf, Employer: inf, UnknownPrior: inf, AnsweredConf: inf, DisagreeConf: inf, PenaltyStrength: inf, ExcludedTitle: inf, UnsureGate: inf, FreshFloor: inf, HalfLifeDays: inf, CompanySpan: inf, CompanySmoothing: inf},
-		"weights-neg":  set(func(w *jobinsight.Weights) { w.Fit, w.Coverage, w.Semantic = -1, -2, -3 }),
-		"weights-sum0": set(func(w *jobinsight.Weights) { w.Fit, w.Coverage, w.Semantic, w.Keyword, w.Title, w.Employer = 0, 0, 0, 0, 0, 0 }),
-		"half-tiny":    set(func(w *jobinsight.Weights) { w.HalfLifeDays = 1e-300 }),
-		"half-huge":    set(func(w *jobinsight.Weights) { w.HalfLifeDays = 1e300 }),
-		"half-max":     set(func(w *jobinsight.Weights) { w.HalfLifeDays = jobinsight.MaxHalfLifeDays }),
-		"smooth-neg":   set(func(w *jobinsight.Weights) { w.CompanySmoothing = -1e6; w.CompanyMinMarks = -9 }),
-		"span-huge":    set(func(w *jobinsight.Weights) { w.CompanySpan = 1e9 }),
-		"floor-1":      set(func(w *jobinsight.Weights) { w.FreshFloor = 1 }),
-		"floor-neg":    set(func(w *jobinsight.Weights) { w.FreshFloor = -5 }),
+		"zero":        {},
+		"all-nan":     {Fit: nan, Coverage: nan, Semantic: nan, Keyword: nan, Title: nan, Employer: nan, UnknownPrior: nan, AnsweredConf: nan, DisagreeConf: nan, PenaltyStrength: nan, ExcludedTitle: nan, UnsureGate: nan, FreshFloor: nan, HalfLifeDays: nan, CompanySpan: nan, CompanySmoothing: nan},
+		"all-inf":     {Fit: inf, Coverage: inf, Semantic: inf, Keyword: inf, Title: inf, Employer: inf, UnknownPrior: inf, AnsweredConf: inf, DisagreeConf: inf, PenaltyStrength: inf, ExcludedTitle: inf, UnsureGate: inf, FreshFloor: inf, HalfLifeDays: inf, CompanySpan: inf, CompanySmoothing: inf},
+		"weights-neg": set(func(w *jobinsight.Weights) { w.Fit, w.Coverage, w.Semantic = -1, -2, -3 }),
+		"weights-sum0": set(func(w *jobinsight.Weights) {
+			w.Fit, w.Coverage, w.Semantic, w.Keyword, w.Title, w.Employer = 0, 0, 0, 0, 0, 0
+		}),
+		"half-tiny":  set(func(w *jobinsight.Weights) { w.HalfLifeDays = 1e-300 }),
+		"half-huge":  set(func(w *jobinsight.Weights) { w.HalfLifeDays = 1e300 }),
+		"half-max":   set(func(w *jobinsight.Weights) { w.HalfLifeDays = jobinsight.MaxHalfLifeDays }),
+		"smooth-neg": set(func(w *jobinsight.Weights) { w.CompanySmoothing = -1e6; w.CompanyMinMarks = -9 }),
+		"span-huge":  set(func(w *jobinsight.Weights) { w.CompanySpan = 1e9 }),
+		"floor-1":    set(func(w *jobinsight.Weights) { w.FreshFloor = 1 }),
+		"floor-neg":  set(func(w *jobinsight.Weights) { w.FreshFloor = -5 }),
 	}
 	for name, w := range cases {
 		for _, in := range []jobinsight.Inputs{

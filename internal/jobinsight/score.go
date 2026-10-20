@@ -134,6 +134,10 @@ type Weights struct {
 	// PenaltyStrength is how much a fully confident kept-by drop rule
 	// removes: gate x (1 - PenaltyStrength*conf).
 	PenaltyStrength float64
+	// Mismatch is how much a fully confident mismatch_domain or
+	// mismatch_seniority reading removes: gate x (1 - Mismatch*conf). As a
+	// gate, no amount of coverage or similarity rescues a confident mismatch.
+	Mismatch float64
 	// ExcludedTitle and UnsureGate are the gates for an excluded title and
 	// an unsure triage.
 	ExcludedTitle, UnsureGate float64
@@ -141,10 +145,11 @@ type Weights struct {
 	// age is unknown; HalfLifeDays halves the rest.
 	FreshFloor, HalfLifeDays float64
 	// CompanyMinMarks is the marks a company needs before its factor moves,
-	// CompanySmoothing the pseudo-count, CompanySpan the factor's half-range
-	// around 1.
-	CompanyMinMarks               int
-	CompanySmoothing, CompanySpan float64
+	// CompanySmoothing the pseudo-count. CompanySpan is how far liked marks
+	// lift the factor above 1, CompanyDown how far hidden marks sink it below:
+	// hiding is the stronger signal, so it may move the factor further.
+	CompanyMinMarks                            int
+	CompanySmoothing, CompanySpan, CompanyDown float64
 }
 
 // BasisSemantic is the knowledge-base similarity.
@@ -152,10 +157,13 @@ const BasisSemantic Basis = "semantic"
 
 const (
 	// DefaultScoreHalfLifeDays is the age that halves the freshness bonus.
-	DefaultScoreHalfLifeDays = 7.0
+	// The red-team worlds (rankeval) favoured 10 over 7 on both the mean and
+	// the worst case; 21, the in-sample sweep's pick, collapsed for an owner
+	// who wants very recent postings.
+	DefaultScoreHalfLifeDays = 10.0
 	// CompanyMin and CompanyMax bound the company factor under
-	// DefaultWeights (CompanySpan 0.10).
-	CompanyMin = 0.9
+	// DefaultWeights (CompanyDown 0.40, CompanySpan 0.10).
+	CompanyMin = 0.6
 	CompanyMax = 1.1
 )
 
@@ -167,9 +175,9 @@ func DefaultWeights() Weights {
 	return Weights{
 		Fit: 0.30, Coverage: 0.20, Semantic: 0.25, Keyword: 0.10, Title: 0.10, Employer: 0.05,
 		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
-		PenaltyStrength: 0.60, ExcludedTitle: 0.50, UnsureGate: 0.85,
+		PenaltyStrength: 0.60, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
 		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays,
-		CompanyMinMarks: 3, CompanySmoothing: 5, CompanySpan: 0.10,
+		CompanyMinMarks: 3, CompanySmoothing: 5, CompanySpan: 0.10, CompanyDown: 0.40,
 	}
 }
 
@@ -244,11 +252,19 @@ func ScoreWith(in Inputs, w Weights) Result {
 		parts[5].value = 1
 	}
 
-	// Weights that are not positive numbers are skipped.
-	var sum float64
+	// Weights that are not positive finite numbers are skipped; the rest are
+	// scaled by the largest first, so huge weights cannot overflow the sum.
+	var top float64
 	for i := range parts {
 		if !(parts[i].weight > 0) || math.IsInf(parts[i].weight, 0) {
 			parts[i].weight = 0
+		}
+		top = max(top, parts[i].weight)
+	}
+	var sum float64
+	for i := range parts {
+		if top > 0 {
+			parts[i].weight /= top
 		}
 		sum += parts[i].weight
 	}
@@ -272,6 +288,9 @@ func ScoreWith(in Inputs, w Weights) Result {
 	gate := 1.0
 	for _, p := range in.Penalties {
 		gate *= 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
+	}
+	if fitConf > 0 && (in.RoleFit.Value == "mismatch_domain" || in.RoleFit.Value == "mismatch_seniority") {
+		gate *= 1 - clamp01(w.Mismatch)*fitConf
 	}
 	if excluded {
 		gate *= clamp01(w.ExcludedTitle)
@@ -297,12 +316,20 @@ func ScoreWith(in Inputs, w Weights) Result {
 
 	company := 1.0
 	liked, hidden := float64(max(in.Company.Liked, 0)), float64(max(in.Company.Hidden, 0))
-	span := 0.0
+	up, down := 0.0, 0.0
 	if finite(w.CompanySpan) {
-		span = clamp(w.CompanySpan, 0, 1)
+		up = clamp(w.CompanySpan, 0, 1)
+	}
+	if finite(w.CompanyDown) {
+		down = clamp(w.CompanyDown, 0, 1)
 	}
 	if n := liked + hidden; n >= float64(w.CompanyMinMarks) && n > 0 && n+w.CompanySmoothing > 0 {
-		company = clamp(1+span*(liked-hidden)/(n+w.CompanySmoothing), 1-span, 1+span)
+		lean := (liked - hidden) / (n + w.CompanySmoothing)
+		if lean >= 0 {
+			company = clamp(1+up*lean, 1, 1+up)
+		} else {
+			company = clamp(1+down*lean, 1-down, 1)
+		}
 	}
 
 	r := Result{
