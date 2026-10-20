@@ -133,6 +133,23 @@ func runFakeServer() {
 				// DevPrism's 0 of 0: no must-have extracted, coverage 0.
 				reply(map[string]any{"coveragePercentage": 0, "extractionEmpty": true, "mustHave": map[string]any{"items": []any{}}})
 				continue
+			case "NULLNOMUST":
+				// DevPrism's newer answer to no must-have: coverage is null.
+				reply(map[string]any{"coveragePercentage": nil, "extractionEmpty": true, "mustHave": map[string]any{"items": []any{}}})
+				continue
+			case "NULLEMPTYITEMS":
+				reply(map[string]any{"coveragePercentage": nil, "mustHave": map[string]any{"items": []any{}}})
+				continue
+			case "NULLWITHITEMS":
+				// A null coverage next to must-haves is not a measurement and not "no must-haves".
+				reply(map[string]any{"coveragePercentage": nil, "mustHave": map[string]any{"items": []any{map[string]any{"skill": "go", "status": "covered"}}}})
+				continue
+			case "NULLNOMUSTHAVEKEY":
+				reply(map[string]any{"coveragePercentage": nil, "extractionEmpty": true})
+				continue
+			case "NOCOVERAGEKEY":
+				reply(map[string]any{"extractionEmpty": true, "mustHave": map[string]any{"items": []any{}}})
+				continue
 			case "BADSHAPE":
 				reply(map[string]any{"unexpected": 1})
 				continue
