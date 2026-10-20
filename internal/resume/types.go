@@ -18,6 +18,11 @@ type Coverage struct {
 type Gap struct {
 	CoveragePct float64    `json:"coverage_pct"`
 	MustHaves   []Coverage `json:"must_haves"`
+	// NoMustHaves is true when DevPrism extracted no must-have requirement from
+	// the JD (its extractionEmpty flag, or an empty item list). DevPrism reports
+	// 0% coverage then (0 of 0), which is "unread", not "nothing covered": the
+	// percentage must not be used as a measurement.
+	NoMustHaves bool `json:"no_must_haves,omitempty"`
 }
 
 // Score is DevPrism resume_score_and_select, reduced to what ranking needs.

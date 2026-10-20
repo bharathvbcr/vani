@@ -140,7 +140,7 @@ func (r *Runner) preScore(ctx context.Context, rec ledger.Record) map[string]str
 // one with no description has nothing to score, and is left unranked rather
 // than ranked zero.
 func (r *Runner) scoreStage(ctx context.Context, rec ledger.Record) (map[string]string, string, error) {
-	if r.ScoreFirst && rec.Annotations[ledger.AnnCoverage] != "" {
+	if r.ScoreFirst && (rec.Annotations[ledger.AnnCoverage] != "" || rec.Annotations[AnnCoverageUnknown] != "") {
 		return nil, "scored", nil
 	}
 	if strings.TrimSpace(rec.Posting.Description) == "" {

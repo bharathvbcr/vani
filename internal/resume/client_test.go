@@ -129,6 +129,10 @@ func runFakeServer() {
 			case "STRUCT":
 				reply(map[string]any{"structuredContent": gapPayload(a.PageBudget, a.PersonaID), "content": []any{}})
 				continue
+			case "NOMUST":
+				// DevPrism's 0 of 0: no must-have extracted, coverage 0.
+				reply(map[string]any{"coveragePercentage": 0, "extractionEmpty": true, "mustHave": map[string]any{"items": []any{}}})
+				continue
 			case "BADSHAPE":
 				reply(map[string]any{"unexpected": 1})
 				continue
