@@ -342,7 +342,7 @@ func (w *world) observe(r *rand.Rand) {
 		default:
 			in.RoleFit.Answered = true
 			var correct bool
-			if r.Float64() < 0.7 { // Jev present, roughly calibrated
+			if r.Float64() < 0.7 { // Liquid D present, roughly calibrated
 				pp := 0.45 + 0.53*r.Float64()
 				in.RoleFit.P, in.RoleFit.HasP = pp, true
 				correct = r.Float64() < pp

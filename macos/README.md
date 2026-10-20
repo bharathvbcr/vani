@@ -41,7 +41,14 @@ Its **Audit** tab is the weekly "would you apply?" sample: it fetches `vani audi
 place from the jobs row contract, `JobRow`, via `vani jobs show`; the description as plain text) and
 answers with one key each, Y / M / N / S, through `vani audit answer`, which writes the would_apply label
 with the pick's stratum and p_select. Vani's own readings and the strata are never shown. A failed write
-leaves the card where it is.
+leaves the card where it is. Each card that comes on screen is reported to `vani impressions log
+--surface audit` (key and position only, one slate per draw), so the audit counts as shown.
+The Jobs tab's words (fit, status, category, triage options) come from `vani labels --json`, read
+once and again at the next refresh if it failed; Go owns the vocabulary, and the built-in table is
+only a fallback that the tab says it is showing. After each list refresh the Jobs tab reports its
+top 20 rows (keys and positions, never a title) to `vani impressions log --surface jobs`, one slate
+per view per local day, so a job counts as seen-and-passed only when it was shown. A failed report
+is kept in the model, not shown, and never blocks the list.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.

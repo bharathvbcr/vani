@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -58,7 +60,7 @@ func (e *env) browse() (*browsing, error) {
 }
 
 // view lists the jobs of a Jobs view, as `jobs list` would, in sortBy order.
-func (b *browsing) view(view, sortBy string, openOnly bool) ([]selected, error) {
+func (b *browsing) view(view, sortBy string, openOnly bool) ([]jobview.Selected, error) {
 	var o jobsOpts
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -66,12 +68,12 @@ func (b *browsing) view(view, sortBy string, openOnly bool) ([]selected, error) 
 	if err := fs.Parse(nil); err != nil {
 		return nil, err
 	}
-	o.view, o.sort, o.open = view, sortBy, openOnly
+	o.View, o.Sort, o.Open = view, sortBy, openOnly
 	if err := o.check("audit", true); err != nil {
 		return nil, err
 	}
-	sel, _ := selectJobs(b.snap, b.m, &o, b.in, 0)
-	sortJobs(sel, view, sortBy)
+	sel, _ := jobview.Select(b.snap, b.m, &o.Opts, b.in, 0)
+	jobview.Sort(sel, view, sortBy)
 	return sel, nil
 }
 
@@ -124,11 +126,14 @@ func (e *env) drawAudit(scored, dropped int, seed, labels string) (*auditDraw, e
 	}
 	var cands []eval.AuditCandidate
 	for _, k := range kept {
-		cands = append(cands, eval.AuditCandidate{Key: k.job.Key, Score: k.job.Priority})
+		if b.m[k.Job.Key].Mark != marks.None {
+			continue // judged by its mark already, as in the digest's Explore
+		}
+		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
 	}
 	rules := e.dropRules()
 	for _, r := range b.snap.Records {
-		if r.Status == posting.Dropped {
+		if r.Status == posting.Dropped && b.m[r.Key].Mark == marks.None {
 			cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)})
 		}
 	}
@@ -234,6 +239,13 @@ func (e *env) cmdAudit(args []string) error {
 	}
 	n, err := eval.LabelAudit(stdin, e.stdout, d.picks, recs, d.s, names, *blind)
 	fmt.Fprintf(e.stdout, "audited %d of %d drawn\n", n, len(d.picks))
+	// The cards the session showed are impressions: every answered card, and
+	// the one it stopped on unless it ran out of cards. A recording failure
+	// never fails the audit, but it is said.
+	shown := min(n+1, len(d.picks))
+	if ierr := recordAuditCards(context.Background(), e.stateDir, now(), d.seed, d.picks[:shown]); ierr != nil {
+		fmt.Fprintf(e.stderr, "vani: the audit cards' impressions were not recorded: %v\n", ierr)
+	}
 	if errors.Is(err, io.EOF) {
 		return nil
 	}

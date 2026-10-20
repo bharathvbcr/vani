@@ -13,7 +13,7 @@ import (
 	"github.com/bharathvbcr/decide/jev"
 )
 
-// config refuses OpenRouter backend names the Jev client would refuse, so a
+// config refuses OpenRouter backend names the decide/jev client would refuse, so a
 // config that checks clean never fails at jev.New over its name.
 func TestBackendNameLimitMatchesJev(t *testing.T) {
 	if config.MaxBackendName != jev.MaxNameBytes {

@@ -100,6 +100,10 @@ type runRecord struct {
 	// 0 when nothing was new. Nil when no digest was written: the run stopped
 	// before it, it was held back, or writing it failed.
 	DigestRoles *int `json:"digest_roles,omitempty"`
+	// ImpressionsError says the digest was written but what it showed was not
+	// recorded (internal/feedback), so the ranking's measurement has a gap for
+	// this run; "" when they were recorded or no digest was written.
+	ImpressionsError string `json:"impressions_error,omitempty"`
 	// CountsBefore and CountsAfter are the ledger's postings by status at the
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`
@@ -118,7 +122,7 @@ type runDetail struct {
 	Boards *boardsReport `json:"boards,omitempty"`
 	// Advance is the triage/score/explain phase; nil when the run ended
 	// before it (no board could be read, the stages could not be built).
-	Advance *advanceReport `json:"advance,omitempty"`
+	Advance *pipeline.AdvanceReport `json:"advance,omitempty"`
 	// BackendErrors are the decision backends' failed calls, by cause. A
 	// backend error becomes an "unavailable" reading that keeps no text, so
 	// this is the only place a refused key or an outage is written down.
@@ -130,40 +134,6 @@ type runDetail struct {
 	// readings by kind, cost, wall time, and what the circuit breaker turned
 	// away. Additive: readers that do not know the key ignore it.
 	BackendStats map[string]backendStat `json:"backend_stats,omitempty"`
-}
-
-// Why an advance phase ended before it had worked through every eligible
-// posting (advanceReport.Stopped).
-const (
-	stopCap          = "cap"           // advance_per_run reached
-	stopUnreadStreak = "unread_streak" // maxConsecutiveUnread unread in a row
-	stopNoneRead     = "none_read"     // no backend read any posting
-	stopFailStreak   = "fail_streak"   // maxConsecutiveFailed stage failures in a row
-	stopNoneAdvanced = "none_advanced" // every attempted posting failed or went unread
-	stopCancelled    = "cancelled"
-)
-
-// advanceReport is what one run's advance phase did. Deferred postings were
-// not attempted this run and wait, still listed, for the next one.
-type advanceReport struct {
-	// Eligible postings were waiting for a stage when the phase started.
-	Eligible int `json:"eligible"`
-	// Limit is the per-run cap (config advance_per_run).
-	Limit     int `json:"limit"`
-	Attempted int `json:"attempted"`
-	// Unread postings no decision backend could read; they stay live.
-	Unread int `json:"unread"`
-	// Failed postings hit another stage error; they wait for the next run.
-	Failed   int    `json:"failed"`
-	Deferred int    `json:"deferred"`
-	Stopped  string `json:"stopped,omitempty"`
-	// FailOpen counts postings kept because a check could not run, by cause
-	// (empty description, unread title or location, DevPrism down). A kept
-	// posting here did not pass the check; it was never checked.
-	FailOpen pipeline.FailOpenCounts `json:"fail_open,omitzero"`
-	// Notes is what the notes gate did: below the floor, deferred for unknown
-	// relevance, deferred because the notes budget was spent.
-	Notes pipeline.NotesCounts `json:"notes,omitzero"`
 }
 
 // Board outcomes in the run's board report (boardReport.Outcome).

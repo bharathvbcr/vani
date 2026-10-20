@@ -396,7 +396,7 @@ private struct LastRunSection: View {
                 }
                 let changes = run.statusChanges
                 if !changes.isEmpty {
-                    Row(label: "Status changes", value: changes.map { "\($0.status) \($0.delta > 0 ? "+" : "")\($0.delta)" }.joined(separator: ", "), secondary: true)
+                    Row(label: "Status changes", value: changes.map { "\(Labels.label(for: $0.status)) \($0.delta > 0 ? "+" : "")\($0.delta)" }.joined(separator: ", "), secondary: true)
                 }
                 if let e = run.error, !e.isEmpty {
                     Row(label: run.stage.map { "Failed at \($0)" } ?? "Error", value: e)
@@ -570,7 +570,7 @@ private struct LedgerSection: View {
             } else {
                 Row(label: "Postings", value: "\(ledger.total)")
                 ForEach(ledger.byStatus.sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }, id: \.key) { s, n in
-                    Row(label: s.capitalized, value: "\(n)", secondary: true)
+                    Row(label: Labels.label(for: s), value: "\(n)", secondary: true)
                 }
                 if ledger.torn == true {
                     Text("A run was writing as this was read; the counts are complete up to it.").font(.caption).foregroundStyle(.secondary)

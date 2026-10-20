@@ -60,8 +60,29 @@ final class AuditModel {
         let result = await Task.detached(priority: .userInitiated) { Result { try c.card(pick) } }.value
         guard gen == cardGeneration else { return } // a newer card superseded this one
         switch result {
-        case let .success(card): self.card = card
+        case let .success(card):
+            self.card = card
+            await reportImpression(of: pick)
         case let .failure(err): cardError = String(describing: err)
+        }
+    }
+
+    /// Why the card on screen could not be reported to `vani impressions log`;
+    /// nil when it was. Measurement only: it never blocks the card.
+    private(set) var impressionsError: String?
+
+    /// Tells vani this card is on screen (key and position only), one slate per
+    /// draw, so the audit's cards count as seen. A card shown again is not
+    /// logged twice.
+    private func reportImpression(of pick: AuditPick) async {
+        guard let seed, let index = session?.index else { return }
+        let jobs = client().jobs, section = pick.stratum
+        let result = await Task.detached(priority: .utility) {
+            Result { try jobs.logImpressions(surface: .audit, slate: seed, section: section, keys: [pick.key], firstPosition: index + 1) }
+        }.value
+        switch result {
+        case .success: impressionsError = nil
+        case let .failure(err): impressionsError = String(describing: err)
         }
     }
 

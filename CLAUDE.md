@@ -22,7 +22,7 @@ go -C /Users/bharath/Code/apps/Vani test ./...
 - Go only: stdlib, Manvi and the owner's `decide` module. **No new third-party dependency without
   asking the owner.** Do not edit `go.mod`/`go.work` or run `go mod tidy`; report the need instead.
 - Shared contracts live in `internal/{posting,egress,sources,resume,ledger}` type files and in the
-  `decide` module (question, readings, router, Jev and Lappi clients; Vani keeps only
+  `decide` module (question, readings, router, the OpenRouter Decisions API client (package `jev`) and Lappi clients; Vani keeps only
   `internal/decide/jdtriage` and `internal/decide/llmbackend`). Change a contract only by asking;
   implement against it. A `decide` change is tested in that repo too
   (`go -C /Users/bharath/Code/devtools/decide test ./...`).

@@ -332,7 +332,7 @@ func TestNVIDIABoardFillsOverRunsWithinTheDetailCap(t *testing.T) {
 				return out
 			},
 			DropListed: func(p posting.Posting) bool { return strings.HasPrefix(p.Title, "Senior") },
-			Report:    func(_ sources.Board, x Stats) { st = x },
+			Report:     func(_ sources.Board, x Stats) { st = x },
 		})
 		s.now = func() time.Time { return fixedNow.AddDate(0, 0, run) }
 		got, err := s.List(context.Background(), board)

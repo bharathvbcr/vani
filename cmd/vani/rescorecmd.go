@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -80,14 +79,14 @@ type rescoreReport struct {
 	Rescored int
 	// Repaired is how many 0-of-0 coverages were marked unknown this run.
 	Repaired int
-	Advance  advanceReport
+	Advance  pipeline.AdvanceReport
 }
 
 // errScoringOff refuses a rescore with nothing to score with.
 var errScoringOff = errors.New("devprism.binary is empty: nothing to score with (set it, see docs/PHASE0-devprism.md)")
 
 // rescore scores up to limit unscored postings (rescorable) through the same
-// advanceAll the daily run uses, so its concurrency (advance_concurrency),
+// pipeline.Advance the daily run uses, so its concurrency (advance_concurrency),
 // cancellation and stop rules hold: maxConsecutiveFailed DevPrism failures in
 // a row, or a pass where none was scored, fail it. Freshest postings go first.
 func (w *wired) rescore(ctx context.Context, limit int) (rescoreReport, error) {
@@ -117,15 +116,10 @@ func rescoreWith(ctx context.Context, l ledger.Ledger, limit, workers int, resco
 			keys = append(keys, r.Key)
 		}
 	}
-	// advanceAll's cap line names advance_per_run and the next daily run, which
-	// is wrong here (--limit, and the run does not rescore); the command prints
-	// how many are still unscored instead.
-	quiet := func(format string, a ...any) {
-		if !strings.HasPrefix(format, "advance cap ") {
-			warnf(format, a...)
-		}
-	}
-	adv, err := advanceAll(ctx, recs, nil, limit, workers, nil, rescore, quiet, withTodo(rescorable))
+	// The kindRescore plan leaves out the cap line, which names advance_per_run
+	// and the next daily run: wrong here (--limit, and the run does not
+	// rescore). The command prints how many are still unscored instead.
+	adv, err := pipeline.Advance(ctx, baseAdvancePlan(kindRescore, limit, workers, warnf), pipeline.AdvanceDeps{Records: recs, Advance: rescore})
 	rep.Advance = adv
 	for _, k := range keys {
 		if r, ok := l.Get(k); ok && r.Annotations[ledger.AnnRank] != "" {

@@ -82,6 +82,21 @@ func TestWarnShadowErrors(t *testing.T) {
 	}
 }
 
+// The end-of-advance shadow notes (the run's and the inbox poll's) include the
+// failed-call line.
+func TestWarnShadowNotesReportsFailedCalls(t *testing.T) {
+	var out bytes.Buffer
+	w := &wired{warn: &out}
+	r, rt := shadowRunner(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}, 0)
+	route(t, rt)
+	w.warnShadowNotes(r)
+	if got := out.String(); !strings.HasPrefix(got, `vani: shadow "local-test-d1-combined": 1`) {
+		t.Fatalf("warning = %q", got)
+	}
+}
+
 func TestShadowErrorsNote(t *testing.T) {
 	t.Run("a failing shadow is reported", func(t *testing.T) {
 		r, rt := shadowRunner(t, func(w http.ResponseWriter, _ *http.Request) {

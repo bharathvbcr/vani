@@ -31,6 +31,7 @@ final class AuditModelTests: XCTestCase {
         case "$*" in
         "audit answer"*) echo '\(answerReply)'; exit \(answerStatus) ;;
         "audit --json"*) echo '\(drawReply)'; exit \(drawStatus) ;;
+        "impressions log"*) cat >/dev/null; echo '{"logged":1}'; exit 0 ;;
         "jobs show"*) k="${4}"; echo "{\\"key\\":\\"$k\\",\\"company\\":\\"Co\\",\\"title\\":\\"Title $k\\",\\"status\\":\\"live\\"}"; exit 0 ;;
         esac
         exit 2
@@ -52,7 +53,9 @@ final class AuditModelTests: XCTestCase {
         XCTAssertEqual(m.seed, "2026-W43")
         XCTAssertEqual(m.session?.picks.count, 2)
         XCTAssertEqual(m.card?.title, "Title gh:a:1")
-        XCTAssertEqual(f.calls, ["audit --json --blind", "jobs show --json gh:a:1"])
+        XCTAssertEqual(f.calls, ["audit --json --blind", "jobs show --json gh:a:1",
+                                 "impressions log --json --surface audit --slate 2026-w43 --section decile:1"])
+        XCTAssertNil(m.impressionsError)
     }
 
     func testAnAnswerIsWrittenThenTheNextCardShows() async throws {

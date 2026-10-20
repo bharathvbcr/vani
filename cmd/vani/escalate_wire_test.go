@@ -182,7 +182,7 @@ func TestTriageModelIsPricedFromTheTableAndLLMModelFromConfig(t *testing.T) {
 }
 
 // rewriteDoer sends every request to srv whatever its URL says, standing in for
-// OpenRouter (the wiring builds the Jev client with its default endpoint).
+// OpenRouter (the wiring builds the decide/jev client with its default endpoint).
 type rewriteDoer struct{ srv *httptest.Server }
 
 func (d rewriteDoer) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
@@ -203,7 +203,7 @@ func jevAt(ps map[string]float64) string {
 		}
 		answers[s.Name] = map[string]any{"choice": s.Options[0].Value, "confidence": p}
 	}
-	// Jev answers every slot it is asked, and the question also carries the
+	// Liquid D answers every slot it is asked, and the question also carries the
 	// job-category slot the Triager appends (ExtraSlots).
 	catP := 0.9
 	if v, ok := ps[jobcategory.Slot]; ok {
@@ -214,7 +214,7 @@ func jevAt(ps map[string]float64) string {
 	return string(b)
 }
 
-// escalationRig is the real wiring with an OpenRouter primary (a fake Jev on
+// escalationRig is the real wiring with an OpenRouter primary (a fake Liquid D on
 // loopback) and the Claude tier (a fake Anthropic on loopback), escalating
 // below 0.5.
 type escalationRig struct {

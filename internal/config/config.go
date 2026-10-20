@@ -1107,6 +1107,10 @@ func (c Config) Validate() error {
 	case "llm":
 		if c.LLM.Provider == "" {
 			add("decide.shadow llm needs llm.provider")
+		} else if c.Decide.ShadowOnDropCandidates() && (c.LLM.TriageModel == "" || c.LLM.TriageModel == c.LLM.Model) {
+			// Every drop candidate is asked, so without a cheaper model of its own
+			// the shadow would spend the llm daily cap on llm.model's expensive tier.
+			add("decide.shadow llm with shadow_mode %s needs llm.triage_model set to a model other than llm.model (%q): it would read every drop candidate on the expensive tier", ShadowModeDropCandidates, c.LLM.Model)
 		}
 	case ShadowOpenRouter:
 		if !c.OpenRouterConfigured() {

@@ -323,19 +323,19 @@ func TestSelectBoards(t *testing.T) {
 // to advance_per_run.
 func TestWiredAdvancePlan(t *testing.T) {
 	w := &wired{cfg: config.Config{AdvancePerRun: 40}}
-	if l, s := w.advancePlan(); l != 40 || s {
+	if l, s := runPlan(w); l != 40 || s {
 		t.Errorf("untuned: %d %v", l, s)
 	}
 	w.tune(5, false)
-	if l, s := w.advancePlan(); l != 5 || s {
+	if l, s := runPlan(w); l != 5 || s {
 		t.Errorf("--advance 5: %d %v", l, s)
 	}
 	w.tune(0, true)
-	if l, s := w.advancePlan(); l != 40 || !s {
+	if l, s := runPlan(w); l != 40 || !s {
 		t.Errorf("--list-only: %d %v", l, s)
 	}
 	w.tune(0, false)
-	if l, s := w.advancePlan(); l != 40 || s {
+	if l, s := runPlan(w); l != 40 || s {
 		t.Errorf("reset: %d %v", l, s)
 	}
 }

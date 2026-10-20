@@ -32,6 +32,10 @@ type ExclusionChange struct {
 	Drop    []ledger.Record
 	Reasons []string // Reasons[i] is why Drop[i] is dropped
 	Reopen  []ledger.Record
+	// Unread are the Live, unprotected postings kept because a location rule
+	// could not read their location (DropPolicy.ExcludeUnreadable): the check
+	// could not run, which is not the same as passing it.
+	Unread []ledger.Record
 }
 
 // ExclusionChanges reads what p's exclusions would do to recs, in their
@@ -49,6 +53,9 @@ func ExclusionChanges(recs []ledger.Record, p DropPolicy, protect func(posting.K
 		case ok && excludable[r.Status] && (protect == nil || !protect(r.Key)):
 			ch.Drop = append(ch.Drop, r)
 			ch.Reasons = append(ch.Reasons, why)
+		case !ok && r.Status == posting.Live && p.ExcludeUnreadable != nil && p.ExcludeUnreadable(r.Posting) &&
+			(protect == nil || !protect(r.Key)):
+			ch.Unread = append(ch.Unread, r)
 		}
 	}
 	return ch
@@ -61,8 +68,11 @@ func ExclusionChanges(recs []ledger.Record, p DropPolicy, protect func(posting.K
 // exclusion dropped that they no longer match, forgetting what triage built
 // on it. It asks no backend. It writes in batches of at most exclusionBatch;
 // an error leaves the batches before it written, and the next run finishes.
-func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, protect func(posting.Key) bool) (ExclusionChange, error) {
+func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, protect func(posting.Key) bool, fo *FailOpen) (ExclusionChange, error) {
 	ch := ExclusionChanges(l.All(), p, protect)
+	for range ch.Unread {
+		fo.Note(CauseLocationUnreadable)
+	}
 	evs := make([]ledger.Event, 0, len(ch.Drop)+len(ch.Reopen))
 	for i, r := range ch.Drop {
 		evs = append(evs, ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: posting.Dropped,

@@ -88,8 +88,8 @@ func (e *env) jobsFind(args []string) error {
 				if err != nil {
 					return err
 				}
-				j := toJob(r, m[r.Key])
-				in.enrich(&j, r, 0)
+				j := jobview.ToJob(r, m[r.Key])
+				in.Enrich(&j, r, 0)
 				out.Job.Row = j.Row
 			}
 		}
@@ -161,7 +161,7 @@ func matchPageURL(snap ledger.Snapshot, m map[posting.Key]marks.Entry, page stri
 		out.Ambiguous = true
 	default:
 		r := cands[0].r
-		j := toJob(r, m[r.Key])
+		j := jobview.ToJob(r, m[r.Key])
 		out.Job = &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: cands[0].on}
 	}
 	return out

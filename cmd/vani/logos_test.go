@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/logo"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
@@ -229,7 +230,7 @@ func TestJobsListCarriesTheCachedLogo(t *testing.T) {
 		t.Fatalf("logos %v; want acme's icon and none for globex (not fetched)", byKey)
 	}
 	o, _ := mustCode(t, 0, "jobs", "show", "--json", "gh:acme:1")
-	var shown jobJSON
+	var shown jobview.Job
 	if err := json.Unmarshal([]byte(o), &shown); err != nil || shown.Logo != icon {
 		t.Fatalf("show logo %q, %v", shown.Logo, err)
 	}

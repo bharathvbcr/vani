@@ -11,7 +11,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// orderOption adjusts advanceAll and orderAdvance; nil options are ignored.
+// orderOption adjusts orderAdvance; nil options are ignored.
 type orderOption func(*orderSettings)
 
 type orderSettings struct {
@@ -24,9 +24,6 @@ type orderSettings struct {
 	// (rankRules), so the Score order reads them as `vani jobs` and the digest do.
 	rules     []jobinsight.DropRule
 	titleRank func(string) int
-	// todo, when set, is which records advanceAll advances, in place of its
-	// pipeline-status rule.
-	todo func(ledger.Record) bool
 }
 
 func settingsOf(opts []orderOption) orderSettings {
@@ -56,14 +53,6 @@ func withAgeNeutral(set map[string]bool) orderOption {
 // Score order; like withAgeNeutral it changes nothing without withSemantic.
 func withRank(rules []jobinsight.DropRule, titleRank func(string) int) orderOption {
 	return func(s *orderSettings) { s.rules, s.titleRank = rules, titleRank }
-}
-
-// withTodo makes advanceAll advance exactly the records f selects (vani
-// rescore's Scored and Explained records without a score) instead of those
-// still in the pipeline. Its cap, concurrency, stop rules and ordering apply
-// unchanged. A nil f changes nothing.
-func withTodo(f func(ledger.Record) bool) orderOption {
-	return func(s *orderSettings) { s.todo = f }
 }
 
 // orderAdvance sorts todo in the order a run advances it: highest title rank

@@ -36,7 +36,7 @@ import (
 // ledger as a snapshot, writes nothing, needs no API key and talks only to
 // loopback: llama-server instances it starts itself (Metal only, as a run
 // does), or with --endpoint one /v1/systemone server already running there
-// (a model llama.cpp cannot load, such as RSI-Jev).
+// (a model llama.cpp cannot load, such as the Liquid D RSI build).
 
 const (
 	defaultBenchPostings = 400
