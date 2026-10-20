@@ -97,6 +97,19 @@ final class RankingTests: XCTestCase {
         XCTAssertEqual(j.priority, 61.2, "the rest of the job still decodes")
     }
 
+    func testFactorNoteIsKeptAndAMalformedNoteIsDropped() throws {
+        let j = try job(#"""
+        "score_factors":[{"name":"fresh","value":0.78,"weight":0,"known":false,"note":"age_neutral"},
+        {"name":"gate","value":1,"weight":0,"known":true,"note":7},
+        {"name":"company","value":1,"weight":0,"known":true}]
+        """#)
+        let items = try XCTUnwrap(j.scoreFactors).items
+        XCTAssertEqual(items.map(\.name), ["fresh", "gate", "company"], "a bad note does not drop its factor")
+        XCTAssertEqual(items[0].note, "age_neutral")
+        XCTAssertNil(items[1].note)
+        XCTAssertNil(items[2].note)
+    }
+
     func testAFactorWithoutKnownIsNotKnown() throws {
         let j = try job(#""score_factors":[{"name":"fit","value":0.8,"weight":0.3}]"#)
         XCTAssertEqual(try XCTUnwrap(j.scoreFactors).items.first?.known, false)

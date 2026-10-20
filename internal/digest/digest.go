@@ -76,6 +76,9 @@ type Options struct {
 	// title signals' Rank, nil for none. The same as `vani jobs` applies.
 	Rules     []jobinsight.DropRule
 	TitleRank func(title string) int
+	// AgeNeutral is jobinsight.RankContext.AgeNeutral: employers whose undated
+	// postings are not aged.
+	AgeNeutral map[string]bool
 }
 
 func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
@@ -115,7 +118,7 @@ func savedAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, 
 // ones: Render lists them under "Not ranked".
 func sortDigest(out, all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) {
 	c := jobinsight.NewRankContext(all, m, now)
-	c.Semantic, c.DropRules, c.TitleRank = o.Semantic, o.Rules, o.TitleRank
+	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral
 	score := make(map[posting.Key]float64, len(out))
 	for _, r := range out {
 		score[r.Key] = jobinsight.Score(jobinsight.InputsFor(r, c)).Score

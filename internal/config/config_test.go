@@ -103,6 +103,15 @@ func TestValidateRules(t *testing.T) {
 				c.RankPenalties[i] = RankPenalty{Slot: "seniority", Values: []string{"senior"}}
 			}
 		}, "rank_penalties has 33 entries, max 32"},
+		{"age neutral blank name", func(c *Config) { c.AgeNeutralCompanies = []string{"Google", "  "} }, "age_neutral_companies[1]: name is empty"},
+		{"age neutral control character", func(c *Config) { c.AgeNeutralCompanies = []string{"Goo\x00gle"} }, "age_neutral_companies[0]: name contains a control character"},
+		{"age neutral long name", func(c *Config) { c.AgeNeutralCompanies = []string{strings.Repeat("g", MaxAgeNeutralNameBytes+1)} }, "age_neutral_companies[0]: name is 81 bytes"},
+		{"too many age neutral companies", func(c *Config) {
+			c.AgeNeutralCompanies = make([]string, MaxAgeNeutralCompanies+1)
+			for i := range c.AgeNeutralCompanies {
+				c.AgeNeutralCompanies[i] = "Company"
+			}
+		}, "age_neutral_companies has 65 entries, max 64"},
 		{"negative page interval", func(c *Config) { c.PageIntervalMS = -1 }, "page_interval_ms -1"},
 		{"page interval over max", func(c *Config) { c.PageIntervalMS = 10_001 }, "page_interval_ms 10001 must be within 0..10000"},
 		{"huge page interval", func(c *Config) { c.PageIntervalMS = math.MaxInt }, "page_interval_ms"},
@@ -240,6 +249,29 @@ func TestRankPenaltiesRoundTrip(t *testing.T) {
 	}
 	if len(got.RankPenalties) != 1 || got.RankPenalties[0].Slot != "seniority" || !slices.Equal(got.RankPenalties[0].Values, []string{"senior", "staff_plus"}) {
 		t.Fatalf("rank_penalties = %+v", got.RankPenalties)
+	}
+}
+
+// age_neutral_companies is omitted when unset and survives a save and load.
+func TestAgeNeutralCompaniesRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	if err := Save(p, valid()); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(p); strings.Contains(string(data), "age_neutral_companies") {
+		t.Fatal("unset age_neutral_companies written")
+	}
+	c := valid()
+	c.AgeNeutralCompanies = []string{"Google", "Alphabet"}
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.AgeNeutralCompanies, []string{"Google", "Alphabet"}) {
+		t.Fatalf("age_neutral_companies = %v", got.AgeNeutralCompanies)
 	}
 }
 

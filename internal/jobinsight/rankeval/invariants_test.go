@@ -68,6 +68,29 @@ func invariantViolations(w jobinsight.Weights) []string {
 		}
 		prev = cur
 	}
+	// An undated posting of an employer that closes by application cap is never
+	// aged by when Vani first saw it, never scores below an ordinary undated
+	// posting seen as long ago, and never above the same posting dated today.
+	{
+		today := good()
+		today.AgeDays = 0
+		for _, seen := range []int{0, 1, 10, 60, 400} {
+			neutral, plain := good(), good()
+			neutral.AgeKnown, neutral.AgeDays, neutral.SeenKnown, neutral.SeenDays, neutral.AgeNeutral = false, -1, true, seen, true
+			plain.AgeKnown, plain.AgeDays, plain.SeenKnown, plain.SeenDays = false, -1, true, seen
+			if s(neutral) < s(plain)-eps {
+				bad("age-neutral undated posting seen %d days ago scores %.4f below an ordinary one %.4f", seen, s(neutral), s(plain))
+			}
+			if s(neutral) > s(today)+eps {
+				bad("age-neutral undated posting seen %d days ago scores %.4f above one dated today %.4f", seen, s(neutral), s(today))
+			}
+			base := good()
+			base.AgeKnown, base.AgeDays, base.SeenKnown, base.SeenDays, base.AgeNeutral = false, -1, true, 0, true
+			if d := s(neutral) - s(base); d > eps || d < -eps {
+				bad("age-neutral undated posting seen %d days ago scores %.4f, not the flat %.4f", seen, s(neutral), s(base))
+			}
+		}
+	}
 	// A strong fit with no coverage beats a domain mismatch with high coverage.
 	{
 		a, b := good(), good()

@@ -98,6 +98,11 @@ type Inputs struct {
 	// (Weights.UnknownAgeDays), and it keeps ageing from then on.
 	SeenKnown bool
 	SeenDays  int
+	// AgeNeutral is true when the posting's employer closes postings by an
+	// application cap, not by age (the config's age_neutral_companies). Its age is
+	// then no evidence of staleness: when AgeKnown is false the guess is held at
+	// Weights.NeutralFresh and does not age. A date the board gave still counts.
+	AgeNeutral bool
 
 	// Unsure is true when triage could not decide and kept the posting.
 	Unsure bool
@@ -122,7 +127,14 @@ type Factor struct {
 	// multipliers.
 	Weight float64 `json:"weight"`
 	Known  bool    `json:"known"`
+	// Note says, for the few factors that need it, why the value is what it is
+	// (a NoteAgeNeutral for a freshness held flat); empty otherwise.
+	Note string `json:"note,omitempty"`
 }
+
+// NoteAgeNeutral is the fresh factor's Note when the employer is age-neutral and
+// the posting undated: the value is a flat assumption, not an age.
+const NoteAgeNeutral = "age_neutral"
 
 // Result is Score's answer.
 type Result struct {
@@ -183,6 +195,10 @@ type Weights struct {
 	// posting, not the floor reserved for very old ones; the live ledger's dated
 	// postings average 0.34, so this is a deliberate lean toward surfacing.
 	UnknownAgeDays float64
+	// NeutralFresh is the freshness of an undated posting whose employer is
+	// age-neutral (Inputs.AgeNeutral) and was seen at all: flat, not aged. Outside
+	// (0, 1] means DefaultNeutralFresh.
+	NeutralFresh float64
 	// CompanyMinMarks is the marks a company needs before its factor moves,
 	// CompanySmoothing the pseudo-count. CompanySpan is how far liked marks
 	// lift the factor above 1, CompanyDown how far hidden marks sink it below:
@@ -259,6 +275,11 @@ const (
 	// the worst case; 21, the in-sample sweep's pick, collapsed for an owner
 	// who wants very recent postings.
 	DefaultScoreHalfLifeDays = 10.0
+	// DefaultNeutralFresh is the freshness an undated posting of an age-neutral
+	// employer holds: that of one about a week old at the default half-life (0.25
+	// floor + 0.75 x 2^-0.5 = 0.78), above the 0.34 the live ledger's dated
+	// postings average and below the 1.0 of one dated today.
+	DefaultNeutralFresh = 0.78
 	// CompanyMin and CompanyMax bound the company factor under
 	// DefaultWeights (CompanyDown 0.40, CompanySpan 0.10).
 	CompanyMin = 0.6
@@ -284,7 +305,7 @@ func DefaultWeights() Weights {
 		Fit: 0.30, Coverage: 0.20, Semantic: 0.35, Keyword: 0.03, Title: 0.10, Employer: 0.05,
 		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
 		PenaltyStrength: 0.80, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
-		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays,
+		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays, NeutralFresh: DefaultNeutralFresh,
 		CompanyMinMarks: 0, CompanySmoothing: 8, CompanySpan: 0.10, CompanyDown: 0.40,
 		OrdinalFit: true, KnownMatch: true, MatchShrink: 0.10,
 	}
@@ -452,9 +473,20 @@ func ScoreWith(in Inputs, w Weights) Result {
 			half = DefaultScoreHalfLifeDays
 		}
 	}
+	freshNote := ""
 	switch {
 	case in.AgeKnown:
 		fresh = floor + (1-floor)*math.Exp2(-float64(max(in.AgeDays, 0))/half)
+	case in.SeenKnown && in.AgeNeutral:
+		freshNote = NoteAgeNeutral
+		// The employer closes by application cap, so how long ago Vani first saw an
+		// undated posting is not a sign it has gone stale: no ageing, and still
+		// short of a posting dated today.
+		fresh = w.NeutralFresh
+		if !(fresh > 0 && fresh <= 1) {
+			fresh = DefaultNeutralFresh
+		}
+		fresh = max(fresh, floor)
 	case in.SeenKnown:
 		// An undated posting is no older than when Vani first saw it plus what a
 		// listed posting typically already is: a lower bound and a prior, so it
@@ -498,7 +530,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 	}
 	r.Factors = append(r.Factors,
 		Factor{Name: "gate", Value: gate, Known: true},
-		Factor{Name: "fresh", Value: fresh, Known: in.AgeKnown},
+		Factor{Name: "fresh", Value: fresh, Known: in.AgeKnown, Note: freshNote},
 		Factor{Name: "company", Value: company, Known: true})
 	return r
 }

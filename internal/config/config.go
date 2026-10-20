@@ -43,19 +43,24 @@ const (
 
 // Config is the whole on-disk configuration.
 type Config struct {
-	Version       int             `json:"version"`
-	Watchlist     []sources.Board `json:"watchlist"`
-	AllowedHosts  []string        `json:"allowed_hosts"`
-	Schedule      Schedule        `json:"schedule"`
-	Decide        Decide          `json:"decide"`
-	LLM           LLM             `json:"llm"`
-	DevPrism      DevPrism        `json:"devprism"`
-	DropRules     []DropRule      `json:"drop_rules"`
+	Version      int             `json:"version"`
+	Watchlist    []sources.Board `json:"watchlist"`
+	AllowedHosts []string        `json:"allowed_hosts"`
+	Schedule     Schedule        `json:"schedule"`
+	Decide       Decide          `json:"decide"`
+	LLM          LLM             `json:"llm"`
+	DevPrism     DevPrism        `json:"devprism"`
+	DropRules    []DropRule      `json:"drop_rules"`
 	// RankPenalties demote, never drop: a kept posting whose triage slot reads
 	// one of Values ranks lower in Jobs and the digest, in proportion to how
 	// sure the reading is (Rule 7: an ordering preference, not an engine rule).
 	RankPenalties []RankPenalty `json:"rank_penalties,omitempty"`
-	TargetSummary string          `json:"target_summary"`
+	// AgeNeutralCompanies name employers that close postings by an application
+	// cap, not by age (matched on the posting's company, ignoring case and outer
+	// space). Their undated postings are not aged by when Vani first saw them; a
+	// date the board gives still counts. An ordering preference only (Rule 7).
+	AgeNeutralCompanies []string `json:"age_neutral_companies,omitempty"`
+	TargetSummary       string   `json:"target_summary"`
 	// MotivationNotes is the owner's own note on what they care about in
 	// their work. `vani draft` gives it to motivation questions ("Why
 	// <company>?") as trusted text in the prompt, so it must be
@@ -117,6 +122,13 @@ type Semantic struct {
 
 // MaxRankPenalties bounds Config.RankPenalties.
 const MaxRankPenalties = 32
+
+// MaxAgeNeutralCompanies and MaxAgeNeutralNameBytes bound
+// Config.AgeNeutralCompanies.
+const (
+	MaxAgeNeutralCompanies = 64
+	MaxAgeNeutralNameBytes = 80
+)
 
 // Semantic warm bounds (Semantic.WarmPerRun).
 const (
@@ -1093,6 +1105,20 @@ func (c Config) Validate() error {
 			if known && !slices.Contains(legal, v) {
 				add("rank_penalties[%d]: %q is not a %s value (want one of %s)", i, v, r.Slot, strings.Join(legal, ", "))
 			}
+		}
+	}
+
+	if len(c.AgeNeutralCompanies) > MaxAgeNeutralCompanies {
+		add("age_neutral_companies has %d entries, max %d", len(c.AgeNeutralCompanies), MaxAgeNeutralCompanies)
+	}
+	for i, n := range c.AgeNeutralCompanies {
+		switch {
+		case strings.TrimSpace(n) == "":
+			add("age_neutral_companies[%d]: name is empty", i)
+		case len(n) > MaxAgeNeutralNameBytes:
+			add("age_neutral_companies[%d]: name is %d bytes, max %d", i, len(n), MaxAgeNeutralNameBytes)
+		case strings.ContainsFunc(n, unicode.IsControl):
+			add("age_neutral_companies[%d]: name contains a control character", i)
 		}
 	}
 

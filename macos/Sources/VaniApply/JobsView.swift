@@ -1246,6 +1246,10 @@ private struct JobDetailContent: View {
         // An undated posting is assumed to be as old as Vani's first sighting plus a prior (the
         // value shown is that assumption); a vani from before that reports the floor as known.
         if f.name == "fresh" && !ageKnown {
+            if f.note == "age_neutral" {
+                return "age unknown: ×" + String(format: "%.2f", f.fraction)
+                    + " held flat; this employer closes postings by application cap, not by age"
+            }
             return f.known ? "age unknown: held at the floor"
                 : "age unknown: ×" + String(format: "%.2f", f.fraction) + " assumed from when Vani first saw it"
         }
