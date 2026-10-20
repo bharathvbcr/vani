@@ -378,6 +378,95 @@ func TestClipSimilarText(t *testing.T) {
 	}
 }
 
+func TestDupText(t *testing.T) {
+	if got := DupText("", "desc"); got != "desc" {
+		t.Errorf("no title: %q", got)
+	}
+	if got := DupText("  ", "desc"); got != "desc" {
+		t.Errorf("blank title: %q", got)
+	}
+	if got := DupText("Engineer", "desc"); got != "Engineer\ndesc" {
+		t.Errorf("title: %q", got)
+	}
+	long := DupText(strings.Repeat("t", 1000), strings.Repeat("字", 1000))
+	if len(long) > MaxDupTitleBytes+1+MaxDupTextBytes {
+		t.Errorf("%d bytes", len(long))
+	}
+}
+
+func TestTitleIndex(t *testing.T) {
+	x := NewTitleIndex()
+	if !x.Add("Backend Engineer", "Build services in Go") || x.Title("Build services in Go") != "Backend Engineer" {
+		t.Fatal("recorded title not found")
+	}
+	if x.Add("", "d") || x.Add("T", "  ") {
+		t.Error("blank input recorded")
+	}
+	// The same description under another title is ambiguous for both.
+	x.Add("Backend Engineer (Remote)", "Build services in Go")
+	if got := x.Title("Build services in Go"); got != "" {
+		t.Errorf("ambiguous description gave %q", got)
+	}
+	// Repeating the same title is not ambiguity.
+	y := NewTitleIndex()
+	y.Add("A", "d1")
+	y.Add("A", "d1")
+	if y.Title("d1") != "A" {
+		t.Error("repeat made it ambiguous")
+	}
+	// The key is the embedded part: a long description matches by its first kilobyte.
+	long := strings.Repeat("x", MaxDupTextBytes)
+	y.Add("Long", long+" tail one")
+	if y.Title(long+" a different tail") != "Long" {
+		t.Error("lookup by the embedded prefix failed")
+	}
+	var nilIdx *TitleIndex
+	if nilIdx.Title("d1") != "" {
+		t.Error("nil index")
+	}
+	if y.Title("never added") != "" {
+		t.Error("unknown description")
+	}
+}
+
+func TestNewTitledSimilarity(t *testing.T) {
+	ctx := context.Background()
+	desc := "Build and run backend services in production"
+	a, b := desc+" for payments", desc+" for payments team"
+	titles := NewTitleIndex()
+	titles.Add("Backend Engineer", a)
+	titles.Add("Pastry Chef", b)
+	s := labelSpy()
+	with, ok, err := NewTitledSimilarity(s, nil, titles)(ctx, a, b)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	without, ok, err := NewSimilarity(labelSpy(), nil)(ctx, a, b)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if !(with < without) {
+		t.Errorf("different titles should lower the cosine: with %.3f, without %.3f", with, without)
+	}
+	var saw bool
+	for _, tx := range s.texts {
+		if strings.HasPrefix(tx, "Backend Engineer\n"+desc) {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("the title was not embedded: %q", s.texts)
+	}
+	// A title the index does not know leaves that side description-only, still a reading.
+	if _, ok, err := NewTitledSimilarity(labelSpy(), nil, NewTitleIndex())(ctx, a, b); err != nil || !ok {
+		t.Errorf("empty index: %v %v", ok, err)
+	}
+	// Same description, same title: identical text, cosine 1.
+	if cos, ok, err := NewTitledSimilarity(labelSpy(), nil, titles)(ctx, a, a); err != nil || !ok || cos != 1 {
+		t.Errorf("identical: %v %v %v", cos, ok, err)
+	}
+}
+
 func TestNewSimilarity(t *testing.T) {
 	s := labelSpy()
 	c := openVC(t, t.TempDir(), 0)
