@@ -179,7 +179,11 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      running as you cannot spend your model budget through it.
 7. **Run notifications.**
    - While the app runs, with or without its window open, it announces each finished daily run once
-     as a Vani Apply notification. Clicking one opens the app on the Jobs tab.
+     as a Vani Apply notification. Clicking one opens the app on the Jobs tab, and reopens the
+     window if it was closed.
+   - Closing the window does not quit the app: it keeps the notifier lock and keeps announcing.
+     The Dock icon or a notification click brings the window back. Quit (Command-Q) hands notices
+     back to the daemon.
    - It reads the run from `vani status --json` (`last_run`), the same read the Pipeline tab makes
      every 60 seconds. It never reads Vani's state folder itself.
    - The app asks for notification permission at first launch, and only while you have not
@@ -296,7 +300,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 129 tests (2026-10-19). They cover the TS vectors, validation, the store
+  - `swift test`: 198 tests, 5 skipped, 0 failures (2026-10-19; first counted at 129). They cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).
@@ -311,13 +315,28 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
     refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers
     the daemon's side: it skips while the lock is held, posts when there is no lock, a stale file
     or an unopenable path, and never creates the file.
-  - That Swift's `flock(LOCK_EX)` and Go's shared probe on the same file exclude each other is
-    inferred: both are BSD `flock` on one path. No test runs the app and the daemon together.
+  - Run notifications in the signed bundle (2026-10-19). The bundle came from `scripts/bundle.sh`.
+    The copy tested had its own bundle id (`dev.vbcr.vani.apply.notifytest`) and no agent plist
+    or appex, so it could not disturb the installed app's login item. It used a throwaway store
+    (`VANI_APPLY_STORE_DIR`) and a throwaway Vani state folder. Evidence is from the unified log
+    (`usernoted`) and `lsof`:
+    - The permission prompt is shown at first launch and not on the next one.
+    - A run that finished after launch is posted once and presented as a banner. The next 60-second
+      poll does not post it again.
+    - With the window closed, the app keeps running, keeps the lock and posts the next run. A Dock
+      reopen brings the window back in the same process.
+    - While the app runs, `lsof` shows it holding `<state>/app/notifier.lock`. `vani run-once`
+      reached its "digest held back" notice and posted nothing. After the app quit, the same run
+      posted through osascript, logged as a Script Editor notification about 0.2 s later.
+  - That Swift's `flock(LOCK_EX)` and Go's shared probe exclude each other: the bundled app above
+    held the lock and the daemon's notifier stayed quiet.
 - **Not verified here:**
-  - A notification shown by the bundled app, its permission prompt, and a click opening the Jobs
-    tab. `UNUserNotificationCenter` needs a signed app bundle, which `swift test` does not run.
-    A click while the app runs with its window closed may activate the app and show no window:
-    the handler brings forward an existing window and does not reopen a closed one.
+  - A click on a notification, with the window open or closed. Computer use cannot reach
+    Notification Center, and no click on the test copy's notices showed up in the log. The
+    reopen goes through `MainWindowReveal` (`MainWindowRevealTests`). Without the fix, closing
+    the window quit the app, so there was no running app to click through to.
+  - The text of a posted notice as shown on screen. The log hides it; it comes from
+    `RunNotice.decide`, which `RunNoticeTests` cover.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.
