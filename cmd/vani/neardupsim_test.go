@@ -78,6 +78,7 @@ func ndSetup(t *testing.T) ndFixture {
 
 	old, oldLoad := openEmbedder, nearDupLoadTimeout
 	t.Cleanup(func() { openEmbedder, nearDupLoadTimeout = old, oldLoad })
+	t.Cleanup(func() { f.wantNoDescriptionLogged(t) }) // every path, failures included
 	return f
 }
 
@@ -117,7 +118,7 @@ func (f ndFixture) wantLexical(t *testing.T) {
 func (f ndFixture) wantNoDescriptionLogged(t *testing.T) {
 	t.Helper()
 	if strings.Contains(strings.ToLower(f.warn.String()), strings.ToLower(postMarker)) {
-		t.Fatalf("a description reached the warnings:\n%s", f.warn.String())
+		t.Errorf("a description reached the warnings:\n%s", f.warn.String())
 	}
 }
 
@@ -154,8 +155,6 @@ func TestNearDupCosineAnnotatesTheCandidateOnly(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(semanticDir(f.stateDir), "semantic-vectors.json")); err != nil {
 		t.Fatalf("vector cache not saved: %v", err)
 	}
-	f.wantNoDescriptionLogged(t)
-
 	// A rerun reads both vectors from the cache and writes nothing.
 	calls := emb.count()
 	rep = f.run(t)
@@ -218,7 +217,9 @@ func TestNearDupEmbedFailureIsCountedNotACosine(t *testing.T) {
 		t.Fatal(err)
 	}
 	broken := &countingEmbedder{Embedder: semantic.NewFakeEmbedder(256, nil),
-		hook: func(context.Context, []string) ([][]float32, error, bool) { return nil, errors.New("metal device lost"), true }}
+		hook: func(context.Context, []string) ([][]float32, error, bool) {
+			return nil, errors.New("metal device lost"), true
+		}}
 	openEmbedder = fakeOpener(broken, &closed)
 	rep := f.run(t)
 	if !rep.SimilarityConfigured || rep.SimilarityErrors != 1 || broken.count() == 0 {
