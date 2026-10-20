@@ -5,12 +5,15 @@ import VaniApplyKit
 
 /// A fake `vani` for the Pipeline tab: `status --json` prints status.json, and
 /// `run-once` acts out the run named in the file `mode`, rewriting status.json
-/// the way a real run rewrites its record. Every call is appended to `calls`.
+/// the way a real run rewrites its record. `run-request` acts out a daemon that
+/// picks the request up (`daemon-picks`) or drops it (`daemon-drops`), in the
+/// background as the real daemon would. `daemon` is the status's daemon facet
+/// (none: an older vani). Every call is appended to `calls`.
 private struct PipelineFixture {
     let dir: URL
     var vani: URL { dir.appendingPathComponent("vani") }
 
-    init(_ t: XCTestCase, mode: String, lastRun: String) throws {
+    init(_ t: XCTestCase, mode: String, lastRun: String, daemon: String? = nil) throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vani-pipeline-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let d = dir
@@ -19,16 +22,37 @@ private struct PipelineFixture {
         #!/bin/sh
         D='\#(dir.path)'
         echo "$*" >> "$D/calls"
+        # status LAST_RUN [RUN_REQUEST]: rewrite status.json, with the daemon facet from the file daemon.
         status() {
-          printf '{"version":1,"generated_at":"2026-10-20T00:00:00Z","state_dir":"%s","config":{"ok":true,"boards":1},"ledger":{"ok":true,"exists":true,"path":"/l","total":0,"by_status":{}},"last_run":%s,"schedule":{"ok":true,"daily_at":"08:30","timezone":"UTC"},"backends":{"ok":true,"day":"2026-10-20","items":[]},"decide":{"ok":true,"local_configured":false,"lappi_configured":false}}' "$D" "$1" > "$D/status.tmp" && mv "$D/status.tmp" "$D/status.json"
+          extra=""
+          [ -f "$D/daemon" ] && extra=",\"daemon\":$(cat "$D/daemon")"
+          [ -n "$2" ] && extra="$extra,\"run_request\":$2"
+          printf '{"version":1,"generated_at":"2026-10-20T00:00:00Z","state_dir":"%s","config":{"ok":true,"boards":1},"ledger":{"ok":true,"exists":true,"path":"/l","total":0,"by_status":{}},"last_run":%s,"schedule":{"ok":true,"daily_at":"08:30","timezone":"UTC"},"backends":{"ok":true,"day":"2026-10-20","items":[]},"decide":{"ok":true,"local_configured":false,"lappi_configured":false}%s}' "$D" "$1" "$extra" > "$D/status.tmp" && mv "$D/status.tmp" "$D/status.json"
         }
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        running="{\"ok\":true,\"state\":\"running\",\"trigger\":\"manual\",\"started_at\":\"$now\"}"
         case "$1" in
         status) cat "$D/status.json"; exit 0 ;;
         run-once) ;;
+        run-request)
+          old=$(cat "$D/lastrun")
+          status "$old" "{\"ok\":true,\"pending\":true,\"requested_at\":\"$now\",\"claimed\":false}"
+          case "$(cat "$D/mode")" in
+          daemon-picks)
+            ( sleep 1
+              status "$running" "{\"ok\":true,\"pending\":false,\"claimed\":true,\"claimed_requested_at\":\"$now\"}"
+              sleep 1
+              status "{\"ok\":true,\"state\":\"ok\",\"trigger\":\"manual\",\"options\":{\"advance\":9},\"started_at\":\"$now\",\"finished_at\":\"$now\"}" "{\"ok\":true,\"pending\":false,\"claimed\":false}"
+            ) >/dev/null 2>&1 &
+            ;;
+          daemon-drops)
+            ( sleep 1; status "$old" "{\"ok\":true,\"pending\":false,\"claimed\":false}" ) >/dev/null 2>&1 &
+            ;;
+          esac
+          printf '{"requested_at":"%s","options":{"advance":9},"daemon_pid":4242}\n' "$now"
+          exit 0 ;;
         *) exit 2 ;;
         esac
-        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        running="{\"ok\":true,\"state\":\"running\",\"trigger\":\"manual\",\"started_at\":\"$now\"}"
         case "$(cat "$D/mode")" in
         refused)
           echo 'vani: ledger: directory is locked by another process: another vani holds it (the daemon)' >&2
@@ -48,8 +72,14 @@ private struct PipelineFixture {
         try Data(script.utf8).write(to: vani)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: vani.path)
         try Data(mode.utf8).write(to: dir.appendingPathComponent("mode"))
+        try Data(lastRun.utf8).write(to: dir.appendingPathComponent("lastrun"))
+        var extra = ""
+        if let daemon {
+            try Data(daemon.utf8).write(to: dir.appendingPathComponent("daemon"))
+            extra = #","daemon":\#(daemon)"#
+        }
         // The record before the run, in the shape the script's status() writes.
-        let status = #"{"version":1,"generated_at":"2026-10-20T00:00:00Z","state_dir":"\#(dir.path)","config":{"ok":true,"boards":1},"ledger":{"ok":true,"exists":true,"path":"/l","total":0,"by_status":{}},"last_run":\#(lastRun),"schedule":{"ok":true,"daily_at":"08:30","timezone":"UTC"},"backends":{"ok":true,"day":"2026-10-20","items":[]},"decide":{"ok":true,"local_configured":false,"lappi_configured":false}}"#
+        let status = #"{"version":1,"generated_at":"2026-10-20T00:00:00Z","state_dir":"\#(dir.path)","config":{"ok":true,"boards":1},"ledger":{"ok":true,"exists":true,"path":"/l","total":0,"by_status":{}},"last_run":\#(lastRun),"schedule":{"ok":true,"daily_at":"08:30","timezone":"UTC"},"backends":{"ok":true,"day":"2026-10-20","items":[]},"decide":{"ok":true,"local_configured":false,"lappi_configured":false}\#(extra)}"#
         try Data(status.utf8).write(to: dir.appendingPathComponent("status.json"))
     }
 
@@ -60,6 +90,7 @@ private struct PipelineFixture {
 }
 
 private let oldRun = #"{"ok":true,"state":"ok","trigger":"schedule","started_at":"2026-10-14T08:30:00Z","finished_at":"2026-10-14T08:35:00Z"}"#
+private let daemonUp = #"{"ok":true,"running":true,"pid":4242,"since":"2026-10-19T08:00:00Z"}"#
 
 @MainActor
 final class PipelineModelTests: XCTestCase {
@@ -142,6 +173,57 @@ final class PipelineModelTests: XCTestCase {
         XCTAssertNil(m.manualRun)
         m.stopRun() // nothing of this app's to stop
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") }, "\(f.calls())")
+    }
+
+    /// With the daemon running, Run Now asks it (`run-request`) instead of
+    /// starting run-once, waits while the request is pending, and follows the
+    /// daemon's run once it starts. Nothing of the daemon's is ever signalled.
+    func testWithTheDaemonRunningTheRunIsAskedOfIt() async throws {
+        let f = try PipelineFixture(self, mode: "daemon-picks", lastRun: oldRun, daemon: daemonUp)
+        let m = try model(f)
+        await m.refresh()
+        XCTAssertTrue(m.daemonRunning)
+        await m.startRun(ManualRunOptions(advance: 9))
+        XCTAssertNil(m.runError)
+        XCTAssertTrue(m.waitingForDaemon, "the daemon has not picked it up yet")
+        XCTAssertNotNil(m.runBlocker, "a second run cannot be asked for while one waits")
+        XCTAssertNil(m.manualRun, "no process of this app's own")
+        m.stopRun() // nothing of this app's to stop
+        try await eventually("the daemon's run to end") { !m.waitingForDaemon && m.status?.lastRun.state == .ok && !m.runInProgress }
+        XCTAssertNil(m.runError)
+        XCTAssertEqual(m.status?.lastRun.trigger, .manual)
+        XCTAssertEqual(m.status?.lastRun.options, ManualRunOptions(advance: 9))
+        XCTAssertEqual(m.savedOptions, ManualRunOptions(advance: 9))
+        XCTAssertTrue(f.calls().contains("run-request --advance 9 --json"), "\(f.calls())")
+        XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") }, "\(f.calls())")
+        XCTAssertNil(m.runBlocker)
+    }
+
+    /// A request the daemon drops without a run (stale, invalid) is reported,
+    /// rather than waited on for ever.
+    func testARequestTheDaemonDropsSaysSo() async throws {
+        let f = try PipelineFixture(self, mode: "daemon-drops", lastRun: oldRun, daemon: daemonUp)
+        let m = try model(f)
+        await m.refresh()
+        await m.startRun(ManualRunOptions(advance: 9))
+        XCTAssertTrue(m.waitingForDaemon)
+        try await eventually("the dropped request") { !m.waitingForDaemon }
+        XCTAssertTrue(m.runError?.contains("dropped") == true, m.runError ?? "")
+        XCTAssertEqual(m.status?.lastRun.trigger, .schedule, "the old record stays")
+    }
+
+    /// A daemon facet saying no daemon runs (or none at all, from an older vani)
+    /// keeps the run-once path.
+    func testWithoutARunningDaemonRunOnceIsStarted() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun,
+                                    daemon: #"{"ok":true,"running":false,"reason":"no daemon has announced itself"}"#)
+        let m = try model(f)
+        await m.refresh()
+        XCTAssertFalse(m.daemonRunning)
+        await m.startRun(ManualRunOptions(noDigest: true))
+        try await eventually("run-once's refusal") { m.runError != nil && m.manualRun == nil }
+        XCTAssertTrue(f.calls().contains("run-once --no-digest"), "\(f.calls())")
+        XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-request") }, "\(f.calls())")
     }
 
     /// Options vani would refuse never start a process.

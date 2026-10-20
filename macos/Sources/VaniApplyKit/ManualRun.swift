@@ -5,6 +5,11 @@ import Foundation
 // to <state dir>/runs/manual.log. Its progress and outcome are the run record,
 // read through `vani status --json` like every other run: the app parses no
 // output of the run itself.
+//
+// While the daemon runs it holds the ledger and run-once is refused, so the app
+// asks the daemon instead: `vani run-request --json` (cmd/vani/runrequest.go)
+// with the same flags. The daemon makes the run with its own keys and records
+// it like any other; status's run_request facet says whether it is waiting.
 
 /// A manual run's overrides: `vani run-once`'s flags (cmd/vani/runoptions.go),
 /// and how `vani status --json` reports them (`last_run.options`).
@@ -55,14 +60,14 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
 
     /// `vani run-once`'s argv after the command, or the reason vani would
     /// refuse it (the bounds checkRunOptions applies), so a bad choice is
-    /// caught before anything starts.
-    public func arguments() throws -> [String] {
+    /// caught before anything starts. `run-request` takes the same flags.
+    public func arguments(command: String = "run-once") throws -> [String] {
         guard (0...Self.maxAdvance).contains(advance) else {
             throw BankError("the advance cap must be within 1…\(Self.maxAdvance), or 0 for advance_per_run")
         }
         if listOnly && advance != 0 { throw BankError("a list-only run has no advance phase to cap") }
         guard boards.count <= Self.maxBoards else { throw BankError("choose at most \(Self.maxBoards) boards, or all of them") }
-        var args = ["run-once"]
+        var args = [command]
         if advance > 0 { args += ["--advance", String(advance)] }
         for b in boards {
             let parts = b.split(separator: ":", maxSplits: 1)

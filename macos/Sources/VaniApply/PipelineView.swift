@@ -19,7 +19,7 @@ struct PipelineView: View {
                 if let err = pipeline.runError {
                     ErrorBanner(title: "The manual run could not start", message: err, stale: false)
                 }
-                if pipeline.startingRun || pipeline.runInProgress {
+                if pipeline.startingRun || pipeline.runInProgress || pipeline.waitingForDaemon {
                     RunningBanner()
                 }
                 if let s = pipeline.status {
@@ -88,11 +88,17 @@ private struct RunningBanner: View {
 
     private var title: String {
         if pipeline.startingRun { return "Starting a run…" }
+        if pipeline.waitingForDaemon { return "Waiting for the daemon to pick up your run" }
         return pipeline.manualRun != nil ? "Your run is going" : "A run is going"
     }
 
     private var detail: String {
-        if pipeline.startingRun { return "Reading the model keys and starting vani." }
+        if pipeline.startingRun {
+            return pipeline.daemonRunning ? "Asking the daemon, which holds the ledger, to make this run." : "Reading the model keys and starting vani."
+        }
+        if pipeline.waitingForDaemon {
+            return "The daemon checks for it every few seconds, after any run it is making now. It runs with the daemon's own keys and can be stopped only by stopping the daemon."
+        }
         let run = pipeline.status?.lastRun
         let started = run?.state == .running ? run?.startedAt.map { "Started \(PipelineStatus.age(Date().timeIntervalSince($0))) ago. " } ?? "" : ""
         let elsewhere = pipeline.manualRun == nil ? "It was started by the daemon or a shell, so it can be stopped only there. " : ""

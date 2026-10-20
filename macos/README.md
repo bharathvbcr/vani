@@ -23,9 +23,16 @@ whether to triage, score and explain (and a cap in place of `advance_per_run`), 
 digest. The last choices are remembered. The run gets the keys drafting gets, writes its output to
 `<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes.
 **Stop** sends the run this app started SIGTERM, which vani records as cancelled; a run the daemon
-or a shell started is shown but never signalled. A run vani refuses before it starts (the daemon
+or a shell started is shown but never signalled. A run vani refuses before it starts (another run
 holds the ledger) shows vani's reason from the log. The run is a separate process, so quitting the
 app does not stop it; the next launch shows it from the run record, without Stop.
+While the daemon runs (status's `daemon.running`), the daemon holds the ledger and run-once would be
+refused, so Run Now calls `vani run-request --json` with the same options instead: the daemon makes
+the run with its own keys (none are read here) and its own log. The tab shows "Waiting for the daemon
+to pick up your run" while `run_request` is pending, then follows the run record like any other run;
+Stop is not offered, since the run is the daemon's. A request the daemon drops without a run (stale
+after an hour, or unreadable), or one still waiting when the daemon stops, is reported in the error
+banner. Both facets decode leniently and are absent from an older `vani`, which keeps the run-once path.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.
