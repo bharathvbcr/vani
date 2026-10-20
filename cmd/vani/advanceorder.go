@@ -7,6 +7,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -116,4 +117,17 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 		}
 		return y.fresh.Compare(x.fresh)
 	})
+	// A scored posting whose note is deferred (unknown relevance, notes budget
+	// spent) costs no call but still takes an advance slot each run; it waits
+	// behind every posting that can move. Stable, so the order above holds.
+	slices.SortStableFunc(todo, func(a, b ledger.Record) int {
+		return cmp.Compare(boolInt(pipeline.NotesDeferred(a)), boolInt(pipeline.NotesDeferred(b)))
+	})
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
