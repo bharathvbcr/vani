@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,16 +19,34 @@ type profileData struct {
 	floor, ceil float64
 }
 
-// calibrate maps a raw aggregate onto [0,1] between the floor and ceiling.
-func (pd *profileData) calibrate(raw float64) float64 {
-	s := (raw - pd.floor) / (pd.ceil - pd.floor)
-	switch {
-	case s != s || s < 0: // NaN or below the floor
+// kneeAt is where score starts bending toward 1 instead of clipping at it.
+const kneeAt = 0.8
+
+// score maps a posting's raw aggregate over n distinct chunks onto [0,1].
+//
+// Above the ceiling anchor it bends smoothly toward 1 rather than clipping, so
+// postings closer to the owner's work than the anchor still order (37 of 1682 live
+// postings sat at exactly 1.0, the top of the list among them). Evidence counts:
+// a posting that offers fewer than topChunks distinct chunks is discounted, in
+// proportion to how few, so two good lines do not read as a posting that is all
+// about the owner's work. Full evidence is not discounted, so a normal posting
+// scores as it did.
+func (pd *profileData) score(raw float64, n int) float64 {
+	if n <= 0 || math.IsNaN(raw) {
 		return 0
-	case s > 1:
-		return 1
 	}
-	return s
+	s := (raw - pd.floor) / (pd.ceil - pd.floor)
+	if math.IsNaN(s) || s <= 0 {
+		return 0
+	}
+	if s > kneeAt {
+		s = kneeAt + (1-kneeAt)*math.Tanh((s-kneeAt)/(1-kneeAt))
+	}
+	if n < topChunks {
+		const k = 2.0
+		s *= (float64(n) / (float64(n) + k)) / (float64(topChunks) / (topChunks + k))
+	}
+	return min(max(s, 0), 1)
 }
 
 // Matcher scores postings against a Profile. Warm embeds; Lookup only reads
@@ -268,8 +287,8 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 				rep.note(fmt.Errorf("%w: a row is the wrong width, non-finite or zero", ErrEmbed))
 				continue
 			}
-			raw, ev, thin := m.rawScore(p.chunks, vecs, pd)
-			m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.calibrate(raw), Evidence: ev, Thin: thin})
+			raw, ev, taken := m.rawScoreN(p.chunks, vecs, pd)
+			m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.score(raw, taken), Evidence: ev, Thin: taken < minDistinctChunks})
 			rep.Scored++
 		}
 		i = j
@@ -366,7 +385,7 @@ func (m *Matcher) ensureProfile(ctx context.Context) (*profileData, error) {
 	var floorSum float64
 	off := 0
 	for i, a := range anchors {
-		raw, _, _ := m.rawScore(a, rows[off:off+len(a)], pd)
+		raw, _, _ := m.rawScoreN(a, rows[off:off+len(a)], pd)
 		off += len(a)
 		if i < len(offDomainAnchors) {
 			floorSum += raw
@@ -385,10 +404,10 @@ func (m *Matcher) ensureProfile(ctx context.Context) (*profileData, error) {
 	return pd, nil
 }
 
-// rawScore is the weight-aware mean of the top m=min(8,n) chunk maxima, where
-// a chunk's maximum is its best cosine over the profile chunks, and the
-// evidence for the best three chunks.
-func (m *Matcher) rawScore(chunks []Chunk, vecs [][]float32, pd *profileData) (float64, []Evidence, bool) {
+// rawScoreN is the weight-aware mean of the top m=min(8,n) chunk maxima, where
+// a chunk's maximum is its best cosine over the profile chunks, the evidence for
+// the best three chunks, and how many distinct chunks the mean rests on.
+func (m *Matcher) rawScoreN(chunks []Chunk, vecs [][]float32, pd *profileData) (float64, []Evidence, int) {
 	type best struct {
 		idx   int
 		cos   float64
@@ -434,5 +453,5 @@ func (m *Matcher) rawScore(chunks []Chunk, vecs [][]float32, pd *profileData) (f
 	for _, b := range taken[:min(evidenceN, len(taken))] {
 		ev = append(ev, Evidence{Snippet: truncRunes(chunks[b.idx].Text, snippetRunes), Label: b.label, Cosine: b.cos})
 	}
-	return num / den, ev, len(taken) < minDistinctChunks
+	return num / den, ev, len(taken)
 }

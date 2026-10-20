@@ -374,16 +374,20 @@ func TestCalibration(t *testing.T) {
 			t.Errorf("score %v outside [0,1]", s)
 		}
 	}
-	// A narrow raw band (a real model) maps the same way: calibrate is affine
-	// between floor and ceiling, clamped.
+	// A narrow raw band (a real model) maps the same way: score is affine between
+	// floor and ceiling up to its knee, zero at and below the floor, and above the
+	// ceiling it keeps ordering instead of clipping (breadth_test.go).
 	pd := &profileData{floor: 0.55, ceil: 0.76}
-	if pd.calibrate(0.55) != 0 || pd.calibrate(0.76) != 1 || pd.calibrate(0.4) != 0 || pd.calibrate(0.9) != 1 {
-		t.Error("calibrate ends")
+	if pd.score(0.55, topChunks) != 0 || pd.score(0.4, topChunks) != 0 {
+		t.Error("floor and below must score 0")
 	}
-	if got := pd.calibrate(0.655); math.Abs(got-0.5) > 1e-9 {
+	if got := pd.score(0.655, topChunks); math.Abs(got-0.5) > 1e-9 {
 		t.Errorf("midpoint %v", got)
 	}
-	if pd.calibrate(math.NaN()) != 0 {
+	if at, above := pd.score(0.76, topChunks), pd.score(0.9, topChunks); !(at < above && above < 1) {
+		t.Errorf("the ceiling must not clip: %v at it, %v above it", at, above)
+	}
+	if pd.score(math.NaN(), topChunks) != 0 {
 		t.Error("NaN must not become a score")
 	}
 }

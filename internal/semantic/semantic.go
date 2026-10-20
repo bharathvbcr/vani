@@ -73,7 +73,7 @@ var (
 const (
 	// Version is folded into Profile.Hash. Bump it when chunking, the anchors
 	// or the scoring change, so cached scores are recomputed.
-	Version = 2
+	Version = 3
 
 	// MaxBatch is the most texts one Embed call takes.
 	MaxBatch = 32

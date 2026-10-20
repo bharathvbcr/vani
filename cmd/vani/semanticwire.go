@@ -10,6 +10,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/digest"
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
@@ -344,7 +345,8 @@ type semanticJSON struct {
 func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) {
 	m, warning := semanticLookup(cfg, stateDir)
 	rules, titleRank := rankRules(cfg)
-	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank}, warning
+	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank,
+		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)}, warning
 }
 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)

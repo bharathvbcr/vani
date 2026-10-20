@@ -379,6 +379,7 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 	if err == nil {
 		in.attachSemantic(cfg, e.stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
+		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 	}
 	return in, nil
 }

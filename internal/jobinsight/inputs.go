@@ -54,6 +54,26 @@ type RankContext struct {
 
 	DropRules    []DropRule
 	HalfLifeDays float64
+
+	// AgeNeutral holds the employers (keys from AgeNeutralSet) that close
+	// postings by an application cap, so an undated posting of theirs is not aged.
+	AgeNeutral map[string]bool
+}
+
+// AgeNeutralSet turns the config's age_neutral_companies into the set
+// RankContext.AgeNeutral reads: names lower-cased and trimmed, blanks dropped,
+// nil for none.
+func AgeNeutralSet(names []string) map[string]bool {
+	var set map[string]bool
+	for _, n := range names {
+		if k := companyKey(n); k != "" {
+			if set == nil {
+				set = map[string]bool{}
+			}
+			set[k] = true
+		}
+	}
+	return set
 }
 
 // NewRankContext counts the first crawl per board and the marks per company
@@ -143,6 +163,7 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 		Unsure:       IsUnsure(r),
 		HalfLifeDays: c.HalfLifeDays,
 		AgeDays:      -1,
+		AgeNeutral:   c.AgeNeutral[companyKey(r.Posting.Company)],
 	}
 
 	rank, hasRank := parseFloat(ann[ledger.AnnRank])
@@ -169,6 +190,9 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 
 	if at, _, known := FreshAge(r.Posting.PostedAt, r.FirstSeen, c.FirstCrawl[BoardOf(string(r.Key))], c.Now); known {
 		in.AgeDays, in.AgeKnown = AgeDays(at, c.Now), true
+	} else if !at.IsZero() {
+		// Age unknown, but the first sighting bounds it from below (Score).
+		in.SeenDays, in.SeenKnown = AgeDays(at, c.Now), true
 	}
 
 	seen := map[string]bool{}

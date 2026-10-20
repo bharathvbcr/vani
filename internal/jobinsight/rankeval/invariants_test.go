@@ -44,7 +44,11 @@ func invariantViolations(w jobinsight.Weights) []string {
 	bad := func(format string, a ...any) { v = append(v, fmt.Sprintf(format, a...)) }
 	s := func(in jobinsight.Inputs) float64 { return jobinsight.ScoreWith(in, w).Score }
 
-	// A known age never scores below an unknown one, however old.
+	// A known age never scores below an unknown one, however old. This is the
+	// nothing-known case (no SeenKnown). Where InputsFor knows when Vani first
+	// saw an undated posting, Score deliberately scores it as that old plus
+	// UnknownAgeDays, so a known age older than that does lose to it
+	// (jobinsight/unknownage_test.go).
 	for _, age := range []int{0, 1, 10, 60, 180, 1000} {
 		k, u := good(), good()
 		k.AgeDays, u.AgeKnown, u.AgeDays = age, false, -1
@@ -63,6 +67,29 @@ func invariantViolations(w jobinsight.Weights) []string {
 			break
 		}
 		prev = cur
+	}
+	// An undated posting of an employer that closes by application cap is never
+	// aged by when Vani first saw it, never scores below an ordinary undated
+	// posting seen as long ago, and never above the same posting dated today.
+	{
+		today := good()
+		today.AgeDays = 0
+		for _, seen := range []int{0, 1, 10, 60, 400} {
+			neutral, plain := good(), good()
+			neutral.AgeKnown, neutral.AgeDays, neutral.SeenKnown, neutral.SeenDays, neutral.AgeNeutral = false, -1, true, seen, true
+			plain.AgeKnown, plain.AgeDays, plain.SeenKnown, plain.SeenDays = false, -1, true, seen
+			if s(neutral) < s(plain)-eps {
+				bad("age-neutral undated posting seen %d days ago scores %.4f below an ordinary one %.4f", seen, s(neutral), s(plain))
+			}
+			if s(neutral) > s(today)+eps {
+				bad("age-neutral undated posting seen %d days ago scores %.4f above one dated today %.4f", seen, s(neutral), s(today))
+			}
+			base := good()
+			base.AgeKnown, base.AgeDays, base.SeenKnown, base.SeenDays, base.AgeNeutral = false, -1, true, 0, true
+			if d := s(neutral) - s(base); d > eps || d < -eps {
+				bad("age-neutral undated posting seen %d days ago scores %.4f, not the flat %.4f", seen, s(neutral), s(base))
+			}
+		}
 	}
 	// A strong fit with no coverage beats a domain mismatch with high coverage.
 	{

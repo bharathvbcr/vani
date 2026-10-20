@@ -36,14 +36,14 @@ func TestRewordedStuffingCountsOnce(t *testing.T) {
 	}
 	cs, vs := build(20)
 	co, vo := build(1)
-	stuffed, _, thinS := m.rawScore(cs, vs, pd)
-	once, _, thinO := m.rawScore(co, vo, pd)
-	t.Logf("stuffed raw %.4f, once raw %.4f", stuffed, once)
+	stuffed, _, nS := m.rawScoreN(cs, vs, pd)
+	once, _, nO := m.rawScoreN(co, vo, pd)
+	t.Logf("stuffed raw %.4f over %d chunks, once raw %.4f over %d", stuffed, nS, once, nO)
 	if math.Abs(stuffed-once) > 1e-9 {
 		t.Fatalf("reworded stuffing moved the raw score: stuffed %.4f vs once %.4f", stuffed, once)
 	}
-	if thinS || thinO {
-		t.Fatalf("four distinct chunks reported thin: %v %v", thinS, thinO)
+	if nS < minDistinctChunks || nO < minDistinctChunks || nS != nO {
+		t.Fatalf("four distinct chunks counted as %d and %d (thin under %d)", nS, nO, minDistinctChunks)
 	}
 }
 

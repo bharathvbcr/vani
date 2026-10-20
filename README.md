@@ -276,7 +276,20 @@ flowchart TD
     `[{"slot": "seniority", "values": ["senior"]}]` to keep senior roles but list them lower.
     `vani jobs` and the digest apply the same rules and title signals.
   - Priority is relevance scaled by freshness (`--half-life`, default 10 days). A posting listed
-    in its board's first crawl with no posted date has an unknown age and gets the floor.
+    in its board's first crawl with no posted date has an unknown age: it is scored as one first
+    seen 1.5 half-lives old (freshness about 0.5 when first seen today) and ages from the day Vani
+    first saw it, instead of taking the floor of a very old posting. List employers that close
+    postings by an application cap, not by age, in `age_neutral_companies` (e.g. `["Google"]`;
+    matched on the posting's company, ignoring case): an undated posting of theirs is held at a
+    flat freshness of 0.78 (a posting about a week old) instead of ageing from when Vani first
+    saw it. A date the board gives still counts, and the Mac app says the age was held flat.
+  - The knowledge-base match (`internal/semantic`) leaves out lines that ask the same of every
+    candidate (a degree, years of experience, communication skills, work authorization), scores
+    a posting that offers few distinct lines lower than one that offers a full set, and no
+    longer clips at 1.0, so postings closer to your work than the target-summary anchor still
+    order. Scores cached by an older build are ignored, so the ranker treats every posting as
+    unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
+    postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
     It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at
     least 90% of one company's postings repeat is that company's blurb, and is left out.

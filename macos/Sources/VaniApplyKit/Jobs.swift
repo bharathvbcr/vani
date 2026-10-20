@@ -502,12 +502,16 @@ public struct ScoreFactor: Equatable, Sendable {
     /// Its share of the match for additive components, 0 for multipliers.
     public var weight: Double
     public var known: Bool
+    /// Why the value is what it is, for the few factors that say (`age_neutral`
+    /// on a freshness held flat for an employer that closes by application cap).
+    public var note: String?
 
-    public init(name: String, value: Double, weight: Double = 0, known: Bool = true) {
+    public init(name: String, value: Double, weight: Double = 0, known: Bool = true, note: String? = nil) {
         self.name = name
         self.value = value
         self.weight = weight
         self.known = known
+        self.note = note
     }
 
     /// The order Score builds them in; a name this app does not know sorts after.
@@ -580,6 +584,19 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
         var value: Double
         var weight: Double?
         var known: Bool?
+        var note: String?
+
+        private enum CodingKeys: String, CodingKey { case name, value, weight, known, note }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decode(String.self, forKey: .name)
+            value = try c.decode(Double.self, forKey: .value)
+            weight = try c.decodeIfPresent(Double.self, forKey: .weight)
+            known = try c.decodeIfPresent(Bool.self, forKey: .known)
+            // Unlike the numbers, a note that is not a string is dropped, not fatal: it only explains.
+            note = try? c.decode(String.self, forKey: .note)
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -590,7 +607,7 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
                 guard let raw = try? list.decode(Raw.self) else { _ = try? list.decode(Skip.self); continue }
                 guard !raw.name.isEmpty, raw.value.isFinite else { continue }
                 // No `known` means the signal's presence was not stated: not known.
-                out.append(ScoreFactor(name: raw.name, value: raw.value, weight: raw.weight ?? 0, known: raw.known ?? false))
+                out.append(ScoreFactor(name: raw.name, value: raw.value, weight: raw.weight ?? 0, known: raw.known ?? false, note: raw.note))
             }
         }
         items = out.reduce(into: [ScoreFactor]()) { acc, f in
@@ -601,7 +618,7 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.unkeyedContainer()
         for f in items {
-            try c.encode(Wire(name: f.name, value: f.value, weight: f.weight, known: f.known))
+            try c.encode(Wire(name: f.name, value: f.value, weight: f.weight, known: f.known, note: f.note))
         }
     }
 
@@ -610,6 +627,7 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
         var value: Double
         var weight: Double
         var known: Bool
+        var note: String?
     }
 }
 

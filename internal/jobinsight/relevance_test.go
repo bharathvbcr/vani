@@ -15,8 +15,10 @@ func TestRelevanceFromKnownPartsOnly(t *testing.T) {
 	if only.Relevance < 70 {
 		t.Errorf("fit-only strong fit shows %v, want >= 70", only.Relevance)
 	}
-	if math.Abs(only.RelevanceKnown-0.30) > 1e-9 {
-		t.Errorf("fit-only RelevanceKnown %v, want 0.30 (the fit weight; an unpreferred employer is not evidence)", only.RelevanceKnown)
+	dw := DefaultWeights()
+	total := dw.Fit + dw.Coverage + dw.Semantic + dw.Keyword + dw.Title + dw.Employer
+	if want := dw.Fit / total; math.Abs(only.RelevanceKnown-want) > 1e-9 {
+		t.Errorf("fit-only RelevanceKnown %v, want %v (the fit share; an unpreferred employer is not evidence)", only.RelevanceKnown, want)
 	}
 
 	full := Score(Inputs{
@@ -42,13 +44,17 @@ func TestMatchModes(t *testing.T) {
 	fitVal, rest, _ := w.fitValue("strong_fit")
 	fit := 0.95*fitVal + 0.05*rest // ordinal: the rest leans on the neighbours
 	known := Score(in)
-	if want := (0.30*fit + 0.10*0.40) / (0.30 + 0.10); math.Abs(known.Match-want) > 1e-9 {
+	// Shares are the weights over their sum; only fit is known, and the shrink
+	// pulls it toward the prior by MatchShrink.
+	sum := w.Fit + w.Coverage + w.Semantic + w.Keyword + w.Title + w.Employer
+	fitShare := w.Fit / sum
+	if want := (fitShare*fit + w.MatchShrink*w.UnknownPrior) / (fitShare + w.MatchShrink); math.Abs(known.Match-want) > 1e-9 {
 		t.Errorf("KnownMatch: Match %v, want %v", known.Match, want)
 	}
 	w.KnownMatch = false
 	diluted := ScoreWith(in, w)
-	// 0.30*fit + prior(0.40) x (0.20+0.25+0.10+0.10) + 0.05*0
-	if want := 0.30*fit + 0.40*0.65; math.Abs(diluted.Match-want) > 1e-9 {
+	// fit share x fit + prior x (coverage + semantic + keyword + title shares) + employer share x 0
+	if want := fitShare*fit + w.UnknownPrior*(w.Coverage+w.Semantic+w.Keyword+w.Title)/sum; math.Abs(diluted.Match-want) > 1e-9 {
 		t.Errorf("prior-filled: Match %v, want %v", diluted.Match, want)
 	}
 	if !(known.Score > diluted.Score) {
