@@ -429,6 +429,25 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   caller. It brings personal data into the resume path and needs the owner's go-ahead.
   Until then it is kept: its allowlist is sealed (`Allowed()` returns a copy) and it refuses
   with `ErrNoKeychain` off macOS.
+- **Jev naming left after the Liquid D rename (2026-10-20, branch `liquid-d-rename`).** The decision
+  model is Liquid D (`liquid/d1-ultra` over OpenRouter). `config.Default()` (what `vani init`
+  writes) now names it and, by the owner's call, no llm: tests that need one set `testLLM`. And
+  `kbmatch.backend` `"jev"` is now `"openrouter"`: the old value still loads, `vani` warns about it,
+  `--backend jev` still works, and saving writes `"openrouter"`. Stored kbmatch answers keep the
+  backend they recorded, so old ones say `"jev"`. A `KBMatch` built in Go with `"jev"` and saved
+  as it is still writes `"jev"`. No live path does that, since loading and the flag both
+  normalise it. Three names stay on purpose:
+  - `<state dir>/budget/jev.json` and its spend key `jev`. `decide.DailyCap` re-reads the file on
+    every call, reads a missing file as nothing spent, and takes no cross-process lock. So no
+    rename is safe while a daemon or an older binary still holds the old path: it would start the
+    day at zero, a second full cap. `TestOpenRouterCapFileKeepsItsName` and the two spend tests in
+    `cmd/vani/openrouter_budget_test.go` pin the name. Renaming it first needs a flock in
+    `DailyCap`, then a migration that merges the two files' days.
+  - `decide/jev`, `jev.Config` and the `.Jev` reading fields. These are the OpenRouter Decisions
+    API client, and renaming them is a cross-repo contract change.
+  - `eval.LegacyOpenRouterName` and the `jev_*` config aliases, which exist for old data.
+  The file name `internal/decide/kbmatch/jev.go` could become `descriptions.go` the next time that
+  package is touched.
 - **`JobsClient.call` and `PipelineClient.status` are the same twelve lines** (run vani, bound,
   decode `{"error"}`). Extract one `VaniJSONCall` in `VaniApplyKit` when `Jobs.swift` is next
   touched.

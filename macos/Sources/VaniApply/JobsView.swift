@@ -1163,7 +1163,7 @@ private struct JobDetailContent: View {
     }
 
     private var reasons: some View {
-        // The percentage is jdreasons' Jev probability for the pick, in percent
+        // The percentage is jdreasons' decision-model probability for the pick, in percent
         // (internal/decide/jdreasons): how sure the decision model is of it.
         section("Why this role", caption: job.reasons.contains { $0.pct != nil } ? "% = how sure the model is of each pick" : nil) {
             VStack(alignment: .leading, spacing: 8) {

@@ -35,7 +35,7 @@ func clearKeys(t *testing.T) {
 func TestMeteredProviderConstruction(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	w := &wired{cfg: cfg, stateDir: t.TempDir(), warn: &bytes.Buffer{}}
 
@@ -188,7 +188,7 @@ func TestRunOnceSkipsPageBoardWithoutLightpanda(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	t.Setenv("PATH", t.TempDir())
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Watchlist = []sources.Board{{ATS: posting.Page, Token: "initech-careers", Company: "Initech",
 		URL: "https://careers.initech.example/jobs", LinkPattern: `^https://careers\.initech\.example/jobs/\d+$`}}
@@ -224,7 +224,7 @@ func TestRunOnceSkipsPageBoardWithoutLightpanda(t *testing.T) {
 func TestLappiShadowThenPrimary(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Lappi = &config.Lappi{Socket: "/tmp/vani-test-no-agent.sock"}
 	cfg.Decide.Shadow = "lappi"
@@ -274,7 +274,7 @@ func TestLocalModelIsAShadowOverLoopback(t *testing.T) {
 		_, _ = io.WriteString(w, `{"answers":{"work_mode":{"choice":"remote","confidence":0.9}}}`)
 	}))
 	defer srv.Close()
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Endpoint: srv.URL + "/v1/systemone", Model: "test-d1", Questions: "per_slot"}
 	cfg.Decide.Shadow = "local"
@@ -324,7 +324,7 @@ func TestLocalServerModeUsesTheStartedEndpoint(t *testing.T) {
 		_, _ = io.WriteString(w, `{"answers":{"work_mode":{"choice":"remote","confidence":0.9}}}`)
 	}))
 	defer srv.Close()
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d1",
 		Server: &config.LocalServer{Binary: "/opt/llama/llama-server", ModelPath: "/opt/models/d1.gguf"}}
@@ -367,7 +367,7 @@ func TestRunOnceGoesOnWhenTheLocalServerFails(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	t.Setenv("PATH", t.TempDir())
-	cfg := config.Default()
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d1", Server: &config.LocalServer{
 		Binary: filepath.Join(t.TempDir(), "no-such-llama-server"), ModelPath: "/opt/models/d1.gguf", StartTimeoutMS: 2000}}

@@ -139,7 +139,9 @@ stateDiagram-v2
   says which keys to rename, a file setting an old and a new key to different values is refused,
   and saving writes the new names. Ledger rows written before the rename name the model `jev`;
   `vani eval` and `vani label` read those as the configured model's name and say how many they
-  mapped. The daily cap file stays `<state dir>/budget/jev.json`, so the rename kept the day's spend.
+  mapped. The daily cap file stays `<state dir>/budget/jev.json` (spend key `jev`) on purpose: the
+  cap takes no lock across processes, so a renamed file would let a still-running daemon start the
+  day at zero. `kbmatch.backend` `"jev"` followed on 2026-10-20 and is now `"openrouter"`.
 - **Ranking:** DevPrism `resume_gap_analysis` must-have coverage (DevPrism started lazily over
   `--mcp`). Skipped while `devprism.binary` is empty; `vani rescore` scores those postings once
   it is set (see Use).
@@ -158,7 +160,8 @@ stateDiagram-v2
   states none), its link, must-have coverage, triage answers and the note. Every posting field is
   escaped so it cannot add links, headings or lines.
 - **Decision clients** live in the shared module `~/Code/devtools/decide` (types, router, budget
-  caps, the Jev and Lappi clients). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
+  caps, the Lappi client and `decide/jev`, the OpenRouter Decisions API client Liquid D is asked
+  through). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
   task, exact question text, context layout and options, plus one single-slot Lappi family per
   slot with its own exact question (Lappi trains one slot per example). The OpenRouter model and the LLM get all
   slots in one request; Lappi gets one request per slot, and an absent or hung agent costs one
@@ -226,7 +229,7 @@ flowchart TD
   `task_not_trained` refusal stops Vani asking for the rest of the process.
 - **Local decision model** (`decide.local`, shadow only; config refuses it anywhere else): a
   llama.cpp server's `/v1/systemone` (for example LiquidAI d1-3B, llama.cpp ≥ 0.7.0), asked
-  through the Jev client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
+  through the same `decide/jev` client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
   without `.gguf` when Vani starts the server; at most 32 bytes in all, which `vani config
   check` enforces; rows recorded earlier are filed as plain `local`) with no key, over `egress.Loopback`, which dials
   only loopback addresses. Either `endpoint` (a server you keep running) or `server` (`binary`,
@@ -306,7 +309,7 @@ flowchart TD
     order. Scores cached by an older build are ignored, so the ranker treats every posting as
     unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
     postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
-  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|jev] [--model ID] [--no-retrieve]`
+  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|openrouter] [--model ID] [--no-retrieve]`
     asks a model, for the top N postings by priority (default 40) that triage did not read as a
     mismatch, whether the work each describes is the work in your knowledge base: `core`,
     `partial`, `adjacent` or `unrelated`. It is a second read of the job's duties, not of the
@@ -320,7 +323,8 @@ flowchart TD
     is shorter; without it (`--no-retrieve`, or the model cannot load) the question carries the
     full digest instead. The **answering model** is the llm (`kbmatch.backend` `"llm"`, the
     default) on `kbmatch.model`, else `llm.triage_model`, else `llm.model`, or the **decision
-    model** (`"jev"`: `decide.openrouter_model` over OpenRouter, from the OpenRouter cap).
+    model** (`"openrouter"`, formerly `"jev"`: Liquid D, `decide.openrouter_model`, over
+    OpenRouter, from the OpenRouter cap).
     `kbmatch.model` is its own setting so a cheap model can read postings here without changing
     how triage and escalation run. Example: `"kbmatch": {"model": "claude-haiku-5-5"}`.
     **What is sent**, per posting: the posting, your `target_summary` and a view of the

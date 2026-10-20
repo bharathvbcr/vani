@@ -24,7 +24,8 @@ const (
 	// Suffixes appended to "triage.<slot>". Calibration and shadow keys exist
 	// for evaluation only; no engine rule reads them.
 	//
-	// AnnTriageSuffixP is Jev's probability of the chosen label (4 decimals).
+	// AnnTriageSuffixP is the OpenRouter decision model's probability of the
+	// chosen label (4 decimals).
 	AnnTriageSuffixP = ".p"
 	// AnnTriageSuffixLappiScore is Lappi's top-two probability margin.
 	AnnTriageSuffixLappiScore = ".lappi_score"

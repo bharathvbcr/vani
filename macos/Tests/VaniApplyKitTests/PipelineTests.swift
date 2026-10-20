@@ -38,7 +38,7 @@ private func statusReply(lastRun: String? = nil, backends: String? = nil, ledger
     "ledger":{"ok":\(ledgerOK),\(ledgerOK ? "" : #""reason":"ledger: corrupt events file","#)"exists":true,"path":"/s/ledger","total":812,"by_status":{"digested":300,"dead":200,"dropped":250,"unsure":12,"live":50}},\
     "last_run":\(lastRun ?? #"{"ok":true,"state":"ok","started_at":"\#(started)","finished_at":"\#(finished)","duration_sec":312.4,"postings_before":780,"postings_after":812,"counts_before":{"live":10,"digested":300,"dropped":240,"dead":200,"unsure":30},"counts_after":{"live":50,"digested":300,"dropped":250,"dead":200,"unsure":12}}"#),\
     "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-15T15:30:00Z"},\
-    "backends":\(backends ?? #"{"ok":true,"day":"2026-10-14","items":[{"ok":true,"name":"jev-1.13","kind":"openrouter","cap_usd":0.25,"spent_usd":0.1,"remaining_usd":0.15},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0.7,"remaining_usd":0.3}]}"#),\
+    "backends":\(backends ?? #"{"ok":true,"day":"2026-10-14","items":[{"ok":true,"name":"d1-ultra","kind":"openrouter","cap_usd":0.25,"spent_usd":0.1,"remaining_usd":0.15},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0.7,"remaining_usd":0.3}]}"#),\
     "decide":{"ok":true,"shadow":"local","local_configured":true,"local_mode":"server","local_model":"d1-3b","lappi_configured":false}}
     """
 }
@@ -78,7 +78,7 @@ final class PipelineTests: XCTestCase {
         "ledger":{"ok":true,"reason":"no ledger yet: no run has created it","exists":false,"path":"/s/st/ledger","total":0,"by_status":{}},\
         "last_run":{"ok":true,"state":"failed","started_at":"2026-10-19T05:00:00.123456-07:00","finished_at":"2026-10-19T05:00:09Z","duration_sec":9,"stage":"pipeline","error":"pipeline: no decision backend","postings_before":3,"postings_after":3,"counts_before":{"live":3},"counts_after":{"live":3}},\
         "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-19T15:30:00Z"},\
-        "backends":{"ok":true,"day":"2026-10-19","items":[{"ok":true,"name":"jev-1-13","kind":"openrouter","cap_usd":0.25,"spent_usd":0,"remaining_usd":0.25},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0,"remaining_usd":1}]},\
+        "backends":{"ok":true,"day":"2026-10-19","items":[{"ok":true,"name":"d1-ultra","kind":"openrouter","cap_usd":0.25,"spent_usd":0,"remaining_usd":0.25},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0,"remaining_usd":1}]},\
         "decide":{"ok":true,"local_configured":false,"lappi_configured":false}}
         """
         let s = try decode(real)
@@ -145,7 +145,7 @@ final class PipelineTests: XCTestCase {
     }
 
     func testUnreadableSpendIsUnknownNeverZero() throws {
-        let backends = #"{"ok":true,"day":"2026-10-14","items":[{"ok":false,"reason":"openrouter budget: file is corrupt","name":"jev-1.13","kind":"openrouter","cap_usd":0.25},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0,"remaining_usd":1}]}"#
+        let backends = #"{"ok":true,"day":"2026-10-14","items":[{"ok":false,"reason":"openrouter budget: file is corrupt","name":"d1-ultra","kind":"openrouter","cap_usd":0.25},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0,"remaining_usd":1}]}"#
         let s = try decode(statusReply(backends: backends))
         let or = try XCTUnwrap(s.backends.items.first)
         XCTAssertNil(or.spentUSD)
@@ -153,7 +153,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertNil(or.fractionSpent, "an unread spend is not 0% spent")
         XCTAssertEqual(s.backends.items.last?.fractionSpent, 0, "a read spend of zero is zero")
         let issue = try XCTUnwrap(s.issues(at: now).first)
-        XCTAssertEqual(issue.title, "Today's spend on jev-1.13 could not be read")
+        XCTAssertEqual(issue.title, "Today's spend on d1-ultra could not be read")
         XCTAssertEqual(issue.detail, "openrouter budget: file is corrupt")
     }
 

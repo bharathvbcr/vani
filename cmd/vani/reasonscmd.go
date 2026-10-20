@@ -22,8 +22,8 @@ import (
 // replace it.
 var reasonsProvider = func(ctx context.Context, w *wired) (llm.Provider, error) { return w.provider(ctx) }
 
-// notesEndpoint points the notes Jev client at a test server; empty is Jev's own
-// endpoint.
+// notesEndpoint points the notes picker's decision-model client at a test
+// server; empty is OpenRouter.
 var notesEndpoint string
 
 func (e *env) reasonsPath() string { return filepath.Join(e.stateDir, jdreasons.FileName) }
@@ -162,12 +162,13 @@ func (e *env) reasonsCheck(args []string) error {
 	return nil
 }
 
-// notes builds the digest's "why this role" picker: Jev picks one reason per
-// category from the catalog, so no model writes text per posting. It returns
-// the explainer and whether the explain stage is switched off:
-//   - no catalog, a stale one, or no Jev in the config: off. Scored postings
-//     reach the digest without a note.
-//   - a catalog that will not load, or Jev configured but not available this
+// notes builds the digest's "why this role" picker: the OpenRouter decision
+// model picks one reason per category from the catalog, so no model writes text
+// per posting. It returns the explainer and whether the explain stage is
+// switched off:
+//   - no catalog, a stale one, or no decide.openrouter_model: off. Scored
+//     postings reach the digest without a note.
+//   - a catalog that will not load, or the model configured but not available this
 //     run (no key in this shell): paused. Postings stay scored until a run
 //     can pick, rather than being marked explained with no note for good.
 func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explainer, bool) {

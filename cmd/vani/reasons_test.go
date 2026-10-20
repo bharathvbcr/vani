@@ -46,6 +46,7 @@ func reasonsSetup(t *testing.T, p *draftLLM) (cfgPath, stateDir string) {
 		t.Fatal(err)
 	}
 	cfg.TargetSummary = reasonsTarget
+	cfg.LLM = testLLM
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +295,7 @@ func TestRunnerSkipsNotesWithAStaleCatalog(t *testing.T) {
 func TestRunnerPausesNotesWithoutJev(t *testing.T) {
 	cfg := reasonsConfig(t)
 	t.Setenv("OPENROUTER_API_KEY", "")
-	cfg.LLM.Provider = "gemini" // keep a triage backend so the runner builds
+	cfg.LLM = testLLM // keep a triage backend so the runner builds
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	stateDir := t.TempDir()
 	writeCatalog(t, stateDir, reasonsTarget)
