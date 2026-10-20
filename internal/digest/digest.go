@@ -71,6 +71,11 @@ type Options struct {
 	// base, or false when none is cached for it (the ranker then takes its
 	// prior: unknown is never scored as 0). Nil means no embeddings.
 	Semantic func(r ledger.Record) (float64, bool)
+	// Rules demote a kept role whose triage reading matches one (drop rules
+	// it passed under their threshold, and rank penalties); TitleRank is the
+	// title signals' Rank, nil for none. The same as `vani jobs` applies.
+	Rules     []jobinsight.DropRule
+	TitleRank func(title string) int
 }
 
 func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
@@ -104,13 +109,13 @@ func savedAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, 
 
 // sortDigest orders out by jobinsight.Score, built from all (the whole ledger,
 // so the first-crawl and company-marks parts see every posting) and the marks.
-// The digest has no vocabulary, title signals or drop rules, so those parts
-// take their prior for every role alike; the embedding part is o.Semantic when
-// the caller has one. A role DevPrism did not score stays behind the scored
+// The digest has no keyword vocabulary, so that part takes its prior for every
+// role alike; the embedding part, rules and title signals come from o, as
+// `vani jobs` applies them. A role DevPrism did not score stays behind the scored
 // ones: Render lists them under "Not ranked".
 func sortDigest(out, all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) {
 	c := jobinsight.NewRankContext(all, m, now)
-	c.Semantic = o.Semantic
+	c.Semantic, c.DropRules, c.TitleRank = o.Semantic, o.Rules, o.TitleRank
 	score := make(map[posting.Key]float64, len(out))
 	for _, r := range out {
 		score[r.Key] = jobinsight.Score(jobinsight.InputsFor(r, c)).Score

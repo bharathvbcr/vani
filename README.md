@@ -254,6 +254,11 @@ flowchart TD
     order): triage's role_fit, DevPrism's coverage, title signals, target-term overlap and
     marks on the company, each unknown part taking a prior below "known good". `score_factors`
     in the JSON lists the parts.
+  - A kept role whose answered triage reading matches a `drop_rules` entry (under its drop
+    threshold) or a `rank_penalties` entry is demoted in proportion to that reading's
+    confidence, never dropped. `rank_penalties` has the drop-rule shape without thresholds, e.g.
+    `[{"slot": "seniority", "values": ["senior"]}]` to keep senior roles but list them lower.
+    `vani jobs` and the digest apply the same rules and title signals.
   - Priority is relevance scaled by freshness (`--half-life`, default 10 days). A posting listed
     in its board's first crawl with no posted date has an unknown age and gets the floor.
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).

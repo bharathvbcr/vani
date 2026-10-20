@@ -108,6 +108,43 @@ func TestRealLedgerComposition(t *testing.T) {
 			return recs[a].Key < recs[b].Key
 		}))
 	}
+
+	// A rank penalty on seniority "senior" (config rank_penalties), as the
+	// owner's early-career target would set it; the proxy gain does not read
+	// seniority, so the ages and fit mix are the measure, plus how many senior
+	// readings remain in the top 20.
+	rcPen := rc
+	rcPen.DropRules = []jobinsight.DropRule{{Slot: "seniority", Values: []string{"senior"}}}
+	s := make([]float64, len(recs))
+	for i, r := range recs {
+		s[i] = jobinsight.Score(jobinsight.InputsFor(r, rcPen)).Score
+	}
+	idx := order(func(a, b int) bool {
+		if s[a] != s[b] {
+			return s[a] > s[b]
+		}
+		return recs[a].Key < recs[b].Key
+	})
+	report("+senior penalty", idx)
+	senior := func(idx []int) int {
+		n := 0
+		for _, i := range idx[:min(20, len(idx))] {
+			if jobinsight.SlotOf(recs[i].Annotations, "seniority").Value == "senior" {
+				n++
+			}
+		}
+		return n
+	}
+	base := make([]float64, len(recs))
+	for i := range recs {
+		base[i] = jobinsight.Score(ins[i]).Score
+	}
+	t.Logf("senior readings in top 20: default %d, +senior penalty %d", senior(order(func(a, b int) bool {
+		if base[a] != base[b] {
+			return base[a] > base[b]
+		}
+		return recs[a].Key < recs[b].Key
+	})), senior(idx))
 }
 
 type realVariant struct {

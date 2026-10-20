@@ -287,7 +287,8 @@ type semanticJSON struct {
 // caller to print.
 func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) {
 	m, warning := semanticLookup(cfg, stateDir)
-	return digest.Options{Semantic: semanticRank(m)}, warning
+	rules, titleRank := rankRules(cfg)
+	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank}, warning
 }
 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)

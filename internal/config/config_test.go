@@ -89,6 +89,20 @@ func TestValidateRules(t *testing.T) {
 		{"drop rule unknown value", func(c *Config) {
 			c.DropRules = []DropRule{{Slot: "seniority", Values: []string{"manager", "boss"}, MinOpenRouterProb: 0.9}}
 		}, `drop_rules[0]: "boss" is not a seniority value`},
+		{"rank penalty empty slot", func(c *Config) { c.RankPenalties = []RankPenalty{{Values: []string{"senior"}}} }, "rank_penalties[0]: slot is empty"},
+		{"rank penalty slot typo", func(c *Config) {
+			c.RankPenalties = []RankPenalty{{Slot: "seniority_level", Values: []string{"senior"}}}
+		}, `rank_penalties[0]: slot "seniority_level" is not a triage slot`},
+		{"rank penalty unknown value", func(c *Config) {
+			c.RankPenalties = []RankPenalty{{Slot: "seniority", Values: []string{"senior", "boss"}}}
+		}, `rank_penalties[0]: "boss" is not a seniority value`},
+		{"rank penalty no values", func(c *Config) { c.RankPenalties = []RankPenalty{{Slot: "seniority"}} }, "rank_penalties[0]: values is empty"},
+		{"too many rank penalties", func(c *Config) {
+			c.RankPenalties = make([]RankPenalty, MaxRankPenalties+1)
+			for i := range c.RankPenalties {
+				c.RankPenalties[i] = RankPenalty{Slot: "seniority", Values: []string{"senior"}}
+			}
+		}, "rank_penalties has 33 entries, max 32"},
 		{"negative page interval", func(c *Config) { c.PageIntervalMS = -1 }, "page_interval_ms -1"},
 		{"page interval over max", func(c *Config) { c.PageIntervalMS = 10_001 }, "page_interval_ms 10001 must be within 0..10000"},
 		{"huge page interval", func(c *Config) { c.PageIntervalMS = math.MaxInt }, "page_interval_ms"},
@@ -174,6 +188,30 @@ func TestLoadRejectsUnknownFieldAndTrailing(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(dir, "missing.json")); err == nil {
 		t.Fatal("missing file accepted")
+	}
+}
+
+// rank_penalties accepts legal slot values, is omitted when unset, and
+// survives a save and load.
+func TestRankPenaltiesRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	if err := Save(p, valid()); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(p); strings.Contains(string(data), "rank_penalties") {
+		t.Fatal("unset rank_penalties written")
+	}
+	c := valid()
+	c.RankPenalties = []RankPenalty{{Slot: "seniority", Values: []string{"senior", "staff_plus"}}}
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RankPenalties) != 1 || got.RankPenalties[0].Slot != "seniority" || !slices.Equal(got.RankPenalties[0].Values, []string{"senior", "staff_plus"}) {
+		t.Fatalf("rank_penalties = %+v", got.RankPenalties)
 	}
 }
 

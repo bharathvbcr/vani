@@ -51,6 +51,10 @@ type Config struct {
 	LLM           LLM             `json:"llm"`
 	DevPrism      DevPrism        `json:"devprism"`
 	DropRules     []DropRule      `json:"drop_rules"`
+	// RankPenalties demote, never drop: a kept posting whose triage slot reads
+	// one of Values ranks lower in Jobs and the digest, in proportion to how
+	// sure the reading is (Rule 7: an ordering preference, not an engine rule).
+	RankPenalties []RankPenalty `json:"rank_penalties,omitempty"`
 	TargetSummary string          `json:"target_summary"`
 	// MotivationNotes is the owner's own note on what they care about in
 	// their work. `vani draft` gives it to motivation questions ("Why
@@ -110,6 +114,9 @@ type Semantic struct {
 	// DefaultSemanticWarmPerRun; at most MaxSemanticWarmPerRun.
 	WarmPerRun int `json:"warm_per_run,omitempty"`
 }
+
+// MaxRankPenalties bounds Config.RankPenalties.
+const MaxRankPenalties = 32
 
 // Semantic warm bounds (Semantic.WarmPerRun).
 const (
@@ -314,6 +321,12 @@ func (l LLM) Prices() (input, output int64, err error) {
 type DevPrism struct {
 	Binary    string `json:"binary"`
 	ToolsHash string `json:"tools_hash"`
+}
+
+// RankPenalty demotes a kept posting whose triage slot reads one of Values.
+type RankPenalty struct {
+	Slot   string   `json:"slot"`
+	Values []string `json:"values"`
 }
 
 // DropRule drops a posting when a triage slot reads one of Values with enough
@@ -930,6 +943,26 @@ func (c Config) Validate() error {
 		}
 		if math.IsNaN(r.MinLappiScore) || r.MinLappiScore < 0 {
 			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
+		}
+	}
+	if len(c.RankPenalties) > MaxRankPenalties {
+		add("rank_penalties has %d entries, max %d", len(c.RankPenalties), MaxRankPenalties)
+	}
+	for i, r := range c.RankPenalties {
+		legal, known := slotValues[r.Slot]
+		switch {
+		case r.Slot == "":
+			add("rank_penalties[%d]: slot is empty", i)
+		case !known:
+			add("rank_penalties[%d]: slot %q is not a triage slot (want one of %s)", i, r.Slot, strings.Join(slices.Sorted(maps.Keys(slotValues)), ", "))
+		}
+		if len(r.Values) == 0 {
+			add("rank_penalties[%d]: values is empty", i)
+		}
+		for _, v := range r.Values {
+			if known && !slices.Contains(legal, v) {
+				add("rank_penalties[%d]: %q is not a %s value (want one of %s)", i, v, r.Slot, strings.Join(legal, ", "))
+			}
 		}
 	}
 

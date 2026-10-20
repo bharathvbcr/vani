@@ -368,12 +368,7 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	if err == nil {
 		in.attachSemantic(cfg, e.stateDir)
-		if s := cfg.TitleSignals; len(s.Include) > 0 || len(s.Exclude) > 0 {
-			in.rc.TitleRank = s.Rank
-		}
-		for _, r := range cfg.DropRules {
-			in.rc.DropRules = append(in.rc.DropRules, jobinsight.DropRule{Slot: r.Slot, Values: r.Values})
-		}
+		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
 	}
 	return in, nil
 }
