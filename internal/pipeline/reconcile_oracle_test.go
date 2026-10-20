@@ -144,6 +144,13 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 				return s, err
 			}
 			s.Rerendered++
+		case rec.Status != posting.Dropped && rec.Posting.PostedAt.IsZero() && !p.PostedAt.IsZero():
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+				Reason: "re-dated"}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Redated++
 		default:
 			s.Unchanged++
 		}

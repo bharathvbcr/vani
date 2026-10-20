@@ -38,6 +38,10 @@ type Summary struct {
 	// range): the stored posting takes the new rendering and keeps its status
 	// and annotations.
 	Rerendered int
+	// Redated postings were stored without a posted date and are listed with
+	// one (an adapter that learned to read it): the stored posting takes the
+	// date and keeps its status and annotations. A stored date is never moved.
+	Redated    int
 	Unchanged  int
 	Reappeared int // seen again after a miss (or after being marked dead)
 	Missed     int // absent, below the death threshold
@@ -176,6 +180,17 @@ func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Rerendered++
+		case rec.Status != posting.Dropped && rec.Posting.PostedAt.IsZero() && !p.PostedAt.IsZero():
+			// Same content, stored undated, now listed with a posted date: the
+			// stored posting takes it so the advance order can rank it by
+			// freshness. Status and annotations stay. A stored date is never
+			// moved, as relative phrases drift a day between runs.
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+				Reason: "re-dated"}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Redated++
 		default:
 			s.Unchanged++
 		}

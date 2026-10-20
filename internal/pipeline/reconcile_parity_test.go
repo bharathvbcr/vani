@@ -89,7 +89,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 	defer func() {
 		// Every outcome reconcile can reach was reached, so parity was checked
 		// on each path and not only on the easy ones.
-		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Reappeared == 0 ||
+		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Redated == 0 || total.Reappeared == 0 ||
 			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 {
 			t.Errorf("the seeds did not cover every outcome: %+v", total)
 		}
@@ -129,6 +129,11 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						default:
 							p.Description = "The role description."
 						}
+						// Some listings carry a posted date, some do not, so a
+						// posting stored undated is re-dated on a later run.
+						if rng.IntN(2) == 0 {
+							p.PostedAt = start.Add(-time.Duration(rng.IntN(30)) * 24 * time.Hour)
+						}
 						listed = append(listed, p)
 					}
 					rng.Shuffle(len(listed), func(i, j int) { listed[i], listed[j] = listed[j], listed[i] })
@@ -144,6 +149,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.New += got.New
 					total.Changed += got.Changed
 					total.Rerendered += got.Rerendered
+					total.Redated += got.Redated
 					total.Reappeared += got.Reappeared
 					total.Missed += got.Missed
 					total.Dead += got.Dead
