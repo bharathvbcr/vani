@@ -1,7 +1,6 @@
 package rankeval
 
 import (
-	"fmt"
 	"math"
 	"testing"
 
@@ -9,24 +8,9 @@ import (
 )
 
 // Red-team cases: orderings a person would call wrong, and numeric abuse.
-//
-// A case documenting a failure checks its expectation and, when the ranker
-// violates it, skips with the exact inputs and scores ("known failure"). Once
-// the ranker is fixed the same test runs as a normal assertion, so a fix cannot
-// land without un-skipping it, and a skip can never hide a regression of a
-// case that passes.
+// Every case is a hard assertion: none is skipped as a known failure.
 
 func def(in jobinsight.Inputs) jobinsight.Result { return jobinsight.Score(in) }
-
-// knownFailure skips with detail while the ranker is known not to hold a
-// case. Once the case holds, replace the call with a hard assertion: a fixed
-// case left on knownFailure would skip silently if it regressed.
-func knownFailure(t *testing.T, ok bool, format string, a ...any) {
-	t.Helper()
-	if !ok {
-		t.Skip("known failure: " + fmt.Sprintf(format, a...))
-	}
-}
 
 // solid is a confident, well-covered partial fit; a negative age means unknown.
 func solid(age int) jobinsight.Inputs {
@@ -144,7 +128,15 @@ func TestRTSharpRecencyBuriesExcellent(t *testing.T) {
 	m.Coverage, m.Semantic = 35, 0.35
 	se, sm := def(e).Score, def(m).Score
 	t.Logf("excellent strong_fit (p .95, cov 90, sem .9) 21 days old: %.1f; mediocre adjacent (p .7, cov 35, sem .35) today: %.1f", se, sm)
-	knownFailure(t, se > sm, "excellent 21-day-old posting %.1f below mediocre same-day adjacent %.1f", se, sm)
+	// Resolved by policy (owner, 2026-10-20, docs/RANKING_PLAN.md): priority
+	// answers "what is new" and stays recency-weighted, so the fresh posting may
+	// lead the new roles; "what is the best open role" is Relevance, age left
+	// out, which the digest's Top open section ranks by. The excellent posting
+	// must lead there, by a clear margin.
+	re, rm := def(e).Relevance, def(m).Relevance
+	if !(re > rm+20) {
+		t.Fatalf("excellent posting's relevance %.1f not clearly above the mediocre one's %.1f", re, rm)
+	}
 }
 
 // An unknown age must not beat a known-fresh posting of the same quality.
