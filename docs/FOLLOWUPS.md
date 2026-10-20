@@ -224,6 +224,15 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     from the next run on.
   - d1-ultra answered 44 HTTP 429s, 30 timeouts and 28 HTTP 502s in that run. Jev already retries
     with backoff and honours Retry-After; nothing here paces the four workers together.
+  - **NVIDIA's board after install (measured 2026-10-19, listings only, no details).** Distinct
+    postings as terms are added: "new college grad" 74, + "LLM" 497, + "inference" 716, +
+    "TensorRT" 729, + "CUDA" 984, + "deep learning" 1,477. Recommended: `search` "new college grad",
+    `searches` ["LLM", "inference", "TensorRT", "CUDA"], `max_postings` 1200 (984 now, about 22%
+    headroom; about 16 minutes of detail requests per run). "deep learning" would leave 1.5% under
+    the 1,500 ceiling and fail the board as soon as it grows. Covering all of NVIDIA (about 2,750)
+    needs the facet split that "Teach Vani's Go Workday adapter to list big boards"
+    (`claude/relaxed-burnell-e60996`) is building; that branch is also to raise
+    `sources.MaxPostingsCeiling` for split boards.
   - **At merge, with the uncommitted jobsIngest work in the main checkout:** the `re-dated` case
     goes once into the shared `reconcile(..., full bool)` loop that `Reconcile` and
     `ReconcilePartial` both call, before `default`. Add a `reconcile_partial_test.go` case: posted
