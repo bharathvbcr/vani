@@ -59,7 +59,11 @@ func TestQueueSkipsInheritedReadings(t *testing.T) {
 	orig := mkRec("orig", posting.Triaged, tri)
 	recs := []ledger.Record{orig, inheritedCopy("copy", "orig", orig),
 		inheritedCopy("copy-unsure", "orig", mkRec("u", posting.Unsure, map[string]string{"triage.unsure": "x"}))}
-	if got := keys(Queue(recs, s, 10, nil)); strings.Join(got, ",") != "orig" {
+	queue, err := Queue(recs, s, 10, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(queue); strings.Join(got, ",") != "orig" {
 		t.Fatalf("queue offered a copy for labelling: %v", got)
 	}
 }
