@@ -34,7 +34,8 @@ final class RankingTests: XCTestCase {
         XCTAssertEqual(j.relevance, 72.5)
         XCTAssertEqual(j.relevanceBasis, "rank", "the existing fields are untouched")
         let b = try XCTUnwrap(j.rankingBreakdown)
-        XCTAssertEqual(b.factors.map(\.name), ScoreFactor.knownNames)
+        // kb_match appears only on a posting the language model was asked about.
+        XCTAssertEqual(b.factors.map(\.name), ScoreFactor.knownNames.filter { $0 != "kb_match" })
         XCTAssertEqual(b.semanticScore, 0.74)
         XCTAssertEqual(b.evidence.map(\.label), ["skills", "ML platform engineer"], "strongest match first")
     }
@@ -95,6 +96,22 @@ final class RankingTests: XCTestCase {
         let names = try XCTUnwrap(j.scoreFactors).items.map(\.name)
         XCTAssertEqual(names, ["fit", "gate"], "bad elements are skipped and a repeated name keeps its first")
         XCTAssertEqual(j.priority, 61.2, "the rest of the job still decodes")
+    }
+
+    func testKBMatchFactorSortsBetweenEmployerAndGateWithItsOwnWords() throws {
+        let j = try job(#"""
+        "score_factors":[{"name":"gate","value":1,"weight":0,"known":true},
+        {"name":"kb_match","value":0.65,"weight":0.12,"known":true},
+        {"name":"employer","value":0,"weight":0.04,"known":true},
+        {"name":"fit","value":0.8,"weight":0.3,"known":true}]
+        """#)
+        let b = try XCTUnwrap(j.rankingBreakdown)
+        XCTAssertEqual(b.ordered.map(\.name), ["fit", "employer", "kb_match", "gate"])
+        let kb = try XCTUnwrap(b.ordered.first { $0.name == "kb_match" })
+        XCTAssertEqual(kb.title, "Language-model read")
+        XCTAssertTrue(kb.explanation.contains("language model"))
+        XCTAssertEqual(kb.valueLabel, "65")
+        XCTAssertEqual(kb.weightLabel, "12% of the blend")
     }
 
     func testFactorNoteIsKeptAndAMalformedNoteIsDropped() throws {
@@ -215,7 +232,10 @@ final class RankingTests: XCTestCase {
             guard let factors = j.scoreFactors?.items, !factors.isEmpty else {
                 throw XCTSkip("this vani sends no score_factors; build it from the rank-relevance branch")
             }
-            XCTAssertEqual(factors.map(\.name), ScoreFactor.knownNames, "the nine components, in Score's order")
+            // Nobody asked the model about this posting, so vani leaves kb_match out
+            // (an unjudged posting takes no share: kbmatchcmd_test.go).
+            XCTAssertEqual(factors.map(\.name), ScoreFactor.knownNames.filter { $0 != "kb_match" },
+                           "the nine components of an unjudged posting, in Score's order")
             XCTAssertEqual(page.insight?.halfLifeDays, days ?? JobsClient.defaultHalfLifeDays, "vani took the --half-life")
             XCTAssertEqual(factors.first { $0.name == "fit" }?.known, false, "a role_fit with no calibrated confidence is not known")
             XCTAssertEqual(factors.first { $0.name == "coverage" }?.known, false, "no DevPrism rank in this ledger")

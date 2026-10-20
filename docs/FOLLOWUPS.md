@@ -1065,9 +1065,65 @@ Each was decided on evidence; the cards' other criteria were built and tested.
       1,682 postings). The installed app's `vani` still runs the old ranking until it is rebuilt.
     - `genericLine` leaves out "fast-paced" on purpose: "Work in a fast-paced environment shipping
       CUDA kernels" is a work line (`generic_test.go`).
-    - Proposed, not built: asking a language model whether a posting's work matches the knowledge
-      base is a new `decide` question (a contract change, with token spend), so it needs the
-      owner's go-ahead.
+    - Built after the owner's go-ahead (2026-10-20): `internal/decide/kbmatch` and `vani kbmatch`.
+      A Vani-local `career.kb_match` task (like `jdreasons`: no change to the shared `decide`
+      module, the pinned `jdtriage/fixture.json` or Lappi), answered by the llm backend by
+      default, or by the decision model (Jev, `kbmatch.backend: "jev"`) when asked. Jev is not
+      the default because `role_fit` is already its read and this one should be independent.
+      Answers live in `kbmatch.json` beside the ledger, not as ledger annotations, so a run needs
+      no ledger lock, `internal/pipeline` is untouched and the daemon is unaffected. Score gains a
+      seventh additive part (`Weights.KBMatch` 0.15) that is left out entirely when a posting has
+      no answer, so an unasked posting's score, relevance and factor list are byte-identical to
+      before. The 15% is an unmeasured choice: rankeval has no judged worlds, only the invariant
+      that closer options never score lower and the part never gates.
+    - Added the same day (owner: "can the embedding model and the decision model be used; a
+      cheaper model like sonnet or haiku"):
+      - `kbmatch.model` (and `--model`) picks the llm model on its own. It is not
+        `llm.triage_model`: that setting also moves the triage LLM backend and escalation
+        (`wire.go`, `escalate.go`), so setting it to haiku would have changed `role_fit`'s
+        last-resort reader, which nobody asked for. `kbmatch.model` falls back to
+        `llm.triage_model`, then `llm.model`. The dry run prices the chosen model at Anthropic's
+        published rates (`anthropic.PriceOf`), as the daily cap meters it; the configured prices
+        apply only to the configured model and to a model the table does not know.
+      - `kbmatch.backend: "jev"` (or `--backend jev`) asks the decision model over OpenRouter
+        with option descriptions and the same question text, from the OpenRouter cap. Its
+        probability is kept. Tested over a local server, not against OpenRouter.
+      - The embedding model picks, per posting, the eight knowledge-base lines closest to it
+        (`semantic.Matcher.Nearest`: best cosine of each profile line over the posting's chunks,
+        stack lines and titles left out, near-duplicates collapsed) and the question carries a
+        compact digest (1.3 KB on the live bank, was 6.1 KB) plus those lines. Against the real
+        bank and model the closest line to an inference posting is 0.80 and to a nursing posting
+        0.68, with at most two of five lines shared (`nearest_real_test.go`). A failure to load
+        the model, or on one posting, sends the full digest instead and says so. Whether the
+        focused question yields better answers than the full digest is unmeasured: no model was
+        called. The answer's identity does not depend on the picked lines (it is keyed to the
+        bank, target and posting text), so the Jobs list needs no embedding model to find it; the
+        entry records `mode` and `backend` for audit.
+    - Not exercised: any provider call. The tests use a fake `decide.Decider` and a local
+      server for Jev. This environment holds neither `ANTHROPIC_API_KEY` nor
+      `OPENROUTER_API_KEY`, so `vani kbmatch run` stopped at "no credential for anthropic" on the
+      first real attempt, before any request; the prompt's wording (`kbmatch.Prompt`) and the
+      reply parse against a real model are unverified. First real run: `vani kbmatch run
+      --dry-run`, then `--top 5`, then read the `kb_match` factor on those jobs.
+    - Cost (dry run on a copy of the live ledger; 643 of 1,682 postings are not mismatch
+      readings; at most 144,000 input tokens for the top 40, 3,600 a posting before the
+      embedding model shortens it), typical / at most counting every reply at its full
+      1,280-token budget: top 40 on haiku-5-5 $0.02 / $0.04, sonnet-5-5 $0.35 / $0.80,
+      opus-5-5 $0.70 / $1.60; all 500 on haiku $0.23 / $0.51, on sonnet $4.54 / $10.19.
+    - Hazard: the config loader rejects unknown keys, so a `vani` built before a key existed
+      fails to read a config that carries it. `vani jobs` does not fail: it drops the
+      target-keyword marking, the semantic scores, the title signals and the drop rules and puts
+      the reason in `insight.warning` (checked: an older build lists priorities with no semantic
+      match); `run-once` and `daemon` refuse to start. State as of 2026-10-20: the live config
+      carries `age_neutral_companies: ["Google"]`. The repo-root `vani` and `build/vani` accept
+      it (main merged it); `build/vani-fix` and the app's installed helper (`Vani Apply.app`,
+      built before that merge) do not, so reinstall the app before relying on the key there.
+      The `kbmatch` key is not in main yet: leave it out of the live config until this branch is
+      merged and every `vani` that reads the config is rebuilt. `vani kbmatch run --model
+      claude-haiku-5-5` needs no config key.
+    - Not built: a daily stage. The command is run by hand; wiring it into the pipeline would
+      touch `internal/pipeline` and needs its own decision about when it may spend. The batch is
+      not concurrent (one question at a time; the time per question is unmeasured).
   - Lappi's calibrated score is not used for confidence (an answered Lappi reading counts as
     `AnsweredConf` 0.7): Lappi's score is a top-two margin, not a probability, and decide keeps
     the two apart on purpose.

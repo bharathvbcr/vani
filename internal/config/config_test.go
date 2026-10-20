@@ -112,6 +112,18 @@ func TestValidateRules(t *testing.T) {
 				c.AgeNeutralCompanies[i] = "Company"
 			}
 		}, "age_neutral_companies has 65 entries, max 64"},
+		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "jev"`},
+		{"kbmatch jev without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchJev }, "needs decide.openrouter_model"},
+		{"kbmatch model on jev", func(c *Config) {
+			c.Decide.OpenRouterModel = "m/x"
+			c.KBMatch = KBMatch{Backend: KBMatchJev, Model: "claude-haiku-5-5"}
+		}, `applies to the "llm" backend only`},
+		{"kbmatch model without provider", func(c *Config) { c.LLM = LLM{}; c.KBMatch.Model = "claude-haiku-5-5" }, "kbmatch.model needs llm.provider"},
+		{"kbmatch model with space", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.KBMatch.Model = "a b" }, "kbmatch.model"},
+		{"kbmatch model too long", func(c *Config) {
+			c.LLM = LLM{Provider: "gemini", Model: "m"}
+			c.KBMatch.Model = strings.Repeat("m", MaxModelName+1)
+		}, "kbmatch.model"},
 		{"negative page interval", func(c *Config) { c.PageIntervalMS = -1 }, "page_interval_ms -1"},
 		{"page interval over max", func(c *Config) { c.PageIntervalMS = 10_001 }, "page_interval_ms 10001 must be within 0..10000"},
 		{"huge page interval", func(c *Config) { c.PageIntervalMS = math.MaxInt }, "page_interval_ms"},
@@ -320,6 +332,43 @@ func TestAgeNeutralCompaniesRoundTrip(t *testing.T) {
 	}
 	if !slices.Equal(got.AgeNeutralCompanies, []string{"Google", "Alphabet"}) {
 		t.Fatalf("age_neutral_companies = %v", got.AgeNeutralCompanies)
+	}
+}
+
+// kbmatch is omitted when unset, survives a save and load, and picks the model
+// without touching llm.triage_model.
+func TestKBMatchSettingsRoundTripAndModel(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	c := valid()
+	c.LLM = LLM{Provider: "anthropic", Model: "claude-opus-5-5", InputNanoUSDPerToken: 4000, OutputNanoUSDPerToken: 20000}
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(p); strings.Contains(string(data), "kbmatch") {
+		t.Fatal("unset kbmatch written")
+	}
+	if got := c.KBMatchModel(); got != "claude-opus-5-5" {
+		t.Errorf("default model %q, want llm.model", got)
+	}
+	c.LLM.TriageModel = "claude-sonnet-5-5"
+	if got := c.KBMatchModel(); got != "claude-sonnet-5-5" {
+		t.Errorf("model %q, want llm.triage_model when kbmatch sets none", got)
+	}
+	c.KBMatch = KBMatch{Model: "claude-haiku-5-5"}
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KBMatchModel() != "claude-haiku-5-5" || got.LLM.TriageModel != "claude-sonnet-5-5" || got.KBMatch.EffectiveBackend() != KBMatchLLM {
+		t.Errorf("round trip: model %q, triage %q, backend %q", got.KBMatchModel(), got.LLM.TriageModel, got.KBMatch.EffectiveBackend())
+	}
+	c.Decide.OpenRouterModel = "liquid/d1-ultra"
+	c.KBMatch = KBMatch{Backend: KBMatchJev}
+	if err := Save(p, c); err != nil {
+		t.Fatalf("a jev kbmatch with openrouter configured should save: %v", err)
 	}
 }
 

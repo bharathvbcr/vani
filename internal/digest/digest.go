@@ -79,6 +79,9 @@ type Options struct {
 	// AgeNeutral is jobinsight.RankContext.AgeNeutral: employers whose undated
 	// postings are not aged.
 	AgeNeutral map[string]bool
+	// KBMatch is jobinsight.RankContext.KBMatch: the language model's read of a
+	// role's work, where it was asked.
+	KBMatch func(r ledger.Record) (jobinsight.Slot, bool)
 }
 
 func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
@@ -118,7 +121,7 @@ func savedAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, 
 // ones: Render lists them under "Not ranked".
 func sortDigest(out, all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) {
 	c := jobinsight.NewRankContext(all, m, now)
-	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral
+	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
 	score := make(map[posting.Key]float64, len(out))
 	for _, r := range out {
 		score[r.Key] = jobinsight.Score(jobinsight.InputsFor(r, c)).Score

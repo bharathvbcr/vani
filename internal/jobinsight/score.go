@@ -104,6 +104,12 @@ type Inputs struct {
 	// Weights.NeutralFresh and does not age. A date the board gave still counts.
 	AgeNeutral bool
 
+	// KBMatch is a language model's read of whether the posting's work is the
+	// work in the owner's knowledge base (one of KBMatchOrder). Only the postings
+	// that were asked have one; for the rest it is unknown and the part is left
+	// out of the blend entirely, so they score exactly as without it.
+	KBMatch Slot
+
 	// Unsure is true when triage could not decide and kept the posting.
 	Unsure bool
 
@@ -167,6 +173,9 @@ type Result struct {
 type Weights struct {
 	// Additive shares of match. ScoreWith normalizes them to sum to 1.
 	Fit, Coverage, Semantic, Keyword, Title, Employer float64
+	// KBMatch is the share of a judged posting's blend that the language
+	// model's read of its work takes. An unjudged posting has none.
+	KBMatch float64
 	// UnknownPrior is the value an unknown additive component takes.
 	UnknownPrior float64
 	// AnsweredConf is the confidence of an answered reading with no Jev p.
@@ -266,6 +275,13 @@ func (w Weights) fitValue(v string) (val, rest float64, ok bool) {
 	return vals[idx], s / n, true
 }
 
+// KBMatchOrder is the kb_match options from closest to the owner's work to
+// furthest; kbMatchValues gives each a value in this order. internal/decide/kbmatch
+// asks the question with exactly these options.
+var KBMatchOrder = [...]string{"core", "partial", "adjacent", "unrelated"}
+
+var kbMatchValues = [...]float64{1, 0.65, 0.3, 0}
+
 // BasisSemantic is the knowledge-base similarity.
 const BasisSemantic Basis = "semantic"
 
@@ -303,6 +319,9 @@ func DefaultWeights() Weights {
 		// keyword 0.03 / semantic 0.35 scores NDCG@10 0.7346 against 0.7341 before:
 		// the metric is flat here, so the choice rests on the principle, not the gain.
 		Fit: 0.30, Coverage: 0.20, Semantic: 0.35, Keyword: 0.03, Title: 0.10, Employer: 0.05,
+		// A judged posting's blend gains the model's read of its work; an unjudged
+		// one is unchanged (the part is left out, not filled with a prior).
+		KBMatch:      0.15,
 		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
 		PenaltyStrength: 0.80, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
 		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays, NeutralFresh: DefaultNeutralFresh,
@@ -345,7 +364,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 		value  float64
 		known  bool
 	}
-	var parts [6]part
+	var parts [7]part
 
 	fitConf := w.conf(in.RoleFit)
 	base, ordinalRest, ok := w.fitValue(in.RoleFit.Value)
@@ -391,6 +410,21 @@ func ScoreWith(in Inputs, w Weights) Result {
 		parts[5].value = 1
 	}
 
+	// The model's read of the work, when this posting was asked and answered with
+	// a listed option. Unknown, it takes no share at all rather than the prior, so
+	// the postings nobody asked about score as they would without the part.
+	parts[6] = part{"kb_match", w.KBMatch, prior, false}
+	if c := w.conf(in.KBMatch); c > 0 {
+		for i, o := range KBMatchOrder {
+			if o == in.KBMatch.Value {
+				parts[6].value, parts[6].known = c*kbMatchValues[i]+(1-c)*prior, true
+			}
+		}
+	}
+	if !parts[6].known {
+		parts[6].weight = 0
+	}
+
 	// Weights that are not positive finite numbers are skipped; the rest are
 	// scaled by the largest first, so huge weights cannot overflow the sum.
 	var top float64
@@ -407,7 +441,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 		}
 		sum += parts[i].weight
 	}
-	match, share := prior, [6]float64{}
+	match, share := prior, [len(parts)]float64{}
 	if sum > 0 {
 		match = 0
 		for i, p := range parts {
@@ -425,7 +459,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 		if !p.known || (i == 5 && !in.PreferredEmployer) {
 			continue
 		}
-		if i < 5 {
+		if i != 5 { // every part but the employer preference is evidence
 			anyKnown = true
 		}
 		knownSum += share[i]
@@ -523,9 +557,12 @@ func ScoreWith(in Inputs, w Weights) Result {
 		RelevanceKnown: relKnown,
 		Match:          match, Gate: gate, Fresh: fresh, Company: company,
 		Basis:   basis,
-		Factors: make([]Factor, 0, 9),
+		Factors: make([]Factor, 0, len(parts)+3),
 	}
 	for i, p := range parts {
+		if i == 6 && !p.known {
+			continue // not asked: the list reads as it did before the part existed
+		}
 		r.Factors = append(r.Factors, Factor{Name: p.name, Value: p.value, Weight: share[i], Known: p.known})
 	}
 	r.Factors = append(r.Factors,

@@ -380,6 +380,13 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 		in.attachSemantic(cfg, e.stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
+		var warn string
+		if in.rc.KBMatch, warn = kbmatchLookup(cfg, e.stateDir); warn != "" {
+			if in.info.Warning != "" {
+				in.info.Warning += "; "
+			}
+			in.info.Warning += warn
+		}
 	}
 	return in, nil
 }
