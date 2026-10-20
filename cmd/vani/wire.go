@@ -103,6 +103,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		RunReport: w.runReport,
 		Reload:    w.setBoards,
 		PollInbox: w.pollInbox,
+		Rescore:   w.rescore,
 		// The Vani Apply app posts run notices itself while it runs; the
 		// daemon's are the fallback for when it does not.
 		Notifier: notify.UnlessHeld(notify.AppLockPath(stateDir), notify.New(nil)),
@@ -523,7 +524,14 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 		return advanceReport{}, fmt.Errorf("advance concurrency %d must be above 0", workers)
 	}
 	var todo []ledger.Record
+	pick := settingsOf(ordering).todo
 	for _, r := range recs {
+		if pick != nil {
+			if pick(r) {
+				todo = append(todo, r)
+			}
+			continue
+		}
 		switch r.Status {
 		case posting.Live, posting.Triaged, posting.Unsure, posting.Scored:
 			todo = append(todo, r)
@@ -1009,9 +1017,20 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	if x != nil {
 		r.Badger = lcaBadger{x}
 	}
+	if err := w.scoring(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// scoring sets r's scoring stage: DevPrism (started lazily), or SkipScoring
+// with a warning while devprism.binary is empty, and the employer lookup the
+// rank boost reads. The run and `vani rescore` share it, so a rescored posting
+// is ranked exactly as a freshly scored one.
+func (w *wired) scoring(r *pipeline.Runner) error {
 	ex, err := loadEmployerView(w.stateDir, w.warnf)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if ex != nil {
 		r.Employer = employerLookup{ex}
@@ -1020,12 +1039,12 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		w.warnf("employer_preferences set but no employer lists imported; no rank boost (docs/EMPLOYER.md)")
 	}
 	if w.cfg.DevPrism.Binary == "" {
-		w.warnf("devprism.binary empty; scoring disabled, the digest will not be ranked (docs/FOLLOWUPS.md)")
+		w.warnf("devprism.binary empty; scoring disabled, the digest will not be ranked (vani rescore scores these postings once it is set)")
 		r.SkipScoring = true
 	} else {
 		r.Scorer = w.lazyScorer()
 	}
-	return r, nil
+	return nil
 }
 
 // provider builds the configured Manvi adapter, metered by a budget ledger

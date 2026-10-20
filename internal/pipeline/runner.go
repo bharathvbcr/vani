@@ -204,29 +204,9 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 				}
 				continue
 			}
-			if r.Scorer == nil {
-				return fmt.Errorf("%w: scorer", ErrStageMissing)
-			}
-			gap, err := r.Scorer.Gap(ctx, rec.Posting.Description, "")
+			ann, err := r.scoreAnnotations(ctx, rec)
 			if err != nil {
-				return fmt.Errorf("pipeline: gap %s: %w", key, err)
-			}
-			sc, err := r.Scorer.Score(ctx, rec.Posting.Description, "")
-			if err != nil {
-				return fmt.Errorf("pipeline: score %s: %w", key, err)
-			}
-			cov := strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64)
-			rank := gap.CoveragePct
-			if r.preferredEmployer(rec.Posting.Company) {
-				rank += EmployerRankBoost
-			}
-			ann := map[string]string{
-				ledger.AnnRank:     strconv.FormatFloat(rank, 'f', -1, 64),
-				ledger.AnnCoverage: cov,
-				ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
-			}
-			if m := missingRequirements(gap); m != "" {
-				ann[ledger.AnnMissing] = m
+				return err
 			}
 			if err := r.emit(ctx, key, posting.Scored, "scored", ann); err != nil {
 				return err
@@ -256,6 +236,38 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			return nil // Explained, or terminal: nothing further to run
 		}
 	}
+}
+
+// scoreAnnotations asks DevPrism about rec's description and returns what a
+// score records: the rank (must-have coverage, plus EmployerRankBoost at a
+// preferred employer), the coverage, the matched block count and the uncovered
+// must-haves. It is the one owner of those annotations; Advance and Rescore
+// both write what it returns.
+func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[string]string, error) {
+	if r.Scorer == nil {
+		return nil, fmt.Errorf("%w: scorer", ErrStageMissing)
+	}
+	gap, err := r.Scorer.Gap(ctx, rec.Posting.Description, "")
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: gap %s: %w", rec.Key, err)
+	}
+	sc, err := r.Scorer.Score(ctx, rec.Posting.Description, "")
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: score %s: %w", rec.Key, err)
+	}
+	rank := gap.CoveragePct
+	if r.preferredEmployer(rec.Posting.Company) {
+		rank += EmployerRankBoost
+	}
+	ann := map[string]string{
+		ledger.AnnRank:     strconv.FormatFloat(rank, 'f', -1, 64),
+		ledger.AnnCoverage: strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64),
+		ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
+	}
+	if m := missingRequirements(gap); m != "" {
+		ann[ledger.AnnMissing] = m
+	}
+	return ann, nil
 }
 
 // missingRequirements lists the must-haves DevPrism found missing or weak,
