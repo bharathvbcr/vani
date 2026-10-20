@@ -86,9 +86,10 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 			rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
 		default:
 			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
+			rec.Cause = runCause(err)
 		}
 		e.saveRunRecord(rec)
-		e.announceFailure(ctx, app, rec, err)
+		e.announceFailure(ctx, app, rec)
 		return err
 	}
 }
@@ -137,6 +138,7 @@ func (e *env) reloadBoards(app *App) error {
 // warms the knowledge-base scores the digest orders by (semanticwire.go), with
 // what the pipeline's own warm before its advance phase left of
 // semantic.warm_per_run; that never fails the run, and rec carries what it did.
+// rec.DigestRoles is the size of the digest it wrote (nil when it wrote none).
 func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
@@ -168,7 +170,8 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, re
 		}
 	}
 	opts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
-	return stageDigest, e.publishDigest(ctx, app, now().In(loc), loc, opts)
+	rec.DigestRoles, err = e.publishDigest(ctx, app, now().In(loc), loc, opts)
+	return stageDigest, err
 }
 
 // saveRunRecord writes the record; a failure is a warning, never a failed run:
@@ -194,20 +197,25 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 // everything instead would show, and then consume, roles the user hid. The
 // pipeline's results are already in the ledger, so the roles are listed once
 // the store reads again.
-func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) error {
+//
+// roles is how many roles the digest listed, set once the digest is written
+// (0 when nothing was new) and nil when it was not. A failure marking them
+// Digested still returns roles: the digest exists, and the run record says so.
+func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) (roles *int, err error) {
 	if app.Ledger == nil {
-		return errors.New("app has no ledger")
+		return nil, errors.New("app has no ledger")
 	}
 	dir := marks.Dir(e.stateDir)
 	m, err := marks.ReadMarks(dir)
 	if err != nil {
-		return fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
+		return nil, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
 	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, countsFor(recs, date, loc), opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	n := len(keys)
 	var errs []error
 	for _, k := range keys {
 		ev := ledger.Event{V: 1, At: now(), Key: k, Status: posting.Digested, Reason: "digest " + date.Format("2006-01-02")}
@@ -225,7 +233,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}
-	return errors.Join(errs...)
+	return &n, errors.Join(errs...)
 }
 
 // countsFor derives the footer counts for the calendar day of date in loc from
@@ -290,7 +298,8 @@ func (e *env) cmdDigest(args []string) error {
 	if warning != "" {
 		fmt.Fprintf(e.stderr, "vani: digest: %s\n", warning)
 	}
-	return e.publishDigest(ctx, app, date, loc, opts)
+	_, err = e.publishDigest(ctx, app, date, loc, opts)
+	return err
 }
 
 func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {

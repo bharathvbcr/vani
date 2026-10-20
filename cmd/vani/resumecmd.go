@@ -101,7 +101,9 @@ type codedError struct {
 
 func (e *codedError) Error() string { return e.msg }
 
-func coded(code, format string, a ...any) error { return &codedError{code: code, msg: fmt.Sprintf(format, a...)} }
+func coded(code, format string, a ...any) error {
+	return &codedError{code: code, msg: fmt.Sprintf(format, a...)}
+}
 
 // cmdResume reads one request (JSON) on stdin and writes one reply (JSON) on
 // stdout: {"pdf","name","bytes","pages","ats_coverage_pct"} or {"error","code"}.

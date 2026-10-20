@@ -214,10 +214,78 @@ final class PipelineTests: XCTestCase {
     func testAReplyWithoutTheRunDetailStillDecodes() throws {
         // A vani from before advance and backend_errors: the default fixture has neither.
         let s = try decode(statusReply())
+        XCTAssertNil(s.lastRun.boards)
         XCTAssertNil(s.lastRun.advance)
         XCTAssertNil(s.lastRun.backendErrors)
         XCTAssertEqual(s.health(at: now), .healthy)
         XCTAssertEqual(PipelineStatus.supportedVersion, 1, "the fields are additive: no contract bump")
+    }
+
+    // MARK: boards
+
+    /// A succeeded run where one board failed to list (the Intel case) and a
+    /// careers page was skipped, in the shape cmd/vani/runrecord.go writes.
+    private static let runWithBoards = #"{"ok":true,"state":"ok","boards":{"configured":4,"read":2,"failed":1,"skipped":1,"listed":35,"items":[{"ats":"gh","token":"nvidia","company":"NVIDIA","outcome":"read","listed":35,"reconcile":{"new":35}},{"ats":"wd","token":"intel/External","company":"Intel","outcome":"failed","error":"workday \"intel/External\": posting \"/job/X_JR1\": http 500"},{"ats":"pg","token":"hooli","company":"Hooli","outcome":"skipped","error":"careers-page source disabled this run: lightpanda not found"},{"ats":"lv","token":"quiet","outcome":"read","listed":0}]}}"#
+
+    func testDecodesTheBoardsReportAndNamesTheBoardsNotRead() throws {
+        let s = try decode(statusReply(lastRun: Self.runWithBoards))
+        let b = try XCTUnwrap(s.lastRun.boards)
+        XCTAssertEqual(b.configured, 4)
+        XCTAssertEqual(b.unreadCount, 2)
+        XCTAssertEqual(b.items.map(\.outcome), [.read, .failed, .skipped, .read])
+        XCTAssertEqual(b.items[3].listed, 0)
+        XCTAssertNil(b.items[3].company)
+        XCTAssertEqual(b.summary, "2 of 4 boards read; 35 postings listed")
+        XCTAssertEqual(b.outcome, "1 failed, 1 skipped; their postings were left as they were")
+        XCTAssertEqual(b.problems().map(\.board), ["Intel (wd intel/External)", "Hooli (pg hooli)"])
+        XCTAssertEqual(b.problems().map(\.outcome), ["failed", "skipped"])
+        XCTAssertEqual(b.problems()[0].error, #"workday "intel/External": posting "/job/X_JR1": http 500"#)
+        XCTAssertNil(b.moreNote())
+        // A run that succeeded with a board unread is a warning, never healthy.
+        XCTAssertEqual(s.health(at: now), .warning)
+        let issue = try XCTUnwrap(s.issues(at: now).first { $0.title.contains("board") })
+        XCTAssertEqual(issue.title, "2 boards could not be read last run")
+        XCTAssertEqual(issue.detail, "Intel (wd intel/External), Hooli (pg hooli)")
+    }
+
+    func testEveryBoardReadIsHealthy() throws {
+        let run = #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":1,"items":[{"ats":"gh","token":"a","outcome":"read","listed":1}]}}"#
+        let s = try decode(statusReply(lastRun: run))
+        XCTAssertEqual(s.lastRun.boards?.summary, "1 of 1 board read; 1 posting listed")
+        XCTAssertNil(s.lastRun.boards?.outcome)
+        XCTAssertEqual(s.lastRun.boards?.problems(), [])
+        XCTAssertEqual(s.health(at: now), .healthy)
+    }
+
+    func testBoardsCutByVaniAndNotReached() throws {
+        // A cancelled run: one read, one failed mid-listing, one never tried;
+        // and a report whose items vani cut (only the totals are whole).
+        let run = #"{"ok":true,"state":"cancelled","boards":{"configured":30,"read":1,"failed":20,"skipped":0,"not_reached":9,"listed":3,"items":[{"ats":"gh","token":"a","outcome":"failed","error":"line one\nline two"},{"ats":"gh","token":"b","outcome":"newer","error":""}],"unrecorded":19}}"#
+        let b = try XCTUnwrap(try decode(statusReply(lastRun: run)).lastRun.boards)
+        XCTAssertEqual(b.notReached, 9)
+        XCTAssertEqual(b.unrecorded, 19)
+        XCTAssertEqual(b.outcome, "20 failed, 9 not reached; their postings were left as they were")
+        XCTAssertEqual(b.problems()[0].error, "line one line two", "one line")
+        XCTAssertEqual(b.items[1].outcome, .unknown("newer"))
+        XCTAssertEqual(b.problems()[1].outcome, "newer", "a newer outcome is shown as written, never as read")
+        XCTAssertEqual(b.moreNote(), "18 more boards not read")
+        XCTAssertEqual(b.problems(limit: 1).count, 1)
+        XCTAssertEqual(b.moreNote(limit: 1), "19 more boards not read")
+    }
+
+    func testBoardErrorsAndNamesAreBounded() throws {
+        let item = PipelineStatus.LastRun.Boards.Item(ats: "wd", token: String(repeating: "t", count: 500),
+                                                     company: String(repeating: "c", count: 500), outcome: .failed,
+                                                     error: String(repeating: "x", count: 5000))
+        let b = PipelineStatus.LastRun.Boards(configured: 1, read: 0, failed: 1, listed: 0, items: [item])
+        let line = try XCTUnwrap(b.problems().first)
+        XCTAssertEqual(line.error.count, PipelineStatus.LastRun.Boards.maxError)
+        XCTAssertEqual(line.board.count, 80)
+    }
+
+    func testAMalformedBoardsReportFailsTheReadInsteadOfLookingAbsent() {
+        let run = #"{"ok":true,"state":"ok","boards":{"configured":"many"}}"#
+        XCTAssertThrowsError(try decode(statusReply(lastRun: run)))
     }
 
     func testTheCapExampleFromTheBrief() {
@@ -314,11 +382,13 @@ final class PipelineTests: XCTestCase {
         let runs = state.appendingPathComponent("runs")
         try FileManager.default.createDirectory(at: runs, withIntermediateDirectories: true)
         // The record shape of cmd/vani/runrecord.go (runRecord).
-        let record = #"{"v":1,"pid":1,"started_at":"2026-10-19T12:00:00Z","finished_at":"2026-10-19T12:04:00Z","outcome":"failed","stage":"pipeline","error":"pipeline: no decision backend read 20 postings in a row","advance":{"eligible":3027,"limit":300,"attempted":20,"unread":20,"failed":0,"deferred":3007,"stopped":"unread_streak"},"backend_errors":{"causes":[{"backend":"anthropic","count":2,"example":"anthropic: http 429 (request req_1): rate_limit_error"}],"unrecorded":3}}"#
+        let record = #"{"v":1,"pid":1,"started_at":"2026-10-19T12:00:00Z","finished_at":"2026-10-19T12:04:00Z","outcome":"failed","stage":"pipeline","error":"pipeline: no decision backend read 20 postings in a row","boards":{"configured":2,"read":1,"failed":1,"skipped":0,"listed":35,"items":[{"ats":"gh","token":"nvidia","outcome":"read","listed":35,"reconcile":{"new":35}},{"ats":"wd","token":"intel/External","company":"Intel","outcome":"failed","error":"http 500"}]},"advance":{"eligible":3027,"limit":300,"attempted":20,"unread":20,"failed":0,"deferred":3007,"stopped":"unread_streak"},"backend_errors":{"causes":[{"backend":"anthropic","count":2,"example":"anthropic: http 429 (request req_1): rate_limit_error"}],"unrecorded":3}}"#
         try Data(record.utf8).write(to: runs.appendingPathComponent("last.json"))
 
         let s = try PipelineClient(vaniBinary: vani, configPath: state.appendingPathComponent("none.json").path, stateDir: state.path).status()
         XCTAssertEqual(s.lastRun.state, .failed)
+        XCTAssertEqual(try XCTUnwrap(s.lastRun.boards).problems().map(\.board), ["Intel (wd intel/External)"])
+        XCTAssertEqual(s.lastRun.boards?.listed, 35)
         XCTAssertEqual(try XCTUnwrap(s.lastRun.advance),
                        PipelineStatus.LastRun.Advance(eligible: 3027, limit: 300, attempted: 20, unread: 20, failed: 0, deferred: 3007, stopped: .unreadStreak))
         XCTAssertEqual(try XCTUnwrap(s.lastRun.backendErrors),
@@ -329,6 +399,7 @@ final class PipelineTests: XCTestCase {
         try Data(old.utf8).write(to: runs.appendingPathComponent("last.json"))
         let plain = try PipelineClient(vaniBinary: vani, configPath: state.appendingPathComponent("none.json").path, stateDir: state.path).status()
         XCTAssertEqual(plain.lastRun.state, .ok)
+        XCTAssertNil(plain.lastRun.boards)
         XCTAssertNil(plain.lastRun.advance)
         XCTAssertNil(plain.lastRun.backendErrors)
     }

@@ -110,6 +110,9 @@ func TestWatchlistDomain(t *testing.T) {
 	if cfg, _ = config.Load(cfgPath); countOf(cfg.AllowedHosts, "www.acme.com") != 1 {
 		t.Fatalf("allowed_hosts repeats the domain: %v", cfg.AllowedHosts)
 	}
+	if o, _ := mustCode(t, 0, "watchlist", "list", "--json"); !strings.Contains(o, `"domain":"www.acme.com"`) {
+		t.Errorf("watchlist list --json leaves out the domain: %s", o)
+	}
 
 	o, _ := mustCode(t, 0, "watchlist", "domain", "--ats", "gh", "--token", "acme", "--domain", "")
 	if !strings.Contains(o, "cleared") {
