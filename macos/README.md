@@ -190,8 +190,12 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      by the stop reason (`unread_streak`/`none_read`, `fail_streak`/`none_advanced`), then by the
      stage (`pipeline`, else digest). The run's error text, which can carry fetched URLs or page
      content, never appears in a notification, and neither does anything personal.
-   - The digest's size is the run's own change in the ledger's `digested` count
-     (`counts_after` minus `counts_before`). A run that digested nothing posts nothing.
+   - The digest's size is the run's net change in the ledger's `digested` count
+     (`counts_after` minus `counts_before`). A run whose count did not rise posts nothing. This is
+     a net figure, not the digest's size. In the same run, before the digest, reconcile can move
+     earlier digested postings out of `digested`: to `dead` when a board dropped them twice, or
+     to `live` when their description changed. Such a run shows too few roles, or posts nothing
+     on a day that did produce a digest. An exact count needs the digest's size in the run record.
    - **Posts nothing:** a run that is still going, cancelled, interrupted, in a state this app does
      not know, or one that finished more than 36 hours ago (the app opened days later). It also
      posts nothing when no run is recorded, when the record could not be read (corrupt, wrong
@@ -205,8 +209,11 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      ("Vani stopped"), a digest held back because the Jobs marks could not be read, and a config
      that could not be re-read. The run record carries no field for these: they show only in the
      error text, which the app does not read. The app shows them as the stage's default ("The
-     pipeline stopped before the digest." or "The digest could not be finished."). Telling them
-     apart needs a cause code in the run record.
+     pipeline stopped before the digest." or "The digest could not be finished."). For a stale
+     config that default is false. The run went on with the previous watchlist and wrote the
+     digest, but its outcome is `failed` at stage `digest`. So the app says the digest could not be
+     finished and posts no digest notice. Telling these cases apart needs a cause code in the run
+     record.
    - **The daemon still notifies as well.** The daemon's own osascript notices
      (`internal/notify`) are unchanged. macOS attributes them to Script Editor, and clicking one
      opens Script Editor. While both are on, a run can show twice: once from Script Editor and once
@@ -287,6 +294,8 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 - **Not verified here:**
   - A notification shown by the bundled app, its permission prompt, and a click opening the Jobs
     tab. `UNUserNotificationCenter` needs a signed app bundle, which `swift test` does not run.
+    A click while the app runs with its window closed may activate the app and show no window:
+    the handler brings forward an existing window and does not reopen a closed one.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.
