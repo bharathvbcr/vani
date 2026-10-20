@@ -34,6 +34,8 @@ const DefaultPlattRidge = 1e-3
 const (
 	plattMaxIter = 100
 	plattTol     = 1e-10
+	// minLogitSpread is the least spread of logit(p) a fit on p needs.
+	minLogitSpread = 1e-6
 )
 
 // FitPlatt fits sigmoid(A*logit(p)+B) to samples by Platt's method: targets
@@ -90,7 +92,10 @@ func PlattUsable(samples []PlattSample) int {
 
 // plattData picks the samples a fit uses and their logit(p) (0 when the fit
 // is on the intercept alone). The fit is on p when most samples carry a valid
-// one; the rest are then left out. A p outside 0..1 or NaN is never used.
+// one and those p are not all alike; the rest are then left out. When every
+// usable p is the same, the slope cannot be told from the intercept (only
+// the ridge would pick it), so the fit is the intercept alone. A p outside
+// 0..1 or NaN is never used.
 func plattData(samples []PlattSample) (xs []float64, ys []bool, usesP bool) {
 	validP := func(s PlattSample) bool { return s.HasP && s.P >= 0 && s.P <= 1 }
 	withP := 0
@@ -100,6 +105,17 @@ func plattData(samples []PlattSample) (xs []float64, ys []bool, usesP bool) {
 		}
 	}
 	usesP = withP*2 > len(samples)
+	if usesP {
+		lo, hi := math.Inf(1), math.Inf(-1)
+		for _, s := range samples {
+			if validP(s) {
+				q := min(max(s.P, 1e-6), 1-1e-6)
+				x := math.Log(q / (1 - q))
+				lo, hi = min(lo, x), max(hi, x)
+			}
+		}
+		usesP = hi-lo > minLogitSpread
+	}
 	for _, s := range samples {
 		switch {
 		case usesP && !validP(s), !usesP && s.HasP && !validP(s):

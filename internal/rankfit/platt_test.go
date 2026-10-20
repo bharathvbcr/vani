@@ -90,8 +90,8 @@ func TestPlattRefusesBelowThreshold(t *testing.T) {
 	}
 }
 
-// One class only, every p the same: Platt's targets keep the fit finite and
-// the confidence below 1.
+// One class only, or every p the same: Platt's targets keep the fit finite
+// and the confidence below 1, and a constant p is fitted as the intercept.
 func TestPlattOneClassAndConstantP(t *testing.T) {
 	for name, s := range map[string][]PlattSample{
 		"all right, no p":    samples(120, 0, 0, false),
@@ -108,6 +108,11 @@ func TestPlattOneClassAndConstantP(t *testing.T) {
 		c, ok := fit.Calibration.Conf(s[0].P, s[0].HasP)
 		if !ok || !(c > 0 && c < 1) || !fit.Calibration.Valid() {
 			t.Fatalf("%s: conf %v ok %v from %+v", name, c, ok, fit.Calibration)
+		}
+		// A constant p cannot tell a slope from the intercept: the fit must not
+		// present a ridge-chosen slope as measured.
+		if fit.Calibration.UsesP || fit.Calibration.A != 0 {
+			t.Errorf("%s: %+v, want the intercept alone", name, fit.Calibration)
 		}
 		// The smoothed precision bounds the answer away from 0 and 1.
 		pos := 0
@@ -131,16 +136,16 @@ func TestPlattInvalidP(t *testing.T) {
 		t.Fatalf("120 NaN p: %v, want a refusal counting 0", err)
 	}
 
-	mixed := append(samples(100, 50, 0.7, true), samples(10, 10, 1.5, true)...)
+	mixed := append(append(samples(100, 50, 0.7, true), samples(50, 50, 0.4, true)...), samples(10, 10, 1.5, true)...)
 	fit, err := FitPlatt("b", mixed, DefaultPlattRidge)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !fit.Calibration.UsesP || fit.N != 150 || fit.Unused != 20 {
-		t.Fatalf("mixed: %+v, want 150 used on p and 20 left out", fit)
+	if !fit.Calibration.UsesP || fit.N != 250 || fit.Unused != 20 {
+		t.Fatalf("mixed: %+v, want 250 used on p and 20 left out", fit)
 	}
-	if got := PlattUsable(mixed); got != 150 {
-		t.Errorf("PlattUsable %d, want 150", got)
+	if got := PlattUsable(mixed); got != 250 {
+		t.Errorf("PlattUsable %d, want 250", got)
 	}
 
 	short := append(samples(60, 30, 0.7, true), samples(10, 10, -0.2, true)...)

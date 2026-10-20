@@ -22,7 +22,7 @@ var rankfitParts = []string{"all", "platt", "weights"}
 
 // errRankfitNoGain is a weight fit that ran but did not beat the hand weights
 // on the held-out pairs: nothing is written.
-var errRankfitNoGain = errors.New("rankfit: the fitted shares do not beat the hand weights on the held-out judged pairs; nothing written")
+var errRankfitNoGain = errors.New("rankfit: the fitted shares do not beat the hand weights on the held-out judged pairs; nothing written (--part platt keeps a calibration alone)")
 
 // cmdRankfit learns Score's constants from judged labels (internal/rankfit):
 // per-backend Platt calibration from the eval labels, and the shares from

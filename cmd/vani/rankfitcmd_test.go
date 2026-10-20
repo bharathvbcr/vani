@@ -101,6 +101,9 @@ func TestRankfitPlattWritesACalibrationAndJobsUsesIt(t *testing.T) {
 		t.Fatalf("file %+v, want two calibrations and no shares", f)
 	}
 	for _, b := range []string{"d1-ultra", "jev"} {
+		if f.Calibration[b].UsesP {
+			t.Errorf("%s: every p is .9, yet the fit claims a slope on p", b)
+		}
 		c, ok := f.Calibration[b].Conf(0.9, true)
 		if !ok || math.Abs(c-0.8) > 0.02 {
 			t.Errorf("%s: a p of .9 that is right 4 times in 5 calibrates to %v (ok %v)", b, c, ok)
