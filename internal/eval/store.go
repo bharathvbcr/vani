@@ -46,7 +46,29 @@ type Entry struct {
 	Labels     map[string]string `json:"labels"`
 	TextSHA256 string            `json:"text_sha256,omitempty"`
 	LabeledAt  time.Time         `json:"labeled_at"`
+	// Source and PSelect belong to a would_apply label (see WouldApply): the
+	// sampling stratum the posting was drawn from ("decile:10",
+	// "dropped:title:role_fit") or SourceManual, and the posting's inclusion
+	// probability in that draw. A triage-slot label carries neither.
+	Source  string  `json:"source,omitempty"`
+	PSelect float64 `json:"p_select,omitempty"`
 }
+
+const (
+	// WouldApply is the label slot for the owner's "would I apply to this" read
+	// of a posting. Its options are WouldApplyOptions and Skip. It is not a
+	// triage slot: no backend answers it, so the triage report ignores it.
+	WouldApply = "would_apply"
+	// SourceManual marks a would_apply label the owner gave outside any sample.
+	// It has no inclusion probability, so the relevance report keeps it out of
+	// every stratum.
+	SourceManual = "manual"
+	// maxSourceBytes bounds a Source.
+	maxSourceBytes = 64
+)
+
+// WouldApplyOptions are the would_apply values besides Skip.
+var WouldApplyOptions = []string{"yes", "maybe", "no"}
 
 // Store keeps labels in LabelDir/labels.jsonl and description text in TextDir.
 type Store struct {
@@ -90,7 +112,52 @@ func slotOptions() map[string]map[string]bool {
 		}
 		out[sl.Name] = m
 	}
+	wa := make(map[string]bool, len(WouldApplyOptions))
+	for _, o := range WouldApplyOptions {
+		wa[o] = true
+	}
+	out[WouldApply] = wa
 	return out
+}
+
+// validSource reports whether s is a short lower-case token: letters, digits
+// and _:-. (what a stratum name is made of).
+func validSource(s string) bool {
+	if s == "" || len(s) > maxSourceBytes {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == ':' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// checkSampling validates Source and PSelect: a would_apply label names its
+// stratum and, unless it is manual, an inclusion probability in (0, 1]; any
+// other label carries neither.
+func (l Entry) checkSampling() error {
+	_, wa := l.Labels[WouldApply]
+	if !wa {
+		if l.Source != "" || l.PSelect != 0 {
+			return errors.New("eval: source and p_select belong to a would_apply label")
+		}
+		return nil
+	}
+	if !validSource(l.Source) {
+		return fmt.Errorf("eval: would_apply label needs a source of at most %d characters from a-z 0-9 _ : - .", maxSourceBytes)
+	}
+	if l.Source == SourceManual {
+		if l.PSelect != 0 {
+			return errors.New("eval: a manual would_apply label has no p_select")
+		}
+		return nil
+	}
+	if !(l.PSelect > 0 && l.PSelect <= 1) { // false for NaN
+		return fmt.Errorf("eval: p_select %v must be in (0, 1]", l.PSelect)
+	}
+	return nil
 }
 
 // Validate refuses a label with no key, no slots, an unknown slot, or a value
@@ -115,7 +182,7 @@ func (l Entry) Validate() error {
 	if l.TextSHA256 != "" && !validHash(l.TextSHA256) {
 		return fmt.Errorf("eval: malformed text_sha256 %q", l.TextSHA256)
 	}
-	return nil
+	return l.checkSampling()
 }
 
 func validHash(h string) bool {

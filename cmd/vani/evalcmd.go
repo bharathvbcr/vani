@@ -76,7 +76,10 @@ func (e *env) cmdLabel(args []string) error {
 	if sd == 0 {
 		sd = now().UnixNano()
 	}
-	queue := eval.Queue(recs, s, *n, rand.New(rand.NewSource(sd)))
+	queue, err := eval.Queue(recs, s, *n, rand.New(rand.NewSource(sd)), e.dropRules())
+	if err != nil {
+		return fmt.Errorf("labels unreadable, refusing to queue (would repeat work): %w", err)
+	}
 	if len(queue) == 0 {
 		fmt.Fprintln(e.stdout, "nothing to label: no unlabelled triaged postings")
 		return nil

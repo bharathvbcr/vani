@@ -118,6 +118,7 @@ func BuildHeldOut(recs []ledger.Record, s *Store, names Names, sp Split) (Report
 	if bad > 0 {
 		return Report{}, HeldOut{}, fmt.Errorf("eval: %d label lines are unreadable; a held-out split over a partial label file could hold out the wrong postings (plain `vani eval` reports them)", bad)
 	}
+	labels = triageLabels(labels)
 	all := buildReport(recs, labels, bad, nil, names)
 	keys := make([]posting.Key, 0, len(labels))
 	for k := range labels {

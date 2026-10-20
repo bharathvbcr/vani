@@ -196,6 +196,22 @@ type Report struct {
 	Promotions []Promotion
 }
 
+// triageLabels keeps the entries that label at least one triage slot. A
+// would_apply-only entry (the audit's) says nothing about a backend's reading,
+// and counting it would inflate the triage report and move the held-out split.
+func triageLabels(labels map[posting.Key]Entry) map[posting.Key]Entry {
+	out := make(map[posting.Key]Entry, len(labels))
+	for k, e := range labels {
+		for slot := range e.Labels {
+			if slot != WouldApply {
+				out[k] = e
+				break
+			}
+		}
+	}
+	return out
+}
+
 func ratio(num, den int) (float64, bool) {
 	if den <= 0 {
 		return 0, false
@@ -218,6 +234,7 @@ func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
 // buildReport is BuildReport over an already-read label set. BuildHeldOut
 // calls it with the held-out subset, so both reports share one arithmetic.
 func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, err error, names Names) Report {
+	labels = triageLabels(labels)
 	rep := Report{Records: len(recs), ProbabilityBackend: names.probability()}
 	rep.MalformedLines = bad
 	if err != nil {

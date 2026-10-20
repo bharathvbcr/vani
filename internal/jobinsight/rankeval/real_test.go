@@ -23,6 +23,11 @@ import (
 // age (half-life 14 days; unknown age 0.3). The proxy is partly circular (Score
 // reads role_fit too); it is a sanity check of how fit and recency trade off on
 // real readings, not a ground truth. No titles, companies or text are printed.
+//
+// REGRESSION-ONLY: this proxy shares its inputs with the ranker, so it detects
+// a change in how Score trades fit against recency, not whether the ranking
+// matches what the owner wants. Relevance is measured by `vani relevance`, from
+// the owner's would_apply labels (internal/eval).
 func TestRealLedgerComposition(t *testing.T) {
 	dir := os.Getenv("VANI_REAL_STATE")
 	if dir == "" {
@@ -58,6 +63,7 @@ func TestRealLedgerComposition(t *testing.T) {
 		gain[i] = (math.Exp2(grade) - 1) * rec
 		leg[i] = realLegacy(i, r, now)
 	}
+	t.Logf("REGRESSION-ONLY proxy (circular with Score; not a relevance measure: see `vani relevance`)")
 	t.Logf("real ledger: %d ranked postings (of %d), now %s", len(recs), len(snap.Records), now.Format(time.DateOnly))
 
 	order := func(less func(a, b int) bool) []int {
