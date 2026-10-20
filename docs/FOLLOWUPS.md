@@ -744,11 +744,11 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     is not set yet, because the installed binary predates the key and rejects it. Add it once the
     merged build is installed, then run `vani semantic warm`. Without it Score runs without the
     embedding part (rankeval "this-machine": NDCG@10 0.53 vs 0.74 with every signal).
-  - Owner decision: `rank_penalties` (demote only, Rule 7) with
-    `[{"slot": "seniority", "values": ["senior"]}]` suits the early-career target. On a copy of the
-    real ledger it takes senior readings in the top 20 from 13 to 4 (proxy NDCG@20 0.792 → 0.924;
-    the proxy does not read seniority, so its gain comes from the fit mix and ages). Not in the
-    live config.
+  - Approved by the owner 2026-10-19, to add with `semantic.snapshot` once the merged build is
+    installed: `rank_penalties` (demote only, Rule 7) `[{"slot": "seniority", "values": ["senior"]}]`.
+    On a copy of the real ledger it takes senior readings in the top 20 from 13 to 4 (proxy
+    NDCG@20 0.792 → 0.924; the proxy does not read seniority, so its gain comes from the fit mix
+    and ages).
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
   - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
