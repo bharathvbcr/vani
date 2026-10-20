@@ -23,6 +23,12 @@ type Board struct {
 	Company string `json:"company"`
 	// Region selects a regional API host where one exists ("eu" for Lever).
 	Region string `json:"region,omitempty"`
+	// Domain is the host of the company's own website ("www.anthropic.com"),
+	// optional. Vani fetches the company's icon from fixed paths on it
+	// (internal/logo), so it must be in allowed_hosts like a board host, and it
+	// must be the host that serves the icon: a redirect to another host is
+	// refused like any other.
+	Domain string `json:"domain,omitempty"`
 
 	// Host is the board's API host where the ATS does not fix one: the
 	// Workday tenant host "{tenant}.wd{N}.myworkdayjobs.com" (its tenant label

@@ -110,6 +110,9 @@ type jobJSON struct {
 	DupCandidateOf string  `json:"dup_candidate_of,omitempty"`
 	DupSiblingOf   string  `json:"dup_sibling_of,omitempty"`
 	DupScore       float64 `json:"dup_score,omitempty"`
+	// Logo is the absolute path of the company's cached icon (internal/logo),
+	// set only when the file is there; the app shows the monogram otherwise.
+	Logo string `json:"logo,omitempty"`
 }
 
 type jobsListJSON struct {

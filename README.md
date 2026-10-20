@@ -432,6 +432,17 @@ serves a whole board, so it reads the host's `robots.txt` once per board. The wa
 each navigation, since lightpanda gives up on a first response after 5 s and the egress proxy's own
 per-host pacing must stay under that.
 
+Company icons: a board's optional `domain` is the host of the company's own website
+(`watchlist add … --domain www.acme.com`, or `watchlist domain --ats gh --token acme --domain
+www.acme.com` for a board you have; `--allow-host` adds it to `allowed_hosts`, which must list it).
+Each run asks that host for `/apple-touch-icon.png`, then `/favicon.ico`, and keeps the first reply
+that is a PNG, ICO or JPEG of at most 256 KiB in `<state dir>/logos/`. It never reads the site's
+pages or follows their links, and a redirect to another host is refused, so give the host that serves
+the icon (often the `www.` one). Icons are refetched after 30 days; a domain that failed waits 7. The
+refresh takes at most 2 minutes and 50 domains a run, and only warns. `logos refresh [--force]` does
+it now. `jobs list`/`show` give each job's cached icon as `logo` (an absolute path); the Jobs tab shows
+it in place of the company's monogram, and the monogram when there is none.
+
 Config and state default to `~/Library/Application Support/Vani/` on macOS, on Linux to
 `$XDG_CONFIG_HOME/vani/config.json` and `$XDG_STATE_HOME/vani` (`~/.config`, `~/.local/state`
 when unset), and on Windows to `%AppData%\Vani`; override either with `VANI_CONFIG` and

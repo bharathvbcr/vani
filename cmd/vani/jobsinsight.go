@@ -317,6 +317,9 @@ type insight struct {
 	rc jobinsight.RankContext
 	// sem is the cache-only knowledge-base matcher; nil when off or unusable.
 	sem *semantic.Matcher
+	// logos finds each posting's cached company icon; nil when the config
+	// could not be read (every job then shows its monogram).
+	logos *logoIndex
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -354,6 +357,9 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 	in := &insight{vocab: v, now: now(), halfLife: halfLife,
 		info: insightJSON{HalfLifeDays: halfLife, Vocab: v.Len()}}
 	cfg, err := e.loadConfig()
+	if err == nil {
+		in.logos = newLogoIndex(cfg, e.stateDir)
+	}
 	switch {
 	case err != nil:
 		in.info.Warning = "keywords are not marked against your target roles: " + oneLine(err.Error(), 200)
@@ -423,6 +429,7 @@ func (in *insight) enrich(j *jobJSON, r ledger.Record, kwLimit int) []jobinsight
 	j.Reasons = parseReasons(j.Explanation)
 	in.semanticInto(j, r)
 	j.Pay = jobinsight.ParsePay(r.Posting.Description)
+	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	return hits
 }
 
