@@ -17,7 +17,8 @@ func TestRelevanceFromKnownPartsOnly(t *testing.T) {
 	}
 	dw := DefaultWeights()
 	total := dw.Fit + dw.Coverage + dw.Semantic + dw.Keyword + dw.Title + dw.Employer
-	if want := dw.Fit / total; math.Abs(only.RelevanceKnown-want) > 1e-9 {
+	// The fit's share is its weight scaled by the reading's confidence (p 0.95).
+	if want := 0.95 * dw.Fit / total; math.Abs(only.RelevanceKnown-want) > 1e-9 {
 		t.Errorf("fit-only RelevanceKnown %v, want %v (the fit share; an unpreferred employer is not evidence)", only.RelevanceKnown, want)
 	}
 
@@ -29,8 +30,9 @@ func TestRelevanceFromKnownPartsOnly(t *testing.T) {
 	if full.Relevance < 80 {
 		t.Errorf("everything known and matching shows %v, want >= 80", full.Relevance)
 	}
-	if math.Abs(full.RelevanceKnown-1) > 1e-9 {
-		t.Errorf("full RelevanceKnown %v, want 1", full.RelevanceKnown)
+	// Everything is known; only the fit's doubt (p 0.95) is not evidence.
+	if want := 1 - 0.05*dw.Fit/total; math.Abs(full.RelevanceKnown-want) > 1e-9 {
+		t.Errorf("full RelevanceKnown %v, want %v", full.RelevanceKnown, want)
 	}
 }
 
@@ -41,20 +43,19 @@ func TestRelevanceFromKnownPartsOnly(t *testing.T) {
 func TestMatchModes(t *testing.T) {
 	in := Inputs{RoleFit: Slot{Value: "strong_fit", Answered: true, P: 0.95, HasP: true}, AgeKnown: true, AgeDays: 2}
 	w := DefaultWeights()
-	fitVal, rest, _ := w.fitValue("strong_fit")
-	fit := 0.95*fitVal + 0.05*rest // ordinal: the rest leans on the neighbours
+	fit, _ := w.fitValue("strong_fit") // confidence scales the weight, not the value
 	known := Score(in)
-	// Shares are the weights over their sum; only fit is known, and the shrink
-	// pulls it toward the prior by MatchShrink.
+	// Shares are the weights over their sum, the fit's scaled by its confidence;
+	// only fit is known, and the shrink pulls it toward the prior by MatchShrink.
 	sum := w.Fit + w.Coverage + w.Semantic + w.Keyword + w.Title + w.Employer
-	fitShare := w.Fit / sum
+	fitShare := 0.95 * w.Fit / sum
 	if want := (fitShare*fit + w.MatchShrink*w.UnknownPrior) / (fitShare + w.MatchShrink); math.Abs(known.Match-want) > 1e-9 {
 		t.Errorf("KnownMatch: Match %v, want %v", known.Match, want)
 	}
 	w.KnownMatch = false
 	diluted := ScoreWith(in, w)
-	// fit share x fit + prior x (coverage + semantic + keyword + title shares) + employer share x 0
-	if want := fitShare*fit + w.UnknownPrior*(w.Coverage+w.Semantic+w.Keyword+w.Title)/sum; math.Abs(diluted.Match-want) > 1e-9 {
+	// fit share x fit + prior x (everything else, including the doubt in the fit) + employer share x 0
+	if want := fitShare*fit + w.UnknownPrior*(1-fitShare-w.Employer/sum); math.Abs(diluted.Match-want) > 1e-9 {
 		t.Errorf("prior-filled: Match %v, want %v", diluted.Match, want)
 	}
 	if !(known.Score > diluted.Score) {
@@ -67,7 +68,7 @@ func TestMatchModes(t *testing.T) {
 	}
 }
 
-// Read as ordinal, role_fit stays monotone: at any confidence a better option
+// role_fit stays monotone: at any confidence a better option
 // is worth at least as much as a worse one, more confidence in a good option
 // never lowers the fit and more confidence in a bad one never raises it.
 func TestOrdinalFitMonotone(t *testing.T) {

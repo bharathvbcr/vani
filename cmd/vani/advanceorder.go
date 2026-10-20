@@ -15,6 +15,14 @@ type orderOption func(*orderSettings)
 
 type orderSettings struct {
 	semantic func(ledger.Record) (float64, bool)
+	// ageNeutral is jobinsight.RankContext.AgeNeutral for the Score order, so
+	// advance ages an age-neutral employer's undated postings no more than
+	// `vani jobs` and the digest do.
+	ageNeutral map[string]bool
+	// rules and titleRank are the config's drop rules and title signals
+	// (rankRules), so the Score order reads them as `vani jobs` and the digest do.
+	rules     []jobinsight.DropRule
+	titleRank func(string) int
 	// todo, when set, is which records advanceAll advances, in place of its
 	// pipeline-status rule.
 	todo func(ledger.Record) bool
@@ -34,6 +42,19 @@ func settingsOf(opts []orderOption) orderSettings {
 // semanticRank); a nil f changes nothing.
 func withSemantic(f func(ledger.Record) (float64, bool)) orderOption {
 	return func(s *orderSettings) { s.semantic = f }
+}
+
+// withAgeNeutral passes the config's age_neutral_companies (as
+// jobinsight.AgeNeutralSet) to the Score order; it changes nothing without
+// withSemantic, whose Score order is the only one that reads age through Score.
+func withAgeNeutral(set map[string]bool) orderOption {
+	return func(s *orderSettings) { s.ageNeutral = set }
+}
+
+// withRank passes the config's drop rules and title signals (rankRules) to the
+// Score order; like withAgeNeutral it changes nothing without withSemantic.
+func withRank(rules []jobinsight.DropRule, titleRank func(string) int) orderOption {
+	return func(s *orderSettings) { s.rules, s.titleRank = rules, titleRank }
 }
 
 // withTodo makes advanceAll advance exactly the records f selects (vani
@@ -70,7 +91,8 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 	var rc jobinsight.RankContext
 	if set.semantic != nil {
 		rc = jobinsight.NewRankContext(all, nil, at)
-		rc.Semantic = set.semantic
+		rc.Semantic, rc.AgeNeutral = set.semantic, set.ageNeutral
+		rc.DropRules, rc.TitleRank = set.rules, set.titleRank
 	}
 	firstCrawl := map[string]time.Time{}
 	for _, r := range all {

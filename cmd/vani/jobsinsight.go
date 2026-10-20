@@ -556,9 +556,38 @@ func inSet(set map[string]bool, v string) bool {
 	return set[v]
 }
 
-// sortJobs orders a list. "default" is the original order: marked views by
-// when they were marked, the rest by priority (jobinsight.Score), then rank,
-// triage fit, then first seen.
+// diversifyJobs shapes a sorted list for reading, as the digest does
+// (jobinsight.Diversify): exact company+title duplicates fold into the first
+// row, which counts them in Similar, and one company leads at most
+// jobinsight.DiversityPerCompany rows of the first jobinsight.DiversityWindow.
+// Only the ranked orders of the "new" view (unmarked roles) are shaped: the owner's marked views,
+// the "all" view, which mixes in marked roles,
+// and the fresh, company and salary sorts are lists the owner asked for as is.
+func diversifyJobs(sel []selected, view, by string) []selected {
+	if view != "new" || by != "default" && by != "priority" && by != "relevance" {
+		return sel
+	}
+	rows := jobinsight.Diversify(len(sel),
+		func(i int) string { return sel[i].job.Company },
+		func(i int) string { return sel[i].job.Title },
+		jobinsight.DiversityPerCompany, jobinsight.DiversityWindow)
+	out := make([]selected, 0, len(rows))
+	for _, r := range rows {
+		s := sel[r.Index]
+		s.job.Similar = len(r.Similar)
+		out = append(out, s)
+	}
+	return out
+}
+
+// resultOf is the two numbers an order reads, as jobinsight's comparators take them.
+func resultOf(j jobJSON) jobinsight.Result {
+	return jobinsight.Result{Score: j.Priority, Relevance: j.Relevance}
+}
+
+// sortJobs orders a list. "default" is the digest's order: marked views by
+// when they were marked, the rest by priority (jobinsight.Score), then
+// relevance, then key (jobinsight.ComparePriority, the one tie-break).
 // Every order ends on the key, so it is total and stable across calls.
 func sortJobs(sel []selected, view, by string) {
 	byMarkTime := by == "default" && (view == "saved" || view == "applied" || view == "hidden")
@@ -566,19 +595,9 @@ func sortJobs(sel []selected, view, by string) {
 		a, b := sel[i].job, sel[j].job
 		switch by {
 		case "priority":
-			if a.Priority != b.Priority {
-				return a.Priority > b.Priority
-			}
-			if a.Relevance != b.Relevance {
-				return a.Relevance > b.Relevance
-			}
+			return jobinsight.ComparePriority(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
 		case "relevance":
-			if a.Relevance != b.Relevance {
-				return a.Relevance > b.Relevance
-			}
-			if a.Priority != b.Priority {
-				return a.Priority > b.Priority
-			}
+			return jobinsight.CompareRelevance(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
 		case "fresh":
 			if a.FreshAt.IsZero() != b.FreshAt.IsZero() {
 				return !a.FreshAt.IsZero()
@@ -609,21 +628,9 @@ func sortJobs(sel []selected, view, by string) {
 			if byMarkTime && !a.MarkedAt.Equal(b.MarkedAt) {
 				return a.MarkedAt.After(b.MarkedAt)
 			}
-			if a.Priority != b.Priority {
-				return a.Priority > b.Priority
-			}
-			if (a.Rank != nil) != (b.Rank != nil) {
-				return a.Rank != nil
-			}
-			if a.Rank != nil && *a.Rank != *b.Rank {
-				return *a.Rank > *b.Rank
-			}
-			if fa, fb := fitOrder(a), fitOrder(b); fa != fb {
-				return fa < fb
-			}
-			if !a.FirstSeen.Equal(b.FirstSeen) {
-				return a.FirstSeen.After(b.FirstSeen)
-			}
+			// The digest's order: priority, relevance, key. Rank (DevPrism coverage)
+			// is already in both numbers, so it is not a tie-break.
+			return jobinsight.ComparePriority(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
 		}
 		return a.Key < b.Key
 	})

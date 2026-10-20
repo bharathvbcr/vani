@@ -230,7 +230,13 @@ func (w *wired) advanceOrder() orderOption {
 	if warning != "" {
 		w.warnf("advance order: %s", warning)
 	}
-	return withSemantic(semanticRank(m))
+	neutral := jobinsight.AgeNeutralSet(w.cfg.AgeNeutralCompanies)
+	rules, titleRank := rankRules(w.cfg)
+	return func(s *orderSettings) {
+		withSemantic(semanticRank(m))(s)
+		withAgeNeutral(neutral)(s)
+		withRank(rules, titleRank)(s)
+	}
 }
 
 // warmSemanticDocs scores up to max of docs; warmSemantic's body.
