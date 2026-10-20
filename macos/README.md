@@ -17,6 +17,15 @@ going. A role's detail shows **Why it ranks here**: the components of the priori
 (`score_factors`; an absent signal reads "not known", never 0) and the posting lines that matched your
 résumé roles best (`semantic.evidence`). Both are display only, decoded leniently, and absent from an older
 `vani`. Settings › Vani sets the freshness half-life (`--half-life`, sent only when it is not Vani's 10 days).
+Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R), which starts
+`vani run-once` with options for that run only: every board or the ones you pick from the watchlist,
+whether to triage, score and explain (and a cap in place of `advance_per_run`), and whether to write a
+digest. The last choices are remembered. The run gets the keys drafting gets, writes its output to
+`<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes.
+**Stop** sends the run this app started SIGTERM, which vani records as cancelled; a run the daemon
+or a shell started is shown but never signalled. A run vani refuses before it starts (the daemon
+holds the ledger) shows vani's reason from the log. The run is a separate process, so quitting the
+app does not stop it; the next launch shows it from the run record, without Stop.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.

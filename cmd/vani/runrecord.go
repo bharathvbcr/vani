@@ -85,7 +85,12 @@ type runRecord struct {
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitzero"`
 	Outcome    string    `json:"outcome"`
-	Stage      string    `json:"stage,omitempty"`
+	// Trigger is who started the run: triggerSchedule (the daemon) or
+	// triggerManual (run-once). Absent in an older vani's record.
+	Trigger string `json:"trigger,omitempty"`
+	// Options are a manual run's overrides; nil when it had none.
+	Options *runOptions `json:"options,omitempty"`
+	Stage   string      `json:"stage,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	// Cause names a failed run's known cause (runCause), so a reader can word
 	// the failure without reading Error; "" when the failure has none of them.

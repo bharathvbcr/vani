@@ -296,14 +296,14 @@ public struct DraftRunner: Sendable {
         case refused(DraftReply)
     }
 
-    /// The program and argv that start `vani <subcommand>`: through
+    /// The program and argv that start `vani <arguments>`: through
     /// anthropic-account when Vani's config names the anthropic provider, else
     /// vani itself. Both paths are absolute, because the child's PATH is only
     /// the system folders.
-    func command(_ subcommand: String, usesModel: Bool = true) -> Command {
+    func command(_ arguments: [String], usesModel: Bool = true) -> Command {
         guard usesModel, case let .anthropicAccount(launcher) = keys,
               VaniConfig.llmProvider(configPath: configPath) == "anthropic" else {
-            return .run(vaniBinary, [subcommand])
+            return .run(vaniBinary, arguments)
         }
         guard let launcher, FileManager.default.isExecutableFile(atPath: launcher.path) else {
             let looked = launcher.map { [$0] } ?? AnthropicAccount.candidates
@@ -312,7 +312,36 @@ public struct DraftRunner: Sendable {
         if let account, !account.isEmpty, !AnthropicAccount.isValidName(account) {
             return .refused(.failure("account", "the saved Anthropic account name is not valid; choose one in Settings"))
         }
-        return .run(launcher, AnthropicAccount.execArguments(account: account, command: vaniBinary, arguments: [subcommand]))
+        return .run(launcher, AnthropicAccount.execArguments(account: account, command: vaniBinary, arguments: arguments))
+    }
+
+    /// How to start one `vani` job: the program, its argv and its environment,
+    /// keys included.
+    public struct Launch: Sendable {
+        public var program: URL
+        public var arguments: [String]
+        public var environment: [String: String]
+    }
+
+    /// The launch for `vani <arguments>` with the minimal environment and, for a
+    /// job that calls a model, its keys (`addKeys`), or the reply that refuses
+    /// it. It may wait on a Keychain prompt, up to `keychainTimeout`, so call it
+    /// off the main thread.
+    public func prepare(_ arguments: [String], withDecisionKey: Bool = false, usesModel: Bool = true) -> Prepared {
+        let program: URL, argv: [String]
+        switch command(arguments, usesModel: usesModel) {
+        case let .refused(f): return .refused(f)
+        case let .run(p, a): (program, argv) = (p, a)
+        }
+        var env = VaniProcess.environment(configPath: configPath, stateDir: stateDir)
+        // A job that calls no model gets no model key, workspace or decision key.
+        if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey) { return .refused(failure) }
+        return .launch(Launch(program: program, arguments: argv, environment: env))
+    }
+
+    public enum Prepared: Sendable {
+        case launch(Launch)
+        case refused(DraftReply)
     }
 
     /// A Keychain read can block on a macOS "allow access" prompt that nobody
@@ -336,16 +365,13 @@ public struct DraftRunner: Sendable {
     /// environment, in the process it replaces itself with.
     func invoke(_ subcommand: String, input: Data, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
                 usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes) -> Invocation {
-        let program: URL, arguments: [String]
-        switch command(subcommand, usesModel: usesModel) {
+        let launch: Launch
+        switch prepare([subcommand], withDecisionKey: withDecisionKey, usesModel: usesModel) {
         case let .refused(f): return .failure(f)
-        case let .run(p, a): (program, arguments) = (p, a)
+        case let .launch(l): launch = l
         }
-        var env = VaniProcess.environment(configPath: configPath, stateDir: stateDir)
-        // A job that calls no model gets no model key, workspace or decision key.
-        if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey) { return .failure(failure) }
         let t = timeout ?? self.timeout
-        let out = VaniProcess.run(program, arguments: arguments, environment: env, input: input,
+        let out = VaniProcess.run(launch.program, arguments: launch.arguments, environment: launch.environment, input: input,
                                   timeout: t, maxOutputBytes: maxOutputBytes)
         if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
         if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(t)) s")) }

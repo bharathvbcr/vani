@@ -156,6 +156,76 @@ extension VaniProcess {
     }
 }
 
+extension VaniProcess {
+    /// Start a long `vani` job with no timeout: stdin is /dev/null, and stdout
+    /// and stderr go to `log` (created 0600 and truncated; a symlink is refused),
+    /// never to a pipe, so the job runs on and keeps its output if this app
+    /// quits. `onExit` gets the exit status when the job ends while this process
+    /// still runs.
+    public static func launch(_ program: URL, arguments: [String], environment: [String: String], log: URL,
+                              onExit: @escaping @Sendable (Int32) -> Void) throws -> LaunchedJob {
+        guard FileManager.default.isExecutableFile(atPath: program.path) else {
+            throw BankError("the vani binary is missing at \(program.path)")
+        }
+        try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let fd = open(log.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw BankError("cannot open the run log \(log.path): \(String(cString: strerror(errno)))") }
+        let out = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? out.close() } // the child has its own copy once it runs
+        let p = Process()
+        p.executableURL = program
+        p.arguments = arguments
+        p.environment = environment
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = out
+        p.standardError = out
+        p.terminationHandler = { onExit($0.terminationStatus) }
+        do { try p.run() } catch {
+            throw BankError("could not start vani: \(error.localizedDescription)")
+        }
+        return LaunchedJob(process: p, log: log)
+    }
+
+    /// The last line `vani` wrote about itself in a job's log ("vani: …", the
+    /// CLI's own error and warning prefix), bounded to one line; nil when the
+    /// log is unreadable or has none. Only the log's last 16 KB are read.
+    public static func lastVaniLine(inLog log: URL, maxCharacters: Int = 300) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: log) else { return nil }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
+        guard let data = try? h.readToEnd(), let text = String(data: data, encoding: .utf8) else { return nil }
+        let line = text.split(whereSeparator: \.isNewline).last { $0.hasPrefix("vani: ") }
+        return line.map { PipelineStatus.bounded(String($0.dropFirst("vani: ".count)), max: maxCharacters) }
+    }
+}
+
+/// A `vani` job started by `VaniProcess.launch`.
+public final class LaunchedJob: @unchecked Sendable {
+    private let process: Process
+    public let log: URL
+    public let pid: Int32
+    public let startedAt: Date
+
+    init(process: Process, log: URL, startedAt: Date = Date()) {
+        self.process = process
+        self.log = log
+        pid = process.processIdentifier
+        self.startedAt = startedAt
+    }
+
+    public var isRunning: Bool { process.isRunning }
+
+    /// The exit status once the job has ended; nil while it runs.
+    public var exitStatus: Int32? { process.isRunning ? nil : process.terminationStatus }
+
+    /// SIGTERM: vani cancels the run and records it as cancelled.
+    public func stop() {
+        if process.isRunning { process.terminate() }
+    }
+}
+
 /// Each field is written by one reader thread and read only after the group
 /// has finished.
 private final class OutputBox: @unchecked Sendable {
