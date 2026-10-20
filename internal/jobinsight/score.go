@@ -1,5 +1,7 @@
 package jobinsight
 
+import "math"
+
 // Score is the one owner of how a posting is ordered for a person: the Jobs
 // views' default and priority sorts, the Mac app's Home list (which reads
 // priority) and the digest all rank by it. It is display-only (Rule 7): it
@@ -145,14 +147,177 @@ type Weights struct {
 	CompanySmoothing, CompanySpan float64
 }
 
+// BasisSemantic is the knowledge-base similarity.
+const BasisSemantic Basis = "semantic"
+
+const (
+	// DefaultScoreHalfLifeDays is the age that halves the freshness bonus.
+	DefaultScoreHalfLifeDays = 7.0
+	// CompanyMin and CompanyMax bound the company factor under
+	// DefaultWeights (CompanySpan 0.10).
+	CompanyMin = 0.9
+	CompanyMax = 1.1
+)
+
 // Score ranks in by DefaultWeights.
-//
-// TEMPORARY: the ranker body lands in the next commit; until then every
-// posting scores zero, which the evaluation harness must report as failing.
 func Score(in Inputs) Result { return ScoreWith(in, DefaultWeights()) }
 
-// ScoreWith ranks in by w. TEMPORARY stub, see Score.
-func ScoreWith(in Inputs, w Weights) Result { return Result{} }
+// DefaultWeights are the shipped constants.
+func DefaultWeights() Weights {
+	return Weights{
+		Fit: 0.30, Coverage: 0.20, Semantic: 0.25, Keyword: 0.10, Title: 0.10, Employer: 0.05,
+		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
+		PenaltyStrength: 0.60, ExcludedTitle: 0.50, UnsureGate: 0.85,
+		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays,
+		CompanyMinMarks: 3, CompanySmoothing: 5, CompanySpan: 0.10,
+	}
+}
 
-// DefaultWeights are the shipped constants. TEMPORARY stub, see Score.
-func DefaultWeights() Weights { return Weights{} }
+// finite reports whether v is neither NaN nor infinite.
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+// conf is how far a slot's reading is trusted, in [0,1].
+func (w Weights) conf(s Slot) float64 {
+	c := 0.0
+	switch {
+	case s.HasP && finite(s.P):
+		c = clamp01(s.P)
+	case s.Answered:
+		c = clamp01(w.AnsweredConf)
+	}
+	if s.Disagree {
+		c *= clamp01(w.DisagreeConf)
+	}
+	return c
+}
+
+// ScoreWith ranks in by w. It is pure: the same inputs give the same Result,
+// and nothing in it is dropped or changes status (Rule 7).
+func ScoreWith(in Inputs, w Weights) Result {
+	prior := clamp01(w.UnknownPrior)
+
+	type part struct {
+		name   string
+		weight float64
+		value  float64
+		known  bool
+	}
+	var parts [6]part
+
+	fitConf := w.conf(in.RoleFit)
+	base, ok := fitBase[in.RoleFit.Value]
+	if !ok {
+		fitConf = 0
+	}
+	parts[0] = part{"fit", w.Fit, fitConf*base + (1-fitConf)*prior, fitConf > 0}
+
+	parts[1] = part{"coverage", w.Coverage, prior, false}
+	if in.HasCoverage && finite(in.Coverage) {
+		parts[1].value, parts[1].known = clamp01(in.Coverage/100), true
+	}
+
+	parts[2] = part{"semantic", w.Semantic, prior, false}
+	if in.HasSemantic && finite(in.Semantic) {
+		parts[2].value, parts[2].known = clamp01(in.Semantic), true
+	}
+
+	parts[3] = part{"keyword", w.Keyword, prior, false}
+	if in.Target {
+		t, b := float64(max(in.TitleHits, 0)), float64(max(in.BodyHits, 0))
+		parts[3].value = clamp01(0.6*(1-math.Exp(-t/1.5)) + 0.4*(1-math.Exp(-b/3)))
+		parts[3].known = true
+	}
+
+	excluded := in.TitleSignals && in.TitleRank < 0
+	parts[4] = part{"title", w.Title, prior, false}
+	if in.TitleSignals {
+		parts[4].known = true
+		if excluded {
+			parts[4].value = 0
+		} else {
+			parts[4].value = float64(min(in.TitleRank, 3)) / 3
+		}
+	}
+
+	parts[5] = part{"employer", w.Employer, 0, true}
+	if in.PreferredEmployer {
+		parts[5].value = 1
+	}
+
+	// Weights that are not positive numbers are skipped.
+	var sum float64
+	for i := range parts {
+		if !(parts[i].weight > 0) || math.IsInf(parts[i].weight, 0) {
+			parts[i].weight = 0
+		}
+		sum += parts[i].weight
+	}
+	match, share := prior, [6]float64{}
+	if sum > 0 {
+		match = 0
+		for i, p := range parts {
+			share[i] = p.weight / sum
+			match += share[i] * p.value
+		}
+		match = clamp01(match)
+	}
+
+	basis, best := BasisNone, 0.0
+	for i, b := range [...]Basis{BasisFit, BasisRank, BasisSemantic} {
+		if c := share[i] * parts[i].value; parts[i].known && c > best {
+			basis, best = b, c
+		}
+	}
+
+	gate := 1.0
+	for _, p := range in.Penalties {
+		gate *= 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
+	}
+	if excluded {
+		gate *= clamp01(w.ExcludedTitle)
+	}
+	if in.Unsure {
+		gate *= clamp01(w.UnsureGate)
+	}
+	gate = clamp01(gate)
+
+	floor := clamp01(w.FreshFloor)
+	fresh := floor
+	if in.AgeDays >= 0 {
+		half := in.HalfLifeDays
+		if !(half > 0 && half <= MaxHalfLifeDays) {
+			half = w.HalfLifeDays
+			if !(half > 0 && half <= MaxHalfLifeDays) {
+				half = DefaultScoreHalfLifeDays
+			}
+		}
+		fresh = floor + (1-floor)*math.Exp2(-float64(in.AgeDays)/half)
+	}
+	fresh = clamp01(fresh)
+
+	company := 1.0
+	liked, hidden := float64(max(in.Company.Liked, 0)), float64(max(in.Company.Hidden, 0))
+	span := 0.0
+	if finite(w.CompanySpan) {
+		span = clamp(w.CompanySpan, 0, 1)
+	}
+	if n := liked + hidden; n >= float64(w.CompanyMinMarks) && n > 0 && n+w.CompanySmoothing > 0 {
+		company = clamp(1+span*(liked-hidden)/(n+w.CompanySmoothing), 1-span, 1+span)
+	}
+
+	r := Result{
+		Score:     round1(clamp(100*match*gate*fresh*company, 0, 100)),
+		Relevance: round1(clamp(100*match*gate*company, 0, 100)),
+		Match:     match, Gate: gate, Fresh: fresh, Company: company,
+		Basis:   basis,
+		Factors: make([]Factor, 0, 9),
+	}
+	for i, p := range parts {
+		r.Factors = append(r.Factors, Factor{Name: p.name, Value: p.value, Weight: share[i], Known: p.known})
+	}
+	r.Factors = append(r.Factors,
+		Factor{Name: "gate", Value: gate, Known: true},
+		Factor{Name: "fresh", Value: fresh, Known: true},
+		Factor{Name: "company", Value: company, Known: true})
+	return r
+}

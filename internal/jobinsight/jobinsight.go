@@ -45,6 +45,42 @@ func Fresh(posted, firstSeen, now time.Time) (time.Time, FreshSource) {
 	return firstSeen, FromSeen
 }
 
+// FreshAge is the one rule for a posting's freshness date and whether its age
+// is known. boardFirstCrawl is the earliest first-seen among the posting's
+// board's records: the pipeline stamps every posting a board lists in one
+// Reconcile call with the same instant, so a posting first seen at exactly that
+// instant was listed in the board's first crawl and may be arbitrarily old.
+//
+//   - A plausible posted date (see Fresh) is known, and is never later than
+//     firstSeen: a posting cannot look fresher than when Vani saw it.
+//   - Otherwise a firstSeen after the board's first crawl is known: the posting
+//     was put up at most one run before Vani saw it.
+//   - Otherwise (listed in the first crawl, undated, or nothing at all) the age
+//     is unknown; at is firstSeen, which may be the zero time.
+func FreshAge(posted, firstSeen, boardFirstCrawl, now time.Time) (at time.Time, src FreshSource, known bool) {
+	if p, s := Fresh(posted, firstSeen, now); s == FromPosted {
+		if !firstSeen.IsZero() && p.After(firstSeen) {
+			p = firstSeen
+		}
+		return p, FromPosted, true
+	}
+	if !firstSeen.IsZero() && !firstSeen.Equal(boardFirstCrawl) {
+		return firstSeen, FromSeen, true
+	}
+	return firstSeen, FromSeen, false
+}
+
+// BoardOf is the board part of a posting key: everything before its last
+// component ("gh:acme" for "gh:acme:123", "wd:tenant:site" for a Workday key).
+func BoardOf(key string) string {
+	for i := len(key) - 1; i >= 0; i-- {
+		if key[i] == ':' {
+			return key[:i]
+		}
+	}
+	return key
+}
+
 // AgeDays is whole days from at to now, never negative. A zero at gives -1:
 // the age is unknown.
 func AgeDays(at, now time.Time) int {
