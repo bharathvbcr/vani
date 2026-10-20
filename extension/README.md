@@ -71,8 +71,11 @@ native-messaging manifest allows. `dist-safari/` is the same code with a Safari-
 
 Each job gets its own resume. On a job's application page, open the popup and use **Resume for
 this job → Choose PDF** (at most 512 KB). The Vani Apply Mac app keeps a copy in its App Group
-folder, keyed by the page's address (the same reduced URL Mark Applied uses), so Chrome and Safari
-read the same file. On **Fill**, the file input that reads as a resume (Resume/CV, Résumé, CV, or a
+folder, keyed by the page's address (the reduced URL Mark Applied uses; on Workday one key per
+posting, so its `/job/`, `/en-US/…/job/`, `/details/` and `/apply/…` routes share one resume), so
+Chrome and Safari read the same file. A resume chosen before that, under a Workday page's old
+address, is still found on that same route and moves to the new key when you choose again; one chosen
+on a different route than the page you are on is not found until you choose it again. On **Fill**, the file input that reads as a resume (Resume/CV, Résumé, CV, or a
 `resume` name) gets that PDF through the browser's drag-and-drop API and is outlined **yellow**,
 with the file name in its tooltip: check it is the version for this job. A cover-letter,
 "other attachments", transcript or portfolio box never gets it.
@@ -127,6 +130,43 @@ each one:
   because Safari's sandboxed extension cannot start `vani` itself.
   Failures say why: the budget is spent, the Mac app isn't reachable, no key is configured, or the
   draft timed out.
+
+### Crawling a whole listing into Vani
+
+In the scrape drawer, **Crawl all pages → Vani** reads every page of the listing you are on, not
+just the one on screen, and sends the jobs to Vani the way **Save to Vani** does (`ingestJobs`,
+batches of at most 200; `src/crawlrun.ts`, `src/crawler.ts`). Progress shows under the button,
+**Stop** ends the crawl and sends nothing, and the last line says what was read, what was left out
+and what Vani answered.
+
+- **Workday boards** are read through the board's own listing API, same-origin from the page, so
+  no host permission is added. That API serves at most 2000 rows of one query and then serves page
+  1 again, so a bigger board is split by one of its own facets. Vani analyses the description it
+  is sent and fetches none, so the crawl reads the descriptions of the 200 most relevant jobs
+  (ranked against your bank's target profile). Each description is trimmed to the 4000-byte ingest
+  bound, starting where the role is described. The jobs it did not fetch are counted, not sent.
+- **Other listings** are walked through their own "Next" or "Load more" control. A `rel=next` or
+  next link is fetched and parsed only when it stays on the same listing: the same origin and path,
+  and the same query apart from paging parameters. Anything else is reported and not followed. The
+  tab never navigates.
+- **Bounds:** 600 requests, 3 in flight, a 250 ms pause before each, 15 s per request, a 4 MiB
+  body, 15 minutes per Workday crawl, 50 pages or 2000 jobs per page walk. Eight descriptions
+  failing in a row end the description phase. The crawl reports itself complete only when the
+  board's own count (two of its facets agreeing) was reached and nothing was left out.
+- **Batches** close at 200 jobs or 800 KiB, whichever comes first. The size is counted the way the
+  Mac host measures its 1 MiB bound, with every `/` escaped. A live 200-job NVIDIA batch was 749 KB.
+- **Saving the search:** a Workday board with more than 5,000 jobs is not saved as a daily search,
+  because the daemon's Workday adapter (`workday.MaxPostings` for a board with no `max_postings`)
+  refuses a board that size on every run. The status line says so. Narrow the board with a search
+  or filter, then crawl again to save it.
+- **Checked, and not checked.**
+  - Checked: the crawl code against NVIDIA's live board (2753 of 2753 jobs listed, descriptions
+    read), the same-origin listing and detail requests from inside the real careers page, and
+    `bun test`.
+  - Loaded in a real Chrome: the drawer button, progress, Stop, an NVIDIA crawl and a Greenhouse
+    pager all reached the native host. An app whose bundled `vani` predates `jobs ingest` refuses
+    the batch; a current `vani` queued it.
+  - **Not checked:** saving a daily search from the extension.
 
 ### Marking a job Applied
 
@@ -235,7 +275,7 @@ flowchart LR
 
     subgraph NativeMac["Native macOS Layer"]
         PIPE["Native Messaging Pipe\n(dev.vbcr.vani_apply / stdio)"]
-        HOST["Vani Apply Native Host / Appex\n(Enforces size <= 900KB, strict origin)"]
+        HOST["Vani Apply Native Host / Appex\n(Chunked streaming, strict origin)"]
         SAN["Security & Secret Sanitizer\n(Zero network egress, mode 0600)"]
         APPGROUP[("App Group: bank.json\n(Shared across browsers)")]
         LOG[("activity.jsonl\n(Event types & counts only)")]
@@ -260,12 +300,22 @@ flowchart LR
   answers still in the browser are merged into the app's bank (the newer answer per question
   wins) and then removed from the browser; if that fails or the browser copy is unreadable it is
   left in place. If the app answers with an error, the extension reports it rather than
-  silently writing to the browser, which would split the bank. The bank is capped at 900 KB
-  (Chrome limits a native reply to 1 MB); over the cap, saving is refused until you delete
-  answers. Nothing is sent over the network: the extension has no host permission for any server
+  silently writing to the browser, which would split the bank. Large banks are streamed
+  in 500 KB chunks so Chrome's 1 MB native-messaging reply limit is never exceeded.
+  Nothing is sent over the network: the extension has no host permission for any server
   and makes no network requests. The only new channel is the local native-messaging pipe to the
   Mac app, whose activity log receives event names, the page hostname and counts, never answers
   or labels. Disk protection is the OS's (FileVault). Other extensions cannot read this storage.
+- **Native port (Chrome):** bank ops share one `connectNative` port (`src/nativeport.ts`) instead of
+  launching the host per message. The host is one serial loop, so replies arrive in request order
+  and are matched by position (no request ids; the protocol is unchanged). Up to 4 calls are in
+  flight and 64 pending in all; a call that times out (5 s) or a lost connection closes the port and
+  rejects everything pending, since a late reply would be matched to the wrong call, and the next
+  call reconnects. Only read-only ops (`ping`, `get`, `getChunk`, `queryCandidates`, `listAnswers`,
+  `resumeGet`, `resumeInfo`) are retried once, and only after a disconnect. Ops that can take seconds
+  (`draft`, `jobFind`, `jobMark`, `jobsIngest`) and any unknown op still use one process per message,
+  as do all calls while the port is backing off after failed connections (1 s doubling to 30 s).
+  Safari, and a Chrome without `connectNative`, keep the per-message path.
 - **Never stored or filled:** password fields; card, CVV and expiry fields; SSN, tax-id, passport and
   driver's-licence fields; bank, routing and IBAN fields; date of birth; security questions; one-time
   codes; captchas. Recognition uses input type, `autocomplete` and label words. An import cannot
@@ -399,3 +449,26 @@ installed here; `src/chrome.d.ts` declares the Chrome API surface used). The typ
 `bun test` also covers the store (fake native host and fake `chrome.storage`) and replays
 `test/vectors/classify.json`, the classifier vectors shared with the Mac app's Swift tests; do not
 edit that file by hand.
+
+Also under `bun test`:
+
+- `test/bankindex.test.ts`: the indexed `matchField` equals the old full scan of the bank (seeded
+  random banks, a 2000-answer bank), and one bank is indexed once.
+- `test/fillwait.test.ts`: fill waits on the page, not a clock (a fake DOM and MutationObserver):
+  `waitFor` resolves on the first mutation batch, gives up at its ceiling, releases every observer
+  and timer on every exit (also when the condition throws), and observes each root it is given (up
+  to 64), so a change inside an open shadow root is seen.
+- `test/bankcache.test.ts`: the bank memo (`createBankMemo`): reads inside the freshness window share
+  one request, `invalidate` and writes in flight, failures, and a clock that goes backwards.
+- `test/rounds.test.ts`: fill rounds (a state list that appears after the country is filled in
+  round 2; the 3-round and 6 s limits; a field the user cleared is not refilled), `carryMatches`,
+  and `waitForQuiet` / `observeRoots` over the document and open shadow roots, with every observer
+  disconnected after quiet, after the cap and after a failure.
+- `test/concept.test.ts`: one concept, one bank row (`conceptKey`, `findOwner`, `mergeCapture`,
+  `pendingDiff`), the label cap, intent sync and lookup cost, replaying `test/vectors/concept.json`, which is shared with
+  the Mac app's Swift `ConceptKeyTests`; do not edit that file by hand.
+
+`test/dom.html` includes real open-shadow-root cases (`shadow+frames`, and a dependent field that
+appears inside a shadow root mid-fill). Its fill-waits check, run by `test/live.ts`, measures how
+soon the fill acts after the widget renders its options (under 150 ms), not the total time:
+headless Chrome throttles page timers by hundreds of ms, and by a different amount per timer.

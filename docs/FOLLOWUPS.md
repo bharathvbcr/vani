@@ -179,6 +179,90 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **Not verified:** no live run (not to be run against the live config by this work); the
   live d1-ultra and llama-server latencies under concurrency, and DevPrism's scoring time.
 
+## Answer and job dedup, fill speed (applied 2026-10-19, uncommitted in the main checkout)
+
+- **What changed:**
+  - **Bank store** (`BankStore.swift`): bank.json is the source of truth, and SQLite is resynced
+    to the same revision. Before this, a missed mirror write followed by a capture rewrote
+    bank.json from stale SQLite rows.
+  - **Capture** (`conceptKey`/`findOwner` in `extension/src/bank.ts`, `Concept.swift`): a
+    capture lands in the existing answer for the same question, with the new wording added.
+    Both languages replay `test/vectors/concept.json`.
+  - **Answers page:** "Find duplicates" merges in one validated `store.update`.
+  - **Jobs** (`reconcile_identity.go`, `neardup.go`): before triage, Reconcile marks Duplicate
+    for the same job-id URL, for the same company/title/location on two ATSes, and for a
+    near-identical JD at the same place. A different place is only `dup.sibling_of`, and a
+    partial match is only `dup.candidate_of`.
+  - **Fill:** match index, MutationObserver waits (every document and shadow root the scan
+    walked), a 2 s bank memo, and up to 3 rounds for dependent fields.
+  - **Revive** (`reconcile_revive.go`): a Duplicate that is still listed comes back Live when its
+    survivor is Dead or gone, and it then demotes any live twin it outranks. A weak posting is
+    never made a duplicate of a Dead ATS record (`atsFor`).
+- **Applied on the owner's go-ahead ("keep persistent connection; Batched job-ledger; Sharing
+  triage results"):**
+  - **Persistent port** (`extension/src/nativeport.ts`): bank ops go over one `connectNative`
+    port, matched to replies in FIFO order. A timeout poisons the port, so the next call
+    reconnects. Slow ops (draft, jobFind, jobMark, jobsIngest) and Safari keep one process per
+    message. Host time per call drops from 6-8 ms to 0.06-0.11 ms.
+  - **Host idle exit:** the host no longer exits on idle while a frame is waiting on stdin.
+  - **`Ledger.AppendBatch`:** one fsync per batch, all-or-nothing on validation. 1,000 events
+    take 4.85 ms instead of 4,569 ms. Near-dup's first pass takes 174 ms instead of about 3 s.
+  - **Keep triage across a near-identical edit** (`editkeep.go`): kept when shingle Jaccard is
+    at least 0.90, with the same role title and place, and no changed shingle that holds an
+    authorization, work-mode or seniority term. At most 3 kept edits in a row, then triage is
+    asked again.
+  - **Sibling triage copying: not built.** On the bench ledger, 0 of 201 siblings had a twin
+    dropped on a JD-content slot. Asking d1 only the location slots saves under 2% of a call.
+- **Embedding layer,** on branch `claude/wizardly-curie-dbba78` (`56fced3`, `dfde033`, `17e877b`;
+  cut from rank-relevance):
+  - **Code:** the vector cache, `vani answers similar --json`, and a lexical veto (a one-word
+    swap or a contrast word stays "possible").
+  - **Cutoffs:** "likely" at 0.95 and "possible" at 0.88, measured on 106 labelled pairs with no
+    false merge at "likely".
+  - **Adapter:** the near-dup cosine adapter embeds the title too.
+  - **Merge order:** rank-relevance, then that branch, then the wiring described in its
+    `docs/SIMILARITY.md`.
+  - **Until it merges,** the Answers page says similar-wording grouping is unavailable, and
+    `NearDupOptions.Similarity` is nil.
+- **Near-dup audit** (build/rsi-bench-state ledger copy, 2,639 live records):
+  - Before the fix, 70 shingle Duplicates were written, 43 of them with different raw titles.
+    Most were different jobs on one templated JD:
+    - seniority ("Staff" vs "Senior Staff");
+    - bracketed team or term ("(Fintech)"/"(Healthtech)", "(Summer 2027)"/"(Winter 2027)");
+    - remote roles in other places, because every remote posting compared equal.
+  - Now a Duplicate needs the same `roleTitle` and the same places, remote included. The run gives
+    8 Duplicates, and all 8 are the same job. There are 160 candidates and 201 siblings, and a
+    rerun writes nothing.
+  - Tests: `TestNearDupDifferentRolesOnOneTemplateAreNeverDuplicates` and
+    `TestNearDupRemoteRolesInDifferentPlacesAreSiblings`. Both failed when the fix was mutated
+    back to the old rule.
+- **Known limits:**
+  - A Mac-app edit can take up to 2 s to reach a fill (the memo window). The persistent port
+    removed per-call spawn cost, so this memo is now the main source of staleness. A host push
+    was designed and deferred: about 60 lines of Swift, and the `notify` key is reserved.
+  - Whether an idle open port keeps the MV3 worker alive in current Chrome is not tested.
+    Correctness does not depend on it, because a closed port reconnects.
+  - A write sent within microseconds of the host's idle exit is rejected loudly; a read is
+    retried.
+  - The Answers merge sheet and the Jobs duplicate badges were not checked on screen. They
+    compile and their logic is tested. The app was launched against a synthetic bank
+    (`tmp/ui-store`), but the session could not bring it into the user's full-screen Space.
+  - Fixed and checked at runtime: the app's Safari state check logged "data race detected" at
+    launch. SafariServices declares that completion handler `NS_SWIFT_UI_ACTOR`, so a closure
+    literal passed to it was inferred `@MainActor` but was called on a background queue.
+    `AppModel.safariState` and `AppModel.showSafariSettings` now pass a plain `@Sendable` value
+    instead. The startup log went from 2 warnings to 0, which checks `safariState` only.
+    `showSafariSettings`'s handler is not main-actor in the SDK, so its change is precautionary
+    and was not exercised at runtime. There is no unit test; the evidence is the relaunch log.
+- **Leftovers to remove by hand** (deleting needed a confirmation this session could not show).
+  All are under the gitignored `tmp/`:
+  - `tmp/neardupbench/` and `tmp/batchbench/` (Go programs marked `//go:build ignore`).
+  - `tmp/neardupbench-scratch*/`, `tmp/batchbench-scratch/`, `tmp/benchstore/` and
+    `tmp/ui-store/`.
+  - `tmp/uitest/`, `tmp/nmping.ts`, `tmp/dupaudit.ts`, `tmp/siblingmeasure.ts`,
+    `tmp/portbench.ts` and `tmp/mutate.sh`.
+  - Branch `embed-similar`, which has no unique commits; it is an ancestor of rank-relevance.
+
 ## Triage backlog and Workday coverage (2026-10-19, branch no-gaps)
 
 - **Why NVIDIA, Adobe and Broadcom got no triage.** The 09:57 run in `.state` predates `58e8f9c`
@@ -238,6 +322,9 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     the main checkout's uncommitted one) does, by `capFor`. `extension/src/crawlrun.ts`
     (`DAEMON_WORKDAY_MAX = 200`) must become 5,000 (`workday.MaxPostings`), since a board saved from
     the extension carries no `max_postings`.
+    **Done at the merge (`2841b02`, 2026-10-19).** The case is in the shared loop, and the test is
+    `TestReconcilePartialRedatesAnUndatedScrape` (`redate_test.go`). The main checkout's
+    uncommitted `CheckSize` gave way to the branch's `checksize.go`. `DAEMON_WORKDAY_MAX` is 5,000.
   - **Workday detail reuse:** a stored posting is re-read only on its turn (once in 30 days, when the
     run's 300 detail requests are not all spent on new rows), so an edited description can go
     unseen for up to a month. New postings the title rule drops are never fetched or stored, so
@@ -655,6 +742,53 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     (`TestEmptyPageStopsLoopWhenTotalOverstates`). If the service returns an empty page part-way
     through by mistake, the postings it did not reach count as missed. This was an earlier choice,
     kept because a live `total` that overstates would otherwise fail the board on every run.
+  - Jibe (`jb`, AMD) fails the board when a page adds nothing before `totalCount` is reached,
+    as Eightfold does. Live on 2026-10-19 the unsearched AMD listing read 1278 of 1278 in 13
+    pages, so an overstated total has not been seen.
+
+- **Jibe postings are never marked remote (2026-10-19).** The AMD payload has no remote field.
+  It marks some home-office roles only in `location_name` (`"RO,Home Office"`), which
+  `internal/sources/jibe` does not parse. A rule for it needs more than one tenant's data to
+  verify.
+
+- **Workday serves at most 2000 rows of one query, then page 1 again (seen live, NVIDIA,
+  2026-10-19).** `nvidia/NVIDIAExternalCareerSite` answers `total: 2000` while its facets count
+  2753 (`timeType` and `workerSubType` agree). Offsets 1980 and 1990 return the last rows; every
+  offset from 2000 to 6000 returns page 1 again (`JR2026658` first) with HTTP 200. Before the merge
+  `2841b02` the Go adapter was safe only because `offset >= total` stopped it at the capped total,
+  and its `MaxPostings = 200` made NVIDIA fail as `ErrTooManyPostings` on every run. Inside a
+  facet-filtered query, the applied
+  facet's own counts span the whole board (its other options), so they never size that query.
+  - **The extension's crawl handles it** (`extension/src/crawler.ts`): it pages to the window,
+    detects the wrap, and splits a larger board by a facet whose buckets sum to the board's count.
+    Live: 2753 of 2753 listed in 16 queries and 150 requests, about 80 s.
+  - **Save is now refused, listing is still open:** `vani jobs ingest` with `save_search` no longer
+    saves a Workday search the adapter cannot list. `saveSearch` (`cmd/vani/jobsingest.go`) calls
+    `workday.CheckSize`, one limit-1 request per search term, and answers status `invalid` when a
+    term is over `MaxPostings`, or when the check could not run. The jobs are still queued. This
+    adds no field to the ingest JSON. It checks each term alone, not their union, so a board of
+    several small terms can still fail in `List`. `vani watchlist add --ats wd` has no such check.
+    The saved board carries only `q`: URL facets are not applied by the adapter, so the reason says
+    to narrow by search terms.
+  - **Go side, merged (`2841b02`, `internal/sources/workday/crawl.go`):** the adapter pages to the
+    window, fails on a wrap or a repeated page, and splits a bigger board by a facet. A board's
+    listing limit is `max_postings`, defaulting to `workday.MaxPostings` (5,000), with a ceiling of
+    `sources.MaxPostingsCeiling` (10,000). It makes at most 300 detail requests per board per run.
+    Stored postings are reused, and new ones the title rule drops are not fetched. Tested on a fake
+    NVIDIA-shaped board only; **not yet run live from the daemon.** The installed app's bundled
+    `vani` predates it.
+  - **Open, ingest bound:** a crawled job's description reaches Vani only as the 4000-byte
+    `snippet` (`docs/EXTENSION_INGEST.md`). The crawl sends the part that describes the role, not
+    the company boilerplate, but triage and scoring see that excerpt, not the whole posting.
+  - **Run as a loaded extension (2026-10-19, headed Chrome, throwaway profile):**
+    - **Worked:** the drawer's "Crawl all pages → Vani", progress, Stop, NVIDIA (135 jobs, all
+      descriptions) and a Greenhouse pager (14 pages, 667 jobs) all worked through the native host.
+    - **Refused:** the installed app's bundled `vani` (built 20:38) has no `jobs ingest`, so it
+      refused every batch. A `vani` built from this tree queued the same 135-job batch.
+    - **Not tried:** saving a daily search.
+  - **Saving from the extension:** a Workday board over 5,000 jobs (`crawlrun.ts`
+    `DAEMON_WORKDAY_MAX`, matching `workday.MaxPostings`) is not saved as a daily search. A board
+    saved from the extension has no `max_postings` of its own.
 
 - **Salesforce is left off the watchlist (owner's call via Fable, D15, 2026-10-19).** Its
   Workday board is `salesforce/External_Career_Site` on `salesforce.wd12.myworkdayjobs.com`.

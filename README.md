@@ -20,7 +20,7 @@ flowchart TD
         LV["Lever US & EU API"]
         AB["Ashby API"]
         WD["Workday CXS API"]
-        SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX)"]
+        SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX), Jibe"]
         PG["Custom Pages (Lightpanda)"]
     end
 
@@ -118,8 +118,10 @@ stateDiagram-v2
 
 - **Sources:** Greenhouse, Lever (US and EU), Ashby and Workday (cxs search, paged by 20)
   public job-board APIs, and the big-employer search sites: amazon.jobs (`az`, its search.json),
-  Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`)
-  and Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
+  Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`),
+  Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites
+  such as AMD's (`jb`, token the client code `amd`, host `careers.amd.com`; search optional, pages
+  of 100 spaced 5 s apart as its robots.txt asks). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
   block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
   `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
   authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
