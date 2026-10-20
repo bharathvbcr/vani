@@ -114,8 +114,8 @@ func TestAnswersSimilarFindsPairs(t *testing.T) {
 		if p.Tier != "likely" && p.Tier != "possible" {
 			t.Errorf("tier %q", p.Tier)
 		}
-		if (p.Tier == "likely") != (p.Cos >= semantic.LikelyCos) {
-			t.Errorf("tier %q at cos %v", p.Tier, p.Cos)
+		if want := semantic.TierPair(texts[p.A], texts[p.B], p.Cos); want != "" && p.Tier != want {
+			t.Errorf("tier %q at cos %v, want %q", p.Tier, p.Cos, want)
 		}
 		got[[2]int{p.A, p.B}] = p.Tier
 	}
@@ -149,6 +149,26 @@ func TestAnswersSimilarMinCosAndEmptyPairsAreAnArray(t *testing.T) {
 	r, _, _ = askSimilar(t, reqJSON(t, []string{"same words", "same words"}, &one), 0)
 	if len(r.Pairs) != 1 || r.Pairs[0].Tier != "likely" {
 		t.Errorf("identical wordings at min_cos 1: %+v", r.Pairs)
+	}
+}
+
+// A model that scores First name and Last name as the same vector must not make
+// them "likely": the lexical veto holds them at "possible", while a true pair at
+// the same cosine stays "likely".
+func TestAnswersSimilarVetoHoldsNearMissesAtPossible(t *testing.T) {
+	_, emb := similarSetup(t)
+	emb.Embedder = semantic.NewFakeEmbedder(256, [][]string{{"first", "last"}, {"linkedin", "linked"}})
+	texts := []string{"First name", "Last name", "LinkedIn", "LINKEDIN *"}
+	r, out, _ := askSimilar(t, reqJSON(t, texts, nil), 0)
+	tier := map[[2]int]string{}
+	for _, p := range r.Pairs {
+		tier[[2]int{p.A, p.B}] = p.Tier
+		if p.Cos < 0.999 {
+			t.Errorf("setup: %+v should be a perfect cosine", p)
+		}
+	}
+	if tier[[2]int{0, 1}] != "possible" || tier[[2]int{2, 3}] != "likely" {
+		t.Fatalf("%s", out)
 	}
 }
 

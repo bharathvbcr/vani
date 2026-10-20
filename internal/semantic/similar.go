@@ -32,23 +32,31 @@ const (
 // every pair in the fixture scores at least 0.8, and wordings that differ by one
 // word ("First name"/"Last name") score above many true rewordings.
 //
-//   - LikelyCos is above the highest different-question pair in the fixture
-//     ("First name" ~ "Last name", 0.9646), so it makes no false merge there.
-//     It keeps 9 of the 52 same-question pairs (17%). The margin over the
-//     highest negative is 0.005 and nothing was held out of the choice: a cutoff
-//     chosen on the dev third alone (0.94) would have merged First/Last name in
-//     the holdout, so treat "likely" as "no counter-example yet", not a proof.
+//   - LikelyCos is 0.95. A cosine alone cannot hold the line: "First name" ~ "Last name"
+//     scores 0.9646 and now-versus-future sponsorship 0.9598, so "likely" is the
+//     cosine at or above LikelyCos AND no lexical veto (LexicalVeto: a one-word
+//     substitution or a contrast word such as first/last). Of the fixture's 54
+//     different-question pairs 36 are vetoed; the highest one left scores 0.9204
+//     ("Years of experience" ~ "Years of experience with Python", a superset the
+//     veto does not see), so LikelyCos sits 0.03 above it. It keeps 15 of the 52
+//     same-question pairs (29%) with no false merge; 16 true pairs are vetoed
+//     down to "possible" (cost of the veto). The veto's words were read off the
+//     same fixture, so nothing was held out: treat "likely" as "no counter-example
+//     yet", not a proof. Without the veto the cutoff would have to be 0.97 (9 pairs).
 //   - PossibleCos keeps 50 of 52 same-question pairs (96%), the knee of the
 //     curve: 0.87 adds one pair for two more false merges. At it 30 of the 54
 //     different-question pairs are also flagged (precision 62%), so it is a list
 //     for a person to review, never a merge.
+//
+// Use TierPair, not the bare cosine band.
 const (
-	LikelyCos   = 0.97
+	LikelyCos   = 0.95
 	PossibleCos = 0.88
 )
 
-// Tier names a cosine's band: "likely", "possible", or "" below PossibleCos.
-func Tier(cos float64) string {
+// cosineTier is a cosine's band: "likely", "possible", or "" below PossibleCos.
+// It does not know the labels; TierPair adds the lexical veto.
+func cosineTier(cos float64) string {
 	switch {
 	case cos >= LikelyCos:
 		return "likely"

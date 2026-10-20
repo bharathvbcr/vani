@@ -154,14 +154,14 @@ func TestRealLabelCalibration(t *testing.T) {
 		cos   []float64
 	}{"all": {pairs, cos}, "dev": {devPairs, devCos}, "holdout": {holdPairs, holdCos}} {
 		for i, p := range c.pairs {
-			if !p.Same && c.cos[i] >= LikelyCos {
+			if !p.Same && TierPair(p.A, p.B, c.cos[i]) == "likely" {
 				t.Errorf("%s: LIKELY (%.3f) merges %q with %q at %.4f", name, LikelyCos, p.A, p.B, c.cos[i])
 			}
 		}
 	}
 	var likelyTP, possibleTP, possibleFP int
 	for i, p := range pairs {
-		if p.Same && cos[i] >= LikelyCos {
+		if p.Same && TierPair(p.A, p.B, cos[i]) == "likely" {
 			likelyTP++
 		}
 		if cos[i] >= PossibleCos {
@@ -174,16 +174,61 @@ func TestRealLabelCalibration(t *testing.T) {
 	}
 	t.Logf("LIKELY %.3f: %d/%d same-question pairs, 0 false merges; POSSIBLE %.3f: %d/%d same-question pairs, %d false merges",
 		LikelyCos, likelyTP, all.PosCount, PossibleCos, possibleTP, all.PosCount, possibleFP)
+	// With the lexical veto: a vetoed pair can only be "possible", so the "likely"
+	// tier is what is left. This is informational for choosing LikelyCos; the
+	// veto's words were read off these same negatives, so it is not held out.
+	var kept []labelPair
+	var keptCos []float64
+	vetoedPos, vetoedNeg := 0, 0
+	for i, p := range pairs {
+		if LexicalVeto(p.A, p.B) != "" {
+			if p.Same {
+				vetoedPos++
+			} else {
+				vetoedNeg++
+			}
+			continue
+		}
+		kept, keptCos = append(kept, p), append(keptCos, cos[i])
+	}
+	withVeto := calibrate(kept, keptCos, 0.01)
+	var vb strings.Builder
+	fmt.Fprintf(&vb, "\nwith the lexical veto (%d same-question and %d different-question pairs vetoed to possible)\n", vetoedPos, vetoedNeg)
+	fmt.Fprintf(&vb, "  highest unvetoed different-question cos %.4f; zero-false-merge cutoff %.4f would keep %d of %d same-question pairs\n",
+		withVeto.MaxNeg, withVeto.ZeroFPCut, int(math.Round(withVeto.ZeroFPRecall*float64(withVeto.PosCount))), all.PosCount)
+	fmt.Fprintf(&vb, "  cutoff  likely-tier precision  recall(of %d)  falseMerges\n", all.PosCount)
+	for _, pt := range withVeto.Points {
+		if pt.TP+pt.FP == 0 || pt.Cut < 0.90 {
+			continue
+		}
+		fmt.Fprintf(&vb, "  %.2f    %6.1f%%              %5.1f%%        %d\n", pt.Cut, 100*pt.Precision, 100*float64(pt.TP)/float64(all.PosCount), pt.FP)
+	}
+	t.Log(vb.String())
+	var tierLikelyTP, tierLikelyFP int
+	for i, p := range pairs {
+		if TierPair(p.A, p.B, cos[i]) == "likely" {
+			if p.Same {
+				tierLikelyTP++
+			} else {
+				tierLikelyFP++
+			}
+		}
+	}
+	t.Logf("TierPair at LIKELY %.2f with the veto: %d of %d same-question pairs, %d false merges", LikelyCos, tierLikelyTP, all.PosCount, tierLikelyFP)
+	if tierLikelyFP != 0 {
+		t.Errorf("%d false merges at the likely tier", tierLikelyFP)
+	}
+
 	// The tiers still do what the doc on LikelyCos says they do.
-	if likelyTP < 9 || possibleTP < 50 {
-		t.Errorf("tiers kept %d (likely) and %d (possible) same-question pairs, measured 9 and 50 of %d", likelyTP, possibleTP, all.PosCount)
+	if likelyTP < 15 || possibleTP < 50 {
+		t.Errorf("tiers kept %d (likely) and %d (possible) same-question pairs, measured 15 and 50 of %d", likelyTP, possibleTP, all.PosCount)
 	}
 	// What a bank-sized list looks like: every pair among the fixture's distinct
 	// labels, unlabelled (some of these really are the same question).
 	var allLikely, allPossible int
 	for i := range rows {
 		for j := i + 1; j < len(rows); j++ {
-			switch Tier(dot(rows[i], rows[j])) {
+			switch TierPair(texts[i], texts[j], dot(rows[i], rows[j])) {
 			case "likely":
 				allLikely++
 				allPossible++
@@ -218,7 +263,7 @@ func TestRealSimilarPairsEndToEnd(t *testing.T) {
 		if (a == "LinkedIn profile URL" && b == "LinkedIn") || (a == "LinkedIn" && b == "LinkedIn profile URL") {
 			found = true
 		}
-		if p.Cos >= LikelyCos && (strings.Contains(a, "name") && strings.Contains(b, "name")) {
+		if TierPair(a, b, p.Cos) == "likely" && strings.Contains(a, "name") && strings.Contains(b, "name") {
 			t.Errorf("first/last name came out LIKELY: %v", p)
 		}
 	}

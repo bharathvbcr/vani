@@ -84,8 +84,10 @@ and writes one on stdout:
 a and b index texts (a < b). Send question keys and labels only, never answer
 values: the texts are embedded and cached on disk (state dir semantic/).
 
-tier is "likely" at cos >= %.2f (no false merge on the calibration fixture, which is not a
-proof) and "possible" below that, down to min_cos. A missing min_cos is %.2f. The pairs are
+tier is "likely" at cos >= %.2f unless the two wordings differ by one content word or a
+contrast word (first/last, current/previous, now/future, ...; semantic.LexicalVeto), and
+"possible" otherwise, down to min_cos. No false merge on the calibration fixture, which is
+not a proof. A missing min_cos is %.2f. The pairs are
 for a person to review; nothing is merged here.
 
 Bounds: at most %d texts; a text over %d bytes is cut there at a rune boundary
@@ -208,7 +210,7 @@ func (e *env) similarOnce(timeout time.Duration) (similarReply, error) {
 	}
 	out := make([]similarPairJSON, len(pairs))
 	for i, p := range pairs {
-		tier := semantic.Tier(p.Cos)
+		tier := semantic.TierPair(req.Texts[p.A], req.Texts[p.B], p.Cos)
 		if tier == "" {
 			tier = "possible" // below the standard floor because min_cos asked for it
 		}
