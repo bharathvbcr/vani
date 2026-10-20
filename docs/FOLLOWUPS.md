@@ -739,6 +739,27 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     render it as bold.
   - 18 bullets exist only in the 9 variants and are not synced.
   - Tests: `internal/kbsync/tags_test.go`; goldens in `internal/kbsync/testdata`.
+- **Ranking and KB matching (branch `rank-relevance`, 2026-10-19), open items:**
+  - Off until configured: `kb.bank`, `semantic.snapshot` (a google/embeddinggemma-2 snapshot) and
+    `target_summary` are empty in the live config, and `devprism.binary` too, so coverage is absent.
+    Without them Score runs on the decision model's readings and age alone (rankeval
+    "this-machine": NDCG@10 0.53 vs 0.74 with every signal).
+  - Displayed `relevance` compresses when parts are unknown (each takes the 0.40 prior): a
+    confident strong fit shows about 50 on a machine with no coverage, semantic or target. Order is
+    unaffected (priority = Score); consider renormalizing the display over known parts only.
+  - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
+    `--half-life` (Score's default is 10 days).
+  - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
+    mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
+  - `vani jobs mark` builds its insight with nil marks, so its priority can differ slightly from
+    the list's.
+  - The bundled helper is built with `-tags tessl` (Metal, cgo); hardened-runtime signing has not
+    been checked for Metal access from the signed helper.
+  - Tessl's archive pins gusset `984209b`, while the Go side of gusset is the live
+    `devtools/gusset` checkout; tessl's frame-version check fails the load on drift.
+  - `extension/src/relevance.ts` still scores pages with its own in-page algorithm, not Score.
+  - A generic text-vector cache in `internal/semantic` (for answer dedup and near-duplicate
+    postings) belongs to the "Embedding unification" session.
 - **Employer lists need a yearly re-import** (IRS eo1-eo4 and IPEDS HD2024 imported 2026-10-18 into
   `.state/state`, 1.6M names). Recheck the IPEDS codes in each year's dictionary (docs/EMPLOYER.md).
   Runs read the derived `index.view` (0.09 s / 69 MB a lookup, was 3 s / 490 MB). Import still loads
