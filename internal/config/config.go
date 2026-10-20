@@ -86,6 +86,9 @@ type Config struct {
 	// entries read triage slots from the title before any model is asked; a
 	// drop rule for the slot and value read drops the posting unasked.
 	TitleSignals TitleSignals `json:"title_signals,omitzero"`
+	// Funnel tunes the triage funnel's spend (funnel.go): the thin-description
+	// skip, the notes relevance floor and the notes' own daily cap.
+	Funnel Funnel `json:"funnel,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -1242,6 +1245,7 @@ func (c Config) Validate() error {
 		seenPref[p] = true
 	}
 	c.TitleSignals.validate(add)
+	c.Funnel.validate(add)
 
 	if len(errs) == 0 {
 		return nil

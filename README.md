@@ -535,6 +535,19 @@ Mac app, its native messaging host and its helpers are macOS only and have no Wi
 scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every
 request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
 
+The `funnel` config block (all keys optional) trims paid calls without hiding a posting:
+`min_description_runes` (default 20) skips the triage call for a thinner description and keeps the
+posting as unsure; `notes_min_relevance` (default 20, about the 78th percentile of the live
+ledger: the age-free relevance the Jobs views show, not DevPrism coverage) is the floor for a "why this
+role" note, with a relevance that rests on nothing known deferred, not explained;
+`notes_daily_usd` (default 0.15, from the measured ~$0.00011 per call) is the notes' own OpenRouter cap, separate from
+`decide.daily_usd.openrouter` so notes cannot starve triage; `score_after_triage` puts DevPrism back
+after triage (by default it runs first, and coverage never gates anything). A posting that matches an
+already-read one on description hash, title, location and model id copies its reading
+(`triage.inherited_from`) and the drop rule runs again on the copy. The run record's `advance` block
+reports `deferred` (not reached because of the cap), `fail_open` (kept because a check could not run,
+by cause) and `notes`.
+
 Each run triages, scores and explains at most `advance_per_run` postings (default 300, at most
 5000), which bounds its spend and duration. They go highest title rank first, then the freshest:
 the posted date when the board gives one, else when Vani first saw a posting that appeared after

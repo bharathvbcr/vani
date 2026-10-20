@@ -1,0 +1,69 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"path/filepath"
+
+	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
+	"github.com/bharathvbcr/decide"
+)
+
+// notesBudgetFile is the notes' own daily cap, a file beside the OpenRouter
+// triage cap (jev.json). Two files, so spending one never moves the other.
+const notesBudgetFile = "jev-notes.json"
+
+// triageModelID names everything a triage reading depends on besides the
+// posting: the backends that may answer, and the question they are asked (the
+// shared fixture and the target summary). A reading is inherited only under
+// the same id, so changing a model, a backend order or the summary re-asks.
+func triageModelID(cfg config.Config) string {
+	h := sha256.New()
+	h.Write(jdtriage.FixtureJSON)
+	h.Write([]byte{0})
+	h.Write([]byte(cfg.TargetSummary))
+	h.Write([]byte{0})
+	// The triager also asks the job-category slot (see runner), so the
+	// question's shape is part of what a reading depends on.
+	extra := jobcategory.DecideSlot()
+	h.Write([]byte(fmt.Sprintf("%s=%v", extra.Name, extra.Options)))
+	lappi := "off"
+	if l := cfg.Decide.Lappi; l != nil {
+		lappi = "shadow"
+		if l.Primary {
+			lappi = "primary"
+		}
+	}
+	return fmt.Sprintf("or=%s;llm=%s/%s;lappi=%s;ctx=%s", cfg.Decide.OpenRouterModel, cfg.LLM.Provider, cfg.LLM.Model, lappi,
+		hex.EncodeToString(h.Sum(nil))[:12])
+}
+
+// notesSpend is the notes' own daily cap, or nil when OpenRouter is not in use
+// (triage spend is nil too, and notes are off). A cap that cannot be opened is
+// an error, never an unmetered notes backend.
+func notesSpend(stateDir string, cfg config.Config, triageSpend *decide.DailyCap) (*decide.DailyCap, error) {
+	if triageSpend == nil {
+		return nil, nil
+	}
+	c, err := decide.NewDailyCap(filepath.Join(stateDir, "budget", notesBudgetFile), cfg.Funnel.NotesCapUSD())
+	if err != nil {
+		return nil, fmt.Errorf("notes budget: %w", err)
+	}
+	return c, nil
+}
+
+// fillFunnelReport copies the run's fail-open and notes-gate counts into the
+// advance report and says so when any check could not run.
+func fillFunnelReport(rep *advanceReport, r *pipeline.Runner, warnf func(string, ...any)) {
+	rep.FailOpen, rep.Notes = r.FailOpen.Counts(), r.Notes.Counts()
+	if n := rep.FailOpen.Total(); n > 0 {
+		warnf("%d posting(s) kept because a check could not run: %+v", n, rep.FailOpen)
+	}
+	if n := rep.Notes.UnknownRelevance + rep.Notes.BudgetSpent; n > 0 {
+		warnf("%d note(s) deferred (%d relevance unknown, %d notes budget spent); they stay scored for a later run", n, rep.Notes.UnknownRelevance, rep.Notes.BudgetSpent)
+	}
+}

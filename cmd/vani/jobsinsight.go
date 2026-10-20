@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdreasons"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
@@ -350,15 +351,22 @@ func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry) {
 // cannot be read leaves keywords unmarked and says so; listing jobs never
 // needed a config, and does not start needing one here.
 func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry) (*insight, error) {
-	v, err := jobinsight.Default()
-	if err != nil {
-		return nil, err
+	cfg, err := e.loadConfig()
+	return newInsightFor(cfg, err, e.stateDir, halfLife, snap, m)
+}
+
+// newInsightFor is newInsight over a config already read (cfgErr is why it
+// could not be). The daily run builds the notes gate's relevance from it, so
+// the gate and the Jobs views rank with one context.
+func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry) (*insight, error) {
+	v, verr := jobinsight.Default()
+	if verr != nil {
+		return nil, verr
 	}
 	in := &insight{vocab: v, now: now(), halfLife: halfLife,
 		info: insightJSON{HalfLifeDays: halfLife, Vocab: v.Len()}}
-	cfg, err := e.loadConfig()
 	if err == nil {
-		in.logos = newLogoIndex(cfg, e.stateDir)
+		in.logos = newLogoIndex(cfg, stateDir)
 	}
 	switch {
 	case err != nil:
@@ -377,11 +385,11 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	if err == nil {
-		in.attachSemantic(cfg, e.stateDir)
+		in.attachSemantic(cfg, stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 		var warn string
-		if in.rc.KBMatch, warn = kbmatchLookup(cfg, e.stateDir); warn != "" {
+		if in.rc.KBMatch, warn = kbmatchLookup(cfg, stateDir); warn != "" {
 			if in.info.Warning != "" {
 				in.info.Warning += "; "
 			}

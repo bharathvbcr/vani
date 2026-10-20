@@ -286,6 +286,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 	}
 	w.warmBeforeAdvance(ctx, w.led.All(), titleDropper(runner.Policy))
 	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), limit, w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
+	fillFunnelReport(&rep, runner, w.warnf)
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()
@@ -1044,7 +1045,11 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
 	triage := w.escalating(router, esc)
 
-	explainer, skipExplain := w.notes(d, spend)
+	nspend, err := notesSpend(w.stateDir, w.cfg, spend)
+	if err != nil {
+		return nil, err
+	}
+	explainer, skipExplain := w.notes(d, nspend)
 	r := &pipeline.Runner{
 		Ledger:      w.led,
 		Triager:     &jdtriage.Triager{D: triage, TargetSummary: w.cfg.TargetSummary, ExtraSlots: []decide.Slot{jobcategory.DecideSlot()}},
@@ -1062,6 +1067,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	if err := w.scoring(r); err != nil {
 		return nil, err
 	}
+	r.Funnel = buildFunnel(w.cfg, !r.SkipScoring, nspend, notesRelevance(w.cfg, w.stateDir, w.led.All, w.warnf))
 	return r, nil
 }
 
