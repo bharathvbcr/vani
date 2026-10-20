@@ -447,6 +447,10 @@ func TestEscalatorIsInstalledOnlyWhenEnabled(t *testing.T) {
 	}
 
 	cfg.Decide.Escalate = &config.Escalate{Enabled: true}
+	if err := cfg.Validate(); err == nil { // no cheaper tier to escalate on
+		t.Fatal("escalation enabled without llm.triage_model validated")
+	}
+	cfg.LLM.TriageModel = "claude-haiku-5-5"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}

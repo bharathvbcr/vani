@@ -944,6 +944,12 @@ func (c Config) Validate() error {
 			if c.LLM.Provider == "" {
 				add("decide.escalate needs llm.provider")
 			}
+			// Escalation re-asks every low-confidence slot (up to max_per_run a
+			// run) on llm.triage_model. Without a cheaper model of its own it would
+			// do that on llm.model, spending the llm daily cap on the expensive tier.
+			if c.LLM.Provider != "" && (c.LLM.TriageModel == "" || c.LLM.TriageModel == c.LLM.Model) {
+				add("decide.escalate needs llm.triage_model set to a model other than llm.model (%q): it would escalate on the expensive tier", c.LLM.Model)
+			}
 			if c.Decide.Shadow != "" {
 				add("decide.escalate and decide.shadow are exclusive (escalated readings are recorded as the shadow's)")
 			}

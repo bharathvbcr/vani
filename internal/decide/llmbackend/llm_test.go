@@ -52,6 +52,7 @@ type fakeProvider struct {
 	text      string
 	streamErr error
 	nextErr   error
+	respErr   error
 	stream    *fakeStream
 	reqs      []llm.Request
 	block     bool
@@ -67,7 +68,7 @@ func (p *fakeProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream,
 	if p.streamErr != nil {
 		return nil, p.streamErr
 	}
-	p.stream = &fakeStream{text: p.text, block: p.block, ctx: ctx, nextErr: p.nextErr}
+	p.stream = &fakeStream{text: p.text, block: p.block, ctx: ctx, nextErr: p.nextErr, respErr: p.respErr}
 	return p.stream, nil
 }
 

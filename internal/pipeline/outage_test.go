@@ -36,11 +36,10 @@ func TestOutageAnswerKeepsThePostingLive(t *testing.T) {
 		name string
 		ans  decide.Answer
 	}{
-		{"every slot failed", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Failed})},
+		{"every slot unavailable", slots(map[string]decide.Reading{"remote": decide.Unavailable, "level": decide.Unavailable})},
 		{"every slot not asked", slots(map[string]decide.Reading{"remote": decide.NotAsked, "level": decide.NotAsked})},
-		{"failed beside unavailable", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Unavailable})},
-		{"failed, unavailable and not asked", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Unavailable, "cat": decide.NotAsked})},
-		{"one failed slot", slots(map[string]decide.Reading{"remote": decide.Failed})},
+		{"not asked beside unavailable", slots(map[string]decide.Reading{"remote": decide.NotAsked, "level": decide.Unavailable})},
+		{"one unavailable slot", slots(map[string]decide.Reading{"remote": decide.Unavailable})},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -52,6 +51,45 @@ func TestOutageAnswerKeepsThePostingLive(t *testing.T) {
 			}
 			if got := rec(t, l, k); !reflect.DeepEqual(got, before) {
 				t.Fatalf("an outage wrote to the ledger:\n got %+v\nwant %+v", got, before)
+			}
+		})
+	}
+}
+
+// Failed is a backend's unusable reading of this posting (an unparseable reply,
+// a value outside the options), not an outage: asking again would repeat it
+// every run and leave the posting Live and invisible. An answer made only of
+// Failed, or of Failed beside outage readings, goes to the DropPolicy and
+// becomes Unsure, as it did before outages were retried, and one Advance asks
+// the backends once.
+func TestFailedReadingsAreUnsureNotOutages(t *testing.T) {
+	cases := []struct {
+		name string
+		ans  decide.Answer
+	}{
+		{"every slot failed", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Failed})},
+		{"one failed slot", slots(map[string]decide.Reading{"remote": decide.Failed})},
+		{"failed beside unavailable", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Unavailable})},
+		{"failed beside not asked", slots(map[string]decide.Reading{"remote": decide.NotAsked, "level": decide.Failed})},
+		{"failed, unavailable and not asked", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Unavailable, "cat": decide.NotAsked})},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, l, k := runnerWith(t, c.ans, nil)
+			r.SkipScoring, r.SkipExplain = true, true
+			if err := r.Advance(ctx, k); err != nil {
+				t.Fatalf("err = %v: a failed reading must be triaged, not retried", err)
+			}
+			got := rec(t, l, k)
+			if got.Annotations["triage.unsure"] == "" || got.Status == posting.Live {
+				t.Fatalf("status %s, annotations %v: want an unsure verdict", got.Status, got.Annotations)
+			}
+			if Unread(got) {
+				t.Fatalf("a record with a failed reading reads as unread: %v", got.Annotations)
+			}
+			ft := r.Triager.(*fakeTriager)
+			if err := r.Advance(ctx, k); err != nil || ft.calls != 1 {
+				t.Fatalf("a second advance asked the backends again: err %v, %d calls", err, ft.calls)
 			}
 		})
 	}
@@ -135,7 +173,7 @@ func TestEmptyAnswerIsNotAnOutage(t *testing.T) {
 // A shadow reading is informational: a shadow that answered cannot turn an
 // outage on the primary into a reading.
 func TestShadowAnswerDoesNotMakeAnOutageARead(t *testing.T) {
-	ans := slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Failed})
+	ans := slots(map[string]decide.Reading{"remote": decide.Unavailable, "level": decide.Unavailable})
 	ans.Shadow = map[string]decide.SlotReading{"remote": {Reading: decide.Answered, Value: "remote"}}
 	r, l, k := runnerWith(t, ans, nil)
 	before := rec(t, l, k)
@@ -147,8 +185,9 @@ func TestShadowAnswerDoesNotMakeAnOutageARead(t *testing.T) {
 	}
 }
 
-// noReading is a positive check on the three outage readings: anything else,
-// an unknown value included, is a reading the engine must not guess about.
+// noReading is a positive check on the two outage readings: anything else,
+// Failed and an unknown value included, is a reading the engine must not guess
+// about.
 func TestNoReadingTable(t *testing.T) {
 	r := func(rd decide.Reading) decide.SlotReading { return decide.SlotReading{Reading: rd} }
 	cases := []struct {
@@ -158,9 +197,12 @@ func TestNoReadingTable(t *testing.T) {
 	}{
 		{"no slots", decide.Answer{}, false},
 		{"unavailable", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Unavailable)}}, true},
-		{"failed", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Failed)}}, true},
+		{"failed", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Failed)}}, false},
 		{"not asked", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.NotAsked)}}, true},
-		{"all three", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Unavailable), "b": r(decide.Failed), "c": r(decide.NotAsked)}}, true},
+		{"unavailable with not asked", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Unavailable), "b": r(decide.NotAsked)}}, true},
+		{"failed with unavailable", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Failed), "b": r(decide.Unavailable)}}, false},
+		{"failed with not asked", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Failed), "b": r(decide.NotAsked)}}, false},
+		{"all three", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Unavailable), "b": r(decide.Failed), "c": r(decide.NotAsked)}}, false},
 		{"answered", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Answered)}}, false},
 		{"abstained", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Abstained)}}, false},
 		{"refused", decide.Answer{Slots: map[string]decide.SlotReading{"a": r(decide.Refused)}}, false},
@@ -181,7 +223,7 @@ func TestNoReadingTable(t *testing.T) {
 // the per-run caps in cmd/vani (maxConsecutiveUnread stops the phase on the
 // ErrTriageUnavailable this returns), not anything in here.
 func TestPermanentOutageAsksOncePerAdvanceAndWritesNothing(t *testing.T) {
-	ans := slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.NotAsked})
+	ans := slots(map[string]decide.Reading{"remote": decide.Unavailable, "level": decide.NotAsked})
 	r, l, k := runnerWith(t, ans, nil)
 	ft := r.Triager.(*fakeTriager)
 	before := rec(t, l, k)
@@ -199,34 +241,42 @@ func TestPermanentOutageAsksOncePerAdvanceAndWritesNothing(t *testing.T) {
 	}
 }
 
-// cancelTriager cancels the run while it is asking, then reports every slot
-// failed, as a backend whose call died with the context does.
-type cancelTriager struct{ cancel context.CancelFunc }
+// cancelTriager cancels the run while it is asking, then reports every slot as
+// rd: Unavailable as a backend whose call died with the context does, or Failed
+// as one that read a truncated reply.
+type cancelTriager struct {
+	cancel context.CancelFunc
+	rd     decide.Reading
+}
 
 func (c cancelTriager) Triage(context.Context, posting.Posting) (decide.Answer, error) {
 	c.cancel()
-	return slots(map[string]decide.Reading{"remote": decide.Failed}), nil
+	return slots(map[string]decide.Reading{"remote": c.rd}), nil
 }
 
 // A run cancelled mid-advance never leaves a triage verdict behind.
 func TestCancelledMidAdvanceWritesNoVerdict(t *testing.T) {
-	r, l, k := runnerWith(t, decide.Answer{}, nil)
-	cctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	r.Triager = cancelTriager{cancel}
-	before := rec(t, l, k)
-	if err := r.Advance(cctx, k); err == nil {
-		t.Fatal("Advance succeeded on a cancelled run")
-	}
-	if got := rec(t, l, k); !reflect.DeepEqual(got, before) {
-		t.Fatalf("a cancelled advance wrote to the ledger: %+v", got)
+	for _, rd := range []decide.Reading{decide.Unavailable, decide.Failed} {
+		t.Run(string(rd), func(t *testing.T) {
+			r, l, k := runnerWith(t, decide.Answer{}, nil)
+			cctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			r.Triager = cancelTriager{cancel, rd}
+			before := rec(t, l, k)
+			if err := r.Advance(cctx, k); err == nil {
+				t.Fatal("Advance succeeded on a cancelled run")
+			}
+			if got := rec(t, l, k); !reflect.DeepEqual(got, before) {
+				t.Fatalf("a cancelled advance wrote to the ledger: %+v", got)
+			}
+		})
 	}
 }
 
 // An outage keeps the posting Live, so the next run, once the backend is back,
 // reads it and carries it on: nothing about the earlier outage sticks.
 func TestPostingReadsAfterTheOutageEnds(t *testing.T) {
-	r, l, k := runnerWith(t, slots(map[string]decide.Reading{"remote": decide.Failed}), nil)
+	r, l, k := runnerWith(t, slots(map[string]decide.Reading{"remote": decide.Unavailable}), nil)
 	r.SkipScoring, r.SkipExplain = true, true
 	if err := r.Advance(ctx, k); !errors.Is(err, ErrTriageUnavailable) {
 		t.Fatalf("err = %v", err)
@@ -266,10 +316,14 @@ func TestUnreadCoversEveryOutageReading(t *testing.T) {
 		ann  map[string]string
 		want bool
 	}{
-		{"all failed", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "failed"}, true},
+		{"all unavailable", map[string]string{"triage.a.reading": "unavailable", "triage.b.reading": "unavailable"}, true},
 		{"all not asked", map[string]string{"triage.a.reading": "not_asked", "triage.b.reading": "not_asked"}, true},
-		{"failed, unavailable, not asked", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "unavailable", "triage.c.reading": "not_asked"}, true},
-		{"one failed slot", map[string]string{"triage.a.reading": "failed", "triage.backend": "llm"}, true},
+		{"unavailable and not asked", map[string]string{"triage.a.reading": "unavailable", "triage.b.reading": "not_asked"}, true},
+		{"one unavailable slot", map[string]string{"triage.a.reading": "unavailable", "triage.backend": "llm"}, true},
+		{"all failed", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "failed"}, false},
+		{"one failed slot", map[string]string{"triage.a.reading": "failed", "triage.backend": "llm"}, false},
+		{"failed, unavailable, not asked", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "unavailable", "triage.c.reading": "not_asked"}, false},
+		{"failed with not asked", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "not_asked"}, false},
 		{"failed with answered", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "answered"}, false},
 		{"not asked with answered", map[string]string{"triage.a.reading": "not_asked", "triage.b.reading": "answered"}, false},
 		{"failed with abstained", map[string]string{"triage.a.reading": "failed", "triage.b.reading": "abstained"}, false},
@@ -292,7 +346,7 @@ func TestUnreadCoversEveryOutageReading(t *testing.T) {
 
 // Records already parked as unsure on an outage answer go back to Live; the
 // ones that hold a real reading, and the ones the owner has seen, do not.
-func TestRetriageUnreadBackfillsFailedAndNotAsked(t *testing.T) {
+func TestRetriageUnreadBackfillsUnavailableAndNotAskedOnly(t *testing.T) {
 	l := openLedger(t)
 	t1 := t0
 	mk := func(id string, ans decide.Answer, digest bool) posting.Key {
@@ -310,15 +364,19 @@ func TestRetriageUnreadBackfillsFailedAndNotAsked(t *testing.T) {
 		return p.Key
 	}
 	stuck := []posting.Key{
-		mk("1", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Failed}), false),
+		mk("1", slots(map[string]decide.Reading{"remote": decide.Unavailable, "level": decide.Unavailable}), false),
 		mk("2", slots(map[string]decide.Reading{"remote": decide.NotAsked, "level": decide.NotAsked}), false),
-		mk("3", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Unavailable, "cat": decide.NotAsked}), false),
+		mk("3", slots(map[string]decide.Reading{"remote": decide.NotAsked, "level": decide.Unavailable}), false),
 	}
 	kept := []posting.Key{
 		mk("4", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Answered}), false),
 		mk("5", slots(map[string]decide.Reading{"remote": decide.Abstained}), false),
 		mk("6", slots(map[string]decide.Reading{"remote": decide.Refused}), false),
-		mk("7", slots(map[string]decide.Reading{"remote": decide.Failed}), true), // seen in a digest
+		mk("7", slots(map[string]decide.Reading{"remote": decide.Unavailable}), true), // seen in a digest
+		// A backend's unusable reading is a verdict about this text, not an outage:
+		// it is not backfilled, alone or beside outage readings.
+		mk("9", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Failed}), false),
+		mk("10", slots(map[string]decide.Reading{"remote": decide.Failed, "level": decide.Unavailable, "cat": decide.NotAsked}), false),
 	}
 	// A malformed reading value is not guessed at.
 	bad := ghPost(t, "8", "jd 8")
@@ -379,7 +437,7 @@ func TestRetriageUnreadBackfillStopsOnCancel(t *testing.T) {
 	for _, id := range []string{"1", "2"} {
 		p := ghPost(t, id, "d")
 		if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: p.Key, Status: posting.Unsure, Posting: &p,
-			Annotations: map[string]string{"triage.remote.reading": "failed"}}); err != nil {
+			Annotations: map[string]string{"triage.remote.reading": "unavailable"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

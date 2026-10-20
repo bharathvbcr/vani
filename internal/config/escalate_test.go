@@ -131,9 +131,20 @@ func TestEscalateValidation(t *testing.T) {
 		"max_per_run negative":           {func(c *Config) { c.Decide.Escalate = &Escalate{Enabled: true, MaxPerRun: ptr(-1)} }, "decide.escalate.max_per_run"},
 		"max_per_run over bound":         {func(c *Config) { c.Decide.Escalate = &Escalate{Enabled: true, MaxPerRun: ptr(MaxEscalatePerRun + 1)} }, "decide.escalate.max_per_run"},
 		"max_per_run huge":               {func(c *Config) { c.Decide.Escalate = &Escalate{Enabled: true, MaxPerRun: ptr(math.MaxInt)} }, "decide.escalate.max_per_run"},
+		// The cheap tier is required: escalating on llm.model (explicitly, or by
+		// leaving triage_model empty) would spend the daily cap on the tier the
+		// escalation is meant to be cheaper than.
+		"enabled without triage_model": {func(c *Config) { c.LLM.TriageModel = ""; c.Decide.Escalate = &Escalate{Enabled: true} }, "decide.escalate needs llm.triage_model"},
+		"enabled, triage_model is llm.model": {func(c *Config) {
+			c.LLM.TriageModel = c.LLM.Model
+			c.Decide.Escalate = &Escalate{Enabled: true}
+		}, "decide.escalate needs llm.triage_model"},
+		"disabled without triage_model": {func(c *Config) { c.LLM.TriageModel = ""; c.Decide.Escalate = &Escalate{} }, ""},
+		"absent section":                {func(c *Config) { c.LLM.TriageModel = ""; c.Decide.Escalate = nil }, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := valid()
+			c.LLM.TriageModel = "cheap-tier" // a model other than llm.model, for the cases that enable escalation
 			tc.mut(&c)
 			err := c.Validate()
 			switch {
