@@ -56,16 +56,17 @@ func TestRTConfidentMismatchRescuedBySignals(t *testing.T) {
 	}
 }
 
-// A company the owner hid ten postings of only loses 1-(1-0.1*10/15) = 6.7%,
-// which one day of age already outweighs, so its newest postings lead.
-func TestRTHiddenCompanyFloodStillLeads(t *testing.T) {
+// Policy (owner, 2026-10-20): the company factor only lifts, from saves and
+// applies. A hide says that posting was wrong, not the company, so a company
+// the owner hid ten postings of scores exactly like an unmarked one.
+func TestRTHiddenCompanyFloodDoesNotSink(t *testing.T) {
 	h := solid(0)
 	h.Company = jobinsight.CompanyMarks{Hidden: 10}
-	u := solid(2)
-	sh, su := def(h).Score, def(u).Score
-	t.Logf("company with 10 hidden marks, today: %.1f; unmarked identical posting, 2 days old: %.1f; company factor %.3f", sh, su, def(h).Company)
-	if !(sh < su) {
-		t.Fatalf("10 hidden marks (%.1f, factor %.3f) still outrank an identical unmarked posting 2 days older (%.1f)", sh, def(h).Company, su)
+	u := solid(0)
+	rh, ru := def(h), def(u)
+	t.Logf("company with 10 hidden marks: %.1f (factor %.3f); unmarked identical posting: %.1f", rh.Score, rh.Company, ru.Score)
+	if rh.Company != 1 || rh.Score != ru.Score {
+		t.Fatalf("10 hidden marks moved the score to %.1f (factor %.3f); an unmarked identical posting scores %.1f", rh.Score, rh.Company, ru.Score)
 	}
 }
 

@@ -157,9 +157,8 @@ func realVariants() []realVariant {
 	with := func(f func(*jobinsight.Weights)) jobinsight.Weights { w := d; f(&w); return w }
 	return []realVariant{
 		{"Score(default)", d},
-		{"-ordinal", with(func(w *jobinsight.Weights) { w.OrdinalFit = false })},
 		{"-known", with(func(w *jobinsight.Weights) { w.KnownMatch = false })},
-		{"-ordinal-known", with(func(w *jobinsight.Weights) { w.OrdinalFit, w.KnownMatch = false, false })},
+		{"shrink 0.10", with(func(w *jobinsight.Weights) { w.MatchShrink = 0.10 })},
 		{"old fit values", with(func(w *jobinsight.Weights) { w.FitValues = [5]float64{0.85, 0.65, 0.45, 0.20, 0.10} })},
 		{"half-life 14", with(func(w *jobinsight.Weights) { w.HalfLifeDays = 14 })},
 	}
