@@ -118,7 +118,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   `-race` on a quiet machine and passed its 10 s bound, but crossed it twice while a Swift build
   ran alongside. Not a code fault; raise the bound or skip it under `-race` if it recurs.
 
-## Title prefilter (built 2026-10-19, not yet enabled in the live config)
+## Title prefilter (built 2026-10-19, enabled in the live config: title_signals.read)
 
 - **Enabling it: install the binary first.** `Parse` refuses unknown fields, so a
   `title_signals.read` in `config.json` makes every older `vani` fail to load the config. That
@@ -985,14 +985,15 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     `vani jobs list --sort priority --limit 20 --json` (`.jobs[].triage.seniority`), run with
     `VANI_CONFIG` and `VANI_STATE_DIR` set to the live `.state` paths. A `title_signals.read`
     for "Senior"/"Sr." is the other lever.
-  - Postings that went through the pipeline while `devprism.binary` was empty were marked Scored
-    with "scoring disabled" and no rank or coverage, and nothing re-scores them now that DevPrism
-    is configured. Every posting in the live top 20 takes the coverage prior (0.4), so the largest
-    signal is missing from the live ranking until they are re-scored.
+  - ~~Postings scored while `devprism.binary` was empty lack coverage in the live top 20~~ —
+    resolved: on 2026-10-20 a fold of the live ledger found 2,287 of 2,301 digested postings with
+    coverage and rank (`vani rescore` exists for the rest).
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
-  - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
-    mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
+  - Resolved by policy (2026-10-20, docs/RANKING_PLAN.md): at half-life 10 an excellent
+    21-day-old posting still ranks below a mediocre same-day one by priority ("what is new"), and
+    the digest's Top open section ranks by Relevance ("best open role"), where it leads.
+    `TestRTSharpRecencyBuriesExcellent` asserts that and no longer skips.
   - Closed on this branch: displayed `relevance` rests on the known parts (`relevance_known`);
     `vani jobs mark`/`note` rank with the marks as written; the digest ranks with the same drop-rule
     penalties, rank penalties and title signals as `vani jobs` (`cmd/vani/rankconfig.go`); the
@@ -1274,3 +1275,17 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **Merged into main** (2026-10-19). The only conflict was the `cmdJobs` usage string, which both
   sides rewrote; it now reads `"jobs: expected list, stats, gaps, folders, show, find, ingest, mark
   or note"`.
+
+## Ranking measurement (branch ranking-measure, 2026-10-20)
+
+- Plan, findings and phase status: `docs/RANKING_PLAN.md`.
+- Built: `internal/feedback` (impressions and audit judgments beside the ledger), the digest's
+  Top open and Explore sections (`digest.top_open`, `digest.explore`), `vani audit` and the
+  age-neutral advance order. The recency red-team case is policy now, not a skip.
+- Open: the Mac app's New / Top open sections and an audit sheet wait on the uncommitted
+  JobsView/JobsModel work in the main checkout. Fail-open counters, the semantic floor, the notes
+  gate and the agreement drop rule are the Phase 3 session's. The Go Platt and weight fitter is the
+  Phase 4-5 session's; they read `<state>/feedback/judgments.jsonl` and must refuse below 100 and
+  150 usable judgments.
+- An app that calls `vani jobs` does not log impressions yet: only the digest does. Adding a
+  `vani audit shown` (or similar) for the app's visible rows comes with the app work.
