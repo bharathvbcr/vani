@@ -58,10 +58,33 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             case ok, failed, cancelled, running, interrupted, unknown
         }
 
+        /// Who started a run (runRecord.Trigger).
+        public enum Trigger: Equatable, Sendable {
+            /// The daemon's daily schedule.
+            case schedule
+            /// `vani run-once`: from a shell, or this app's Run Now.
+            case manual
+            /// A trigger a newer vani adds: shown as written.
+            case unknown(String)
+
+            init(raw: String) {
+                switch raw {
+                case "schedule": self = .schedule
+                case "manual": self = .manual
+                default: self = .unknown(raw)
+                }
+            }
+        }
+
         public var ok: Bool
         public var reason: String?
         /// A state a newer vani adds decodes as `.unknown`, never fails the read.
         public var state: State
+        /// Nil from a vani that does not record it.
+        public var trigger: Trigger?
+        /// A manual run's overrides; nil when it had none, or from an older vani.
+        /// Display only, so one that does not decode is dropped, never fails the read.
+        public var options: ManualRunOptions?
         public var startedAt: Date?
         public var finishedAt: Date?
         public var durationSec: Double?
@@ -89,7 +112,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var backendErrors: BackendErrors?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, state, stage, error, cause, boards, advance
+            case ok, reason, state, stage, error, cause, boards, advance, trigger, options
             case digestRoles = "digest_roles"
             case startedAt = "started_at"
             case finishedAt = "finished_at"
@@ -106,6 +129,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             ok = try c.decode(Bool.self, forKey: .ok)
             reason = try c.decodeIfPresent(String.self, forKey: .reason)
             state = (try? c.decode(State.self, forKey: .state)) ?? .unknown
+            trigger = try c.decodeIfPresent(String.self, forKey: .trigger).flatMap { $0.isEmpty ? nil : Trigger(raw: $0) }
+            options = (try? c.decodeIfPresent(ManualRunOptions.self, forKey: .options)) ?? nil
             startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
             finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
             durationSec = try c.decodeIfPresent(Double.self, forKey: .durationSec)
@@ -127,7 +152,10 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     cause: Cause? = nil, digestRoles: Int? = nil,
                     postingsBefore: Int? = nil, postingsAfter: Int? = nil,
                     countsBefore: [String: Int]? = nil, countsAfter: [String: Int]? = nil,
-                    boards: Boards? = nil, advance: Advance? = nil, backendErrors: BackendErrors? = nil) {
+                    boards: Boards? = nil, advance: Advance? = nil, backendErrors: BackendErrors? = nil,
+                    trigger: Trigger? = nil, options: ManualRunOptions? = nil) {
+            self.trigger = trigger
+            self.options = options
             self.cause = cause
             self.digestRoles = digestRoles
             self.countsBefore = countsBefore

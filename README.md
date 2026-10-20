@@ -248,7 +248,20 @@ flowchart TD
   reason, never as zero or fine. A record that started but never ended is `running` only while its
   process lives and is under a day old, otherwise `interrupted`. The app flags a failed or
   interrupted run, an unreadable section, a spent budget and a run older than 36 hours in its
-  sidebar. A run the daemon skips for starting too late is logged but not recorded.
+  sidebar. A run the daemon skips for starting too late is logged but not recorded. The record's
+  `trigger` says who started the run (`schedule`, the daemon; `manual`, `run-once`) and `options`
+  what a manual run changed.
+- **Manual runs (`vani run-once`, the Mac app's Pipeline tab › Run Now):** the flags change one run
+  and never the config: `--advance N` caps the advance phase at N in place of `advance_per_run`,
+  `--board ats:token` (repeatable) lists only those watchlist boards (the others' postings are
+  untouched; a board no longer on the watchlist stops the run before it lists anything),
+  `--list-only` lists and reconciles without triage, scoring or explaining (no decision model is
+  called, but one must still be configured: the run builds its stages first), and `--no-digest`
+  leaves the run's roles for the next digest. A digest from a manual run marks its roles digested,
+  so the next daily digest does not list them again. `run-once` is refused at once while the daemon
+  (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
+  writes its output to `<state dir>/runs/manual.log`, follows it through `vani status --json`, and
+  can stop a run it started (SIGTERM; recorded `cancelled`), never one the daemon started.
 - **Browsing aids (`vani jobs`, the Mac app's Jobs tab):** every role carries a freshness date
   and a relevance score with its basis. Display-only: they sort and plot, and never drop a role.
   - Freshness is the board's posted date. Greenhouse's comes from `first_published`. A board with
@@ -380,6 +393,7 @@ build/vani init
 build/vani watchlist add --ats gh --token <board> --company <Name> --allow-host boards-api.greenhouse.io
 build/vani config check
 build/vani run-once
+build/vani run-once --board gh:<board> --advance 25 --no-digest
 build/vani status
 build/vani lca import /absolute/path/LCA_FY2025.csv
 build/vani employer import /absolute/path/HD2024.csv

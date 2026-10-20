@@ -8,12 +8,19 @@ import VaniApplyKit
 /// read says so; it never shows as zero or fine.
 struct PipelineView: View {
     @Environment(PipelineModel.self) private var pipeline
+    @State private var showRunSheet = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let err = pipeline.error {
                     ErrorBanner(title: "Vani could not report its status", message: err, stale: pipeline.status != nil)
+                }
+                if let err = pipeline.runError {
+                    ErrorBanner(title: "The manual run could not start", message: err, stale: false)
+                }
+                if pipeline.startingRun || pipeline.runInProgress {
+                    RunningBanner()
                 }
                 if let s = pipeline.status {
                     StatusHeader(status: s)
@@ -32,6 +39,12 @@ struct PipelineView: View {
         .navigationTitle("Pipeline")
         .toolbar {
             ToolbarItem {
+                Button { showRunSheet = true } label: { Label("Run Now…", systemImage: "play.fill") }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(pipeline.runBlocker != nil)
+                    .help(pipeline.runBlocker ?? "Run the pipeline now, with options for this run only (⇧⌘R)")
+            }
+            ToolbarItem {
                 Button { Task { await pipeline.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
                     .disabled(pipeline.loading)
@@ -39,6 +52,209 @@ struct PipelineView: View {
             }
         }
         .task { await pipeline.refresh() }
+        .sheet(isPresented: $showRunSheet) {
+            RunNowSheet(initial: pipeline.savedOptions) { options in
+                Task { await pipeline.startRun(options) }
+            }
+        }
+    }
+}
+
+/// A run going now: started here (Stop sends it SIGTERM, and vani records it
+/// cancelled) or elsewhere (the daemon, a shell), which this app never signals.
+private struct RunningBanner: View {
+    @Environment(PipelineModel.self) private var pipeline
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.semibold)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if let log = pipeline.lastLog, pipeline.manualRun != nil {
+                Button("Show Log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
+                    .help(log.path)
+            }
+            if pipeline.manualRun?.isRunning == true {
+                Button("Stop", role: .destructive) { pipeline.stopRun() }
+                    .help("Cancel this run; what it already wrote to the ledger stays")
+            }
+        }
+        .padding(10)
+        .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var title: String {
+        if pipeline.startingRun { return "Starting a run…" }
+        return pipeline.manualRun != nil ? "Your run is going" : "A run is going"
+    }
+
+    private var detail: String {
+        if pipeline.startingRun { return "Reading the model keys and starting vani." }
+        let run = pipeline.status?.lastRun
+        let started = run?.state == .running ? run?.startedAt.map { "Started \(PipelineStatus.age(Date().timeIntervalSince($0))) ago. " } ?? "" : ""
+        let elsewhere = pipeline.manualRun == nil ? "It was started by the daemon or a shell, so it can be stopped only there. " : ""
+        return started + elsewhere + "This page updates every few seconds."
+    }
+}
+
+/// The options for one run started by hand: `vani run-once`'s flags. They
+/// change this run only; the config, and the daily run, stay as they are.
+private struct RunNowSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let start: (ManualRunOptions) -> Void
+
+    @State private var allBoards: Bool
+    @State private var chosen: Set<String>
+    @State private var advance: Bool
+    @State private var capOn: Bool
+    @State private var cap: Int
+    @State private var digest: Bool
+    @State private var boards: [WatchlistEntry] = []
+    @State private var boardsError: String?
+    @State private var loadingBoards = true
+    @State private var filter = ""
+
+    init(initial: ManualRunOptions, start: @escaping (ManualRunOptions) -> Void) {
+        self.start = start
+        _allBoards = State(initialValue: initial.boards.isEmpty)
+        _chosen = State(initialValue: Set(initial.boards))
+        _advance = State(initialValue: !initial.listOnly)
+        _capOn = State(initialValue: initial.advance > 0)
+        _cap = State(initialValue: initial.advance > 0 ? initial.advance : 50)
+        _digest = State(initialValue: !initial.noDigest)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Run the pipeline now").font(.headline)
+            Text("These choices apply to this run only. Your config and the daily run stay as they are.")
+                .font(.callout).foregroundStyle(.secondary)
+            Form {
+                Section("Boards") {
+                    Picker("Boards", selection: $allBoards) {
+                        Text("Every board on the watchlist").tag(true)
+                        Text("Only the boards I choose").tag(false)
+                    }
+                    .pickerStyle(.radioGroup)
+                    .labelsHidden()
+                    if !allBoards { boardPicker }
+                }
+                Section("Triage, scoring and explaining") {
+                    Toggle("Advance new postings this run", isOn: $advance)
+                        .help("Off lists and reconciles boards only: new postings stay live for the next run. No decision model is called, but one must still be configured.")
+                    if advance {
+                        Toggle("Cap the postings advanced this run (instead of advance_per_run)", isOn: $capOn)
+                        if capOn {
+                            Stepper(value: $cap, in: 1...ManualRunOptions.maxAdvance, step: cap < 50 ? 5 : 25) {
+                                HStack {
+                                    Text("At most")
+                                    TextField("Postings", value: $cap, format: .number)
+                                        .frame(width: 70)
+                                        .multilineTextAlignment(.trailing)
+                                    Text("postings")
+                                }
+                            }
+                        }
+                    }
+                }
+                Section("Digest") {
+                    Toggle("Write a digest when the run ends", isOn: $digest)
+                    Text(digest
+                         ? "The roles it lists are marked digested, so the next daily digest will not list them again."
+                         : "The run's roles stay pending and the next digest lists them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            if let problem {
+                Text(problem).font(.callout).foregroundStyle(.red)
+            }
+            HStack {
+                Text("A run is refused while the daemon or another vani holds the ledger.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Start Run") {
+                    start(options)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(problem != nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: allBoards ? 560 : 720)
+        .task { await loadBoards() }
+    }
+
+    private var options: ManualRunOptions {
+        ManualRunOptions(advance: advance && capOn ? cap : 0,
+                         boards: allBoards ? [] : boards.map(ref).filter(chosen.contains),
+                         listOnly: !advance,
+                         noDigest: !digest)
+    }
+
+    /// Why Start Run is off: what run-once would refuse.
+    private var problem: String? {
+        if !allBoards {
+            if loadingBoards { return "Reading the watchlist…" }
+            if boardsError != nil { return "The watchlist could not be read, so boards cannot be chosen." }
+            if options.boards.isEmpty { return "Choose at least one board, or run every board." }
+        }
+        do { _ = try options.arguments() } catch { return String(describing: error) }
+        return nil
+    }
+
+    private func ref(_ b: WatchlistEntry) -> String { ManualRunOptions.ref(ats: b.ats, token: b.token) }
+
+    @ViewBuilder private var boardPicker: some View {
+        if loadingBoards {
+            ProgressView().controlSize(.small)
+        } else if let boardsError {
+            Text(boardsError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+        } else if boards.isEmpty {
+            Text("The watchlist has no boards.").foregroundStyle(.secondary)
+        } else {
+            TextField("Filter", text: $filter, prompt: Text("Company or token"))
+            let shown = boards.filter { filter.isEmpty || $0.title.localizedCaseInsensitiveContains(filter) || $0.token.localizedCaseInsensitiveContains(filter) }
+            List(shown, id: \.id) { b in
+                Toggle(isOn: Binding(get: { chosen.contains(ref(b)) },
+                                     set: { if $0 { chosen.insert(ref(b)) } else { chosen.remove(ref(b)) } })) {
+                    HStack {
+                        Text(b.title)
+                        Text("\(b.kind) · \(b.token)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(minHeight: 160, maxHeight: 220)
+            HStack {
+                Text("\(options.boards.count) of \(boards.count) chosen").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Choose Shown") { shown.forEach { chosen.insert(ref($0)) } }.controlSize(.small)
+                Button("Clear") { chosen.removeAll() }.controlSize(.small)
+            }
+        }
+    }
+
+    private func loadBoards() async {
+        let client = model.jobsClient
+        let result = await Task.detached(priority: .userInitiated) { Result { try client.watchlist() } }.value
+        loadingBoards = false
+        switch result {
+        case let .success(list):
+            // One row per board as run-once names it (ats:token, case aside).
+            var seen = Set<String>()
+            boards = list.filter { seen.insert(ref($0).lowercased()).inserted }
+            // A board saved last time and since removed is dropped, not sent.
+            let known = Set(boards.map(ref))
+            chosen = chosen.filter(known.contains)
+        case let .failure(err):
+            boardsError = String(describing: err)
+        }
     }
 }
 
@@ -170,6 +386,9 @@ private struct LastRunSection: View {
                 Row(label: "State", value: "No run recorded yet")
             } else {
                 Row(label: "State", value: stateText(run))
+                if let trigger = run.trigger {
+                    Row(label: "Started by", value: triggerText(trigger) + (run.options?.summary.map { ": \($0)" } ?? ""))
+                }
                 if let started = run.startedAt {
                     Row(label: "Started", value: "\(started.formatted(date: .abbreviated, time: .shortened)) (\(ago(started)) ago)")
                 }
@@ -214,6 +433,14 @@ private struct LastRunSection: View {
         case .interrupted: "Did not finish (its process is gone)"
         case .never: "No run recorded yet"
         case .unknown: "Unknown"
+        }
+    }
+
+    private func triggerText(_ t: PipelineStatus.LastRun.Trigger) -> String {
+        switch t {
+        case .schedule: "The daily schedule"
+        case .manual: "You (Run Now or vani run-once)"
+        case .unknown(let raw): PipelineStatus.bounded(raw, max: 40)
         }
     }
 

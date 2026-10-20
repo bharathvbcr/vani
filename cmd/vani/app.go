@@ -39,6 +39,11 @@ type App struct {
 	// Rescore scores up to limit postings that went past the scoring stage
 	// without a score (vani rescore). Nil means not available.
 	Rescore func(ctx context.Context, limit int) (rescoreReport, error)
+	// Tune sets what the next RunOnce does in its advance phase: advance caps
+	// it (0 keeps advance_per_run) and listOnly skips it. Every run sets it,
+	// so a manual run's overrides never reach the next scheduled one. Nil means
+	// the app cannot be tuned, and a run that asks for it fails.
+	Tune func(advance int, listOnly bool)
 	// Notifier announces a finished digest. Nil means no notification.
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
@@ -57,17 +62,22 @@ var buildApp = wireApp
 
 // dailyJob is what the daemon and run-once execute: run the pipeline, then
 // publish the digest. Each run is written to the run record (runrecord.go) when
-// it starts and again when it ends, however it ends.
-func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
+// it starts and again when it ends, however it ends. trigger says who started
+// it (triggerSchedule, triggerManual) and opts are a manual run's overrides;
+// the daemon's runs take none.
+func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOptions) daemon.Job {
 	return func(ctx context.Context) error {
-		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning}
+		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning, Trigger: trigger, Options: opts.recorded()}
 		if app.Ledger != nil {
 			rec.CountsBefore = statusCounts(app.Ledger.All())
 		}
 		e.saveRunRecord(rec)
 		stage, err := stagePipeline, ledgerBroken(app.Ledger)
 		if err == nil {
-			stage, err = e.dailySteps(ctx, app, cfg, &rec)
+			err = tuneRun(app, opts)
+		}
+		if err == nil {
+			stage, err = e.dailySteps(ctx, app, cfg, opts, &rec)
 			if berr := ledgerBroken(app.Ledger); berr != nil {
 				err = errors.Join(err, berr)
 			}
@@ -115,22 +125,59 @@ func ledgerBroken(l ledger.Ledger) error {
 // cannot be read the run goes on with the previous values and the failure is
 // joined into the run's error: the run record says the config was stale, and
 // the run is not reported as a clean one.
-func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
-	reloadErr := e.reloadBoards(app)
-	stage, err = e.runAndPublish(ctx, app, cfg, rec)
+//
+// A manual run's board selection (opts.Boards) is applied to the watchlist the
+// reload produced, never before it, or the reload would put every board back.
+// A selection the watchlist no longer satisfies stops the run before it lists
+// anything.
+func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts runOptions, rec *runRecord) (stage string, err error) {
+	reloadErr := e.reloadBoards(app, cfg, opts.Boards)
+	if errors.Is(reloadErr, errBoardSelection) {
+		return stagePipeline, reloadErr
+	}
+	stage, err = e.runAndPublish(ctx, app, cfg, opts, rec)
 	return stage, errors.Join(reloadErr, err)
 }
 
-// reloadBoards applies the config file's watchlist and allowed hosts to app.
-func (e *env) reloadBoards(app *App) error {
+// reloadBoards applies the config file's watchlist and allowed hosts to app,
+// cut to the boards only names when it names any. When the file cannot be read
+// the selection is cut from cfg, the config this process started with.
+func (e *env) reloadBoards(app *App, cfg config.Config, only []string) error {
 	if app.Reload == nil {
+		if len(only) > 0 {
+			return fmt.Errorf("%w: this app cannot limit a run to some boards", errBoardSelection)
+		}
 		return nil
 	}
 	fresh, _, err := config.LoadWithDeprecations(e.configPath)
+	var stale error
 	if err != nil {
-		return fmt.Errorf("%w; this run uses the previous watchlist and allowed_hosts: %w", errConfigStale, err)
+		stale = fmt.Errorf("%w; this run uses the previous watchlist and allowed_hosts: %w", errConfigStale, err)
+		if len(only) == 0 {
+			return stale
+		}
+		fresh = cfg
 	}
-	app.Reload(fresh.Watchlist, fresh.AllowedHosts)
+	watchlist := fresh.Watchlist
+	if len(only) > 0 {
+		if watchlist, err = selectBoards(fresh.Watchlist, only); err != nil {
+			return errors.Join(stale, err)
+		}
+	}
+	app.Reload(watchlist, fresh.AllowedHosts)
+	return stale
+}
+
+// tuneRun hands the run's advance overrides to the app, and resets them for a
+// run that has none.
+func tuneRun(app *App, opts runOptions) error {
+	if app.Tune == nil {
+		if opts.tunes() {
+			return errors.New("this app cannot change a run's advance phase (--advance, --list-only)")
+		}
+		return nil
+	}
+	app.Tune(opts.Advance, opts.ListOnly)
 	return nil
 }
 
@@ -139,12 +186,17 @@ func (e *env) reloadBoards(app *App) error {
 // what the pipeline's own warm before its advance phase left of
 // semantic.warm_per_run; that never fails the run, and rec carries what it did.
 // rec.DigestRoles is the size of the digest it wrote (nil when it wrote none).
-func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
+// With opts.NoDigest it stops after the pipeline: no warm, no digest.
+func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, opts runOptions, rec *runRecord) (stage string, err error) {
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
 	}
 	if err := app.RunOnce(ctx); err != nil {
 		return stagePipeline, fmt.Errorf("pipeline: %w", err)
+	}
+	if opts.NoDigest {
+		fmt.Fprintln(e.stdout, "digest: skipped (--no-digest); the run's roles wait for the next digest")
+		return stagePipeline, nil
 	}
 	loc, err := scheduleLoc(cfg)
 	if err != nil {
@@ -169,8 +221,8 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, re
 			e.logSemantic(*rec.Semantic)
 		}
 	}
-	opts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
-	rec.DigestRoles, err = e.publishDigest(ctx, app, now().In(loc), loc, opts)
+	dopts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
+	rec.DigestRoles, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
 	return stageDigest, err
 }
 

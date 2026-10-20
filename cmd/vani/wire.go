@@ -104,6 +104,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		Reload:    w.setBoards,
 		PollInbox: w.pollInbox,
 		Rescore:   w.rescore,
+		Tune:      w.tune,
 		// The Vani Apply app posts run notices itself while it runs; the
 		// daemon's are the fallback for when it does not.
 		Notifier: notify.UnlessHeld(notify.AppLockPath(stateDir), notify.New(nil)),
@@ -120,6 +121,24 @@ func (w *wired) setBoards(watchlist []sources.Board, allowed []string) {
 	w.cfg.Watchlist, w.cfg.AllowedHosts = watchlist, allowed
 }
 
+// tune sets the next run's advance cap (0 keeps advance_per_run) and whether
+// it skips the advance phase (App.Tune; dailyJob calls it before every run).
+func (w *wired) tune(advance int, listOnly bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.advanceCap, w.listOnly = advance, listOnly
+}
+
+// advancePlan is the run's advance cap and whether to skip the phase.
+func (w *wired) advancePlan() (limit int, skip bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.advanceCap > 0 {
+		return w.advanceCap, w.listOnly
+	}
+	return w.cfg.AdvanceLimit(), w.listOnly
+}
+
 type wired struct {
 	cfg      config.Config
 	stateDir string
@@ -129,6 +148,11 @@ type wired struct {
 
 	mu     sync.Mutex
 	scorer *lazyScorer
+
+	// advanceCap and listOnly are the run's overrides (tune): a cap other
+	// than advance_per_run when above 0, and skipping the advance phase.
+	advanceCap int
+	listOnly   bool
 
 	// localEndpoint is the address of the local decision model's server when
 	// runOnce started one; empty otherwise.
@@ -255,8 +279,13 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return ctx.Err()
 	}
 
+	limit, skip := w.advancePlan()
+	if skip {
+		w.warnf("advance phase skipped (--list-only): new postings stay live for the next run")
+		return nil
+	}
 	w.warmBeforeAdvance(ctx, w.led.All(), titleDropper(runner.Policy))
-	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), limit, w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()

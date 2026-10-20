@@ -75,6 +75,12 @@ final class AppModel {
                               stateDir: s.vaniStateDir.isEmpty ? nil : s.vaniStateDir)
     }
 
+    /// `vani run-once` for the Pipeline tab's Run Now: the pipeline calls
+    /// decision models, so it gets the keys drafting gets.
+    var manualRunLauncher: ManualRunLauncher {
+        ManualRunLauncher(runner: draftSettings.runner(vaniBinary: vaniBinary))
+    }
+
     // MARK: - Agent
 
     /// The login-item agent that runs drafts and suggestions for both browsers.

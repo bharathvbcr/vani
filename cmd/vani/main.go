@@ -16,6 +16,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
+	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
 // Exit codes.
@@ -41,7 +42,11 @@ commands:
   logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
                              too); --force refetches cached and recently failed ones
   daemon                     run the scheduler in the foreground
-  run-once                   run the pipeline once and write the digest
+  run-once [--advance N] [--board ATS:TOKEN]... [--list-only] [--no-digest]
+                             run the pipeline once and write the digest; the flags change this
+                             run only: cap the advance phase at N postings, list only the named
+                             watchlist boards, skip the advance phase, or skip the digest.
+                             Refused while the daemon (or another run) holds the ledger
   digest [--date YYYY-MM-DD] write the digest for pending roles
   status [--json]            show ledger counts by status; --json adds the last run's outcome,
                              today's spend against each cap and the decision-model setup
@@ -350,7 +355,7 @@ func (e *env) cmdDaemon(args []string) error {
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
 	// The daily run and the inbox poll both write the ledger: one at a time.
 	var ledgerMu sync.Mutex
-	daily := e.dailyJob(app, cfg)
+	daily := e.dailyJob(app, cfg, triggerSchedule, runOptions{})
 	job := func(ctx context.Context) error {
 		ledgerMu.Lock()
 		defer ledgerMu.Unlock()
@@ -404,22 +409,38 @@ func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) erro
 	return poll(ctx)
 }
 
+// cmdRunOnce runs the pipeline once, by hand. Its flags tune this run only;
+// the config, and so the daemon's runs, are unchanged.
 func (e *env) cmdRunOnce(args []string) error {
-	if err := parse(e.newFlags("run-once"), args); err != nil {
+	fs := e.newFlags("run-once")
+	var opts runOptions
+	var boards boardRefs
+	fs.IntVar(&opts.Advance, "advance", 0, fmt.Sprintf("triage, score and explain at most N postings this run (1..%d; default advance_per_run)", config.MaxAdvancePerRun))
+	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
+	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (a decision backend must still be configured; none is called)")
+	fs.BoolVar(&opts.NoDigest, "no-digest", false, "write no digest: the run's roles wait for the next one")
+	if err := parse(fs, args); err != nil {
 		return err
 	}
+	opts.Boards = boards
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
 	}
+	if err := checkRunOptions(opts, cfg.Watchlist); err != nil {
+		return err
+	}
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
+	if errors.Is(err, ledger.ErrLocked) {
+		return fmt.Errorf("%w: another vani holds it (the daemon, or a run-once, rescore or retriage still going); try again when it is done", err)
+	}
 	if err != nil {
 		return err
 	}
 	defer app.close()
 	ctx, stop := signalContext()
 	defer stop()
-	return e.dailyJob(app, cfg)(ctx)
+	return e.dailyJob(app, cfg, triggerManual, opts)(ctx)
 }
 
 func (e *env) cmdStatus(args []string) error {

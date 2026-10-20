@@ -87,6 +87,8 @@ type lastRunFacet struct {
 	StartedAt      time.Time      `json:"started_at,omitzero"`
 	FinishedAt     time.Time      `json:"finished_at,omitzero"`
 	DurationSec    *float64       `json:"duration_sec,omitempty"`
+	Trigger        string         `json:"trigger,omitempty"` // runRecord.Trigger
+	Options        *runOptions    `json:"options,omitempty"` // runRecord.Options
 	Stage          string         `json:"stage,omitempty"`
 	Error          string         `json:"error,omitempty"`
 	Cause          string         `json:"cause,omitempty"`        // runRecord.Cause
@@ -201,7 +203,7 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 	}
 	f := lastRunFacet{
 		facet: facet{OK: true}, State: runState(*r, at), StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
-		Stage: r.Stage, Error: r.Error, Cause: r.Cause, DigestRoles: r.DigestRoles, CountsBefore: r.CountsBefore, CountsAfter: r.CountsAfter,
+		Trigger: r.Trigger, Options: r.Options, Stage: r.Stage, Error: r.Error, Cause: r.Cause, DigestRoles: r.DigestRoles, CountsBefore: r.CountsBefore, CountsAfter: r.CountsAfter,
 		Semantic: r.Semantic, runDetail: r.runDetail,
 	}
 	if !r.FinishedAt.IsZero() {

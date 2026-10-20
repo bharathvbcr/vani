@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // the run notices, to the daemon.
         let announcer = Bundle.main.bundleIdentifier == nil ? nil
             : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock())
-        pipeline = PipelineModel(client: { model.pipelineClient }, announcer: announcer)
+        pipeline = PipelineModel(client: { model.pipelineClient }, launcher: { model.manualRunLauncher }, announcer: announcer)
         super.init()
     }
 
