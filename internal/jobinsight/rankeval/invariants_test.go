@@ -25,6 +25,7 @@ func good() jobinsight.Inputs {
 		BodyHits:     3,
 		Semantic:     0.6,
 		HasSemantic:  true,
+		AgeKnown:     true,
 		AgeDays:      10,
 	}
 }
@@ -46,7 +47,7 @@ func invariantViolations(w jobinsight.Weights) []string {
 	// A known age never scores below an unknown one, however old.
 	for _, age := range []int{0, 1, 10, 60, 180, 1000} {
 		k, u := good(), good()
-		k.AgeDays, u.AgeDays = age, -1
+		k.AgeDays, u.AgeKnown, u.AgeDays = age, false, -1
 		if s(k) < s(u)-eps {
 			bad("known age %d scores %.4f below unknown age %.4f", age, s(k), s(u))
 		}

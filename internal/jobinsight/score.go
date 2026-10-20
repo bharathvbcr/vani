@@ -74,9 +74,12 @@ type Inputs struct {
 	Semantic    float64
 	HasSemantic bool
 
-	// AgeDays is whole days since the posting's freshness date; negative
-	// means unknown (no plausible posted date, and first seen in its board's
-	// first crawl).
+	// AgeKnown is true when AgeDays holds a real age. The zero value is
+	// unknown (no plausible posted date, and first seen in its board's first
+	// crawl), so a caller that forgets the age gets no freshness bonus.
+	AgeKnown bool
+	// AgeDays is whole days since the posting's freshness date, read only when
+	// AgeKnown. A known negative age (clock skew) counts as today.
 	AgeDays int
 
 	// Unsure is true when triage could not decide and kept the posting.
@@ -302,7 +305,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 
 	floor := clamp01(w.FreshFloor)
 	fresh := floor
-	if in.AgeDays >= 0 {
+	if in.AgeKnown {
 		half := in.HalfLifeDays
 		if !(half > 0 && half <= MaxHalfLifeDays) {
 			half = w.HalfLifeDays
@@ -310,7 +313,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 				half = DefaultScoreHalfLifeDays
 			}
 		}
-		fresh = floor + (1-floor)*math.Exp2(-float64(in.AgeDays)/half)
+		fresh = floor + (1-floor)*math.Exp2(-float64(max(in.AgeDays, 0))/half)
 	}
 	fresh = clamp01(fresh)
 

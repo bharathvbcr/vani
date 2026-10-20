@@ -35,6 +35,13 @@ func ageVia(posted, firstSeen, boardFirstCrawl time.Time) int {
 	return jobinsight.AgeDays(at, advNow)
 }
 
+// setAge sets an observed age where a negative n is the harness's "unknown"
+// sentinel: the age is then marked unknown rather than read as a skewed
+// known one.
+func setAge(in *jobinsight.Inputs, n int) {
+	in.AgeKnown, in.AgeDays = n >= 0, n
+}
+
 func with(f func(in *jobinsight.Inputs)) jobinsight.Inputs {
 	in := good()
 	f(&in)
@@ -45,10 +52,10 @@ func days(n int) time.Time { return advNow.Add(-time.Duration(n) * 24 * time.Hou
 
 func advCases() []advCase {
 	boardFirst := days(120)
-	bogusFuture := with(func(in *jobinsight.Inputs) { in.AgeDays = ageVia(days(30).Add(5*24*time.Hour), days(30), boardFirst) })
-	placeholder := with(func(in *jobinsight.Inputs) { in.AgeDays = ageVia(time.Unix(0, 0), days(40), boardFirst) })
-	placeholderFirstCrawl := with(func(in *jobinsight.Inputs) { in.AgeDays = ageVia(time.Unix(0, 0), days(40), days(40)) })
-	age := func(n int) jobinsight.Inputs { return with(func(in *jobinsight.Inputs) { in.AgeDays = n }) }
+	bogusFuture := with(func(in *jobinsight.Inputs) { setAge(in, ageVia(days(30).Add(5*24*time.Hour), days(30), boardFirst)) })
+	placeholder := with(func(in *jobinsight.Inputs) { setAge(in, ageVia(time.Unix(0, 0), days(40), boardFirst)) })
+	placeholderFirstCrawl := with(func(in *jobinsight.Inputs) { setAge(in, ageVia(time.Unix(0, 0), days(40), days(40))) })
+	age := func(n int) jobinsight.Inputs { return with(func(in *jobinsight.Inputs) { setAge(in, n) }) }
 	strong := func(p float64) jobinsight.Inputs {
 		return with(func(in *jobinsight.Inputs) { in.RoleFit = fit("strong_fit", p) })
 	}
@@ -117,8 +124,7 @@ func advCases() []advCase {
 			labels: []string{"good", "empty, age unknown"}},
 		{name: "zero-value Inputs: 'nothing known' vs the same with age unknown",
 			order:  []jobinsight.Inputs{{AgeDays: -1}, {}},
-			labels: []string{"empty, age unknown", "zero value (AgeDays 0 means brand new)"}, soft: true,
-			note: "the zero value reads as age 0, i.e. newest; documented as 'nothing is known', so a caller that forgets AgeDays gets a freshness bonus"},
+			labels: []string{"empty, age unknown", "zero value (AgeKnown false)"}, equal: true},
 		{name: "excluded title with perfect coverage loses to an included title with modest coverage",
 			order: []jobinsight.Inputs{
 				with(func(in *jobinsight.Inputs) { in.TitleRank = 1; in.Coverage = 50 }),

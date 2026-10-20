@@ -28,7 +28,7 @@ func TestInputsForMissingAnnotations(t *testing.T) {
 	r := rec("gh:a:1", "Acme", time.Hour, nil)
 	c := NewRankContext([]ledger.Record{r, rec("gh:a:0", "Acme", 48*time.Hour, nil)}, nil, inT0)
 	in := InputsFor(r, c)
-	want := Inputs{AgeDays: 0}
+	want := Inputs{AgeKnown: true, AgeDays: 0}
 	if !reflect.DeepEqual(in, want) {
 		t.Fatalf("got %+v, want %+v", in, want)
 	}
@@ -154,14 +154,15 @@ func TestInputsForAge(t *testing.T) {
 		{dated, 40},   // the board's own date wins
 		{other, -1},   // its board's only crawl
 	} {
-		if got := InputsFor(k.r, c).AgeDays; got != k.want {
-			t.Errorf("%s: age %d, want %d", k.r.Key, got, k.want)
+		got := InputsFor(k.r, c)
+		if got.AgeDays != k.want || got.AgeKnown != (k.want >= 0) {
+			t.Errorf("%s: age %d known %v, want %d known %v", k.r.Key, got.AgeDays, got.AgeKnown, k.want, k.want >= 0)
 		}
 	}
 	zero := rec("gh:z:1", "Zed", 0, nil)
 	zero.FirstSeen = time.Time{}
-	if got := InputsFor(zero, NewRankContext([]ledger.Record{zero}, nil, inT0)).AgeDays; got != -1 {
-		t.Errorf("no dates: age %d", got)
+	if got := InputsFor(zero, NewRankContext([]ledger.Record{zero}, nil, inT0)); got.AgeDays != -1 || got.AgeKnown {
+		t.Errorf("no dates: age %d known %v", got.AgeDays, got.AgeKnown)
 	}
 }
 

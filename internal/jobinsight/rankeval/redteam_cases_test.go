@@ -27,13 +27,20 @@ func knownFailure(t *testing.T, ok bool, format string, a ...any) {
 	}
 }
 
-// solid is a confident, well-covered partial fit.
+// solid is a confident, well-covered partial fit; a negative age means unknown.
 func solid(age int) jobinsight.Inputs {
 	in := good()
 	in.RoleFit = fit("partial_fit", 0.8)
 	in.Coverage = 60
 	in.Semantic = 0.6
-	in.AgeDays = age
+	setAge(&in, age)
+	return in
+}
+
+// skewed is solid with a known age n, which may be negative (clock skew).
+func skewed(n int) jobinsight.Inputs {
+	in := solid(0)
+	in.AgeDays = n
 	return in
 }
 
@@ -90,22 +97,33 @@ func TestRTExcludedTitleInTopTen(t *testing.T) {
 	knownFailure(t, better >= 10, "an excluded title (%.1f) ranks #%d among 21 ordinary partial fits, inside the top 10", def(ex).Score, better+1)
 }
 
-// A fresh posting with every field forgotten is "posted today": Inputs{} has
-// AgeDays 0. A caller that leaves AgeDays unset gets the maximum freshness.
+// Inputs{} is "nothing is known": a caller that forgets the age must not get
+// the freshness of a posting made today.
 func TestRTZeroInputsLooksPostedToday(t *testing.T) {
 	zero := def(jobinsight.Inputs{})
 	unknown := def(jobinsight.Inputs{AgeDays: -1})
-	t.Logf("Inputs{}: fresh %.3f score %.1f; Inputs{AgeDays:-1}: fresh %.3f score %.1f", zero.Fresh, zero.Score, unknown.Fresh, unknown.Score)
-	knownFailure(t, zero.Fresh < 1, "Inputs{} is treated as posted today (fresh %.2f); AgeDays 0 and 'never set' are indistinguishable", zero.Fresh)
+	today := def(jobinsight.Inputs{AgeKnown: true, AgeDays: 0})
+	t.Logf("Inputs{}: fresh %.3f score %.1f; unknown age: fresh %.3f score %.1f; today: fresh %.3f score %.1f", zero.Fresh, zero.Score, unknown.Fresh, unknown.Score, today.Fresh, today.Score)
+	if zero.Fresh > unknown.Fresh || zero.Score > unknown.Score {
+		t.Errorf("Inputs{} (fresh %.3f, score %.1f) is fresher than an unknown age (fresh %.3f, score %.1f)", zero.Fresh, zero.Score, unknown.Fresh, unknown.Score)
+	}
+	if zero.Fresh >= today.Fresh {
+		t.Errorf("Inputs{} fresh %.3f is not below a same-day posting's %.3f", zero.Fresh, today.Fresh)
+	}
 }
 
 // A posted date a little in the future (timezone, clock skew) makes a caller's
-// "now - posted" negative; any negative age is "unknown" and gets the floor,
-// so the newest possible posting is ranked like an undated one.
+// "now - posted" negative; a known negative age is "today", never unknown.
 func TestRTFutureDatedPostingIsNotFresh(t *testing.T) {
-	f, today := solid(-1), solid(0)
+	f, today := solid(0), solid(0)
+	f.AgeDays = -1 // known, from a posted date slightly in the future
 	sf, st := def(f).Score, def(today).Score
-	knownFailure(t, sf >= st, "AgeDays -1 from a posted date in the future scores %.1f, a same-day posting %.1f; callers must clamp skew to 0", sf, st)
+	if sf != st {
+		t.Errorf("known age -1 scores %.1f, a same-day posting %.1f; want equal", sf, st)
+	}
+	if su := def(solid(-1)).Score; sf <= su {
+		t.Errorf("known age -1 (%.1f) is not above an unknown age (%.1f)", sf, su)
+	}
 }
 
 // With the age-times-relevance product, an excellent posting three weeks old
@@ -159,9 +177,9 @@ func TestRTNumericAbuse(t *testing.T) {
 	}
 	for name, w := range cases {
 		for _, in := range []jobinsight.Inputs{
-			{}, good(), solid(-1), solid(math.MaxInt), solid(-1 << 40),
-			{RoleFit: fit("strong_fit", 0), Coverage: 100, HasCoverage: true, AgeDays: 0},
-			{RoleFit: fit("strong_fit", 1), Coverage: 100, HasCoverage: true, AgeDays: 0},
+			{}, good(), solid(-1), solid(math.MaxInt), skewed(-1 << 40),
+			{RoleFit: fit("strong_fit", 0), Coverage: 100, HasCoverage: true, AgeKnown: true, AgeDays: 0},
+			{RoleFit: fit("strong_fit", 1), Coverage: 100, HasCoverage: true, AgeKnown: true, AgeDays: 0},
 			{RoleFit: fit("strong_fit", 1), Company: jobinsight.CompanyMarks{Liked: math.MaxInt, Hidden: math.MaxInt}},
 		} {
 			r := jobinsight.ScoreWith(in, w)

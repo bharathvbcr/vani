@@ -14,7 +14,7 @@ func baseIn() Inputs {
 	return Inputs{
 		RoleFit: sl("partial_fit", 0.8), Coverage: 60, HasCoverage: true,
 		Semantic: 0.5, HasSemantic: true, Target: true, TitleHits: 1, BodyHits: 2,
-		TitleSignals: true, TitleRank: 1, AgeDays: 3,
+		TitleSignals: true, TitleRank: 1, AgeKnown: true, AgeDays: 3,
 	}
 }
 
@@ -46,12 +46,31 @@ func TestScoreZeroInputs(t *testing.T) {
 	}
 }
 
+// The zero value of Inputs is "nothing is known": an unset age must not read
+// as posted today, and a known negative age (clock skew) must not read as
+// unknown.
+func TestScoreAgeKnownZeroValue(t *testing.T) {
+	zero := Score(Inputs{})
+	unknown := Score(Inputs{AgeDays: -1})
+	today := Score(Inputs{AgeKnown: true, AgeDays: 0})
+	skewed := Score(Inputs{AgeKnown: true, AgeDays: -3})
+	if zero.Fresh != unknown.Fresh || zero.Score != unknown.Score {
+		t.Errorf("zero Inputs %+v differs from unknown age %+v", zero.Fresh, unknown.Fresh)
+	}
+	if zero.Score >= today.Score {
+		t.Errorf("zero Inputs %v is not below a same-day posting %v", zero.Score, today.Score)
+	}
+	if skewed.Fresh != today.Fresh || skewed.Score != today.Score {
+		t.Errorf("known age -3 scores %v (fresh %v), want the same-day %v (fresh %v)", skewed.Score, skewed.Fresh, today.Score, today.Fresh)
+	}
+}
+
 func TestScoreOrderings(t *testing.T) {
 	score := func(in Inputs) float64 { return Score(in).Score }
 
 	t.Run("known strong fit without coverage outranks a known domain mismatch with coverage", func(t *testing.T) {
-		a := Inputs{RoleFit: sl("strong_fit", 0.9), AgeDays: 2}
-		b := Inputs{RoleFit: sl("mismatch_domain", 0.9), Coverage: 90, HasCoverage: true, AgeDays: 2}
+		a := Inputs{RoleFit: sl("strong_fit", 0.9), AgeKnown: true, AgeDays: 2}
+		b := Inputs{RoleFit: sl("mismatch_domain", 0.9), Coverage: 90, HasCoverage: true, AgeKnown: true, AgeDays: 2}
 		if score(a) <= score(b) {
 			t.Errorf("strong %v <= mismatch %v", score(a), score(b))
 		}
@@ -83,7 +102,7 @@ func TestScoreOrderings(t *testing.T) {
 
 	t.Run("known age is no lower than unknown age", func(t *testing.T) {
 		known, unknown := baseIn(), baseIn()
-		known.AgeDays, unknown.AgeDays = 400, -1
+		known.AgeDays, unknown.AgeKnown, unknown.AgeDays = 400, false, -1
 		if score(known) < score(unknown) {
 			t.Errorf("known %v < unknown %v", score(known), score(unknown))
 		}
@@ -187,7 +206,7 @@ func TestScoreOrderings(t *testing.T) {
 
 func TestScoreHalfLifeFallback(t *testing.T) {
 	in := baseIn()
-	in.AgeDays = 14
+	in.AgeKnown, in.AgeDays = true, 14
 	want := Score(in)
 	for _, h := range []float64{0, -1, 400, math.NaN(), math.Inf(1)} {
 		in.HalfLifeDays = h
@@ -212,12 +231,12 @@ func TestScoreHostileInputs(t *testing.T) {
 		"inf everywhere": {
 			RoleFit: Slot{Value: "strong_fit", P: inf, HasP: true}, Coverage: inf, HasCoverage: true,
 			Semantic: -inf, HasSemantic: true, Target: true, TitleHits: math.MaxInt, BodyHits: math.MaxInt,
-			TitleSignals: true, TitleRank: math.MaxInt, AgeDays: math.MaxInt, HalfLifeDays: inf,
+			TitleSignals: true, TitleRank: math.MaxInt, AgeKnown: true, AgeDays: math.MaxInt, HalfLifeDays: inf,
 			Penalties: []Penalty{{Slot{P: inf, HasP: true}}, {Slot{P: -inf, HasP: true}}},
 		},
 		"negative and huge": {
 			RoleFit: sl("strong_fit", -3), Coverage: -50, HasCoverage: true, Semantic: 9, HasSemantic: true,
-			AgeDays: math.MinInt, TitleRank: 1 << 40,
+			AgeKnown: true, AgeDays: math.MinInt, TitleRank: 1 << 40,
 		},
 		"many penalties": {Penalties: make([]Penalty, 5000)},
 	}
@@ -312,6 +331,7 @@ func TestScoreWithNormalizesWeights(t *testing.T) {
 func TestScoreRelevanceIsAgeFree(t *testing.T) {
 	a, b := baseIn(), baseIn()
 	a.AgeDays, b.AgeDays = 0, 300
+	a.AgeKnown, b.AgeKnown = true, true
 	ra, rb := Score(a), Score(b)
 	if ra.Relevance != rb.Relevance {
 		t.Errorf("relevance moved with age: %v vs %v", ra.Relevance, rb.Relevance)

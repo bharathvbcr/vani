@@ -390,9 +390,9 @@ func (w *world) observe(r *rand.Rand) {
 		// Age.
 		switch {
 		case p.dated:
-			in.AgeDays = p.age
+			in.AgeKnown, in.AgeDays = true, p.age
 		case !p.firstCrawl:
-			in.AgeDays = p.firstSeenAge
+			in.AgeKnown, in.AgeDays = true, p.firstSeenAge
 		default:
 			in.AgeDays = -1
 		}

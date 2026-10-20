@@ -76,7 +76,7 @@ func rtGrades(adj []float64, age []int, h float64) []int {
 func cloneAt(w *world, rw *rtWorld, i, a int, adjScale float64) {
 	in := rw.in[i]
 	in.Penalties = append([]jobinsight.Penalty(nil), in.Penalties...)
-	in.AgeDays = observedAge(w, &w.postings[i], a)
+	setAge(&in, observedAge(w, &w.postings[i], a))
 	rw.in = append(rw.in, in)
 	rw.adj = append(rw.adj, rw.adj[i]*adjScale)
 	rw.age = append(rw.age, a)
@@ -118,7 +118,7 @@ var rtVariants = []rtVariant{
 				a = r.IntN(15)
 			}
 			rw.age[i] = a
-			rw.in[i].AgeDays = observedAge(w, &w.postings[i], a)
+			setAge(&rw.in[i], observedAge(w, &w.postings[i], a))
 		}
 		return rw
 	}},
@@ -174,9 +174,9 @@ var rtVariants = []rtVariant{
 				pu = 0.8 // the best matches are the undated ones
 			}
 			if r.Float64() < pu {
-				rw.in[i].AgeDays = -1
+				setAge(&rw.in[i], -1)
 			} else {
-				rw.in[i].AgeDays = rw.age[i]
+				setAge(&rw.in[i], rw.age[i])
 			}
 		}
 		return rw
