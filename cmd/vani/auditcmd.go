@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -238,6 +239,13 @@ func (e *env) cmdAudit(args []string) error {
 	}
 	n, err := eval.LabelAudit(stdin, e.stdout, d.picks, recs, d.s, names, *blind)
 	fmt.Fprintf(e.stdout, "audited %d of %d drawn\n", n, len(d.picks))
+	// The cards the session showed are impressions: every answered card, and
+	// the one it stopped on unless it ran out of cards. A recording failure
+	// never fails the audit, but it is said.
+	shown := min(n+1, len(d.picks))
+	if ierr := recordAuditCards(context.Background(), e.stateDir, now(), d.seed, d.picks[:shown]); ierr != nil {
+		fmt.Fprintf(e.stderr, "vani: the audit cards' impressions were not recorded: %v\n", ierr)
+	}
 	if errors.Is(err, io.EOF) {
 		return nil
 	}

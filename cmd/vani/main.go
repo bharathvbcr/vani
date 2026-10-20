@@ -95,6 +95,9 @@ commands:
                              the target summary and a bounded digest of the bank to the provider;
                              the answers only order and explain)
   kbmatch status             how many answers are kept and current
+  impressions log --surface jobs|audit --slate ID [--section S] [--json]
+                             record the rows a screen shows ({"rows":[{"key","position"}]} on
+                             stdin), once per slate; keys and positions only, never a title
   labels [--json]            the label vocabularies (fit, status, category, triage options) as
                              value and display string in display order; reads no state
   jobs list [--json] [--view new|saved|applied|hidden|all] [--q TEXT] [--limit N]
@@ -258,6 +261,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":
 		cmdErr = e.cmdJobs(args[1:])
+	case "impressions":
+		cmdErr = e.cmdImpressions(args[1:])
 	case "labels":
 		cmdErr = e.cmdLabels(args[1:])
 	case "retriage":

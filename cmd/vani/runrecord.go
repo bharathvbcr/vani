@@ -100,6 +100,10 @@ type runRecord struct {
 	// 0 when nothing was new. Nil when no digest was written: the run stopped
 	// before it, it was held back, or writing it failed.
 	DigestRoles *int `json:"digest_roles,omitempty"`
+	// ImpressionsError says the digest was written but what it showed was not
+	// recorded (internal/feedback), so the ranking's measurement has a gap for
+	// this run; "" when they were recorded or no digest was written.
+	ImpressionsError string `json:"impressions_error,omitempty"`
 	// CountsBefore and CountsAfter are the ledger's postings by status at the
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`

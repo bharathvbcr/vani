@@ -223,7 +223,9 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		}
 	}
 	dopts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
-	rec.DigestRoles, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
+	var pub published
+	pub, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
+	rec.DigestRoles, rec.ImpressionsError = pub.roles, pub.impressionsError
 	return stageDigest, err
 }
 
@@ -251,17 +253,17 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 // pipeline's results are already in the ledger, so the roles are listed once
 // the store reads again.
 //
-// roles is how many roles the digest listed, set once the digest is written
+// The result's roles is how many roles the digest listed, set once it is written
 // (0 when nothing was new) and nil when it was not. A failure marking them
 // Digested still returns roles: the digest exists, and the run record says so.
-func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) (roles *int, err error) {
+func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) (published, error) {
 	if app.Ledger == nil {
-		return nil, errors.New("app has no ledger")
+		return published{}, errors.New("app has no ledger")
 	}
 	dir := marks.Dir(e.stateDir)
 	m, err := marks.ReadMarks(dir)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
+		return published{}, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
 	var adv *pipeline.AdvanceReport
@@ -272,9 +274,17 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	if adv != nil {
 		counts.CouldNotCheck = uncheckedCauses(adv.FailOpen)
 	}
-	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, counts, opts)
+	path, keys, shown, err := digest.WriteShown(e.stateDir, date, recs, m, counts, opts)
 	if err != nil {
-		return nil, err
+		return published{}, err
+	}
+	// What the digest put in front of the owner is the ranking's measurement
+	// (unmarked means seen-and-passed only when it was shown). A failure to
+	// record it never fails the digest, but it is said, not swallowed.
+	var pub published
+	if err := recordImpressions(ctx, e.stateDir, now(), date.Format("2006-01-02"), shown); err != nil {
+		pub.impressionsError = err.Error()
+		fmt.Fprintf(e.stderr, "vani: the digest's impressions were not recorded, so this run's ranking cannot be measured: %v\n", err)
 	}
 	n := len(keys)
 	var errs []error
@@ -290,7 +300,16 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}
-	return &n, errors.Join(errs...)
+	pub.roles = &n
+	return pub, errors.Join(errs...)
+}
+
+// published is what publishDigest did: roles is how many new roles the digest
+// listed (nil when no digest was written), and impressionsError is set when
+// the digest was written but what it showed could not be recorded.
+type published struct {
+	roles            *int
+	impressionsError string
 }
 
 // countsFor derives the footer counts for the calendar day of date in loc from
