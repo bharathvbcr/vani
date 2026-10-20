@@ -11,6 +11,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
@@ -142,7 +143,7 @@ func notRun(rep semanticReport, why string, err error) semanticReport {
 func warmDocs(recs []ledger.Record, mk map[posting.Key]marks.Mark) []semantic.Doc {
 	var todo []ledger.Record
 	for _, r := range recs {
-		if inView("all", r, mk[r.Key]) {
+		if jobview.InView("all", r, mk[r.Key]) {
 			todo = append(todo, r)
 		}
 	}
@@ -338,14 +339,6 @@ func semanticRank(m *semantic.Matcher) func(ledger.Record) (float64, bool) {
 	}
 }
 
-// semanticJSON is a job's knowledge-base match as `vani jobs` reports it.
-type semanticJSON struct {
-	Score    float64             `json:"score"`
-	Evidence []semantic.Evidence `json:"evidence,omitempty"`
-	// Thin: the posting had too little text; the ranker treated it as unknown.
-	Thin bool `json:"thin,omitempty"`
-}
-
 // digestOptions are the digest's ranking inputs for cfg; the warning is for the
 // caller to print.
 func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) {
@@ -379,11 +372,11 @@ func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
 }
 
 // semanticInto fills j's semantic match when one is cached for r.
-func (in *insight) semanticInto(j *jobJSON, r ledger.Record) {
+func (in *insight) semanticInto(j *jobview.Job, r ledger.Record) {
 	if in.sem == nil {
 		return
 	}
 	if mt, ok := semanticScore(in.sem, r); ok {
-		j.Semantic = &semanticJSON{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
+		j.Semantic = &jobview.Semantic{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
 	}
 }

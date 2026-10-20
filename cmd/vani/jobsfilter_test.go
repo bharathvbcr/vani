@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -68,7 +69,7 @@ func TestJobsCarryPay(t *testing.T) {
 		t.Errorf("no pay stated, got %+v", p)
 	}
 	o, _ := mustCode(t, 0, "jobs", "show", "--json", "gh:b:gbp")
-	var j jobJSON
+	var j jobview.Job
 	if err := json.Unmarshal([]byte(o), &j); err != nil || len(j.Pay) != 1 || j.Pay[0].Currency != "GBP" {
 		t.Errorf("show pay %q: %v", o, err)
 	}
@@ -151,7 +152,7 @@ func TestJobsPayStats(t *testing.T) {
 	fixedNow(t)
 	seedPay(t, state)
 	o, _ := mustCode(t, 0, "jobs", "stats", "--json", "--view", "all")
-	var s jobsStatsJSON
+	var s jobview.Stats
 	if err := json.Unmarshal([]byte(o), &s); err != nil {
 		t.Fatalf("stats %q: %v", o, err)
 	}
@@ -164,7 +165,7 @@ func TestJobsPayStats(t *testing.T) {
 	for _, b := range p.Buckets {
 		n[b.Label] = b.N
 	}
-	if len(p.Buckets) != payBuckets || n["<100k"] != 0 || n["100k–150k"] != 2 || n["150k–200k"] != 1 || n["200k–250k"] != 1 || n["≥400k"] != 0 {
+	if len(p.Buckets) != jobview.PayBuckets || n["<100k"] != 0 || n["100k–150k"] != 2 || n["150k–200k"] != 1 || n["200k–250k"] != 1 || n["≥400k"] != 0 {
 		t.Errorf("buckets %+v", p.Buckets)
 	}
 	if p.Median != 153200 {

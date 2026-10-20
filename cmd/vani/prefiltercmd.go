@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -117,14 +118,14 @@ func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
 	fmt.Fprintf(w, "precision: a decision model read role_fit on %d posting(s) it would drop (any status): %s\n", rep.Read, strings.Join(vals, ", "))
 	fmt.Fprintf(w, "  read strong_fit or partial_fit (false drops): %d\n", len(rep.Fits))
 	for _, f := range rep.Fits {
-		fmt.Fprintf(w, "    %s  %s [%s, %s] %s\n", f.Key, cleanText(f.Title, 120, false), f.RoleFit, f.Stage, f.Reason)
+		fmt.Fprintf(w, "    %s  %s [%s, %s] %s\n", f.Key, jobview.CleanText(f.Title, 120, false), f.RoleFit, f.Stage, f.Reason)
 	}
 	if rep.Read == 0 {
 		fmt.Fprintln(w, "  no model reading to compare against: precision is unmeasured, not perfect")
 	}
 	if list {
 		for _, r := range rep.Rows {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Key, cleanText(r.Title, 120, false), r.Reason)
+			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason)
 		}
 	}
 }

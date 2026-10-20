@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -69,10 +70,10 @@ func (e *env) cmdRelevance(args []string) error {
 	if err != nil {
 		return err
 	}
-	keysOf := func(sel []selected) []posting.Key {
+	keysOf := func(sel []jobview.Selected) []posting.Key {
 		out := make([]posting.Key, 0, len(sel))
 		for _, x := range sel {
-			out = append(out, x.job.Key)
+			out = append(out, x.Job.Key)
 		}
 		return out
 	}

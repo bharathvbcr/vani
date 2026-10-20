@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -53,9 +54,9 @@ func TestJobsInsightScalesTo5000Postings(t *testing.T) {
 	}
 	start := time.Now()
 	in := scaleInsight(v, snap)
-	o := jobsOpts{view: "all", sort: "priority", halfLife: jobinsight.DefaultScoreHalfLifeDays}
-	sel, _ := selectJobs(snap, nil, &o, in, listKeywords)
-	sortJobs(sel, o.view, o.sort)
+	o := jobsOpts{Opts: jobview.Opts{View: "all", Sort: "priority", HalfLife: jobinsight.DefaultScoreHalfLifeDays}}
+	sel, _ := jobview.Select(snap, nil, &o.Opts, in, listKeywords)
+	jobview.Sort(sel, o.View, o.Sort)
 	took := time.Since(start)
 	if len(sel) != 5000 {
 		t.Fatalf("selected %d", len(sel))
@@ -73,10 +74,10 @@ func BenchmarkJobsInsight5000(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	o := jobsOpts{view: "all", sort: "priority", halfLife: jobinsight.DefaultScoreHalfLifeDays}
+	o := jobsOpts{Opts: jobview.Opts{View: "all", Sort: "priority", HalfLife: jobinsight.DefaultScoreHalfLifeDays}}
 	for b.Loop() {
 		in := scaleInsight(v, snap)
-		sel, _ := selectJobs(snap, nil, &o, in, listKeywords)
-		sortJobs(sel, o.view, o.sort)
+		sel, _ := jobview.Select(snap, nil, &o.Opts, in, listKeywords)
+		jobview.Sort(sel, o.View, o.Sort)
 	}
 }
