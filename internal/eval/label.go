@@ -59,6 +59,57 @@ func Label(in io.Reader, out io.Writer, recs []ledger.Record, s *Store, names Na
 	return written, nil
 }
 
+// wouldApplySpec is the would_apply question as askSlot asks it.
+var wouldApplySpec = func() jdtriage.SlotSpec {
+	sp := jdtriage.SlotSpec{Name: WouldApply}
+	for _, o := range WouldApplyOptions {
+		sp.Options = append(sp.Options, jdtriage.Option{Value: o})
+	}
+	return sp
+}()
+
+// LabelAudit is Label for the weekly audit: it shows recs[i] (the posting picks[i]
+// drew) and asks the one would_apply question (number = yes/maybe/no, s = skip,
+// q = quit), then writes a would_apply label carrying the pick's stratum and
+// inclusion probability, with the description's hash. recs and picks must line
+// up. The same rules hold as for Label: nothing is written for a posting not
+// answered, input is plain text, and it returns the number written.
+func LabelAudit(in io.Reader, out io.Writer, picks []AuditPick, recs []ledger.Record, s *Store, names Names) (int, error) {
+	if len(picks) != len(recs) {
+		return 0, fmt.Errorf("eval: %d picks but %d postings", len(picks), len(recs))
+	}
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 1024), maxInputLine)
+	written := 0
+	for i, r := range recs {
+		if r.Key != picks[i].Key {
+			return written, fmt.Errorf("eval: pick %d is %s but its posting is %s", i+1, picks[i].Key, r.Key)
+		}
+		if err := showPosting(out, i+1, len(recs), r, names); err != nil {
+			return written, err
+		}
+		choice, quit, err := askSlot(sc, out, wouldApplySpec)
+		if err != nil {
+			return written, err
+		}
+		if quit {
+			fmt.Fprintf(out, "Stopped; %d label(s) written.\n", written)
+			return written, nil
+		}
+		hash, err := s.PutText(r.Posting.Description)
+		if err != nil {
+			return written, err
+		}
+		e := Entry{Key: r.Key, Labels: map[string]string{WouldApply: choice}, TextSHA256: hash, Source: picks[i].Source, PSelect: picks[i].PSelect}
+		if err := s.Put(e); err != nil {
+			return written, err
+		}
+		written++
+	}
+	fmt.Fprintf(out, "Done; %d label(s) written.\n", written)
+	return written, nil
+}
+
 // askSlot prompts until it has a valid answer. quit is true on "q" or when the
 // input ends.
 func askSlot(sc *bufio.Scanner, out io.Writer, sl jdtriage.SlotSpec) (choice string, quit bool, err error) {
