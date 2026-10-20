@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
 // The run record is the one place the last daily run is written down, so
@@ -91,7 +92,7 @@ type runRecord struct {
 	// Options are a manual run's overrides; nil when it had none.
 	Options *runOptions `json:"options,omitempty"`
 	Stage   string      `json:"stage,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Error   string      `json:"error,omitempty"`
 	// Cause names a failed run's known cause (runCause), so a reader can word
 	// the failure without reading Error; "" when the failure has none of them.
 	Cause string `json:"cause,omitempty"`
@@ -156,6 +157,13 @@ type advanceReport struct {
 	Failed   int    `json:"failed"`
 	Deferred int    `json:"deferred"`
 	Stopped  string `json:"stopped,omitempty"`
+	// FailOpen counts postings kept because a check could not run, by cause
+	// (empty description, unread title or location, DevPrism down). A kept
+	// posting here did not pass the check; it was never checked.
+	FailOpen pipeline.FailOpenCounts `json:"fail_open,omitzero"`
+	// Notes is what the notes gate did: below the floor, deferred for unknown
+	// relevance, deferred because the notes budget was spent.
+	Notes pipeline.NotesCounts `json:"notes,omitzero"`
 }
 
 // Board outcomes in the run's board report (boardReport.Outcome).

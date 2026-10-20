@@ -130,12 +130,17 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         return p
     }
 
+    /// The versioned row contract (JobRow, owned by Go): Vani's own relevance,
+    /// priority and display strings. Nil only for a vani that predates it; a
+    /// row of an unknown version fails the whole decode, never half-renders.
+    public var row: JobRow?
+
     public var id: String { key }
 
     enum CodingKeys: String, CodingKey {
         case key, company, title, location, remote, department, url, status, closed, rank, coverage,
              explanation, missing, unsure, lca, employer, triage, category, mark, note, description,
-             relevance, priority, keywords, semantic
+             relevance, priority, keywords, semantic, row
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
         case dupSiblingOfWire = "dup_sibling_of"
@@ -303,8 +308,13 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         return u
     }
 
-    /// Triage's role-fit label in words, when triage gave one.
-    public var fitLabel: String? { Self.words[triage?["role_fit"] ?? ""] }
+    /// Triage's role-fit label in words, when triage gave one. The string is
+    /// Go's (`row.fitLabel`); only a row-less job (a vani older than the row
+    /// contract) falls back to the `words` table below.
+    public var fitLabel: String? {
+        if let row { return row.fitLabel }
+        return Self.words[triage?["role_fit"] ?? ""]
+    }
 
     /// Triage's other readings in words (seniority, work mode, sponsorship),
     /// leaving out "not stated".
@@ -354,7 +364,10 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     public static let workModeOptions = ["remote", "hybrid", "onsite", "not_stated"]
     public static let sponsorshipOptions = ["sponsors_visa", "no_sponsorship", "citizenship_or_clearance_required", "not_stated"]
 
-    // The jdtriage fixture's option values (internal/decide/jdtriage/fixture.json).
+    // FALLBACK vocabulary: the jdtriage fixture's option values in words, for a
+    // job with no `row` (older vani) and for filter menus and charts, which list
+    // options rather than rows. Go's jobview.FitLabels is the owner; JobRowTests
+    // fails if the fit entries here drift from the golden file's `fit_labels`.
     static let words: [String: String] = [
         "strong_fit": "Strong fit", "partial_fit": "Partial fit", "adjacent": "Adjacent",
         "mismatch_seniority": "Seniority mismatch", "mismatch_domain": "Different field",
@@ -412,6 +425,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// "3d", "5w", "4mo": how old the posting is; "~" marks an age measured
     /// from when Vani first saw it, not a board date.
     public var ageLabel: String? {
+        if let row { return row.ageLabel }
         guard let d = ageDays, d >= 0 else { return nil }
         let prefix = freshSource == .seen ? "~" : ""
         switch d {

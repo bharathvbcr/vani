@@ -202,8 +202,9 @@ func TestJobsStats(t *testing.T) {
 	if err := json.Unmarshal([]byte(o), &s); err != nil {
 		t.Fatalf("stats %q: %v", o, err)
 	}
+	// The mismatch_domain row is penalised by the gate alone, so its match rests on nothing.
 	if s.Total != 3 || s.Fit["strong_fit"] != 1 || s.Fit["mismatch_domain"] != 1 || s.Fit["none"] != 1 ||
-		s.WorkMode["remote"] != 1 || s.Basis["fit"] != 2 || s.Basis["none"] != 1 || s.Records != 5 {
+		s.WorkMode["remote"] != 1 || s.Basis["fit"] != 1 || s.Basis["none"] != 2 || s.Records != 5 {
 		t.Fatalf("stats %+v", s)
 	}
 	ages, posted := 0, 0

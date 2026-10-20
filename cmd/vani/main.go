@@ -65,6 +65,9 @@ commands:
                              (reads the ledger without its lock)
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
+  audit-sample [--list] [--seed S] [--scored N] [--dropped N]
+                             weekly stratified would-I-apply sample (deciles + drop classes)
+  relevance [-k LIST]        precision@k, drop misses and backend reliability from would_apply labels
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup COMPANY         show the sponsorship-history badge for a company
   employer import FILE.csv   import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)
@@ -261,6 +264,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdSemantic(args[1:])
 	case "answers":
 		cmdErr = e.cmdAnswers(args[1:])
+	case "audit-sample":
+		cmdErr = e.cmdAuditSample(args[1:])
+	case "relevance":
+		cmdErr = e.cmdRelevance(args[1:])
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}

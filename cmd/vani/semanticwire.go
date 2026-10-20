@@ -230,7 +230,13 @@ func (w *wired) advanceOrder() orderOption {
 	if warning != "" {
 		w.warnf("advance order: %s", warning)
 	}
-	return withSemantic(semanticRank(m))
+	neutral := jobinsight.AgeNeutralSet(w.cfg.AgeNeutralCompanies)
+	rules, titleRank := rankRules(w.cfg)
+	return func(s *orderSettings) {
+		withSemantic(semanticRank(m))(s)
+		withAgeNeutral(neutral)(s)
+		withRank(rules, titleRank)(s)
+	}
 }
 
 // warmSemanticDocs scores up to max of docs; warmSemantic's body.
@@ -353,7 +359,7 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 		warning += kbWarning
 	}
 	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank, KBMatch: kb,
-		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)}, warning
+		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies), HalfLifeDays: jobinsight.DefaultScoreHalfLifeDays}, warning
 }
 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)

@@ -10,6 +10,7 @@ import { intentOf } from "./intents";
 import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
 import { type IngestSource, describeIngest, prepareIngest } from "./ingest";
 import { type RelevanceResult, targetProfileFromBank } from "./relevance";
+import { scoreWord } from "./jobrow";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
@@ -894,7 +895,7 @@ function renderRelevance(rel?: RelevanceResult): void {
   }
   card.style.display = "block";
   const scoreBadge = $("#rel-score-badge");
-  scoreBadge.textContent = `${rel.score}% Match`;
+  scoreBadge.textContent = `${rel.score}% ${scoreWord(rel).toLowerCase()}`;
   scoreBadge.className = `badge ${rel.score >= 80 ? "badge-ok" : rel.score >= 60 ? "badge-rev" : "badge-muted"}`;
 
   const scoreBar = $("#rel-score-bar-fill");

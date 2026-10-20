@@ -157,12 +157,12 @@ func TestQueuePrefersPostingsTheShadowSaw(t *testing.T) {
 		mkRec("seen-unsure", posting.Triaged, shadowedUnsure),
 		mkRec("dis", posting.Triaged, map[string]string{"triage.work_mode": "remote", "triage.work_mode.disagree": "true"}),
 	}
-	got := keys(Queue(recs, s, 100, nil))
+	got := keys(queue(recs, s, 100, nil))
 	want := []string{"dis", "seen-unsure", "seen", "old-unsure", "old"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("order %v, want %v", got, want)
 	}
-	if got := keys(Queue(recs, s, 2, rand.New(rand.NewSource(7)))); strings.Join(got, ",") != "dis,seen-unsure" {
+	if got := keys(queue(recs, s, 2, rand.New(rand.NewSource(7)))); strings.Join(got, ",") != "dis,seen-unsure" {
 		t.Fatalf("n=2: %v", got)
 	}
 }
@@ -187,14 +187,14 @@ func TestQueueOrderingAndExclusions(t *testing.T) {
 	if err := s.Put(Entry{Key: "done", Labels: map[string]string{"work_mode": "remote"}}); err != nil {
 		t.Fatal(err)
 	}
-	got := keys(Queue(recs, s, 100, nil))
+	got := keys(queue(recs, s, 100, nil))
 	want := []string{"d1", "d2", "u1", "u2", "p1", "p2", "p3"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("order %v, want %v", got, want)
 	}
 	// Tiers hold under shuffling, and the same seed gives the same queue.
-	a := keys(Queue(recs, s, 100, rand.New(rand.NewSource(7))))
-	b := keys(Queue(recs, s, 100, rand.New(rand.NewSource(7))))
+	a := keys(queue(recs, s, 100, rand.New(rand.NewSource(7))))
+	b := keys(queue(recs, s, 100, rand.New(rand.NewSource(7))))
 	if strings.Join(a, ",") != strings.Join(b, ",") {
 		t.Fatalf("not deterministic: %v vs %v", a, b)
 	}
@@ -216,10 +216,10 @@ func TestQueueOrderingAndExclusions(t *testing.T) {
 		t.Fatalf("lost or duplicated: %v", a)
 	}
 	// n caps, keeping the highest tiers; n <= 0 is empty.
-	if got := keys(Queue(recs, s, 3, rand.New(rand.NewSource(1)))); len(got) != 3 || tier(got[0]) != 0 || tier(got[1]) != 0 || tier(got[2]) != 1 {
+	if got := keys(queue(recs, s, 3, rand.New(rand.NewSource(1)))); len(got) != 3 || tier(got[0]) != 0 || tier(got[1]) != 0 || tier(got[2]) != 1 {
 		t.Errorf("n=3: %v", got)
 	}
-	if Queue(recs, s, 0, nil) != nil || Queue(nil, s, 5, nil) != nil {
+	if queue(recs, s, 0, nil) != nil || queue(nil, s, 5, nil) != nil {
 		t.Error("empty cases")
 	}
 }

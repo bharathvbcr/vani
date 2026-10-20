@@ -172,11 +172,15 @@ func lowerBound(k, n int, alpha float64) float64 {
 
 // Report is the evaluation of ledger records against the label set.
 type Report struct {
-	Records        int // ledger records examined
-	WithTriage     int // of those, with any triage annotation
-	LabelEntries   int // distinct keys in the label file
-	Matched        int // label entries that have a ledger record
-	NoTriage       int // matched labels whose record has no triage annotations
+	Records      int // ledger records examined
+	WithTriage   int // of those, with any triage annotation
+	LabelEntries int // distinct keys in the label file
+	Matched      int // label entries that have a ledger record
+	NoTriage     int // matched labels whose record has no triage annotations
+	// Inherited counts records whose reading was copied from another posting
+	// (triage.inherited_from). They are left out of every other count: a copy
+	// is not a second observation, and counting it would inflate n.
+	Inherited      int
 	MalformedLines int // label-file lines skipped as unreadable
 	LoadError      string
 	// LegacyPrimary counts scored slot readings whose primary backend was
@@ -190,6 +194,22 @@ type Report struct {
 	Thresholds []Threshold
 	Shadow     []ShadowRow
 	Promotions []Promotion
+}
+
+// triageLabels keeps the entries that label at least one triage slot. A
+// would_apply-only entry (the audit's) says nothing about a backend's reading,
+// and counting it would inflate the triage report and move the held-out split.
+func triageLabels(labels map[posting.Key]Entry) map[posting.Key]Entry {
+	out := make(map[posting.Key]Entry, len(labels))
+	for k, e := range labels {
+		for slot := range e.Labels {
+			if slot != WouldApply {
+				out[k] = e
+				break
+			}
+		}
+	}
+	return out
 }
 
 func ratio(num, den int) (float64, bool) {
@@ -214,6 +234,7 @@ func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
 // buildReport is BuildReport over an already-read label set. BuildHeldOut
 // calls it with the held-out subset, so both reports share one arithmetic.
 func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, err error, names Names) Report {
+	labels = triageLabels(labels)
 	rep := Report{Records: len(recs), ProbabilityBackend: names.probability()}
 	rep.MalformedLines = bad
 	if err != nil {
@@ -230,6 +251,10 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 	promo := map[pk]*Promotion{}
 
 	for _, r := range recs {
+		if inherited(r) {
+			rep.Inherited++
+			continue
+		}
 		if hasTriage(r) {
 			rep.WithTriage++
 		}
@@ -433,6 +458,9 @@ func (r Report) Markdown() string {
 	fmt.Fprintf(&b, "- ledger records: %d, with triage annotations: %d\n", r.Records, r.WithTriage)
 	fmt.Fprintf(&b, "- labeled postings: %d, matched to a ledger record: %d (%d without triage annotations, not scored)\n",
 		r.LabelEntries, r.Matched, r.NoTriage)
+	if r.Inherited > 0 {
+		fmt.Fprintf(&b, "- records with an inherited reading (copied from an identical posting), left out of every count: %d\n", r.Inherited)
+	}
 	if r.MalformedLines > 0 {
 		fmt.Fprintf(&b, "- label lines skipped as unreadable: %d\n", r.MalformedLines)
 	}

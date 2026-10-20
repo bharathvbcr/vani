@@ -1,10 +1,15 @@
-// Real-time relevance engine for job postings and scraped listings.
-// Deterministic, fast, and local: compares job descriptions against target roles,
-// skills, work authorization, location/remote preferences, and salary expectations.
+// OFFLINE ESTIMATE of how well a posting fits, from the page's own text.
+// Vani (the Go daemon, internal/jobinsight) is the owner of relevance and fit: when the Mac app
+// has a row for the posting, jobrow.ts replaces this score with Vani's and the screen says so.
+// This stays because the extension works with no daemon (a page nobody has ingested, the app not
+// running), where it is the only reading there is; every use labels it an estimate and speaks
+// Vani's fit vocabulary (jobrow.ts FIT_LABELS). Deterministic and local: it compares the posting
+// against target roles, skills, work authorization and location/remote preferences.
+
+import { FIT_LABELS, type JobRow } from "./jobrow";
 
 export type RoleFit =
   | "strong_fit"
-  | "good_fit"
   | "partial_fit"
   | "adjacent"
   | "mismatch_seniority"
@@ -20,6 +25,10 @@ export interface UserTargetProfile {
 }
 
 export interface RelevanceResult {
+  /** "estimate": computed here from page text. "vani": Vani's own row (jobrow.ts applyVaniRow). */
+  source: "estimate" | "vani";
+  /** Vani's row when source is "vani". */
+  vani?: JobRow;
   score: number; // 0..100
   fit: RoleFit;
   fitLabel: string;
@@ -474,28 +483,24 @@ export function evaluateRelevance(
   const score = Math.round(clamped * 100);
 
   // Fit categorization
+  // Vani's vocabulary (jobview.FitOrder): strong, partial, adjacent and the two mismatches.
   let fit: RoleFit = "adjacent";
-  let fitLabel = "Adjacent Match";
+  let detail = "";
 
   if (dealbreakers.length > 0) {
     fit = "mismatch_domain";
-    fitLabel = `Mismatch: ${dealbreakers[0]}`;
+    detail = dealbreakers[0]!;
   } else if (titleScore <= 0.20) {
     fit = "mismatch_domain";
-    fitLabel = "Domain Mismatch";
   } else if (seniorityMismatch && jobSeniority && mismatchedTarget) {
     fit = "mismatch_seniority";
-    fitLabel = `Seniority Mismatch: ${jobSeniority.name} vs ${mismatchedTarget.name}`;
+    detail = `${jobSeniority.name} vs ${mismatchedTarget.name}`;
   } else if (score >= 80) {
     fit = "strong_fit";
-    fitLabel = "Strong Match";
-  } else if (score >= 65) {
-    fit = "good_fit";
-    fitLabel = "Good Match";
   } else if (score >= 45) {
     fit = "partial_fit";
-    fitLabel = "Partial Fit";
   }
+  const fitLabel = detail ? `${FIT_LABELS[fit]}: ${detail}` : FIT_LABELS[fit]!;
 
   // Highlights
   const highlights: string[] = [];
@@ -507,9 +512,10 @@ export function evaluateRelevance(
   if (salary) highlights.push(`Salary: ${salary}`);
 
   return {
+    source: "estimate",
     score,
     fit,
-    fitLabel: `${fitLabel} (${score}%)`,
+    fitLabel: `${fitLabel} (estimate ${score}%)`,
     matchedSkills,
     missingSkills: missingSkills.slice(0, 6),
     dealbreakers,
@@ -517,4 +523,13 @@ export function evaluateRelevance(
     salaryRange: salary,
     workplaceType: workplace,
   };
+}
+
+/**
+ * An ordering key for a board's rows before any description is read (which rows to fetch details
+ * for first). It is not a relevance: only the title speaks to fit, so the location is not fed in as
+ * if it were the posting's text, where its words would be read as skills.
+ */
+export function rankListing(row: { title: string; location?: string }, profile?: Partial<UserTargetProfile>): number {
+  return evaluateRelevance({ title: row.title, description: "" }, profile).score;
 }

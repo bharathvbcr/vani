@@ -91,6 +91,9 @@ type Config struct {
 	// backend, and kept postings it comes to match are dropped at the next
 	// run. Tracks leave it alone.
 	Exclude Exclude `json:"exclude,omitzero"`
+	// Funnel tunes the triage funnel's spend (funnel.go): the thin-description
+	// skip, the notes relevance floor and the notes' own daily cap.
+	Funnel Funnel `json:"funnel,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -1248,6 +1251,7 @@ func (c Config) Validate() error {
 	}
 	c.TitleSignals.validate(add)
 	c.Exclude.validate(add)
+	c.Funnel.validate(add)
 
 	if len(errs) == 0 {
 		return nil

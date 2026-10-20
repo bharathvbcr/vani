@@ -82,7 +82,7 @@ func TestJobsFirstCrawlUndatedDoesNotOutrankFreshDated(t *testing.T) {
 	seedScores(t, state,
 		// Board gh:u has one crawl: both postings were listed in it. The dated
 		// one is known fresh; the undated one is of unknown age.
-		scoreSeed{key: "gh:u:undated", company: "Umbra", title: "Engineer", fit: "strong_fit", cov: "80", seenAgo: day},
+		scoreSeed{key: "gh:u:undated", company: "Umbra", title: "Engineer (undated listing)", fit: "strong_fit", cov: "80", seenAgo: day},
 		scoreSeed{key: "gh:u:dated", company: "Umbra", title: "Engineer", fit: "strong_fit", cov: "80", posted: 2 * day, seenAgo: day},
 	)
 	l := listJSON(t)
@@ -140,7 +140,7 @@ func TestJobsScoreUsesConfiguredSignalsAndDropRules(t *testing.T) {
 		scoreSeed{key: "gh:a:first", company: "Acme", title: "Old", status: posting.Dead, seenAgo: 90 * day},
 		scoreSeed{key: "gh:a:plain", company: "Acme", title: "Software Engineer", fit: "adjacent", cov: "60", posted: day, seenAgo: day},
 		scoreSeed{key: "gh:a:excluded", company: "Acme", title: "Recruiter Engineer", fit: "adjacent", cov: "60", posted: day, seenAgo: day},
-		scoreSeed{key: "gh:a:kept", company: "Acme", title: "Software Engineer", fit: "adjacent", cov: "60", posted: day, seenAgo: day, extra: spons},
+		scoreSeed{key: "gh:a:kept", company: "Acme", title: "Software Engineer, Platform", fit: "adjacent", cov: "60", posted: day, seenAgo: day, extra: spons},
 	)
 	l := listJSON(t)
 	plain := findJob(t, l, "gh:a:plain")

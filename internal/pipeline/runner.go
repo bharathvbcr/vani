@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,6 +79,8 @@ type Runner struct {
 	// A posting whose confident employer attributes include one has
 	// EmployerRankBoost added to its rank at scoring. Status never changes.
 	PreferEmployers []string
+	// Funnel holds the spend and fail-open hooks (see triagestep.go).
+	Funnel
 }
 
 // Badger returns a short sponsorship-history badge for a company.
@@ -151,23 +154,16 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if r.Triager == nil {
 				return fmt.Errorf("%w: triager", ErrStageMissing)
 			}
-			// An exclusion, or a title reading that a drop rule drops, ends
-			// triage before any backend is asked; every other title reading is
-			// discarded and the backends read the posting as before.
-			ans, reason, dropped := r.Policy.EvaluatePosting(rec.Posting)
-			st := posting.Dropped
-			if !dropped {
-				var err error
-				ans, err = r.Triager.Triage(ctx, rec.Posting)
-				if err != nil {
-					return fmt.Errorf("pipeline: triage %s: %w", key, err)
-				}
-				if noReading(ans) {
-					return fmt.Errorf("%w: %s", ErrTriageUnavailable, key)
-				}
-				st, reason = r.Policy.Evaluate(ans)
+			// read: exclusion or title drop, too-short description, inherited
+			// reading or the backends (triagestep.go).
+			rd, err := r.read(ctx, key, rec)
+			if err != nil {
+				return err
 			}
-			ann := triageAnnotations(ans)
+			st, reason, ann := rd.status, rd.reason, rd.ann
+			if st != posting.Dropped {
+				maps.Copy(ann, rd.pre)
+			}
 			// This triage replaces any earlier one whole: a key it did not set
 			// (a shadow reading from a run that sampled the shadow, a value the
 			// new answer abstained on) is forgotten, so the eval never pairs
@@ -192,7 +188,7 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 				ann["triage.unsure"] = reason
 			}
 			switch {
-			case ans.Backend == ExcludeBackend:
+			case rd.ans.Backend == ExcludeBackend:
 				ann[AnnExcluded] = reason
 			case rec.Annotations[AnnExcluded] != "":
 				ann[AnnExcluded] = ""
@@ -210,11 +206,14 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 				}
 				continue
 			}
-			ann, err := r.scoreAnnotations(ctx, rec)
+			if r.Scorer == nil {
+				return fmt.Errorf("%w: scorer", ErrStageMissing)
+			}
+			ann, why, err := r.scoreStage(ctx, rec)
 			if err != nil {
 				return err
 			}
-			if err := r.emit(ctx, key, posting.Scored, "scored", ann); err != nil {
+			if err := r.emit(ctx, key, posting.Scored, why, ann); err != nil {
 				return err
 			}
 		case posting.Scored:
@@ -223,6 +222,9 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			}
 			if r.Explainer == nil {
 				return fmt.Errorf("%w: explainer", ErrStageMissing)
+			}
+			if handled, err := r.gateNotes(ctx, rec); handled || err != nil {
+				return err
 			}
 			text, err := r.Explainer.Explain(ctx, rec)
 			if err != nil {
@@ -234,7 +236,7 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if rs := []rune(text); len(rs) > maxExplanationRunes {
 				text = string(rs[:maxExplanationRunes])
 			}
-			if err := r.emit(ctx, key, posting.Explained, "explained", map[string]string{ledger.AnnExplanation: text}); err != nil {
+			if err := r.emit(ctx, key, posting.Explained, "explained", map[string]string{ledger.AnnExplanation: text, AnnNotesDeferred: ""}); err != nil {
 				return err
 			}
 			return nil
