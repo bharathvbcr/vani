@@ -280,6 +280,12 @@ flowchart TD
     (`--or-remote` with a state or area keeps remote roles too: "remote, or in Texas"), `jobs stats`
     counts states, areas and remote listings, and the digest's "Where:" line uses it, falling back
     to the board's text. There is no home area or city table: an area is the place as written.
+  - `jobs gaps` ("what to learn next") counts, across the selected roles, the skills DevPrism
+    found missing or weak, plus (with a target summary) skills a role names that the summary does
+    not, weighted by role priority. DevPrism's gaps rank first (by the priority of the roles it
+    flagged them in): a short summary not naming a skill is weak evidence you lack it. Display-only:
+    it never drops or reorders a role, and without a target summary it says only DevPrism gaps were
+    counted.
 - **Local-model bench:** `vani bench local` replays postings the primary already read through
   one or more local GGUF models. It uses the run's exact request and reproduced the recorded
   shadow 382/382. It reports per-slot agreement with the primary, the confusion between them,

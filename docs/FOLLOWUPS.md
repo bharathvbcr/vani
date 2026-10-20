@@ -1030,3 +1030,24 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - **The host's Keychain read has no timeout.** An unanswered macOS prompt leaves a Chrome draft
     waiting until the extension's own timeout fires. On the anthropic path the read is now the
     launcher's, inside the draft's own 150 s ceiling.
+
+## Skill gaps: `vani jobs gaps` (built 2026-10-19, branch `jobs-gaps`)
+
+- **Not measured on live data.** The live ledger was empty and the config had no
+  `target_summary` when it was built, so it has run only on test fixtures and a seeded scratch
+  ledger. After the next `run-once` with DevPrism on, run `vani jobs gaps --view all` and check
+  that the top rows are skills you actually lack.
+- **Keyword gaps need a target summary.** Without one, only DevPrism's gaps are counted and the
+  command says so. With a one-line summary, most job keywords count as "not named", which is why
+  DevPrism's gaps rank first (by `missing_weight`) and keyword-only gaps follow.
+- **DevPrism phrases that are not vocabulary terms are not counted.** `gap.missing` is free text;
+  only what `internal/jobinsight/vocab.txt` recognizes aggregates across roles. A requirement
+  DevPrism names in words the vocabulary lacks ("on-call rotation experience") is left out, never
+  guessed; adding the term to the vocabulary brings it in.
+- **The Mac app does not show it yet.** `jobs gaps --json` is the contract (flat: `roles`,
+  `with_missing`, `target_known`, `total_gaps`, `gaps[]` with `term`, `cat`, `roles`, `missing`,
+  `weight`, `missing_weight`, `companies`, `examples[]`). A "Skills to build" panel in the Jobs
+  tab's Insights would read it the way the charts read `jobs stats --json`.
+- **Merged into main** (2026-10-19). The only conflict was the `cmdJobs` usage string, which both
+  sides rewrote; it now reads `"jobs: expected list, stats, gaps, folders, show, find, ingest, mark
+  or note"`.
