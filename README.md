@@ -485,8 +485,9 @@ explanation are kept, so nothing is re-explained or re-digested. The kept explan
 without the coverage, and re-picking them would cost an OpenRouter call each. A posting with no
 description is left unscored, since an empty JD would score near zero and rank below the prior.
 Digested postings are counted and left alone. If DevPrism fails, or the call times out or is
-cancelled, nothing is written for that posting. 20 failures in a row, or a pass that scores
-nothing, fail the command. A second pass finds only what the first left.
+cancelled, nothing is written for that posting. 20 failures in a row, or a pass where every
+posting it tried failed, fail the command. A second pass finds only what the first left, and
+does nothing once none are left.
 
 ## Knowledge-base matching (semantic)
 

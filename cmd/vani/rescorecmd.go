@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -81,7 +82,15 @@ func rescoreWith(ctx context.Context, l ledger.Ledger, limit, workers int, resco
 			keys = append(keys, r.Key)
 		}
 	}
-	adv, err := advanceAll(ctx, recs, nil, limit, workers, nil, rescore, warnf, withTodo(rescorable))
+	// advanceAll's cap line names advance_per_run and the next daily run, which
+	// is wrong here (--limit, and the run does not rescore); the command prints
+	// how many are still unscored instead.
+	quiet := func(format string, a ...any) {
+		if !strings.HasPrefix(format, "advance cap ") {
+			warnf(format, a...)
+		}
+	}
+	adv, err := advanceAll(ctx, recs, nil, limit, workers, nil, rescore, quiet, withTodo(rescorable))
 	rep.Advance = adv
 	for _, k := range keys {
 		if r, ok := l.Get(k); ok && r.Annotations[ledger.AnnRank] != "" {

@@ -114,9 +114,14 @@ func TestRescoreHonoursTheLimitAndIsIdempotent(t *testing.T) {
 	before := recordsByKey(t, l)
 	sc := &rescoreScorer{}
 	r := rescoreRunner(l, sc)
-	rep, err := rescoreWith(context.Background(), l, 3, 2, r.Rescore, t.Logf)
+	var warned strings.Builder
+	warnf := func(f string, a ...any) { fmt.Fprintf(&warned, f+"\n", a...) }
+	rep, err := rescoreWith(context.Background(), l, 3, 2, r.Rescore, warnf)
 	if err != nil || rep.Rescored != 3 || rep.Advance.Attempted != 3 || rep.Advance.Stopped != stopCap {
 		t.Fatalf("first pass: %+v, %v", rep, err)
+	}
+	if strings.Contains(warned.String(), "advance_per_run") {
+		t.Errorf("the run's cap line leaked into rescore: %s", warned.String())
 	}
 	rep, err = rescoreWith(context.Background(), l, 3, 2, r.Rescore, t.Logf)
 	if err != nil || rep.Rescored != 1 || rep.Plan.Eligible != 1 {
