@@ -33,7 +33,7 @@ var rescorable = map[posting.Status]bool{posting.Scored: true, posting.Explained
 // ledger's folded record keeps no event reasons, so the missing rank is the
 // test.
 func Unscored(r ledger.Record) bool {
-	return rescorable[r.Status] && r.Annotations[ledger.AnnRank] == ""
+	return rescorable[r.Status] && r.Annotations[ledger.AnnRank] == "" && r.Annotations[AnnCoverageUnknown] == ""
 }
 
 // Described reports whether r has a description to score.
