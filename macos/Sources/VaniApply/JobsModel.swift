@@ -137,6 +137,7 @@ final class JobsModel {
         case let .success(p):
             page = p
             error = nil
+            await reportImpressions(p.jobs.prefix(JobsClient.impressionRows).map(\.key), view: v)
         case let .failure(err):
             error = String(describing: err)
         }
@@ -158,6 +159,25 @@ final class JobsModel {
             gapsError = String(describing: err)
         case nil:
             break
+        }
+    }
+
+    /// Why the rows on screen could not be reported to `vani impressions log`;
+    /// nil when they were. Reporting is measurement only: a failure never blocks
+    /// the list, and it is kept here rather than dropped.
+    private(set) var impressionsError: String?
+
+    /// Tells vani which rows the list put on screen (keys and positions only), so
+    /// an unmarked job counts as seen-and-passed. One slate per view per day:
+    /// refreshing again the same day logs only what is new.
+    private func reportImpressions(_ keys: [String], view: JobView) async {
+        let c = client(), slate = JobsClient.jobsSlate(view: view, day: Date())
+        let result = await Task.detached(priority: .utility) {
+            Result { try c.logImpressions(surface: .jobs, slate: slate, section: view.rawValue, keys: keys) }
+        }.value
+        switch result {
+        case .success: impressionsError = nil
+        case let .failure(err): impressionsError = String(describing: err)
         }
     }
 

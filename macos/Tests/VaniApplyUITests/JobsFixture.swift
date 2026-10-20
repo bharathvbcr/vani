@@ -62,6 +62,7 @@ struct JobsFixture {
             *) exec cat "$d/list.json" ;;
             esac ;;
         "labels --json") exec cat "$d/labels.json" ;;
+        "impressions log") cat >> "$d/impressions.in"; printf '\\n' >> "$d/impressions.in"; printf '{"logged":1}\\n'; exit 0 ;;
         "jobs stats") exec cat "$d/stats.json" ;;
         "jobs gaps") exec cat "$d/gaps.json" ;;
         "jobs show")

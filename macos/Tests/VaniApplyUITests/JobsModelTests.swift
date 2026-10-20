@@ -64,6 +64,29 @@ final class JobsModelTests: XCTestCase {
         XCTAssertNil(m.stats, "stats load only while Insights is open")
     }
 
+    /// Each refresh tells vani which rows it put on screen: keys and 1-based
+    /// positions in list order, under one slate for the view and day, and no
+    /// title or company.
+    func testRefreshReportsTheVisibleRowsAsImpressions() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        await m.refresh()
+        XCTAssertNil(m.impressionsError)
+        let calls = f.calls().filter { $0.hasPrefix("impressions log") }
+        XCTAssertEqual(calls.count, 1, "\(f.calls())")
+        XCTAssertTrue(calls[0].contains("--surface jobs") && calls[0].contains("--slate new-"), calls[0])
+        let sent = try String(contentsOf: f.dir.appendingPathComponent("impressions.in"), encoding: .utf8)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(sent.utf8)) as? [String: Any])
+        let rows = try XCTUnwrap(body["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["key"] as? String }, JobsFixture.standardOrder)
+        XCTAssertEqual(rows.compactMap { $0["position"] as? Int }, Array(1...JobsFixture.standardOrder.count))
+        for role in JobsFixture.roles {
+            XCTAssertFalse(sent.contains(role.title) || sent.contains(role.company), "posting text reached the impressions request")
+        }
+        await m.refresh()
+        XCTAssertEqual(f.calls().filter { $0.hasPrefix("impressions log") }.count, 2, "a refresh reports again; vani keeps each key once per slate")
+    }
+
     func testSortAndFilterChangesRelist() async throws {
         let f = try JobsFixture(self)
         let m = model(f)
