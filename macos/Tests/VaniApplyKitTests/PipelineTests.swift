@@ -48,6 +48,15 @@ private func decode(_ s: String) throws -> PipelineStatus {
 }
 
 final class PipelineTests: XCTestCase {
+    func testANoticeVersionThisAppDoesNotReadIsAWarning() throws {
+        let finished = iso(now.addingTimeInterval(-3 * 3600)), started = iso(now.addingTimeInterval(-3 * 3600 - 312))
+        let run = #"{"ok":true,"state":"ok","started_at":"\#(started)","finished_at":"\#(finished)","notice":{"v":2,"announce":false}}"#
+        let issue = try XCTUnwrap(decode(statusReply(lastRun: run)).issues(at: now).first)
+        XCTAssertEqual(issue.title, "Run notices are off")
+        XCTAssertEqual(issue.severity, .warning)
+        XCTAssertEqual(issue.detail, "vani's run notice is version 2; this app reads version 1. Rebuild the app.")
+    }
+
     func testDecodesAHealthyStatusWithGoTimes() throws {
         let s = try decode(statusReply())
         XCTAssertEqual(s.version, 1)
