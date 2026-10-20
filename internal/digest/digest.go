@@ -219,8 +219,11 @@ func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time,
 
 // DropClass names why a dropped record was dropped, from its triage
 // annotations (the folded record keeps no event reason): the backend that read
-// it ("title" for a title reading) and the first drop rule its readings match,
-// as "title:role_fit=mismatch_domain". "" for a record that is not dropped.
+// it ("title" for a title reading) and the slot of the first drop rule its
+// readings match, as "title:role_fit". It never names the rule's value: rule
+// values can reveal the owner's work authorization (rankconfig.go), and the
+// class reaches the digest and the feedback log. "" for a record that is not
+// dropped.
 func DropClass(r ledger.Record, rules []jobinsight.DropRule) string {
 	if r.Status != posting.Dropped {
 		return ""
@@ -236,7 +239,7 @@ func DropClass(r ledger.Record, rules []jobinsight.DropRule) string {
 				if b := token(r.Annotations[ledger.AnnTriagePrefix+rule.Slot+".backend"]); b != "" {
 					backend = b
 				}
-				return backend + ":" + token(rule.Slot) + "=" + token(v)
+				return backend + ":" + token(rule.Slot)
 			}
 		}
 	}

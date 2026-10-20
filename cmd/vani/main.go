@@ -123,6 +123,12 @@ commands:
   prefilter [--list]        dry run of the title prefilter (title_signals.read with the drop
                              rules): how many live postings it would drop before triage, and how
                              the decision model read the ones it already read (never writes)
+  audit next [-n N] [--json] this week's audit batch: the digest's unjudged Explore picks, then
+                             a sample stratified over priority deciles and drop classes
+  audit run [-n N]           judge the batch on the terminal: would you apply? y/m/n/s, q quits
+  audit judge KEY VERDICT    record yes, maybe, no or skip for one posting
+  audit stats [--json]       what the judgments measure: would-apply by decile, false drops by
+                             class, and how many more the calibration and weight fit need
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
               [--parallel N] [--json]
                              replay postings the primary already read through local decision
@@ -247,6 +253,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdRescore(args[1:])
 	case "prefilter":
 		cmdErr = e.cmdPrefilter(args[1:])
+	case "audit":
+		cmdErr = e.cmdAudit(args[1:])
 	case "migrate":
 		cmdErr = e.cmdMigrate(args[1:])
 	case "bench":

@@ -128,7 +128,7 @@ func TestExplorePicksBothPoolsDeterministically(t *testing.T) {
 		}
 	}
 	for _, s := range shown {
-		if strings.HasPrefix(string(s.Key), "gh:d:") && s.DropClass != "title:role_fit=mismatch_domain" {
+		if strings.HasPrefix(string(s.Key), "gh:d:") && s.DropClass != "title:role_fit" {
 			t.Fatalf("drop class %q", s.DropClass)
 		}
 	}
@@ -164,11 +164,11 @@ func TestDropClass(t *testing.T) {
 		r    ledger.Record
 		want string
 	}{
-		{dropped("k", "title", "role_fit", "mismatch_domain"), "title:role_fit=mismatch_domain"},
-		{dropped("k", "liquid/d1-ultra", "seniority", "staff_plus"), "liquid/d1-ultra:seniority=staff_plus"},
-		{dropped("k", "", "seniority", "manager"), "unknown:seniority=manager"},
+		{dropped("k", "title", "role_fit", "mismatch_domain"), "title:role_fit"},
+		{dropped("k", "liquid/d1-ultra", "seniority", "staff_plus"), "liquid/d1-ultra:seniority"},
+		{dropped("k", "", "seniority", "manager"), "unknown:seniority"},
 		{dropped("k", "title", "work_mode", "onsite"), "title:other"},
-		{dropped("k", "x`y\n<b>", "role_fit", "mismatch_domain"), "xyb:role_fit=mismatch_domain"},
+		{dropped("k", "x`y\n<b>", "role_fit", "mismatch_domain"), "xyb:role_fit"},
 		{rec("k", posting.Digested, "Kept", fit("mismatch_domain")), ""},
 	}
 	for _, c := range cases {
