@@ -41,6 +41,10 @@ type Record struct {
 // Ledger appends events and answers from the folded state.
 type Ledger interface {
 	Append(ctx context.Context, e Event) error
+	// AppendBatch writes evs as one durable unit: all validated before any is
+	// written, one write and one fsync, folded in order. An error means none
+	// were folded. Callers batch only independently valid events.
+	AppendBatch(ctx context.Context, evs []Event) error
 	Get(k posting.Key) (Record, bool)
 	All() []Record
 	Close() error

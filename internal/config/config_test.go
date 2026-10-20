@@ -64,7 +64,7 @@ func TestValidateRules(t *testing.T) {
 		{"workday host missing from allowlist", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext", Host: "acme.wd5.myworkdayjobs.com"}}
 		}, "allowed_hosts is missing: acme.wd5.myworkdayjobs.com"},
-		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, az, gg, ap and ef only"},
+		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, az, gg, ap, ef and jb only"},
 		{"page http url", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Page, Token: "acme", URL: "http://acme.example/jobs", LinkPattern: "/jobs/"}}
 		}, "needs an https url"},
@@ -458,16 +458,21 @@ func TestSearchSiteBoards(t *testing.T) {
 		{ATS: posting.Eightfold, Token: "qualcomm.com", Company: "Qualcomm", Host: "careers.qualcomm.com", Search: "machine learning"},
 		{ATS: posting.Workday, Token: "nvidia/NVIDIAExternalCareerSite", Company: "NVIDIA", Host: "nvidia.wd5.myworkdayjobs.com",
 			Searches: []string{"TensorRT", "new college grad"}},
+		{ATS: posting.Jibe, Token: "amd", Company: "AMD", Host: "careers.amd.com", Search: "machine learning",
+			Filters: map[string][]string{"location": {"United States", "Canada"}}},
+		// Jibe, like Workday, lists the whole site without a search.
+		{ATS: posting.Jibe, Token: "acme", Company: "Acme", Host: "careers.acme.example"},
 		{ATS: posting.Workday, Token: "intel/External", Company: "Intel", Host: "intel.wd1.myworkdayjobs.com",
 			Search: "LLM", MaxPostings: sources.MaxPostingsCeiling},
 	}
 	c := valid()
 	c.Watchlist = append(c.Watchlist, good...)
-	c.AllowedHosts = append(c.AllowedHosts, "www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "nvidia.wd5.myworkdayjobs.com", "intel.wd1.myworkdayjobs.com")
+	c.AllowedHosts = append(c.AllowedHosts, "www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "nvidia.wd5.myworkdayjobs.com",
+		"careers.amd.com", "careers.acme.example", "intel.wd1.myworkdayjobs.com")
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, h := range []string{"www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com"} {
+	for _, h := range []string{"www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "careers.amd.com"} {
 		if !slices.Contains(c.RequiredHosts(), h) {
 			t.Errorf("RequiredHosts lacks %s", h)
 		}
@@ -498,9 +503,16 @@ func TestSearchSiteBoards(t *testing.T) {
 		"eightfold without host":    {mod(3, func(b *sources.Board) { b.Host = "" }), "needs host"},
 		"eightfold ip host":         {mod(3, func(b *sources.Board) { b.Host = "10.0.0.1" }), "needs host"},
 		"eightfold token not dns":   {mod(3, func(b *sources.Board) { b.Token = "qualcomm" }), "domain"},
+		"jibe without host":         {mod(5, func(b *sources.Board) { b.Host = "" }), "needs host"},
+		"jibe ip host":              {mod(5, func(b *sources.Board) { b.Host = "10.0.0.1" }), "needs host"},
+		"jibe host with path":       {mod(5, func(b *sources.Board) { b.Host = "careers.amd.com/x" }), "needs host"},
+		"jibe token not a code":     {mod(5, func(b *sources.Board) { b.Token = "amd.com" }), "client code"},
+		"unverified jibe filter":    {mod(5, func(b *sources.Board) { b.Filters = map[string][]string{"country": {"Canada"}} }), "is not one of"},
+		"url on jibe":               {mod(5, func(b *sources.Board) { b.URL = "https://careers.amd.com/careers-home/jobs" }), "page boards only"},
 		"unknown ats":               {sources.Board{ATS: "zz", Token: "x"}, "is not one of"},
 		"max_postings on amazon":    {mod(0, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
 		"max_postings on eightfold": {mod(3, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
+		"max_postings on jibe":      {mod(5, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
 		"max_postings negative":     {mod(4, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
 		"max_postings over ceiling": {mod(4, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
 	} {
@@ -513,6 +525,31 @@ func TestSearchSiteBoards(t *testing.T) {
 	c.Watchlist = append(c.Watchlist, sources.Board{ATS: posting.Google, Token: "google-2", Company: "Google", Search: "TPU"})
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "second gg board") {
 		t.Fatalf("second google board: %v", err)
+	}
+}
+
+// Unsaved browser scrapes fold under "<host-slug>-scrape" (vani jobs ingest); a
+// board with that token end would age those records out. A hand-edited
+// config.json must be refused as well as `watchlist add`.
+func TestBoardTokenCannotEndInTheScrapeSuffix(t *testing.T) {
+	for _, tok := range []string{"careers-acme-com-scrape", "Acme-Scrape", "-scrape"} {
+		b := sources.Board{ATS: posting.Page, Token: tok, URL: "https://careers.acme.com/jobs", LinkPattern: `^https://careers\.acme\.com/jobs/`}
+		if err := ValidBoard(b); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("ValidBoard(%q) = %v, want the reserved-suffix refusal", tok, err)
+		}
+		c := valid()
+		c.Watchlist = append(c.Watchlist, b)
+		c.AllowedHosts = append(c.AllowedHosts, "careers.acme.com")
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("Validate with token %q = %v, want the reserved-suffix refusal", tok, err)
+		}
+	}
+	// Only the end is reserved.
+	for _, tok := range []string{"scrape", "scrape-acme", "acme-scraper"} {
+		b := sources.Board{ATS: posting.Greenhouse, Token: tok}
+		if err := ValidBoard(b); err != nil {
+			t.Errorf("ValidBoard(%q) = %v", tok, err)
+		}
 	}
 }
 

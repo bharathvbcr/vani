@@ -221,3 +221,20 @@ func TestRecordIDIsPostingKey(t *testing.T) {
 		t.Errorf("RecordID = %q", q.RecordID)
 	}
 }
+
+func TestTriagerExtraSlotsSingleFlow(t *testing.T) {
+	c := &capture{}
+	extra := decide.Slot{Name: "category", Options: []string{"ai-engineer", "other"}}
+	tr := Triager{D: c, ExtraSlots: []decide.Slot{extra}}
+	p := posting.Posting{Key: "gh:acme:2", Title: "Engineer"}
+	if _, err := tr.Triage(context.Background(), p); err != nil {
+		t.Fatalf("Triage failed: %v", err)
+	}
+	if len(c.q.Slots) != 5 {
+		t.Fatalf("slots = %d, want 5", len(c.q.Slots))
+	}
+	last := c.q.Slots[len(c.q.Slots)-1]
+	if last.Name != "category" || len(last.Options) != 2 {
+		t.Errorf("last slot = %+v", last)
+	}
+}

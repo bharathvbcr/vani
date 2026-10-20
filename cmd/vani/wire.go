@@ -22,6 +22,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/egress"
+	"github.com/bharathvbcr/Vani/internal/inbox"
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/localserver"
 	"github.com/bharathvbcr/Vani/internal/notify"
@@ -35,6 +37,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
+	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -98,9 +101,20 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		Ledger:    led,
 		RunOnce:   w.runOnce,
 		RunReport: w.runReport,
+		Reload:    w.setBoards,
+		PollInbox: w.pollInbox,
 		Notifier:  notify.New(nil),
 		Closer:    w.close,
 	}, nil
+}
+
+// setBoards replaces the watchlist and allowed hosts the next run reads (the
+// daily job re-reads them from the config file, so a board saved while the
+// daemon runs is searched from then on). Callers do not overlap it with a run.
+func (w *wired) setBoards(watchlist []sources.Board, allowed []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cfg.Watchlist, w.cfg.AllowedHosts = watchlist, allowed
 }
 
 type wired struct {
@@ -158,38 +172,16 @@ func (w *wired) warnf(format string, a ...any) {
 // bad board is a warning, and its postings are left untouched (an unread
 // board must never count as "every posting disappeared").
 func (w *wired) runOnce(ctx context.Context) error {
-	d, err := egress.New(egress.Config{AllowedHosts: w.cfg.AllowedHosts, MaxBodyBytes: maxBoardBytes})
-	if err != nil {
-		return fmt.Errorf("egress: %w", err)
-	}
-	// A local decision model configured with a server is started for this run
-	// only. If it does not come up, the run goes on without the shadow. The
-	// endpoint lives exactly as long as its server: a daemon reuses w, and a
-	// failed start must never inherit the last run's stopped address.
-	w.localEndpoint = ""
-	errs := newBackendErrors()
-	w.mu.Lock()
-	w.backendErrs, w.advance = errs, nil
-	w.mu.Unlock()
-	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
-		srv, err := localserver.Start(ctx, localserver.Config{
-			Binary: l.Server.Binary, Model: l.Server.ModelPath, ContextSize: l.Server.ContextSize,
-			StartTimeout: time.Duration(l.Server.StartTimeoutMS) * time.Millisecond,
-			BatchSize:    l.Server.BatchSize, Parallel: l.Server.Parallel,
-		})
-		if err != nil {
-			w.warnf("local decision model not started; running without the shadow: %v", err)
-		} else {
-			defer func() { w.localEndpoint = ""; srv.Stop() }()
-			w.localEndpoint = srv.Endpoint
-		}
-	}
 	// Assemble the stages first: a run that cannot triage must not fetch
 	// boards for nothing.
-	runner, err := w.runner(ctx, d)
+	d, runner, stop, err := w.startRun(ctx)
 	if err != nil {
 		return err
 	}
+	defer stop()
+	// Jobs the extension spooled since the last run join the ledger Live before
+	// the boards are read; the advance phase below picks them up with the rest.
+	w.drainSpool(ctx)
 	srcs := apiSources(d)
 	gh, err := greenhouse.NewWithPay(d, greenhouse.Pay{
 		Known: func(k posting.Key) (posting.Posting, bool) {
@@ -232,6 +224,8 @@ func (w *wired) runOnce(ctx context.Context) error {
 	// One index of the ledger for the whole loop: only Reconcile writes to the
 	// ledger here (the adapters read it), as Reconciler requires.
 	rec := pipeline.NewReconciler(w.led)
+	protect := w.markProtector()
+	rec.Protect(protect)
 	read := 0
 	for _, b := range w.cfg.Watchlist {
 		src, ok := srcs[b.ATS]
@@ -261,6 +255,11 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if len(w.cfg.Watchlist) > 0 && read == 0 {
 		return errors.New("no board could be read")
 	}
+	nd, err := pipeline.AnnotateNearDuplicates(ctx, w.led, time.Now(), pipeline.NearDupOptions{Protected: protect})
+	if err != nil {
+		return fmt.Errorf("near-duplicates: %w", err)
+	}
+	w.warnf("near-duplicates: %+v", nd)
 
 	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf)
 	w.mu.Lock()
@@ -270,6 +269,111 @@ func (w *wired) runOnce(ctx context.Context) error {
 	w.warnShadowSample(runner)
 	return err
 }
+
+// startRun readies what one pass over the ledger needs to triage: the egress
+// client, the decision stages and, when configured, the local decision model's
+// server. stop ends the server; call it when the pass is done.
+func (w *wired) startRun(ctx context.Context) (*egress.Client, *pipeline.Runner, func(), error) {
+	d, err := egress.New(egress.Config{AllowedHosts: w.cfg.AllowedHosts, MaxBodyBytes: maxBoardBytes})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("egress: %w", err)
+	}
+	// A local decision model configured with a server is started for this run
+	// only. If it does not come up, the run goes on without the shadow. The
+	// endpoint lives exactly as long as its server: a daemon reuses w, and a
+	// failed start must never inherit the last run's stopped address.
+	w.localEndpoint = ""
+	errs := newBackendErrors()
+	w.mu.Lock()
+	w.backendErrs, w.advance = errs, nil
+	w.mu.Unlock()
+	stop := func() {}
+	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
+		srv, err := localserver.Start(ctx, localserver.Config{
+			Binary: l.Server.Binary, Model: l.Server.ModelPath, ContextSize: l.Server.ContextSize,
+			StartTimeout: time.Duration(l.Server.StartTimeoutMS) * time.Millisecond,
+			BatchSize:    l.Server.BatchSize, Parallel: l.Server.Parallel,
+		})
+		if err != nil {
+			w.warnf("local decision model not started; running without the shadow: %v", err)
+		} else {
+			stop = func() { w.localEndpoint = ""; srv.Stop() }
+			w.localEndpoint = srv.Endpoint
+		}
+	}
+	runner, err := w.runner(ctx, d)
+	if err != nil {
+		stop()
+		return nil, nil, nil, err
+	}
+	return d, runner, stop, nil
+}
+
+// drainSpool folds the spooled extension batches into the ledger and reports
+// what it did. A failure is a warning: the batch stays spooled and is folded
+// next time, and the run's boards do not depend on it. It returns what the
+// drain left Live, for a caller that advances them itself.
+func (w *wired) drainSpool(ctx context.Context) []posting.Key {
+	res, err := drainInbox(ctx, w.led, w.stateDir, w.markProtector())
+	if res.Report.Folded > 0 {
+		w.warnf("inbox: folded %d batch(es), %d job(s): %d new, %d duplicate", res.Report.Folded, res.Report.Jobs, res.New, res.Duplicate)
+	}
+	if n := len(res.Report.Bad); n > 0 {
+		w.warnf("inbox: %d unreadable file(s) moved to %s; they are not retried", n, filepath.Join(w.stateDir, inbox.Dir, inbox.BadDir))
+	}
+	if res.Report.Unreadable > 0 {
+		w.warnf("inbox: %d file(s) could not be read; they stay for the next drain", res.Report.Unreadable)
+	}
+	if res.Report.Remaining > 0 {
+		w.warnf("inbox: %d more file(s) wait for the next drain", res.Report.Remaining)
+	}
+	if err != nil && ctx.Err() == nil {
+		w.warnf("inbox: drain stopped, the rest waits: %v", err)
+	}
+	return res.Live
+}
+
+// pollInbox is the daemon's between-runs pass: fold what the extension
+// spooled and advance the postings that landed Live, bounded by
+// advance_per_run, through the same advanceAll the daily run uses. The caller
+// serialises it with the daily run (one ledger writer at a time).
+func (w *wired) pollInbox(ctx context.Context) error {
+	if n, err := inbox.Pending(filepath.Join(w.stateDir, inbox.Dir)); err != nil {
+		return err
+	} else if n == 0 {
+		return nil
+	}
+	live := w.drainSpool(ctx)
+	if len(live) == 0 {
+		return ctx.Err()
+	}
+	recs := make([]ledger.Record, 0, len(live))
+	for _, k := range live {
+		if r, ok := w.led.Get(k); ok {
+			recs = append(recs, r)
+		}
+	}
+	if testHookAdvanceNew != nil {
+		return testHookAdvanceNew(ctx, recs)
+	}
+	_, runner, stop, err := w.startRun(ctx)
+	if err != nil {
+		// No backend, no egress: the postings stay Live for the next run.
+		w.warnf("inbox: %d new job(s) wait for the next run: %v", len(recs), err)
+		return nil
+	}
+	defer stop()
+	_, err = advanceAll(ctx, recs, w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf)
+	return err
+}
+
+// testHookAdvanceNew, set only by tests, replaces pollInbox's advance phase
+// with a function that receives the records it would have advanced.
+var testHookAdvanceNew func(ctx context.Context, recs []ledger.Record) error
+
+// markProtector says which postings the user marked, which dedupe must never
+// demote to Duplicate (protectMarked).
+func (w *wired) markProtector() func(posting.Key) bool { return protectMarked(w.stateDir, w.warnf) }
 
 // dropPolicy is the configured drop rules, and the title reader that applies
 // them before any backend is asked. The run and `vani prefilter` share it.
@@ -352,6 +456,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Google:     google.New(d),
 		posting.Apple:      apple.New(d),
 		posting.Eightfold:  eightfold.New(d),
+		posting.Jibe:       jibe.New(d),
 	}
 }
 
@@ -776,7 +881,7 @@ func localBackendNamed(l *config.Local, endpoint, name string) (decide.Backend, 
 		Timeout:      timeout,
 		MaxAttempts:  1, // a local server that failed once will fail again this second
 		State:        func(q decide.Question) any { return string(q.Context) },
-		Descriptions: jdtriage.Descriptions(),
+		Descriptions: jobcategory.UnifiedDescriptions(),
 		Instructions: instr,
 	}, d)
 }
@@ -800,7 +905,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 			Name:         w.cfg.Decide.OpenRouterName(),
 			Model:        w.cfg.Decide.OpenRouterModel,
 			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
-			Descriptions: jdtriage.Descriptions(),
+			Descriptions: jobcategory.UnifiedDescriptions(),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,
 		}, d)
@@ -889,7 +994,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	explainer, skipExplain := w.notes(d, spend)
 	r := &pipeline.Runner{
 		Ledger:      w.led,
-		Triager:     &jdtriage.Triager{D: router, TargetSummary: w.cfg.TargetSummary},
+		Triager:     &jdtriage.Triager{D: router, TargetSummary: w.cfg.TargetSummary, ExtraSlots: []decide.Slot{jobcategory.DecideSlot()}},
 		Explainer:   explainer,
 		Policy:      dropPolicy(w.cfg, w.openRouterName()),
 		SkipExplain: skipExplain,

@@ -23,10 +23,10 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 	prefix := b.KeyPrefix()
 	existing := l.All()
 
-	// Company|title|location tuple -> records, for cross-source dedupe. A
+	// Company|title|location tuple -> weak records, for cross-source dedupe. A
 	// weakly keyed posting (fallback or careers page) that repeats an
-	// ATS-keyed one is the duplicate, never the other way round.
-	atsByTuple := map[posting.Key]posting.Key{}
+	// ATS-keyed one is the duplicate, never the other way round. What a new
+	// posting repeats is bruteTwinOf's scan of existing.
 	weakByTuple := map[posting.Key][]posting.Key{}
 	for _, r := range existing {
 		if r.Posting.Company == "" || r.Posting.Title == "" {
@@ -36,14 +36,8 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 		if err != nil {
 			continue
 		}
-		if weakKey(r.Key) {
-			if !r.Status.Terminal() {
-				weakByTuple[fk] = append(weakByTuple[fk], r.Key)
-			}
-			continue
-		}
-		if _, dup := atsByTuple[fk]; !dup {
-			atsByTuple[fk] = r.Key
+		if weakKey(r.Key) && !r.Status.Terminal() {
+			weakByTuple[fk] = append(weakByTuple[fk], r.Key)
 		}
 	}
 
@@ -73,24 +67,29 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 		case !known:
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
 				Annotations: map[string]string{DescHashKey: hash}, Reason: "new"}
-			if weakKey(p.Key) {
-				if fk, err := posting.FallbackKey(p.Company, p.Title, p.Location); err == nil {
-					if orig, ok := atsByTuple[fk]; ok {
-						e.Status = posting.Duplicate
-						e.Annotations[DuplicateOfKey] = string(orig)
-						e.Reason = "duplicate of " + string(orig)
-						s.Duplicate++
-					}
+			if orig, why, ok := bruteTwinOf(p, now, existing); ok {
+				e.Status = posting.Duplicate
+				e.Annotations[DuplicateOfKey] = string(orig)
+				e.Reason = "duplicate of " + string(orig)
+				if why != "" {
+					e.Reason += " (" + why + ")"
 				}
+				s.Duplicate++
 			}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			if e.Status == posting.Live {
 				s.New++
-				// An ATS posting may repeat a fallback record seen earlier.
+				// An ATS posting may repeat a fallback record, or the same role
+				// under another ATS, seen earlier.
 				if !weakKey(p.Key) {
 					n, err := oracleMarkWeakTwins(ctx, l, p, weakByTuple, now)
+					if err != nil {
+						return s, err
+					}
+					s.Duplicate += n
+					n, err = oracleMarkCrossTwins(ctx, l, p, now, now, existing)
 					if err != nil {
 						return s, err
 					}
@@ -98,8 +97,43 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 				}
 			}
 		case rec.Status == posting.Duplicate:
-			s.Unchanged++
+			// The revive rule, with the twin found by the brute scan of existing.
+			of := posting.Key(rec.Annotations[DuplicateOfKey])
+			if of == "" || !survivorGone(l, of) {
+				s.Unchanged++
+				break
+			}
+			var twin posting.Key
+			var why string
+			if k, w, ok := bruteTwinOf(p, rec.FirstSeen, existing); ok && k != of {
+				if r, found := l.Get(k); found && !closed(r.Status) {
+					twin, why = k, w
+				}
+			}
+			if err := l.Append(ctx, reviveEvent(rec, p, hash, now, twin, why)); err != nil {
+				return s, err
+			}
+			s.Revived++
+			if twin == "" && !weakKey(p.Key) {
+				n, err := oracleMarkWeakTwins(ctx, l, p, weakByTuple, now)
+				if err != nil {
+					return s, err
+				}
+				s.Duplicate += n
+				n, err = oracleMarkCrossTwins(ctx, l, p, rec.FirstSeen, now, existing)
+				if err != nil {
+					return s, err
+				}
+				s.Duplicate += n
+			}
 		case rendered && sourceHash(rec.Posting.Description) != sourceHash(p.Description):
+			if score, keep := keepAcrossEdit(rec, p); keep {
+				if err := l.Append(ctx, keptEvent(rec, p, hash, now, score)); err != nil {
+					return s, err
+				}
+				s.Kept++
+				break
+			}
 			ann := staleAnnotations(rec.Annotations)
 			ann[DescHashKey] = hash
 			ann[DiedFromKey] = ""

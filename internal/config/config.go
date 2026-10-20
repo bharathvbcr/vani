@@ -483,7 +483,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.google.com", true
 	case posting.Apple:
 		return "jobs.apple.com", true
-	case posting.Workday, posting.Eightfold:
+	case posting.Workday, posting.Eightfold, posting.Jibe:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
@@ -523,15 +523,22 @@ func (c Config) RequiredHosts() []string {
 // hostname is a DNS name of at least two labels (no IP literal, no port).
 var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 
-// searchATS take a search (Workday optionally; the search sites require one,
-// because their unsearched listing is the whole company).
+// searchATS take a search (Workday and Jibe optionally, since they page a
+// whole company's listing; the search sites require one, because their
+// unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold:
+	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe:
 		return true
 	}
 	return false
 }
+
+// optionalSearchATS list their whole board when given no search.
+func optionalSearchATS(a posting.ATS) bool { return a == posting.Workday || a == posting.Jibe }
+
+// jibeClient matches a Jibe client code, a Jibe board's token.
+var jibeClient = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
@@ -552,7 +559,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap and ef only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap, ef and jb only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -563,7 +570,7 @@ func validSearches(b sources.Board) error {
 			return fmt.Errorf("board %s/%s: search %q must be at most %d bytes with no control characters", b.ATS, b.Token, s, sources.MaxSearchLen)
 		}
 	}
-	if b.ATS != posting.Workday && searchATS(b.ATS) && len(b.SearchTerms()) == 0 {
+	if !optionalSearchATS(b.ATS) && searchATS(b.ATS) && len(b.SearchTerms()) == 0 {
 		return fmt.Errorf("board %s/%s needs at least one search: its unsearched listing is the whole company", b.ATS, b.Token)
 	}
 	if len(b.Filters) == 0 {
@@ -589,19 +596,28 @@ func validSearches(b sources.Board) error {
 	return nil
 }
 
+// ScrapeSuffix ends the token of every batch of jobs scraped in the browser
+// that is not a saved page board's own page (`vani jobs ingest`). ValidBoard
+// refuses it as a board token's end, so no board's absence pass can reach
+// those records.
+const ScrapeSuffix = "-scrape"
+
 // ValidBoard checks a single watchlist entry.
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
 	}
 	if strings.ContainsAny(b.Token, " \t\r\n?#") || strings.Contains(b.Token, "..") {
 		return fmt.Errorf("board (%s) token %q has unsafe characters", b.ATS, b.Token)
+	}
+	if strings.HasSuffix(strings.ToLower(b.Token), ScrapeSuffix) {
+		return fmt.Errorf("board token %q ends in %q, which is reserved for jobs scraped in the browser", b.Token, ScrapeSuffix)
 	}
 	if b.ATS == posting.Workday {
 		if strings.Count(b.Token, "/") != 1 {
@@ -626,8 +642,16 @@ func ValidBoard(b sources.Board) error {
 		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
 			return fmt.Errorf("eightfold board %s needs host, its careers site, e.g. apply.careers.microsoft.com; got %q", b.Token, b.Host)
 		}
+	} else if b.ATS == posting.Jibe {
+		// The token is the site's client code, the host its careers site.
+		if !jibeClient.MatchString(strings.ToLower(b.Token)) {
+			return fmt.Errorf("jibe token %q must be the site's client code, e.g. amd", b.Token)
+		}
+		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
+			return fmt.Errorf("jibe board %s needs host, its careers site, e.g. careers.amd.com; got %q", b.Token, b.Host)
+		}
 	} else if b.ATS != posting.Workday && b.Host != "" {
-		return fmt.Errorf("board %s/%s: host applies to wd and ef only", b.ATS, b.Token)
+		return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
 	}
 	if err := validSearches(b); err != nil {
 		return err

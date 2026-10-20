@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // noticeApp wires an App whose run fails with runErr and reports adv, and
@@ -30,6 +32,7 @@ func noticeApp(t *testing.T, n *fakeNotifier, runErr error, adv *advanceReport, 
 			Notifier:  n,
 			RunOnce:   func(context.Context) error { return runErr },
 			RunReport: func() runDetail { return runDetail{Advance: adv} },
+			Reload:    func([]sources.Board, []string) {},
 		}, nil
 	}
 }
@@ -91,6 +94,23 @@ func TestAdvanceStopNamesTheCause(t *testing.T) {
 				t.Errorf("notifications: %v, want %q", n.calls, want)
 			}
 		})
+	}
+}
+
+// A config that cannot be re-read does not stop the run; the digest is still
+// announced, and so is the stale config.
+func TestStaleConfigIsAnnouncedBesideTheDigest(t *testing.T) {
+	cfgPath, _ := setup(t)
+	mustCode(t, 0, "init")
+	n := &fakeNotifier{}
+	noticeApp(t, n, nil, nil, func() {
+		if err := os.WriteFile(cfgPath, []byte("{not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	mustCode(t, 1, "run-once")
+	if len(n.calls) != 2 || n.calls[0] != "Vani digest|2 roles to review" || !strings.HasPrefix(n.calls[1], "Vani config not reloaded|") {
+		t.Errorf("notifications: %v", n.calls)
 	}
 }
 

@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/digest"
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -69,6 +72,7 @@ type jobJSON struct {
 	LCA         string            `json:"lca,omitempty"`
 	Employer    string            `json:"employer,omitempty"`
 	Triage      map[string]string `json:"triage,omitempty"`
+	Category    string            `json:"category,omitempty"`
 	FirstSeen   time.Time         `json:"first_seen"`
 	PostedAt    time.Time         `json:"posted_at,omitzero"`
 	Mark        marks.Mark        `json:"mark,omitempty"`
@@ -95,6 +99,14 @@ type jobJSON struct {
 	// Pay is the pay the posting's text states (jobinsight.ParsePay), at most
 	// one range per currency.
 	Pay []jobinsight.Pay `json:"pay,omitempty"`
+
+	// Near-duplicate display (pipeline.AnnotateNearDuplicates): the posting
+	// this one repeats (status duplicate), may repeat (candidate) or is the
+	// same role elsewhere as (sibling), and the description overlap behind it.
+	DupOf          string  `json:"dup_of,omitempty"`
+	DupCandidateOf string  `json:"dup_candidate_of,omitempty"`
+	DupSiblingOf   string  `json:"dup_sibling_of,omitempty"`
+	DupScore       float64 `json:"dup_score,omitempty"`
 }
 
 type jobsListJSON struct {
@@ -118,13 +130,15 @@ type jobsListJSON struct {
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, show, find, mark or note")
+		return usagef("jobs: expected list, stats, folders, show, find, ingest, mark or note")
 	}
 	switch args[0] {
 	case "list":
 		return e.jobsList(args[1:])
 	case "stats":
 		return e.jobsStatsCmd(args[1:])
+	case "folders", "categories":
+		return e.jobsFolders(args[1:])
 	case "show":
 		return e.jobsShow(args[1:])
 	case "mark":
@@ -133,6 +147,8 @@ func (e *env) cmdJobs(args []string) error {
 		return e.jobsNote(args[1:])
 	case "find":
 		return e.jobsFind(args[1:])
+	case "ingest":
+		return e.jobsIngest(args[1:])
 	}
 	return usagef("jobs: unknown subcommand %q", args[0])
 }
@@ -281,6 +297,81 @@ func (e *env) jobsStatsCmd(args []string) error {
 		fmt.Fprintln(e.stdout)
 		if out.Insight.Warning != "" {
 			fmt.Fprintf(e.stdout, "note: %s\n", out.Insight.Warning)
+		}
+	})
+}
+
+type jobFolderItem struct {
+	Category string `json:"category"`
+	Label    string `json:"label"`
+	Count    int    `json:"count"`
+}
+
+type jobsFoldersJSON struct {
+	View    string          `json:"view"`
+	Total   int             `json:"total"`
+	Folders []jobFolderItem `json:"folders"`
+	Ledger  string          `json:"ledger"`
+	Records int             `json:"records"`
+}
+
+func (e *env) jobsFolders(args []string) error {
+	fs := e.newFlags("jobs folders")
+	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	view := fs.String("view", "new", "view to count: "+strings.Join(jobViews, ", "))
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	var out jobsFoldersJSON
+	err := func() error {
+		if !contains(jobViews, *view) {
+			return usagef("jobs folders: --view %q must be one of %s", *view, strings.Join(jobViews, ", "))
+		}
+		snap, m, err := e.jobsState()
+		if err != nil {
+			return err
+		}
+		counts := map[string]int{}
+		total := 0
+		for _, r := range snap.Records {
+			entry := m[r.Key]
+			if !inView(*view, r, entry.Mark) {
+				continue
+			}
+			total++
+			j := toJob(r, entry)
+			cat := j.Category
+			if cat == "" {
+				cat = "none"
+			}
+			counts[cat]++
+		}
+		var items []jobFolderItem
+		for _, opt := range jobcategory.Options {
+			items = append(items, jobFolderItem{
+				Category: opt.Value,
+				Label:    opt.Label,
+				Count:    counts[opt.Value],
+			})
+		}
+		items = append(items, jobFolderItem{
+			Category: "none",
+			Label:    "Uncategorized",
+			Count:    counts["none"],
+		})
+		out = jobsFoldersJSON{
+			View:    *view,
+			Total:   total,
+			Folders: items,
+			Ledger:  filepath.Join(e.stateDir, "ledger"),
+			Records: len(snap.Records),
+		}
+		return nil
+	}()
+	return e.jobsReply(*asJSON, out, err, func() {
+		fmt.Fprintf(e.stdout, "%s: %d roles across category folders\n", out.View, out.Total)
+		for _, f := range out.Folders {
+			fmt.Fprintf(e.stdout, "  %-30s  %-28s  %d\n", f.Category, f.Label, f.Count)
 		}
 	})
 }
@@ -514,6 +605,25 @@ func toJob(r ledger.Record, entry marks.Entry) jobJSON {
 				j.Triage = map[string]string{}
 			}
 			j.Triage[slot] = v
+		}
+	}
+	if cat := cleanText(ann[ledger.AnnCategory], 80, false); cat != "" {
+		j.Category = cat
+	} else if cat := cleanText(ann[ledger.AnnTriagePrefix+"category"], 80, false); cat != "" {
+		j.Category = cat
+	}
+	if j.Category != "" {
+		if j.Triage == nil {
+			j.Triage = map[string]string{}
+		}
+		j.Triage["category"] = j.Category
+	}
+	j.DupOf = cleanText(ann[pipeline.DuplicateOfKey], jobFieldRunes, false)
+	j.DupCandidateOf = cleanText(ann[pipeline.AnnDupCandidateOf], jobFieldRunes, false)
+	j.DupSiblingOf = cleanText(ann[pipeline.AnnDupSiblingOf], jobFieldRunes, false)
+	if s := ann[pipeline.AnnDupScore]; s != "" {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= 0 && f <= 1 {
+			j.DupScore = f
 		}
 	}
 	return j

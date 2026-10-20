@@ -51,6 +51,32 @@ func TestUndatedPostingTakesALaterListedDate(t *testing.T) {
 	}
 }
 
+// A scraped batch (jobsIngest, ReconcilePartial) re-dates the same way: the
+// case is in the listing loop both entry points share, so a job first sent
+// undated and later sent with its date takes the date and keeps its status.
+func TestReconcilePartialRedatesAnUndatedScrape(t *testing.T) {
+	l := openLedger(t)
+	rc := NewReconciler(l)
+	p := scraped(t, "https://careers.acme.com/jobs/7", "Platform Engineer")
+	if _, err := rc.ReconcilePartial(ctx, partialBoard(), []posting.Posting{p}, t0); err != nil {
+		t.Fatal(err)
+	}
+	posted := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	p2 := p
+	p2.PostedAt = posted
+	s, err := rc.ReconcilePartial(ctx, partialBoard(), []posting.Posting{p2}, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rec(t, l, p.Key)
+	if s.Redated != 1 || s.Unchanged != 0 || s.Changed != 0 || r.Status != posting.Live {
+		t.Fatalf("scraped undated posting not re-dated: %+v status %s", s, r.Status)
+	}
+	if !r.Posting.PostedAt.Equal(posted) {
+		t.Fatalf("stored posted_at %s, want %s", r.Posting.PostedAt, posted)
+	}
+}
+
 // A stored date is never moved by a later listing: relative phrases
 // ("Posted 3 Days Ago") drift by a day between runs, and rewriting the
 // posting each run would grow the ledger for nothing. Nor does a listing

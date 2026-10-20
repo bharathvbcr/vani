@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // App is everything the long-running commands need from the rest of Vani.
@@ -28,6 +29,13 @@ type App struct {
 	// RunReport returns what the last RunOnce reported about itself (the
 	// advance phase, backend errors) for the run record. Nil means none.
 	RunReport func() runDetail
+	// Reload hands the app the watchlist and allowed hosts the config file holds
+	// now, before each daily run. Nil means the app keeps its own.
+	Reload func(watchlist []sources.Board, allowedHosts []string)
+	// PollInbox folds the jobs the extension spooled (internal/inbox) and
+	// advances the new ones. The daemon calls it between daily runs, never
+	// while a run is going. Nil means no polling.
+	PollInbox func(ctx context.Context) error
 	// Notifier announces a finished digest. Nil means no notification.
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
@@ -97,7 +105,32 @@ func ledgerBroken(l ledger.Ledger) error {
 }
 
 // dailySteps is the run itself; stage names where it stopped when it fails.
+//
+// The watchlist and allowed hosts are re-read from the config file first, so a
+// board saved while the daemon runs is searched from this run on. If the file
+// cannot be read the run goes on with the previous values and the failure is
+// joined into the run's error: the run record says the config was stale, and
+// the run is not reported as a clean one.
 func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config) (stage string, err error) {
+	reloadErr := e.reloadBoards(app)
+	stage, err = e.runAndPublish(ctx, app, cfg)
+	return stage, errors.Join(reloadErr, err)
+}
+
+// reloadBoards applies the config file's watchlist and allowed hosts to app.
+func (e *env) reloadBoards(app *App) error {
+	if app.Reload == nil {
+		return nil
+	}
+	fresh, _, err := config.LoadWithDeprecations(e.configPath)
+	if err != nil {
+		return fmt.Errorf("%w; this run uses the previous watchlist and allowed_hosts: %w", errConfigStale, err)
+	}
+	app.Reload(fresh.Watchlist, fresh.AllowedHosts)
+	return nil
+}
+
+func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config) (stage string, err error) {
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
 	}

@@ -14,8 +14,9 @@ import (
 type Board struct {
 	ATS posting.ATS `json:"ats"`
 	// Token is the board identifier: Greenhouse board token, Lever company
-	// slug, Ashby job-board name, Workday "tenant/site", or a short slug you
-	// choose for a careers page.
+	// slug, Ashby job-board name, Workday "tenant/site", Eightfold company
+	// domain, Jibe client code ("amd"), or a short slug you choose for a
+	// careers page.
 	Token string `json:"token"`
 	// Company is the display name; adapters fall back to it when the ATS
 	// payload carries none.
@@ -25,12 +26,13 @@ type Board struct {
 
 	// Host is the board's API host where the ATS does not fix one: the
 	// Workday tenant host "{tenant}.wd{N}.myworkdayjobs.com" (its tenant label
-	// must match Token's tenant), or an Eightfold careers host such as
-	// "apply.careers.microsoft.com".
+	// must match Token's tenant), or an Eightfold or Jibe careers host such as
+	// "apply.careers.microsoft.com" or "careers.amd.com".
 	Host string `json:"host,omitempty"`
-	// Search narrows a search-based listing (Workday's searchText, or the
-	// query on Amazon, Google, Apple and Eightfold). Searches adds more terms;
-	// the board lists the union of every term's results, each posting once.
+	// Search narrows a search-based listing (Workday's searchText, Jibe's
+	// keywords, or the query on Amazon, Google, Apple and Eightfold). Searches
+	// adds more terms; the board lists the union of every term's results, each
+	// posting once.
 	// Large boards need narrow terms because every listing is capped, and a
 	// term over the cap fails the board rather than being truncated. A posting
 	// that stops matching every term is, to Vani, gone from the board: it ages
@@ -78,11 +80,16 @@ var FilterKeys = map[posting.ATS][]string{
 	posting.Apple:  {"location"},
 	// "United States": Microsoft 330 -> 179, Qualcomm 359 -> 156.
 	posting.Eightfold: {"location"},
+	// AMD "machine learning": 163 -> 98 United States, 10 Canada, 28 Austin.
+	// The site reads only the first of repeated values, so the source runs
+	// one query per value.
+	posting.Jibe: {"location"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then
 // Searches, trimmed, with case-insensitive duplicates and empty terms
-// dropped. A board with none has no terms (Workday then lists everything).
+// dropped. A board with none has no terms (Workday and Jibe then list
+// everything).
 func (b Board) SearchTerms() []string {
 	var out []string
 	seen := map[string]bool{}

@@ -165,6 +165,39 @@ func TestLinkExtractionAndPattern(t *testing.T) {
 	}
 }
 
+// A link pattern derived from the scraped postings (vani jobs ingest) covers
+// the listing's own directory, so it also matches the listing's pagination. A
+// link on the listing's own host and path is the listing again, never a posting.
+func TestListingOwnPathIsNeverAPosting(t *testing.T) {
+	const search = "https://careers.example.com/jobs/search"
+	b := board()
+	b.URL = search + "?q=engineer"
+	b.LinkPattern = `^https://careers\.example\.com/jobs/`
+	r := &fakeBrowser{pages: map[string]string{
+		search + "?q=engineer": listing("/jobs/search?q=engineer&page=2", "/jobs/search?page=3", "/jobs/search/",
+			"HTTPS://CAREERS.EXAMPLE.COM/jobs/search#top", "/jobs/eng-1", "/jobs/ops-2"),
+		"https://careers.example.com/jobs/eng-1": ldPage("t", `{"@type":"JobPosting","title":"Eng"}`),
+		"https://careers.example.com/jobs/ops-2": ldPage("t", `{"@type":"JobPosting","title":"Ops"}`),
+	}}
+	got, err := newSrc(r).List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Title != "Eng" || got[1].Title != "Ops" {
+		t.Fatalf("got %+v, want only the two postings", got)
+	}
+	if len(r.calls) != 3 {
+		t.Errorf("%d fetches (%v), want the listing and two postings", len(r.calls), r.calls)
+	}
+
+	// A listing whose links are all its own pages reads as an empty board, not
+	// as postings.
+	only := &fakeBrowser{pages: map[string]string{search + "?q=engineer": listing("/jobs/search?page=2", "/jobs/search?page=3")}}
+	if got, err := newSrc(only).List(context.Background(), b); err == nil {
+		t.Fatalf("pagination-only listing returned %+v, want an error", got)
+	}
+}
+
 // Relative links resolve against the page's first <base href>, as in a
 // browser. Google's careers results set one and link postings as
 // "jobs/results/<id>-<slug>"; against the listing URL they would resolve one

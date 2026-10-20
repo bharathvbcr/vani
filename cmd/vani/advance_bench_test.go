@@ -106,6 +106,15 @@ type eventLedger struct {
 
 func newEventLedger() *eventLedger { return &eventLedger{recs: map[posting.Key]*ledger.Record{}} }
 
+func (m *eventLedger) AppendBatch(ctx context.Context, evs []ledger.Event) error {
+	for _, e := range evs {
+		if err := m.Append(ctx, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *eventLedger) Append(ctx context.Context, e ledger.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
