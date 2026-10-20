@@ -11,6 +11,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/digest"
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/notify"
@@ -222,7 +223,9 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		}
 	}
 	dopts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
-	rec.DigestRoles, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
+	var pub published
+	pub, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
+	rec.DigestRoles, rec.ImpressionsError = pub.roles, pub.impressionsError
 	return stageDigest, err
 }
 
@@ -250,22 +253,30 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 // pipeline's results are already in the ledger, so the roles are listed once
 // the store reads again.
 //
-// roles is how many roles the digest listed, set once the digest is written
+// The result's roles is how many roles the digest listed, set once it is written
 // (0 when nothing was new) and nil when it was not. A failure marking them
 // Digested still returns roles: the digest exists, and the run record says so.
-func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) (roles *int, err error) {
+func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) (published, error) {
 	if app.Ledger == nil {
-		return nil, errors.New("app has no ledger")
+		return published{}, errors.New("app has no ledger")
 	}
 	dir := marks.Dir(e.stateDir)
 	m, err := marks.ReadMarks(dir)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
+		return published{}, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
-	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, countsFor(recs, date, loc), opts)
+	path, keys, shown, err := digest.WriteShown(e.stateDir, date, recs, m, countsFor(recs, date, loc), opts)
 	if err != nil {
-		return nil, err
+		return published{}, err
+	}
+	// What the digest put in front of the owner is the ranking's measurement
+	// (unmarked means seen-and-passed only when it was shown). A failure to
+	// record it never fails the digest, but it is said, not swallowed.
+	var pub published
+	if err := recordDigestImpressions(ctx, e.stateDir, now(), shown); err != nil {
+		pub.impressionsError = err.Error()
+		fmt.Fprintf(e.stderr, "vani: the digest's impressions were not recorded, so this run's ranking cannot be measured: %v\n", err)
 	}
 	n := len(keys)
 	var errs []error
@@ -285,7 +296,38 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}
-	return &n, errors.Join(errs...)
+	pub.roles = &n
+	return pub, errors.Join(errs...)
+}
+
+// published is what publishDigest did: roles is how many new roles the digest
+// listed (nil when no digest was written), and impressionsError is set when
+// the digest was written but what it showed could not be recorded.
+type published struct {
+	roles            *int
+	impressionsError string
+}
+
+// recordDigestImpressions logs every role a written digest lists, with its
+// section, position and score, in one append. Nothing shown logs nothing.
+func recordDigestImpressions(ctx context.Context, stateDir string, at time.Time, shown []digest.Shown) error {
+	if len(shown) == 0 {
+		return nil
+	}
+	rows := make([]feedback.Impression, 0, len(shown))
+	for _, s := range shown {
+		rows = append(rows, feedback.Impression{At: at, Surface: feedback.SurfaceDigest, Section: s.Section,
+			Key: s.Key, Position: s.Position, Status: string(s.Status), DropReason: s.DropClass,
+			Scores: feedback.ScoresOf(s.Result)})
+	}
+	for len(rows) > 0 { // a digest can list more than one append takes
+		n := min(len(rows), feedback.MaxAppend)
+		if err := feedback.AppendImpressions(ctx, stateDir, rows[:n]); err != nil {
+			return err
+		}
+		rows = rows[n:]
+	}
+	return nil
 }
 
 // countsFor derives the footer counts for the calendar day of date in loc from

@@ -91,7 +91,7 @@ type runRecord struct {
 	// Options are a manual run's overrides; nil when it had none.
 	Options *runOptions `json:"options,omitempty"`
 	Stage   string      `json:"stage,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Error   string      `json:"error,omitempty"`
 	// Cause names a failed run's known cause (runCause), so a reader can word
 	// the failure without reading Error; "" when the failure has none of them.
 	Cause string `json:"cause,omitempty"`
@@ -99,6 +99,10 @@ type runRecord struct {
 	// 0 when nothing was new. Nil when no digest was written: the run stopped
 	// before it, it was held back, or writing it failed.
 	DigestRoles *int `json:"digest_roles,omitempty"`
+	// ImpressionsError says the digest was written but what it showed was not
+	// recorded (internal/feedback), so the ranking's measurement has a gap for
+	// this run; "" when they were recorded or no digest was written.
+	ImpressionsError string `json:"impressions_error,omitempty"`
 	// CountsBefore and CountsAfter are the ledger's postings by status at the
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`

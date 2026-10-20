@@ -111,6 +111,53 @@ type Config struct {
 	// EmbeddingGemma 2 on Tessl. It only orders and explains postings, never
 	// drops one. Off when snapshot or kb.bank is empty.
 	Semantic Semantic `json:"semantic,omitzero"`
+	// Digest configures the digest's sections beyond the new roles.
+	Digest Digest `json:"digest,omitzero"`
+}
+
+// Digest configures the digest's "Top open" and "Explore" sections. A nil
+// field takes its default; an explicit 0 turns the section off.
+type Digest struct {
+	// TopOpen is how many of the best roles listed before and still open the
+	// digest lists by fit alone (age left out). Default DefaultDigestTopOpen.
+	TopOpen *int `json:"top_open,omitempty"`
+	// Explore lists roles picked at random from those ranked lower and those
+	// dropped, so the owner's judgement (vani audit) reaches what the ranking
+	// and the drop rules hide. Default DefaultExploreBelowFold and
+	// DefaultExploreDropped.
+	Explore *Explore `json:"explore,omitempty"`
+}
+
+// Explore is the digest's exploration slots.
+type Explore struct {
+	BelowFold int `json:"below_fold"`
+	Dropped   int `json:"dropped"`
+}
+
+// Digest section bounds and defaults (owner's plan, 2026-10-20: two roles
+// below the fold and one dropped role a day).
+const (
+	DefaultDigestTopOpen    = 10
+	MaxDigestTopOpen        = 50
+	DefaultExploreBelowFold = 2
+	DefaultExploreDropped   = 1
+	MaxExplore              = 10
+)
+
+// DigestTopOpen is Digest.TopOpen with nil read as the default.
+func (c Config) DigestTopOpen() int {
+	if c.Digest.TopOpen == nil {
+		return DefaultDigestTopOpen
+	}
+	return *c.Digest.TopOpen
+}
+
+// DigestExplore is Digest.Explore with nil read as the defaults.
+func (c Config) DigestExplore() (belowFold, dropped int) {
+	if c.Digest.Explore == nil {
+		return DefaultExploreBelowFold, DefaultExploreDropped
+	}
+	return c.Digest.Explore.BelowFold, c.Digest.Explore.Dropped
 }
 
 // Semantic configures embedding-based matching against the knowledge base.
@@ -978,6 +1025,12 @@ func (c Config) Validate() error {
 	}
 	if c.Semantic.WarmPerRun < 0 || c.Semantic.WarmPerRun > MaxSemanticWarmPerRun {
 		add("semantic.warm_per_run %d must be within 0..%d (0 means %d)", c.Semantic.WarmPerRun, MaxSemanticWarmPerRun, DefaultSemanticWarmPerRun)
+	}
+	if n := c.DigestTopOpen(); n < 0 || n > MaxDigestTopOpen {
+		add("digest.top_open %d must be within 0..%d", n, MaxDigestTopOpen)
+	}
+	if b, d := c.DigestExplore(); b < 0 || b > MaxExplore || d < 0 || d > MaxExplore {
+		add("digest.explore below_fold %d and dropped %d must each be within 0..%d", b, d, MaxExplore)
 	}
 	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
 		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
