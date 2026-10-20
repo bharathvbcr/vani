@@ -1041,9 +1041,14 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		return nil, errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
 	}
 	router := decide.NewRouter(backends...)
-	router.Shadow = shadow
-	gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
-	triage := w.escalating(router, esc)
+	var base decide.Decider = router
+	if w.cfg.Decide.ShadowOnDropCandidates() {
+		base = w.dropShadowing(router, shadow) // the shadow reads drop candidates, not a sample
+	} else {
+		router.Shadow = shadow
+		gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
+	}
+	triage := w.escalating(base, esc)
 
 	nspend, err := notesSpend(w.stateDir, w.cfg, spend)
 	if err != nil {
