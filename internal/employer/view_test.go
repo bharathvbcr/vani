@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -77,7 +78,7 @@ func (x *refIndex) Lookup(company string) Badge {
 	b.MatchedName = key
 	b.Attributes = e.attrs.names()
 	b.Kinds = append([]string(nil), e.kinds...)
-	if b.Confidence == ConfExact && !strings.Contains(key, " ") && !contains(e.kinds, KindIPEDS) {
+	if b.Confidence == ConfExact && !strings.Contains(key, " ") && !slices.Contains(e.kinds, KindIPEDS) {
 		b.Confidence = ConfExactOneWord
 	}
 	return b
