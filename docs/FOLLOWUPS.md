@@ -187,6 +187,44 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **Not verified:** no live run (not to be run against the live config by this work); the
   live d1-ultra and llama-server latencies under concurrency, and DevPrism's scoring time.
 
+## Triage backlog and Workday coverage (2026-10-19, branch no-gaps)
+
+- **Why NVIDIA, Adobe and Broadcom got no triage.** The 09:57 run in `.state` predates `58e8f9c`
+  (freshness order, 11:07), so it advanced in `ledger.All()` key order: every `wd:` key sorts last,
+  and the cap and the cancel (13:36) came before any of their 127 postings. The bundled app helper
+  (17:36) has the freshness order. No code change was needed for this part.
+- **Undated postings sorted last forever (fixed).** Greenhouse `first_published` was read only from
+  `365a405` (07:46), and an unchanged listing wrote no event, so 1,051 Databricks, Scale AI and
+  Together AI postings stayed undated and sorted after every dated posting. Reconcile now writes a
+  `re-dated` event (status and annotations kept; `Summary.Redated`) when a same-content posting
+  stored undated is listed with a date. A stored date is never moved, and a dropped posting gets no
+  event. Checked on a copy of the live ledger with live listings: 1,051 undated live postings → 10
+  (Databricks 861, Scale AI 179, Together AI 78 re-dated). Tests: `redate_test.go`; the parity test
+  now varies `PostedAt` and requires the re-dated path.
+- **Title rank was off.** `titleRank` reads only `title_signals.include`/`exclude`, and the live
+  config had only `read`. The owner approved an include list (LLM, AI Engineer, Applied AI, Machine
+  Learning, ML, Inference, GPU, CUDA, Performance, Agent, GenAI, Backend, Systems, New College Grad,
+  Intern), now in `.state/config.json`. Both the bundled helper and this branch's `vani config check`
+  accept it.
+- **Workday per-board cap (owner's choice: a higher per-board cap).** `Board.max_postings`, Workday
+  only, 1..`sources.MaxPostingsCeiling` (1,500); zero keeps 200. Workday stops counting at 2,000: a
+  larger board reports `total: 2000`, and offsets 2000 and 2020 return the first page again (checked
+  live on NVIDIA). So the ceiling stays under 2,000, and a full page of repeats now fails the listing
+  instead of ending it short. Cost: every listed posting is one detail request at about 1 s per host
+  on every run (not only new ones) plus a triage when new. NVIDIA "LLM" lists 431, "inference" 443,
+  "deep learning" 1,008, "TensorRT" 136, "new college grad" 73 (live totals, 2026-10-19).
+- **Open:**
+  - The config loader refuses unknown fields, so `max_postings` cannot go into the live config
+    until a build with this branch is installed in `Vani Apply.app/Contents/Helpers/vani`. The
+    bundled 17:36 helper would reject the whole config.
+  - Eightfold (Microsoft, Qualcomm) has the same 200 cap and per-posting detail request;
+    `max_postings` is refused there until its paging limits are checked.
+  - Intel's board listed 35 postings through this adapter at 21:00 but none during the 09:57 run.
+    The cause went to stderr only; the per-board run record (`claude/focused-diffie-81a9b8`) keeps it
+    from the next run on.
+  - d1-ultra answered 44 HTTP 429s, 30 timeouts and 28 HTTP 502s in that run. Jev already retries
+    with backoff and honours Retry-After; nothing here paces the four workers together.
+
 ## Shadow evaluation (applied 2026-10-19, not yet measured on the live ledger)
 
 - **Three gaps in what `vani eval` could tell you, fixed on the owner's go-ahead ("apply all",
