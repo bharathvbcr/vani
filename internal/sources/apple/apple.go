@@ -78,7 +78,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if len(terms) == 0 {
 		return nil, fmt.Errorf("apple %q: the board needs at least one search", b.Token)
 	}
-	if err := checkFilters(b.Filters); err != nil {
+	if err := sources.CheckFilters(posting.Apple, b.Filters); err != nil {
 		return nil, fmt.Errorf("apple %q: %w", b.Token, err)
 	}
 	var rows []row
@@ -113,19 +113,6 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		out = append(out, p)
 	}
 	return out, nil
-}
-
-func checkFilters(f map[string][]string) error {
-	allowed := sources.FilterKeys[posting.Apple]
-	for k, vs := range f {
-		if !slices.Contains(allowed, k) {
-			return fmt.Errorf("filter %q is not one of %s", k, strings.Join(allowed, ", "))
-		}
-		if len(vs) == 0 {
-			return fmt.Errorf("filter %q has no value", k)
-		}
-	}
-	return nil
 }
 
 func pageURL(term string, filters map[string][]string, page int) string {

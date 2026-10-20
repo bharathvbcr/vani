@@ -121,7 +121,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if !hostRE.MatchString(host) {
 		return nil, fmt.Errorf("jibe %q: host %q is not a hostname", b.Token, b.Host)
 	}
-	if err := checkFilters(b.Filters); err != nil {
+	if err := sources.CheckFilters(posting.Jibe, b.Filters); err != nil {
 		return nil, fmt.Errorf("jibe %q: %w", b.Token, err)
 	}
 	queries := plan(b)
@@ -171,19 +171,6 @@ func plan(b sources.Board) []query {
 		}
 	}
 	return out
-}
-
-func checkFilters(f map[string][]string) error {
-	allowed := sources.FilterKeys[posting.Jibe]
-	for k, vs := range f {
-		if !slices.Contains(allowed, k) {
-			return fmt.Errorf("filter %q is not one of %s", k, strings.Join(allowed, ", "))
-		}
-		if len(vs) == 0 {
-			return fmt.Errorf("filter %q has no value", k)
-		}
-	}
-	return nil
 }
 
 // lister accumulates one board's postings across its queries.
