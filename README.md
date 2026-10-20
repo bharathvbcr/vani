@@ -581,7 +581,18 @@ postings advance at a time (default 4, at most 16; 1 is strictly one by one). Wi
 configured, `decide.shadow_every` asks it about one posting in that many (default 12, picked by a
 hash of the posting key; 1 asks it about every posting), and a local shadow takes at most its
 server's `parallel` calls plus one waiting; the run's warnings say how many postings it read and
-how many sampled ones it skipped while busy. The rest stay `live` for the next run. Only triaged
+how many sampled ones it skipped while busy. `decide.shadow_mode: "drop_candidates"` (default
+`"sample"`, the behaviour above) instead asks the shadow about every slot the drop rules would
+drop on (the primary answered a rule's value at or above its `min_openrouter_prob`), before the
+drop is applied: the reading is recorded as the usual shadow annotations (`.shadow`,
+`.shadow_backend`, `.disagree`) and the drop still follows the primary's rule alone. A candidate
+waits for a free shadow slot rather than being skipped; a shadow that errors or times out is
+recorded `unavailable`, never as agreement. It needs `decide.shadow` and no `shadow_every`, and
+it lets `decide.escalate` run beside it (they read disjoint slots, so `escalate.below_p` must not
+exceed a rule's `min_openrouter_prob`). `vani relevance` ends with the agreement of each shadow
+with the primary on drop candidates, per slot: asked, unavailable, answered, agree/answered with a
+95% Wilson interval, and how many disagreements carry an owner `would_apply` label (and how many
+of those say yes or maybe); with nothing asked it says "no data". The rest stay `live` for the next run. Only triaged
 postings are listed in Jobs, so `jobs list`/`jobs stats` (`pending` in `--json`), the digest
 footer and the Jobs tab footer say how many are still awaiting triage. `status --json` shows
 the last run's `advance` report (eligible, attempted, unread, deferred, why it stopped) and
