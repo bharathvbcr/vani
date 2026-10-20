@@ -7,11 +7,29 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/decide"
 )
 
+// outageReading reports whether rd says no backend read the slot: it was not
+// reachable (Unavailable) or was not asked (NotAsked). It is a positive check
+// on exactly these two. Failed is NOT an outage: a backend read the posting and
+// produced unusable output (unparseable reply, a value outside the options), so
+// that is a reading about this text on this model, and asking again every run
+// would only repeat it, leave the posting Live and invisible, and feed the
+// unread streak. A Failed slot stays what it was before outages were retried:
+// DropPolicy.Evaluate marks the posting Unsure, which is visible. Answered and
+// Abstained are real readings, Refused is a backend's settled "not this
+// question", and a value this build does not know is never guessed at; none of
+// those is an outage.
+func outageReading(rd decide.Reading) bool {
+	return rd == decide.Unavailable || rd == decide.NotAsked
+}
+
 // Unread reports whether r was triaged without any backend reading it: it has
-// at least one "triage.<slot>.reading" annotation and every one of them is
-// "unavailable". Such a record carries no decision, only an outage.
+// at least one "triage.<slot>.reading" annotation and every one of them is an
+// outage reading ("unavailable" or "not_asked"). Such a record carries no
+// decision, only an outage. One real reading, a refusal, a failed (unusable)
+// reading or a value that is not a known reading makes it not unread.
 func Unread(r ledger.Record) bool {
 	n := 0
 	for k, v := range r.Annotations {
@@ -19,7 +37,7 @@ func Unread(r ledger.Record) bool {
 			continue
 		}
 		n++
-		if v != "unavailable" {
+		if !outageReading(decide.Reading(v)) {
 			return false
 		}
 	}

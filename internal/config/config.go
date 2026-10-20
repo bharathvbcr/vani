@@ -207,6 +207,51 @@ type Decide struct {
 	// only: if `vani eval` finds it promotable, it is served through Lappi's
 	// socket rather than promoted here (owner decision 2026-10-18).
 	Local *Local `json:"local,omitempty"`
+	// Escalate re-asks the LLM (llm.triage_model) about the slots the primary
+	// chain read with low confidence. Its readings are recorded beside the
+	// primary's, never in place of them. It uses the shadow's recording, so the
+	// two are exclusive. Absent means off.
+	Escalate *Escalate `json:"escalate,omitempty"`
+}
+
+// Escalate configures decide.escalate. BelowP and MaxPerRun are pointers so an
+// explicit zero in the file is refused rather than read as "use the default".
+type Escalate struct {
+	Enabled bool `json:"enabled"`
+	// BelowP re-asks a slot whose primary probability is under it: within
+	// (0, 1], default DefaultEscalateBelowP.
+	BelowP *float64 `json:"below_p,omitempty"`
+	// MaxPerRun bounds the slots re-asked in one run: 1..MaxEscalatePerRun,
+	// default DefaultEscalateMaxPerRun.
+	MaxPerRun *int `json:"max_per_run,omitempty"`
+}
+
+// Escalation bounds (Escalate.BelowP, Escalate.MaxPerRun).
+const (
+	DefaultEscalateBelowP    = 0.5
+	DefaultEscalateMaxPerRun = 200
+	MaxEscalatePerRun        = 5000
+)
+
+// EscalateEnabled reports whether decide.escalate is present and switched on.
+func (d Decide) EscalateEnabled() bool { return d.Escalate != nil && d.Escalate.Enabled }
+
+// EscalateBelowP is the probability under which a slot is escalated, with an
+// absent value read as the default.
+func (d Decide) EscalateBelowP() float64 {
+	if d.Escalate == nil || d.Escalate.BelowP == nil {
+		return DefaultEscalateBelowP
+	}
+	return *d.Escalate.BelowP
+}
+
+// EscalateMaxPerRun is the per-run bound on escalated slots, with an absent
+// value read as the default.
+func (d Decide) EscalateMaxPerRun() int {
+	if d.Escalate == nil || d.Escalate.MaxPerRun == nil {
+		return DefaultEscalateMaxPerRun
+	}
+	return *d.Escalate.MaxPerRun
 }
 
 // Shadow sampling bounds (Decide.ShadowEvery). One in 12 (owner's choice,
@@ -285,6 +330,21 @@ type LLM struct {
 	// defaults below; anthropic has no built-in default and must set both.
 	InputNanoUSDPerToken  int64 `json:"input_nano_usd_per_token,omitempty"`
 	OutputNanoUSDPerToken int64 `json:"output_nano_usd_per_token,omitempty"`
+	// TriageModel is the model that answers posting triage when the LLM is
+	// asked as a cheaper tier (decide.escalate); empty means Model. Drafts, form
+	// fields and the reasons catalogue keep using Model.
+	TriageModel string `json:"triage_model,omitempty"`
+}
+
+// MaxModelName bounds a configured model id (llm.model, llm.triage_model).
+const MaxModelName = 128
+
+// EffectiveTriageModel is TriageModel with empty read as Model.
+func (l LLM) EffectiveTriageModel() string {
+	if l.TriageModel == "" {
+		return l.Model
+	}
+	return l.TriageModel
 }
 
 // Conservative Gemini Flash rates (the table Jarvis uses for its Gemini
@@ -947,6 +1007,36 @@ func (c Config) Validate() error {
 	if c.LLM.Provider != "" {
 		if _, _, err := c.LLM.Prices(); err != nil {
 			add("%v", err)
+		}
+	}
+	if m := c.LLM.TriageModel; m != "" {
+		switch {
+		case c.LLM.Provider == "":
+			add("llm.triage_model needs llm.provider")
+		case len(m) > MaxModelName || strings.ContainsFunc(m, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
+			add("llm.triage_model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
+		}
+	}
+	if e := c.Decide.Escalate; e != nil {
+		if e.BelowP != nil && (math.IsNaN(*e.BelowP) || *e.BelowP <= 0 || *e.BelowP > 1) {
+			add("decide.escalate.below_p %v must be within (0, 1] (absent means %v)", *e.BelowP, DefaultEscalateBelowP)
+		}
+		if e.MaxPerRun != nil && (*e.MaxPerRun < 1 || *e.MaxPerRun > MaxEscalatePerRun) {
+			add("decide.escalate.max_per_run %d must be within 1..%d (absent means %d)", *e.MaxPerRun, MaxEscalatePerRun, DefaultEscalateMaxPerRun)
+		}
+		if e.Enabled {
+			if c.LLM.Provider == "" {
+				add("decide.escalate needs llm.provider")
+			}
+			// Escalation re-asks every low-confidence slot (up to max_per_run a
+			// run) on llm.triage_model. Without a cheaper model of its own it would
+			// do that on llm.model, spending the llm daily cap on the expensive tier.
+			if c.LLM.Provider != "" && (c.LLM.TriageModel == "" || c.LLM.TriageModel == c.LLM.Model) {
+				add("decide.escalate needs llm.triage_model set to a model other than llm.model (%q): it would escalate on the expensive tier", c.LLM.Model)
+			}
+			if c.Decide.Shadow != "" {
+				add("decide.escalate and decide.shadow are exclusive (escalated readings are recorded as the shadow's)")
+			}
 		}
 	}
 

@@ -78,6 +78,10 @@ type runDetail struct {
 	// SemanticPre is the knowledge-base warm of live postings before the
 	// advance phase (semanticwire.go); nil when it did not run.
 	SemanticPre *semanticReport `json:"semantic_pre,omitempty"`
+	// BackendStats is what each decision backend did, by name: calls, slot
+	// readings by kind, cost, wall time, and what the circuit breaker turned
+	// away. Additive: readers that do not know the key ignore it.
+	BackendStats map[string]backendStat `json:"backend_stats,omitempty"`
 }
 
 // Why an advance phase ended before it had worked through every eligible

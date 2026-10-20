@@ -64,6 +64,13 @@ func BackendName(model string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// ReservedBackendNames is a copy of the reserved set, for the test in cmd/vani
+// that holds it equal to llmbackend's (the two packages cannot import each other).
+func ReservedBackendNames() []string { return slices.Clone(reservedBackendNames) }
+
+// CheckBackendName reports whether n may name an OpenRouter decision backend.
+func CheckBackendName(n string) error { return checkBackendName(n) }
+
 func checkBackendName(n string) error {
 	switch {
 	case n == "":

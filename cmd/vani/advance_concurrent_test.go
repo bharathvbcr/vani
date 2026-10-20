@@ -362,8 +362,12 @@ func TestAdvanceConcurrentSpendCapHolds(t *testing.T) {
 	}
 	l := benchLedger(t, 40)
 	r := jevRunner(t, l, srv, spend)
-	if _, err := advanceAll(context.Background(), l.All(), nil, 40, workers, nil, r.Advance, func(string, ...any) {}); err != nil {
-		t.Fatalf("advance: %v", err)
+	// Postings past the cap read NotAsked (budget) on every slot: no backend
+	// read them, so they stay live and the run ends on the unread streak
+	// instead of parking them as unsure.
+	rep, err := advanceAll(context.Background(), l.All(), nil, 40, workers, nil, r.Advance, func(string, ...any) {})
+	if !errors.Is(err, pipeline.ErrTriageUnavailable) || rep.Stopped != stopUnreadStreak || rep.Unread < maxConsecutiveUnread {
+		t.Fatalf("advance: err %v report %+v, want the unread streak to stop the run", err, rep)
 	}
 	if n := served.Load(); n < 5 || n > 5+workers-1 {
 		t.Fatalf("%d paid calls with a cap of 5, want 5..%d", n, 5+workers-1)
