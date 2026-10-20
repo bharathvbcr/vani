@@ -67,6 +67,9 @@ final class AppModel {
     /// It reads no key: listing and marking spend nothing.
     var jobsClient: JobsClient { draftSettings.jobsClient(vaniBinary: vaniBinary) }
 
+    /// `vani audit` for the Audit tab: the weekly blind draw and its answers. It reads no key.
+    var auditClient: AuditClient { AuditClient(jobs: jobsClient) }
+
     /// `vani status --json` for the Pipeline tab: local files only, no key.
     var pipelineClient: PipelineClient {
         let s = draftSettings

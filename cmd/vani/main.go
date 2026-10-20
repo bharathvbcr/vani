@@ -61,8 +61,14 @@ commands:
                              (reads the ledger without its lock)
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
-  audit-sample [--list] [--seed S] [--scored N] [--dropped N]
-                             weekly stratified would-I-apply sample (deciles + drop classes)
+  audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N]
+                             weekly stratified would-I-apply sample (deciles + drop classes);
+                             --json prints keys, strata and p_select only (no posting text),
+                             --blind hides the model's readings while you answer
+                             (audit-sample is the old name)
+  audit answer --key K --verdict yes|maybe|no|skip [--source S --p-select P]
+                             record one would-I-apply answer; the stratum and p_select come from
+                             the flags (an Explore row's, or an audit --json pick's) or the draw
   relevance [-k LIST]        precision@k, drop misses and backend reliability from would_apply labels
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup COMPANY         show the sponsorship-history badge for a company
@@ -258,8 +264,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdSemantic(args[1:])
 	case "answers":
 		cmdErr = e.cmdAnswers(args[1:])
-	case "audit-sample":
-		cmdErr = e.cmdAuditSample(args[1:])
+	case "audit", "audit-sample": // audit-sample: the old name
+		cmdErr = e.cmdAudit(args[1:])
 	case "relevance":
 		cmdErr = e.cmdRelevance(args[1:])
 	default:

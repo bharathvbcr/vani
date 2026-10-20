@@ -10,6 +10,7 @@ import VaniApplyKit
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let model: AppModel
     let jobs: JobsModel
+    let audit: AuditModel
     let pipeline: PipelineModel
     private var pollTask: Task<Void, Never>?
 
@@ -23,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let model = AppModel(autoRegisterAgent: launch.mode == .register)
         self.model = model
         jobs = JobsModel { model.jobsClient }
+        audit = AuditModel { model.auditClient }
         // Without a bundle (a bare `swift run`) there is no notification center,
         // so the app announces nothing and leaves the notifier lock, and with it
         // the run notices, to the daemon.

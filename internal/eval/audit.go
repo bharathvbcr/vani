@@ -158,10 +158,7 @@ func drawGroup(plan *AuditPlan, strata map[string][]posting.Key, total int, seed
 		return lessHash(hashOf(seed, "stratum", order[i]), hashOf(seed, "stratum", order[j]))
 	})
 	for _, n := range names {
-		ks := strata[n]
-		sort.Slice(ks, func(i, j int) bool {
-			return lessHash(hashOf(seed, "member", string(ks[i])), hashOf(seed, "member", string(ks[j])))
-		})
+		OrderMembers(seed, strata[n])
 	}
 
 	taken := map[string]int{}

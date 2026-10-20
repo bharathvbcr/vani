@@ -114,6 +114,53 @@ type Config struct {
 	// EmbeddingGemma 2 on Tessl. It only orders and explains postings, never
 	// drops one. Off when snapshot or kb.bank is empty.
 	Semantic Semantic `json:"semantic,omitzero"`
+	// Digest sizes the digest's Top open and Explore sections.
+	Digest Digest `json:"digest,omitzero"`
+}
+
+// Digest sizes the digest's extra sections. A nil field reads as its default;
+// an explicit 0 switches the section off.
+type Digest struct {
+	// TopOpen is how many of the best already-digested, still open roles
+	// "Top open" lists, by relevance. Default DefaultDigestTopOpen; at most
+	// MaxDigestTopOpen.
+	TopOpen *int `json:"top_open,omitempty"`
+	// ExploreBelowFold and ExploreDropped are how many roles "Explore" draws
+	// at random from lower-ranked digested roles and from dropped roles, so
+	// the owner's judgement reaches what the ranking would never show. At
+	// most MaxDigestExplore each.
+	ExploreBelowFold *int `json:"explore_below_fold,omitempty"`
+	ExploreDropped   *int `json:"explore_dropped,omitempty"`
+}
+
+// Digest section defaults and bounds (the bounds match digest.MaxTopOpen and
+// digest.MaxExplore; a test in cmd/vani holds them equal).
+const (
+	DefaultDigestTopOpen          = 20
+	DefaultDigestExploreBelowFold = 2
+	DefaultDigestExploreDropped   = 1
+	MaxDigestTopOpen              = 50
+	MaxDigestExplore              = 10
+)
+
+func orDefault(p *int, d int) int {
+	if p == nil {
+		return d
+	}
+	return *p
+}
+
+// DigestTopOpen is Digest.TopOpen with absent read as the default.
+func (c Config) DigestTopOpen() int { return orDefault(c.Digest.TopOpen, DefaultDigestTopOpen) }
+
+// DigestExploreBelowFold is Digest.ExploreBelowFold with absent read as the default.
+func (c Config) DigestExploreBelowFold() int {
+	return orDefault(c.Digest.ExploreBelowFold, DefaultDigestExploreBelowFold)
+}
+
+// DigestExploreDropped is Digest.ExploreDropped with absent read as the default.
+func (c Config) DigestExploreDropped() int {
+	return orDefault(c.Digest.ExploreDropped, DefaultDigestExploreDropped)
 }
 
 // Semantic configures embedding-based matching against the knowledge base.
@@ -984,6 +1031,15 @@ func (c Config) Validate() error {
 	}
 	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
 		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
+	}
+	if n := c.DigestTopOpen(); n < 0 || n > MaxDigestTopOpen {
+		add("digest.top_open %d must be within 0..%d (absent means %d)", n, MaxDigestTopOpen, DefaultDigestTopOpen)
+	}
+	if n := c.DigestExploreBelowFold(); n < 0 || n > MaxDigestExplore {
+		add("digest.explore_below_fold %d must be within 0..%d (absent means %d)", n, MaxDigestExplore, DefaultDigestExploreBelowFold)
+	}
+	if n := c.DigestExploreDropped(); n < 0 || n > MaxDigestExplore {
+		add("digest.explore_dropped %d must be within 0..%d (absent means %d)", n, MaxDigestExplore, DefaultDigestExploreDropped)
 	}
 	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
 		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)

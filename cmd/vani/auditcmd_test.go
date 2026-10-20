@@ -46,7 +46,7 @@ func seedAudit(t *testing.T, stateDir string, kept, nTitle, nModel int) {
 
 func listed(t *testing.T, args ...string) []string {
 	t.Helper()
-	o, _ := mustCode(t, 0, append([]string{"audit-sample", "--list"}, args...)...)
+	o, _ := mustCode(t, 0, append([]string{"audit", "--list"}, args...)...)
 	var out []string
 	for _, ln := range strings.Split(o, "\n") {
 		if strings.HasPrefix(ln, "decile:") || strings.HasPrefix(ln, "dropped:") {
@@ -100,12 +100,12 @@ func TestAuditSampleSmallAndEmptyPools(t *testing.T) {
 	_, state := setup(t)
 	mustCode(t, 0, "init")
 	// No ledger at all is an error, as for `jobs`: it is not an empty draw.
-	if o, e := mustCode(t, 1, "audit-sample", "--list"); o != "" || !strings.Contains(e, "ledger") {
+	if o, e := mustCode(t, 1, "audit", "--list"); o != "" || !strings.Contains(e, "ledger") {
 		t.Errorf("no ledger: stdout %q stderr %q", o, e)
 	}
 	// A ledger with nothing in either pool draws nothing, and says so.
 	seedAudit(t, state, 0, 0, 0)
-	if o, _ := mustCode(t, 0, "audit-sample", "--list"); !strings.Contains(o, "nothing to audit") {
+	if o, _ := mustCode(t, 0, "audit", "--list"); !strings.Contains(o, "nothing to audit") {
 		t.Errorf("empty pools:\n%s", o)
 	}
 	seedAudit(t, state, 3, 0, 1)
@@ -123,7 +123,7 @@ func TestAuditSampleAnswersRecordAndNeverRepeat(t *testing.T) {
 	old := stdin
 	t.Cleanup(func() { stdin = old })
 	stdin = strings.NewReader(strings.Repeat("1\n", 15)) // yes to all
-	o, _ := mustCode(t, 0, "audit-sample", "--seed", "w1")
+	o, _ := mustCode(t, 0, "audit", "--seed", "w1")
 	if !strings.Contains(o, "audited 15 of 15 drawn") {
 		t.Fatalf("session:\n%s", o)
 	}
@@ -176,7 +176,7 @@ func TestAuditSampleRefusesUnreadableLabels(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"audit-sample", "--list"}, {"audit-sample"}} {
+	for _, args := range [][]string{{"audit", "--list"}, {"audit"}} {
 		o, e := mustCode(t, 1, args...)
 		if o != "" || !strings.Contains(e, "unreadable") {
 			t.Errorf("%v: stdout %q stderr %q", args, o, e)
@@ -191,12 +191,12 @@ func TestAuditSampleUsageErrors(t *testing.T) {
 	mustCode(t, 0, "init")
 	seedAudit(t, state, 5, 1, 1)
 	for _, args := range [][]string{
-		{"audit-sample", "--scored", "-1"},
-		{"audit-sample", "--dropped", "-1"},
-		{"audit-sample", "--scored", "0", "--dropped", "0"},
-		{"audit-sample", "--scored", "101"},
-		{"audit-sample", "--seed", strings.Repeat("x", 300)},
-		{"audit-sample", "extra"},
+		{"audit", "--scored", "-1"},
+		{"audit", "--dropped", "-1"},
+		{"audit", "--scored", "0", "--dropped", "0"},
+		{"audit", "--scored", "101"},
+		{"audit", "--seed", strings.Repeat("x", 300)},
+		{"audit", "extra"},
 	} {
 		mustCode(t, 2, args...)
 	}

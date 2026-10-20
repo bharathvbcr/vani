@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,59 @@ func TestExploreSkipsTopOpen(t *testing.T) {
 	_, _, shown := RenderShown(recs, nil, day, Counts{}, Options{TopOpen: 1, ExploreBelowFold: 1})
 	if len(shown) != 1 || shown[0].Section != SectionTopOpen {
 		t.Fatalf("shown %+v", shown)
+	}
+}
+
+// An Explore row states the stratum it was drawn from and its inclusion
+// probability, the numbers a would_apply label needs, taken from the same
+// sampler the weekly audit uses.
+func TestExploreRowsCarrySelectionProbability(t *testing.T) {
+	var recs []ledger.Record
+	for i := 0; i < 20; i++ {
+		recs = append(recs, rec(fmt.Sprintf("gh:f:%02d", i), posting.Digested, "Below", fit("adjacent")))
+	}
+	for i := 0; i < 4; i++ {
+		recs = append(recs, dropped(fmt.Sprintf("gh:d:%02d", i), "title", "role_fit", "mismatch_domain"))
+	}
+	md, _, shown := RenderShown(recs, nil, day, Counts{}, Options{Rules: rules, ExploreBelowFold: 2, ExploreDropped: 1})
+	n := 0
+	for _, s := range shown {
+		if s.Section != SectionExplore {
+			continue
+		}
+		n++
+		wantSrc, wantP := "explore:below_fold", 2.0/20
+		if strings.HasPrefix(string(s.Key), "gh:d:") {
+			wantSrc, wantP = "explore:dropped", 1.0/4
+		}
+		if s.Source != wantSrc || s.PSelect != wantP {
+			t.Fatalf("%s: source %q p %v, want %q %v", s.Key, s.Source, s.PSelect, wantSrc, wantP)
+		}
+		if !strings.Contains(md, "stratum `"+wantSrc+"` · p_select "+strconv.FormatFloat(wantP, 'g', 6, 64)) {
+			t.Fatalf("digest does not print %s's stratum and p_select:\n%s", s.Key, md)
+		}
+	}
+	if n != 3 {
+		t.Fatalf("explored %d roles, want 3", n)
+	}
+	if !strings.Contains(md, "vani audit answer --key") || strings.Contains(md, "audit judge") {
+		t.Fatalf("explore instructions name a command that does not exist:\n%s", md)
+	}
+}
+
+func TestFooterNamesWhatCouldNotBeChecked(t *testing.T) {
+	c := Counts{New: 1, CouldNotCheck: []Unchecked{{"empty description", 3}, {"title unread", 0}, {"prescore failed", 1}, {"bad`\n<x>", 2}}}
+	md, _, _ := RenderShown(nil, nil, day, c, Options{})
+	if !strings.Contains(md, "could not check: 3 empty description, 1 prescore failed, 2 "+Escape("bad`\n<x>", 80)+"\n") {
+		t.Fatalf("footer:\n%s", md)
+	}
+	if strings.Contains(md, "title unread") {
+		t.Fatalf("a zero cause printed:\n%s", md)
+	}
+	for _, c := range []Counts{{}, {CouldNotCheck: []Unchecked{{"empty description", 0}, {"x", -4}}}} {
+		if md, _, _ := RenderShown(nil, nil, day, c, Options{}); strings.Contains(md, "could not check") {
+			t.Fatalf("no causes must print nothing:\n%s", md)
+		}
 	}
 }
 
