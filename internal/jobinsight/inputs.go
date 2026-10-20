@@ -55,6 +55,10 @@ type RankContext struct {
 	DropRules    []DropRule
 	HalfLifeDays float64
 
+	// KBMatch returns the language model's read of the record's work, when it
+	// was asked (internal/decide/kbmatch's store); nil or false means unknown.
+	KBMatch func(r ledger.Record) (Slot, bool)
+
 	// AgeNeutral holds the employers (keys from AgeNeutralSet) that close
 	// postings by an application cap, so an undated posting of theirs is not aged.
 	AgeNeutral map[string]bool
@@ -180,6 +184,11 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 	if c.Target && c.Hits != nil {
 		in.Target = true
 		in.TitleHits, in.BodyHits = c.Hits(r)
+	}
+	if c.KBMatch != nil {
+		if s, ok := c.KBMatch(r); ok {
+			in.KBMatch = s
+		}
 	}
 	if c.Semantic != nil {
 		in.Semantic, in.HasSemantic = c.Semantic(r)

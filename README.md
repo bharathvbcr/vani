@@ -277,6 +277,24 @@ flowchart TD
     order. Scores cached by an older build are ignored, so the ranker treats every posting as
     unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
     postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
+  - `vani kbmatch run [--top N] [--dry-run]` asks the configured llm (`llm.triage_model`, else
+    `llm.model`), for the top N postings by priority (default 40) that triage did not read as a
+    mismatch, whether the work each describes is the work in your knowledge base: `core`,
+    `partial`, `adjacent` or `unrelated`. It is a second read of the job's duties, not of the
+    company's industry, so it is what separates an AI company's marketing role from an
+    inference role. The answers are kept in `kbmatch.json` beside the ledger and enter the
+    ranking as one more part (`kb_match`, 15% of a judged posting's blend); a posting nobody
+    asked about scores exactly as before, and the answer only orders and explains. **What is
+    sent**, per posting: the posting, your `target_summary` and a digest of at most 6 KB built
+    from the knowledge-base profile (role titles, stack terms and up to three bullets an entry,
+    with employers, dates, places, URLs and e-mail addresses already removed). `--dry-run`
+    prints the counts, the digest size and the most the run could cost, and sends nothing. It
+    spends from `decide.daily_usd.llm`, stops after three unusable answers in a row, and keeps
+    what it got. An edit to the bank or the target summary makes the stored answers out of date,
+    and `vani kbmatch status` counts them. On the live ledger 643 of 1,682 postings are not
+    mismatches; the top 40 are about 144,000 input tokens and at most $1.60 at claude-opus-5-5's
+    configured prices, so covering all of them takes several days under a $10 cap, or a cheaper
+    `llm.triage_model`.
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
     It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at
     least 90% of one company's postings repeat is that company's blurb, and is left out.

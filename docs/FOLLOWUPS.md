@@ -1065,9 +1065,28 @@ Each was decided on evidence; the cards' other criteria were built and tested.
       1,682 postings). The installed app's `vani` still runs the old ranking until it is rebuilt.
     - `genericLine` leaves out "fast-paced" on purpose: "Work in a fast-paced environment shipping
       CUDA kernels" is a work line (`generic_test.go`).
-    - Proposed, not built: asking a language model whether a posting's work matches the knowledge
-      base is a new `decide` question (a contract change, with token spend), so it needs the
-      owner's go-ahead.
+    - Built after the owner's go-ahead (2026-10-20): `internal/decide/kbmatch` and `vani kbmatch`.
+      A Vani-local `career.kb_match` task (like `jdreasons`: no change to the shared `decide`
+      module, the pinned `jdtriage/fixture.json` or Lappi), answered by the llm backend only
+      (Jev is not asked: `role_fit` is already its read, and this one should be independent).
+      Answers live in `kbmatch.json` beside the ledger, not as ledger annotations, so a run needs
+      no ledger lock, `internal/pipeline` is untouched and the daemon is unaffected. Score gains a
+      seventh additive part (`Weights.KBMatch` 0.15) that is left out entirely when a posting has
+      no answer, so an unasked posting's score, relevance and factor list are byte-identical to
+      before. The 15% is an unmeasured choice: rankeval has no judged worlds, only the invariant
+      that closer options never score lower and the part never gates.
+    - Not exercised: the provider call itself. The tests use a fake `decide.Decider`; no request
+      was sent to Anthropic, so the prompt's wording (`kbmatch.Prompt`) and the reply parse
+      against a real model are unverified. First real run: `vani kbmatch run --dry-run`, then
+      `--top 5`, then read the `kb_match` factor on those jobs.
+    - Cost (dry run on a copy of the live ledger, claude-opus-5-5 at the configured prices):
+      643 of 1,682 postings are not mismatch readings. Top 40: about 144,000 input tokens
+      (about 3,600 a posting, 6 KB of it the digest), at most $1.60 counting every reply at its
+      1,280-token budget; all 500 at the cap: about $20, so two days under `daily_usd.llm` 10.
+      Set `llm.triage_model` to a cheaper model to cover everything in a day.
+    - Not built: a daily stage. The command is run by hand; wiring it into the pipeline would
+      touch `internal/pipeline` and needs its own decision about when it may spend. The batch is
+      not concurrent (one question at a time; the time per question is unmeasured).
   - Lappi's calibrated score is not used for confidence (an answered Lappi reading counts as
     `AnsweredConf` 0.7): Lappi's score is a top-two margin, not a probability, and decide keeps
     the two apart on purpose.

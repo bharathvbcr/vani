@@ -63,6 +63,12 @@ commands:
   reasons import [--force] FILE
                              check and install a catalog drafted elsewhere ({drafted_by?,fit,gap,check})
   reasons check              validate the catalog against the current target summary
+  kbmatch run [--top N] [--dry-run]
+                             ask the llm whether the top postings' work is the work in your
+                             knowledge base (spends from the daily llm budget; sends each posting,
+                             the target summary and a bounded digest of the bank to the provider;
+                             the answers only order and explain)
+  kbmatch status             how many answers are kept and current
   jobs list [--json] [--view new|saved|applied|hidden|all] [--q TEXT] [--limit N]
             [--sort default|priority|relevance|fresh|company] [--fit LIST]
             [--work-mode LIST] [--sponsorship LIST] [--max-age DAYS] [--open] [--half-life DAYS]
@@ -216,6 +222,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdResume(args[1:])
 	case "reasons":
 		cmdErr = e.cmdReasons(args[1:])
+	case "kbmatch":
+		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":
 		cmdErr = e.cmdJobs(args[1:])
 	case "retriage":

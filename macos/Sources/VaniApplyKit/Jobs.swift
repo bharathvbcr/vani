@@ -515,7 +515,7 @@ public struct ScoreFactor: Equatable, Sendable {
     }
 
     /// The order Score builds them in; a name this app does not know sorts after.
-    public static let knownNames = ["fit", "coverage", "semantic", "keyword", "title", "employer", "gate", "fresh", "company"]
+    public static let knownNames = ["fit", "coverage", "semantic", "keyword", "title", "employer", "kb_match", "gate", "fresh", "company"]
     /// The multipliers: they scale the blend rather than add to it.
     public static let multiplierNames: Set<String> = ["gate", "fresh", "company"]
 
@@ -533,6 +533,7 @@ public struct ScoreFactor: Equatable, Sendable {
         case "keyword": "Target keywords"
         case "title": "Title"
         case "employer": "Employer"
+        case "kb_match": "Language-model read"
         case "gate": "Gate"
         case "fresh": "Freshness"
         case "company": "Company history"
@@ -549,6 +550,7 @@ public struct ScoreFactor: Equatable, Sendable {
         case "keyword": "overlap with your target summary's terms"
         case "title": "signals in the job title"
         case "employer": "your employer preference"
+        case "kb_match": "a language model's read of whether the posting's work is the work in your knowledge base (asked only for the top postings: vani kbmatch run)"
         case "gate": "1 unless a confident mismatch, an excluded title or a drop rule lowers it"
         case "fresh": "newer postings score higher: the bonus halves every half-life of age (Settings), with a floor"
         case "company": "a small nudge learned from the roles you saved and hid at this company"

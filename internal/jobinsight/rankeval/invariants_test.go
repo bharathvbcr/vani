@@ -91,6 +91,23 @@ func invariantViolations(w jobinsight.Weights) []string {
 			}
 		}
 	}
+	// A language model's read of the work orders by how close it says the work is
+	// (no option scores above a closer one) and never gates.
+	{
+		prev := math.Inf(1)
+		for _, opt := range jobinsight.KBMatchOrder {
+			in := good()
+			in.KBMatch = jobinsight.Slot{Value: opt, Answered: true}
+			cur := s(in)
+			if cur > prev+eps {
+				bad("kb_match %q scores %.4f above a closer option's %.4f", opt, cur, prev)
+			}
+			prev = cur
+			if g := jobinsight.ScoreWith(in, w).Gate; g != jobinsight.ScoreWith(good(), w).Gate {
+				bad("kb_match %q moved the gate to %.4f", opt, g)
+			}
+		}
+	}
 	// A strong fit with no coverage beats a domain mismatch with high coverage.
 	{
 		a, b := good(), good()
