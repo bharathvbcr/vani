@@ -208,7 +208,7 @@ func kbmatchCandidates(snap ledger.Snapshot, m map[posting.Key]marks.Entry, in *
 			current++
 			continue
 		}
-		out = append(out, kbmatchCandidate{rec: r, priority: jobinsight.Score(jobinsight.InputsFor(r, in.rc)).Score, text: text})
+		out = append(out, kbmatchCandidate{rec: r, priority: in.rc.ScoreOf(r).Score, text: text})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].priority != out[j].priority {

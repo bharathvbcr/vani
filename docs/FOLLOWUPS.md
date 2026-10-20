@@ -1289,3 +1289,37 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   150 usable judgments.
 - An app that calls `vani jobs` does not log impressions yet: only the digest does. Adding a
   `vani audit shown` (or similar) for the app's visible rows comes with the app work.
+
+## Rank learning: `vani rankfit` (built 2026-10-20, branch `claude/admiring-einstein-72e43c`)
+
+docs/RANKING_PLAN.md Phases 4–5, machinery only: nothing has been fitted on live data (0 judged
+labels, 29 saves, 0 hides on 2026-10-20).
+
+- **Merge with the exclude-config work.** `internal/config/config.go` gains `rank_weights_file`
+  (one field after `age_neutral_companies`, and one entry in the absolute-path check). The main
+  checkout has another session's uncommitted exclude work in that file: merge by hand, not by
+  overwriting either side.
+- **`would_apply` waits on Phase 1.** `internal/rankfit/labels.go` reads the audit label as
+  `Entry.Labels["would_apply"]` = `yes` | `no` (`skip` and anything else is no judgement). Today
+  `eval.Entry.Validate` refuses any slot outside `jdtriage.Slots`, so such a line is counted as bad
+  and the weight fit refuses with 0 judged labels. Phase 1 must either accept that key in
+  `Validate` or pick another format; if it picks another, change `rankfit.WouldApply` (the one
+  reader) to match. The weight path is tested below the store
+  (`TestRankfitWeightsFitsJobsInsightParts`), not end to end through `vani rankfit`.
+- **The company factor is left out of the fit.** It is learned from the same marks the fit
+  trains on, so including it would reward the fit for reading its own labels. Accuracy is
+  reported on `log match + log gate + log fresh`, for the fitted and the hand shares alike; the
+  live Score still multiplies the company factor.
+- **Gate and freshness are not fitted, only diagnosed.** `Weights` has no exponent for them;
+  the file carries the seven shares and the calibration. `rankfit` also fits free gate and
+  freshness exponents and prints them: far from 1, they say the gate or freshness constants
+  (`Mismatch`, `UnsureGate`, `FreshFloor`, `HalfLifeDays`), not the shares, are what is off.
+- **Calibration is keyed by the backend as recorded.** Legacy `jev` rows calibrate separately
+  from `d1-ultra` rows (no `eval.Names` mapping at score time), so each needs its own 100
+  judged readings. kb_match readings carry no backend and stay uncalibrated.
+- **`advance` order ignores the file.** `cmd/vani/advanceorder.go` builds its own context with
+  no config (R7, a Phase 2 item); it still ranks by the hand weights.
+- **A weight fit that does not beat the hand weights is not written** (exit 1). Phase 5's exit
+  also asks that the labelled set replace the synthetic rankeval worlds: not done.
+- **Not run on the live state.** `vani rankfit --dry-run` against `.state/state` was not run
+  from this branch.

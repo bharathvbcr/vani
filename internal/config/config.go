@@ -60,6 +60,11 @@ type Config struct {
 	// space). Their undated postings are not aged by when Vani first saw them; a
 	// date the board gives still counts. An ordering preference only (Rule 7).
 	AgeNeutralCompanies []string `json:"age_neutral_companies,omitempty"`
+	// RankWeightsFile is a rank weights file `vani rankfit` wrote (fitted Score
+	// shares and per-backend calibration). Empty means the hand weights. A file
+	// that is missing or invalid also means the hand weights, with a warning on
+	// `vani jobs` and the digest; it is never used half-read.
+	RankWeightsFile string `json:"rank_weights_file,omitempty"`
 	// KBMatch configures `vani kbmatch`, the language-model read of whether a
 	// posting's work is the work in the knowledge base.
 	KBMatch       KBMatch `json:"kbmatch,omitzero"`
@@ -1015,7 +1020,7 @@ func (c Config) Validate() error {
 	}
 	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
 		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir,
-		"semantic.snapshot": c.Semantic.Snapshot} {
+		"semantic.snapshot": c.Semantic.Snapshot, "rank_weights_file": c.RankWeightsFile} {
 		if p != "" && !filepath.IsAbs(p) {
 			add("%s %q must be an absolute path", name, p)
 		}

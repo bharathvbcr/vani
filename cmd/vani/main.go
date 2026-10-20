@@ -61,6 +61,12 @@ commands:
                              (reads the ledger without its lock)
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
+  rankfit [--part all|platt|weights] [--dry-run] [--labels DIR] [--out FILE] [--seed N]
+          [--lambda X] [--holdout PCT] [--max-pairs N]
+                             fit Score's per-backend calibration (100 judged readings per
+                             backend) and shares (150 would-apply judgements) to a rank weights
+                             file; refuses below the thresholds and writes nothing. Use it by
+                             setting rank_weights_file
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup COMPANY         show the sponsorship-history badge for a company
   employer import FILE.csv   import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)
@@ -233,6 +239,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdLabel(args[1:])
 	case "eval":
 		cmdErr = e.cmdEval(args[1:])
+	case "rankfit":
+		cmdErr = e.cmdRankfit(args[1:])
 	case "kb":
 		cmdErr = e.cmdKB(args[1:])
 	case "draft":
