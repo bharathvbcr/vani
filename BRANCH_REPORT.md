@@ -122,7 +122,9 @@ resolution in full.
 - The window-closed and reopen code merged cleanly onto the merged `AppDelegate`.
 - The README test count is replaced with the measured one.
 
-**Problem already on main, not from these merges.** Swift `JobsTests.testAgainstTheRealVani` fails.
+**Problem already on main, not from these merges, since fixed by another session in `343f79d`**
+(the test now gives its board an earlier crawl). After that commit, the full `swift test` passes:
+410 tests, 0 failures. The original note: Swift `JobsTests.testAgainstTheRealVani` failed.
 The Go `vani` now gives an undated first-crawl posting no `fresh_source`, and the test still expects
 `seen`.
 - The failure reproduces with `build/vani` built from pre-merge `main` `65e47fa`.

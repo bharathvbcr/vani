@@ -321,9 +321,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 410 tests, 1 failure (2026-10-19, after the branch merges; first counted at 129).
-    The failure is `JobsTests.testAgainstTheRealVani`: the Go `vani` now gives an undated
-    first-crawl posting no `fresh_source`, and the test still expects `seen`. The tests cover the TS vectors, validation, the store
+  - `swift test`: 410 tests, 0 failures (2026-10-19; first counted at 129). They cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).
