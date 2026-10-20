@@ -820,10 +820,16 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     from 64 KiB to 256 KiB. A worst-case record, with every bound full of six-byte-escaped text, is
     85 KB (`TestWorstCaseRunRecordIsReadable` holds it under half the bound); full backend errors
     plus full board entries would have passed 64 KiB. The Mac Pipeline tab shows the
-    boards that were not read, and a run that succeeded with one is a warning, not healthy. Not done:
-    - **Why Intel failed is not yet known.** The next run's record will say. If it is one bad
-      detail, a per-posting skip with a bound would need to keep absence tracking honest; that is a
-      separate decision.
+    boards that were not read, and a run that succeeded with one is a warning, not healthy. Also
+    fixed: `cleanText` (behind `oneLine`) wrote a pending space or newline after its bound check,
+    so every bounded line could keep one rune more than its limit. Not done:
+    - **Why Intel failed is inferred, not known.** Four live probes through the real adapter and
+      egress client listed 35 postings with no error (36–40 s each). In the 09:57 run the ledger
+      shows NVIDIA reconciled at 09:59:52 and Adobe at 10:01:12. Adobe's 47 details at Broadcom's
+      rate (7 in 9 s) take about 55 s, so Intel ran for roughly 20–30 s before it ended with no
+      records. That fits a transient detail failure partway through, which fails the whole board
+      by design. The next failure's `boards` entry will carry the cause. If it recurs, a bounded
+      per-posting retry or skip is a separate decision, because absence tracking must stay honest.
     - **An older installed `vani` reading a new record over 64 KiB reports the last run as unknown.**
       Rebuild the installed binary with the app.
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers
