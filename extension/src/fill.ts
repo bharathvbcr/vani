@@ -11,6 +11,7 @@ import { mapChoice, matchField } from "./match";
 import { dialCodeOnly, normalizeLabel } from "./normalize";
 import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
 import { type ResumeFetch, isResumeField } from "./resume";
+import { observeRoots } from "./rounds";
 
 export interface FillOutcome {
   label: string;
@@ -32,15 +33,48 @@ const marked = new Set<HTMLElement>();
 type Win = Window & typeof globalThis;
 const winOf = (el: Element): Win => (el.ownerDocument.defaultView ?? window) as Win;
 const txt = (el: Element): string => (el.textContent ?? "").replace(/\s+/g, " ").trim();
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+/** How often a wait re-checks on its own, for changes a MutationObserver cannot see (shadow roots, properties). */
+const FALLBACK_TICK_MS = 100;
 
-async function until(cond: () => boolean, timeout = 600, step = 25): Promise<boolean> {
-  const end = Date.now() + timeout;
-  for (;;) {
-    if (cond()) return true;
-    if (Date.now() >= end) return false;
-    await sleep(step);
-  }
+/**
+ * Wait until `cond()` is true. Resolves true at once if it already is; otherwise re-checks on the
+ * first mutation batch under `root` (a node or a list of roots such as a scan's document and open
+ * shadow roots, one observer each, at most 64; default: the global document) and on a 100 ms fallback tick,
+ * and resolves false at the `timeout` ceiling after one last check. The observer and both timers
+ * are released however the wait ends, including when `cond` throws (the promise then rejects).
+ */
+export function waitFor(cond: () => boolean, timeout = 600, root?: Node | readonly Node[]): Promise<boolean> {
+  if (cond()) return Promise.resolve(true);
+  return new Promise<boolean>((resolve, reject) => {
+    let stopObserving: (() => void) | undefined;
+    let tick: ReturnType<typeof setTimeout> | undefined;
+    let ceiling: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+    const end = (settle: () => void): void => {
+      done = true;
+      stopObserving?.();
+      clearTimeout(tick);
+      clearTimeout(ceiling);
+      settle();
+    };
+    const check = (last: boolean): void => {
+      if (done) return;
+      let ok: boolean;
+      try { ok = cond(); } catch (e) { end(() => reject(e)); return; }
+      if (ok) end(() => resolve(true));
+      else if (last) end(() => resolve(false));
+    };
+    const targets: readonly Node[] = root === undefined ? (typeof document === "undefined" ? [] : [document]) : Array.isArray(root) ? root : [root as Node];
+    // One observer per root (at most MAX_OBSERVED_ROOTS); the tick below covers any root beyond that.
+    stopObserving = observeRoots(targets, () => check(false), { childList: true, attributes: true, characterData: true, subtree: true });
+    const again = (): void => {
+      if (done) return;
+      check(false);
+      if (!done) tick = setTimeout(again, FALLBACK_TICK_MS);
+    };
+    tick = setTimeout(again, FALLBACK_TICK_MS);
+    ceiling = setTimeout(() => check(true), timeout);
+  });
 }
 
 function fire(el: HTMLElement, type: string): void {
@@ -161,6 +195,9 @@ function shown(trigger: HTMLElement, before: ReadonlySet<HTMLElement>): HTMLElem
  */
 async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => string | null, typed: string, typeahead = false): Promise<false | "ok" | "check"> {
   const isInput = trigger.localName === "input";
+  // Watch the page and, for a widget inside a shadow root, that root too: its list
+  // usually renders there, where a document observer hears nothing.
+  const root = widgetRoots(trigger);
   const before = new Set(visibleOptions(trigger.ownerDocument)); // options on screen before this widget is opened are not its own
   const showing = (): HTMLElement[] => shown(trigger, before);
   const choose = (): HTMLElement | null => {
@@ -178,16 +215,16 @@ async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => str
   if (showing().length === 0 && trigger.getAttribute("role") !== "listbox") {
     trigger.focus();
     realClick(trigger);
-    if (!(await until(() => showing().length > 0, 500))) {
+    if (!(await waitFor(() => showing().length > 0, 500, root))) {
       key(trigger, "ArrowDown");
-      await until(() => showing().length > 0, 300);
+      await waitFor(() => showing().length > 0, 300, root);
     }
   }
   let target = choose();
   if (!target && isInput && typed && typeahead) {
     setText(trigger as HTMLInputElement, typed);
     typedHere = true;
-    await until(() => (target = choose()) !== null, 900);
+    await waitFor(() => (target = choose()) !== null, 900, root);
   }
   if (!target) return giveUp();
   const want = normalizeLabel(txt(target));
@@ -210,7 +247,9 @@ async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => str
     }
     return null;
   };
-  if (!(await until(() => (verdict = judge()) !== null, 600)) || verdict === null) return giveUp();
+  // A widget that already shows the chosen option needs no wait for a verdict.
+  verdict = judge();
+  if (verdict === null && (!(await waitFor(() => (verdict = judge()) !== null, 600, root)) || verdict === null)) return giveUp();
   if (showing().length > 0 && trigger.getAttribute("role") !== "listbox") key(trigger, "Escape");
   return verdict;
 }
@@ -255,14 +294,21 @@ async function fillAriaRadio(ref: FieldRef, values: string[]): Promise<boolean> 
   const el = ref.els[i];
   if (!el) return false;
   if (el.getAttribute("aria-checked") !== "true") realClick(el);
-  return until(() => el.getAttribute("aria-checked") === "true", 400);
+  return waitFor(() => el.getAttribute("aria-checked") === "true", 400, widgetRoots(el));
 }
 
 async function fillAriaCheckbox(el: HTMLElement, values: string[]): Promise<boolean> {
   const want = values[0] === "yes";
   const is = () => el.getAttribute("aria-checked") === "true";
   if (is() !== want) realClick(el);
-  return until(() => is() === want, 400);
+  return waitFor(() => is() === want, 400, widgetRoots(el));
+}
+
+/** The roots a widget's changes can land in: its document, plus its shadow root when it has one. */
+export function widgetRoots(el: Element): Node[] {
+  const doc = el.ownerDocument;
+  const own = el.getRootNode();
+  return own !== doc && own.nodeType === 11 ? [doc, own] : [doc];
 }
 
 function setEditable(el: HTMLElement, text: string): boolean {
@@ -441,6 +487,8 @@ export interface FillOptions {
    * once per fill. Without it every file input is left alone ("untouchable").
    */
   resume?: () => Promise<ResumeFetch>;
+  /** Matches already computed for these refs (coverageOf's `matches`); fillAll matches only the refs missing from it. */
+  matches?: Map<FieldRef, Match | null>;
 }
 
 export async function fillRef(ref: FieldRef, m: Match, opts: FillOptions = {}): Promise<FillOutcome> {
@@ -516,18 +564,31 @@ async function attachResume(ref: FieldRef, get: () => Promise<ResumeFetch>, opts
   return { label, filled: true, review: true };
 }
 
-/** Match and fill every field; returns what happened to each, in order. */
+/** Widgets that open a list or wait on the page: filled after the plain fields, which settle at once. */
+const driven = (ref: FieldRef): boolean => ref.widget === "combobox" || ref.widget === "aria-radio" || ref.widget === "aria-checkbox";
+
+/**
+ * Match and fill every field; returns what happened to each, in the order of `refs`. Plain fields
+ * (native controls, contenteditable, split date/phone) are filled first, then the comboboxes, aria
+ * radios/checkboxes and multi-selects, which wait on the page. `opts.matches` (from coverageOf) lets
+ * the page's matches be computed once: a ref found in it is not matched again.
+ */
 export async function fillAll(refs: FieldRef[], bank: Bank, host: string, opts: FillOptions = {}): Promise<FillOutcome[]> {
-  const out: FillOutcome[] = [];
+  const out = new Array<FillOutcome>(refs.length);
   // One request for the resume per fill, made only if a resume input is there.
   let resume: Promise<ResumeFetch> | undefined;
   const getResume = opts.resume ? () => (resume ??= opts.resume!()) : undefined;
-  for (const ref of refs) {
-    if (ref.info.kind === "file" && getResume && isResumeField(ref.info)) { out.push(await attachResume(ref, getResume, opts)); continue; }
-    if (ref.info.kind === "file" || ref.info.kind === "password") { out.push({ label: ref.info.label, filled: false, reason: "untouchable" }); continue; }
-    const m = matchField(ref.info, bank, host);
-    if (!m) { out.push({ label: ref.info.label, filled: false, reason: "no_match" }); continue; }
-    out.push(await fillRef(ref, m, opts));
+  const one = async (ref: FieldRef): Promise<FillOutcome> => {
+    if (ref.info.kind === "file" && getResume && isResumeField(ref.info)) return attachResume(ref, getResume, opts);
+    if (ref.info.kind === "file" || ref.info.kind === "password") return { label: ref.info.label, filled: false, reason: "untouchable" };
+    const m = opts.matches?.has(ref) ? opts.matches.get(ref) ?? null : matchField(ref.info, bank, host);
+    if (!m) return { label: ref.info.label, filled: false, reason: "no_match" };
+    return fillRef(ref, m, opts);
+  };
+  for (const wave of [false, true]) {
+    for (let i = 0; i < refs.length; i++) {
+      if (driven(refs[i]!) === wave) out[i] = await one(refs[i]!);
+    }
   }
   return out;
 }

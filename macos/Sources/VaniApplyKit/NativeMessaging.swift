@@ -7,8 +7,11 @@ import Foundation
 public enum NativeMessaging {
     /// Chrome's limit for one message from the host.
     public static let maxReplyBytes = 1024 * 1024
-    /// Our limit for one message from the extension: a 900 KB bank plus its envelope.
-    public static let maxRequestBytes = 2 * 1024 * 1024
+    /// Our limit for one message from the extension.
+    public static let maxRequestBytes = 64 * 1024 * 1024
+    /// When reply body exceeds this, chunking is used to stay safely under Chrome's 1 MB limit.
+    public static let chunkThreshold = 750_000
+    public static let chunkSize = 500_000
 
     public enum ReadError: Error, Equatable {
         case truncated

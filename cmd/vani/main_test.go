@@ -329,6 +329,23 @@ func (m *memLedger) Append(_ context.Context, e ledger.Event) error {
 	r.Status, r.LastEvent = e.Status, e.At
 	return nil
 }
+func (m *memLedger) AppendBatch(_ context.Context, evs []ledger.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fail {
+		return errors.New("disk full")
+	}
+	for _, e := range evs {
+		if _, ok := m.recs[e.Key]; !ok {
+			return errors.New("unknown key")
+		}
+	}
+	for _, e := range evs {
+		r := m.recs[e.Key]
+		r.Status, r.LastEvent = e.Status, e.At
+	}
+	return nil
+}
 func (m *memLedger) Get(k posting.Key) (ledger.Record, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

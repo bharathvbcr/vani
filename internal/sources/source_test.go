@@ -27,7 +27,7 @@ func TestSearchTerms(t *testing.T) {
 func TestFilterKeysOnlyForSearchSites(t *testing.T) {
 	for ats := range FilterKeys {
 		switch ats {
-		case posting.Google, posting.Amazon, posting.Apple, posting.Eightfold:
+		case posting.Google, posting.Amazon, posting.Apple, posting.Eightfold, posting.Jibe:
 		default:
 			t.Errorf("filters listed for %q, which has no verified filters", ats)
 		}
@@ -41,6 +41,7 @@ func TestKeyPrefixForSearchSites(t *testing.T) {
 	}{
 		{Board{ATS: posting.Amazon, Token: "Amazon"}, "az:amazon:"},
 		{Board{ATS: posting.Eightfold, Token: "microsoft.com"}, "ef:microsoft.com:"},
+		{Board{ATS: posting.Jibe, Token: "AMD"}, "jb:amd:"},
 		{Board{ATS: posting.Workday, Token: "nvidia/Site"}, "wd:nvidia:site:"},
 	} {
 		if got := tc.b.KeyPrefix(); got != tc.want {

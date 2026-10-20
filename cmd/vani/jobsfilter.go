@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 )
 
@@ -30,6 +31,8 @@ type jobsFilter struct {
 	payListed               bool
 	seniority               string
 	seniorities             map[string]bool
+	category, folder        string
+	categories              map[string]bool
 	company, notCompany     string
 	companies, notCompanies map[string]bool
 	exclude                 string
@@ -43,6 +46,8 @@ func addFilterFlags(fs *flag.FlagSet, f *jobsFilter) {
 	fs.StringVar(&f.currency, "currency", "USD", "the currency of --min-salary, the salary sort and the pay stats: "+strings.Join(jobinsight.PayCurrencies(), ", "))
 	fs.BoolVar(&f.payListed, "salary-listed", false, "only jobs whose text states pay")
 	fs.StringVar(&f.seniority, "seniority", "", "only these seniority readings (comma list; none = no reading)")
+	fs.StringVar(&f.category, "category", "", "only jobs in these category folders (comma list: "+strings.Join(jobcategory.OptionValues(), ", ")+"; none = no reading)")
+	fs.StringVar(&f.folder, "folder", "", "alias for --category")
 	fs.StringVar(&f.company, "company", "", "only these companies (comma list of exact names, any case)")
 	fs.StringVar(&f.notCompany, "exclude-company", "", "leave out these companies (comma list of exact names, any case)")
 	fs.StringVar(&f.exclude, "exclude", "", "leave out jobs whose title contains any of these words (comma list, any case)")
@@ -51,8 +56,11 @@ func addFilterFlags(fs *flag.FlagSet, f *jobsFilter) {
 
 // check validates and parses the flags.
 func (f *jobsFilter) check(cmd string) error {
+	if f.folder != "" && f.category == "" {
+		f.category = f.folder
+	}
 	for name, v := range map[string]string{"min-salary": f.minSalary, "currency": f.currency, "seniority": f.seniority,
-		"company": f.company, "exclude-company": f.notCompany, "exclude": f.exclude} {
+		"category": f.category, "company": f.company, "exclude-company": f.notCompany, "exclude": f.exclude} {
 		if len(v) > maxFilterFlagBytes || !utf8.ValidString(v) {
 			return usagef("%s: --%s must be UTF-8 and at most %d bytes", cmd, name, maxFilterFlagBytes)
 		}
@@ -70,6 +78,9 @@ func (f *jobsFilter) check(cmd string) error {
 		return usagef("%s: --min-relevance must be 0-100", cmd)
 	}
 	if f.seniorities, err = optionSet(cmd, "seniority", "seniority", f.seniority); err != nil {
+		return err
+	}
+	if f.categories, err = optionSet(cmd, "category", "category", f.category); err != nil {
 		return err
 	}
 	if f.companies, err = nameSet(cmd, "company", f.company); err != nil {
@@ -138,6 +149,13 @@ func nameSet(cmd, flagName, raw string) (map[string]bool, error) {
 // keep reports whether an enriched job passes the filters.
 func (f *jobsFilter) keep(j *jobJSON) bool {
 	if !inSet(f.seniorities, j.Triage["seniority"]) {
+		return false
+	}
+	cat := j.Category
+	if cat == "" && j.Triage != nil {
+		cat = j.Triage["category"]
+	}
+	if !inSet(f.categories, cat) {
 		return false
 	}
 	company := strings.ToLower(strings.Join(strings.Fields(j.Company), " "))

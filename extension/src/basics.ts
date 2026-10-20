@@ -6,11 +6,10 @@
 // field resolves to (its autocomplete meaning, else its question), so Fill
 // needs nothing new to use them, and the answers table edits and deletes them.
 import type { Bank, FieldInfo, FieldKind } from "./types";
-import { MAX_VALUE_CHARS, answerKey } from "./bank";
+import { BASICS_HOST, MAX_VALUE_CHARS, answerKey } from "./bank";
 import { INTENTS, intentOf } from "./intents";
 
-/** The capture host for answers typed in the popup: never a real site, so no per-site signature is kept. */
-export const BASICS_HOST = "vani-basics";
+export { BASICS_HOST };
 
 /** contact: facts about you; work: recurring questions; self_id: voluntary self-identification (only with self-ID on). */
 export type BasicGroup = "contact" | "work" | "self_id";
@@ -55,15 +54,20 @@ function info(b: Basic, value: string[]): FieldInfo {
 }
 
 /**
- * The basics with something new typed, as fields for the capture message. An
- * empty box is left out (it never clears a saved answer), and so is one that
- * still shows what `saved` (basicsValues) holds, so saving twice changes nothing.
+ * The basics with something new typed, as fields for the capture message. A box
+ * that was empty and remains empty is left out, and so is one that still shows
+ * what `saved` (basicsValues) holds. When an already-saved basic is cleared
+ * (!v && saved[b.id]), an empty field is sent so capture can remove it.
  */
 export function basicsFields(values: Readonly<Record<string, string>>, saved: Readonly<Record<string, string>> = {}): FieldInfo[] {
   const out: FieldInfo[] = [];
   for (const b of BASICS) {
     const v = (values[b.id] ?? "").trim().slice(0, MAX_VALUE_CHARS);
-    if (v && v !== saved[b.id]) out.push(info(b, [v]));
+    if (v && v !== saved[b.id]) {
+      out.push(info(b, [v]));
+    } else if (!v && saved[b.id]) {
+      out.push(info(b, []));
+    }
   }
   return out;
 }

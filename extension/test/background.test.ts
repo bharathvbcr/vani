@@ -130,6 +130,30 @@ describe("resume messages", () => {
   });
 });
 
+describe("ingestJobs", () => {
+  const page = { url: "https://careers.acme.com/search?q=engineer", title: "Jobs at Acme" };
+  const job = { title: "Staff Engineer", company: "Acme", location: "Remote", url: "https://careers.acme.com/jobs/1", snippet: "Build things" };
+
+  test("is forwarded to the host as jobsIngest, with only the contract's fields", async () => {
+    const r = await ask({ type: "ingestJobs", page: { ...page, extra: 1 }, saveSearch: true, jobs: [{ ...job, relevance: { score: 9 }, posted: "2026-10-01T00:00:00Z" }, job] });
+    expect(nativeSent.at(-1)).toEqual({
+      op: "jobsIngest",
+      page,
+      save_search: true,
+      jobs: [{ ...job, posted: "2026-10-01T00:00:00Z" }, job],
+    });
+    // No Mac app here: the unreachable host is a coded reply, shown to the user rather than swallowed.
+    expect(r.replies).toEqual([{ error: "the Vani Apply Mac app isn't reachable", code: "unreachable" }]);
+  });
+
+  test("a batch over a bound never reaches the host", async () => {
+    const before = nativeSent.length;
+    const r = await ask({ type: "ingestJobs", page, saveSearch: false, jobs: [{ ...job, url: "javascript:alert(1)" }] });
+    expect(r.replies).toEqual([{ error: "malformed ingestJobs message" }]);
+    expect(nativeSent.length).toBe(before);
+  });
+});
+
 describe("message checks", () => {
   test("every content message type is accepted with its own fields, and bad options are refused", () => {
     for (const m of [{ type: "scan" }, { type: "fill" }, { type: "fill", overwrite: true, typeahead: false }, { type: "capture" }, { type: "clearMarks" }, { type: "appliedShow" }]) {
@@ -147,5 +171,144 @@ describe("message checks", () => {
   test("background messages: the inherited Object keys are not message types", () => {
     for (const t of ["constructor", "hasOwnProperty", "valueOf"]) expect(checkToBackground({ type: t })).toEqual({ error: "unknown message type" });
     expect(checkToBackground({ type: "jobStart", kind: "rm", request: {} })).toEqual({ error: "malformed jobStart message" });
+  });
+});
+
+// With the Mac app present: what the background asks it, and how often.
+describe("Mac app bank round trips", () => {
+  type Row = { key: string; fills: number; [k: string]: unknown };
+  const host = {
+    rev: 7,
+    answers: {} as Record<string, Row>,
+    calls: [] as Array<Record<string, unknown>>,
+    /** Upcoming patches to refuse as a conflict, bumping the rev as a concurrent writer would. */
+    conflicts: 0,
+    failPatch: false,
+  };
+  const ops = (): string[] => host.calls.map(c => String(c.op));
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+  let originalSend: unknown;
+
+  function row(key: string, fills = 0): Row {
+    return { key, labels: [key], kind: "text", value: ["v"], sensitivity: "standard", signatures: [], uses: 1, fills, updatedAt: "2026-01-01T00:00:00Z", review: false };
+  }
+
+  function reply(m: Record<string, unknown>): unknown {
+    switch (m.op) {
+      case "ping": return { ok: true, protocol: 1, rev: host.rev };
+      case "get": return { rev: host.rev, bank: { version: 1, answers: host.answers, settings: { captureSelfId: false, disabledHosts: [] } } };
+      case "log": return { ok: true };
+      case "patch": {
+        if (host.failPatch) return { error: "disk full" };
+        if (host.conflicts > 0) { host.conflicts--; host.rev++; return { conflict: true, rev: host.rev }; }
+        if (m.baseRev !== undefined && m.baseRev !== host.rev) return { conflict: true, rev: host.rev };
+        for (const a of m.upsert as Row[]) host.answers[a.key] = a;
+        for (const k of m.delete as string[]) delete host.answers[k];
+        host.rev++;
+        return { rev: host.rev, droppedSecret: 0 };
+      }
+      default: return { error: "unknown op" };
+    }
+  }
+
+  beforeAll(() => {
+    const rt = (g.chrome as { runtime: { sendNativeMessage: unknown } }).runtime;
+    originalSend = rt.sendNativeMessage;
+    rt.sendNativeMessage = (_app: string, m: Record<string, unknown>, cb: (r: unknown) => void) => {
+      host.calls.push(m);
+      queueMicrotask(() => cb(JSON.parse(JSON.stringify(reply(m)))));
+    };
+  });
+  afterAll(() => { (g.chrome as { runtime: { sendNativeMessage: unknown } }).runtime.sendNativeMessage = originalSend; });
+
+  async function reset(): Promise<void> {
+    local = {};
+    host.rev = 7;
+    host.answers = { city: row("city", 2), zip: row("zip", 5), name: row("name", 0) };
+    host.conflicts = 0;
+    host.failPatch = false;
+    await ask({ type: "deleteAnswer", key: "nothing-here" }); // any write drops the memo
+    host.calls.length = 0;
+  }
+
+  test("ten getBank calls inside the window make one native get, and the reply carries the revision", async () => {
+    await reset();
+    const rs = await Promise.all(Array.from({ length: 10 }, () => ask({ type: "getBank" })));
+    for (const r of rs) expect(r.replies[0]).toMatchObject({ mode: "mac-app", rev: 8 });
+    expect(ops().filter(o => o === "get").length).toBe(1);
+  });
+
+  test("the first getBank after the window asks again", async () => {
+    await reset();
+    await ask({ type: "getBank" });
+    await ask({ type: "getBank" });
+    expect(ops().filter(o => o === "get").length).toBe(1);
+    await sleep(2_050);
+    await ask({ type: "getBank" });
+    expect(ops().filter(o => o === "get").length).toBe(2);
+  });
+
+  test("concurrent getBank calls make one native get", async () => {
+    await reset();
+    await Promise.all([ask({ type: "getBank" }), ask({ type: "getBank" }), ask({ type: "getBank" })]);
+    expect(ops().filter(o => o === "get").length).toBe(1);
+  });
+
+  test("filled patches only the affected rows, counting a key once per use, against the revision it read", async () => {
+    await reset();
+    await ask({ type: "getBank" });
+    host.calls.length = 0;
+    expect((await ask({ type: "filled", keys: ["city", "city", "name"] })).replies).toEqual([{ ok: true }]);
+    expect(ops().filter(o => o !== "log")).toEqual(["patch"]); // no get, no put: the memo served the read
+    const patch = host.calls.find(c => c.op === "patch")!;
+    expect((patch.upsert as Row[]).map(r => [r.key, r.fills])).toEqual([["city", 4], ["name", 1]]);
+    expect(patch.baseRev).toBe(8);
+    expect(patch.delete).toEqual([]);
+    expect(host.answers.zip!.fills).toBe(5);
+    // The next read is the patched bank, from the memo.
+    host.calls.length = 0;
+    const next = (await ask({ type: "getBank" })).replies[0] as { bank: { answers: Record<string, Row> }; rev: number };
+    expect(next.rev).toBe(9);
+    expect(next.bank.answers.city!.fills).toBe(4);
+    expect(ops()).toEqual([]);
+  });
+
+  test("a conflict drops the memo; filled reads once more, retries once, and loses nothing", async () => {
+    await reset();
+    await ask({ type: "getBank" });
+    host.calls.length = 0;
+    host.conflicts = 1; // someone else wrote since
+    host.answers.city = row("city", 10); // and their row is what must be counted on
+    expect((await ask({ type: "filled", keys: ["city"] })).replies).toEqual([{ ok: true }]);
+    expect(ops().filter(o => o !== "log")).toEqual(["patch", "get", "patch"]);
+    expect(host.answers.city!.fills).toBe(11);
+  });
+
+  test("two conflicts in a row: the loss is logged with counts only and the page gets a reply, not a throw", async () => {
+    await reset();
+    await ask({ type: "getBank" });
+    host.calls.length = 0;
+    host.conflicts = 2;
+    const r = await ask({ type: "filled", keys: ["city", "zip"] });
+    expect(r.replies).toEqual([{ ok: false, error: "fill counts were not saved" }]);
+    await sleep(10);
+    const logged = host.calls.filter(c => c.op === "log").map(c => c.entry as { event: string; counts: Record<string, number> });
+    expect(logged.at(-1)).toEqual({ event: "fill", counts: { filled: 2, countsLost: 2 } });
+    expect(JSON.stringify(host.calls.filter(c => c.op === "log"))).not.toContain("\"v\""); // no answer content
+    expect(host.answers.city!.fills).toBe(2);
+  });
+
+  test("a host that refuses the patch is the same: logged, answered, not thrown", async () => {
+    await reset();
+    host.failPatch = true;
+    const r = await ask({ type: "filled", keys: ["city"] });
+    expect(r.replies).toEqual([{ ok: false, error: "fill counts were not saved" }]);
+    expect(host.answers.city!.fills).toBe(2);
+  });
+
+  test("a key the bank no longer holds is not invented", async () => {
+    await reset();
+    expect((await ask({ type: "filled", keys: ["deleted-meanwhile"] })).replies).toEqual([{ ok: true }]);
+    expect(ops().includes("patch")).toBe(false);
   });
 });

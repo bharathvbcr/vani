@@ -55,7 +55,7 @@ func TestDigestLeavesOutHiddenAndListsSaved(t *testing.T) {
 	if r, _ := l.Get("gh:a:2"); r.Status != posting.Digested {
 		t.Errorf("listed role status %s, want digested", r.Status)
 	}
-	if len(n.calls) != 1 || !strings.Contains(n.calls[0], "1 roles") {
+	if len(n.calls) != 1 || !strings.Contains(n.calls[0], "|1 role to review") {
 		t.Errorf("notifications: %v", n.calls)
 	}
 

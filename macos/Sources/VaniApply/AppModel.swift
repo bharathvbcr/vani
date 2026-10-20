@@ -82,18 +82,27 @@ final class AppModel {
     /// approval in Login Items. Replacing the app bundle (every rebuild) makes
     /// launchd's copy of the job stale while SMAppService still says .enabled,
     /// so an enabled agent that does not answer is unregistered and registered
-    /// again. `repair` forces that (Settings > Register again).
+    /// again. So is one that answers from another copy of the app (the job is
+    /// one per user, and the last copy to register owns it): it would run that
+    /// copy's `vani` for both browsers. `repair` forces it (Settings > Register again).
     func registerAgent(repair: Bool = false) {
         agentError = nil
+        let own = Bundle.main.bundleURL
         Task {
             let failure: String? = await Task.detached(priority: .utility) {
                 // Its own handle: SMAppService is not Sendable across actors.
                 let service = SMAppService.agent(plistName: AgentConstants.plistName)
                 do {
-                    if service.status == .enabled, repair || !XPCAgentClient().reachable() {
+                    if service.status == .enabled,
+                       AgentIdentity.reregister(repair: repair, agentBundle: XPCAgentClient().identity(), ownBundle: own) != nil {
                         try await service.unregister()
                     }
                     if service.status != .enabled { try service.register() }
+                    // Ask again: a copy that still answers from elsewhere is reported, not taken for this app's.
+                    if service.status == .enabled, let theirs = XPCAgentClient().identity(),
+                       case let .foreign(path)? = AgentIdentity.reregister(repair: false, agentBundle: theirs, ownBundle: own) {
+                        return "it runs from another copy of Vani Apply (\(path)). Quit that copy, then choose Register again."
+                    }
                     return nil
                 } catch {
                     return error.localizedDescription
@@ -110,7 +119,9 @@ final class AppModel {
 
     var agentSummary: String {
         switch agentStatus {
-        case .enabled: return "Running on demand: Safari and Chrome can ask for drafts and suggestions."
+        case .enabled:
+            if let agentError { return "Registered, but \(agentError)" }
+            return "Running on demand: Safari and Chrome can ask for drafts and suggestions."
         case .requiresApproval: return "Waiting for approval in System Settings > General > Login Items."
         case .notFound: return "Not found in this copy of the app; rebuild it with scripts/bundle.sh."
         case .notRegistered: return "Not registered" + (agentError.map { ": \($0)" } ?? ".")
@@ -246,6 +257,52 @@ final class AppModel {
         }
     }
 
+    /// Add `label` as another wording of the answer `key` (the duplicate an add would have hit).
+    @discardableResult
+    func addWording(_ label: String, to key: String) -> Bool {
+        change(.edit, counts: ["wordings": 1]) { bank in
+            bank.answers[key] = try Dedup.addingWording(label, to: key, in: bank)
+        }
+    }
+
+    // MARK: - Duplicates
+
+    /// `vani answers similar`, with Vani's config and state folder as drafting uses.
+    var similarLabels: SimilarLabels {
+        let s = draftSettings
+        return SimilarLabels(vaniBinary: vaniBinary,
+                             configPath: s.vaniConfig.isEmpty ? nil : s.vaniConfig,
+                             stateDir: s.vaniStateDir.isEmpty ? nil : s.vaniStateDir)
+    }
+
+    /// Clusters from the bank as it is now, with any similar-wording pairs already found.
+    func duplicateClusters(similar: SimilarResult? = nil) -> [Dedup.Cluster] {
+        var pairs: [SimilarPair] = []
+        if case let .available(found, _)? = similar { pairs = found }
+        return Dedup.clusters(bank: snapshot.bank, similar: pairs)
+    }
+
+    /// The similar-wording pass, off the main thread. The child is bounded by SimilarLabels.timeout.
+    func findSimilarWordings() async -> SimilarResult {
+        let bank = snapshot.bank
+        let client = similarLabels
+        return await Task.detached(priority: .userInitiated) { client.find(in: bank) }.value
+    }
+
+    func findDuplicates() async -> (clusters: [Dedup.Cluster], semantic: SimilarResult) {
+        let semantic = await findSimilarWordings()
+        return (duplicateClusters(similar: semantic), semantic)
+    }
+
+    /// Merge the plans in one validated write (one revision). Counts only reach the log.
+    @discardableResult
+    func merge(_ plans: [Dedup.MergePlan]) -> Bool {
+        let removed = plans.reduce(0) { $0 + $1.merged.count }
+        return change(.edit, counts: ["merged": removed, "clusters": plans.count]) { bank in
+            try Dedup.merge(bank: &bank, plans: plans)
+        }
+    }
+
     func delete(keys: Set<String>) {
         _ = change(.delete, counts: ["deleted": keys.count]) { bank in
             for k in keys { bank.answers.removeValue(forKey: k) }
@@ -332,21 +389,37 @@ final class AppModel {
     }
 
     func refreshSafari() {
-        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: Self.safariExtensionID) { [weak self] state, error in
-            let enabled = state?.isEnabled
-            let message = error.map { $0.localizedDescription }
-            Task { @MainActor in
-                self?.safariEnabled = enabled
-                self?.safariStateError = message
-            }
+        Self.safariState(Self.safariExtensionID) { [weak self] enabled, message in
+            self?.safariEnabled = enabled
+            self?.safariStateError = message
         }
     }
 
     func openSafariSettings() {
-        SFSafariApplication.showPreferencesForExtension(withIdentifier: Self.safariExtensionID) { [weak self] error in
+        Self.showSafariSettings(Self.safariExtensionID) { [weak self] message in
+            self?.actionError = "Safari: \(message)"
+        }
+    }
+
+    // Safari answers on a background queue, but the SDK declares the state handler
+    // NS_SWIFT_UI_ACTOR, so a closure literal passed straight to it is inferred @MainActor and
+    // the runtime flags it as a data race. Each handler is built as a plain @Sendable value first
+    // (no actor inferred) and hands its result to the main actor itself.
+    nonisolated private static func safariState(_ id: String, _ done: @escaping @MainActor @Sendable (Bool?, String?) -> Void) {
+        let handler: @Sendable (SFSafariExtensionState?, Error?) -> Void = { state, error in
+            let enabled = state?.isEnabled
+            let message = error.map { $0.localizedDescription }
+            Task { @MainActor in done(enabled, message) }
+        }
+        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: id, completionHandler: handler)
+    }
+
+    nonisolated private static func showSafariSettings(_ id: String, _ failed: @escaping @MainActor @Sendable (String) -> Void) {
+        let handler: @Sendable (Error?) -> Void = { error in
             guard let error else { return }
             let message = error.localizedDescription
-            Task { @MainActor in self?.actionError = "Safari: \(message)" }
+            Task { @MainActor in failed(message) }
         }
+        SFSafariApplication.showPreferencesForExtension(withIdentifier: id, completionHandler: handler)
     }
 }

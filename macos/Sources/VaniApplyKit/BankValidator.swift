@@ -80,7 +80,7 @@ public enum BankValidator {
 
     /// Validate a bank given as JSON text (an import file).
     public static func validate(json: Data) throws -> Result {
-        if json.count > 8_000_000 { throw BankError("bank file is larger than 8 MB") }
+        if json.count > Limits.maxBankBytes { throw BankError("bank file is larger than \(Limits.maxBankBytes) bytes") }
         let raw: Any
         do { raw = try JSONSerialization.jsonObject(with: json, options: [.fragmentsAllowed]) } catch {
             throw BankError("bank is not valid JSON")

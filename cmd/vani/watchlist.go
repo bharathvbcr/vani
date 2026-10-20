@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,12 +30,24 @@ func (e *env) cmdWatchlist(args []string) error {
 }
 
 func (e *env) watchlistList(args []string) error {
-	if err := parse(e.newFlags("watchlist list"), args); err != nil {
+	fs := e.newFlags("watchlist list")
+	asJSON := fs.Bool("json", false, "a JSON array of the boards on stdout (the Mac app's Saved searches)")
+	if err := parse(fs, args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		out := make([]watchlistJSON, 0, len(cfg.Watchlist))
+		for _, b := range cfg.Watchlist {
+			out = append(out, watchlistJSON{ATS: b.ATS, Token: b.Token, Company: b.Company, Region: b.Region, Host: b.Host,
+				Search: b.Search, Searches: b.Searches, URL: b.URL, LinkPattern: b.LinkPattern})
+		}
+		enc := json.NewEncoder(e.stdout)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(out)
 	}
 	for _, b := range cfg.Watchlist {
 		region := b.Region
@@ -48,18 +61,18 @@ func (e *env) watchlistList(args []string) error {
 
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; pg: a short slug)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe) or pg (careers page)")
+	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; pg: a short slug)")
 	company := fs.String("company", "", "company display name")
 	region := fs.String("region", "", "regional host (eu, lever only)")
-	host := fs.String("host", "", "workday tenant host (acme.wd5.myworkdayjobs.com) or eightfold careers host")
+	host := fs.String("host", "", "workday tenant host (acme.wd5.myworkdayjobs.com), or eightfold or jibe careers host (careers.amd.com)")
 	var searches []string
-	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef); the board lists their union", func(s string) error {
+	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef, jb); the board lists their union", func(s string) error {
 		searches = append(searches, s)
 		return nil
 	})
 	var filters map[string][]string
-	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap)", func(s string) error {
+	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap, ef, jb)", func(s string) error {
 		k, v, ok := strings.Cut(s, "=")
 		if !ok || k == "" {
 			return fmt.Errorf("filter %q is not name=value", s)
@@ -88,19 +101,15 @@ func (e *env) watchlistAdd(args []string) error {
 	default:
 		b.Searches = searches
 	}
-	if err := config.ValidBoard(b); err != nil {
+	if err := config.ValidBoard(b); err != nil { // before the config is read: a bad flag is a usage error
 		return usagef("watchlist add: %v", err)
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, b) }) {
-		return fmt.Errorf("board %s/%s is already on the watchlist", b.ATS, b.Token)
-	}
-	cfg.Watchlist = append(cfg.Watchlist, b)
-	if host, ok := config.BoardHost(b); ok && *allow && !slices.Contains(cfg.AllowedHosts, host) {
-		cfg.AllowedHosts = append(cfg.AllowedHosts, host)
+	if err := addBoard(&cfg, b, *allow); err != nil {
+		return err
 	}
 	if err := config.Save(e.configPath, cfg); err != nil {
 		return fmt.Errorf("%w\n(use --allow-host to add the board's API host to allowed_hosts)", err)
@@ -133,6 +142,50 @@ func (e *env) watchlistRemove(args []string) error {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "removed %s/%s\n", *ats, *token)
+	return nil
+}
+
+// watchlistJSON is one board in `watchlist list --json`.
+type watchlistJSON struct {
+	ATS         posting.ATS `json:"ats"`
+	Token       string      `json:"token"`
+	Company     string      `json:"company"`
+	Region      string      `json:"region,omitempty"`
+	Host        string      `json:"host,omitempty"`
+	Search      string      `json:"search,omitempty"`
+	Searches    []string    `json:"searches,omitempty"`
+	URL         string      `json:"url,omitempty"`
+	LinkPattern string      `json:"link_pattern,omitempty"`
+}
+
+// invalidBoardError wraps the reason config.ValidBoard refused a board.
+type invalidBoardError struct{ error }
+
+func (e invalidBoardError) Unwrap() error { return e.error }
+
+// boardExistsError says the watchlist already holds the board (sameBoard).
+type boardExistsError struct{ b sources.Board }
+
+func (e boardExistsError) Error() string {
+	return fmt.Sprintf("board %s/%s is already on the watchlist", e.b.ATS, e.b.Token)
+}
+
+// addBoard is the one way a board joins a config, for `watchlist add` and
+// `jobs ingest`: it checks the board (config.ValidBoard), refuses one the
+// watchlist already has (sameBoard) and, with allowHost, adds the board's host
+// to allowed_hosts. The caller saves the config (config.Save validates it
+// again, including that every board host is allowed). On error cfg is unchanged.
+func addBoard(cfg *config.Config, b sources.Board, allowHost bool) error {
+	if err := config.ValidBoard(b); err != nil {
+		return invalidBoardError{err}
+	}
+	if slices.ContainsFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, b) }) {
+		return boardExistsError{b}
+	}
+	cfg.Watchlist = append(cfg.Watchlist, b)
+	if host, ok := config.BoardHost(b); ok && allowHost && !slices.Contains(cfg.AllowedHosts, host) {
+		cfg.AllowedHosts = append(cfg.AllowedHosts, host)
+	}
 	return nil
 }
 

@@ -380,7 +380,8 @@ func documentBase(listing string, sc scanned) (string, error) {
 
 // postingURLs resolves each link against base (see documentBase), upgrades
 // http to https (see upgradeHTTP), keeps the links whose canonical URL matches
-// pattern, drops duplicates and the listing page itself, and enforces the cap
+// pattern, drops duplicates and the listing page itself (any link on the
+// listing's own host and path, so its pagination is never a posting), and enforces the cap
 // and the non-empty rule.
 func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]target, error) {
 	baseURL, err := url.Parse(base)
@@ -389,6 +390,7 @@ func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]
 	}
 	var out []target
 	seen := map[string]bool{listing: true}
+	listHost, listPath := hostAndPath(listing)
 	for _, l := range links {
 		ref, err := url.Parse(strings.TrimSpace(l.href))
 		if err != nil {
@@ -401,6 +403,11 @@ func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]
 		upgradeHTTP(abs)
 		canon, err := posting.CanonicalURL(abs.String())
 		if err != nil || !pattern.MatchString(canon) || seen[canon] {
+			continue
+		}
+		// The listing's own path with another query is the listing again
+		// (pagination, sort, filters), never a posting, whatever the pattern says.
+		if h, p := hostAndPath(canon); h == listHost && p == listPath {
 			continue
 		}
 		seen[canon] = true
@@ -418,6 +425,16 @@ func postingURLs(links []link, listing, base string, pattern *regexp.Regexp) ([]
 		return nil, errors.New("page: no link on the page matched link_pattern; refusing to report an empty board")
 	}
 	return out, nil
+}
+
+// hostAndPath is a URL's lower-cased host and its path without a trailing "/",
+// the identity of a page apart from its query.
+func hostAndPath(raw string) (host, path string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", ""
+	}
+	return strings.ToLower(u.Host), strings.TrimRight(u.Path, "/")
 }
 
 // upgradeHTTP rewrites an http link on the default port to https, as a

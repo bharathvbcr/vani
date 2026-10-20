@@ -98,6 +98,15 @@ type failingAppend struct {
 
 var errAppend = errors.New("disk full")
 
+// AppendBatch counts as one call and fails whole.
+func (f *failingAppend) AppendBatch(ctx context.Context, evs []ledger.Event) error {
+	f.calls++
+	if f.calls >= f.n {
+		return errAppend
+	}
+	return f.Ledger.AppendBatch(ctx, evs)
+}
+
 func (f *failingAppend) Append(ctx context.Context, e ledger.Event) error {
 	f.calls++
 	if f.calls >= f.n {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,7 +31,7 @@ commands:
   init                       write a default config (refuses to overwrite)
   config check               validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
-  watchlist list             list boards
+  watchlist list [--json]    list boards
   watchlist add    --ats gh|lv|ab|wd|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg) [--allow-host]
   watchlist remove --ats A --token T
@@ -68,10 +69,16 @@ commands:
   jobs stats [--json] [same selection flags as list]
                              distributions over the selection: fit, age, scores, companies, keywords,
                              US states, areas and remote listings
+  jobs folders [--json] [--view new|saved|applied|hidden|all]
+                             category folder counts for the selection (career tracks from drafts/deciders)
   jobs show [--json] KEY     one role with its description
   jobs find [--json] --url URL
                              which tracked role a page is (scheme, host and path against url and
                              apply_url; query and fragment ignored); read-only, never fetches
+  jobs ingest --json         jobs scraped from a listing page: {page,save_search,jobs} on stdin,
+                             {queued,duplicates,rejected,search,analysis} on stdout. Queues them in
+                             <state dir>/inbox (the ledger's owner folds them) and, with
+                             save_search, adds the page to the watchlist (docs/EXTENSION_INGEST.md)
   jobs mark [--json] KEY saved|applied|hidden|clear
                              record what you did with a role (state dir marks/, never the ledger)
   jobs note [--json] KEY TEXT
@@ -323,7 +330,60 @@ func (e *env) cmdDaemon(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
-	return daemon.Run(ctx, cfg.Schedule, e.dailyJob(app, cfg), daemonClock)
+	// The daily run and the inbox poll both write the ledger: one at a time.
+	var ledgerMu sync.Mutex
+	daily := e.dailyJob(app, cfg)
+	job := func(ctx context.Context) error {
+		ledgerMu.Lock()
+		defer ledgerMu.Unlock()
+		return daily(ctx)
+	}
+	if app.PollInbox != nil {
+		pollCtx, cancel := context.WithCancel(ctx)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e.pollInboxLoop(pollCtx, app.PollInbox, &ledgerMu)
+		}()
+		// Registered after app.close's defer, so it runs first: the poll must
+		// be done with the ledger before the ledger closes.
+		defer func() { cancel(); wg.Wait() }()
+	}
+	return daemon.Run(ctx, cfg.Schedule, job, daemonClock)
+}
+
+// inboxPollInterval is how often the daemon looks for spooled extension jobs
+// between daily runs. A variable only so tests need not wait.
+var inboxPollInterval = 2 * time.Minute
+
+// pollInboxLoop calls poll every inboxPollInterval, holding mu so it never
+// overlaps the daily run, until ctx ends. A failed or panicking poll is
+// reported and the loop goes on: the spooled files stay for the next one.
+func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex) {
+	t := time.NewTicker(inboxPollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := e.pollInboxOnce(ctx, poll, mu); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
+		}
+	}
+}
+
+func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex) (err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic: %v", p)
+		}
+	}()
+	return poll(ctx)
 }
 
 func (e *env) cmdRunOnce(args []string) error {

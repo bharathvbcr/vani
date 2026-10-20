@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MAX_RESUME_BYTES, buildResumeRequest, checkResumeName, fromBase64, isPdf, isResumeField, parseBuiltResume, parseResumeGet,
-  parseResumeInfo, resumeHeader, resumeKey, resumeOp, toBase64,
+  parseResumeInfo, resumeHeader, resumeKey, resumeOp, runResume, toBase64,
 } from "../src/resume";
 import { type FieldInfo, emptyBank } from "../src/types";
 import { mergeCapture } from "../src/bank";
@@ -159,6 +159,115 @@ describe("resumeOp", () => {
       const r = resumeOp(m);
       expect("error" in r && r.code === code).toBe(true);
     }
+  });
+});
+
+describe("resumeKey on Workday", () => {
+  const H = "https://utaustin.wd1.myworkdayjobs.com";
+  test("a resume chosen on the posting is the one Fill finds on the apply page, on any route", () => {
+    const k = resumeKey(`${H}/UTstaff/job/AUSTIN-TX/FDE_R_1`);
+    expect(k).toBe(`${H}/UTstaff/job/FDE_R_1`);
+    expect(resumeKey(`${H}/en-US/UTstaff/details/FDE_R_1?q=x`)).toBe(k);
+    expect(resumeKey(`${H}/en-US/UTstaff/job/AUSTIN%2C-TX/FDE_R_1/apply/applyManually`)).toBe(k);
+  });
+});
+
+describe("runResume: the canonical key, then the key a resume was stored under before it", () => {
+  const H = "https://utaustin.wd1.myworkdayjobs.com";
+  const canon = `${H}/UTstaff/job/FDE_R_1`;
+  const oldDirect = `${H}/UTstaff/job/AUSTIN-TX/FDE_R_1`;
+  const oldApply = `${H}/en-US/UTstaff/job/AUSTIN%2C-TX/FDE_R_1/apply/applyManually`;
+  const B64 = toBase64(PDF);
+
+  /** A Mac app that keeps bindings by key; `broken` makes every call fail like an unreachable app. */
+  function mac(bound: Record<string, string> = {}, broken = false) {
+    const calls: { op: string; key: string }[] = [];
+    const native = async (op: object): Promise<unknown> => {
+      const o = op as { op: string; key: string; pdf?: string };
+      calls.push({ op: o.op, key: o.key });
+      if (broken) return { error: "the Vani Apply Mac app isn't reachable", code: "unreachable" };
+      if (o.op === "resumePut") { bound[o.key] = o.pdf!; return { ok: true, key: o.key }; }
+      if (o.op === "resumeDelete") { const had = o.key in bound; delete bound[o.key]; return { ok: true, removed: had }; }
+      return o.key in bound ? { found: true, name: "r.pdf", bytes: 1, pickedAt: "", pdf: bound[o.key] } : { found: false };
+    };
+    return { bound, calls, native };
+  }
+
+  test("a resume bound under the canonical key is found on the first call", async () => {
+    const m = mac({ [canon]: B64 });
+    expect(await runResume({ type: "resumeGet", url: oldApply }, m.native)).toMatchObject({ found: true });
+    expect(m.calls).toEqual([{ op: "resumeGet", key: canon }]);
+  });
+
+  test("a resume stored before the change under this page's own old key is still found (and not for another route)", async () => {
+    const m = mac({ [oldApply.replace(/\/en-US/, "")]: B64 });
+    expect(await runResume({ type: "resumeInfo", url: oldDirect }, m.native)).toEqual({ found: false });
+    const n = mac({ [oldDirect]: B64 });
+    expect(await runResume({ type: "resumeInfo", url: oldDirect }, n.native)).toMatchObject({ found: true });
+    expect(n.calls).toEqual([{ op: "resumeInfo", key: canon }, { op: "resumeInfo", key: oldDirect }]);
+  });
+
+  test("nothing bound anywhere is not found, and costs no more than the two lookups", async () => {
+    const m = mac();
+    expect(await runResume({ type: "resumeGet", url: oldDirect }, m.native)).toEqual({ found: false });
+    expect(m.calls.length).toBe(2);
+  });
+
+  test("a page whose key is unchanged is looked up once", async () => {
+    const m = mac();
+    await runResume({ type: "resumeGet", url: "https://boards.greenhouse.io/acme/jobs/1" }, m.native);
+    expect(m.calls.length).toBe(1);
+  });
+
+  test("an unreachable app is an error, never 'not found', and is not retried under the old key", async () => {
+    const m = mac({}, true);
+    expect(await runResume({ type: "resumeGet", url: oldDirect }, m.native)).toMatchObject({ code: "unreachable" });
+    expect(m.calls.length).toBe(1);
+  });
+
+  test("when the old-key lookup is the one that fails, the failure is returned, not 'not found'", async () => {
+    let n = 0;
+    const r = await runResume({ type: "resumeGet", url: oldDirect }, async () => (n++ === 0 ? { found: false } : { error: "io", code: "io" }));
+    expect(r).toEqual({ error: "io", code: "io" });
+  });
+
+  test("Remove takes the old binding too, or the fallback would bring it back", async () => {
+    const m = mac({ [canon]: B64, [oldDirect]: B64 });
+    expect(await runResume({ type: "resumeDelete", url: oldDirect }, m.native)).toEqual({ ok: true, removed: true });
+    expect(m.bound).toEqual({});
+    expect(await runResume({ type: "resumeGet", url: oldDirect }, m.native)).toEqual({ found: false });
+    const none = mac();
+    expect(await runResume({ type: "resumeDelete", url: oldDirect }, none.native)).toEqual({ ok: true, removed: false });
+  });
+
+  test("a delete that fails on either key is an error", async () => {
+    const r = await runResume({ type: "resumeDelete", url: oldDirect }, async () => ({ error: "io", code: "io" }));
+    expect(r).toEqual({ error: "io", code: "io" });
+  });
+
+  test("a put binds the canonical key and retires this page's old binding, so one job holds one slot", async () => {
+    const m = mac({ [oldDirect]: "OLD=" });
+    const r = await runResume({ type: "resumePut", url: oldDirect, name: "r.pdf", pdf: B64 }, m.native);
+    expect(r).toMatchObject({ ok: true });
+    expect(m.bound).toEqual({ [canon]: B64 });
+  });
+
+  test("a put the Mac app refused leaves the old binding alone", async () => {
+    const m = mac({ [oldDirect]: "OLD=" });
+    const r = await runResume({ type: "resumePut", url: oldDirect, name: "r.pdf", pdf: B64 }, async op => {
+      m.calls.push({ op: (op as { op: string }).op, key: "" });
+      return { error: "full", code: "full" };
+    });
+    expect(r).toEqual({ error: "full", code: "full" });
+    expect(m.bound).toEqual({ [oldDirect]: "OLD=" });
+    expect(m.calls.length).toBe(1);
+  });
+
+  test("a bad request is refused before any call", async () => {
+    const m = mac();
+    expect(await runResume({ type: "resumeGet", url: "chrome://extensions" }, m.native)).toMatchObject({ code: "bad_request" });
+    expect(await runResume({ type: "resumePut", url: oldDirect, name: "cv.docx", pdf: B64 }, m.native)).toMatchObject({ code: "bad_request" });
+    expect(m.calls).toEqual([]);
   });
 });
 

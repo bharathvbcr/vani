@@ -7,48 +7,78 @@
   :root {
     color-scheme: light dark;
     --ok: #10b981;
+    --ok-dark: #059669;
     --ok-bg: rgba(16, 185, 129, 0.12);
+    --ok-border: rgba(16, 185, 129, 0.28);
     --rev: #f59e0b;
+    --rev-dark: #d97706;
     --rev-bg: rgba(245, 158, 11, 0.12);
+    --rev-border: rgba(245, 158, 11, 0.28);
     --ai: #8b5cf6;
     --ai-bg: rgba(139, 92, 246, 0.12);
+    --ai-border: rgba(139, 92, 246, 0.28);
     --danger: #ef4444;
     --danger-bg: rgba(239, 68, 68, 0.12);
+    --danger-border: rgba(239, 68, 68, 0.28);
     --bg: #ffffff;
     --surface: #f8fafc;
+    --surface-card: #ffffff;
     --surface-hover: #f1f5f9;
     --surface-active: #e2e8f0;
     --border: #e2e8f0;
     --border-hover: #cbd5e1;
     --text: #0f172a;
     --muted: #64748b;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
     --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-    --radius: 8px;
-    --radius-lg: 12px;
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+    --radius-sm: 6px;
+    --radius: 10px;
+    --radius-lg: 14px;
+    /* One accent. --accent fills buttons (white text, 5.5:1); --accent-text is the same hue as text on a card. */
+    --accent: #047857;
+    --accent-hover: #065f46;
+    --accent-text: #047857;
+    --rev-text: #b45309;
+    --danger-text: #b91c1c;
+    /* Spacing scale for the header, tab bar and Home tab. */
+    --s1: 4px;
+    --s2: 8px;
+    --s3: 12px;
+    --s4: 16px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f172a;
-      --surface: #1e293b;
-      --surface-hover: #283548;
-      --surface-active: #334155;
-      --border: #334155;
-      --border-hover: #475569;
+      --accent-hover: #059669;
+      --accent-text: #34d399;
+      --rev-text: #fbbf24;
+      --danger-text: #f87171;
+      --bg: #090d16;
+      --surface: #0f172a;
+      --surface-card: #141e33;
+      --surface-hover: #1c2944;
+      --surface-active: #243555;
+      --border: #212e47;
+      --border-hover: #314468;
       --text: #f8fafc;
       --muted: #94a3b8;
-      --shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+      --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.6);
     }
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
     margin: 0;
     padding: 0;
-    width: 490px;
+    width: 494px;
     background: var(--bg);
     color: var(--text);
     overflow-x: hidden;
+    letter-spacing: -0.005em;
   }
 
   /* Header */
@@ -56,86 +86,127 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px 10px;
+    gap: var(--s2);
+    padding: var(--s2) var(--s4);
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s2);
+    min-width: 0;
   }
-  .brand img {
-    border-radius: 6px;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-  }
+  .brand img { border-radius: 5px; display: block; }
   .brand-title {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     margin: 0;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    white-space: nowrap;
   }
-  .brand-chip {
-    font-size: 10px;
-    font-weight: 600;
-    padding: 2px 6px;
-    border-radius: 9999px;
-    background: var(--ok-bg);
-    color: var(--ok);
-    border: 1px solid var(--ok);
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    min-width: 0;
   }
   .host-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: 11px;
     color: var(--muted);
-    background: var(--surface-active);
-    padding: 3px 8px;
-    border-radius: 6px;
-    max-width: 170px;
+    background: var(--bg);
+    padding: 3px 9px 3px 7px;
+    border-radius: 9999px;
+    max-width: 230px;
+    border: 1px solid var(--border);
+    min-width: 0;
+  }
+  .host-pill #host {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .ico {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ico-sm { width: 13px; height: 13px; }
+  .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .icon-btn:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  .icon-btn .rescan-icon { display: inline-flex; }
+  .icon-btn.spinning .rescan-icon { animation: spin-rescan 0.7s linear infinite; }
+  @keyframes spin-rescan {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .icon-btn.spinning .rescan-icon { animation: none; }
   }
 
-  /* Navigation Tabs */
+  /* Navigation tabs: icon over label so all five fit in 494px */
   .nav-tabs {
     display: flex;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    padding: 0 8px;
-    gap: 2px;
+    padding: 0 var(--s2);
   }
   .tab-btn {
     flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 9px 8px;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+    padding: 7px var(--s1) 6px;
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    font-size: 12px;
+    border-radius: 0;
+    font-size: 11px;
     font-weight: 500;
     color: var(--muted);
-    cursor: pointer;
-    transition: all 0.15s ease;
+    white-space: nowrap;
   }
-  .tab-btn:hover {
+  .tab-btn:hover:not(:disabled) {
     color: var(--text);
     background: var(--surface-hover);
   }
   .tab-btn.active {
-    color: var(--ok);
-    border-bottom-color: var(--ok);
+    color: var(--accent-text);
+    border-bottom-color: var(--accent-text);
     font-weight: 600;
   }
+  .tab-btn:focus-visible { outline-offset: -2px; }
 
   /* Tab Panes */
   .tab-pane {
     display: none;
     padding: 14px 16px;
-    max-height: 520px;
+    max-height: 530px;
     overflow-y: auto;
   }
   .tab-pane.active {
@@ -162,14 +233,16 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 7px;
+    padding: 2.5px 8px;
     border-radius: 9999px;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: -0.01em;
   }
-  .badge-ok { background: var(--ok-bg); color: var(--ok); }
-  .badge-rev { background: var(--rev-bg); color: var(--rev); }
-  .badge-muted { background: var(--surface-hover); color: var(--muted); }
+  .badge-ok { background: var(--ok-bg); color: var(--accent-text); border: 1px solid var(--ok-border); }
+  .badge-rev { background: var(--rev-bg); color: var(--rev-text); border: 1px solid var(--rev-border); }
+  .badge-muted { background: var(--surface-active); color: var(--muted); border: 1px solid var(--border); }
+  .badge-danger { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-border); }
 
   /* Buttons */
   button {
@@ -177,7 +250,7 @@
     font-size: 12px;
     font-weight: 500;
     padding: 6px 12px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text);
@@ -186,7 +259,7 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    transition: all 0.15s ease;
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   }
   button:hover:not(:disabled) {
     background: var(--surface-hover);
@@ -194,19 +267,31 @@
   }
   button:active:not(:disabled) {
     background: var(--surface-active);
+    transform: translateY(1px);
+  }
+  button:focus-visible, summary:focus-visible, .btn-file-upload:focus-within {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+  }
+  button.btn-copied {
+    background: var(--ok-bg) !important;
+    border-color: var(--ok) !important;
+    color: var(--ok) !important;
+    font-weight: 600 !important;
   }
   button:disabled {
     opacity: 0.5;
     cursor: default;
   }
   button.primary {
-    background: var(--ok);
+    background: var(--accent);
     color: #fff;
-    border-color: var(--ok);
+    border-color: var(--accent);
     font-weight: 600;
   }
   button.primary:hover:not(:disabled) {
-    filter: brightness(1.08);
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
   }
   button.accent {
     background: var(--ai);
@@ -216,108 +301,431 @@
   button.danger {
     background: var(--danger-bg);
     color: var(--danger);
-    border-color: var(--danger);
+    border-color: var(--danger-border);
+  }
+  button.danger:hover:not(:disabled) {
+    background: var(--danger);
+    color: #fff;
   }
   button.sm {
     padding: 3px 8px;
     font-size: 11px;
-    border-radius: 4px;
+    border-radius: 5px;
   }
 
   /* Shortcut chip inside button */
   .kbd {
     font-size: 10px;
-    padding: 1px 4px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.25);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    font-family: ui-monospace, monospace;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.24);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-weight: 600;
   }
 
-  /* Status and Alerts */
-  #status {
-    min-height: 20px;
-    margin: 8px 0;
-    padding: 8px 10px;
+  /* Home tab layout: sections are ordered by view (data-view on #tab-page, set by popup.ts from home.ts) */
+  #tab-page.active { display: flex; flex-direction: column; }
+  #tab-page > * { flex: none; }
+  #tab-page > #status { order: 0; }
+  #tab-page > #applied { order: 1; }
+  #tab-page > #portal-card { order: 2; }
+  #tab-page > #home-empty-card, #tab-page > #form-view, #tab-page > #resume { order: 3; }
+  #tab-page > #missed-card { order: 4; }
+  #tab-page > #job-area { order: 5; }
+  #tab-page > #form-extra { order: 6; }
+  #tab-page[data-view="job"] > #job-area { order: 3; }
+  /* A resume belongs with a form or a posting, not with the dashboard */
+  #tab-page:is([data-view="idle"], [data-view="disabled"], [data-view="error"]) > #resume { display: none; }
+
+  .card {
+    background: var(--surface-card);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
+    padding: var(--s3);
+    margin-bottom: var(--s3);
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s2);
+    margin-bottom: var(--s2);
+  }
+  .card-title { margin: 0; font-size: 12px; font-weight: 700; color: var(--text); }
+  .card > .card-title { margin-bottom: var(--s2); }
+  .job-actions { display: flex; justify-content: flex-end; margin-bottom: var(--s3); }
+  .card-note { margin: var(--s2) 0 0; font-size: 12px; color: var(--muted); }
+  .item-list { margin: 0; padding: 0; list-style: none; font-size: 12px; }
+  .item-list li { margin-bottom: 5px; }
+  .link-btn { padding: 0; border: none; background: none; color: var(--accent-text); font-size: 11px; }
+  .link-btn:hover:not(:disabled) { background: none; text-decoration: underline; }
+
+  /* Fill action: one prominent button, two quiet tools beside it */
+  .fill-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: var(--s2);
+    margin-bottom: var(--s2);
+  }
+  .hero-cta {
+    padding: 10px var(--s4);
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+  .hero-cta:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .hero-cta .kbd { background: rgba(255, 255, 255, 0.2); border-color: rgba(255, 255, 255, 0.4); color: #fff; }
+  .hero-cta:disabled { cursor: progress; }
+  .tool-btn { padding: 0 var(--s3); font-weight: 600; }
+  .fill-options {
+    margin-bottom: var(--s3);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .fill-options summary {
+    cursor: pointer;
+    width: max-content;
+    padding: 2px 0;
+    user-select: none;
+  }
+  .fill-options summary:hover { color: var(--text); }
+  .fill-options-body { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) 0 var(--s1); }
+  .check-row { display: flex; align-items: center; gap: var(--s2); color: var(--text); cursor: pointer; }
+  .check-row input { margin: 0; }
+
+  /* Status line: tone is set by popup.ts (info, ok, warn, error); the raw detail lives in the title */
+  #status {
+    margin-bottom: var(--s3);
+    padding: var(--s2) var(--s3);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
     font-size: 12px;
-    line-height: 1.4;
+    line-height: 1.45;
+    color: var(--text);
   }
+  #status[data-tone="ok"] { border-left-color: var(--accent-text); }
+  #status[data-tone="warn"] { border-left-color: var(--rev-text); }
+  #status[data-tone="error"] { border-left-color: var(--danger-text); background: var(--danger-bg); }
   #status:empty { display: none; }
 
-  /* Coverage Meter Bar */
-  .meter-card {
-    background: var(--surface);
+  /* Custom Sleek Scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-hover);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
+  }
+
+  /* Job Details Card */
+  #job-details-card {
+    background: var(--surface-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 10px 12px;
-    margin-bottom: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-sm);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
-  .meter-label-row {
+  #job-details-card:hover {
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow);
+  }
+  .job-title-wrap {
     display: flex;
-    justify-content: space-between;
-    font-size: 12px;
-    margin-bottom: 6px;
-    font-weight: 600;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
   }
-  .meter-bar {
-    height: 8px;
+  #job-title-text {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #job-company-text {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #job-desc-snippet {
+    font-size: 11.5px;
+    color: var(--muted);
+    max-height: 48px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 1.45;
+    margin-top: 4px;
+  }
+  #toggle-job-desc {
+    margin-top: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  #toggle-job-desc:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-hover);
+  }
+  #job-desc-full {
+    font-size: 11.5px;
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 9px 11px;
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+
+  /* Relevance Breakdown Card */
+  #relevance-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-sm);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  #relevance-card:hover {
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow);
+  }
+  .rel-score-bar-track {
+    height: 5px;
     width: 100%;
     background: var(--surface-active);
-    border-radius: 4px;
+    border-radius: 9999px;
+    overflow: hidden;
+    margin: 6px 0 8px;
+  }
+  .rel-bar-fill {
+    height: 100%;
+    border-radius: 9999px;
+    width: 0%;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .rel-bar-fill.fill-ok { background: linear-gradient(90deg, #10b981, #059669); }
+  .rel-bar-fill.fill-rev { background: linear-gradient(90deg, #f59e0b, #d97706); }
+  .rel-bar-fill.fill-muted { background: var(--muted); }
+  #rel-dealbreaker {
+    color: var(--danger);
+    font-size: 11px;
+    font-weight: 500;
+    margin-top: 6px;
+    padding: 6px 10px;
+    background: var(--danger-bg);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--danger-border);
+  }
+
+  /* Missed Fields Card */
+  #missed-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--rev);
+    border-radius: var(--radius);
+    padding: 11px 14px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-sm);
+  }
+  #missed-list {
+    margin: 0;
+    padding-left: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #missed-list li {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 5px 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    transition: border-color 0.15s ease;
+  }
+  #missed-list li:hover {
+    border-color: var(--border-hover);
+  }
+
+  /* Portal Card */
+  #portal-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--ai);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* Coverage Meter Card */
+  .meter-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s2);
+    margin-bottom: var(--s2);
+  }
+  .meter-titles { display: flex; flex-direction: column; min-width: 0; }
+  .meter-subtitle { font-size: 12px; color: var(--muted); }
+  .meter-badge { font-size: 12px; padding: 2px 10px; }
+  .meter-bar-track {
+    height: 8px;
+    background: var(--surface-active);
+    border-radius: 9999px;
     display: flex;
     overflow: hidden;
+    margin-bottom: var(--s2);
   }
-  .meter-bar .bar-ok { background: var(--ok); transition: width 0.3s ease; }
-  .meter-bar .bar-rev { background: var(--rev); transition: width 0.3s ease; }
-  .meter-bar .bar-unk { background: var(--border-hover); transition: width 0.3s ease; }
-  .meter-stats {
+  .meter-bar-track > div { width: 0; transition: width 0.3s ease; }
+  .meter-bar-track .bar-ok { background: var(--accent); }
+  .meter-bar-track .bar-rev { background: var(--rev); }
+  .meter-bar-track .bar-unk { background: var(--border-hover); }
+  .meter-legend { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); font-size: 12px; color: var(--muted); }
+  .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-item b { color: var(--text); font-weight: 700; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-ok { background: var(--accent); }
+  .dot-rev { background: var(--rev); }
+  .dot-unk { background: var(--border-hover); }
+
+  /* Resume attachment */
+  .card-actions { display: flex; align-items: center; gap: var(--s2); }
+  .btn-file-upload {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 5px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .btn-file-upload:hover { background: var(--surface-hover); border-color: var(--border-hover); }
+  .btn-file-upload input[type=file] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    overflow: hidden;
+  }
+  .resume-file-info {
+    font-size: 12px;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  /* Applied banner */
+  #applied {
     display: flex;
-    gap: 12px;
-    margin-top: 6px;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s2);
+    background: var(--ok-bg);
+    border: 1px solid var(--ok-border);
+    border-radius: var(--radius);
+    padding: var(--s2) var(--s3);
+    margin-bottom: var(--s3);
+  }
+  #applied[hidden] { display: none; }
+  #applied-text { font-weight: 600; font-size: 12px; flex: 1; color: var(--text); }
+  .banner-actions { display: flex; gap: 6px; flex: none; }
+  .security-note {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin: var(--s1) 0 0;
     font-size: 11px;
     color: var(--muted);
   }
-  .meter-stat-item {
+
+  /* Dashboard: shown when the page is not an application */
+  .empty-hero {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--s3);
+    padding: var(--s3);
+    margin-bottom: var(--s3);
+    border: 1px dashed var(--border-hover);
+    border-radius: var(--radius);
   }
-  .meter-dot {
-    width: 6px;
-    height: 6px;
+  .empty-hero-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
-  }
-
-  /* Applied Banner */
-  #applied {
     background: var(--ok-bg);
-    border: 1px solid var(--ok);
-    border-radius: var(--radius);
-    padding: 10px 12px;
-    margin: 10px 0;
+    color: var(--accent-text);
+    flex: none;
   }
-  #applied .row { margin: 0; }
-  #applied-text { font-weight: 600; font-size: 12px; flex: 1; color: var(--text); }
-
-  /* Frame and Coverage Boxes */
-  #framebox, #coverage {
+  .empty-hero-text { flex: 1; min-width: 0; }
+  .empty-hero-title { margin: 0; font-size: 13px; font-weight: 700; }
+  .empty-hero-desc { margin: 2px 0 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+  .bar { height: 6px; border-radius: 9999px; background: var(--surface-active); overflow: hidden; }
+  .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+  .card-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); margin-top: var(--s2); }
+  .card-foot .muted { min-width: 0; }
+  .quick-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s2); margin-bottom: var(--s3); }
+  .quick-btn {
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--s3) var(--s2);
+    background: var(--surface-card);
+    font-weight: 600;
+  }
+  .quick-btn .ico { width: 18px; height: 18px; color: var(--accent-text); }
+  .shortcuts { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s1) var(--s4); font-size: 11px; color: var(--muted); }
+  .shortcuts kbd {
+    font: 600 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 1px 5px;
+    margin-right: 4px;
+    border-radius: 4px;
+    border: 1px solid var(--border-hover);
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 8px 12px;
-    margin: 8px 0;
-    font-size: 12px;
-  }
-  #framebox ul, #coverage ul {
-    margin: 4px 0 0;
-    padding-left: 20px;
     color: var(--text);
   }
-  #framebox li, #coverage li { margin-bottom: 4px; }
 
   /* Checkbox / Label rows */
   label.toggle-label {
@@ -334,16 +742,9 @@
   }
 
   /* Basics Tab */
-  details#basics {
+  #basics {
     margin: 0;
     border: none;
-  }
-  details#basics summary {
-    font-size: 13px;
-    font-weight: 600;
-    padding: 6px 0;
-    cursor: pointer;
-    color: var(--text);
   }
   .section-card {
     background: var(--surface);
@@ -631,148 +1032,268 @@
 </style>
 </head>
 <body>
-  <!-- Header Bar -->
+  <!-- Icons: drawn once, used with <use href="#i-name"> (no external files; MV3 CSP safe) -->
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-3-6.7"/><path d="M21 4v5h-5"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8M8 21v-7h8v7"/></symbol>
+    <symbol id="i-clear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M21 11l-9 9a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8-8"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  </svg>
+
   <header class="header">
     <div class="brand">
-      <img src="icons/icon-32.png" width="22" height="22" alt="Vani Logo">
+      <img src="icons/icon-32.png" width="20" height="20" alt="">
       <h1 class="brand-title">Vani Apply</h1>
-      <span class="brand-chip">v1.0</span>
     </div>
-    <div class="host-pill" id="host" title="Current host"></div>
+    <div class="header-right">
+      <div class="host-pill" title="Current host">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-globe"/></svg>
+        <span id="host"></span>
+      </div>
+      <button id="btn-rescan" class="icon-btn" title="Re-scan current tab (⌥⇧R)" aria-label="Re-scan page">
+        <span class="rescan-icon"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg></span>
+      </button>
+    </div>
   </header>
 
-  <!-- Navigation Tabs -->
-  <nav class="nav-tabs">
-    <button class="tab-btn active" data-tab="page">
-      <span>⚡</span> Page & Fill
+  <nav class="nav-tabs" role="tablist" aria-label="Sections">
+    <button class="tab-btn active" data-tab="page" role="tab" aria-selected="true" aria-controls="tab-page" title="Home &amp; Fill">
+      <svg class="ico" aria-hidden="true"><use href="#i-home"/></svg><span>Home</span>
     </button>
-    <button class="tab-btn" data-tab="scraper">
-      <span>🔍</span> Job Scraper
+    <button class="tab-btn" data-tab="scraper" role="tab" aria-selected="false" aria-controls="tab-scraper" title="Job Scraper">
+      <svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><span>Jobs</span>
     </button>
-    <button class="tab-btn" data-tab="basics">
-      <span>👤</span> Your Basics
+    <button class="tab-btn" data-tab="basics" role="tab" aria-selected="false" aria-controls="tab-basics" title="Your Basics">
+      <svg class="ico" aria-hidden="true"><use href="#i-user"/></svg><span>Basics</span>
     </button>
-    <button class="tab-btn" data-tab="answers">
-      <span>📚</span> Saved Answers
+    <button class="tab-btn" data-tab="answers" role="tab" aria-selected="false" aria-controls="tab-answers" title="Saved Answers">
+      <svg class="ico" aria-hidden="true"><use href="#i-list"/></svg><span>Answers</span>
     </button>
-    <button class="tab-btn" data-tab="settings">
-      <span>⚙️</span> Settings & Data
+    <button class="tab-btn" data-tab="settings" role="tab" aria-selected="false" aria-controls="tab-settings" title="Settings &amp; Data">
+      <svg class="ico" aria-hidden="true"><use href="#i-sliders"/></svg><span>Settings</span>
     </button>
   </nav>
 
-  <!-- TAB 1: Page & Fill -->
-  <main id="tab-page" class="tab-pane active">
+  <!-- Home tab. data-view (form | job | idle | disabled | error) is set by popup.ts from home.ts; sections are ordered by CSS. -->
+  <main id="tab-page" class="tab-pane active" data-view="idle">
+    <div id="status" role="status" aria-live="polite" data-tone="info">Checking this page…</div>
+
     <!-- Portal Adaptation Banner -->
-    <div id="portal-card" class="section-card" style="display:none;margin-bottom:8px;padding:8px 12px;">
+    <div id="portal-card" class="section-card" style="display:none;margin-bottom:10px;padding:10px 14px;">
       <div class="row-between" style="margin:0;">
-        <span style="font-weight:600;display:flex;align-items:center;gap:6px;font-size:12px;">
+        <span style="font-weight:700;display:flex;align-items:center;gap:7px;font-size:12px;">
           <span id="portal-icon">🏢</span> <span id="portal-name">Portal</span>
         </span>
         <span class="badge badge-muted" id="portal-step" style="display:none;"></span>
       </div>
-      <div id="portal-tips" class="muted" style="margin-top:4px;font-size:11px;"></div>
+      <div id="portal-tips" class="muted" style="margin-top:5px;font-size:11px;line-height:1.4;"></div>
+    </div>
+
+    <!-- Applied Job Banner -->
+    <div id="applied" hidden>
+      <span id="applied-text"></span>
+      <div class="banner-actions">
+        <button id="applied-yes" class="primary sm">Mark applied</button>
+        <button id="applied-no" class="sm">Not now</button>
+      </div>
+    </div>
+
+    <!-- The posting on this page: shown with a form or on a job page, never on the dashboard -->
+    <section id="job-area" hidden>
+    <div id="job-details-card" class="section-card" style="display:none;">
+      <div class="section-card-title">
+        <span class="job-title-wrap">
+          <span style="font-size:13px;">💼</span>
+          <span id="job-title-text" title="Job title">Job Details</span>
+        </span>
+        <button id="copy-job-details" class="sm primary" title="Copy job title and description to clipboard">
+          📋 Copy Details
+        </button>
+      </div>
+      <div class="job-meta-row">
+        <span id="job-company-text" class="muted"></span>
+        <div style="display:flex;gap:4px;">
+          <button id="copy-job-title" class="sm" title="Copy job title only">Copy Title</button>
+          <button id="copy-job-desc" class="sm" title="Copy job description only">Copy Description</button>
+        </div>
+      </div>
+      <div id="job-desc-snippet" class="muted"></div>
+      <button id="toggle-job-desc" class="sm" style="display:none;">
+        Show full description ▾
+      </button>
+      <div id="job-desc-full" style="display:none;"></div>
     </div>
 
     <!-- Real-time Relevance Card -->
-    <div id="relevance-card" class="section-card" style="display:none;margin-bottom:8px;">
+    <div id="relevance-card" class="section-card" style="display:none;">
       <div class="section-card-title">
-        <span>Job Relevance</span>
+        <span style="display:flex;align-items:center;gap:6px;"><span>🎯</span> Job Relevance</span>
         <span id="rel-score-badge" class="badge badge-ok">0% Match</span>
+      </div>
+      <div class="rel-score-bar-track">
+        <div id="rel-score-bar-fill" class="rel-bar-fill"></div>
       </div>
       <div class="row-between" style="margin:2px 0 6px;">
         <strong id="rel-fit-label" style="font-size:12px;"></strong>
         <span id="rel-workplace" class="badge badge-muted"></span>
       </div>
-      <div id="rel-skills-row" class="row" style="margin:2px 0;gap:4px;"></div>
-      <div id="rel-dealbreaker" style="display:none;color:var(--danger);font-size:11px;margin-top:4px;"></div>
+      <div id="rel-skills-row" class="row" style="margin:4px 0 6px;gap:5px;"></div>
+      <div id="rel-dealbreaker" style="display:none;"></div>
     </div>
+    <div id="job-actions" class="job-actions" hidden>
+      <button id="job-track" class="sm" title="Add this posting to the jobs Vani tracks">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-plus"/></svg>Track in Vani
+      </button>
+    </div>
+    </section>
 
     <!-- Missed Fillings Alert -->
-    <div id="missed-card" class="section-card" style="display:none;margin-bottom:8px;border-color:var(--rev);background:var(--rev-bg);">
-      <div class="section-card-title" style="color:var(--rev);">
+    <div id="missed-card" class="section-card" style="display:none;">
+      <div class="section-card-title" style="color:var(--rev-dark);">
         <span>⚠️ Missed Required Fields</span>
         <span id="missed-count-badge" class="badge badge-rev">0 Missed</span>
       </div>
       <div class="muted" style="margin-bottom:6px;font-size:11px;">
         Required or invalid fields to complete before submitting:
       </div>
-      <ul id="missed-list" style="margin:0;padding-left:18px;font-size:12px;display:flex;flex-direction:column;gap:5px;"></ul>
+      <ul id="missed-list"></ul>
     </div>
 
-    <!-- Applied Job Banner -->
-    <div id="applied" hidden>
-      <div class="row">
-        <span id="applied-text"></span>
-        <button id="applied-yes" class="primary sm">Mark Applied</button>
-        <button id="applied-no" class="sm">Not now</button>
-      </div>
-    </div>
-
-    <!-- Resume for this job -->
-    <div id="resume" class="row" hidden title="The PDF Fill attaches to this job's resume box. Each job has its own; a job with none gets no file.">
-      <strong>Resume for this job:</strong> <span id="resume-name" class="muted"></span>
-      <label>Choose PDF <input type="file" id="resume-pick" accept="application/pdf,.pdf"></label>
-      <button id="resume-remove" hidden>Remove</button>
-    </div>
-
-    <!-- Visual Page Coverage Meter -->
-    <div id="meter-card" class="meter-card">
-      <div class="meter-label-row">
-        <span>Form Readiness</span>
-        <span id="meter-percent">0%</span>
-      </div>
-      <div class="meter-bar">
-        <div id="bar-ok" class="bar-ok" style="width: 0%;" title="Confident fields"></div>
-        <div id="bar-rev" class="bar-rev" style="width: 0%;" title="Fields to review"></div>
-        <div id="bar-unk" class="bar-unk" style="width: 100%;" title="Unmatched / New fields"></div>
-      </div>
-      <div class="meter-stats">
-        <div class="meter-stat-item">
-          <span class="meter-dot" style="background: var(--ok);"></span>
-          <span id="stat-ok">0 confident</span>
+    <!-- Dashboard: no form and no posting on this page. Every number comes from the saved bank. -->
+    <section id="home-empty-card" aria-label="Dashboard" hidden>
+      <div class="empty-hero">
+        <span class="empty-hero-icon"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg></span>
+        <div class="empty-hero-text">
+          <h2 id="home-title" class="empty-hero-title">No application form here</h2>
+          <p id="home-desc" class="empty-hero-desc">Open an application on Greenhouse, Lever, Ashby or Workday to fill it, or find roles with the scraper.</p>
         </div>
-        <div class="meter-stat-item">
-          <span class="meter-dot" style="background: var(--rev);"></span>
-          <span id="stat-rev">0 review</span>
+        <button type="button" class="sm" id="btn-empty-rescan" title="Re-scan current tab for forms">
+          <svg class="ico ico-sm" aria-hidden="true"><use href="#i-refresh"/></svg>Re-scan
+        </button>
+      </div>
+
+      <div id="home-profile" class="card" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Your profile</h2>
+          <span id="profile-pct" class="badge badge-muted">0%</span>
         </div>
-        <div class="meter-stat-item">
-          <span class="meter-dot" style="background: var(--border-hover);"></span>
-          <span id="stat-unk">0 new</span>
+        <div id="profile-track" class="bar" role="progressbar" aria-label="Basics saved" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="profile-bar" class="bar-fill"></div>
+        </div>
+        <p id="profile-text" class="card-note"></p>
+        <div class="card-foot">
+          <span id="profile-meta" class="muted"></span>
+          <button type="button" id="btn-profile-next" class="primary sm" hidden></button>
         </div>
       </div>
+
+      <div class="quick-actions">
+        <button type="button" class="quick-btn" id="btn-goto-scraper" title="Open the job scraper and scrape the listings on this page">
+          <svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><span>Scrape this page</span>
+        </button>
+        <button type="button" class="quick-btn" id="btn-goto-basics" title="Open Your Basics">
+          <svg class="ico" aria-hidden="true"><use href="#i-user"/></svg><span>Open basics</span>
+        </button>
+        <button type="button" class="quick-btn" id="btn-goto-answers" title="Open Saved Answers">
+          <svg class="ico" aria-hidden="true"><use href="#i-list"/></svg><span id="answers-label">Saved answers</span>
+        </button>
+      </div>
+
+      <div class="shortcuts" aria-label="Keyboard shortcuts">
+        <span><kbd>⌥⇧F</kbd>Fill a form</span>
+        <span><kbd>⌥⇧R</kbd>Re-scan this tab</span>
+      </div>
+    </section>
+
+    <!-- Application form on this page -->
+    <section id="form-view" hidden>
+      <div id="meter-card" class="card meter-card">
+        <div class="meter-header">
+          <div class="meter-titles">
+            <h2 class="card-title">Form readiness</h2>
+            <span id="meter-subtitle" class="meter-subtitle">Checking page for form fields…</span>
+          </div>
+          <span id="meter-percent" class="badge meter-badge badge-muted">0%</span>
+        </div>
+        <div class="meter-bar-track" role="img" aria-label="Share of fields by readiness">
+          <div id="bar-ok" class="bar-ok" title="Ready to fill"></div>
+          <div id="bar-rev" class="bar-rev" title="Fields to review"></div>
+          <div id="bar-unk" class="bar-unk" title="Unmatched or new fields"></div>
+        </div>
+        <div class="meter-legend">
+          <span class="legend-item" title="Fields with a confident saved answer"><i class="dot dot-ok"></i><b id="stat-ok">0</b> ready</span>
+          <span class="legend-item" title="Fields Vani fills as a draft for you to check, or leaves to you"><i class="dot dot-rev"></i><b id="stat-rev">0</b> to review</span>
+          <span class="legend-item" title="Questions with no saved answer yet"><i class="dot dot-unk"></i><b id="stat-unk">0</b> new</span>
+        </div>
+      </div>
+
+      <div class="fill-row">
+        <button id="fill" class="hero-cta" title="Auto-fill recognized fields on this application (⌥⇧F)">
+          <svg class="ico" aria-hidden="true"><use href="#i-bolt"/></svg><span class="lbl">Fill form</span><span class="kbd">⌥⇧F</span>
+        </button>
+        <button id="save" class="tool-btn" title="Capture and save filled answers from this form to your bank">
+          <svg class="ico" aria-hidden="true"><use href="#i-save"/></svg><span class="lbl">Save answers</span>
+        </button>
+        <button id="clear-marks" class="tool-btn" title="Clear the green and yellow highlights on the form">
+          <svg class="ico" aria-hidden="true"><use href="#i-clear"/></svg><span class="lbl">Clear marks</span>
+        </button>
+      </div>
+
+      <details id="fill-options" class="fill-options">
+        <summary>Fill options</summary>
+        <div class="fill-options-body">
+          <label class="check-row" title="Overwrite values that have already been typed into fields">
+            <input type="checkbox" id="overwrite"><span>Overwrite values already typed into fields</span>
+          </label>
+          <label class="check-row" title="Search-as-you-type dropdown fields are typed into when enabled">
+            <input type="checkbox" id="typeahead"><span>Type into search-as-you-type fields</span>
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <!-- The resume for this job's page: also useful on the posting, before the form -->
+    <div id="resume" class="card" hidden title="The PDF Fill attaches to this job's resume box. Each job has its own; a job with none gets no file.">
+      <div class="card-head">
+        <h2 class="card-title">Job resume</h2>
+        <div class="card-actions">
+          <label class="btn-file-upload">
+            <svg class="ico ico-sm" aria-hidden="true"><use href="#i-clip"/></svg><span>Attach PDF</span>
+            <input type="file" id="resume-pick" accept="application/pdf,.pdf">
+          </label>
+          <button id="resume-remove" class="sm danger" hidden title="Remove attached resume">Remove</button>
+        </div>
+      </div>
+      <div class="resume-file-info">
+        <span id="resume-name">none chosen; Fill leaves the resume box empty</span>
+      </div>
     </div>
 
-    <!-- Actions -->
-    <div class="row">
-      <button id="fill" class="primary" style="flex: 1;">
-        Fill this form <span class="kbd">⌥⇧F</span>
-      </button>
-      <button id="save" style="flex: 1;">Save answers</button>
-      <button id="clear-marks" title="Clear visual green/yellow highlights on the form">Clear marks</button>
-    </div>
+    <!-- New questions and frame detail for the form -->
+    <section id="form-extra" hidden>
+      <div id="framebox" class="card" hidden>
+        <h2 class="card-title">Fields by frame</h2>
+        <ul id="frames" class="item-list"></ul>
+      </div>
 
-    <div class="row" style="margin-top: 4px;">
-      <label class="toggle-label">
-        <input type="checkbox" id="overwrite"> overwrite typed values
-      </label>
-      <label class="toggle-label" title="Search-as-you-type fields are only typed into if this is on; the site may run its own search when they are.">
-        <input type="checkbox" id="typeahead"> type into search fields
-      </label>
-    </div>
+      <div id="coverage" class="card" hidden>
+        <h2 class="card-title">New questions on this page</h2>
+        <ul id="unknown" class="item-list"></ul>
+      </div>
 
-    <!-- Live Status Banner -->
-    <div id="status"></div>
-
-    <!-- Frame details and Unknown questions -->
-    <div id="framebox" hidden><strong>By frame</strong><ul id="frames"></ul></div>
-    <div id="coverage" hidden>
-      <strong>New questions on this page</strong> (no saved answer yet)
-      <ul id="unknown"></ul>
-    </div>
-
-    <div class="muted" style="margin-top: 10px;">
-      Green outlines = confident match. Yellow outlines = check before submitting. Vani never submits.
-    </div>
+      <p class="security-note">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-lock"/></svg>Vani never submits for you. Green outline = match, yellow = review.
+      </p>
+    </section>
   </main>
 
   <!-- TAB: Job Scraper -->
@@ -784,6 +1305,14 @@
       <button id="export-csv" class="sm" title="Export listings to CSV">CSV</button>
       <button id="export-json" class="sm" title="Export listings to JSON">JSON</button>
     </div>
+
+    <div class="row-between" style="margin:6px 0 4px;gap:8px;">
+      <label class="toggle-label" title="Vani searches this page again every day">
+        <input type="checkbox" id="scraper-save-search" checked> Search this page again daily
+      </label>
+      <button id="scraper-save" class="sm" title="Send every scraped job to Vani">Save to Vani</button>
+    </div>
+    <div id="scraper-save-result" class="muted" role="status" style="margin:0 0 6px;"></div>
 
     <div class="row-between" style="margin:6px 0 8px;gap:8px;">
       <div class="filter-input-wrap" style="flex:1;">
@@ -820,8 +1349,7 @@
       Entered once here, filled on every application. Answered questions on any form update these automatically.
     </div>
 
-    <details id="basics" open>
-      <summary style="display:none;"></summary>
+    <div id="basics">
       <div class="section-card">
         <div class="section-card-title">Contact Information</div>
         <div id="basic-contact" class="grid"></div>
@@ -847,7 +1375,7 @@
         <button id="basic-save" class="primary">Save basics</button>
         <span id="basic-status" class="muted"></span>
       </div>
-    </details>
+    </div>
   </section>
 
   <!-- TAB 3: Saved Answers Bank -->

@@ -81,8 +81,8 @@ public enum Limits {
     public static let maxDisabledHosts = 500
     public static let maxKeyChars = 200
     public static let reviewChars = 280
-    /// Under Chrome's 1 MB host-to-extension message limit, with room for the reply envelope.
-    public static let maxBankBytes = 900_000
+    /// Safety cap against memory exhaustion. Native messaging uses chunking over 750 KB.
+    public static let maxBankBytes = 50_000_000
 }
 
 extension Bank {
@@ -96,6 +96,15 @@ extension Bank {
     /// The bank as Foundation JSON objects, for replies that are not raw bytes (Safari).
     public func jsonObject() throws -> Any {
         try JSONSerialization.jsonObject(with: encoded())
+    }
+}
+
+extension Answer {
+    public func jsonObject() throws -> [String: Any] {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let d = try enc.encode(self)
+        return (try JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
     }
 }
 

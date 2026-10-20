@@ -27,6 +27,8 @@ const (
 	Apple ATS = "ap"
 	// Eightfold is an Eightfold "PCSX" careers site (Microsoft, Qualcomm).
 	Eightfold ATS = "ef"
+	// Jibe is an iCIMS Jibe careers site (AMD).
+	Jibe ATS = "jb"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

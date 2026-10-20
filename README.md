@@ -20,7 +20,7 @@ flowchart TD
         LV["Lever US & EU API"]
         AB["Ashby API"]
         WD["Workday CXS API"]
-        SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX)"]
+        SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX), Jibe"]
         PG["Custom Pages (Lightpanda)"]
     end
 
@@ -118,8 +118,10 @@ stateDiagram-v2
 
 - **Sources:** Greenhouse, Lever (US and EU), Ashby and Workday (cxs search, paged by 20)
   public job-board APIs, and the big-employer search sites: amazon.jobs (`az`, its search.json),
-  Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`)
-  and Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
+  Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`),
+  Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites
+  such as AMD's (`jb`, token the client code `amd`, host `careers.amd.com`; search optional, pages
+  of 100 spaced 5 s apart as its robots.txt asks). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
   block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
   `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
   authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
@@ -407,7 +409,11 @@ Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.my
 and, where verified, `--filter name=value`: `az --token amazon` (`normalized_country_code[]`,
 `category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
-posting cap fails rather than being truncated, so pick searches narrow enough. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
+posting cap fails rather than being truncated, so pick searches narrow enough. Workday lists past
+its 2000-row window by splitting the board on its own facets (5,000 postings by default; a board's
+`max_postings` sets 1 to 10,000); stored
+postings are reused, so a run spends at most 300 detail requests per board and a new large board
+fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for

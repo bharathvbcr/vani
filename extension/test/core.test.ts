@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { type Bank, type FieldInfo, emptyBank } from "../src/types";
 import { autocompleteKey, jaccard, normalizeLabel, signature, siteKey, tokens } from "../src/normalize";
 import { classify } from "../src/classify";
-import { MAX_ANSWERS, exportBank, mergeCapture, parseBank } from "../src/bank";
+import { MAX_ANSWERS, MAX_BANK_BYTES, exportBank, mergeCapture, mergeCaptureDelta, parseBank } from "../src/bank";
 import { mapChoice, matchField } from "../src/match";
 import { pendingDiff } from "../src/capture";
 
@@ -148,6 +148,26 @@ describe("capture", () => {
     b = mergeCapture(b, many, "a.com", now).bank;
     expect(Object.keys(b.answers).length).toBe(MAX_ANSWERS);
   });
+
+  test("mergeCaptureDelta computes granular upsert and deleteKeys", () => {
+    let b = emptyBank();
+    const delta1 = mergeCaptureDelta(b, [
+      field({ label: "Full Name", value: ["John Doe"] }),
+      field({ label: "Phone", value: ["1234567890"] }),
+    ], "greenhouse.io", now);
+    expect(delta1.upsert.length).toBe(2);
+    expect(delta1.deleteKeys.length).toBe(0);
+    expect(delta1.counts.added).toBe(2);
+
+    b = { ...b, answers: Object.fromEntries(delta1.upsert.map(a => [a.key, a])) };
+    const delta2 = mergeCaptureDelta(b, [
+      field({ label: "Full Name", value: ["Johnathan Doe"] }),
+    ], "greenhouse.io", now);
+    expect(delta2.upsert.length).toBe(1);
+    expect(delta2.upsert[0]?.value).toEqual(["Johnathan Doe"]);
+    expect(delta2.deleteKeys.length).toBe(0);
+    expect(delta2.counts.updated).toBe(1);
+  });
 });
 
 describe("match", () => {
@@ -257,7 +277,7 @@ describe("import/export", () => {
     expect(() => parseBank(JSON.stringify({ version: 1, answers: [] }))).toThrow();
     expect(() => parseBank(JSON.stringify({ version: 1, answers: { ab: { key: "different" } } }))).toThrow(/malformed/);
     expect(() => parseBank(JSON.stringify({ version: 1, answers: { ab: { key: "ab", kind: "weird", value: [], labels: [], signatures: [] } } }))).toThrow(/kind/);
-    expect(() => parseBank("x".repeat(8_000_001))).toThrow(/8 MB/);
+    expect(() => parseBank("x".repeat(MAX_BANK_BYTES + 1))).toThrow(/larger than/);
   });
 
   test("a hand-edited secret is dropped on import", () => {

@@ -76,6 +76,20 @@ final class Service: NSObject, AgentXPC, NSXPCListenerDelegate {
         touch()
         reply(jobsOps.markApplied(key: key))
     }
+
+    // Queueing scraped jobs may drain the inbox into the ledger, so it gets its own ceiling
+    // (JobsClient.ingestTimeout), which the client's longer ingest call timeout covers.
+    func ingest(payload: Data, reply: @escaping (Data?, String?) -> Void) {
+        touch()
+        let r = AgentJobsOps(jobs: DraftSettings.load(from: storeDir).jobsClient(vaniBinary: vaniBinary, timeout: JobsClient.ingestTimeout)).ingest(payload: payload)
+        reply(r.reply, r.error)
+    }
+
+    // Lets the app see whose copy of `vani` this agent runs, and take the job back.
+    func identity(reply: @escaping (String) -> Void) {
+        touch()
+        reply(AgentIdentity.bundlePath(helpers: vaniBinary.deletingLastPathComponent()))
+    }
 }
 
 let service = Service(jobs: jobs)

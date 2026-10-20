@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // App is everything the long-running commands need from the rest of Vani.
@@ -28,6 +29,13 @@ type App struct {
 	// RunReport returns what the last RunOnce reported about itself (the
 	// advance phase, backend errors) for the run record. Nil means none.
 	RunReport func() runDetail
+	// Reload hands the app the watchlist and allowed hosts the config file holds
+	// now, before each daily run. Nil means the app keeps its own.
+	Reload func(watchlist []sources.Board, allowedHosts []string)
+	// PollInbox folds the jobs the extension spooled (internal/inbox) and
+	// advances the new ones. The daemon calls it between daily runs, never
+	// while a run is going. Nil means no polling.
+	PollInbox func(ctx context.Context) error
 	// Notifier announces a finished digest. Nil means no notification.
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
@@ -77,6 +85,7 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
 		}
 		e.saveRunRecord(rec)
+		e.announceFailure(ctx, app, rec, err)
 		return err
 	}
 }
@@ -96,11 +105,36 @@ func ledgerBroken(l ledger.Ledger) error {
 }
 
 // dailySteps is the run itself; stage names where it stopped when it fails.
-// Between the pipeline and the digest it warms the knowledge-base scores the
-// digest orders by (semanticwire.go), with what the pipeline's own warm before
-// its advance phase left of semantic.warm_per_run; that never fails the run,
-// and rec carries what it did.
+//
+// The watchlist and allowed hosts are re-read from the config file first, so a
+// board saved while the daemon runs is searched from this run on. If the file
+// cannot be read the run goes on with the previous values and the failure is
+// joined into the run's error: the run record says the config was stale, and
+// the run is not reported as a clean one.
 func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
+	reloadErr := e.reloadBoards(app)
+	stage, err = e.runAndPublish(ctx, app, cfg, rec)
+	return stage, errors.Join(reloadErr, err)
+}
+
+// reloadBoards applies the config file's watchlist and allowed hosts to app.
+func (e *env) reloadBoards(app *App) error {
+	if app.Reload == nil {
+		return nil
+	}
+	fresh, _, err := config.LoadWithDeprecations(e.configPath)
+	if err != nil {
+		return fmt.Errorf("%w; this run uses the previous watchlist and allowed_hosts: %w", errConfigStale, err)
+	}
+	app.Reload(fresh.Watchlist, fresh.AllowedHosts)
+	return nil
+}
+
+// runAndPublish runs the pipeline and publishes the digest. Between the two it
+// warms the knowledge-base scores the digest orders by (semanticwire.go), with
+// what the pipeline's own warm before its advance phase left of
+// semantic.warm_per_run; that never fails the run, and rec carries what it did.
+func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
 	}
@@ -153,9 +187,10 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 //
 // The digest honours the Jobs marks (marks only, never notes). When they
 // cannot be read the digest is held back: no file and no Digested event, and
-// the error is returned and announced. Listing everything instead would show,
-// and then consume, roles the user hid. The pipeline's results are already in
-// the ledger, so the roles are listed once the store reads again.
+// the error is returned (errDigestHeldBack; dailyJob announces it). Listing
+// everything instead would show, and then consume, roles the user hid. The
+// pipeline's results are already in the ledger, so the roles are listed once
+// the store reads again.
 func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location, opts digest.Options) error {
 	if app.Ledger == nil {
 		return errors.New("app has no ledger")
@@ -163,12 +198,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	dir := marks.Dir(e.stateDir)
 	m, err := marks.ReadMarks(dir)
 	if err != nil {
-		if app.Notifier != nil {
-			if nerr := app.Notifier.Notify(ctx, "Vani digest held back", "Your Jobs marks could not be read; see vani's log"); nerr != nil {
-				fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", nerr)
-			}
-		}
-		return fmt.Errorf("digest held back: read the Jobs marks in %s: %w", dir, err)
+		return fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
 	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, countsFor(recs, date, loc), opts)
@@ -184,8 +214,11 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	}
 	fmt.Fprintf(e.stdout, "digest: %s (%d roles)\n", path, len(keys))
 	if len(keys) > 0 && app.Notifier != nil {
-		body := fmt.Sprintf("%d roles to review", len(keys))
-		if err := app.Notifier.Notify(ctx, "Vani digest", body); err != nil {
+		var adv *advanceReport
+		if app.RunReport != nil {
+			adv = app.RunReport().Advance
+		}
+		if err := app.Notifier.Notify(ctx, "Vani digest", digestBody(len(keys), adv)); err != nil {
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}

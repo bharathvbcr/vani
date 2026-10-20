@@ -12,8 +12,12 @@ describe("templateTailoring: why-company and why-role questions are Draft's", ()
       "Why Anthropic",
       "Why us?",
     ]) {
+      expect(templateTailoring(label, "Anthropic")).toBeNull();
       expect(templateTailoring(label)).toBeNull();
     }
+    // The company-name matcher alone would have called this why_company.
+    expect(matchTailorableQuestion("Why at Anthropic, specifically?", "Anthropic")?.kind).toBe("why_company");
+    expect(templateTailoring("Why at Anthropic, specifically?", "Anthropic")).toBeNull();
   });
 
   test("other tailorable questions keep their templates", () => {
@@ -161,5 +165,24 @@ describe("tailored repeated questions engine", () => {
 
     const diversityDraft = generateTailoredDraft("diversity_perspective", jobWithComp);
     expect(diversityDraft).toContain("diverse viewpoints");
+  });
+
+  test("matchTailorableQuestion matches company-specific prompts", () => {
+    // Direct company questions
+    const qAnthropic = matchTailorableQuestion("Why Anthropic?");
+    expect(qAnthropic?.kind).toBe("why_company");
+
+    const qStripe = matchTailorableQuestion("Why Stripe?");
+    expect(qStripe?.kind).toBe("why_company");
+
+    const qWithCompany = matchTailorableQuestion("Why at OpenAI?", "OpenAI");
+    expect(qWithCompany?.kind).toBe("why_company");
+
+    const qJoin = matchTailorableQuestion("What makes you want to join our team?");
+    expect(qJoin?.kind).toBe("why_company");
+
+    // Negative lookahead check: ensure "Why this role?" stays why_role
+    const qRole = matchTailorableQuestion("Why this role?");
+    expect(qRole?.kind).toBe("why_role");
   });
 });

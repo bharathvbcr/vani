@@ -7,13 +7,16 @@ import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCov
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsValues } from "./basics";
 import { intentOf } from "./intents";
-import { exportJobsAsCSV, exportJobsAsJSON, type ScrapedJob, type ScrapeResult } from "./scraper";
+import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
+import { type IngestSource, describeIngest, prepareIngest } from "./ingest";
 import { type RelevanceResult, targetProfileFromBank } from "./relevance";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
 import type { JobInfo } from "./draft";
+import { formatJobDetails } from "./jobinfo";
 import { resumeRow } from "./resumerow";
+import { type HomeView, bankSummary, basicsCompleteness, compactCount, friendlyError, homeHeadline, homeState, meterModel, nextStep, ratedFrame, viewSections } from "./home";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -53,18 +56,14 @@ async function scanTabExtended(): Promise<TabScanExtended> {
     r.answered[0]?.reply;
   const portal = portalReply?.portal;
 
-  // Pick relevance: prefer one with positive score or non-empty
-  const relReply =
-    r.answered.find(a => a.reply.relevance && a.reply.relevance.score > 0)?.reply ??
-    r.answered.find(a => a.frameId === 0)?.reply ??
-    r.answered[0]?.reply;
+  const relReply = ratedFrame(r.answered)?.reply;
   const relevance = relReply?.relevance;
 
   // Pick job description info
   const jobReply =
+    relReply ??
     r.answered.find(a => a.reply.job && a.reply.job.description)?.reply ??
     portalReply ??
-    relReply ??
     r.answered.find(a => a.frameId === 0)?.reply ??
     r.answered[0]?.reply;
   const job = jobReply?.job;
@@ -127,9 +126,50 @@ function toast(msg: string): void {
   toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
 }
 
-function status(t: string): void {
+function flashCopied(btn: HTMLButtonElement | null, text = "✓ Copied"): void {
+  if (!btn) return;
+  if (!btn.dataset.origHtml) {
+    btn.dataset.origHtml = btn.innerHTML;
+  }
+  btn.textContent = text;
+  btn.classList.add("btn-copied");
+  setTimeout(() => {
+    if (btn.dataset.origHtml) {
+      btn.innerHTML = btn.dataset.origHtml;
+      delete btn.dataset.origHtml;
+    }
+    btn.classList.remove("btn-copied");
+  }, 1600);
+}
+
+type Tone = "info" | "ok" | "warn" | "error";
+
+/** One line under the header. `detail` (a raw message) goes in the tooltip, not on screen. */
+function status(t: string, tone: Tone = "info", detail = ""): void {
   const el = $("#status");
-  if (el) el.textContent = t;
+  if (!el) return;
+  el.textContent = t;
+  el.dataset.tone = tone;
+  el.title = detail;
+}
+
+/** An exception shown as a plain sentence; `prefix` names the action that failed. */
+function statusError(e: unknown, prefix = ""): void {
+  const f = friendlyError(e);
+  status(prefix ? `${prefix}: ${f.line}` : f.line, "error", f.detail);
+}
+
+/** Swap a button's label while it works; returns the restore. The icon stays. */
+function busy(btn: HTMLButtonElement | null, label: string): () => void {
+  if (!btn) return () => undefined;
+  const lbl = btn.querySelector<HTMLElement>(".lbl");
+  const before = lbl?.textContent ?? "";
+  btn.disabled = true;
+  if (lbl) lbl.textContent = label;
+  return () => {
+    btn.disabled = false;
+    if (lbl) lbl.textContent = before;
+  };
 }
 
 function preview(a: Answer): string {
@@ -142,7 +182,7 @@ function categoryOf(a: Answer): "contact" | "work" | "self_id" | "other" {
   if (a.sensitivity === "self_id") return "self_id";
   const intent = intentOf(a.key) || a.labels.map(l => intentOf(l)).find(Boolean);
   if (intent) {
-    if (intent.selfId) return "self_id";
+    if (intent === "self_id") return "self_id";
     return "work";
   }
   const k = a.key.toLowerCase();
@@ -156,27 +196,19 @@ function categoryOf(a: Answer): "contact" | "work" | "self_id" | "other" {
 }
 
 function updateMeter(c: Coverage): void {
-  const total = c.found || 1;
-  const okPct = Math.round((c.green / total) * 100);
-  const revPct = Math.round((c.yellow / total) * 100);
-  const unkPct = Math.max(0, 100 - okPct - revPct);
-
-  const barOk = $("#bar-ok");
-  const barRev = $("#bar-rev");
-  const barUnk = $("#bar-unk");
-  if (barOk) barOk.style.width = `${okPct}%`;
-  if (barRev) barRev.style.width = `${revPct}%`;
-  if (barUnk) barUnk.style.width = `${unkPct}%`;
-
+  const m = meterModel(c);
+  $("#bar-ok").style.width = `${m.okPct}%`;
+  $("#bar-rev").style.width = `${m.revPct}%`;
+  $("#bar-unk").style.width = `${m.unkPct}%`;
   const percentEl = $("#meter-percent");
-  if (percentEl) percentEl.textContent = `${c.found > 0 ? Math.round(((c.green + c.yellow) / c.found) * 100) : 0}% ready`;
-
-  const statOk = $("#stat-ok");
-  if (statOk) statOk.textContent = `${c.green} confident`;
-  const statRev = $("#stat-rev");
-  if (statRev) statRev.textContent = `${c.yellow} review`;
-  const statUnk = $("#stat-unk");
-  if (statUnk) statUnk.textContent = `${c.unknown} new`;
+  percentEl.textContent = `${m.badge} ready`;
+  percentEl.className = `badge meter-badge badge-${m.tone}`;
+  $("#meter-subtitle").textContent = m.subtitle;
+  $("#stat-ok").textContent = m.ok;
+  $("#stat-rev").textContent = m.review;
+  $("#stat-unk").textContent = m.fresh;
+  const fillBtn = $("#fill") as HTMLButtonElement;
+  fillBtn.disabled = !(c.found > 0);
 }
 
 function render(): void {
@@ -241,6 +273,7 @@ function render(): void {
     copy.onclick = async () => {
       try {
         await navigator.clipboard.writeText(a.value.join(", "));
+        flashCopied(copy, "✓ Copied");
         toast("Copied to clipboard!");
       } catch {
         toast("Could not copy to clipboard.");
@@ -272,11 +305,10 @@ function render(): void {
   $("#count").textContent = `${Object.keys(current.answers).length} saved answers`;
   $("#storage").textContent = (mode === "mac-app" ? "Stored by the Vani Apply Mac app." : "Stored in this browser only.") + (note ? ` ${note}` : "");
   const bytes = bankBytes(current);
-  $("#size").textContent = `${Math.round(bytes / 1000)} KB / ${MAX_BANK_BYTES / 1000} KB`;
+  $("#size").textContent = `${Math.round(bytes / 1000)} KB`;
   const quotaFill = $("#quota-fill");
   if (quotaFill) {
-    const pct = Math.min(100, Math.round((bytes / MAX_BANK_BYTES) * 100));
-    quotaFill.style.width = `${pct}%`;
+    quotaFill.style.display = "none";
   }
 
   renderBasics();
@@ -379,8 +411,8 @@ $("#modal-add-save").onclick = async () => {
 
 let basicsTyped = false;
 
-function basicInput(id: string): HTMLInputElement | HTMLSelectElement {
-  return $(`#basic-${id}`) as HTMLInputElement | HTMLSelectElement;
+function basicInput(id: string): HTMLInputElement | HTMLSelectElement | null {
+  return $(`#basic-${id}`) as HTMLInputElement | HTMLSelectElement | null;
 }
 
 function option(value: string, text = value): HTMLOptionElement {
@@ -401,14 +433,26 @@ function buildBasics(): void {
       box = document.createElement("select");
       box.append(option("", "—"), ...b.options.map(o => option(o)));
       box.onchange = () => { basicsTyped = true; };
+      box.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void saveBasics();
+        }
+      };
     } else {
       box = document.createElement("input");
       box.type = b.kind === "email" || b.kind === "tel" || b.kind === "url" ? b.kind : "text";
       box.setAttribute("autocomplete", b.autocomplete || "off");
       box.oninput = () => { basicsTyped = true; };
+      box.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void saveBasics();
+        }
+      };
     }
     box.id = `basic-${b.id}`;
-    $(`#basic-${b.group}`).append(label, box);
+    $(`#basic-${b.group}`)?.append(label, box);
   }
 }
 
@@ -417,6 +461,7 @@ function renderBasics(): void {
   if (!basicsTyped) {
     for (const b of BASICS) {
       const box = basicInput(b.id);
+      if (!box) continue;
       const saved = v[b.id] ?? "";
       if (box instanceof HTMLSelectElement && saved && !Array.from(box.options).some(o => o.value === saved)) {
         box.append(option(saved));
@@ -424,39 +469,91 @@ function renderBasics(): void {
       box.value = saved;
     }
   }
-  $("#basic-selfid-box").hidden = !current?.settings.captureSelfId;
+  const selfIdBox = $("#basic-selfid-box");
+  if (selfIdBox) selfIdBox.hidden = !current?.settings.captureSelfId;
 }
 
 async function saveBasics(): Promise<void> {
   const out = $("#basic-status");
-  const values: Record<string, string> = {};
-  for (const b of BASICS) values[b.id] = basicInput(b.id).value;
-  const fields = basicsFields(values, basicsValues(current));
-  if (fields.length === 0) {
-    out.textContent = "Nothing new to save.";
-    toast("No changes in basics.");
-    return;
-  }
   try {
+    const values: Record<string, string> = {};
+    for (const b of BASICS) {
+      const el = basicInput(b.id);
+      if (el) values[b.id] = el.value;
+    }
+    const fields = basicsFields(values, basicsValues(current));
+    if (fields.length === 0) {
+      if (out) out.textContent = "Nothing new to save.";
+      toast("No changes in basics.");
+      return;
+    }
+    if (out) out.textContent = "Saving basics...";
     const r = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
     if (!r || !("added" in r)) throw new Error((r && "error" in r && r.error) || "no reply from the extension");
     basicsTyped = false;
-    out.textContent = `Saved ${r.added + r.updated}` + (r.skippedSecret ? `; ${r.skippedSecret} refused as sensitive` : "") + ".";
+    if (out) out.textContent = `Saved ${r.added + r.updated}` + (r.skippedSecret ? `; ${r.skippedSecret} refused as sensitive` : "") + ".";
     toast(`Saved ${r.added + r.updated} basics.`);
     await refresh();
   } catch (e) {
-    out.textContent = `Could not save: ${e instanceof Error ? e.message : String(e)}`;
+    if (out) out.textContent = `Could not save: ${e instanceof Error ? e.message : String(e)}`;
     toast("Failed to save basics.");
   }
 }
 
 async function refresh(): Promise<void> {
   const r = await bg<{ bank?: Bank; mode?: "mac-app" | "browser"; note?: string | null; error?: string }>({ type: "getBank" });
-  if (r.error || !r.bank) { status(`Could not read saved answers: ${r.error ?? "unknown"}`); return; }
+  if (r.error || !r.bank) { status("Could not read your saved answers.", "error", r.error ?? "no reply from the extension"); return; }
   current = r.bank;
   mode = r.mode ?? "browser";
   note = r.note ?? null;
   render();
+  renderDashboard();
+}
+
+// --- home tab: which blocks show, and the dashboard -------------------------------------
+
+/** Show the blocks the view calls for and hide the rest. home.ts decides the view; this only toggles. */
+function setHomeView(view: HomeView): void {
+  const s = viewSections(view);
+  $("#tab-page").dataset.view = view;
+  $("#form-view").hidden = !s.form;
+  $("#form-extra").hidden = !s.form;
+  $("#job-area").hidden = !s.job;
+  $("#home-empty-card").hidden = !s.dashboard;
+  if (!s.form) $("#missed-card").style.display = "none";
+  const h = homeHeadline(view, host);
+  $("#home-title").textContent = h.title;
+  $("#home-desc").textContent = h.desc;
+  renderDashboard();
+}
+
+/** Profile completeness, saved-answer counts and the next step, from the bank the background returned. Nothing when it could not be read. */
+function renderDashboard(): void {
+  const card = $("#home-profile");
+  card.hidden = current === null;
+  if (!current) return;
+  const c = basicsCompleteness(current);
+  const s = bankSummary(current);
+  const step = nextStep(c, s);
+  const pct = $("#profile-pct");
+  pct.textContent = `${c.pct}%`;
+  pct.className = `badge badge-${c.pct >= 70 ? "ok" : c.pct > 0 ? "rev" : "muted"}`;
+  $("#profile-bar").style.width = `${c.pct}%`;
+  $("#profile-track").setAttribute("aria-valuenow", String(c.pct));
+  $("#profile-text").textContent = step ? step.text : "Your basics are saved, so Fill can complete the usual first fields.";
+  const answers = `${compactCount(s.answers)} saved ${s.answers === 1 ? "answer" : "answers"}`;
+  $("#profile-meta").textContent = `${c.filled} of ${c.total} basics · ${answers} · ${mode === "mac-app" ? "kept by the Mac app" : "kept in this browser"}`;
+  const next = $("#btn-profile-next");
+  next.hidden = step === null;
+  if (step) {
+    next.textContent = step.button;
+    next.dataset.tab = step.tab;
+  }
+  $("#answers-label").textContent = s.answers > 0 ? answers : "Saved answers";
+}
+
+function openTab(name: string): void {
+  document.querySelector<HTMLButtonElement>(`.tab-btn[data-tab="${name}"]`)?.click();
 }
 
 /** Per-page breakdown and the questions with no saved answer. */
@@ -475,7 +572,7 @@ function renderCoverage(c: Coverage): void {
     const btnGroup = document.createElement("div");
     btnGroup.style.cssText = "display:flex;gap:4px;flex-shrink:0;";
 
-    const tailorable = templateTailoring(label);
+    const tailorable = templateTailoring(label, activeJob?.company);
     if (tailorable) {
       const tb = document.createElement("button");
       tb.className = "sm";
@@ -586,7 +683,13 @@ function initTabs(): void {
     btn.onclick = () => {
       const target = btn.dataset.tab;
       if (!target) return;
-      tabs.forEach(t => t.classList.toggle("active", t === btn));
+      if (basicsTyped && target !== "basics") {
+        void saveBasics();
+      }
+      tabs.forEach(t => {
+        t.classList.toggle("active", t === btn);
+        t.setAttribute("aria-selected", String(t === btn));
+      });
       document.querySelectorAll<HTMLElement>(".tab-pane").forEach(pane => {
         pane.classList.toggle("active", pane.id === `tab-${target}`);
       });
@@ -614,6 +717,22 @@ function initTabs(): void {
 }
 
 let scrapedJobs: ScrapedJob[] = [];
+/** The listing page the scrape came from (ScrapeResult.pageUrl is already scrubbed). */
+let scrapedPage = { pageUrl: "", pageTitle: "" };
+
+/** Send jobs to Vani and say what Vani answered, or why nothing was sent; a failure is shown, never swallowed. */
+async function sendToVani(scrape: { pageUrl: string; pageTitle: string; jobs: readonly IngestSource[] }, saveSearch: boolean): Promise<{ ok: boolean; text: string }> {
+  const p = prepareIngest(scrape, saveSearch);
+  if ("error" in p) return { ok: false, text: p.error };
+  let reply: unknown;
+  try {
+    reply = await bg<unknown>(p.req);
+  } catch (e) {
+    return { ok: false, text: `Could not reach Vani: ${friendlyError(e).line}` };
+  }
+  const out = describeIngest(reply);
+  return { ok: out.ok, text: `${out.text}${p.leftOut ? `. ${p.leftOut}` : ""}` };
+}
 
 function renderPortal(portal?: PortalInfo): void {
   const card = $("#portal-card");
@@ -637,6 +756,120 @@ function renderPortal(portal?: PortalInfo): void {
   $("#portal-tips").textContent = portal.tips.join(" ");
 }
 
+/** "Track in Vani" for the posting on this page: only for an http(s) page with a title, sent as the scraper's Track button sends it. */
+function renderJobActions(job: JobInfo | undefined, pageUrl: string | undefined): void {
+  const row = $("#job-actions");
+  const btn = $("#job-track") as HTMLButtonElement;
+  const title = typeof job?.title === "string" ? job.title.trim() : "";
+  row.hidden = !title || !pageUrl || !/^https?:\/\//i.test(pageUrl);
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const url = scrubPageUrl(pageUrl ?? "");
+      const r = await sendToVani({ pageUrl: url, pageTitle: "", jobs: [{ title, company: job?.company?.trim() || host, location: "", url, snippet: "" }] }, false);
+      status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+function renderJobDetails(job?: JobInfo, pageUrl?: string): void {
+  const card = $("#job-details-card");
+  if (!card) return;
+  const title = job?.title?.trim() ?? "";
+  const desc = job?.description?.trim() ?? "";
+  const company = job?.company?.trim() ?? "";
+
+  if (!title && !desc) {
+    card.style.display = "none";
+    return;
+  }
+  card.style.display = "block";
+
+  const titleEl = $("#job-title-text");
+  if (titleEl) {
+    titleEl.textContent = title || "Job Details";
+    titleEl.title = title || "Job Details";
+  }
+
+  const compEl = $("#job-company-text");
+  if (compEl) {
+    compEl.textContent = company ? `🏢 ${company}` : (host ? `🌐 ${host}` : "");
+  }
+
+  const snippetEl = $("#job-desc-snippet");
+  const toggleBtn = $("#toggle-job-desc") as HTMLButtonElement | null;
+  const fullDescEl = $("#job-desc-full");
+
+  if (snippetEl) {
+    if (desc) {
+      snippetEl.textContent = desc.slice(0, 240) + (desc.length > 240 ? "…" : "");
+      snippetEl.style.display = "-webkit-box";
+    } else {
+      snippetEl.style.display = "none";
+    }
+  }
+
+  if (toggleBtn && fullDescEl) {
+    if (desc && desc.length > 200) {
+      toggleBtn.style.display = "inline-flex";
+      fullDescEl.textContent = desc;
+      let expanded = false;
+      toggleBtn.onclick = () => {
+        expanded = !expanded;
+        fullDescEl.style.display = expanded ? "block" : "none";
+        toggleBtn.textContent = expanded ? "Hide description ▴" : "Show full description ▾";
+      };
+    } else {
+      toggleBtn.style.display = "none";
+      fullDescEl.style.display = "none";
+    }
+  }
+
+  const copyDetailsBtn = $("#copy-job-details") as HTMLButtonElement | null;
+  if (copyDetailsBtn) {
+    copyDetailsBtn.onclick = async () => {
+      const textToCopy = formatJobDetails(job ?? {}, pageUrl);
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        flashCopied(copyDetailsBtn, "✓ Copied Details!");
+        toast("Job details copied to clipboard!");
+      } catch {
+        toast("Could not copy job details.");
+      }
+    };
+  }
+
+  const copyTitleBtn = $("#copy-job-title") as HTMLButtonElement | null;
+  if (copyTitleBtn) {
+    copyTitleBtn.disabled = !title;
+    copyTitleBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(title);
+        flashCopied(copyTitleBtn, "✓ Copied!");
+        toast("Job title copied!");
+      } catch {
+        toast("Could not copy title.");
+      }
+    };
+  }
+
+  const copyDescBtn = $("#copy-job-desc") as HTMLButtonElement | null;
+  if (copyDescBtn) {
+    copyDescBtn.disabled = !desc;
+    copyDescBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(desc);
+        flashCopied(copyDescBtn, "✓ Copied!");
+        toast("Job description copied!");
+      } catch {
+        toast("Could not copy description.");
+      }
+    };
+  }
+}
+
 function renderRelevance(rel?: RelevanceResult): void {
   const card = $("#relevance-card");
   if (!card) return;
@@ -649,10 +882,24 @@ function renderRelevance(rel?: RelevanceResult): void {
   scoreBadge.textContent = `${rel.score}% Match`;
   scoreBadge.className = `badge ${rel.score >= 80 ? "badge-ok" : rel.score >= 60 ? "badge-rev" : "badge-muted"}`;
 
+  const scoreBar = $("#rel-score-bar-fill");
+  if (scoreBar) {
+    scoreBar.style.width = `${Math.min(100, Math.max(0, rel.score))}%`;
+    scoreBar.className = `rel-bar-fill ${rel.score >= 80 ? "fill-ok" : rel.score >= 60 ? "fill-rev" : "fill-muted"}`;
+  }
+
   $("#rel-fit-label").textContent = rel.fitLabel;
   const wpEl = $("#rel-workplace");
   if (wpEl) {
-    wpEl.textContent = rel.workplaceType && rel.workplaceType !== "Unknown" ? rel.workplaceType : (rel.salaryRange ?? "");
+    const parts: string[] = [];
+    if (rel.workplaceType && rel.workplaceType !== "Unknown") {
+      parts.push(rel.workplaceType === "Remote" ? "🏡 Remote" : rel.workplaceType === "Hybrid" ? "🏢 Hybrid" : `📍 ${rel.workplaceType}`);
+    }
+    if (rel.salaryRange) {
+      parts.push(`💰 ${rel.salaryRange}`);
+    }
+    wpEl.textContent = parts.length > 0 ? parts.join(" · ") : (rel.workplaceType ?? "");
+    wpEl.style.display = wpEl.textContent ? "inline-flex" : "none";
   }
 
   const skillsRow = $("#rel-skills-row");
@@ -660,21 +907,30 @@ function renderRelevance(rel?: RelevanceResult): void {
   for (const s of rel.matchedSkills.slice(0, 5)) {
     const chip = document.createElement("span");
     chip.className = "badge badge-ok";
-    chip.textContent = s;
+    chip.textContent = `✓ ${s}`;
+    chip.title = `Matched in your profile: ${s}`;
     skillsRow.append(chip);
   }
   for (const s of rel.missingSkills.slice(0, 3)) {
     const chip = document.createElement("span");
     chip.className = "badge badge-muted";
     chip.textContent = `+ ${s}`;
-    chip.title = "Mentioned in JD";
+    chip.title = `Mentioned in job description: ${s}`;
     skillsRow.append(chip);
+  }
+  const totalExtra = Math.max(0, rel.matchedSkills.length - 5) + Math.max(0, rel.missingSkills.length - 3);
+  if (totalExtra > 0) {
+    const moreChip = document.createElement("span");
+    moreChip.className = "badge badge-muted";
+    moreChip.textContent = `+${totalExtra} more`;
+    moreChip.title = `${totalExtra} additional skills analyzed`;
+    skillsRow.append(moreChip);
   }
 
   const dbEl = $("#rel-dealbreaker");
   if (dbEl) {
     if (rel.dealbreakers.length > 0) {
-      dbEl.textContent = `⚠️ Warning: ${rel.dealbreakers.join("; ")}`;
+      dbEl.textContent = `⛔ Dealbreaker: ${rel.dealbreakers.join("; ")}`;
       dbEl.style.display = "block";
     } else {
       dbEl.style.display = "none";
@@ -696,15 +952,25 @@ function renderMissedChecklist(audit?: FormAuditReport): void {
   list.textContent = "";
   for (const m of audit.missed) {
     const li = document.createElement("li");
-    li.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;";
+
+    const descWrap = document.createElement("div");
+    descWrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;overflow:hidden;";
+
+    const icon = document.createElement("span");
+    icon.textContent = m.type === "required" ? "⚠️" : "❌";
+    icon.style.cssText = "font-size:12px;flex-shrink:0;";
 
     const desc = document.createElement("span");
     desc.textContent = m.description;
+    desc.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;";
+    desc.title = m.description;
+
+    descWrap.append(icon, desc);
 
     const jump = document.createElement("button");
     jump.className = "sm";
     jump.textContent = "Jump";
-    jump.title = "Scroll to field and highlight";
+    jump.title = `Scroll to "${m.label}" and highlight on page`;
     jump.onclick = async () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id !== undefined) {
@@ -713,11 +979,12 @@ function renderMissedChecklist(audit?: FormAuditReport): void {
         } else {
           await chrome.tabs.sendMessage(tab.id, { type: "jumpToMissed", index: m.refIndex });
         }
+        flashCopied(jump, "✓ Focused");
         toast(`Jumped to "${m.label}"`);
       }
     };
 
-    li.append(desc, jump);
+    li.append(descWrap, jump);
     list.append(li);
   }
 }
@@ -808,12 +1075,28 @@ function renderScraper(): void {
     actRow.className = "row";
     actRow.style.cssText = "margin:0;justify-content:flex-end;gap:6px;";
 
+    const copyDetailsBtn = document.createElement("button");
+    copyDetailsBtn.className = "sm";
+    copyDetailsBtn.textContent = "Copy details";
+    copyDetailsBtn.title = "Copy job title, company, URL and description snippet to clipboard";
+    copyDetailsBtn.onclick = async () => {
+      const textToCopy = formatJobDetails({ title: j.title, company: j.company, description: j.snippet }, j.url);
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        flashCopied(copyDetailsBtn, "✓ Copied");
+        toast("Job details copied to clipboard!");
+      } catch {
+        toast("Could not copy job details.");
+      }
+    };
+
     const copyBtn = document.createElement("button");
     copyBtn.className = "sm";
     copyBtn.textContent = "Copy link";
     copyBtn.onclick = async () => {
       try {
         await navigator.clipboard.writeText(j.url);
+        flashCopied(copyBtn, "✓ Copied");
         toast("Link copied to clipboard!");
       } catch {
         toast("Could not copy link.");
@@ -824,18 +1107,24 @@ function renderScraper(): void {
     trackBtn.className = "sm";
     trackBtn.textContent = "Track in Vani";
     trackBtn.onclick = async () => {
-      await bg({ type: "trackJob", job: { title: j.title, company: j.company, url: j.url } }).catch(() => undefined);
-      toast(`Tracking "${j.title}" in Vani!`);
+      trackBtn.disabled = true;
+      try {
+        const r = await sendToVani({ pageUrl: scrapedPage.pageUrl, pageTitle: scrapedPage.pageTitle, jobs: [j] }, false);
+        status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");
+        toast(r.ok ? `Sent "${j.title.slice(0, 60)}" to Vani.` : "Vani did not take the job.");
+      } finally {
+        trackBtn.disabled = false;
+      }
     };
 
     const openBtn = document.createElement("button");
     openBtn.className = "sm primary";
     openBtn.textContent = "Open role";
     openBtn.onclick = () => {
-      void chrome.tabs.create({ url: j.url });
+      window.open(j.url, "_blank");
     };
 
-    actRow.append(copyBtn, trackBtn, openBtn);
+    actRow.append(copyDetailsBtn, copyBtn, trackBtn, openBtn);
     card.append(topRow, subRow, skillsRow, actRow);
     list.append(card);
   }
@@ -851,9 +1140,11 @@ function initScraper(): void {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (tab?.id !== undefined) {
-          const r = await chrome.tabs.sendMessage<ScrapeResult>(tab.id, { type: "scrapeJobs" }).catch(() => null);
+          // The top frame answers: its URL is the listing page's (every frame has a content script and would answer otherwise).
+          const r = await chrome.tabs.sendMessage<ScrapeResult>(tab.id, { type: "scrapeJobs" }, { frameId: 0 }).catch(() => null);
           if (r && Array.isArray(r.jobs)) {
             scrapedJobs = r.jobs;
+            scrapedPage = { pageUrl: typeof r.pageUrl === "string" ? r.pageUrl : "", pageTitle: typeof r.pageTitle === "string" ? r.pageTitle : "" };
             renderScraper();
             toast(`Scraped ${r.jobs.length} jobs!`);
           } else {
@@ -865,6 +1156,24 @@ function initScraper(): void {
       } finally {
         b.disabled = false;
         b.textContent = "🔍 Scrape Jobs on This Page";
+      }
+    };
+  }
+
+  const saveBtn = $("#scraper-save") as HTMLButtonElement | null;
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      const out = $("#scraper-save-result");
+      if (scrapedJobs.length === 0) { if (out) out.textContent = "Scrape a page first."; return; }
+      saveBtn.disabled = true;
+      if (out) out.textContent = "Sending…";
+      try {
+        const again = ($("#scraper-save-search") as HTMLInputElement | null)?.checked ?? false;
+        const r = await sendToVani({ ...scrapedPage, jobs: scrapedJobs }, again);
+        if (out) out.textContent = r.text;
+        status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");
+      } finally {
+        saveBtn.disabled = false;
       }
     };
   }
@@ -914,58 +1223,138 @@ function initScraper(): void {
 async function init(): Promise<void> {
   initTabs();
   initScraper();
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  host = tab?.url ? new URL(tab.url).hostname : "";
-  $("#host").textContent = host || "(no page)";
-  if (tab?.id !== undefined) void appliedRow(tab.id, tab.url);
-  void resumeRow(tab?.url, { row: $("#resume"), name: $("#resume-name"), pick: $("#resume-pick"), remove: $("#resume-remove") }, bg);
-  await refresh();
+  const gotoScraper = $("#btn-goto-scraper");
+  if (gotoScraper) {
+    // "Scrape this page": open the scraper and run its own Scrape button (the existing scrapeJobs message).
+    gotoScraper.onclick = () => {
+      openTab("scraper");
+      $("#scrape-page-btn")?.click();
+    };
+  }
+  $("#btn-goto-basics").onclick = () => openTab("basics");
+  $("#btn-goto-answers").onclick = () => openTab("answers");
+  $("#btn-profile-next").onclick = () => openTab($("#btn-profile-next").dataset.tab ?? "basics");
+  const btnRescan = $("#btn-rescan");
+  if (btnRescan) {
+    btnRescan.onclick = () => void rescanTab(true);
+  }
+  const btnEmptyRescan = $("#btn-empty-rescan");
+  if (btnEmptyRescan) {
+    btnEmptyRescan.onclick = () => void rescanTab(true);
+  }
+
+  // Keyboard shortcut for re-scan: ⌥⇧R
+  window.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.altKey && e.shiftKey && (e.key === "R" || e.key === "r")) {
+      e.preventDefault();
+      void rescanTab(true);
+    }
+  });
+
+  await rescanTab(false);
+}
+
+async function rescanTab(notify = false): Promise<void> {
+  const rescanBtn = $("#btn-rescan");
+  if (rescanBtn) rescanBtn.classList.add("spinning");
+  const emptyRescan = $("#btn-empty-rescan") as HTMLButtonElement | null;
+  if (emptyRescan) emptyRescan.disabled = true;
+
   try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    host = tab?.url ? new URL(tab.url).hostname : "";
+    const hostEl = $("#host");
+    if (hostEl) hostEl.textContent = host || "(no page)";
+    if (tab?.id !== undefined) void appliedRow(tab.id, tab.url);
+    void resumeRow(tab?.url, { row: $("#resume"), name: $("#resume-name"), pick: $("#resume-pick"), remove: $("#resume-remove") }, bg);
+    await refresh();
+
     const t = await scanTabExtended();
     activeJob = t.job;
     renderFrames(t.tabCoverage);
-    if (t.portal) renderPortal(t.portal);
-    if (t.relevance) renderRelevance(t.relevance);
-    if (t.audit) renderMissedChecklist(t.audit);
-    if (t.tabCoverage.disabled) {
-      status("Disabled on this site.");
-    } else if (t.tabCoverage.frames.length === 0) {
-      status(`No fields found in ${t.tabCoverage.answered} of ${t.tabCoverage.asked} frames that answered.`);
-    } else {
+    renderPortal(t.portal);
+    renderJobDetails(t.job, tab?.url);
+    renderRelevance(t.relevance);
+    renderMissedChecklist(t.audit);
+    // The scan only reports "disabled" for frames that found fields; the saved setting says it for the host outright.
+    const off = t.tabCoverage.disabled || (host !== "" && current?.settings?.disabledHosts?.includes(host) === true);
+    const view = homeState({
+      found: off ? 0 : t.tabCoverage.total.found,
+      disabled: off,
+      portal: t.portal,
+      job: t.job,
+      relevance: t.relevance,
+    });
+    if (view === "form") {
       status(coverageLine(t.tabCoverage.total) + (t.tabCoverage.frames.length > 1 ? ` Across ${t.tabCoverage.frames.length} frames.` : ""));
       renderCoverage(t.tabCoverage.total);
+    } else {
+      if (current) status(""); // keep "Could not read your saved answers" when that is why the dashboard has no profile
+      updateMeter(t.tabCoverage.total);
     }
+    renderJobActions(t.job, tab?.url);
+    setHomeView(view);
+    if (notify) toast("Tab scan refreshed!");
   } catch (e) {
-    status(`Cannot read this page: ${e instanceof Error ? e.message : String(e)}`);
+    statusError(e);
+    renderPortal(undefined);
+    setHomeView("error");
+    updateMeter({
+      found: 0,
+      known: 0,
+      fillable: 0,
+      unknown: 0,
+      manual: 0,
+      skipped: 0,
+      capped: false,
+      unread: 0,
+      unknownLabels: [],
+      unknownListed: 0,
+      manualLabels: [],
+    });
+    if (notify) toast("Re-scan failed.");
+  } finally {
+    if (rescanBtn) rescanBtn.classList.remove("spinning");
+    if (emptyRescan) emptyRescan.disabled = false;
   }
 }
 
 $("#fill").onclick = async () => {
+  const done = busy($("#fill") as HTMLButtonElement | null, "Filling…");
   try {
     const r = await toFrames<FillReply>({ type: "fill", overwrite: ($("#overwrite") as HTMLInputElement).checked, typeahead: ($("#typeahead") as HTMLInputElement).checked }, { registered });
     const outcomes = mergeFill(r);
     const f = outcomes.filter(o => o.filled);
     const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
     status(`Filled ${f.length} (${f.filter(o => o.review).length} to review)` + (manual ? `, ${manual} to do by hand` : "") +
-      (r.answered.length > 1 ? ` across ${r.answered.length} frames` : "") + ". Check the page, then submit yourself." + notAnswered(r));
+      (r.answered.length > 1 ? ` across ${r.answered.length} frames` : "") + ". Check the page, then submit yourself." + notAnswered(r), "ok");
     toast(`Filled ${f.length} fields!`);
     await refresh();
     const t = await scanTabExtended().catch(() => null);
     if (t) {
-      if (t.audit) renderMissedChecklist(t.audit);
+      renderMissedChecklist(t.audit);
       renderCoverage(t.tabCoverage.total);
     }
-  } catch (e) { status(String(e)); }
+  } catch (e) {
+    statusError(e, "Fill failed");
+  } finally {
+    done();
+  }
 };
 
 $("#save").onclick = async () => {
+  const done = busy($("#save") as HTMLButtonElement | null, "Saving…");
   try {
     const r = await toFrames<CaptureReply>({ type: "capture" }, { registered });
     const c = sumCaptures(r);
-    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + notAnswered(r));
+    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + notAnswered(r), "ok");
     toast(`Saved ${c.added + c.updated} answers!`);
     await refresh();
-  } catch (e) { status(String(e)); }
+  } catch (e) {
+    statusError(e, "Save failed");
+  } finally {
+    done();
+  }
 };
 
 const clearMarksBtn = $("#clear-marks");
@@ -975,7 +1364,7 @@ if (clearMarksBtn) {
       await toFrames({ type: "clearMarks" }, { registered });
       toast("Field highlights cleared from page.");
     } catch (e) {
-      status(`Could not clear highlights: ${e instanceof Error ? e.message : String(e)}`);
+      statusError(e, "Could not clear highlights");
     }
   };
 }

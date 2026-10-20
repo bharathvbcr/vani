@@ -2,9 +2,11 @@
 // saved it, applied, or hid it, plus a private note. It is kept apart from the
 // ledger on purpose. The ledger is the pipeline's record and is locked for the
 // length of a run; marks are the user's, written from the app at any time, and
-// nothing in the pipeline or the decision backends reads them, so a note never
-// reaches a model, a log line or an annotation. The digest reads the marks
-// alone, through ReadMarks, which drops every note before it returns.
+// no decision backend reads them, so a note never reaches a model, a log line
+// or an annotation. Two readers see the marks alone, through ReadMarks, which
+// drops every note before it returns: the digest, and the run's duplicate
+// rules (cmd/vani wire.go), which only learn which keys are marked so a
+// posting the user acted on is never demoted to Duplicate.
 //
 // The store is an append-only JSONL file folded on read, like the ledger:
 // every change keeps its time, a crashed write loses at most that one line,

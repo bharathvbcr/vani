@@ -13,7 +13,11 @@ Its **Jobs** tab browses the roles Vani retrieved (New, Saved, Applied, Hidden, 
 Applied (⇧⌘A), Hide (⌘⌫) and keep a private note per role. It is a client of `vani jobs … --json`
 (cmd/vani/jobscmd.go) run from `Contents/Helpers/vani` with the Vani config and state folder set in
 Settings › Vani. Vani reads its ledger without taking the run's lock, so Jobs works while a run is
-going. Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
+going. A role's detail shows **Why it ranks here**: the components of the priority `vani jobs` reports
+(`score_factors`; an absent signal reads "not known", never 0) and the posting lines that matched your
+résumé roles best (`semantic.evidence`). Both are display only, decoded leniently, and absent from an older
+`vani`. Settings › Vani sets the freshness half-life (`--half-life`, sent only when it is not Vani's 10 days).
+Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.
 
@@ -37,7 +41,7 @@ flowchart TD
     end
 
     subgraph AppGroup["Shared App Group Container (HAUHVD8M37.dev.vbcr.vani)"]
-        BANK[("apply/bank.json\n(Mode 0600, capped <= 900KB)")]
+        BANK[("apply/bank.json\n(Mode 0600)")]
         ACT[("apply/activity.jsonl\n(Event, host, counts; no answer text)")]
     end
 
@@ -113,8 +117,8 @@ them identically:
 
 Merging stays in the extension, so there is one implementation. On a conflict it re-applies its change
 to the returned bank, up to 3 times.
-- **Size cap:** a bank is capped at 900 KB because Chrome refuses any host message over 1 MB. Both
-  sides enforce it, and so does the host's reply encoder.
+- **Streaming:** replies over 750 KB are streamed in chunks (`getChunk`) to stay under
+  Chrome's 1 MB native-messaging reply limit, removing any 900 KB bank cap.
 - **Classifier parity:** `normalizeLabel` and `classify` exist in TypeScript and Swift. Both are held
   to `extension/test/vectors/classify.json`, which is generated from the TS code by
   `build/macos-gen/gen-vectors.ts`.
@@ -238,7 +242,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 129 tests (2026-10-19). They cover the TS vectors, validation, the store
+  - `swift test`: 343 tests, 1 skipped (2026-10-19). They cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).
