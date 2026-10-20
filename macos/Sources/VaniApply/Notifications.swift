@@ -40,6 +40,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         pollTask?.cancel()
     }
 
+    /// Closing the window leaves the app running, still holding the notifier
+    /// lock and announcing runs. A lone `Window` scene would otherwise quit the
+    /// app with its window, and the daemon would announce instead. Quit
+    /// (Command-Q) hands notices back to the daemon.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// The Dock icon reopens a closed window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { revealMainWindow() }
+        return true
+    }
+
     /// Asks only while the user has not decided; macOS keeps the answer, and
     /// Settings > Notifications is where it changes afterwards.
     static func requestPermissionOnce() {
@@ -65,10 +79,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         await MainActor.run { self.showJobs() }
     }
 
+    /// openWindow(id: "main"), captured by the scene's root view when it first
+    /// appears (VaniApplyApp). It stays valid after that window closes.
+    var openMainWindow: (() -> Void)?
+
     func showJobs() {
         model.pane = .jobs
+        revealMainWindow()
+    }
+
+    private func revealMainWindow() {
         NSApp.activate()
-        NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+        let reveal = MainWindowReveal(open: openMainWindow) {
+            guard let window = NSApp.windows.first(where: { $0.canBecomeMain && ($0.isVisible || $0.isMiniaturized) }) else {
+                return false
+            }
+            window.makeKeyAndOrderFront(nil)
+            return true
+        }
+        if reveal.reveal() == .noWindow {
+            NSLog("Vani Apply: no window to show for a notification click")
+        }
     }
 }
 
