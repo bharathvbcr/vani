@@ -47,6 +47,11 @@ commands:
                              run only: cap the advance phase at N postings, list only the named
                              watchlist boards, skip the advance phase, or skip the digest.
                              Refused while the daemon (or another run) holds the ledger
+  run-request [--json] [same flags as run-once]
+                             ask the running daemon to make that run itself (it polls every few
+                             seconds, between its scheduled run and inbox polls); refused when no
+                             daemon is running or a request is already waiting. A request the
+                             daemon has not picked up within an hour is dropped
   digest [--date YYYY-MM-DD] write the digest for pending roles
   status [--json]            show ledger counts by status; --json adds the last run's outcome,
                              today's spend against each cap and the decision-model setup
@@ -195,6 +200,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdDaemon(args[1:])
 	case "run-once":
 		cmdErr = e.cmdRunOnce(args[1:])
+	case "run-request":
+		cmdErr = e.cmdRunRequest(args[1:])
 	case "digest":
 		cmdErr = e.cmdDigest(args[1:])
 	case "status":
@@ -350,30 +357,67 @@ func (e *env) cmdDaemon(args []string) error {
 		return err
 	}
 	defer app.close()
-	ctx, stop := signalContext()
+	// The ledger is held from here on, so this process is the daemon: run
+	// requests (runrequest.go) find it through daemon.json.
+	pid := os.Getpid()
+	if err := writeDaemonRecord(e.stateDir, pid, now()); err != nil {
+		return fmt.Errorf("announcing the daemon: %w", err)
+	}
+	defer func() {
+		if err := removeDaemonRecord(e.stateDir, pid); err != nil {
+			fmt.Fprintf(e.stderr, "vani: removing the daemon record: %v\n", err)
+		}
+	}()
+	e.clearClaimedRequest()
+	sigCtx, stop := signalContext()
 	defer stop()
+	// A manual run that leaves the ledger unusable ends the daemon as a
+	// scheduled one does: cancelling ctx ends daemon.Run, and fatal is returned.
+	ctx, cancel := context.WithCancel(sigCtx)
+	var fatal error
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
-	// The daily run and the inbox poll both write the ledger: one at a time.
+	// The daily run, the inbox poll and a requested manual run all write the
+	// ledger: one at a time.
 	var ledgerMu sync.Mutex
 	daily := e.dailyJob(app, cfg, triggerSchedule, runOptions{})
 	job := func(ctx context.Context) error {
 		ledgerMu.Lock()
 		defer ledgerMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err // ended while a manual run held the ledger: no run, no record
+		}
 		return daily(ctx)
 	}
+	var wg sync.WaitGroup
+	// Registered after app.close's defer, so it runs first: the polls must be
+	// done with the ledger before the ledger closes.
+	defer func() { cancel(); wg.Wait() }()
 	if app.PollInbox != nil {
-		pollCtx, cancel := context.WithCancel(ctx)
-		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.pollInboxLoop(pollCtx, app.PollInbox, &ledgerMu)
+			e.pollInboxLoop(ctx, app.PollInbox, &ledgerMu)
 		}()
-		// Registered after app.close's defer, so it runs first: the poll must
-		// be done with the ledger before the ledger closes.
-		defer func() { cancel(); wg.Wait() }()
 	}
-	return daemon.Run(ctx, cfg.Schedule, job, daemonClock)
+	manual := func(ctx context.Context, opts runOptions) error {
+		return e.dailyJob(app, cfg, triggerManual, opts)(ctx)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := e.pollRequestLoop(ctx, manual, &ledgerMu); err != nil {
+			fmt.Fprintf(e.stderr, "vani: requested manual run failed, exiting: %v\n", err)
+			fatal = err
+			cancel()
+		}
+	}()
+	err = daemon.Run(ctx, cfg.Schedule, job, daemonClock)
+	cancel()
+	wg.Wait()
+	if err == nil {
+		err = fatal
+	}
+	return err
 }
 
 // inboxPollInterval is how often the daemon looks for spooled extension jobs
@@ -413,16 +457,12 @@ func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) erro
 // the config, and so the daemon's runs, are unchanged.
 func (e *env) cmdRunOnce(args []string) error {
 	fs := e.newFlags("run-once")
-	var opts runOptions
-	var boards boardRefs
-	fs.IntVar(&opts.Advance, "advance", 0, fmt.Sprintf("triage, score and explain at most N postings this run (1..%d; default advance_per_run)", config.MaxAdvancePerRun))
-	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
-	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (a decision backend must still be configured; none is called)")
-	fs.BoolVar(&opts.NoDigest, "no-digest", false, "write no digest: the run's roles wait for the next one")
+	optsp, boards := runOptionFlags(fs)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	opts.Boards = boards
+	opts := *optsp
+	opts.Boards = *boards
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
@@ -432,7 +472,11 @@ func (e *env) cmdRunOnce(args []string) error {
 	}
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
 	if errors.Is(err, ledger.ErrLocked) {
-		return fmt.Errorf("%w: another vani holds it (the daemon, or a run-once, rescore or retriage still going); try again when it is done", err)
+		hint := "the daemon, or a run-once, rescore or retriage still going; try again when it is done"
+		if _, derr := liveDaemon(e.stateDir); derr == nil {
+			hint = "the daemon is running; `vani run-request` with the same flags asks it to make this run"
+		}
+		return fmt.Errorf("%w: another vani holds it (%s)", err, hint)
 	}
 	if err != nil {
 		return err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"strings"
 
@@ -56,6 +57,19 @@ func (o runOptions) recorded() *runOptions {
 
 // tunes reports whether the options change the pipeline itself (App.Tune).
 func (o runOptions) tunes() bool { return o.Advance != 0 || o.ListOnly }
+
+// runOptionFlags registers a manual run's flags on fs (run-once and
+// run-request take the same ones). The boards land in the second value; the
+// caller copies them into the options after parsing.
+func runOptionFlags(fs *flag.FlagSet) (*runOptions, *boardRefs) {
+	var opts runOptions
+	var boards boardRefs
+	fs.IntVar(&opts.Advance, "advance", 0, fmt.Sprintf("triage, score and explain at most N postings this run (1..%d; default advance_per_run)", config.MaxAdvancePerRun))
+	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
+	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (a decision backend must still be configured; none is called)")
+	fs.BoolVar(&opts.NoDigest, "no-digest", false, "write no digest: the run's roles wait for the next one")
+	return &opts, &boards
+}
 
 // boardRefs is a repeatable --board flag.
 type boardRefs []string

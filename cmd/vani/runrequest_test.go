@@ -1,0 +1,628 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/daemon"
+	"github.com/bharathvbcr/Vani/internal/ledger"
+)
+
+// announceDaemon writes daemon.json for this test process, which is alive.
+func announceDaemon(t *testing.T, stateDir string) {
+	t.Helper()
+	if err := writeDaemonRecord(stateDir, os.Getpid(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeRequestFile writes raw as the pending request.
+func writeRequestFile(t *testing.T, stateDir string, raw []byte) string {
+	t.Helper()
+	path := runsPath(stateDir, runRequestFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func requestJSON(t *testing.T, r runRequest) []byte {
+	t.Helper()
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func requestExists(stateDir, name string) bool {
+	_, err := os.Lstat(runsPath(stateDir, name))
+	return err == nil
+}
+
+// With no daemon known, or one whose process is gone, nobody would pick a
+// request up: run-request refuses, says to use run-once, and writes nothing.
+func TestRunRequestRefusedWithoutADaemon(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	_, e := mustCode(t, exitRuntime, "run-request")
+	if !strings.Contains(e, "no running vani daemon") || !strings.Contains(e, "run-once") {
+		t.Errorf("stderr %q", e)
+	}
+	o, _ := mustCode(t, exitRuntime, "run-request", "--json")
+	var reply struct{ Error string }
+	if err := json.Unmarshal([]byte(o), &reply); err != nil || !strings.Contains(reply.Error, "no running vani daemon") {
+		t.Errorf("--json reply %q (%v)", o, err)
+	}
+
+	if err := writeDaemonRecord(stateDir, 1<<30, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	old := pidAlive
+	t.Cleanup(func() { pidAlive = old })
+	pidAlive = func(int) bool { return false }
+	_, e = mustCode(t, exitRuntime, "run-request")
+	if !strings.Contains(e, "is gone") {
+		t.Errorf("a dead daemon: stderr %q", e)
+	}
+	if err := os.WriteFile(runsPath(stateDir, daemonRecordFile), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustCode(t, exitRuntime, "run-request")
+	if requestExists(stateDir, runRequestFile) {
+		t.Error("a refused request was written")
+	}
+	s := statusOf(t)
+	if s.Daemon.OK || s.Daemon.Running {
+		t.Errorf("a corrupt daemon record reads as %+v", s.Daemon)
+	}
+}
+
+// A request is written once with its options and time, status reports it as
+// pending, and a second request while it waits is refused.
+func TestRunRequestIsWrittenOnce(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	addBoards(t)
+	announceDaemon(t, stateDir)
+	o, _ := mustCode(t, 0, "run-request", "--json", "--advance", "7", "--board", "gh:acme", "--no-digest")
+	var reply runRequestReply
+	if err := json.Unmarshal([]byte(o), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.RequestedAt.IsZero() || reply.DaemonPID != os.Getpid() || reply.Options.Advance != 7 || !reply.Options.NoDigest || len(reply.Options.Boards) != 1 {
+		t.Errorf("reply %+v", reply)
+	}
+	req, err := readRunRequest(runsPath(stateDir, runRequestFile), time.Now())
+	if err != nil || !req.RequestedAt.Equal(reply.RequestedAt) || req.Options.Advance != 7 {
+		t.Fatalf("written %+v, %v", req, err)
+	}
+	if fi, err := os.Stat(runsPath(stateDir, runRequestFile)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("request file mode: %v %v", fi, err)
+	}
+	s := statusOf(t)
+	if !s.Daemon.OK || !s.Daemon.Running || s.Daemon.PID != os.Getpid() || s.Daemon.Since.IsZero() {
+		t.Errorf("daemon facet %+v", s.Daemon)
+	}
+	rr := s.RunRequest
+	if !rr.OK || !rr.Pending || rr.Stale || rr.Claimed || !rr.RequestedAt.Equal(reply.RequestedAt) || rr.Options == nil || rr.Options.Advance != 7 {
+		t.Errorf("run_request facet %+v", rr)
+	}
+	_, e := mustCode(t, exitRuntime, "run-request")
+	if !strings.Contains(e, "already waiting") {
+		t.Errorf("second request: stderr %q", e)
+	}
+	if again, _ := readRunRequest(runsPath(stateDir, runRequestFile), time.Now()); again.Options.Advance != 7 {
+		t.Errorf("the second request replaced the first: %+v", again)
+	}
+}
+
+// Under --json a board the watchlist lacks is a reply on stdout with exit 1,
+// not a usage exit 2 (which the app reads as "this vani is too old"); without
+// --json it stays a usage error, as for run-once.
+func TestRunRequestOptionErrorsUnderJSON(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	o, _ := mustCode(t, exitRuntime, "run-request", "--json", "--board", "gh:nobody")
+	if !strings.Contains(o, `"error"`) || !strings.Contains(o, "not on the watchlist") {
+		t.Errorf("stdout %q", o)
+	}
+	mustCode(t, exitUsage, "run-request", "--board", "gh:nobody")
+	mustCode(t, exitUsage, "run-request", "--list-only", "--advance", "3")
+	mustCode(t, exitUsage, "run-request", "stray")
+	if requestExists(stateDir, runRequestFile) {
+		t.Error("a refused request was written")
+	}
+}
+
+// A stale request (no daemon picked it up) and an unreadable one are replaced
+// by a new request rather than blocking it.
+func TestRunRequestReplacesAStaleOne(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now().Add(-2 * time.Hour), Options: runOptions{Advance: 3}}))
+	if s := statusOf(t); !s.RunRequest.Pending || !s.RunRequest.Stale {
+		t.Errorf("a stale request reads as %+v", s.RunRequest)
+	}
+	mustCode(t, 0, "run-request", "--list-only")
+	if r, err := readRunRequest(runsPath(stateDir, runRequestFile), time.Now()); err != nil || !r.Options.ListOnly || r.Options.Advance != 0 {
+		t.Errorf("after replacing: %+v %v", r, err)
+	}
+	writeRequestFile(t, stateDir, []byte("{broken"))
+	mustCode(t, 0, "run-request")
+}
+
+// serveFor serves one request with a run that records what it was asked and
+// what status said while it ran.
+type servedRun struct {
+	calls   int
+	opts    runOptions
+	claimed bool // the claimed file existed while the run went
+	pending bool // request.json still existed while the run went
+}
+
+func serveOnce(t *testing.T, stateDir string, runErr error) (*servedRun, error) {
+	t.Helper()
+	got := &servedRun{}
+	var stderr bytes.Buffer
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: &stderr}
+	var mu sync.Mutex
+	err := e.serveRunRequest(context.Background(), func(_ context.Context, o runOptions) error {
+		got.calls++
+		got.opts = o
+		got.claimed = requestExists(stateDir, runClaimedFile)
+		got.pending = requestExists(stateDir, runRequestFile)
+		return runErr
+	}, &mu)
+	return got, err
+}
+
+// The daemon claims a request once: it runs it with its options, status shows
+// it claimed (not pending) during the run, and afterwards neither file is left,
+// so the next poll runs nothing.
+func TestServeRunRequestClaimsOnce(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	mustCode(t, 0, "run-request", "--advance", "4", "--no-digest")
+	got, err := serveOnce(t, stateDir, nil)
+	if err != nil || got.calls != 1 || got.opts.Advance != 4 || !got.opts.NoDigest {
+		t.Fatalf("served %+v, %v", got, err)
+	}
+	if !got.claimed || got.pending {
+		t.Errorf("during the run: claimed %v pending %v", got.claimed, got.pending)
+	}
+	if requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
+		t.Error("a request file outlived its run")
+	}
+	if again, err := serveOnce(t, stateDir, nil); err != nil || again.calls != 0 {
+		t.Errorf("second poll: %+v, %v", again, err)
+	}
+	// A failed run is the run's error, and the claim is still let go.
+	mustCode(t, 0, "run-request")
+	boom := errors.New("pipeline: boom")
+	if _, err := serveOnce(t, stateDir, boom); !errors.Is(err, boom) {
+		t.Errorf("run error %v", err)
+	}
+	if requestExists(stateDir, runClaimedFile) {
+		t.Error("a failed run left its claim")
+	}
+}
+
+// Status shows a claimed request while its run goes, also past the age a
+// pending request goes stale at (a run can take that long).
+func TestStatusShowsAClaimedRequest(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	at := time.Now().Add(-90 * time.Minute)
+	raw := requestJSON(t, runRequest{V: 1, RequestedAt: at})
+	if err := os.MkdirAll(filepath.Join(stateDir, runRecordDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runsPath(stateDir, runClaimedFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := statusOf(t)
+	if !s.RunRequest.OK || s.RunRequest.Pending || !s.RunRequest.Claimed || !s.RunRequest.ClaimedRequestedAt.Equal(at) {
+		t.Errorf("run_request %+v", s.RunRequest)
+	}
+}
+
+// A request no daemon picked up within the hour is dropped without a run: the
+// user asked for a run then, not now.
+func TestServeRunRequestDropsAStaleOne(t *testing.T) {
+	_, stateDir := setup(t)
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now().Add(-61 * time.Minute)}))
+	got, err := serveOnce(t, stateDir, nil)
+	if got.calls != 0 || !errors.Is(err, errRequestStale) {
+		t.Errorf("served %+v, %v", got, err)
+	}
+	if requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
+		t.Error("a stale request was kept")
+	}
+}
+
+// Request files that are not what run-request writes never run, are removed,
+// and never take the daemon down.
+func TestServeRunRequestAdversarialFiles(t *testing.T) {
+	fresh := time.Now()
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"empty", nil},
+		{"corrupt", []byte(`{"v":1,"requested_at":`)},
+		{"not an object", []byte(`[1,2]`)},
+		{"trailing data", append(requestJSON(t, runRequest{V: 1, RequestedAt: fresh}), []byte(` {}`)...)},
+		{"unknown key", []byte(`{"v":1,"requested_at":"` + fresh.UTC().Format(time.RFC3339Nano) + `","options":{},"run_twice":true}`)},
+		{"unknown option", []byte(`{"v":1,"requested_at":"` + fresh.UTC().Format(time.RFC3339Nano) + `","options":{"advance":3,"boards_all":true}}`)},
+		{"wrong version", requestJSON(t, runRequest{V: 2, RequestedAt: fresh})},
+		{"no time", requestJSON(t, runRequest{V: 1})},
+		{"from the future", requestJSON(t, runRequest{V: 1, RequestedAt: fresh.Add(time.Hour)})},
+		{"advance out of bounds", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Advance: config.MaxAdvancePerRun + 1}})},
+		{"negative advance", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Advance: -1}})},
+		{"list-only with a cap", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Advance: 3, ListOnly: true}})},
+		{"too many boards", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Boards: make([]string, maxRunBoards+1)}})},
+		{"oversized", append([]byte(`{"v":1,"pad":"`), bytes.Repeat([]byte("x"), maxRunRequest)...)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, stateDir := setup(t)
+			writeRequestFile(t, stateDir, c.raw)
+			got, err := serveOnce(t, stateDir, nil)
+			if got.calls != 0 || err == nil || !strings.Contains(err.Error(), "dropped") {
+				t.Errorf("served %+v, %v", got, err)
+			}
+			if requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
+				t.Error("the bad request was kept")
+			}
+		})
+	}
+}
+
+// A symlink at request.json is never followed: the run is not made, the link
+// is removed, and its target is left exactly as it was. Status does not read
+// through it either.
+func TestServeRunRequestRefusesASymlink(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	target := filepath.Join(t.TempDir(), "elsewhere.json")
+	body := requestJSON(t, runRequest{V: 1, RequestedAt: time.Now(), Options: runOptions{Advance: 9}})
+	if err := os.WriteFile(target, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := runsPath(stateDir, runRequestFile)
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if s := statusOf(t); s.RunRequest.OK || s.RunRequest.Pending {
+		t.Errorf("status read through a symlink: %+v", s.RunRequest)
+	}
+	got, err := serveOnce(t, stateDir, nil)
+	if got.calls != 0 || err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("served %+v, %v", got, err)
+	}
+	if requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
+		t.Error("the link was kept")
+	}
+	if after, err := os.ReadFile(target); err != nil || !bytes.Equal(after, body) {
+		t.Errorf("the link's target changed: %q %v", after, err)
+	}
+	// A directory in its place is refused the same way.
+	if err := os.Mkdir(link, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := serveOnce(t, stateDir, nil); got.calls != 0 || err == nil {
+		t.Errorf("a directory: %+v, %v", got, err)
+	}
+}
+
+// A panicking run is contained: the daemon goes on and the claim is let go.
+func TestServeRunRequestContainsAPanic(t *testing.T) {
+	_, stateDir := setup(t)
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()}))
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
+	var mu sync.Mutex
+	err := e.serveRunRequest(context.Background(), func(context.Context, runOptions) error { panic("boom") }, &mu)
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("err %v", err)
+	}
+	if requestExists(stateDir, runClaimedFile) {
+		t.Error("a panicked run left its claim")
+	}
+}
+
+// The claim waits for the ledger mutex: while the scheduled run holds it the
+// request stays pending (status says so), and nothing runs until it is free.
+func TestServeRunRequestWaitsForTheLedger(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()}))
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
+	var mu sync.Mutex
+	mu.Lock()
+	var ran atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		done <- e.serveRunRequest(context.Background(), func(context.Context, runOptions) error { ran.Store(true); return nil }, &mu)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	if ran.Load() {
+		t.Fatal("the request ran while the ledger was held")
+	}
+	if s := statusOf(t); !s.RunRequest.Pending || s.RunRequest.Claimed {
+		t.Errorf("while waiting: %+v", s.RunRequest)
+	}
+	mu.Unlock()
+	if err := <-done; err != nil || !ran.Load() {
+		t.Errorf("after the ledger was free: ran %v, %v", ran.Load(), err)
+	}
+}
+
+// A daemon shutting down leaves a waiting request for the next daemon.
+func TestServeRunRequestLeavesItOnShutdown(t *testing.T) {
+	_, stateDir := setup(t)
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()}))
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var mu sync.Mutex
+	if err := e.serveRunRequest(ctx, func(context.Context, runOptions) error { t.Error("ran"); return nil }, &mu); err != nil {
+		t.Error(err)
+	}
+	if !requestExists(stateDir, runRequestFile) {
+		t.Error("the request was taken by a daemon on its way out")
+	}
+}
+
+// daemonRun is a daemon test's view of the runs its app made.
+type daemonRun struct {
+	mu        sync.Mutex
+	lastTune  int
+	busy      atomic.Int32
+	overlap   atomic.Int32
+	manual    int
+	scheduled int
+}
+
+// wireRequestDaemon runs the daemon on a jump clock with request polling at a
+// few milliseconds. Its app's RunOnce tells a manual run from a scheduled one
+// by the advance cap the run was tuned with (the request asks for 7). The
+// record clock stays real, so a request is fresh by the wall clock.
+func wireRequestDaemon(t *testing.T, l *brokenLedger, onRun func(manual bool, d *daemonRun) error) *daemonRun {
+	t.Helper()
+	wireDaemon(t, l, nil)
+	now = time.Now
+	oldPoll := requestPollInterval
+	requestPollInterval = 2 * time.Millisecond
+	t.Cleanup(func() { requestPollInterval = oldPoll })
+	d := &daemonRun{}
+	buildApp = func(config.Config, string, io.Writer) (*App, error) {
+		return &App{Ledger: l, Notifier: &fakeNotifier{},
+			Tune: func(advance int, _ bool) { d.mu.Lock(); d.lastTune = advance; d.mu.Unlock() },
+			RunOnce: func(context.Context) error {
+				if d.busy.Add(1) > 1 {
+					d.overlap.Add(1)
+				}
+				defer d.busy.Add(-1)
+				d.mu.Lock()
+				manual := d.lastTune == 7
+				if manual {
+					d.manual++
+				} else {
+					d.scheduled++
+				}
+				d.mu.Unlock()
+				time.Sleep(10 * time.Millisecond)
+				return onRun(manual, d)
+			}}, nil
+	}
+	return d
+}
+
+// The daemon makes a requested run between its scheduled runs, never beside
+// one, records it as manual with its options, and leaves no request, claim or
+// daemon record behind when it exits.
+func TestDaemonServesARequestSerialisedWithTheScheduledRun(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l := &brokenLedger{memLedger: fixture()}
+	var sawManualRecord atomic.Bool
+	d := wireRequestDaemon(t, l, func(manual bool, d *daemonRun) error {
+		if manual {
+			if r, err := readRunRecord(stateDir); err == nil && r.Trigger == triggerManual && r.Options != nil && r.Options.Advance == 7 && r.PID == os.Getpid() {
+				sawManualRecord.Store(true)
+			}
+			return nil
+		}
+		d.mu.Lock()
+		scheduled, manualRuns := d.scheduled, d.manual
+		d.mu.Unlock()
+		if scheduled == 1 {
+			// Asked for while the scheduled run holds the ledger.
+			mustCode(t, 0, "run-request", "--advance", "7", "--no-digest")
+		}
+		if manualRuns > 0 && scheduled > 2 {
+			l.poison(errors.New("stop the daemon"))
+			return errors.New("stop")
+		}
+		if scheduled > 500 {
+			l.poison(errors.New("the request was never served"))
+			return errors.New("stop")
+		}
+		return nil
+	})
+	_, stderr := mustCode(t, exitRuntime, "daemon")
+	if d.manual != 1 {
+		t.Fatalf("%d manual runs, want 1\n%s", d.manual, stderr)
+	}
+	if d.overlap.Load() != 0 {
+		t.Errorf("%d runs overlapped", d.overlap.Load())
+	}
+	if !sawManualRecord.Load() {
+		t.Error("the manual run was not recorded as manual, by the daemon, with its options")
+	}
+	for _, name := range []string{runRequestFile, runClaimedFile, daemonRecordFile} {
+		if requestExists(stateDir, name) {
+			t.Errorf("%s outlived the daemon", name)
+		}
+	}
+}
+
+// A requested run that leaves the ledger unusable ends the daemon non-zero, as
+// a scheduled one does, rather than leaving it to fail every later run.
+func TestFatalRequestedRunEndsTheDaemon(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l := &brokenLedger{memLedger: fixture()}
+	var asked atomic.Bool
+	d := wireRequestDaemon(t, l, func(manual bool, d *daemonRun) error {
+		if manual {
+			// Fatal by the error alone: the ledger reads healthy, so no later
+			// scheduled run would end the daemon; only the request loop can.
+			return fmt.Errorf("%w: ledger: fsync failed: input/output error", daemon.ErrFatal)
+		}
+		if asked.CompareAndSwap(false, true) {
+			mustCode(t, 0, "run-request", "--advance", "7")
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.scheduled > 300 {
+			return fmt.Errorf("%w: the daemon outlived its fatal manual run", daemon.ErrFatal)
+		}
+		return nil
+	})
+	_, stderr := mustCode(t, exitRuntime, "daemon")
+	if d.manual != 1 || !strings.Contains(stderr, "fsync failed: input/output error") || strings.Contains(stderr, "outlived") {
+		t.Errorf("manual runs %d, stderr:\n%s", d.manual, stderr)
+	}
+	if requestExists(stateDir, daemonRecordFile) {
+		t.Error("the daemon record outlived the daemon")
+	}
+}
+
+// A daemon starting after one that died mid-run drops that run's claim rather
+// than make the run again unasked.
+func TestDaemonStartDropsAnEarlierClaim(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	if err := os.MkdirAll(filepath.Join(stateDir, runRecordDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runsPath(stateDir, runClaimedFile), requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := &brokenLedger{memLedger: fixture()}
+	d := wireRequestDaemon(t, l, func(bool, *daemonRun) error {
+		l.poison(errors.New("stop the daemon"))
+		return errors.New("stop")
+	})
+	_, stderr := mustCode(t, exitRuntime, "daemon")
+	if d.manual != 0 || requestExists(stateDir, runClaimedFile) || !strings.Contains(stderr, "not run again") {
+		t.Errorf("manual %d, stderr:\n%s", d.manual, stderr)
+	}
+}
+
+// The daemon record names the daemon while it runs and goes when it exits; a
+// record another daemon wrote since is left alone.
+func TestDaemonRecord(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l := &brokenLedger{memLedger: fixture()}
+	var during daemonFacet
+	wireDaemon(t, l, func(context.Context) error {
+		during = statusOf(t).Daemon
+		l.poison(errors.New("stop the daemon"))
+		return errors.New("stop")
+	})
+	mustCode(t, exitRuntime, "daemon")
+	if !during.OK || !during.Running || during.PID != os.Getpid() {
+		t.Errorf("while running: %+v", during)
+	}
+	if s := statusOf(t); s.Daemon.Running || !s.Daemon.OK {
+		t.Errorf("after exit: %+v", s.Daemon)
+	}
+
+	if err := writeDaemonRecord(stateDir, os.Getpid()+1, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDaemonRecord(stateDir, os.Getpid()); err != nil || !requestExists(stateDir, daemonRecordFile) {
+		t.Errorf("another daemon's record: %v", err)
+	}
+}
+
+// run-once refused by a running daemon points at run-request.
+func TestRunOnceRefusedByTheDaemonPointsAtRunRequest(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	old := buildApp
+	t.Cleanup(func() { buildApp = old })
+	buildApp = func(config.Config, string, io.Writer) (*App, error) { return nil, errLockedForTest }
+	_, e := mustCode(t, exitRuntime, "run-once")
+	if !strings.Contains(e, "run-request") {
+		t.Errorf("stderr %q", e)
+	}
+}
+
+// pollRequestLoop returns a fatal run error and reports the others.
+func TestPollRequestLoopStopsOnlyOnFatal(t *testing.T) {
+	_, stateDir := setup(t)
+	old := requestPollInterval
+	requestPollInterval = time.Millisecond
+	t.Cleanup(func() { requestPollInterval = old })
+	var stderr bytes.Buffer
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: &stderr}
+	var mu sync.Mutex
+	runs := 0
+	run := func(context.Context, runOptions) error {
+		runs++
+		if runs == 1 {
+			return errors.New("an ordinary failure")
+		}
+		return daemonFatal
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- e.pollRequestLoop(ctx, run, &mu) }()
+	for i := 0; i < 2; i++ {
+		for requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
+			time.Sleep(time.Millisecond)
+		}
+		mu.Lock()
+		writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()}))
+		mu.Unlock()
+	}
+	if err := <-done; !errors.Is(err, daemonFatal) || runs != 2 {
+		t.Errorf("loop ended with %v after %d runs", err, runs)
+	}
+	if !strings.Contains(stderr.String(), "an ordinary failure") {
+		t.Errorf("stderr %q", stderr.String())
+	}
+}
+
+var (
+	daemonFatal      = errors.Join(daemon.ErrFatal, errors.New("ledger poisoned"))
+	errLockedForTest = ledger.ErrLocked
+)
