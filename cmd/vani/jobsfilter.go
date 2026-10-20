@@ -230,12 +230,12 @@ func payStats(sel []selected, cur string) payStatsJSON {
 		case payBuckets - 1:
 			hi = -1
 		}
-		label := "<" + shortMoney(hi)
+		label := "<" + jobinsight.ShortMoney(hi)
 		if i > 0 {
-			label = shortMoney(lo) + "–" + shortMoney(hi)
+			label = jobinsight.ShortMoney(lo) + "–" + jobinsight.ShortMoney(hi)
 		}
 		if hi < 0 {
-			label = "≥" + shortMoney(lo)
+			label = "≥" + jobinsight.ShortMoney(lo)
 		}
 		out.Buckets = append(out.Buckets, payBucketJSON{Label: label, Min: lo, Max: hi})
 	}
@@ -270,17 +270,6 @@ func payStats(sel []selected, cur string) payStatsJSON {
 	return out
 }
 
-// shortMoney writes 150000 as 150k and 2500000 as 2.5M.
-func shortMoney(v float64) string {
-	switch {
-	case v >= 1e6:
-		return strconv.FormatFloat(math.Round(v/1e5)/10, 'f', -1, 64) + "M"
-	case v >= 1e3:
-		return strconv.FormatFloat(math.Round(v/1e2)/10, 'f', -1, 64) + "k"
-	}
-	return strconv.FormatFloat(math.Round(v*100)/100, 'f', -1, 64)
-}
-
 // payNote is a job's pay in cur (else its first stated pay) for text output,
 // "USD 150k–180k/yr", or "" when it states none.
 func payNote(j jobJSON, cur string) string {
@@ -293,9 +282,9 @@ func payNote(j jobJSON, cur string) string {
 	}
 	per := map[jobinsight.Period]string{jobinsight.Hour: "/hr", jobinsight.Day: "/day", jobinsight.Week: "/wk",
 		jobinsight.Month: "/mo", jobinsight.Year: "/yr"}[p.Period]
-	amount := shortMoney(p.Min)
+	amount := jobinsight.ShortMoney(p.Min)
 	if p.Max != p.Min {
-		amount += "–" + shortMoney(p.Max)
+		amount += "–" + jobinsight.ShortMoney(p.Max)
 	}
 	return p.Currency + " " + amount + per
 }

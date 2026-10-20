@@ -304,7 +304,7 @@ func (e *env) jobsStatsCmd(args []string) error {
 		for _, b := range s.Buckets {
 			fmt.Fprintf(e.stdout, " %s %d,", b.Label, b.N)
 		}
-		fmt.Fprintf(e.stdout, " median %s (stated %d, other currency %d, none %d)\nkeywords:", shortMoney(s.Median), s.Listed, s.Other, s.Unlisted)
+		fmt.Fprintf(e.stdout, " median %s (stated %d, other currency %d, none %d)\nkeywords:", jobinsight.ShortMoney(s.Median), s.Listed, s.Other, s.Unlisted)
 		for _, k := range out.Keywords {
 			fmt.Fprintf(e.stdout, " %s %d,", k.Term, k.N)
 		}
