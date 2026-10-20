@@ -13,6 +13,7 @@
 //
 // Page content is untrusted: it only ever becomes data in an ingest batch, bounded by ingest.ts.
 
+import { isRecord } from "./guards";
 import { type IngestOutcome, type IngestPage, type IngestSource, MAX_INGEST_JOBS, MAX_SNIPPET, buildIngestBatch, describeIngest, isIngestReply, leftOutText } from "./ingest";
 import { type UserTargetProfile, rankListing } from "./relevance";
 
@@ -100,10 +101,6 @@ const defaultHttp = (): Http => ({
 });
 
 const bytes = (s: string): number => new TextEncoder().encode(s).length;
-
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
 
 function clean(s: unknown): string {
   return typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "";

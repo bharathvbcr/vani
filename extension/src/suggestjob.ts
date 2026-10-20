@@ -7,6 +7,7 @@
 // The agent runs it as a job: the background starts it and the content script
 // polls, so no browser message stays open for the minutes a draft can take
 // (Safari unloads an idle background page; Chrome an idle worker).
+import { clean, clip, isRecord } from "./guards";
 import type { JobInfo } from "./draft";
 import { MAX_COMPANY_CHARS, MAX_DESCRIPTION_CHARS, MAX_TITLE_CHARS } from "./draft";
 
@@ -53,14 +54,6 @@ export const JOB_HELP: Record<string, string> = {
   unsupported: "This version of the Vani Apply app can't run suggestions. Rebuild and reopen it.",
 };
 
-function clip(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) : s;
-}
-
-function clean(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
-
 /** The `vani suggest` request, or an error when there is nothing to ask about. */
 export function buildSuggestRequest(fields: SuggestField[], job: JobInfo): object {
   const seen = new Set<string>();
@@ -84,10 +77,6 @@ export function buildSuggestRequest(fields: SuggestField[], job: JobInfo): objec
   };
 }
 
-function isObj(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
 function str(x: unknown, n: number): string {
   return typeof x === "string" ? clip(x, n) : "";
 }
@@ -98,7 +87,7 @@ function failure(code: string, error?: string): JobFailure {
 
 /** A host or agent error object as a failure; null when x is not one. */
 export function jobError(x: unknown): JobFailure | null {
-  if (!isObj(x) || typeof x.error !== "string") return null;
+  if (!isRecord(x) || typeof x.error !== "string") return null;
   return failure(typeof x.code === "string" ? x.code : "provider", x.error);
 }
 
@@ -110,11 +99,11 @@ export function jobError(x: unknown): JobFailure | null {
 export function parseSuggestReply(x: unknown, asked: ReadonlySet<string>): SuggestResult {
   const err = jobError(x);
   if (err) return err;
-  if (!isObj(x) || !Array.isArray(x.fields)) return failure("bad_reply");
+  if (!isRecord(x) || !Array.isArray(x.fields)) return failure("bad_reply");
   const fields: FieldSuggestion[] = [];
   const seen = new Set<string>();
   for (const f of x.fields.slice(0, MAX_FIELDS)) {
-    if (!isObj(f) || typeof f.id !== "string" || !asked.has(f.id) || seen.has(f.id)) continue;
+    if (!isRecord(f) || typeof f.id !== "string" || !asked.has(f.id) || seen.has(f.id)) continue;
     if (typeof f.status !== "string" || !STATUSES.has(f.status)) continue;
     const status = f.status as SuggestStatus;
     const draft = status === "drafted" ? str(f.draft, MAX_DRAFT_CHARS + 1).trim() : "";
@@ -137,7 +126,7 @@ export type JobStep = { job: string } | { pending: true } | { done: true; reply:
 export function parseJobStep(x: unknown): JobStep {
   const err = jobError(x);
   if (err) return err;
-  if (isObj(x)) {
+  if (isRecord(x)) {
     if (typeof x.job === "string" && x.job.length > 0 && x.job.length <= 64) return { job: x.job };
     if (x.pending === true) return { pending: true };
     if (x.done === true && "reply" in x) return { done: true, reply: x.reply };

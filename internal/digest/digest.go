@@ -286,17 +286,9 @@ func token(s string) string {
 	return b.String()
 }
 
-// Saved returns the roles the user saved in Jobs whose posting is still
+// savedWith returns the roles the user saved in Jobs whose posting is still
 // listed (not dead, not a duplicate), whatever their pipeline status, in
 // digest order.
-func Saved(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record {
-	return savedAt(recs, m, time.Now(), Options{})
-}
-
-func savedAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
-	return savedWith(recs, m, newScorer(recs, m, now, o))
-}
-
 func savedWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {

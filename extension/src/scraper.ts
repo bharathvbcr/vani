@@ -2,6 +2,7 @@
 // Greenhouse/Lever/Ashby boards, company careers pages, and generic job listings).
 // Extracts listings and immediately computes real-time relevance scores for each.
 
+import { clean } from "./guards";
 import {
   type RelevanceResult,
   type UserTargetProfile,
@@ -52,10 +53,6 @@ export interface ScrapeResult {
   pageTitle: string;
   totalFound: number;
   jobs: ScrapedJob[];
-}
-
-function clean(s: string | null | undefined): string {
-  return (s ?? "").replace(/\s+/g, " ").trim();
 }
 
 function resolveUrl(href: string | null | undefined, base?: string): string {

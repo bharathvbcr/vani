@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -230,8 +231,8 @@ func TestParseSalaryAndShortMoney(t *testing.T) {
 		}
 	}
 	for v, want := range map[float64]string{0: "0", 52.5: "52.5", 999: "999", 1000: "1k", 153200: "153.2k", 2_500_000: "2.5M", 1_000_000: "1M"} {
-		if got := shortMoney(v); got != want {
-			t.Errorf("shortMoney(%v) = %q, want %q", v, got, want)
+		if got := jobinsight.ShortMoney(v); got != want {
+			t.Errorf("jobinsight.ShortMoney(%v) = %q, want %q", v, got, want)
 		}
 	}
 }

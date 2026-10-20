@@ -1,6 +1,7 @@
 package employer
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/lca"
@@ -65,7 +66,7 @@ func (v *View) Lookup(company string) Badge {
 	b.MatchedName = strings.Clone(key) // never pin the view's body
 	b.Attributes = attr(m & attrMask).names()
 	b.Kinds = kindsOf(m >> kindsShift)
-	if b.Confidence == ConfExact && !strings.Contains(key, " ") && !contains(b.Kinds, KindIPEDS) {
+	if b.Confidence == ConfExact && !strings.Contains(key, " ") && !slices.Contains(b.Kinds, KindIPEDS) {
 		b.Confidence = ConfExactOneWord
 	}
 	return b
@@ -95,7 +96,7 @@ func (b Badge) String() string {
 		case AttrCapExemptLikely:
 			parts = append(parts, "likely H-1B cap-exempt (degree-granting public or non-profit institution, IPEDS)")
 		case AttrNonprofit:
-			if contains(b.Kinds, KindIRSBMF) {
+			if slices.Contains(b.Kinds, KindIRSBMF) {
 				parts = append(parts, "likely non-profit (IRS exempt organizations list)")
 			} else {
 				parts = append(parts, "likely non-profit (private non-profit institution, IPEDS)")
@@ -110,13 +111,4 @@ func (b Badge) String() string {
 		how = "exact one-word name match, which often collides; not used for rank"
 	}
 	return strings.Join(parts, "; ") + " (" + how + ")"
-}
-
-func contains(vs []string, v string) bool {
-	for _, x := range vs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }

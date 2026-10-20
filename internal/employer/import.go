@@ -25,6 +25,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/Vani/internal/indexutil"
 	"github.com/bharathvbcr/Vani/internal/lca"
 )
 
@@ -104,11 +105,6 @@ type Partial struct {
 	Names  map[string]attr
 }
 
-func canonHeader(s string) string {
-	s = strings.ToUpper(strings.TrimSpace(s))
-	return strings.Join(strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '-' }), "_")
-}
-
 // columns of either kind; -1 when absent.
 type columns struct {
 	kind                      string
@@ -119,7 +115,7 @@ type columns struct {
 func resolveColumns(header []string) (columns, error) {
 	idx := make(map[string]int, len(header))
 	for i, h := range header {
-		k := canonHeader(h)
+		k := indexutil.CanonHeader(h)
 		if _, dup := idx[k]; !dup {
 			idx[k] = i
 		}

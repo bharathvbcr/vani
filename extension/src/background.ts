@@ -1,5 +1,6 @@
 // Background service worker: the single writer to the answer bank, and the
 // keyboard shortcut. It makes no network requests.
+import { createLock } from "./guards";
 import type { Answer, Bank } from "./types";
 import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
 import {
@@ -32,12 +33,7 @@ function str(x: unknown): string {
 // Serialize every read-modify-write: two tabs capturing at once must not lose
 // one another's answers. (The store also retries on a conflicting write from
 // another process, e.g. the Safari extension.)
-let chain: Promise<unknown> = Promise.resolve();
-function locked<T>(fn: () => Promise<T>): Promise<T> {
-  const next = chain.then(fn, fn);
-  chain = next.catch(() => undefined);
-  return next;
-}
+const locked = createLock();
 
 async function update(fn: (b: Bank) => Bank): Promise<Bank> {
   return locked(() => updateBank(fn));

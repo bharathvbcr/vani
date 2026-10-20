@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/Vani/internal/indexutil"
 )
 
 // oldSave writes the index file the way Save did before the checksum was
@@ -21,7 +23,7 @@ func oldSave(t *testing.T, path string, srcs []fileSource) {
 		Version  int          `json:"version"`
 		Checksum string       `json:"checksum"`
 		Sources  []fileSource `json:"sources"`
-	}{SchemaVersion, sumOf(b), srcs})
+	}{SchemaVersion, indexutil.SumHex(b), srcs})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +81,7 @@ func TestRespacedSourcesFailTheChecksum(t *testing.T) {
 
 func TestUnknownFieldInsideSourcesIsRefused(t *testing.T) {
 	raw := []byte(`[{"name":"hd.csv","kind":"ipeds","sha256":"aa","names":{},"extra":1}]`)
-	data, _ := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: sumOf(raw), Sources: raw})
+	data, _ := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: indexutil.SumHex(raw), Sources: raw})
 	path := filepath.Join(t.TempDir(), "index.json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)

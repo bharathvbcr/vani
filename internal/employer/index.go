@@ -2,18 +2,16 @@ package employer
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"sort"
 	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/indexutil"
 	"github.com/bharathvbcr/Vani/internal/lca"
 )
 
@@ -108,12 +106,7 @@ func (x *Index) Names() int {
 }
 
 func sortedSources(m map[string]Partial) []Partial {
-	out := make([]Partial, 0, len(m))
-	for _, p := range m {
-		out = append(out, p)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Source.SHA256 < out[j].Source.SHA256 })
-	return out
+	return indexutil.SortedBySHA(m, func(p Partial) string { return p.Source.SHA256 })
 }
 
 type fileSource struct {
@@ -128,11 +121,6 @@ type fileDoc struct {
 	Version  int             `json:"version"`
 	Checksum string          `json:"checksum"` // sha256 of the JSON encoding of Sources
 	Sources  json.RawMessage `json:"sources"`
-}
-
-func sumOf(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
 
 // Save writes the index as compact JSON with mode 0600, atomically, then the
@@ -153,7 +141,7 @@ func (x *Index) Save(path string) error {
 		x.mu.RUnlock()
 		return fmt.Errorf("employer: encode index: %w", err)
 	}
-	data, err := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: sumOf(b), Sources: b})
+	data, err := json.Marshal(fileDoc{Version: SchemaVersion, Checksum: indexutil.SumHex(b), Sources: b})
 	x.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("employer: encode index: %w", err)
@@ -163,8 +151,7 @@ func (x *Index) Save(path string) error {
 	}
 	// The index is written first: a crash before the view lands leaves a view
 	// bound to the old bytes, which LoadView detects and rebuilds.
-	fileSum := sha256.Sum256(data)
-	if err := writeView(ViewPath(path), view, hex.EncodeToString(fileSum[:]), int64(len(data))); err != nil {
+	if err := writeView(ViewPath(path), view, indexutil.SumHex(data), int64(len(data))); err != nil {
 		return fmt.Errorf("employer: index saved but its lookup view was not: %w", err)
 	}
 	return nil
@@ -252,7 +239,7 @@ func decodeSources(data []byte) (map[string]Partial, error) {
 	// The bytes Save hashed are the bytes on disk, so they are hashed as
 	// read. A sources block re-spaced or re-ordered by hand no longer
 	// matches, where re-encoding it used to.
-	if sumOf(doc.Sources) != doc.Checksum {
+	if indexutil.SumHex(doc.Sources) != doc.Checksum {
 		return nil, errors.New("employer: corrupt index: checksum mismatch")
 	}
 	var srcs []fileSource

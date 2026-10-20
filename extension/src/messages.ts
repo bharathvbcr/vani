@@ -1,5 +1,6 @@
 // Messages between the content script, the popup and the background worker.
 // The background worker is the only writer to storage.
+import { isRecord } from "./guards";
 import type { Answer, Bank, FieldInfo, Settings } from "./types";
 import type { CaptureResult } from "./bank";
 import type { FillOutcome } from "./fill";
@@ -79,10 +80,6 @@ export type ToContent =
 // `{ error }`, never with nothing.
 
 export const UNKNOWN_MESSAGE = "unknown message type";
-
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
 
 const optBool = (x: unknown) => x === undefined || typeof x === "boolean";
 const optTab = (m: Record<string, unknown>) => m.tabId === undefined || typeof m.tabId === "number";

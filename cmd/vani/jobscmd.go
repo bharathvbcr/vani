@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -304,7 +305,7 @@ func (e *env) jobsStatsCmd(args []string) error {
 		for _, b := range s.Buckets {
 			fmt.Fprintf(e.stdout, " %s %d,", b.Label, b.N)
 		}
-		fmt.Fprintf(e.stdout, " median %s (stated %d, other currency %d, none %d)\nkeywords:", shortMoney(s.Median), s.Listed, s.Other, s.Unlisted)
+		fmt.Fprintf(e.stdout, " median %s (stated %d, other currency %d, none %d)\nkeywords:", jobinsight.ShortMoney(s.Median), s.Listed, s.Other, s.Unlisted)
 		for _, k := range out.Keywords {
 			fmt.Fprintf(e.stdout, " %s %d,", k.Term, k.N)
 		}
@@ -338,7 +339,7 @@ func (e *env) jobsFolders(args []string) error {
 	}
 	var out jobsFoldersJSON
 	err := func() error {
-		if !contains(jobViews, *view) {
+		if !slices.Contains(jobViews, *view) {
 			return usagef("jobs folders: --view %q must be one of %s", *view, strings.Join(jobViews, ", "))
 		}
 		snap, m, err := e.jobsState()
@@ -690,15 +691,6 @@ func cleanText(s string, maxRunes int, keepLines bool) string {
 		n++
 	}
 	return b.String()
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 func orDash(s string) string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -103,11 +104,11 @@ func addSelectFlags(fs *flag.FlagSet, o *jobsOpts) {
 // order.
 func (o *jobsOpts) check(cmd string, sortable bool) error {
 	switch {
-	case !contains(jobViews, o.view):
+	case !slices.Contains(jobViews, o.view):
 		return usagef("%s: --view must be one of %s", cmd, strings.Join(jobViews, ", "))
 	case len(o.query) > maxQueryBytes || !utf8.ValidString(o.query):
 		return usagef("%s: --q must be UTF-8 and at most %d bytes", cmd, maxQueryBytes)
-	case sortable && !contains(jobSorts, o.sort):
+	case sortable && !slices.Contains(jobSorts, o.sort):
 		return usagef("%s: --sort must be one of %s", cmd, strings.Join(jobSorts, ", "))
 	case o.maxAge < 0 || o.maxAge > maxAgeDays:
 		return usagef("%s: --max-age must be 0-%d", cmd, maxAgeDays)

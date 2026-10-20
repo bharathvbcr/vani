@@ -110,7 +110,7 @@ func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand, rules []DropRu
 		if r.Status == posting.Dead || r.Status == posting.Duplicate {
 			continue
 		}
-		if _, done := labeled[r.Key]; done || inherited(r) {
+		if _, done := labeled[r.Key]; done || Inherited(r) {
 			continue // a copied reading is not worth a label: it is not counted
 		}
 		if r.Status == posting.Dropped {
@@ -191,9 +191,9 @@ func byClass(drops []ledger.Record, n int, rules []DropRule, shuffle func([]ledg
 	return out
 }
 
-// inherited reports whether r's triage reading was copied from another
+// Inherited reports whether r's triage reading was copied from another
 // posting rather than made for it.
-func inherited(r ledger.Record) bool {
+func Inherited(r ledger.Record) bool {
 	return r.Annotations[ledger.AnnTriageInheritedFrom] != ""
 }
 
