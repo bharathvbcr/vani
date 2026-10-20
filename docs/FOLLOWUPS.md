@@ -664,6 +664,29 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     bullet/fact counts). Either delete the 4 old blocks in DevPrism after moving anything worth
     keeping into rkb, or keep both and accept that `resume_gap_analysis` counts evidence from
     either copy.
+- **Postings scored while `devprism.binary` was empty (2026-10-19): `vani rescore`.** Those runs
+  wrote `scored` with reason "scoring disabled" and no `rank` or `gap.coverage_pct`. Setting the
+  binary later did not revisit them, so in the live top 20 of `jobs list --sort priority` every
+  posting took the 0.4 coverage prior.
+  - What it does: `vani rescore` scores `scored`/`explained` records that have no `rank`, in place.
+    The record keeps its status and explanation. It goes through the run's `advanceAll`, so the cap,
+    concurrency, cancellation and 20-failure streak are the run's. It calls DevPrism only, never a
+    model. `--dry-run` reads a snapshot without the lock. See README "Use".
+  - Why a missing `rank` stands in for the reason: the folded record keeps no event reasons. Every
+    real score writes `rank`, and a copy of the live ledger showed the two agree.
+  - Dry run on a copy of the live ledger, taken 2026-10-19: **1,631 would be rescored** (1,581
+    explained, 50 scored), 0 without a description, and 51 digested left alone. The live `.state`
+    was not written.
+  - **Owner decisions:**
+    - Run `vani rescore` against `.state`. Stop the daemon first, since the command needs the
+      ledger lock.
+    - Whether the 51 digested postings should be scored too. They would keep `digested`.
+    - Whether to re-pick the 1,581 kept explanations. They were picked without the coverage, and
+      re-picking costs an OpenRouter call each.
+    - Whether the daily run should also do this. That would be one `advanceAll(… withTodo(rescorable))`
+      call in `runOnce` after the advance phase. It was left out: it would compete with the live
+      backlog (1,186 `live` that day) for `advance_per_run`. The class only arises from an empty
+      binary; a DevPrism that is down leaves postings `triaged` and the run retries them.
 - **Decisions API, four slots in one request (2026-10-19 02:18 UTC, `liquid/d1-ultra`).** The owner
   approved one paid call, sent by `build/phase0-devprism/jevone`: Vani's real `jdtriage.Question` for a
   synthetic posting, `decide/jev` with `MaxAttempts: 1`, through `egress`.

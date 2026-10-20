@@ -96,7 +96,12 @@ commands:
                              return postings triaged with no backend reading to live; with
                              --title-drops, postings dropped on a title the current
                              title_signals.read and drop rules no longer drop
-  prefilter [--list]         dry run of the title prefilter (title_signals.read with the drop
+  rescore [--dry-run] [--limit N]
+                             score scored and explained postings that have no score (they went
+                             through while devprism.binary was empty); status and explanation
+                             are kept. DevPrism only, no model; at most N (default
+                             advance_per_run). --dry-run counts without the ledger lock
+  prefilter [--list]        dry run of the title prefilter (title_signals.read with the drop
                              rules): how many live postings it would drop before triage, and how
                              the decision model read the ones it already read (never writes)
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
@@ -212,6 +217,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdJobs(args[1:])
 	case "retriage":
 		cmdErr = e.cmdRetriage(args[1:])
+	case "rescore":
+		cmdErr = e.cmdRescore(args[1:])
 	case "prefilter":
 		cmdErr = e.cmdPrefilter(args[1:])
 	case "migrate":

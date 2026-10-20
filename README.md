@@ -141,7 +141,8 @@ stateDiagram-v2
   `vani eval` and `vani label` read those as the configured model's name and say how many they
   mapped. The daily cap file stays `<state dir>/budget/jev.json`, so the rename kept the day's spend.
 - **Ranking:** DevPrism `resume_gap_analysis` must-have coverage (DevPrism started lazily over
-  `--mcp`). Skipped while `devprism.binary` is empty.
+  `--mcp`). Skipped while `devprism.binary` is empty; `vani rescore` scores those postings once
+  it is set (see Use).
 - **Note ("why this role"):** picked, not written. `vani reasons draft` has the LLM draft, once, a
   catalog of short reasons for the target summary in three categories (why it fits, the biggest
   gap, what to check first), written to `<state dir>/reasons.json` for review and editing (`vani reasons import FILE` installs
@@ -388,6 +389,7 @@ build/vani eval
 build/vani jobs list --sort priority --fit strong_fit,partial_fit --max-age 14
 build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager --sort salary
 build/vani jobs stats --view all
+build/vani rescore --dry-run
 build/vani bench local --model /abs/candidate.gguf --model /abs/d1-3B-Q8_0.gguf
 build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code
 build/vani launchd plist --binary /absolute/path/to/vani
@@ -471,6 +473,20 @@ the last run's `advance` report (eligible, attempted, unread, deferred, why it s
 
 Before setting `devprism.binary` (which enables ranking and a real `kb sync`), run the Phase 0
 check that the installed DevPrism answers `--mcp` without migrating `career.db`.
+
+Postings that went through a run while `devprism.binary` was empty are `scored` or `explained`
+with no score, so the ranker gives them its unknown-coverage prior; setting the binary later does
+not revisit them. `vani rescore --dry-run` counts them, reading the ledger without its lock so it
+works while the daemon runs. `vani rescore [--limit N]` scores them, at most N
+(default `advance_per_run`), freshest first and `advance_concurrency` at a time. It needs the
+ledger lock, so stop the daemon first. It calls DevPrism only, spends nothing, and adds the
+`rank`, coverage, block-count and missing-requirement annotations in place. Status and
+explanation are kept, so nothing is re-explained or re-digested. The kept explanations were picked
+without the coverage, and re-picking them would cost an OpenRouter call each. A posting with no
+description is left unscored, since an empty JD would score near zero and rank below the prior.
+Digested postings are counted and left alone. If DevPrism fails, or the call times out or is
+cancelled, nothing is written for that posting. 20 failures in a row, or a pass that scores
+nothing, fail the command. A second pass finds only what the first left.
 
 ## Knowledge-base matching (semantic)
 

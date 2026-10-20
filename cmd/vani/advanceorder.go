@@ -10,17 +10,38 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// orderOption adjusts orderAdvance; nil options are ignored.
+// orderOption adjusts advanceAll and orderAdvance; nil options are ignored.
 type orderOption func(*orderSettings)
 
 type orderSettings struct {
 	semantic func(ledger.Record) (float64, bool)
+	// todo, when set, is which records advanceAll advances, in place of its
+	// pipeline-status rule.
+	todo func(ledger.Record) bool
+}
+
+func settingsOf(opts []orderOption) orderSettings {
+	var set orderSettings
+	for _, o := range opts {
+		if o != nil {
+			o(&set)
+		}
+	}
+	return set
 }
 
 // withSemantic orders by Score with f as the knowledge-base similarity (see
 // semanticRank); a nil f changes nothing.
 func withSemantic(f func(ledger.Record) (float64, bool)) orderOption {
 	return func(s *orderSettings) { s.semantic = f }
+}
+
+// withTodo makes advanceAll advance exactly the records f selects (vani
+// rescore's Scored and Explained records without a score) instead of those
+// still in the pipeline. Its cap, concurrency, stop rules and ordering apply
+// unchanged. A nil f changes nothing.
+func withTodo(f func(ledger.Record) bool) orderOption {
+	return func(s *orderSettings) { s.todo = f }
 }
 
 // orderAdvance sorts todo in the order a run advances it: highest title rank
@@ -44,12 +65,7 @@ func withSemantic(f func(ledger.Record) (float64, bool)) orderOption {
 // it the order is exactly the one above. Either way this only orders (Rule 7):
 // no posting is dropped or skipped.
 func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opts ...orderOption) {
-	var set orderSettings
-	for _, o := range opts {
-		if o != nil {
-			o(&set)
-		}
-	}
+	set := settingsOf(opts)
 	at := now()
 	var rc jobinsight.RankContext
 	if set.semantic != nil {

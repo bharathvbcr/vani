@@ -36,6 +36,9 @@ type App struct {
 	// advances the new ones. The daemon calls it between daily runs, never
 	// while a run is going. Nil means no polling.
 	PollInbox func(ctx context.Context) error
+	// Rescore scores up to limit postings that went past the scoring stage
+	// without a score (vani rescore). Nil means not available.
+	Rescore func(ctx context.Context, limit int) (rescoreReport, error)
 	// Notifier announces a finished digest. Nil means no notification.
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
