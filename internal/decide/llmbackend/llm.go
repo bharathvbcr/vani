@@ -38,11 +38,46 @@ type Config struct {
 	Model     string        // required; the provider must serve it
 	MaxTokens int           // default 256, max 1024
 	Timeout   time.Duration // default 30s, max 120s
+	// Name is the backend name its answers and ledger annotations carry, so two
+	// Claude backends on different models are told apart. Empty means DefaultName;
+	// otherwise 1..MaxNameBytes of [a-z0-9_-], and not one another backend uses.
+	Name string
+}
+
+// DefaultName is the backend name when Config.Name is empty.
+const DefaultName = "llm"
+
+// MaxNameBytes bounds Config.Name (decide/jev's limit, config.MaxBackendName).
+const MaxNameBytes = 32
+
+// reservedNames are the names other backends answer under (config's
+// reservedBackendNames, less DefaultName, which this backend owns).
+var reservedNames = []string{"lappi", "local", "unknown", "title"}
+
+// ReservedNames is a copy of reservedNames, for the test in cmd/vani that holds
+// it equal to config's (the two packages cannot import each other).
+func ReservedNames() []string { return slices.Clone(reservedNames) }
+
+// CheckName reports whether n may name an LLM backend (Config.Name).
+func CheckName(n string) error { return checkName(n) }
+
+// checkName refuses a name another backend uses or that cannot be a safe key.
+func checkName(n string) error {
+	if len(n) == 0 || len(n) > MaxNameBytes || strings.IndexFunc(n, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-'
+	}) >= 0 {
+		return fmt.Errorf("llmbackend: name %q must be 1..%d bytes of [a-z0-9_-]", n, MaxNameBytes)
+	}
+	if slices.Contains(reservedNames, n) || strings.HasPrefix(n, "local-") {
+		return fmt.Errorf("llmbackend: name %q is taken by another backend", n)
+	}
+	return nil
 }
 
 // Backend asks a provider to choose among options.
 type Backend struct {
 	p       llm.Provider
+	name    string
 	model   string
 	max     int
 	timeout time.Duration
@@ -57,6 +92,12 @@ func New(p llm.Provider, cfg Config) (*Backend, error) {
 	}
 	if cfg.Model == "" {
 		return nil, errors.New("llmbackend: a model is required")
+	}
+	if cfg.Name == "" {
+		cfg.Name = DefaultName
+	}
+	if err := checkName(cfg.Name); err != nil {
+		return nil, err
 	}
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = DefaultMaxTokens
@@ -77,10 +118,10 @@ func New(p llm.Provider, cfg Config) (*Backend, error) {
 	if err := capab.Validate(llm.Request{Model: cfg.Model, MaxTokens: cfg.MaxTokens}); err != nil {
 		return nil, fmt.Errorf("llmbackend: %w", err)
 	}
-	return &Backend{p: p, model: cfg.Model, max: cfg.MaxTokens, timeout: cfg.Timeout}, nil
+	return &Backend{p: p, name: cfg.Name, model: cfg.Model, max: cfg.MaxTokens, timeout: cfg.Timeout}, nil
 }
 
-func (b *Backend) Name() string { return "llm" }
+func (b *Backend) Name() string { return b.name }
 
 // Serves is true for any task.
 func (b *Backend) Serves(string) bool { return true }
@@ -112,8 +153,8 @@ func userMessage(q decide.Question) string {
 	return sb.String()
 }
 
-func allSlots(q decide.Question, rd decide.SlotReading) decide.Answer {
-	a := decide.Answer{Backend: "llm", Slots: make(map[string]decide.SlotReading, len(q.Slots))}
+func allSlots(name string, q decide.Question, rd decide.SlotReading) decide.Answer {
+	a := decide.Answer{Backend: name, Slots: make(map[string]decide.SlotReading, len(q.Slots))}
 	for _, s := range q.Slots {
 		a.Slots[s.Name] = rd
 	}
@@ -128,7 +169,7 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 	for _, s := range q.Slots {
 		for _, o := range s.Options {
 			if o == None {
-				return allSlots(q, decide.SlotReading{Reading: decide.Refused, Detail: "option_none_reserved"}), nil
+				return allSlots(b.name, q, decide.SlotReading{Reading: decide.Refused, Detail: "option_none_reserved"}), nil
 			}
 		}
 	}
@@ -148,9 +189,9 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 		if ctx.Err() != nil {
 			detail = "deadline"
 		}
-		return allSlots(q, decide.SlotReading{Reading: decide.Unavailable, Detail: detail}), err
+		return allSlots(b.name, q, decide.SlotReading{Reading: decide.Unavailable, Detail: detail}), err
 	}
-	return parse(q, text), nil
+	return parse(b.name, q, text), nil
 }
 
 // ReasoningHeadroom is added to the visible-reply budget for a model that always
@@ -222,9 +263,9 @@ func stripFence(s string) string {
 
 // parse reads the reply strictly: one JSON object; extra keys ignored; each
 // slot must be present and be a string equal to an option or "none".
-func parse(q decide.Question, text string) decide.Answer {
+func parse(name string, q decide.Question, text string) decide.Answer {
 	bad := func(detail string) decide.Answer {
-		return allSlots(q, decide.SlotReading{Reading: decide.Failed, Detail: detail})
+		return allSlots(name, q, decide.SlotReading{Reading: decide.Failed, Detail: detail})
 	}
 	if len(text) > maxReplyBytes {
 		return bad("reply_too_large")
@@ -237,7 +278,7 @@ func parse(q decide.Question, text string) decide.Answer {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return bad("trailing_data")
 	}
-	ans := decide.Answer{Backend: "llm", Slots: make(map[string]decide.SlotReading, len(q.Slots))}
+	ans := decide.Answer{Backend: name, Slots: make(map[string]decide.SlotReading, len(q.Slots))}
 	for _, s := range q.Slots {
 		raw, ok := obj[s.Name]
 		if !ok {

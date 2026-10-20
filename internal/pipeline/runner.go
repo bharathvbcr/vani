@@ -26,13 +26,17 @@ var ErrStageMissing = errors.New("pipeline: stage not configured")
 // next run asks again; only a real reading can make it Unsure.
 var ErrTriageUnavailable = errors.New("pipeline: no decision backend could read the posting")
 
-// noReading is true when every slot of a non-empty answer is Unavailable.
+// noReading is true when every slot of a non-empty answer is an outage reading
+// (Unavailable or NotAsked): no backend read the posting, so it stays Live and
+// the next run asks again. A Failed slot is a backend's unusable reading, not
+// an outage (see outageReading); an answer with one goes to the DropPolicy and
+// becomes Unsure.
 func noReading(a decide.Answer) bool {
 	if len(a.Slots) == 0 {
 		return false
 	}
 	for _, sr := range a.Slots {
-		if sr.Reading != decide.Unavailable {
+		if !outageReading(sr.Reading) {
 			return false
 		}
 	}

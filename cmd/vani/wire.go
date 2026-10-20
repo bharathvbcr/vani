@@ -142,7 +142,7 @@ type wired struct {
 func (w *wired) runReport() runDetail {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report()}
+	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats()}
 }
 
 func (w *wired) close() error {
@@ -916,16 +916,22 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 
+	// esc is the escalation tier (decide.escalate): a second backend on the same
+	// metered provider, so one daily cap bounds all LLM spend.
+	var esc decide.Backend
 	if w.cfg.LLM.Provider != "" {
 		p, err := w.provider(ctx)
 		if err != nil {
 			w.warnf("llm disabled: %v", err)
 		} else {
-			lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.Model})
+			lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.EffectiveTriageModel()})
 			if err != nil {
 				return nil, fmt.Errorf("llm backend: %w", err)
 			}
 			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
+			if esc, err = w.escalateBackend(p); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// Lappi is local and free. It is the shadow until `vani eval` reports it
@@ -990,11 +996,12 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow
 	gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
+	triage := w.escalating(router, esc)
 
 	explainer, skipExplain := w.notes(d, spend)
 	r := &pipeline.Runner{
 		Ledger:      w.led,
-		Triager:     &jdtriage.Triager{D: router, TargetSummary: w.cfg.TargetSummary, ExtraSlots: []decide.Slot{jobcategory.DecideSlot()}},
+		Triager:     &jdtriage.Triager{D: triage, TargetSummary: w.cfg.TargetSummary, ExtraSlots: []decide.Slot{jobcategory.DecideSlot()}},
 		Explainer:   explainer,
 		Policy:      dropPolicy(w.cfg, w.openRouterName()),
 		SkipExplain: skipExplain,
@@ -1060,12 +1067,12 @@ func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("llm budget: %w", err)
 	}
-	prices := budget.Prices{Rates: budget.Rates{Input: in, Output: out, CacheWrite: in, CacheRead: in}}
-	return &budget.Provider{Inner: pricedProvider{Provider: inner, prices: prices}, Ledger: l}, nil
+	return &budget.Provider{Inner: newPricedProvider(inner, w.cfg.LLM.Model, in, out), Ledger: l}, nil
 }
 
-// pricedProvider meters the adapter at the configured prices (the operator's
-// conservative figures, which win over any table the adapter publishes).
+// pricedProvider meters the adapter at the configured prices for the configured
+// model (the operator's conservative figures, which win over any table the
+// adapter publishes) and at the adapter's table for any other model (pricing.go).
 //
 // Embedding llm.Provider exposes only that interface, so every optional
 // contract budget.Provider looks for on its inner provider is forwarded here
@@ -1074,9 +1081,8 @@ func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
 type pricedProvider struct {
 	llm.Provider
 	prices budget.Prices
+	model  string // the configured model; empty meters every model at prices
 }
-
-func (p pricedProvider) PriceOf(string) (budget.Prices, bool) { return p.prices, true }
 
 // AttemptGateSupported is true only when the adapter itself makes that promise.
 func (p pricedProvider) AttemptGateSupported() bool {

@@ -52,6 +52,7 @@ type fakeProvider struct {
 	text      string
 	streamErr error
 	nextErr   error
+	respErr   error
 	stream    *fakeStream
 	reqs      []llm.Request
 	block     bool
@@ -67,7 +68,7 @@ func (p *fakeProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream,
 	if p.streamErr != nil {
 		return nil, p.streamErr
 	}
-	p.stream = &fakeStream{text: p.text, block: p.block, ctx: ctx, nextErr: p.nextErr}
+	p.stream = &fakeStream{text: p.text, block: p.block, ctx: ctx, nextErr: p.nextErr, respErr: p.respErr}
 	return p.stream, nil
 }
 
@@ -284,5 +285,58 @@ func TestInvalidQuestionNeverReachesProvider(t *testing.T) {
 	q.Slots = nil
 	if _, err := b.Decide(context.Background(), q); !errors.Is(err, decide.ErrInvalidQuestion) || len(p.reqs) != 0 {
 		t.Fatalf("err=%v reqs=%d", err, len(p.reqs))
+	}
+}
+
+// Name is "llm" unless set, so existing ledgers keep their backend name; a
+// second backend with its own name is told apart in the answer.
+func TestNameDefaultsToLLMAndCustomNameAnswers(t *testing.T) {
+	const reply = `{"mode":"remote","level":"senior"}`
+	def, err := New(&fakeProvider{text: reply}, Config{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Name() != "llm" {
+		t.Fatalf("default Name() = %q, want llm", def.Name())
+	}
+	custom, err := New(&fakeProvider{text: reply}, Config{Model: "m", Name: "llm-haiku"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if custom.Name() != "llm-haiku" {
+		t.Fatalf("Name() = %q", custom.Name())
+	}
+	a, err := custom.Decide(context.Background(), question())
+	if err != nil || a.Backend != "llm-haiku" {
+		t.Fatalf("answer backend %q err %v, want llm-haiku", a.Backend, err)
+	}
+	// Every failure shape carries the name too, or a failed escalation read
+	// would be filed under the primary "llm".
+	bad, _ := New(&fakeProvider{text: "not json"}, Config{Model: "m", Name: "llm-haiku"})
+	if a, _ := bad.Decide(context.Background(), question()); a.Backend != "llm-haiku" {
+		t.Errorf("parse failure backend %q", a.Backend)
+	}
+	down, _ := New(&fakeProvider{streamErr: errors.New("down")}, Config{Model: "m", Name: "llm-haiku"})
+	if a, _ := down.Decide(context.Background(), question()); a.Backend != "llm-haiku" {
+		t.Errorf("provider failure backend %q", a.Backend)
+	}
+	reserved := question()
+	reserved.Slots[0].Options = []string{"none", "x"}
+	refuse, _ := New(&fakeProvider{text: reply}, Config{Model: "m", Name: "llm-haiku"})
+	if a, _ := refuse.Decide(context.Background(), reserved); a.Backend != "llm-haiku" {
+		t.Errorf("refused-question backend %q", a.Backend)
+	}
+}
+
+func TestNameIsValidated(t *testing.T) {
+	for _, n := range []string{"LLM", "has space", "a/b", "dot.name", strings.Repeat("a", MaxNameBytes+1), "lappi", "local", "unknown", "title", "local-x", "\x00"} {
+		if _, err := New(&fakeProvider{}, Config{Model: "m", Name: n}); err == nil {
+			t.Errorf("name %q accepted", n)
+		}
+	}
+	for _, n := range []string{"llm", "llm-haiku", "claude_haiku-5-5", strings.Repeat("a", MaxNameBytes)} {
+		if _, err := New(&fakeProvider{}, Config{Model: "m", Name: n}); err != nil {
+			t.Errorf("name %q refused: %v", n, err)
+		}
 	}
 }
