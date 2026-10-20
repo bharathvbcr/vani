@@ -224,6 +224,16 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     from the next run on.
   - d1-ultra answered 44 HTTP 429s, 30 timeouts and 28 HTTP 502s in that run. Jev already retries
     with backoff and honours Retry-After; nothing here paces the four workers together.
+  - **At merge, with the uncommitted jobsIngest work in the main checkout:** the `re-dated` case
+    goes once into the shared `reconcile(..., full bool)` loop that `Reconcile` and
+    `ReconcilePartial` both call, before `default`. Add a `reconcile_partial_test.go` case: posted
+    date missing, then supplied, gives `re-dated`. The Workday save guards in `cmd/vani/jobsingest.go`
+    and `extension/src/crawlrun.ts` (`DAEMON_WORKDAY_MAX = 200`) assume the fixed cap and must compare
+    against the board's effective cap (`max_postings`, else 200; at most 1,500).
+  - NVIDIA lists about 2,750 postings in all, over Workday's 2,000 counting limit, so even
+    `max_postings` reaches it only through searches. A facet split (`jobFamilyGroup` buckets) is
+    verified in `extension/src/crawler.ts`; porting it to the Go adapter is proposed separately
+    ("Teach Vani's Go Workday adapter to list big boards") and is the owner's call.
 
 ## Shadow evaluation (applied 2026-10-19, not yet measured on the live ledger)
 
