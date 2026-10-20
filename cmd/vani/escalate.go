@@ -65,13 +65,16 @@ func (w *wired) escalating(router *decide.Router, esc decide.Backend) decide.Dec
 // a slot the LLM answered itself carries no Jev calibration; Lappi readings
 // carry a Lappi one. Neither is a candidate.
 //
-// RANKING SIDE EFFECT: triageAnnotations writes triage.<slot>.disagree=true
-// whenever an Answered shadow value differs from the primary's, and the ranker
-// (branch rank-relevance, DisagreeConf) halves a slot's confidence on that key
-// regardless of which backend the shadow was. So escalation never changes what
-// is dropped (DropPolicy ignores Shadow), but it does lower ranking confidence
-// where the cheap tier disagrees, exactly as the decide.shadow backend does. The
-// two are exclusive in the config for that reason.
+// MEASURE MODE FOR DROPS AND FOR RANKING: DropPolicy ignores Shadow, so
+// escalation never changes what is dropped. The ranker (branch rank-relevance)
+// skips its DisagreeConf confidence cut for shadow_backend=escalate until a
+// slot is promoted by config, so it does not change ranking either.
+// triageAnnotations still writes triage.<slot>.disagree=true whenever an
+// Answered shadow value differs from the primary's, on purpose: `vani eval`'s
+// Promotion report reads that key to measure the cheap tier against the primary.
+//
+// decide.escalate and decide.shadow are exclusive in the config because both
+// write Answer.Shadow for the same slots (one slot has one shadow reading).
 //
 // Bounds: maxPerRun slots per run (one escalator per run, so the counter resets
 // with the run), and the escalate backend is on the metered provider, so the llm
