@@ -39,7 +39,7 @@ flowchart TD
 
         subgraph Triage["3. Decision & Triage"]
             TR["career.jd_triage\n(role_fit, sponsorship, work_mode, seniority)"]
-            JEV["OpenRouter model (d1-ultra)"]
+            ORT["OpenRouter model (d1-ultra)"]
             LLM["LLM via Manvi (Gemini / Claude)"]
             LAP["Lappi (Local socket, free)"]
             SHADOW["Shadow & Eval (vani label / eval)"]
@@ -69,9 +69,9 @@ flowchart TD
     DEDUP -->|Active| LIVE
 
     LIVE --> TR
-    TR --> JEV & LLM & LAP
+    TR --> ORT & LLM & LAP
     TR -.-> SHADOW
-    JEV & LLM & LAP --> DROP_RULE
+    ORT & LLM & LAP --> DROP_RULE
     DROP_RULE -->|Calibrated drop| DROP
     DROP_RULE -->|Uncertain fit| UNSURE
     DROP_RULE -->|Clear fit| TRIAGED
@@ -137,7 +137,7 @@ stateDiagram-v2
   `decide.shadow` `jev` are now `openrouter_model`, `openrouter_key_env`, `daily_usd.openrouter`,
   `min_openrouter_prob` and `openrouter`. Old configs and track files still load, every command
   says which keys to rename, a file setting an old and a new key to different values is refused,
-  and saving writes the new names. Ledger rows written before the rename name the model `jev`;
+  and saving writes the new names. Ledger rows written before the rename name the model `jev` (no persisted ledger key was renamed);
   `vani eval` and `vani label` read those as the configured model's name and say how many they
   mapped.
 - **Renamed files and values (2026-10-20):** the daily cap files `budget/jev.json` and `budget/jev-notes.json` are now `budget/openrouter.json` and `budget/openrouter-notes.json`; the next command that opens them renames them (a link that never overwrites, so the day's spend carries over; the spend key inside stays `jev`, as it is the file format). If both names exist Vani refuses and names them: keep the one you want counted and move the other aside. `vani status` reads an old file in place. `kbmatch.backend` `jev` (and `--backend jev`) is now `openrouter`; the old value still loads. `config.Default()` seeds `liquid/d1-ultra`.
@@ -324,7 +324,7 @@ flowchart TD
     order. Scores cached by an older build are ignored, so the ranker treats every posting as
     unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
     postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
-  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|jev] [--model ID] [--no-retrieve]`
+  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|openrouter] [--model ID] [--no-retrieve]`
     asks a model, for the top N postings by priority (default 40) that triage did not read as a
     mismatch, whether the work each describes is the work in your knowledge base: `core`,
     `partial`, `adjacent` or `unrelated`. It is a second read of the job's duties, not of the
@@ -338,7 +338,7 @@ flowchart TD
     is shorter; without it (`--no-retrieve`, or the model cannot load) the question carries the
     full digest instead. The **answering model** is the llm (`kbmatch.backend` `"llm"`, the
     default) on `kbmatch.model`, else `llm.triage_model`, else `llm.model`, or the **decision
-    model** (`"jev"`: `decide.openrouter_model` over OpenRouter, from the OpenRouter cap).
+    model** (`"openrouter"`: `decide.openrouter_model` over OpenRouter, from the OpenRouter cap).
     `kbmatch.model` is its own setting so a cheap model can read postings here without changing
     how triage and escalation run. Example: `"kbmatch": {"model": "claude-haiku-5-5"}`.
     **What is sent**, per posting: the posting, your `target_summary` and a view of the

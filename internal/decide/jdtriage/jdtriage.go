@@ -62,7 +62,7 @@ type Fixture struct {
 	} `json:"context"`
 	// Families are the trained Lappi families, one per slot. Lappi's
 	// training data carries one choice slot per example, so Lappi is asked
-	// each slot as its own family with its own exact question; Jev and the
+	// each slot as its own family with its own exact question; Liquid D and the
 	// LLM are asked all slots at once with Question.
 	Families []Family `json:"families"`
 }
@@ -74,7 +74,7 @@ type Family struct {
 	Slot     SlotSpec `json:"slot"`
 }
 
-// Option is one legal answer with the description Jev judges it by.
+// Option is one legal answer with the description Liquid D judges it by.
 type Option struct {
 	Value       string `json:"value"`
 	Description string `json:"description"`
@@ -176,7 +176,7 @@ func SlotValues() map[string][]string {
 }
 
 // Descriptions returns the table as the slot -> option -> description map the
-// Jev backend's Config takes.
+// jev.Config (the decision-model client) takes.
 func Descriptions() map[string]map[string]string {
 	out := make(map[string]map[string]string, len(Slots))
 	for _, s := range Slots {

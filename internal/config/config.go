@@ -364,7 +364,7 @@ type Local struct {
 	Server    *LocalServer `json:"server,omitempty"`
 	Model     string       `json:"model"`
 	TimeoutMS int          `json:"timeout_ms,omitempty"` // zero means 20 s
-	// Questions is "combined" (default: the one question Jev gets, so the eval
+	// Questions is "combined" (default: the one question Liquid D gets, so the eval
 	// compares models on identical requests) or "per_slot" (each slot asked
 	// its own fixture family question, as Lappi is). Which suits a given
 	// model is what `vani eval` measures.
