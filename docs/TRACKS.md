@@ -72,6 +72,9 @@ the repo's ignored `drafts/deciders/`, which `tracks_dir` can point at directly.
   See [Title signals](#title-signals).
 - `track` records the id, so `track list` can mark it.
 - `motivation_notes` is left alone: it is about the seeker, not the track.
+- `exclude` is left alone too: the owner's hard filter (titles, companies, locations,
+  descriptions) holds whatever track is active. Unlike `title_signals.exclude`, which only orders
+  triage, it drops; see the README's Exclusions entry.
 
 The new config is validated before it is saved. A track that fails any check is not applied and
 the config is left byte-for-byte unchanged.

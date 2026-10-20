@@ -99,19 +99,24 @@ func reopen(ctx context.Context, l ledger.Ledger, now time.Time, dryRun bool, re
 			keys = append(keys, r.Key)
 			continue
 		}
-		forget := map[string]string{
-			ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnMissing: "", ledger.AnnBlocks: "", ledger.AnnExplanation: "",
-		}
-		for k := range r.Annotations {
-			if strings.HasPrefix(k, ledger.AnnTriagePrefix) {
-				forget[k] = ""
-			}
-		}
-		if err := l.Append(ctx, ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: posting.Live,
-			Annotations: forget, Reason: reason}); err != nil {
+		if err := l.Append(ctx, reopenEvent(r, now, reason)); err != nil {
 			return keys, err
 		}
 		keys = append(keys, r.Key)
 	}
 	return keys, nil
+}
+
+// reopenEvent returns r to Live, forgetting the triage, scoring, explanation
+// and exclusion annotations and keeping everything else.
+func reopenEvent(r ledger.Record, now time.Time, reason string) ledger.Event {
+	forget := map[string]string{
+		ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnMissing: "", ledger.AnnBlocks: "", ledger.AnnExplanation: "",
+	}
+	for k := range r.Annotations {
+		if strings.HasPrefix(k, ledger.AnnTriagePrefix) || k == AnnExcluded {
+			forget[k] = ""
+		}
+	}
+	return ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: posting.Live, Annotations: forget, Reason: reason}
 }

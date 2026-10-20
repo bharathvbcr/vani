@@ -86,6 +86,11 @@ type Config struct {
 	// entries read triage slots from the title before any model is asked; a
 	// drop rule for the slot and value read drops the posting unasked.
 	TitleSignals TitleSignals `json:"title_signals,omitzero"`
+	// Exclude is the owner's hard filter on a posting's own title, company,
+	// location and description: what it matches is dropped without asking any
+	// backend, and kept postings it comes to match are dropped at the next
+	// run. Tracks leave it alone.
+	Exclude Exclude `json:"exclude,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -1242,6 +1247,7 @@ func (c Config) Validate() error {
 		seenPref[p] = true
 	}
 	c.TitleSignals.validate(add)
+	c.Exclude.validate(add)
 
 	if len(errs) == 0 {
 		return nil

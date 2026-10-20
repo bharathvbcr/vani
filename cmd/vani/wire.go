@@ -235,7 +235,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 	// spends at most workday.MaxDetails requests a run.
 	wd, err := workday.NewWith(d, workday.Options{
 		Stored:    w.storedFor,
-		DropTitle: titleDrops(runner.Policy),
+		DropListed: listedDrops(runner.Policy),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 		},
@@ -275,6 +275,9 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if _, err := w.annotateNearDups(ctx, protect, time.Now()); err != nil {
 		return err
 	}
+	if err := w.applyExclusions(ctx, runner.Policy, protect, time.Now()); err != nil {
+		return err
+	}
 	// Company icons for the Jobs list: bounded, and warn-only.
 	w.refreshLogos(ctx)
 	if ctx.Err() != nil {
@@ -286,8 +289,8 @@ func (w *wired) runOnce(ctx context.Context) error {
 		w.warnf("advance phase skipped (--list-only): new postings stay live for the next run")
 		return nil
 	}
-	w.warmBeforeAdvance(ctx, w.led.All(), titleDropper(runner.Policy))
-	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), limit, w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
+	w.warmBeforeAdvance(ctx, w.led.All(), prefilterDropper(runner.Policy))
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), limit, w.cfg.AdvanceWorkers(), prefilterDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()
@@ -309,6 +312,21 @@ func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) 
 	}
 	w.warnf("near-duplicates: %+v", nd)
 	return nd, nil
+}
+
+// applyExclusions drops the kept postings the configured exclusions now match
+// and reopens the excluded ones they no longer match, before anything is
+// advanced, so editing exclude takes effect on the whole ledger at the next
+// run. Marked postings are never dropped.
+func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, protect func(posting.Key) bool, now time.Time) error {
+	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect)
+	if err != nil {
+		return fmt.Errorf("exclusions: %w", err)
+	}
+	if len(ch.Drop) > 0 || len(ch.Reopen) > 0 {
+		w.warnf("exclusions: dropped %d posting(s), returned %d to live", len(ch.Drop), len(ch.Reopen))
+	}
+	return nil
 }
 
 // startRun readies what one pass over the ledger needs to triage: the egress
@@ -404,7 +422,7 @@ func (w *wired) pollInbox(ctx context.Context) error {
 		return nil
 	}
 	defer stop()
-	_, err = advanceAll(ctx, recs, w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf)
+	_, err = advanceAll(ctx, recs, w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), prefilterDropper(runner.Policy), runner.Advance, w.warnf)
 	return err
 }
 
@@ -416,14 +434,17 @@ var testHookAdvanceNew func(ctx context.Context, recs []ledger.Record) error
 // demote to Duplicate (protectMarked).
 func (w *wired) markProtector() func(posting.Key) bool { return protectMarked(w.stateDir, w.warnf) }
 
-// dropPolicy is the configured drop rules, and the title reader that applies
-// them before any backend is asked. The run and `vani prefilter` share it.
+// dropPolicy is the configured drop rules, the exclusions, and the title
+// reader that applies the rules before any backend is asked. The run and `vani prefilter` share it.
 func dropPolicy(cfg config.Config, openRouter string) pipeline.DropPolicy {
 	rules := make([]pipeline.DropRule, 0, len(cfg.DropRules))
 	for _, r := range cfg.DropRules {
 		rules = append(rules, pipeline.DropRule{Slot: r.Slot, Values: r.Values, MinOpenRouterProb: r.MinOpenRouterProb, MinLappiScore: r.MinLappiScore})
 	}
 	p := pipeline.DropPolicy{Rules: rules, OpenRouter: openRouter}
+	if x := cfg.Exclude.Clone(); !x.Empty() {
+		p.Exclude = x.Match
+	}
 	if s := cfg.TitleSignals; len(s.Read) > 0 {
 		p.ReadTitle = func(title string) []pipeline.TitleReading {
 			reads := s.Reads(title)
@@ -437,27 +458,45 @@ func dropPolicy(cfg config.Config, openRouter string) pipeline.DropPolicy {
 	return p
 }
 
-// titleDropper reports whether the runner would drop a record by its title
-// alone (a live posting the policy's title reading drops), or is nil when
-// the policy reads no titles.
-func titleDropper(p pipeline.DropPolicy) func(ledger.Record) bool {
-	drops := titleDrops(p)
-	if drops == nil {
+// prefilterDropper reports whether the runner would drop a record before
+// asking any backend (a live posting an exclusion or the policy's title
+// reading drops), or is nil when the policy has neither.
+func prefilterDropper(p pipeline.DropPolicy) func(ledger.Record) bool {
+	if !p.Prefilters() {
 		return nil
 	}
 	return func(r ledger.Record) bool {
-		return r.Status == posting.Live && drops(r.Posting.Title)
+		if r.Status != posting.Live {
+			return false
+		}
+		_, _, dropped := p.EvaluatePosting(r.Posting)
+		return dropped
 	}
 }
 
-// titleDrops reports whether the policy drops a posting by its title alone,
-// or is nil when the policy reads no titles.
+// listedDrops reports whether the policy drops a posting from what a board's
+// listing says of it (workday.Options.DropListed: title, company, location),
+// or is nil when the policy has neither exclusions nor title readings.
+func listedDrops(p pipeline.DropPolicy) func(posting.Posting) bool {
+	if !p.Prefilters() {
+		return nil
+	}
+	return func(post posting.Posting) bool {
+		_, _, dropped := p.EvaluatePosting(post)
+		return dropped
+	}
+}
+
+// titleDrops reports whether the policy drops a posting by its title alone
+// (a title exclusion or title reading), or is nil when the policy has neither
+// exclusions nor title readings. Workday asks it of a listed row before
+// fetching the row's details.
 func titleDrops(p pipeline.DropPolicy) func(string) bool {
-	if p.ReadTitle == nil {
+	if !p.Prefilters() {
 		return nil
 	}
 	return func(title string) bool {
-		_, _, dropped := p.EvaluateTitle(title)
+		_, _, dropped := p.EvaluatePosting(posting.Posting{Title: title})
 		return dropped
 	}
 }

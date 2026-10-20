@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -521,7 +522,29 @@ func (e *env) jobsState() (ledger.Snapshot, map[posting.Key]marks.Entry, error) 
 	if err != nil {
 		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read marks: %w", err)
 	}
+	// Listing jobs needs no config; when there is one, its exclusions hide now
+	// what the next run will drop.
+	if cfg, err := e.loadConfig(); err == nil {
+		hideExcluded(snap.Records, m, cfg.Exclude)
+	}
 	return snap, m, nil
+}
+
+// hideExcluded shows each unmarked posting x matches as dropped, as the next
+// run's exclusion pass (pipeline.ApplyExclusions) will record it. It changes
+// the read snapshot only.
+func hideExcluded(recs []ledger.Record, m map[posting.Key]marks.Entry, x config.Exclude) {
+	if x.Empty() {
+		return
+	}
+	for i, r := range recs {
+		if m[r.Key].Mark != marks.None || !keptStatus(r.Status) {
+			continue
+		}
+		if _, ok := x.Match(r.Posting); ok {
+			recs[i].Status = posting.Dropped
+		}
+	}
 }
 
 func findRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool) {

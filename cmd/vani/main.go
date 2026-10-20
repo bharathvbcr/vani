@@ -32,6 +32,10 @@ commands:
   init                       write a default config (refuses to overwrite)
   config check               validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
+  config exclude [--set]     print the exclusions (titles, title_unless, companies, locations,
+                             descriptions) as JSON; --set replaces them with the JSON object on
+                             stdin. The next run drops what they match and reopens what they
+                             no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
   watchlist add    --ats gh|lv|ab|wd|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
@@ -120,9 +124,11 @@ commands:
                              through while devprism.binary was empty); status and explanation
                              are kept. DevPrism only, no model; at most N (default
                              advance_per_run). --dry-run counts without the ledger lock
-  prefilter [--list]        dry run of the title prefilter (title_signals.read with the drop
-                             rules): how many live postings it would drop before triage, and how
-                             the decision model read the ones it already read (never writes)
+  prefilter [--list]        dry run of the prefilter (exclude, and title_signals.read with the
+                             drop rules): how many live postings it would drop before triage,
+                             which kept ones the next run's exclusions drop or return to live,
+                             and how the decision model read the ones it already read (never
+                             writes)
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
               [--parallel N] [--json]
                              replay postings the primary already read through local decision
@@ -338,8 +344,11 @@ func (e *env) cmdConfig(args []string) error {
 	if len(args) > 0 && args[0] == "motivation" {
 		return e.cmdConfigMotivation(args[1:])
 	}
+	if len(args) > 0 && args[0] == "exclude" {
+		return e.cmdConfigExclude(args[1:])
+	}
 	if len(args) == 0 || args[0] != "check" {
-		return usagef("config: expected subcommand \"check\" or \"motivation\"")
+		return usagef("config: expected subcommand \"check\", \"motivation\" or \"exclude\"")
 	}
 	if err := parse(e.newFlags("config check"), args[1:]); err != nil {
 		return err

@@ -133,6 +133,31 @@ stateDiagram-v2
   Answers only annotate; a posting is dropped only by a configured `drop_rules` entry, on a
   calibrated answer (`min_openrouter_prob` for the OpenRouter model, `min_lappi_score` for
   Lappi). Anything uncertain is kept and marked unsure.
+- **Exclusions (`exclude`):** the owner's hard filter, an engine rule on a posting's own fields
+  (never a model's reading), so it drops without a threshold and spends nothing. Example:
+  `"exclude": {"titles": ["intern", "interns", "internship", "co-op", "coop"], "title_unless":
+  ["internal"], "companies": ["Acme Corp"], "locations": ["India", "London", "remote"],
+  "descriptions": ["security clearance"]}`.
+  - `titles`: whole words, any case (`intern` does not match `Internal` or `Internship`, so list
+    each form). `title_unless` keeps a title that also contains one of its phrases.
+  - `companies`: exact names, ignoring case and spacing.
+  - `locations`: a posting is dropped only when every option it lists is excluded, so a role in
+    Bangalore or San Francisco is kept. Options are its places, plus remote work when the board
+    says where (`Remote (US)`) or names no place. An entry matches an area or region as whole words
+    (`London` also matches `New London, CT`), a US state by code or name (`TX`, `Texas`;
+    `Washington` is the state, not DC), `United States`/`USA`/`US` any US place, and `remote`
+    remote-only roles. A remote scope of several places (`US, Canada`) needs each excluded. A
+    posting with no readable location is kept.
+  - `descriptions`: at most 32 phrases, matched against the whole description; the ledger records
+    only that one matched, never which.
+  - At most 128 entries per list and 100 bytes per entry; empty or duplicate entries are refused.
+  - Where it applies: a Live posting is dropped at triage before any backend (and Workday rows by
+    title before their detail request); every run first drops kept postings (triaged through
+    digested) it now matches, never one you marked, and returns to live the postings it dropped
+    that it no longer matches. `vani jobs` and the Jobs tab hide matching unmarked roles at once.
+    The reason is the `exclude.matched` annotation. `vani prefilter --list` shows what the next
+    run will do; `vani config exclude [--set]` (and Settings › Exclude postings) read and replace
+    it as JSON. Tracks leave it alone.
 - **Renamed keys (2026-10-19):** `jev_model`, `jev_key_env`, `daily_usd.jev`, `min_jev_prob` and
   `decide.shadow` `jev` are now `openrouter_model`, `openrouter_key_env`, `daily_usd.openrouter`,
   `min_openrouter_prob` and `openrouter`. Old configs and track files still load, every command

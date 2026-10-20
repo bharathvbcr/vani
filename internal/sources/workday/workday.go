@@ -91,17 +91,18 @@ type Options struct {
 	// posting has the row's path (read from its URL) is returned as stored,
 	// with no detail request. Required.
 	Stored func(b sources.Board) []posting.Posting
-	// DropTitle reports whether the engine's title rule drops a posting with
-	// this title. A listed row with no stored posting that DropTitle drops is
-	// neither fetched nor returned (it would be dropped before triage anyway).
-	// Nil drops nothing.
-	DropTitle func(title string) bool
+	// DropListed reports whether the engine drops a posting before triage
+	// from what a listed row says: its title, the board's company and the
+	// row's location text (no description, no remote flag). A listed row with
+	// no stored posting that DropListed drops is neither fetched nor returned
+	// (it would be dropped before triage anyway). Nil drops nothing.
+	DropListed func(p posting.Posting) bool
 	// Report, when set, receives each listed board's counts.
 	Report func(sources.Board, Stats)
 }
 
 // Stats counts what one List did. Every listed row is counted once, in
-// Reused, Fetched, Refreshed, TitleDropped, Deferred or Gone.
+// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
 type Stats struct {
 	Listed   int `json:"listed"`
 	Queries  int `json:"queries"`  // listing queries; a split board has one per bucket
@@ -112,8 +113,8 @@ type Stats struct {
 	// stored and were re-read in their turn.
 	Fetched   int `json:"fetched"`
 	Refreshed int `json:"refreshed,omitempty"`
-	// TitleDropped rows were new and dropped by title without a request.
-	TitleDropped int `json:"title_dropped,omitempty"`
+	// Prefiltered rows were new and dropped by DropListed without a request.
+	Prefiltered int `json:"prefiltered,omitempty"`
 	// Deferred rows were new but past MaxDetails: they are fetched on a later
 	// run. Not being stored, their absence ages nothing.
 	Deferred int `json:"deferred,omitempty"`
@@ -207,6 +208,29 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	return out, nil
 }
 
+// boardCompany is the company a board's postings carry: the board's, else
+// the tenant.
+func boardCompany(b sources.Board, tenant string) string {
+	if c := strings.TrimSpace(b.Company); c != "" {
+		return c
+	}
+	return tenant
+}
+
+// locationCount is a row's location text when it only counts the posting's
+// places ("3 Locations"): no place to judge until the details are read.
+var locationCount = regexp.MustCompile(`(?i)^[0-9]+\s+locations?$`)
+
+// listedPosting is what a listed row says of its posting before its details
+// are read: the fields DropListed may judge.
+func listedPosting(b sources.Board, tenant string, row listedJob) posting.Posting {
+	loc := strings.TrimSpace(row.LocationsText)
+	if locationCount.MatchString(loc) {
+		loc = ""
+	}
+	return posting.Posting{ATS: posting.Workday, Company: boardCompany(b, tenant), Title: strings.TrimSpace(row.Title), Location: loc}
+}
+
 // fetch is one row that gets a detail request, and whether it was stored.
 type fetch struct {
 	row    listedJob
@@ -250,8 +274,8 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			p.SeenAt = seen
 			slot[i] = &p
 			st.Reused++
-		case s.opt != nil && s.opt.DropTitle != nil && s.opt.DropTitle(strings.TrimSpace(row.Title)):
-			st.TitleDropped++
+		case s.opt != nil && s.opt.DropListed != nil && s.opt.DropListed(listedPosting(b, tenant, row)):
+			st.Prefiltered++
 		default:
 			fresh = append(fresh, i)
 		}
@@ -403,10 +427,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	if location == "" {
 		location = strings.TrimSpace(row.LocationsText)
 	}
-	company := strings.TrimSpace(b.Company)
-	if company == "" {
-		company = tenant
-	}
+	company := boardCompany(b, tenant)
 	phrase := row.PostedOn
 	if phrase == "" {
 		phrase = info.PostedOn

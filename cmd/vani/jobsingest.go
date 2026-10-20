@@ -583,7 +583,7 @@ func drainInbox(ctx context.Context, led ledger.Ledger, stateDir string, protect
 func protectMarked(stateDir string, warnf func(string, ...any)) func(posting.Key) bool {
 	m, err := marks.ReadMarks(marks.Dir(stateDir))
 	if err != nil {
-		warnf("marks unreadable; dedupe will not demote any existing posting: %v", err)
+		warnf("marks unreadable; dedupe will not demote, and exclusions will not drop, any existing posting: %v", err)
 		return func(posting.Key) bool { return true }
 	}
 	return func(k posting.Key) bool { _, ok := m[k]; return ok }

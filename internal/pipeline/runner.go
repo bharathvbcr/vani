@@ -151,10 +151,10 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if r.Triager == nil {
 				return fmt.Errorf("%w: triager", ErrStageMissing)
 			}
-			// A title reading that a drop rule drops ends triage before any
-			// backend is asked; every other title reading is discarded and
-			// the backends read the posting as before.
-			ans, reason, dropped := r.Policy.EvaluateTitle(rec.Posting.Title)
+			// An exclusion, or a title reading that a drop rule drops, ends
+			// triage before any backend is asked; every other title reading is
+			// discarded and the backends read the posting as before.
+			ans, reason, dropped := r.Policy.EvaluatePosting(rec.Posting)
 			st := posting.Dropped
 			if !dropped {
 				var err error
@@ -190,6 +190,12 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			}
 			if st == posting.Unsure {
 				ann["triage.unsure"] = reason
+			}
+			switch {
+			case ans.Backend == ExcludeBackend:
+				ann[AnnExcluded] = reason
+			case rec.Annotations[AnnExcluded] != "":
+				ann[AnnExcluded] = ""
 			}
 			if err := r.emit(ctx, key, st, reason, ann); err != nil {
 				return err
@@ -388,10 +394,48 @@ type DropPolicy struct {
 	// ReadTitle reads triage slot values from a posting's title alone
 	// (config.TitleSignals.Reads); nil reads nothing.
 	ReadTitle func(title string) []TitleReading
+	// Exclude reports why the owner's exclusions (config.Exclude.Match) drop a
+	// posting; nil excludes nothing. It reads the posting's own fields, never
+	// a model's reading, so it drops with no threshold.
+	Exclude func(p posting.Posting) (why string, ok bool)
 }
 
 // TitleBackend is the backend name a title reading is recorded under.
 const TitleBackend = "title"
+
+// ExcludeBackend is the triage backend recorded on a posting an exclusion
+// dropped before any backend was asked.
+const ExcludeBackend = "exclude"
+
+// AnnExcluded is the drop reason on a posting an exclusion dropped, at triage
+// or by ApplyExclusions; it is cleared when the posting is reopened.
+const AnnExcluded = "exclude.matched"
+
+// excluded reports the drop reason p's exclusions give post, if any.
+func (p DropPolicy) excluded(post posting.Posting) (string, bool) {
+	if p.Exclude == nil {
+		return "", false
+	}
+	why, ok := p.Exclude(post)
+	if !ok {
+		return "", false
+	}
+	return "excluded: " + why, true
+}
+
+// Prefilters reports whether the policy can drop a posting before any
+// backend is asked: it has exclusions or reads titles.
+func (p DropPolicy) Prefilters() bool { return p.Exclude != nil || p.ReadTitle != nil }
+
+// EvaluatePosting is what triage applies before asking any backend: an
+// exclusion drops first, then EvaluateTitle. dropped false means the backends
+// must read the posting, and the answer is to be discarded.
+func (p DropPolicy) EvaluatePosting(post posting.Posting) (a decide.Answer, reason string, dropped bool) {
+	if why, ok := p.excluded(post); ok {
+		return decide.Answer{Backend: ExcludeBackend}, why, true
+	}
+	return p.EvaluateTitle(post.Title)
+}
 
 // TitleReading is one slot value read from a title, and the phrase matched.
 type TitleReading struct {

@@ -331,7 +331,7 @@ func TestNVIDIABoardFillsOverRunsWithinTheDetailCap(t *testing.T) {
 				}
 				return out
 			},
-			DropTitle: func(title string) bool { return strings.HasPrefix(title, "Senior") },
+			DropListed: func(p posting.Posting) bool { return strings.HasPrefix(p.Title, "Senior") },
 			Report:    func(_ sources.Board, x Stats) { st = x },
 		})
 		s.now = func() time.Time { return fixedNow.AddDate(0, 0, run) }
@@ -342,7 +342,7 @@ func TestNVIDIABoardFillsOverRunsWithinTheDetailCap(t *testing.T) {
 		if n := fb.gets - gets; n > MaxDetails {
 			t.Fatalf("run %d: %d detail requests, cap %d", run, n, MaxDetails)
 		}
-		if st.Listed != 2753 || st.TitleDropped != 2753-keep || st.Reused+st.Refreshed+st.Fetched+st.Deferred+st.TitleDropped+st.Gone != 2753 {
+		if st.Listed != 2753 || st.Prefiltered != 2753-keep || st.Reused+st.Refreshed+st.Fetched+st.Deferred+st.Prefiltered+st.Gone != 2753 {
 			t.Fatalf("run %d: stats %+v do not account for every row", run, st)
 		}
 		returned := map[posting.Key]bool{}

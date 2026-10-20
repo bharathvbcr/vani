@@ -160,14 +160,14 @@ func TestWorkdayHooksMatchTheRunnerAndTheBoard(t *testing.T) {
 }
 
 func TestTitleDropperMatchesTheRunner(t *testing.T) {
-	if titleDropper(pipeline.DropPolicy{}) != nil {
+	if prefilterDropper(pipeline.DropPolicy{}) != nil {
 		t.Fatal("a policy without title reads has a dropper")
 	}
 	cfg := config.Config{
 		DropRules:    []config.DropRule{{Slot: "seniority", Values: []string{"manager"}, MinOpenRouterProb: 0.9}},
 		TitleSignals: config.TitleSignals{Read: []config.TitleRead{{Slot: "seniority", Value: "manager", Match: []string{"Manager"}}}},
 	}
-	d := titleDropper(dropPolicy(cfg, "d1-ultra"))
+	d := prefilterDropper(dropPolicy(cfg, "d1-ultra"))
 	live := ledger.Record{Status: posting.Live, Posting: posting.Posting{Title: "Engineering Manager"}}
 	if !d(live) {
 		t.Fatal("live manager title not a title drop")
