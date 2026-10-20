@@ -118,13 +118,15 @@ type jobsListJSON struct {
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, show, find, mark or note")
+		return usagef("jobs: expected list, stats, gaps, show, find, mark or note")
 	}
 	switch args[0] {
 	case "list":
 		return e.jobsList(args[1:])
 	case "stats":
 		return e.jobsStatsCmd(args[1:])
+	case "gaps":
+		return e.jobsGapsCmd(args[1:])
 	case "show":
 		return e.jobsShow(args[1:])
 	case "mark":
