@@ -60,7 +60,10 @@ type Config struct {
 	// space). Their undated postings are not aged by when Vani first saw them; a
 	// date the board gives still counts. An ordering preference only (Rule 7).
 	AgeNeutralCompanies []string `json:"age_neutral_companies,omitempty"`
-	TargetSummary       string   `json:"target_summary"`
+	// KBMatch configures `vani kbmatch`, the language-model read of whether a
+	// posting's work is the work in the knowledge base.
+	KBMatch       KBMatch `json:"kbmatch,omitzero"`
+	TargetSummary string  `json:"target_summary"`
 	// MotivationNotes is the owner's own note on what they care about in
 	// their work. `vani draft` gives it to motivation questions ("Why
 	// <company>?") as trusted text in the prompt, so it must be
@@ -348,8 +351,45 @@ type LLM struct {
 	TriageModel string `json:"triage_model,omitempty"`
 }
 
-// MaxModelName bounds a configured model id (llm.model, llm.triage_model).
+// MaxModelName bounds a configured model id (llm.model, llm.triage_model,
+// kbmatch.model).
 const MaxModelName = 128
+
+// The backends `vani kbmatch` may ask.
+const (
+	// KBMatchLLM asks the Manvi llm provider (llm.provider).
+	KBMatchLLM = "llm"
+	// KBMatchJev asks the decision model (decide.openrouter_model) over
+	// OpenRouter, from the OpenRouter daily cap.
+	KBMatchJev = "jev"
+)
+
+// KBMatch configures `vani kbmatch`. The zero value asks the llm on
+// llm.triage_model, else llm.model.
+type KBMatch struct {
+	// Backend is KBMatchLLM (the default) or KBMatchJev.
+	Backend string `json:"backend,omitempty"`
+	// Model is the llm model that answers when Backend is KBMatchLLM. Empty means
+	// llm.triage_model, else llm.model. It is separate from llm.triage_model so a
+	// cheap model can read postings here without changing how triage runs.
+	Model string `json:"model,omitempty"`
+}
+
+// EffectiveBackend is Backend with empty read as KBMatchLLM.
+func (k KBMatch) EffectiveBackend() string {
+	if k.Backend == "" {
+		return KBMatchLLM
+	}
+	return k.Backend
+}
+
+// KBMatchModel is the llm model `vani kbmatch` asks.
+func (c Config) KBMatchModel() string {
+	if c.KBMatch.Model != "" {
+		return c.KBMatch.Model
+	}
+	return c.LLM.EffectiveTriageModel()
+}
 
 // EffectiveTriageModel is TriageModel with empty read as Model.
 func (l LLM) EffectiveTriageModel() string {
@@ -1036,6 +1076,26 @@ func (c Config) Validate() error {
 		case len(m) > MaxModelName || strings.ContainsFunc(m, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
 			add("llm.triage_model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
 		}
+	}
+	switch c.KBMatch.Backend {
+	case "", KBMatchLLM:
+		if m := c.KBMatch.Model; m != "" {
+			switch {
+			case c.LLM.Provider == "":
+				add("kbmatch.model needs llm.provider")
+			case len(m) > MaxModelName || strings.ContainsFunc(m, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
+				add("kbmatch.model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
+			}
+		}
+	case KBMatchJev:
+		if !c.OpenRouterConfigured() {
+			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchJev)
+		}
+		if c.KBMatch.Model != "" {
+			add("kbmatch.model applies to the %q backend only", KBMatchLLM)
+		}
+	default:
+		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchJev)
 	}
 	if e := c.Decide.Escalate; e != nil {
 		if e.BelowP != nil && (math.IsNaN(*e.BelowP) || *e.BelowP <= 0 || *e.BelowP > 1) {

@@ -84,10 +84,30 @@ func ReadingOf(err error) (r decide.Reading, ok bool) {
 	return "", false
 }
 
+// MaxCompactBytes bounds the compact digest (stack terms and entry titles only),
+// which is what a question carries when an embedding model has picked the
+// closest lines (Focus) to go beside it.
+const MaxCompactBytes = 2 << 10
+
+// MaxFocus is the most lines the embedding model may add to a question.
+const MaxFocus = 8
+
 // Digest is the knowledge base as the model sees it.
 type Digest struct {
+	// Text is the full digest. SHA256 is its hash and the one identity of the
+	// knowledge base: an answer is current while it matches, whichever of Text or
+	// Compact + Focus the question carried.
 	Text   string
 	SHA256 string
+	// Compact is the stack terms and entry titles alone.
+	Compact string
+}
+
+// Focus is one line of the knowledge base an embedding model found closest to a
+// posting: the entry it belongs to and the line itself.
+type Focus struct {
+	Label string
+	Text  string
 }
 
 // DigestOf cuts p into a bounded, deterministic digest: stack terms first, then
@@ -113,26 +133,28 @@ func DigestOf(p semantic.Profile) (Digest, error) {
 			}
 		}
 	}
-	var sb strings.Builder
-	add := func(line string) bool {
-		if sb.Len()+len(line)+1 > MaxDigestBytes {
+	var sb, compact strings.Builder
+	add := func(b *strings.Builder, max int, line string) bool {
+		if b.Len()+len(line)+1 > max {
 			return false
 		}
-		sb.WriteString(line)
-		sb.WriteByte('\n')
+		b.WriteString(line)
+		b.WriteByte('\n')
 		return true
 	}
 	for _, s := range skills {
-		if !add(s) {
+		if !add(&sb, MaxDigestBytes, s) {
 			break
 		}
+		add(&compact, MaxCompactBytes, s)
 	}
 	for _, label := range order {
-		if !add("- " + label) {
+		if !add(&sb, MaxDigestBytes, "- "+label) {
 			break
 		}
+		add(&compact, MaxCompactBytes, "- "+label)
 		for _, b := range bullets[label] {
-			if !add("    * " + b) {
+			if !add(&sb, MaxDigestBytes, "    * "+b) {
 				break
 			}
 		}
@@ -141,7 +163,7 @@ func DigestOf(p semantic.Profile) (Digest, error) {
 		return Digest{}, errors.New("kbmatch: the knowledge base has no titles, skills or bullets to describe")
 	}
 	sum := sha256.Sum256([]byte(sb.String()))
-	return Digest{Text: sb.String(), SHA256: hex.EncodeToString(sum[:])}, nil
+	return Digest{Text: sb.String(), SHA256: hex.EncodeToString(sum[:]), Compact: compact.String()}, nil
 }
 
 // cutRunes cuts s to at most n bytes on a rune boundary.
@@ -168,13 +190,34 @@ func TextSHA256(p posting.Posting, summary string, d Digest) string {
 
 // Question renders the question for p. The context stays within
 // jdtriage.MaxContextBytes: the posting body is cut to what the target summary
-// and digest leave, and truncated says whether it was.
-func Question(p posting.Posting, summary string, d Digest) (q decide.Question, truncated bool) {
+// and knowledge base leave, and truncated says whether it was.
+//
+// With no focus the question carries the full digest. With focus (at most
+// MaxFocus lines an embedding model found closest to this posting) it carries the
+// compact digest and those lines instead: shorter, and the lines are the ones
+// that bear on this posting rather than the first few of each entry.
+func Question(p posting.Posting, summary string, d Digest, focus []Focus) (q decide.Question, truncated bool) {
 	var head strings.Builder
 	head.WriteString("JOB SEEKER'S TARGET ROLES:\n")
 	head.WriteString(summary)
-	head.WriteString("\n\nJOB SEEKER'S EXPERIENCE:\n")
-	head.WriteString(d.Text)
+	if len(focus) == 0 || d.Compact == "" {
+		head.WriteString("\n\nJOB SEEKER'S EXPERIENCE:\n")
+		head.WriteString(d.Text)
+	} else {
+		head.WriteString("\n\nJOB SEEKER'S EXPERIENCE (stack terms and entry titles):\n")
+		head.WriteString(d.Compact)
+		head.WriteString("\nTHE JOB SEEKER'S EXPERIENCE CLOSEST TO THIS POSTING (picked by an embedding model):\n")
+		for i, f := range focus {
+			if i == MaxFocus {
+				break
+			}
+			head.WriteString("- ")
+			head.WriteString(cutRunes(strings.Join(strings.Fields(f.Label), " "), maxBulletBytes))
+			head.WriteString(": ")
+			head.WriteString(cutRunes(strings.Join(strings.Fields(f.Text), " "), maxBulletBytes))
+			head.WriteByte('\n')
+		}
+	}
 	head.WriteString("\nJOB POSTING:\nTitle: ")
 	head.WriteString(strings.Join(strings.Fields(p.Title), " "))
 	head.WriteString("\nLocation: ")
@@ -201,6 +244,11 @@ type Judge struct {
 	// Target is the owner's non-identifying target summary (jdtriage's rules).
 	Target string
 	Digest Digest
+	// Focus, when set, picks the knowledge-base lines closest to a posting (an
+	// embedding model, internal/semantic Matcher.Nearest). An error or no lines
+	// fall back to the full digest: retrieval makes a question shorter, it is
+	// never needed to ask one.
+	Focus func(ctx context.Context, p posting.Posting) ([]Focus, error)
 }
 
 // Verdict is a usable answer: one of jobinsight.KBMatchOrder.
@@ -209,6 +257,8 @@ type Verdict struct {
 	// P is the backend's calibrated probability when it gave one.
 	P    float64
 	HasP bool
+	// Focused is true when the question carried embedding-picked lines.
+	Focused bool
 }
 
 // Ask reads p. It returns ErrNotRead (wrapped, with the reading) when the model
@@ -224,7 +274,15 @@ func (j Judge) Ask(ctx context.Context, p posting.Posting) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, err
 	}
-	q, _ := Question(p, summary, j.Digest)
+	var focus []Focus
+	if j.Focus != nil {
+		if f, ferr := j.Focus(ctx, p); ferr == nil {
+			focus = f
+		} else if ctx.Err() != nil {
+			return Verdict{}, ctx.Err()
+		}
+	}
+	q, _ := Question(p, summary, j.Digest, focus)
 	ans, err := j.D.Decide(ctx, q)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("kbmatch: %w", err)
@@ -238,7 +296,7 @@ func (j Judge) Ask(ctx context.Context, p posting.Posting) (Verdict, error) {
 	}
 	for _, o := range jobinsight.KBMatchOrder {
 		if o == rd.Value {
-			v := Verdict{Value: o}
+			v := Verdict{Value: o, Focused: len(focus) > 0 && j.Digest.Compact != ""}
 			if rd.Jev != nil {
 				v.P, v.HasP = rd.Jev.Probability, true
 			}

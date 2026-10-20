@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/semantic"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -95,10 +96,13 @@ func (f *fakeKB) Decide(_ context.Context, q decide.Question) (decide.Answer, er
 
 func useFake(t *testing.T, f *fakeKB) {
 	t.Helper()
-	oldP, oldD := kbmatchProvider, kbmatchDecider
-	t.Cleanup(func() { kbmatchProvider, kbmatchDecider = oldP, oldD })
-	kbmatchProvider = func(context.Context, *wired) (llm.Provider, error) { return nil, nil }
-	kbmatchDecider = func(*wired, llm.Provider) (decide.Decider, error) { return f, nil }
+	oldD, oldF := kbmatchDecider, kbmatchFocus
+	t.Cleanup(func() { kbmatchDecider, kbmatchFocus = oldD, oldF })
+	kbmatchDecider = func(context.Context, *wired, string) (decide.Decider, error) { return f, nil }
+	// No embedding model in these tests unless one asks for it.
+	kbmatchFocus = func(context.Context, config.Config, string, semantic.Profile) (func(context.Context, posting.Posting) ([]kbmatch.Focus, error), func(), error) {
+		return nil, nil, errors.New("no embedding model in this test")
+	}
 }
 
 func byTitle(m map[string]string) func(string) decide.SlotReading {
@@ -123,8 +127,8 @@ func TestKBMatchDryRunSendsNothing(t *testing.T) {
 	k := twoPostings(t)
 	f := &fakeKB{answer: byTitle(nil)}
 	useFake(t, f)
-	kbmatchProvider = func(context.Context, *wired) (llm.Provider, error) {
-		t.Fatal("a dry run must not build the provider")
+	kbmatchDecider = func(context.Context, *wired, string) (decide.Decider, error) {
+		t.Fatal("a dry run must not build the decider")
 		return nil, nil
 	}
 	o, _ := mustCode(t, 0, "kbmatch", "run", "--dry-run")

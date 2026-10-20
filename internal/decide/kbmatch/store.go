@@ -50,7 +50,18 @@ type Entry struct {
 	At   time.Time `json:"at"`
 	// P is the backend's probability when it gave one.
 	P float64 `json:"p,omitempty"`
+	// Backend is the backend that answered ("llm", "jev") and Mode what the
+	// question carried: "full" digest or "focused" (compact digest plus lines an
+	// embedding model picked). Both are audit; neither invalidates the answer.
+	Backend string `json:"backend,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
+
+// The modes an Entry may record.
+const (
+	ModeFull    = "full"
+	ModeFocused = "focused"
+)
 
 type storeFile struct {
 	Version int              `json:"version"`
@@ -125,6 +136,10 @@ func checkEntry(key string, e Entry) error {
 		return errors.New("an entry has an oversized model name")
 	case !(e.P >= 0 && e.P <= 1):
 		return errors.New("an entry has a probability outside 0..1")
+	case e.Mode != "" && e.Mode != ModeFull && e.Mode != ModeFocused:
+		return fmt.Errorf("an entry has mode %q", e.Mode)
+	case len(e.Backend) > 32:
+		return errors.New("an entry has an oversized backend name")
 	}
 	return nil
 }
