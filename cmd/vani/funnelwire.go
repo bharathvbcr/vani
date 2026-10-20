@@ -8,6 +8,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/decide"
@@ -54,6 +55,17 @@ func notesSpend(stateDir string, cfg config.Config, triageSpend *decide.DailyCap
 		return nil, fmt.Errorf("notes budget: %w", err)
 	}
 	return c, nil
+}
+
+// uncheckedCauses is a run's fail-open tally as the digest footer names it.
+func uncheckedCauses(c pipeline.FailOpenCounts) []digest.Unchecked {
+	return []digest.Unchecked{
+		{Cause: "empty description", N: c.EmptyDescription},
+		{Cause: "title unread", N: c.TitleUnread},
+		{Cause: "location unreadable", N: c.LocationUnreadable},
+		{Cause: "prescore failed", N: c.PrescoreFailed},
+		{Cause: "other", N: c.Other},
+	}
 }
 
 // fillFunnelReport copies the run's fail-open and notes-gate counts into the

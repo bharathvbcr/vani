@@ -263,7 +263,15 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		return nil, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
-	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, countsFor(recs, date, loc), opts)
+	var adv *advanceReport
+	if app.RunReport != nil {
+		adv = app.RunReport().Advance
+	}
+	counts := countsFor(recs, date, loc)
+	if adv != nil {
+		counts.CouldNotCheck = uncheckedCauses(adv.FailOpen)
+	}
+	path, keys, err := digest.WriteWith(e.stateDir, date, recs, m, counts, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -277,10 +285,6 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	}
 	fmt.Fprintf(e.stdout, "digest: %s (%d roles)\n", path, len(keys))
 	if len(keys) > 0 && app.Notifier != nil {
-		var adv *advanceReport
-		if app.RunReport != nil {
-			adv = app.RunReport().Advance
-		}
 		if err := app.Notifier.Notify(ctx, "Vani digest", digestBody(len(keys), adv)); err != nil {
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}

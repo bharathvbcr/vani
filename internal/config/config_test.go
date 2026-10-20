@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -771,6 +772,56 @@ func TestAdvanceLimit(t *testing.T) {
 		if got := c.AdvanceLimit(); got != tc.want {
 			t.Fatalf("advance_per_run %d: limit %d, want %d", tc.set, got, tc.want)
 		}
+	}
+}
+
+// digest.*: absent reads as the default, an explicit 0 switches the section
+// off, the bounds are valid and anything outside them is refused.
+func TestDigestSectionKnobs(t *testing.T) {
+	c := valid()
+	if c.DigestTopOpen() != 20 || c.DigestExploreBelowFold() != 2 || c.DigestExploreDropped() != 1 {
+		t.Fatalf("defaults %d/%d/%d, want 20/2/1", c.DigestTopOpen(), c.DigestExploreBelowFold(), c.DigestExploreDropped())
+	}
+	zero, top, explore := 0, MaxDigestTopOpen, MaxDigestExplore
+	c.Digest = Digest{TopOpen: &zero, ExploreBelowFold: &explore, ExploreDropped: &zero}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("bounds must be valid: %v", err)
+	}
+	if c.DigestTopOpen() != 0 || c.DigestExploreBelowFold() != MaxDigestExplore || c.DigestExploreDropped() != 0 {
+		t.Fatalf("explicit values lost: %d/%d/%d", c.DigestTopOpen(), c.DigestExploreBelowFold(), c.DigestExploreDropped())
+	}
+	c.Digest = Digest{TopOpen: &top}
+	if err := c.Validate(); err != nil || c.DigestTopOpen() != MaxDigestTopOpen {
+		t.Fatalf("max top_open: %v", err)
+	}
+	over, neg := MaxDigestTopOpen+1, -1
+	overE := MaxDigestExplore + 1
+	for name, tc := range map[string]struct {
+		d    Digest
+		want string
+	}{
+		"top_open over":       {Digest{TopOpen: &over}, "digest.top_open 51 must be within 0..50"},
+		"top_open negative":   {Digest{TopOpen: &neg}, "digest.top_open -1"},
+		"below fold over":     {Digest{ExploreBelowFold: &overE}, "digest.explore_below_fold 11 must be within 0..10"},
+		"below fold negative": {Digest{ExploreBelowFold: &neg}, "digest.explore_below_fold -1"},
+		"dropped over":        {Digest{ExploreDropped: &overE}, "digest.explore_dropped 11"},
+		"dropped negative":    {Digest{ExploreDropped: &neg}, "digest.explore_dropped -1"},
+	} {
+		c := valid()
+		c.Digest = tc.d
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestDigestKnobsLoadFromJSON(t *testing.T) {
+	var c Config
+	if err := json.Unmarshal([]byte(`{"digest":{"top_open":0,"explore_dropped":3}}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.DigestTopOpen() != 0 || c.DigestExploreDropped() != 3 || c.DigestExploreBelowFold() != 2 {
+		t.Fatalf("%d/%d/%d", c.DigestTopOpen(), c.DigestExploreBelowFold(), c.DigestExploreDropped())
 	}
 }
 
