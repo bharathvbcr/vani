@@ -585,10 +585,13 @@ func Default() Config {
 		AllowedHosts: []string{hostOpenRouter},
 		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
 		Decide: Decide{
-			OpenRouterModel:  "typesafe/jev-1.13",
+			OpenRouterModel:  "liquid/d1-ultra",
 			OpenRouterKeyEnv: "OPENROUTER_API_KEY",
 			DailyUSD:         DailyUSD{OpenRouter: 0.25, LLM: 1.0},
 		},
+		// The llm tier is seeded because `vani draft` and the keyless test
+		// fixtures need a provider; it is the drafting/escalation backend, not
+		// the triage decision model.
 		LLM: LLM{Provider: "gemini", Model: "gemini-3.8-flash"},
 		// Empty until Phase 0 confirms the installed DevPrism answers --mcp
 		// without migrating career.db; scoring is skipped while it is empty.

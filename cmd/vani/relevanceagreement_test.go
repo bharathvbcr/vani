@@ -23,7 +23,7 @@ func seedDropCandidateBy(t *testing.T, stateDir, key, shadowValue, shadowBackend
 	}
 	p := posting.Posting{Key: posting.Key(key), ATS: "gh", Company: "Acme", Title: "Engineer " + key, Description: "Build things."}
 	ann := map[string]string{
-		"triage.role_fit": "mismatch_domain", "triage.role_fit.reading": "answered", "triage.role_fit.backend": "jev-1-13",
+		"triage.role_fit": "mismatch_domain", "triage.role_fit.reading": "answered", "triage.role_fit.backend": "d1-ultra",
 		"triage.role_fit.p": "0.9500", "triage.role_fit.shadow_backend": shadowBackend,
 		"triage.role_fit.shadow_reading": "answered", "triage.role_fit.shadow": shadowValue,
 	}
@@ -51,7 +51,7 @@ func TestRelevanceReportsDropCandidateAgreementWithoutLabels(t *testing.T) {
 	seedDropCandidate(t, state, "gh:a:1", "mismatch_domain")
 	seedDropCandidate(t, state, "gh:a:2", "strong_fit")
 	o, _ := mustCode(t, 0, "relevance")
-	for _, frag := range []string{"no data: no judged would_apply labels", "## Drop candidates: shadow vs jev-1-13", "| role_fit | local-d3-mini-per_slot | 2 | 0 | 2 | 1/2 = 50%", "| 1 | 0 | 0 |"} {
+	for _, frag := range []string{"no data: no judged would_apply labels", "## Drop candidates: shadow vs d1-ultra", "| role_fit | local-d3-mini-per_slot | 2 | 0 | 2 | 1/2 = 50%", "| 1 | 0 | 0 |"} {
 		if !strings.Contains(o, frag) {
 			t.Errorf("report lacks %q:\n%s", frag, o)
 		}
