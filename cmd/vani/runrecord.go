@@ -75,6 +75,9 @@ type runDetail struct {
 	// backend error becomes an "unavailable" reading that keeps no text, so
 	// this is the only place a refused key or an outage is written down.
 	BackendErrors *backendErrorReport `json:"backend_errors,omitempty"`
+	// SemanticPre is the knowledge-base warm of live postings before the
+	// advance phase (semanticwire.go); nil when it did not run.
+	SemanticPre *semanticReport `json:"semantic_pre,omitempty"`
 }
 
 // Why an advance phase ended before it had worked through every eligible

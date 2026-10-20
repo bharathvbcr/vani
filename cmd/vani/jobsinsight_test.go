@@ -131,7 +131,9 @@ func TestJobsInsightFields(t *testing.T) {
 	}
 
 	for sortBy, want := range map[string]string{
-		"priority":  "gh:a:infra gh:c:unread gh:b:sales",
+		"priority": "gh:a:infra gh:c:unread gh:b:sales",
+		// The unread job's only known part is zero keyword overlap; shrinkage
+		// toward the prior keeps that thin evidence above the known mismatch.
 		"relevance": "gh:a:infra gh:c:unread gh:b:sales",
 		"fresh":     "gh:a:infra gh:c:unread gh:b:sales",
 		"company":   "gh:a:infra gh:b:sales gh:c:unread",

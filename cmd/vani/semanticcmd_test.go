@@ -55,11 +55,12 @@ func semanticSetup(t *testing.T) (cfgPath, stateDir string) {
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	old, oldTimeout := openEmbedder, semanticWarmTimeout
+	old, oldTimeout, oldPrefix := openEmbedder, semanticWarmTimeout, semanticModelPrefix
 	openEmbedder = func(context.Context, config.Config) (semantic.Embedder, func() error, error) {
 		return semantic.NewFakeEmbedder(256, semSynonyms), func() error { return nil }, nil
 	}
-	t.Cleanup(func() { openEmbedder, semanticWarmTimeout = old, oldTimeout })
+	semanticModelPrefix = func(config.Config) string { return "" } // the fake's id is not a Tessl id
+	t.Cleanup(func() { openEmbedder, semanticWarmTimeout, semanticModelPrefix = old, oldTimeout, oldPrefix })
 	return cfgPath, stateDir
 }
 

@@ -105,5 +105,8 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		model = "none yet"
 	}
 	fmt.Fprintf(w, "cached scores: %d\nmodel: %s\n", m.Len(), model)
+	if _, err := semantic.OpenLookupFor(prof, semanticDir(e.stateDir), semanticModelPrefix(cfg)); errors.Is(err, semantic.ErrModelMismatch) {
+		fmt.Fprintf(w, "warning: the cached scores are from another model than semantic.snapshot; run `vani semantic warm`\n")
+	}
 	return nil
 }

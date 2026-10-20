@@ -97,8 +97,9 @@ func ledgerBroken(l ledger.Ledger) error {
 
 // dailySteps is the run itself; stage names where it stopped when it fails.
 // Between the pipeline and the digest it warms the knowledge-base scores the
-// digest orders by (semanticwire.go); that never fails the run, and rec carries
-// what it did.
+// digest orders by (semanticwire.go), with what the pipeline's own warm before
+// its advance phase left of semantic.warm_per_run; that never fails the run,
+// and rec carries what it did.
 func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, rec *runRecord) (stage string, err error) {
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
@@ -112,9 +113,22 @@ func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, rec *
 	}
 	if cfg.SemanticOn() && app.Ledger != nil && ctx.Err() == nil {
 		mk, _ := marks.ReadMarks(marks.Dir(e.stateDir)) // unreadable marks: the kept postings only
-		rep := warmSemantic(ctx, cfg, e.stateDir, app.Ledger.All(), mk, cfg.SemanticWarmLimit())
-		rec.Semantic = &rep
-		e.logSemantic(rep)
+		// semantic.warm_per_run is one budget for the run: what the warm before
+		// the advance phase embedded is not spent twice (preAdvanceBudget).
+		limit := cfg.SemanticWarmLimit()
+		if app.RunReport != nil {
+			if pre := app.RunReport().SemanticPre; pre != nil {
+				limit = max(limit-pre.Scored, 0)
+			}
+		}
+		if limit > 0 {
+			rep := warmSemantic(ctx, cfg, e.stateDir, app.Ledger.All(), mk, limit)
+			rec.Semantic = &rep
+			e.logSemantic(rep)
+		} else {
+			rec.Semantic = &semanticReport{Ran: true, Note: "kept postings not warmed: semantic.warm_per_run was spent before the advance phase"}
+			e.logSemantic(*rec.Semantic)
+		}
 	}
 	opts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
 	return stageDigest, e.publishDigest(ctx, app, now().In(loc), loc, opts)

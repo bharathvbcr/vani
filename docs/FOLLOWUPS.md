@@ -753,8 +753,9 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
   - `vani jobs mark` builds its insight with nil marks, so its priority can differ slightly from
     the list's.
-  - The bundled helper is built with `-tags tessl` (Metal, cgo); hardened-runtime signing has not
-    been checked for Metal access from the signed helper.
+  - Checked 2026-10-19: a `-tags tessl` binary signed as bundle.sh signs the helper (hardened
+    runtime, Apple Development, identifier dev.vbcr.vani.cli, no entitlements) runs EmbeddingGemma 2
+    on Metal with the same results as unsigned. The full app bundle itself was not rebuilt.
   - Tessl's archive pins gusset `984209b`, while the Go side of gusset is the live
     `devtools/gusset` checkout; tessl's frame-version check fails the load on drift.
   - `extension/src/relevance.ts` still scores pages with its own in-page algorithm, not Score.

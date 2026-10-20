@@ -111,8 +111,19 @@ type Factor struct {
 type Result struct {
 	// Score is the 0-100 order key: match x gate x fresh x company.
 	Score float64
-	// Relevance is the 0-100 age-independent part: match x gate x company.
+	// Relevance is the 0-100 age-independent number the app shows and
+	// --min-relevance filters on: how relevant, from what is known. It is
+	// gate x company x the match of the KNOWN additive parts only, their
+	// weights renormalized, so a confident strong fit is not shown as ~50
+	// merely because coverage or similarity is missing on this machine. An
+	// unpreferred employer is absence of evidence, not a known zero, so it does
+	// not count as known. With no known part besides the employer it falls back
+	// to match x gate x company. It is NOT the sort key: Score is, and Score
+	// keeps the unknown prior so unknown never outranks known-good in the order.
 	Relevance float64
+	// RelevanceKnown is the share (0-1) of the additive weight Relevance rests
+	// on; 0 when it fell back to the prior-filled match.
+	RelevanceKnown float64
 	// Match, Gate, Fresh and Company are the four parts, each in [0,1]
 	// (Company in [CompanyMin, CompanyMax]).
 	Match, Gate, Fresh, Company float64
@@ -169,6 +180,10 @@ const (
 	CompanyMin = 0.6
 	CompanyMax = 1.1
 )
+
+// relevanceShrink is the prior's pseudo-weight in the displayed relevance,
+// in the same units as the additive shares (which sum to 1).
+const relevanceShrink = 0.10
 
 // Score ranks in by DefaultWeights.
 func Score(in Inputs) Result { return ScoreWith(in, DefaultWeights()) }
@@ -281,6 +296,28 @@ func ScoreWith(in Inputs, w Weights) Result {
 		match = clamp01(match)
 	}
 
+	// The displayed relevance: only the parts that are known, reweighted. A
+	// preferred employer is a known 1; an unpreferred one says nothing.
+	relMatch, relKnown, anyKnown := match, 0.0, false
+	var knownSum, knownVal float64
+	for i, p := range parts {
+		if !p.known || (i == 5 && !in.PreferredEmployer) {
+			continue
+		}
+		if i < 5 {
+			anyKnown = true
+		}
+		knownSum += share[i]
+		knownVal += share[i] * p.value
+	}
+	if anyKnown && knownSum > 0 {
+		// Shrunk toward the prior by a pseudo-weight, so one thin known part
+		// (zero keyword overlap alone) cannot read as a confident 0 and sink
+		// below a known mismatch, while well-evidenced postings barely move.
+		relMatch = clamp01((knownVal + relevanceShrink*prior) / (knownSum + relevanceShrink))
+		relKnown = clamp01(knownSum)
+	}
+
 	basis, best := BasisNone, 0.0
 	for i, b := range [...]Basis{BasisFit, BasisRank, BasisSemantic} {
 		if c := share[i] * parts[i].value; parts[i].known && c > best {
@@ -336,9 +373,10 @@ func ScoreWith(in Inputs, w Weights) Result {
 	}
 
 	r := Result{
-		Score:     round1(clamp(100*match*gate*fresh*company, 0, 100)),
-		Relevance: round1(clamp(100*match*gate*company, 0, 100)),
-		Match:     match, Gate: gate, Fresh: fresh, Company: company,
+		Score:          round1(clamp(100*match*gate*fresh*company, 0, 100)),
+		Relevance:      round1(clamp(100*relMatch*gate*company, 0, 100)),
+		RelevanceKnown: relKnown,
+		Match:          match, Gate: gate, Fresh: fresh, Company: company,
 		Basis:   basis,
 		Factors: make([]Factor, 0, 9),
 	}

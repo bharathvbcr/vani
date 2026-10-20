@@ -36,6 +36,13 @@ var openEmbedder = func(ctx context.Context, cfg config.Config) (semantic.Embedd
 	return t, t.Close, nil
 }
 
+// semanticModelPrefix is the model id the configured snapshot's scores start
+// with (semantic.TesslConfig.ModelPrefix); the cache-only lookup refuses scores
+// another model wrote. Tests whose fake embedder has its own id replace it.
+var semanticModelPrefix = func(cfg config.Config) string {
+	return semantic.TesslConfig{Snapshot: cfg.Semantic.Snapshot}.ModelPrefix()
+}
+
 func semanticDir(stateDir string) string { return filepath.Join(stateDir, "semantic") }
 
 // semanticProfile cuts the configured bank into the profile to embed.
@@ -111,6 +118,66 @@ func openScoreCache(emb semantic.Embedder, p semantic.Profile, dir string) (m *s
 // owner's knowledge base and caches the scores under stateDir. It never returns
 // an error: whatever stopped it is in the report.
 func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs []ledger.Record, mk map[posting.Key]marks.Mark, max int) semanticReport {
+	return warmSemanticDocs(ctx, cfg, stateDir, warmDocs(recs, mk), max)
+}
+
+// The daily run spends semantic.warm_per_run (L) in two warms, so the posting
+// the decision model reads first is already scored and the digest's kept
+// postings are too. Before the advance phase it may embed up to
+// L - L/4 live postings (they feed triage, so they go first); after it, the
+// kept postings get whatever L the first warm did not use, at least L/4 when
+// the first warm spends all it may. Cached postings cost nothing in either.
+func preAdvanceBudget(limit int) int { return limit - limit/4 }
+
+// preAdvanceDocs are the live postings the title rule would not drop, freshest
+// first: the ones the advance phase may hand to the decision model.
+func preAdvanceDocs(recs []ledger.Record, drop func(ledger.Record) bool) []semantic.Doc {
+	var todo []ledger.Record
+	for _, r := range recs {
+		if r.Status == posting.Live && (drop == nil || !drop(r)) {
+			todo = append(todo, r)
+		}
+	}
+	orderAdvance(todo, recs, nil)
+	docs := make([]semantic.Doc, len(todo))
+	for i, r := range todo {
+		docs[i] = semantic.Doc{Key: string(r.Key), Title: r.Posting.Title, Description: r.Posting.Description}
+	}
+	return docs
+}
+
+// warmBeforeAdvance scores the live postings advanceAll may triage so that
+// advanceOrder can put the best matches first. It only orders (Rule 7) and
+// never fails the run: whatever stopped it is in the report kept for the run
+// record, and the advance phase goes on regardless.
+func (w *wired) warmBeforeAdvance(ctx context.Context, recs []ledger.Record, drop func(ledger.Record) bool) {
+	if !w.cfg.SemanticOn() || ctx.Err() != nil {
+		return
+	}
+	rep := warmSemanticDocs(ctx, w.cfg, w.stateDir, preAdvanceDocs(recs, drop), preAdvanceBudget(w.cfg.SemanticWarmLimit()))
+	w.mu.Lock()
+	w.semPre = &rep
+	w.mu.Unlock()
+	if rep.Note != "" {
+		w.warnf("before advance: %s", rep.Note)
+	}
+}
+
+// advanceOrder is the order option that ranks the advance phase by knowledge-base
+// match, or nil (title rank, freshness, ledger order) when there is no cache.
+func (w *wired) advanceOrder() orderOption {
+	if !w.cfg.SemanticOn() {
+		return nil
+	}
+	m, warning := semanticLookup(w.cfg, w.stateDir)
+	if warning != "" {
+		w.warnf("advance order: %s", warning)
+	}
+	return withSemantic(semanticRank(m))
+}
+
+// warmSemanticDocs scores up to max of docs; warmSemantic's body.
+func warmSemanticDocs(ctx context.Context, cfg config.Config, stateDir string, docs []semantic.Doc, max int) semanticReport {
 	var rep semanticReport
 	if !cfg.SemanticOn() {
 		return notRun(rep, "semantic.snapshot and kb.bank are not both set", nil)
@@ -119,7 +186,6 @@ func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs 
 	if err != nil {
 		return notRun(rep, "the knowledge base profile could not be built", err)
 	}
-	docs := warmDocs(recs, mk)
 	if len(docs) == 0 {
 		rep.Ran = true
 		return rep
@@ -140,6 +206,9 @@ func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs 
 	rep.Scored, rep.Cached, rep.Failed, rep.Skipped = r.Scored, r.Cached, r.Failed, r.Skipped
 	rep.Unavailable, rep.Canceled, rep.Rebuilt = r.Unavailable, r.Canceled, rebuilt
 	switch {
+	case errors.Is(werr, semantic.ErrWarmBusy):
+		rep.Ran = false
+		rep.Note = werr.Error()
 	case werr != nil && r.Unavailable:
 		rep.Ran = false
 		rep.Note = "semantic matching not run: " + oneLine(werr.Error(), 200)
@@ -174,7 +243,10 @@ func semanticLookup(cfg config.Config, stateDir string) (m *semantic.Matcher, wa
 	if err != nil {
 		return nil, "knowledge-base matching is off: the profile could not be built: " + oneLine(err.Error(), 200)
 	}
-	m, err = semantic.OpenLookup(prof, semanticDir(stateDir))
+	m, err = semantic.OpenLookupFor(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	if errors.Is(err, semantic.ErrModelMismatch) {
+		return nil, "knowledge-base scores are from another model; run `vani semantic warm`"
+	}
 	if err != nil {
 		return nil, "knowledge-base matching is off: the score cache could not be read: " + oneLine(err.Error(), 200)
 	}

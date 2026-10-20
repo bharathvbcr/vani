@@ -10,6 +10,19 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
+// orderOption adjusts orderAdvance; nil options are ignored.
+type orderOption func(*orderSettings)
+
+type orderSettings struct {
+	semantic func(ledger.Record) (float64, bool)
+}
+
+// withSemantic orders by Score with f as the knowledge-base similarity (see
+// semanticRank); a nil f changes nothing.
+func withSemantic(f func(ledger.Record) (float64, bool)) orderOption {
+	return func(s *orderSettings) { s.semantic = f }
+}
+
 // orderAdvance sorts todo in the order a run advances it: highest title rank
 // first (rank nil ranks every posting alike), then the freshest posting first,
 // then ledger order. all is every ledger record, eligible or not; it says when
@@ -21,8 +34,28 @@ import (
 // listed in its board's first crawl without a usable date has no known age: it
 // sorts after every posting whose freshness is known, in ledger order.
 // UpdatedAt is not used: Greenhouse moves it on every edit.
-func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int) {
+//
+// With withSemantic, postings of the same title rank go in the order of
+// jobinsight.Score (the one ranking owner) over their Inputs, so a posting that
+// matches the owner's knowledge base is advanced before an equally fresh one
+// that does not, and freshness still counts through Score's own age term. A
+// live posting has no triage readings: fit and coverage are Score's unknown
+// priors. Ties fall back to the freshness and ledger-order rules above. Without
+// it the order is exactly the one above. Either way this only orders (Rule 7):
+// no posting is dropped or skipped.
+func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opts ...orderOption) {
+	var set orderSettings
+	for _, o := range opts {
+		if o != nil {
+			o(&set)
+		}
+	}
 	at := now()
+	var rc jobinsight.RankContext
+	if set.semantic != nil {
+		rc = jobinsight.NewRankContext(all, nil, at)
+		rc.Semantic = set.semantic
+	}
 	firstCrawl := map[string]time.Time{}
 	for _, r := range all {
 		b := jobinsight.BoardOf(string(r.Key))
@@ -32,6 +65,7 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int) {
 	}
 	type order struct {
 		rank  int
+		score float64
 		known bool
 		fresh time.Time
 	}
@@ -45,11 +79,17 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int) {
 		if !o.known {
 			o.fresh = time.Time{} // unknown ages tie, in ledger order
 		}
+		if set.semantic != nil {
+			o.score = jobinsight.Score(jobinsight.InputsFor(r, rc)).Score
+		}
 		keys[r.Key] = o
 	}
 	slices.SortStableFunc(todo, func(a, b ledger.Record) int {
 		x, y := keys[a.Key], keys[b.Key]
 		if c := cmp.Compare(y.rank, x.rank); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(y.score, x.score); c != 0 { // all 0 without a semantic cache
 			return c
 		}
 		if x.known != y.known {

@@ -23,6 +23,23 @@ const (
 	maxTesslTimeout         = 10 * time.Minute
 )
 
+// tesslModelPrefix is the model id up to the embedding width: the snapshot
+// directory's name and the f32 precision. OpenTessl appends the width; the
+// cache-only lookup requires the prefix without loading the model.
+func tesslModelPrefix(snapshot string) string {
+	return "tessl/embeddinggemma-2@" + filepath.Base(filepath.Clean(snapshot)) + "/f32/d"
+}
+
+// ModelPrefix is what every Embedder.Model of this config's snapshot starts
+// with, or "" when no snapshot is configured. It is the one definition the
+// Tessl embedder builds its id from, so the two cannot drift.
+func (c TesslConfig) ModelPrefix() string {
+	if c.Snapshot == "" {
+		return ""
+	}
+	return tesslModelPrefix(c.Snapshot)
+}
+
 func (c TesslConfig) check() error {
 	switch {
 	case c.Snapshot == "":

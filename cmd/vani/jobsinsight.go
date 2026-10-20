@@ -420,6 +420,7 @@ func (in *insight) enrich(j *jobJSON, r ledger.Record, kwLimit int) []jobinsight
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
 	res := jobinsight.Score(jobinsight.InputsFor(r, in.rc))
 	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
+	j.RelevanceKnown = res.RelevanceKnown
 	j.Reasons = parseReasons(j.Explanation)
 	in.semanticInto(j, r)
 	j.Pay = jobinsight.ParsePay(r.Posting.Description)

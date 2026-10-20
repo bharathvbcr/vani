@@ -84,6 +84,7 @@ type jobJSON struct {
 	AgeDays        *int                 `json:"age_days,omitempty"`
 	Relevance      float64              `json:"relevance"`
 	RelevanceBasis jobinsight.Basis     `json:"relevance_basis,omitempty"`
+	RelevanceKnown float64              `json:"relevance_known,omitempty"` // 0-1 share of the additive weight relevance rests on
 	Priority       float64              `json:"priority"`
 	ScoreFactors   []jobinsight.Factor  `json:"score_factors,omitempty"`
 	Keywords       []jobinsight.Keyword `json:"keywords,omitempty"`
@@ -387,11 +388,18 @@ func (e *env) jobsWrite(raw string, out *jobJSON, set func(string, posting.Key) 
 	if !ok {
 		return fmt.Errorf("jobs: no posting %q in the ledger", k)
 	}
-	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, nil)
+	entry, err := set(marks.Dir(e.stateDir), k)
 	if err != nil {
 		return err
 	}
-	entry, err := set(marks.Dir(e.stateDir), k)
+	// The insight is built from the marks as written, the same ones `jobs list`
+	// reads, so the priority reported here (company factor included) is the one
+	// the list shows for this job.
+	m, err := marks.Read(marks.Dir(e.stateDir))
+	if err != nil {
+		return fmt.Errorf("jobs: read marks: %w", err)
+	}
+	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
 	if err != nil {
 		return err
 	}

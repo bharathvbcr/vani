@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // profileData is the embedded profile and its calibration.
@@ -39,8 +40,9 @@ type Matcher struct {
 	hash  string
 	dir   string
 
-	warmMu sync.Mutex   // one Warm at a time; guards pd
-	pd     *profileData // nil until embedded or loaded
+	warmMu   sync.Mutex    // one Warm at a time; guards pd
+	pd       *profileData  // nil until embedded or loaded
+	lockWait time.Duration // how long Warm waits for the cache lock; 0 is DefaultLockWait
 
 	mu         sync.RWMutex // guards sf and maxEntries
 	sf         *scoreFile
@@ -144,6 +146,33 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 	defer m.warmMu.Unlock()
 	var rep Report
 	max = min(max, MaxWarmDocs)
+
+	// The cache lock spans load, embed and save, so a warm in another process
+	// neither loses these entries nor has its own overwritten. What it saved
+	// since this matcher was opened is read back first.
+	wait := m.lockWait
+	if wait <= 0 {
+		wait = DefaultLockWait
+	}
+	unlock, lerr := lockCache(ctx, m.dir, wait)
+	if lerr == nil {
+		defer unlock()
+		lerr = m.reload()
+	}
+	if lerr != nil {
+		seen := map[string]bool{}
+		for _, d := range docs {
+			switch {
+			case d.Key == "":
+				rep.Failed++
+			case !seen[d.Key]:
+				seen[d.Key] = true
+				rep.Skipped++
+			}
+		}
+		rep.note(lerr)
+		return rep, lerr
+	}
 
 	var todo []pending
 	seen := map[string]bool{}
@@ -269,6 +298,19 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 		}
 	}
 	return rep, runErr
+}
+
+// reload replaces the in-memory scores with the file's. Called with the cache
+// lock and warmMu held.
+func (m *Matcher) reload() error {
+	sf, err := loadScores(filepath.Join(m.dir, scoresFileName), m.hash, m.model)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.sf = sf
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Matcher) store(key string, e *entry) {

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -52,7 +51,7 @@ func OpenTessl(ctx context.Context, c TesslConfig) (*Tessl, error) {
 	}
 	return &Tessl{
 		m:    m,
-		id:   fmt.Sprintf("tessl/embeddinggemma-2@%s/f32/d%d", filepath.Base(filepath.Clean(c.Snapshot)), m.EmbeddingDim()),
+		id:   fmt.Sprintf("%s%d", tesslModelPrefix(c.Snapshot), m.EmbeddingDim()),
 		call: c.callTimeout(),
 		sts:  slices.Contains(p.Names, string(KindSimilarity)),
 	}, nil
