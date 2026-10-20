@@ -122,6 +122,14 @@ func gateShadow(rt *decide.Router, every, inFlight int) *shadowGate {
 	return g
 }
 
+// warnShadowNotes is what an advance phase says about the shadow after it ends:
+// the failed calls and the sampled share. The run and the inbox poll both end
+// with it, so a shadow that failed reads the same in either.
+func (w *wired) warnShadowNotes(r *pipeline.Runner) {
+	w.warnShadowErrors(r)
+	w.warnShadowSample(r)
+}
+
 // warnShadowSample prints shadowSampleNote to the run's warnings when there is one.
 func (w *wired) warnShadowSample(r *pipeline.Runner) {
 	if note := shadowSampleNote(r); note != "" {

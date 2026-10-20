@@ -148,7 +148,7 @@ func TestValidateRules(t *testing.T) {
 
 func TestUSDBoundsInclusive(t *testing.T) {
 	c := valid()
-	c.Decide.OpenRouterModel = "" // a zero cap is only valid with Jev switched off
+	c.Decide.OpenRouterModel = "" // a zero cap is only valid with the OpenRouter model switched off
 	c.Decide.DailyUSD = DailyUSD{OpenRouter: 0, LLM: 20}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("0 and 20 must be valid: %v", err)
@@ -257,12 +257,12 @@ func TestLeverUSHost(t *testing.T) {
 	}
 }
 
-func TestNoJevNoOpenRouterRequirement(t *testing.T) {
+func TestNoOpenRouterModelNoOpenRouterRequirement(t *testing.T) {
 	c := valid()
 	c.Decide.OpenRouterModel = ""
 	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com"}
 	if err := c.Validate(); err != nil {
-		t.Fatalf("openrouter must not be required without jev: %v", err)
+		t.Fatalf("openrouter must not be required without an openrouter model: %v", err)
 	}
 }
 

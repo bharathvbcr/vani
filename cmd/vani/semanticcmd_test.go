@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/semantic"
@@ -401,7 +402,7 @@ func TestSemanticOffAndUsage(t *testing.T) {
 
 // The jobs JSON field is additive and absent without a match.
 func TestJobJSONOmitsSemanticWhenUnknown(t *testing.T) {
-	raw, err := json.Marshal(jobJSON{Key: "k"})
+	raw, err := json.Marshal(jobview.Job{Key: "k"})
 	if err != nil {
 		t.Fatal(err)
 	}

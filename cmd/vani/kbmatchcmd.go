@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -192,7 +193,7 @@ type kbmatchCandidate struct {
 // digest are left out; the counts say how many were left out why.
 func kbmatchCandidates(snap ledger.Snapshot, m map[posting.Key]marks.Entry, in *insight, st *kbmatch.Store, d kbmatch.Digest, summary string, top int) (out []kbmatchCandidate, mismatch, thin, current int) {
 	for _, r := range snap.Records {
-		if !inView("all", r, m[r.Key].Mark) {
+		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
 		if strings.HasPrefix(jobinsight.SlotOf(r.Annotations, "role_fit").Value, "mismatch_") {
@@ -445,7 +446,7 @@ func (e *env) kbmatchStatus(args []string) error {
 	var current int
 	byValue := map[string]int{}
 	for _, r := range snap.Records {
-		if !inView("all", r, m[r.Key].Mark) {
+		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
 		if en, ok := st.Lookup(string(r.Key), digest.SHA256, kbmatch.TextSHA256(r.Posting, summary, digest)); ok {

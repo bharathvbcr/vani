@@ -39,6 +39,23 @@ func TestShadowModeValidation(t *testing.T) {
 			c.DropRules = []DropRule{{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.4}}
 			c.Decide.Escalate = &Escalate{Enabled: true}
 		}, "claim the same slots"},
+		"llm shadow on drop candidates, cheap triage model": {func(c *Config) {
+			llmCfg(c)
+			c.Decide.Local, c.Decide.Shadow = nil, "llm"
+			c.Decide.ShadowMode = ShadowModeDropCandidates
+		}, ""},
+		"llm shadow on drop candidates would use llm.model": {func(c *Config) {
+			llmCfg(c)
+			c.LLM.TriageModel = ""
+			c.Decide.Local, c.Decide.Shadow = nil, "llm"
+			c.Decide.ShadowMode = ShadowModeDropCandidates
+		}, "needs llm.triage_model"},
+		"llm shadow on drop candidates, triage model is llm.model": {func(c *Config) {
+			llmCfg(c)
+			c.LLM.TriageModel = c.LLM.Model
+			c.Decide.Local, c.Decide.Shadow = nil, "llm"
+			c.Decide.ShadowMode = ShadowModeDropCandidates
+		}, "needs llm.triage_model"},
 		"escalate with sampled shadow stays exclusive": {func(c *Config) {
 			llmCfg(c)
 			c.Decide.Escalate = &Escalate{Enabled: true}

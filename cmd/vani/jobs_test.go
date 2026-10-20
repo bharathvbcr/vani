@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -57,17 +57,17 @@ func seedJobs(t *testing.T, stateDir string, jobs ...seedJob) *ledger.File {
 	return l
 }
 
-func listJSON(t *testing.T, args ...string) jobsListJSON {
+func listJSON(t *testing.T, args ...string) jobview.List {
 	t.Helper()
 	o, _ := mustCode(t, 0, append([]string{"jobs", "list", "--json"}, args...)...)
-	var out jobsListJSON
+	var out jobview.List
 	if err := json.Unmarshal([]byte(o), &out); err != nil {
 		t.Fatalf("list reply %q: %v", o, err)
 	}
 	return out
 }
 
-func keys(l jobsListJSON) string {
+func keys(l jobview.List) string {
 	var ks []string
 	for _, j := range l.Jobs {
 		ks = append(ks, string(j.Key))
@@ -90,7 +90,7 @@ func TestJobsReportPostingsAwaitingTriage(t *testing.T) {
 	if l.Total != 0 || len(l.Jobs) != 0 {
 		t.Fatalf("untriaged postings were listed: %s", keys(l))
 	}
-	want := pendingJSON{Total: 3, Matching: 2, Companies: []pendingCompanyJSON{{"Anthropic", 2}, {"Cohere", 1}}}
+	want := jobview.Pending{Total: 3, Matching: 2, Companies: []jobview.PendingCompany{{Company: "Anthropic", N: 2}, {Company: "Cohere", N: 1}}}
 	if !reflect.DeepEqual(l.Pending, want) {
 		t.Fatalf("pending %+v, want %+v", l.Pending, want)
 	}
@@ -99,7 +99,7 @@ func TestJobsReportPostingsAwaitingTriage(t *testing.T) {
 	}
 
 	o, _ := mustCode(t, 0, "jobs", "stats", "--json", "--q", "inference")
-	var s jobsStatsJSON
+	var s jobview.Stats
 	if err := json.Unmarshal([]byte(o), &s); err != nil {
 		t.Fatal(err)
 	}
@@ -129,14 +129,14 @@ func TestJobsPendingEmpty(t *testing.T) {
 // The company list is bounded and the total still counts every posting.
 func TestJobsPendingCompaniesAreBounded(t *testing.T) {
 	var recs []ledger.Record
-	for i := 0; i < maxPendingCompanies+5; i++ {
+	for i := 0; i < jobview.MaxPendingCompanies+5; i++ {
 		for j := 0; j <= i; j++ {
 			k := posting.Key(fmt.Sprintf("gh:c%02d:%d", i, j))
 			recs = append(recs, ledger.Record{Key: k, Status: posting.Live, Posting: posting.Posting{Key: k, Company: fmt.Sprintf("C%02d", i)}})
 		}
 	}
-	p := pendingOf(ledger.Snapshot{Records: recs}, nil, "")
-	if len(p.Companies) != maxPendingCompanies || p.Total != len(recs) || p.Companies[0].Company != "C24" {
+	p := jobview.PendingOf(ledger.Snapshot{Records: recs}, nil, "")
+	if len(p.Companies) != jobview.MaxPendingCompanies || p.Total != len(recs) || p.Companies[0].Company != "C24" {
 		t.Fatalf("%d companies, total %d of %d, first %+v", len(p.Companies), p.Total, len(recs), p.Companies[0])
 	}
 }
@@ -185,7 +185,7 @@ func TestJobsMarkMovesBetweenViewsAndKeepsTheNote(t *testing.T) {
 		seedJob{key: "gh:a:dead", title: "Closed role", status: posting.Dead},
 	)
 	o, _ := mustCode(t, 0, "jobs", "mark", "--json", "gh:a:1", "saved")
-	var j jobJSON
+	var j jobview.Job
 	if err := json.Unmarshal([]byte(o), &j); err != nil || j.Mark != marks.Saved || j.MarkedAt.IsZero() || j.Title != "Inference Engineer" {
 		t.Fatalf("mark reply %q (%v)", o, err)
 	}
@@ -263,7 +263,7 @@ func TestJobsShowIsSafeToRender(t *testing.T) {
 		seedJob{key: "gh:a:2", title: "Eng", url: "https://boards.example.com/a/2", status: posting.Digested},
 	)
 	o, _ := mustCode(t, 0, "jobs", "show", "--json", "gh:a:1")
-	var j jobJSON
+	var j jobview.Job
 	if err := json.Unmarshal([]byte(o), &j); err != nil {
 		t.Fatal(err)
 	}
@@ -292,43 +292,5 @@ func TestJobsListNewExcludesDeadPostings(t *testing.T) {
 	l := listJSON(t, "--view", "new")
 	if l.Total != 1 || len(l.Jobs) != 1 || l.Jobs[0].Key != "gh:a:1" {
 		t.Fatalf("jobs list --view new included dead posting: %v", keys(l))
-	}
-}
-
-func TestCleanText(t *testing.T) {
-	cases := []struct {
-		in        string
-		max       int
-		keepLines bool
-		want      string
-	}{
-		{"", 10, false, ""},
-		{"  a \t b  ", 10, false, "a b"},
-		{"a\x00b\x7fc", 10, false, "a b c"},
-		{"bad\xffutf8", 20, false, "bad�utf8"},
-		{strings.Repeat("é", 10), 4, false, "éééé…"},
-		{"a\n\n b\n", 10, true, "a\nb"},
-		{"a\nb", 10, false, "a b"},
-		// A separator at the cut counts toward maxRunes: never maxRunes+1 before the ellipsis.
-		{"ab cd", 3, false, "ab…"},
-		{"ab\ncd", 3, true, "ab…"},
-		{"ab cd", 4, false, "ab c…"},
-		{"ab c", 4, false, "ab c"},
-	}
-	for _, c := range cases {
-		if got := cleanText(c.in, c.max, c.keepLines); got != c.want {
-			t.Errorf("cleanText(%q, %d, %v) = %q, want %q", c.in, c.max, c.keepLines, got, c.want)
-		}
-	}
-	// The bound holds for any spacing: at most maxRunes, plus the ellipsis.
-	for _, in := range []string{strings.Repeat("a b ", 200), strings.Repeat("é\n\n", 200), strings.Repeat(" x", 200)} {
-		for _, keep := range []bool{false, true} {
-			for max := 1; max < 20; max++ {
-				got := strings.TrimSuffix(cleanText(in, max, keep), "…")
-				if n := utf8.RuneCountInString(got); n > max {
-					t.Errorf("cleanText(%q…, %d, %v) kept %d runes", in[:8], max, keep, n)
-				}
-			}
-		}
 	}
 }

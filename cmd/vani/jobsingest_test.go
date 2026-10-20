@@ -558,7 +558,7 @@ func TestWorkdayCheckTimeoutLeavesRoomBeforeTheHostKillsTheCLI(t *testing.T) {
 	}
 }
 
-const nvidiaListing ="https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite"
+const nvidiaListing = "https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite"
 
 // A Workday search the adapter cannot list (over MaxPostings, or NVIDIA's
 // capped 2000) is not saved, or the daemon would fail it every day. Its jobs

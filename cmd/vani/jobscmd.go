@@ -8,19 +8,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
-	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/config"
-	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -35,112 +30,7 @@ const (
 	defaultJobsLimit = 1000
 	maxJobsLimit     = 5000
 	maxQueryBytes    = 200
-	jobFieldRunes    = 300
-	jobNoteRunes     = 2000
-	maxDescRunes     = 60000
 )
-
-// Views. "new" is every kept posting the user has not marked; the mark views
-// show marked postings whatever became of them since (a saved role that
-// closed stays saved, flagged closed); "all" is kept plus marked.
-var jobViews = []string{"new", "saved", "applied", "hidden", "all"}
-
-// keptStatus reports whether a posting passed triage and is still listed:
-// these are the retrieved roles worth browsing. Dropped, dead and duplicate
-// postings appear only when marked.
-func keptStatus(s posting.Status) bool {
-	switch s {
-	case posting.Triaged, posting.Unsure, posting.Scored, posting.Explained, posting.Digested:
-		return true
-	}
-	return false
-}
-
-type jobJSON struct {
-	Key        posting.Key    `json:"key"`
-	Company    string         `json:"company"`
-	Title      string         `json:"title"`
-	Location   string         `json:"location,omitempty"`
-	Remote     bool           `json:"remote,omitempty"`
-	Department string         `json:"department,omitempty"`
-	URL        string         `json:"url,omitempty"` // http(s) only (digest.HTTPURL)
-	ApplyURL   string         `json:"apply_url,omitempty"`
-	Status     posting.Status `json:"status"`
-	Closed     bool           `json:"closed,omitempty"` // the board no longer lists it
-	Rank       *float64       `json:"rank,omitempty"`
-	// Similar counts the other listings of this title at this company that the
-	// default list folded into this row (jobinsight.Diversify); 0 when none.
-	Similar     int               `json:"similar,omitempty"`
-	Coverage    *float64          `json:"coverage,omitempty"`
-	Explanation string            `json:"explanation,omitempty"`
-	Missing     string            `json:"missing,omitempty"`
-	Unsure      string            `json:"unsure,omitempty"`
-	LCA         string            `json:"lca,omitempty"`
-	Employer    string            `json:"employer,omitempty"`
-	Triage      map[string]string `json:"triage,omitempty"`
-	Category    string            `json:"category,omitempty"`
-	FirstSeen   time.Time         `json:"first_seen"`
-	PostedAt    time.Time         `json:"posted_at,omitzero"`
-	Mark        marks.Mark        `json:"mark,omitempty"`
-	MarkedAt    time.Time         `json:"marked_at,omitzero"`
-	Note        string            `json:"note,omitempty"`
-	NoteAt      time.Time         `json:"note_at,omitzero"`
-	Description string            `json:"description,omitempty"` // `jobs show` only
-
-	// Display-only insight (jobsinsight.go): freshness, scores, keywords and
-	// the note split into reasons. No engine rule reads them.
-	FreshAt        time.Time            `json:"fresh_at,omitzero"`
-	FreshSrc       string               `json:"fresh_src,omitempty"` // posted or seen
-	AgeDays        *int                 `json:"age_days,omitempty"`
-	Relevance      float64              `json:"relevance"`
-	RelevanceBasis jobinsight.Basis     `json:"relevance_basis,omitempty"`
-	RelevanceKnown float64              `json:"relevance_known,omitempty"` // 0-1 share of the additive weight relevance rests on
-	Priority       float64              `json:"priority"`
-	ScoreFactors   []jobinsight.Factor  `json:"score_factors,omitempty"`
-	Keywords       []jobinsight.Keyword `json:"keywords,omitempty"`
-	Reasons        []reasonJSON         `json:"reasons,omitempty"`
-	Semantic       *semanticJSON        `json:"semantic,omitempty"` // cached knowledge-base match (semanticwire.go)
-	// Places, RemoteListed and RemoteScope are what the board's location says
-	// (internal/location), not triage's work_mode reading.
-	Places       []placeJSON `json:"places,omitempty"`
-	RemoteListed bool        `json:"remote_listed,omitempty"`
-	RemoteScope  string      `json:"remote_scope,omitempty"`
-	// Pay is the pay the posting's text states (jobinsight.ParsePay), at most
-	// one range per currency.
-	Pay []jobinsight.Pay `json:"pay,omitempty"`
-
-	// Near-duplicate display (pipeline.AnnotateNearDuplicates): the posting
-	// this one repeats (status duplicate), may repeat (candidate) or is the
-	// same role elsewhere as (sibling), and the description overlap behind it.
-	DupOf          string  `json:"dup_of,omitempty"`
-	DupCandidateOf string  `json:"dup_candidate_of,omitempty"`
-	DupSiblingOf   string  `json:"dup_sibling_of,omitempty"`
-	DupScore       float64 `json:"dup_score,omitempty"`
-	// Logo is the absolute path of the company's cached icon (internal/logo),
-	// set only when the file is there; the app shows the monogram otherwise.
-	Logo string `json:"logo,omitempty"`
-	// Row is the versioned contract every surface reads (internal/jobview).
-	Row *jobview.Row `json:"row,omitempty"`
-}
-
-type jobsListJSON struct {
-	View   string         `json:"view"`
-	Query  string         `json:"query,omitempty"`
-	Jobs   []jobJSON      `json:"jobs"`
-	Total  int            `json:"total"` // matches before the limit
-	Shown  int            `json:"shown"`
-	Counts map[string]int `json:"counts"` // per view, ignoring the query
-	// Torn means a run was mid-append: the list is complete up to that line.
-	Torn bool `json:"torn,omitempty"`
-	// Ledger is the directory read and Records how many postings it holds, so
-	// an empty list from the wrong state folder does not pass for "no jobs".
-	Ledger  string      `json:"ledger"`
-	Records int         `json:"records"`
-	Sort    string      `json:"sort"`
-	Insight insightJSON `json:"insight"`
-	// Pending is what no view lists yet: postings awaiting triage.
-	Pending pendingJSON `json:"pending"`
-}
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
@@ -202,12 +92,12 @@ func (e *env) jobsList(args []string) error {
 	asJSON := fs.Bool("json", false, "one JSON object on stdout")
 	var o jobsOpts
 	addSelectFlags(fs, &o)
-	fs.StringVar(&o.sort, "sort", "default", "default, priority, relevance, fresh, company or salary (top of the stated range in --currency)")
+	fs.StringVar(&o.Sort, "sort", "default", "default, priority, relevance, fresh, company or salary (top of the stated range in --currency)")
 	limit := fs.Int("limit", defaultJobsLimit, fmt.Sprintf("at most this many jobs (1-%d)", maxJobsLimit))
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	var out jobsListJSON
+	var out jobview.List
 	err := func() error {
 		if *limit < 1 || *limit > maxJobsLimit {
 			return usagef("jobs list: --limit must be 1-%d", maxJobsLimit)
@@ -219,13 +109,13 @@ func (e *env) jobsList(args []string) error {
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.halfLife, snap, m)
+		in, err := e.newInsight(o.HalfLife, snap, m)
 		if err != nil {
 			return err
 		}
-		out = listJobs(snap, m, &o, in, *limit)
+		out = jobview.BuildList(snap, m, &o.Opts, in, in.info, listKeywords, *limit)
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
-		out.Pending = pendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.query)))
+		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
@@ -242,7 +132,7 @@ func (e *env) jobsList(args []string) error {
 			if j.AgeDays != nil {
 				age = fmt.Sprintf("%3dd", *j.AgeDays)
 			}
-			pay := payNote(j, o.more.currency)
+			pay := payNote(j, o.more.Currency)
 			if pay != "" {
 				pay = "  " + pay
 			}
@@ -267,7 +157,7 @@ func (e *env) jobsStatsCmd(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	var out jobsStatsJSON
+	var out jobview.Stats
 	err := func() error {
 		if err := o.check("jobs stats", false); err != nil {
 			return err
@@ -276,16 +166,16 @@ func (e *env) jobsStatsCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.halfLife, snap, m)
+		in, err := e.newInsight(o.HalfLife, snap, m)
 		if err != nil {
 			return err
 		}
-		sel, _ := selectJobs(snap, m, &o, in, 0)
-		out = jobsStats(sel, in)
-		out.Salary = payStats(sel, o.more.currency)
-		out.View, out.Query, out.Torn = o.view, o.query, snap.Torn
+		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
+		out = jobview.StatsOf(sel, in.info, in.target)
+		out.Salary = jobview.PayStatsOf(sel, o.more.Currency)
+		out.View, out.Query, out.Torn = o.View, o.Query, snap.Torn
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
-		out.Pending = pendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.query)))
+		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
@@ -334,14 +224,14 @@ type jobsFoldersJSON struct {
 func (e *env) jobsFolders(args []string) error {
 	fs := e.newFlags("jobs folders")
 	asJSON := fs.Bool("json", false, "one JSON object on stdout")
-	view := fs.String("view", "new", "view to count: "+strings.Join(jobViews, ", "))
+	view := fs.String("view", "new", "view to count: "+strings.Join(jobview.Views, ", "))
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	var out jobsFoldersJSON
 	err := func() error {
-		if !slices.Contains(jobViews, *view) {
-			return usagef("jobs folders: --view %q must be one of %s", *view, strings.Join(jobViews, ", "))
+		if !slices.Contains(jobview.Views, *view) {
+			return usagef("jobs folders: --view %q must be one of %s", *view, strings.Join(jobview.Views, ", "))
 		}
 		snap, m, err := e.jobsState()
 		if err != nil {
@@ -351,11 +241,11 @@ func (e *env) jobsFolders(args []string) error {
 		total := 0
 		for _, r := range snap.Records {
 			entry := m[r.Key]
-			if !inView(*view, r, entry.Mark) {
+			if !jobview.InView(*view, r, entry.Mark) {
 				continue
 			}
 			total++
-			j := toJob(r, entry)
+			j := jobview.ToJob(r, entry)
 			cat := j.Category
 			if cat == "" {
 				cat = "none"
@@ -398,7 +288,7 @@ func (e *env) jobsShow(args []string) error {
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
-	var out jobJSON
+	var out jobview.Job
 	err := func() error {
 		if fs.NArg() != 1 {
 			return usagef("jobs show: expected one posting key")
@@ -419,9 +309,9 @@ func (e *env) jobsShow(args []string) error {
 		if err != nil {
 			return err
 		}
-		out = toJob(r, m[k])
-		in.enrich(&out, r, showKeywords)
-		out.Description = cleanText(r.Posting.Description, maxDescRunes, true)
+		out = jobview.ToJob(r, m[k])
+		in.Enrich(&out, r, showKeywords)
+		out.Description = jobview.CleanText(r.Posting.Description, jobview.DescRunes, true)
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
@@ -435,7 +325,7 @@ func (e *env) jobsMark(args []string) error {
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
-	var out jobJSON
+	var out jobview.Job
 	err := func() error {
 		if fs.NArg() != 2 {
 			return usagef("jobs mark: expected a posting key and saved, applied, hidden or clear")
@@ -461,7 +351,7 @@ func (e *env) jobsNote(args []string) error {
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
-	var out jobJSON
+	var out jobview.Job
 	err := func() error {
 		if fs.NArg() != 2 {
 			return usagef(`jobs note: expected a posting key and the note ("" clears it)`)
@@ -479,7 +369,7 @@ func (e *env) jobsNote(args []string) error {
 // jobsWrite checks the key names a posting the ledger has, applies set, and
 // fills out with the updated job. Marking a posting Vani never saw is refused:
 // a typo must not become an orphan entry.
-func (e *env) jobsWrite(raw string, out *jobJSON, set func(string, posting.Key) (marks.Entry, error)) error {
+func (e *env) jobsWrite(raw string, out *jobview.Job, set func(string, posting.Key) (marks.Entry, error)) error {
 	k, err := checkJobKey(raw)
 	if err != nil {
 		return err
@@ -507,8 +397,8 @@ func (e *env) jobsWrite(raw string, out *jobJSON, set func(string, posting.Key) 
 	if err != nil {
 		return err
 	}
-	*out = toJob(r, entry)
-	in.enrich(out, r, showKeywords)
+	*out = jobview.ToJob(r, entry)
+	in.Enrich(out, r, showKeywords)
 	return nil
 }
 
@@ -545,7 +435,7 @@ func hideExcluded(recs []ledger.Record, m map[posting.Key]marks.Entry, x config.
 		return
 	}
 	for i, r := range recs {
-		if m[r.Key].Mark != marks.None || !keptStatus(r.Status) {
+		if m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
 			continue
 		}
 		if _, ok := x.Match(r.Posting); ok {
@@ -562,159 +452,10 @@ func findRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool) {
 	return ledger.Record{}, false
 }
 
-// inView reports whether a record with mark belongs in view.
-func inView(view string, r ledger.Record, mark marks.Mark) bool {
-	switch view {
-	case "new":
-		return mark == marks.None && keptStatus(r.Status)
-	case "all":
-		return mark != marks.None || keptStatus(r.Status)
-	}
-	return string(mark) == view
-}
-
-func listJobs(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobsOpts, in *insight, limit int) jobsListJSON {
-	out := jobsListJSON{View: o.view, Query: o.query, Sort: o.sort, Torn: snap.Torn, Jobs: []jobJSON{}, Insight: in.info}
-	sel, counts := selectJobs(snap, m, o, in, listKeywords)
-	out.Counts = counts
-	sortJobs(sel, o.view, o.sort)
-	sel = diversifyJobs(sel, o.view, o.sort)
-	out.Total = len(sel)
-	if len(sel) > limit {
-		sel = sel[:limit]
-	}
-	for _, s := range sel {
-		out.Jobs = append(out.Jobs, s.job)
-	}
-	out.Shown = len(out.Jobs)
-	return out
-}
-
 // roleFitOrder ranks triage's role_fit labels (jdtriage's fixture) for
 // display: unscored postings sort by how well triage said they fit. Display
 // order only; no engine rule reads it.
 var roleFitOrder = []string{"strong_fit", "partial_fit", "adjacent", "mismatch_seniority", "mismatch_domain"}
-
-func fitOrder(j jobJSON) int {
-	for i, v := range roleFitOrder {
-		if j.Triage["role_fit"] == v {
-			return i
-		}
-	}
-	return len(roleFitOrder)
-}
-
-func toJob(r ledger.Record, entry marks.Entry) jobJSON {
-	p := r.Posting
-	ann := r.Annotations
-	j := jobJSON{
-		Key:         r.Key,
-		Company:     cleanText(p.Company, jobFieldRunes, false),
-		Title:       cleanText(p.Title, jobFieldRunes, false),
-		Location:    cleanText(p.Location, jobFieldRunes, false),
-		Remote:      p.Remote,
-		Department:  cleanText(p.Department, jobFieldRunes, false),
-		Status:      r.Status,
-		Closed:      r.Status == posting.Dead,
-		Explanation: cleanText(ann[ledger.AnnExplanation], jobNoteRunes, false),
-		Missing:     cleanText(ann[ledger.AnnMissing], jobNoteRunes, false),
-		LCA:         cleanText(ann[ledger.AnnLCA], jobFieldRunes, false),
-		Employer:    cleanText(ann[ledger.AnnEmployer], jobFieldRunes, false),
-		FirstSeen:   r.FirstSeen,
-		PostedAt:    p.PostedAt,
-		Mark:        entry.Mark,
-		MarkedAt:    entry.MarkedAt,
-		Note:        entry.Note,
-		NoteAt:      entry.NoteAt,
-	}
-	if j.Title == "" {
-		j.Title = "(untitled)"
-	}
-	if u, ok := digest.HTTPURL(p.URL); ok {
-		j.URL = u
-	}
-	if u, ok := digest.HTTPURL(p.ApplyURL); ok {
-		j.ApplyURL = u
-	}
-	if v, ok := digest.Rank(r); ok {
-		j.Rank = &v
-	}
-	if v, ok := digest.Coverage(r); ok {
-		j.Coverage = &v
-	}
-	if digest.IsUnsure(r) {
-		j.Unsure = digest.WhyUnsure(ann)
-	}
-	for _, slot := range digest.TriageSlots {
-		if v := cleanText(ann[ledger.AnnTriagePrefix+slot], 80, false); v != "" {
-			if j.Triage == nil {
-				j.Triage = map[string]string{}
-			}
-			j.Triage[slot] = v
-		}
-	}
-	if cat := cleanText(ann[ledger.AnnCategory], 80, false); cat != "" {
-		j.Category = cat
-	} else if cat := cleanText(ann[ledger.AnnTriagePrefix+"category"], 80, false); cat != "" {
-		j.Category = cat
-	}
-	if j.Category != "" {
-		if j.Triage == nil {
-			j.Triage = map[string]string{}
-		}
-		j.Triage["category"] = j.Category
-	}
-	j.DupOf = cleanText(ann[pipeline.DuplicateOfKey], jobFieldRunes, false)
-	j.DupCandidateOf = cleanText(ann[pipeline.AnnDupCandidateOf], jobFieldRunes, false)
-	j.DupSiblingOf = cleanText(ann[pipeline.AnnDupSiblingOf], jobFieldRunes, false)
-	if s := ann[pipeline.AnnDupScore]; s != "" {
-		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= 0 && f <= 1 {
-			j.DupScore = f
-		}
-	}
-	return j
-}
-
-// cleanText makes untrusted posting text safe to show as plain text: control
-// characters (and, unless keepLines, newlines) become single spaces, runs of
-// spaces collapse, and the result is cut at maxRunes. It does no Markdown
-// escaping; the app shows it verbatim, never as Markdown or HTML.
-func cleanText(s string, maxRunes int, keepLines bool) string {
-	var b strings.Builder
-	n, space, newline := 0, false, false
-	for _, r := range strings.ToValidUTF8(s, "�") {
-		if keepLines && r == '\n' {
-			newline = b.Len() > 0
-			space = false
-			continue
-		}
-		if unicode.IsSpace(r) || unicode.IsControl(r) || r == ' ' || r == ' ' {
-			space = b.Len() > 0
-			continue
-		}
-		// A pending separator is written with this rune, so it counts too.
-		sep := 0
-		if newline || space {
-			sep = 1
-		}
-		if n+sep >= maxRunes {
-			b.WriteString("…")
-			break
-		}
-		switch {
-		case newline:
-			b.WriteByte('\n')
-			n++
-		case space:
-			b.WriteByte(' ')
-			n++
-		}
-		newline, space = false, false
-		b.WriteRune(r)
-		n++
-	}
-	return b.String()
-}
 
 func orDash(s string) string {
 	if s == "" {

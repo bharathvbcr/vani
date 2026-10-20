@@ -39,7 +39,7 @@ flowchart TD
 
         subgraph Triage["3. Decision & Triage"]
             TR["career.jd_triage\n(role_fit, sponsorship, work_mode, seniority)"]
-            JEV["OpenRouter model (d1-ultra)"]
+            ORT["OpenRouter model (d1-ultra)"]
             LLM["LLM via Manvi (Gemini / Claude)"]
             LAP["Lappi (Local socket, free)"]
             SHADOW["Shadow & Eval (vani label / eval)"]
@@ -69,9 +69,9 @@ flowchart TD
     DEDUP -->|Active| LIVE
 
     LIVE --> TR
-    TR --> JEV & LLM & LAP
+    TR --> ORT & LLM & LAP
     TR -.-> SHADOW
-    JEV & LLM & LAP --> DROP_RULE
+    ORT & LLM & LAP --> DROP_RULE
     DROP_RULE -->|Calibrated drop| DROP
     DROP_RULE -->|Uncertain fit| UNSURE
     DROP_RULE -->|Clear fit| TRIAGED
@@ -162,7 +162,7 @@ stateDiagram-v2
   `decide.shadow` `jev` are now `openrouter_model`, `openrouter_key_env`, `daily_usd.openrouter`,
   `min_openrouter_prob` and `openrouter`. Old configs and track files still load, every command
   says which keys to rename, a file setting an old and a new key to different values is refused,
-  and saving writes the new names. Ledger rows written before the rename name the model `jev`;
+  and saving writes the new names. Ledger rows written before the rename name the model `jev` (no persisted ledger key was renamed);
   `vani eval` and `vani label` read those as the configured model's name and say how many they
   mapped. The daily cap file stays `<state dir>/budget/jev.json` (spend key `jev`) on purpose: the
   cap takes no lock across processes, so a renamed file would let a still-running daemon start the
@@ -252,7 +252,24 @@ flowchart TD
 - **Lappi** (`decide.lappi`, socket default `~/Library/Caches/qd/qd.sock`): local and free. With no
   agent running every ask reads `unavailable/socket_not_found` and the chain carries on; the first
   `task_not_trained` refusal stops Vani asking for the rest of the process.
-- **Local decision model** (`decide.local`, shadow only; config refuses it anywhere else): a
+- **Cloud shadow (recommended setup):** the OpenRouter model decides and a Claude Haiku reads every
+  drop candidate as the second opinion, with no local model or server to run. In the config:
+
+  ```json
+  "llm": {"provider": "anthropic", "model": "<your Opus id>", "triage_model": "<a Haiku id>",
+          "input_nano_usd_per_token": 4000, "output_nano_usd_per_token": 20000},
+  "decide": {"openrouter_model": "liquid/d1-ultra", "daily_usd": {"openrouter": 1, "llm": 1},
+             "shadow": "llm", "shadow_mode": "drop_candidates"},
+  "drop_rules": [{"slot": "role_fit", "values": ["mismatch_domain"], "min_openrouter_prob": 0.9}]
+  ```
+
+  The shadow runs on `llm.triage_model` (config refuses `shadow: "llm"` with `drop_candidates`
+  unless it is set and differs from `llm.model`, so the expensive tier is never asked), is metered
+  under the `daily_usd.llm` cap together with every other Claude call (past it a reading is
+  `unavailable`, never agreement), is recorded under the backend name `llm`, and shows in
+  `vani relevance` as `llm (<triage model>)`. Prices are your conservative per-token figures; set
+  the other values to your own. The local model below is optional.
+- **Local decision model** (optional; `decide.local`, shadow only; config refuses it anywhere else): a
   llama.cpp server's `/v1/systemone` (for example LiquidAI d1-3B, llama.cpp ≥ 0.7.0), asked
   through the same `decide/jev` client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
   without `.gguf` when Vani starts the server; at most 32 bytes in all, which `vani config

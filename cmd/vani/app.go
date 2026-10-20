@@ -14,6 +14,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/notify"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
@@ -263,7 +264,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		return nil, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
-	var adv *advanceReport
+	var adv *pipeline.AdvanceReport
 	if app.RunReport != nil {
 		adv = app.RunReport().Advance
 	}

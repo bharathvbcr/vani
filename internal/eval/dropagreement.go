@@ -47,6 +47,18 @@ type AgreementRow struct {
 type DropAgreement struct {
 	Primary string
 	Rows    []AgreementRow
+
+	llmModel string // Names.LLMModel, shown beside the "llm" shadow
+}
+
+// shadowLabel is a shadow backend as the report names it: "llm" carries the
+// model it ran on; every other name (an OpenRouter model, a local model and
+// mode) already says what it is.
+func (d DropAgreement) shadowLabel(name string) string {
+	if name == "llm" && d.llmModel != "" {
+		return name + " (" + d.llmModel + ")"
+	}
+	return name
 }
 
 // BuildDropAgreement counts, over recs, how often each shadow backend agreed
@@ -54,7 +66,7 @@ type DropAgreement struct {
 // copies, not observations, and are left out; so are escalation readings. A
 // slot read by the primary under a rule's threshold is not a candidate.
 func BuildDropAgreement(labels map[posting.Key]Entry, recs []ledger.Record, rules []DropRuleSpec, names Names) DropAgreement {
-	out := DropAgreement{Primary: names.probability()}
+	out := DropAgreement{Primary: names.probability(), llmModel: names.LLMModel}
 	byslot := map[string]DropRuleSpec{}
 	for _, r := range rules {
 		if r.MinP > 0 && r.MinP <= 1 {
@@ -185,7 +197,7 @@ func (d DropAgreement) Markdown() string {
 		if lo, hi, ok := Wilson(r.Agree, r.Answered); ok {
 			agree = fmt.Sprintf("%d/%d = %.0f%% (95%% CI %.0f-%.0f%%)", r.Agree, r.Answered, 100*float64(r.Agree)/float64(r.Answered), 100*lo, 100*hi)
 		}
-		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %s | %d | %d | %d |\n", r.Slot, r.Shadow, r.Asked, r.Unavailable, r.Answered, agree, r.Disagree, r.DisagreeJudged, r.DisagreeWanted)
+		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %s | %d | %d | %d |\n", r.Slot, d.shadowLabel(r.Shadow), r.Asked, r.Unavailable, r.Answered, agree, r.Disagree, r.DisagreeJudged, r.DisagreeWanted)
 	}
 	for _, r := range unasked {
 		fmt.Fprintf(&b, "\n- %s: %d candidate(s) with no shadow reading (before the mode was on, or not asked)\n", r.Slot, r.NotAsked)

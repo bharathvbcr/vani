@@ -286,6 +286,10 @@ private struct FilterMenu: View {
             Toggle("Hide possible duplicates", isOn: $hideDuplicates)
             Button("Clear Filters") { jobs.clearFilter() }
                 .disabled(jobs.filter.isEmpty)
+            if let note = jobs.labelsNote {
+                Divider()
+                Text(note)
+            }
         } label: {
             Label(jobs.filter.isEmpty ? "Filter" : "Filter (\(jobs.filter.activeCount))",
                   systemImage: jobs.filter.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
@@ -660,6 +664,9 @@ private struct JobList: View {
             }
             if let err = jobs.error {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(err)
+            }
+            if let note = jobs.labelsNote {
+                Label("Built-in labels", systemImage: "textformat").foregroundStyle(.orange).help(note)
             }
             Spacer()
             if let ledger = page.ledger {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -69,10 +70,10 @@ func (e *env) cmdRelevance(args []string) error {
 	if err != nil {
 		return err
 	}
-	keysOf := func(sel []selected) []posting.Key {
+	keysOf := func(sel []jobview.Selected) []posting.Key {
 		out := make([]posting.Key, 0, len(sel))
 		for _, x := range sel {
-			out = append(out, x.job.Key)
+			out = append(out, x.Job.Key)
 		}
 		return out
 	}
@@ -112,6 +113,9 @@ func (e *env) namesAndDropRules() (eval.Names, []eval.DropRuleSpec, error) {
 	var n eval.Names
 	if cfg.OpenRouterConfigured() {
 		n.OpenRouter = cfg.Decide.OpenRouterName()
+	}
+	if cfg.LLM.Provider != "" {
+		n.LLMModel = cfg.LLM.EffectiveTriageModel()
 	}
 	specs := make([]eval.DropRuleSpec, 0, len(cfg.DropRules))
 	for _, r := range cfg.DropRules {

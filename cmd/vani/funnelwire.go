@@ -67,15 +67,3 @@ func uncheckedCauses(c pipeline.FailOpenCounts) []digest.Unchecked {
 		{Cause: "other", N: c.Other},
 	}
 }
-
-// fillFunnelReport copies the run's fail-open and notes-gate counts into the
-// advance report and says so when any check could not run.
-func fillFunnelReport(rep *advanceReport, r *pipeline.Runner, warnf func(string, ...any)) {
-	rep.FailOpen, rep.Notes = r.FailOpen.Counts(), r.Notes.Counts()
-	if n := rep.FailOpen.Total(); n > 0 {
-		warnf("%d posting(s) kept because a check could not run: %+v", n, rep.FailOpen)
-	}
-	if n := rep.Notes.UnknownRelevance + rep.Notes.BudgetSpent; n > 0 {
-		warnf("%d note(s) deferred (%d relevance unknown, %d notes budget spent); they stay scored for a later run", n, rep.Notes.UnknownRelevance, rep.Notes.BudgetSpent)
-	}
-}

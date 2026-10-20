@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -22,7 +23,7 @@ func TestJobsMarkReportsTheListsPriority(t *testing.T) {
 	mustCode(t, 0, "jobs", "mark", "gh:a:2", "saved")
 	mustCode(t, 0, "jobs", "mark", "gh:a:3", "saved")
 	o, _ := mustCode(t, 0, "jobs", "mark", "--json", "gh:a:1", "saved")
-	var marked jobJSON
+	var marked jobview.Job
 	if err := json.Unmarshal([]byte(o), &marked); err != nil {
 		t.Fatalf("mark reply %q: %v", o, err)
 	}

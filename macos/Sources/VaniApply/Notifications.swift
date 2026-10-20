@@ -49,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         if Bundle.main.bundleIdentifier != nil { Self.requestPermissionOnce() }
         pollTask = Task { [pipeline] in await pipeline.poll() }
+        // The label table is read once at launch, before any pane shows a menu or a chart.
+        Task { [jobs] in await jobs.loadLabels() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

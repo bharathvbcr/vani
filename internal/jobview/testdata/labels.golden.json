@@ -1,0 +1,161 @@
+{
+  "v": 1,
+  "fit": [
+    {
+      "value": "strong_fit",
+      "label": "Strong fit"
+    },
+    {
+      "value": "partial_fit",
+      "label": "Partial fit"
+    },
+    {
+      "value": "adjacent",
+      "label": "Adjacent"
+    },
+    {
+      "value": "mismatch_seniority",
+      "label": "Seniority mismatch"
+    },
+    {
+      "value": "mismatch_domain",
+      "label": "Different field"
+    }
+  ],
+  "status": [
+    {
+      "value": "discovered",
+      "label": "Discovered"
+    },
+    {
+      "value": "live",
+      "label": "Live"
+    },
+    {
+      "value": "triaged",
+      "label": "Triaged"
+    },
+    {
+      "value": "unsure",
+      "label": "Unsure"
+    },
+    {
+      "value": "scored",
+      "label": "Scored"
+    },
+    {
+      "value": "explained",
+      "label": "Explained"
+    },
+    {
+      "value": "digested",
+      "label": "Digested"
+    },
+    {
+      "value": "dead",
+      "label": "Closed"
+    },
+    {
+      "value": "duplicate",
+      "label": "Duplicate"
+    },
+    {
+      "value": "dropped",
+      "label": "Dropped"
+    }
+  ],
+  "category": [
+    {
+      "value": "ai-engineer",
+      "label": "AI Engineer"
+    },
+    {
+      "value": "agent-systems",
+      "label": "Agent Systems"
+    },
+    {
+      "value": "ml-inference-systems",
+      "label": "ML Inference Systems"
+    },
+    {
+      "value": "ml-research",
+      "label": "ML Research"
+    },
+    {
+      "value": "biomedical-ai",
+      "label": "Biomedical AI"
+    },
+    {
+      "value": "biomedical-research",
+      "label": "Biomedical Research"
+    },
+    {
+      "value": "human-factors-medical-devices",
+      "label": "Human Factors"
+    },
+    {
+      "value": "other",
+      "label": "Other"
+    }
+  ],
+  "triage": {
+    "seniority": [
+      {
+        "value": "intern_or_new_grad",
+        "label": "Intern / new grad"
+      },
+      {
+        "value": "mid",
+        "label": "Mid-level"
+      },
+      {
+        "value": "senior",
+        "label": "Senior"
+      },
+      {
+        "value": "staff_plus",
+        "label": "Staff+"
+      },
+      {
+        "value": "manager",
+        "label": "Manager"
+      }
+    ],
+    "sponsorship": [
+      {
+        "value": "sponsors_visa",
+        "label": "Sponsors visas"
+      },
+      {
+        "value": "no_sponsorship",
+        "label": "No sponsorship"
+      },
+      {
+        "value": "citizenship_or_clearance_required",
+        "label": "Citizenship or clearance"
+      },
+      {
+        "value": "not_stated",
+        "label": "Not stated"
+      }
+    ],
+    "work_mode": [
+      {
+        "value": "remote",
+        "label": "Remote"
+      },
+      {
+        "value": "hybrid",
+        "label": "Hybrid"
+      },
+      {
+        "value": "onsite",
+        "label": "On-site"
+      },
+      {
+        "value": "not_stated",
+        "label": "Not stated"
+      }
+    ]
+  }
+}

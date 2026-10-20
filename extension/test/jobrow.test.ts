@@ -34,6 +34,22 @@ describe("jobs row contract", () => {
     expect("good_fit" in FIT_LABELS).toBe(false);
   });
 
+  test("the offline estimate speaks only the five fit labels of Go's label table", () => {
+    const labels = JSON.parse(readFileSync(join(import.meta.dir, "../../internal/jobview/testdata/labels.golden.json"), "utf8")) as {
+      v: number;
+      fit: Array<{ value: string; label: string }>;
+    };
+    expect(labels.v).toBe(1);
+    expect(Object.fromEntries(labels.fit.map((e) => [e.value, e.label]))).toEqual(FIT_LABELS);
+    // Every fit the estimate can assign is one of them (an assignment or a RoleFit member).
+    const src = readFileSync(join(import.meta.dir, "../src/relevance.ts"), "utf8");
+    const used = new Set([...src.matchAll(/\bfit = "([a-z_]+)"/g)].map((m) => m[1]));
+    const typed = new Set([...src.slice(src.indexOf("type RoleFit"), src.indexOf(";", src.indexOf("type RoleFit"))).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]));
+    expect(typed).toEqual(new Set(labels.fit.map((e) => e.value)));
+    for (const u of used) expect(typed.has(u!)).toBe(true);
+    expect(used.size).toBeGreaterThan(0);
+  });
+
   test("an unknown schema version is refused by name, never mis-rendered", () => {
     for (const v of [0, 2, 99, -1, "1", null, undefined]) {
       const p = parseJobRow({ ...golden.rows[0], v });

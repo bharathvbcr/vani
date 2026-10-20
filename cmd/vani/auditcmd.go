@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -58,7 +59,7 @@ func (e *env) browse() (*browsing, error) {
 }
 
 // view lists the jobs of a Jobs view, as `jobs list` would, in sortBy order.
-func (b *browsing) view(view, sortBy string, openOnly bool) ([]selected, error) {
+func (b *browsing) view(view, sortBy string, openOnly bool) ([]jobview.Selected, error) {
 	var o jobsOpts
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -66,12 +67,12 @@ func (b *browsing) view(view, sortBy string, openOnly bool) ([]selected, error) 
 	if err := fs.Parse(nil); err != nil {
 		return nil, err
 	}
-	o.view, o.sort, o.open = view, sortBy, openOnly
+	o.View, o.Sort, o.Open = view, sortBy, openOnly
 	if err := o.check("audit", true); err != nil {
 		return nil, err
 	}
-	sel, _ := selectJobs(b.snap, b.m, &o, b.in, 0)
-	sortJobs(sel, view, sortBy)
+	sel, _ := jobview.Select(b.snap, b.m, &o.Opts, b.in, 0)
+	jobview.Sort(sel, view, sortBy)
 	return sel, nil
 }
 
@@ -124,7 +125,7 @@ func (e *env) drawAudit(scored, dropped int, seed, labels string) (*auditDraw, e
 	}
 	var cands []eval.AuditCandidate
 	for _, k := range kept {
-		cands = append(cands, eval.AuditCandidate{Key: k.job.Key, Score: k.job.Priority})
+		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
 	}
 	rules := e.dropRules()
 	for _, r := range b.snap.Records {

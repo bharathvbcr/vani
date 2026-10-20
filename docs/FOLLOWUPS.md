@@ -141,7 +141,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   `title_signals` and run `vani track show <id>`, which checks it.
 - **Outage detection.** A title drop is no backend reading. It does not reset the unread
   breaker, and it does not stop a phase in which no backend read anything from failing
-  (`advanceAll`'s `titleDrop`).
+  (`pipeline.AdvancePlan.TitleDrop`).
 
 ## Run speed (applied 2026-10-19, measured on fakes only)
 
@@ -151,7 +151,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   in the decide module; up to 3 calls past the OpenRouter daily cap with 4 workers is acceptable
   (`DailyCap.Allow` and `Charge` are separate steps; `TestAdvanceConcurrentSpendCapHolds`).
 - **What changed:**
-  - `advance_concurrency` (default 4): `advanceAll` starts postings in rank order and counts
+  - `advance_concurrency` (default 4): `pipeline.Advance` starts postings in rank order and counts
     results on one goroutine. A stop starts nothing new and waits for the postings in flight.
     The unread streak can admit up to workers-1 extra attempts.
   - `decide.shadow_every` (default 12): hash sample by posting key (`cmd/vani/shadowsample.go`).
@@ -706,7 +706,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   binary later did not revisit them, so in the live top 20 of `jobs list --sort priority` every
   posting took the 0.4 coverage prior.
   - What it does: `vani rescore` scores `scored`/`explained` records that have no `rank`, in place.
-    The record keeps its status and explanation. It goes through the run's `advanceAll`, so the cap,
+    The record keeps its status and explanation. It goes through the run's `pipeline.Advance` (`baseAdvancePlan(kindRescore, …)`), so the cap,
     concurrency, cancellation and 20-failure streak are the run's. It calls DevPrism only, never a
     model. `--dry-run` reads a snapshot without the lock. See README "Use".
   - Why a missing `rank` stands in for the reason: the folded record keeps no event reasons. Every
@@ -720,7 +720,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     - Whether the 51 digested postings should be scored too. They would keep `digested`.
     - Whether to re-pick the 1,581 kept explanations. They were picked without the coverage, and
       re-picking costs an OpenRouter call each.
-    - Whether the daily run should also do this. That would be one `advanceAll(… withTodo(rescorable))`
+    - Whether the daily run should also do this. That would be one `pipeline.Advance` call with `AdvancePlan.Select = rescorable`
       call in `runOnce` after the advance phase. It was left out: it would compete with the live
       backlog (1,186 `live` that day) for `advance_per_run`. The class only arises from an empty
       binary; a DevPrism that is down leaves postings `triaged` and the run retries them.

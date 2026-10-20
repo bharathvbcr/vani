@@ -147,7 +147,7 @@ func TestFixturePinned(t *testing.T) {
 
 // Each Lappi family carries exactly one slot of the combined question, with
 // the same options in the same order, so a per-slot Lappi answer and a
-// multi-slot Jev answer are comparable.
+// multi-slot Liquid D answer are comparable.
 func TestFamiliesMirrorSlots(t *testing.T) {
 	if len(Families) != len(Slots) {
 		t.Fatalf("%d families, %d slots", len(Families), len(Slots))
