@@ -29,6 +29,7 @@ func (c *Client) Gap(ctx context.Context, jd, personaID string) (Gap, error) {
 	}
 	var out struct {
 		CoveragePercentage *float64 `json:"coveragePercentage"`
+		ExtractionEmpty    bool     `json:"extractionEmpty"`
 		MustHave           *struct {
 			Items []struct {
 				Skill  string `json:"skill"`
@@ -48,6 +49,7 @@ func (c *Client) Gap(ctx context.Context, jd, personaID string) (Gap, error) {
 		}
 		g.MustHaves = append(g.MustHaves, Coverage{Requirement: it.Skill, Status: it.Status})
 	}
+	g.NoMustHaves = out.ExtractionEmpty || len(g.MustHaves) == 0
 	return g, nil
 }
 

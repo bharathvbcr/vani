@@ -263,6 +263,18 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: score %s: %w", rec.Key, err)
 	}
+	if gap.NoMustHaves {
+		// DevPrism found no must-have to measure, so its 0% is 0 of 0: an
+		// unknown, not a zero. Record no rank and no coverage (an empty value
+		// forgets a stale one) so the ranker applies its unknown-coverage prior,
+		// and count it: the posting is kept with a check that could not run.
+		r.FailOpen.Note(CauseCoverageUnknown)
+		return map[string]string{
+			ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnMissing: "",
+			ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
+			AnnCoverageUnknown: CoverageNoMustHaves,
+		}, nil
+	}
 	rank := gap.CoveragePct
 	if r.preferredEmployer(rec.Posting.Company) {
 		rank += EmployerRankBoost
@@ -271,6 +283,7 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 		ledger.AnnRank:     strconv.FormatFloat(rank, 'f', -1, 64),
 		ledger.AnnCoverage: strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64),
 		ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
+		AnnCoverageUnknown: "",
 	}
 	if m := missingRequirements(gap); m != "" {
 		ann[ledger.AnnMissing] = m

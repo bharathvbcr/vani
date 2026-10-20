@@ -18,6 +18,18 @@ const (
 	// CausePrescoreFailed: DevPrism failed before triage, so coverage is
 	// unknown; triage went ahead (coverage is never a gate).
 	CausePrescoreFailed = "prescore_failed"
+	// CauseCoverageUnknown: DevPrism extracted no must-have from the JD, so its
+	// 0% coverage is 0 of 0 and is recorded as unknown, not as zero.
+	CauseCoverageUnknown = "coverage_unknown"
+)
+
+const (
+	// AnnCoverageUnknown marks a scored posting whose coverage is unknown and
+	// says why. It stops the score stage and Rescore from asking again.
+	AnnCoverageUnknown = "gap.coverage_unknown"
+	// CoverageNoMustHaves is AnnCoverageUnknown's value when DevPrism found no
+	// must-have requirement in the JD.
+	CoverageNoMustHaves = "no_must_haves"
 )
 
 // FailOpenCounts is a run's fail-open tally, one counter per cause. It is
@@ -27,6 +39,7 @@ type FailOpenCounts struct {
 	TitleUnread        int `json:"title_unread,omitempty"`
 	LocationUnreadable int `json:"location_unreadable,omitempty"`
 	PrescoreFailed     int `json:"prescore_failed,omitempty"`
+	CoverageUnknown    int `json:"coverage_unknown,omitempty"`
 	// Other counts a cause this build has no counter for, so an unknown
 	// cause is never dropped silently.
 	Other int `json:"other,omitempty"`
@@ -34,7 +47,7 @@ type FailOpenCounts struct {
 
 // Total is every kept-unchecked posting.
 func (c FailOpenCounts) Total() int {
-	return c.EmptyDescription + c.TitleUnread + c.LocationUnreadable + c.PrescoreFailed + c.Other
+	return c.EmptyDescription + c.TitleUnread + c.LocationUnreadable + c.PrescoreFailed + c.CoverageUnknown + c.Other
 }
 
 // FailOpen counts fail-open keeps by cause. Safe for concurrent use; a nil
@@ -60,6 +73,8 @@ func (f *FailOpen) Note(cause string) {
 		f.c.LocationUnreadable++
 	case CausePrescoreFailed:
 		f.c.PrescoreFailed++
+	case CauseCoverageUnknown:
+		f.c.CoverageUnknown++
 	default:
 		f.c.Other++
 	}
