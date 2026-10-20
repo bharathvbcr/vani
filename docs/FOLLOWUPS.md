@@ -220,10 +220,20 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - **Cutoffs:** "likely" at 0.95 and "possible" at 0.88, measured on 106 labelled pairs with no
     false merge at "likely".
   - **Adapter:** the near-dup cosine adapter embeds the title too.
-  - **Merge order:** rank-relevance, then that branch, then the wiring described in its
-    `docs/SIMILARITY.md`.
-  - **Until it merges,** the Answers page says similar-wording grouping is unavailable, and
-    `NearDupOptions.Similarity` is nil.
+  - **Merged** on `claude/wonderful-hawking-3e840a`: rank-relevance, then that branch, then main,
+    then the wiring. `runOnce` passes `nearDupSimilarity` (`cmd/vani/semanticwire.go`) as
+    `NearDupOptions.Similarity`. With semantic matching off, a model that will not load, or a
+    build without `-tags tessl`, it is nil and the stage runs on shingles alone
+    (`neardupsim_test.go`). Until that branch reaches main, the Answers page says
+    similar-wording grouping is unavailable.
+  - **Open:** a slow cosine (a cold vector cache) spends the stage's 2 s deadline, so the stage
+    ends `Partial`, and the oldest postings' shingle decisions wait for a later run. The report
+    does not say whether the cut came during shingles or during a cosine. A separate cosine
+    budget inside `AnnotateNearDuplicates` would keep the shingle pass whole.
+  - **Open:** a daily run loads the model up to three times: near-dup, the warm before the advance
+    phase, and the warm before the digest. Each load takes 1-2.5 s.
+  - **Open:** the cosine only reads pairs the shingles already found (overlap at least 0.60). A
+    reworded re-post under that overlap gets no annotation.
 - **Near-dup audit** (build/rsi-bench-state ledger copy, 2,639 live records):
   - Before the fix, 70 shingle Duplicates were written, 43 of them with different raw titles.
     Most were different jobs on one templated JD:

@@ -81,59 +81,21 @@ reading as `dup.cosine`; no status depends on it. `a` and `b` are
 title (a description two postings carry under different titles is ambiguous and gets none; an
 unknown one is embedded without a title). Both are `NearDupOptions.Similarity`-shaped.
 
-### Constructing it in `cmd/vani/wire.go` (after this branch and the near-dup stage are merged)
+### How the daily run wires it
 
-Config: `semantic.snapshot` and `kb.bank` must both be set (config validation requires the pair),
-and the binary must be built with `-tags tessl` (see README, "Knowledge-base matching").
+`runOnce` (`cmd/vani/wire.go`) runs the stage through `annotateNearDups`. That function takes the
+option from `nearDupSimilarity` (`cmd/vani/semanticwire.go`), and the option is
+`semantic.NewTitledSimilarity`. Its `TitleIndex` is filled from the ledger with the same
+`srcutil.SourceText` the stage compares. The function then calls `finish`, which saves the vector
+cache once and closes the model, whatever the stage returned.
 
-```go
-// nearDupSimilarity returns the stage's Similarity option and a finish func.
-// With no snapshot, an unloadable model or an unusable cache it returns a nil
-// option: the stage then runs on shingles alone (NearDupReport.SimilarityConfigured
-// is false and no dup.cosine annotation is written).
-func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context, string, string) (float64, bool, error), finish func()) {
-	finish = func() {}
-	if w.cfg.Semantic.Snapshot == "" {
-		return nil, finish
-	}
-	emb, closeEmb, err := openEmbedder(ctx, w.cfg) // semanticwire.go; ErrUnavailable without -tags tessl
-	if err != nil {
-		w.warnf("near-duplicate cosine off: %s", oneLine(err.Error(), 200))
-		return nil, finish
-	}
-	dir := semanticDir(w.stateDir)
-	cache, err := semantic.OpenVectorCache(dir, 0)
-	if errors.Is(err, semantic.ErrCache) { // a cache holds nothing the model cannot recompute
-		if semantic.ResetVectorCache(dir) == nil {
-			cache, err = semantic.OpenVectorCache(dir, 0)
-		}
-	}
-	if err != nil {
-		cache = nil // no caching this run; the cosine still works
-		w.warnf("near-duplicate vector cache off: %s", oneLine(err.Error(), 200))
-	}
-	titles := semantic.NewTitleIndex()
-	for _, r := range w.led.All() {
-		titles.Add(r.Posting.Title, srcutil.SourceText(r.Posting.Description)) // the same text the stage compares
-	}
-	return semantic.NewTitledSimilarity(emb, cache, titles), func() {
-		if cache != nil {
-			if err := cache.Save(); err != nil {
-				w.warnf("near-duplicate vector cache not saved: %s", oneLine(err.Error(), 200))
-			}
-		}
-		_ = closeEmb()
-	}
-}
-```
-
-and at the existing call (`wire.go`, `pipeline.AnnotateNearDuplicates(... NearDupOptions{Protected: protect})`):
-
-```go
-sim, finish := w.nearDupSimilarity(ctx)
-nd, err := pipeline.AnnotateNearDuplicates(ctx, w.led, time.Now(), pipeline.NearDupOptions{Protected: protect, Similarity: sim})
-finish() // saves the vector cache once; never inside the stage
-```
+The cosine runs only when `semantic.snapshot` and `kb.bank` are both set (`SemanticOn`) and the
+binary is built with `-tags tessl` (see README, "Knowledge-base matching"). Otherwise the option is
+nil. The stage then runs on shingles alone: `SimilarityConfigured:false` appears in the
+`near-duplicates:` warning line, and no `dup.cosine` is written. A model that fails to load within
+`nearDupLoadTimeout` (2 min) gets a `near-duplicate cosine off, shingles only` warning and nil as
+well, and the run carries on. An unreadable vector cache is rebuilt; if the rebuild also fails,
+the cosine runs uncached. `cmd/vani/neardupsim_test.go` covers each of these cases.
 
 What to expect: the model loads once per run (1-2.5 s, outside the stage's 2 s deadline); a cold
 cache embeds inside that deadline, so many new candidate pairs can end the stage `Partial` and show
