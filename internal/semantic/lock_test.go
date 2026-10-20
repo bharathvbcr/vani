@@ -133,6 +133,31 @@ func TestWarmLockWaitHonorsContext(t *testing.T) {
 	}
 }
 
+func TestStaleScores(t *testing.T) {
+	if n, err := StaleScores(synthProfile(t), filepath.Join(t.TempDir(), "none")); err != nil || n != 0 {
+		t.Errorf("missing cache: %d, %v", n, err)
+	}
+	m, dir := newMatcher(t, newSpy())
+	mustWarm(t, m, k8sDoc(), pastryDoc())
+	if n, err := StaleScores(synthProfile(t), dir); err != nil || n != 0 {
+		t.Errorf("same profile: %d, %v", n, err)
+	}
+	other := synthProfile(t)
+	other.Chunks = other.Chunks[1:]
+	if other.Hash() == synthProfile(t).Hash() {
+		t.Fatal("dropping a chunk must change the profile hash")
+	}
+	if n, err := StaleScores(other, dir); err != nil || n != 2 {
+		t.Errorf("other profile: %d, %v, want 2", n, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, scoresFileName), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StaleScores(other, dir); !errors.Is(err, ErrCache) {
+		t.Errorf("malformed cache: %v, want ErrCache", err)
+	}
+}
+
 func TestOpenLookupForModelPrefix(t *testing.T) {
 	s := newSpy()
 	m, dir := newMatcher(t, s)

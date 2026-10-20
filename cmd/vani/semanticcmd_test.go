@@ -349,8 +349,35 @@ func TestSemanticStatus(t *testing.T) {
 	}
 	mustCode(t, 0, "semantic", "warm")
 	o, _ = mustCode(t, 0, "semantic", "status")
-	if !strings.Contains(o, "cached scores: 1") || !strings.Contains(o, "fake-bow") {
+	if !strings.Contains(o, "cached scores: 1") || !strings.Contains(o, "fake-bow") || strings.Contains(o, "earlier profile") {
 		t.Errorf("status after warm:\n%s", o)
+	}
+}
+
+// Scores warmed for an earlier profile are not this profile's, so status shows
+// none usable, and says the cache is stale rather than looking never warmed.
+func TestSemanticStatusStaleProfile(t *testing.T) {
+	cfgPath, state := semanticSetup(t)
+	seedInsight(t, state, insightSeed{key: "gh:a:1", company: "Acme", title: "Infra Engineer", status: posting.Explained,
+		desc: "Run k8s", posted: daysAgo(2), seenAgo: time.Hour})
+	mustCode(t, 0, "semantic", "warm")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.TargetSummary = "Staff data engineer building streaming pipelines"
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	o, _ := mustCode(t, 0, "semantic", "status")
+	for _, want := range []string{"cached scores: 0", "warning: 1 cached score is for an earlier profile", "run `vani semantic warm`"} {
+		if !strings.Contains(o, want) {
+			t.Errorf("status missing %q:\n%s", want, o)
+		}
+	}
+	mustCode(t, 0, "semantic", "warm")
+	if o, _ := mustCode(t, 0, "semantic", "status"); !strings.Contains(o, "cached scores: 1") || strings.Contains(o, "earlier profile") {
+		t.Errorf("status after rewarm:\n%s", o)
 	}
 }
 
