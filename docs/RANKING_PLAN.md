@@ -20,8 +20,7 @@ not re-read here; the repo carries no copy of it.
 | 5 Weight fit | **open** (needs ≥150 labels) | — |
 | 6 Lappi v2 | nothing to build until Lappi is served | — |
 
-Findings N1–N10 and D1–D11 of the later audit are not recorded in this repository. Their rows belong
-here once the owner supplies that list; none is guessed.
+Findings N1 to N10 and D1 to D11 of the later audit, and the advance-caller differences, are below.
 
 ## Summary
 
@@ -72,6 +71,45 @@ at p≥0.9 (or Lappi) can drop a posting.
 | F4 | Notes ran for every survivor. Now gated on the age-free relevance: floor 32 (the integrated ranking's p78 of the live ledger, `7716b4d`), its own daily cap `funnel.notes_daily_usd`. `advance_per_run`: owner decision 750 (the code default is 300). | **done** |
 | F5 | Fail-open keeps were not counted. Counters per cause (`602cdaf`), named in the digest footer (`9efed0d`); the exclusion stage counts a posting a location rule could not read as `location_unreadable`; the inbox poll fills the same report (`966c0db`). | **done** |
 | F6 | Drops had no recall measure. Now: the dropped stratum in the label queue and the weekly `vani audit`, `vani relevance` (precision with Wilson intervals, drop-candidate agreement per shadow), `decide.shadow_mode: drop_candidates`. Recall needs labels. | built; waiting on labels |
+
+## Ranking audit (N) and funnel audit (D)
+
+"Where" is a file or commit on this branch that I found; a row says "reported" where I could not find the code.
+
+| # | Finding | State | Where |
+|---|---|---|---|
+| N1 | Confidence interpolated a fit's value but never reduced its weight (62% of readings had p<0.5; a strong_fit at p=0.21 ranked #4). | done | confidence scales a part's weight, `internal/jobinsight/score.go` (`c56df41`) |
+| N2 | A kept mismatch_domain was penalised three times (fit part, gate, drop-rule penalty). | done | gate only: `Mismatch` and `PenaltyStrength` act on the gate, `score.go` (`c56df41`) |
+| N3 | Coverage exactly 0 on 22%: DevPrism's 0 of 0. | Vani side done; DevPrism fix open | `gap.coverage_unknown`, `vani rescore` repair (`a67bbae`, `e1238b3`), null accepted only with no must-haves (`internal/resume/tools.go`); DevPrism task `dp-gap-nice-only-must-haves` |
+| N4 | Digest tie-break by ATS key; the app's top roles tied by list order. | done | one Relevance, Priority, Key tie-break (`0cc2745`, `b4518a6`) |
+| N5 | The digest ignored the configured half-life. | done | digest options carry it (`0cc2745`, `7446092`; `Options.HalfLifeDays`) |
+| N5b | Keyword hits (weight 0.03) are absent in the digest. | open, minor | `digest.go` `sortDigest` comment: that part takes its prior for every role |
+| N6 | The company factor penalised a whole company for hides (to 0.67) and the 1.1 cap clipped. | done | upward-only from saves and applies, `CompanyMin` 1.0, `CompanyMax` 1.1, `score.go`, `inputs.go` |
+| N7 | Employer preference weight 0.05 is effectively a tie-break. | open | needs labels (Phase 4) |
+| N8 | The extension's separate "x% Match", good_fit label, crawler scoring location text. | done | Vani's row when available, a labelled estimate otherwise (`extension/src/jobrow.ts`), `rankListing` scores the title only (`relevance.ts`) |
+| N9 | Near-duplicates and company concentration in the top 100. | done | `Diversify`, at most 3 per company in the top 50, exact company and title folded with a similar count (`internal/jobinsight/order.go`) |
+| N10 | Notify does not use the score. | no action | — |
+| D1 | The llm fallback answers only unanswered slots and can never drop (F2). | by design | Haiku `llm.triage_model` set |
+| D2 | Notes ran for every scored posting. | done | relevance floor 32 and its own cap (`internal/config/funnel.go`, `7716b4d`, `b8bee70`) |
+| D3 | Semantic never gated paid calls; 750 warmed against 3000 advanced. | done | `advance_per_run` 750 in the live config (reported), semantic advance order, the tail reported as deferred |
+| D4 | DevPrism ran after triage; Gap and Score both. | done | DevPrism before triage, `funnel.score_after_triage` restores the old order; coverage is not a gate (`602cdaf`) |
+| D5 | No in-chain escalation or agreement. | measurement only | `decide.shadow_mode: drop_candidates` with the cloud Haiku shadow, the agreement report in `vani relevance` (`fa84e4b`); a rule change waits for labels |
+| D6 | A drop proceeds despite shadow disagreement. | open by decision | measure first; reported in `vani relevance` |
+| D7 | Low-p answers become Triaged, not Unsure. | by decision | handled in ranking by the confidence weight, not by status |
+| D8 | Fail-open keeps uncounted; no empty-description gate. | done | counters `empty_description`, `title_unread`, `location_unreadable`, `prescore_failed`, `coverage_unknown` (`internal/pipeline/failopen.go`), digest footer, inbox poll too (`966c0db`), `min_description_runes` 40 |
+| D9 | Near-duplicate siblings paid their own triage. | done | reading inheritance, `triage.inherited_from`, never across locations for a drop; eval and bench leave inherited readings out (`internal/pipeline/readcache.go`, `57b128a`) |
+| D10 | No triage-reading cache by content. | done | cache on (desc_hash, title, location, model), `readcache.go` |
+| D11 | Notes and triage shared one cap. | done | `budget/jev-notes.json` beside `budget/jev.json` (`funnelwire.go`) |
+
+### Advance-caller differences (`advancePlan`, `cmd/vani/runwire.go`)
+
+| # | Difference | State | `AdvancePlan` field |
+|---|---|---|---|
+| 1 | The inbox poll ignores the tuned cap override. | deliberate | `Limit` (run: the override, else `advance_per_run`; inbox: `advance_per_run`) |
+| 2 | The inbox poll skips the semantic order and warm. | deliberate (user-submitted, arrival order) | `Order` (run: title rank then semantic; inbox: title rank) |
+| 3 | The inbox poll dropped the funnel and fail-open counts and shadow warnings. | fixed (`966c0db`) | `FillFunnel` true for run and inbox |
+| 4 | Rescore sorts by freshness only. | deliberate | `Select` and `QuietCap`, with its own order |
+| 5 | `--list-only` skips the advance phase only in the run. | deliberate | `Skip` (run only) |
 
 ## Target architecture until Lappi v2: a cost-ordered cascade
 

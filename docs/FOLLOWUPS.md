@@ -76,8 +76,6 @@ The ranking and filtering audit and its status per finding are in
   means asking Vani to score a page it has not ingested, which is a contract change.
 - **`internal/decide/kbmatch/jev.go`** holds the option descriptions and could be renamed
   `descriptions.go` the next time that package is touched.
-- **Findings N1–N10 and D1–D11** of the later audit are not recorded in this repository. Add them
-  to RANKING_PLAN.md from the owner's copy.
 
 ## Needs the owner's go-ahead
 
