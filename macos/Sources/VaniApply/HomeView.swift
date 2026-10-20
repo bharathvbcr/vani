@@ -152,11 +152,14 @@ struct HomeView: View {
     }
 }
 
-private func healthColor(_ h: PipelineHealth) -> Color {
-    switch h {
-    case .healthy: .green
-    case .warning: .orange
-    case .problem: .red
+extension PipelineHealth {
+    /// The tint Home and Pipeline show this health in.
+    var tint: Color {
+        switch self {
+        case .healthy: .green
+        case .warning: .orange
+        case .problem: .red
+        }
     }
 }
 
@@ -493,7 +496,7 @@ private struct PipelineCard: View {
                 let health = s.health(at: now)
                 let issues = s.issues(at: now)
                 HStack(spacing: 8) {
-                    Image(systemName: HomeOverview.healthSymbol(health)).foregroundStyle(healthColor(health)).font(.title2)
+                    Image(systemName: HomeOverview.healthSymbol(health)).foregroundStyle(health.tint).font(.title2)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(HomeOverview.healthTitle(health)).font(.title3.weight(.semibold))
                         Text(HomeOverview.runHeadline(s.lastRun, now: now)).font(.callout).foregroundStyle(.secondary)
