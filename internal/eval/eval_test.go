@@ -2,7 +2,6 @@ package eval
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -366,17 +365,17 @@ func TestReportMath(t *testing.T) {
 	if wm == nil || wm.Backend != "jev" || wm.Labeled != 4 || wm.Answered != 3 || wm.Correct != 2 {
 		t.Fatalf("work_mode cell: %+v", wm)
 	}
-	if p, ok := wm.Precision(); !ok || math.Abs(p-2.0/3) > 1e-9 {
-		t.Errorf("precision %v %v", p, ok)
+	if p := pct(wm.Correct, wm.Answered); p != "66.7% (2/3)" {
+		t.Errorf("precision %q", p)
 	}
-	if c, ok := wm.Coverage(); !ok || c != 0.75 {
-		t.Errorf("coverage %v %v", c, ok)
+	if c := pct(wm.Answered, wm.Labeled); c != "75.0% (3/4)" {
+		t.Errorf("coverage %q", c)
 	}
 	if sp == nil || sp.Labeled != 1 || sp.Answered != 0 {
 		t.Fatalf("sponsorship cell: %+v", sp)
 	}
-	if _, ok := sp.Precision(); ok {
-		t.Error("precision over zero answered must be not-ok")
+	if p := pct(sp.Correct, sp.Answered); p != "n/a (0/0)" {
+		t.Errorf("precision over zero answered must be n/a, got %q", p)
 	}
 
 	// Threshold table: answered/correct at each cut, coverage over the 4 labeled.

@@ -28,12 +28,6 @@ type Cell struct {
 	Correct  int // of those, value equals the label
 }
 
-// Precision is Correct/Answered; ok is false when nothing was answered.
-func (c Cell) Precision() (float64, bool) { return ratio(c.Correct, c.Answered) }
-
-// Coverage is Answered/Labeled; ok is false when nothing was labeled.
-func (c Cell) Coverage() (float64, bool) { return ratio(c.Answered, c.Labeled) }
-
 // ThresholdRow is the OpenRouter model's precision among answers with p >= P for one slot.
 type ThresholdRow struct {
 	P        float64
@@ -41,9 +35,6 @@ type ThresholdRow struct {
 	Answered int // answered with p >= P
 	Correct  int
 }
-
-func (t ThresholdRow) Precision() (float64, bool) { return ratio(t.Correct, t.Answered) }
-func (t ThresholdRow) Coverage() (float64, bool)  { return ratio(t.Answered, t.Labeled) }
 
 // Threshold is one slot's OpenRouter precision-at-threshold table.
 type Threshold struct {
@@ -65,11 +56,6 @@ type ShadowRow struct {
 	Disagree       int
 	PrimaryRight   int // among Disagree, primary equals the label
 	ShadowRight    int // among Disagree, shadow equals the label
-}
-
-func (s ShadowRow) Precision() (float64, bool) { return ratio(s.ShadowCorrect, s.ShadowAnswered) }
-func (s ShadowRow) AgreementRate() (float64, bool) {
-	return ratio(s.Agree, s.BothAnswered)
 }
 
 // MinPromotionLabels is the fewest labeled postings a shadow must have been

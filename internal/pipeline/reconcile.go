@@ -19,7 +19,8 @@ import (
 
 const (
 	// DescHashKey holds the description hash of the stored posting version.
-	DescHashKey = "desc_hash"
+	// The key itself is the ledger contract's.
+	DescHashKey = ledger.AnnDescHash
 	// DuplicateOfKey names the ATS-keyed record a fallback-keyed posting repeats.
 	DuplicateOfKey = "duplicate_of"
 	// DiedFromKey holds the status a posting had when absence killed it, so
