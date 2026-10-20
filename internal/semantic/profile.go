@@ -27,16 +27,23 @@ type Profile struct {
 	Truncated bool
 }
 
+// DefaultTarget is the target when the config states none: the roles the
+// career.jd_triage question compares a posting with when no target is stated
+// (internal/decide/jdtriage/fixture.json; a test keeps the two in step).
+const DefaultTarget = "early-career software, ML or systems engineering roles"
+
 // ProfileFromBank builds a Profile. Order is deterministic: skills first, then
 // each entry (sorted by id) as its title followed by its bullets, so a bank over
 // the chunk cap loses the tail of the last entries, not the skills. Duplicate
 // texts (compared ignoring case) are dropped; markdown, URLs, e-mail addresses
-// and {{clm...}} claim tokens are removed from bullet text. An empty bank or an
-// empty target is an error: the target is the calibration ceiling.
+// and {{clm...}} claim tokens are removed from bullet text. An empty bank is an
+// error. An empty target summary falls back to DefaultTarget, the comparison
+// the decision model makes when none is stated, so the calibration ceiling
+// still exists and semantic matching is not silently off.
 func ProfileFromBank(b kbsync.Bank, targetSummary string) (Profile, error) {
 	target := truncBytes(tidy(kbsync.PlainText(targetSummary)), MaxProfileChunkBytes)
 	if target == "" {
-		return Profile{}, fmt.Errorf("%w: the target summary is empty", ErrEmpty)
+		target = DefaultTarget
 	}
 	p := Profile{Target: target}
 	seen := map[string]bool{}

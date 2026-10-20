@@ -162,8 +162,10 @@ func TestProfileEmptyAndBad(t *testing.T) {
 		t.Errorf("empty bank: %v", err)
 	}
 	b, _ := kbsync.Parse([]byte(synthBank))
-	if _, err := ProfileFromBank(b, "  "); !errors.Is(err, ErrEmpty) {
-		t.Errorf("empty target: %v", err)
+	// An empty target falls back to the decision model's default comparison,
+	// so semantic matching is not silently off for a config with none.
+	if p, err := ProfileFromBank(b, "  "); err != nil || p.Target != DefaultTarget {
+		t.Errorf("empty target: profile target %q, err %v; want DefaultTarget", p.Target, err)
 	}
 	for name, raw := range map[string]string{
 		"malformed":      `{"entries": `,
