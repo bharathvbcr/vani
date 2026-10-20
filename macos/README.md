@@ -177,6 +177,40 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      10 minutes.
    - It accepts XPC connections only from code signed by team `HAUHVD8M37`, so another process
      running as you cannot spend your model budget through it.
+7. **Run notifications.**
+   - While the app runs, with or without its window open, it announces each finished daily run once
+     as a Vani Apply notification. Clicking one opens the app on the Jobs tab.
+   - It reads the run from `vani status --json` (`last_run`), the same read the Pipeline tab makes
+     every 60 seconds. It never reads Vani's state folder itself.
+   - The app asks for notification permission at first launch, and only while you have not
+     answered. Change the answer later in System Settings ▸ Notifications ▸ Vani Apply.
+   - The wording is the daemon's fixed vocabulary (`cmd/vani/runnotice.go`). A run that ended
+     `ok` and digested roles posts **Vani digest**: "N roles to review", plus how many postings
+     could not be read or scored. A `failed` run posts **Vani run failed**, and the body is chosen
+     by the stop reason (`unread_streak`/`none_read`, `fail_streak`/`none_advanced`), then by the
+     stage (`pipeline`, else digest). The run's error text, which can carry fetched URLs or page
+     content, never appears in a notification, and neither does anything personal.
+   - The digest's size is the run's own change in the ledger's `digested` count
+     (`counts_after` minus `counts_before`). A run that digested nothing posts nothing.
+   - **Posts nothing:** a run that is still going, cancelled, interrupted, in a state this app does
+     not know, or one that finished more than 36 hours ago (the app opened days later). It also
+     posts nothing when no run is recorded, when the record could not be read (corrupt, wrong
+     version), or when `vani status` fails. The announcer keeps the reason (`RunAnnouncer.lastSkip`).
+   - **Once per run.** A run is keyed on its start time. The last key announced is stored in the
+     app's defaults (`lastAnnouncedRun`) *before* the notice is posted, so a relaunch or a re-read
+     never repeats it. A crash at that moment loses one notice rather than posting it twice.
+   - A day's notices share a thread (`vani-run-YYYY-MM-DD`, the run's local finish day), so they
+     group together in Notification Center.
+   - **What the app cannot tell apart.** The daemon's notice also names a fatal ledger error
+     ("Vani stopped"), a digest held back because the Jobs marks could not be read, and a config
+     that could not be re-read. The run record carries no field for these: they show only in the
+     error text, which the app does not read. The app shows them as the stage's default ("The
+     pipeline stopped before the digest." or "The digest could not be finished."). Telling them
+     apart needs a cause code in the run record.
+   - **The daemon still notifies as well.** The daemon's own osascript notices
+     (`internal/notify`) are unchanged. macOS attributes them to Script Editor, and clicking one
+     opens Script Editor. While both are on, a run can show twice: once from Script Editor and once
+     from Vani Apply. Which one should remain has not been decided.
 
 ## Claude drafting: what is sent and where the key comes from
 
@@ -246,7 +280,13 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - The appex is sandboxed and every piece carries the App Group entitlement.
   - The appex's `LC_MAIN` entry is the `_NSExtensionMain` stub, and its principal class is
     `SafariWebExtensionHandler`.
+  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage
+    and stop reason maps to a notice, and that error text stays out. They also cover missing,
+    corrupt and unreadable records, and that a run is announced once, including across a
+    relaunch.
 - **Not verified here:**
+  - A notification shown by the bundled app, its permission prompt, and a click opening the Jobs
+    tab. `UNUserNotificationCenter` needs a signed app bundle, which `swift test` does not run.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.

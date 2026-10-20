@@ -20,6 +20,8 @@ final class AppModel {
     /// The last failed action, shown as an alert.
     var actionError: String?
     var notice: String?
+    /// The sidebar's selection; a notification click sets it to Jobs.
+    var pane: Pane? = .jobs
 
     private(set) var safariEnabled: Bool?
     private(set) var safariStateError: String?
