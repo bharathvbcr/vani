@@ -197,7 +197,8 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      to `live` when their description changed. Such a run shows too few roles, or posts nothing
      on a day that did produce a digest. An exact count needs the digest's size in the run record.
    - **Posts nothing:** a run that is still going, cancelled, interrupted, in a state this app does
-     not know, or one that finished more than 36 hours ago (the app opened days later). It also
+     not know, or one that finished more than 36 hours ago (a backstop; the lock cutoff below
+     already leaves earlier runs to the daemon). It also
      posts nothing when no run is recorded, when the record could not be read (corrupt, wrong
      version), or when `vani status` fails. The announcer keeps the reason (`RunAnnouncer.lastSkip`).
    - **Once per run.** A run is keyed on its start time. The last key announced is stored in the
@@ -222,7 +223,8 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      Editor. The lock belongs to the app's open file, so it goes when the app quits or crashes: a
      stale lock file cannot silence the daemon. A lock the daemon cannot check (an unreadable
      file, a lock error) counts as not held, so the daemon posts. A duplicate is better than
-     silence.
+     silence. The app's Settings (config and state paths) must point at the state folder that the
+     launchd daemon uses. Otherwise the lock is in a folder the daemon never checks, and both post.
    - The app announces a run only if the run finished after the app took the lock (its first
      status read). A run that finished earlier was the daemon's to announce, so the app stays quiet
      about it. If the app cannot take the lock (another copy holds it, or there is no state folder),
