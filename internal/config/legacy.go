@@ -184,6 +184,30 @@ func (r *DropRule) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// legacyKBMatchBackend is the kbmatch.backend value before 2026-10-20.
+const legacyKBMatchBackend = "jev"
+
+// NormalizeKBMatchBackend reads the old kbmatch backend "jev" as
+// KBMatchOpenRouter and returns every other value unchanged.
+func NormalizeKBMatchBackend(b string) string {
+	if b == legacyKBMatchBackend {
+		return KBMatchOpenRouter
+	}
+	return b
+}
+
+// UnmarshalJSON reads KBMatch, accepting the old backend "jev".
+func (k *KBMatch) UnmarshalJSON(data []byte) error {
+	type plain KBMatch // no methods, so no recursion
+	var w plain
+	if err := strictDecode(data, &w); err != nil {
+		return err
+	}
+	w.Backend = NormalizeKBMatchBackend(w.Backend)
+	*k = KBMatch(w)
+	return nil
+}
+
 // Deprecations lists, in file order of sections, the old key names a config
 // document uses, each with its replacement. It reads only those keys and
 // reports nothing for a document it cannot read (Parse reports that).
@@ -200,6 +224,9 @@ func Deprecations(data []byte) []string {
 		DropRules []struct {
 			MinProb json.RawMessage `json:"min_jev_prob"`
 		} `json:"drop_rules"`
+		KBMatch *struct {
+			Backend *string `json:"backend"`
+		} `json:"kbmatch"`
 	}
 	if json.Unmarshal(data, &p) != nil {
 		return nil
@@ -218,6 +245,9 @@ func Deprecations(data []byte) []string {
 		if d.Shadow != nil && *d.Shadow == legacyShadowValue {
 			out = append(out, `decide.shadow "jev" is now "openrouter"`)
 		}
+	}
+	if k := p.KBMatch; k != nil && k.Backend != nil && *k.Backend == legacyKBMatchBackend {
+		out = append(out, `kbmatch.backend "jev" is now "openrouter"`)
 	}
 	n := 0
 	for _, r := range p.DropRules {

@@ -364,7 +364,7 @@ type Local struct {
 	Server    *LocalServer `json:"server,omitempty"`
 	Model     string       `json:"model"`
 	TimeoutMS int          `json:"timeout_ms,omitempty"` // zero means 20 s
-	// Questions is "combined" (default: the one question Jev gets, so the eval
+	// Questions is "combined" (default: the one question Liquid D gets, so the eval
 	// compares models on identical requests) or "per_slot" (each slot asked
 	// its own fixture family question, as Lappi is). Which suits a given
 	// model is what `vani eval` measures.
@@ -426,15 +426,15 @@ const MaxModelName = 128
 const (
 	// KBMatchLLM asks the Manvi llm provider (llm.provider).
 	KBMatchLLM = "llm"
-	// KBMatchJev asks the decision model (decide.openrouter_model) over
+	// KBMatchOpenRouter asks the decision model (decide.openrouter_model) over
 	// OpenRouter, from the OpenRouter daily cap.
-	KBMatchJev = "jev"
+	KBMatchOpenRouter = "openrouter"
 )
 
 // KBMatch configures `vani kbmatch`. The zero value asks the llm on
 // llm.triage_model, else llm.model.
 type KBMatch struct {
-	// Backend is KBMatchLLM (the default) or KBMatchJev.
+	// Backend is KBMatchLLM (the default) or KBMatchOpenRouter.
 	Backend string `json:"backend,omitempty"`
 	// Model is the llm model that answers when Backend is KBMatchLLM. Empty means
 	// llm.triage_model, else llm.model. It is separate from llm.triage_model so a
@@ -585,10 +585,13 @@ func Default() Config {
 		AllowedHosts: []string{hostOpenRouter},
 		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
 		Decide: Decide{
-			OpenRouterModel:  "typesafe/jev-1.13",
+			OpenRouterModel:  "liquid/d1-ultra",
 			OpenRouterKeyEnv: "OPENROUTER_API_KEY",
 			DailyUSD:         DailyUSD{OpenRouter: 0.25, LLM: 1.0},
 		},
+		// The llm tier is seeded because `vani draft` and the keyless test
+		// fixtures need a provider; it is the drafting/escalation backend, not
+		// the triage decision model.
 		LLM: LLM{Provider: "gemini", Model: "gemini-3.8-flash"},
 		// Empty until Phase 0 confirms the installed DevPrism answers --mcp
 		// without migrating career.db; scoring is skipped while it is empty.
@@ -1228,15 +1231,15 @@ func (c Config) Validate() error {
 				add("kbmatch.model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
 			}
 		}
-	case KBMatchJev:
+	case KBMatchOpenRouter:
 		if !c.OpenRouterConfigured() {
-			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchJev)
+			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchOpenRouter)
 		}
 		if c.KBMatch.Model != "" {
 			add("kbmatch.model applies to the %q backend only", KBMatchLLM)
 		}
 	default:
-		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchJev)
+		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchOpenRouter)
 	}
 	if e := c.Decide.Escalate; e != nil {
 		if e.BelowP != nil && (math.IsNaN(*e.BelowP) || *e.BelowP <= 0 || *e.BelowP > 1) {

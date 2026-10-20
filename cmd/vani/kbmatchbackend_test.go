@@ -101,14 +101,14 @@ func TestKBMatchFlagsAreChecked(t *testing.T) {
 	if code, _, _ := do(t, "kbmatch", "run", "--dry-run", "--backend", "gpt"); code != exitUsage {
 		t.Errorf("--backend gpt: exit %d, want usage", code)
 	}
-	if code, _, e := do(t, "kbmatch", "run", "--dry-run", "--backend", "jev"); code != exitRuntime || !strings.Contains(e, "decide.openrouter_model") {
-		t.Errorf("--backend jev without openrouter: exit %d, %s", code, e)
+	if code, _, e := do(t, "kbmatch", "run", "--dry-run", "--backend", "openrouter"); code != exitRuntime || !strings.Contains(e, "decide.openrouter_model") {
+		t.Errorf("--backend openrouter without openrouter: exit %d, %s", code, e)
 	}
 	k.cfg.LLM = config.LLM{}
 	k.cfg.Decide.DailyUSD.LLM = 0
 	k.save(t)
-	if code, _, e := do(t, "kbmatch", "run", "--dry-run"); code != exitRuntime || !strings.Contains(e, "--backend jev") {
-		t.Errorf("no llm: exit %d, %s (should point at --backend jev)", code, e)
+	if code, _, e := do(t, "kbmatch", "run", "--dry-run"); code != exitRuntime || !strings.Contains(e, "--backend openrouter") {
+		t.Errorf("no llm: exit %d, %s (should point at --backend openrouter)", code, e)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestKBMatchAsksTheDecisionModel(t *testing.T) {
 	k.cfg.Decide.DailyUSD.LLM = 0
 	k.cfg.Decide.OpenRouterModel = "liquid/d1-ultra"
 	k.cfg.Decide.DailyUSD.OpenRouter = 5
-	k.cfg.KBMatch.Backend = config.KBMatchJev
+	k.cfg.KBMatch.Backend = config.KBMatchOpenRouter
 	k.save(t)
 
 	var bodies [][]byte
@@ -188,7 +188,7 @@ func TestKBMatchAsksTheDecisionModel(t *testing.T) {
 		}
 		if e, ok := st.Lookup(key, digest.SHA256, kbmatch.TextSHA256(recs[key], summary, digest)); ok {
 			snapAnswers++
-			if e.Backend != "jev" || e.Model != "liquid/d1-ultra" || e.P != 0.9 || e.Mode != kbmatch.ModeFull {
+			if e.Backend != "openrouter" || e.Model != "liquid/d1-ultra" || e.P != 0.9 || e.Mode != kbmatch.ModeFull {
 				t.Errorf("%s: entry %+v", key, e)
 			}
 		}

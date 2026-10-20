@@ -27,7 +27,7 @@ const (
 	// DefaultNotesDailyUSD is the notes' own daily cap, separate from
 	// decide.daily_usd.openrouter so notes can never starve triage; spent, notes
 	// wait for the next UTC day. Measured 2026-10-20 from the live ledger and
-	// budget/jev.json: all OpenRouter calls cost about $0.00011 each (10-19:
+	// budget/openrouter.json: all OpenRouter calls cost about $0.00011 each (10-19:
 	// $0.495 over 4654 triage+notes calls; 10-20: $0.161 over 1342); the cost
 	// is recorded per day, not per call, so notes alone are unmeasured. The
 	// peak day wrote 1864 notes ungated; gated at the floor that is about 400,

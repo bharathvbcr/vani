@@ -23,14 +23,6 @@ import (
 	"github.com/bharathvbcr/decide/lappi"
 )
 
-// The OpenRouter model's daily cap lives in <state dir>/budget/jev.json under
-// spend key "jev": the names it had before the backend was named after its
-// model. Keeping them carries a day's spend across the rename.
-const (
-	openRouterBudgetFile = "jev.json"
-	openRouterSpendKey   = "jev"
-)
-
 // openRouterName is the configured OpenRouter model's backend name, or ""
 // when none is configured (then no backend drops on a probability).
 func (w *wired) openRouterName() string {
@@ -69,6 +61,12 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 	led, err := ledger.Open(filepath.Join(stateDir, "ledger"))
 	if err != nil {
 		return nil, fmt.Errorf("ledger: %w", err)
+	}
+	// Under the ledger lock, so a daemon start renames the pre-2026-10-20
+	// jev*.json budget files before any run opens them.
+	if err := migrateBudgetFiles(stateDir); err != nil {
+		_ = led.Close()
+		return nil, err
 	}
 	if warn == nil {
 		warn = io.Discard
@@ -219,13 +217,13 @@ func localBackendNamed(l *config.Local, endpoint, name string) (decide.Backend, 
 func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, error) {
 	var backends []decide.Backend
 	// One cap for every OpenRouter client this run (triage and notes): two
-	// DailyCaps on one file would each lock only themselves. The file and its
-	// spend key keep their pre-rename name "jev" (jev.Config's default
+	// DailyCaps on one file would each lock only themselves. The spend key keeps its
+	// pre-rename name "jev" (jev.Config's default
 	// SpendKey), so renaming the backend did not reset a day's spend.
 	var spend *decide.DailyCap
 	if w.cfg.OpenRouterConfigured() {
 		var err error
-		spend, err = decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
+		spend, err = newBudgetCap(w.stateDir, openRouterBudgetFile, w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
 			return nil, fmt.Errorf("openrouter budget: %w", err)
 		}

@@ -22,7 +22,7 @@ type Slot struct {
 	Value string
 	// Answered is true when the reading was decide.Answered.
 	Answered bool
-	// P is Jev's calibrated probability of Value, when HasP.
+	// P is Liquid D's calibrated probability of Value, when HasP.
 	P    float64
 	HasP bool
 	// Disagree is true when the shadow backend answered a different value.
@@ -182,7 +182,7 @@ type Weights struct {
 	KBMatch float64
 	// UnknownPrior is the value an unknown additive component takes.
 	UnknownPrior float64
-	// AnsweredConf is the confidence of an answered reading with no Jev p.
+	// AnsweredConf is the confidence of an answered reading with no Liquid D p.
 	AnsweredConf float64
 	// DisagreeConf multiplies a reading's confidence when the shadow
 	// backend disagreed, unless that shadow was ShadowEscalate.
