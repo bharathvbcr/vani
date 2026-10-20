@@ -43,8 +43,14 @@ func Unscored(r ledger.Record) bool {
 // that as a measured zero. A genuine zero has every must-have missing or weak,
 // and gap.missing lists those, so it is never matched. Already-marked records
 // are not matched, which makes the repair idempotent.
+//
+// Unlike Unscored it does not need a rescorable status: Digested postings are
+// the ranked, shown ones and carry the stale reading too. The repair keeps the
+// status, so no consumer sees a transition. Dead and Dropped are excluded
+// because the daily footer counts them by last-event day (countsFor), and a
+// repair event would add them to today's count; neither is ranked or shown.
 func ZeroOfZero(r ledger.Record) bool {
-	if !rescorable[r.Status] || r.Annotations[AnnCoverageUnknown] != "" {
+	if r.Status == posting.Dead || r.Status == posting.Dropped || r.Annotations[AnnCoverageUnknown] != "" {
 		return false
 	}
 	cov, err := strconv.ParseFloat(strings.TrimSpace(r.Annotations[ledger.AnnCoverage]), 64)
