@@ -54,6 +54,13 @@ const (
 	NearDupMaxCandidates = 50
 	// NearDupDeadline bounds the whole stage.
 	NearDupDeadline = 2 * time.Second
+	// NearDupSimilarityShare is the share of the stage's deadline the optional
+	// similarity may spend, all its readings together: the shingle pass always
+	// keeps the rest.
+	NearDupSimilarityShare = 0.5
+	// NearDupSimilarityBreaker is how many similarity errors in a row stop the
+	// readings for the rest of the stage.
+	NearDupSimilarityBreaker = 3
 
 	maxLooseTitleBytes   = 512
 	maxLooseCompanyBytes = 256
@@ -68,6 +75,12 @@ type NearDupOptions struct {
 	// cosine over the two descriptions). It only annotates (AnnDupCosine): no
 	// status depends on it. Nil means not configured, and the report says so. An
 	// error or ok=false leaves the pair without a reading and is counted.
+	//
+	// Its readings have their own budget, NearDupSimilarityShare of the
+	// deadline, which each call's ctx carries. Once the budget is spent, or
+	// NearDupSimilarityBreaker errors come in a row, the remaining pairs are not
+	// read (SimilaritySkipped) and the shingle pass goes on. A Similarity that
+	// ignores ctx can still outrun the stage's deadline.
 	Similarity func(ctx context.Context, a, b string) (cos float64, ok bool, err error)
 	// Deadline bounds the stage; zero is NearDupDeadline, and a negative value
 	// is an already-expired deadline (for tests).
@@ -90,9 +103,20 @@ type NearDupReport struct {
 	// Partial means the deadline cut the stage short: the postings after
 	// Examined were not looked at and keep whatever annotations they had.
 	Partial bool
+	// PartialInSimilarity means the deadline that cut the stage ran out during
+	// a similarity reading; otherwise a Partial cut came in the shingle pass.
+	PartialInSimilarity bool
 	// SimilarityConfigured is false when no Similarity was supplied.
 	SimilarityConfigured bool
-	SimilarityErrors     int
+	// SimilarityErrors counts readings that failed or had no data.
+	SimilarityErrors int
+	// SimilaritySkipped counts candidate pairs left without a reading because
+	// the similarity's budget ran out (SimilarityBudgetSpent) or its breaker
+	// opened (SimilarityBreakerOpen); a reading the budget cut off mid-way is
+	// one of them. Their statuses and shingle annotations are decided as usual.
+	SimilaritySkipped     int
+	SimilarityBudgetSpent bool
+	SimilarityBreakerOpen bool
 }
 
 // legalSuffixes are dropped from the end of a company name.
@@ -278,7 +302,8 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 	// postings, whose pairs have had the most runs to be annotated. The
 	// outcomes are the ones a pass from oldest to newest would reach.
 	d := &nearDup{recs: recs, index: index, opt: opt, now: now, sctx: sctx, rep: &rep,
-		out: make([]*nearDupOutcome, len(recs))}
+		out:       make([]*nearDupOutcome, len(recs)),
+		simBudget: time.Duration(float64(deadline) * NearDupSimilarityShare)}
 	for i := len(recs) - 1; i >= 0; i-- {
 		if !d.decide(i) {
 			break
@@ -289,6 +314,7 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 			return rep, err
 		}
 		rep.Partial = true
+		rep.PartialInSimilarity = d.simOverran
 	}
 	for _, o := range d.out {
 		if o != nil {
@@ -328,6 +354,12 @@ type nearDup struct {
 	rep   *NearDupReport
 	out   []*nearDupOutcome // nil until decided
 	cut   bool              // the deadline stopped the phase
+
+	// The similarity's own budget: time spent in readings, all together.
+	simBudget, simSpent time.Duration
+	simFails            int  // errors in a row
+	simOpen             bool // the breaker opened: no more readings
+	simOverran          bool // the stage's deadline ran out during a reading
 }
 
 // decide settles posting i, and first every earlier posting it is scored
@@ -409,15 +441,14 @@ func (d *nearDup) decide(i int) bool {
 		want[AnnDupCandidateOf] = string(d.recs[cand.j].rec.Key)
 		want[AnnDupScore] = scoreText(cand.score)
 		if d.opt.Similarity != nil {
-			if cos, ok, err := d.opt.Similarity(d.sctx, a.desc, d.recs[cand.j].desc); err != nil || !ok {
-				if d.sctx.Err() != nil { // the reading was cut off, not refused
-					d.cut = true
-					return false
-				}
-				rep.SimilarityErrors++
-			} else {
+			cos, read, ok := d.cosine(a.desc, d.recs[cand.j].desc)
+			if !ok {
+				return false
+			}
+			if read {
 				want[AnnDupCosine] = strconv.FormatFloat(cos, 'f', 3, 64)
 			}
+			// No reading leaves no dup.cosine: a stale one is forgotten below.
 		}
 		rep.Candidates++
 	case haveSib:
@@ -444,6 +475,53 @@ func (d *nearDup) decide(i int) bool {
 	}
 	d.out[i] = o
 	return true
+}
+
+// cosine takes the optional similarity's reading of one candidate pair inside
+// the similarity's own budget. read says a reading was taken; ok is false only
+// when the stage's deadline cut the reading off, which cuts the phase as a
+// deadline in the shingle pass does. Any other pair without a reading is
+// counted: an error or no data in SimilarityErrors, a pair not read (budget
+// spent, breaker open) or cut off by the budget in SimilaritySkipped.
+func (d *nearDup) cosine(a, b string) (cos float64, read, ok bool) {
+	rep := d.rep
+	if d.simOpen || d.simSpent >= d.simBudget {
+		rep.SimilaritySkipped++
+		rep.SimilarityBudgetSpent = rep.SimilarityBudgetSpent || !d.simOpen
+		return 0, false, true
+	}
+	cctx, cancel := context.WithTimeout(d.sctx, d.simBudget-d.simSpent)
+	start := time.Now()
+	cos, has, err := d.opt.Similarity(cctx, a, b)
+	d.simSpent += time.Since(start)
+	budgetCut := cctx.Err() != nil
+	cancel()
+	taken := err == nil && has
+	if d.sctx.Err() != nil {
+		d.simOverran = true
+		if !taken { // the stage's deadline cut the reading off: not refused
+			d.cut = true
+			return 0, false, false
+		}
+	}
+	switch {
+	case taken:
+		d.simFails = 0
+		return cos, true, true
+	case err != nil && budgetCut: // the budget ran out mid-reading: not taken, not refused
+		d.simSpent = max(d.simSpent, d.simBudget)
+		rep.SimilaritySkipped++
+		rep.SimilarityBudgetSpent = true
+	case err != nil:
+		rep.SimilarityErrors++
+		if d.simFails++; d.simFails >= NearDupSimilarityBreaker {
+			d.simOpen = true
+			rep.SimilarityBreakerOpen = true
+		}
+	default: // no data (a blank description): says nothing about the similarity's health
+		rep.SimilarityErrors++
+	}
+	return 0, false, true
 }
 
 func scoreText(f float64) string { return strconv.FormatFloat(f, 'f', 2, 64) }

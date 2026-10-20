@@ -97,8 +97,23 @@ nil. The stage then runs on shingles alone: `SimilarityConfigured:false` appears
 well, and the run carries on. An unreadable vector cache is rebuilt; if the rebuild also fails,
 the cosine runs uncached. `cmd/vani/neardupsim_test.go` covers each of these cases.
 
-What to expect: the model loads once per run (1-2.5 s, outside the stage's 2 s deadline); a cold
-cache embeds inside that deadline, so many new candidate pairs can end the stage `Partial` and show
-`SimilarityErrors` (timeouts), and the next run, finding the finished vectors cached, goes further. When the
-embedder is unavailable the stage is exactly the shingle stage it was: the unavailability is a
-warning line, never a cosine of 0 and never a failed run. Descriptions are never logged.
+What to expect: the model loads once per run (1-2.5 s, outside the stage's 2 s deadline). The
+cosine has a budget of its own inside the stage: `NearDupSimilarityShare` (half) of the deadline,
+1 s, counted over all its readings together, and each call's ctx carries what is left. A cold
+cache spends that budget. The candidates it did not reach get no `dup.cosine`, and the stage counts
+them in `SimilaritySkipped` with `SimilarityBudgetSpent:true`. A reading the budget cuts off
+mid-way is skipped too, not an error. The shingle pass always finishes: every Duplicate,
+`dup.sibling_of` and `dup.candidate_of` is the one a run without the cosine writes, and the stage
+is not `Partial` on the cosine's account. The next run finds the finished vectors cached and
+reads further. `NearDupSimilarityBreaker` (3) errors in a row stop the readings for the rest of
+the stage (`SimilarityBreakerOpen:true`); a reading resets the count, and a pair with no data
+(a blank description) neither trips nor resets it. A skipped pair forgets the `dup.cosine` an
+earlier run wrote, so a reading not taken this run never shows as one that was.
+
+`Partial` still means the stage's own deadline cut it, as before: the postings it did not reach
+keep what they had. `PartialInSimilarity:true` says the cut came during a cosine reading; this
+happens only when the similarity ignores its ctx, or when the shingle pass had already used more
+than half the deadline. `semantic`'s adapter honours ctx: an embed that outlives it is abandoned,
+and its late answer is dropped. When the embedder is unavailable the stage is exactly the shingle
+stage it was: the unavailability is a warning line, never a cosine of 0 and never a failed run.
+Descriptions are never logged.

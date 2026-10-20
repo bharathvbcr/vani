@@ -226,10 +226,18 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     build without `-tags tessl`, it is nil and the stage runs on shingles alone
     (`neardupsim_test.go`). Until that branch reaches main, the Answers page says
     similar-wording grouping is unavailable.
-  - **Open:** a slow cosine (a cold vector cache) spends the stage's 2 s deadline, so the stage
-    ends `Partial`, and the oldest postings' shingle decisions wait for a later run. The report
-    does not say whether the cut came during shingles or during a cosine. A separate cosine
-    budget inside `AnnotateNearDuplicates` would keep the shingle pass whole.
+  - **Done (branch `claude/neardup-sim-budget`, on top of `claude/wonderful-hawking-3e840a`):** a
+    slow cosine (a cold vector cache) no longer spends the stage's 2 s deadline. The readings
+    share a budget of their own, `NearDupSimilarityShare` (half) of the deadline, and a breaker
+    stops them after `NearDupSimilarityBreaker` (3) errors in a row. Pairs past either are left
+    without a reading and counted (`SimilaritySkipped`, `SimilarityBudgetSpent`,
+    `SimilarityBreakerOpen`); the shingle pass finishes, with the outcomes of a run without the
+    cosine (`neardup_simbudget_test.go`). A cut from the stage's own deadline is `Partial` as
+    before, and `PartialInSimilarity` says whether it came during a reading.
+  - **Open:** the budget protects the shingle pass only from the cosine's share. A shingle pass
+    that needs more than the other half of the deadline can still be cut during a reading
+    (`PartialInSimilarity`). How long the shingle pass alone takes on a large ledger is not
+    measured yet.
   - **Open:** a daily run loads the model up to three times: near-dup, the warm before the advance
     phase, and the warm before the digest. Each load takes 1-2.5 s.
   - **Open:** the cosine only reads pairs the shingles already found (overlap at least 0.60). A

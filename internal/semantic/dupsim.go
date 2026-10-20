@@ -109,8 +109,10 @@ func NewSimilarity(e Embedder, c *VectorCache) func(ctx context.Context, a, b st
 // ok is false, with no error, when either description is blank: there is no
 // reading. A failure is returned as the error and the stage counts it
 // (NearDupReport.SimilarityErrors); this never turns one into a cosine of 0.
-// The stage's own deadline bounds every call through ctx, so this is only
-// practical with the model already loaded and the vectors cached.
+// The stage gives its similarity a budget of its own (a share of the stage's
+// deadline) and bounds every call by it through ctx; a pair the budget does not
+// reach gets no reading (NearDupReport.SimilaritySkipped). This is only
+// practical with the model already loaded and the vectors mostly cached.
 func NewTitledSimilarity(e Embedder, c *VectorCache, titles *TitleIndex) func(ctx context.Context, a, b string) (float64, bool, error) {
 	return func(ctx context.Context, a, b string) (float64, bool, error) {
 		if e == nil {
