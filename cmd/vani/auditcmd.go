@@ -125,11 +125,14 @@ func (e *env) drawAudit(scored, dropped int, seed, labels string) (*auditDraw, e
 	}
 	var cands []eval.AuditCandidate
 	for _, k := range kept {
+		if b.m[k.Job.Key].Mark != marks.None {
+			continue // judged by its mark already, as in the digest's Explore
+		}
 		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
 	}
 	rules := e.dropRules()
 	for _, r := range b.snap.Records {
-		if r.Status == posting.Dropped {
+		if r.Status == posting.Dropped && b.m[r.Key].Mark == marks.None {
 			cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)})
 		}
 	}

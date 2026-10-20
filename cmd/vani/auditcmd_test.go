@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -199,5 +201,45 @@ func TestAuditSampleUsageErrors(t *testing.T) {
 		{"audit", "extra"},
 	} {
 		mustCode(t, 2, args...)
+	}
+}
+
+// A marked role is already judged by its mark (a saved one is listed under
+// Saved), so the draw never picks one, in either pool: like the digest's
+// Explore, the audit samples unmarked roles only.
+func TestAuditSampleNeverDrawsAMarkedRole(t *testing.T) {
+	_, state := setup(t)
+	mustCode(t, 0, "init")
+	seedAudit(t, state, 12, 0, 10)
+	at := time.Date(2026, 10, 18, 14, 0, 0, 0, time.UTC)
+	markedKeys := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		k := fmt.Sprintf("gh:m:%03d", i)
+		if _, err := marks.SetMark(marks.Dir(state), posting.Key(k), marks.Saved, at); err != nil {
+			t.Fatal(err)
+		}
+		markedKeys[k] = true
+	}
+	for i := 0; i < 4; i++ {
+		k := fmt.Sprintf("gh:k:%03d", i)
+		if _, err := marks.SetMark(marks.Dir(state), posting.Key(k), marks.Applied, at); err != nil {
+			t.Fatal(err)
+		}
+		markedKeys[k] = true
+	}
+	picks := 0
+	o, _ := mustCode(t, 0, "audit", "--list", "--seed", "w1", "--scored", "12", "--dropped", "10")
+	for _, ln := range strings.Split(o, "\n") {
+		f := strings.Split(ln, "\t")
+		if len(f) != 3 {
+			continue
+		}
+		picks++
+		if markedKeys[f[2]] {
+			t.Errorf("the draw picked the marked role %s", f[2])
+		}
+	}
+	if picks != 8+2 { // 8 unmarked kept, 2 unmarked dropped
+		t.Errorf("%d picks, want 10", picks)
 	}
 }
