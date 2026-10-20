@@ -8,16 +8,33 @@ struct VaniApplyApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
     var body: some Scene {
-        Window("Vani Apply", id: "main") {
+        Window("Vani Apply", id: Self.mainWindowID) {
             ContentView()
                 .environment(delegate.model)
                 .environment(delegate.jobs)
                 .environment(delegate.pipeline)
                 .frame(minWidth: 820, minHeight: 520)
+                .modifier(CaptureMainWindowOpener(delegate: delegate))
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {}
+        }
+    }
+
+    static let mainWindowID = "main"
+}
+
+/// Hands the delegate SwiftUI's window opener, which only a view can read, so a
+/// notification click can reopen the window after it was closed.
+private struct CaptureMainWindowOpener: ViewModifier {
+    let delegate: AppDelegate
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            let open = openWindow
+            delegate.openMainWindow = { open(id: VaniApplyApp.mainWindowID) }
         }
     }
 }
