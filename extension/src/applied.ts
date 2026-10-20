@@ -17,6 +17,7 @@
 //                    the user sees the question), mark only the job that was offered,
 //                    only when asked
 //   createAppliedFlow the content script's side: ask, show, accept or dismiss
+import { createLock } from "./guards";
 import type { ToBackground } from "./messages";
 
 /** internal/joburl.MaxBytes: a longer page URL is not sent, never cut. */
@@ -187,14 +188,8 @@ export function createBroker(d: BrokerDeps): Broker {
   let memory: Record<string, StoredOffer> = {};
   const store: OfferStore = d.store ?? { load: async () => memory, save: async v => { memory = v; } };
   let cache: Record<string, StoredOffer> = {};
-  let chain: Promise<unknown> = Promise.resolve();
-
   /** Reads and writes of the table run one at a time; a native call never holds the lock. */
-  function locked<T>(fn: () => Promise<T>): Promise<T> {
-    const next = chain.then(fn, fn);
-    chain = next.catch(() => undefined);
-    return next;
-  }
+  const locked = createLock();
 
   async function read(): Promise<Record<string, StoredOffer>> {
     let m: Record<string, StoredOffer>;

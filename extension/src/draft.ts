@@ -3,6 +3,7 @@
 // carries only the question label and the posting as shown on the page: no
 // field values and nothing from the answer bank. A draft is never filled as a
 // confident answer; the page shows it yellow, for review.
+import { clean, clip } from "./guards";
 import type { Transport } from "./store";
 import { NATIVE_HOST } from "./store";
 
@@ -103,14 +104,6 @@ export function createDrafter(transport: Transport = draftTransport, timeoutMs =
       inFlight = false;
     }
   };
-}
-
-function clip(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) : s;
-}
-
-function clean(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
 }
 
 /** The native request, or an error when there is nothing to draft for. */

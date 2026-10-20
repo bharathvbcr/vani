@@ -2,6 +2,7 @@
 // JobPosting first (Greenhouse, Lever, Ashby, Workday and most careers pages
 // publish it), then Open Graph and the document title. Page content is
 // untrusted: it is only ever sent as data to the drafting model, clipped.
+import { clean } from "./guards";
 import type { JobInfo } from "./draft";
 import { MIN_JOB_DESCRIPTION } from "./home";
 import { pageKey } from "./applied";
@@ -52,10 +53,6 @@ function postings(node: unknown, out: Record<string, unknown>[], depth = 0): voi
   const type = o["@type"];
   if (type === "JobPosting" || (Array.isArray(type) && type.includes("JobPosting"))) out.push(o);
   if (o["@graph"]) postings(o["@graph"], out, depth + 1);
-}
-
-function clean(s: string | null | undefined): string {
-  return (s ?? "").replace(/\s+/g, " ").trim();
 }
 
 // The posting as the page renders it. On a single-page board (Workday) this is the only
