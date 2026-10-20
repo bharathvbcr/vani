@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // everyOther marks every second record as dropped by its title.
@@ -107,6 +110,52 @@ func TestAdvanceTitleDropsCountTowardTheCap(t *testing.T) {
 	rep, err = advanceAll(context.Background(), liveRecs(2), nil, 10, 1, all, func(context.Context, posting.Key) error { return errors.New("ledger full") }, func(string, ...any) {})
 	if !errors.Is(err, errAdvanceFailing) || rep.Failed != 2 || rep.Stopped != stopNoneAdvanced {
 		t.Fatalf("err %v report %+v", err, rep)
+	}
+}
+
+// The Workday source's title prefilter is the runner's title drop, and what
+// it may reuse is every stored posting under the board, whatever its status.
+func TestWorkdayHooksMatchTheRunnerAndTheBoard(t *testing.T) {
+	if titleDrops(pipeline.DropPolicy{}) != nil {
+		t.Fatal("a policy without title reads has a title prefilter")
+	}
+	cfg := config.Config{
+		DropRules:    []config.DropRule{{Slot: "seniority", Values: []string{"manager"}, MinOpenRouterProb: 0.9}},
+		TitleSignals: config.TitleSignals{Read: []config.TitleRead{{Slot: "seniority", Value: "manager", Match: []string{"Manager"}}}},
+	}
+	drops := titleDrops(dropPolicy(cfg, "d1-ultra"))
+	if !drops("Engineering Manager") || drops("Software Engineer") {
+		t.Fatal("title prefilter disagrees with the runner")
+	}
+
+	l, err := ledger.Open(filepath.Join(t.TempDir(), "ledger"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for _, c := range []struct {
+		key posting.Key
+		st  posting.Status
+	}{
+		{"wd:nvidia:site:jr1", posting.Live},
+		{"wd:nvidia:site:jr2", posting.Dead},
+		{"wd:nvidia:site2:jr3", posting.Live}, // another site of the tenant
+		{"gh:nvidia:x", posting.Live},
+	} {
+		p := posting.Posting{Key: c.key, ATS: c.key.ATS(), Company: "N", Title: "t", Description: "jd"}
+		if err := l.Append(context.Background(), ledger.Event{V: 1, At: jobsT0, Key: c.key, Status: c.st, Posting: &p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &wired{led: l}
+	got := w.storedFor(sources.Board{ATS: posting.Workday, Token: "NVIDIA/Site"})
+	var keys []string
+	for _, p := range got {
+		keys = append(keys, string(p.Key))
+	}
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "wd:nvidia:site:jr1,wd:nvidia:site:jr2" {
+		t.Fatalf("stored for the board: %v", keys)
 	}
 }
 

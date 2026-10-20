@@ -204,6 +204,20 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return err
 	}
 	srcs[posting.Greenhouse] = gh
+	// Workday costs a detail request per posting: stored postings are reused
+	// and new ones the title rule drops are never fetched, so a large board
+	// spends at most workday.MaxDetails requests a run.
+	wd, err := workday.NewWith(d, workday.Options{
+		Stored:    w.storedFor,
+		DropTitle: titleDrops(runner.Policy),
+		Report: func(b sources.Board, st workday.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	srcs[posting.Workday] = wd
 	if w.hasPageBoard() {
 		src, stop, err := w.pageSource(ctx, d)
 		if err != nil {
@@ -282,16 +296,38 @@ func dropPolicy(cfg config.Config, openRouter string) pipeline.DropPolicy {
 // alone (a live posting the policy's title reading drops), or is nil when
 // the policy reads no titles.
 func titleDropper(p pipeline.DropPolicy) func(ledger.Record) bool {
-	if p.ReadTitle == nil {
+	drops := titleDrops(p)
+	if drops == nil {
 		return nil
 	}
 	return func(r ledger.Record) bool {
-		if r.Status != posting.Live {
-			return false
-		}
-		_, _, dropped := p.EvaluateTitle(r.Posting.Title)
+		return r.Status == posting.Live && drops(r.Posting.Title)
+	}
+}
+
+// titleDrops reports whether the policy drops a posting by its title alone,
+// or is nil when the policy reads no titles.
+func titleDrops(p pipeline.DropPolicy) func(string) bool {
+	if p.ReadTitle == nil {
+		return nil
+	}
+	return func(title string) bool {
+		_, _, dropped := p.EvaluateTitle(title)
 		return dropped
 	}
+}
+
+// storedFor is every posting the ledger holds under b, whatever its status:
+// what an adapter may reuse instead of fetching again.
+func (w *wired) storedFor(b sources.Board) []posting.Posting {
+	prefix := b.KeyPrefix()
+	var out []posting.Posting
+	for _, r := range w.led.All() {
+		if strings.HasPrefix(string(r.Key), prefix) {
+			out = append(out, r.Posting)
+		}
+	}
+	return out
 }
 
 // titleRank orders triage by the configured title signals, or is nil (ledger
