@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
@@ -51,6 +52,33 @@ const (
 	stageDigest   = "digest"
 )
 
+// Run causes: why a failed run failed, when it is one a reader words on its
+// own (failureNotice, and the Mac app's RunNotice). Fixed codes, set from the
+// error's identity and never from its text.
+const (
+	causeLedgerFatal    = "ledger_fatal"     // daemon.ErrFatal: the ledger could not be written safely
+	causeDigestHeldBack = "digest_held_back" // errDigestHeldBack: the Jobs marks could not be read
+	causeConfigStale    = "config_stale"     // errConfigStale: the run used the previous watchlist
+)
+
+// runCause is the run error's cause code. A joined error can carry several;
+// the code is the first in failureNotice's order, which is also the order of
+// what the user most needs to know.
+func runCause(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, daemon.ErrFatal):
+		return causeLedgerFatal
+	case errors.Is(err, errDigestHeldBack):
+		return causeDigestHeldBack
+	case errors.Is(err, errConfigStale):
+		return causeConfigStale
+	default:
+		return ""
+	}
+}
+
 type runRecord struct {
 	V          int       `json:"v"`
 	PID        int       `json:"pid"`
@@ -59,6 +87,13 @@ type runRecord struct {
 	Outcome    string    `json:"outcome"`
 	Stage      string    `json:"stage,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	// Cause names a failed run's known cause (runCause), so a reader can word
+	// the failure without reading Error; "" when the failure has none of them.
+	Cause string `json:"cause,omitempty"`
+	// DigestRoles is how many roles the run's digest listed (publishDigest),
+	// 0 when nothing was new. Nil when no digest was written: the run stopped
+	// before it, it was held back, or writing it failed.
+	DigestRoles *int `json:"digest_roles,omitempty"`
 	// CountsBefore and CountsAfter are the ledger's postings by status at the
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`

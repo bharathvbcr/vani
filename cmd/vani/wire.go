@@ -103,8 +103,10 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		RunReport: w.runReport,
 		Reload:    w.setBoards,
 		PollInbox: w.pollInbox,
-		Notifier:  notify.New(nil),
-		Closer:    w.close,
+		// The Vani Apply app posts run notices itself while it runs; the
+		// daemon's are the fallback for when it does not.
+		Notifier: notify.UnlessHeld(notify.AppLockPath(stateDir), notify.New(nil)),
+		Closer:   w.close,
 	}, nil
 }
 
