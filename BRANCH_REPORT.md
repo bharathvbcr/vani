@@ -6,6 +6,65 @@
 
 ---
 
+# Wave 6 (2026-10-20)
+
+**Status: done.**
+- 1 merge, carrying 2 new commits. 2 branches deleted.
+- Two worktree folders could not be removed completely (W6.3).
+
+## W6.1 Inventory and backups
+- `main` was `56ba6c7` and clean.
+- `rank-unknown-age-meaning` had 2 new commits (`a1a70cd`, `c4846b9`, kbmatch), quiet since 01:41.
+  `git cherry` showed both as `+`.
+- Backups: `refs/backup/2026-10-20-wave6/<branch>` for every branch, plus
+  `tmp/vani-branches-2026-10-20-wave6.bundle` (verified).
+- GitPulse was still deferred, so the branch worktree's uncommitted state could not be read.
+
+## W6.2 Merge
+| Branch | Merge commit | Conflicts | Checks |
+|---|---|---|---|
+| `rank-unknown-age-meaning` (at `c4846b9`) | `5870d40` | none | go: 53 ok; swift: 429 tests, 0 fail |
+
+**Fix made at merge time.** The branch's Swift contract test `RankingTests.testAgainstTheRealVani`
+expected all ten factor names for an unjudged posting. Go leaves `kb_match` out of an unjudged
+posting on purpose: `score.go` gives it no weight, and `kbmatchcmd_test.go` asserts it is absent.
+- The test failed the same way against a `vani` built from the branch tip alone.
+- It now expects the nine factors of an unjudged posting.
+
+Opus reviewed and approved. Follow-ups, not changed here:
+- **Personal data:** `vani kbmatch run` sends the owner's bank bullets with URLs and e-mails
+  removed. No code drops work-authorization or phone lines, so the "no personal data in a prompt"
+  rule currently depends on the bank's contents. Nothing is sent unless `vani kbmatch run` is used.
+- No real provider call has been made, so the prompt wording, reply parsing and the 15% weight are
+  unmeasured.
+- An older `vani` rejects the `kbmatch` config key. Rebuild the binaries and the app before adding
+  it.
+
+## W6.3 Deleted
+The owner chose both: `rank-unknown-age-meaning` (`c4846b9`) and
+`claude/admiring-mirzakhani-25ed26` (`b54aecb`). Both were deleted with `git branch -d`. Backups
+are at `refs/backup/2026-10-20-wave6/<branch>`.
+
+**Incomplete worktree removal.** `git worktree remove` passed its clean check and dropped both
+registrations, but stopped with "Directory not empty". Finder wrote a `.DS_Store` into each folder
+during the removal, at 08:21. These folders remain, untracked by git:
+- `.claude/worktrees/rank-unknown-age`
+- `.claude/worktrees/admiring-mirzakhani-25ed26`
+
+They hold a partial copy of committed files, plus ignored scratch: `tmp/`, `build/`, `go.work` and
+`macos/.build`. The `rank-unknown-age` copy also has `tmp/state-preview`, a copy of Vani state that
+includes the ledger and marks. No source work is in them. They were not deleted with `rm -rf`. The
+owner can move them to the Trash.
+
+**Kept:** `worktree-resume-attach`: merged, locked, with a dirty file.
+
+## W6.4 Final checks and builds
+- `git fsck`: clean apart from the Finder file `refs/.DS_Store`.
+- `vani` was rebuilt from `5870d40` and installed to `./vani` and `build/vani`, sha256
+  `a1a0317795197b20…`. `Vani Apply.app` was not rebuilt or installed.
+
+---
+
 # Wave 5 (2026-10-20)
 
 **Status: done.** 2 branches merged; nothing was deleted (the owner kept the one deletable branch).
