@@ -42,6 +42,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     public var lca: String?
     public var employer: String?
     public var triage: [String: String]?
+    public var category: String?
     public var firstSeen: Date?
     public var postedAt: Date?
     public var mark: JobMark?
@@ -62,6 +63,11 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// Relevance discounted by age, at most halved.
     public var priority: Double?
     public var keywords: [Keyword]?
+    /// How `priority` was built, one entry per component (jobinsight.Score).
+    /// Display only, and decoded leniently: see `ScoreFactors`.
+    public var scoreFactors: ScoreFactors?
+    /// The cached match against your résumé knowledge base. Display only.
+    public var semantic: SemanticMatch?
     /// The picked note split by Vani into its reasons.
     public var reasonList: [Reason]?
 
@@ -76,12 +82,66 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// at most one range per currency.
     public var pay: [Pay]?
 
+    // Near-duplicate display (cmd/vani/jobscmd.go jobJSON). Each is decoded
+    // leniently (see `Lenient`): a value of the wrong type reads as absent and
+    // never fails the list. Read them through the accessors below.
+    var dupOfWire: Lenient<String>?
+    var dupCandidateOfWire: Lenient<String>?
+    var dupSiblingOfWire: Lenient<String>?
+    var dupScoreWire: Lenient<Double>?
+
+    /// The posting key this one repeats (status duplicate).
+    public var dupOf: String? {
+        get { dupOfWire?.value }
+        set { dupOfWire = newValue.map { Lenient($0) } }
+    }
+    /// The posting key this one may repeat (a candidate, not a certainty).
+    public var dupCandidateOf: String? {
+        get { dupCandidateOfWire?.value }
+        set { dupCandidateOfWire = newValue.map { Lenient($0) } }
+    }
+    /// The posting key of the same role in another location.
+    public var dupSiblingOf: String? {
+        get { dupSiblingOfWire?.value }
+        set { dupSiblingOfWire = newValue.map { Lenient($0) } }
+    }
+    /// The description overlap behind the duplicate reading, 0...1; nil when
+    /// absent, not a number or outside 0...1.
+    public var dupScore: Double? {
+        get { dupScoreWire?.value.flatMap { $0.isFinite && $0 >= 0 && $0 <= 1 ? $0 : nil } }
+        set { dupScoreWire = newValue.map { Lenient($0) } }
+    }
+
+    /// The company icon Vani cached for this job (internal/logo), decoded
+    /// leniently like the duplicate fields. Read it through `logoPath`.
+    var logoWire: Lenient<String>?
+
+    /// The cached icon's file, or nil to draw the monogram: only an absolute,
+    /// already-standardized path to a .png, .ico or .jpg file is used.
+    public var logoPath: String? {
+        get { logoWire?.value.flatMap(Self.usableLogoPath) }
+        set { logoWire = newValue.map { Lenient($0) } }
+    }
+
+    static func usableLogoPath(_ p: String) -> String? {
+        guard p.count <= 1024, p.hasPrefix("/"), !p.contains("\0"),
+              (p as NSString).standardizingPath == p,
+              ["png", "ico", "jpg"].contains((p as NSString).pathExtension) else { return nil }
+        return p
+    }
+
     public var id: String { key }
 
     enum CodingKeys: String, CodingKey {
         case key, company, title, location, remote, department, url, status, closed, rank, coverage,
-             explanation, missing, unsure, lca, employer, triage, mark, note, description,
-             relevance, priority, keywords
+             explanation, missing, unsure, lca, employer, triage, category, mark, note, description,
+             relevance, priority, keywords, semantic
+        case dupOfWire = "dup_of"
+        case dupCandidateOfWire = "dup_candidate_of"
+        case dupSiblingOfWire = "dup_sibling_of"
+        case dupScoreWire = "dup_score"
+        case logoWire = "logo"
+        case scoreFactors = "score_factors"
         case applyURL = "apply_url"
         case firstSeen = "first_seen"
         case postedAt = "posted_at"
@@ -227,6 +287,13 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     public var postingLink: URL? { Self.httpURL(url) }
     /// The application form, when the board gives one.
     public var applyLink: URL? { Self.httpURL(applyURL) }
+    /// The best link for sharing: the posting URL, or the apply URL if no posting URL was given.
+    public var shareLink: URL? { postingLink ?? applyLink }
+
+    /// A one-line summary for sharing (e.g. "Software Engineer at Acme").
+    public var shareSubject: String {
+        company.isEmpty ? title : "\(title) at \(company)"
+    }
 
     /// An absolute http(s) URL with a host, or nil. Vani already filters links;
     /// this is the second check, at the point a link becomes clickable.
@@ -245,10 +312,40 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         ["seniority", "work_mode", "sponsorship"].compactMap { Self.words[triage?[$0] ?? ""] }
     }
 
+    /// Career track / category folder options.
+    public static let categoryOptions = [
+        "ai-engineer",
+        "agent-systems",
+        "ml-inference-systems",
+        "ml-research",
+        "biomedical-ai",
+        "biomedical-research",
+        "human-factors-medical-devices",
+        "other",
+    ]
+
+    static let categoryWords: [String: String] = [
+        "ai-engineer": "AI Engineer",
+        "agent-systems": "Agent Systems",
+        "ml-inference-systems": "ML Inference Systems",
+        "ml-research": "ML Research",
+        "biomedical-ai": "Biomedical AI",
+        "biomedical-research": "Biomedical Research",
+        "human-factors-medical-devices": "Human Factors",
+        "other": "Other",
+    ]
+
+    /// Category folder / track name in words ("ai-engineer" → "AI Engineer").
+    public var categoryLabel: String? {
+        guard let category, !category.isEmpty else { return nil }
+        return Self.categoryWords[category] ?? category.replacingOccurrences(of: "-", with: " ").capitalized
+    }
+
     /// A jdtriage option value in words ("strong_fit" → "Strong fit"); "none"
     /// is no reading.
     public static func label(for option: String) -> String {
         if option == "none" { return "No reading" }
+        if let cat = categoryWords[option] { return cat }
         return words[option] ?? option.replacingOccurrences(of: "_", with: " ")
     }
 
@@ -327,6 +424,284 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
 
     /// Keywords your target summary names, then gaps, then the rest (Vani's order).
     public var keywordList: [Keyword] { keywords ?? [] }
+
+    /// The ranking breakdown for the detail view, or nil when Vani sent none
+    /// (an older vani, or a posting it did not score).
+    public var rankingBreakdown: RankingBreakdown? {
+        let factors = scoreFactors?.items ?? []
+        let evidence = semantic?.topEvidence ?? []
+        if factors.isEmpty && evidence.isEmpty && semantic?.score == nil { return nil }
+        return RankingBreakdown(factors: factors, semanticScore: semantic?.score, evidence: evidence, ageKnown: ageDays != nil)
+    }
+}
+
+/// A display-only field that decodes to nil when it is not a `T`, so one odd
+/// value never fails the whole list.
+struct Lenient<T: Codable & Equatable & Sendable>: Codable, Equatable, Sendable {
+    var value: T?
+
+    init(_ value: T?) { self.value = value }
+
+    init(from decoder: Decoder) throws {
+        value = try? decoder.singleValueContainer().decode(T.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        if let value { try c.encode(value) } else { try c.encodeNil() }
+    }
+}
+
+/// A row's duplicate note: "Possible duplicate of Acme — Engineer (87%)" or
+/// "Same role, other location". Keys are untrusted text, shown verbatim.
+public struct DuplicateBadge: Equatable, Sendable {
+    public enum Kind: Sendable { case candidate, sibling }
+    public var kind: Kind
+    public var text: String
+    public var help: String
+}
+
+extension Job {
+    /// The target's "company — title" when it is among `loaded`, else the key text.
+    static func duplicateTarget(_ key: String, in loaded: [String: Job]) -> String {
+        if let t = loaded[key] {
+            let parts = [t.company, t.title].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if !parts.isEmpty { return parts.joined(separator: " — ") }
+        }
+        return key.count > 80 ? String(key.prefix(80)) + "…" : key
+    }
+
+    /// Candidate first, then sibling. `loaded` maps posting key to job, to name the target.
+    public func duplicateBadges(loaded: [String: Job]) -> [DuplicateBadge] {
+        var out: [DuplicateBadge] = []
+        if let k = dupCandidateOf, !k.isEmpty {
+            let score = dupScore.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
+            let target = Self.duplicateTarget(k, in: loaded)
+            out.append(DuplicateBadge(kind: .candidate, text: "Possible duplicate of \(target)\(score)",
+                                      help: "Its description overlaps \(target). Vani keeps both; check before applying twice."))
+        }
+        if let k = dupSiblingOf, !k.isEmpty {
+            out.append(DuplicateBadge(kind: .sibling, text: "Same role, other location",
+                                      help: "The same role is also listed at \(Self.duplicateTarget(k, in: loaded))."))
+        }
+        return out
+    }
+
+    /// `jobs` without the rows Vani flags as possible duplicates of another.
+    public static func hidingPossibleDuplicates(_ jobs: [Job]) -> [Job] {
+        jobs.filter { ($0.dupCandidateOf ?? "").isEmpty }
+    }
+}
+
+/// One component of `priority` as `vani jobs` reports it (jobinsight.Factor).
+/// `value` is in 0...1; `known` false means the signal was absent and `value`
+/// is only a neutral prior, so it is shown as "not known", never as a score.
+public struct ScoreFactor: Equatable, Sendable {
+    public var name: String
+    public var value: Double
+    /// Its share of the match for additive components, 0 for multipliers.
+    public var weight: Double
+    public var known: Bool
+
+    public init(name: String, value: Double, weight: Double = 0, known: Bool = true) {
+        self.name = name
+        self.value = value
+        self.weight = weight
+        self.known = known
+    }
+
+    /// The order Score builds them in; a name this app does not know sorts after.
+    public static let knownNames = ["fit", "coverage", "semantic", "keyword", "title", "employer", "gate", "fresh", "company"]
+    /// The multipliers: they scale the blend rather than add to it.
+    public static let multiplierNames: Set<String> = ["gate", "fresh", "company"]
+
+    public var isMultiplier: Bool { Self.multiplierNames.contains(name) || weight <= 0 }
+
+    /// The value as a 0...1 fraction, whatever Vani sent.
+    public var fraction: Double { value.isFinite ? min(max(value, 0), 1) : 0 }
+
+    /// Words for the factor, or the name itself when it is a new one.
+    public var title: String {
+        switch name {
+        case "fit": "Role fit"
+        case "coverage": "Résumé coverage"
+        case "semantic": "Knowledge-base match"
+        case "keyword": "Target keywords"
+        case "title": "Title"
+        case "employer": "Employer"
+        case "gate": "Gate"
+        case "fresh": "Freshness"
+        case "company": "Company history"
+        default: name.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    /// What the factor measures, in one line.
+    public var explanation: String {
+        switch name {
+        case "fit": "the decision model's role-fit reading, weighted by how sure it is"
+        case "coverage": "how much of the posting's must-haves your résumé covers (DevPrism)"
+        case "semantic": "how close the posting reads to your résumé roles (EmbeddingGemma)"
+        case "keyword": "overlap with your target summary's terms"
+        case "title": "signals in the job title"
+        case "employer": "your employer preference"
+        case "gate": "1 unless a confident mismatch, an excluded title or a drop rule lowers it"
+        case "fresh": "newer postings score higher: the bonus halves every half-life of age (Settings), with a floor"
+        case "company": "a small nudge learned from the roles you saved and hid at this company"
+        default: "a ranking component this app has no description for"
+        }
+    }
+
+    /// "not known", or the value out of 100 for an additive component, or
+    /// "×0.85" for a multiplier.
+    public var valueLabel: String {
+        guard known else { return "not known" }
+        if isMultiplier { return "×" + String(format: "%.2f", fraction) }
+        return "\(Int((fraction * 100).rounded()))"
+    }
+
+    /// "25% of the blend", for an additive component that carries weight.
+    public var weightLabel: String? {
+        guard weight.isFinite, weight > 0 else { return nil }
+        return "\(Int((min(weight, 1) * 100).rounded()))% of the blend"
+    }
+}
+
+/// `score_factors`. Decoding never throws: it is explanation, not data the
+/// list depends on, so an element that is not a factor is skipped and a field
+/// that is not a list reads as none. Unknown factor names are kept.
+public struct ScoreFactors: Codable, Equatable, Sendable {
+    public var items: [ScoreFactor]
+
+    public init(_ items: [ScoreFactor]) { self.items = items }
+
+    private struct Raw: Decodable {
+        var name: String
+        var value: Double
+        var weight: Double?
+        var known: Bool?
+    }
+
+    public init(from decoder: Decoder) throws {
+        var out: [ScoreFactor] = []
+        if var list = try? decoder.unkeyedContainer() {
+            while !list.isAtEnd {
+                // Advance past an element that does not decode, or the loop would never end.
+                guard let raw = try? list.decode(Raw.self) else { _ = try? list.decode(Skip.self); continue }
+                guard !raw.name.isEmpty, raw.value.isFinite else { continue }
+                // No `known` means the signal's presence was not stated: not known.
+                out.append(ScoreFactor(name: raw.name, value: raw.value, weight: raw.weight ?? 0, known: raw.known ?? false))
+            }
+        }
+        items = out.reduce(into: [ScoreFactor]()) { acc, f in
+            if !acc.contains(where: { $0.name == f.name }) { acc.append(f) }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.unkeyedContainer()
+        for f in items {
+            try c.encode(Wire(name: f.name, value: f.value, weight: f.weight, known: f.known))
+        }
+    }
+
+    private struct Wire: Encodable {
+        var name: String
+        var value: Double
+        var weight: Double
+        var known: Bool
+    }
+}
+
+/// Decodes anything and keeps nothing, to step an unkeyed container past a bad element.
+struct Skip: Decodable {
+    init(from decoder: Decoder) throws {}
+}
+
+/// `semantic`: the posting's match against the knowledge base, with the
+/// posting lines that matched best. Decoding never throws (see `ScoreFactors`).
+public struct SemanticMatch: Codable, Equatable, Sendable {
+    /// 0...1, calibrated; nil when Vani sent none or it is not a number.
+    public var score: Double?
+    public var evidence: [Evidence]
+
+    public struct Evidence: Codable, Equatable, Sendable {
+        /// A posting line (at most 120 characters). Untrusted board text.
+        public var snippet: String
+        /// The résumé chunk it matched: a role title or "skills".
+        public var label: String
+        public var cosine: Double
+
+        public init(snippet: String, label: String, cosine: Double) {
+            self.snippet = snippet
+            self.label = label
+            self.cosine = cosine
+        }
+    }
+
+    public init(score: Double? = nil, evidence: [Evidence] = []) {
+        self.score = score
+        self.evidence = evidence
+    }
+
+    private enum CodingKeys: String, CodingKey { case score, evidence }
+
+    private struct RawEvidence: Decodable {
+        var snippet: String
+        var label: String
+        var cosine: Double
+    }
+
+    public init(from decoder: Decoder) throws {
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+            score = nil
+            evidence = []
+            return
+        }
+        let s = try? c.decodeIfPresent(Double.self, forKey: .score)
+        score = s.flatMap { $0 }.flatMap { $0.isFinite ? $0 : nil }
+        var out: [Evidence] = []
+        if var list = try? c.nestedUnkeyedContainer(forKey: .evidence) {
+            while !list.isAtEnd {
+                guard let e = try? list.decode(RawEvidence.self) else { _ = try? list.decode(Skip.self); continue }
+                let snippet = e.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !snippet.isEmpty, e.cosine.isFinite else { continue }
+                out.append(Evidence(snippet: snippet, label: e.label.trimmingCharacters(in: .whitespacesAndNewlines), cosine: e.cosine))
+            }
+        }
+        evidence = out
+    }
+
+    /// How many matched lines the detail view shows.
+    public static let shownEvidence = 3
+
+    /// The strongest matches first (ties keep Vani's order), at most `shownEvidence`.
+    public var topEvidence: [Evidence] {
+        let ranked = evidence.enumerated().sorted { a, b in
+            a.element.cosine != b.element.cosine ? a.element.cosine > b.element.cosine : a.offset < b.offset
+        }
+        return ranked.prefix(Self.shownEvidence).map(\.element)
+    }
+}
+
+/// What the detail view lists to explain a job's place in the order.
+public struct RankingBreakdown: Equatable, Sendable {
+    public var factors: [ScoreFactor]
+    public var semanticScore: Double?
+    public var evidence: [SemanticMatch.Evidence]
+    /// False when the posting has no age, so its freshness sits at the floor.
+    public var ageKnown: Bool
+
+    /// The blend's inputs in Score's order, then the multipliers, then any
+    /// factor this app does not know, in the order Vani sent them.
+    public var ordered: [ScoreFactor] {
+        let rank = Dictionary(uniqueKeysWithValues: ScoreFactor.knownNames.enumerated().map { ($1, $0) })
+        return factors.enumerated().sorted { a, b in
+            let ra = rank[a.element.name] ?? ScoreFactor.knownNames.count
+            let rb = rank[b.element.name] ?? ScoreFactor.knownNames.count
+            return ra != rb ? ra < rb : a.offset < b.offset
+        }.map(\.element)
+    }
 }
 
 public struct JobsPage: Codable, Equatable, Sendable {
@@ -422,6 +797,12 @@ public struct JobsInsight: Codable, Equatable, Sendable {
 public enum JobSort: String, CaseIterable, Identifiable, Sendable {
     case standard = "default", priority, relevance, fresh, company, salary
     public var id: String { rawValue }
+    /// The order a view opens in: New leads with the highest priority, the number each
+    /// row's badge shows; the marked views keep the standard order, which lists them by
+    /// when they were marked.
+    public static func defaultSort(for view: JobView) -> JobSort {
+        view == .new ? .priority : .standard
+    }
     public var title: String {
         switch self {
         case .standard: "Rank, then fit"
@@ -437,6 +818,7 @@ public enum JobSort: String, CaseIterable, Identifiable, Sendable {
 /// The selection filters list and stats share. Values are the jdtriage
 /// fixture's options; "none" means no reading.
 public struct JobFilter: Equatable, Sendable {
+    public var categories: Set<String> = []
     public var fits: Set<String> = []
     public var workModes: Set<String> = []
     public var sponsorships: Set<String> = []
@@ -476,7 +858,7 @@ public struct JobFilter: Equatable, Sendable {
 
     /// How many filter groups are on, for a badge.
     public var activeCount: Int {
-        [!fits.isEmpty, !workModes.isEmpty, !sponsorships.isEmpty, maxAgeDays != nil, openOnly,
+        [!categories.isEmpty, !fits.isEmpty, !workModes.isEmpty, !sponsorships.isEmpty, maxAgeDays != nil, openOnly,
          !states.isEmpty, !areas.isEmpty, remoteOnly, widensToRemote,
          minSalary != nil, salaryListed, !seniorities.isEmpty, minRelevance != nil].filter { $0 }.count
     }
@@ -508,6 +890,7 @@ public struct JobFilter: Equatable, Sendable {
 
     var arguments: [String] {
         var a: [String] = []
+        if !categories.isEmpty { a += ["--category", categories.sorted().joined(separator: ",")] }
         if !fits.isEmpty { a += ["--fit", fits.sorted().joined(separator: ",")] }
         if !workModes.isEmpty { a += ["--work-mode", workModes.sorted().joined(separator: ",")] }
         if !sponsorships.isEmpty { a += ["--sponsorship", sponsorships.sorted().joined(separator: ",")] }
@@ -584,6 +967,7 @@ public struct JobsStats: Codable, Equatable, Sendable {
     public var view: String
     public var total: Int
     public var fit: [String: Int]
+    public var category: [String: Int]?
     public var workMode: [String: Int]
     public var sponsorship: [String: Int]
     public var seniority: [String: Int]
@@ -637,7 +1021,7 @@ public struct JobsStats: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case view, total, fit, sponsorship, seniority, basis, age, relevance, priority, companies, keywords, insight, torn
+        case view, total, fit, category, sponsorship, seniority, basis, age, relevance, priority, companies, keywords, insight, torn
         case state, area, salary
         case workMode = "work_mode"
         case freshSource = "fresh_source"
@@ -662,32 +1046,49 @@ public struct JobsClient: Sendable {
     public let vaniBinary: URL
     public let configPath: String?
     public let stateDir: String?
+    /// Days of age that halve a job's freshness bonus (`--half-life`); nil
+    /// leaves it to Vani's default. Sent only when set, so a vani from before
+    /// the flag keeps working until the setting is used.
+    public let halfLifeDays: Double?
     let timeout: TimeInterval
 
-    public init(vaniBinary: URL, configPath: String? = nil, stateDir: String? = nil, timeout: TimeInterval = JobsClient.timeout) {
+    public init(vaniBinary: URL, configPath: String? = nil, stateDir: String? = nil, halfLifeDays: Double? = nil, timeout: TimeInterval = JobsClient.timeout) {
         self.vaniBinary = vaniBinary
         self.configPath = configPath
         self.stateDir = stateDir
+        self.halfLifeDays = halfLifeDays
         self.timeout = timeout
     }
 
+    /// jobinsight.DefaultScoreHalfLifeDays and MaxHalfLifeDays: Vani refuses a
+    /// half-life outside (0, 365].
+    public static let defaultHalfLifeDays = 10.0
+    public static let maxHalfLifeDays = 365.0
+
+    /// `--half-life` for a setting: nothing when it is unset, not usable, or
+    /// already Vani's default.
+    static func halfLifeArguments(_ days: Double?) -> [String] {
+        guard let d = days, d.isFinite, d > 0, d <= maxHalfLifeDays, d != defaultHalfLifeDays else { return [] }
+        return ["--half-life", String(format: "%g", d)]
+    }
+
     public func list(_ view: JobView, query: String = "", sort: JobSort = .standard, filter: JobFilter = JobFilter(), limit: Int = 1000) throws -> JobsPage {
-        try call(Self.listArguments(view, query: query, sort: sort, filter: filter, limit: limit))
+        try call(Self.listArguments(view, query: query, sort: sort, filter: filter, limit: limit, halfLifeDays: halfLifeDays))
     }
 
     /// Distributions over the selection a list with the same arguments shows.
     public func stats(_ view: JobView, query: String = "", filter: JobFilter = JobFilter()) throws -> JobsStats {
-        try call(Self.statsArguments(view, query: query, filter: filter))
+        try call(Self.statsArguments(view, query: query, filter: filter, halfLifeDays: halfLifeDays))
     }
 
-    static func listArguments(_ view: JobView, query: String, sort: JobSort, filter: JobFilter, limit: Int) -> [String] {
+    static func listArguments(_ view: JobView, query: String, sort: JobSort, filter: JobFilter, limit: Int, halfLifeDays: Double? = nil) -> [String] {
         var args = ["jobs", "list", "--json", "--view", view.rawValue, "--limit", String(limit)]
         if sort != .standard { args += ["--sort", sort.rawValue] }
-        return args + selection(query, filter)
+        return args + halfLifeArguments(halfLifeDays) + selection(query, filter)
     }
 
-    static func statsArguments(_ view: JobView, query: String, filter: JobFilter) -> [String] {
-        ["jobs", "stats", "--json", "--view", view.rawValue] + selection(query, filter)
+    static func statsArguments(_ view: JobView, query: String, filter: JobFilter, halfLifeDays: Double? = nil) -> [String] {
+        ["jobs", "stats", "--json", "--view", view.rawValue] + halfLifeArguments(halfLifeDays) + selection(query, filter)
     }
 
     static func selection(_ query: String, _ filter: JobFilter) -> [String] {

@@ -17,6 +17,10 @@ import Foundation
 //   {"op":"jobFind","url":"https://..."}  -> {"found":bool,"url","matches":N,"ambiguous"?,"job"?:{key,company,title,status,mark?,closed?,matchedOn}}
 //                                          | {"error","code"}
 //   {"op":"jobMark","key":"gh:acme:123"}  -> {"ok":true,"key","mark":"applied"} | {"error","code"}
+//   {"op":"jobsIngest","page":{"url","title"?},"save_search"?:bool,"jobs":[{title,url,company?,location?,snippet?,posted?}]}
+//                                         -> `vani jobs ingest --json` output unchanged: {queued,duplicates,rejected,search,analysis}
+//                                          | {"error","code"}   (code: bad_request | unsupported | jobs;
+//                                            bounds in JobIngest, contract in docs/EXTENSION_INGEST.md)
 //   {"op":"resumePut","key":pageKey,"name":"x.pdf","pdf":base64}
 //                                         -> {"ok":true,"key","name","bytes","sha256","pickedAt"} | {"error","code"}
 //   {"op":"resumeGet","key":pageKey}      -> {"found":false} | {"found":true,"name","bytes","sha256","pickedAt","pdf":base64}
@@ -66,7 +70,45 @@ public enum NativeProtocol {
             return ["ok": true, "protocol": version, "rev": try store.read().rev]
         case "get":
             let snap = try store.read()
-            return ["rev": snap.rev, "bank": try snap.bank.jsonObject()]
+            let rawData = try snap.bank.encoded()
+            if rawData.count > NativeMessaging.chunkThreshold {
+                let chunkCount = (rawData.count + NativeMessaging.chunkSize - 1) / NativeMessaging.chunkSize
+                let chunkEnd = min(NativeMessaging.chunkSize, rawData.count)
+                let chunkStr = String(decoding: rawData[..<chunkEnd], as: UTF8.self)
+                return [
+                    "rev": snap.rev,
+                    "chunked": true,
+                    "totalBytes": rawData.count,
+                    "chunkIndex": 0,
+                    "chunkCount": chunkCount,
+                    "chunk": chunkStr
+                ]
+            }
+            // Reuse the bytes already encoded for the size check.
+            return ["rev": snap.rev, "bank": try JSONSerialization.jsonObject(with: rawData)]
+        case "getChunk":
+            guard let rev = (req["rev"] as? NSNumber)?.intValue,
+                  let index = (req["chunkIndex"] as? NSNumber)?.intValue, index >= 0 else {
+                throw BankError("getChunk needs rev and chunkIndex")
+            }
+            let snap = try store.read()
+            if snap.rev != rev {
+                return ["conflict": true, "rev": snap.rev]
+            }
+            let rawData = try snap.bank.encoded()
+            let chunkCount = (rawData.count + NativeMessaging.chunkSize - 1) / NativeMessaging.chunkSize
+            guard index < chunkCount else {
+                throw BankError("chunkIndex out of range")
+            }
+            let start = index * NativeMessaging.chunkSize
+            let end = min(start + NativeMessaging.chunkSize, rawData.count)
+            let chunkStr = String(decoding: rawData[start..<end], as: UTF8.self)
+            return [
+                "rev": snap.rev,
+                "chunkIndex": index,
+                "chunkCount": chunkCount,
+                "chunk": chunkStr
+            ]
         case "put":
             guard let baseRev = req["baseRev"], BankValidator.isNumber(baseRev),
                   let base = (baseRev as? NSNumber)?.intValue, base >= 0 else {
@@ -77,8 +119,54 @@ public enum NativeProtocol {
             case let .stored(rev, dropped):
                 return ["rev": rev, "droppedSecret": dropped]
             case let .conflict(snap):
+                let rawData = try snap.bank.encoded()
+                if rawData.count > NativeMessaging.chunkThreshold {
+                    return ["conflict": true, "rev": snap.rev, "chunked": true]
+                }
                 return ["conflict": true, "rev": snap.rev, "bank": try snap.bank.jsonObject()]
             }
+        case "patch":
+            var upsertAnswers: [Answer] = []
+            if let upsertArr = req["upsert"] as? [[String: Any]] {
+                for raw in upsertArr {
+                    guard let key = raw["key"] as? String,
+                          let kindStr = raw["kind"] as? String, let kind = FieldKind(rawValue: kindStr),
+                          let val = raw["value"] as? [String] else { continue }
+                    let labels = raw["labels"] as? [String] ?? []
+                    let signatures = raw["signatures"] as? [String] ?? []
+                    let uses = (raw["uses"] as? NSNumber)?.intValue ?? 0
+                    let fills = (raw["fills"] as? NSNumber)?.intValue ?? 0
+                    let updatedAt = raw["updatedAt"] as? String ?? isoNow()
+                    let review = (raw["review"] as? Bool) ?? false
+                    let sens = Classifier.classify(kind: kind, label: ([key] + labels).joined(separator: " "), name: "", autocomplete: "")
+                    upsertAnswers.append(Answer(key: key, labels: labels, kind: kind, value: val, sensitivity: sens, signatures: signatures, uses: uses, fills: fills, updatedAt: updatedAt, review: review))
+                }
+            }
+            let deleteKeys = req["delete"] as? [String] ?? []
+            let baseRev = (req["baseRev"] as? NSNumber)?.intValue
+            do {
+                let res = try store.patch(upsert: upsertAnswers, deleteKeys: deleteKeys, baseRev: baseRev)
+                return ["ok": true, "rev": res.rev, "droppedSecret": res.droppedSecret]
+            } catch SQLiteBankStore.StoreError.conflict(let currentRev) {
+                return ["conflict": true, "rev": currentRev]
+            }
+        case "queryCandidates":
+            let sigs = req["signatures"] as? [String] ?? []
+            let keys = req["keys"] as? [String] ?? []
+            let labels = req["labels"] as? [String] ?? []
+            let candidates = try store.queryCandidates(signatures: sigs, keys: keys, labels: labels)
+            return ["ok": true, "candidates": try candidates.map { try $0.jsonObject() }]
+        case "listAnswers":
+            let offset = (req["offset"] as? NSNumber)?.intValue ?? 0
+            let limit = (req["limit"] as? NSNumber)?.intValue ?? 50
+            let search = req["search"] as? String
+            let res = try store.listAnswers(offset: offset, limit: limit, search: search)
+            return [
+                "ok": true,
+                "total": res.total,
+                "rev": res.rev,
+                "answers": try res.answers.map { try $0.jsonObject() }
+            ]
         case "log":
             try store.log(try activityEntry(req["entry"], source: source))
             return ["ok": true]
@@ -123,6 +211,21 @@ public enum NativeProtocol {
                 return ["error": String(describing: error), "code": "jobs"]
             }
             return ["ok": true, "key": key, "mark": JobMark.applied.rawValue]
+        case "jobsIngest":
+            guard let jobs = jobs ?? (agent as? JobsBackend) else { return ["error": "jobs are not available here", "code": "unsupported"] }
+            let payload: Data
+            do { payload = try JobIngest.payload(from: req) } catch {
+                return ["error": String(describing: error), "code": "bad_request"]
+            }
+            // Nothing about the page or the jobs reaches the log, and errors name rules, not text.
+            do {
+                guard let reply = try JSONSerialization.jsonObject(with: try jobs.ingest(payload: payload)) as? [String: Any] else {
+                    return ["error": "vani's ingest reply was not an object", "code": "jobs"]
+                }
+                return reply
+            } catch {
+                return ["error": String(describing: error), "code": "jobs"]
+            }
         case "resumePut", "resumeGet", "resumeInfo", "resumeDelete":
             return resumeOp(op, req, store: store, source: source)
         case "draft":

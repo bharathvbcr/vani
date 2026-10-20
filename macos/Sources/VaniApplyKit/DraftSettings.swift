@@ -12,11 +12,15 @@ public struct DraftSettings: Codable, Equatable, Sendable {
     /// A name from `anthropic-account list`, passed as `--account`. A name, not
     /// a secret; the key and any workspace id stay with anthropic-account.
     public var anthropicAccount: String
+    /// Days of age that halve a job's freshness bonus in the Jobs ranking
+    /// (`vani jobs --half-life`). nil leaves it to Vani's default (10 days).
+    public var jobsHalfLifeDays: Double?
 
-    public init(vaniConfig: String = "", vaniStateDir: String = "", anthropicAccount: String = "") {
+    public init(vaniConfig: String = "", vaniStateDir: String = "", anthropicAccount: String = "", jobsHalfLifeDays: Double? = nil) {
         self.vaniConfig = vaniConfig
         self.vaniStateDir = vaniStateDir
         self.anthropicAccount = anthropicAccount
+        self.jobsHalfLifeDays = jobsHalfLifeDays
     }
 
     // Every field may be absent, so a file saved before a field existed still
@@ -27,6 +31,13 @@ public struct DraftSettings: Codable, Equatable, Sendable {
         vaniConfig = try c.decodeIfPresent(String.self, forKey: .vaniConfig) ?? ""
         vaniStateDir = try c.decodeIfPresent(String.self, forKey: .vaniStateDir) ?? ""
         anthropicAccount = try c.decodeIfPresent(String.self, forKey: .anthropicAccount) ?? ""
+        // A half-life that is not a usable number reads as unset rather than failing the whole file.
+        jobsHalfLifeDays = (try? c.decodeIfPresent(Double.self, forKey: .jobsHalfLifeDays)).flatMap { $0 }.flatMap(Self.usableHalfLife)
+    }
+
+    /// `days` when `vani jobs --half-life` accepts it (more than 0, at most a year).
+    static func usableHalfLife(_ days: Double) -> Double? {
+        days.isFinite && days > 0 && days <= JobsClient.maxHalfLifeDays ? days : nil
     }
 
     static func url(in directory: URL) -> URL { directory.appendingPathComponent("draft-settings.json") }
@@ -45,6 +56,12 @@ public struct DraftSettings: Codable, Equatable, Sendable {
             guard p.hasPrefix("/"), !p.contains("\0"), p.utf8.count <= 1024 else { throw BankError("\(name) must be an absolute path") }
         }
         var out = self
+        if let d = jobsHalfLifeDays {
+            guard let ok = Self.usableHalfLife(d) else {
+                throw BankError("Freshness half-life must be more than 0 and at most \(Int(JobsClient.maxHalfLifeDays)) days")
+            }
+            out.jobsHalfLifeDays = ok
+        }
         out.anthropicAccount = anthropicAccount.trimmingCharacters(in: .whitespacesAndNewlines)
         guard out.anthropicAccount.isEmpty || AnthropicAccount.isValidName(out.anthropicAccount) else {
             throw BankError("Anthropic account must be a name from anthropic-account list (letters, digits, . _ -)")
@@ -116,6 +133,7 @@ public struct DraftSettings: Codable, Equatable, Sendable {
         JobsClient(vaniBinary: vaniBinary,
                    configPath: vaniConfig.isEmpty ? nil : vaniConfig,
                    stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,
+                   halfLifeDays: jobsHalfLifeDays,
                    timeout: timeout)
     }
 

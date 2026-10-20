@@ -2,7 +2,7 @@
 // page state captured twice changes nothing (mergeCapture bumps `uses` on every
 // call). Secrets and unopted self-ID leave the page with their value removed.
 import type { Bank, FieldInfo } from "./types";
-import { MAX_OPTIONS, MAX_VALUE_CHARS, answerKey, bareCodeOutOfPlace, keepsSaved } from "./bank";
+import { MAX_OPTIONS, MAX_VALUE_CHARS, answerKey, bareCodeOutOfPlace, keepsSaved, ownerIndex } from "./bank";
 import { classify, untouchable } from "./classify";
 import { normalizeLabel, signature } from "./normalize";
 
@@ -41,6 +41,7 @@ export function pendingDiff(bank: Bank, fields: FieldInfo[], host: string, expli
   const changed: FieldInfo[] = [];
   const sens: FieldInfo[] = [];
   let unchanged = 0;
+  const owners = ownerIndex(bank.answers);
   for (const raw of fields) {
     if (untouchable(raw.kind) && raw.kind !== "password") continue;
     const f = redact(raw, bank.settings.captureSelfId);
@@ -50,8 +51,8 @@ export function pendingDiff(bank: Bank, fields: FieldInfo[], host: string, expli
       continue;
     }
     if (bareCodeOutOfPlace(f.label, value)) continue; // not an answer (bank.bareCodeOutOfPlace): nothing to send
-    const key = answerKey(f);
-    const a = key.length >= 2 ? bank.answers[key] : undefined;
+    // Held under this key or a sibling wording's (bank.ownerIndex), as mergeCapture will store it.
+    const a = answerKey(f).length >= 2 ? owners.find(f, classify(raw)) : undefined;
     const label = normalizeLabel(f.label);
     const sig = signature(host, f);
     // A bare dialling code over a fuller saved answer is never stored (bank.keepsSaved): nothing to send.

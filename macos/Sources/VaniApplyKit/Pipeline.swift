@@ -485,7 +485,7 @@ extension PipelineStatus {
     /// Untrusted text made fit for one line: whitespace, control and format
     /// characters (newlines, bidi overrides) become single spaces, and anything
     /// past `max` characters is cut with an ellipsis.
-    static func bounded(_ s: String, max: Int) -> String {
+    public static func bounded(_ s: String, max: Int) -> String {
         var out = ""
         var space = false
         for ch in s {

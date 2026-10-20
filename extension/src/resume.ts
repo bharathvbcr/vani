@@ -10,7 +10,7 @@
 // popup, and never logged.
 import type { Bank, FieldInfo } from "./types";
 import type { JobInfo } from "./draft";
-import { pageKey } from "./applied";
+import { pageKey, postingKey } from "./applied";
 import { basicsValues } from "./basics";
 import { JOB_HELP } from "./suggestjob";
 
@@ -64,9 +64,22 @@ export function isResumeField(info: Pick<FieldInfo, "kind" | "label" | "name" | 
   return resume && !all.some(w => OTHER_WORDS.has(w));
 }
 
-/** The key a resume is bound under: the page's pageKey (applied.ts), or null for a page that has none. */
+/**
+ * The key a resume is bound under: the posting's key (applied.ts postingKey, one per posting even on
+ * Workday's several routes), or null for a page that has none. The Mac app treats it as an opaque URL.
+ */
 export function resumeKey(url: unknown): string | null {
-  return pageKey(url);
+  return postingKey(url);
+}
+
+/**
+ * The key a resume was bound under before Workday's routes shared one: this page's own pageKey.
+ * Null when it is the same as resumeKey. Only a resume bound on the route being looked up is
+ * recovered this way; one stored under another route's key is not (the Mac app would have to re-key it).
+ */
+export function legacyResumeKey(url: unknown): string | null {
+  const legacy = pageKey(url);
+  return legacy !== null && legacy !== resumeKey(url) ? legacy : null;
 }
 
 export function isPdf(b: Uint8Array): boolean {
@@ -148,6 +161,38 @@ export function resumeOp(m: ResumeMessage): Record<string, unknown> | { error: s
   if (bytes.length > MAX_RESUME_BYTES) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
   if (!isPdf(bytes)) return { error: "that file is not a PDF", code: "bad_request" };
   return { op: "resumePut", key, name, pdf: m.pdf };
+}
+
+const isError = (r: unknown): boolean => isObj(r) && typeof r.error === "string";
+
+/**
+ * One resume message end to end: the native call under the posting's key and, for a page whose key
+ * changed (Workday), the key it used to have.
+ *  - get / info: not found under the new key is looked up under the old one; a failed lookup is
+ *    returned as the failure, never as "not found".
+ *  - delete: removes both, or the old binding would answer the next lookup.
+ *  - put: binds the new key, then retires this page's old binding so one job holds one slot.
+ */
+export async function runResume(m: ResumeMessage, native: (op: object) => Promise<unknown>): Promise<unknown> {
+  const op = resumeOp(m);
+  if ("error" in op) return op;
+  const legacy = legacyResumeKey(m.url);
+  const old = legacy === null ? null : { op: m.type === "resumePut" ? "resumeDelete" : m.type, key: legacy };
+  const r = await native(op);
+  if (old === null || isError(r)) return r;
+  switch (m.type) {
+    case "resumeGet":
+    case "resumeInfo":
+      return isObj(r) && r.found === false ? native(old) : r;
+    case "resumeDelete": {
+      const o = await native(old);
+      if (isError(o)) return o;
+      return isObj(r) && isObj(o) && o.removed === true ? { ...r, removed: true } : r;
+    }
+    default:
+      await native(old).catch(() => undefined); // the new binding stands even if the old one cannot be retired
+      return r;
+  }
 }
 
 // --- building one (the offer on a form with no resume chosen) ---------------------------

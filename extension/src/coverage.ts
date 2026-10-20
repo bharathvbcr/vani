@@ -1,6 +1,6 @@
 // What the extension made of the current page: the owner's check that it
 // "collects all the fields". Pure, shared by the scan reply, the panel and the popup.
-import type { Bank, FieldInfo } from "./types";
+import type { Bank, FieldInfo, Match } from "./types";
 import { classify, untouchable } from "./classify";
 import { matchField } from "./match";
 
@@ -27,28 +27,35 @@ export interface Coverage {
 
 export type Bucket = "skipped" | "manual" | "fillable" | "unknown";
 
-/** The one place a field is sorted, so scan and fill cannot disagree. */
-export function bucketOf(f: FieldInfo, manual: string, bank: Bank | null, host: string): { bucket: Bucket; known: boolean } {
+/** The one place a field is sorted, so scan and fill cannot disagree. `onMatch` receives the match it computed (not called for a skipped field or no bank). */
+export function bucketOf(f: FieldInfo, manual: string, bank: Bank | null, host: string, onMatch?: (m: Match | null) => void): { bucket: Bucket; known: boolean } {
   if (untouchable(f.kind)) return { bucket: "skipped", known: false };
   const sens = classify(f);
   if (sens === "secret" || (sens === "self_id" && !(bank?.settings.captureSelfId))) return { bucket: "skipped", known: false };
-  const known = !!bank && matchField(f, bank, host) !== null;
+  const match = bank ? matchField(f, bank, host) : undefined;
+  if (match !== undefined) onMatch?.(match);
+  const known = match != null;
   if (manual) return { bucket: "manual", known };
   return { bucket: known ? "fillable" : "unknown", known };
 }
 
-export function coverageOf(
-  refs: Array<{ info: FieldInfo; manual: string }>,
+/**
+ * `matches`, when given, is filled with the match computed for each ref (null: none) so the
+ * caller can hand the same map to fillAll (FillOptions.matches) and the page is matched once.
+ */
+export function coverageOf<R extends { info: FieldInfo; manual: string }>(
+  refs: R[],
   bank: Bank | null,
   host: string,
   scan: { capped: boolean; unread: number } = { capped: false, unread: 0 },
+  matches?: Map<R, Match | null>,
 ): Coverage {
   const c: Coverage = {
     found: refs.length, known: 0, fillable: 0, unknown: 0, manual: 0, skipped: 0,
     capped: scan.capped, unread: scan.unread, unknownLabels: [], unknownListed: 0, manualLabels: [],
   };
   for (const r of refs) {
-    const { bucket, known } = bucketOf(r.info, r.manual, bank, host);
+    const { bucket, known } = bucketOf(r.info, r.manual, bank, host, matches && (m => matches.set(r, m)));
     if (known) c.known++;
     c[bucket]++;
     const label = r.info.label.trim() || r.info.name || "(unlabelled)";

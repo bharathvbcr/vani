@@ -2,6 +2,7 @@ import { type Answer, type Bank, type FieldInfo, type Match, CHOICE_KINDS } from
 import { autocompleteKey, jaccard, normalizeLabel, signature, tokens, withoutDialCode } from "./normalize";
 import { classify, untouchable } from "./classify";
 import { entryReadings, legacyEntryKey } from "./sections";
+import { bankIndexFor, fuzzyCandidates } from "./bankindex";
 import { intentByKey, intentOf, motivationEssay } from "./intents";
 
 /** Below this a fuzzy label match is not trusted at all. */
@@ -59,22 +60,6 @@ export function mapChoice(value: string, options: string[]): string | null {
   return best >= 0 && bestScore >= 0.6 ? options[best]! : null;
 }
 
-/**
- * A saved wording's entry readings with their tokens, by wording: every field of every rescan
- * compares against every saved wording, and these never change. Bounded; cleared when full.
- */
-const readings = new Map<string, Array<{ n: number; tokens: Set<string> }>>();
-const MAX_READINGS = 8192;
-
-function savedReadings(label: string): Array<{ n: number; tokens: Set<string> }> {
-  let r = readings.get(label);
-  if (r) return r;
-  r = entryReadings(label, true).map(e => ({ n: e.n, tokens: tokens(e.base) }));
-  if (readings.size >= MAX_READINGS) readings.clear();
-  readings.set(label, r);
-  return r;
-}
-
 export function valueFor(field: FieldInfo, a: Answer): string[] | null {
   // A multi-select (select multiple, chip picker) takes every saved value, whatever its option count.
   const many = field.kind === "checkbox" || field.multi === true;
@@ -113,13 +98,16 @@ export function matchField(field: FieldInfo, bank: Bank, host: string): Match | 
   if (sens === "self_id" && !bank.settings.captureSelfId) return null;
   if (motivationEssay(field.label)) return null; // written per posting: Draft and Suggest, never a saved answer
 
-  const answers = Object.values(bank.answers);
+  // Candidates come from a per-bank index (bankindex.ts) instead of a scan of every answer; each
+  // list is in bank order, so the candidate order (and so every tie) is the full scan's.
+  const idx = bankIndexFor(bank);
+  const answers = idx.answers;
   const usable = (a: Answer) => a.sensitivity !== "secret" && (a.sensitivity !== "self_id" || bank.settings.captureSelfId);
   const candidates: Array<{ a: Answer; via: Match["via"]; score: number }> = [];
 
   const sig = signature(host, field);
   if (sig) {
-    for (const a of answers) if (usable(a) && a.signatures.includes(sig)) candidates.push({ a, via: "signature", score: 1 });
+    for (const i of idx.bySignature.get(sig) ?? []) if (usable(answers[i]!)) candidates.push({ a: answers[i]!, via: "signature", score: 1 });
   }
   const ak = autocompleteKey(field.autocomplete);
   if (ak && bank.answers[ak] && usable(bank.answers[ak]!)) candidates.push({ a: bank.answers[ak]!, via: "autocomplete", score: 0.95 });
@@ -130,22 +118,27 @@ export function matchField(field: FieldInfo, bank: Bank, host: string): Match | 
   const [page] = entryReadings(label, false);
   if (label && page) {
     const ft = tokens(page.base);
-    for (const a of answers) {
+    const exact = new Set(idx.byKeyOrLabel.get(label) ?? []);
+    const old = new Set(legacy ? idx.byKeyOrLabel.get(legacy) ?? [] : []);
+    // Exact and legacy hits are looked up; the rest are fuzzy, but only answers sharing a token with
+    // the field can reach MIN_FUZZY (see fuzzyCandidates). Merged back into bank order.
+    const near = fuzzyCandidates(idx, ft);
+    const hit = [...new Set([...exact, ...old, ...near])].sort((x, y) => x - y);
+    for (const i of hit) {
+      const a = answers[i]!;
       if (!usable(a)) continue;
-      if (a.key === label || a.labels.includes(label)) {
+      if (exact.has(i)) {
         candidates.push({ a, via: "label", score: 0.9 });
         continue;
       }
       // Just under an exact hit, so an entry re-saved under the new key outranks its old twin.
-      if (legacy && (a.key === legacy || a.labels.includes(legacy))) {
+      if (old.has(i)) {
         candidates.push({ a, via: "label", score: 0.89 });
         continue;
       }
       let best = 0;
       // Entry 2 of a repeated section never borrows entry 1's answer (or the reverse).
-      for (const l of [a.key, ...a.labels]) {
-        for (const r of savedReadings(l)) if (r.n === page.n) best = Math.max(best, jaccard(ft, r.tokens));
-      }
+      for (const r of idx.readings[i]!) if (r.n === page.n) best = Math.max(best, jaccard(ft, r.tokens));
       if (best >= MIN_FUZZY) candidates.push({ a, via: "fuzzy", score: 0.5 + 0.35 * best });
     }
   }
@@ -155,13 +148,22 @@ export function matchField(field: FieldInfo, bank: Bank, host: string): Match | 
   const want = intentOf(field.label);
   const intent = want ? intentByKey(want) : undefined;
   if (intent) {
-    for (const a of answers) {
-      if (usable(a) && [a.key, ...a.labels].some(l => intentOf(l) === want)) candidates.push({ a, via: "intent", score: 0.88 });
+    for (const i of idx.byIntent.get(want) ?? []) {
+      if (usable(answers[i]!)) candidates.push({ a: answers[i]!, via: "intent", score: 0.88 });
     }
   }
 
-  candidates.sort((x, y) => y.score - x.score ||
-    (x.via === "intent" && y.via === "intent" ? y.a.updatedAt.localeCompare(x.a.updatedAt) : y.a.uses - x.a.uses));
+  const isWant = (a: Answer) => Boolean(want && idx.intentsOf.get(a)?.has(want));
+
+  candidates.sort((x, y) => {
+    // When candidates answer the same intent as the field, the more recently updated answer wins.
+    if (want && isWant(x.a) && isWant(y.a)) {
+      const timeCmp = (y.a.updatedAt ?? "").localeCompare(x.a.updatedAt ?? "");
+      if (timeCmp !== 0) return timeCmp;
+    }
+    return y.score - x.score ||
+      (x.via === "intent" && y.via === "intent" ? (y.a.updatedAt ?? "").localeCompare(x.a.updatedAt ?? "") : y.a.uses - x.a.uses);
+  });
   for (const c of candidates) {
     const value = valueFor(field, c.a);
     if (!value) continue;

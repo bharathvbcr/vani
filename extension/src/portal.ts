@@ -36,6 +36,18 @@ export interface QueryableDoc {
   querySelectorAll(sel: string): ArrayLike<unknown>;
 }
 
+/**
+ * Whether a Workday page lists postings. A careers site's name is the tenant's own ("UTstaff",
+ * "External_Careers"), so a listing is told by what it is not: on myworkdayjobs.com every path
+ * that is not one posting (/job/ or /details/, apply steps included) or a login is a listing.
+ * Rendered jobTitle anchors mark one anywhere, and other Workday hosts keep the path hints.
+ */
+function isWorkdayBoard(host: string, path: string, qa: (sel: string) => unknown[]): boolean {
+  if (qa("a[data-automation-id='jobTitle']").length > 0) return true;
+  if (!host.includes("myworkdayjobs.com")) return path.includes("/search") || path.includes("/jobs");
+  return !/\/(job|details|login)(\/|$)/.test(path);
+}
+
 export function detectPortal(
   doc?: QueryableDoc | null,
   href?: string,
@@ -72,7 +84,7 @@ export function detectPortal(
       badge: "Workday",
       icon: "🏢",
       isATS: true,
-      isJobBoard: path.includes("/search") || path.includes("/jobs"),
+      isJobBoard: isWorkdayBoard(host, path, qa),
       isMultiStep: true,
       stepInfo,
       tips: [
@@ -86,7 +98,7 @@ export function detectPortal(
   // 2. Greenhouse
   if (
     host.includes("greenhouse.io") ||
-    q("form#application_form, div#app_body, [data-qa='greenhouse-job-board']") !== null ||
+    q("form#application_form, form#application-form, .application--form, div#app_body, [data-qa='greenhouse-job-board']") !== null ||
     (qa("script") as Array<{ src?: string }>).some(s => s.src?.includes("greenhouse.io"))
   ) {
     return {
@@ -95,7 +107,7 @@ export function detectPortal(
       badge: "Greenhouse",
       icon: "🌿",
       isATS: true,
-      isJobBoard: !q("form#application_form, [data-qa='greenhouse-job-board'], input[type=file]"),
+      isJobBoard: Boolean(q("[data-qa='greenhouse-job-board']")) || !q("form#application_form, form#application-form, .application--form, input[type=file]"),
       isMultiStep: false,
       tips: [
         "Single-page form: Fill populates contact, questions, and custom dropdowns at once.",

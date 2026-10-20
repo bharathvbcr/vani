@@ -30,10 +30,11 @@ struct VaniApplyApp: App {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case jobs = "Jobs", pipeline = "Pipeline", answers = "Answers", activity = "Activity", browsers = "Browsers", settings = "Settings"
+    case home = "Home", jobs = "Jobs", pipeline = "Pipeline", answers = "Answers", activity = "Activity", browsers = "Browsers", settings = "Settings"
     var id: String { rawValue }
     var symbol: String {
         switch self {
+        case .home: "house"
         case .jobs: "briefcase"
         case .pipeline: "waveform.path.ecg"
         case .answers: "text.bubble"
@@ -47,7 +48,7 @@ enum Pane: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(PipelineModel.self) private var pipeline
-    @State private var section: Pane? = .jobs
+    @State private var section: Pane? = .home
 
     var body: some View {
         NavigationSplitView {
@@ -68,7 +69,8 @@ struct ContentView: View {
                 if let err = model.storeError {
                     StoreErrorBanner(message: err)
                 }
-                switch section ?? .jobs {
+                switch section ?? .home {
+                case .home: HomeView(section: $section)
                 case .jobs: JobsView()
                 case .pipeline: PipelineView()
                 case .answers: AnswersView()

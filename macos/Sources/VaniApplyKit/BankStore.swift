@@ -62,11 +62,13 @@ public final class BankStore: @unchecked Sendable {
     /// How long a lock may be waited for. A writer holds it for one small file
     /// write, so five seconds of contention means something is stuck.
     let lockWait: TimeInterval
+    public let sqlite: SQLiteBankStore?
 
     public init(directory: URL, maxActivityBytes: Int = 512 * 1024, lockWait: TimeInterval = 5) {
         self.directory = directory
         self.maxActivityBytes = maxActivityBytes
         self.lockWait = lockWait
+        self.sqlite = try? SQLiteBankStore(directory: directory)
     }
 
     /// What identifies the activity log's contents without reading it: each
@@ -110,6 +112,7 @@ public final class BankStore: @unchecked Sendable {
             if current.rev != baseRev { return .conflict(current) }
             let rev = current.rev + 1
             try writeUnlocked(StoredFile(rev: rev, bank: checked.bank))
+            mirror(Snapshot(rev: rev, bank: checked.bank))
             return .stored(rev: rev, droppedSecret: checked.droppedSecret)
         }
     }
@@ -128,7 +131,105 @@ public final class BankStore: @unchecked Sendable {
             let checked = try BankValidator.validate(bank)
             let next = StoredFile(rev: current.rev + 1, bank: checked.bank)
             try writeUnlocked(next)
+            mirror(Snapshot(rev: next.rev, bank: next.bank))
             return Snapshot(rev: next.rev, bank: next.bank)
+        }
+    }
+
+    /// Granular atomic row-level patch (upsert and delete) without transferring the entire bank.
+    /// bank.json is the source of truth: the patch is applied to it, and the SQLite mirror is then
+    /// brought to the same revision, so a mirror that missed an earlier write cannot lose rows and a
+    /// missing SQLite file cannot fail a capture.
+    public func patch(upsert: [Answer], deleteKeys: [String], baseRev: Int? = nil) throws -> SQLiteBankStore.PatchResult {
+        try withLock(exclusive: true) {
+            let current = try readUnlocked()
+            if let base = baseRev, base != current.rev {
+                throw SQLiteBankStore.StoreError.conflict(current.rev)
+            }
+            let (kept, droppedSecret) = SQLiteBankStore.screen(upsert)
+            var bank = current.bank
+            for key in deleteKeys { bank.answers[key] = nil }
+            for a in kept { bank.answers[a.key] = a }
+            // Rows the bank cannot hold are refused here; writing them would leave bank.json unreadable.
+            let checked = try BankValidator.validate(bank)
+            let next = Snapshot(rev: current.rev + 1, bank: checked.bank)
+            try writeUnlocked(StoredFile(rev: next.rev, bank: next.bank))
+            mirror(next)
+            return SQLiteBankStore.PatchResult(rev: next.rev, droppedSecret: droppedSecret)
+        }
+    }
+
+    /// Bring the SQLite mirror to the snapshot just written to bank.json (callers hold the lock).
+    /// A failure leaves bank.json authoritative and is noted on stderr, with no bank content;
+    /// the next write resyncs again, so it never fails the user's write.
+    private func mirror(_ snapshot: Snapshot) {
+        guard let sqlite else { return }
+        do { try sqlite.resync(snapshot) } catch {
+            FileHandle.standardError.write(Data("vani: bank.sqlite mirror not updated (\(error)); bank.json is unaffected\n".utf8))
+        }
+    }
+
+    /// Fast indexed lookup for form matching candidates based on signatures, keys, and labels.
+    public func queryCandidates(signatures: [String] = [], keys: [String] = [], labels: [String] = []) throws -> [Answer] {
+        try readMirrorOrJSON({ try $0.queryCandidates(signatures: signatures, keys: keys, labels: labels) }) { snap in
+            snap.bank.answers.values.filter { a in
+                keys.contains(a.key) || a.signatures.contains(where: signatures.contains) || a.labels.contains(where: labels.contains)
+            }
+        }
+    }
+
+    /// Paginated list and search for UI tables. Search matches key, value and labels, ASCII
+    /// case-insensitively, with % _ and \ matching themselves, the same on both paths.
+    public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> SQLiteBankStore.ListResult {
+        try readMirrorOrJSON({ try $0.listAnswers(offset: offset, limit: limit, search: search) }) { snap in
+            var all = Array(snap.bank.answers.values)
+            if let s = search, !s.trimmingCharacters(in: .whitespaces).isEmpty {
+                let needle = Self.asciiLowercased(s)
+                all = all.filter { a in
+                    ([a.key] + a.value + a.labels).contains { Self.asciiLowercased($0).contains(needle) }
+                }
+            }
+            all.sort { $0.updatedAt > $1.updatedAt }
+            let slice = all.dropFirst(max(offset, 0)).prefix(max(limit, 0))
+            return SQLiteBankStore.ListResult(total: all.count, rev: snap.rev, answers: Array(slice))
+        }
+    }
+
+    /// SQLite's LIKE folds ASCII case only; the JSON path folds the same way so the two agree.
+    private static func asciiLowercased(_ s: String) -> String {
+        String(String.UnicodeScalarView(s.unicodeScalars.map { ("A"..."Z").contains($0) ? Unicode.Scalar($0.value + 32)! : $0 }))
+    }
+
+    /// Answer from the SQLite mirror only while it is at bank.json's revision, checked under the
+    /// shared lock (writers hold the exclusive one, so the mirror cannot move mid-read). When it is
+    /// behind, ahead or unreadable, answer from bank.json, the source of truth, and afterwards try
+    /// to repair the mirror. The repair waits only briefly for the exclusive lock, so a read is
+    /// never held up by a writer.
+    private func readMirrorOrJSON<T>(_ fromMirror: (SQLiteBankStore) throws -> T, _ fromJSON: (Snapshot) -> T) throws -> T {
+        var mirrorStale = false
+        let result: T = try withLock(exclusive: false) {
+            let snap = try readUnlocked()
+            if let sqlite {
+                if (try? sqlite.currentRevision()) == snap.rev, let fromSQLite = try? fromMirror(sqlite) { return fromSQLite }
+                mirrorStale = true
+            }
+            return fromJSON(snap)
+        }
+        if mirrorStale { repairMirror() }
+        return result
+    }
+
+    /// Best-effort: resync the mirror to bank.json if it is still out of step once the exclusive lock
+    /// is held. A failure is noted on stderr (no bank content) and never reaches the reader.
+    private func repairMirror() {
+        guard let sqlite else { return }
+        do {
+            try withFileLock(lockURL, exclusive: true, wait: min(lockWait, 0.25), what: "the answer bank") {
+                let snap = try readUnlocked()
+                if (try? sqlite.currentRevision()) != snap.rev { try sqlite.resync(snap) }
+            }
+        } catch {
+            FileHandle.standardError.write(Data("vani: bank.sqlite mirror not repaired (\(error)); bank.json is unaffected\n".utf8))
         }
     }
 

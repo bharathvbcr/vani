@@ -123,4 +123,26 @@ final class JobsModelTests: XCTestCase {
         XCTAssertNotNil(m.actionError)
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("jobs note") })
     }
+
+    /// New opens by priority; another view gets its own default; a sort the owner
+    /// picked is kept across view changes.
+    func testEachViewOpensInItsDefaultSortUnlessOneWasPicked() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        XCTAssertEqual(m.sort, .priority)
+        await m.refresh()
+        XCTAssertTrue(f.calls().contains { $0.contains("--sort priority") }, "\(f.calls())")
+
+        m.view = .saved
+        XCTAssertEqual(m.sort, .standard, "marked views list by when they were marked")
+        m.view = .new
+        XCTAssertEqual(m.sort, .priority)
+
+        m.sort = .fresh
+        m.view = .applied
+        XCTAssertEqual(m.sort, .fresh, "a picked sort survives a view change")
+        m.view = .new
+        XCTAssertEqual(m.sort, .fresh)
+        try await eventually("the fresh order") { m.jobs.map(\.key) == JobsFixture.freshOrder }
+    }
 }

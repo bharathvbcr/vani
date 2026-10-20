@@ -112,21 +112,47 @@ extension VaniProcess {
     static func call<T: Decodable>(_ binary: URL, _ args: [String], configPath: String?, stateDir: String?,
                                    input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int,
                                    decoder: JSONDecoder = JSONDecoder(), tooOld: String) throws -> T {
+        let (out, name) = try finished(binary, args, configPath: configPath, stateDir: stateDir, input: input,
+                                       timeout: timeout, maxOutputBytes: maxOutputBytes)
+        if out.status == 0, let value = try? decoder.decode(T.self, from: out.stdout) {
+            return value
+        }
+        throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+    }
+
+    /// Like `call`, but the reply is handed back as the bytes vani wrote, unchanged:
+    /// on exit 0 they must be one JSON object. For a caller that relays the reply as is.
+    static func callRaw(_ binary: URL, _ args: [String], configPath: String?, stateDir: String?,
+                        input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int, tooOld: String) throws -> Data {
+        let (out, name) = try finished(binary, args, configPath: configPath, stateDir: stateDir, input: input,
+                                       timeout: timeout, maxOutputBytes: maxOutputBytes)
+        if out.status == 0, (try? JSONSerialization.jsonObject(with: out.stdout)) is [String: Any] {
+            return out.stdout
+        }
+        throw failure(out, name: name, decoder: JSONDecoder(), tooOld: tooOld)
+    }
+
+    /// Runs the command and refuses what no reply can come from: it did not start, did
+    /// not finish in time, or wrote more than the ceiling. Also returns the command's
+    /// name: its leading words, before any flag.
+    private static func finished(_ binary: URL, _ args: [String], configPath: String?, stateDir: String?,
+                                 input: Data?, timeout: TimeInterval, maxOutputBytes: Int) throws -> (Outcome, String) {
         let out = run(binary, arguments: args, environment: environment(configPath: configPath, stateDir: stateDir),
                       input: input, timeout: timeout, maxOutputBytes: maxOutputBytes)
-        // The command's name: its leading words, before any flag.
         let name = "vani \(args.prefix { !$0.hasPrefix("-") }.prefix(2).joined(separator: " "))"
         if let launchError = out.launchError { throw BankError(launchError) }
         if out.timedOut { throw BankError("\(name) did not finish within \(Int(timeout)) s") }
         let cap = maxOutputBytes >= 1 << 20 ? "\(maxOutputBytes >> 20) MB" : "\(maxOutputBytes >> 10) KB"
         if out.truncated { throw BankError("vani's reply was larger than \(cap)") }
-        if out.status == 0, let value = try? decoder.decode(T.self, from: out.stdout) {
-            return value
-        }
+        return (out, name)
+    }
+
+    /// vani's `{"error": ...}` as it wrote it, or an account of the missing reply.
+    private static func failure(_ out: Outcome, name: String, decoder: JSONDecoder, tooOld: String) -> BankError {
         if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
-            throw BankError(failure.error)
+            return BankError(failure.error)
         }
-        throw BankError("\(name) exited \(out.status ?? -1) without a reply" + (out.status == 2 ? " (\(tooOld))" : ""))
+        return BankError("\(name) exited \(out.status ?? -1) without a reply" + (out.status == 2 ? " (\(tooOld))" : ""))
     }
 }
 

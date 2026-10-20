@@ -104,6 +104,44 @@ describe("basics", () => {
     expect(again.bank.answers["first name"]?.value).toEqual(["Test"]);
   });
 
+  test("saving a basic supersedes older specific question wordings for the same intent", () => {
+    const olderDate = new Date("2024-01-01T00:00:00Z");
+    const newerDate = new Date("2026-10-19T12:00:00Z");
+    const specificLabel = "Will you now or will you in the future require employment visa sponsorship to work in the country in which the job you're applying for is located?";
+    // Old capture from greenhouse with "Yes"
+    const prior = mergeCapture(emptyBank(), [
+      field({ label: specificLabel, kind: "select", options: ["Yes", "No"], value: ["Yes"] }),
+    ], "job-boards.greenhouse.io", olderDate).bank;
+
+    // User updates their basic in the popup to "No"
+    const updated = mergeCapture(prior, basicsFields({ "visa-sponsorship": "No" }), BASICS_HOST, newerDate).bank;
+
+    // A form asking the specific question wording must now fill "No"
+    const yn = field({ label: specificLabel, kind: "select", options: ["Yes", "No"] });
+    const m = matchField(yn, updated, "job-boards.greenhouse.io");
+    expect(m?.value).toEqual(["No"]);
+  });
+
+  test("clearing a previously saved basic removes it from the bank", () => {
+    const savedValues = basicsValues(saved.bank);
+    expect(savedValues.phone).toBe(ENTERED.phone);
+    // User clears phone in the basics popup
+    const clearedFields = basicsFields({ ...savedValues, phone: "" }, savedValues);
+    expect(clearedFields.length).toBeGreaterThan(0);
+    const after = mergeCapture(saved.bank, clearedFields, BASICS_HOST, now).bank;
+    expect(basicsValues(after).phone).toBe("");
+    expect(after.answers["phone"]).toBeUndefined();
+  });
+
+  test("clearing a previously saved intent basic removes it and its wordings from the bank", () => {
+    const work = mergeCapture(emptyBank(), basicsFields({ "visa-sponsorship": "No" }), BASICS_HOST, now).bank;
+    const workValues = basicsValues(work);
+    expect(workValues["visa-sponsorship"]).toBe("No");
+    const cleared = basicsFields({ ...workValues, "visa-sponsorship": "" }, workValues);
+    const after = mergeCapture(work, cleared, BASICS_HOST, now).bank;
+    expect(basicsValues(after)["visa-sponsorship"]).toBe("");
+  });
+
   test("a basic that still shows the saved value is not sent again", () => {
     const shown = basicsValues(saved.bank);
     expect(basicsFields(shown, shown)).toEqual([]);

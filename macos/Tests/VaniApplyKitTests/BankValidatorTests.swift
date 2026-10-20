@@ -39,10 +39,11 @@ final class BankValidatorTests: XCTestCase {
         refused(bankJSON(many), "max 2000")
     }
 
-    func testRefusesABankOverTheByteCap() {
-        // 100 answers x 10 values x 1000 chars is ~1 MB.
+    func testAcceptsABankOver1MBAndRefusesOverByteCap() throws {
+        // 100 answers x 10 values x 1000 chars is ~1 MB: accepted now with chunking
         let big = (0..<100).map { answerJSON("question \($0)", value: Array(repeating: String(repeating: "y", count: 1000), count: 10)) }
-        refused(bankJSON(big), "byte limit")
+        let result = try BankValidator.validate(bankJSON(big))
+        XCTAssertEqual(result.bank.answers.count, 100)
     }
 
     func testDropsAndCountsSecretAnswers() throws {

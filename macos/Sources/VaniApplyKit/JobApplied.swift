@@ -58,6 +58,9 @@ public struct JobMatch: Codable, Equatable, Sendable {
 public protocol JobsBackend: Sendable {
     func find(url: String) throws -> JobMatch
     func markApplied(key: String) throws
+    /// `vani jobs ingest --json`: queue scraped jobs (JobIngest). `payload` is the checked
+    /// request JSON; the reply is vani's JSON, unchanged.
+    func ingest(payload: Data) throws -> Data
 }
 
 extension JobsClient: JobsBackend {
@@ -88,6 +91,16 @@ public struct AgentJobsOps: Sendable {
         guard let checked = JobLinks.checkedKey(key) else { return "not a posting key" }
         do { try jobs.markApplied(key: checked); return nil } catch { return String(describing: error) }
     }
+
+    /// Re-checks the request, since the agent trusts no caller, and hands vani the rebuilt one.
+    public func ingest(payload: Data) -> (reply: Data?, error: String?) {
+        do {
+            guard payload.count <= JobIngest.maxPayloadBytes, let req = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+                return (nil, "not a jobsIngest request")
+            }
+            return (try jobs.ingest(payload: try JobIngest.payload(from: req)), nil)
+        } catch { return (nil, String(describing: error)) }
+    }
 }
 
 /// Safari's route: the Jobs ops go to the agent, which runs `vani jobs`. Unlike drafts and
@@ -112,6 +125,18 @@ extension XPCAgentClient: JobsBackend {
             }
         }
         guard r["ok"] as? Bool == true else { throw BankError(r["error"] as? String ?? "the agent did not confirm the mark") }
+    }
+
+    public func ingest(payload: Data) throws -> Data {
+        // vani may drain the inbox into the ledger, so this waits longer than the other calls.
+        let r = call(timeout: Self.ingestCallTimeout) { agent, done, box in
+            agent.ingest(payload: payload) { data, error in
+                if let data { box.set(["reply": data]) } else { box.set(["error": error ?? "the agent sent no result"]) }
+                done.signal()
+            }
+        }
+        guard let data = r["reply"] as? Data else { throw BankError(r["error"] as? String ?? "the agent sent no result") }
+        return data
     }
 }
 

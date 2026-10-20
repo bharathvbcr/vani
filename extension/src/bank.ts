@@ -1,6 +1,10 @@
-import { type Answer, type Bank, type FieldInfo, type FieldKind, CHOICE_KINDS, emptyBank } from "./types";
-import { autocompleteKey, dialCodeOnly, normalizeLabel, signature } from "./normalize";
+import { type Answer, type Bank, type FieldInfo, type FieldKind, type Sensitivity, CHOICE_KINDS, emptyBank } from "./types";
+import { autocompleteKey, dialCodeOnly, normalizeLabel, signature, tokens } from "./normalize";
 import { classify, untouchable } from "./classify";
+import { intentOf } from "./intents";
+
+/** The capture host for answers typed in the popup: never a real site, so no per-site signature is kept. */
+export const BASICS_HOST = "vani-basics";
 
 // Bounds: the bank lives in chrome.storage.local (10 MB quota) or the Mac app,
 // and is exported as JSON, so every list and string is capped.
@@ -12,10 +16,10 @@ export const MAX_OPTIONS = 200;
 /** Free text longer than this is usually job-specific ("why us?"): kept, filled as a draft. */
 export const REVIEW_CHARS = 280;
 /**
- * Serialized bank cap. Chrome limits a native-messaging host's reply to the
- * extension at 1 MB, so the whole bank must fit in one reply with headroom.
+ * Serialized bank cap (safety bound against memory exhaustion).
+ * Chunked native-messaging streaming removes the 1 MB message limit.
  */
-export const MAX_BANK_BYTES = 900_000;
+export const MAX_BANK_BYTES = 50_000_000;
 
 /** UTF-8 size of the bank as it travels (compact JSON). */
 export function bankBytes(bank: Bank): number {
@@ -66,6 +70,98 @@ export function answerKey(f: Pick<FieldInfo, "label" | "autocomplete">): string 
   return autocompleteKey(f.autocomplete) || normalizeLabel(f.label);
 }
 
+/**
+ * The meaning of a question, independent of its wording: the intent id when the
+ * label reads as exactly one intent, else the autocomplete meaning, else its
+ * sorted unique content tokens ("LinkedIn" and "LinkedIn Profile URL" both give
+ * "linkedin"). "" when nothing is left to identify it. Kept here, not in
+ * normalize.ts: intents.ts imports normalize.ts, so the reverse import is a cycle.
+ * Swift's Classifier.conceptKey is held to the same extension/test/vectors/concept.json.
+ */
+export function conceptKey(label: string, autocomplete: string): string {
+  const intent = intentOf(label);
+  if (intent) return intent;
+  const ac = autocompleteKey(autocomplete);
+  if (ac) return ac;
+  return [...tokens(label)].sort().join(" ");
+}
+
+/** Choice answers and text answers never stand in for each other. */
+function kindsCompatible(a: FieldKind, b: FieldKind): boolean {
+  return CHOICE_KINDS.has(a) === CHOICE_KINDS.has(b);
+}
+
+export interface OwnerIndex {
+  /** The answer that already holds this question, under its own key or a sibling wording's. */
+  find(f: Pick<FieldInfo, "kind" | "label" | "autocomplete">, sens: Sensitivity): Answer | undefined;
+  /** Record an answer stored or changed since the index was built. */
+  add(a: Answer): void;
+  /** Forget what was built: answers were deleted. */
+  invalidate(): void;
+  /** conceptKey calls made so far: one per stored wording at build, then one per find. */
+  readonly computed: number;
+}
+
+/**
+ * Finds the existing answer to a question. The concept map is built once, on the
+ * first miss on the exact key, from the key and every wording of each answer (O(N));
+ * a lookup is then one map read, however many answers the bank holds. A concept
+ * key only counts when non-empty, the kinds are compatible and the sensitivity is
+ * equal. Among several matches the most used wins, then the newest, then the key.
+ */
+export function ownerIndex(answers: Record<string, Answer>): OwnerIndex {
+  let byConcept: Map<string, Set<string>> | null = null;
+  let computed = 0;
+  const addAnswer = (m: Map<string, Set<string>>, a: Answer) => {
+    for (const l of [a.key, ...a.labels]) {
+      computed++;
+      const c = conceptKey(l, "");
+      if (!c) continue;
+      const set = m.get(c);
+      if (set) set.add(a.key); else m.set(c, new Set([a.key]));
+    }
+  };
+  return {
+    find(f, sens) {
+      const direct = Object.hasOwn(answers, answerKey(f)) ? answers[answerKey(f)] : undefined;
+      if (direct) return direct;
+      computed++;
+      const want = conceptKey(f.label, f.autocomplete);
+      if (!want) return undefined;
+      if (!byConcept) {
+        byConcept = new Map();
+        for (const a of Object.values(answers)) addAnswer(byConcept, a);
+      }
+      let best: Answer | undefined;
+      for (const k of byConcept.get(want) ?? []) {
+        const a = Object.hasOwn(answers, k) ? answers[k] : undefined;
+        if (!a || a.sensitivity !== sens || !kindsCompatible(a.kind, f.kind)) continue;
+        // The stored row is re-classified from its key and every wording joined (parseBank): a
+        // wording that would change that reading (to secret, which drops the row, or to self_id)
+        // makes no owner.
+        const joined = (extra: string[]): Sensitivity => classify({ kind: a.kind, label: [a.key, ...a.labels, ...extra].join(" "), name: "", autocomplete: "" });
+        if (joined([f.label]) !== joined([])) continue;
+        if (!best || a.uses > best.uses || (a.uses === best.uses && (a.updatedAt > best.updatedAt || (a.updatedAt === best.updatedAt && a.key < best.key)))) best = a;
+      }
+      return best;
+    },
+    add(a) {
+      if (byConcept) addAnswer(byConcept, a);
+    },
+    invalidate() {
+      byConcept = null;
+    },
+    get computed() {
+      return computed;
+    },
+  };
+}
+
+/** One-shot owner lookup; callers that look up many fields keep an ownerIndex instead. */
+export function findOwner(bank: Bank, f: Pick<FieldInfo, "kind" | "label" | "autocomplete">, sens: Sensitivity): Answer | undefined {
+  return ownerIndex(bank.answers).find(f, sens);
+}
+
 function clip(xs: string[], n: number): string[] {
   return xs.slice(0, n);
 }
@@ -106,6 +202,7 @@ function addUnique(list: string[], item: string, cap: number): string[] {
 export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now: Date): CaptureResult {
   const out: Bank = { ...bank, answers: { ...bank.answers } };
   const res: CaptureResult = { bank: out, added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 };
+  const owners = ownerIndex(out.answers);
   for (const f of fields) {
     if (f.kind === "password") { res.skippedSecret++; continue; }
     if (untouchable(f.kind)) continue;
@@ -114,12 +211,38 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     if (sens === "self_id" && !bank.settings.captureSelfId) { res.skippedSelfId++; continue; }
     const value = clip(f.value.map(v => v.trim()).filter(Boolean), MAX_OPTIONS).map(v => v.slice(0, MAX_VALUE_CHARS));
     // An unchecked single checkbox reads "no": that is an answer, but an
-    // empty text box is not.
-    if (value.length === 0) { res.skippedEmpty++; continue; }
+    // empty text box is not. When saving basics, an empty value means the
+    // user explicitly cleared that basic: remove it and related wordings.
+    if (value.length === 0) {
+      if (host === BASICS_HOST) {
+        const key = answerKey(f);
+        const want = intentOf(f.label);
+        let removed = false;
+        if (out.answers[key]) {
+          delete out.answers[key];
+          removed = true;
+        }
+        if (want) {
+          for (const [k, a] of Object.entries(out.answers)) {
+            if ([a.key, ...a.labels].some(l => intentOf(l) === want)) {
+              delete out.answers[k];
+              removed = true;
+            }
+          }
+        }
+        if (removed) { res.updated++; owners.invalidate(); }
+      } else {
+        res.skippedEmpty++;
+      }
+      continue;
+    }
     const key = answerKey(f);
     if (key.length < 2) { res.skippedEmpty++; continue; }
     if (bareCodeOutOfPlace(f.label, value)) { res.skippedEmpty++; continue; }
-    const prev = out.answers[key];
+    // The answer that already holds this question, under this key or a sibling
+    // wording's ("LinkedIn" / "LinkedIn Profile URL"): stored into, never renamed.
+    const prev = owners.find(f, sens);
+    const target = prev?.key ?? key;
     if (prev && keepsSaved(prev.value, value)) continue;
     if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedEmpty++; continue; }
     const label = normalizeLabel(f.label);
@@ -128,7 +251,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     // answer however short: both are filled next time only as drafts to review.
     const long = f.drafted === true || (!CHOICE_KINDS.has(f.kind) && value.join(" ").length > REVIEW_CHARS);
     const next: Answer = {
-      key,
+      key: target,
       labels: addUnique(prev?.labels ?? [], label, MAX_LABELS),
       kind: f.kind,
       value,
@@ -139,10 +262,53 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
       updatedAt: now.toISOString(),
       review: long,
     };
-    out.answers[key] = next;
+    out.answers[target] = next;
+    owners.add(next);
     if (prev) res.updated++; else res.added++;
+
+    // Every other answer that shares this intent (a basic or a captured wording) takes the new value.
+    const want = intentOf(f.label);
+    if (want) {
+      for (const [k, a] of Object.entries(out.answers)) {
+        if (k !== target && [a.key, ...a.labels].some(l => intentOf(l) === want)) {
+          out.answers[k] = {
+            ...a,
+            value,
+            updatedAt: now.toISOString(),
+            review: host === BASICS_HOST ? false : long,
+          };
+        }
+      }
+    }
   }
   return res;
+}
+
+export interface CaptureDelta {
+  upsert: Answer[];
+  deleteKeys: string[];
+  counts: Omit<CaptureResult, "bank">;
+}
+
+/**
+ * Computes the minimal delta (upsert and deleteKeys) for granular row-level patching.
+ */
+export function mergeCaptureDelta(bank: Bank, fields: FieldInfo[], host: string, now: Date): CaptureDelta {
+  const result = mergeCapture(bank, fields, host, now);
+  const upsert: Answer[] = [];
+  const deleteKeys: string[] = [];
+  for (const [k, a] of Object.entries(result.bank.answers)) {
+    if (bank.answers[k] !== a) {
+      upsert.push(a);
+    }
+  }
+  for (const k of Object.keys(bank.answers)) {
+    if (!result.bank.answers[k]) {
+      deleteKeys.push(k);
+    }
+  }
+  const { bank: _, ...counts } = result;
+  return { upsert, deleteKeys, counts };
 }
 
 const KINDS: ReadonlySet<string> = new Set<FieldKind>([
@@ -159,7 +325,7 @@ function isStrArray(x: unknown, cap: number): x is string[] {
  * because a hand-edited export must not smuggle in what capture refuses.
  */
 export function parseBank(json: string): { bank: Bank; droppedSecret: number } {
-  if (json.length > 8_000_000) throw new Error("bank file is larger than 8 MB");
+  if (json.length > MAX_BANK_BYTES) throw new Error(`bank file is larger than ${MAX_BANK_BYTES} bytes`);
   const raw: unknown = JSON.parse(json);
   if (!raw || typeof raw !== "object") throw new Error("bank is not an object");
   const r = raw as Record<string, unknown>;

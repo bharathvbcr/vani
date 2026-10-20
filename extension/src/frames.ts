@@ -242,6 +242,7 @@ export interface ContentHandlers {
   getRelevance?(): Promise<unknown> | unknown;
   jumpToMissed?(index: number): void | Promise<void>;
   insertTailored?(label: string, text: string): void | Promise<void>;
+  attachResume?(name: string, pdf: string, pickedAt: string): Promise<unknown> | unknown;
 }
 
 type Listener = (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean;
@@ -285,6 +286,10 @@ export function contentListener(h: ContentHandlers): Listener {
     }
     if (msg.type === "insertTailored") {
       void Promise.resolve().then(() => h.insertTailored?.(msg.label, msg.text)).then(() => sendResponse({ ok: true }), (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+    if (msg.type === "attachResume") {
+      void Promise.resolve().then(() => h.attachResume?.(msg.name, msg.pdf, msg.pickedAt)).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
     const run = (): Promise<unknown> => msg.type === "scan" ? h.scan() : msg.type === "fill" ? h.fill(msg.overwrite, msg.typeahead) : h.capture();

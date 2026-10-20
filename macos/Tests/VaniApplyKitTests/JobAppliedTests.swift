@@ -213,6 +213,11 @@ final class JobAppliedTests: XCTestCase {
         func markApplied(key: String) throws {
             if let e = ops.markApplied(key: key) { throw BankError(e) }
         }
+        func ingest(payload: Data) throws -> Data {
+            let r = ops.ingest(payload: payload)
+            guard let data = r.reply else { throw BankError(r.error ?? "none") }
+            return data
+        }
     }
 
     func testSafariReachesTheJobsOpsThroughTheAgent() throws {
@@ -279,6 +284,8 @@ final class JobAppliedTests: XCTestCase {
         func result(job: String, reply: @escaping (Data?, Bool, String?) -> Void) { reply(nil, false, "unused") }
         func find(url: String, reply: @escaping (Data?, String?) -> Void) { let r = ops.find(url: url); reply(r.match, r.error) }
         func markApplied(key: String, reply: @escaping (String?) -> Void) { reply(ops.markApplied(key: key)) }
+        func ingest(payload: Data, reply: @escaping (Data?, String?) -> Void) { let r = ops.ingest(payload: payload); reply(r.reply, r.error) }
+        func identity(reply: @escaping (String) -> Void) { reply("/Applications/Vani Apply.app") }
     }
 
     func testTheJobsCallsCrossAnXPCConnection() throws {

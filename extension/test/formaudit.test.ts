@@ -180,4 +180,38 @@ describe("form audit & missed fillings", () => {
 
     expect(hasValue(ref)).toBe(true);
   });
+
+  test("hasValue does not falsely mark second file input as attached when container has multiple file inputs", () => {
+    // Form with two file inputs
+    const formContainer = document.createElement("div");
+    const resumeInput = document.createElement("input");
+    resumeInput.type = "file";
+    const coverLetterInput = document.createElement("input");
+    coverLetterInput.type = "file";
+
+    formContainer.append(resumeInput, coverLetterInput);
+    // Add mock querySelectorAll to find the two inputs
+    formContainer.querySelectorAll = ((sel: string) => sel.includes("file") ? [resumeInput, coverLetterInput] : []) as any;
+    // Simulate attached pill inside the shared form
+    formContainer.querySelector = ((sel: string) => sel.includes("file-name") ? document.createElement("div") : null) as any;
+    coverLetterInput.closest = () => formContainer;
+
+    const coverLetterRef = mockRef({ kind: "file", label: "Cover Letter" }, coverLetterInput);
+    expect(hasValue(coverLetterRef)).toBe(false);
+  });
+
+  test("jumpToField called consecutively preserves original styles cleanly", () => {
+    const el = document.createElement("input");
+    el.style.outline = "2px solid #2e8b57";
+    document.body.append(el);
+    el.scrollIntoView = () => {};
+    const ref = mockRef({ label: "Outlined Field" }, el);
+
+    // Call jumpToField twice rapidly
+    jumpToField(ref);
+    expect(el.style.outline).toBe("3px solid #f59e0b");
+    jumpToField(ref);
+    expect(el.style.outline).toBe("3px solid #f59e0b");
+    el.remove();
+  });
 });

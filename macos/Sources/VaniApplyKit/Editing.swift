@@ -51,13 +51,32 @@ public enum Editing {
         !kind.isChoice && value.joined(separator: " ").utf16.count > Limits.reviewChars
     }
 
+    /// The answer that already holds this question, under its own key or a sibling
+    /// wording's ("LinkedIn" for "LinkedIn profile URL"). Mirrors bank.ts ownerIndex:
+    /// the concept key must be non-empty, the kinds both choice or both text, the
+    /// sensitivity equal; among several the most used, then the newest, then the key.
+    public static func owner(of question: String, kind: FieldKind, in bank: Bank) -> Answer? {
+        let key = Classifier.normalizeLabel(question)
+        if let direct = bank.answers[key] { return direct }
+        let sens = Classifier.classify(kind: kind, label: question, name: "", autocomplete: "")
+        let want = Classifier.conceptKey(label: question, autocomplete: "")
+        if want.isEmpty { return nil }
+        var best: Answer?
+        for a in bank.answers.values where a.sensitivity == sens && a.kind.isChoice == kind.isChoice {
+            guard ([a.key] + a.labels).contains(where: { Classifier.conceptKey(label: $0, autocomplete: "") == want }) else { continue }
+            if let b = best, (a.uses, a.updatedAt, b.key) <= (b.uses, b.updatedAt, a.key) { continue }
+            best = a
+        }
+        return best
+    }
+
     /// A new answer typed into the app.
     public static func newAnswer(question: String, kind: FieldKind, text: String, in bank: Bank, now: Date = Date()) throws -> Answer {
         let key = Classifier.normalizeLabel(question)
         if key.utf16.count < 2 { throw EditError.emptyQuestion }
         let sens = Classifier.classify(kind: kind, label: question, name: "", autocomplete: "")
         if sens == .secret { throw EditError.secret }
-        if bank.answers[key] != nil { throw EditError.duplicate(key) }
+        if let existing = owner(of: question, kind: kind, in: bank) { throw EditError.duplicate(existing.key) }
         if bank.answers.count >= Limits.maxAnswers { throw EditError.full }
         let value = try checked(values(from: text, kind: kind))
         return Answer(key: key, labels: [key], kind: kind, value: value, sensitivity: sens, signatures: [],
@@ -87,9 +106,8 @@ public enum Editing {
     /// existing one's value replaced. Always marked for review, so the extension
     /// fills it yellow and never as a confident answer.
     public static func savingDraft(question: String, text: String, in bank: Bank, now: Date = Date()) throws -> Answer {
-        let key = Classifier.normalizeLabel(question)
         var a: Answer
-        if let existing = bank.answers[key] {
+        if let existing = owner(of: question, kind: .textarea, in: bank) {
             a = try edited(existing, text: text, now: now)
         } else {
             a = try newAnswer(question: question, kind: .textarea, text: text, in: bank, now: now)

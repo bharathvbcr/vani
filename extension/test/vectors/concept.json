@@ -1,0 +1,525 @@
+{
+ "comment": "Generated from extension/src/bank.ts conceptKey; read by bun test (concept.test.ts) and swift test (ConceptKeyTests) so the two cannot drift.",
+ "cases": [
+  {
+   "label": "LinkedIn",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "LinkedIn Profile URL",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "LinkedIn URL",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "Your LinkedIn profile",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "linkedin.com/in/...",
+   "autocomplete": "",
+   "want": "com linkedin"
+  },
+  {
+   "label": "LinkedIn Profile *",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "LINKEDIN PROFILE LINK (optional)",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "GitHub",
+   "autocomplete": "",
+   "want": "github"
+  },
+  {
+   "label": "GitHub URL",
+   "autocomplete": "",
+   "want": "github"
+  },
+  {
+   "label": "GitHub Profile",
+   "autocomplete": "",
+   "want": "github"
+  },
+  {
+   "label": "Github handle",
+   "autocomplete": "",
+   "want": "github"
+  },
+  {
+   "label": "Portfolio",
+   "autocomplete": "",
+   "want": "portfolio"
+  },
+  {
+   "label": "Portfolio URL",
+   "autocomplete": "",
+   "want": "portfolio"
+  },
+  {
+   "label": "Personal website",
+   "autocomplete": "",
+   "want": "personal website"
+  },
+  {
+   "label": "Website",
+   "autocomplete": "",
+   "want": "website"
+  },
+  {
+   "label": "Website",
+   "autocomplete": "url",
+   "want": "website"
+  },
+  {
+   "label": "Personal Website URL",
+   "autocomplete": "url",
+   "want": "website"
+  },
+  {
+   "label": "Phone",
+   "autocomplete": "",
+   "want": "phone"
+  },
+  {
+   "label": "Phone number",
+   "autocomplete": "",
+   "want": "phone"
+  },
+  {
+   "label": "Mobile number",
+   "autocomplete": "",
+   "want": "phone"
+  },
+  {
+   "label": "Cell phone",
+   "autocomplete": "",
+   "want": "phone"
+  },
+  {
+   "label": "Telephone",
+   "autocomplete": "tel",
+   "want": "phone"
+  },
+  {
+   "label": "Phone",
+   "autocomplete": "tel-national",
+   "want": "phone"
+  },
+  {
+   "label": "Email",
+   "autocomplete": "",
+   "want": "email"
+  },
+  {
+   "label": "E-mail address",
+   "autocomplete": "",
+   "want": "addres email"
+  },
+  {
+   "label": "Email address *",
+   "autocomplete": "email",
+   "want": "email"
+  },
+  {
+   "label": "Your email",
+   "autocomplete": "email",
+   "want": "email"
+  },
+  {
+   "label": "Authorized to work",
+   "autocomplete": "",
+   "want": "authorized to work"
+  },
+  {
+   "label": "Are you legally authorized to work in the US?",
+   "autocomplete": "",
+   "want": "authorized to work"
+  },
+  {
+   "label": "Work authorization",
+   "autocomplete": "",
+   "want": "authorized to work"
+  },
+  {
+   "label": "Do you have the right to work in the United States?",
+   "autocomplete": "",
+   "want": "authorized to work"
+  },
+  {
+   "label": "Are you eligible to work in the USA?",
+   "autocomplete": "",
+   "want": "authorized to work"
+  },
+  {
+   "label": "Will you now or in the future require visa sponsorship?",
+   "autocomplete": "",
+   "want": "visa sponsorship"
+  },
+  {
+   "label": "Do you require sponsorship?",
+   "autocomplete": "",
+   "want": "visa sponsorship"
+  },
+  {
+   "label": "Visa sponsorship",
+   "autocomplete": "",
+   "want": "visa sponsorship"
+  },
+  {
+   "label": "Are you authorized to work without sponsorship?",
+   "autocomplete": "",
+   "want": "authoriz sponsor without work"
+  },
+  {
+   "label": "What is your earliest start date?",
+   "autocomplete": "",
+   "want": "earliest start date"
+  },
+  {
+   "label": "Earliest start date",
+   "autocomplete": "",
+   "want": "earliest start date"
+  },
+  {
+   "label": "Notice period",
+   "autocomplete": "",
+   "want": "earliest start date"
+  },
+  {
+   "label": "When can you start?",
+   "autocomplete": "",
+   "want": "earliest start date"
+  },
+  {
+   "label": "Salary expectations",
+   "autocomplete": "",
+   "want": "salary expectations"
+  },
+  {
+   "label": "What are your salary requirements?",
+   "autocomplete": "",
+   "want": "salary expectations"
+  },
+  {
+   "label": "Desired compensation",
+   "autocomplete": "",
+   "want": "salary expectations"
+  },
+  {
+   "label": "Expected salary",
+   "autocomplete": "",
+   "want": "salary expectations"
+  },
+  {
+   "label": "How did you hear about us?",
+   "autocomplete": "",
+   "want": "how did you hear about us"
+  },
+  {
+   "label": "Where did you hear about this job?",
+   "autocomplete": "",
+   "want": "how did you hear about us"
+  },
+  {
+   "label": "Are you willing to relocate?",
+   "autocomplete": "",
+   "want": "open to relocation"
+  },
+  {
+   "label": "Open to relocation",
+   "autocomplete": "",
+   "want": "open to relocation"
+  },
+  {
+   "label": "Have you previously applied here?",
+   "autocomplete": "",
+   "want": "applied here before"
+  },
+  {
+   "label": "Have you interviewed here before?",
+   "autocomplete": "",
+   "want": "interviewed here before"
+  },
+  {
+   "label": "Gender",
+   "autocomplete": "",
+   "want": "gender"
+  },
+  {
+   "label": "What is your gender?",
+   "autocomplete": "",
+   "want": "gender"
+  },
+  {
+   "label": "Race",
+   "autocomplete": "",
+   "want": "race"
+  },
+  {
+   "label": "Veteran status",
+   "autocomplete": "",
+   "want": "veteran status"
+  },
+  {
+   "label": "First name",
+   "autocomplete": "",
+   "want": "first name"
+  },
+  {
+   "label": "Given name",
+   "autocomplete": "given-name",
+   "want": "first name"
+  },
+  {
+   "label": "Legal first name",
+   "autocomplete": "given-name",
+   "want": "first name"
+  },
+  {
+   "label": "Last name",
+   "autocomplete": "family-name",
+   "want": "last name"
+  },
+  {
+   "label": "Full name",
+   "autocomplete": "name",
+   "want": "full name"
+  },
+  {
+   "label": "City",
+   "autocomplete": "address-level2",
+   "want": "city"
+  },
+  {
+   "label": "Current company",
+   "autocomplete": "",
+   "want": "company current"
+  },
+  {
+   "label": "Company",
+   "autocomplete": "organization",
+   "want": "current company"
+  },
+  {
+   "label": "Job title",
+   "autocomplete": "organization-title",
+   "want": "current title"
+  },
+  {
+   "label": "Street address",
+   "autocomplete": "section-x shipping street-address",
+   "want": "street address"
+  },
+  {
+   "label": "Years of experience with Go",
+   "autocomplete": "",
+   "want": "experience go year"
+  },
+  {
+   "label": "How many years of Go experience?",
+   "autocomplete": "",
+   "want": "experience go how many year"
+  },
+  {
+   "label": "Do you have experience with Kubernetes and Docker?",
+   "autocomplete": "",
+   "want": "docker experience kubernet"
+  },
+  {
+   "label": "Are you open to working in person and are you authorized to work in the US?",
+   "autocomplete": "",
+   "want": "authoriz open person usa work"
+  },
+  {
+   "label": "Authorized to work in the US and require sponsorship?",
+   "autocomplete": "",
+   "want": "authoriz require sponsor usa work"
+  },
+  {
+   "label": "",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "   ",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "*",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "(optional)",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "Please enter your",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "The",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "URL",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "Profile Link",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "Number",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "Café Name",
+   "autocomplete": "",
+   "want": "café name"
+  },
+  {
+   "label": "Naïve Résumé Link",
+   "autocomplete": "",
+   "want": "naïve résumé"
+  },
+  {
+   "label": "Ünïcödé Straße",
+   "autocomplete": "",
+   "want": "straße ünïcödé"
+  },
+  {
+   "label": "日本語の質問",
+   "autocomplete": "",
+   "want": "日本語の質問"
+  },
+  {
+   "label": "Что вы умеете?",
+   "autocomplete": "",
+   "want": "вы умеете что"
+  },
+  {
+   "label": "ＬｉｎｋｅｄＩｎ",
+   "autocomplete": "",
+   "want": "linkedin"
+  },
+  {
+   "label": "What's your name?",
+   "autocomplete": "",
+   "want": "name what"
+  },
+  {
+   "label": "Don’t you agree?",
+   "autocomplete": "",
+   "want": "agree dont"
+  },
+  {
+   "label": "Tell us: why — this role?!",
+   "autocomplete": "",
+   "want": "role tell why"
+  },
+  {
+   "label": "C++ / C# experience",
+   "autocomplete": "",
+   "want": "c experience"
+  },
+  {
+   "label": "Zip/Postal code",
+   "autocomplete": "",
+   "want": "code postal zip"
+  },
+  {
+   "label": "Preferred pronouns",
+   "autocomplete": "",
+   "want": "preferr pronoun"
+  },
+  {
+   "label": "United States",
+   "autocomplete": "",
+   "want": "usa"
+  },
+  {
+   "label": "Country of residence",
+   "autocomplete": "country-name",
+   "want": "country"
+  },
+  {
+   "label": "Skills (vani section 2)",
+   "autocomplete": "",
+   "want": "2 section skill vani"
+  },
+  {
+   "label": "Authorized to work (vani section 2)",
+   "autocomplete": "",
+   "want": "2 authoriz section vani work"
+  },
+  {
+   "label": "Will you work in USA and U.S.A.?",
+   "autocomplete": "",
+   "want": "usa work"
+  },
+  {
+   "label": "Citizenship in the United States of America",
+   "autocomplete": "",
+   "want": "citizen usa"
+  },
+  {
+   "label": "Tags",
+   "autocomplete": "",
+   "want": "tag"
+  },
+  {
+   "label": "Notes",
+   "autocomplete": "",
+   "want": "not"
+  },
+  {
+   "label": "A",
+   "autocomplete": "",
+   "want": ""
+  },
+  {
+   "label": "Resume",
+   "autocomplete": "garbage-token",
+   "want": "resume"
+  },
+  {
+   "label": "Cover Letter",
+   "autocomplete": " ",
+   "want": "cover letter"
+  },
+  {
+   "label": "Please describe in as much detail as you can your experience building distributed systems Please describe in as much detail as you can your experience building distributed systems Please describe in as much detail as you can your experience building distributed systems Please describe in as much detail as you can your experience building distributed systems Please describe in as much detail as you can your experience building distributed systems kubernetes",
+   "autocomplete": "",
+   "want": "build describe detail distribut experience much system"
+  },
+  {
+   "label": "Please describe in as much detail as you can your experience building distributed systems Please describe in as much detail as you can your experience building distributed systems Please describe in as much detail as you can your experience building ",
+   "autocomplete": "",
+   "want": "build describe detail distribut experience much system"
+  },
+  {
+   "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "autocomplete": "",
+   "want": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ ]
+}
