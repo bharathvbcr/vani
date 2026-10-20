@@ -139,7 +139,8 @@ stateDiagram-v2
   says which keys to rename, a file setting an old and a new key to different values is refused,
   and saving writes the new names. Ledger rows written before the rename name the model `jev`;
   `vani eval` and `vani label` read those as the configured model's name and say how many they
-  mapped. The daily cap file stays `<state dir>/budget/jev.json`, so the rename kept the day's spend.
+  mapped.
+- **Renamed files and values (2026-10-20):** the daily cap files `budget/jev.json` and `budget/jev-notes.json` are now `budget/openrouter.json` and `budget/openrouter-notes.json`; the next command that opens them renames them (a link that never overwrites, so the day's spend carries over; the spend key inside stays `jev`, as it is the file format). If both names exist Vani refuses and names them: keep the one you want counted and move the other aside. `vani status` reads an old file in place. `kbmatch.backend` `jev` (and `--backend jev`) is now `openrouter`; the old value still loads. `config.Default()` seeds `liquid/d1-ultra`.
 - **Ranking:** DevPrism `resume_gap_analysis` must-have coverage (DevPrism started lazily over
   `--mcp`). Skipped while `devprism.binary` is empty; `vani rescore` scores those postings once
   it is set (see Use).

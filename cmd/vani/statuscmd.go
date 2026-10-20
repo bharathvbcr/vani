@@ -346,11 +346,11 @@ func (e *env) backendsOf(ctx context.Context, cfg config.Config, cfgErr error, a
 	out := backendsFacet{facet: facet{OK: true}, Day: day, Items: []backendJSON{}}
 	if cfg.OpenRouterConfigured() {
 		b := backendJSON{Name: cfg.Decide.OpenRouterName(), Kind: "openrouter", CapUSD: cfg.Decide.DailyUSD.OpenRouter}
-		spent, err := readOpenRouterSpend(filepath.Join(e.stateDir, "budget", openRouterBudgetFile), day, openRouterSpendKey)
+		spent, err := e.readOpenRouterBudget(openRouterBudgetFile, day)
 		out.Items = append(out.Items, b.withSpend(spent, err))
 		// The notes' own cap, in its own file beside the triage one.
 		nb := backendJSON{Name: b.Name + " notes", Kind: "openrouter_notes", CapUSD: cfg.Funnel.NotesCapUSD()}
-		spent, err = readOpenRouterSpend(filepath.Join(e.stateDir, "budget", notesBudgetFile), day, openRouterSpendKey)
+		spent, err = e.readOpenRouterBudget(notesBudgetFile, day)
 		out.Items = append(out.Items, nb.withSpend(spent, err))
 	}
 	if cfg.LLM.Provider != "" {
@@ -359,6 +359,17 @@ func (e *env) backendsOf(ctx context.Context, cfg config.Config, cfgErr error, a
 		out.Items = append(out.Items, b.withSpend(spent, err))
 	}
 	return out
+}
+
+// readOpenRouterBudget is today's spend from the named OpenRouter budget file.
+// It writes nothing: a pre-2026-10-20 jev*.json file is read in place until a
+// writing command renames it, and both names existing is an error.
+func (e *env) readOpenRouterBudget(name, day string) (float64, error) {
+	p, err := budgetReadPath(e.stateDir, name)
+	if err != nil {
+		return 0, err
+	}
+	return readOpenRouterSpend(p, day, openRouterSpendKey)
 }
 
 func (b backendJSON) withSpend(spent float64, err error) backendJSON {

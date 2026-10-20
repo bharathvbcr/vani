@@ -77,7 +77,7 @@ var (
 			}
 			return decide.NewRouter(logErrors(lb, w.warnf, nil)), nil
 		case config.KBMatchOpenRouter:
-			spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
+			spend, err := newBudgetCap(w.stateDir, openRouterBudgetFile, w.cfg.Decide.DailyUSD.OpenRouter)
 			if err != nil {
 				return nil, fmt.Errorf("openrouter budget: %w", err)
 			}

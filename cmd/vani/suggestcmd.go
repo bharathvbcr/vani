@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/decide/fieldtriage"
@@ -119,7 +118,7 @@ func (e *env) suggestOnce() ([]suggest.Suggestion, string, error) {
 func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 	var backends []decide.Backend
 	if w.cfg.OpenRouterConfigured() {
-		spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
+		spend, err := newBudgetCap(w.stateDir, openRouterBudgetFile, w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
 			return nil, fmt.Errorf("openrouter budget: %w", err)
 		}

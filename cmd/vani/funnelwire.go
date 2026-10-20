@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"path/filepath"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -13,10 +12,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/decide"
 )
-
-// notesBudgetFile is the notes' own daily cap, a file beside the OpenRouter
-// triage cap (jev.json). Two files, so spending one never moves the other.
-const notesBudgetFile = "jev-notes.json"
 
 // triageModelID names everything a triage reading depends on besides the
 // posting: the backends that may answer, and the question they are asked (the
@@ -50,7 +45,7 @@ func notesSpend(stateDir string, cfg config.Config, triageSpend *decide.DailyCap
 	if triageSpend == nil {
 		return nil, nil
 	}
-	c, err := decide.NewDailyCap(filepath.Join(stateDir, "budget", notesBudgetFile), cfg.Funnel.NotesCapUSD())
+	c, err := newBudgetCap(stateDir, notesBudgetFile, cfg.Funnel.NotesCapUSD())
 	if err != nil {
 		return nil, fmt.Errorf("notes budget: %w", err)
 	}
