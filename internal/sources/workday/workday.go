@@ -205,14 +205,19 @@ type fetch struct {
 func (s *source) details(ctx context.Context, b sources.Board, base, host, tenant, site string, rows []listedJob, st *Stats) ([]posting.Posting, error) {
 	seen := s.now()
 	stored := map[string]posting.Posting{}
+	storedKeys := map[posting.Key]bool{}
+	unmatched := 0 // stored postings whose URL names no path on this site
 	if s.opt != nil {
 		prefix := b.KeyPrefix()
 		for _, p := range s.opt.Stored(b) {
 			if !strings.HasPrefix(string(p.Key), prefix) {
 				continue // another board's posting is never this board's row
 			}
+			storedKeys[p.Key] = true
 			if path, ok := storedPath(p.URL, host, site); ok {
 				stored[path] = p
+			} else {
+				unmatched++
 			}
 		}
 	}
@@ -241,6 +246,13 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			srcutil.ErrTooManyPostings, len(fresh), MaxDetails)
 	}
 	if len(fresh) > MaxDetails {
+		// Deferring is safe only for rows the ledger does not hold. A stored
+		// posting whose URL could not be matched to a path may be one of the
+		// rows about to be deferred, and leaving it out would age it.
+		if unmatched > 0 {
+			return nil, fmt.Errorf("%d stored postings have a URL that names no path on site %q, so the %d new rows past the %d-request cap cannot be deferred safely",
+				unmatched, site, len(fresh)-MaxDetails, MaxDetails)
+		}
 		st.Deferred = len(fresh) - MaxDetails
 		fresh = fresh[:MaxDetails]
 	}
@@ -288,6 +300,13 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			st.Refreshed++
 		} else {
 			st.Fetched++
+			// A "new" row that turns out to be stored means its URL and the
+			// listing's path disagree: other stored rows may be among the
+			// deferred, so a deferring listing cannot be trusted.
+			if storedKeys[p.Key] && st.Deferred > 0 {
+				return nil, fmt.Errorf("posting %s is stored under a URL that does not match its listed path %q, so the %d deferred rows may hold stored postings",
+					p.Key, j.row.ExternalPath, st.Deferred)
+			}
 		}
 		slot[order[n]] = &p
 	}

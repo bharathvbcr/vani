@@ -752,6 +752,54 @@ func TestRefreshTurnCoversEveryPathOnce(t *testing.T) {
 	}
 }
 
+// Deferring is safe only when every stored posting is matched to its listed
+// row. Stored postings whose URLs do not match (another site segment, or a
+// path the listing no longer uses) would look new, and deferring the rest
+// would age them as absent: such a board fails instead. With nothing
+// deferred, every row is returned anyway, so the same mismatch is harmless.
+func TestDeferralRefusedWhenStoredPostingsDoNotMatch(t *testing.T) {
+	storedAs := func(fb *fakeBoard, n int, url func(j fakeJob, esc string) string) []posting.Posting {
+		var out []posting.Posting
+		for _, j := range fb.jobs[:n] {
+			esc, _ := escapePath(j.path)
+			key, _ := posting.WorkdayKey("nvidia", "NVIDIAExternalCareerSite", fmt.Sprintf("JR%d", j.req))
+			out = append(out, posting.Posting{Key: key, ATS: posting.Workday, Title: j.title, URL: url(j, esc)})
+		}
+		return out
+	}
+	for name, url := range map[string]func(fakeJob, string) string{
+		"another site segment": func(_ fakeJob, esc string) string { return "https://" + host + "/External" + esc },
+		"a path the listing no longer uses": func(j fakeJob, _ string) string {
+			return fmt.Sprintf("https://%s/NVIDIAExternalCareerSite/job/Old-Slug_JR%d", host, j.req)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fb := nvidiaBoard(400 + MaxDetails)
+			fb.params = nil
+			stored := storedAs(fb, 400, url)
+			s, _ := fakeSource(fb, &Options{Stored: func(sources.Board) []posting.Posting { return stored }})
+			got, err := s.List(context.Background(), board)
+			if err == nil || got != nil {
+				t.Fatalf("deferred past unmatched stored postings: %d postings, %v", len(got), err)
+			}
+			if fb.gets > MaxDetails {
+				t.Errorf("%d detail requests", fb.gets)
+			}
+
+			// Few enough rows to fetch them all: nothing is deferred, so the
+			// stored postings come back fetched, none left out.
+			fb = nvidiaBoard(250)
+			fb.params = nil
+			stored = storedAs(fb, 200, url)
+			s, _ = fakeSource(fb, &Options{Stored: func(sources.Board) []posting.Posting { return stored }})
+			got, err = s.List(context.Background(), board)
+			if err != nil || len(got) != 250 {
+				t.Fatalf("no deferral: %d postings, %v", len(got), err)
+			}
+		})
+	}
+}
+
 // Re-reads that do not fit the cap beside new rows are reused as stored; a
 // stored posting another board owns is never matched; one new posting gone
 // among reused ones is that posting closing, not a dead endpoint.
