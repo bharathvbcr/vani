@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/joburl"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -39,6 +41,9 @@ type jobRef struct {
 	Closed    bool           `json:"closed,omitempty"`
 	Mark      marks.Mark     `json:"mark,omitempty"`
 	MatchedOn string         `json:"matched_on"` // url, apply_url or base
+	// Row is the versioned contract (internal/jobview): Vani's own relevance,
+	// priority and fit label for this posting, for the extension to show.
+	Row *jobview.Row `json:"row,omitempty"`
 }
 
 type jobFindJSON struct {
@@ -77,6 +82,17 @@ func (e *env) jobsFind(args []string) error {
 			return err
 		}
 		out = matchPageURL(snap, m, page)
+		if out.Job != nil {
+			if r, ok := findRecord(snap, out.Job.Key); ok {
+				in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
+				if err != nil {
+					return err
+				}
+				j := toJob(r, m[r.Key])
+				in.enrich(&j, r, 0)
+				out.Job.Row = j.Row
+			}
+		}
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		return nil
 	}()

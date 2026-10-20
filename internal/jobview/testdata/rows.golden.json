@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "fit_order": [
+    "strong_fit",
+    "partial_fit",
+    "adjacent",
+    "mismatch_seniority",
+    "mismatch_domain"
+  ],
+  "fit_labels": {
+    "adjacent": "Adjacent",
+    "mismatch_domain": "Different field",
+    "mismatch_seniority": "Seniority mismatch",
+    "partial_fit": "Partial fit",
+    "strong_fit": "Strong fit"
+  },
+  "status_labels": {
+    "dead": "Closed",
+    "digested": "Digested",
+    "discovered": "Discovered",
+    "dropped": "Dropped",
+    "duplicate": "Duplicate",
+    "explained": "Explained",
+    "live": "Live",
+    "scored": "Scored",
+    "triaged": "Triaged",
+    "unsure": "Unsure"
+  },
+  "rows": [
+    {
+      "v": 1,
+      "key": "greenhouse:acme:1001",
+      "title": "Backend Engineer",
+      "company": "Acme Robotics",
+      "location": "Remote, US",
+      "status": "scored",
+      "status_label": "Scored",
+      "relevance": 82.4,
+      "relevance_basis": "rank",
+      "priority": 71.3,
+      "fit": "strong_fit",
+      "fit_label": "Strong fit",
+      "reasons": [
+        {
+          "kind": "fits",
+          "text": "Go services",
+          "pct": 91
+        },
+        {
+          "kind": "gap",
+          "text": "Kafka"
+        }
+      ],
+      "similar": 0,
+      "age_days": 3,
+      "fresh_src": "posted",
+      "age_label": "3d"
+    },
+    {
+      "v": 1,
+      "key": "lever:globex:77",
+      "title": "Platform Engineer",
+      "company": "Globex",
+      "status": "triaged",
+      "status_label": "Triaged",
+      "relevance": 41,
+      "relevance_basis": "fit",
+      "priority": 30.5,
+      "fit": "mismatch_seniority",
+      "fit_label": "Seniority mismatch",
+      "similar": 0,
+      "age_days": 40,
+      "fresh_src": "seen",
+      "age_label": "~5w"
+    },
+    {
+      "v": 1,
+      "key": "ashby:initech:9",
+      "title": "Data Engineer",
+      "company": "Initech",
+      "location": "Austin, TX",
+      "status": "dead",
+      "status_label": "Closed",
+      "relevance": 12,
+      "relevance_basis": "none",
+      "priority": 6,
+      "reasons": [
+        {
+          "kind": "other",
+          "text": "No listed reason applies."
+        }
+      ],
+      "similar": 0
+    },
+    {
+      "v": 1,
+      "key": "workable:umbrella:5",
+      "title": "Systems Engineer",
+      "company": "Umbrella",
+      "status": "duplicate",
+      "status_label": "Duplicate",
+      "relevance": 55,
+      "priority": 20,
+      "similar": 2,
+      "age_days": 0,
+      "fresh_src": "seen",
+      "age_label": "~today"
+    },
+    {
+      "v": 1,
+      "key": "greenhouse:hooli:3",
+      "title": "Staff Engineer",
+      "company": "Hooli",
+      "status": "unsure",
+      "status_label": "Unsure",
+      "relevance": 63.8,
+      "priority": 63.8,
+      "fit": "adjacent",
+      "fit_label": "Adjacent",
+      "similar": 0,
+      "age_days": 95,
+      "fresh_src": "posted",
+      "age_label": "3mo"
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
 	"github.com/bharathvbcr/Vani/internal/marks"
@@ -57,11 +58,8 @@ type insightJSON struct {
 	Warning     string `json:"warning,omitempty"`
 }
 
-type reasonJSON struct {
-	Kind string `json:"kind"` // fits, gap, check or other
-	Text string `json:"text"`
-	Pct  *int   `json:"pct,omitempty"`
-}
+// reasonJSON is the contract's reason (internal/jobview).
+type reasonJSON jobview.Reason
 
 // placeJSON is one place a posting's location names (internal/location).
 type placeJSON struct {
@@ -438,6 +436,8 @@ func (in *insight) enrich(j *jobJSON, r ledger.Record, kwLimit int) []jobinsight
 	in.semanticInto(j, r)
 	j.Pay = jobinsight.ParsePay(r.Posting.Description)
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
+	row := rowOf(*j)
+	j.Row = &row
 	return hits
 }
 

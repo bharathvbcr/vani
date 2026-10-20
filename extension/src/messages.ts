@@ -31,6 +31,8 @@ export type ToBackground =
   // (and sends its URL: opening the popup on a tracked page offers the same question, on any host).
   | { type: "appliedSignal"; url: string; tabId?: number }
   | { type: "appliedPending"; tabId?: number }
+  /** Vani's own jobs row for the page's posting (jobrow.ts), asked of the Mac app; `{ row: null }` when there is none. */
+  | { type: "jobRow"; url: string }
   | { type: "appliedMark"; tabId?: number }
   | { type: "appliedDismiss"; tabId?: number }
   /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
@@ -99,6 +101,7 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   jobPoll: m => typeof m.job === "string",
   appliedSignal: m => optTab(m),
   appliedPending: optTab,
+  jobRow: m => typeof m.url === "string" && m.url.length <= 2048,
   appliedMark: optTab,
   appliedDismiss: optTab,
   frameReady: () => true,
