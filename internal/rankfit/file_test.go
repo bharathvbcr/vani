@@ -17,7 +17,7 @@ func goodFile() File {
 	return File{V: FileVersion, FittedAt: t0,
 		Shares:      &Shares{Fit: 0.2, Coverage: 0.5, Semantic: 0.2, Keyword: 0.01, Title: 0.05, Employer: 0.04, KBMatch: 0.1},
 		Calibration: map[string]jobinsight.Calibration{"d1-ultra": {A: 0.8, B: -0.3, UsesP: true}, "claude": {B: 1.2}},
-		Report:      &Report{Labels: 200, Judged: 160}}
+		Report:      &Report{Labels: 200, Targets: TargetCounts{Yes: 60, Maybe: 40, No: 60}}}
 }
 
 func TestFileRoundTripAndApply(t *testing.T) {

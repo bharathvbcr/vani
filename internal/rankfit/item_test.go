@@ -5,6 +5,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 )
 
@@ -19,10 +20,10 @@ import (
 func handItems() []Item {
 	unknown := [NumParts]float64{0.4, 0.4, 0.4, 0.4, 0.4, 0, 0}
 	present := [NumParts]bool{true, true, true, true, true, true, false}
-	a := Item{Key: "a", Value: unknown, Present: present, Gate: 1, Fresh: 1, Positive: true, Judged: true}
+	a := Item{Key: "a", Value: unknown, Present: present, Gate: 1, Fresh: 1, Grade: GradeYes, Judged: true}
 	a.Value[PartFit], a.Known[PartFit] = 1, true
 	a.Value[PartSemantic], a.Known[PartSemantic] = 0.5, true
-	b := Item{Key: "b", Value: unknown, Present: present, Gate: 0.5, Fresh: 0.25, Judged: true}
+	b := Item{Key: "b", Value: unknown, Present: present, Gate: 0.5, Fresh: 0.25, Grade: GradeNo, Judged: true}
 	b.Value[PartSemantic], b.Known[PartSemantic] = 0.2, true
 	return []Item{a, b}
 }
@@ -59,7 +60,7 @@ func TestObjectiveGradientMatchesFiniteDifferences(t *testing.T) {
 	base := jobinsight.DefaultWeights()
 	var items []Item
 	for i := range 40 {
-		it, err := ItemFrom(string(rune('a'+i%26))+string(rune('a'+i/26)), jobinsight.ScoreWith(randomInputs(rng), base), i%3 == 0, true)
+		it, err := ItemFrom(string(rune('a'+i%26))+string(rune('a'+i/26)), jobinsight.ScoreWith(randomInputs(rng), base), Target{Grade: i % 3, Judged: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +69,7 @@ func TestObjectiveGradientMatchesFiniteDifferences(t *testing.T) {
 	var pairs []pair
 	for i := range items {
 		for j := range items {
-			if items[i].Positive && !items[j].Positive {
+			if items[i].Grade > items[j].Grade {
 				pairs = append(pairs, pair{i, j})
 			}
 		}
@@ -152,7 +153,7 @@ func TestLogMatchIsScoreWithsMatch(t *testing.T) {
 	for bi, base := range bases {
 		for n := range 3000 {
 			in := randomInputs(rng)
-			it, err := ItemFrom("k", jobinsight.ScoreWith(in, base), false, false)
+			it, err := ItemFrom("k", jobinsight.ScoreWith(in, base), Target{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,7 +182,7 @@ func TestLogMatchGradientMatchesFiniteDifferences(t *testing.T) {
 	base := jobinsight.DefaultWeights()
 	b := blendOf(base)
 	for n := range 500 {
-		it, err := ItemFrom("k", jobinsight.ScoreWith(randomInputs(rng), base), false, false)
+		it, err := ItemFrom("k", jobinsight.ScoreWith(randomInputs(rng), base), Target{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +206,7 @@ func TestLogMatchGradientMatchesFiniteDifferences(t *testing.T) {
 
 func TestItemFromRefusesMalformedResults(t *testing.T) {
 	good := jobinsight.ScoreWith(jobinsight.Inputs{}, jobinsight.DefaultWeights())
-	if _, err := ItemFrom("k", good, true, false); err != nil {
+	if _, err := ItemFrom("k", good, Target{}); err != nil {
 		t.Fatalf("a real result: %v", err)
 	}
 	for name, mutate := range map[string]func(r *jobinsight.Result){
@@ -233,7 +234,52 @@ func TestItemFromRefusesMalformedResults(t *testing.T) {
 	} {
 		r := jobinsight.ScoreWith(jobinsight.Inputs{}, jobinsight.DefaultWeights())
 		mutate(&r)
-		if _, err := ItemFrom("k", r, true, false); err == nil {
+		if _, err := ItemFrom("k", r, Target{}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// What feedback records (feedback.ScoresOf) rebuilds the Item ScoreWith ranked,
+// except for the one case the record cannot carry: an unknown role fit whose
+// option was set took the ordinal value, not the prior.
+func TestItemFromScoresMatchesItemFrom(t *testing.T) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	base := jobinsight.DefaultWeights()
+	prior := blendOf(base).prior
+	edge := 0
+	for n := range 3000 {
+		r := jobinsight.ScoreWith(randomInputs(rng), base)
+		want, err := ItemFrom("k", r, Target{Grade: GradeMaybe, Judged: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ItemFromScores("k", feedback.ScoresOf(r), base, Target{Grade: GradeMaybe, Judged: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !want.Known[PartFit] && want.Value[PartFit] != prior {
+			edge++
+			if got.Value[PartFit] != prior {
+				t.Fatalf("case %d: unrecorded fit read as %v, want the prior", n, got.Value[PartFit])
+			}
+			want.Value[PartFit] = prior
+		}
+		if got != want {
+			t.Fatalf("case %d:\n got %+v\nwant %+v", n, got, want)
+		}
+	}
+	if edge == 0 {
+		t.Error("the ordinal edge never came up: the test does not cover it")
+	}
+	for name, s := range map[string]feedback.Scores{
+		"no gate":     {Factors: map[string]float64{"fresh": 1, "employer": 0}},
+		"no fresh":    {Factors: map[string]float64{"gate": 1, "employer": 0}},
+		"part over 1": {Factors: map[string]float64{"gate": 1, "fresh": 1, "coverage": 1.5}},
+		"NaN part":    {Factors: map[string]float64{"gate": 1, "fresh": 1, "semantic": math.NaN()}},
+		"nil factors": {},
+	} {
+		if _, err := ItemFromScores("k", s, base, Target{}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

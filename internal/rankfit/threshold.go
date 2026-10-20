@@ -1,14 +1,20 @@
 package rankfit
 
-import "fmt"
+import (
+	"fmt"
 
+	"github.com/bharathvbcr/Vani/internal/feedback"
+)
+
+// The thresholds are feedback's (docs/RANKING_PLAN.md), so `vani audit stats`
+// and the fitter cannot disagree about when a fit is ready.
 const (
-	// MinPlattLabels is the judged readings one backend needs before its
-	// confidence is calibrated (docs/RANKING_PLAN.md, Phase 4).
-	MinPlattLabels = 100
-	// MinJudgedLabels is the judged would-apply labels the weight fit needs
-	// (Phase 5). Marks add volume but do not count toward it.
-	MinJudgedLabels = 150
+	// MinPlattPostings is the judged postings one backend needs before its
+	// confidence is calibrated (Phase 4).
+	MinPlattPostings = feedback.CalibrationMin
+	// MinJudged is the usable audit judgments (yes, maybe or no) the weight
+	// fit needs (Phase 5). Marks add volume but do not count toward it.
+	MinJudged = feedback.WeightFitMin
 )
 
 // NotRunError is a fit that refused to run: too few labels, or labels that

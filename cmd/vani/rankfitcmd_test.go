@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -28,22 +30,22 @@ func TestRankfitRefusesBelowThresholds(t *testing.T) {
 
 	o, e := mustCode(t, 1, "rankfit")
 	for _, want := range []string{
-		"could not run: platt needs 100 judged readings for at least one backend, has 23",
-		"could not run: weight fit needs 150 judged would-apply labels, has 0",
+		"could not run: platt needs 100 judged postings for at least one backend, has 23",
+		"could not run: weight fit needs 150 usable audit judgments, has 0",
 		"nothing written",
 	} {
 		if !strings.Contains(e, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, e)
 		}
 	}
-	if !strings.Contains(o, "labels: 45 eval entries") || strings.Contains(o, "accuracy") {
+	if !strings.Contains(o, "slot labels: 45 eval entries") || strings.Contains(o, "accuracy") {
 		t.Errorf("stdout should carry counts and no figures:\n%s", o)
 	}
 	if _, err := os.Stat(weightsPath(stateDir)); !os.IsNotExist(err) {
 		t.Fatalf("a refused run left a weights file: %v", err)
 	}
 	// Each part alone refuses alone.
-	if _, e := mustCode(t, 1, "rankfit", "--part", "weights"); !strings.Contains(e, "weight fit needs 150") || strings.Contains(e, "platt") {
+	if _, e := mustCode(t, 1, "rankfit", "--part", "weights"); !strings.Contains(e, "weight fit needs 150 usable audit judgments") || strings.Contains(e, "platt") {
 		t.Errorf("--part weights: %s", e)
 	}
 	if _, e := mustCode(t, 1, "rankfit", "--part", "platt"); !strings.Contains(e, "platt needs 100") || strings.Contains(e, "weight fit") {
@@ -57,9 +59,9 @@ func TestRankfitDryRunPrintsCounts(t *testing.T) {
 	seedEval(t, stateDir, 45)
 	o, _ := mustCode(t, 0, "rankfit", "--dry-run")
 	for _, want := range []string{
-		"platt d1-ultra: 22 judged readings (would refuse: 22 of 100)",
-		"platt jev: 23 judged readings (would refuse: 23 of 100)",
-		"weight fit: 0 judged would-apply labels (would refuse: 0 of 150)",
+		"platt d1-ultra: 22 judged postings (would refuse: 22 of 100)",
+		"platt jev: 23 judged postings (would refuse: 23 of 100)",
+		"weight fit: 0 usable audit judgments (would refuse: 0 of 150)",
 		"dry run: nothing fitted or written",
 	} {
 		if !strings.Contains(o, want) {
@@ -171,11 +173,9 @@ func TestConfigRefusesARelativeRankWeightsFile(t *testing.T) {
 	}
 }
 
-// The weight fit end to end below the store: postings ranked by `vani jobs`'s
-// own insight, labels that favour coverage over fit. The would-apply label
-// cannot be written to the eval store until Phase 1 extends it, so the
-// targets are given here directly.
-func TestRankfitWeightsFitsJobsInsightParts(t *testing.T) {
+// Labels with no recorded scores (a mark nothing showed) are scored now, by
+// `vani jobs`'s own insight: labels that favour coverage over fit.
+func TestRankfitWeightsScoresUnrecordedLabelsNow(t *testing.T) {
 	cfgPath, stateDir := setup(t)
 	fixedNow(t)
 	if err := config.Save(cfgPath, config.Default()); err != nil {
@@ -193,7 +193,11 @@ func TestRankfitWeightsFitsJobsInsightParts(t *testing.T) {
 			Annotations: map[string]string{ledger.AnnCoverage: fmt.Sprint(cov), ledger.AnnRank: fmt.Sprint(cov),
 				"triage.role_fit": fit, "triage.role_fit.reading": "answered", "triage.role_fit.backend": "d1-ultra", "triage.role_fit.p": "0.7"}})
 		// Judged on coverage, against what the hand weights' fit share says.
-		targets[k] = rankfit.Target{Positive: cov >= 50, Judged: i < 300}
+		g := rankfit.GradeNo
+		if cov >= 50 {
+			g = rankfit.GradeYes
+		}
+		targets[k] = rankfit.Target{Grade: g, Judged: i < 300}
 	}
 	var out bytes.Buffer
 	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: &out, stderr: &out}
@@ -208,5 +212,75 @@ func TestRankfitWeightsFitsJobsInsightParts(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// seedJudgments writes n audit judgments whose recorded scores (as `vani audit`
+// records them) favour coverage over fit: a yes has high coverage, a no low.
+// Each carries a drop class naming a rule value, which must never be printed.
+func seedJudgments(t *testing.T, stateDir string, n int) {
+	t.Helper()
+	fits := []string{"strong_fit", "partial_fit", "adjacent"}
+	for i := range n {
+		cov := float64((i * 37) % 101)
+		in := jobinsight.Inputs{RoleFit: jobinsight.Slot{Value: fits[(i*7)%3], Answered: true, HasP: true, P: 0.7}, Coverage: cov, HasCoverage: true,
+			AgeKnown: true, AgeDays: i % 20}
+		v := feedback.VerdictNo
+		switch {
+		case cov >= 66:
+			v = feedback.VerdictYes
+		case cov >= 33:
+			v = feedback.VerdictMaybe
+		}
+		j := feedback.Judgment{At: jobsT0, Key: posting.Key(fmt.Sprintf("gh:j:%04d", i)), Verdict: v, Source: "dropped:d1-ultra:sponsorship",
+			DropReason: "sponsorship=no_sponsorship", Scores: feedback.ScoresOf(jobinsight.Score(in))}
+		if err := feedback.AppendJudgment(context.Background(), stateDir, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The weight fit end to end: audit judgments in the feedback log, their
+// recorded scores, a file written only above the threshold. Nothing about a
+// drop class reaches the output or the file.
+func TestRankfitWeightsFromAuditJudgments(t *testing.T) {
+	_, stateDir := setup(t)
+	fixedNow(t)
+	mustCode(t, 0, "init")
+	seedJudgments(t, stateDir, rankfit.MinJudged-1)
+	if _, e := mustCode(t, 1, "rankfit", "--part", "weights"); !strings.Contains(e, "weight fit needs 150 usable audit judgments, has 149") {
+		t.Fatalf("149 judgments: %s", e)
+	}
+	if _, err := os.Stat(weightsPath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("a refused run left a file: %v", err)
+	}
+
+	_, stateDir = setup(t)
+	mustCode(t, 0, "init")
+	seedJudgments(t, stateDir, 400)
+	o, e := mustCode(t, 0, "rankfit", "--part", "weights")
+	for _, want := range []string{"audit judgments: ", "400 labelled postings with the scores recorded when judged or shown, 0 scored now", "held-out pairwise accuracy: fitted", "wrote "} {
+		if !strings.Contains(o, want) {
+			t.Errorf("output lacks %q:\n%s", want, o)
+		}
+	}
+	b, err := os.ReadFile(weightsPath(stateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{"sponsorship", "no_sponsorship", "dropped:"} {
+		if strings.Contains(o+e+string(b), leak) {
+			t.Errorf("%q reached the output or the file", leak)
+		}
+	}
+	f, err := rankfit.Load(weightsPath(stateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Shares == nil || f.Calibration != nil || f.Report.Weights == nil || !f.Report.Weights.Beats() || f.Report.Targets.Judged() != 400 {
+		t.Fatalf("file %+v", f)
+	}
+	if s := f.Shares; !(s.Coverage/s.Fit > 0.2/0.3) {
+		t.Errorf("coverage did not gain on fit: %+v", s)
 	}
 }

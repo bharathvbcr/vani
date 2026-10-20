@@ -13,7 +13,7 @@ import (
 )
 
 // world draws n postings whose labels follow plantedShares, not the hand
-// weights: coverage carries the blend. judged of them carry a would-apply
+// weights: coverage carries the blend. judged of them carry an audit
 // judgement; the rest are marks.
 var plantedShares = [NumParts]float64{0.05, 0.60, 0.05, 0.03, 0.10, 0.05, 0.12}
 
@@ -40,9 +40,14 @@ func world(seed uint64, n, judged int) []Item {
 	}
 	sorted := append([]float64(nil), u...)
 	slicesSort(sorted)
-	median := sorted[n/2]
+	low, high := sorted[n/3], sorted[2*n/3]
 	for i := range items {
-		items[i].Positive = u[i] > median
+		switch {
+		case u[i] > high:
+			items[i].Grade = GradeYes
+		case u[i] > low:
+			items[i].Grade = GradeMaybe
+		}
 	}
 	return items
 }
@@ -155,23 +160,23 @@ func TestFitIsDeterministic(t *testing.T) {
 
 func TestFitRefusals(t *testing.T) {
 	base := jobinsight.DefaultWeights()
-	short := world(4, 3000, MinJudgedLabels-1) // marks do not count toward the threshold
+	short := world(4, 3000, MinJudged-1) // marks do not count toward the threshold
 	allYes := world(5, 400, 200)
 	for i := range allYes {
 		if allYes[i].Judged {
-			allYes[i].Positive = true
+			allYes[i].Grade = GradeYes
 		}
 	}
 	for name, tc := range map[string]struct {
 		items []Item
 		need  int
 	}{
-		"no items":            {nil, MinJudgedLabels},
-		"149 judged":          {short, MinJudgedLabels},
+		"no items":            {nil, MinJudged},
+		"149 judged":          {short, MinJudged},
 		"judged all yes":      {allYes, 0},
-		"one judged only no":  {func() []Item { w := world(7, 200, 200); return setAll(w, false) }(), 0},
-		"one item":            {world(8, 1, 1), MinJudgedLabels},
-		"all marks, no judge": {world(9, 5000, 0), MinJudgedLabels},
+		"one judged only no":  {setAll(world(7, 200, 200), GradeNo), 0},
+		"one item":            {world(8, 1, 1), MinJudged},
+		"all marks, no judge": {world(9, 5000, 0), MinJudged},
 	} {
 		_, err := Fit(tc.items, base, Options{Seed: 1})
 		var nr *NotRunError
@@ -185,9 +190,9 @@ func TestFitRefusals(t *testing.T) {
 	}
 }
 
-func setAll(items []Item, positive bool) []Item {
+func setAll(items []Item, grade int) []Item {
 	for i := range items {
-		items[i].Positive = positive
+		items[i].Grade = grade
 	}
 	return items
 }
@@ -201,6 +206,8 @@ func TestFitRejectsBadItems(t *testing.T) {
 		"negative gate": func(w []Item) { w[7].Gate = -0.1 },
 		"NaN fresh":     func(w []Item) { w[8].Fresh = math.NaN() },
 		"inf value":     func(w []Item) { w[9].Value[PartFit] = math.Inf(1) },
+		"grade 3":       func(w []Item) { w[10].Grade = 3 },
+		"grade -1":      func(w []Item) { w[11].Grade = -1 },
 	} {
 		w := world(10, 400, 200)
 		mutate(w)

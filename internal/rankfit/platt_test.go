@@ -2,15 +2,22 @@ package rankfit
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
+
+// sampleSeq gives every sample samples makes its own posting.
+var sampleSeq int
 
 func samples(right, wrong int, p float64, hasP bool) []PlattSample {
 	var out []PlattSample
 	for i := range right + wrong {
-		out = append(out, PlattSample{P: p, HasP: hasP, Correct: i < right})
+		sampleSeq++
+		out = append(out, PlattSample{Key: posting.Key(fmt.Sprintf("gh:p:%d", sampleSeq)), P: p, HasP: hasP, Correct: i < right})
 	}
 	return out
 }
@@ -77,8 +84,8 @@ func TestPlattRefusesBelowThreshold(t *testing.T) {
 	} {
 		_, err := FitPlatt("b", s, DefaultPlattRidge)
 		var nr *NotRunError
-		if !errors.As(err, &nr) || nr.Need != MinPlattLabels || nr.Have != len(s) {
-			t.Errorf("%s: error %v, want a NotRunError for %d of %d", name, err, len(s), MinPlattLabels)
+		if !errors.As(err, &nr) || nr.Need != MinPlattPostings || nr.Have != len(s) {
+			t.Errorf("%s: error %v, want a NotRunError for %d of %d", name, err, len(s), MinPlattPostings)
 			continue
 		}
 		if !strings.HasPrefix(err.Error(), "could not run: ") {
@@ -86,7 +93,17 @@ func TestPlattRefusesBelowThreshold(t *testing.T) {
 		}
 	}
 	if _, err := FitPlatt("b", samples(70, 30, 0.8, true), DefaultPlattRidge); err != nil {
-		t.Errorf("exactly %d: %v", MinPlattLabels, err)
+		t.Errorf("exactly %d: %v", MinPlattPostings, err)
+	}
+
+	// Readings of every slot of 50 postings are 50 postings, however many.
+	var many []PlattSample
+	for i := range 300 {
+		many = append(many, PlattSample{Key: posting.Key(fmt.Sprintf("gh:m:%d", i%50)), P: float64(i%9) / 9, HasP: true, Correct: i%3 > 0})
+	}
+	var nr *NotRunError
+	if _, err := FitPlatt("b", many, DefaultPlattRidge); !errors.As(err, &nr) || nr.Have != 50 {
+		t.Errorf("300 readings of 50 postings: %v, want a refusal counting 50", err)
 	}
 }
 
@@ -157,7 +174,7 @@ func TestPlattInvalidP(t *testing.T) {
 func TestPlattDeterministic(t *testing.T) {
 	var s []PlattSample
 	for i := range 400 {
-		s = append(s, PlattSample{P: float64(i%97) / 97, HasP: true, Correct: i%7 < 4})
+		s = append(s, PlattSample{Key: posting.Key(fmt.Sprintf("gh:d:%d", i)), P: float64(i%97) / 97, HasP: true, Correct: i%7 < 4})
 	}
 	a, err := FitPlatt("b", s, DefaultPlattRidge)
 	if err != nil {

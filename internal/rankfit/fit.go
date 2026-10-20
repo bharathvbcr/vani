@@ -70,7 +70,7 @@ type FitResult struct {
 	Shares Shares `json:"shares"`
 	Hand   Shares `json:"hand"`
 	// FitAccuracy and HandAccuracy are the share of held-out judged pairs
-	// (a would-apply yes against a no) each ranks the right way round (a tie
+	// (two judgments of different verdicts) each ranks the right way round (a tie
 	// counts half). HeldOutPairs is how many there were.
 	FitAccuracy  float64 `json:"fit_accuracy"`
 	HandAccuracy float64 `json:"hand_accuracy"`
@@ -117,14 +117,15 @@ func heldOut(key string, seed uint64, pct int) bool {
 	return h.Sum64()%100 < uint64(pct)
 }
 
-// Fit fits Score's shares to items' pairwise preferences: every positive
-// item should outrank every negative one. The model is ScoreWith's own order
-// key without the company factor, log(match(s)) + log(gate) + log(fresh),
-// with P(a above b) = sigmoid(tau * (u_a - u_b)), and an L2 prior on each
+// Fit fits Score's shares to items' pairwise preferences: every item should
+// outrank every item of a lower grade. The model is ScoreWith's own order key
+// without the company factor, log(match(s)) + log(gate) + log(fresh), with
+// P(a above b) = sigmoid(tau * (u_a - u_b)), and an L2 prior on each
 // log-share centred on base's. Judged items are split into training and a
-// held-out set by a seeded hash of their key; marks train only. Fewer than
-// MinJudgedLabels judged items, or a side with only one class, is a
-// NotRunError. The fit is deterministic for a given seed and item set.
+// held-out set by a seeded hash of their key; marks and impressions train
+// only. Fewer than MinJudged judged items, or no pair of different grades on
+// either side, is a NotRunError. The fit is deterministic for a given seed and
+// item set.
 func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) {
 	opt, err := opt.withDefaults()
 	if err != nil {
@@ -148,41 +149,30 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 			res.Judged++
 		}
 	}
-	if err := needAtLeast("weight fit", "judged would-apply labels", res.Judged, MinJudgedLabels); err != nil {
+	if err := needAtLeast("weight fit", "usable audit judgments", res.Judged, MinJudged); err != nil {
 		return res, err
 	}
 
-	var trainPos, trainNeg, testPos, testNeg []int
+	var trainBy, testBy grades
 	for i, it := range items {
-		test := it.Judged && heldOut(it.Key, opt.Seed, opt.HoldoutPct)
-		switch {
-		case test && it.Positive:
-			testPos = append(testPos, i)
-		case test:
-			testNeg = append(testNeg, i)
-		case it.Positive:
-			trainPos = append(trainPos, i)
-		default:
-			trainNeg = append(trainNeg, i)
+		if it.Judged && heldOut(it.Key, opt.Seed, opt.HoldoutPct) {
+			testBy[it.Grade] = append(testBy[it.Grade], i)
+			res.HeldOutItems++
+		} else {
+			trainBy[it.Grade] = append(trainBy[it.Grade], i)
+			res.TrainItems++
 		}
 	}
-	res.HeldOutItems = len(testPos) + len(testNeg)
-	res.TrainItems = len(trainPos) + len(trainNeg)
-	if len(testPos) == 0 || len(testNeg) == 0 {
-		return res, &NotRunError{Part: "weight fit", Why: fmt.Sprintf("the held-out judged labels need both a yes and a no (%d yes, %d no)", len(testPos), len(testNeg))}
+	if testBy.pairs() == 0 {
+		return res, &NotRunError{Part: "weight fit", Why: fmt.Sprintf("the held-out judgments need two different verdicts (%s)", testBy)}
 	}
-	if len(trainPos) == 0 || len(trainNeg) == 0 {
-		return res, &NotRunError{Part: "weight fit", Why: fmt.Sprintf("the training labels need both a positive and a negative (%d positive, %d negative)", len(trainPos), len(trainNeg))}
+	if trainBy.pairs() == 0 {
+		return res, &NotRunError{Part: "weight fit", Why: fmt.Sprintf("the training labels need two different grades (%s)", trainBy)}
 	}
-	res.TrainPairsTotal = len(trainPos) * len(trainNeg)
-	train := samplePairs(trainPos, trainNeg, opt.MaxPairs, opt.Seed)
+	res.TrainPairsTotal = trainBy.pairs()
+	train := trainBy.sample(opt.MaxPairs, opt.Seed)
 	res.TrainPairs = len(train)
-	test := make([]pair, 0, len(testPos)*len(testNeg))
-	for _, p := range testPos {
-		for _, n := range testNeg {
-			test = append(test, pair{p, n})
-		}
-	}
+	test := testBy.sample(math.MaxInt, 0)
 
 	b := blendOf(base)
 	hand := res.Hand.Array()
@@ -204,6 +194,9 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 }
 
 func (it *Item) check() error {
+	if it.Grade < GradeNo || it.Grade > GradeYes {
+		return fmt.Errorf("rankfit: %s grade %d, want %d..%d", it.Key, it.Grade, GradeNo, GradeYes)
+	}
 	for i := range NumParts {
 		if v := it.Value[i]; !(v >= 0 && v <= 1) {
 			return fmt.Errorf("rankfit: %s part %s is %v, want 0..1", it.Key, PartNames[i], v)
@@ -215,15 +208,36 @@ func (it *Item) check() error {
 	return nil
 }
 
-// samplePairs is every positive-negative pair, or max of them drawn
-// uniformly (with replacement) by a generator seeded with seed.
-func samplePairs(pos, neg []int, max int, seed uint64) []pair {
-	total := len(pos) * len(neg)
+// grades holds item indexes by grade.
+type grades [GradeYes + 1][]int
+
+func (g grades) String() string {
+	return fmt.Sprintf("%d yes, %d maybe, %d no", len(g[GradeYes]), len(g[GradeMaybe]), len(g[GradeNo]))
+}
+
+// gradePairs are the (higher, lower) grade buckets a pair can span.
+var gradePairs = [...][2]int{{GradeYes, GradeMaybe}, {GradeYes, GradeNo}, {GradeMaybe, GradeNo}}
+
+// pairs is how many pairs of different grades g holds.
+func (g grades) pairs() int {
+	n := 0
+	for _, gp := range gradePairs {
+		n += len(g[gp[0]]) * len(g[gp[1]])
+	}
+	return n
+}
+
+// sample is every pair of different grades, higher first, or max of them
+// drawn uniformly (with replacement) by a generator seeded with seed.
+func (g grades) sample(max int, seed uint64) []pair {
+	total := g.pairs()
 	if total <= max {
 		out := make([]pair, 0, total)
-		for _, p := range pos {
-			for _, n := range neg {
-				out = append(out, pair{p, n})
+		for _, gp := range gradePairs {
+			for _, w := range g[gp[0]] {
+				for _, l := range g[gp[1]] {
+					out = append(out, pair{w, l})
+				}
 			}
 		}
 		return out
@@ -232,7 +246,15 @@ func samplePairs(pos, neg []int, max int, seed uint64) []pair {
 	out := make([]pair, max)
 	for i := range out {
 		k := rng.IntN(total)
-		out[i] = pair{pos[k/len(neg)], neg[k%len(neg)]}
+		for _, gp := range gradePairs {
+			hi, lo := g[gp[0]], g[gp[1]]
+			if n := len(hi) * len(lo); k >= n {
+				k -= n
+				continue
+			}
+			out[i] = pair{hi[k/len(lo)], lo[k%len(lo)]}
+			break
+		}
 	}
 	slices.SortFunc(out, func(a, b pair) int {
 		if a.win != b.win {

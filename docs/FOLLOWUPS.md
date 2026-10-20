@@ -1290,22 +1290,37 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - An app that calls `vani jobs` does not log impressions yet: only the digest does. Adding a
   `vani audit shown` (or similar) for the app's visible rows comes with the app work.
 
-## Rank learning: `vani rankfit` (built 2026-10-20, branch `claude/admiring-einstein-72e43c`)
+## Rank learning: `vani rankfit` (built 2026-10-20, branch `claude/admiring-einstein-72e43c`, on `ranking-measure`)
 
-docs/RANKING_PLAN.md Phases 4–5, machinery only: nothing has been fitted on live data (0 judged
-labels, 29 saves, 0 hides on 2026-10-20).
+docs/RANKING_PLAN.md Phases 4–5, machinery only: nothing has been fitted on live data (0 audit
+judgments, 29 saves, 0 hides on 2026-10-20). The branch is rebased onto `ranking-measure` and
+merges after it.
 
 - **Merge with the exclude-config work.** `internal/config/config.go` gains `rank_weights_file`
   (one field after `age_neutral_companies`, and one entry in the absolute-path check). The main
   checkout has another session's uncommitted exclude work in that file: merge by hand, not by
   overwriting either side.
-- **`would_apply` waits on Phase 1.** `internal/rankfit/labels.go` reads the audit label as
-  `Entry.Labels["would_apply"]` = `yes` | `no` (`skip` and anything else is no judgement). Today
-  `eval.Entry.Validate` refuses any slot outside `jdtriage.Slots`, so such a line is counted as bad
-  and the weight fit refuses with 0 judged labels. Phase 1 must either accept that key in
-  `Validate` or pick another format; if it picks another, change `rankfit.WouldApply` (the one
-  reader) to match. The weight path is tested below the store
-  (`TestRankfitWeightsFitsJobsInsightParts`), not end to end through `vani rankfit`.
+- **Labels.** The weight fit reads `internal/feedback`: `feedback.Latest` judgments (yes above
+  maybe above no; skip labels nothing; the threshold is `feedback.WeightFitMin` on usable ones),
+  then marks (saved/applied yes, hidden no), then impressions (shown and left unmarked is a no;
+  never shown is no label). Only judgments are held out and scored. Platt reads `vani label`'s
+  slot labels (`internal/eval`, read only), threshold `feedback.CalibrationMin` distinct postings
+  per backend. An audit judgment of a dropped posting is not used as a slot label: "would not
+  apply" does not say the reading was right.
+- **Recorded scores, one approximation.** A judged or shown posting is fitted on the factors
+  feedback recorded then, which is what the owner saw (`rankfit.ItemFromScores`). Those hold
+  known parts only, so an unknown role fit takes the prior. ScoreWith gives an option that is set
+  but unanswered its ordinal value instead; the record cannot carry that
+  (`TestItemFromScoresMatchesItemFrom` pins the one case). A mark nothing showed is scored now.
+  Recorded factors were computed under the calibration of their day, not this run's.
+- **Shown-but-unmarked negatives are many.** The digest logs every role it lists, so passed
+  postings will outnumber saves. Only held-out audit judgments decide whether the file is
+  written, so a mark-driven fit that does not order judgments better is refused. If passed
+  postings swamp the saves, weight them down or keep only those shown above a saved one.
+- **Per-slot calibration (owner decision).** Calibration pools every triage slot of a backend.
+  `vani label` asks every slot, so calibrating per (backend, slot) would cost no extra labels and
+  would keep easy slots from lifting role_fit's confidence. The change: `Slot.Name` from
+  `SlotOf`, calibration keyed `backend/slot`, and `PlattSamples` grouped the same way.
 - **The company factor is left out of the fit.** It is learned from the same marks the fit
   trains on, so including it would reward the fit for reading its own labels. Accuracy is
   reported on `log match + log gate + log fresh`, for the fitted and the hand shares alike; the
@@ -1316,9 +1331,12 @@ labels, 29 saves, 0 hides on 2026-10-20).
   (`Mismatch`, `UnsureGate`, `FreshFloor`, `HalfLifeDays`), not the shares, are what is off.
 - **Calibration is keyed by the backend as recorded.** Legacy `jev` rows calibrate separately
   from `d1-ultra` rows (no `eval.Names` mapping at score time), so each needs its own 100
-  judged readings. kb_match readings carry no backend and stay uncalibrated.
-- **`advance` order ignores the file.** `cmd/vani/advanceorder.go` builds its own context with
-  no config (R7, a Phase 2 item); it still ranks by the hand weights.
+  judged postings. kb_match readings carry no backend and stay uncalibrated.
+- **`advance` order ignores the file.** `cmd/vani/advanceorder.go` builds its own context from
+  run options, not the config's rank weights; it still ranks by the hand weights. `vani audit`
+  scores with the file (its context is `vani jobs`'s).
+- **`--dry-run` exits 0 even when it says "would refuse".** It is a count, not a readiness probe;
+  read its "would run" lines, or run without it.
 - **A weight fit that does not beat the hand weights is not written** (exit 1). Phase 5's exit
   also asks that the labelled set replace the synthetic rankeval worlds: not done.
 - **Not run on the live state.** `vani rankfit --dry-run` against `.state/state` was not run

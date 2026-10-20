@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 )
 
@@ -37,15 +38,17 @@ type Item struct {
 	// Gate and Fresh are Score's multipliers. The company factor is left
 	// out: it is learned from the same marks the fit trains on.
 	Gate, Fresh float64
-	// Positive is the label; Judged is true when it is a would-apply
-	// judgement rather than a mark.
-	Positive, Judged bool
+	// Grade is the label (GradeNo, GradeMaybe, GradeYes); Judged is true when
+	// it is an audit judgment rather than a mark or an impression.
+	Grade  int
+	Judged bool
 }
 
 // ItemFrom reads an Item from r, which must be ScoreWith's answer for the
-// posting: its Factors hold every part the fit needs.
-func ItemFrom(key string, r jobinsight.Result, positive, judged bool) (Item, error) {
-	it := Item{Key: key, Positive: positive, Judged: judged, Gate: math.NaN(), Fresh: math.NaN()}
+// posting: its Factors hold every part the fit needs, unknown ones included,
+// so the Item is exactly what ScoreWith ranked.
+func ItemFrom(key string, r jobinsight.Result, t Target) (Item, error) {
+	it := Item{Key: key, Grade: t.Grade, Judged: t.Judged, Gate: math.NaN(), Fresh: math.NaN()}
 	index := map[string]int{}
 	for i, n := range PartNames {
 		index[n] = i
@@ -80,6 +83,40 @@ func ItemFrom(key string, r jobinsight.Result, positive, judged bool) (Item, err
 	if math.IsNaN(it.Gate) || math.IsNaN(it.Fresh) {
 		return Item{}, fmt.Errorf("rankfit: %s has no gate or fresh factor", key)
 	}
+	return it, nil
+}
+
+// ItemFromScores reads an Item from Score's parts as feedback recorded them
+// when the posting was judged or shown (feedback.ScoresOf): the known parts
+// by name, plus gate and fresh. A part not recorded was unknown and takes
+// base's prior, as ScoreWith gives it; kb_match not recorded was not asked
+// and takes no share. One approximation: an unknown role fit whose option
+// was set but unanswered took ScoreWith's ordinal value, not the prior, and
+// that value is not recorded.
+func ItemFromScores(key string, s feedback.Scores, base jobinsight.Weights, t Target) (Item, error) {
+	prior := blendOf(base).prior
+	it := Item{Key: key, Grade: t.Grade, Judged: t.Judged}
+	for i, n := range PartNames {
+		v, ok := s.Factors[n]
+		switch {
+		case ok && !(v >= 0 && v <= 1):
+			return Item{}, fmt.Errorf("rankfit: %s factor %s is %v, want 0..1", key, n, v)
+		case ok:
+			it.Value[i], it.Present[i] = v, true
+			it.Known[i] = i != PartEmployer || v == 1
+		case i == PartKBMatch:
+		case i == PartEmployer: // always known to ScoreWith; recorded as 0 when absent
+			it.Present[i] = true
+		default:
+			it.Value[i], it.Present[i] = prior, true
+		}
+	}
+	g, okG := s.Factors["gate"]
+	f, okF := s.Factors["fresh"]
+	if !okG || !okF {
+		return Item{}, fmt.Errorf("rankfit: %s has no recorded gate or fresh", key)
+	}
+	it.Gate, it.Fresh = g, f
 	return it, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
@@ -25,8 +26,8 @@ var rankfitParts = []string{"all", "platt", "weights"}
 var errRankfitNoGain = errors.New("rankfit: the fitted shares do not beat the hand weights on the held-out judged pairs; nothing written (--part platt keeps a calibration alone)")
 
 // cmdRankfit learns Score's constants from judged labels (internal/rankfit):
-// per-backend Platt calibration from the eval labels, and the shares from
-// would-apply judgements and marks. Below a threshold it refuses, exits
+// per-backend Platt calibration from the eval slot labels, and the shares from
+// the audit's judgments (internal/feedback), marks and impressions. Below a threshold it refuses, exits
 // non-zero and writes nothing; a refusal reads "could not run", never as a
 // result. --dry-run prints the counts and what would run.
 func (e *env) cmdRankfit(args []string) error {
@@ -36,7 +37,7 @@ func (e *env) cmdRankfit(args []string) error {
 	part := fs.String("part", "all", "what to fit: "+strings.Join(rankfitParts, ", "))
 	seed := fs.Uint64("seed", 1, "seed for the held-out split and the pair sample")
 	lambda := fs.Float64("lambda", rankfit.DefaultLambda, "L2 pull of each log-share toward the hand weights, in training items")
-	holdout := fs.Int("holdout", rankfit.DefaultHoldoutPct, "percent of judged labels held out to evaluate the fit (1-90)")
+	holdout := fs.Int("holdout", rankfit.DefaultHoldoutPct, "percent of audit judgments held out to evaluate the fit (1-90)")
 	maxPairs := fs.Int("max-pairs", rankfit.DefaultMaxPairs, "training pairs above which they are sampled")
 	dry := fs.Bool("dry-run", false, "print the label counts and what would run; fit and write nothing")
 	if err := parse(fs, args); err != nil {
@@ -84,22 +85,27 @@ func (e *env) cmdRankfit(args []string) error {
 		mk[k] = en.Mark
 	}
 
-	targets := rankfit.Targets(lab, mk)
-	rep := rankfit.Report{Labels: len(lab)}
-	for _, t := range targets {
-		switch {
-		case t.Judged:
-			rep.Judged++
-		case t.Positive:
-			rep.MarkedPos++
-		default:
-			rep.MarkedNeg++
+	judged, err := feedback.ReadJudgments(e.stateDir)
+	if err != nil {
+		return fmt.Errorf("rankfit could not run: read judgments: %w", err)
+	}
+	shown, err := feedback.ReadImpressions(e.stateDir)
+	if err != nil {
+		return fmt.Errorf("rankfit could not run: read impressions: %w", err)
+	}
+	for name, r := range map[string][2]int{"judgments": {judged.Skipped, judged.Capped}, "impressions": {shown.Skipped, shown.Capped}} {
+		if r[0] > 0 || r[1] > 0 {
+			fmt.Fprintf(e.stderr, "vani: %s: %d unreadable lines skipped, %d older lines past the read cap left out\n", name, r[0], r[1])
 		}
 	}
+
+	targets, tc := rankfit.Targets(judged.Rows, shown.Rows, mk)
+	rep := rankfit.Report{Labels: len(lab), Targets: tc}
 	samples, missing := rankfit.PlattSamples(snap.Records, lab)
 	w := e.stdout
-	fmt.Fprintf(w, "labels: %d eval entries (%d not in the ledger); %d would-apply judgements; marks: %d positive, %d negative\n",
-		rep.Labels, missing, rep.Judged, rep.MarkedPos, rep.MarkedNeg)
+	fmt.Fprintf(w, "slot labels: %d eval entries (%d not in the ledger)\n", rep.Labels, missing)
+	fmt.Fprintf(w, "audit judgments: %d yes, %d maybe, %d no (%d skipped); marks: %d saved, %d hidden; shown and left unmarked: %d\n",
+		tc.Yes, tc.Maybe, tc.No, tc.Skipped, tc.Saved, tc.Hidden, tc.Passed)
 
 	doPlatt, doWeights := *part != "weights", *part != "platt"
 	var notRun []string
@@ -109,25 +115,25 @@ func (e *env) cmdRankfit(args []string) error {
 			n := rankfit.PlattUsable(samples[b])
 			usable = max(usable, n)
 			verdict := "would run"
-			if n < rankfit.MinPlattLabels {
-				verdict = fmt.Sprintf("would refuse: %d of %d", n, rankfit.MinPlattLabels)
+			if n < rankfit.MinPlattPostings {
+				verdict = fmt.Sprintf("would refuse: %d of %d", n, rankfit.MinPlattPostings)
 			}
-			fmt.Fprintf(w, "platt %s: %d judged readings (%s)\n", b, n, verdict)
+			fmt.Fprintf(w, "platt %s: %d judged postings (%s)\n", b, n, verdict)
 		}
-		if usable < rankfit.MinPlattLabels {
-			notRun = append(notRun, (&rankfit.NotRunError{Part: "platt", Have: usable, Need: rankfit.MinPlattLabels,
-				What: "judged readings for at least one backend"}).Error())
+		if usable < rankfit.MinPlattPostings {
+			notRun = append(notRun, (&rankfit.NotRunError{Part: "platt", Have: usable, Need: rankfit.MinPlattPostings,
+				What: "judged postings for at least one backend"}).Error())
 		}
 	}
 	if doWeights {
 		verdict := "would run"
-		if rep.Judged < rankfit.MinJudgedLabels {
-			verdict = fmt.Sprintf("would refuse: %d of %d", rep.Judged, rankfit.MinJudgedLabels)
+		if tc.Judged() < rankfit.MinJudged {
+			verdict = fmt.Sprintf("would refuse: %d of %d", tc.Judged(), rankfit.MinJudged)
 		}
-		fmt.Fprintf(w, "weight fit: %d judged would-apply labels (%s)\n", rep.Judged, verdict)
-		if rep.Judged < rankfit.MinJudgedLabels {
-			notRun = append(notRun, (&rankfit.NotRunError{Part: "weight fit", Have: rep.Judged, Need: rankfit.MinJudgedLabels,
-				What: "judged would-apply labels"}).Error())
+		fmt.Fprintf(w, "weight fit: %d usable audit judgments (%s)\n", tc.Judged(), verdict)
+		if tc.Judged() < rankfit.MinJudged {
+			notRun = append(notRun, (&rankfit.NotRunError{Part: "weight fit", Have: tc.Judged(), Need: rankfit.MinJudged,
+				What: "usable audit judgments"}).Error())
 		}
 	}
 	if *dry {
@@ -180,37 +186,48 @@ func (e *env) cmdRankfit(args []string) error {
 	return nil
 }
 
-// rankfitWeights builds each labelled posting's Score parts under base, as
-// `vani jobs` would rank it (the same insight), fits the shares and prints
-// the comparison with the hand weights.
+// rankfitWeights builds each labelled posting's Score parts: as feedback
+// recorded them when it was judged or shown, which is what the owner saw;
+// else scored now under base, as `vani jobs` would rank it (the same insight).
+// It fits the shares and prints the comparison with the hand weights.
 func (e *env) rankfitWeights(snap ledger.Snapshot, me map[posting.Key]marks.Entry, targets map[posting.Key]rankfit.Target,
 	base jobinsight.Weights, opt rankfit.Options, w io.Writer) (rankfit.FitResult, error) {
-	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, me)
-	if err != nil {
-		return rankfit.FitResult{}, err
-	}
+	var in *insight
 	byKey := make(map[posting.Key]ledger.Record, len(snap.Records))
 	for _, r := range snap.Records {
 		byKey[r.Key] = r
 	}
 	var items []rankfit.Item
-	absent := 0
+	absent, recorded := 0, 0
 	for _, k := range slices.Sorted(maps.Keys(targets)) {
+		t := targets[k]
+		if t.Scores != nil {
+			it, err := rankfit.ItemFromScores(string(k), *t.Scores, base, t)
+			if err != nil {
+				return rankfit.FitResult{}, err
+			}
+			items, recorded = append(items, it), recorded+1
+			continue
+		}
 		r, ok := byKey[k]
 		if !ok {
 			absent++
 			continue
 		}
-		t := targets[k]
-		it, err := rankfit.ItemFrom(string(k), jobinsight.ScoreWith(jobinsight.InputsFor(r, in.rc), base), t.Positive, t.Judged)
+		if in == nil {
+			var err error
+			if in, err = e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, me); err != nil {
+				return rankfit.FitResult{}, err
+			}
+		}
+		it, err := rankfit.ItemFrom(string(k), jobinsight.ScoreWith(jobinsight.InputsFor(r, in.rc), base), t)
 		if err != nil {
 			return rankfit.FitResult{}, err
 		}
 		items = append(items, it)
 	}
-	if absent > 0 {
-		fmt.Fprintf(w, "weight fit: %d labelled postings are not in the ledger and are left out\n", absent)
-	}
+	fmt.Fprintf(w, "weight fit: %d labelled postings with the scores recorded when judged or shown, %d scored now, %d not in the ledger and left out\n",
+		recorded, len(items)-recorded, absent)
 	res, err := rankfit.Fit(items, base, opt)
 	if err != nil {
 		return res, fmt.Errorf("rankfit %w; nothing written", err)

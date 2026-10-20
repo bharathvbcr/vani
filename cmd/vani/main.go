@@ -63,10 +63,10 @@ commands:
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
   rankfit [--part all|platt|weights] [--dry-run] [--labels DIR] [--out FILE] [--seed N]
           [--lambda X] [--holdout PCT] [--max-pairs N]
-                             fit Score's per-backend calibration (100 judged readings per
-                             backend) and shares (150 would-apply judgements) to a rank weights
-                             file; refuses below the thresholds and writes nothing. Use it by
-                             setting rank_weights_file
+                             fit Score's per-backend calibration (eval slot labels, 100 judged
+                             postings per backend) and shares (150 usable audit judgments, plus
+                             marks and impressions) to a rank weights file; refuses below the
+                             thresholds and writes nothing. Use it by setting rank_weights_file
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup COMPANY         show the sponsorship-history badge for a company
   employer import FILE.csv   import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)

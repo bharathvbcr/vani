@@ -5,11 +5,14 @@ import (
 	"math"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // PlattSample is one backend reading of one slot set against the human label
 // for that slot: Correct when the backend's answer was the label.
 type PlattSample struct {
+	// Key is the labelled posting; the threshold counts postings, not slots.
+	Key     posting.Key
 	P       float64
 	HasP    bool
 	Correct bool
@@ -18,9 +21,11 @@ type PlattSample struct {
 // PlattFit is one backend's calibration and what it rests on.
 type PlattFit struct {
 	Calibration jobinsight.Calibration `json:"calibration"`
-	// N is the samples fitted, Correct how many of them were right.
-	N       int `json:"n"`
-	Correct int `json:"correct"`
+	// N is the samples fitted, Correct how many of them were right, Postings
+	// the distinct postings they came from.
+	N        int `json:"n"`
+	Correct  int `json:"correct"`
+	Postings int `json:"postings"`
 	// Unused counts samples left out: those without p (or with an invalid
 	// one) when the fit is on p, and those with an invalid p otherwise.
 	Unused int `json:"unused,omitempty"`
@@ -28,7 +33,7 @@ type PlattFit struct {
 
 // DefaultPlattRidge is the L2 pull toward the identity calibration (A 1,
 // B 0 on p; B 0 without it). It only keeps the Newton system well posed
-// when every p is the same; at MinPlattLabels it moves no estimate visibly.
+// when every p is the same; at MinPlattPostings it moves no estimate visibly.
 const DefaultPlattRidge = 1e-3
 
 const (
@@ -44,16 +49,16 @@ const (
 // with a backtracking line search, so the answer is deterministic. When most
 // samples carry p the fit is on logit(p) and the rest are left out; otherwise
 // it is the intercept alone (A 0), the backend's smoothed precision, which
-// replaces AnsweredConf for it. Fewer than MinPlattLabels usable samples is a
-// NotRunError. ridge < 0 or not finite means DefaultPlattRidge.
+// replaces AnsweredConf for it. Usable samples from fewer than MinPlattPostings
+// distinct postings is a NotRunError. ridge < 0 or not finite means DefaultPlattRidge.
 func FitPlatt(backend string, samples []PlattSample, ridge float64) (PlattFit, error) {
 	if !(ridge >= 0) || math.IsInf(ridge, 0) {
 		ridge = DefaultPlattRidge
 	}
 	part := "platt " + backend
-	xs, ys, usesP := plattData(samples)
-	fit := PlattFit{N: len(xs), Unused: len(samples) - len(xs)}
-	if err := needAtLeast(part, "judged readings", fit.N, MinPlattLabels); err != nil {
+	xs, ys, usesP, postings := plattData(samples)
+	fit := PlattFit{N: len(xs), Unused: len(samples) - len(xs), Postings: postings}
+	if err := needAtLeast(part, "judged postings", postings, MinPlattPostings); err != nil {
 		return fit, err
 	}
 	pos := 0
@@ -83,11 +88,11 @@ func FitPlatt(backend string, samples []PlattSample, ridge float64) (PlattFit, e
 	return fit, nil
 }
 
-// PlattUsable is how many of samples FitPlatt would fit: what its threshold
-// is counted on.
+// PlattUsable is how many distinct postings the samples FitPlatt would fit
+// come from: what its threshold is counted on.
 func PlattUsable(samples []PlattSample) int {
-	xs, _, _ := plattData(samples)
-	return len(xs)
+	_, _, _, n := plattData(samples)
+	return n
 }
 
 // plattData picks the samples a fit uses and their logit(p) (0 when the fit
@@ -96,7 +101,7 @@ func PlattUsable(samples []PlattSample) int {
 // usable p is the same, the slope cannot be told from the intercept (only
 // the ridge would pick it), so the fit is the intercept alone. A p outside
 // 0..1 or NaN is never used.
-func plattData(samples []PlattSample) (xs []float64, ys []bool, usesP bool) {
+func plattData(samples []PlattSample) (xs []float64, ys []bool, usesP bool, postings int) {
 	validP := func(s PlattSample) bool { return s.HasP && s.P >= 0 && s.P <= 1 }
 	withP := 0
 	for _, s := range samples {
@@ -105,6 +110,7 @@ func plattData(samples []PlattSample) (xs []float64, ys []bool, usesP bool) {
 		}
 	}
 	usesP = withP*2 > len(samples)
+	seen := map[posting.Key]bool{}
 	if usesP {
 		lo, hi := math.Inf(1), math.Inf(-1)
 		for _, s := range samples {
@@ -127,8 +133,9 @@ func plattData(samples []PlattSample) (xs []float64, ys []bool, usesP bool) {
 			xs = append(xs, 0)
 		}
 		ys = append(ys, s.Correct)
+		seen[s.Key] = true
 	}
-	return xs, ys, usesP
+	return xs, ys, usesP, len(seen)
 }
 
 // plattObjective is the cross-entropy of sigmoid(a*x+b) against t plus the

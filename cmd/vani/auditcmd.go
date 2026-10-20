@@ -155,7 +155,7 @@ func (s *auditState) batch(n int) []feedback.Pick {
 }
 
 func (s *auditState) score(r ledger.Record) jobinsight.Result {
-	return jobinsight.Score(jobinsight.InputsFor(r, s.rc))
+	return s.rc.ScoreOf(r)
 }
 
 func (s *auditState) item(p feedback.Pick) (auditItem, bool) {
