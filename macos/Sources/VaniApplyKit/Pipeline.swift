@@ -68,10 +68,19 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         /// Where a failed run stopped: pipeline or digest.
         public var stage: String?
         public var error: String?
+        /// A failed run's cause code; nil when the run had none of the known
+        /// ones, or from a vani that does not record it.
+        public var cause: Cause?
+        /// How many roles the run's digest listed; nil when no digest was
+        /// written, or from a vani that does not record it.
+        public var digestRoles: Int?
         public var postingsBefore: Int?
         public var postingsAfter: Int?
         public var countsBefore: [String: Int]?
         public var countsAfter: [String: Int]?
+        /// The listing phase, board by board; nil when the run ended before it,
+        /// or from a vani that does not report it.
+        public var boards: Boards?
         /// The triage/score/explain phase; nil when the run ended before it,
         /// or from a vani that does not report it.
         public var advance: Advance?
@@ -80,7 +89,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var backendErrors: BackendErrors?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, state, stage, error, advance
+            case ok, reason, state, stage, error, cause, boards, advance
+            case digestRoles = "digest_roles"
             case startedAt = "started_at"
             case finishedAt = "finished_at"
             case durationSec = "duration_sec"
@@ -101,18 +111,28 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             durationSec = try c.decodeIfPresent(Double.self, forKey: .durationSec)
             stage = try c.decodeIfPresent(String.self, forKey: .stage)
             error = try c.decodeIfPresent(String.self, forKey: .error)
+            cause = try c.decodeIfPresent(String.self, forKey: .cause).flatMap { $0.isEmpty ? nil : Cause(raw: $0) }
+            digestRoles = try c.decodeIfPresent(Int.self, forKey: .digestRoles)
             postingsBefore = try c.decodeIfPresent(Int.self, forKey: .postingsBefore)
             postingsAfter = try c.decodeIfPresent(Int.self, forKey: .postingsAfter)
             countsBefore = try c.decodeIfPresent([String: Int].self, forKey: .countsBefore)
             countsAfter = try c.decodeIfPresent([String: Int].self, forKey: .countsAfter)
+            boards = try c.decodeIfPresent(Boards.self, forKey: .boards)
             advance = try c.decodeIfPresent(Advance.self, forKey: .advance)
             backendErrors = try c.decodeIfPresent(BackendErrors.self, forKey: .backendErrors)
         }
 
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
                     durationSec: Double? = nil, stage: String? = nil, error: String? = nil,
+                    cause: Cause? = nil, digestRoles: Int? = nil,
                     postingsBefore: Int? = nil, postingsAfter: Int? = nil,
-                    advance: Advance? = nil, backendErrors: BackendErrors? = nil) {
+                    countsBefore: [String: Int]? = nil, countsAfter: [String: Int]? = nil,
+                    boards: Boards? = nil, advance: Advance? = nil, backendErrors: BackendErrors? = nil) {
+            self.cause = cause
+            self.digestRoles = digestRoles
+            self.countsBefore = countsBefore
+            self.countsAfter = countsAfter
+            self.boards = boards
             self.advance = advance
             self.backendErrors = backendErrors
             self.ok = ok
@@ -125,6 +145,28 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             self.error = error
             self.postingsBefore = postingsBefore
             self.postingsAfter = postingsAfter
+        }
+
+        /// Why a failed run failed, when vani names it (cmd/vani/runrecord.go
+        /// runCause): set from the error's identity, never its text.
+        public enum Cause: Equatable, Sendable {
+            /// The ledger could not be written safely, so the daemon stopped.
+            case ledgerFatal
+            /// The Jobs marks could not be read, so the digest was held back.
+            case digestHeldBack
+            /// The config could not be re-read; the run used the previous watchlist.
+            case configStale
+            /// A cause a newer vani adds: worded as the stage's default.
+            case unknown(String)
+
+            init(raw: String) {
+                switch raw {
+                case "ledger_fatal": self = .ledgerFatal
+                case "digest_held_back": self = .digestHeldBack
+                case "config_stale": self = .configStale
+                default: self = .unknown(raw)
+                }
+            }
         }
 
         /// Postings the run added to the ledger (a ledger-derived difference, not
@@ -140,6 +182,159 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             return Set(before.keys).union(after.keys).sorted().compactMap { s in
                 let d = (after[s] ?? 0) - (before[s] ?? 0)
                 return d == 0 ? nil : (s, d)
+            }
+        }
+
+        /// What one run's listing phase did, board by board (boardsReport in
+        /// cmd/vani/runrecord.go). The totals count every configured board;
+        /// `items` may be cut by vani's bounds, failed and skipped boards kept
+        /// before read ones, and the cut is `unrecorded`.
+        public struct Boards: Decodable, Equatable, Sendable {
+            public struct Item: Decodable, Equatable, Sendable {
+                public enum Outcome: Equatable, Sendable {
+                    case read
+                    /// Listing or reconciling failed; the board's postings were left as they were.
+                    case failed
+                    /// No adapter, or the careers-page source was disabled this run.
+                    case skipped
+                    /// An outcome a newer vani adds: shown as written, never as read.
+                    case unknown(String)
+
+                    init(raw: String) {
+                        switch raw {
+                        case "read": self = .read
+                        case "failed": self = .failed
+                        case "skipped": self = .skipped
+                        default: self = .unknown(raw)
+                        }
+                    }
+                }
+
+                public var ats: String
+                public var token: String
+                public var company: String?
+                public var outcome: Outcome
+                /// Postings the board listed; nil when it failed or was skipped.
+                public var listed: Int?
+                /// Why the board failed or was skipped: adapter text, untrusted.
+                /// Show it through `problems`, which bounds it.
+                public var error: String?
+
+                enum CodingKeys: String, CodingKey { case ats, token, company, outcome, listed, error }
+
+                public init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    ats = try c.decode(String.self, forKey: .ats)
+                    token = try c.decode(String.self, forKey: .token)
+                    company = try c.decodeIfPresent(String.self, forKey: .company)
+                    outcome = Outcome(raw: try c.decode(String.self, forKey: .outcome))
+                    listed = try c.decodeIfPresent(Int.self, forKey: .listed)
+                    error = try c.decodeIfPresent(String.self, forKey: .error)
+                }
+
+                public init(ats: String, token: String, company: String? = nil, outcome: Outcome, listed: Int? = nil, error: String? = nil) {
+                    self.ats = ats
+                    self.token = token
+                    self.company = company
+                    self.outcome = outcome
+                    self.listed = listed
+                    self.error = error
+                }
+            }
+
+            /// A board that was not read, ready to show: one bounded line each.
+            public struct Line: Equatable, Sendable {
+                /// "Intel (wd intel/External)"
+                public var board: String
+                /// "failed", "skipped", or a newer vani's outcome as written.
+                public var outcome: String
+                public var error: String
+            }
+
+            /// Longest error shown, in characters.
+            public static let maxError = 240
+
+            public var configured: Int
+            public var read: Int
+            public var failed: Int
+            public var skipped: Int
+            /// Boards never tried: the run ended before them.
+            public var notReached: Int
+            /// Postings the read boards listed, together.
+            public var listed: Int
+            public var items: [Item]
+            /// Tried boards vani left out of `items`.
+            public var unrecorded: Int
+
+            enum CodingKeys: String, CodingKey {
+                case configured, read, failed, skipped, listed, items, unrecorded
+                case notReached = "not_reached"
+            }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                configured = try c.decode(Int.self, forKey: .configured)
+                read = try c.decode(Int.self, forKey: .read)
+                failed = try c.decode(Int.self, forKey: .failed)
+                skipped = try c.decode(Int.self, forKey: .skipped)
+                listed = try c.decode(Int.self, forKey: .listed)
+                notReached = try c.decodeIfPresent(Int.self, forKey: .notReached) ?? 0
+                items = try c.decodeIfPresent([Item].self, forKey: .items) ?? []
+                unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
+            }
+
+            public init(configured: Int, read: Int, failed: Int = 0, skipped: Int = 0, notReached: Int = 0,
+                        listed: Int, items: [Item] = [], unrecorded: Int = 0) {
+                self.configured = configured
+                self.read = read
+                self.failed = failed
+                self.skipped = skipped
+                self.notReached = notReached
+                self.listed = listed
+                self.items = items
+                self.unrecorded = unrecorded
+            }
+
+            /// Boards tried but not read: failed and skipped.
+            public var unreadCount: Int { failed + skipped }
+
+            /// "17 of 18 boards read; 412 postings listed"
+            public var summary: String {
+                "\(read) of \(configured) board\(configured == 1 ? "" : "s") read; \(listed) posting\(listed == 1 ? "" : "s") listed"
+            }
+
+            /// How the boards that were not read went, or nil when every board was read.
+            public var outcome: String? {
+                var parts: [String] = []
+                if failed > 0 { parts.append("\(failed) failed") }
+                if skipped > 0 { parts.append("\(skipped) skipped") }
+                if notReached > 0 { parts.append("\(notReached) not reached") }
+                guard !parts.isEmpty else { return nil }
+                return parts.joined(separator: ", ") + "; their postings were left as they were"
+            }
+
+            /// The first `limit` boards that were not read, in vani's order.
+            public func problems(limit: Int = 5) -> [Line] {
+                items.filter { $0.outcome != .read }.prefix(max(limit, 0)).map { item in
+                    let name = item.company.flatMap { $0.isEmpty ? nil : $0 }
+                    let where_ = "\(item.ats) \(item.token)"
+                    let outcome: String = switch item.outcome {
+                    case .read: "read"
+                    case .failed: "failed"
+                    case .skipped: "skipped"
+                    case .unknown(let raw): PipelineStatus.bounded(raw, max: 30)
+                    }
+                    return Line(board: PipelineStatus.bounded(name.map { "\($0) (\(where_))" } ?? where_, max: 80),
+                                outcome: outcome,
+                                error: PipelineStatus.bounded(item.error ?? "", max: Self.maxError))
+                }
+            }
+
+            /// What `problems(limit:)` left out, or nil when it shows every board not read.
+            public func moreNote(limit: Int = 5) -> String? {
+                let shown = min(items.filter { $0.outcome != .read }.count, max(limit, 0))
+                let hidden = unreadCount - shown
+                return hidden > 0 ? "\(hidden) more board\(hidden == 1 ? "" : "s") not read" : nil
             }
         }
 
@@ -443,6 +638,14 @@ extension PipelineStatus {
             }
         case .running:
             break
+        }
+
+        // A board that failed or was skipped is a warning even on a run that
+        // succeeded: its postings silently stop updating otherwise.
+        if lastRun.state != .running, let b = lastRun.boards, b.unreadCount > 0 {
+            let names = b.problems(limit: 3).map(\.board).joined(separator: ", ")
+            add(.warning, "\(b.unreadCount) board\(b.unreadCount == 1 ? "" : "s") could not be read last run",
+                names.isEmpty ? nil : names)
         }
 
         if !schedule.ok { add(.warning, "The schedule could not be read", schedule.reason) }

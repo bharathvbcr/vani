@@ -193,6 +193,73 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      10 minutes.
    - It accepts XPC connections only from code signed by team `HAUHVD8M37`, so another process
      running as you cannot spend your model budget through it.
+7. **Run notifications.**
+   - While the app runs, with or without its window open, it announces each finished daily run once
+     as a Vani Apply notification. Clicking one opens the app on the Jobs tab, and reopens the
+     window if it was closed.
+   - Closing the window does not quit the app: it keeps the notifier lock and keeps announcing.
+     The Dock icon or a notification click brings the window back. Quit (Command-Q) hands notices
+     back to the daemon.
+   - It reads the run from `vani status --json` (`last_run`), the same read the Pipeline tab makes
+     every 60 seconds. It never reads Vani's state folder itself.
+   - The app asks for notification permission at first launch, and only while you have not
+     answered. Change the answer later in System Settings ▸ Notifications ▸ Vani Apply.
+   - The wording is the daemon's fixed vocabulary (`cmd/vani/runnotice.go`). A run that ended
+     `ok` and digested roles posts **Vani digest**: "N roles to review", plus how many postings
+     could not be read or scored. A `failed` run's notice follows `failureNotice`'s order:
+     `last_run.cause` `ledger_fatal` posts **Vani stopped**, and `digest_held_back` posts **Vani
+     digest held back**. Otherwise the stop reason decides (`unread_streak`/`none_read`,
+     `fail_streak`/`none_advanced`) and then the stage `pipeline`, both as **Vani run failed**.
+     After those, `config_stale` posts **Vani config not reloaded**, and anything else gets "The
+     digest could not be finished." The daemon sets `cause` from the error's identity
+     (`runCause` in `cmd/vani/runrecord.go`), and both sides read that one code. A run records
+     `config_stale` when the per-run config re-read (`reloadBoards`) fails and the run goes on
+     with the previous watchlist. The run's error
+     text can carry fetched URLs or page content, so it never appears in a notification. Nothing
+     personal does either.
+   - The digest's size is `last_run.digest_roles`: the roles the run's digest listed. The daemon
+     records it whenever it wrote a digest, including a failed run that wrote one (a stale
+     config, or a ledger append that failed after the file was written). A digest of 0 roles
+     posts nothing.
+   - **Older vani.** A vani that records neither field gets the old mapping: the stage's text
+     for the three causes, and the run's net change in the ledger's `digested` count
+     (`counts_after` minus `counts_before`) as the digest's size. That net figure undercounts
+     when the same run's reconcile moved earlier digested postings to `dead` or `live`. An
+     unknown `cause` from a newer vani reads as the stage's text.
+   - **Posts nothing:** a run that is still going, cancelled, interrupted, in a state this app does
+     not know, or one that finished more than 36 hours ago (a backstop; the lock cutoff below
+     already leaves earlier runs to the daemon). It also
+     posts nothing when no run is recorded, when the record could not be read (corrupt, wrong
+     version), or when `vani status` fails. The announcer keeps the reason (`RunAnnouncer.lastSkip`).
+   - **Once per run.** A run is keyed on its start time. The last key announced is stored in the
+     app's defaults (`lastAnnouncedRun`) *before* the notice is posted, so a relaunch or a re-read
+     never repeats it. A crash at that moment loses one notice rather than posting it twice.
+   - A day's notices share a thread (`vani-run-YYYY-MM-DD`, the run's local finish day), so they
+     group together in Notification Center.
+   - **One notice per run.** The daemon can post two for one run: a stale-config run that wrote
+     its digest gets **Vani digest** from `publishDigest`, then **Vani config not reloaded**. The
+     app posts one notice per run, the failure, so that run's digest notice is not posted. The
+     digest file is still written.
+   - **The daemon is the fallback.** While the app runs, it holds an exclusive `flock` on
+     `<state_dir>/app/notifier.lock`, where `state_dir` is the folder `vani status` reports. The
+     daemon's notifier (`notify.UnlessHeld`, wired in `cmd/vani/wire.go`) tests that lock before
+     each notice. While the lock is held it posts nothing, and otherwise it posts through osascript
+     as before. Those fallback notices are attributed to Script Editor, and clicking one opens Script
+     Editor. The lock belongs to the app's open file, so it goes when the app quits or crashes: a
+     stale lock file cannot silence the daemon. A lock the daemon cannot check (an unreadable
+     file, a lock error) counts as not held, so the daemon posts. A duplicate is better than
+     silence. The app's Settings (config and state paths) must point at the state folder that the
+     launchd daemon uses. Otherwise the lock is in a folder the daemon never checks, and both post.
+   - The app announces a run only if the run finished after the app took the lock (its first
+     status read). A run that finished earlier was the daemon's to announce, so the app stays quiet
+     about it. If the app cannot take the lock (another copy holds it, or there is no state folder),
+     it posts nothing and the daemon announces.
+   - **Edge cases.** A run that ends in the same moment the app takes the lock can be announced
+     twice, or not at all. A run that ends while the app holds the lock, followed by the app quitting
+     before its next read (up to 60 seconds), is announced by neither. The next launch treats that
+     run as the daemon's.
+   - A bare `swift run` (no app bundle) has no notification center, so it takes no lock and
+     announces nothing.
 
 ## Claude drafting: what is sent and where the key comes from
 
@@ -254,7 +321,9 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 343 tests, 1 skipped (2026-10-19). They cover the TS vectors, validation, the store
+  - `swift test`: 410 tests, 1 failure (2026-10-19, after the branch merges; first counted at 129).
+    The failure is `JobsTests.testAgainstTheRealVani`: the Go `vani` now gives an undated
+    first-crawl posting no `fresh_source`, and the test still expects `seen`. The tests cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).
@@ -262,7 +331,37 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - The appex is sandboxed and every piece carries the App Group entitlement.
   - The appex's `LC_MAIN` entry is the `_NSExtensionMain` stub, and its principal class is
     `SafariWebExtensionHandler`.
+  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage,
+    stop reason and cause code maps to a notice, in `failureNotice`'s order. They cover
+    `digest_roles` over the counts' difference, the fallback when a vani records neither, and
+    that error text stays out, even text that names a cause. They also cover missing,
+    corrupt and unreadable records, and that a run is announced once, including across a
+    relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
+    refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers
+    the daemon's side: it skips while the lock is held, posts when there is no lock, a stale file
+    or an unopenable path, and never creates the file.
+  - Run notifications in the signed bundle (2026-10-19). The bundle came from `scripts/bundle.sh`.
+    The copy tested had its own bundle id (`dev.vbcr.vani.apply.notifytest`) and no agent plist
+    or appex, so it could not disturb the installed app's login item. It used a throwaway store
+    (`VANI_APPLY_STORE_DIR`) and a throwaway Vani state folder. Evidence is from the unified log
+    (`usernoted`) and `lsof`:
+    - The permission prompt is shown at first launch and not on the next one.
+    - A run that finished after launch is posted once and presented as a banner. The next 60-second
+      poll does not post it again.
+    - With the window closed, the app keeps running, keeps the lock and posts the next run. A Dock
+      reopen brings the window back in the same process.
+    - While the app runs, `lsof` shows it holding `<state>/app/notifier.lock`. `vani run-once`
+      reached its "digest held back" notice and posted nothing. After the app quit, the same run
+      posted through osascript, logged as a Script Editor notification about 0.2 s later.
+  - That Swift's `flock(LOCK_EX)` and Go's shared probe exclude each other: the bundled app above
+    held the lock and the daemon's notifier stayed quiet.
 - **Not verified here:**
+  - A click on a notification, with the window open or closed. Computer use cannot reach
+    Notification Center, and no click on the test copy's notices showed up in the log. The
+    reopen goes through `MainWindowReveal` (`MainWindowRevealTests`). Without the fix, closing
+    the window quit the app, so there was no running app to click through to.
+  - The text of a posted notice as shown on screen. The log hides it; it comes from
+    `RunNotice.decide`, which `RunNoticeTests` cover.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.

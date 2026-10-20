@@ -211,6 +211,12 @@ func TestRunOnceSkipsPageBoardWithoutLightpanda(t *testing.T) {
 	if n := len(app.Ledger.All()); n != 0 {
 		t.Fatalf("%d postings recorded", n)
 	}
+	// The failed run still reports its boards, with why the page board was skipped.
+	b := app.RunReport().Boards
+	if b == nil || b.Configured != 1 || b.Skipped != 1 || b.Read != 0 || len(b.Items) != 1 ||
+		b.Items[0].Outcome != boardSkipped || !strings.Contains(b.Items[0].Error, "careers-page source disabled this run: ") {
+		t.Fatalf("boards report: %+v", b)
+	}
 }
 
 // Lappi is the shadow until promoted, then first in the chain. Building the

@@ -1043,6 +1043,32 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     (OpenRouter, LLM, Lappi, local, and the notes picker). `jobs list`/`stats` report `pending`,
     and the digest and the Jobs tab footer show the count. Draining 2,639 postings at 300 a run
     takes 9 runs. Raising the cap is the owner's spend decision.
+  - **A board that failed to list was invisible (2026-10-19).** Intel's board (`wd intel/External`
+    on intel.wd1.myworkdayjobs.com, search "LLM") answered total=35 when probed live, yet the
+    ledger held no `wd:intel` record and the run record did not say why. A board whose listing fails
+    (one bad Workday detail fails the whole board, by design: a partial listing would age healthy
+    postings as absent) only reached stderr. Now the run record and `status --json` carry `boards`:
+    the configured, read, failed, skipped and not-reached counts, the postings listed, and one entry
+    per board (ATS, token, company, outcome, listed count, reconcile counts, and a one-line error
+    of at most 300 runes for a failed or skipped board). The entries are bounded at 100 boards and
+    32 KiB; failed and skipped boards are kept before read ones, and the cut is counted
+    (`unrecorded`). The totals are always exact. A cancelled run keeps the boards read before it and
+    the one being listed (failed), and counts the rest as not reached. The record reader's bound went
+    from 64 KiB to 256 KiB. A worst-case record, with every bound full of six-byte-escaped text, is
+    85 KB (`TestWorstCaseRunRecordIsReadable` holds it under half the bound); full backend errors
+    plus full board entries would have passed 64 KiB. The Mac Pipeline tab shows the
+    boards that were not read, and a run that succeeded with one is a warning, not healthy. Also
+    fixed: `cleanText` (behind `oneLine`) wrote a pending space or newline after its bound check,
+    so every bounded line could keep one rune more than its limit. Not done:
+    - **Why Intel failed is inferred, not known.** Four live probes through the real adapter and
+      egress client listed 35 postings with no error (36–40 s each). In the 09:57 run the ledger
+      shows NVIDIA reconciled at 09:59:52 and Adobe at 10:01:12. Adobe's 47 details at Broadcom's
+      rate (7 in 9 s) take about 55 s, so Intel ran for roughly 20–30 s before it ended with no
+      records. That fits a transient detail failure partway through, which fails the whole board
+      by design. The next failure's `boards` entry will carry the cause. If it recurs, a bounded
+      per-posting retry or skip is a separate decision, because absence tracking must stay honest.
+    - **An older installed `vani` reading a new record over 64 KiB reports the last run as unknown.**
+      Rebuild the installed binary with the app.
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers
     `unsupported`. Fixing that means XPC to the app, or a request queue in the group folder that the
     app serves.

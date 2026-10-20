@@ -260,6 +260,12 @@ func TestReloadFailureIsLoudAndKeepsThePreviousBoards(t *testing.T) {
 	if err != nil || rec == nil || rec.Outcome != outcomeFailed || !strings.Contains(rec.Error, "config reload failed") {
 		t.Fatalf("run record %+v, %v", rec, err)
 	}
+	// The digest was written, so the record names the stale config as the
+	// cause, at stage digest, with the digest's size (failureNotice: "Vani
+	// config not reloaded", not an unfinished digest).
+	if rec.Cause != causeConfigStale || rec.Stage != stageDigest || rec.DigestRoles == nil {
+		t.Errorf("cause %q, stage %q, digest_roles %v: want %q at %q with the digest's size", rec.Cause, rec.Stage, rec.DigestRoles, causeConfigStale, stageDigest)
+	}
 }
 
 // The poll never overlaps the daily run, runs while the daemon is up, and is

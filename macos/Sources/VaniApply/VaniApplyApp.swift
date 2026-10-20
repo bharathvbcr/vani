@@ -3,34 +3,38 @@ import VaniApplyKit
 
 @main
 struct VaniApplyApp: App {
-    @State private var model: AppModel
-    @State private var jobs: JobsModel
-    @State private var pipeline: PipelineModel
-
-    init() {
-        // A screenshot or fixture rig passes -VaniApplyNoAgent YES so it does not
-        // take the per-user login agent from the owner's copy (AgentLaunch).
-        let launch = AgentLaunch.from(arguments: CommandLine.arguments)
-        if let problem = launch.problem {
-            FileHandle.standardError.write(Data("Vani Apply: \(problem)\n".utf8))
-        }
-        let model = AppModel(autoRegisterAgent: launch.mode == .register)
-        _model = State(initialValue: model)
-        _jobs = State(initialValue: JobsModel { model.jobsClient })
-        _pipeline = State(initialValue: PipelineModel { model.pipelineClient })
-    }
+    // The delegate owns the models, so a notification click and the pipeline
+    // poll reach them whether or not the window is open (Notifications.swift).
+    @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
     var body: some Scene {
-        Window("Vani Apply", id: "main") {
+        Window("Vani Apply", id: Self.mainWindowID) {
             ContentView()
-                .environment(model)
-                .environment(jobs)
-                .environment(pipeline)
+                .environment(delegate.model)
+                .environment(delegate.jobs)
+                .environment(delegate.pipeline)
                 .frame(minWidth: 820, minHeight: 520)
+                .modifier(CaptureMainWindowOpener(delegate: delegate))
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {}
+        }
+    }
+
+    static let mainWindowID = "main"
+}
+
+/// Hands the delegate SwiftUI's window opener, which only a view can read, so a
+/// notification click can reopen the window after it was closed.
+private struct CaptureMainWindowOpener: ViewModifier {
+    let delegate: AppDelegate
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            let open = openWindow
+            delegate.openMainWindow = { open(id: VaniApplyApp.mainWindowID) }
         }
     }
 }
@@ -54,11 +58,11 @@ enum Pane: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(PipelineModel.self) private var pipeline
-    @State private var section: Pane? = .home
 
     var body: some View {
+        @Bindable var model = model
         NavigationSplitView {
-            List(Pane.allCases, selection: $section) { s in
+            List(Pane.allCases, selection: $model.pane) { s in
                 HStack {
                     Label(s.rawValue, systemImage: s.symbol)
                     if s == .pipeline, let badge = pipelineBadge {
@@ -75,8 +79,8 @@ struct ContentView: View {
                 if let err = model.storeError {
                     StoreErrorBanner(message: err)
                 }
-                switch section ?? .home {
-                case .home: HomeView(section: $section)
+                switch model.pane ?? .home {
+                case .home: HomeView(section: $model.pane)
                 case .jobs: JobsView()
                 case .pipeline: PipelineView()
                 case .answers: AnswersView()
@@ -86,9 +90,6 @@ struct ContentView: View {
                 }
             }
         }
-        // Read the pipeline's status while the app is open, so a failed daily run
-        // shows on the sidebar without opening the tab.
-        .task { await pipeline.poll() }
         .alert("Vani Apply", isPresented: Binding(get: { model.actionError != nil }, set: { if !$0 { model.actionError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

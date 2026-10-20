@@ -16,7 +16,7 @@ import (
 
 func (e *env) cmdWatchlist(args []string) error {
 	if len(args) == 0 {
-		return usagef("watchlist: expected list, add or remove")
+		return usagef("watchlist: expected list, add, remove or domain")
 	}
 	switch args[0] {
 	case "list":
@@ -25,6 +25,8 @@ func (e *env) cmdWatchlist(args []string) error {
 		return e.watchlistAdd(args[1:])
 	case "remove":
 		return e.watchlistRemove(args[1:])
+	case "domain":
+		return e.watchlistDomain(args[1:])
 	}
 	return usagef("watchlist: unknown subcommand %q", args[0])
 }
@@ -43,7 +45,7 @@ func (e *env) watchlistList(args []string) error {
 		out := make([]watchlistJSON, 0, len(cfg.Watchlist))
 		for _, b := range cfg.Watchlist {
 			out = append(out, watchlistJSON{ATS: b.ATS, Token: b.Token, Company: b.Company, Region: b.Region, Host: b.Host,
-				Search: b.Search, Searches: b.Searches, URL: b.URL, LinkPattern: b.LinkPattern})
+				Search: b.Search, Searches: b.Searches, URL: b.URL, LinkPattern: b.LinkPattern, Domain: b.Domain})
 		}
 		enc := json.NewEncoder(e.stdout)
 		enc.SetEscapeHTML(false)
@@ -85,7 +87,8 @@ func (e *env) watchlistAdd(args []string) error {
 	})
 	pageURL := fs.String("url", "", "careers listing page (pg only, https)")
 	linkPattern := fs.String("link-pattern", "", "regexp a posting link must match (pg only)")
-	allow := fs.Bool("allow-host", false, "also add the board's API host to allowed_hosts")
+	domain := fs.String("domain", "", "the company's website host, for its icon (www.example.com)")
+	allow := fs.Bool("allow-host", false, "also add the board's API host and --domain to allowed_hosts")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -93,7 +96,7 @@ func (e *env) watchlistAdd(args []string) error {
 		return usagef("watchlist add: --ats, --token and --company are required")
 	}
 	b := sources.Board{ATS: posting.ATS(*ats), Token: *token, Company: *company, Region: *region,
-		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters}
+		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters, Domain: *domain}
 	switch len(searches) {
 	case 0:
 	case 1:
@@ -115,6 +118,57 @@ func (e *env) watchlistAdd(args []string) error {
 		return fmt.Errorf("%w\n(use --allow-host to add the board's API host to allowed_hosts)", err)
 	}
 	fmt.Fprintf(e.stdout, "added %s/%s (%s)\n", b.ATS, b.Token, b.Company)
+	return nil
+}
+
+// allowHost adds host to allowed unless it is empty or already there.
+func allowHost(allowed []string, host string) []string {
+	if host == "" || slices.Contains(allowed, host) {
+		return allowed
+	}
+	return append(allowed, host)
+}
+
+// watchlistDomain sets (or, with an empty --domain, clears) the website host a
+// board's company icon is fetched from (internal/logo).
+func (e *env) watchlistDomain(args []string) error {
+	fs := e.newFlags("watchlist domain")
+	ats := fs.String("ats", "", "ATS of the board")
+	token := fs.String("token", "", "board token")
+	domain := fs.String("domain", "", "the company's website host (www.example.com); empty clears it")
+	allow := fs.Bool("allow-host", false, "also add --domain to allowed_hosts")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if *ats == "" || *token == "" {
+		return usagef("watchlist domain: --ats and --token are required")
+	}
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return err
+	}
+	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
+	i := slices.IndexFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
+	if i < 0 {
+		return fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
+	}
+	b := cfg.Watchlist[i]
+	b.Domain = *domain
+	if err := config.ValidBoard(b); err != nil {
+		return usagef("watchlist domain: %v", err)
+	}
+	cfg.Watchlist[i] = b
+	if *allow {
+		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, b.Domain)
+	}
+	if err := config.Save(e.configPath, cfg); err != nil {
+		return fmt.Errorf("%w\n(use --allow-host to add the domain to allowed_hosts)", err)
+	}
+	if b.Domain == "" {
+		fmt.Fprintf(e.stdout, "cleared the domain of %s/%s\n", b.ATS, b.Token)
+	} else {
+		fmt.Fprintf(e.stdout, "%s/%s domain %s\n", b.ATS, b.Token, b.Domain)
+	}
 	return nil
 }
 
@@ -156,6 +210,7 @@ type watchlistJSON struct {
 	Searches    []string    `json:"searches,omitempty"`
 	URL         string      `json:"url,omitempty"`
 	LinkPattern string      `json:"link_pattern,omitempty"`
+	Domain      string      `json:"domain,omitempty"`
 }
 
 // invalidBoardError wraps the reason config.ValidBoard refused a board.
@@ -172,10 +227,11 @@ func (e boardExistsError) Error() string {
 
 // addBoard is the one way a board joins a config, for `watchlist add` and
 // `jobs ingest`: it checks the board (config.ValidBoard), refuses one the
-// watchlist already has (sameBoard) and, with allowHost, adds the board's host
-// to allowed_hosts. The caller saves the config (config.Save validates it
-// again, including that every board host is allowed). On error cfg is unchanged.
-func addBoard(cfg *config.Config, b sources.Board, allowHost bool) error {
+// watchlist already has (sameBoard) and, with allow, adds the board's host and
+// its logo Domain (when set) to allowed_hosts. The caller saves the config
+// (config.Save validates it again, including that every board host is
+// allowed). On error cfg is unchanged.
+func addBoard(cfg *config.Config, b sources.Board, allow bool) error {
 	if err := config.ValidBoard(b); err != nil {
 		return invalidBoardError{err}
 	}
@@ -183,9 +239,14 @@ func addBoard(cfg *config.Config, b sources.Board, allowHost bool) error {
 		return boardExistsError{b}
 	}
 	cfg.Watchlist = append(cfg.Watchlist, b)
-	if host, ok := config.BoardHost(b); ok && allowHost && !slices.Contains(cfg.AllowedHosts, host) {
-		cfg.AllowedHosts = append(cfg.AllowedHosts, host)
+	if !allow {
+		return nil
 	}
+	if host, ok := config.BoardHost(b); ok {
+		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, host)
+	}
+	// The company icon is fetched from the board's own domain (internal/logo).
+	cfg.AllowedHosts = allowHost(cfg.AllowedHosts, b.Domain)
 	return nil
 }
 

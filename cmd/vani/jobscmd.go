@@ -110,6 +110,9 @@ type jobJSON struct {
 	DupCandidateOf string  `json:"dup_candidate_of,omitempty"`
 	DupSiblingOf   string  `json:"dup_sibling_of,omitempty"`
 	DupScore       float64 `json:"dup_score,omitempty"`
+	// Logo is the absolute path of the company's cached icon (internal/logo),
+	// set only when the file is there; the app shows the monogram otherwise.
+	Logo string `json:"logo,omitempty"`
 }
 
 type jobsListJSON struct {
@@ -658,7 +661,12 @@ func cleanText(s string, maxRunes int, keepLines bool) string {
 			space = b.Len() > 0
 			continue
 		}
-		if n >= maxRunes {
+		// A pending separator is written with this rune, so it counts too.
+		sep := 0
+		if newline || space {
+			sep = 1
+		}
+		if n+sep >= maxRunes {
 			b.WriteString("…")
 			break
 		}

@@ -484,11 +484,16 @@ func TestRunRecordKeepsAdvanceReportAndBackendErrors(t *testing.T) {
 	sink.add("anthropic", "http 429", "anthropic: http 429 (request req_1): rate_limit_error")
 	sink.add("anthropic", "http 429", "anthropic: http 429 (request req_2): rate_limit_error")
 	adv := advanceReport{Eligible: 3027, Limit: 300, Attempted: 20, Unread: 20, Deferred: 3007, Stopped: stopUnreadStreak}
+	listed := 35
+	boards := boardsReportOf(2, []boardReport{
+		{ATS: "gh", Token: "nvidia", Company: "NVIDIA", Outcome: boardRead, Listed: &listed, Reconcile: &reconcileCounts{New: 35}},
+		{ATS: "wd", Token: "intel/External", Company: "Intel", Outcome: boardFailed, Error: `workday "intel/External": posting "/job/X_JR1": http 500`},
+	})
 	old := buildApp
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
 		return &App{Ledger: l, Notifier: &fakeNotifier{},
 			RunOnce:   func(context.Context) error { return errors.New("no decision backend read 20 postings in a row") },
-			RunReport: func() runDetail { return runDetail{Advance: &adv, BackendErrors: sink.report()} },
+			RunReport: func() runDetail { return runDetail{Boards: &boards, Advance: &adv, BackendErrors: sink.report()} },
 		}, nil
 	}
 	t.Cleanup(func() { buildApp = old })
@@ -504,9 +509,16 @@ func TestRunRecordKeepsAdvanceReportAndBackendErrors(t *testing.T) {
 	if r.BackendErrors == nil || len(r.BackendErrors.Causes) != 1 || r.BackendErrors.Causes[0].Count != 2 {
 		t.Errorf("backend errors %+v", r.BackendErrors)
 	}
+	if r.Boards == nil || r.Boards.Read != 1 || r.Boards.Failed != 1 || len(r.Boards.Items) != 2 {
+		t.Errorf("boards %+v", r.Boards)
+	}
 	s := statusOf(t).LastRun
 	if s.Advance == nil || s.Advance.Deferred != 3007 || s.BackendErrors == nil || s.BackendErrors.Causes[0].Backend != "anthropic" {
 		t.Errorf("status last run %+v", s)
+	}
+	if s.Boards == nil || s.Boards.Listed != 35 || s.Boards.Items[1].Outcome != boardFailed ||
+		!strings.Contains(s.Boards.Items[1].Error, "http 500") || s.Boards.Items[0].Reconcile.New != 35 {
+		t.Errorf("status boards %+v", s.Boards)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
@@ -27,7 +28,10 @@ const (
 	runRecordVersion = 1
 	runRecordDir     = "runs"
 	runRecordFile    = "last.json"
-	maxRunRecord     = 64 << 10
+	// maxRunRecord bounds the record a reader accepts. The record's own bounds
+	// (boards, backend errors) keep a worst-case record well under it
+	// (TestWorstCaseRunRecordIsReadable); a record past it reads as unknown.
+	maxRunRecord     = 256 << 10
 	maxRunErrorRunes = 500
 	// maxRunAge is how long a record with no end is still believed to be a
 	// running process: a pid can be reused, and no run takes this long.
@@ -48,6 +52,33 @@ const (
 	stageDigest   = "digest"
 )
 
+// Run causes: why a failed run failed, when it is one a reader words on its
+// own (failureNotice, and the Mac app's RunNotice). Fixed codes, set from the
+// error's identity and never from its text.
+const (
+	causeLedgerFatal    = "ledger_fatal"     // daemon.ErrFatal: the ledger could not be written safely
+	causeDigestHeldBack = "digest_held_back" // errDigestHeldBack: the Jobs marks could not be read
+	causeConfigStale    = "config_stale"     // errConfigStale: the run used the previous watchlist
+)
+
+// runCause is the run error's cause code. A joined error can carry several;
+// the code is the first in failureNotice's order, which is also the order of
+// what the user most needs to know.
+func runCause(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, daemon.ErrFatal):
+		return causeLedgerFatal
+	case errors.Is(err, errDigestHeldBack):
+		return causeDigestHeldBack
+	case errors.Is(err, errConfigStale):
+		return causeConfigStale
+	default:
+		return ""
+	}
+}
+
 type runRecord struct {
 	V          int       `json:"v"`
 	PID        int       `json:"pid"`
@@ -56,6 +87,13 @@ type runRecord struct {
 	Outcome    string    `json:"outcome"`
 	Stage      string    `json:"stage,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	// Cause names a failed run's known cause (runCause), so a reader can word
+	// the failure without reading Error; "" when the failure has none of them.
+	Cause string `json:"cause,omitempty"`
+	// DigestRoles is how many roles the run's digest listed (publishDigest),
+	// 0 when nothing was new. Nil when no digest was written: the run stopped
+	// before it, it was held back, or writing it failed.
+	DigestRoles *int `json:"digest_roles,omitempty"`
 	// CountsBefore and CountsAfter are the ledger's postings by status at the
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`
@@ -68,6 +106,10 @@ type runRecord struct {
 
 // runDetail is what the pipeline itself reports about a run (App.RunReport).
 type runDetail struct {
+	// Boards is the listing phase, board by board; nil when the run ended
+	// before it (the stages could not be built). A board that failed to list
+	// otherwise reaches only stderr.
+	Boards *boardsReport `json:"boards,omitempty"`
 	// Advance is the triage/score/explain phase; nil when the run ended
 	// before it (no board could be read, the stages could not be built).
 	Advance *advanceReport `json:"advance,omitempty"`
@@ -109,6 +151,64 @@ type advanceReport struct {
 	Failed   int    `json:"failed"`
 	Deferred int    `json:"deferred"`
 	Stopped  string `json:"stopped,omitempty"`
+}
+
+// Board outcomes in the run's board report (boardReport.Outcome).
+const (
+	boardRead    = "read"
+	boardFailed  = "failed"  // listing or reconciling failed; its postings are untouched
+	boardSkipped = "skipped" // no adapter, or the careers-page source is disabled this run
+)
+
+// boardsReport is what one run's listing phase did. The totals count every
+// configured board, whatever Items keeps.
+type boardsReport struct {
+	// Configured is the watchlist's size.
+	Configured int `json:"configured"`
+	Read       int `json:"read"`
+	Failed     int `json:"failed"`
+	Skipped    int `json:"skipped"`
+	// NotReached boards were never tried: the run ended (cancelled, a ledger
+	// failure) before them.
+	NotReached int `json:"not_reached,omitempty"`
+	// Listed is the postings the read boards listed, together.
+	Listed int `json:"listed"`
+	// Items holds one entry per tried board, in watchlist order. When the
+	// bounds cut it, failed and skipped boards are kept before read ones.
+	Items []boardReport `json:"items"`
+	// Unrecorded counts tried boards left out of Items by its bounds
+	// (maxRecordedBoards, maxBoardsBytes).
+	Unrecorded int `json:"unrecorded,omitempty"`
+}
+
+// boardReport is one board in one run.
+type boardReport struct {
+	ATS     string `json:"ats"`
+	Token   string `json:"token"`
+	Company string `json:"company,omitempty"`
+	Outcome string `json:"outcome"`
+	// Listed is how many postings the board listed; absent when the listing
+	// failed or the board was skipped. Zero is a board that answered empty.
+	Listed *int `json:"listed,omitempty"`
+	// Reconcile is what the listing did to the ledger; read boards only.
+	Reconcile *reconcileCounts `json:"reconcile,omitempty"`
+	// Error is why the board failed or was skipped: the adapter's error on one
+	// bounded line (it names the board, a search term or a posting's path,
+	// never a description).
+	Error string `json:"error,omitempty"`
+}
+
+// reconcileCounts is pipeline.Summary as the run record writes it.
+type reconcileCounts struct {
+	New        int `json:"new,omitempty"`
+	Changed    int `json:"changed,omitempty"`
+	Rerendered int `json:"rerendered,omitempty"`
+	Unchanged  int `json:"unchanged,omitempty"`
+	Reappeared int `json:"reappeared,omitempty"`
+	Missed     int `json:"missed,omitempty"`
+	Dead       int `json:"dead,omitempty"`
+	Duplicate  int `json:"duplicate,omitempty"`
+	Invalid    int `json:"invalid,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {

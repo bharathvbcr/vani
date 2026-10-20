@@ -103,8 +103,10 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		RunReport: w.runReport,
 		Reload:    w.setBoards,
 		PollInbox: w.pollInbox,
-		Notifier:  notify.New(nil),
-		Closer:    w.close,
+		// The Vani Apply app posts run notices itself while it runs; the
+		// daemon's are the fallback for when it does not.
+		Notifier: notify.UnlessHeld(notify.AppLockPath(stateDir), notify.New(nil)),
+		Closer:   w.close,
 	}, nil
 }
 
@@ -132,9 +134,10 @@ type wired struct {
 	localEndpoint string
 
 	// backendErrs collects the current run's decision-backend errors; runOnce
-	// replaces it at the start of every run. advance is the last run's
-	// advance report. Both are read by runReport, under mu.
+	// replaces it at the start of every run. boards and advance are the last
+	// run's board and advance reports. All are read by runReport, under mu.
 	backendErrs *backendErrors
+	boards      *boardsReport
 	advance     *advanceReport
 	// semPre is the last run's knowledge-base warm before the advance phase
 	// (semanticwire.go warmBeforeAdvance); nil when it did not run.
@@ -145,7 +148,7 @@ type wired struct {
 func (w *wired) runReport() runDetail {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats(), SemanticPre: w.semPre}
+	return runDetail{Boards: w.boards, Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats(), SemanticPre: w.semPre}
 }
 
 func (w *wired) close() error {
@@ -173,7 +176,8 @@ func (w *wired) warnf(format string, a ...any) {
 // runOnce lists every board, reconciles it, then advances postings. It fails
 // as a whole only when no board could be read or the ledger fails; a single
 // bad board is a warning, and its postings are left untouched (an unread
-// board must never count as "every posting disappeared").
+// board must never count as "every posting disappeared"). What happened to
+// each board reaches the run record (listBoards).
 func (w *wired) runOnce(ctx context.Context) error {
 	// Assemble the stages first: a run that cannot triage must not fetch
 	// boards for nothing.
@@ -213,11 +217,13 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return err
 	}
 	srcs[posting.Workday] = wd
+	var pageErr error
 	if w.hasPageBoard() {
 		src, stop, err := w.pageSource(ctx, d)
 		if err != nil {
 			// Page boards are skipped with a warning below; API boards still run.
 			w.warnf("careers-page boards disabled: %v", err)
+			pageErr = err
 		} else {
 			defer stop()
 			srcs[posting.Page] = src
@@ -229,33 +235,14 @@ func (w *wired) runOnce(ctx context.Context) error {
 	rec := pipeline.NewReconciler(w.led)
 	protect := w.markProtector()
 	rec.Protect(protect)
-	read := 0
-	for _, b := range w.cfg.Watchlist {
-		src, ok := srcs[b.ATS]
-		if !ok {
-			if b.ATS == posting.Page {
-				w.warnf("board %s/%s: careers-page source disabled this run; skipped", b.ATS, b.Token)
-			} else {
-				w.warnf("board %s/%s: no adapter for %s; skipped", b.ATS, b.Token, b.ATS)
-			}
-			continue
-		}
-		listed, err := src.List(ctx, b)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			w.warnf("board %s/%s: %v; left unchanged", b.ATS, b.Token, err)
-			continue
-		}
-		read++
-		sum, err := rec.Reconcile(ctx, b, listed, time.Now())
-		if err != nil {
-			return fmt.Errorf("reconcile %s/%s: %w", b.ATS, b.Token, err)
-		}
-		w.warnf("board %s/%s: %+v", b.ATS, b.Token, sum)
+	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, rec.Reconcile, w.warnf)
+	w.mu.Lock()
+	w.boards = &boards
+	w.mu.Unlock()
+	if err != nil {
+		return err
 	}
-	if len(w.cfg.Watchlist) > 0 && read == 0 {
+	if boards.Configured > 0 && boards.Read == 0 {
 		return errors.New("no board could be read")
 	}
 	nd, err := pipeline.AnnotateNearDuplicates(ctx, w.led, time.Now(), pipeline.NearDupOptions{Protected: protect})
@@ -263,6 +250,11 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return fmt.Errorf("near-duplicates: %w", err)
 	}
 	w.warnf("near-duplicates: %+v", nd)
+	// Company icons for the Jobs list: bounded, and warn-only.
+	w.refreshLogos(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	w.warmBeforeAdvance(ctx, w.led.All(), titleDropper(runner.Policy))
 	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
@@ -289,7 +281,7 @@ func (w *wired) startRun(ctx context.Context) (*egress.Client, *pipeline.Runner,
 	w.localEndpoint = ""
 	errs := newBackendErrors()
 	w.mu.Lock()
-	w.backendErrs, w.advance, w.semPre = errs, nil, nil
+	w.backendErrs, w.boards, w.advance, w.semPre = errs, nil, nil, nil
 	w.mu.Unlock()
 	stop := func() {}
 	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
