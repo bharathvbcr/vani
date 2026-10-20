@@ -21,6 +21,7 @@ struct InsightsPanel: View {
                         card("Role fit", help: "How triage read each role against your target roles. Click a bar to filter by it.") {
                             FitBars(stats: stats)
                         }
+                        SkillsToBuildCard()
                         card("Age", help: "How long ago roles were posted. The lighter part is dated by first sight, an upper bound on age.") {
                             AgeBars(stats: stats)
                         }
