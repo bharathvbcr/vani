@@ -60,6 +60,9 @@ type runRecord struct {
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`
 	CountsAfter  map[string]int `json:"counts_after,omitempty"`
+	// Semantic is the knowledge-base warm between the advance phase and the
+	// digest (semanticwire.go); nil when semantic matching is off.
+	Semantic *semanticReport `json:"semantic,omitempty"`
 	runDetail
 }
 
@@ -72,6 +75,9 @@ type runDetail struct {
 	// backend error becomes an "unavailable" reading that keeps no text, so
 	// this is the only place a refused key or an outage is written down.
 	BackendErrors *backendErrorReport `json:"backend_errors,omitempty"`
+	// SemanticPre is the knowledge-base warm of live postings before the
+	// advance phase (semanticwire.go); nil when it did not run.
+	SemanticPre *semanticReport `json:"semantic_pre,omitempty"`
 }
 
 // Why an advance phase ended before it had worked through every eligible

@@ -250,9 +250,17 @@ flowchart TD
   and a relevance score with its basis. Display-only: they sort and plot, and never drop a role.
   - Freshness is the board's posted date. Greenhouse's comes from `first_published`. A board with
     no date falls back to when Vani first saw the role, and that fallback is marked approximate.
-  - Relevance (0-100) comes from DevPrism's rank, or triage's role_fit when there is no rank,
-    plus overlap with the target summary's terms.
-  - Priority is relevance at most halved by age (`--half-life`, default 14 days).
+  - Relevance (0-100) and priority come from one ranker (`jobinsight.Score`, also the digest's
+    order): triage's role_fit, DevPrism's coverage, title signals, target-term overlap and
+    marks on the company, each unknown part taking a prior below "known good". `score_factors`
+    in the JSON lists the parts.
+  - A kept role whose answered triage reading matches a `drop_rules` entry (under its drop
+    threshold) or a `rank_penalties` entry is demoted in proportion to that reading's
+    confidence, never dropped. `rank_penalties` has the drop-rule shape without thresholds, e.g.
+    `[{"slot": "seniority", "values": ["senior"]}]` to keep senior roles but list them lower.
+    `vani jobs` and the digest apply the same rules and title signals.
+  - Priority is relevance scaled by freshness (`--half-life`, default 10 days). A posting listed
+    in its board's first crawl with no posted date has an unknown age and gets the floor.
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
     It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at
     least 90% of one company's postings repeat is that company's blurb, and is left out.
@@ -441,6 +449,54 @@ the last run's `advance` report (eligible, attempted, unread, deferred, why it s
 Before setting `devprism.binary` (which enables ranking and a real `kb sync`), run the Phase 0
 check that the installed DevPrism answers `--mcp` without migrating `career.db`.
 
+## Knowledge-base matching (semantic)
+
+Postings are also matched to the resume knowledge base by meaning, so "k8s" scores against
+"Kubernetes". It only orders and explains postings (weight 0.25 of the match part of
+`jobinsight.Score`); it never drops one, and a posting with no score takes the ranker's prior, not 0.
+It is on when both keys are set, and off otherwise:
+
+```json
+{
+  "kb": {"bank": "/abs/path/to/rkb/bank.json"},
+  "semantic": {
+    "snapshot": "/Users/<you>/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/<revision>",
+    "warm_per_run": 1000
+  },
+  "target_summary": "Senior platform engineer building Kubernetes and Go infrastructure"
+}
+```
+
+- `kb.bank` is rkb's `bank.json`. The profile is built from role titles, stack terms and bullet text
+  only; organisations, dates, locations and contact fields are never read. `target_summary` is the
+  calibration ceiling and is required.
+- `semantic.snapshot` is the absolute path of a Hugging Face snapshot directory of
+  `google/embeddinggemma-2` (the `snapshots/<revision>` folder, not the repository root).
+  `warm_per_run` (default 1000, at most 5000) bounds the postings one daily run embeds.
+- The model runs in-process on Metal through Tessl, so it needs a build with `-tags tessl` on
+  darwin/arm64 and the Tessl engine archive. Build the archive once with
+  `make -C go engine` in the tessl repo
+  (`/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a` must exist), then
+  `go build -tags tessl -o build/vani ./cmd/vani`. `macos/scripts/bundle.sh` adds the tag by itself
+  when it runs on Apple silicon and finds the archive. Linking prints `ld: warning` lines about a
+  duplicate `-lgusset`; they are harmless.
+- **Without the tag** (or with no snapshot, or a snapshot that will not load) the daily run still
+  succeeds and writes the digest; its run record (`vani status --json`, `last_run.semantic`) and
+  stderr say `semantic matching not run: <reason>`, and `vani jobs` carries no `semantic` field.
+  It is never reported as success.
+- The daily run scores the freshest browsable postings first (the Jobs views' rule), up to
+  `warm_per_run`, within 10 minutes, between the pipeline and the digest. `vani semantic warm
+  [--max N]` does the same on demand (use it for the first big backlog); `vani semantic status`
+  prints whether this binary has Tessl, whether the config is on, the profile's chunk count, the
+  cached scores and the model id. Scores are cached in `<state dir>/semantic/` per
+  (profile, model, posting text); a changed bank, target summary, model or posting rescores.
+  An unreadable cache is rebuilt by the next warm.
+- `vani jobs` and the digest only read that cache (no model is loaded). Each job gets
+  `semantic: {score, evidence: [{snippet, label, cosine}]}` when a score is cached. If the bank or
+  the cache cannot be read, `insight.warning` says so and the score stays unknown.
+- No bank text or posting text is written to a log line, the run record or an error: counts and
+  reasons only.
+
 ## Build and test
 
 The `go.work` file is ignored but required: Manvi's own `go.mod` replaces DevCouncil and gusset
@@ -457,7 +513,13 @@ use (
 )
 
 replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => /Users/bharath/Code/devtools/Manvi/manvi
+replace github.com/bharathvbcr/decide v0.0.0 => /Users/bharath/Code/devtools/decide
+replace github.com/bharathvbcr/tessl/go v0.0.0 => /Users/bharath/Code/research/tessl/go
 ```
+
+The decide and tessl replaces are absolute so the same file works in a worktree, where the
+relative replaces in `go.mod` point outside the tree. The default build leaves tessl out; only
+`-tags tessl` (darwin/arm64, with the engine archive) links it.
 
 ```bash
 go -C /Users/bharath/Code/apps/Vani vet ./...

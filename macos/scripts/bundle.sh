@@ -42,7 +42,20 @@ if [ -n "${VANI_CLI_BINARY:-}" ]; then
   [ -x "$VANI_CLI_BINARY" ] || { echo "VANI_CLI_BINARY is not an executable: $VANI_CLI_BINARY" >&2; exit 1; }
   cp "$VANI_CLI_BINARY" "$APP/Contents/Helpers/vani"
 else
-  go -C "$VANI" build -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
+  # Embedding-based knowledge-base matching (internal/semantic) links the Tessl
+  # engine, so it is built in only on Apple silicon when the engine archive
+  # exists (`make -C go engine` in the tessl repo). Without it vani still
+  # builds and reports "semantic matching not run".
+  # The archive sits where go.mod's tessl/go replace points; TESSL_ARCHIVE
+  # overrides it (a worktree, another checkout).
+  TESSL_ARCHIVE="${TESSL_ARCHIVE:-$VANI/../../research/tessl/go/engine/target/release/libgusset.a}"
+  GO_TAGS=""
+  if [ "$(uname -s)/$(uname -m)" = "Darwin/arm64" ] && [ -f "$TESSL_ARCHIVE" ]; then
+    GO_TAGS="tessl"
+  else
+    echo "bundle.sh: building vani without -tags tessl (no Apple silicon or no $TESSL_ARCHIVE): semantic matching will report \"not run\"" >&2
+  fi
+  go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
 fi
 cp "$MACOS/Support/Extension-Info.plist" "$APPEX/Contents/Info.plist"
 cp "$BIN/VaniApplyExtension" "$APPEX/Contents/MacOS/VaniApplyExtension"

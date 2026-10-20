@@ -51,6 +51,10 @@ type Config struct {
 	LLM           LLM             `json:"llm"`
 	DevPrism      DevPrism        `json:"devprism"`
 	DropRules     []DropRule      `json:"drop_rules"`
+	// RankPenalties demote, never drop: a kept posting whose triage slot reads
+	// one of Values ranks lower in Jobs and the digest, in proportion to how
+	// sure the reading is (Rule 7: an ordering preference, not an engine rule).
+	RankPenalties []RankPenalty `json:"rank_penalties,omitempty"`
 	TargetSummary string          `json:"target_summary"`
 	// MotivationNotes is the owner's own note on what they care about in
 	// their work. `vani draft` gives it to motivation questions ("Why
@@ -95,6 +99,41 @@ type Config struct {
 	// unchanged. Zero means DefaultAdvanceConcurrency; 1 is strictly one at a
 	// time; at most MaxAdvanceConcurrency.
 	AdvanceConcurrency int `json:"advance_concurrency,omitempty"`
+	// Semantic matches postings against the knowledge base (kb.bank) with
+	// EmbeddingGemma 2 on Tessl. It only orders and explains postings, never
+	// drops one. Off when snapshot or kb.bank is empty.
+	Semantic Semantic `json:"semantic,omitzero"`
+}
+
+// Semantic configures embedding-based matching against the knowledge base.
+type Semantic struct {
+	// Snapshot is the absolute path of a google/embeddinggemma-2 Hugging Face
+	// snapshot directory. Only a vani built with -tags tessl can use it.
+	Snapshot string `json:"snapshot,omitempty"`
+	// WarmPerRun bounds how many postings one daily run embeds. Zero means
+	// DefaultSemanticWarmPerRun; at most MaxSemanticWarmPerRun.
+	WarmPerRun int `json:"warm_per_run,omitempty"`
+}
+
+// MaxRankPenalties bounds Config.RankPenalties.
+const MaxRankPenalties = 32
+
+// Semantic warm bounds (Semantic.WarmPerRun).
+const (
+	DefaultSemanticWarmPerRun = 1000
+	MaxSemanticWarmPerRun     = 5000
+)
+
+// SemanticOn reports whether semantic matching is configured: a snapshot and
+// a bank to build the profile from.
+func (c Config) SemanticOn() bool { return c.Semantic.Snapshot != "" && c.KB.Bank != "" }
+
+// SemanticWarmLimit is WarmPerRun with zero read as the default.
+func (c Config) SemanticWarmLimit() int {
+	if c.Semantic.WarmPerRun == 0 {
+		return DefaultSemanticWarmPerRun
+	}
+	return c.Semantic.WarmPerRun
 }
 
 // Per-run advance bounds (Config.AdvancePerRun, Config.AdvanceConcurrency).
@@ -282,6 +321,12 @@ func (l LLM) Prices() (input, output int64, err error) {
 type DevPrism struct {
 	Binary    string `json:"binary"`
 	ToolsHash string `json:"tools_hash"`
+}
+
+// RankPenalty demotes a kept posting whose triage slot reads one of Values.
+type RankPenalty struct {
+	Slot   string   `json:"slot"`
+	Values []string `json:"values"`
 }
 
 // DropRule drops a posting when a triage slot reads one of Values with enough
@@ -731,13 +776,20 @@ func (c Config) Validate() error {
 		}
 	}
 	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
-		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir} {
+		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir,
+		"semantic.snapshot": c.Semantic.Snapshot} {
 		if p != "" && !filepath.IsAbs(p) {
 			add("%s %q must be an absolute path", name, p)
 		}
 	}
 	if maxMS := int(page.MaxInterval / time.Millisecond); c.PageIntervalMS < 0 || c.PageIntervalMS > maxMS {
 		add("page_interval_ms %d must be within 0..%d", c.PageIntervalMS, maxMS)
+	}
+	if c.Semantic.WarmPerRun < 0 || c.Semantic.WarmPerRun > MaxSemanticWarmPerRun {
+		add("semantic.warm_per_run %d must be within 0..%d (0 means %d)", c.Semantic.WarmPerRun, MaxSemanticWarmPerRun, DefaultSemanticWarmPerRun)
+	}
+	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
+		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
 	}
 	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
 		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)
@@ -891,6 +943,26 @@ func (c Config) Validate() error {
 		}
 		if math.IsNaN(r.MinLappiScore) || r.MinLappiScore < 0 {
 			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
+		}
+	}
+	if len(c.RankPenalties) > MaxRankPenalties {
+		add("rank_penalties has %d entries, max %d", len(c.RankPenalties), MaxRankPenalties)
+	}
+	for i, r := range c.RankPenalties {
+		legal, known := slotValues[r.Slot]
+		switch {
+		case r.Slot == "":
+			add("rank_penalties[%d]: slot is empty", i)
+		case !known:
+			add("rank_penalties[%d]: slot %q is not a triage slot (want one of %s)", i, r.Slot, strings.Join(slices.Sorted(maps.Keys(slotValues)), ", "))
+		}
+		if len(r.Values) == 0 {
+			add("rank_penalties[%d]: values is empty", i)
+		}
+		for _, v := range r.Values {
+			if known && !slices.Contains(legal, v) {
+				add("rank_penalties[%d]: %q is not a %s value (want one of %s)", i, v, r.Slot, strings.Join(legal, ", "))
+			}
 		}
 	}
 

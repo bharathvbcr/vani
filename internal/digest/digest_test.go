@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -62,6 +63,49 @@ func TestSelectIncludeExcludeAndOrder(t *testing.T) {
 	}
 	if strings.Contains(md, "Awaiting triage") {
 		t.Error("footer names a backlog that is not there")
+	}
+}
+
+// Options.Rules demote a role whose answered triage reading matches, and
+// Options.TitleRank raises an included title, as in `vani jobs`; neither drops
+// a role (Rule 7).
+func TestRulesAndTitleRankReorder(t *testing.T) {
+	ann := func(seniority string) map[string]string {
+		return map[string]string{
+			"rank": "60", "triage.role_fit": "strong_fit", "triage.role_fit.reading": "answered",
+			"triage.seniority": seniority, "triage.seniority.reading": "answered", "triage.seniority.p": "0.95",
+		}
+	}
+	recs := []ledger.Record{
+		rec("gh:a:1", posting.Explained, "Senior Engineer", ann("senior")),
+		rec("gh:a:2", posting.Explained, "Engineer", ann("mid")),
+	}
+	order := func(o Options) string {
+		_, keys := RenderWith(recs, nil, day, Counts{}, o)
+		var s []string
+		for _, k := range keys {
+			s = append(s, string(k))
+		}
+		return strings.Join(s, " ")
+	}
+	if got := order(Options{}); got != "gh:a:1 gh:a:2" {
+		t.Fatalf("no rules: %s, want the key order of a tie", got)
+	}
+	rules := []jobinsight.DropRule{{Slot: "seniority", Values: []string{"senior"}}}
+	if got := order(Options{Rules: rules}); got != "gh:a:2 gh:a:1" {
+		t.Fatalf("seniority penalty: %s, want the senior role second and still listed", got)
+	}
+	title := func(s string) int {
+		if strings.HasPrefix(s, "Senior") {
+			return 1
+		}
+		return 0
+	}
+	if got := order(Options{TitleRank: title}); got != "gh:a:1 gh:a:2" {
+		t.Fatalf("title rank: %s", got)
+	}
+	if got := order(Options{TitleRank: func(s string) int { return map[bool]int{true: 1}[s == "Engineer"] }}); got != "gh:a:2 gh:a:1" {
+		t.Fatalf("title rank on the second role: %s, want it first", got)
 	}
 }
 

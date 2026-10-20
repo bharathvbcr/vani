@@ -731,6 +731,44 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     render it as bold.
   - 18 bullets exist only in the 9 variants and are not synced.
   - Tests: `internal/kbsync/tags_test.go`; goldens in `internal/kbsync/testdata`.
+- **Ranking and KB matching (branch `rank-relevance`, 2026-10-19), open items:**
+  - The live config (`.state/config.json`) has `kb.bank` and `target_summary`; `semantic.snapshot`
+    is not set yet, because the installed binary predates the key and rejects it. Add it once the
+    merged build is installed, then run `vani semantic warm`. Without it Score runs without the
+    embedding part (rankeval "this-machine": NDCG@10 0.53 vs 0.74 with every signal).
+  - Approved by the owner 2026-10-19, to add with `semantic.snapshot` once the merged build is
+    installed: `rank_penalties` (demote only, Rule 7) `[{"slot": "seniority", "values": ["senior"]}]`.
+    On a copy of the real ledger it takes senior readings in the top 20 from 13 to 4 (proxy
+    NDCG@20 0.792 → 0.924; the proxy does not read seniority, so its gain comes from the fit mix
+    and ages).
+  - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
+    `--half-life` (Score's default is 10 days).
+  - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
+    mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
+  - Closed on this branch: displayed `relevance` rests on the known parts (`relevance_known`);
+    `vani jobs mark`/`note` rank with the marks as written; the digest ranks with the same drop-rule
+    penalties, rank penalties and title signals as `vani jobs` (`cmd/vani/rankconfig.go`); the
+    semantic warm runs before triage too; the score file is keyed by model and the warm holds an
+    inter-process lock; an escalation shadow's disagreement does not lower confidence (only a
+    Lappi-style shadow's does, as DisagreeConf was tuned on those pairs).
+  - Checked 2026-10-19: a `-tags tessl` binary signed as bundle.sh signs the helper (hardened
+    runtime, Apple Development, identifier dev.vbcr.vani.cli, no entitlements) runs EmbeddingGemma 2
+    on Metal with the same results as unsigned. The full app bundle itself was not rebuilt.
+  - Tessl's archive pins gusset `984209b`, while the Go side of gusset is the live
+    `devtools/gusset` checkout; tessl's frame-version check fails the load on drift.
+  - `extension/src/relevance.ts` still scores pages with its own in-page algorithm, not Score.
+  - A generic text-vector cache in `internal/semantic` (for answer dedup and near-duplicate
+    postings) belongs to the "Embedding unification" session. Until then scores are keyed by
+    posting key and text hash: the same JD under several keys is embedded once per key, and a KB
+    edit re-embeds every posting (posting vectors are not kept).
+  - Similarity breaks title-rank ties in `advance` order but drops nothing, so it saves triage
+    tokens only through ordering under `advance_per_run`.
+  - An undated posting from its board's first crawl has unknown age and the freshness floor for
+    good; rankeval's 60%-undated world stays the weakest (NDCG@10 about 0.45) and no weight
+    setting tried helped.
+  - Lappi's calibrated score is not used for confidence (an answered Lappi reading counts as
+    `AnsweredConf` 0.7): Lappi's score is a top-two margin, not a probability, and decide keeps
+    the two apart on purpose.
 - **Employer lists need a yearly re-import** (IRS eo1-eo4 and IPEDS HD2024 imported 2026-10-18 into
   `.state/state`, 1.6M names). Recheck the IPEDS codes in each year's dictionary (docs/EMPLOYER.md).
   Runs read the derived `index.view` (0.09 s / 69 MB a lookup, was 3 s / 490 MB). Import still loads

@@ -93,6 +93,8 @@ type lastRunFacet struct {
 	PostingsAfter  *int           `json:"postings_after,omitempty"`
 	CountsBefore   map[string]int `json:"counts_before,omitempty"`
 	CountsAfter    map[string]int `json:"counts_after,omitempty"`
+	// Semantic is the run's knowledge-base warm (runRecord.Semantic).
+	Semantic *semanticReport `json:"semantic,omitempty"`
 	// Advance and BackendErrors: what the cap left waiting, and why decision
 	// backends failed (runDetail).
 	runDetail
@@ -198,7 +200,7 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 	f := lastRunFacet{
 		facet: facet{OK: true}, State: runState(*r, at), StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 		Stage: r.Stage, Error: r.Error, CountsBefore: r.CountsBefore, CountsAfter: r.CountsAfter,
-		runDetail: r.runDetail,
+		Semantic: r.Semantic, runDetail: r.runDetail,
 	}
 	if !r.FinishedAt.IsZero() {
 		d := math.Max(r.FinishedAt.Sub(r.StartedAt).Seconds(), 0)

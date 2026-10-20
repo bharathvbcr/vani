@@ -56,17 +56,36 @@ type Counts struct {
 }
 
 // Select returns the records that belong in a digest, in digest order:
-// Explained by rank descending (unranked last, by key), then Unsure by the
-// same order. Digested and every other status are excluded, and so is every
-// role the user hid in Jobs.
+// scored roles first, then unscored ones, each by jobinsight.Score descending
+// (the one ranker the Jobs list also sorts by), then Unsure by the same order.
+// Digested and every other status are excluded, and so is every role the user
+// hid in Jobs. Ages are measured from the present; Render measures them from
+// its date.
 func Select(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record {
+	return selectAt(recs, m, time.Now(), Options{})
+}
+
+// Options carry what the digest cannot compute itself.
+type Options struct {
+	// Semantic returns a role's calibrated 0-1 similarity to the knowledge
+	// base, or false when none is cached for it (the ranker then takes its
+	// prior: unknown is never scored as 0). Nil means no embeddings.
+	Semantic func(r ledger.Record) (float64, bool)
+	// Rules demote a kept role whose triage reading matches one (drop rules
+	// it passed under their threshold, and rank penalties); TitleRank is the
+	// title signals' Rank, nil for none. The same as `vani jobs` applies.
+	Rules     []jobinsight.DropRule
+	TitleRank func(title string) int
+}
+
+func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
 		if (r.Status == posting.Explained || r.Status == posting.Unsure) && m[r.Key] != marks.Hidden {
 			out = append(out, r)
 		}
 	}
-	sortDigest(out)
+	sortDigest(out, recs, m, now, o)
 	return out
 }
 
@@ -74,28 +93,44 @@ func Select(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record 
 // listed (not dead, not a duplicate), whatever their pipeline status, in
 // digest order.
 func Saved(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record {
+	return savedAt(recs, m, time.Now(), Options{})
+}
+
+func savedAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
 		if m[r.Key] == marks.Saved && r.Status != posting.Dead && r.Status != posting.Duplicate {
 			out = append(out, r)
 		}
 	}
-	sortDigest(out)
+	sortDigest(out, recs, m, now, o)
 	return out
 }
 
-func sortDigest(out []ledger.Record) {
+// sortDigest orders out by jobinsight.Score, built from all (the whole ledger,
+// so the first-crawl and company-marks parts see every posting) and the marks.
+// The digest has no keyword vocabulary, so that part takes its prior for every
+// role alike; the embedding part, rules and title signals come from o, as
+// `vani jobs` applies them. A role DevPrism did not score stays behind the scored
+// ones: Render lists them under "Not ranked".
+func sortDigest(out, all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) {
+	c := jobinsight.NewRankContext(all, m, now)
+	c.Semantic, c.DropRules, c.TitleRank = o.Semantic, o.Rules, o.TitleRank
+	score := make(map[posting.Key]float64, len(out))
+	for _, r := range out {
+		score[r.Key] = jobinsight.Score(jobinsight.InputsFor(r, c)).Score
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if IsUnsure(a) != IsUnsure(b) {
 			return !IsUnsure(a)
 		}
-		sa, oka := Rank(a)
-		sb, okb := Rank(b)
+		_, oka := Rank(a)
+		_, okb := Rank(b)
 		if oka != okb {
 			return oka
 		}
-		if oka && sa != sb {
+		if sa, sb := score[a.Key], score[b.Key]; sa != sb {
 			return sa > sb
 		}
 		return a.Key < b.Key
@@ -105,9 +140,7 @@ func sortDigest(out []ledger.Record) {
 // IsUnsure reports whether triage could not decide this posting. The pipeline
 // keeps scoring unsure postings, so after scoring their status is Scored or
 // Explained and the flag lives on as the "triage.unsure" annotation.
-func IsUnsure(r ledger.Record) bool {
-	return r.Status == posting.Unsure || strings.TrimSpace(r.Annotations[ledger.AnnTriagePrefix+"unsure"]) != ""
-}
+func IsUnsure(r ledger.Record) bool { return jobinsight.IsUnsure(r) }
 
 // Rank is the digest's sort key from the "rank" annotation; false when the
 // posting is not scored.
@@ -136,11 +169,16 @@ func Coverage(r ledger.Record) (float64, bool) {
 // keys not returned; saved roles are listed again under Saved, and that list
 // adds no keys (a saved role is Digested only when it is listed as new).
 func Render(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, c Counts) (string, []posting.Key) {
-	sel := Select(recs, m)
+	return RenderWith(recs, m, date, c, Options{})
+}
+
+// RenderWith is Render with o's ranking inputs.
+func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, c Counts, o Options) (string, []posting.Key) {
+	sel := selectAt(recs, m, date, o)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Vani digest %s\n\n", date.Format("2006-01-02"))
 
-	// Select puts ranked roles before unranked ones, so splitting keeps order.
+	// Select puts scored roles before unscored ones, so splitting keeps order.
 	var ranked, unranked, unsure []ledger.Record
 	for _, r := range sel {
 		_, ok := Rank(r)
@@ -184,7 +222,7 @@ func Render(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, 
 			keys = append(keys, r.Key)
 		}
 	}
-	if saved := Saved(recs, m); len(saved) > 0 {
+	if saved := savedAt(recs, m, date, o); len(saved) > 0 {
 		fmt.Fprintf(&b, "## Saved (%d)\n\n", len(saved))
 		b.WriteString("Roles you saved in Jobs and have not applied to or hidden yet.\n\n")
 		for i, r := range saved {
@@ -351,10 +389,15 @@ func Escape(s string, maxRunes int) string {
 // atomically. It returns the path and the keys of the new roles the file
 // includes; m is the user's Jobs marks, as for Render.
 func Write(stateDir string, date time.Time, recs []ledger.Record, m map[posting.Key]marks.Mark, c Counts) (string, []posting.Key, error) {
+	return WriteWith(stateDir, date, recs, m, c, Options{})
+}
+
+// WriteWith is Write with o's ranking inputs.
+func WriteWith(stateDir string, date time.Time, recs []ledger.Record, m map[posting.Key]marks.Mark, c Counts, o Options) (string, []posting.Key, error) {
 	if stateDir == "" {
 		return "", nil, errors.New("digest: empty state dir")
 	}
-	md, keys := Render(recs, m, date, c)
+	md, keys := RenderWith(recs, m, date, c, o)
 	dir := filepath.Join(stateDir, "digests")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("digest: %w", err)

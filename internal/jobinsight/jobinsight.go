@@ -45,6 +45,42 @@ func Fresh(posted, firstSeen, now time.Time) (time.Time, FreshSource) {
 	return firstSeen, FromSeen
 }
 
+// FreshAge is the one rule for a posting's freshness date and whether its age
+// is known. boardFirstCrawl is the earliest first-seen among the posting's
+// board's records: the pipeline stamps every posting a board lists in one
+// Reconcile call with the same instant, so a posting first seen at exactly that
+// instant was listed in the board's first crawl and may be arbitrarily old.
+//
+//   - A plausible posted date (see Fresh) is known, and is never later than
+//     firstSeen: a posting cannot look fresher than when Vani saw it.
+//   - Otherwise a firstSeen after the board's first crawl is known: the posting
+//     was put up at most one run before Vani saw it.
+//   - Otherwise (listed in the first crawl, undated, or nothing at all) the age
+//     is unknown; at is firstSeen, which may be the zero time.
+func FreshAge(posted, firstSeen, boardFirstCrawl, now time.Time) (at time.Time, src FreshSource, known bool) {
+	if p, s := Fresh(posted, firstSeen, now); s == FromPosted {
+		if !firstSeen.IsZero() && p.After(firstSeen) {
+			p = firstSeen
+		}
+		return p, FromPosted, true
+	}
+	if !firstSeen.IsZero() && !firstSeen.Equal(boardFirstCrawl) {
+		return firstSeen, FromSeen, true
+	}
+	return firstSeen, FromSeen, false
+}
+
+// BoardOf is the board part of a posting key: everything before its last
+// component ("gh:acme" for "gh:acme:123", "wd:tenant:site" for a Workday key).
+func BoardOf(key string) string {
+	for i := len(key) - 1; i >= 0; i-- {
+		if key[i] == ':' {
+			return key[:i]
+		}
+	}
+	return key
+}
+
 // AgeDays is whole days from at to now, never negative. A zero at gives -1:
 // the age is unknown.
 func AgeDays(at, now time.Time) int {
@@ -71,60 +107,22 @@ const (
 )
 
 // fitBase maps the jdtriage fixture's role_fit options to a base relevance.
-// The order matches cmd/vani's roleFitOrder; the spacing is a display choice.
+// The order matches cmd/vani's roleFitOrder. The spacing was measured, not
+// picked: widening it from 0.85/0.65/0.45/0.20/0.10 raised rankeval's
+// hidden-truth NDCG@10 in 8 of 10 scenario cells, held the red-team worlds
+// within noise, and on the owner's real ledger stopped fresh adjacent roles
+// (which the target summary calls "adjacent rather than a fit") from
+// outnumbering strong fits in the top 20.
 var fitBase = map[string]float64{
-	"strong_fit":         0.85,
+	"strong_fit":         0.90,
 	"partial_fit":        0.65,
-	"adjacent":           0.45,
-	"mismatch_seniority": 0.20,
-	"mismatch_domain":    0.10,
+	"adjacent":           0.30,
+	"mismatch_seniority": 0.10,
+	"mismatch_domain":    0.05,
 }
 
-const (
-	neutralBase   = 0.35 // no rank, no fit reading
-	keywordWeight = 0.25 // share of relevance that target-keyword overlap can move
-	keywordScale  = 3.0  // overlap of this many target terms gives ~63% of the keyword share
-	// DefaultHalfLifeDays is how many days of age halve a posting's freshness
-	// bonus in Priority.
-	DefaultHalfLifeDays = 14.0
-	// MaxHalfLifeDays bounds the half-life a caller may ask for.
-	MaxHalfLifeDays = 365.0
-)
-
-// Relevance is a 0-100 display score: 75% from DevPrism's rank when the
-// posting has one, otherwise from triage's role_fit, and 25% from how many of
-// the target summary's terms the posting mentions. rank is clamped to 0-100
-// (an employer boost can push the ledger's rank past 100).
-func Relevance(rank *float64, roleFit string, targetHits int) (float64, Basis) {
-	base, basis := neutralBase, BasisNone
-	switch b, ok := fitBase[roleFit]; {
-	case rank != nil && !math.IsNaN(*rank):
-		base, basis = clamp01(*rank/100), BasisRank
-	case ok:
-		base, basis = b, BasisFit
-	}
-	if targetHits < 0 {
-		targetHits = 0
-	}
-	kw := 1 - math.Exp(-float64(targetHits)/keywordScale)
-	return round1(100 * ((1-keywordWeight)*base + keywordWeight*kw)), basis
-}
-
-// Priority discounts relevance by age: a posting loses up to half its score
-// as it ages, halving that freshness bonus every halfLife days. An unknown age
-// (ageDays < 0) gets the floor, so an undated posting never outranks a dated
-// one of the same relevance. halfLife outside (0, MaxHalfLifeDays] means
-// DefaultHalfLifeDays.
-func Priority(relevance float64, ageDays int, halfLife float64) float64 {
-	if !(halfLife > 0 && halfLife <= MaxHalfLifeDays) {
-		halfLife = DefaultHalfLifeDays
-	}
-	fresh := 0.0
-	if ageDays >= 0 {
-		fresh = math.Exp2(-float64(ageDays) / halfLife)
-	}
-	return round1(clamp(relevance, 0, 100) * (0.5 + 0.5*fresh))
-}
+// MaxHalfLifeDays bounds the half-life a caller may ask for.
+const MaxHalfLifeDays = 365.0
 
 func clamp01(v float64) float64 { return clamp(v, 0, 1) }
 

@@ -122,13 +122,16 @@ type wired struct {
 	// advance report. Both are read by runReport, under mu.
 	backendErrs *backendErrors
 	advance     *advanceReport
+	// semPre is the last run's knowledge-base warm before the advance phase
+	// (semanticwire.go warmBeforeAdvance); nil when it did not run.
+	semPre *semanticReport
 }
 
 // runReport is what the last runOnce left for the run record.
 func (w *wired) runReport() runDetail {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report()}
+	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report(), SemanticPre: w.semPre}
 }
 
 func (w *wired) close() error {
@@ -169,7 +172,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 	w.localEndpoint = ""
 	errs := newBackendErrors()
 	w.mu.Lock()
-	w.backendErrs, w.advance = errs, nil
+	w.backendErrs, w.advance, w.semPre = errs, nil, nil
 	w.mu.Unlock()
 	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
 		srv, err := localserver.Start(ctx, localserver.Config{
@@ -248,7 +251,8 @@ func (w *wired) runOnce(ctx context.Context) error {
 		return errors.New("no board could be read")
 	}
 
-	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf)
+	w.warmBeforeAdvance(ctx, w.led.All(), titleDropper(runner.Policy))
+	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf, w.advanceOrder())
 	w.mu.Lock()
 	w.advance = &rep
 	w.mu.Unlock()
@@ -378,7 +382,7 @@ const maxDistinctCauses = 20
 // without asking any backend. Such a posting counts toward limit, but it is no
 // backend reading: it neither ends an unread streak nor keeps the phase from
 // failing when no backend read anything.
-func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit, workers int, titleDrop func(ledger.Record) bool, advance func(context.Context, posting.Key) error, warnf func(string, ...any)) (advanceReport, error) {
+func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Posting) int, limit, workers int, titleDrop func(ledger.Record) bool, advance func(context.Context, posting.Key) error, warnf func(string, ...any), ordering ...orderOption) (advanceReport, error) {
 	if limit <= 0 {
 		return advanceReport{}, fmt.Errorf("advance limit %d must be above 0", limit)
 	}
@@ -392,7 +396,7 @@ func advanceAll(ctx context.Context, recs []ledger.Record, rank func(posting.Pos
 			todo = append(todo, r)
 		}
 	}
-	orderAdvance(todo, recs, rank)
+	orderAdvance(todo, recs, rank, ordering...)
 	rep := advanceReport{Eligible: len(todo), Limit: limit}
 	done := func(stopped string) advanceReport {
 		rep.Deferred = rep.Eligible - rep.Attempted

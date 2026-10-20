@@ -43,6 +43,7 @@ func seedJobs(t *testing.T, stateDir string, jobs ...seedJob) *ledger.File {
 		ann := map[string]string{ledger.AnnExplanation: "Fits: Inference serving and runtimes (88%)."}
 		if j.fit != "" {
 			ann["triage.role_fit"] = j.fit
+			ann["triage.role_fit.reading"] = "answered"
 		}
 		if j.rank != "" {
 			ann[ledger.AnnRank] = j.rank
@@ -147,12 +148,15 @@ func TestJobsListOrdersAndFilters(t *testing.T) {
 		seedJob{key: "gh:a:ranked", title: "ML Systems", fit: "adjacent", rank: "71", status: posting.Explained},
 		seedJob{key: "gh:a:partial", title: "Platform Engineer", fit: "partial_fit", status: posting.Scored},
 		seedJob{key: "gh:a:dropped", title: "Recruiter", status: posting.Dropped},
-		seedJob{key: "gh:a:dead", title: "Old role", status: posting.Dead},
+		seedJob{key: "gh:a:dead", title: "Old role", status: posting.Dead, age: 90 * 24 * time.Hour},
 		seedJob{key: "gh:a:live", title: "Untriaged", status: posting.Live},
 	)
 	l := listJSON(t)
-	// Ranked first, then by triage fit; dropped, dead and untriaged are not "new".
-	if got, want := keys(l), "gh:a:ranked gh:a:strong gh:a:partial gh:a:dom"; got != want {
+	// By priority (jobinsight.Score): a strong fit leads, then the partial fit
+	// ahead of an adjacent role with 71% coverage (adjacent is "not the
+	// target work"; coverage does not make it a fit), then domain mismatch;
+	// dropped, dead and untriaged are not "new".
+	if got, want := keys(l), "gh:a:strong gh:a:partial gh:a:ranked gh:a:dom"; got != want {
 		t.Fatalf("order %q, want %q", got, want)
 	}
 	if l.Total != 4 || l.Shown != 4 || l.Counts["new"] != 4 || l.Counts["saved"] != 0 {

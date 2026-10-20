@@ -1,7 +1,6 @@
 package jobinsight
 
 import (
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -42,71 +41,6 @@ func TestAgeDays(t *testing.T) {
 	}
 	if got := AgeDays(now.Add(-49*time.Hour), now); got != 2 {
 		t.Errorf("49h: %d, want 2", got)
-	}
-}
-
-func TestRelevance(t *testing.T) {
-	r := func(v float64) *float64 { return &v }
-	nan := math.NaN()
-	cases := []struct {
-		name  string
-		rank  *float64
-		fit   string
-		hits  int
-		want  float64
-		basis Basis
-	}{
-		{"rank wins over fit", r(80), "mismatch_domain", 0, 60, BasisRank},
-		{"rank above 100 is clamped", r(130), "", 0, 75, BasisRank},
-		{"negative rank", r(-5), "", 0, 0, BasisRank},
-		{"NaN rank falls to fit", &nan, "strong_fit", 0, 63.8, BasisFit},
-		{"fit only", nil, "partial_fit", 0, 48.8, BasisFit},
-		{"unknown fit", nil, "bogus", 0, 26.3, BasisNone},
-		{"keywords lift", nil, "", 3, 42.1, BasisNone},
-		{"many keywords saturate below 100", r(100), "", 1000, 100, BasisRank},
-		{"negative hits", nil, "", -4, 26.3, BasisNone},
-	}
-	for _, c := range cases {
-		got, basis := Relevance(c.rank, c.fit, c.hits)
-		if got != c.want || basis != c.basis {
-			t.Errorf("%s: got %v %s, want %v %s", c.name, got, basis, c.want, c.basis)
-		}
-	}
-	// More target terms never lowers relevance.
-	prev := -1.0
-	for h := 0; h < 30; h++ {
-		v, _ := Relevance(nil, "adjacent", h)
-		if v < prev {
-			t.Fatalf("relevance fell from %v to %v at %d hits", prev, v, h)
-		}
-		prev = v
-	}
-}
-
-func TestPriority(t *testing.T) {
-	if got := Priority(80, 0, 14); got != 80 {
-		t.Errorf("fresh: %v, want 80", got)
-	}
-	if got := Priority(80, 14, 14); got != 60 {
-		t.Errorf("one half-life: %v, want 60", got)
-	}
-	if got := Priority(80, -1, 14); got != 40 {
-		t.Errorf("unknown age gets the floor: %v, want 40", got)
-	}
-	if got := Priority(80, 100000, 14); got != 40 {
-		t.Errorf("ancient: %v, want 40", got)
-	}
-	if got, def := Priority(80, 14, 0), Priority(80, 14, DefaultHalfLifeDays); got != def {
-		t.Errorf("bad half-life uses the default: %v vs %v", got, def)
-	}
-	if got := Priority(math.NaN(), 0, 14); got != 0 {
-		t.Errorf("NaN relevance: %v", got)
-	}
-	// Older never ranks higher at the same relevance.
-	for age := 1; age < 200; age++ {
-		if Priority(50, age, 14) > Priority(50, age-1, 14) {
-			t.Fatalf("priority rose with age at %d", age)
-		}
 	}
 }
 
@@ -275,5 +209,46 @@ func TestAnnotate(t *testing.T) {
 	}
 	if n := TargetHits(hits, map[string]bool{"Go": true, "Nope": true}); n != 1 {
 		t.Errorf("TargetHits %d", n)
+	}
+}
+
+func TestFreshAge(t *testing.T) {
+	first := now.Add(-10 * 24 * time.Hour) // the board's first crawl
+	later := now.Add(-3 * 24 * time.Hour)  // a later crawl
+	cases := []struct {
+		name                  string
+		posted, seen, boardAt time.Time
+		want                  time.Time
+		src                   FreshSource
+		known                 bool
+	}{
+		{"plausible posted date", first.Add(-20 * 24 * time.Hour), first, first, first.Add(-20 * 24 * time.Hour), FromPosted, true},
+		{"posted date known even in the first crawl", first.Add(-time.Hour), first, first, first.Add(-time.Hour), FromPosted, true},
+		{"1970 placeholder, first crawl", time.Unix(0, 0), first, first, first, FromSeen, false},
+		{"1970 placeholder, later crawl", time.Unix(0, 0), later, first, later, FromSeen, true},
+		{"posted a day after first seen is capped to first seen", later.Add(24 * time.Hour), later, first, later, FromPosted, true},
+		{"posted 36h+ after first seen is implausible, first crawl", first.Add(4 * 24 * time.Hour), first, first, first, FromSeen, false},
+		{"posted 36h+ after first seen is implausible, later crawl", later.Add(4 * 24 * time.Hour), later, first, later, FromSeen, true},
+		{"posted in the future", now.Add(10 * 24 * time.Hour), later, first, later, FromSeen, true},
+		{"undated, first crawl", time.Time{}, first, first, first, FromSeen, false},
+		{"undated, later crawl", time.Time{}, later, first, later, FromSeen, true},
+		{"zero everything", time.Time{}, time.Time{}, time.Time{}, time.Time{}, FromSeen, false},
+		{"zero first seen, board dated", time.Time{}, time.Time{}, first, time.Time{}, FromSeen, false},
+	}
+	for _, c := range cases {
+		at, src, known := FreshAge(c.posted, c.seen, c.boardAt, now)
+		if !at.Equal(c.want) || src != c.src || known != c.known {
+			t.Errorf("%s: got %v %s %v, want %v %s %v", c.name, at, src, known, c.want, c.src, c.known)
+		}
+	}
+}
+
+func TestBoardOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"gh:acme:123": "gh:acme", "wd:tenant:site:9": "wd:tenant:site", "plain": "plain", "": "", "a:": "a",
+	} {
+		if got := BoardOf(in); got != want {
+			t.Errorf("BoardOf(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

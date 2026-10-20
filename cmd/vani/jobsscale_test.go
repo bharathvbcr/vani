@@ -29,6 +29,16 @@ func scaleSnapshot(n int) ledger.Snapshot {
 	return snap
 }
 
+// scaleInsight is what newInsight builds, minus the config: the ranking
+// context with target-keyword hits, so the pass includes the score.
+func scaleInsight(v *jobinsight.Vocab, snap ledger.Snapshot) *insight {
+	in := &insight{vocab: v, target: v.Terms("Inference in Go and Rust."), now: jobsT0, halfLife: jobinsight.DefaultScoreHalfLifeDays}
+	in.learn(snap, nil)
+	in.rc = jobinsight.NewRankContext(snap.Records, nil, jobsT0)
+	in.rc.Target, in.rc.Hits, in.rc.HalfLifeDays = true, in.targetHits, in.halfLife
+	return in
+}
+
 // The whole insight pass for one `jobs list` (learn every posting's keywords,
 // then select, enrich and sort) stays interactive at 5,000 postings: the Mac
 // app runs it on every list, mark and note.
@@ -41,10 +51,9 @@ func TestJobsInsightScalesTo5000Postings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := &insight{vocab: v, target: v.Terms("Inference in Go and Rust."), now: jobsT0, halfLife: jobinsight.DefaultHalfLifeDays}
 	start := time.Now()
-	in.learn(snap, nil)
-	o := jobsOpts{view: "all", sort: "priority", halfLife: jobinsight.DefaultHalfLifeDays}
+	in := scaleInsight(v, snap)
+	o := jobsOpts{view: "all", sort: "priority", halfLife: jobinsight.DefaultScoreHalfLifeDays}
 	sel, _ := selectJobs(snap, nil, &o, in, listKeywords)
 	sortJobs(sel, o.view, o.sort)
 	took := time.Since(start)
@@ -64,10 +73,9 @@ func BenchmarkJobsInsight5000(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	o := jobsOpts{view: "all", sort: "priority", halfLife: jobinsight.DefaultHalfLifeDays}
+	o := jobsOpts{view: "all", sort: "priority", halfLife: jobinsight.DefaultScoreHalfLifeDays}
 	for b.Loop() {
-		in := &insight{vocab: v, target: v.Terms("Inference in Go and Rust."), now: jobsT0, halfLife: jobinsight.DefaultHalfLifeDays}
-		in.learn(snap, nil)
+		in := scaleInsight(v, snap)
 		sel, _ := selectJobs(snap, nil, &o, in, listKeywords)
 		sortJobs(sel, o.view, o.sort)
 	}
