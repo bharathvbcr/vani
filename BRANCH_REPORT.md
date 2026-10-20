@@ -6,6 +6,69 @@
 
 ---
 
+# Wave 4 (2026-10-20)
+
+**Status: done.** Every branch is now on `main`. Only `main` and the locked `worktree-resume-attach`
+remain.
+
+## W4.1 Inventory and backups
+- `main` was `9fab42d` and clean. No branch tip had moved since 23:57 on 2026-10-19.
+- Three branches were unmerged, and they form one chain: `wizardly-curie` (3 ahead) ⊂
+  `wonderful-hawking` (8 ahead) ⊂ `neardup-sim-budget` (9 ahead). `git cherry` showed all 6
+  unique commits as `+`.
+- 19 other branches were already on `main`.
+- Backups: `refs/backup/2026-10-20-wave4/<branch>` for every branch, plus
+  `tmp/vani-branches-2026-10-20-wave4.bundle` (verified, 40 heads).
+- GitPulse was rate-limited throughout, as in pass 3. Live sessions were read with `lsof -d cwd`.
+  Uncommitted work in the three branches' worktrees could not be checked. Merging their committed
+  tips does not touch those worktrees.
+
+## W4.2 Merge
+| Branch | Merge commit | Conflicts | Checks |
+|---|---|---|---|
+| `claude/neardup-sim-budget` (+ `wonderful-hawking`, `wizardly-curie`) | `541b05f` | `cmd/vani/app.go`, `cmd/vani/wire.go` | go: 52 ok; bun: 1065 pass |
+
+Both conflicts were old-`main` text, because the branch was built on an older `main`.
+- `app.go`: kept `main`'s `publishDigest` with `roles`. The branch never changed it.
+- `wire.go`: the branch's `annotateNearDups` replaces the inline call and logs the summary itself,
+  so `main`'s duplicate `warnf` was dropped. `main`'s `refreshLogos` and its `w.boards` reset are
+  kept.
+
+Opus reviewed and approved.
+- The cosine stage is off when semantic is off, bounded, and warn-only.
+- The new extension vectors hold no personal data.
+- Follow-up: `semantic-vectors.json` is saved without `semantic.lock`. A concurrent
+  `vani answers similar` can drop new cache entries, which costs speed, not correctness.
+
+## W4.3 Deleted
+The owner chose "remove all clean ones". All 17 worktrees were clean, and each was removed with
+`git worktree remove`. Their idle sessions lost their working directory and should be closed.
+Branches were deleted with `git branch -d`, which refuses an unmerged branch.
+
+The deleted branches:
+- `admiring-volhard`, `competent-blackburn`, `focused-diffie`, `goofy-chatelet`, `hopeful-bun`,
+  `neardup-sim-budget` (it was checked out in the `infallible-albattani` worktree)
+- `jobs-gaps`, `jolly-williamson`, `no-gaps`, `rank-relevance`, `relaxed-burnell`, `relaxed-greider`
+- `sweet-jepsen`, `turn-error-classify`, `wizardly-curie`, `wonderful-elion`, `wonderful-hawking`
+- plus `infallible-albattani`, which had no worktree.
+
+Each one's tip is at `refs/backup/2026-10-20-wave4/<branch>`. To restore one:
+`git update-ref refs/heads/<branch> refs/backup/2026-10-20-wave4/<branch>`, then
+`git worktree add .claude/worktrees/<name> <branch>`.
+
+**Kept:** `worktree-resume-attach`. It is merged, but its worktree is locked and had a dirty file.
+Unlock it with `git worktree unlock`, check its change, then remove it.
+
+## W4.4 Final checks and builds
+- `git fsck`: clean apart from the Finder file `refs/.DS_Store`.
+- `vani` was rebuilt from `541b05f` and installed to `./vani` and `build/vani`, sha256
+  `04b719555b2b…`.
+- `Vani Apply.app` was not rebuilt. No macOS sources changed in this wave. The bundle staged in
+  pass 3 (`tmp/release-0bb6aad`) embeds the older `vani`; rebuild it before installing if the app's
+  embedded CLI should match.
+
+---
+
 # Pass 3 (2026-10-19, owner: "everything is done, so commit and merge all")
 
 **Status: done.**
