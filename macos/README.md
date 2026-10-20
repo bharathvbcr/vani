@@ -33,6 +33,9 @@ to pick up your run" while `run_request` is pending, then follows the run record
 Stop is not offered, since the run is the daemon's. A request the daemon drops without a run (stale
 after an hour, or unreadable), or one still waiting when the daemon stops, is reported in the error
 banner. Both facets decode leniently and are absent from an older `vani`, which keeps the run-once path.
+The app keeps its request's time only in memory: after a relaunch a pending request still blocks
+Run Now ("A run request is already waiting") and its run shows from the record once the daemon
+makes it, but a request the daemon then drops is not reported.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.
