@@ -386,17 +386,25 @@ final class JobsTests: XCTestCase {
         let ledger = state.appendingPathComponent("ledger")
         try FileManager.default.createDirectory(at: ledger, withIntermediateDirectories: true)
         let line = #"{"v":1,"at":"2026-10-18T12:00:00.5Z","key":"gh:acme:1","status":"digested","posting":{"key":"gh:acme:1","ats":"gh","company":"Acme","title":"Inference Engineer","url":"https://boards.example.com/1","description":"Serve models.","seen_at":"2026-10-18T12:00:00Z"},"annotations":{"explanation":"Fits: Inference serving and runtimes (88%).","triage.role_fit":"strong_fit"}}"#
-        try Data((line + "\n").utf8).write(to: ledger.appendingPathComponent("events.jsonl"))
+        let events = ledger.appendingPathComponent("events.jsonl")
+        try Data((line + "\n").utf8).write(to: events)
 
         let c = JobsClient(vaniBinary: vani, stateDir: state.path)
+        // Alone, the posting was listed in its board's first crawl: with no
+        // posted date its age is unknown, and vani sends no fresh_src.
+        XCTAssertNil(try c.list(.new).jobs.first?.freshSource, "an undated first-crawl posting has no known age")
+        // An earlier crawl of the board (a posting since gone) makes the
+        // first-seen time a real upper bound on the age.
+        let earlier = #"{"v":1,"at":"2026-10-17T12:00:00Z","key":"gh:acme:0","status":"dead","posting":{"key":"gh:acme:0","ats":"gh","company":"Acme","title":"Old Role","seen_at":"2026-10-17T12:00:00Z"}}"#
+        try Data((earlier + "\n" + line + "\n").utf8).write(to: events)
         var page = try c.list(.new)
         guard page.jobs.count == 1 else {
             return XCTFail("list: \(page)")
         }
-        XCTAssertEqual(page.records, 1)
+        XCTAssertEqual(page.records, 2)
         XCTAssertEqual(page.ledger, ledger.path)
         XCTAssertEqual(page.jobs[0].reasons, [.init(kind: .fits, text: "Inference serving and runtimes", pct: 88)])
-        XCTAssertEqual(page.jobs[0].freshSource, .seen, "the ledger line has no posted date")
+        XCTAssertEqual(page.jobs[0].freshSource, .seen, "the ledger line has no posted date, and the board was crawled before")
         XCTAssertNotNil(page.jobs[0].priority)
         XCTAssertNotNil(page.insight)
         let sorted = try c.list(.new, sort: .fresh, filter: { var f = JobFilter(); f.fits = ["strong_fit"]; return f }())
