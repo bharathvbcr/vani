@@ -6,6 +6,60 @@
 
 ---
 
+# Wave 5 (2026-10-20)
+
+**Status: done.** 2 branches merged; nothing was deleted (the owner kept the one deletable branch).
+
+## W5.1 Inventory and backups
+- Since wave 4, `main` was at `21d828d`, with commits from other sessions (`9e04349` logo icon URL,
+  `21d828d` manual runs).
+- Two branches were unmerged:
+  - `rank-unknown-age-meaning`: 3 ahead.
+  - `claude/admiring-mirzakhani-25ed26`: 4 ahead. Its first commit, `0fe6b42`, was
+    patch-identical to `21d828d` (`git cherry` showed `-`).
+- Main's worktree held 10 uncommitted files. They were identical to `rank-unknown-age-meaning`'s
+  first commit `c929797`, file for file and in the README hunks, and none had been edited since
+  that commit (00:17).
+- They were stashed, `stash@{0}`, so the merges could run. Backups:
+  - the snapshot ref `refs/backup/2026-10-20-wave5/main-worktree-tracked` (`bbfa430`);
+  - the untracked files in `tmp/wave5-main-untracked.tgz`;
+  - every branch at `refs/backup/2026-10-20-wave5/<branch>`;
+  - `tmp/vani-branches-2026-10-20-wave5.bundle` (verified).
+- The stash is still there. Its content is on `main` now, so it can be dropped once you are sure.
+
+## W5.2 Merges
+| Branch | Merge commit | Conflicts | Checks |
+|---|---|---|---|
+| `rank-unknown-age-meaning` (at `68495d4`) | `eb7962c` | none | go: 52 ok; swift: 422 tests, 0 fail |
+| `claude/admiring-mirzakhani-25ed26` | `b37738a` | 8 files, add/add from the duplicated run-once work | go: 52 ok; swift: 428 tests, 0 fail |
+
+How `b37738a` was resolved:
+- Six files: main's version was byte-identical to `0fe6b42`, so the branch's version, which builds
+  on it, was taken inside every conflict block. The results equal the branch's files.
+- `main.go`: the branch side was taken in each block. Main's `watchlist icon` help lines lie
+  outside the blocks and are kept.
+- `README.md`: two additions from the branch.
+
+The owner cancelled a `git checkout --theirs` on the six files. Resolution was redone by editing
+the conflict blocks instead.
+
+Opus reviewed and approved. Follow-up: two `vani run-request`s at the same instant can both report
+success while one overwrites the other. An exclusive create would fix it.
+
+## W5.3 Kept
+- `rank-unknown-age-meaning`: its session committed `a1a70cd` (kbmatch) at 01:25, after the merge.
+  It is 1 ahead and still being worked on.
+- `claude/admiring-mirzakhani-25ed26`: merged. The owner chose to keep it while its idle session
+  remains.
+- `worktree-resume-attach`: merged, locked, and with a dirty file.
+
+## W5.4 Final checks and builds
+- `git fsck`: clean apart from the Finder file `refs/.DS_Store`.
+- `vani` was rebuilt from `b37738a` and installed to `./vani` and `build/vani`, sha256
+  `01581d3874f2…`. The app was not rebuilt.
+
+---
+
 # Wave 4 (2026-10-20)
 
 **Status: done.** Every branch is now on `main`. Only `main` and the locked `worktree-resume-attach`
