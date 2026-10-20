@@ -116,3 +116,43 @@ type Result struct {
 	// Factors lists every component in a fixed order.
 	Factors []Factor
 }
+
+// Weights are Score's tunable constants. DefaultWeights is what every caller
+// uses; the evaluation harness sweeps others.
+type Weights struct {
+	// Additive shares of match. ScoreWith normalizes them to sum to 1.
+	Fit, Coverage, Semantic, Keyword, Title, Employer float64
+	// UnknownPrior is the value an unknown additive component takes.
+	UnknownPrior float64
+	// AnsweredConf is the confidence of an answered reading with no Jev p.
+	AnsweredConf float64
+	// DisagreeConf multiplies a reading's confidence when the shadow
+	// backend disagreed.
+	DisagreeConf float64
+	// PenaltyStrength is how much a fully confident kept-by drop rule
+	// removes: gate x (1 - PenaltyStrength*conf).
+	PenaltyStrength float64
+	// ExcludedTitle and UnsureGate are the gates for an excluded title and
+	// an unsure triage.
+	ExcludedTitle, UnsureGate float64
+	// FreshFloor is the freshness of a very old posting and of one whose
+	// age is unknown; HalfLifeDays halves the rest.
+	FreshFloor, HalfLifeDays float64
+	// CompanyMinMarks is the marks a company needs before its factor moves,
+	// CompanySmoothing the pseudo-count, CompanySpan the factor's half-range
+	// around 1.
+	CompanyMinMarks               int
+	CompanySmoothing, CompanySpan float64
+}
+
+// Score ranks in by DefaultWeights.
+//
+// TEMPORARY: the ranker body lands in the next commit; until then every
+// posting scores zero, which the evaluation harness must report as failing.
+func Score(in Inputs) Result { return ScoreWith(in, DefaultWeights()) }
+
+// ScoreWith ranks in by w. TEMPORARY stub, see Score.
+func ScoreWith(in Inputs, w Weights) Result { return Result{} }
+
+// DefaultWeights are the shipped constants. TEMPORARY stub, see Score.
+func DefaultWeights() Weights { return Weights{} }
