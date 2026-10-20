@@ -15,7 +15,7 @@ import (
 
 func (e *env) cmdWatchlist(args []string) error {
 	if len(args) == 0 {
-		return usagef("watchlist: expected list, add or remove")
+		return usagef("watchlist: expected list, add, remove or domain")
 	}
 	switch args[0] {
 	case "list":
@@ -24,6 +24,8 @@ func (e *env) cmdWatchlist(args []string) error {
 		return e.watchlistAdd(args[1:])
 	case "remove":
 		return e.watchlistRemove(args[1:])
+	case "domain":
+		return e.watchlistDomain(args[1:])
 	}
 	return usagef("watchlist: unknown subcommand %q", args[0])
 }
@@ -72,7 +74,8 @@ func (e *env) watchlistAdd(args []string) error {
 	})
 	pageURL := fs.String("url", "", "careers listing page (pg only, https)")
 	linkPattern := fs.String("link-pattern", "", "regexp a posting link must match (pg only)")
-	allow := fs.Bool("allow-host", false, "also add the board's API host to allowed_hosts")
+	domain := fs.String("domain", "", "the company's website host, for its icon (www.example.com)")
+	allow := fs.Bool("allow-host", false, "also add the board's API host and --domain to allowed_hosts")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -80,7 +83,7 @@ func (e *env) watchlistAdd(args []string) error {
 		return usagef("watchlist add: --ats, --token and --company are required")
 	}
 	b := sources.Board{ATS: posting.ATS(*ats), Token: *token, Company: *company, Region: *region,
-		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters}
+		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters, Domain: *domain}
 	switch len(searches) {
 	case 0:
 	case 1:
@@ -99,13 +102,67 @@ func (e *env) watchlistAdd(args []string) error {
 		return fmt.Errorf("board %s/%s is already on the watchlist", b.ATS, b.Token)
 	}
 	cfg.Watchlist = append(cfg.Watchlist, b)
-	if host, ok := config.BoardHost(b); ok && *allow && !slices.Contains(cfg.AllowedHosts, host) {
-		cfg.AllowedHosts = append(cfg.AllowedHosts, host)
+	if *allow {
+		if host, ok := config.BoardHost(b); ok {
+			cfg.AllowedHosts = allowHost(cfg.AllowedHosts, host)
+		}
+		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, b.Domain)
 	}
 	if err := config.Save(e.configPath, cfg); err != nil {
 		return fmt.Errorf("%w\n(use --allow-host to add the board's API host to allowed_hosts)", err)
 	}
 	fmt.Fprintf(e.stdout, "added %s/%s (%s)\n", b.ATS, b.Token, b.Company)
+	return nil
+}
+
+// allowHost adds host to allowed unless it is empty or already there.
+func allowHost(allowed []string, host string) []string {
+	if host == "" || slices.Contains(allowed, host) {
+		return allowed
+	}
+	return append(allowed, host)
+}
+
+// watchlistDomain sets (or, with an empty --domain, clears) the website host a
+// board's company icon is fetched from (internal/logo).
+func (e *env) watchlistDomain(args []string) error {
+	fs := e.newFlags("watchlist domain")
+	ats := fs.String("ats", "", "ATS of the board")
+	token := fs.String("token", "", "board token")
+	domain := fs.String("domain", "", "the company's website host (www.example.com); empty clears it")
+	allow := fs.Bool("allow-host", false, "also add --domain to allowed_hosts")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if *ats == "" || *token == "" {
+		return usagef("watchlist domain: --ats and --token are required")
+	}
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return err
+	}
+	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
+	i := slices.IndexFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
+	if i < 0 {
+		return fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
+	}
+	b := cfg.Watchlist[i]
+	b.Domain = *domain
+	if err := config.ValidBoard(b); err != nil {
+		return usagef("watchlist domain: %v", err)
+	}
+	cfg.Watchlist[i] = b
+	if *allow {
+		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, b.Domain)
+	}
+	if err := config.Save(e.configPath, cfg); err != nil {
+		return fmt.Errorf("%w\n(use --allow-host to add the domain to allowed_hosts)", err)
+	}
+	if b.Domain == "" {
+		fmt.Fprintf(e.stdout, "cleared the domain of %s/%s\n", b.ATS, b.Token)
+	} else {
+		fmt.Fprintf(e.stdout, "%s/%s domain %s\n", b.ATS, b.Token, b.Domain)
+	}
 	return nil
 }
 

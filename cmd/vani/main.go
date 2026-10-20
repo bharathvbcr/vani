@@ -32,8 +32,13 @@ commands:
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
   watchlist list             list boards
   watchlist add    --ats gh|lv|ab|wd|pg --token T --company C [--region eu]
-                   [--host H --search S] (workday) [--url U --link-pattern RE] (pg) [--allow-host]
+                   [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
+                   [--domain HOST] [--allow-host]
   watchlist remove --ats A --token T
+  watchlist domain --ats A --token T --domain HOST [--allow-host]
+                             the company's website host its icon is fetched from ("" clears it)
+  logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
+                             too); --force refetches cached and recently failed ones
   daemon                     run the scheduler in the foreground
   run-once                   run the pipeline once and write the digest
   digest [--date YYYY-MM-DD] write the digest for pending roles
@@ -157,6 +162,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdConfig(args[1:])
 	case "watchlist":
 		cmdErr = e.cmdWatchlist(args[1:])
+	case "logos":
+		cmdErr = e.cmdLogos(args[1:])
 	case "daemon":
 		cmdErr = e.cmdDaemon(args[1:])
 	case "run-once":

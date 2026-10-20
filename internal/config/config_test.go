@@ -134,6 +134,34 @@ func TestMissingHostsListed(t *testing.T) {
 	}
 }
 
+func TestBoardDomain(t *testing.T) {
+	for _, bad := range []string{"https://www.acme.com", "www.acme.com/", "www.acme.com:443", "WWW.Acme.com",
+		" www.acme.com", "acme", "..acme.com", "acme..com", "www.acme.com.", "1.2.3.4", "../logos", "acme com"} {
+		b := sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme", Domain: bad}
+		if err := ValidBoard(b); err == nil || !strings.Contains(err.Error(), "domain") {
+			t.Errorf("domain %q: got %v, want a domain error", bad, err)
+		}
+	}
+	c := valid()
+	c.Watchlist[0].Domain = "www.acme.com"
+	c.Watchlist[1].Domain = "www.acme.com" // two boards may share one site
+	if got := c.RequiredHosts(); !slices.Contains(got, "www.acme.com") || len(got) != 5 {
+		t.Fatalf("RequiredHosts = %v, want the domain once", got)
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "allowed_hosts is missing: www.acme.com") {
+		t.Fatalf("an unallowed domain: got %v", err)
+	}
+	c.AllowedHosts = append(c.AllowedHosts, "www.acme.com")
+	if err := c.Validate(); err != nil {
+		t.Fatalf("an allowed domain: %v", err)
+	}
+	c.Watchlist[0].Domain, c.Watchlist[1].Domain = "", ""
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a board without a domain stays valid: %v", err)
+	}
+}
+
 func TestLeverUSHost(t *testing.T) {
 	c := valid()
 	c.Watchlist = []sources.Board{{ATS: posting.Lever, Token: "g", Company: "G"}}

@@ -95,6 +95,9 @@ type jobJSON struct {
 	// Pay is the pay the posting's text states (jobinsight.ParsePay), at most
 	// one range per currency.
 	Pay []jobinsight.Pay `json:"pay,omitempty"`
+	// Logo is the absolute path of the company's cached icon (internal/logo),
+	// set only when the file is there; the app shows the monogram otherwise.
+	Logo string `json:"logo,omitempty"`
 }
 
 type jobsListJSON struct {

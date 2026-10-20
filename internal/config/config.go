@@ -508,6 +508,9 @@ func (c Config) RequiredHosts() []string {
 		if h, ok := BoardHost(b); ok {
 			set[h] = true
 		}
+		if b.Domain != "" {
+			set[b.Domain] = true
+		}
 	}
 	if c.OpenRouterConfigured() {
 		set[hostOpenRouter] = true
@@ -662,6 +665,11 @@ func ValidBoard(b sources.Board) error {
 		}
 	default:
 		return fmt.Errorf("board %s/%s region %q is not supported", b.ATS, b.Token, b.Region)
+	}
+	// The domain is a host name, never a URL: it becomes an allowed host and
+	// the name of the cached icon file, so it is checked exactly as written.
+	if b.Domain != "" && !hostname.MatchString(b.Domain) {
+		return fmt.Errorf("board %s/%s domain %q must be a lower-case host name such as www.example.com, with no scheme, path or port", b.ATS, b.Token, b.Domain)
 	}
 	return nil
 }

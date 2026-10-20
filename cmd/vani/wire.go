@@ -261,6 +261,11 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if len(w.cfg.Watchlist) > 0 && read == 0 {
 		return errors.New("no board could be read")
 	}
+	// Company icons for the Jobs list: bounded, and warn-only.
+	w.refreshLogos(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	rep, err := advanceAll(ctx, w.led.All(), w.titleRank(), w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers(), titleDropper(runner.Policy), runner.Advance, w.warnf)
 	w.mu.Lock()
