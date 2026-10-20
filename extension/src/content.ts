@@ -28,7 +28,7 @@ import { contentListener } from "./frames";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
-import { matchTailorableQuestion, generateTailoredDraft } from "./tailor";
+import { templateTailoring, generateTailoredDraft } from "./tailor";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
 import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, isResumeField, parseResumeGet } from "./resume";
 import { type OfferAction, type OfferUi, type PickedFile, createResumeOffer } from "./resumeoffer";
@@ -655,7 +655,7 @@ function renderUnknown(c: Coverage): void {
       d.addEventListener("click", () => { void startDraft(ref, job, li); });
       row.append(d);
     }
-    const tailorable = matchTailorableQuestion(labelOf(ref));
+    const tailorable = templateTailoring(labelOf(ref));
     if (tailorable) {
       const tb = btn("d", "✨ Tailor to JD");
       tb.title = `Generate tailored answer for "${tailorable.title}" using company & role from this JD`;
