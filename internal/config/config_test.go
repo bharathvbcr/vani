@@ -458,10 +458,12 @@ func TestSearchSiteBoards(t *testing.T) {
 		{ATS: posting.Eightfold, Token: "qualcomm.com", Company: "Qualcomm", Host: "careers.qualcomm.com", Search: "machine learning"},
 		{ATS: posting.Workday, Token: "nvidia/NVIDIAExternalCareerSite", Company: "NVIDIA", Host: "nvidia.wd5.myworkdayjobs.com",
 			Searches: []string{"TensorRT", "new college grad"}},
+		{ATS: posting.Workday, Token: "intel/External", Company: "Intel", Host: "intel.wd1.myworkdayjobs.com",
+			Search: "LLM", MaxPostings: sources.MaxPostingsCeiling},
 	}
 	c := valid()
 	c.Watchlist = append(c.Watchlist, good...)
-	c.AllowedHosts = append(c.AllowedHosts, "www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "nvidia.wd5.myworkdayjobs.com")
+	c.AllowedHosts = append(c.AllowedHosts, "www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "nvidia.wd5.myworkdayjobs.com", "intel.wd1.myworkdayjobs.com")
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -481,22 +483,26 @@ func TestSearchSiteBoards(t *testing.T) {
 		b    sources.Board
 		want string
 	}{
-		"amazon without search":   {mod(0, func(b *sources.Board) { b.Searches = nil }), "needs at least one search"},
-		"blank searches only":     {mod(1, func(b *sources.Board) { b.Search, b.Searches = " ", []string{""} }), "needs at least one search"},
-		"too many searches":       {mod(1, func(b *sources.Board) { b.Searches = many }), "searches, more than"},
-		"search too long":         {mod(1, func(b *sources.Board) { b.Search = long }), "at most"},
-		"control char in search":  {mod(1, func(b *sources.Board) { b.Search = "a\nb" }), "control"},
-		"unverified filter":       {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"degree": {"MASTERS"}} }), "is not one of"},
-		"unverified eightfold":    {mod(3, func(b *sources.Board) { b.Filters = map[string][]string{"department": {"x"}} }), "is not one of"},
-		"filter on workday":       {mod(4, func(b *sources.Board) { b.Filters = map[string][]string{"x": {"y"}} }), "not supported"},
-		"empty filter values":     {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {}} }), "values"},
-		"blank filter value":      {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {" "}} }), "value"},
-		"search on greenhouse":    {sources.Board{ATS: posting.Greenhouse, Token: "acme", Search: "x"}, "search applies"},
-		"host on amazon":          {mod(0, func(b *sources.Board) { b.Host = "www.amazon.jobs" }), "host applies"},
-		"eightfold without host":  {mod(3, func(b *sources.Board) { b.Host = "" }), "needs host"},
-		"eightfold ip host":       {mod(3, func(b *sources.Board) { b.Host = "10.0.0.1" }), "needs host"},
-		"eightfold token not dns": {mod(3, func(b *sources.Board) { b.Token = "qualcomm" }), "domain"},
-		"unknown ats":             {sources.Board{ATS: "zz", Token: "x"}, "is not one of"},
+		"amazon without search":     {mod(0, func(b *sources.Board) { b.Searches = nil }), "needs at least one search"},
+		"blank searches only":       {mod(1, func(b *sources.Board) { b.Search, b.Searches = " ", []string{""} }), "needs at least one search"},
+		"too many searches":         {mod(1, func(b *sources.Board) { b.Searches = many }), "searches, more than"},
+		"search too long":           {mod(1, func(b *sources.Board) { b.Search = long }), "at most"},
+		"control char in search":    {mod(1, func(b *sources.Board) { b.Search = "a\nb" }), "control"},
+		"unverified filter":         {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"degree": {"MASTERS"}} }), "is not one of"},
+		"unverified eightfold":      {mod(3, func(b *sources.Board) { b.Filters = map[string][]string{"department": {"x"}} }), "is not one of"},
+		"filter on workday":         {mod(4, func(b *sources.Board) { b.Filters = map[string][]string{"x": {"y"}} }), "not supported"},
+		"empty filter values":       {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {}} }), "values"},
+		"blank filter value":        {mod(1, func(b *sources.Board) { b.Filters = map[string][]string{"target_level": {" "}} }), "value"},
+		"search on greenhouse":      {sources.Board{ATS: posting.Greenhouse, Token: "acme", Search: "x"}, "search applies"},
+		"host on amazon":            {mod(0, func(b *sources.Board) { b.Host = "www.amazon.jobs" }), "host applies"},
+		"eightfold without host":    {mod(3, func(b *sources.Board) { b.Host = "" }), "needs host"},
+		"eightfold ip host":         {mod(3, func(b *sources.Board) { b.Host = "10.0.0.1" }), "needs host"},
+		"eightfold token not dns":   {mod(3, func(b *sources.Board) { b.Token = "qualcomm" }), "domain"},
+		"unknown ats":               {sources.Board{ATS: "zz", Token: "x"}, "is not one of"},
+		"max_postings on amazon":    {mod(0, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
+		"max_postings on eightfold": {mod(3, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
+		"max_postings negative":     {mod(4, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
+		"max_postings over ceiling": {mod(4, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
 	} {
 		if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)

@@ -275,8 +275,102 @@ func TestSaturatedListingIsBoundedAndErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "search") {
 		t.Fatalf("err = %v, want over-cap error mentioning search", err)
 	}
-	if len(offsets) > maxPages {
-		t.Errorf("%d pages requested, bound is %d", len(offsets), maxPages)
+	if bound := maxPagesFor(MaxPostings); len(offsets) > bound {
+		t.Errorf("%d pages requested, bound is %d", len(offsets), bound)
+	}
+}
+
+// A board's max_postings raises its cap: a 450-posting board lists in full
+// under 500, and still fails over it before any detail is fetched.
+func TestMaxPostingsRaisesTheCap(t *testing.T) {
+	var offsets []int
+	s, _ := newSource(pagedHandler(450, &offsets, func(o int) int {
+		if o == 0 {
+			return 450
+		}
+		return 0
+	}, detailTmpl))
+	b := board
+	b.MaxPostings = 500
+	got, err := s.List(context.Background(), b)
+	if err != nil || len(got) != 450 {
+		t.Fatalf("got %d postings, %v; want 450", len(got), err)
+	}
+	if len(offsets) != 23 { // 22 full pages and one of 10
+		t.Errorf("%d listing pages, want 23", len(offsets))
+	}
+	// The default cap still refuses the same board.
+	if _, err := s.List(context.Background(), board); !errors.Is(err, srcutil.ErrTooManyPostings) {
+		t.Fatalf("default cap: err = %v, want too many", err)
+	}
+
+	s, d := newSource(pagedHandler(501, &offsets, func(int) int { return 501 }, detailTmpl))
+	if _, err := s.List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) || !strings.Contains(err.Error(), "max_postings") {
+		t.Fatalf("over the raised cap: err = %v, want too many naming max_postings", err)
+	}
+	if len(d.Requests()) != 1 {
+		t.Errorf("made %d requests over the cap, want only the first listing page", len(d.Requests()))
+	}
+}
+
+// A raised cap with a total that never runs dry is still bounded by pages.
+func TestRaisedCapListingIsBounded(t *testing.T) {
+	var offsets []int
+	s, _ := newSource(pagedHandler(100000, &offsets, func(int) int { return 0 }, detailTmpl))
+	b := board
+	b.MaxPostings = 300
+	if _, err := s.List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) {
+		t.Fatalf("err = %v, want too many", err)
+	}
+	if bound := maxPagesFor(300); len(offsets) > bound {
+		t.Errorf("%d pages requested, bound is %d", len(offsets), bound)
+	}
+}
+
+// max_postings outside 1..MaxPostingsCeiling is refused before any request.
+func TestMaxPostingsOutOfRange(t *testing.T) {
+	for _, n := range []int{-1, sources.MaxPostingsCeiling + 1, 1 << 40} {
+		s, d := newSource(fixtureHandler(t))
+		b := board
+		b.MaxPostings = n
+		if _, err := s.List(context.Background(), b); err == nil || !strings.Contains(err.Error(), "max_postings") {
+			t.Fatalf("max_postings %d: err = %v", n, err)
+		}
+		if len(d.Requests()) != 0 {
+			t.Fatalf("max_postings %d: %d requests made", n, len(d.Requests()))
+		}
+	}
+}
+
+// Past 2,000 Workday answers every offset with the first page (NVIDIA,
+// 2026-10-19). A listing that starts over fails the board instead of ending
+// short, and no detail is spent on it.
+func TestPagingThatStartsOverFails(t *testing.T) {
+	s, d := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if r.Method != "POST" || r.URL != jobsURL {
+			return srctest.Reply{}, false
+		}
+		var req struct{ Offset int }
+		json.Unmarshal(r.Body, &req)
+		start := req.Offset
+		if start >= 40 {
+			start = 0 // went round
+		}
+		var rows []string
+		for i := start; i < start+20; i++ {
+			rows = append(rows, fmt.Sprintf(`{"title":"T%d","externalPath":"/job/X/T%d_JR%d"}`, i, i, i))
+		}
+		return ok(`{"total":0,"jobPostings":[` + strings.Join(rows, ",") + `]}`), true
+	})
+	b := board
+	b.MaxPostings = 1000
+	if got, err := s.List(context.Background(), b); err == nil || !strings.Contains(err.Error(), "went round") {
+		t.Fatalf("a listing that started over returned %d postings, %v", len(got), err)
+	}
+	for _, r := range d.Requests() {
+		if r.Method == "GET" {
+			t.Fatal("a detail request was spent on a listing that went round")
+		}
 	}
 }
 

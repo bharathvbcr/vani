@@ -7,7 +7,8 @@
 // The listing carries no description, so every posting costs one detail
 // request. Workday refuses a page larger than 20 rows, reports its total only
 // on the first page, and has no stable cursor, so the adapter caps a board at
-// MaxPostings and asks the user to narrow a larger board with `search`.
+// MaxPostings (or the board's max_postings) and asks the user to narrow a
+// larger board with `search`.
 package workday
 
 import (
@@ -40,15 +41,28 @@ var errDetailGone = errors.New("detail is gone (HTTP 404)")
 func maxGone(n int) int { return max(1, n/10) }
 
 const (
-	// MaxPostings is the most postings one board may list. Each posting costs a
-	// detail request, so the cap is far below the other adapters'.
+	// MaxPostings is the most postings one board may list unless the board
+	// sets max_postings. Each posting costs a detail request, so the cap is far
+	// below the other adapters'.
 	MaxPostings = 200
 	// pageSize is Workday's largest page: a larger limit returns zero rows.
 	pageSize = 20
-	// maxPages bounds the listing loop even when total is wrong: the cap plus
-	// the one empty page that ends a listing, plus one spare.
-	maxPages = MaxPostings/pageSize + 2
 )
+
+// capFor is the board's posting cap: its max_postings, or MaxPostings.
+func capFor(b sources.Board) (int, error) {
+	switch {
+	case b.MaxPostings == 0:
+		return MaxPostings, nil
+	case b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling:
+		return 0, fmt.Errorf("max_postings %d outside 1..%d", b.MaxPostings, sources.MaxPostingsCeiling)
+	}
+	return b.MaxPostings, nil
+}
+
+// maxPagesFor bounds the listing loop even when total is wrong: the cap plus
+// the one empty page that ends a listing, plus one spare.
+func maxPagesFor(limit int) int { return limit/pageSize + 2 }
 
 type source struct {
 	d   egress.Doer
@@ -107,6 +121,10 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if len(b.Filters) > 0 {
 		return nil, fmt.Errorf("workday %q: filters are not supported (Workday facets are tenant-specific ids)", b.Token)
 	}
+	limit, err := capFor(b)
+	if err != nil {
+		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
+	}
 	base := "https://" + host + "/wday/cxs/" + url.PathEscape(tenant) + "/" + url.PathEscape(site)
 
 	// Each search term is listed in full; the board is their union, each
@@ -119,7 +137,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	var rows []listedJob
 	paths := map[string]bool{}
 	for _, term := range terms {
-		got, err := s.list(ctx, base+"/jobs", term)
+		got, err := s.list(ctx, base+"/jobs", term, limit)
 		if err != nil {
 			return nil, fmt.Errorf("workday %q: search %q: %w", b.Token, term, err)
 		}
@@ -129,9 +147,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 				rows = append(rows, j)
 			}
 		}
-		if len(rows) > MaxPostings {
-			return nil, fmt.Errorf("workday %q: %w: the board's searches together list more than %d postings; narrow them",
-				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
+		if len(rows) > limit {
+			return nil, fmt.Errorf("workday %q: %w: the board's searches together list more than %d postings; narrow them or raise max_postings",
+				b.Token, srcutil.ErrTooManyPostings, limit)
 		}
 	}
 	seen := s.now()
@@ -166,11 +184,15 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 
 // list pages the listing endpoint for one search term. Workday reports total
 // only on the first page (later pages say 0), so total is read once; an empty
-// page always ends the loop, and the page count is bounded either way.
-func (s *source) list(ctx context.Context, endpoint, term string) ([]listedJob, error) {
+// page always ends the loop, and the page count is bounded either way. A full
+// page that brings no new posting means paging went round (past 2,000 Workday
+// answers every offset with the first page): the listing fails rather than
+// end short, since a short listing would age healthy postings as absent.
+func (s *source) list(ctx context.Context, endpoint, term string, limit int) ([]listedJob, error) {
 	var rows []listedJob
 	paths := map[string]bool{}
 	total, offset := 0, 0
+	maxPages := maxPagesFor(limit)
 	for page := 0; page < maxPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -187,14 +209,15 @@ func (s *source) list(ctx context.Context, endpoint, term string) ([]listedJob, 
 		}
 		if page == 0 {
 			total = resp.Total
-			if total > MaxPostings {
-				return nil, fmt.Errorf("%w: board lists %d postings, over the %d limit; set the board's search to narrow it",
-					srcutil.ErrTooManyPostings, total, MaxPostings)
+			if total > limit {
+				return nil, fmt.Errorf("%w: board lists %d postings, over the %d limit; set the board's search to narrow it or raise max_postings",
+					srcutil.ErrTooManyPostings, total, limit)
 			}
 		}
 		if len(resp.JobPostings) == 0 {
 			return rows, nil
 		}
+		added := 0
 		for _, j := range resp.JobPostings {
 			// Paging shifts under a board that changes mid-listing; a repeat
 			// is the same posting, not a second one.
@@ -203,10 +226,16 @@ func (s *source) list(ctx context.Context, endpoint, term string) ([]listedJob, 
 			}
 			paths[j.ExternalPath] = true
 			rows = append(rows, j)
+			added++
 		}
-		if len(rows) > MaxPostings {
-			return nil, fmt.Errorf("%w: board lists more than %d postings; set the board's search to narrow it",
-				srcutil.ErrTooManyPostings, MaxPostings)
+		// A board shifting mid-listing repeats a few rows; a whole page of
+		// repeats is the listing starting over.
+		if added == 0 && len(resp.JobPostings) == pageSize {
+			return nil, fmt.Errorf("listing at offset %d repeated a full page of earlier postings; paging went round", offset)
+		}
+		if len(rows) > limit {
+			return nil, fmt.Errorf("%w: board lists more than %d postings; set the board's search to narrow it or raise max_postings",
+				srcutil.ErrTooManyPostings, limit)
 		}
 		offset += len(resp.JobPostings)
 		if total > 0 && offset >= total {
