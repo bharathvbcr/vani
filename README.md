@@ -224,7 +224,24 @@ flowchart TD
 - **Lappi** (`decide.lappi`, socket default `~/Library/Caches/qd/qd.sock`): local and free. With no
   agent running every ask reads `unavailable/socket_not_found` and the chain carries on; the first
   `task_not_trained` refusal stops Vani asking for the rest of the process.
-- **Local decision model** (`decide.local`, shadow only; config refuses it anywhere else): a
+- **Cloud shadow (recommended setup):** the OpenRouter model decides and a Claude Haiku reads every
+  drop candidate as the second opinion, with no local model or server to run. In the config:
+
+  ```json
+  "llm": {"provider": "anthropic", "model": "<your Opus id>", "triage_model": "<a Haiku id>",
+          "input_nano_usd_per_token": 4000, "output_nano_usd_per_token": 20000},
+  "decide": {"openrouter_model": "liquid/d1-ultra", "daily_usd": {"openrouter": 1, "llm": 1},
+             "shadow": "llm", "shadow_mode": "drop_candidates"},
+  "drop_rules": [{"slot": "role_fit", "values": ["mismatch_domain"], "min_openrouter_prob": 0.9}]
+  ```
+
+  The shadow runs on `llm.triage_model` (config refuses `shadow: "llm"` with `drop_candidates`
+  unless it is set and differs from `llm.model`, so the expensive tier is never asked), is metered
+  under the `daily_usd.llm` cap together with every other Claude call (past it a reading is
+  `unavailable`, never agreement), is recorded under the backend name `llm`, and shows in
+  `vani relevance` as `llm (<triage model>)`. Prices are your conservative per-token figures; set
+  the other values to your own. The local model below is optional.
+- **Local decision model** (optional; `decide.local`, shadow only; config refuses it anywhere else): a
   llama.cpp server's `/v1/systemone` (for example LiquidAI d1-3B, llama.cpp ≥ 0.7.0), asked
   through the Jev client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
   without `.gguf` when Vani starts the server; at most 32 bytes in all, which `vani config

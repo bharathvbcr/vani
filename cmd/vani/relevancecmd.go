@@ -113,6 +113,9 @@ func (e *env) namesAndDropRules() (eval.Names, []eval.DropRuleSpec, error) {
 	if cfg.OpenRouterConfigured() {
 		n.OpenRouter = cfg.Decide.OpenRouterName()
 	}
+	if cfg.LLM.Provider != "" {
+		n.LLMModel = cfg.LLM.EffectiveTriageModel()
+	}
 	specs := make([]eval.DropRuleSpec, 0, len(cfg.DropRules))
 	for _, r := range cfg.DropRules {
 		specs = append(specs, eval.DropRuleSpec{Slot: r.Slot, Values: r.Values, MinP: r.MinOpenRouterProb})
