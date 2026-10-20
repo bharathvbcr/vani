@@ -16,6 +16,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/digest"
+	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/localserver"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -272,6 +273,10 @@ func benchCases(snap ledger.Snapshot, n int) ([]benchCase, int, map[string]int) 
 	var all []benchCase
 	backends := map[posting.Key]string{}
 	for _, r := range snap.Records {
+		if eval.Inherited(r) {
+			// A copied reading is not the primary's reading of this posting.
+			continue
+		}
 		ann := r.Annotations
 		c := benchCase{rec: r, primary: map[string]string{}, primaryP: map[string]float64{}, shadow: map[string]string{}}
 		backend, ok := "", true

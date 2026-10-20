@@ -309,6 +309,31 @@ func TestBenchCasesSpreadAcrossCompanies(t *testing.T) {
 	}
 }
 
+// A reading copied from an identical posting (triage.inherited_from) is not a
+// primary's measurement of that posting: measuring a model against it would
+// count one reading twice. The cases leave inherited records out, as the eval
+// report does.
+func TestBenchCasesSkipInheritedReadings(t *testing.T) {
+	ann := map[string]string{}
+	for _, slot := range digest.TriageSlots {
+		pre := ledger.AnnTriagePrefix + slot
+		ann[pre], ann[pre+ledger.AnnTriageSuffixReading], ann[pre+ledger.AnnTriageSuffixBackend] = firstOption(slot), "answered", "d1-ultra"
+	}
+	copied := map[string]string{ledger.AnnTriageInheritedFrom: "gh:a:1"}
+	for k, v := range ann {
+		copied[k] = v
+	}
+	var snap ledger.Snapshot
+	for k, a := range map[string]map[string]string{"gh:a:1": ann, "gh:a:2": copied} {
+		snap.Records = append(snap.Records, ledger.Record{Key: posting.Key(k), Annotations: a,
+			Posting: posting.Posting{Key: posting.Key(k), Company: "A", Description: "x"}})
+	}
+	got, eligible, primary := benchCases(snap, 10)
+	if len(got) != 1 || got[0].rec.Key != "gh:a:1" || eligible != 1 || primary["d1-ultra"] != 1 {
+		t.Errorf("inherited reading counted: %d cases, eligible %d, %v", len(got), eligible, primary)
+	}
+}
+
 func TestBenchLocalRefusals(t *testing.T) {
 	state, bin, model := benchSetup(t)
 	for _, args := range [][]string{

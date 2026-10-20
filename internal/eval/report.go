@@ -251,7 +251,7 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 	promo := map[pk]*Promotion{}
 
 	for _, r := range recs {
-		if inherited(r) {
+		if Inherited(r) {
 			rep.Inherited++
 			continue
 		}
