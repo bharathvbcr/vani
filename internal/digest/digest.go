@@ -188,8 +188,9 @@ func topOpen(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer, n i
 	return out[:min(n, len(out))]
 }
 
-// explore picks up to belowFold digested, unmarked roles not in skip and up to
-// dropped dropped roles not hidden, each pool ordered by a hash of the date and
+// explore picks up to belowFold digested roles and up to dropped dropped roles,
+// all unmarked (a marked role is already judged, and a saved one is listed
+// under Saved) and none in skip, each pool ordered by a hash of the date and
 // the key: random to the ranking, the same for a given day.
 func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, skip map[posting.Key]bool, belowFold, dropped int) []ledger.Record {
 	var fold, drop []ledger.Record
@@ -197,7 +198,7 @@ func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time,
 		switch {
 		case r.Status == posting.Digested && m[r.Key] == marks.None && !skip[r.Key]:
 			fold = append(fold, r)
-		case r.Status == posting.Dropped && m[r.Key] != marks.Hidden && m[r.Key] != marks.Applied:
+		case r.Status == posting.Dropped && m[r.Key] == marks.None:
 			drop = append(drop, r)
 		}
 	}

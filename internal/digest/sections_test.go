@@ -113,14 +113,18 @@ func TestExplorePicksBothPoolsDeterministically(t *testing.T) {
 		recs = append(recs, dropped(fmt.Sprintf("gh:d:%02d", i), "title", "role_fit", "mismatch_domain"))
 	}
 	m := map[posting.Key]marks.Mark{"gh:f:00": marks.Saved, "gh:d:00": marks.Hidden}
+	for i := 1; i < 30; i++ { // a saved dropped role is listed under Saved, never explored
+		m[posting.Key(fmt.Sprintf("gh:d:%02d", i))] = marks.Saved
+	}
+	m["gh:d:29"] = marks.None
 	o := Options{Rules: rules, ExploreBelowFold: 2, ExploreDropped: 1}
 	md, keys, shown := RenderShown(recs, m, day, Counts{}, o)
 	ex := sectionKeys(shown, SectionExplore)
 	if len(keys) != 0 || len(ex) != 3 {
 		t.Fatalf("keys %v explore %v", keys, ex)
 	}
-	if !strings.HasPrefix(ex[0], "gh:f:") || !strings.HasPrefix(ex[1], "gh:f:") || !strings.HasPrefix(ex[2], "gh:d:") {
-		t.Fatalf("explore %v: want two below-fold then one dropped", ex)
+	if !strings.HasPrefix(ex[0], "gh:f:") || !strings.HasPrefix(ex[1], "gh:f:") || ex[2] != "gh:d:29" {
+		t.Fatalf("explore %v: want two below-fold then the one unmarked dropped role", ex)
 	}
 	for _, k := range ex {
 		if k == "gh:f:00" || k == "gh:d:00" {
