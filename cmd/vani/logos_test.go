@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/logo"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
@@ -65,19 +66,90 @@ func TestLogoIndex(t *testing.T) {
 	}
 }
 
-func TestLogoDomainsSkipsUnallowed(t *testing.T) {
+func TestLogoSourcesSkipsUnallowed(t *testing.T) {
 	cfg := config.Config{
 		Watchlist: []sources.Board{
 			{ATS: posting.Greenhouse, Token: "a", Domain: "www.a.com"},
 			{ATS: posting.Greenhouse, Token: "b", Domain: "www.b.com"},
 			{ATS: posting.Greenhouse, Token: "c", Domain: "www.a.com"},
 			{ATS: posting.Greenhouse, Token: "d"},
+			{ATS: posting.Greenhouse, Token: "e", Domain: "www.e.com", Icon: "https://cdn.e.com/i.png"},
+			{ATS: posting.Greenhouse, Token: "f", Domain: "www.f.com", Icon: "https://cdn.f.com/i.png"},
 		},
-		AllowedHosts: []string{" WWW.A.com ", "boards-api.greenhouse.io"},
+		AllowedHosts: []string{" WWW.A.com ", "boards-api.greenhouse.io", "www.e.com", "cdn.e.com", "www.f.com"},
 	}
-	allowed, missing := logoDomains(cfg)
-	if !slices.Equal(allowed, []string{"www.a.com"}) || !slices.Equal(missing, []string{"www.b.com"}) {
-		t.Fatalf("allowed %v missing %v", allowed, missing)
+	got, hosts, missing := logoSources(cfg)
+	want := []logo.Source{{Domain: "www.a.com"}, {Domain: "www.a.com"},
+		{Domain: "www.e.com", Icon: "https://cdn.e.com/i.png"}, {Domain: "www.f.com"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sources %v, want %v", got, want)
+	}
+	// f's icon host is not allowed: f is still asked at its fixed paths.
+	if !slices.Equal(hosts, []string{"cdn.e.com", "www.a.com", "www.e.com", "www.f.com"}) ||
+		!slices.Equal(missing, []string{"cdn.f.com", "www.b.com"}) {
+		t.Fatalf("hosts %v missing %v", hosts, missing)
+	}
+}
+
+func TestWatchlistIcon(t *testing.T) {
+	cfgPath, _ := setup(t)
+	mustCode(t, 0, "init")
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "acme", "--company", "Acme", "--allow-host")
+	const icon = "https://cdn.acme-assets.com/icon.png"
+	_, e := mustCode(t, 2, "watchlist", "icon", "--ats", "gh", "--token", "acme", "--url", icon)
+	if !strings.Contains(e, "no domain") {
+		t.Errorf("an icon without a domain: stderr %q", e)
+	}
+	mustCode(t, 0, "watchlist", "domain", "--ats", "gh", "--token", "acme", "--domain", "www.acme.com", "--allow-host")
+	before, _ := os.ReadFile(cfgPath)
+	_, e = mustCode(t, 1, "watchlist", "icon", "--ats", "gh", "--token", "acme", "--url", icon)
+	if !strings.Contains(e, "allowed_hosts is missing: cdn.acme-assets.com") {
+		t.Errorf("stderr %q", e)
+	}
+	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
+		t.Fatal("a refused icon changed the config")
+	}
+	for _, bad := range []string{"http://cdn.acme-assets.com/icon.png", "https://cdn.acme-assets.com:8443/i.png",
+		"https://user@cdn.acme-assets.com/i.png", "https://cdn.acme-assets.com/i.png#x", "https://CDN.acme.com/i.png",
+		"cdn.acme-assets.com/icon.png", " https://cdn.acme-assets.com/i.png", "https://cdn.acme-assets.com/a b.png"} {
+		mustCode(t, 2, "watchlist", "icon", "--ats", "gh", "--token", "acme", "--url", bad, "--allow-host")
+	}
+	mustCode(t, 0, "watchlist", "icon", "--ats", "gh", "--token", "acme", "--url", icon, "--allow-host")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Watchlist[0].Icon != icon || !slices.Contains(cfg.AllowedHosts, "cdn.acme-assets.com") {
+		t.Fatalf("watchlist %+v allowed %v", cfg.Watchlist, cfg.AllowedHosts)
+	}
+	if o, _ := mustCode(t, 0, "watchlist", "list", "--json"); !strings.Contains(o, `"icon":"`+icon+`"`) {
+		t.Errorf("watchlist list --json leaves out the icon: %s", o)
+	}
+	// The icon is kept under the domain, so the domain cannot be cleared first.
+	mustCode(t, 2, "watchlist", "domain", "--ats", "gh", "--token", "acme", "--domain", "")
+	o, _ := mustCode(t, 0, "watchlist", "icon", "--ats", "gh", "--token", "acme", "--url", "")
+	if !strings.Contains(o, "cleared the icon") {
+		t.Errorf("stdout %q", o)
+	}
+	if cfg, _ = config.Load(cfgPath); cfg.Watchlist[0].Icon != "" {
+		t.Fatalf("icon not cleared: %+v", cfg.Watchlist[0])
+	}
+}
+
+func TestWatchlistAddWithIcon(t *testing.T) {
+	cfgPath, _ := setup(t)
+	mustCode(t, 0, "init")
+	mustCode(t, 2, "watchlist", "add", "--ats", "gh", "--token", "acme", "--company", "Acme", "--icon", "https://cdn.acme-assets.com/i.png")
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "acme", "--company", "Acme",
+		"--domain", "www.acme.com", "--icon", "https://cdn.acme-assets.com/i.png", "--allow-host")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"boards-api.greenhouse.io", "www.acme.com", "cdn.acme-assets.com"} {
+		if !slices.Contains(cfg.AllowedHosts, h) {
+			t.Errorf("allowed_hosts %v lacks %s", cfg.AllowedHosts, h)
+		}
 	}
 }
 

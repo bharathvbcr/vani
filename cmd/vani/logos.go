@@ -25,41 +25,56 @@ const logoRequestTimeout = 15 * time.Second
 
 func logoCache(stateDir string) logo.Cache { return logo.Cache{Dir: filepath.Join(stateDir, "logos")} }
 
-// logoDomains is every board domain in the watchlist that allowed_hosts lists
-// (config.Validate refuses a config where one is missing; this is the fetch's
-// own guard), and the ones it does not.
-func logoDomains(cfg config.Config) (allowed, missing []string) {
+// logoSources is every board domain in the watchlist that allowed_hosts lists,
+// with its icon URL when that URL's host is listed too; hosts names the hosts
+// they need, and missing the domains and icon hosts allowed_hosts lacks
+// (config.Validate refuses such a config; this is the fetch's own guard). A
+// domain whose icon host is missing is still asked at its fixed paths.
+func logoSources(cfg config.Config) (sources []logo.Source, hosts, missing []string) {
 	ok := map[string]bool{}
 	for _, h := range cfg.AllowedHosts {
 		ok[strings.ToLower(strings.TrimSpace(h))] = true
 	}
 	for _, b := range cfg.Watchlist {
-		switch {
-		case b.Domain == "":
-		case ok[b.Domain]:
-			allowed = append(allowed, b.Domain)
-		default:
-			missing = append(missing, b.Domain)
+		if b.Domain == "" {
+			continue
 		}
+		if !ok[b.Domain] {
+			missing = append(missing, b.Domain)
+			continue
+		}
+		s := logo.Source{Domain: b.Domain}
+		hosts = append(hosts, b.Domain)
+		if h, valid := config.IconHost(b.Icon); valid {
+			if ok[h] {
+				s.Icon = b.Icon
+				hosts = append(hosts, h)
+			} else {
+				missing = append(missing, h)
+			}
+		}
+		sources = append(sources, s)
 	}
-	slices.Sort(allowed)
+	slices.SortFunc(sources, func(a, b logo.Source) int { return strings.Compare(a.Domain+" "+a.Icon, b.Domain+" "+b.Icon) })
+	slices.Sort(hosts)
 	slices.Sort(missing)
-	return slices.Compact(allowed), slices.Compact(missing)
+	return sources, slices.Compact(hosts), slices.Compact(missing)
 }
 
 // refreshLogos fetches the icons the cache lacks or holds stale. The egress
-// client allows only the board domains, so a redirect elsewhere, even to
-// another allowed board host, is refused and named in the result.
+// client allows only the board domains and icon hosts, so a redirect
+// elsewhere, even to another allowed board host, is refused and named in the
+// result.
 func refreshLogos(ctx context.Context, cfg config.Config, stateDir string, now time.Time, force bool) (logo.Result, []string, error) {
-	domains, missing := logoDomains(cfg)
-	if len(domains) == 0 {
+	sources, hosts, missing := logoSources(cfg)
+	if len(sources) == 0 {
 		return logo.Result{}, missing, nil
 	}
-	d, err := egress.New(egress.Config{AllowedHosts: domains, MaxBodyBytes: logo.MaxBytes + 1, Timeout: logoRequestTimeout})
+	d, err := egress.New(egress.Config{AllowedHosts: hosts, MaxBodyBytes: logo.MaxBytes + 1, Timeout: logoRequestTimeout})
 	if err != nil {
 		return logo.Result{}, missing, fmt.Errorf("logos: egress: %w", err)
 	}
-	res, err := logoCache(stateDir).Refresh(ctx, d, domains, now, force)
+	res, err := logoCache(stateDir).Refresh(ctx, d, sources, now, force)
 	return res, missing, err
 }
 
@@ -74,7 +89,7 @@ func (w *wired) refreshLogos(ctx context.Context) {
 
 func (w *wired) warnLogos(res logo.Result, missing []string, err error) {
 	if len(missing) > 0 {
-		w.warnf("logos: not in allowed_hosts, skipped: %s", strings.Join(missing, ", "))
+		w.warnf("logos: not in allowed_hosts, not asked: %s", strings.Join(missing, ", "))
 	}
 	if res.StateReset != "" {
 		w.warnf("logos: state file unreadable, started afresh: %s", res.StateReset)
@@ -119,7 +134,7 @@ func (e *env) cmdLogos(args []string) error {
 	}
 	w := &wired{warn: e.stdout}
 	w.warnLogos(res, missing, err)
-	if domains, _ := logoDomains(cfg); len(domains) == 0 && len(missing) == 0 {
+	if sources, _, _ := logoSources(cfg); len(sources) == 0 && len(missing) == 0 {
 		fmt.Fprintln(e.stdout, "no board has a domain; set one with `vani watchlist domain`")
 	}
 	return err

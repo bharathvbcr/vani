@@ -34,10 +34,13 @@ commands:
   watchlist list [--json]    list boards
   watchlist add    --ats gh|lv|ab|wd|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
-                   [--domain HOST] [--allow-host]
+                   [--domain HOST [--icon URL]] [--allow-host]
   watchlist remove --ats A --token T
   watchlist domain --ats A --token T --domain HOST [--allow-host]
                              the company's website host its icon is fetched from ("" clears it)
+  watchlist icon   --ats A --token T --url URL [--allow-host]
+                             an https icon URL for a site that serves none at the usual paths,
+                             asked for first ("" clears it; the board needs a domain)
   logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
                              too); --force refetches cached and recently failed ones
   daemon                     run the scheduler in the foreground

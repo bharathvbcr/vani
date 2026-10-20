@@ -2,7 +2,8 @@
 // board names its website host (sources.Board.Domain), so the Jobs list can
 // show it in place of the company's monogram.
 //
-// The icon is asked for at fixed, well-known paths on that host only. The
+// The icon is asked for at fixed, well-known paths on that host, after the
+// board's owner-set icon URL (sources.Board.Icon) when there is one. The
 // site's HTML is never fetched and no link from it is followed, and a reply is
 // kept only if its bytes are a PNG, ICO or JPEG image: an SVG (which can carry
 // script) or an HTML "not found" page served with status 200 is refused.
@@ -27,8 +28,16 @@ import (
 )
 
 // Paths are asked for in order; the first image wins. apple-touch-icon is
-// usually 180px, favicon.ico usually 16-48px.
-var Paths = []string{"/apple-touch-icon.png", "/favicon.ico"}
+// usually 180px, favicon.ico usually 16-48px; some sites serve only
+// favicon.png.
+var Paths = []string{"/apple-touch-icon.png", "/favicon.ico", "/favicon.png"}
+
+// Source is one domain whose icon is cached, with the owner-set icon URL
+// asked for before Paths ("" when there is none).
+type Source struct {
+	Domain string
+	Icon   string
+}
 
 const (
 	// MaxBytes bounds an icon; a larger reply is refused, never truncated.
@@ -83,23 +92,36 @@ func validDomain(d string) bool {
 	return true
 }
 
-// Fetch asks https://domain for each of Paths in turn and returns the first
-// reply that is an accepted image, with its kind. The error names every path
-// that failed and why, including a host the egress policy refused.
-func Fetch(ctx context.Context, d egress.Doer, domain string) ([]byte, string, error) {
+// Fetch asks for icon (when not "") and then https://domain plus each of Paths
+// in turn, and returns the first reply that is an accepted image, with its
+// kind. The error names every URL that failed and why, including a host the
+// egress policy refused. icon is not checked here beyond being https: the
+// config (config.IconHost) has, and egress allows only listed hosts.
+func Fetch(ctx context.Context, d egress.Doer, domain, icon string) ([]byte, string, error) {
 	if !validDomain(domain) {
 		return nil, "", fmt.Errorf("logo: domain %q is not a host name", domain)
 	}
-	var errs []error
+	type try struct{ label, url string }
+	var tries []try
+	if icon != "" {
+		if !strings.HasPrefix(icon, "https://") {
+			return nil, "", fmt.Errorf("logo: icon %q is not an https URL", oneLine(icon, 120))
+		}
+		tries = append(tries, try{"icon " + oneLine(icon, 120), icon})
+	}
 	for _, p := range Paths {
-		b, kind, err := fetchOne(ctx, d, "https://"+domain+p)
+		tries = append(tries, try{p, "https://" + domain + p})
+	}
+	var errs []error
+	for _, t := range tries {
+		b, kind, err := fetchOne(ctx, d, t.url)
 		if err == nil {
 			return b, kind, nil
 		}
 		if ctx.Err() != nil {
 			return nil, "", ctx.Err()
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", p, err))
+		errs = append(errs, fmt.Errorf("%s: %w", t.label, err))
 	}
 	return nil, "", errors.Join(errs...)
 }
@@ -162,11 +184,18 @@ func (c Cache) file(domain string) (string, time.Time, bool) {
 type Failure struct {
 	At    time.Time `json:"at"`
 	Error string    `json:"error"`
+	// Icon is the owner-set icon URL the fetch asked for; a different one
+	// now is tried at once, without waiting RetryAfter.
+	Icon string `json:"icon,omitempty"`
 }
 
 type state struct {
 	Version  int                `json:"version"`
 	Failures map[string]Failure `json:"failures"`
+	// Icons is the owner-set icon URL each cached icon was fetched under (a
+	// domain fetched with none is absent). An icon cached under another URL
+	// is refetched at once, however fresh.
+	Icons map[string]string `json:"icons,omitempty"`
 }
 
 // Result says what one Refresh did. Every domain asked about is counted in
@@ -189,19 +218,31 @@ type Result struct {
 
 // Refresh fetches the icon of every domain that has none, or one older than
 // RefreshAfter, skipping domains that failed within RetryAfter; force asks
-// every domain regardless. A failed refetch keeps the icon already cached. It
-// stops at MaxPerRun fetches and when ctx ends (returning ctx's error with the
-// counts so far). Domains are fetched one at a time.
-func (c Cache) Refresh(ctx context.Context, d egress.Doer, domains []string, now time.Time, force bool) (Result, error) {
+// every domain regardless. A domain whose icon URL changed since its last
+// fetch, cached or failed, is asked at once. A failed refetch keeps the icon
+// already cached. It stops at MaxPerRun fetches and when ctx ends (returning
+// ctx's error with the counts so far). Domains are fetched one at a time; a
+// domain listed twice is asked once, with the first icon URL that is set
+// (config.Validate refuses two different ones).
+func (c Cache) Refresh(ctx context.Context, d egress.Doer, sources []Source, now time.Time, force bool) (Result, error) {
 	var res Result
 	if c.Dir == "" {
 		return res, errors.New("logo: cache directory is not set")
 	}
 	st, reset := c.load()
 	res.StateReset = reset
-	uniq := slices.Clone(domains)
+	icon := map[string]string{}
+	var uniq []string
+	for _, s := range sources {
+		prev, seen := icon[s.Domain]
+		if !seen {
+			uniq = append(uniq, s.Domain)
+		}
+		if prev == "" {
+			icon[s.Domain] = s.Icon
+		}
+	}
 	slices.Sort(uniq)
-	uniq = slices.Compact(uniq)
 	var errs []string
 	tried := 0
 	var stop error
@@ -209,6 +250,7 @@ func (c Cache) Refresh(ctx context.Context, d egress.Doer, domains []string, now
 		if dom == "" {
 			continue
 		}
+		want := icon[dom]
 		if stop != nil {
 			res.Deferred++
 			continue
@@ -220,11 +262,11 @@ func (c Cache) Refresh(ctx context.Context, d egress.Doer, domains []string, now
 		}
 		_, mod, cached := c.file(dom)
 		if !force {
-			if cached && now.Sub(mod) < RefreshAfter {
+			if cached && now.Sub(mod) < RefreshAfter && st.Icons[dom] == want {
 				res.Fresh++
 				continue
 			}
-			if f, ok := st.Failures[dom]; ok && now.Sub(f.At) < RetryAfter {
+			if f, ok := st.Failures[dom]; ok && now.Sub(f.At) < RetryAfter && f.Icon == want {
 				res.Waiting++
 				continue
 			}
@@ -234,7 +276,7 @@ func (c Cache) Refresh(ctx context.Context, d egress.Doer, domains []string, now
 			continue
 		}
 		tried++
-		b, kind, err := Fetch(ctx, d, dom)
+		b, kind, err := Fetch(ctx, d, dom, want)
 		if err == nil {
 			err = c.store(dom, kind, b)
 		}
@@ -247,11 +289,16 @@ func (c Cache) Refresh(ctx context.Context, d egress.Doer, domains []string, now
 			res.Failed++
 			msg := oneLine(err.Error(), maxErrorLen)
 			errs = append(errs, dom+": "+msg)
-			st.Failures[dom] = Failure{At: now, Error: msg}
+			st.Failures[dom] = Failure{At: now, Error: msg, Icon: want}
 			continue
 		}
 		res.Fetched++
 		delete(st.Failures, dom)
+		if want == "" {
+			delete(st.Icons, dom)
+		} else {
+			st.Icons[dom] = want
+		}
 	}
 	res.Errors = errs
 	if err := c.save(st); err != nil {
@@ -279,7 +326,7 @@ func (c Cache) store(domain, kind string, b []byte) error {
 // load reads state.json. A missing file is an empty state; an unreadable one
 // is started afresh and the reason returned, never a failed refresh.
 func (c Cache) load() (state, string) {
-	empty := state{Version: stateVersion, Failures: map[string]Failure{}}
+	empty := state{Version: stateVersion, Failures: map[string]Failure{}, Icons: map[string]string{}}
 	f, err := os.Open(filepath.Join(c.Dir, stateFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return empty, ""
@@ -304,6 +351,9 @@ func (c Cache) load() (state, string) {
 	}
 	if st.Failures == nil {
 		st.Failures = map[string]Failure{}
+	}
+	if st.Icons == nil {
+		st.Icons = map[string]string{}
 	}
 	return st, ""
 }

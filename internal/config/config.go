@@ -616,6 +616,9 @@ func (c Config) RequiredHosts() []string {
 		if b.Domain != "" {
 			set[b.Domain] = true
 		}
+		if h, ok := IconHost(b.Icon); ok {
+			set[h] = true
+		}
 	}
 	if c.OpenRouterConfigured() {
 		set[hostOpenRouter] = true
@@ -800,7 +803,34 @@ func ValidBoard(b sources.Board) error {
 	if b.Domain != "" && !hostname.MatchString(b.Domain) {
 		return fmt.Errorf("board %s/%s domain %q must be a lower-case host name such as www.example.com, with no scheme, path or port", b.ATS, b.Token, b.Domain)
 	}
+	if b.Icon != "" {
+		if b.Domain == "" {
+			return fmt.Errorf("board %s/%s has an icon but no domain; the icon is kept under the domain", b.ATS, b.Token)
+		}
+		if _, ok := IconHost(b.Icon); !ok {
+			return fmt.Errorf("board %s/%s icon %q must be an https URL of at most %d bytes on a lower-case host name, with no port, user or fragment", b.ATS, b.Token, b.Icon, MaxIconURL)
+		}
+	}
 	return nil
+}
+
+// MaxIconURL bounds a board's icon URL.
+const MaxIconURL = 2048
+
+// IconHost is the host of a board's icon URL, and whether the URL is one Vani
+// fetches: https, a lower-case host name with no port, no user and no
+// fragment, at most MaxIconURL bytes. The host becomes an allowed host, so it
+// is checked exactly as written.
+func IconHost(icon string) (string, bool) {
+	if icon == "" || len(icon) > MaxIconURL || strings.ContainsAny(icon, " \t\r\n#\\") {
+		return "", false
+	}
+	u, err := url.Parse(icon)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" ||
+		u.Port() != "" || !hostname.MatchString(u.Host) {
+		return "", false
+	}
+	return u.Host, true
 }
 
 func badUSD(v float64) bool { return math.IsNaN(v) || v < 0 || v > MaxDailyUSD }
@@ -825,10 +855,19 @@ func (c Config) Validate() error {
 	}
 
 	seen := map[string]bool{}
+	// icons is the icon each domain names; boards sharing a domain share its
+	// one cached icon, so they may not name two.
+	icons := map[string]string{}
 	for i, b := range c.Watchlist {
 		if err := ValidBoard(b); err != nil {
 			add("watchlist[%d]: %v", i, err)
 			continue
+		}
+		if b.Icon != "" {
+			if prev, ok := icons[b.Domain]; ok && prev != b.Icon {
+				add("watchlist[%d]: domain %s already has icon %s; boards that share a domain share its icon", i, b.Domain, prev)
+			}
+			icons[b.Domain] = b.Icon
 		}
 		id := string(b.ATS) + "/" + strings.ToLower(b.Token)
 		if seen[id] {

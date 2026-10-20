@@ -29,6 +29,12 @@ type Board struct {
 	// must be the host that serves the icon: a redirect to another host is
 	// refused like any other.
 	Domain string `json:"domain,omitempty"`
+	// Icon is an https URL of the company's icon, set by the owner when Domain
+	// serves none at the fixed paths (the site names it only in its HTML,
+	// which Vani never reads). Optional; it needs Domain, under which the icon
+	// is cached, and its host must be in allowed_hosts. It is asked for before
+	// the fixed paths.
+	Icon string `json:"icon,omitempty"`
 
 	// Host is the board's API host where the ATS does not fix one: the
 	// Workday tenant host "{tenant}.wd{N}.myworkdayjobs.com" (its tenant label

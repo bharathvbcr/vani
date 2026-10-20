@@ -51,7 +51,7 @@ func TestFetchFallsBackToFavicon(t *testing.T) {
 		"https://www.acme.com/apple-touch-icon.png": {Status: 404},
 		"https://www.acme.com/favicon.ico":          {Status: 200, Body: icoBytes},
 	})
-	b, kind, err := Fetch(context.Background(), d, "www.acme.com")
+	b, kind, err := Fetch(context.Background(), d, "www.acme.com", "")
 	if err != nil || kind != "ico" || !bytes.Equal(b, icoBytes) {
 		t.Fatalf("Fetch = %d bytes, %q, %v", len(b), kind, err)
 	}
@@ -69,7 +69,7 @@ func TestFetchPrefersTouchIcon(t *testing.T) {
 	d := srctest.New(map[string]srctest.Reply{
 		"https://www.acme.com/apple-touch-icon.png": {Status: 200, Body: pngBytes},
 	})
-	_, kind, err := Fetch(context.Background(), d, "www.acme.com")
+	_, kind, err := Fetch(context.Background(), d, "www.acme.com", "")
 	if err != nil || kind != "png" || len(d.URLs()) != 1 {
 		t.Fatalf("kind %q err %v requests %v", kind, err, d.URLs())
 	}
@@ -80,7 +80,7 @@ func TestFetchRefusesSoft404AndSVG(t *testing.T) {
 		"https://www.acme.com/apple-touch-icon.png": {Status: 200, Body: html, Header: http.Header{"Content-Type": {"text/html"}}},
 		"https://www.acme.com/favicon.ico":          {Status: 200, Body: svg, Header: http.Header{"Content-Type": {"image/svg+xml"}}},
 	})
-	_, _, err := Fetch(context.Background(), d, "www.acme.com")
+	_, _, err := Fetch(context.Background(), d, "www.acme.com", "")
 	if !errors.Is(err, ErrNotImage) {
 		t.Fatalf("err = %v, want ErrNotImage", err)
 	}
@@ -97,7 +97,7 @@ func TestFetchRefusesOversized(t *testing.T) {
 		"https://www.acme.com/apple-touch-icon.png": {Status: 200, Body: big},
 		"https://www.acme.com/favicon.ico":          {Status: 500},
 	})
-	_, _, err := Fetch(context.Background(), d, "www.acme.com")
+	_, _, err := Fetch(context.Background(), d, "www.acme.com", "")
 	if err == nil || !strings.Contains(err.Error(), "larger than") || !strings.Contains(err.Error(), "status 500") {
 		t.Fatalf("err = %v", err)
 	}
@@ -109,7 +109,7 @@ func TestFetchNamesTheRefusedHost(t *testing.T) {
 	d := doerFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New(`egress: host is not in the allowlist: "acme.com"`)
 	})
-	_, _, err := Fetch(context.Background(), d, "www.acme.com")
+	_, _, err := Fetch(context.Background(), d, "www.acme.com", "")
 	if err == nil || !strings.Contains(err.Error(), `"acme.com"`) {
 		t.Fatalf("err = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestFetchNamesTheRefusedHost(t *testing.T) {
 func TestFetchRefusesBadDomainWithoutARequest(t *testing.T) {
 	d := srctest.New(nil)
 	for _, dom := range []string{"", "../etc", "acme.com/x", "Acme.com", "acme..com", ".acme.com", "acme.com.", "acme.com:8443", "a b.com"} {
-		if _, _, err := Fetch(context.Background(), d, dom); err == nil {
+		if _, _, err := Fetch(context.Background(), d, dom, ""); err == nil {
 			t.Errorf("Fetch(%q) succeeded", dom)
 		}
 	}
@@ -136,7 +136,7 @@ func TestFetchTimeoutStops(t *testing.T) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})
-	_, _, err := Fetch(ctx, d, "www.acme.com")
+	_, _, err := Fetch(ctx, d, "www.acme.com", "")
 	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
 		t.Fatalf("err %v after %d calls; want the deadline after one", err, calls)
 	}
@@ -148,7 +148,7 @@ func TestRefreshCachesAndSkipsFresh(t *testing.T) {
 		"https://www.acme.com/apple-touch-icon.png": {Status: 200, Body: pngBytes},
 	})
 	now := time.Now()
-	res, err := c.Refresh(context.Background(), d, []string{"www.acme.com", "www.acme.com", ""}, now, false)
+	res, err := c.Refresh(context.Background(), d, doms("www.acme.com", "www.acme.com", ""), now, false)
 	if err != nil || res.Fetched != 1 || len(d.URLs()) != 1 {
 		t.Fatalf("first refresh %+v, %v, requests %v", res, err, d.URLs())
 	}
@@ -159,11 +159,11 @@ func TestRefreshCachesAndSkipsFresh(t *testing.T) {
 	if got, _ := os.ReadFile(p); !bytes.Equal(got, pngBytes) {
 		t.Fatalf("cached bytes differ")
 	}
-	res, err = c.Refresh(context.Background(), d, []string{"www.acme.com"}, now.Add(time.Hour), false)
+	res, err = c.Refresh(context.Background(), d, doms("www.acme.com"), now.Add(time.Hour), false)
 	if err != nil || res.Fresh != 1 || res.Fetched != 0 || len(d.URLs()) != 1 {
 		t.Fatalf("second refresh %+v, %v; a fresh icon must not be refetched", res, err)
 	}
-	res, err = c.Refresh(context.Background(), d, []string{"www.acme.com"}, now.Add(time.Hour), true)
+	res, err = c.Refresh(context.Background(), d, doms("www.acme.com"), now.Add(time.Hour), true)
 	if err != nil || res.Fetched != 1 || len(d.URLs()) != 2 {
 		t.Fatalf("forced refresh %+v, %v", res, err)
 	}
@@ -179,7 +179,7 @@ func TestRefreshFailureWaitsAndKeepsTheOldIcon(t *testing.T) {
 		return srctest.Reply{Status: 503}, true
 	})
 	now := time.Now()
-	if res, err := c.Refresh(context.Background(), d, []string{"www.acme.com"}, now, false); err != nil || res.Fetched != 1 {
+	if res, err := c.Refresh(context.Background(), d, doms("www.acme.com"), now, false); err != nil || res.Fetched != 1 {
 		t.Fatalf("seed %+v %v", res, err)
 	}
 	p, _ := c.Path("www.acme.com")
@@ -188,7 +188,7 @@ func TestRefreshFailureWaitsAndKeepsTheOldIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok = false
-	res, err := c.Refresh(context.Background(), d, []string{"www.acme.com"}, now, false)
+	res, err := c.Refresh(context.Background(), d, doms("www.acme.com"), now, false)
 	if err != nil || res.Failed != 1 || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "status 503") {
 		t.Fatalf("stale refetch %+v %v", res, err)
 	}
@@ -196,12 +196,12 @@ func TestRefreshFailureWaitsAndKeepsTheOldIcon(t *testing.T) {
 		t.Fatalf("a failed refetch dropped the cached icon")
 	}
 	n := len(d.URLs())
-	res, _ = c.Refresh(context.Background(), d, []string{"www.acme.com"}, now.Add(RetryAfter-time.Hour), false)
+	res, _ = c.Refresh(context.Background(), d, doms("www.acme.com"), now.Add(RetryAfter-time.Hour), false)
 	if res.Waiting != 1 || len(d.URLs()) != n {
 		t.Fatalf("within RetryAfter: %+v, %d new requests", res, len(d.URLs())-n)
 	}
 	ok = true
-	res, _ = c.Refresh(context.Background(), d, []string{"www.acme.com"}, now.Add(RetryAfter+time.Hour), false)
+	res, _ = c.Refresh(context.Background(), d, doms("www.acme.com"), now.Add(RetryAfter+time.Hour), false)
 	if res.Fetched != 1 {
 		t.Fatalf("after RetryAfter: %+v", res)
 	}
@@ -224,9 +224,9 @@ func TestRefreshReplacesTheOtherKind(t *testing.T) {
 		return srctest.Reply{Status: 404}, true
 	})
 	now := time.Now()
-	c.Refresh(context.Background(), d, []string{"www.acme.com"}, now, false)
+	c.Refresh(context.Background(), d, doms("www.acme.com"), now, false)
 	png = false
-	c.Refresh(context.Background(), d, []string{"www.acme.com"}, now, true)
+	c.Refresh(context.Background(), d, doms("www.acme.com"), now, true)
 	p, ok := c.Path("www.acme.com")
 	if !ok || filepath.Ext(p) != ".ico" {
 		t.Fatalf("Path = %q", p)
@@ -241,11 +241,11 @@ func TestRefreshCapsFetchesPerRun(t *testing.T) {
 	d := srctest.NewFunc(func(srctest.Request) (srctest.Reply, bool) {
 		return srctest.Reply{Status: 200, Body: pngBytes}, true
 	})
-	var doms []string
+	var many []string
 	for i := range MaxPerRun + 3 {
-		doms = append(doms, fmt.Sprintf("www.c%03d.com", i))
+		many = append(many, fmt.Sprintf("www.c%03d.com", i))
 	}
-	res, err := c.Refresh(context.Background(), d, doms, time.Now(), false)
+	res, err := c.Refresh(context.Background(), d, doms(many...), time.Now(), false)
 	if err != nil || res.Fetched != MaxPerRun || res.Deferred != 3 || len(d.URLs()) != MaxPerRun {
 		t.Fatalf("%+v %v, %d requests", res, err, len(d.URLs()))
 	}
@@ -258,7 +258,7 @@ func TestRefreshStopsOnCancel(t *testing.T) {
 		cancel()
 		return nil, r.Context().Err()
 	})
-	res, err := c.Refresh(ctx, d, []string{"www.a.com", "www.b.com", "www.c.com"}, time.Now(), false)
+	res, err := c.Refresh(ctx, d, doms("www.a.com", "www.b.com", "www.c.com"), time.Now(), false)
 	if !errors.Is(err, context.Canceled) || res.Deferred != 3 || res.Failed != 0 {
 		t.Fatalf("%+v %v; a cancelled run is not a failure and records none", res, err)
 	}
@@ -271,7 +271,7 @@ func TestRefreshRefusesBadDomain(t *testing.T) {
 	dir := t.TempDir()
 	c := Cache{Dir: filepath.Join(dir, "logos")}
 	d := srctest.New(nil)
-	res, err := c.Refresh(context.Background(), d, []string{"../escape"}, time.Now(), false)
+	res, err := c.Refresh(context.Background(), d, doms("../escape"), time.Now(), false)
 	if err != nil || res.Failed != 1 || len(d.URLs()) != 0 {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -294,7 +294,7 @@ func TestRefreshStartsAfreshFromACorruptState(t *testing.T) {
 	d := srctest.New(map[string]srctest.Reply{
 		"https://www.acme.com/apple-touch-icon.png": {Status: 200, Body: pngBytes},
 	})
-	res, err := c.Refresh(context.Background(), d, []string{"www.acme.com"}, time.Now(), false)
+	res, err := c.Refresh(context.Background(), d, doms("www.acme.com"), time.Now(), false)
 	if err != nil || res.StateReset == "" || res.Fetched != 1 {
 		t.Fatalf("%+v %v", res, err)
 	}

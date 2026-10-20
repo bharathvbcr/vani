@@ -437,10 +437,15 @@ per-host pacing must stay under that.
 Company icons: a board's optional `domain` is the host of the company's own website
 (`watchlist add … --domain www.acme.com`, or `watchlist domain --ats gh --token acme --domain
 www.acme.com` for a board you have; `--allow-host` adds it to `allowed_hosts`, which must list it).
-Each run asks that host for `/apple-touch-icon.png`, then `/favicon.ico`, and keeps the first reply
-that is a PNG, ICO or JPEG of at most 256 KiB in `<state dir>/logos/`. It never reads the site's
-pages or follows their links, and a redirect to another host is refused, so give the host that serves
-the icon (often the `www.` one). Icons are refetched after 30 days; a domain that failed waits 7. The
+Each run asks that host for `/apple-touch-icon.png`, then `/favicon.ico`, then `/favicon.png`, and
+keeps the first reply that is a PNG, ICO or JPEG of at most 256 KiB in `<state dir>/logos/`. It never
+reads the site's pages or follows their links, and a redirect to another host is refused, so give the
+host that serves the icon (often the `www.` one). A site that names its icon only in its HTML (Databricks,
+Modal, Qualcomm, Together AI) needs the URL set by hand: `watchlist icon --ats gh --token acme --url
+https://www.acme.com/assets/icon.png --allow-host` (or `watchlist add … --icon URL`). That URL is asked
+for first, must be https on a host in `allowed_hosts`, needs the board's `domain` (the icon is cached
+under it), and boards sharing a domain may not name two icons; changing it refetches at once. `--url ""`
+clears it. Icons are refetched after 30 days; a domain that failed waits 7. The
 refresh takes at most 2 minutes and 50 domains a run, and only warns. `logos refresh [--force]` does
 it now. `jobs list`/`show` give each job's cached icon as `logo` (an absolute path); the Jobs tab shows
 it in place of the company's monogram, and the monogram when there is none.

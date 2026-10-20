@@ -176,6 +176,54 @@ func TestBoardDomain(t *testing.T) {
 	}
 }
 
+func TestBoardIcon(t *testing.T) {
+	const icon = "https://cdn.acme-assets.com/brand/icon.png?v=3"
+	board := func(domain, icon string) sources.Board {
+		return sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme", Domain: domain, Icon: icon}
+	}
+	if err := ValidBoard(board("", icon)); err == nil || !strings.Contains(err.Error(), "no domain") {
+		t.Errorf("an icon without a domain: got %v", err)
+	}
+	for _, bad := range []string{"http://cdn.acme.com/i.png", "https://cdn.acme.com:8443/i.png", "https://u:p@cdn.acme.com/i.png",
+		"https://cdn.acme.com/i.png#frag", "https://cdn.acme.com/i.png#", "https://CDN.acme.com/i.png", "cdn.acme.com/i.png",
+		"//cdn.acme.com/i.png", " https://cdn.acme.com/i.png", "https://cdn.acme.com/a b.png", "https://cdn.acme.com/a\\b",
+		"https://1.2.3.4/i.png", "https:cdn.acme.com/i.png", "https:///i.png", "https://cdn.acme.com/" + strings.Repeat("a", MaxIconURL)} {
+		if err := ValidBoard(board("www.acme.com", bad)); err == nil || !strings.Contains(err.Error(), "icon") {
+			t.Errorf("icon %q: got %v, want an icon error", bad, err)
+		}
+	}
+	if h, ok := IconHost(icon); !ok || h != "cdn.acme-assets.com" {
+		t.Fatalf("IconHost = %q, %v", h, ok)
+	}
+
+	c := valid()
+	c.Watchlist[0].Domain, c.Watchlist[0].Icon = "www.acme.com", icon
+	c.AllowedHosts = append(c.AllowedHosts, "www.acme.com")
+	if got := c.RequiredHosts(); !slices.Contains(got, "cdn.acme-assets.com") {
+		t.Fatalf("RequiredHosts = %v, want the icon host", got)
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "allowed_hosts is missing: cdn.acme-assets.com") {
+		t.Fatalf("an unallowed icon host: got %v", err)
+	}
+	c.AllowedHosts = append(c.AllowedHosts, "cdn.acme-assets.com")
+	if err := c.Validate(); err != nil {
+		t.Fatalf("an allowed icon: %v", err)
+	}
+	// Boards sharing a domain share its one cached icon.
+	c.Watchlist[1].Domain = "www.acme.com"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a second board on the domain with no icon: %v", err)
+	}
+	c.Watchlist[1].Icon = icon
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a second board naming the same icon: %v", err)
+	}
+	c.Watchlist[1].Icon = "https://cdn.acme-assets.com/other.png"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "already has icon") {
+		t.Fatalf("two icons for one domain: got %v", err)
+	}
+}
+
 func TestLeverUSHost(t *testing.T) {
 	c := valid()
 	c.Watchlist = []sources.Board{{ATS: posting.Lever, Token: "g", Company: "G"}}
