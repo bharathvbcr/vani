@@ -10,6 +10,7 @@ import VaniApplyKit
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let model: AppModel
     let jobs: JobsModel
+    let audit: AuditModel
     let pipeline: PipelineModel
     let exclusions: ExclusionsEditor
     private var pollTask: Task<Void, Never>?
@@ -28,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // A saved exclusion re-lists Jobs, which hides the roles it matches.
         exclusions = ExclusionsEditor(client: { model.draftSettings.exclusionsClient(vaniBinary: model.vaniBinary) },
                                       onSaved: { jobs.reload() })
+        audit = AuditModel { model.auditClient }
         // Without a bundle (a bare `swift run`) there is no notification center,
         // so the app announces nothing and leaves the notifier lock, and with it
         // the run notices, to the daemon. A launch by the daemon to announce a

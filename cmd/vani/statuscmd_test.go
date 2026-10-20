@@ -83,7 +83,7 @@ func TestStatusJSONFreshInstallSaysWhatIsMissing(t *testing.T) {
 	if !s.Schedule.OK || s.Schedule.NextRun.IsZero() || !s.Schedule.NextRun.After(s.GeneratedAt) {
 		t.Errorf("schedule: %+v", s.Schedule)
 	}
-	if !s.Backends.OK || len(s.Backends.Items) != 2 || s.Backends.Day != today() {
+	if !s.Backends.OK || len(s.Backends.Items) != 3 || s.Backends.Day != today() {
 		t.Fatalf("backends: %+v", s.Backends)
 	}
 	for _, b := range s.Backends.Items {

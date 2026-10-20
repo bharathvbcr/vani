@@ -12,6 +12,7 @@ struct VaniApplyApp: App {
             ContentView()
                 .environment(delegate.model)
                 .environment(delegate.jobs)
+                .environment(delegate.audit)
                 .environment(delegate.pipeline)
                 .environment(delegate.exclusions)
                 .frame(minWidth: 820, minHeight: 520)
@@ -41,12 +42,13 @@ private struct CaptureMainWindowOpener: ViewModifier {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case home = "Home", jobs = "Jobs", pipeline = "Pipeline", answers = "Answers", activity = "Activity", browsers = "Browsers", settings = "Settings"
+    case home = "Home", jobs = "Jobs", audit = "Audit", pipeline = "Pipeline", answers = "Answers", activity = "Activity", browsers = "Browsers", settings = "Settings"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .home: "house"
         case .jobs: "briefcase"
+        case .audit: "checkmark.circle"
         case .pipeline: "waveform.path.ecg"
         case .answers: "text.bubble"
         case .activity: "clock.arrow.circlepath"
@@ -83,6 +85,7 @@ struct ContentView: View {
                 switch model.pane ?? .home {
                 case .home: HomeView(section: $model.pane)
                 case .jobs: JobsView()
+                case .audit: AuditView()
                 case .pipeline: PipelineView()
                 case .answers: AnswersView()
                 case .activity: ActivityView()

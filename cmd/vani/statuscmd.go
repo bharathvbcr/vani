@@ -153,7 +153,7 @@ type backendsFacet struct {
 type backendJSON struct {
 	facet
 	Name string `json:"name"`
-	Kind string `json:"kind"` // llm or openrouter
+	Kind string `json:"kind"` // llm, openrouter or openrouter_notes
 	// CapUSD is the configured daily cap. SpentUSD and RemainingUSD are absent
 	// when the spend could not be read (ok false), never zero.
 	CapUSD       float64  `json:"cap_usd"`
@@ -348,6 +348,10 @@ func (e *env) backendsOf(ctx context.Context, cfg config.Config, cfgErr error, a
 		b := backendJSON{Name: cfg.Decide.OpenRouterName(), Kind: "openrouter", CapUSD: cfg.Decide.DailyUSD.OpenRouter}
 		spent, err := readOpenRouterSpend(filepath.Join(e.stateDir, "budget", openRouterBudgetFile), day, openRouterSpendKey)
 		out.Items = append(out.Items, b.withSpend(spent, err))
+		// The notes' own cap, in its own file beside the triage one.
+		nb := backendJSON{Name: b.Name + " notes", Kind: "openrouter_notes", CapUSD: cfg.Funnel.NotesCapUSD()}
+		spent, err = readOpenRouterSpend(filepath.Join(e.stateDir, "budget", notesBudgetFile), day, openRouterSpendKey)
+		out.Items = append(out.Items, nb.withSpend(spent, err))
 	}
 	if cfg.LLM.Provider != "" {
 		b := backendJSON{Name: cfg.LLM.Provider, Kind: "llm", CapUSD: cfg.Decide.DailyUSD.LLM}

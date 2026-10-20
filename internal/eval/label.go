@@ -31,7 +31,7 @@ func Label(in io.Reader, out io.Writer, recs []ledger.Record, s *Store, names Na
 	sc.Buffer(make([]byte, 0, 1024), maxInputLine)
 	written := 0
 	for i, r := range recs {
-		if err := showPosting(out, i+1, len(recs), r, names); err != nil {
+		if err := showPosting(out, i+1, len(recs), r, names, false); err != nil {
 			return written, err
 		}
 		labels := make(map[string]string, len(jdtriage.Slots))
@@ -72,9 +72,9 @@ var wouldApplySpec = func() jdtriage.SlotSpec {
 // drew) and asks the one would_apply question (number = yes/maybe/no, s = skip,
 // q = quit), then writes a would_apply label carrying the pick's stratum and
 // inclusion probability, with the description's hash. recs and picks must line
-// up. The same rules hold as for Label: nothing is written for a posting not
+// up. blind hides the model's current triage readings from each card. The same rules hold as for Label: nothing is written for a posting not
 // answered, input is plain text, and it returns the number written.
-func LabelAudit(in io.Reader, out io.Writer, picks []AuditPick, recs []ledger.Record, s *Store, names Names) (int, error) {
+func LabelAudit(in io.Reader, out io.Writer, picks []AuditPick, recs []ledger.Record, s *Store, names Names, blind bool) (int, error) {
 	if len(picks) != len(recs) {
 		return 0, fmt.Errorf("eval: %d picks but %d postings", len(picks), len(recs))
 	}
@@ -85,7 +85,7 @@ func LabelAudit(in io.Reader, out io.Writer, picks []AuditPick, recs []ledger.Re
 		if r.Key != picks[i].Key {
 			return written, fmt.Errorf("eval: pick %d is %s but its posting is %s", i+1, picks[i].Key, r.Key)
 		}
-		if err := showPosting(out, i+1, len(recs), r, names); err != nil {
+		if err := showPosting(out, i+1, len(recs), r, names, blind); err != nil {
 			return written, err
 		}
 		choice, quit, err := askSlot(sc, out, wouldApplySpec)
@@ -140,7 +140,7 @@ func askSlot(sc *bufio.Scanner, out io.Writer, sl jdtriage.SlotSpec) (choice str
 	}
 }
 
-func showPosting(out io.Writer, i, n int, r ledger.Record, names Names) error {
+func showPosting(out io.Writer, i, n int, r ledger.Record, names Names, blind bool) error {
 	p := r.Posting
 	desc := []rune(plain(p.Description))
 	shown := desc
@@ -151,16 +151,18 @@ func showPosting(out io.Writer, i, n int, r ledger.Record, names Names) error {
 	fmt.Fprintf(&b, "\n=== %d/%d  %s ===\n", i, n, plain(string(r.Key)))
 	fmt.Fprintf(&b, "Title:    %s\nCompany:  %s\nLocation: %s\n", plain(p.Title), plain(p.Company), plain(p.Location))
 	fmt.Fprintf(&b, "Description (first %d of %d characters):\n%s\n", len(shown), len(desc), string(shown))
-	b.WriteString("Current triage:\n")
-	any := false
-	for _, sl := range jdtriage.Slots {
-		if line := triageLine(r, sl.Name, names); line != "" {
-			fmt.Fprintf(&b, "  %s\n", line)
-			any = true
+	if !blind { // a blind card hides the readings: they would anchor the owner
+		b.WriteString("Current triage:\n")
+		any := false
+		for _, sl := range jdtriage.Slots {
+			if line := triageLine(r, sl.Name, names); line != "" {
+				fmt.Fprintf(&b, "  %s\n", line)
+				any = true
+			}
 		}
-	}
-	if !any {
-		b.WriteString("  (none)\n")
+		if !any {
+			b.WriteString("  (none)\n")
+		}
 	}
 	_, err := io.WriteString(out, b.String())
 	return err

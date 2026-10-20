@@ -27,7 +27,7 @@ func TestLabelAuditScriptedSession(t *testing.T) {
 	// before the fourth is answered.
 	in := strings.NewReader("1\n9\n3\ns\nq\n")
 	var out bytes.Buffer
-	n, err := LabelAudit(in, &out, picks, recs, s, Names{})
+	n, err := LabelAudit(in, &out, picks, recs, s, Names{}, false)
 	if err != nil || n != 3 {
 		t.Fatalf("n=%d err=%v\n%s", n, err, out.String())
 	}
@@ -56,18 +56,41 @@ func TestLabelAuditScriptedSession(t *testing.T) {
 	}
 }
 
+// A blind audit never shows the model's readings (they would anchor the
+// owner); a sighted one does. The label written is the same either way.
+func TestLabelAuditBlindHidesTriageReadings(t *testing.T) {
+	ann := map[string]string{"triage.role_fit": "strong_fit", "triage.role_fit.reading": "answered", "triage.role_fit.p": "0.9100"}
+	for _, blind := range []bool{false, true} {
+		s, _, _ := newStore(t)
+		recs := []ledger.Record{mkRec("gh:a:1", posting.Triaged, ann)}
+		picks := []AuditPick{{Key: "gh:a:1", Source: "decile:10", PSelect: 0.25}}
+		var out bytes.Buffer
+		n, err := LabelAudit(strings.NewReader("1\n"), &out, picks, recs, s, Names{}, blind)
+		if err != nil || n != 1 {
+			t.Fatalf("blind=%v n=%d err=%v", blind, n, err)
+		}
+		shows := strings.Contains(out.String(), "strong_fit") || strings.Contains(out.String(), "Current triage") || strings.Contains(out.String(), "0.9100")
+		if shows == blind {
+			t.Fatalf("blind=%v but triage shown=%v:\n%s", blind, shows, out.String())
+		}
+		if !strings.Contains(out.String(), "Title:") {
+			t.Fatalf("blind card lost the posting:\n%s", out.String())
+		}
+	}
+}
+
 func TestLabelAuditRefusesMismatchedPicks(t *testing.T) {
 	s, _, _ := newStore(t)
 	recs := []ledger.Record{mkRec("gh:a:1", posting.Triaged, nil)}
 	var out bytes.Buffer
-	if _, err := LabelAudit(strings.NewReader("1\n"), &out, nil, recs, s, Names{}); err == nil {
+	if _, err := LabelAudit(strings.NewReader("1\n"), &out, nil, recs, s, Names{}, false); err == nil {
 		t.Error("length mismatch accepted")
 	}
-	if _, err := LabelAudit(strings.NewReader("1\n"), &out, []AuditPick{{Key: "gh:b:9", Source: "decile:1", PSelect: 1}}, recs, s, Names{}); err == nil {
+	if _, err := LabelAudit(strings.NewReader("1\n"), &out, []AuditPick{{Key: "gh:b:9", Source: "decile:1", PSelect: 1}}, recs, s, Names{}, false); err == nil {
 		t.Error("pick/posting key mismatch accepted")
 	}
 	// A pick with no valid p_select is refused by the store, and nothing is written.
-	n, err := LabelAudit(strings.NewReader("1\n"), &out, []AuditPick{{Key: "gh:a:1", Source: "decile:1"}}, recs, s, Names{})
+	n, err := LabelAudit(strings.NewReader("1\n"), &out, []AuditPick{{Key: "gh:a:1", Source: "decile:1"}}, recs, s, Names{}, false)
 	if err == nil || n != 0 {
 		t.Errorf("n=%d err=%v", n, err)
 	}

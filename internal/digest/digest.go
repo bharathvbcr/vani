@@ -11,7 +11,6 @@
 package digest
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -25,6 +24,7 @@ import (
 	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
@@ -54,6 +54,16 @@ type Counts struct {
 	// so the footer says they exist: otherwise "No new roles today" above
 	// "New today: 3027" reads as nothing to look at.
 	AwaitingTriage int
+	// CouldNotCheck is what the run kept without checking, by cause (a check
+	// that could not run is not a check that passed). Causes with no postings
+	// are not printed; none at all prints nothing.
+	CouldNotCheck []Unchecked
+}
+
+// Unchecked is one cause a posting was kept unchecked and how many were.
+type Unchecked struct {
+	Cause string
+	N     int
 }
 
 // Select returns the records that belong in a digest, in digest order:
@@ -118,6 +128,11 @@ type Shown struct {
 	// DropClass is DropClass of a dropped role listed for exploration.
 	DropClass string
 	Result    jobinsight.Result
+	// Source and PSelect belong to an Explore row: the stratum it was drawn
+	// from and its inclusion probability (eval.UniformSample), what a
+	// would_apply label records.
+	Source  string
+	PSelect float64
 }
 
 // Section names Shown carries; they match the feedback package's.
@@ -217,7 +232,7 @@ func writeSimilar(b *strings.Builder, n int) {
 // all unmarked (a marked role is already judged, and a saved one is listed
 // under Saved) and none in skip, each pool ordered by a hash of the date and
 // the key: random to the ranking, the same for a given day.
-func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, skip map[posting.Key]bool, belowFold, dropped int) []ledger.Record {
+func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, skip map[posting.Key]bool, belowFold, dropped int) []explored {
 	var fold, drop []ledger.Record
 	for _, r := range recs {
 		switch {
@@ -228,19 +243,34 @@ func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time,
 		}
 	}
 	day := date.Format("2006-01-02")
-	pick := func(pool []ledger.Record, n int) []ledger.Record {
-		if n <= 0 {
-			return nil
+	pick := func(pool []ledger.Record, n int, source string) []explored {
+		keys := make([]posting.Key, len(pool))
+		byKey := make(map[posting.Key]ledger.Record, len(pool))
+		for i, r := range pool {
+			keys[i] = r.Key
+			byKey[r.Key] = r
 		}
-		h := make(map[posting.Key]string, len(pool))
-		for _, r := range pool {
-			sum := sha256.Sum256([]byte(day + "\x00" + string(r.Key)))
-			h[r.Key] = string(sum[:])
+		got, p := eval.UniformSample(day, keys, n)
+		out := make([]explored, 0, len(got))
+		for _, k := range got {
+			out = append(out, explored{rec: byKey[k], source: source, p: p})
 		}
-		sort.Slice(pool, func(i, j int) bool { return h[pool[i].Key] < h[pool[j].Key] })
-		return pool[:min(n, len(pool))]
+		return out
 	}
-	return append(pick(fold, belowFold), pick(drop, dropped)...)
+	return append(pick(fold, belowFold, ExploreSourceBelowFold), pick(drop, dropped, ExploreSourceDropped)...)
+}
+
+// Strata an Explore row is drawn from (a would_apply label's source).
+const (
+	ExploreSourceBelowFold = "explore:below_fold"
+	ExploreSourceDropped   = "explore:dropped"
+)
+
+// explored is one Explore pick with its stratum and inclusion probability.
+type explored struct {
+	rec    ledger.Record
+	source string
+	p      float64
 }
 
 // DropClass names why a dropped record was dropped, from its triage
@@ -458,10 +488,13 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	}
 	if ex := explore(recs, m, date, skip, min(o.ExploreBelowFold, MaxExplore), min(o.ExploreDropped, MaxExplore)); len(ex) > 0 {
 		fmt.Fprintf(&b, "## Explore (%d)\n\n", len(ex))
-		b.WriteString("Picked at random from roles ranked lower and roles that were dropped, so Vani can learn what it misses. Judge them with `vani audit judge <key> yes|maybe|no`.\n\n")
-		for _, r := range ex {
+		b.WriteString("Picked at random from roles ranked lower and roles that were dropped, so Vani can learn what it misses. Judge one with `vani audit answer --key KEY --verdict yes|maybe|no --source STRATUM --p-select P`, using the stratum and p_select on its row.\n\n")
+		for _, x := range ex {
+			r := x.rec
 			writeBrief(&b, r, sc.score(r), DropClass(r, o.Rules))
-			show(r, SectionExplore)
+			fmt.Fprintf(&b, "  - Drawn: stratum `%s` · p_select %s\n", x.source, strconv.FormatFloat(x.p, 'g', 6, 64))
+			shown = append(shown, Shown{Key: r.Key, Section: SectionExplore, Position: len(shown) + 1, Status: r.Status,
+				DropClass: DropClass(r, o.Rules), Result: sc.score(r), Source: x.source, PSelect: x.p})
 		}
 		b.WriteString("\n")
 	}
@@ -481,6 +514,15 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "New today: %d | Dropped today: %d | Dead today: %d\n", c.New, c.Dropped, c.Dead)
+	var unchecked []string
+	for _, u := range c.CouldNotCheck {
+		if u.N > 0 {
+			unchecked = append(unchecked, fmt.Sprintf("%d %s", u.N, Escape(u.Cause, 80)))
+		}
+	}
+	if len(unchecked) > 0 {
+		fmt.Fprintf(&b, "\nKept without a check, could not check: %s\n", strings.Join(unchecked, ", "))
+	}
 	if c.AwaitingTriage > 0 {
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
 	}
