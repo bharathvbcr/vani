@@ -628,7 +628,8 @@ It is on when both keys are set, and off otherwise:
   `warm_per_run`, within 10 minutes, between the pipeline and the digest. `vani semantic warm
   [--max N]` does the same on demand (use it for the first big backlog); `vani semantic status`
   prints whether this binary has Tessl, whether the config is on, the profile's chunk count, the
-  cached scores and the model id. Scores are cached in `<state dir>/semantic/` per
+  cached scores and the model id, and warns when the cache on disk was warmed for an earlier profile
+  (those scores are not shown; `vani semantic warm` replaces them). Scores are cached in `<state dir>/semantic/` per
   (profile, model, posting text); a changed bank, target summary, model or posting rescores.
   An unreadable cache is rebuilt by the next warm.
 - `vani jobs` and the digest only read that cache (no model is loaded). Each job gets

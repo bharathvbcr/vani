@@ -57,6 +57,19 @@ func OpenLookupFor(p Profile, cacheDir, modelPrefix string) (*Matcher, error) {
 		sf: sf, maxEntries: DefaultMaxEntries}, nil
 }
 
+// StaleScores counts the cached scores written for a profile other than p.
+// OpenLookup ignores them (the next warm replaces them), so without this a
+// stale cache reads the same as one never warmed. 0 when the file is missing
+// or is p's; a malformed file is an ErrCache error.
+func StaleScores(p Profile, cacheDir string) (int, error) {
+	var sf scoreFile
+	missing, err := readCache(filepath.Join(cacheDir, scoresFileName), &sf)
+	if err != nil || missing || sf.ProfileHash == p.Hash() {
+		return 0, err
+	}
+	return len(sf.Entries), nil
+}
+
 // Model is the embedding model the cached scores came from; "" when the
 // matcher holds none.
 func (m *Matcher) Model() string { return m.model }

@@ -105,6 +105,15 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		model = "none yet"
 	}
 	fmt.Fprintf(w, "cached scores: %d\nmodel: %s\n", m.Len(), model)
+	if n, err := semantic.StaleScores(prof, semanticDir(e.stateDir)); err != nil {
+		fmt.Fprintf(w, "score cache: unreadable: %s\n", oneLine(err.Error(), 200))
+	} else if n > 0 {
+		noun := "scores are"
+		if n == 1 {
+			noun = "score is"
+		}
+		fmt.Fprintf(w, "warning: %d cached %s for an earlier profile (the bank or target summary changed); run `vani semantic warm`\n", n, noun)
+	}
 	if _, err := semantic.OpenLookupFor(prof, semanticDir(e.stateDir), semanticModelPrefix(cfg)); errors.Is(err, semantic.ErrModelMismatch) {
 		fmt.Fprintf(w, "warning: the cached scores are from another model than semantic.snapshot; run `vani semantic warm`\n")
 	}

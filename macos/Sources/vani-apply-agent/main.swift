@@ -27,7 +27,9 @@ let jobs = AgentJobs { kind, request in
     DraftSettings.load(from: storeDir).runner(vaniBinary: vaniBinary).runJob(kind, input: request)
 }
 
-final class Service: NSObject, AgentXPC, NSXPCListenerDelegate {
+// Sendable by its lock: `last` is read and written only under `lastUse`, and
+// AgentJobs is itself lock-guarded.
+final class Service: NSObject, AgentXPC, NSXPCListenerDelegate, @unchecked Sendable {
     let jobs: AgentJobs
     let lastUse = NSLock()
     nonisolated(unsafe) var last = Date()
@@ -35,6 +37,11 @@ final class Service: NSObject, AgentXPC, NSXPCListenerDelegate {
     init(jobs: AgentJobs) { self.jobs = jobs }
 
     func touch() { lastUse.lock(); last = Date(); lastUse.unlock() }
+
+    func idleSeconds() -> TimeInterval {
+        lastUse.lock(); defer { lastUse.unlock() }
+        return Date().timeIntervalSince(last)
+    }
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection conn: NSXPCConnection) -> Bool {
         // Only code signed by this team may start jobs: anything else could
@@ -97,14 +104,11 @@ let listener = NSXPCListener(machServiceName: AgentConstants.machService)
 listener.delegate = service
 listener.resume()
 
-let idleSeconds = 300.0
-Thread.detachNewThread {
+let idleLimit = 300.0
+Thread.detachNewThread { [service] in
     while true {
         Thread.sleep(forTimeInterval: 15)
-        service.lastUse.lock()
-        let idle = Date().timeIntervalSince(service.last)
-        service.lastUse.unlock()
-        if idle > idleSeconds, !service.jobs.hasWork { exit(0) }
+        if service.idleSeconds() > idleLimit, !service.jobs.hasWork { exit(0) }
     }
 }
 RunLoop.main.run()
