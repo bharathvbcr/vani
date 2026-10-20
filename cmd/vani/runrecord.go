@@ -72,6 +72,10 @@ type runDetail struct {
 	// backend error becomes an "unavailable" reading that keeps no text, so
 	// this is the only place a refused key or an outage is written down.
 	BackendErrors *backendErrorReport `json:"backend_errors,omitempty"`
+	// BackendStats is what each decision backend did, by name: calls, slot
+	// readings by kind, cost, wall time, and what the circuit breaker turned
+	// away. Additive: readers that do not know the key ignore it.
+	BackendStats map[string]backendStat `json:"backend_stats,omitempty"`
 }
 
 // Why an advance phase ended before it had worked through every eligible
