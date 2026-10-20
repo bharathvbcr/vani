@@ -11,7 +11,7 @@ import { exportJobsAsCSV, exportJobsAsJSON, type ScrapedJob, type ScrapeResult }
 import { type RelevanceResult, targetProfileFromBank } from "./relevance";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
-import { matchTailorableQuestion, generateTailoredDraft } from "./tailor";
+import { templateTailoring, generateTailoredDraft } from "./tailor";
 import type { JobInfo } from "./draft";
 import { resumeRow } from "./resumerow";
 
@@ -475,7 +475,7 @@ function renderCoverage(c: Coverage): void {
     const btnGroup = document.createElement("div");
     btnGroup.style.cssText = "display:flex;gap:4px;flex-shrink:0;";
 
-    const tailorable = matchTailorableQuestion(label);
+    const tailorable = templateTailoring(label);
     if (tailorable) {
       const tb = document.createElement("button");
       tb.className = "sm";

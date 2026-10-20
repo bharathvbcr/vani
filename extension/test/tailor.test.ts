@@ -1,6 +1,29 @@
 import { describe, expect, test } from "bun:test";
-import { generateTailoredDraft, matchTailorableQuestion } from "../src/tailor";
+import { generateTailoredDraft, matchTailorableQuestion, templateTailoring } from "../src/tailor";
 import type { JobInfo } from "../src/draft";
+
+describe("templateTailoring: why-company and why-role questions are Draft's", () => {
+  test("no template for a motivation question, in any wording the matchers know", () => {
+    for (const label of [
+      "Why do you want to work at Acme?",
+      "What attracts you to our company and mission?",
+      "Why are you interested in this position?",
+      "Why Anthropic?",
+      "Why Anthropic",
+      "Why us?",
+    ]) {
+      expect(templateTailoring(label)).toBeNull();
+    }
+  });
+
+  test("other tailorable questions keep their templates", () => {
+    expect(templateTailoring("What makes you a strong fit for this team?")?.kind).toBe("role_fit");
+    expect(templateTailoring("Cover letter or note to the hiring manager")?.kind).toBe("cover_letter");
+    expect(templateTailoring("What are your salary expectations?")?.kind).toBe("salary_expectations");
+    expect(templateTailoring("")).toBeNull();
+    expect(templateTailoring("What is your phone number?")).toBeNull();
+  });
+});
 
 describe("tailored repeated questions engine", () => {
   test("matchTailorableQuestion categorizes repeated questions correctly", () => {

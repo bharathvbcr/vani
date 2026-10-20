@@ -3,6 +3,7 @@
 // and dynamically tailors answers using extracted company name, role title, and tech stack requirements.
 
 import type { JobInfo } from "./draft";
+import { motivationEssay } from "./intents";
 import { extractSalaryRange, extractSkills, type UserTargetProfile } from "./relevance";
 
 export type TailoredKind =
@@ -82,6 +83,22 @@ const DIVERSITY_PATTERNS = [
   /\b(diversity|inclusion|diverse perspectives?|underrepresented|belonging|dei)\b/i,
   /\bcontribute to (our )?(culture|diversity|inclusive environment)\b/i,
 ];
+
+/**
+ * Why this company and why this role are written for one posting by `vani draft`, from the JD and
+ * the owner's profile (the Draft button): a template never answers them.
+ */
+export const DRAFT_KINDS: ReadonlySet<TailoredKind> = new Set<TailoredKind>(["why_company", "why_role"]);
+
+/**
+ * The question a template may answer, or null. A why-company or why-role question, or any wording
+ * intents.ts reads as a motivation essay ("Why Anthropic?"), is left to Draft.
+ */
+export function templateTailoring(label: string): TailoredQuestionMatch | null {
+  if (motivationEssay(label)) return null;
+  const m = matchTailorableQuestion(label);
+  return m && !DRAFT_KINDS.has(m.kind) ? m : null;
+}
 
 /** Check if a field label is a repeated question that can be tailored to the JD. */
 export function matchTailorableQuestion(label: string): TailoredQuestionMatch | null {

@@ -77,6 +77,7 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
 		}
 		e.saveRunRecord(rec)
+		e.announceFailure(ctx, app, rec, err)
 		return err
 	}
 }
@@ -129,9 +130,10 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 //
 // The digest honours the Jobs marks (marks only, never notes). When they
 // cannot be read the digest is held back: no file and no Digested event, and
-// the error is returned and announced. Listing everything instead would show,
-// and then consume, roles the user hid. The pipeline's results are already in
-// the ledger, so the roles are listed once the store reads again.
+// the error is returned (errDigestHeldBack; dailyJob announces it). Listing
+// everything instead would show, and then consume, roles the user hid. The
+// pipeline's results are already in the ledger, so the roles are listed once
+// the store reads again.
 func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location) error {
 	if app.Ledger == nil {
 		return errors.New("app has no ledger")
@@ -139,12 +141,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	dir := marks.Dir(e.stateDir)
 	m, err := marks.ReadMarks(dir)
 	if err != nil {
-		if app.Notifier != nil {
-			if nerr := app.Notifier.Notify(ctx, "Vani digest held back", "Your Jobs marks could not be read; see vani's log"); nerr != nil {
-				fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", nerr)
-			}
-		}
-		return fmt.Errorf("digest held back: read the Jobs marks in %s: %w", dir, err)
+		return fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
 	path, keys, err := digest.Write(e.stateDir, date, recs, m, countsFor(recs, date, loc))
@@ -160,8 +157,11 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	}
 	fmt.Fprintf(e.stdout, "digest: %s (%d roles)\n", path, len(keys))
 	if len(keys) > 0 && app.Notifier != nil {
-		body := fmt.Sprintf("%d roles to review", len(keys))
-		if err := app.Notifier.Notify(ctx, "Vani digest", body); err != nil {
+		var adv *advanceReport
+		if app.RunReport != nil {
+			adv = app.RunReport().Advance
+		}
+		if err := app.Notifier.Notify(ctx, "Vani digest", digestBody(len(keys), adv)); err != nil {
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}
