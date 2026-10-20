@@ -536,7 +536,12 @@ func cleanText(s string, maxRunes int, keepLines bool) string {
 			space = b.Len() > 0
 			continue
 		}
-		if n >= maxRunes {
+		// A pending separator is written with this rune, so it counts too.
+		sep := 0
+		if newline || space {
+			sep = 1
+		}
+		if n+sep >= maxRunes {
 			b.WriteString("…")
 			break
 		}

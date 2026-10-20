@@ -217,13 +217,13 @@ func TestListBoardsBoundsAnOversizedError(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := rep.Items[0]
-	if n := utf8.RuneCountInString(e.Error); n > maxBoardErrorRunes+2 { // oneLine: a joining space and the ellipsis
+	if n := utf8.RuneCountInString(e.Error); n > maxBoardErrorRunes+1 { // +1: the ellipsis
 		t.Errorf("error is %d runes", n)
 	}
 	if strings.ContainsAny(e.Error, "\n\x00") {
 		t.Errorf("error is not one line: %q", e.Error)
 	}
-	if utf8.RuneCountInString(e.Token) > maxBoardNameRunes+2 || utf8.RuneCountInString(e.Company) > maxBoardNameRunes+2 ||
+	if utf8.RuneCountInString(e.Token) > maxBoardNameRunes+1 || utf8.RuneCountInString(e.Company) > maxBoardNameRunes+1 ||
 		strings.Contains(e.Company, "\n") {
 		t.Errorf("names not bounded: %q %q", e.Token, e.Company)
 	}
