@@ -939,8 +939,11 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     senior readings imply about 0.17-0.24 (gates 0.82-0.87). Without the embedding part it takes
     senior readings in the top 20 from 13 to 4 (rankeval real-ledger test; proxy NDCG@20 0.792 →
     0.924, the proxy does not read seniority). With embeddings on, `vani jobs` still lists 7 in
-    the top 20: those roles match the knowledge base well. Measure again after a week of use
-    before changing the strength; a `title_signals.read` for "Senior"/"Sr." is the other lever.
+    the top 20: those roles match the knowledge base well. Owner's decision: leave it as is and
+    measure again on or after 2026-10-26 (baseline 7 of 20). Count senior readings in
+    `vani jobs list --sort priority --limit 20 --json` (`.jobs[].triage.seniority`), run with
+    `VANI_CONFIG` and `VANI_STATE_DIR` set to the live `.state` paths. A `title_signals.read`
+    for "Senior"/"Sr." is the other lever.
   - Postings that went through the pipeline while `devprism.binary` was empty were marked Scored
     with "scoring disabled" and no rank or coverage, and nothing re-scores them now that DevPrism
     is configured. Every posting in the live top 20 takes the coverage prior (0.4), so the largest
