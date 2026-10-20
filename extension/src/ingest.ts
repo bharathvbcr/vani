@@ -2,6 +2,8 @@
 // from a scrape, and the words for the host's reply. The Go CLI enforces the same bounds again; this
 // side refuses a batch over a bound and never cuts a field to fit.
 
+import { isRecord } from "./guards";
+
 export interface IngestJob {
   title: string;
   company: string;
@@ -24,10 +26,6 @@ const MAX_POSTED = 64;
 const MAX_PAGE_TITLE = 300;
 
 const bytes = (s: string): number => new TextEncoder().encode(s).length;
-
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
 
 /** The URL's protocol when it parses and is within the byte bound, else null. */
 function urlProtocol(u: string): string | null {

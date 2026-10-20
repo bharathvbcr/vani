@@ -306,7 +306,7 @@ private struct StatusHeader: View {
         let health = status.health(at: Date())
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: symbol(health)).font(.title2).foregroundStyle(color(health))
+                Image(systemName: symbol(health)).font(.title2).foregroundStyle(health.tint)
                 Text(title(health)).font(.title2.weight(.semibold))
             }
             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -337,14 +337,6 @@ private struct StatusHeader: View {
         case .healthy: "checkmark.circle.fill"
         case .warning: "exclamationmark.triangle.fill"
         case .problem: "xmark.octagon.fill"
-        }
-    }
-
-    private func color(_ h: PipelineHealth) -> Color {
-        switch h {
-        case .healthy: .green
-        case .warning: .orange
-        case .problem: .red
         }
     }
 }

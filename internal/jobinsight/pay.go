@@ -378,15 +378,15 @@ var periodSuffix = map[Period]string{Hour: "/hr", Day: "/day", Week: "/wk", Mont
 // Short is p in one short line for text output: "USD 150k–180k/yr", or
 // "USD 70/hr" when the range is one amount.
 func (p Pay) Short() string {
-	amount := shortMoney(p.Min)
+	amount := ShortMoney(p.Min)
 	if p.Max != p.Min {
-		amount += "–" + shortMoney(p.Max)
+		amount += "–" + ShortMoney(p.Max)
 	}
 	return p.Currency + " " + amount + periodSuffix[p.Period]
 }
 
-// shortMoney writes 150000 as 150k and 2500000 as 2.5M.
-func shortMoney(v float64) string {
+// ShortMoney writes 150000 as 150k and 2500000 as 2.5M.
+func ShortMoney(v float64) string {
 	switch {
 	case v >= 1e6:
 		return strconv.FormatFloat(math.Round(v/1e5)/10, 'f', -1, 64) + "M"

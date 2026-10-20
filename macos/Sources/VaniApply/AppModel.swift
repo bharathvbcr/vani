@@ -312,11 +312,6 @@ final class AppModel {
         return await Task.detached(priority: .userInitiated) { client.find(in: bank) }.value
     }
 
-    func findDuplicates() async -> (clusters: [Dedup.Cluster], semantic: SimilarResult) {
-        let semantic = await findSimilarWordings()
-        return (duplicateClusters(similar: semantic), semantic)
-    }
-
     /// Merge the plans in one validated write (one revision). Counts only reach the log.
     @discardableResult
     func merge(_ plans: [Dedup.MergePlan]) -> Bool {

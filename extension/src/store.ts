@@ -1,6 +1,7 @@
 // The answer bank's storage. When the Vani Apply Mac app is installed and
 // answers a native-messaging ping, it holds the bank (one file shared with
 // Safari); otherwise the bank stays in chrome.storage.local.
+import { createLock, isRecord } from "./guards";
 import { type Answer, type Bank, emptyBank } from "./types";
 import { MAX_BANK_BYTES, bankBytes, mergeBanks, parseBank } from "./bank";
 import { createBankMemo } from "./bankcache";
@@ -80,10 +81,6 @@ const chromeLocal: LocalArea = {
   remove: k => chrome.storage.local.remove(k),
 };
 
-function isObj(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
 function isRev(x: unknown): x is number {
   return typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
 }
@@ -130,12 +127,7 @@ export function createStore(opts: StoreOptions = {}) {
   let pingPromise: Promise<boolean> | null = null;
   let migratePromise: Promise<void> | null = null;
 
-  let writeQueue = Promise.resolve<unknown>(undefined);
-  function serializeWrite<T>(op: () => Promise<T>): Promise<T> {
-    const next = writeQueue.then(op, op);
-    writeQueue = next.catch(() => undefined);
-    return next;
-  }
+  const serializeWrite = createLock();
 
   /** One bounded request. Throws TransportError (unreachable) or NativeError (host said no). */
   async function call(msg: object): Promise<Record<string, unknown>> {
@@ -153,7 +145,7 @@ export function createStore(opts: StoreOptions = {}) {
     } finally {
       clearTimeout(timer);
     }
-    if (!isObj(reply)) { nativeUntil = 0; memo.invalidate(); throw new TransportError("Mac app sent no reply"); }
+    if (!isRecord(reply)) { nativeUntil = 0; memo.invalidate(); throw new TransportError("Mac app sent no reply"); }
     if (typeof reply.error === "string") throw new NativeError(reply.error);
     return reply;
   }

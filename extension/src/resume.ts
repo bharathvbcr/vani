@@ -8,6 +8,7 @@
 // The PDF goes from the Mac app to the tab being filled and nowhere else. Its
 // file name (which carries the owner's name) is shown on the page and in the
 // popup, and never logged.
+import { isRecord } from "./guards";
 import type { Bank, FieldInfo } from "./types";
 import type { JobInfo } from "./draft";
 import { pageKey, postingKey } from "./applied";
@@ -111,7 +112,6 @@ export function fromBase64(s: unknown): Uint8Array | null {
   return out;
 }
 
-const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const clip = (s: string) => (s.length > MAX_DETAIL ? `${s.slice(0, MAX_DETAIL - 1)}…` : s);
 const unavailable = (detail: string): ResumeFetch => ({ ok: false, reason: "resume_unavailable", detail: clip(detail) });
 
@@ -121,7 +121,7 @@ const unavailable = (detail: string): ResumeFetch => ({ ok: false, reason: "resu
  * PDF is a reason; nothing is ever passed on unchecked.
  */
 export function parseResumeGet(r: unknown): ResumeFetch {
-  if (!isObj(r)) return unavailable("the Vani Apply Mac app sent no reply about the resume");
+  if (!isRecord(r)) return unavailable("the Vani Apply Mac app sent no reply about the resume");
   if (typeof r.error === "string") {
     const why = r.code === "unreachable" ? "the Vani Apply Mac app isn't reachable" : `the Vani Apply Mac app could not read the resume: ${r.error}`;
     return unavailable(why);
@@ -163,7 +163,7 @@ export function resumeOp(m: ResumeMessage): Record<string, unknown> | { error: s
   return { op: "resumePut", key, name, pdf: m.pdf };
 }
 
-const isError = (r: unknown): boolean => isObj(r) && typeof r.error === "string";
+const isError = (r: unknown): boolean => isRecord(r) && typeof r.error === "string";
 
 /**
  * One resume message end to end: the native call under the posting's key and, for a page whose key
@@ -183,11 +183,11 @@ export async function runResume(m: ResumeMessage, native: (op: object) => Promis
   switch (m.type) {
     case "resumeGet":
     case "resumeInfo":
-      return isObj(r) && r.found === false ? native(old) : r;
+      return isRecord(r) && r.found === false ? native(old) : r;
     case "resumeDelete": {
       const o = await native(old);
       if (isError(o)) return o;
-      return isObj(r) && isObj(o) && o.removed === true ? { ...r, removed: true } : r;
+      return isRecord(r) && isRecord(o) && o.removed === true ? { ...r, removed: true } : r;
     }
     default:
       await native(old).catch(() => undefined); // the new binding stands even if the old one cannot be retired
@@ -237,7 +237,7 @@ const OWN_TEXT = new Set(["config", "devprism", "render", "pages", "too_large", 
 
 /** A built resume from `vani resume`'s reply (through runJob), checked like a stored one; or why not. */
 export function parseBuiltResume(r: unknown): ResumeFetch {
-  if (!isObj(r)) return unavailable("Vani sent no resume");
+  if (!isRecord(r)) return unavailable("Vani sent no resume");
   if (typeof r.error === "string") {
     const code = typeof r.code === "string" ? r.code : "";
     return unavailable(!OWN_TEXT.has(code) && JOB_HELP[code] ? JOB_HELP[code]! : r.error);
@@ -254,7 +254,7 @@ export function parseBuiltResume(r: unknown): ResumeFetch {
 
 /** The Mac app's resumeInfo reply, for the popup. */
 export function parseResumeInfo(r: unknown): ResumeInfo {
-  if (!isObj(r)) return { error: "the Vani Apply Mac app sent no reply" };
+  if (!isRecord(r)) return { error: "the Vani Apply Mac app sent no reply" };
   if (typeof r.error === "string") return { error: clip(r.error) };
   if (r.found === false) return { found: false };
   const name = checkResumeName(r.name);
