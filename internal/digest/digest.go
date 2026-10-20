@@ -84,6 +84,11 @@ type Options struct {
 	// role's work, where it was asked.
 	KBMatch func(r ledger.Record) (jobinsight.Slot, bool)
 
+	// HalfLifeDays is jobinsight.RankContext.HalfLifeDays: the age that halves
+	// the freshness bonus, as `vani jobs --half-life`. Outside (0, MaxHalfLifeDays]
+	// means the default.
+	HalfLifeDays float64
+
 	// TopOpen lists this many of the best roles already digested and still
 	// open, by Relevance (fit alone, age left out), under "Top open": the
 	// "what is the best open role" answer beside the new roles' "what is new".
@@ -135,6 +140,7 @@ type scorer struct {
 func newScorer(all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) *scorer {
 	c := jobinsight.NewRankContext(all, m, now)
 	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
+	c.HalfLifeDays = o.HalfLifeDays
 	return &scorer{c: c, memo: map[posting.Key]jobinsight.Result{}}
 }
 
@@ -164,10 +170,12 @@ func selectWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) 
 
 // topOpen is up to n roles already digested, still listed and not marked
 // (saved roles have their own section; hidden and applied ones are done), by
-// Relevance, then Score, then key.
-func topOpen(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer, n int) []ledger.Record {
+// Relevance, then Score, then key (jobinsight.CompareRelevance), diversified
+// (jobinsight.Diversify). similar counts, per listed role, the roles collapsed
+// into it.
+func topOpen(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer, n int) (top []ledger.Record, similar map[posting.Key]int) {
 	if n <= 0 {
-		return nil
+		return nil, nil
 	}
 	var out []ledger.Record
 	for _, r := range recs {
@@ -176,16 +184,33 @@ func topOpen(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer, n i
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		a, b := sc.score(out[i]), sc.score(out[j])
-		if a.Relevance != b.Relevance {
-			return a.Relevance > b.Relevance
-		}
-		if a.Score != b.Score {
-			return a.Score > b.Score
-		}
-		return out[i].Key < out[j].Key
+		return jobinsight.CompareRelevance(sc.score(out[i]), sc.score(out[j]), string(out[i].Key), string(out[j].Key)) < 0
 	})
-	return out[:min(n, len(out))]
+	rows := diverse(out)
+	top = make([]ledger.Record, 0, min(n, len(rows)))
+	similar = map[posting.Key]int{}
+	for _, row := range rows[:min(n, len(rows))] {
+		top = append(top, out[row.Index])
+		similar[out[row.Index].Key] = len(row.Similar)
+	}
+	return top, similar
+}
+
+// diverse is jobinsight.Diversify over an ordered list of roles: duplicates
+// collapse and one company leads at most a few rows. Both lists the digest
+// shapes this way (new ranked roles, Top open) go through it.
+func diverse(recs []ledger.Record) []jobinsight.DiverseRow {
+	return jobinsight.Diversify(len(recs),
+		func(i int) string { return recs[i].Posting.Company },
+		func(i int) string { return recs[i].Posting.Title },
+		jobinsight.DiversityPerCompany, jobinsight.DiversityWindow)
+}
+
+// writeSimilar says how many roles a row stands for besides itself.
+func writeSimilar(b *strings.Builder, n int) {
+	if n > 0 {
+		fmt.Fprintf(b, "- Similar: %d more listing(s) of this title at this company\n", n)
+	}
 }
 
 // explore picks up to belowFold digested roles and up to dropped dropped roles,
@@ -290,10 +315,6 @@ func savedWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) [
 // `vani jobs` applies them. A role DevPrism did not score stays behind the scored
 // ones: Render lists them under "Not ranked".
 func sortDigest(out []ledger.Record, sc *scorer) {
-	score := make(map[posting.Key]float64, len(out))
-	for _, r := range out {
-		score[r.Key] = sc.score(r).Score
-	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if IsUnsure(a) != IsUnsure(b) {
@@ -304,10 +325,7 @@ func sortDigest(out []ledger.Record, sc *scorer) {
 		if oka != okb {
 			return oka
 		}
-		if sa, sb := score[a.Key], score[b.Key]; sa != sb {
-			return sa > sb
-		}
-		return a.Key < b.Key
+		return jobinsight.ComparePriority(sc.score(a), sc.score(b), string(a.Key), string(b.Key)) < 0
 	})
 }
 
@@ -387,10 +405,17 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	}
 	if len(ranked) > 0 {
 		fmt.Fprintf(&b, "## Ranked roles (%d)\n\n", len(ranked))
-		for _, r := range ranked {
-			writeRole(&b, r)
+		// Shaped for reading (jobinsight.Diversify): a duplicate listing folds into
+		// its first row, yet every role is still returned as new so it is marked
+		// Digested and does not come back tomorrow.
+		for _, row := range diverse(ranked) {
+			r := ranked[row.Index]
+			writeRoleSimilar(&b, r, len(row.Similar))
 			keys = append(keys, r.Key)
 			show(r, SectionRanked)
+			for _, i := range row.Similar {
+				keys = append(keys, ranked[i].Key)
+			}
 		}
 	}
 	// A posting explained without a rank was never scored (scoring off, or
@@ -414,12 +439,15 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 			show(r, SectionUnsure)
 		}
 	}
-	top := topOpen(recs, m, sc, min(o.TopOpen, MaxTopOpen))
+	top, similar := topOpen(recs, m, sc, min(o.TopOpen, MaxTopOpen))
 	if len(top) > 0 {
 		fmt.Fprintf(&b, "## Top open (%d)\n\n", len(top))
 		b.WriteString("The best roles listed before and still open, by fit alone: age is left out, so a strong role does not sink because it is a few weeks old.\n\n")
 		for _, r := range top {
 			writeBrief(&b, r, sc.score(r), "")
+			if n := similar[r.Key]; n > 0 {
+				fmt.Fprintf(&b, "  - Similar: %d more listing(s) of this title at this company\n", n)
+			}
 			show(r, SectionTopOpen)
 		}
 		b.WriteString("\n")
@@ -503,7 +531,10 @@ func Where(p posting.Posting) string {
 	return "location not listed"
 }
 
-func writeRole(b *strings.Builder, r ledger.Record) {
+func writeRole(b *strings.Builder, r ledger.Record) { writeRoleSimilar(b, r, 0) }
+
+// writeRoleSimilar is writeRole for a row that stands for similar more roles.
+func writeRoleSimilar(b *strings.Builder, r ledger.Record, similar int) {
 	p := r.Posting
 	fmt.Fprintf(b, "### %s at %s\n\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes))
 
@@ -538,6 +569,7 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 	if IsUnsure(r) {
 		fmt.Fprintf(b, "- Why unsure: %s\n", WhyUnsure(r.Annotations))
 	}
+	writeSimilar(b, similar)
 	if ex := strings.TrimSpace(r.Annotations[ledger.AnnExplanation]); ex != "" {
 		fmt.Fprintf(b, "\n%s\n", Escape(ex, maxExplainLen))
 	}

@@ -87,7 +87,7 @@ func TestTopOpenAndExploreOffByDefault(t *testing.T) {
 func TestTopOpenBounds(t *testing.T) {
 	var recs []ledger.Record
 	for i := 0; i < MaxTopOpen+20; i++ {
-		recs = append(recs, rec(fmt.Sprintf("gh:a:%03d", i), posting.Digested, "Role", fit("strong_fit")))
+		recs = append(recs, rec(fmt.Sprintf("gh:a:%03d", i), posting.Digested, fmt.Sprintf("Role %03d", i), fit("strong_fit")))
 	}
 	_, _, shown := RenderShown(recs, nil, day, Counts{}, Options{TopOpen: 10_000})
 	if n := len(sectionKeys(shown, SectionTopOpen)); n != MaxTopOpen {
