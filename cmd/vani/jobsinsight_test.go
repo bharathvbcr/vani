@@ -39,6 +39,9 @@ func seedInsight(t *testing.T, stateDir string, seeds ...insightSeed) {
 				ann[k] = v
 			}
 		}
+		if s.fit != "" {
+			ann["triage.role_fit.reading"] = "answered"
+		}
 		e := ledger.Event{V: 1, At: jobsT0.Add(-s.seenAgo), Key: p.Key, Status: s.status, Posting: &p, Annotations: ann}
 		if err := l.Append(context.Background(), e); err != nil {
 			t.Fatal(err)
@@ -73,6 +76,9 @@ var insightSeeds = []insightSeed{
 	{key: "gh:c:unread", company: "Cobalt", title: "Platform Engineer", desc: "Terraform and AWS.", status: posting.Unsure,
 		posted: jobsT0.Add(-9 * 24 * time.Hour), seenAgo: 8 * 24 * time.Hour},
 	{key: "gh:a:gone", company: "Acme", title: "Old role", status: posting.Dead},
+	// Beta's board was first crawled 90 days ago, so gh:b:sales (40 days) was
+	// put up at most a run before it was seen: its age is known.
+	{key: "gh:b:old", company: "Beta", title: "Old role", status: posting.Dead, seenAgo: 90 * 24 * time.Hour},
 }
 
 func findJob(t *testing.T, l jobsListJSON, key string) jobJSON {
@@ -134,8 +140,8 @@ func TestJobsInsightFields(t *testing.T) {
 			t.Errorf("--sort %s: %q, want %q", sortBy, got, want)
 		}
 	}
-	// The default order is unchanged: ranked, then fit, then unread.
-	if got := keys(listJSON(t)); got != "gh:a:infra gh:b:sales gh:c:unread" {
+	// The default order is priority: the fresh strong fit, the unread job, then the 40-day-old mismatch.
+	if got := keys(listJSON(t)); got != "gh:a:infra gh:c:unread gh:b:sales" {
 		t.Errorf("default order %q", got)
 	}
 }
@@ -155,7 +161,7 @@ func TestJobsInsightFilters(t *testing.T) {
 		"--max-age 1":                       "",
 		"--view saved":                      "gh:a:gone",
 		"--view saved --open":               "",
-		"--view all --sponsorship none":     "gh:a:infra gh:b:sales gh:a:gone gh:c:unread", // unread ties break on first seen
+		"--view all --sponsorship none":     "gh:a:infra gh:a:gone gh:c:unread gh:b:sales", // by priority: a fresh unread job leads an old mismatch
 		"--view all --open --sort priority": "gh:a:infra gh:c:unread gh:b:sales",
 	} {
 		if got := keys(listJSON(t, strings.Fields(args)...)); got != want {
@@ -195,7 +201,7 @@ func TestJobsStats(t *testing.T) {
 		t.Fatalf("stats %q: %v", o, err)
 	}
 	if s.Total != 3 || s.Fit["strong_fit"] != 1 || s.Fit["mismatch_domain"] != 1 || s.Fit["none"] != 1 ||
-		s.WorkMode["remote"] != 1 || s.Basis["fit"] != 2 || s.Basis["none"] != 1 || s.Records != 4 {
+		s.WorkMode["remote"] != 1 || s.Basis["fit"] != 2 || s.Basis["none"] != 1 || s.Records != 5 {
 		t.Fatalf("stats %+v", s)
 	}
 	ages, posted := 0, 0

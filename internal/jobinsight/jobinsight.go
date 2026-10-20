@@ -116,51 +116,8 @@ var fitBase = map[string]float64{
 	"mismatch_domain":    0.10,
 }
 
-const (
-	neutralBase   = 0.35 // no rank, no fit reading
-	keywordWeight = 0.25 // share of relevance that target-keyword overlap can move
-	keywordScale  = 3.0  // overlap of this many target terms gives ~63% of the keyword share
-	// DefaultHalfLifeDays is how many days of age halve a posting's freshness
-	// bonus in Priority.
-	DefaultHalfLifeDays = 14.0
-	// MaxHalfLifeDays bounds the half-life a caller may ask for.
-	MaxHalfLifeDays = 365.0
-)
-
-// Relevance is a 0-100 display score: 75% from DevPrism's rank when the
-// posting has one, otherwise from triage's role_fit, and 25% from how many of
-// the target summary's terms the posting mentions. rank is clamped to 0-100
-// (an employer boost can push the ledger's rank past 100).
-func Relevance(rank *float64, roleFit string, targetHits int) (float64, Basis) {
-	base, basis := neutralBase, BasisNone
-	switch b, ok := fitBase[roleFit]; {
-	case rank != nil && !math.IsNaN(*rank):
-		base, basis = clamp01(*rank/100), BasisRank
-	case ok:
-		base, basis = b, BasisFit
-	}
-	if targetHits < 0 {
-		targetHits = 0
-	}
-	kw := 1 - math.Exp(-float64(targetHits)/keywordScale)
-	return round1(100 * ((1-keywordWeight)*base + keywordWeight*kw)), basis
-}
-
-// Priority discounts relevance by age: a posting loses up to half its score
-// as it ages, halving that freshness bonus every halfLife days. An unknown age
-// (ageDays < 0) gets the floor, so an undated posting never outranks a dated
-// one of the same relevance. halfLife outside (0, MaxHalfLifeDays] means
-// DefaultHalfLifeDays.
-func Priority(relevance float64, ageDays int, halfLife float64) float64 {
-	if !(halfLife > 0 && halfLife <= MaxHalfLifeDays) {
-		halfLife = DefaultHalfLifeDays
-	}
-	fresh := 0.0
-	if ageDays >= 0 {
-		fresh = math.Exp2(-float64(ageDays) / halfLife)
-	}
-	return round1(clamp(relevance, 0, 100) * (0.5 + 0.5*fresh))
-}
+// MaxHalfLifeDays bounds the half-life a caller may ask for.
+const MaxHalfLifeDays = 365.0
 
 func clamp01(v float64) float64 { return clamp(v, 0, 1) }
 

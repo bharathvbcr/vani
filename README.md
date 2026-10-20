@@ -250,9 +250,12 @@ flowchart TD
   and a relevance score with its basis. Display-only: they sort and plot, and never drop a role.
   - Freshness is the board's posted date. Greenhouse's comes from `first_published`. A board with
     no date falls back to when Vani first saw the role, and that fallback is marked approximate.
-  - Relevance (0-100) comes from DevPrism's rank, or triage's role_fit when there is no rank,
-    plus overlap with the target summary's terms.
-  - Priority is relevance at most halved by age (`--half-life`, default 14 days).
+  - Relevance (0-100) and priority come from one ranker (`jobinsight.Score`, also the digest's
+    order): triage's role_fit, DevPrism's coverage, title signals, target-term overlap and
+    marks on the company, each unknown part taking a prior below "known good". `score_factors`
+    in the JSON lists the parts.
+  - Priority is relevance scaled by freshness (`--half-life`, default 7 days). A posting listed
+    in its board's first crawl with no posted date has an unknown age and gets the floor.
   - Keywords come from a deterministic, bounded extractor ([`internal/jobinsight`](internal/jobinsight)).
     It uses an embedded vocabulary with stop phrases ("Spark Capital" is not Spark). A term at
     least 90% of one company's postings repeat is that company's blurb, and is left out.

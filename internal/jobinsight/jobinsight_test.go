@@ -1,7 +1,6 @@
 package jobinsight
 
 import (
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -42,71 +41,6 @@ func TestAgeDays(t *testing.T) {
 	}
 	if got := AgeDays(now.Add(-49*time.Hour), now); got != 2 {
 		t.Errorf("49h: %d, want 2", got)
-	}
-}
-
-func TestRelevance(t *testing.T) {
-	r := func(v float64) *float64 { return &v }
-	nan := math.NaN()
-	cases := []struct {
-		name  string
-		rank  *float64
-		fit   string
-		hits  int
-		want  float64
-		basis Basis
-	}{
-		{"rank wins over fit", r(80), "mismatch_domain", 0, 60, BasisRank},
-		{"rank above 100 is clamped", r(130), "", 0, 75, BasisRank},
-		{"negative rank", r(-5), "", 0, 0, BasisRank},
-		{"NaN rank falls to fit", &nan, "strong_fit", 0, 63.8, BasisFit},
-		{"fit only", nil, "partial_fit", 0, 48.8, BasisFit},
-		{"unknown fit", nil, "bogus", 0, 26.3, BasisNone},
-		{"keywords lift", nil, "", 3, 42.1, BasisNone},
-		{"many keywords saturate below 100", r(100), "", 1000, 100, BasisRank},
-		{"negative hits", nil, "", -4, 26.3, BasisNone},
-	}
-	for _, c := range cases {
-		got, basis := Relevance(c.rank, c.fit, c.hits)
-		if got != c.want || basis != c.basis {
-			t.Errorf("%s: got %v %s, want %v %s", c.name, got, basis, c.want, c.basis)
-		}
-	}
-	// More target terms never lowers relevance.
-	prev := -1.0
-	for h := 0; h < 30; h++ {
-		v, _ := Relevance(nil, "adjacent", h)
-		if v < prev {
-			t.Fatalf("relevance fell from %v to %v at %d hits", prev, v, h)
-		}
-		prev = v
-	}
-}
-
-func TestPriority(t *testing.T) {
-	if got := Priority(80, 0, 14); got != 80 {
-		t.Errorf("fresh: %v, want 80", got)
-	}
-	if got := Priority(80, 14, 14); got != 60 {
-		t.Errorf("one half-life: %v, want 60", got)
-	}
-	if got := Priority(80, -1, 14); got != 40 {
-		t.Errorf("unknown age gets the floor: %v, want 40", got)
-	}
-	if got := Priority(80, 100000, 14); got != 40 {
-		t.Errorf("ancient: %v, want 40", got)
-	}
-	if got, def := Priority(80, 14, 0), Priority(80, 14, DefaultHalfLifeDays); got != def {
-		t.Errorf("bad half-life uses the default: %v vs %v", got, def)
-	}
-	if got := Priority(math.NaN(), 0, 14); got != 0 {
-		t.Errorf("NaN relevance: %v", got)
-	}
-	// Older never ranks higher at the same relevance.
-	for age := 1; age < 200; age++ {
-		if Priority(50, age, 14) > Priority(50, age-1, 14) {
-			t.Fatalf("priority rose with age at %d", age)
-		}
 	}
 }
 

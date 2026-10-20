@@ -94,7 +94,7 @@ func addSelectFlags(fs *flag.FlagSet, o *jobsOpts) {
 	fs.BoolVar(&o.orRemote, "or-remote", false, "with --state or --area, also keep jobs the board lists as remote (remote, or in these places)")
 	fs.IntVar(&o.maxAge, "max-age", 0, fmt.Sprintf("only jobs at most this many days old (0 = any, up to %d)", maxAgeDays))
 	fs.BoolVar(&o.open, "open", false, "leave out roles the board no longer lists")
-	fs.Float64Var(&o.halfLife, "half-life", jobinsight.DefaultHalfLifeDays, "days of age that halve a job's freshness bonus in priority")
+	fs.Float64Var(&o.halfLife, "half-life", jobinsight.DefaultScoreHalfLifeDays, "days of age that halve a job's freshness bonus in priority")
 	addFilterFlags(fs, &o.more)
 }
 
@@ -307,6 +307,9 @@ type insight struct {
 	// company's blurb terms, learned from those hits (learn).
 	hits   map[posting.Key][]jobinsight.Hit
 	boiler map[string]map[string]bool
+	// rc is the one ranking context (jobinsight.InputsFor) every job's score
+	// is built from; newInsight fills it.
+	rc jobinsight.RankContext
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -354,7 +357,44 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 		in.info.Target, in.info.TargetTerms = true, len(in.target)
 	}
 	in.learn(snap, m)
+	marked := make(map[posting.Key]marks.Mark, len(m))
+	for k, e := range m {
+		marked[k] = e.Mark
+	}
+	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
+	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
+	if err == nil {
+		if s := cfg.TitleSignals; len(s.Include) > 0 || len(s.Exclude) > 0 {
+			in.rc.TitleRank = s.Rank
+		}
+		for _, r := range cfg.DropRules {
+			in.rc.DropRules = append(in.rc.DropRules, jobinsight.DropRule{Slot: r.Slot, Values: r.Values})
+		}
+	}
 	return in, nil
+}
+
+// targetHits splits the distinct target terms a posting names into those its
+// title names and those only the rest of it names (a term in both counts once,
+// as a title term), with the company's blurb terms left out.
+func (in *insight) targetHits(r ledger.Record) (title, body int) {
+	boiler := in.boiler[strings.ToLower(strings.TrimSpace(r.Posting.Company))]
+	inTitle := map[string]bool{}
+	for _, h := range jobinsight.Without(in.vocab.Extract(r.Posting.Title), boiler) {
+		if in.target[h.Term] {
+			inTitle[h.Term] = true
+		}
+	}
+	whole, ok := in.hits[r.Key]
+	if !ok {
+		whole = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+	}
+	for _, h := range jobinsight.Without(whole, boiler) {
+		if in.target[h.Term] && !inTitle[h.Term] {
+			body++
+		}
+	}
+	return len(inTitle), body
 }
 
 func oneLine(s string, n int) string { return cleanText(s, n, false) }
@@ -363,13 +403,9 @@ func oneLine(s string, n int) string { return cleanText(s, n, false) }
 // keyword hits (for stats).
 func (in *insight) enrich(j *jobJSON, r ledger.Record, kwLimit int) []jobinsight.Hit {
 	locate(j, r.Posting)
-	at, src := jobinsight.Fresh(r.Posting.PostedAt, r.FirstSeen, in.now)
-	if !at.IsZero() {
-		j.FreshAt, j.FreshSrc = at, string(src)
-	}
-	age := jobinsight.AgeDays(at, in.now)
-	if age >= 0 {
-		j.AgeDays = &age
+	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
+		age := jobinsight.AgeDays(at, in.now)
+		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
 	}
 	hits, ok := in.hits[r.Key]
 	if !ok {
@@ -378,8 +414,8 @@ func (in *insight) enrich(j *jobJSON, r ledger.Record, kwLimit int) []jobinsight
 	hits = jobinsight.Without(hits, in.boiler[strings.ToLower(strings.TrimSpace(r.Posting.Company))])
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
-	j.Relevance, j.RelevanceBasis = jobinsight.Relevance(j.Rank, j.Triage["role_fit"], jobinsight.TargetHits(hits, in.target))
-	j.Priority = jobinsight.Priority(j.Relevance, age, in.halfLife)
+	res := jobinsight.Score(jobinsight.InputsFor(r, in.rc))
+	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
 	j.Reasons = parseReasons(j.Explanation)
 	j.Pay = jobinsight.ParsePay(r.Posting.Description)
 	return hits
@@ -501,7 +537,8 @@ func inSet(set map[string]bool, v string) bool {
 }
 
 // sortJobs orders a list. "default" is the original order: marked views by
-// when they were marked, the rest by rank, then triage fit, then first seen.
+// when they were marked, the rest by priority (jobinsight.Score), then rank,
+// triage fit, then first seen.
 // Every order ends on the key, so it is total and stable across calls.
 func sortJobs(sel []selected, view, by string) {
 	byMarkTime := by == "default" && (view == "saved" || view == "applied" || view == "hidden")
@@ -551,6 +588,9 @@ func sortJobs(sel []selected, view, by string) {
 		default:
 			if byMarkTime && !a.MarkedAt.Equal(b.MarkedAt) {
 				return a.MarkedAt.After(b.MarkedAt)
+			}
+			if a.Priority != b.Priority {
+				return a.Priority > b.Priority
 			}
 			if (a.Rank != nil) != (b.Rank != nil) {
 				return a.Rank != nil

@@ -85,6 +85,7 @@ type jobJSON struct {
 	Relevance      float64              `json:"relevance"`
 	RelevanceBasis jobinsight.Basis     `json:"relevance_basis,omitempty"`
 	Priority       float64              `json:"priority"`
+	ScoreFactors   []jobinsight.Factor  `json:"score_factors,omitempty"`
 	Keywords       []jobinsight.Keyword `json:"keywords,omitempty"`
 	Reasons        []reasonJSON         `json:"reasons,omitempty"`
 	// Places, RemoteListed and RemoteScope are what the board's location says
@@ -308,7 +309,7 @@ func (e *env) jobsShow(args []string) error {
 		if !ok {
 			return fmt.Errorf("jobs show: no posting %q in the ledger", k)
 		}
-		in, err := e.newInsight(jobinsight.DefaultHalfLifeDays, snap, m)
+		in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
 		if err != nil {
 			return err
 		}
@@ -385,7 +386,7 @@ func (e *env) jobsWrite(raw string, out *jobJSON, set func(string, posting.Key) 
 	if !ok {
 		return fmt.Errorf("jobs: no posting %q in the ledger", k)
 	}
-	in, err := e.newInsight(jobinsight.DefaultHalfLifeDays, snap, nil)
+	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, nil)
 	if err != nil {
 		return err
 	}

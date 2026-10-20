@@ -120,7 +120,7 @@ func TestJobsSeniorityCompanyTitleRelevanceFilters(t *testing.T) {
 		{[]string{"--exclude-company", "Globex,Initech"}, "gh:a:mid gh:a:low"},
 		{[]string{"--company", "acme", "--exclude-company", "acme"}, ""},
 		{[]string{"--exclude", "manager,STAFF"}, "gh:a:mid gh:a:low gh:b:gbp gh:c:hourly"},
-		{[]string{"--min-relevance", "50"}, "gh:a:mid gh:b:none gh:b:gbp"},
+		{[]string{"--min-relevance", "45"}, "gh:a:mid gh:b:none"}, // with fit unknown, coverage 90/80/70 scores 48/46/44
 		{[]string{"--seniority", "mid", "--min-salary", "150k"}, "gh:a:mid"},
 	} {
 		got := keys(listJSON(t, append([]string{"--view", "all"}, c.args...)...))
