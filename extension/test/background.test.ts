@@ -9,6 +9,8 @@ const g = globalThis as Record<string, unknown>;
 const saved = { chrome: g.chrome, browser: g.browser };
 let listener: Listener | undefined;
 let local: Record<string, unknown> = {};
+/** When set, chrome.storage.local.set rejects with this message (a browser whose extension storage cannot be written). */
+let localSetFails: string | null = null;
 const removed: Array<(tabId: number) => void> = [];
 /** What the background asked the (absent) Mac app, in order. */
 const nativeSent: object[] = [];
@@ -32,7 +34,10 @@ beforeAll(async () => {
     storage: {
       local: {
         get: async (k: string | string[]) => Object.fromEntries((Array.isArray(k) ? k : [k]).filter(x => x in local).map(x => [x, local[x]])),
-        set: async (items: Record<string, unknown>) => { local = { ...local, ...items }; },
+        set: async (items: Record<string, unknown>) => {
+          if (localSetFails) throw new Error(localSetFails);
+          local = { ...local, ...items };
+        },
         remove: async (k: string | string[]) => { for (const x of Array.isArray(k) ? k : [k]) delete local[x]; },
       },
       session: undefined,
@@ -79,6 +84,31 @@ describe("background router", () => {
     expect(r.replies.length).toBe(1);
     expect(r.replies[0]).toMatchObject({ mode: "browser" });
     expect(await ask({ type: "filled", keys: [] })).toEqual({ async: true, replies: [{ ok: true }] });
+  });
+});
+
+/** A basic as the popup sends it (test value only). */
+const cityBasic = { kind: "text", label: "City", name: "", autocomplete: "address-level2", automationId: "", options: [], required: false, value: ["Testville"] };
+
+describe("capture without the Mac app", () => {
+  test("a basics save lands in browser storage and is counted", async () => {
+    local = {};
+    const r = await ask({ type: "capture", host: "vani-basics", fields: [cityBasic] });
+    expect(r.replies[0]).toMatchObject({ added: 1, updated: 0, skippedSecret: 0 });
+  });
+
+  test("storage that refuses the write is an error that says where and why, not a silent count", async () => {
+    local = {};
+    localSetFails = "QuotaExceededError: storage is read-only";
+    try {
+      const r = await ask({ type: "capture", host: "vani-basics", fields: [cityBasic] });
+      const reply = r.replies[0] as { error?: string; added?: number };
+      expect(reply.added).toBeUndefined();
+      expect(reply.error).toContain("this browser did not save it (the Mac app is not reachable)");
+      expect(reply.error).toContain("storage is read-only");
+    } finally {
+      localSetFails = null;
+    }
   });
 });
 
@@ -184,6 +214,8 @@ describe("Mac app bank round trips", () => {
     /** Upcoming patches to refuse as a conflict, bumping the rev as a concurrent writer would. */
     conflicts: 0,
     failPatch: false,
+    /** Upserted rows the host screens out as secret on the next patch (it stores the rest). */
+    dropSecret: 0,
   };
   const ops = (): string[] => host.calls.map(c => String(c.op));
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -202,10 +234,12 @@ describe("Mac app bank round trips", () => {
         if (host.failPatch) return { error: "disk full" };
         if (host.conflicts > 0) { host.conflicts--; host.rev++; return { conflict: true, rev: host.rev }; }
         if (m.baseRev !== undefined && m.baseRev !== host.rev) return { conflict: true, rev: host.rev };
-        for (const a of m.upsert as Row[]) host.answers[a.key] = a;
+        const upsert = m.upsert as Row[];
+        const dropped = Math.min(host.dropSecret, upsert.length);
+        for (const a of upsert.slice(dropped)) host.answers[a.key] = a;
         for (const k of m.delete as string[]) delete host.answers[k];
         host.rev++;
-        return { rev: host.rev, droppedSecret: 0 };
+        return { rev: host.rev, droppedSecret: dropped };
       }
       default: return { error: "unknown op" };
     }
@@ -227,6 +261,7 @@ describe("Mac app bank round trips", () => {
     host.answers = { city: row("city", 2), zip: row("zip", 5), name: row("name", 0) };
     host.conflicts = 0;
     host.failPatch = false;
+    host.dropSecret = 0;
     await ask({ type: "deleteAnswer", key: "nothing-here" }); // any write drops the memo
     host.calls.length = 0;
   }
@@ -304,6 +339,27 @@ describe("Mac app bank round trips", () => {
     const r = await ask({ type: "filled", keys: ["city"] });
     expect(r.replies).toEqual([{ ok: false, error: "fill counts were not saved" }]);
     expect(host.answers.city!.fills).toBe(2);
+  });
+
+  test("a basics save the Mac app refuses is an error naming the Mac app and its reason", async () => {
+    await reset();
+    host.failPatch = true;
+    const reply = (await ask({ type: "capture", host: "vani-basics", fields: [cityBasic] })).replies[0] as { error?: string; added?: number };
+    expect(reply.added).toBeUndefined();
+    expect(reply.error).toContain("the Mac app did not save it");
+    expect(reply.error).toContain("disk full");
+  });
+
+  test("rows the Mac app drops as secret are not reported as saved", async () => {
+    await reset();
+    host.dropSecret = 1;
+    const reply = (await ask({ type: "capture", host: "vani-basics", fields: [cityBasic, { ...cityBasic, label: "Country", autocomplete: "country-name", value: ["Testland"] }] })).replies[0];
+    const r = reply as { added: number; updated: number; skippedSecret: number };
+    expect(r.skippedSecret).toBe(1);
+    expect(r.added + r.updated).toBe(1); // two sent, one stored
+    expect(r.added).toBe(0); // a dropped row comes off the added count first
+    expect(host.answers.country).toBeDefined(); // the host kept one of the two
+    expect(host.answers.city!.value).toEqual(["v"]); // and dropped the other: the old row stands
   });
 
   test("a key the bank no longer holds is not invented", async () => {

@@ -156,6 +156,17 @@ async function bumpFills(keys: string[]): Promise<void> {
   throw new Error("answer bank changed concurrently");
 }
 
+/**
+ * The Mac app screens every row again and drops the ones it classifies as secret. Those were counted
+ * as saved here; move them to skippedSecret (from added first, then updated) so the reply never
+ * claims a row the bank does not hold.
+ */
+function refusedByApp(counts: Omit<CaptureResult, "bank">, dropped: number): Omit<CaptureResult, "bank"> {
+  const n = Math.max(0, Math.min(dropped, counts.added + counts.updated));
+  const fromAdded = Math.min(n, counts.added);
+  return { ...counts, added: counts.added - fromAdded, updated: counts.updated - (n - fromAdded), skippedSecret: counts.skippedSecret + n };
+}
+
 async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.type) {
     case "getBank": {
@@ -165,17 +176,24 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "capture": {
       if (!Array.isArray(msg.fields) || msg.fields.length > 500 || typeof msg.host !== "string") return { error: "bad capture" };
       let result: Omit<CaptureResult, "bank"> | undefined;
-      if (await storageMode() === "mac-app") {
-        const b = await loadBank({ fresh: true }); // the delta is computed against this: never a window-old copy
-        const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date());
-        result = delta.counts;
-        await patchAnswers(delta.upsert, delta.deleteKeys);
-      } else {
-        await update(b => {
-          const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
-          result = counts;
-          return bank;
-        });
+      const mode = await storageMode();
+      try {
+        if (mode === "mac-app") {
+          const b = await loadBank({ fresh: true }); // the delta is computed against this: never a window-old copy
+          const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date());
+          const { droppedSecret } = await patchAnswers(delta.upsert, delta.deleteKeys);
+          result = refusedByApp(delta.counts, droppedSecret);
+        } else {
+          await update(b => {
+            const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
+            result = counts;
+            return bank;
+          });
+        }
+      } catch (e) {
+        // Say which store refused: "Mac app" and "this browser" fail for different reasons and are fixed in different places.
+        const where = mode === "mac-app" ? "the Mac app did not save it" : "this browser did not save it (the Mac app is not reachable)";
+        throw new Error(`${where}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
       }
       if (result) void logActivity({ event: "capture", host: msg.host, counts: { ...result } });
       return result;

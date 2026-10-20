@@ -5,7 +5,7 @@ import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./message
 import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
-import { BASICS, BASICS_HOST, basicsFields, basicsValues } from "./basics";
+import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
 import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
 import { type IngestSource, describeIngest, prepareIngest } from "./ingest";
@@ -473,30 +473,45 @@ function renderBasics(): void {
   if (selfIdBox) selfIdBox.hidden = !current?.settings.captureSelfId;
 }
 
+let savingBasics = false;
+
 async function saveBasics(): Promise<void> {
+  if (savingBasics) return; // Enter and the button both save: one capture at a time
   const out = $("#basic-status");
+  const button = $<HTMLButtonElement>("#basic-save");
+  const values: Record<string, string> = {};
+  for (const b of BASICS) {
+    const el = basicInput(b.id);
+    if (el) values[b.id] = el.value;
+  }
+  const fields = basicsFields(values, basicsValues(current));
+  if (fields.length === 0) {
+    if (out) out.textContent = "Nothing new to save.";
+    toast("No changes in basics.");
+    return;
+  }
+  savingBasics = true;
+  if (button) button.disabled = true;
+  if (out) out.textContent = "Saving basics...";
+  let reply: unknown;
   try {
-    const values: Record<string, string> = {};
-    for (const b of BASICS) {
-      const el = basicInput(b.id);
-      if (el) values[b.id] = el.value;
-    }
-    const fields = basicsFields(values, basicsValues(current));
-    if (fields.length === 0) {
-      if (out) out.textContent = "Nothing new to save.";
-      toast("No changes in basics.");
-      return;
-    }
-    if (out) out.textContent = "Saving basics...";
-    const r = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
-    if (!r || !("added" in r)) throw new Error((r && "error" in r && r.error) || "no reply from the extension");
-    basicsTyped = false;
-    if (out) out.textContent = `Saved ${r.added + r.updated}` + (r.skippedSecret ? `; ${r.skippedSecret} refused as sensitive` : "") + ".";
-    toast(`Saved ${r.added + r.updated} basics.`);
+    reply = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
+  } catch (e) {
+    reply = { error: friendlyError(e, "the extension did not answer").detail || "the extension did not answer" };
+  } finally {
+    savingBasics = false;
+    if (button) button.disabled = false;
+  }
+  const o = basicsSaveOutcome(reply);
+  if (out) out.textContent = o.status;
+  toast(o.toast);
+  if (!o.saved) return; // what was typed stays in the boxes for another try
+  basicsTyped = false;
+  // The save landed; a failure to redraw from the bank is reported as that, not as a failed save.
+  try {
     await refresh();
   } catch (e) {
-    if (out) out.textContent = `Could not save: ${e instanceof Error ? e.message : String(e)}`;
-    toast("Failed to save basics.");
+    if (out) out.textContent = `${o.status} The list could not be redrawn: ${friendlyError(e).line}`;
   }
 }
 
