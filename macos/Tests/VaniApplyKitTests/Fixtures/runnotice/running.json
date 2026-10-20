@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "state": "running",
+  "started_at": "2026-10-14T16:41:40Z",
+  "counts_before": {
+    "digested": 300,
+    "live": 40
+  },
+  "counts_after": {
+    "digested": 312,
+    "live": 28
+  },
+  "notice": {
+    "v": 1,
+    "announce": false,
+    "reason": "the run is still going"
+  }
+}

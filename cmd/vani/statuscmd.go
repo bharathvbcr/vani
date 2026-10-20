@@ -128,6 +128,9 @@ type lastRunFacet struct {
 	CountsAfter    map[string]int `json:"counts_after,omitempty"`
 	// Semantic is the run's knowledge-base warm (runRecord.Semantic).
 	Semantic *semanticReport `json:"semantic,omitempty"`
+	// Notice is what the Mac app announces for this run (decideNotice): the
+	// app posts it and decides nothing about it.
+	Notice *noticeFacet `json:"notice,omitempty"`
 	// Advance and BackendErrors: what the cap left waiting, and why decision
 	// backends failed (runDetail).
 	runDetail
@@ -200,6 +203,8 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 		// another tool writing this ledger.
 		out.LastRun.Reason = fmt.Sprintf("no run record, but the ledger holds %d postings from earlier runs that kept none", out.Ledger.Total)
 	}
+	notice := decideNotice(out.LastRun, at, time.Local)
+	out.LastRun.Notice = &notice
 	out.Schedule = scheduleOf(cfg, cfgErr, at)
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)

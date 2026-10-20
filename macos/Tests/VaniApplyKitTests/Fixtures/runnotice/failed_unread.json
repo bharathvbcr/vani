@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "state": "failed",
+  "started_at": "2026-10-14T16:41:40Z",
+  "finished_at": "2026-10-14T16:46:40Z",
+  "stage": "pipeline",
+  "counts_before": {
+    "digested": 300,
+    "live": 40
+  },
+  "counts_after": {
+    "digested": 312,
+    "live": 28
+  },
+  "notice": {
+    "v": 1,
+    "announce": true,
+    "title": "Vani run failed",
+    "body": "No decision backend could read the postings; they stay live for the next run. Run vani status for details.",
+    "thread_id": "vani-run-2026-10-14",
+    "key": "run-1791996100000"
+  },
+  "advance": {
+    "eligible": 9,
+    "limit": 9,
+    "attempted": 5,
+    "unread": 5,
+    "failed": 0,
+    "deferred": 4,
+    "stopped": "unread_streak"
+  }
+}
