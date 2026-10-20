@@ -259,7 +259,7 @@ func TestNearDupDeadlineIsReportedAsPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a deadline is a partial run, not an error: %v", err)
 	}
-	if !rep.Partial || rep.Examined != 0 || rep.Records != 2 || rep.Written != 0 || !reflect.DeepEqual(l.All(), before) {
+	if !rep.Partial || rep.PartialInSimilarity || rep.Examined != 0 || rep.Records != 2 || rep.Written != 0 || !reflect.DeepEqual(l.All(), before) {
 		t.Fatalf("report %+v", rep)
 	}
 	// Run to completion the same ledger is not partial, and the duplicate lands.

@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/semantic"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 // Semantic matching only orders and explains postings (Rule 7): nothing here
@@ -44,6 +45,61 @@ var semanticModelPrefix = func(cfg config.Config) string {
 }
 
 func semanticDir(stateDir string) string { return filepath.Join(stateDir, "semantic") }
+
+// nearDupLoadTimeout bounds loading the model for the near-duplicate stage.
+// The load sits outside the stage's own deadline (pipeline.NearDupDeadline).
+// Tests shorten it.
+var nearDupLoadTimeout = 2 * time.Minute
+
+// nearDupSimilarity is the near-duplicate stage's optional second opinion: the
+// cosine of two candidate postings' title and first kilobyte of description
+// (semantic.NewTitledSimilarity, docs/SIMILARITY.md), and a finish func that
+// saves the vector cache once and closes the model. Call finish after the
+// stage, whatever the stage returned.
+//
+// With semantic matching off or a model that will not load, sim is nil: the
+// stage then runs on shingles alone and its report says the similarity was not
+// configured, so a reading that could not be taken never looks like one that
+// was. A load failure is a warning line, never a failed run. An unusable
+// vector cache is rebuilt, and failing that the cosine runs uncached.
+func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context, string, string) (float64, bool, error), finish func()) {
+	finish = func() {}
+	if !w.cfg.SemanticOn() || ctx.Err() != nil {
+		return nil, finish
+	}
+	lctx, cancel := context.WithTimeout(ctx, nearDupLoadTimeout)
+	emb, closeEmb, err := openEmbedder(lctx, w.cfg)
+	cancel()
+	if err != nil {
+		w.warnf("near-duplicate cosine off, shingles only: %s", oneLine(err.Error(), 200))
+		return nil, finish
+	}
+	dir := semanticDir(w.stateDir)
+	cache, err := semantic.OpenVectorCache(dir, 0)
+	if errors.Is(err, semantic.ErrCache) { // a cache holds nothing the model cannot recompute
+		if rerr := semantic.ResetVectorCache(dir); rerr == nil {
+			cache, err = semantic.OpenVectorCache(dir, 0)
+		}
+	}
+	if err != nil {
+		cache = nil // no caching this run; the cosine still works
+		w.warnf("near-duplicate vector cache off: %s", oneLine(err.Error(), 200))
+	}
+	titles := semantic.NewTitleIndex()
+	for _, r := range w.led.All() {
+		titles.Add(r.Posting.Title, srcutil.SourceText(r.Posting.Description)) // the text the stage hands sim
+	}
+	return semantic.NewTitledSimilarity(emb, cache, titles), func() {
+		if cache != nil {
+			if err := cache.Save(); err != nil {
+				w.warnf("near-duplicate vector cache not saved: %s", oneLine(err.Error(), 200))
+			}
+		}
+		if closeEmb != nil {
+			_ = closeEmb()
+		}
+	}
+}
 
 // semanticProfile cuts the configured bank into the profile to embed.
 func semanticProfile(cfg config.Config) (semantic.Profile, error) {

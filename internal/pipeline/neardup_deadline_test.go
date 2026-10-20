@@ -37,16 +37,19 @@ func TestNearDupDeadlineCostsTheOldestPostings(t *testing.T) {
 	older := ndAdd(t, l, "2", "Acme", "Engineer", "Remote", shares(80, 100), t0.Add(time.Minute)) // a candidate of old
 	first := ndAdd(t, l, "3", "Globex", "Designer", "Remote", jd2, t0.Add(2*time.Minute))
 	newest := ndAdd(t, l, "4", "Globex", "Designer", "Remote", jd2, t0.Add(3*time.Minute)) // a duplicate of first
-	// The similarity reading of `older`'s candidate pair uses up the deadline.
+	// The similarity reading of `older`'s candidate pair ignores its budget and
+	// outruns the stage's deadline: the one cut the budget cannot prevent.
+	const deadline = 200 * time.Millisecond
 	rep := annotate(t, l, t1, NearDupOptions{
-		Deadline: 200 * time.Millisecond,
+		Deadline: deadline,
 		Similarity: func(ctx context.Context, a, b string) (float64, bool, error) {
-			<-ctx.Done()
+			time.Sleep(deadline + 50*time.Millisecond)
 			return 0, false, ctx.Err()
 		},
 	})
 	// Decided: newest and first, and old, which `older` needed before it was cut.
-	if !rep.Partial || rep.Examined != 3 || rep.Records != 4 || rep.Written != 1 || rep.SimilarityErrors != 0 {
+	if !rep.Partial || !rep.PartialInSimilarity || rep.Examined != 3 || rep.Records != 4 || rep.Written != 1 ||
+		rep.SimilarityErrors != 0 || rep.SimilaritySkipped != 0 {
 		t.Fatalf("report %+v", rep)
 	}
 	wantDuplicate(t, l, newest, first)

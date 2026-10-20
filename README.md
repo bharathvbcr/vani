@@ -514,12 +514,34 @@ It is on when both keys are set, and off otherwise:
   `google/embeddinggemma-2` (the `snapshots/<revision>` folder, not the repository root).
   `warm_per_run` (default 1000, at most 5000) bounds the postings one daily run embeds.
 - The model runs in-process on Metal through Tessl, so it needs a build with `-tags tessl` on
-  darwin/arm64 and the Tessl engine archive. Build the archive once with
-  `make -C go engine` in the tessl repo
-  (`/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a` must exist), then
-  `go build -tags tessl -o build/vani ./cmd/vani`. `macos/scripts/bundle.sh` adds the tag by itself
-  when it runs on Apple silicon and finds the archive. Linking prints `ld: warning` lines about a
-  duplicate `-lgusset`; they are harmless.
+  darwin/arm64 (cgo on, Xcode command line tools) and the Tessl engine archive. No `CGO_*` flag is
+  set by hand: the tessl binding's own `#cgo LDFLAGS` link
+  `/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a` and the Metal frameworks.
+  Build the archive once (and again when the tessl or gusset checkout changes), then build vani:
+
+  ```bash
+  make -C /Users/bharath/Code/research/tessl/go engine
+  go -C /Users/bharath/Code/apps/Vani build -tags tessl -trimpath -o build/vani ./cmd/vani
+  build/vani semantic status    # "this binary has the Tessl engine: yes"
+  ```
+
+  Go's build cache keys a cgo package on the text of its flags, not on the archive's bytes, so after
+  **rebuilding** the archive, name its hash the way tessl's Makefile does (otherwise Go may relink the
+  old engine): `CGO_CFLAGS="-DTESSL_ENGINE_SHA=$(shasum -a 256
+  /Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a | cut -c1-16)"` in front of
+  the `go build`. go.mod's `replace` for `github.com/bharathvbcr/tessl/go` is the relative
+  `../../research/tessl/go`, right for the main checkout; in a git worktree the ignored `go.work`
+  needs `replace github.com/bharathvbcr/tessl/go v0.0.0 => /Users/bharath/Code/research/tessl/go`.
+  Linking prints `ld: warning` lines about a duplicate `-lgusset`; they are
+  harmless.
+
+  To install it for the Mac app (which calls `Contents/Helpers/vani`), rebuild the bundle:
+  `macos/scripts/bundle.sh` adds the tag by itself on Apple silicon when the archive exists, or
+  `VANI_CLI_BINARY=/Users/bharath/Code/apps/Vani/build/vani macos/scripts/bundle.sh` reuses the
+  binary above. Check the installed helper with
+  `"…/Vani Apply.app/Contents/Helpers/vani" semantic status`. The same binary answers
+  `vani answers similar` (the merge sheet's similar-wording pass) and the near-duplicate cosine;
+  see [docs/SIMILARITY.md](docs/SIMILARITY.md).
 - **Without the tag** (or with no snapshot, or a snapshot that will not load) the daily run still
   succeeds and writes the digest; its run record (`vani status --json`, `last_run.semantic`) and
   stderr say `semantic matching not run: <reason>`, and `vani jobs` carries no `semantic` field.

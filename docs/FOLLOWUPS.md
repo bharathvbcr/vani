@@ -220,10 +220,28 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - **Cutoffs:** "likely" at 0.95 and "possible" at 0.88, measured on 106 labelled pairs with no
     false merge at "likely".
   - **Adapter:** the near-dup cosine adapter embeds the title too.
-  - **Merge order:** rank-relevance, then that branch, then the wiring described in its
-    `docs/SIMILARITY.md`.
-  - **Until it merges,** the Answers page says similar-wording grouping is unavailable, and
-    `NearDupOptions.Similarity` is nil.
+  - **Merged** on `claude/wonderful-hawking-3e840a`: rank-relevance, then that branch, then main,
+    then the wiring. `runOnce` passes `nearDupSimilarity` (`cmd/vani/semanticwire.go`) as
+    `NearDupOptions.Similarity`. With semantic matching off, a model that will not load, or a
+    build without `-tags tessl`, it is nil and the stage runs on shingles alone
+    (`neardupsim_test.go`). Until that branch reaches main, the Answers page says
+    similar-wording grouping is unavailable.
+  - **Done (branch `claude/neardup-sim-budget`, on top of `claude/wonderful-hawking-3e840a`):** a
+    slow cosine (a cold vector cache) no longer spends the stage's 2 s deadline. The readings
+    share a budget of their own, `NearDupSimilarityShare` (half) of the deadline, and a breaker
+    stops them after `NearDupSimilarityBreaker` (3) errors in a row. Pairs past either are left
+    without a reading and counted (`SimilaritySkipped`, `SimilarityBudgetSpent`,
+    `SimilarityBreakerOpen`); the shingle pass finishes, with the outcomes of a run without the
+    cosine (`neardup_simbudget_test.go`). A cut from the stage's own deadline is `Partial` as
+    before, and `PartialInSimilarity` says whether it came during a reading.
+  - **Open:** the budget protects the shingle pass only from the cosine's share. A shingle pass
+    that needs more than the other half of the deadline can still be cut during a reading
+    (`PartialInSimilarity`). How long the shingle pass alone takes on a large ledger is not
+    measured yet.
+  - **Open:** a daily run loads the model up to three times: near-dup, the warm before the advance
+    phase, and the warm before the digest. Each load takes 1-2.5 s.
+  - **Open:** the cosine only reads pairs the shingles already found (overlap at least 0.60). A
+    reworded re-post under that overlap gets no annotation.
 - **Near-dup audit** (build/rsi-bench-state ledger copy, 2,639 live records):
   - Before the fix, 70 shingle Duplicates were written, 43 of them with different raw titles.
     Most were different jobs on one templated JD:

@@ -246,11 +246,9 @@ func (w *wired) runOnce(ctx context.Context) error {
 	if boards.Configured > 0 && boards.Read == 0 {
 		return errors.New("no board could be read")
 	}
-	nd, err := pipeline.AnnotateNearDuplicates(ctx, w.led, time.Now(), pipeline.NearDupOptions{Protected: protect})
-	if err != nil {
-		return fmt.Errorf("near-duplicates: %w", err)
+	if _, err := w.annotateNearDups(ctx, protect, time.Now()); err != nil {
+		return err
 	}
-	w.warnf("near-duplicates: %+v", nd)
 	// Company icons for the Jobs list: bounded, and warn-only.
 	w.refreshLogos(ctx)
 	if ctx.Err() != nil {
@@ -265,6 +263,21 @@ func (w *wired) runOnce(ctx context.Context) error {
 	w.warnShadowErrors(runner)
 	w.warnShadowSample(runner)
 	return err
+}
+
+// annotateNearDups runs the near-duplicate stage over the ledger, with the
+// embedding cosine as its optional second opinion (nearDupSimilarity). The
+// shingle rules decide every status; the cosine is only an annotation, and
+// without it the stage is the shingle stage alone.
+func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) bool, now time.Time) (pipeline.NearDupReport, error) {
+	sim, finish := w.nearDupSimilarity(ctx)
+	nd, err := pipeline.AnnotateNearDuplicates(ctx, w.led, now, pipeline.NearDupOptions{Protected: protect, Similarity: sim})
+	finish() // saves the vector cache once, whatever the stage returned
+	if err != nil {
+		return nd, fmt.Errorf("near-duplicates: %w", err)
+	}
+	w.warnf("near-duplicates: %+v", nd)
+	return nd, nil
 }
 
 // startRun readies what one pass over the ledger needs to triage: the egress
