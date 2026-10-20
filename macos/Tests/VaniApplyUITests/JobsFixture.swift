@@ -47,6 +47,7 @@ struct JobsFixture {
             *) exec cat "$d/list.json" ;;
             esac ;;
         "jobs stats") exec cat "$d/stats.json" ;;
+        "jobs gaps") exec cat "$d/gaps.json" ;;
         "jobs show")
             for last; do :; done
             case "$last" in fx:*) exec cat "$d/show-$last.json" ;; esac ;;
@@ -63,7 +64,23 @@ struct JobsFixture {
         try write("list-fresh.json", page(Self.freshOrder.compactMap { byKey[$0] }))
         try write("list-strong.json", page(Self.strongOrder.compactMap { byKey[$0] }))
         try write("stats.json", stats())
+        try Data(Self.gapsReply.utf8).write(to: dir.appendingPathComponent("gaps.json"))
         for r in Self.roles { try write("show-\(r.key).json", job(r)) }
+    }
+
+    /// `vani jobs gaps --json` over the four roles: DevPrism-found gaps first.
+    static let gapsReply = """
+    {"view":"new","roles":4,"with_missing":2,"target_known":true,"total_gaps":3,"gaps":[\
+    {"term":"Kubernetes","cat":"infra","roles":2,"missing":2,"weight":90.5,"missing_weight":90.5,"companies":2,\
+    "examples":[{"key":"fx:alpha:1","company":"Alpha Labs","title":"Platform Engineer"},{"key":"fx:gamma:3","company":"Gamma Works","title":"Site Reliability Engineer"}]},\
+    {"term":"Terraform","cat":"infra","roles":1,"missing":0,"weight":30,"missing_weight":0,"companies":1,\
+    "examples":[{"key":"fx:delta:4","company":"Delta Tools","title":"Backend Engineer"}]}],\
+    "insight":{"target":true,"target_terms":5},"ledger":"/l","records":4}
+    """
+
+    /// Replaces what the fake `vani jobs gaps` answers.
+    func setGapsReply(_ json: String) throws {
+        try Data(json.utf8).write(to: dir.appendingPathComponent("gaps.json"))
     }
 
     func calls() -> [String] {

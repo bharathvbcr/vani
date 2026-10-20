@@ -83,6 +83,10 @@ commands:
                              record what you did with a role (state dir marks/, never the ledger)
   jobs note [--json] KEY TEXT
                              a private note on a role ("" clears it); never sent to a model
+  jobs gaps [--json] [-n N] [--examples N] [same selection flags as list]
+                             skills to build: what the selected roles ask for that DevPrism found
+                             missing (ranked first) or your target summary does not name, by the
+                             priority of the roles each blocks; display-only
   retriage [--dry-run] [--title-drops]
                              return postings triaged with no backend reading to live; with
                              --title-drops, postings dropped on a title the current

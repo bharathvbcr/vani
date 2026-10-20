@@ -41,6 +41,11 @@ final class JobsModel {
     /// Distributions over the selection, loaded with the list while Insights is open.
     private(set) var stats: JobsStats?
     private(set) var statsError: String?
+    /// "Skills to build" (`vani jobs gaps`) over the same selection, loaded with the stats.
+    /// Display-only: nothing here reaches the list. Cleared when a reload fails, so a
+    /// failure never sits under another selection's skills.
+    private(set) var gaps: JobsGaps?
+    private(set) var gapsError: String?
     private(set) var loading = false
     private(set) var error: String?
     /// The selected job as `vani jobs show` returned it (with its description).
@@ -98,7 +103,10 @@ final class JobsModel {
         async let counted: Result<JobsStats, Error>? = wantStats
             ? Task.detached(priority: .utility) { Result { try c.stats(v, query: q, filter: f) } }.value
             : nil
-        let (result, statsResult) = await (listed, counted)
+        async let gapped: Result<JobsGaps, Error>? = wantStats
+            ? Task.detached(priority: .utility) { Result { try c.gaps(v, query: q, filter: f) } }.value
+            : nil
+        let (result, statsResult, gapsResult) = await (listed, counted, gapped)
         guard gen == listGeneration else { return } // a newer list superseded this one
         loading = false
         switch result {
@@ -114,6 +122,16 @@ final class JobsModel {
             statsError = nil
         case let .failure(err)?:
             statsError = String(describing: err)
+        case nil:
+            break
+        }
+        switch gapsResult {
+        case let .success(g)?:
+            gaps = g
+            gapsError = nil
+        case let .failure(err)?:
+            gaps = nil
+            gapsError = String(describing: err)
         case nil:
             break
         }
