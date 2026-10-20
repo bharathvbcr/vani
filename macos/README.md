@@ -186,16 +186,26 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      answered. Change the answer later in System Settings ▸ Notifications ▸ Vani Apply.
    - The wording is the daemon's fixed vocabulary (`cmd/vani/runnotice.go`). A run that ended
      `ok` and digested roles posts **Vani digest**: "N roles to review", plus how many postings
-     could not be read or scored. A `failed` run posts **Vani run failed**, and the body is chosen
-     by the stop reason (`unread_streak`/`none_read`, `fail_streak`/`none_advanced`), then by the
-     stage (`pipeline`, else digest). The run's error text, which can carry fetched URLs or page
-     content, never appears in a notification, and neither does anything personal.
-   - The digest's size is the run's net change in the ledger's `digested` count
-     (`counts_after` minus `counts_before`). A run whose count did not rise posts nothing. This is
-     a net figure, not the digest's size. In the same run, before the digest, reconcile can move
-     earlier digested postings out of `digested`: to `dead` when a board dropped them twice, or
-     to `live` when their description changed. Such a run shows too few roles, or posts nothing
-     on a day that did produce a digest. An exact count needs the digest's size in the run record.
+     could not be read or scored. A `failed` run's notice follows `failureNotice`'s order:
+     `last_run.cause` `ledger_fatal` posts **Vani stopped**, and `digest_held_back` posts **Vani
+     digest held back**. Otherwise the stop reason decides (`unread_streak`/`none_read`,
+     `fail_streak`/`none_advanced`) and then the stage `pipeline`, both as **Vani run failed**.
+     After those, `config_stale` posts **Vani config not reloaded**, and anything else gets "The
+     digest could not be finished." The daemon sets `cause` from the error's identity
+     (`runCause` in `cmd/vani/runrecord.go`), and both sides read that one code. No run records
+     `config_stale` yet: the per-run config re-read that raises `errConfigStale` is not wired
+     (2026-10-19), so the app maps the code for when it is. The run's error
+     text can carry fetched URLs or page content, so it never appears in a notification. Nothing
+     personal does either.
+   - The digest's size is `last_run.digest_roles`: the roles the run's digest listed. The daemon
+     records it whenever it wrote a digest, including a failed run that wrote one (a stale
+     config, or a ledger append that failed after the file was written). A digest of 0 roles
+     posts nothing.
+   - **Older vani.** A vani that records neither field gets the old mapping: the stage's text
+     for the three causes, and the run's net change in the ledger's `digested` count
+     (`counts_after` minus `counts_before`) as the digest's size. That net figure undercounts
+     when the same run's reconcile moved earlier digested postings to `dead` or `live`. An
+     unknown `cause` from a newer vani reads as the stage's text.
    - **Posts nothing:** a run that is still going, cancelled, interrupted, in a state this app does
      not know, or one that finished more than 36 hours ago (a backstop; the lock cutoff below
      already leaves earlier runs to the daemon). It also
@@ -206,15 +216,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      never repeats it. A crash at that moment loses one notice rather than posting it twice.
    - A day's notices share a thread (`vani-run-YYYY-MM-DD`, the run's local finish day), so they
      group together in Notification Center.
-   - **What the app cannot tell apart.** The daemon's notice also names a fatal ledger error
-     ("Vani stopped"), a digest held back because the Jobs marks could not be read, and a config
-     that could not be re-read. The run record carries no field for these: they show only in the
-     error text, which the app does not read. The app shows them as the stage's default ("The
-     pipeline stopped before the digest." or "The digest could not be finished."). For a stale
-     config that default is false. The run went on with the previous watchlist and wrote the
-     digest, but its outcome is `failed` at stage `digest`. So the app says the digest could not be
-     finished and posts no digest notice. Telling these cases apart needs a cause code in the run
-     record.
+   - **One notice per run.** The daemon can post two for one run: a stale-config run that wrote
+     its digest gets **Vani digest** from `publishDigest`, then **Vani config not reloaded**. The
+     app posts one notice per run, the failure, so that run's digest notice is not posted. The
+     digest file is still written.
    - **The daemon is the fallback.** While the app runs, it holds an exclusive `flock` on
      `<state_dir>/app/notifier.lock`, where `state_dir` is the folder `vani status` reports. The
      daemon's notifier (`notify.UnlessHeld`, wired in `cmd/vani/wire.go`) tests that lock before
@@ -304,8 +309,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - The appex is sandboxed and every piece carries the App Group entitlement.
   - The appex's `LC_MAIN` entry is the `_NSExtensionMain` stub, and its principal class is
     `SafariWebExtensionHandler`.
-  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage
-    and stop reason maps to a notice, and that error text stays out. They also cover missing,
+  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage,
+    stop reason and cause code maps to a notice, in `failureNotice`'s order. They cover
+    `digest_roles` over the counts' difference, the fallback when a vani records neither, and
+    that error text stays out, even text that names a cause. They also cover missing,
     corrupt and unreadable records, and that a run is announced once, including across a
     relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
     refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers

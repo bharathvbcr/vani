@@ -68,6 +68,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         /// Where a failed run stopped: pipeline or digest.
         public var stage: String?
         public var error: String?
+        /// A failed run's cause code; nil when the run had none of the known
+        /// ones, or from a vani that does not record it.
+        public var cause: Cause?
+        /// How many roles the run's digest listed; nil when no digest was
+        /// written, or from a vani that does not record it.
+        public var digestRoles: Int?
         public var postingsBefore: Int?
         public var postingsAfter: Int?
         public var countsBefore: [String: Int]?
@@ -80,7 +86,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var backendErrors: BackendErrors?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, state, stage, error, advance
+            case ok, reason, state, stage, error, cause, advance
+            case digestRoles = "digest_roles"
             case startedAt = "started_at"
             case finishedAt = "finished_at"
             case durationSec = "duration_sec"
@@ -101,6 +108,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             durationSec = try c.decodeIfPresent(Double.self, forKey: .durationSec)
             stage = try c.decodeIfPresent(String.self, forKey: .stage)
             error = try c.decodeIfPresent(String.self, forKey: .error)
+            cause = try c.decodeIfPresent(String.self, forKey: .cause).flatMap { $0.isEmpty ? nil : Cause(raw: $0) }
+            digestRoles = try c.decodeIfPresent(Int.self, forKey: .digestRoles)
             postingsBefore = try c.decodeIfPresent(Int.self, forKey: .postingsBefore)
             postingsAfter = try c.decodeIfPresent(Int.self, forKey: .postingsAfter)
             countsBefore = try c.decodeIfPresent([String: Int].self, forKey: .countsBefore)
@@ -111,9 +120,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
                     durationSec: Double? = nil, stage: String? = nil, error: String? = nil,
+                    cause: Cause? = nil, digestRoles: Int? = nil,
                     postingsBefore: Int? = nil, postingsAfter: Int? = nil,
                     countsBefore: [String: Int]? = nil, countsAfter: [String: Int]? = nil,
                     advance: Advance? = nil, backendErrors: BackendErrors? = nil) {
+            self.cause = cause
+            self.digestRoles = digestRoles
             self.countsBefore = countsBefore
             self.countsAfter = countsAfter
             self.advance = advance
@@ -128,6 +140,28 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             self.error = error
             self.postingsBefore = postingsBefore
             self.postingsAfter = postingsAfter
+        }
+
+        /// Why a failed run failed, when vani names it (cmd/vani/runrecord.go
+        /// runCause): set from the error's identity, never its text.
+        public enum Cause: Equatable, Sendable {
+            /// The ledger could not be written safely, so the daemon stopped.
+            case ledgerFatal
+            /// The Jobs marks could not be read, so the digest was held back.
+            case digestHeldBack
+            /// The config could not be re-read; the run used the previous watchlist.
+            case configStale
+            /// A cause a newer vani adds: worded as the stage's default.
+            case unknown(String)
+
+            init(raw: String) {
+                switch raw {
+                case "ledger_fatal": self = .ledgerFatal
+                case "digest_held_back": self = .digestHeldBack
+                case "config_stale": self = .configStale
+                default: self = .unknown(raw)
+                }
+            }
         }
 
         /// Postings the run added to the ledger (a ledger-derived difference, not

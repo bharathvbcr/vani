@@ -16,9 +16,11 @@ private typealias Run = PipelineStatus.LastRun
 private typealias Advance = Run.Advance
 
 private func lastRun(_ state: Run.State, stage: String? = nil, error: String? = nil, ok: Bool = true, reason: String? = nil,
+                 cause: Run.Cause? = nil, digestRoles: Int? = nil,
                  digestedBefore: Int? = 300, digestedAfter: Int? = 312, advance: Advance? = nil,
                  startedAt: Date? = started, finishedAt: Date? = finished) -> Run {
     Run(ok: ok, reason: reason, state: state, startedAt: startedAt, finishedAt: finishedAt, stage: stage, error: error,
+        cause: cause, digestRoles: digestRoles,
         countsBefore: digestedBefore.map { ["digested": $0, "live": 40] },
         countsAfter: digestedAfter.map { ["digested": $0, "live": 28] },
         advance: advance)
@@ -100,6 +102,78 @@ final class RunNoticeTests: XCTestCase {
             XCTAssertEqual(n?.title, "Vani run failed", "\(r)")
             XCTAssertEqual(n?.body, body, "\(r)")
         }
+    }
+
+    func testCauseVocabulary() {
+        let see = " Run vani status for details."
+        let unread = Advance(eligible: 9, limit: 9, attempted: 5, unread: 5, deferred: 4, stopped: .unreadStreak)
+        let stopped = ("Vani stopped", "The ledger could not be written safely, so Vani stopped. See vani's log.")
+        let heldBack = ("Vani digest held back", "Your Jobs marks could not be read; see vani's log")
+        let stale = ("Vani config not reloaded", "The config file could not be read, so this run used the previous watchlist." + see)
+        let cases: [(Run, (String, String))] = [
+            (lastRun(.failed, stage: "digest", cause: .ledgerFatal), stopped),
+            // failureNotice's order: a fatal ledger outranks a stop reason and the stage.
+            (lastRun(.failed, stage: "pipeline", cause: .ledgerFatal, advance: unread), stopped),
+            (lastRun(.failed, stage: "digest", cause: .digestHeldBack), heldBack),
+            (lastRun(.failed, stage: "digest", cause: .digestHeldBack, advance: unread), heldBack),
+            (lastRun(.failed, stage: "digest", cause: .configStale), stale),
+            // A stale config ranks below the stop reason and a pipeline failure.
+            (lastRun(.failed, stage: "pipeline", cause: .configStale), ("Vani run failed", "The pipeline stopped before the digest." + see)),
+            (lastRun(.failed, stage: "digest", cause: .configStale, advance: unread),
+             ("Vani run failed", "No decision backend could read the postings; they stay live for the next run." + see)),
+            // A cause a newer vani adds reads as the stage's text.
+            (lastRun(.failed, stage: "digest", cause: .unknown("new_cause")), ("Vani run failed", "The digest could not be finished." + see)),
+            (lastRun(.failed, stage: "pipeline", cause: .unknown("new_cause")), ("Vani run failed", "The pipeline stopped before the digest." + see)),
+        ]
+        for (r, want) in cases {
+            let n = notice(r)
+            XCTAssertEqual(n?.title, want.0, "\(r)")
+            XCTAssertEqual(n?.body, want.1, "\(r)")
+        }
+    }
+
+    func testConfigStaleRunWithItsDigestWrittenIsNotADigestFailure() {
+        // The digest was written (digest_roles), but the run is failed at stage
+        // digest because the config could not be re-read.
+        let n = notice(lastRun(.failed, stage: "digest", cause: .configStale, digestRoles: 5))
+        XCTAssertEqual(n?.title, "Vani config not reloaded")
+        XCTAssertFalse(n?.body.contains("could not be finished") ?? true)
+        // An older vani records no cause: the stage's text, as before, even
+        // when the error text names the cause.
+        XCTAssertEqual(notice(lastRun(.failed, stage: "digest", error: "config reload failed; this run uses the previous watchlist",
+                                      digestRoles: 5))?.body,
+                       "The digest could not be finished. Run vani status for details.")
+    }
+
+    func testDigestRolesIsTheDigestsSize() {
+        // Reconcile moved 12 digested postings to dead in the same run: the
+        // ledger's digested count did not move, but the digest listed 12.
+        XCTAssertEqual(notice(lastRun(.ok, digestRoles: 12, digestedBefore: 300, digestedAfter: 300))?.body, "12 roles to review")
+        // And the other way: the count rose by 12, the digest listed 3.
+        XCTAssertEqual(notice(lastRun(.ok, digestRoles: 3))?.body, "3 roles to review")
+        XCTAssertEqual(skip(lastRun(.ok, digestRoles: 0)), "the digest listed no roles")
+        // Recorded with no ledger counts: the size is still known.
+        XCTAssertEqual(notice(lastRun(.ok, digestRoles: 1, digestedBefore: nil, digestedAfter: nil))?.body, "1 role to review")
+        // An older vani records none: the counts' difference, as before.
+        XCTAssertEqual(RunNotice.digestedRoles(lastRun(.ok)), 12)
+    }
+
+    func testDecodesCauseAndDigestRoles() throws {
+        func run(_ extra: String) throws -> Run {
+            let raw = Data(#"{"ok":true,"state":"failed","started_at":"2026-10-14T07:55:00Z","finished_at":"2026-10-14T08:00:00Z","stage":"digest"\#(extra)}"#.utf8)
+            return try JobsClient.decoder.decode(Run.self, from: raw)
+        }
+        let full = try run(#","cause":"config_stale","digest_roles":4"#)
+        XCTAssertEqual(full.cause, .configStale)
+        XCTAssertEqual(full.digestRoles, 4)
+        XCTAssertEqual(try run(#","cause":"ledger_fatal""#).cause, .ledgerFatal)
+        XCTAssertEqual(try run(#","cause":"digest_held_back""#).cause, .digestHeldBack)
+        XCTAssertEqual(try run(#","cause":"new_cause""#).cause, .unknown("new_cause"))
+        XCTAssertNil(try run(#","cause":"""#).cause)
+        let old = try run("")
+        XCTAssertNil(old.cause)
+        XCTAssertNil(old.digestRoles)
+        XCTAssertEqual(try run(#","digest_roles":0"#).digestRoles, 0)
     }
 
     func testErrorTextNeverReachesTheNotice() {

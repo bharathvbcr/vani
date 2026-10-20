@@ -140,7 +140,7 @@ func TestAnnounceFailureOutlivesTheRunContext(t *testing.T) {
 	n := notifyFunc(func(ctx context.Context) error { got = ctx.Err(); return nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	(&env{stderr: io.Discard}).announceFailure(ctx, &App{Notifier: n}, runRecord{Outcome: outcomeFailed, Stage: stageDigest}, errors.New("x"))
+	(&env{stderr: io.Discard}).announceFailure(ctx, &App{Notifier: n}, runRecord{Outcome: outcomeFailed, Stage: stageDigest})
 	if got != nil {
 		t.Errorf("notifier saw a cancelled context: %v", got)
 	}
@@ -172,10 +172,19 @@ func TestFailureNoticeTable(t *testing.T) {
 		{name: "nil error", rec: runRecord{Outcome: outcomeFailed}, title: "Vani run failed"},
 		{name: "cap is not a failure cause", rec: runRecord{Outcome: outcomeFailed, Stage: stageDigest, runDetail: runDetail{Advance: &advanceReport{Stopped: stopCap}}},
 			err: errors.New(leak), title: "Vani run failed"},
+		// The cause is the error's identity, never its text.
+		{name: "text naming a cause is no cause", rec: runRecord{Outcome: outcomeFailed, Stage: stageDigest},
+			err: errors.New(errConfigStale.Error() + "; " + errDigestHeldBack.Error()), title: "Vani run failed"},
+		{name: "fatal beats a stop reason", rec: runRecord{Outcome: outcomeFailed, Stage: stagePipeline, runDetail: runDetail{Advance: &advanceReport{Stopped: stopNoneRead}}},
+			err: fmt.Errorf("%w: x", daemon.ErrFatal), title: "Vani stopped"},
+		{name: "a stop reason beats a stale config", rec: runRecord{Outcome: outcomeFailed, Stage: stageDigest, runDetail: runDetail{Advance: &advanceReport{Stopped: stopNoneRead}}},
+			err: errConfigStale, title: "Vani run failed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			title, body, ok := failureNotice(c.rec, c.err)
+			rec := c.rec
+			rec.Cause = runCause(c.err)
+			title, body, ok := failureNotice(rec)
 			if ok == c.silent {
 				t.Fatalf("ok=%v for %s", ok, c.name)
 			}

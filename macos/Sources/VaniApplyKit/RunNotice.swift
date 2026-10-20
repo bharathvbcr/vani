@@ -73,10 +73,17 @@ extension RunNotice {
                                threadID: thread, key: key, finishedAt: finished))
     }
 
-    /// failureNotice's text for the cases the run record can tell apart. A run
-    /// stopped by a fatal ledger error, a held-back digest or a stale config is
-    /// not marked as such in the record, so it reads as the stage's default.
+    /// failureNotice's text, case for case and in its order. A vani that
+    /// records no cause (or one this app does not know) gets the stage's text.
     static func failure(_ run: PipelineStatus.LastRun) -> (String, String) {
+        switch run.cause {
+        case .ledgerFatal?:
+            return ("Vani stopped", "The ledger could not be written safely, so Vani stopped. See vani's log.")
+        case .digestHeldBack?:
+            return ("Vani digest held back", "Your Jobs marks could not be read; see vani's log")
+        default:
+            break
+        }
         switch run.advance?.stopped {
         case .unreadStreak?, .noneRead?:
             return ("Vani run failed", "No decision backend could read the postings; they stay live for the next run." + seeStatus)
@@ -88,12 +95,18 @@ extension RunNotice {
         if run.stage == "pipeline" {
             return ("Vani run failed", "The pipeline stopped before the digest." + seeStatus)
         }
+        if run.cause == .configStale {
+            return ("Vani config not reloaded", "The config file could not be read, so this run used the previous watchlist." + seeStatus)
+        }
         return ("Vani run failed", "The digest could not be finished." + seeStatus)
     }
 
-    /// Postings the run's digest marked digested: the run's own change in the
-    /// ledger's digested count. Nil when either end was not recorded.
+    /// The roles the run's digest listed, as vani recorded them (digest_roles).
+    /// A vani that does not record it gets the run's own change in the
+    /// ledger's digested count, which undercounts when the same run's reconcile
+    /// moved digested postings to dead or live. Nil when neither is known.
     static func digestedRoles(_ run: PipelineStatus.LastRun) -> Int? {
+        if let roles = run.digestRoles { return roles }
         guard let before = run.countsBefore, let after = run.countsAfter else { return nil }
         return (after["digested"] ?? 0) - (before["digested"] ?? 0)
     }

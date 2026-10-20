@@ -56,7 +56,7 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 		e.saveRunRecord(rec)
 		stage, err := stagePipeline, ledgerBroken(app.Ledger)
 		if err == nil {
-			stage, err = e.dailySteps(ctx, app, cfg)
+			stage, rec.DigestRoles, err = e.dailySteps(ctx, app, cfg)
 			if berr := ledgerBroken(app.Ledger); berr != nil {
 				err = errors.Join(err, berr)
 			}
@@ -75,9 +75,10 @@ func (e *env) dailyJob(app *App, cfg config.Config) daemon.Job {
 			rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
 		default:
 			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
+			rec.Cause = runCause(err)
 		}
 		e.saveRunRecord(rec)
-		e.announceFailure(ctx, app, rec, err)
+		e.announceFailure(ctx, app, rec)
 		return err
 	}
 }
@@ -96,19 +97,21 @@ func ledgerBroken(l ledger.Ledger) error {
 	return nil
 }
 
-// dailySteps is the run itself; stage names where it stopped when it fails.
-func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config) (stage string, err error) {
+// dailySteps is the run itself; stage names where it stopped when it fails,
+// and roles is the size of the digest it wrote (nil when it wrote none).
+func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config) (stage string, roles *int, err error) {
 	if app.RunOnce == nil {
-		return stagePipeline, errors.New("app has no pipeline runner")
+		return stagePipeline, nil, errors.New("app has no pipeline runner")
 	}
 	if err := app.RunOnce(ctx); err != nil {
-		return stagePipeline, fmt.Errorf("pipeline: %w", err)
+		return stagePipeline, nil, fmt.Errorf("pipeline: %w", err)
 	}
 	loc, err := scheduleLoc(cfg)
 	if err != nil {
-		return stageDigest, err
+		return stageDigest, nil, err
 	}
-	return stageDigest, e.publishDigest(ctx, app, now().In(loc), loc)
+	roles, err = e.publishDigest(ctx, app, now().In(loc), loc)
+	return stageDigest, roles, err
 }
 
 // saveRunRecord writes the record; a failure is a warning, never a failed run:
@@ -134,20 +137,25 @@ func scheduleLoc(cfg config.Config) (*time.Location, error) {
 // everything instead would show, and then consume, roles the user hid. The
 // pipeline's results are already in the ledger, so the roles are listed once
 // the store reads again.
-func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location) error {
+//
+// roles is how many roles the digest listed, set once the digest is written
+// (0 when nothing was new) and nil when it was not. A failure marking them
+// Digested still returns roles: the digest exists, and the run record says so.
+func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *time.Location) (roles *int, err error) {
 	if app.Ledger == nil {
-		return errors.New("app has no ledger")
+		return nil, errors.New("app has no ledger")
 	}
 	dir := marks.Dir(e.stateDir)
 	m, err := marks.ReadMarks(dir)
 	if err != nil {
-		return fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
+		return nil, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
 	recs := app.Ledger.All()
 	path, keys, err := digest.Write(e.stateDir, date, recs, m, countsFor(recs, date, loc))
 	if err != nil {
-		return err
+		return nil, err
 	}
+	n := len(keys)
 	var errs []error
 	for _, k := range keys {
 		ev := ledger.Event{V: 1, At: now(), Key: k, Status: posting.Digested, Reason: "digest " + date.Format("2006-01-02")}
@@ -165,7 +173,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}
-	return errors.Join(errs...)
+	return &n, errors.Join(errs...)
 }
 
 // countsFor derives the footer counts for the calendar day of date in loc from
@@ -226,7 +234,8 @@ func (e *env) cmdDigest(args []string) error {
 	defer app.close()
 	ctx, stop := signalContext()
 	defer stop()
-	return e.publishDigest(ctx, app, date, loc)
+	_, err = e.publishDigest(ctx, app, date, loc)
+	return err
 }
 
 func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
