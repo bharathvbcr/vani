@@ -17,11 +17,13 @@ const (
 	// DefaultNotesMinRelevance is the relevance floor for a "why this role" note.
 	// Relevance is jobinsight Result.Relevance, the age-free 0-100 number the
 	// Jobs views and the app show (not DevPrism coverage, which is exactly 0
-	// on about 22% of postings). Measured 2026-10-20 over the 2267 scored
-	// postings of the live ledger: median 9.6, p75 17.7, p80 21.4, p90 33.4;
-	// the floor 20 (about p78) admits 21.6% of them. Below it a posting is
+	// on about 22% of postings). Measured 2026-10-20 over the 2267 digested
+	// postings of the live ledger with the integrated ranking (confidence-
+	// weighted parts, one mismatch penalty): median 16.7, p75 29.3, p80 34.4,
+	// p90 47.9; the floor 32 (about p78) admits about 22% of them. (Under the
+	// pre-integration scoring the same share sat at 20.) Below it a posting is
 	// listed without a note; the digest's top is well above it.
-	DefaultNotesMinRelevance = 20.0
+	DefaultNotesMinRelevance = 32.0
 	// DefaultNotesDailyUSD is the notes' own daily cap, separate from
 	// decide.daily_usd.openrouter so notes can never starve triage; spent, notes
 	// wait for the next UTC day. Measured 2026-10-20 from the live ledger and
