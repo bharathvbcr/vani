@@ -36,6 +36,10 @@ const (
 	KindQuery Kind = "query"
 	// KindDocument embeds text as a document. Profile chunks use it.
 	KindDocument Kind = "document"
+	// KindSimilarity embeds text for symmetric pair similarity (the
+	// snapshot's "STS" prompt): near-duplicate postings, matching labels. An
+	// embedder whose model has no such prompt answers ErrUnavailable.
+	KindSimilarity Kind = "STS"
 )
 
 // Embedder turns texts into embedding rows. Implementations return one row per

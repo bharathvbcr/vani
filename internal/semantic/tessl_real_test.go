@@ -61,6 +61,77 @@ func TestTesslRealSynonyms(t *testing.T) {
 	}
 }
 
+// TestTesslRealBankOrders scores synthetic postings against the owner's real
+// bank (SEMANTIC_REAL_BANK=1, KBSYNC_BANK=<bank.json>). It prints counts and
+// scores only, never bank content.
+func TestTesslRealBankOrders(t *testing.T) {
+	if os.Getenv("SEMANTIC_REAL_BANK") != "1" {
+		t.Skip("set SEMANTIC_REAL_BANK=1 and KBSYNC_BANK to run against the real bank")
+	}
+	e := realTessl(t)
+	b, err := kbsync.Load(os.Getenv("KBSYNC_BANK"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ProfileFromBank(b, "Early-career software, ML or systems engineer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewMatcher(e, p, filepath.Join(t.TempDir(), "semantic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := []Doc{
+		{Key: "ml", Title: "Machine Learning Engineer", Description: "Train and deploy deep learning models. Requirements: Python, PyTorch, experience shipping models to production, GPU training."},
+		{Key: "swe", Title: "Software Engineer, Backend", Description: "Design APIs and distributed services. Requirements: a systems language, databases, cloud infrastructure, testing."},
+		{Key: "data", Title: "Data Analyst", Description: "Build dashboards and reports. Requirements: SQL, spreadsheets, stakeholder communication."},
+		{Key: "nurse", Title: "Registered Nurse", Description: "Provide patient care on a medical-surgical unit. Requirements: RN license, BLS certification, two years of acute care."},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	start := time.Now()
+	rep, err := m.Warm(ctx, docs, len(docs))
+	if err != nil {
+		t.Fatalf("warm: %v (%+v)", err, rep)
+	}
+	t.Logf("profile chunks=%d truncated=%v warm=%v report=%+v", len(p.Chunks), p.Truncated, time.Since(start).Round(time.Millisecond), rep)
+	score := map[string]float64{}
+	for _, d := range docs {
+		mt, ok := m.Lookup(d.Key, TextHash(d.Title, d.Description))
+		if !ok {
+			t.Fatalf("%s not scored", d.Key)
+		}
+		score[d.Key] = mt.Score
+		t.Logf("%s score=%.3f raw=%.3f", d.Key, mt.Score, mt.Raw)
+	}
+	if !(min(score["ml"], score["swe"]) > score["data"] && score["data"] > score["nurse"]) {
+		t.Fatalf("real bank does not order engineering > analyst > nursing: %v", score)
+	}
+}
+
+func TestTesslRealSimilarityKind(t *testing.T) {
+	e := realTessl(t)
+	rows, err := e.Embed(context.Background(), []string{"LinkedIn", "LinkedIn profile URL", "Years of experience"}, KindSimilarity)
+	if err != nil {
+		t.Fatalf("STS embed: %v", err)
+	}
+	var v [3][]float32
+	for i, r := range rows {
+		var ok bool
+		if v[i], ok = validRow(r, 0); !ok {
+			t.Fatalf("row %d unusable", i)
+		}
+	}
+	same, other := dot(v[0], v[1]), dot(v[0], v[2])
+	t.Logf("sts: linkedin~linkedin-url=%.3f linkedin~experience=%.3f", same, other)
+	if same <= other {
+		t.Fatalf("near-duplicate labels did not beat an unrelated one: %.3f <= %.3f", same, other)
+	}
+	if _, err := e.Embed(context.Background(), []string{"x"}, Kind("nope")); !errors.Is(err, ErrEmbed) {
+		t.Fatalf("unknown kind: %v, want ErrEmbed", err)
+	}
+}
+
 func TestTesslRealMatcherOrders(t *testing.T) {
 	e := realTessl(t)
 	raw := []byte(`{"entries":{

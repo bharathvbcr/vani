@@ -22,6 +22,7 @@ type Tessl struct {
 	m    *embedgemma2.Model
 	id   string
 	call time.Duration
+	sts  bool // the snapshot has the STS prompt KindSimilarity needs
 }
 
 // OpenTessl loads the snapshot in c onto the Metal device, text encoder only.
@@ -53,13 +54,20 @@ func OpenTessl(ctx context.Context, c TesslConfig) (*Tessl, error) {
 		m:    m,
 		id:   fmt.Sprintf("tessl/embeddinggemma-2@%s/f32/d%d", filepath.Base(filepath.Clean(c.Snapshot)), m.EmbeddingDim()),
 		call: c.callTimeout(),
+		sts:  slices.Contains(p.Names, string(KindSimilarity)),
 	}, nil
 }
 
 // Embed embeds texts with the snapshot's prompt named kind, bounded by the
 // per-call timeout.
 func (t *Tessl) Embed(ctx context.Context, texts []string, kind Kind) ([][]float32, error) {
-	if kind != KindQuery && kind != KindDocument {
+	switch kind {
+	case KindQuery, KindDocument:
+	case KindSimilarity:
+		if !t.sts {
+			return nil, fmt.Errorf("%w: tessl snapshot has no %q prompt", ErrUnavailable, kind)
+		}
+	default:
 		return nil, fmt.Errorf("%w: unknown kind %q", ErrEmbed, kind)
 	}
 	if len(texts) == 0 {
