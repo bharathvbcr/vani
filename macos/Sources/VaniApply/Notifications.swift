@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let model: AppModel
     let jobs: JobsModel
     let pipeline: PipelineModel
+    let exclusions: ExclusionsEditor
     private var pollTask: Task<Void, Never>?
 
     override init() {
@@ -22,7 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         let model = AppModel(autoRegisterAgent: launch.mode == .register)
         self.model = model
-        jobs = JobsModel { model.jobsClient }
+        let jobs = JobsModel { model.jobsClient }
+        self.jobs = jobs
+        // A saved exclusion re-lists Jobs, which hides the roles it matches.
+        exclusions = ExclusionsEditor(client: { model.draftSettings.exclusionsClient(vaniBinary: model.vaniBinary) },
+                                      onSaved: { jobs.reload() })
         // Without a bundle (a bare `swift run`) there is no notification center,
         // so the app announces nothing and leaves the notifier lock, and with it
         // the run notices, to the daemon. A launch by the daemon to announce a

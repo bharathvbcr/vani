@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var savedNotes: MotivationNotes?
     @State private var notesProblem: String?
     @State private var notesBusy = false
+    @Environment(ExclusionsEditor.self) private var exclusions
 
     private var editedDraftSettings: DraftSettings {
         DraftSettings(vaniConfig: draftConfig, vaniStateDir: draftState, anthropicAccount: draftAccount,
@@ -79,6 +80,7 @@ struct SettingsView: View {
                         model.saveDraftSettings(editedDraftSettings)
                         jobs.reload()
                         loadNotes()
+                        Task { await exclusions.load() }
                     }
                         .disabled(editedDraftSettings == model.draftSettings)
                 }
@@ -105,6 +107,50 @@ struct SettingsView: View {
                     Text(notesProblem).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
                 Text("Your own words on what you care about in your work and why. Drafts use them only for questions like \u{201C}Why <company>?\u{201D}, tying your reasons to what the posting says; the model is told not to add reasons you did not give. This text is sent to the model: do not put your name, contact details, location, work authorization, or names of people, employers or schools in it. Saved as motivation_notes in the Vani config above (saved settings), which Vani checks before it writes.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Exclude postings") {
+                @Bindable var exclusions = exclusions
+                let cap = exclusions.saved?.maxEntries
+                let bytes = exclusions.saved?.maxEntryBytes
+                Group {
+                    ExclusionField(label: "Title words", prompt: "intern", entries: $exclusions.lists.titles, cap: cap, maxBytes: bytes,
+                                   help: "Drops a role whose title contains one, as whole words: \u{201C}intern\u{201D} does not match \u{201C}Internal\u{201D} or \u{201C}Internship\u{201D}, so list each form.")
+                    ExclusionField(label: "Keep titles with", prompt: "internal tools", entries: $exclusions.lists.titleUnless, cap: cap, maxBytes: bytes,
+                                   help: "Keeps a title a title word matched when it also contains one of these. Needs at least one title word.")
+                    ExclusionField(label: "Companies", prompt: "Exact company name", entries: $exclusions.lists.companies, cap: cap, maxBytes: bytes,
+                                   help: "Drops a role at a company with exactly this name, ignoring case.")
+                    ExclusionField(label: "Locations", prompt: "China", entries: $exclusions.lists.locations, cap: cap, maxBytes: bytes,
+                                   help: "Drops a role only when every place it lists is one of these; a role also open somewhere else is kept. \u{201C}remote\u{201D} drops roles that are only remote; a US state matches by code or name.")
+                    ExclusionField(label: "Only locations", prompt: "United States", entries: $exclusions.lists.onlyLocations, cap: cap, maxBytes: bytes,
+                                   help: "When set, keeps a role only if some place it lists is one of these. A role that names no place is kept.")
+                    ExclusionField(label: "Description phrases", prompt: "security clearance", entries: $exclusions.lists.descriptions,
+                                   cap: exclusions.saved?.maxDescriptions, maxBytes: bytes,
+                                   help: "Drops a role whose description contains one. The ledger records only that a phrase matched, never which.")
+                }
+                .disabled(exclusions.saved == nil)
+                HStack {
+                    if exclusions.busy {
+                        ProgressView().controlSize(.small)
+                        Text("Saving…").font(.caption).foregroundStyle(.secondary)
+                    } else if exclusions.unsaved {
+                        Label("Not saved", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red)
+                    } else if exclusions.saved != nil {
+                        Label("Saved", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if exclusions.unsaved, !exclusions.busy {
+                        Button("Undo Changes") { Task { await exclusions.load() } }
+                        Button("Retry Save") { exclusions.retry() }
+                    } else if exclusions.saved == nil, !exclusions.busy {
+                        Button("Try Again") { Task { await exclusions.load() } }
+                    }
+                }
+                if let problem = exclusions.problem {
+                    Text(problem).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
+                Text("Type an entry and press Return; paste several lines to add each. Any case. Each change is saved at once, and Jobs hides the roles it matches; the next run drops them, and removing an entry brings its roles back. Roles you saved, applied to or hid are never dropped. Hover a list\u{2019}s name for how it matches; `vani prefilter --list` shows what the next run will do. Saved as exclude in the Vani config above.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -150,6 +196,7 @@ struct SettingsView: View {
         }
         .task {
             loadNotes()
+            await exclusions.refresh()
             let listed = await model.anthropicAccounts()
             accounts = listed.names
             accountsProblem = listed.problem
@@ -177,6 +224,73 @@ struct SettingsView: View {
             }
         }
     }
+
+    /// One exclusion list as removable chips, with a field that adds what is
+    /// typed (or each pasted line) on Return, and its count against Vani's cap
+    /// once Vani has replied.
+    private struct ExclusionField: View {
+        let label: String
+        let prompt: String
+        @Binding var entries: [String]
+        let cap: Int?
+        let maxBytes: Int?
+        let help: String
+        @State private var draft = ""
+        @State private var refused: String?
+
+        var body: some View {
+            LabeledContent {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !entries.isEmpty {
+                        WrapLayout(spacing: 6) {
+                            ForEach(entries, id: \.self) { entry in
+                                chip(entry)
+                            }
+                        }
+                    }
+                    HStack {
+                        TextField("", text: $draft, prompt: Text(prompt))
+                            .onSubmit(add)
+                            .onChange(of: draft) { refused = nil }
+                        Button("Add", action: add)
+                            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if let cap {
+                            Text("\(entries.count) of \(cap)").font(.caption).monospacedDigit()
+                                .foregroundStyle(entries.count > cap ? .red : .secondary)
+                        }
+                    }
+                    if let refused {
+                        Text(refused).font(.caption).foregroundStyle(.red)
+                    }
+                }
+            } label: {
+                Text(label).help(help)
+            }
+        }
+
+        private func chip(_ entry: String) -> some View {
+            HStack(spacing: 4) {
+                Text(verbatim: entry).lineLimit(1)
+                Button {
+                    entries.removeAll { $0 == entry }
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove \u{201C}\(entry)\u{201D}")
+                .accessibilityLabel("Remove \(entry)")
+            }
+            .font(.callout)
+            .padding(.leading, 8).padding(.trailing, 5).padding(.vertical, 3)
+            .background(.quaternary, in: Capsule())
+        }
+
+        private func add() {
+            refused = ExclusionLists.add(draft, to: &entries, cap: cap, maxBytes: maxBytes)
+            if refused == nil { draft = "" }
+        }
+    }
+
 
     /// The size Vani measures: whitespace runs collapsed to one space.
     private func collapsedBytes(_ s: String) -> Int {

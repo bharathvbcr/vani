@@ -32,9 +32,7 @@ struct PipelineView: View {
                     ProgressView("Reading status…").frame(maxWidth: .infinity, minHeight: 200)
                 }
             }
-            .padding(16)
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .paneColumn()
         }
         .navigationTitle("Pipeline")
         .toolbar {

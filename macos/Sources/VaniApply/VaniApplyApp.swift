@@ -13,6 +13,7 @@ struct VaniApplyApp: App {
                 .environment(delegate.model)
                 .environment(delegate.jobs)
                 .environment(delegate.pipeline)
+                .environment(delegate.exclusions)
                 .frame(minWidth: 820, minHeight: 520)
                 .modifier(CaptureMainWindowOpener(delegate: delegate))
         }
@@ -89,6 +90,10 @@ struct ContentView: View {
                 case .settings: SettingsView()
                 }
             }
+            // Every pane fills the column from the top. Without this a pane with
+            // no greedy child (an empty list, an unavailable view) is sized to its
+            // content and centred, so the layout jumps when switching panes or tabs.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .alert("Vani Apply", isPresented: Binding(get: { model.actionError != nil }, set: { if !$0 { model.actionError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -111,6 +116,17 @@ extension ContentView {
         case .warning?: ("exclamationmark.triangle.fill", .orange, "The pipeline needs a look")
         case .healthy?, nil: nil
         }
+    }
+}
+
+extension View {
+    /// The content column of a scrolling pane (Home, Pipeline). One width and inset
+    /// for all of them, held to the leading edge like the grouped forms, so the
+    /// content does not move or resize when switching between panes.
+    func paneColumn() -> some View {
+        padding(20)
+            .frame(maxWidth: 1000, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

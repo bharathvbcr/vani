@@ -40,9 +40,7 @@ struct HomeView: View {
                     VStack(spacing: 12) { pipelineCard(pipelineReading, now: now); activityCard }
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 1000, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .paneColumn()
         }
         .background(.background)
         .navigationTitle("Home")

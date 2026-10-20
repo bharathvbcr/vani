@@ -30,6 +30,7 @@ struct JobsView: View {
                 JobDetail()
                     .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxHeight: .infinity)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             jobs.reloadAfterActivation()
@@ -452,6 +453,74 @@ private struct ActiveFiltersBar: View {
     }
 }
 
+/// The round button the job list and the detail pane float at their
+/// bottom-trailing corner once scrolled past their top. No keyboard shortcut:
+/// ⌘↑ belongs to the note editor, and the two panes would claim one key.
+private struct BackToTopButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let scroll: () -> Void
+
+    var body: some View {
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { scroll() }
+        } label: {
+            Image(systemName: "arrow.up")
+                .font(.body.weight(.semibold))
+                .frame(width: 32, height: 32)
+                .background(.regularMaterial, in: Circle())
+                .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .help("Back to top")
+        .accessibilityLabel("Back to top")
+    }
+}
+
+/// The list's on-screen rows, held outside `JobList`'s state. Rows report from
+/// their appear and disappear callbacks while the List lays them out; a write
+/// here redraws only `BackToTopOverlay`, which reads it. Kept in view state, each
+/// report re-rendered the whole List mid-layout and rows were drawn over each other.
+@MainActor
+@Observable
+private final class VisibleRowsTracker {
+    var rows = VisibleRows()
+}
+
+/// `BackToTopButton` while the list is scrolled past its first row, read here so
+/// a row report redraws this overlay and not the List.
+private struct BackToTopOverlay: View {
+    let tracker: VisibleRowsTracker
+    let first: String?
+    let scroll: () -> Void
+
+    var body: some View {
+        BackToTopFade(shown: tracker.rows.scrolledPast(first: first), scroll: scroll)
+    }
+}
+
+/// Fades `BackToTopButton` in and out. The animation is scoped to the button:
+/// attached to the scrolled view, it animated that view's rows and layout too.
+private struct BackToTopFade: View {
+    let shown: Bool
+    let scroll: () -> Void
+
+    var body: some View {
+        ZStack {
+            if shown { BackToTopButton(scroll: scroll).transition(.opacity) }
+        }
+        .animation(.easeInOut(duration: 0.15), value: shown)
+    }
+}
+
+private extension View {
+    /// Overlays `BackToTopButton` while `shown`.
+    func backToTop(_ shown: Bool, scroll: @escaping () -> Void) -> some View {
+        overlay(alignment: .bottomTrailing) { BackToTopFade(shown: shown, scroll: scroll) }
+    }
+}
+
 // MARK: - List
 
 private struct JobList: View {
@@ -459,6 +528,9 @@ private struct JobList: View {
     static let hideDuplicatesKey = "jobs.hidePossibleDuplicates"
     /// Off by default: duplicates are noted on their rows, not removed.
     @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false
+    /// The rows on screen, for the back-to-top button: List rows load lazily,
+    /// so their appear/disappear tracks scrolling.
+    @State private var visibleRows = VisibleRowsTracker()
 
     var body: some View {
         @Bindable var jobs = jobs
@@ -466,66 +538,78 @@ private struct JobList: View {
             if let page = jobs.page, !jobs.jobs.isEmpty {
                 listHeader(page)
             }
-            if let err = jobs.error, jobs.page == nil {
-                ContentUnavailableView {
-                    Label("Couldn't load jobs", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(verbatim: err)
-                    Text("Check the Vani config and state folder in Settings.")
-                } actions: {
-                    Button("Try Again") { jobs.reload() }
-                }
-            } else if jobs.page == nil {
-                ProgressView("Loading jobs…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if jobs.page?.records == 0 {
-                ContentUnavailableView {
-                    Label("No postings in this Vani state folder", systemImage: "folder.badge.questionmark")
-                } description: {
-                    Text(verbatim: "The ledger at \(jobs.page?.ledger ?? "the default location") is empty.")
-                    Text("If Vani runs with another state folder (VANI_STATE_DIR), choose it under Settings › Vani, or run `vani run-once` to retrieve roles here.")
-                }
-            } else if jobs.jobs.isEmpty {
-                ContentUnavailableView {
-                    Label(emptyTitle, systemImage: emptySymbol)
-                } description: {
-                    Text(emptyText)
-                } actions: {
-                    if !jobs.filter.isEmpty {
-                        Button("Clear Filters") { jobs.clearFilter() }
+            // Each state fills the column, so an empty tab keeps the list's
+            // height and the footer stays at the bottom.
+            Group {
+                if let err = jobs.error, jobs.page == nil {
+                    ContentUnavailableView {
+                        Label("Couldn't load jobs", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(verbatim: err)
+                        Text("Check the Vani config and state folder in Settings.")
+                    } actions: {
+                        Button("Try Again") { jobs.reload() }
                     }
-                    if !jobs.query.isEmpty {
-                        Button("Clear Search") { jobs.query = "" }
+                } else if jobs.page == nil {
+                    ProgressView("Loading jobs…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if jobs.page?.records == 0 {
+                    ContentUnavailableView {
+                        Label("No postings in this Vani state folder", systemImage: "folder.badge.questionmark")
+                    } description: {
+                        Text(verbatim: "The ledger at \(jobs.page?.ledger ?? "the default location") is empty.")
+                        Text("If Vani runs with another state folder (VANI_STATE_DIR), choose it under Settings › Vani, or run `vani run-once` to retrieve roles here.")
                     }
-                }
-            } else if hideDuplicates && Job.hidingPossibleDuplicates(jobs.jobs).isEmpty {
-                ContentUnavailableView {
-                    Label("Only possible duplicates here", systemImage: "square.on.square")
-                } description: {
-                    Text("Every role in this list may repeat another one, and “Hide possible duplicates” is on.")
-                } actions: {
-                    Button("Show Them") { hideDuplicates = false }
-                }
-            } else {
-                // Rows stay one per posting, so selection and the ⌘S / ⇧⌘A / ⌘⌫
-                // shortcuts keep acting on a single job key; a repost is noted
-                // on its rows and listed in the detail.
-                let postings = PostingGroups(jobs.jobs)
-                let shown = hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
-                // Targets are named from the whole loaded list, hidden rows included.
-                let loaded = Dictionary(jobs.jobs.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-                ScrollViewReader { proxy in
-                    List(shown, selection: $jobs.selection) { job in
-                        JobRow(job: job, others: postings.others(of: job.key), duplicates: job.duplicateBadges(loaded: loaded))
-                            .tag(job.key)
-                            .contextMenu { JobMenu(job: job) }
+                } else if jobs.jobs.isEmpty {
+                    ContentUnavailableView {
+                        Label(emptyTitle, systemImage: emptySymbol)
+                    } description: {
+                        Text(emptyText)
+                    } actions: {
+                        if !jobs.filter.isEmpty {
+                            Button("Clear Filters") { jobs.clearFilter() }
+                        }
+                        if !jobs.query.isEmpty {
+                            Button("Clear Search") { jobs.query = "" }
+                        }
                     }
-                    .listStyle(.inset)
-                    // A reload rebuilds the list; keep the selected role in view.
-                    .onChange(of: jobs.page) {
-                        if let s = jobs.selection { proxy.scrollTo(s) }
+                } else if hideDuplicates && Job.hidingPossibleDuplicates(jobs.jobs).isEmpty {
+                    ContentUnavailableView {
+                        Label("Only possible duplicates here", systemImage: "square.on.square")
+                    } description: {
+                        Text("Every role in this list may repeat another one, and “Hide possible duplicates” is on.")
+                    } actions: {
+                        Button("Show Them") { hideDuplicates = false }
+                    }
+                } else {
+                    // Rows stay one per posting, so selection and the ⌘S / ⇧⌘A / ⌘⌫
+                    // shortcuts keep acting on a single job key; a repost is noted
+                    // on its rows and listed in the detail.
+                    let postings = PostingGroups(jobs.jobs)
+                    let shown = hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
+                    // Targets are named from the whole loaded list, hidden rows included.
+                    let loaded = Dictionary(jobs.jobs.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+                    ScrollViewReader { proxy in
+                        List(shown, selection: $jobs.selection) { job in
+                            JobRow(job: job, others: postings.others(of: job.key), duplicates: job.duplicateBadges(loaded: loaded))
+                                .tag(job.key)
+                                .contextMenu { JobMenu(job: job) }
+                                .onAppear { visibleRows.rows.appeared(job.key) }
+                                .onDisappear { visibleRows.rows.disappeared(job.key) }
+                        }
+                        .listStyle(.inset)
+                        // A reload rebuilds the list; keep the selected role in view.
+                        .onChange(of: jobs.page) {
+                            if let s = jobs.selection { proxy.scrollTo(s) }
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            BackToTopOverlay(tracker: visibleRows, first: shown.first?.key) {
+                                if let first = shown.first { proxy.scrollTo(first.key, anchor: .top) }
+                            }
+                        }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             if let page = jobs.page {
                 footer(page)
             }
@@ -775,6 +859,7 @@ func copyJobDetailsToPasteboard(job: Job, description: String? = nil) {
 
 /// The mark actions, shared by the row's context menu and the detail pane.
 private struct JobMenu: View {
+    @Environment(ExclusionsEditor.self) private var exclusions
     @Environment(JobsModel.self) private var jobs
     let job: Job
 
@@ -782,6 +867,14 @@ private struct JobMenu: View {
         Button(job.mark == .saved ? "Unsave" : "Save", systemImage: "bookmark") { act(.saved) }
         Button(job.mark == .applied ? "Unmark Applied" : "Mark Applied", systemImage: "checkmark.seal") { act(.applied) }
         Button(job.mark == .hidden ? "Unhide" : "Hide", systemImage: "eye.slash") { act(.hidden) }
+        // Every role at the company, not just this one; undone in Settings ›
+        // Exclude postings. Roles you saved, applied to or hid stay.
+        if !job.company.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Button("Exclude \u{201C}\(job.company)\u{201D}", systemImage: "nosign") {
+                Task { await jobs.excludeCompany(of: job, using: exclusions) }
+            }
+            .help("Add this company to Settings › Exclude postings: Jobs hides its roles and the next run drops them.")
+        }
         Divider()
         Button("Copy Job Details", systemImage: "doc.on.doc") {
             copyJobDetailsToPasteboard(job: job, description: jobs.detail?.key == job.key ? jobs.detail?.description : nil)
@@ -840,6 +933,9 @@ private struct JobDetailContent: View {
     @State private var copiedDescription = false
     // While the note has focus, ⌘⌫ and ⌘S belong to the note, not to Hide and Save.
     @FocusState private var noteFocused: Bool
+    /// The header card has scrolled out of view: offer the way back.
+    @State private var headerScrolledOff = false
+    private static let topID = "jobDetailTop"
 
     private var noteBytes: Int { noteDraft.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count }
     private var noteChanged: Bool { noteDraft.trimmingCharacters(in: .whitespacesAndNewlines) != (job.note ?? "") }
@@ -883,22 +979,27 @@ private struct JobDetailContent: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                headerCard
-                ApplyKitView(job: job, description: currentDescription)
-                if !job.reasons.isEmpty { reasons }
-                if let ranking = job.rankingBreakdown { rankingCard(ranking) }
-                if !job.keywordList.isEmpty { keywords }
-                let others = otherPostings
-                if !others.isEmpty { otherPostingsCard(others) }
-                facts
-                note
-                description
-                    .cardStyle()
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    headerCard
+                        .onGeometryChange(for: Bool.self) { $0.frame(in: .scrollView).maxY < 0 } action: { headerScrolledOff = $0 }
+                    ApplyKitView(job: job, description: currentDescription)
+                    if !job.reasons.isEmpty { reasons }
+                    if let ranking = job.rankingBreakdown { rankingCard(ranking) }
+                    if !job.keywordList.isEmpty { keywords }
+                    let others = otherPostings
+                    if !others.isEmpty { otherPostingsCard(others) }
+                    facts
+                    note
+                    description
+                        .cardStyle()
+                }
+                .padding(20)
+                .frame(maxWidth: 760, alignment: .leading)
+                .id(Self.topID)
             }
-            .padding(20)
-            .frame(maxWidth: 760, alignment: .leading)
+            .backToTop(headerScrolledOff) { proxy.scrollTo(Self.topID, anchor: .top) }
         }
         .onAppear { noteDraft = job.note ?? "" }
         .onChange(of: job.key) { oldKey, newKey in
@@ -1669,7 +1770,7 @@ private struct ScoreBar: View {
 }
 
 /// Lays chips out in rows, wrapping at the proposed width.
-private struct WrapLayout: Layout {
+struct WrapLayout: Layout {
     var spacing: CGFloat = 4
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

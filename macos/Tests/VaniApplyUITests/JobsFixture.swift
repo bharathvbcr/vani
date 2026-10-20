@@ -27,9 +27,24 @@ struct JobsFixture {
     static var freshOrder: [String] { roles.sorted { $0.freshAt > $1.freshAt }.map(\.key) }
     static var strongOrder: [String] { roles.filter { $0.fit == "strong_fit" }.map(\.key) }
 
+    /// Made-up roles after the four, so the list and the detail pane scroll:
+    /// keys `fx:filler:NN`, each with a description long enough to scroll.
+    static func fillers(_ n: Int) -> [Role] {
+        (0..<n).map { i in
+            let nn = String(format: "%02d", i)
+            return Role(key: "fx:filler:\(nn)", company: "Filler Co \(nn)", title: "Filler Role \(nn)", fit: "adjacent",
+                        freshAt: "2026-07-01T12:00:00Z", ageDays: 110, relevance: 10)
+        }
+    }
+
+    static let fillerDescription = (1...80).map { "Paragraph \($0) of a made-up posting, long enough to scroll the detail pane." }
+        .joined(separator: "\n\n")
+
     let dir: URL
 
-    init(_ t: XCTestCase) throws {
+    /// `fillers` roles follow the four in the standard list (not in the fresh
+    /// or strong-fit replies, nor in the stats).
+    init(_ t: XCTestCase, fillers: Int = 0) throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vani-apply-ui-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dir = dir
@@ -60,7 +75,13 @@ struct JobsFixture {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: vani.path)
 
         let byKey = Dictionary(uniqueKeysWithValues: Self.roles.map { ($0.key, $0) })
-        try write("list.json", page(Self.standardOrder.compactMap { byKey[$0] }))
+        let filler = Self.fillers(fillers)
+        try write("list.json", page(Self.standardOrder.compactMap { byKey[$0] } + filler))
+        for r in filler {
+            var j = job(r)
+            j["description"] = Self.fillerDescription
+            try write("show-\(r.key).json", j)
+        }
         try write("list-fresh.json", page(Self.freshOrder.compactMap { byKey[$0] }))
         try write("list-strong.json", page(Self.strongOrder.compactMap { byKey[$0] }))
         try write("stats.json", stats())

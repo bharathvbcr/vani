@@ -201,6 +201,21 @@ final class JobsModel {
         }
     }
 
+    /// Adds the job's company to the exclusions Settings edits, and saves them;
+    /// the re-list then hides its unmarked roles, and the next run drops them.
+    /// Selection moves on as it does when a mark takes a job out of the view.
+    func excludeCompany(of job: Job, using exclusions: ExclusionsEditor) async {
+        let index = jobs.firstIndex { $0.key == job.key }
+        if let problem = await exclusions.add(job.company, to: \.companies) {
+            actionError = problem
+            return
+        }
+        await refresh()
+        if selection == job.key, !jobs.contains(where: { $0.key == job.key }) {
+            selection = index.flatMap { jobs.isEmpty ? nil : jobs[min($0, jobs.count - 1)].key }
+        }
+    }
+
     /// Toggle: marking a job with the mark it already has clears it.
     func toggle(_ job: Job, _ mark: JobMark) async {
         await setMark(job.key, job.mark == mark ? nil : mark)

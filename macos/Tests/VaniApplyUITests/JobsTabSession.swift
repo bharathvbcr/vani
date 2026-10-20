@@ -98,6 +98,45 @@ final class JobsTabSession {
         return last
     }
 
+    // MARK: Scrolling
+
+    enum Pane: String { case list, detail }
+
+    /// Scrolls `pane` to `y` points from its top (nil: to its end) and returns
+    /// where it landed.
+    @discardableResult
+    func scroll(_ pane: Pane, to y: Double?) throws -> Double {
+        send("scroll \(pane.rawValue) " + (y.map { String($0) } ?? "end"))
+        return try readOffset("scroll \(pane.rawValue)")
+    }
+
+    /// Points `pane` is scrolled from its top.
+    func offset(_ pane: Pane) throws -> Double {
+        send("offset \(pane.rawValue)")
+        return try readOffset("offset \(pane.rawValue)")
+    }
+
+    private func readOffset(_ what: String) throws -> Double {
+        guard let line = lines.next(prefix: "OFFSET ", timeout: Self.waitTimeout),
+              let y = Double(line.dropFirst("OFFSET ".count)) else {
+            throw Failure(description: "the host did not answer \(what) (no such pane yet?)")
+        }
+        return y
+    }
+
+    /// Polls `pane`'s offset until `ok` holds, failing with the last one seen.
+    func waitForOffset(_ pane: Pane, _ what: String, _ ok: (Double) -> Bool) throws {
+        let deadline = Date().addingTimeInterval(Self.waitTimeout)
+        var last = try offset(pane)
+        while !ok(last) {
+            guard Date() < deadline else {
+                throw Failure(description: "the \(pane.rawValue) never reached \(what) within \(Int(Self.waitTimeout)) s; last offset: \(last)")
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+            last = try offset(pane)
+        }
+    }
+
     /// The `vani` argument lists the fake recorded, in order.
     func vaniCalls() -> [String] { fixture.calls() }
 
