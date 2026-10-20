@@ -54,6 +54,13 @@ const MaxNameBytes = 32
 // reservedBackendNames, less DefaultName, which this backend owns).
 var reservedNames = []string{"lappi", "local", "unknown", "title"}
 
+// ReservedNames is a copy of reservedNames, for the test in cmd/vani that holds
+// it equal to config's (the two packages cannot import each other).
+func ReservedNames() []string { return slices.Clone(reservedNames) }
+
+// CheckName reports whether n may name an LLM backend (Config.Name).
+func CheckName(n string) error { return checkName(n) }
+
 // checkName refuses a name another backend uses or that cannot be a safe key.
 func checkName(n string) error {
 	if len(n) == 0 || len(n) > MaxNameBytes || strings.IndexFunc(n, func(r rune) bool {

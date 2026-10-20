@@ -128,7 +128,7 @@ type wired struct {
 func (w *wired) runReport() runDetail {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report()}
+	return runDetail{Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats()}
 }
 
 func (w *wired) close() error {
@@ -775,16 +775,22 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 
+	// esc is the escalation tier (decide.escalate): a second backend on the same
+	// metered provider, so one daily cap bounds all LLM spend.
+	var esc decide.Backend
 	if w.cfg.LLM.Provider != "" {
 		p, err := w.provider(ctx)
 		if err != nil {
 			w.warnf("llm disabled: %v", err)
 		} else {
-			lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.Model})
+			lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.EffectiveTriageModel()})
 			if err != nil {
 				return nil, fmt.Errorf("llm backend: %w", err)
 			}
 			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
+			if esc, err = w.escalateBackend(p); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// Lappi is local and free. It is the shadow until `vani eval` reports it
@@ -849,11 +855,12 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow
 	gateShadow(router, w.cfg.Decide.ShadowSampleEvery(), shadowInFlight(w.cfg.Decide))
+	triage := w.escalating(router, esc)
 
 	explainer, skipExplain := w.notes(d, spend)
 	r := &pipeline.Runner{
 		Ledger:      w.led,
-		Triager:     &jdtriage.Triager{D: router, TargetSummary: w.cfg.TargetSummary},
+		Triager:     &jdtriage.Triager{D: triage, TargetSummary: w.cfg.TargetSummary},
 		Explainer:   explainer,
 		Policy:      dropPolicy(w.cfg, w.openRouterName()),
 		SkipExplain: skipExplain,
