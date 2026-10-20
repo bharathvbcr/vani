@@ -931,15 +931,20 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - 18 bullets exist only in the 9 variants and are not synced.
   - Tests: `internal/kbsync/tags_test.go`; goldens in `internal/kbsync/testdata`.
 - **Ranking and KB matching (branch `rank-relevance`, 2026-10-19), open items:**
-  - The live config (`.state/config.json`) has `kb.bank` and `target_summary`; `semantic.snapshot`
-    is not set yet, because the installed binary predates the key and rejects it. Add it once the
-    merged build is installed, then run `vani semantic warm`. Without it Score runs without the
-    embedding part (rankeval "this-machine": NDCG@10 0.53 vs 0.74 with every signal).
-  - Approved by the owner 2026-10-19, to add with `semantic.snapshot` once the merged build is
-    installed: `rank_penalties` (demote only, Rule 7) `[{"slot": "seniority", "values": ["senior"]}]`.
-    On a copy of the real ledger it takes senior readings in the top 20 from 13 to 4 (proxy
-    NDCG@20 0.792 → 0.924; the proxy does not read seniority, so its gain comes from the fit mix
-    and ages).
+  - Live since 2026-10-19 (main `ab1d4d5`, installed app): the config has `kb.bank`,
+    `target_summary`, `semantic.snapshot` and, approved by the owner, `rank_penalties`
+    `[{"slot": "seniority", "values": ["senior"]}]` (backup `.state/config.json.bak-rank-relevance`).
+    `vani semantic warm` scored all 1,682 triaged postings in 2 min 44 s, none failed.
+  - The senior penalty is mild by design: it scales with the reading's confidence, and the live
+    senior readings imply about 0.17-0.24 (gates 0.82-0.87). Without the embedding part it takes
+    senior readings in the top 20 from 13 to 4 (rankeval real-ledger test; proxy NDCG@20 0.792 →
+    0.924, the proxy does not read seniority). With embeddings on, `vani jobs` still lists 7 in
+    the top 20: those roles match the knowledge base well. Measure again after a week of use
+    before changing the strength; a `title_signals.read` for "Senior"/"Sr." is the other lever.
+  - Postings that went through the pipeline while `devprism.binary` was empty were marked Scored
+    with "scoring disabled" and no rank or coverage, and nothing re-scores them now that DevPrism
+    is configured. Every posting in the live top 20 takes the coverage prior (0.4), so the largest
+    signal is missing from the live ranking until they are re-scored.
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
   - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
