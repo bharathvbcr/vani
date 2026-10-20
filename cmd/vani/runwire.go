@@ -119,7 +119,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			return err
 		},
 		Exclusions: func(ctx context.Context) error {
-			return w.applyExclusions(ctx, runner.Policy, protect, time.Now())
+			return w.applyExclusions(ctx, runner.Policy, protect, time.Now(), runner.FailOpen)
 		},
 		Logos: w.refreshLogos,
 		Plan:  func() pipeline.AdvancePlan { return w.advancePlan(kindRun, runner.Policy) },
@@ -212,9 +212,10 @@ func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) 
 // applyExclusions drops the kept postings the configured exclusions now match
 // and reopens the excluded ones they no longer match, before anything is
 // advanced, so editing exclude takes effect on the whole ledger at the next
-// run. Marked postings are never dropped.
-func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, protect func(posting.Key) bool, now time.Time) error {
-	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect)
+// run. Marked postings are never dropped. A Live posting a location rule could
+// not read is kept and counted on fo (pipeline.CauseLocationUnreadable).
+func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, protect func(posting.Key) bool, now time.Time, fo *pipeline.FailOpen) error {
+	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo)
 	if err != nil {
 		return fmt.Errorf("exclusions: %w", err)
 	}

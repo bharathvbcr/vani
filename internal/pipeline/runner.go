@@ -413,6 +413,11 @@ type DropPolicy struct {
 	// posting; nil excludes nothing. It reads the posting's own fields, never
 	// a model's reading, so it drops with no threshold.
 	Exclude func(p posting.Posting) (why string, ok bool)
+	// ExcludeUnreadable reports that a location rule of Exclude could not read
+	// the posting's location, so Exclude kept it without having judged it
+	// (config.Exclude.LocationUnreadable); nil reports nothing. The exclusion
+	// stage counts such a posting as kept unchecked (CauseLocationUnreadable).
+	ExcludeUnreadable func(p posting.Posting) bool
 }
 
 // TitleBackend is the backend name a title reading is recorded under.

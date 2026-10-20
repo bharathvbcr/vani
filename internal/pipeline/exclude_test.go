@@ -109,7 +109,7 @@ func TestApplyExclusionsDropsAndReopens(t *testing.T) {
 	marked := func(k posting.Key) bool { return k == keys[3] }
 	p := DropPolicy{Exclude: excludeTitle("Intern")}
 
-	ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), p, marked)
+	ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), p, marked, nil)
 	if err != nil || len(ch.Drop) != 2 || len(ch.Reopen) != 0 {
 		t.Fatalf("first pass: %+v (%v)", ch, err)
 	}
@@ -126,7 +126,7 @@ func TestApplyExclusionsDropsAndReopens(t *testing.T) {
 		t.Error("the pass asked a backend")
 	}
 
-	ch, err = ApplyExclusions(ctx, l, t0.Add(2*time.Hour), p, marked)
+	ch, err = ApplyExclusions(ctx, l, t0.Add(2*time.Hour), p, marked, nil)
 	if err != nil || len(ch.Drop)+len(ch.Reopen) != 0 {
 		t.Fatalf("second pass not a no-op: %+v (%v)", ch, err)
 	}
@@ -134,7 +134,7 @@ func TestApplyExclusionsDropsAndReopens(t *testing.T) {
 	// The owner narrows the exclusion: "Data Intern" no longer matches and
 	// returns to live with its triage forgotten and its badge kept.
 	p.Exclude = excludeTitle("Engineer Intern")
-	ch, err = ApplyExclusions(ctx, l, t0.Add(3*time.Hour), p, marked)
+	ch, err = ApplyExclusions(ctx, l, t0.Add(3*time.Hour), p, marked, nil)
 	if err != nil || len(ch.Reopen) != 1 || ch.Reopen[0].Key != keys[1] || len(ch.Drop) != 0 {
 		t.Fatalf("narrowed: %+v (%v)", ch, err)
 	}
@@ -145,7 +145,7 @@ func TestApplyExclusionsDropsAndReopens(t *testing.T) {
 	}
 
 	// With no exclusions at all, every excluded posting comes back.
-	ch, err = ApplyExclusions(ctx, l, t0.Add(4*time.Hour), DropPolicy{}, marked)
+	ch, err = ApplyExclusions(ctx, l, t0.Add(4*time.Hour), DropPolicy{}, marked, nil)
 	if err != nil || len(ch.Reopen) != 1 || ch.Reopen[0].Key != keys[0] {
 		t.Fatalf("cleared: %+v (%v)", ch, err)
 	}
@@ -158,7 +158,7 @@ func TestApplyExclusionsLeavesOtherDrops(t *testing.T) {
 	if err := r.Advance(ctx, k); err != nil || rec(t, l, k).Status != posting.Dropped {
 		t.Fatal("setup")
 	}
-	ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), DropPolicy{}, nil)
+	ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), DropPolicy{}, nil, nil)
 	if err != nil || len(ch.Reopen)+len(ch.Drop) != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("%+v (%v)", ch, err)
 	}
@@ -171,7 +171,7 @@ func TestApplyExclusionsBatches(t *testing.T) {
 		titles[i] = fmt.Sprintf("Intern %d", i)
 	}
 	_, _, l, keys := excludeRunner(t, titles...)
-	ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), DropPolicy{Exclude: excludeTitle("Intern")}, nil)
+	ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), DropPolicy{Exclude: excludeTitle("Intern")}, nil, nil)
 	if err != nil || len(ch.Drop) != len(titles) {
 		t.Fatalf("%d dropped (%v)", len(ch.Drop), err)
 	}
@@ -186,7 +186,7 @@ func TestApplyExclusionsStopsOnCancel(t *testing.T) {
 	_, _, l, keys := excludeRunner(t, "Intern")
 	c, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := ApplyExclusions(c, l, t0, DropPolicy{Exclude: excludeTitle("Intern")}, nil); !errors.Is(err, context.Canceled) {
+	if _, err := ApplyExclusions(c, l, t0, DropPolicy{Exclude: excludeTitle("Intern")}, nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 	if rec(t, l, keys[0]).Status != posting.Live {

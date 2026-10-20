@@ -240,9 +240,6 @@ func Deprecations(data []byte) []string {
 			out = append(out, `decide.shadow "jev" is now "openrouter"`)
 		}
 	}
-	if k := p.KBMatch; k != nil && k.Backend != nil && *k.Backend == legacyKBMatchBackend {
-		out = append(out, `kbmatch.backend "jev" is now "openrouter"`)
-	}
 	n := 0
 	for _, r := range p.DropRules {
 		if r.MinProb != nil {

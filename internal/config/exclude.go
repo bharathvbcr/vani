@@ -109,6 +109,24 @@ func (x Exclude) Match(p posting.Posting) (why string, ok bool) {
 	return "", false
 }
 
+// LocationUnreadable reports whether x has a location rule it cannot apply to
+// p: the location names no place and no remote work, or, with only_locations
+// set, is remote with no place and no scope. Match keeps such a posting, but
+// it has not judged it, so the caller counts it as kept unchecked. A rule on
+// another field never makes a posting unreadable here: a blank title or
+// description is already counted by the stage that reads it (title_unread,
+// empty_description).
+func (x Exclude) LocationUnreadable(p posting.Posting) bool {
+	if len(x.Locations) == 0 && len(x.OnlyLocations) == 0 {
+		return false
+	}
+	o := optionsOf(p)
+	if !o.read {
+		return true
+	}
+	return len(x.OnlyLocations) > 0 && o.remote && o.scope == "" && len(o.places) == 0
+}
+
 // locationOptions are the options a posting's location gives: its places,
 // and remote work as an option of its own when it says where ("Remote (US)")
 // or the location names no place. "Remote - India" and "Germany · Remote" are

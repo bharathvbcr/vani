@@ -14,7 +14,7 @@ func dropPolicy(cfg config.Config, openRouter string) pipeline.DropPolicy {
 	}
 	p := pipeline.DropPolicy{Rules: rules, OpenRouter: openRouter}
 	if x := cfg.Exclude.Clone(); !x.Empty() {
-		p.Exclude = x.Match
+		p.Exclude, p.ExcludeUnreadable = x.Match, x.LocationUnreadable
 	}
 	if s := cfg.TitleSignals; len(s.Read) > 0 {
 		p.ReadTitle = func(title string) []pipeline.TitleReading {
