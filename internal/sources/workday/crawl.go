@@ -23,9 +23,9 @@ const (
 	window = 2000
 	// maxSplitDepth bounds how many facets one query may be split by in turn.
 	maxSplitDepth = 3
-	// maxListRequests bounds the listing requests of one board, splits
-	// included: every row of MaxPostings twice over.
-	maxListRequests = 2 * MaxPostings / pageSize
+	// splitRequests is the room listRequests leaves for split queries' first
+	// pages and the short or empty pages that end each query.
+	splitRequests = 100
 	// maxFacetValues is the most values read from one facet of an answer; a
 	// facet with more is partial and never used to split or count.
 	maxFacetValues = 1000
@@ -275,6 +275,7 @@ func chooseSplit(facets []facetChoice, applied map[string][]string) (facetChoice
 type walker struct {
 	s        *source
 	endpoint string
+	limit    int    // the most rows the board may list (capFor)
 	term     string // the search term being walked
 	seen     map[string]bool
 	rows     []listedJob
@@ -282,13 +283,21 @@ type walker struct {
 	queries  int // queries walked, a split query's buckets each counted
 }
 
+func newWalker(s *source, endpoint string, limit int) *walker {
+	return &walker{s: s, endpoint: endpoint, limit: limit, seen: map[string]bool{}}
+}
+
+// listRequests bounds one board's listing requests, splits included: every
+// row of its limit twice over, plus room for the split queries.
+func listRequests(limit int) int { return 2*limit/pageSize + splitRequests }
+
 func (w *walker) page(ctx context.Context, applied map[string][]string, offset int) (listPage, error) {
 	if err := ctx.Err(); err != nil {
 		return listPage{}, err
 	}
-	if w.requests >= maxListRequests {
+	if n := listRequests(w.limit); w.requests >= n {
 		return listPage{}, fmt.Errorf("%w: the listing needs more than %d requests; set the board's search to narrow it",
-			srcutil.ErrTooManyPostings, maxListRequests)
+			srcutil.ErrTooManyPostings, n)
 	}
 	w.requests++
 	var resp rawListResponse
@@ -324,9 +333,9 @@ func (w *walker) add(rows []listedJob, here map[string]bool) (int, error) {
 		if w.seen[r.ExternalPath] {
 			continue
 		}
-		if len(w.seen) >= MaxPostings {
-			return n, fmt.Errorf("%w: board lists more than %d postings; set the board's search to narrow it",
-				srcutil.ErrTooManyPostings, MaxPostings)
+		if len(w.seen) >= w.limit {
+			return n, fmt.Errorf("%w: board lists more than %d postings; set the board's search to narrow it or raise max_postings",
+				srcutil.ErrTooManyPostings, w.limit)
 		}
 		w.seen[r.ExternalPath] = true
 		w.rows = append(w.rows, r)
@@ -354,6 +363,12 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 	}
 	w.queries++
 	count, corroborated := expectedTotal(first.total, first.facets, applied)
+	// The board's own count over the limit fails it before any paging: the
+	// count is a total or a non-location facet sum, never an inflated one.
+	if count > w.limit {
+		return nil, fmt.Errorf("%w: board lists %d postings, over the %d limit; set the board's search to narrow it or raise max_postings",
+			srcutil.ErrTooManyPostings, count, w.limit)
+	}
 	here := map[string]bool{}
 	if _, err := w.add(first.rows, here); err != nil {
 		return nil, err

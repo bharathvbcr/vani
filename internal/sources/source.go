@@ -41,6 +41,13 @@ type Board struct {
 	// the systems that have verified ones (see FilterKeys). Each search term
 	// is run with every filter applied.
 	Filters map[string][]string `json:"filters,omitempty"`
+	// MaxPostings sets the most postings the board may list, Workday only:
+	// zero is the adapter's default (workday.MaxPostings, 5,000), at most
+	// MaxPostingsCeiling. Listing costs a request per 20 postings at the
+	// per-host pace (about a second each); detail requests are bounded per
+	// run apart from it (workday.MaxDetails). A board over its cap still
+	// fails rather than being truncated.
+	MaxPostings int `json:"max_postings,omitempty"`
 
 	// URL is a careers listing page (https). Page boards only.
 	URL string `json:"url,omitempty"`
@@ -54,6 +61,12 @@ const (
 	MaxSearches     = 10
 	MaxSearchLen    = 100
 	MaxFilterValues = 10
+	// MaxPostingsCeiling bounds Board.MaxPostings. Workday stops counting one
+	// query at 2,000 (checked 2026-10-19 on NVIDIA), and the adapter lists a
+	// larger board by splitting it on its facets, which count past that; at
+	// 10,000 a whole listing is at most about 600 requests, ten minutes at the
+	// per-host pace.
+	MaxPostingsCeiling = 10000
 )
 
 // FilterKeys lists, per system, the query filters verified to narrow its

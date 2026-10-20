@@ -225,7 +225,7 @@ func fakeSource(fb *fakeBoard, o *Options) (*source, *srctest.Doer) {
 func listAll(t *testing.T, fb *fakeBoard, b sources.Board) ([]listedJob, *walker, error) {
 	t.Helper()
 	s, _ := fakeSource(fb, nil)
-	w := &walker{s: s, endpoint: jobsURL, seen: map[string]bool{}}
+	w := newWalker(s, jobsURL, MaxPostings)
 	terms := b.SearchTerms()
 	if len(terms) == 0 {
 		terms = []string{""}
@@ -513,19 +513,57 @@ func TestListingThatCannotBeAccountedForFails(t *testing.T) {
 	}
 }
 
-// A board whose listing never runs dry under splits is bounded by the row
-// cap and the request cap, and fails.
-func TestSplitListingIsBounded(t *testing.T) {
+// A board its facets count over its limit fails on the first page, before
+// any split is walked (rows past a limit the count did not show are refused
+// as they are listed: TestLimitedListingIsBounded).
+func TestBoardCountedOverItsLimitFailsAtOnce(t *testing.T) {
 	fb := nvidiaBoard(MaxPostings + 500)
 	for i := range fb.jobs {
 		fb.jobs[i].attrs["jobFamilyGroup"] = []string{fid(2, i%10)}
 	}
 	_, w, err := listAll(t, fb, board)
-	if !errors.Is(err, srcutil.ErrTooManyPostings) {
+	if !errors.Is(err, srcutil.ErrTooManyPostings) || !strings.Contains(err.Error(), "max_postings") {
 		t.Fatalf("err = %v", err)
 	}
-	if w.requests > maxListRequests || len(w.seen) > MaxPostings {
-		t.Errorf("%d requests, %d rows", w.requests, len(w.seen))
+	if w.requests != 1 {
+		t.Errorf("%d requests, want the first page only", w.requests)
+	}
+	// The board's max_postings lets the same board through: every row listed
+	// once, within the request bound.
+	fb = nvidiaBoard(MaxPostings + 500)
+	for i := range fb.jobs {
+		fb.jobs[i].attrs["jobFamilyGroup"] = []string{fid(2, i%10)}
+	}
+	s, _ := fakeSource(fb, nil)
+	w = newWalker(s, jobsURL, MaxPostings+500)
+	if _, err := w.walk(context.Background(), map[string][]string{}, 0); err != nil || len(w.rows) != MaxPostings+500 {
+		t.Fatalf("raised limit: %d rows, %v", len(w.rows), err)
+	}
+	if w.requests > listRequests(w.limit) {
+		t.Errorf("%d requests, bound %d", w.requests, listRequests(w.limit))
+	}
+}
+
+// The board's limit is its max_postings within 1..MaxPostingsCeiling, or
+// MaxPostings; the ceiling lists a whole split NVIDIA-sized board many times
+// over, within a bounded number of requests.
+func TestCapFor(t *testing.T) {
+	for n, want := range map[int]int{0: MaxPostings, 1: 1, 3000: 3000, sources.MaxPostingsCeiling: sources.MaxPostingsCeiling} {
+		b := board
+		b.MaxPostings = n
+		if got, err := capFor(b); err != nil || got != want {
+			t.Errorf("capFor(%d) = %d, %v; want %d", n, got, err, want)
+		}
+	}
+	for _, n := range []int{-1, sources.MaxPostingsCeiling + 1} {
+		b := board
+		b.MaxPostings = n
+		if _, err := capFor(b); err == nil {
+			t.Errorf("capFor(%d) accepted", n)
+		}
+	}
+	if MaxPostings < 2753 || sources.MaxPostingsCeiling < MaxPostings || listRequests(sources.MaxPostingsCeiling) > 1100 {
+		t.Errorf("bounds: default %d, ceiling %d, %d requests at the ceiling", MaxPostings, sources.MaxPostingsCeiling, listRequests(sources.MaxPostingsCeiling))
 	}
 }
 
@@ -560,7 +598,7 @@ func TestRateLimitInsideBucketIsRetried(t *testing.T) {
 		return fb.handle(r)
 	})
 	s := &source{d: d, now: func() time.Time { return fixedNow }}
-	w := &walker{s: s, endpoint: jobsURL, seen: map[string]bool{}}
+	w := newWalker(s, jobsURL, MaxPostings)
 	if _, err := w.walk(context.Background(), map[string][]string{}, 0); err != nil || len(w.rows) != 2753 || !limited {
 		t.Fatalf("err %v, %d rows, limited %v", err, len(w.rows), limited)
 	}

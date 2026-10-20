@@ -43,10 +43,12 @@ var errDetailGone = errors.New("detail is gone (HTTP 404)")
 func maxGone(n int) int { return max(1, n/10) }
 
 const (
-	// MaxPostings is the most postings one board may list, the union of its
-	// search terms. Listing is cheap (20 rows a request); detail requests are
-	// bounded separately by MaxDetails.
-	MaxPostings = 10000
+	// MaxPostings is the most postings one board may list (the union of its
+	// search terms) unless the board sets max_postings, which may go up to
+	// sources.MaxPostingsCeiling. It fits the largest board seen (NVIDIA,
+	// about 2,750) with room to grow. Listing costs a request per 20 rows;
+	// detail requests are bounded separately by MaxDetails.
+	MaxPostings = 5000
 	// MaxDetails is the most detail requests one board spends in one run.
 	// A source from New fails a board that would need more; one from NewWith
 	// reuses stored postings and defers new ones past it to the next run.
@@ -59,6 +61,17 @@ const (
 	// pageSize is Workday's largest page: a larger limit returns zero rows.
 	pageSize = 20
 )
+
+// capFor is the board's listing limit: its max_postings, or MaxPostings.
+func capFor(b sources.Board) (int, error) {
+	switch {
+	case b.MaxPostings == 0:
+		return MaxPostings, nil
+	case b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling:
+		return 0, fmt.Errorf("max_postings %d outside 1..%d", b.MaxPostings, sources.MaxPostingsCeiling)
+	}
+	return b.MaxPostings, nil
+}
 
 type source struct {
 	d   egress.Doer
@@ -172,7 +185,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if len(terms) == 0 {
 		terms = []string{""}
 	}
-	w := &walker{s: s, endpoint: base + "/jobs", seen: map[string]bool{}}
+	limit, err := capFor(b)
+	if err != nil {
+		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
+	}
+	w := newWalker(s, base+"/jobs", limit)
 	for _, term := range terms {
 		w.term = term
 		if _, err := w.walk(ctx, map[string][]string{}, 0); err != nil {

@@ -400,7 +400,8 @@ and, where verified, `--filter name=value`: `az --token amazon` (`normalized_cou
 `category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
 posting cap fails rather than being truncated, so pick searches narrow enough. Workday lists past
-its 2000-row window by splitting the board on its own facets (up to 10,000 postings); stored
+its 2000-row window by splitting the board on its own facets (5,000 postings by default; a board's
+`max_postings` sets 1 to 10,000); stored
 postings are reused, so a run spends at most 300 detail requests per board and a new large board
 fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page load waits until

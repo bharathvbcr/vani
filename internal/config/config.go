@@ -632,6 +632,14 @@ func ValidBoard(b sources.Board) error {
 	if err := validSearches(b); err != nil {
 		return err
 	}
+	if b.MaxPostings != 0 {
+		if b.ATS != posting.Workday {
+			return fmt.Errorf("board %s/%s: max_postings applies to wd only", b.ATS, b.Token)
+		}
+		if b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling {
+			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means the default)", b.ATS, b.Token, b.MaxPostings, sources.MaxPostingsCeiling)
+		}
+	}
 	if b.ATS == posting.Page {
 		u, err := url.Parse(b.URL)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {

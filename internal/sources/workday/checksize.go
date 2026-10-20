@@ -14,7 +14,7 @@ import (
 
 // CheckSize asks Workday, with one first-page request per search term of b,
 // whether List can list the board, and fails with srcutil.ErrTooManyPostings
-// when a term alone counts more than MaxPostings, or counts past Workday's
+// when a term alone counts more than the board's limit (capFor), or counts past Workday's
 // 2000-row window with no facet that could split it or with one facet alone
 // vouching for the count: List would fail that board on every run. It lists
 // nothing and fetches no detail, so a caller can refuse to save a board List
@@ -36,7 +36,11 @@ func CheckSize(ctx context.Context, d egress.Doer, b sources.Board) error {
 	if err != nil {
 		return fmt.Errorf("workday %q: %w", b.Token, err)
 	}
-	w := &walker{s: &source{d: d, now: time.Now}, endpoint: "https://" + host + "/wday/cxs/" + url.PathEscape(tenant) + "/" + url.PathEscape(site) + "/jobs"}
+	limit, err := capFor(b)
+	if err != nil {
+		return fmt.Errorf("workday %q: %w", b.Token, err)
+	}
+	w := newWalker(&source{d: d, now: time.Now}, "https://"+host+"/wday/cxs/"+url.PathEscape(tenant)+"/"+url.PathEscape(site)+"/jobs", limit)
 	terms := b.SearchTerms()
 	if len(terms) == 0 {
 		terms = []string{""}
@@ -51,9 +55,9 @@ func CheckSize(ctx context.Context, d egress.Doer, b sources.Board) error {
 		count, corroborated := expectedTotal(first.total, first.facets, none)
 		_, splits := chooseSplit(first.facets, none)
 		switch {
-		case count > MaxPostings:
-			return fmt.Errorf("workday %q: search %q: %w: it lists %d postings, over the %d limit",
-				b.Token, term, srcutil.ErrTooManyPostings, count, MaxPostings)
+		case count > limit:
+			return fmt.Errorf("workday %q: search %q: %w: it lists %d postings, over the %d limit (max_postings)",
+				b.Token, term, srcutil.ErrTooManyPostings, count, limit)
 		case count >= window && (!corroborated || !splits):
 			return fmt.Errorf("workday %q: search %q: %w: it lists %d or more postings, past Workday's %d-row window, and its facets cannot split it",
 				b.Token, term, srcutil.ErrTooManyPostings, count, window)
