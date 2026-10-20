@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "state": "ok",
+  "started_at": "2026-10-14T16:41:40Z",
+  "finished_at": "2026-10-14T16:46:40Z",
+  "digest_roles": 12,
+  "counts_before": {
+    "digested": 300,
+    "live": 40
+  },
+  "counts_after": {
+    "digested": 312,
+    "live": 28
+  },
+  "notice": {
+    "v": 1,
+    "announce": true,
+    "title": "Vani digest",
+    "body": "12 roles to review",
+    "thread_id": "vani-run-2026-10-14",
+    "key": "run-1791996100000"
+  }
+}

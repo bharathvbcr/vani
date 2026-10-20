@@ -2,38 +2,36 @@ import Foundation
 import XCTest
 @testable import VaniApplyKit
 
+// vani owns the run notice (cmd/vani/runnotice.go: decideNotice; its cases live
+// in cmd/vani/runnoticewire_test.go). These tests hold what stays in the app:
+// decoding vani's notice, refusing a version it does not read, the notifier
+// lock and announcing each key once. The golden files under Fixtures/runnotice
+// are written by `go test ./cmd/vani -run TestRunNoticeGolden -update`.
+
 private let now = Date(timeIntervalSince1970: 1_792_000_000) // 2026-10-14
 private let finished = now.addingTimeInterval(-3600)
 private let started = finished.addingTimeInterval(-300)
 
-private var utc: Calendar {
-    var c = Calendar(identifier: .gregorian)
-    c.timeZone = TimeZone(identifier: "UTC")!
-    return c
-}
-
 private typealias Run = PipelineStatus.LastRun
-private typealias Advance = Run.Advance
 
-private func lastRun(_ state: Run.State, stage: String? = nil, error: String? = nil, ok: Bool = true, reason: String? = nil,
-                 cause: Run.Cause? = nil, digestRoles: Int? = nil,
-                 digestedBefore: Int? = 300, digestedAfter: Int? = 312, advance: Advance? = nil,
-                 startedAt: Date? = started, finishedAt: Date? = finished) -> Run {
-    Run(ok: ok, reason: reason, state: state, startedAt: startedAt, finishedAt: finishedAt, stage: stage, error: error,
-        cause: cause, digestRoles: digestRoles,
-        countsBefore: digestedBefore.map { ["digested": $0, "live": 40] },
-        countsAfter: digestedAfter.map { ["digested": $0, "live": 28] },
-        advance: advance)
+/// A run as vani would print it, with the notice a vani of this version sends.
+private func lastRun(_ state: Run.State, stage: String? = nil, startedAt: Date? = started, finishedAt: Date? = finished) -> Run {
+    let notice: NoticeWire
+    switch (state, startedAt) {
+    case (.ok, let s?), (.failed, let s?):
+        let day = ISO8601DateFormatter().string(from: finishedAt ?? finished).prefix(10)
+        notice = .post(title: state == .ok ? "Vani digest" : "Vani run failed", body: "body",
+                       threadID: "vani-run-\(day)", key: "run-\(Int64((s.timeIntervalSince1970 * 1000).rounded()))")
+    default:
+        notice = .skip("the run is still going")
+    }
+    return Run(state: state, startedAt: startedAt, finishedAt: finishedAt, stage: stage, notice: notice)
 }
 
-private func notice(_ r: Run, at: Date = now) -> RunNotice? {
-    if case let .post(n) = RunNotice.decide(r, at: at, calendar: utc) { return n }
-    return nil
-}
-
-private func skip(_ r: Run, at: Date = now) -> String? {
-    if case let .skip(why) = RunNotice.decide(r, at: at, calendar: utc) { return why }
-    return nil
+private func golden(_ name: String) throws -> Run {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/runnotice/\(name).json")
+    return try JobsClient.decoder.decode(Run.self, from: try Data(contentsOf: url))
 }
 
 private final class Recorder: NoticePoster {
@@ -46,165 +44,100 @@ private final class MemoryStore: AnnouncedRuns {
 }
 
 final class RunNoticeTests: XCTestCase {
-    // MARK: Mapping (failureNotice and digestBody in cmd/vani/runnotice.go)
+    // MARK: Replaying vani's golden notices
 
-    func testDigestNoticeCountsTheRunsDigestedPostings() {
-        let n = notice(lastRun(.ok))
-        XCTAssertEqual(n?.title, "Vani digest")
-        XCTAssertEqual(n?.body, "12 roles to review")
-        XCTAssertEqual(n?.threadID, "vani-run-2026-10-14")
+    private func goldenNames() throws -> [String] {
+        let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/runnotice")
+        return try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            .filter { $0.hasSuffix(".json") }.map { String($0.dropLast(5)) }.sorted()
     }
 
-    func testDigestBodyWording() {
-        XCTAssertEqual(RunNotice.digestBody(roles: 1, advance: nil), "1 role to review")
-        let one = Advance(eligible: 10, limit: 10, attempted: 10, unread: 1, failed: 0, deferred: 0)
-        XCTAssertEqual(RunNotice.digestBody(roles: 2, advance: one),
-                       "2 roles to review; 1 posting could not be read or scored and waits for the next run")
-        let many = Advance(eligible: 10, limit: 10, attempted: 10, unread: 2, failed: 3, deferred: 0)
-        XCTAssertEqual(RunNotice.digestBody(roles: 5, advance: many),
-                       "5 roles to review; 5 postings could not be read or scored and wait for the next run")
-        let clean = Advance(eligible: 10, limit: 10, attempted: 10, deferred: 0)
-        XCTAssertEqual(RunNotice.digestBody(roles: 5, advance: clean), "5 roles to review")
+    /// Every golden file decodes, and the app posts exactly the title and body
+    /// vani wrote when it says to announce, and nothing, with vani's reason,
+    /// when it does not. Only the notifier lock and the key are the app's.
+    func testGoldenNoticesArePostedAsWritten() throws {
+        let names = try goldenNames()
+        XCTAssertGreaterThanOrEqual(names.count, 10, "the golden set was not found")
+        var posts = 0, skips = 0
+        for name in names {
+            let run = try golden(name)
+            let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().appendingPathComponent("Fixtures/runnotice/\(name).json"))) as! [String: Any]
+            let notice = raw["notice"] as! [String: Any]
+            XCTAssertEqual(notice["v"] as? Int, NoticeWire.supportedVersion, name)
+            let rec = Recorder()
+            // Held since before the run, so only vani's own word decides.
+            let dir = try tempDir(self).path
+            let held = NotifierLock()
+            XCTAssertNil(held.hold(stateDir: dir, at: started.addingTimeInterval(-60)))
+            let announcer = RunAnnouncer(store: MemoryStore(), poster: rec, lock: held)
+            let d = announcer.consider(run, stateDir: dir, at: now)
+            if notice["announce"] as? Bool == true {
+                posts += 1
+                XCTAssertEqual(rec.posted.map(\.title), [notice["title"] as? String], name)
+                XCTAssertEqual(rec.posted.map(\.body), [notice["body"] as? String], name)
+                XCTAssertEqual(rec.posted.map(\.threadID), [notice["thread_id"] as? String], name)
+                XCTAssertEqual(rec.posted.map(\.key), [notice["key"] as? String], name)
+                XCTAssertNil(announcer.lastSkip, name)
+            } else {
+                skips += 1
+                XCTAssertTrue(rec.posted.isEmpty, name)
+                XCTAssertEqual(d, .skip(notice["reason"] as! String), name)
+            }
+        }
+        XCTAssertGreaterThan(posts, 0)
+        XCTAssertGreaterThan(skips, 0)
     }
 
-    func testEmptyDigestPostsNothing() {
-        XCTAssertEqual(skip(lastRun(.ok, digestedBefore: 300, digestedAfter: 300)), "the digest listed no roles")
-        // A count that fell (postings left digested during the run) is no digest either.
-        XCTAssertNotNil(skip(lastRun(.ok, digestedBefore: 300, digestedAfter: 299)))
+    func testGoldenWordsAreVanisNotTheApps() throws {
+        guard case let .post(n) = RunNotice.read(try golden("failed_config")) else { return XCTFail("did not post") }
+        XCTAssertEqual(n.title, "Vani config not reloaded")
+        XCTAssertEqual(n.body, "The config file could not be read, so this run used the previous watchlist. Run vani status for details.")
+        XCTAssertEqual(n.threadID, "vani-run-2026-10-14")
+        XCTAssertEqual(n.key, "run-1791996100000")
+        XCTAssertEqual(n.finishedAt, finished.addingTimeInterval(0))
+        guard case let .post(d) = RunNotice.read(try golden("digest")) else { return XCTFail("did not post") }
+        XCTAssertEqual(d.body, "12 roles to review")
     }
 
-    func testDigestWithoutCountsSaysWhy() {
-        XCTAssertEqual(skip(lastRun(.ok, digestedBefore: nil, digestedAfter: nil)),
-                       "the run record has no ledger counts, so the digest's size is unknown")
+    // MARK: Versions and absent or malformed notices are loud
+
+    private func run(notice: String?) throws -> Run {
+        let extra = notice.map { #","notice":\#($0)"# } ?? ""
+        let raw = Data(#"{"ok":true,"state":"ok","started_at":"2026-10-14T07:55:00Z","finished_at":"2026-10-14T08:00:00Z"\#(extra)}"#.utf8)
+        return try JobsClient.decoder.decode(Run.self, from: raw)
     }
 
-    func testFailureVocabulary() {
-        let see = " Run vani status for details."
-        let cases: [(Run, String)] = [
-            (lastRun(.failed, stage: "pipeline", advance: Advance(eligible: 9, limit: 9, attempted: 5, unread: 5, deferred: 4, stopped: .unreadStreak)),
-             "No decision backend could read the postings; they stay live for the next run." + see),
-            (lastRun(.failed, stage: "digest", advance: Advance(eligible: 9, limit: 9, attempted: 9, unread: 9, deferred: 0, stopped: .noneRead)),
-             "No decision backend could read the postings; they stay live for the next run." + see),
-            (lastRun(.failed, stage: "pipeline", advance: Advance(eligible: 9, limit: 9, attempted: 5, failed: 5, deferred: 4, stopped: .failStreak)),
-             "Postings kept failing a stage; they wait for the next run." + see),
-            (lastRun(.failed, stage: "digest", advance: Advance(eligible: 9, limit: 9, attempted: 9, failed: 9, deferred: 0, stopped: .noneAdvanced)),
-             "Postings kept failing a stage; they wait for the next run." + see),
-            (lastRun(.failed, stage: "pipeline"), "The pipeline stopped before the digest." + see),
-            (lastRun(.failed, stage: "pipeline", advance: Advance(eligible: 9, limit: 3, attempted: 3, deferred: 6, stopped: .cap)),
-             "The pipeline stopped before the digest." + see),
-            (lastRun(.failed, stage: "digest"), "The digest could not be finished." + see),
-            (lastRun(.failed), "The digest could not be finished." + see),
-            (lastRun(.failed, stage: "digest", advance: Advance(eligible: 1, limit: 1, attempted: 1, deferred: 0, stopped: .unknown("new_reason"))),
-             "The digest could not be finished." + see),
-        ]
-        for (r, body) in cases {
-            let n = notice(r)
-            XCTAssertEqual(n?.title, "Vani run failed", "\(r)")
-            XCTAssertEqual(n?.body, body, "\(r)")
+    func testAnUnknownNoticeVersionIsRefusedLoudly() throws {
+        let future = try run(notice: #"{"v":2,"announce":true,"title":"t","body":"b","thread_id":"x","key":"k"}"#)
+        let want = RunNoticeDecision.skip("vani's run notice is version 2; this app reads version 1. Rebuild the app.")
+        XCTAssertEqual(RunNotice.read(future), want)
+        let rec = Recorder()
+        let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock())
+        XCTAssertEqual(a.consider(future, stateDir: try tempDir(self).path, at: now), want)
+        XCTAssertTrue(rec.posted.isEmpty)
+        XCTAssertNotNil(a.lastSkip)
+
+        let missing = try run(notice: #"{"announce":true,"title":"t","body":"b","thread_id":"x","key":"k"}"#)
+        XCTAssertEqual(RunNotice.read(missing), .skip("vani's run notice is version missing; this app reads version 1. Rebuild the app."))
+    }
+
+    func testAMalformedNoticeIsRefusedNotPosted() throws {
+        for bad in [#"[]"#, #""text""#, #"{"v":1}"#, #"{"v":1,"announce":true,"title":"","body":"b","thread_id":"x","key":"k"}"#,
+                    #"{"v":1,"announce":true,"title":"t","body":"b","thread_id":"x"}"#] {
+            guard case .skip = RunNotice.read(try run(notice: bad)) else { return XCTFail("posted for \(bad)") }
         }
     }
 
-    func testCauseVocabulary() {
-        let see = " Run vani status for details."
-        let unread = Advance(eligible: 9, limit: 9, attempted: 5, unread: 5, deferred: 4, stopped: .unreadStreak)
-        let stopped = ("Vani stopped", "The ledger could not be written safely, so Vani stopped. See vani's log.")
-        let heldBack = ("Vani digest held back", "Your Jobs marks could not be read; see vani's log")
-        let stale = ("Vani config not reloaded", "The config file could not be read, so this run used the previous watchlist." + see)
-        let cases: [(Run, (String, String))] = [
-            (lastRun(.failed, stage: "digest", cause: .ledgerFatal), stopped),
-            // failureNotice's order: a fatal ledger outranks a stop reason and the stage.
-            (lastRun(.failed, stage: "pipeline", cause: .ledgerFatal, advance: unread), stopped),
-            (lastRun(.failed, stage: "digest", cause: .digestHeldBack), heldBack),
-            (lastRun(.failed, stage: "digest", cause: .digestHeldBack, advance: unread), heldBack),
-            (lastRun(.failed, stage: "digest", cause: .configStale), stale),
-            // A stale config ranks below the stop reason and a pipeline failure.
-            (lastRun(.failed, stage: "pipeline", cause: .configStale), ("Vani run failed", "The pipeline stopped before the digest." + see)),
-            (lastRun(.failed, stage: "digest", cause: .configStale, advance: unread),
-             ("Vani run failed", "No decision backend could read the postings; they stay live for the next run." + see)),
-            // A cause a newer vani adds reads as the stage's text.
-            (lastRun(.failed, stage: "digest", cause: .unknown("new_cause")), ("Vani run failed", "The digest could not be finished." + see)),
-            (lastRun(.failed, stage: "pipeline", cause: .unknown("new_cause")), ("Vani run failed", "The pipeline stopped before the digest." + see)),
-        ]
-        for (r, want) in cases {
-            let n = notice(r)
-            XCTAssertEqual(n?.title, want.0, "\(r)")
-            XCTAssertEqual(n?.body, want.1, "\(r)")
-        }
+    func testAnAbsentNoticeIsNotAQuietDay() throws {
+        guard case let .skip(why) = RunNotice.read(try run(notice: nil)) else { return XCTFail("posted without a notice") }
+        XCTAssertTrue(why.contains("sends no run notice"), why)
     }
 
-    func testConfigStaleRunWithItsDigestWrittenIsNotADigestFailure() {
-        // The digest was written (digest_roles), but the run is failed at stage
-        // digest because the config could not be re-read.
-        let n = notice(lastRun(.failed, stage: "digest", cause: .configStale, digestRoles: 5))
-        XCTAssertEqual(n?.title, "Vani config not reloaded")
-        XCTAssertFalse(n?.body.contains("could not be finished") ?? true)
-        // An older vani records no cause: the stage's text, as before, even
-        // when the error text names the cause.
-        XCTAssertEqual(notice(lastRun(.failed, stage: "digest", error: "config reload failed; this run uses the previous watchlist",
-                                      digestRoles: 5))?.body,
-                       "The digest could not be finished. Run vani status for details.")
-    }
-
-    func testDigestRolesIsTheDigestsSize() {
-        // Reconcile moved 12 digested postings to dead in the same run: the
-        // ledger's digested count did not move, but the digest listed 12.
-        XCTAssertEqual(notice(lastRun(.ok, digestRoles: 12, digestedBefore: 300, digestedAfter: 300))?.body, "12 roles to review")
-        // And the other way: the count rose by 12, the digest listed 3.
-        XCTAssertEqual(notice(lastRun(.ok, digestRoles: 3))?.body, "3 roles to review")
-        XCTAssertEqual(skip(lastRun(.ok, digestRoles: 0)), "the digest listed no roles")
-        // Recorded with no ledger counts: the size is still known.
-        XCTAssertEqual(notice(lastRun(.ok, digestRoles: 1, digestedBefore: nil, digestedAfter: nil))?.body, "1 role to review")
-        // An older vani records none: the counts' difference, as before.
-        XCTAssertEqual(RunNotice.digestedRoles(lastRun(.ok)), 12)
-    }
-
-    func testDecodesCauseAndDigestRoles() throws {
-        func run(_ extra: String) throws -> Run {
-            let raw = Data(#"{"ok":true,"state":"failed","started_at":"2026-10-14T07:55:00Z","finished_at":"2026-10-14T08:00:00Z","stage":"digest"\#(extra)}"#.utf8)
-            return try JobsClient.decoder.decode(Run.self, from: raw)
-        }
-        let full = try run(#","cause":"config_stale","digest_roles":4"#)
-        XCTAssertEqual(full.cause, .configStale)
-        XCTAssertEqual(full.digestRoles, 4)
-        XCTAssertEqual(try run(#","cause":"ledger_fatal""#).cause, .ledgerFatal)
-        XCTAssertEqual(try run(#","cause":"digest_held_back""#).cause, .digestHeldBack)
-        XCTAssertEqual(try run(#","cause":"new_cause""#).cause, .unknown("new_cause"))
-        XCTAssertNil(try run(#","cause":"""#).cause)
-        let old = try run("")
-        XCTAssertNil(old.cause)
-        XCTAssertNil(old.digestRoles)
-        XCTAssertEqual(try run(#","digest_roles":0"#).digestRoles, 0)
-    }
-
-    func testErrorTextNeverReachesTheNotice() {
-        let secret = "GET https://boards.example.com/jobs?token=abc123: Jane Doe <jane@example.com>"
-        let n = notice(lastRun(.failed, stage: "digest", error: secret))
-        XCTAssertNotNil(n)
-        for s in [n?.title ?? "", n?.body ?? "", n?.threadID ?? "", n?.key ?? ""] {
-            XCTAssertFalse(s.contains("example"), s)
-            XCTAssertFalse(s.contains("abc123"), s)
-        }
-    }
-
-    func testRunsThatNeedNoNotice() {
-        XCTAssertEqual(skip(lastRun(.running, finishedAt: nil)), "the run is still going")
-        XCTAssertEqual(skip(lastRun(.cancelled, stage: "pipeline")), "the run was cancelled")
-        XCTAssertEqual(skip(lastRun(.interrupted, finishedAt: nil)), "the run did not finish (its process is gone)")
-        XCTAssertEqual(skip(lastRun(.unknown)), "the run's state is one this app does not know")
-    }
-
-    // MARK: Missing or corrupt records
-
-    func testMissingRecordPostsNothingAndSaysSo() {
-        let never = Run(state: .never)
-        XCTAssertEqual(skip(never), "no run has been recorded yet")
-    }
-
-    func testCorruptRecordPostsNothingAndSaysSo() {
-        let corrupt = Run(ok: false, reason: "run record is corrupt: unexpected EOF", state: .unknown)
-        XCTAssertEqual(skip(corrupt), "the run record could not be read: run record is corrupt: unexpected EOF")
-        let unexplained = Run(ok: false, state: .unknown)
-        XCTAssertEqual(skip(unexplained), "the run record could not be read")
+    func testAnnounceWithoutAnEndTimeIsRefused() throws {
+        let r = Run(state: .ok, startedAt: started, finishedAt: nil,
+                    notice: .post(title: "t", body: "b", threadID: "x", key: "k"))
+        guard case .skip = RunNotice.read(r) else { return XCTFail("posted with no end time") }
     }
 
     func testCorruptStatusJSONPostsNothing() throws {
@@ -219,27 +152,11 @@ final class RunNoticeTests: XCTestCase {
         XCTAssertEqual(a.lastSkip, "vani status could not be read: vani printed something that is not JSON")
     }
 
-    func testRecordWithoutTimesPostsNothing() {
-        XCTAssertEqual(skip(lastRun(.failed, stage: "digest", startedAt: nil)), "the run record has no start or end time")
-        XCTAssertEqual(skip(lastRun(.ok, finishedAt: nil)), "the run record has no start or end time")
-    }
-
-    func testOldRunIsNotNews() {
-        XCTAssertNotNil(notice(lastRun(.ok), at: finished.addingTimeInterval(RunNotice.maxAge - 1)))
-        XCTAssertNotNil(skip(lastRun(.ok), at: finished.addingTimeInterval(RunNotice.maxAge + 1)))
-    }
-
-    func testDecodesWhatVaniPrints() throws {
-        let raw = Data("""
-        {"ok":true,"state":"failed","started_at":"2026-10-14T07:55:00.123456789Z","finished_at":"2026-10-14T08:00:00Z",\
-        "stage":"pipeline","error":"pipeline: GET https://x.example/jobs: 503",\
-        "counts_before":{"digested":3},"counts_after":{"digested":3},\
-        "advance":{"eligible":4,"limit":4,"attempted":4,"unread":4,"failed":0,"deferred":0,"stopped":"none_read"}}
-        """.utf8)
-        let r = try JobsClient.decoder.decode(Run.self, from: raw)
-        let n = notice(r, at: Date(timeIntervalSince1970: 1_792_000_000).addingTimeInterval(-6 * 3600))
-        XCTAssertEqual(n?.body, "No decision backend could read the postings; they stay live for the next run. Run vani status for details.")
-        XCTAssertEqual(n?.threadID, "vani-run-2026-10-14")
+    func testErrorTextNeverReachesThePostedNotice() throws {
+        // The app never sees the run's error text as notice text: it posts only vani's words.
+        let r = try run(notice: #"{"v":1,"announce":true,"title":"Vani run failed","body":"The digest could not be finished.","thread_id":"vani-run-2026-10-14","key":"k"}"#)
+        guard case let .post(n) = RunNotice.read(r) else { return XCTFail("did not post") }
+        XCTAssertEqual([n.title, n.body], ["Vani run failed", "The digest could not be finished."])
     }
 
     // MARK: Announcing once, while the app holds the notifier lock
@@ -259,9 +176,9 @@ final class RunNoticeTests: XCTestCase {
         let store = MemoryStore()
         let (a, lock, dir) = try announcer(store: store, poster: rec)
         let r = lastRun(.ok)
-        a.consider(r, stateDir: dir, at: now, calendar: utc)
-        a.consider(r, stateDir: dir, at: now, calendar: utc)
-        a.consider(r, stateDir: dir, at: now.addingTimeInterval(60), calendar: utc)
+        a.consider(r, stateDir: dir, at: now)
+        a.consider(r, stateDir: dir, at: now)
+        a.consider(r, stateDir: dir, at: now.addingTimeInterval(60))
         XCTAssertEqual(rec.posted.count, 1)
         XCTAssertEqual(a.lastSkip, "this run was already announced")
 
@@ -269,7 +186,7 @@ final class RunNoticeTests: XCTestCase {
         lock.release()
         let again = Recorder()
         let (b, _, _) = try announcer(store: store, poster: again, stateDir: dir)
-        b.consider(r, stateDir: dir, at: now, calendar: utc)
+        b.consider(r, stateDir: dir, at: now)
         XCTAssertTrue(again.posted.isEmpty)
         XCTAssertEqual(b.lastSkip, "this run was already announced")
     }
@@ -277,10 +194,10 @@ final class RunNoticeTests: XCTestCase {
     func testTheNextRunIsAnnounced() throws {
         let rec = Recorder()
         let (a, _, dir) = try announcer(poster: rec)
-        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: now)
         let next = lastRun(.failed, stage: "pipeline", startedAt: started.addingTimeInterval(86400),
                            finishedAt: finished.addingTimeInterval(86400))
-        a.consider(next, stateDir: dir, at: now.addingTimeInterval(86400), calendar: utc)
+        a.consider(next, stateDir: dir, at: now.addingTimeInterval(86400))
         XCTAssertEqual(rec.posted.map(\.title), ["Vani digest", "Vani run failed"])
         XCTAssertNotEqual(rec.posted[0].key, rec.posted[1].key)
         XCTAssertEqual(rec.posted[1].threadID, "vani-run-2026-10-15")
@@ -289,10 +206,10 @@ final class RunNoticeTests: XCTestCase {
     func testARunningRecordThenItsEndAnnouncesTheEnd() throws {
         let rec = Recorder()
         let (a, _, dir) = try announcer(poster: rec)
-        a.consider(lastRun(.running, finishedAt: nil), stateDir: dir, at: now, calendar: utc)
+        a.consider(lastRun(.running, finishedAt: nil), stateDir: dir, at: now)
         XCTAssertTrue(rec.posted.isEmpty)
         XCTAssertEqual(a.lastSkip, "the run is still going")
-        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: now)
         XCTAssertEqual(rec.posted.count, 1)
         XCTAssertNil(a.lastSkip)
     }
@@ -300,8 +217,8 @@ final class RunNoticeTests: XCTestCase {
     func testSkippedReadsLeaveTheStoreAlone() throws {
         let store = MemoryStore()
         let (a, _, dir) = try announcer(store: store, poster: Recorder())
-        a.consider(Run(ok: false, reason: "corrupt", state: .unknown), stateDir: dir, at: now, calendar: utc)
-        a.consider(Run(state: .never), stateDir: dir, at: now, calendar: utc)
+        a.consider(Run(ok: false, reason: "corrupt", state: .unknown), stateDir: dir, at: now)
+        a.consider(Run(state: .never), stateDir: dir, at: now)
         XCTAssertNil(store.lastAnnounced)
     }
 
@@ -311,10 +228,10 @@ final class RunNoticeTests: XCTestCase {
         addTeardownBlock { UserDefaults(suiteName: name)?.removePersistentDomain(forName: name) }
         let rec = Recorder()
         let (a, lock, dir) = try announcer(store: DefaultsAnnouncedRuns(defaults), poster: rec)
-        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: now)
         lock.release()
         let (b, _, _) = try announcer(store: DefaultsAnnouncedRuns(defaults), poster: rec, stateDir: dir)
-        b.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        b.consider(lastRun(.ok), stateDir: dir, at: now)
         XCTAssertEqual(rec.posted.count, 1)
     }
 
@@ -325,7 +242,7 @@ final class RunNoticeTests: XCTestCase {
         let store = MemoryStore()
         // The app opened after the run ended: the daemon saw no lock and posted.
         let (a, _, dir) = try announcer(store: store, poster: rec, lockedAt: finished.addingTimeInterval(60))
-        let d = a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        let d = a.consider(lastRun(.ok), stateDir: dir, at: now)
         XCTAssertEqual(d, .skip("the run finished before this app took over notices, so the daemon announced it"))
         XCTAssertTrue(rec.posted.isEmpty)
         XCTAssertNil(store.lastAnnounced)
@@ -398,13 +315,13 @@ final class RunNoticeTests: XCTestCase {
         let rec = Recorder()
         let lock = NotifierLock()
         let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: lock)
-        a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        a.consider(lastRun(.ok), stateDir: dir, at: now)
         XCTAssertTrue(rec.posted.isEmpty)
         XCTAssertEqual(lock.heldSince, now)
         XCTAssertEqual(lock.path, URL(fileURLWithPath: dir).appendingPathComponent("app/notifier.lock").path)
         // The next day's run ends while the app is up: the app announces it.
         let next = lastRun(.ok, startedAt: started.addingTimeInterval(86400), finishedAt: finished.addingTimeInterval(86400))
-        a.consider(next, stateDir: dir, at: now.addingTimeInterval(86400), calendar: utc)
+        a.consider(next, stateDir: dir, at: now.addingTimeInterval(86400))
         XCTAssertEqual(rec.posted.count, 1)
         XCTAssertEqual(lock.heldSince, now, "keeping the lock does not move its start")
     }
@@ -413,13 +330,13 @@ final class RunNoticeTests: XCTestCase {
         let rec = Recorder()
         let (_, holder, dir) = try announcer(poster: Recorder()) // another copy holds it
         let a = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock())
-        let d = a.consider(lastRun(.ok), stateDir: dir, at: now, calendar: utc)
+        let d = a.consider(lastRun(.ok), stateDir: dir, at: now)
         XCTAssertNotNil(holder.heldSince)
         XCTAssertEqual(d, .skip("the daemon announces runs, because this app does not hold the notifier lock: another copy of Vani Apply announces runs"))
         XCTAssertTrue(rec.posted.isEmpty)
 
         let none = RunAnnouncer(store: MemoryStore(), poster: rec, lock: NotifierLock())
-        if case let .skip(why) = none.consider(lastRun(.ok), stateDir: "", at: now, calendar: utc) {
+        if case let .skip(why) = none.consider(lastRun(.ok), stateDir: "", at: now) {
             XCTAssertTrue(why.hasSuffix("vani reported no state folder"), why)
         } else {
             XCTFail("posted without a state folder")

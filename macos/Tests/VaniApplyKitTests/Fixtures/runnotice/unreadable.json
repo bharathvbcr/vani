@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "reason": "run record is corrupt: unexpected EOF",
+  "state": "unknown",
+  "notice": {
+    "v": 1,
+    "announce": false,
+    "reason": "the run record could not be read: run record is corrupt: unexpected EOF"
+  }
+}

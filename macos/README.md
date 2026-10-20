@@ -356,12 +356,15 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - The appex is sandboxed and every piece carries the App Group entitlement.
   - The appex's `LC_MAIN` entry is the `_NSExtensionMain` stub, and its principal class is
     `SafariWebExtensionHandler`.
-  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage,
-    stop reason and cause code maps to a notice, in `failureNotice`'s order. They cover
-    `digest_roles` over the counts' difference, the fallback when a vani records neither, and
-    that error text stays out, even text that names a cause. They also cover missing,
-    corrupt and unreadable records, and that a run is announced once, including across a
-    relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
+  - Run notifications. vani owns the notice (`decideNotice`, `cmd/vani/runnotice.go`): whether to
+    announce, the words, the key and the version, printed as `last_run.notice` by
+    `status --json`. Its cases (every run state, stage, stop reason and cause code, `digest_roles`
+    over the counts' difference, error text kept out, missing and corrupt records, the age limit)
+    are in `cmd/vani/runnoticewire_test.go`, which also writes the golden files under
+    `Tests/VaniApplyKitTests/Fixtures/runnotice` (`go test ./cmd/vani -run TestRunNoticeGolden
+    -update`). `RunNoticeTests` replay them: the app posts exactly vani's title and body, refuses
+    a notice version it does not read (and a missing or malformed one) loudly, and announces
+    each run once, including across a relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
     refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers
     the daemon's side: it skips while the lock is held, posts when there is no lock, a stale file
     or an unopenable path, and never creates the file.
@@ -386,7 +389,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
     reopen goes through `MainWindowReveal` (`MainWindowRevealTests`). Without the fix, closing
     the window quit the app, so there was no running app to click through to.
   - The text of a posted notice as shown on screen. The log hides it; it comes from
-    `RunNotice.decide`, which `RunNoticeTests` cover.
+    vani's `decideNotice`, which `cmd/vani/runnoticewire_test.go` covers.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.
