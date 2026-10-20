@@ -94,7 +94,31 @@ final class JobsModel {
         if selection != nil { loadDetail() }
     }
 
+    /// Why the label table is the built-in fallback (vani's could not be read), or
+    /// nil once vani's own is loaded. Shown beside the filters: fallback words are
+    /// never presented as vani's.
+    private(set) var labelsNote: String? = "Vani's label table has not been read yet; showing built-in labels."
+    private var labelsLoaded = false
+
+    /// Read `vani labels --json` once; on failure keep the fallback, say so in
+    /// `labelsNote` and try again at the next refresh.
+    func loadLabels() async {
+        guard !labelsLoaded else { return }
+        let c = client()
+        let result = await Task.detached(priority: .userInitiated) { Result { try c.labels() } }.value
+        switch result {
+        case let .success(table):
+            Labels.install(table)
+            labelsLoaded = true
+            labelsNote = nil
+        case let .failure(err):
+            Labels.useFallback()
+            labelsNote = "Showing built-in labels: vani labels could not be read (\(err))"
+        }
+    }
+
     func refresh() async {
+        await loadLabels()
         listGeneration += 1
         let gen = listGeneration
         loading = true

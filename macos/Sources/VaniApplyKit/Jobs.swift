@@ -219,7 +219,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     }
 
     /// The fixture's seniority options, most junior first.
-    public static let seniorityOptions = ["intern_or_new_grad", "mid", "senior", "staff_plus", "manager"]
+    public static var seniorityOptions: [String] { Labels.current.values(Labels.current.triage["seniority"] ?? []) }
     /// The currencies Vani reads pay in (jobinsight.PayCurrencies).
     public static let payCurrencies = ["USD", "CAD", "EUR", "GBP", "AUD", "CHF", "SGD", "NZD", "INR", "JPY", "SEK", "NOK", "DKK", "PLN"]
 
@@ -310,73 +310,39 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
 
     /// Triage's role-fit label in words, when triage gave one. The string is
     /// Go's (`row.fitLabel`); only a row-less job (a vani older than the row
-    /// contract) falls back to the `words` table below.
+    /// contract) reads the loaded vocabulary (`Labels`) itself.
     public var fitLabel: String? {
         if let row { return row.fitLabel }
-        return Self.words[triage?["role_fit"] ?? ""]
+        guard let fit = triage?["role_fit"] else { return nil }
+        return Labels.current.fit.first { $0.value == fit }?.label
     }
 
     /// Triage's other readings in words (seniority, work mode, sponsorship),
     /// leaving out "not stated".
     public var triageLabels: [String] {
-        ["seniority", "work_mode", "sponsorship"].compactMap { Self.words[triage?[$0] ?? ""] }
+        ["seniority", "work_mode", "sponsorship"].compactMap { slot in
+            guard let v = triage?[slot], v != "not_stated" else { return nil }
+            return Labels.current.label(for: v)
+        }
     }
 
-    /// Career track / category folder options.
-    public static let categoryOptions = [
-        "ai-engineer",
-        "agent-systems",
-        "ml-inference-systems",
-        "ml-research",
-        "biomedical-ai",
-        "biomedical-research",
-        "human-factors-medical-devices",
-        "other",
-    ]
-
-    static let categoryWords: [String: String] = [
-        "ai-engineer": "AI Engineer",
-        "agent-systems": "Agent Systems",
-        "ml-inference-systems": "ML Inference Systems",
-        "ml-research": "ML Research",
-        "biomedical-ai": "Biomedical AI",
-        "biomedical-research": "Biomedical Research",
-        "human-factors-medical-devices": "Human Factors",
-        "other": "Other",
-    ]
+    /// Career track / category folder options, in vani's order.
+    public static var categoryOptions: [String] { Labels.current.values(Labels.current.category) }
 
     /// Category folder / track name in words ("ai-engineer" → "AI Engineer").
     public var categoryLabel: String? {
         guard let category, !category.isEmpty else { return nil }
-        return Self.categoryWords[category] ?? category.replacingOccurrences(of: "-", with: " ").capitalized
+        return Labels.current.label(for: category) ?? category.replacingOccurrences(of: "-", with: " ").capitalized
     }
 
     /// A jdtriage option value in words ("strong_fit" → "Strong fit"); "none"
-    /// is no reading.
-    public static func label(for option: String) -> String {
-        if option == "none" { return "No reading" }
-        if let cat = categoryWords[option] { return cat }
-        return words[option] ?? option.replacingOccurrences(of: "_", with: " ")
-    }
+    /// is no reading. The words are vani's (`Labels`).
+    public static func label(for option: String) -> String { Labels.label(for: option) }
 
-    /// The fixture's role_fit options, best first (cmd/vani roleFitOrder).
-    public static let roleFitOrder = ["strong_fit", "partial_fit", "adjacent", "mismatch_seniority", "mismatch_domain"]
-    public static let workModeOptions = ["remote", "hybrid", "onsite", "not_stated"]
-    public static let sponsorshipOptions = ["sponsors_visa", "no_sponsorship", "citizenship_or_clearance_required", "not_stated"]
-
-    // FALLBACK vocabulary: the jdtriage fixture's option values in words, for a
-    // job with no `row` (older vani) and for filter menus and charts, which list
-    // options rather than rows. Go's jobview.FitLabels is the owner; JobRowTests
-    // fails if the fit entries here drift from the golden file's `fit_labels`.
-    static let words: [String: String] = [
-        "strong_fit": "Strong fit", "partial_fit": "Partial fit", "adjacent": "Adjacent",
-        "mismatch_seniority": "Seniority mismatch", "mismatch_domain": "Different field",
-        "intern_or_new_grad": "Intern / new grad", "mid": "Mid-level", "senior": "Senior",
-        "staff_plus": "Staff+", "manager": "Manager",
-        "remote": "Remote", "hybrid": "Hybrid", "onsite": "On-site",
-        "sponsors_visa": "Sponsors visas", "no_sponsorship": "No sponsorship",
-        "citizenship_or_clearance_required": "Citizenship or clearance",
-    ]
+    /// The fixture's role_fit options, best first, and the other slots' options.
+    public static var roleFitOrder: [String] { Labels.current.values(Labels.current.fit) }
+    public static var workModeOptions: [String] { Labels.current.values(Labels.current.triage["work_mode"] ?? []) }
+    public static var sponsorshipOptions: [String] { Labels.current.values(Labels.current.triage["sponsorship"] ?? []) }
 
     /// One picked reason. Vani splits the note (cmd/vani/jobsinsight.go
     /// parseReasons); a note it cannot split arrives whole as `.other`.
