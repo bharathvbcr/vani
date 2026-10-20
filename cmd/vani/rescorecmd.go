@@ -27,6 +27,10 @@ type rescorePlan struct {
 	// ZeroOfZero are scored postings whose stored coverage is DevPrism's 0 of 0
 	// (pipeline.ZeroOfZero); the repair marks them unknown without a DevPrism call.
 	ZeroOfZero int
+	// Unknown are live postings marked gap.coverage_unknown (DevPrism found no
+	// must-haves). Disjoint from Digested, which counts only postings with
+	// neither a rank nor that marker, and from Eligible and NoDescription.
+	Unknown int
 }
 
 // repairUnknownCoverage marks every ZeroOfZero record in l as unknown coverage
@@ -59,8 +63,11 @@ func planRescore(recs []ledger.Record) rescorePlan {
 			p.Eligible++
 		case pipeline.Unscored(r):
 			p.NoDescription++
-		case r.Status == posting.Digested && r.Annotations[ledger.AnnRank] == "":
+		case r.Status == posting.Digested && r.Annotations[ledger.AnnRank] == "" && r.Annotations[pipeline.AnnCoverageUnknown] == "":
 			p.Digested++
+		}
+		if r.Annotations[pipeline.AnnCoverageUnknown] != "" && r.Status != posting.Dead && r.Status != posting.Dropped {
+			p.Unknown++
 		}
 		if pipeline.ZeroOfZero(r) {
 			p.ZeroOfZero++
@@ -193,5 +200,8 @@ func (e *env) printRescoreLeftAlone(p rescorePlan) {
 	}
 	if p.Digested > 0 {
 		fmt.Fprintf(e.stdout, "%d digested posting(s) have no score; left alone\n", p.Digested)
+	}
+	if p.Unknown > 0 {
+		fmt.Fprintf(e.stdout, "%d posting(s) have unknown coverage: DevPrism found no must-haves\n", p.Unknown)
 	}
 }
