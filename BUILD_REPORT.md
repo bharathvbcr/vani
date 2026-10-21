@@ -99,6 +99,47 @@ the exceptions are named below.
   - **Merge note:** this overlaps wt-jibe's uncommitted eightfold.go and apple.go, so expect a rebase when wt-jibe
     lands. It is item 9 in the merge ask.
 
+## Merged to main (owner instruction, 2026-10-21)
+
+All nine branches above are merged (`9b4af91`..`4ce02f4`); main is local and not pushed.
+- **Merges:** `internal/eval/store.go` (G6 + G5) and `cmd/vani/runwire.go` (G4 + G13) auto-merged.
+- **G4 gap:** G4 was merged on your instruction, overriding Fable's merge gate. The app.go:217 gap is still open and tracked on
+  ft-84d4fe25.
+- **Checks after merging:**
+  - Go: build and vet clean, `go test ./...` with no FAIL.
+  - Swift: 557 run, 7 skipped, 0 failed.
+  - Extension: typecheck ok, and `bun test` shows 1,186 pass and 0 fail.
+- **Board:** a request to move the seven cards with no open owner check to done was held by Manvi ("no verification record exists
+  for this task: Manvi's work.verify.task has not judged it"), so they stay in review. G1 and G8 stay in review for
+  the owner checks.
+
+## Wave 3b — built off merged main 4ce02f4 (not merged)
+
+| card | branch @ sha | status |
+|---|---|---|
+| ft-5ddec968 delete native listAnswers/queryCandidates | `worktree-agent-a3300d1f70cebfdcf` @ 862947f | review |
+| ft-fa1f7de7 notify late-lock flake | `worktree-agent-a649f8a7e5d9446fb` @ da0e4d3 | review |
+| G12 ft-8cd27d93 (A2-5, B1-4, A1-8 only) | `worktree-agent-a0db7f71af6c87972` @ d50eb0a | in progress (B1-2 waits for wt-jibe) |
+
+- **ft-5ddec968:**
+  - Deleted 567 lines and added 7. No callers remain, checked two ways: `rg -uu` and DevMap.
+  - `repairMirror` and `readMirrorOrJSON` were only reachable from the deleted ops.
+  - Swift: 543 run, 0 failed. Extension: 1,186 pass, typecheck ok.
+  - It had no separate adversarial pass: the change only deletes code, and its attack surface is "anything still
+    calls it", which the two checks covered.
+- **ft-fa1f7de7 (test-only):**
+  - The fake app's lock attempt collided with `appHolds`' probe lock.
+  - It failed 2 of 500 runs under load before the fix and passed 1,000 of 1,000 after.
+- **G12:**
+  - **A2-5:** a re-opened job now forgets its stale category.
+  - **A1-8:** `retriage --dry-run` reads a snapshot and no longer takes the ledger lock.
+  - **B1-4:** an audit answer now merges with existing slot labels.
+  - **Adversarial pass:** it found the root cause behind B1-4. The eval label store had no read-modify-write across
+    processes; eight concurrent `audit answer` calls all "won". `Store.Update` now does that read-modify-write under a
+    flock on `labels.lock`, and `Put` goes through it. On-disk format is unchanged.
+- **New flake folded into ft-2673557b:** `cmd/vani TestJobsInsightScalesTo5000Postings` fails under `-race` with heavy
+  parallel load.
+
 ## Deferred or blocked (and why)
 
 | card | reason |
