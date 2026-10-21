@@ -66,6 +66,15 @@ public protocol JobsBackend: Sendable {
     func ingest(payload: Data) throws -> Data
 }
 
+/// A backend that answers every call with one error: what stands in when the settings that say
+/// where `vani jobs` keeps its state could not be read.
+struct RefusingJobsBackend: JobsBackend {
+    let error: BankError
+    func find(url: String) throws -> JobMatch { throw error }
+    func markApplied(key: String) throws { throw error }
+    func ingest(payload: Data) throws -> Data { throw error }
+}
+
 extension JobsClient: JobsBackend {
     public func find(url: String) throws -> JobMatch {
         try call(["jobs", "find", "--json", "--url", url])

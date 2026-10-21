@@ -196,6 +196,10 @@ public struct DraftRunner: Sendable {
     let timeout: TimeInterval
     public static let keychainTimeout: TimeInterval = 60
     let keychainTimeout: TimeInterval
+    /// When set, every launch (`prepare`, so draft, suggest, resume and run-once) is refused with
+    /// this reply instead of starting vani: the settings that say which config and account to
+    /// use could not be read, and defaults would run against the wrong ones.
+    public let refusal: DraftReply?
 
     /// How vani gets an Anthropic key.
     public enum KeySource: Sendable, Equatable {
@@ -213,7 +217,9 @@ public struct DraftRunner: Sendable {
                 timeout: TimeInterval = DraftRunner.timeout,
                 keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
                 key: @escaping KeyLookup = { nil },
-                decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) {
+                decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) },
+                refusal: DraftReply? = nil) {
+        self.refusal = refusal
         self.vaniBinary = vaniBinary
         self.configPath = configPath
         self.stateDir = stateDir
@@ -241,6 +247,7 @@ public struct DraftRunner: Sendable {
 
     /// Run one draft. Never throws: every failure is a reply with a code.
     public func run(_ request: DraftRequest) -> DraftReply {
+        if let refusal { return refusal }
         guard FileManager.default.isExecutableFile(atPath: vaniBinary.path) else {
             return .failure("config", "the vani binary is missing at \(vaniBinary.path)")
         }
@@ -328,6 +335,7 @@ public struct DraftRunner: Sendable {
     /// it. It may wait on a Keychain prompt, up to `keychainTimeout`, so call it
     /// off the main thread.
     public func prepare(_ arguments: [String], withDecisionKey: Bool = false, usesModel: Bool = true) -> Prepared {
+        if let refusal { return .refused(refusal) }
         let program: URL, argv: [String]
         switch command(arguments, usesModel: usesModel) {
         case let .refused(f): return .refused(f)

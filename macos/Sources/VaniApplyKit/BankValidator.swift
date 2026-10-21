@@ -102,6 +102,13 @@ public enum BankValidator {
 
     static func isNumber(_ x: Any?) -> Bool { x is NSNumber && !isBool(x) }
 
+    /// The one parser for an integer read from an untrusted message: an NSNumber that is not a Bool and
+    /// is integral, finite and within Int range. 1.9 is nil, never 1; 1e300 and 2^64-1 are nil.
+    static func strictInt(_ x: Any?) -> Int? {
+        guard isNumber(x), let n = x as? NSNumber else { return nil }
+        return Int(exactly: n)
+    }
+
     static func isTrue(_ x: Any?) -> Bool { isBool(x) && (x as? NSNumber)?.boolValue == true }
 
     static func stringArray(_ x: Any?, cap: Int) -> [String]? {
@@ -117,8 +124,7 @@ public enum BankValidator {
 
     /// `Number.isSafeInteger(x) && x >= 0 ? x : 0`.
     static func count(_ x: Any?) -> Int {
-        guard isNumber(x), let d = (x as? NSNumber)?.doubleValue, d >= 0, d <= 9_007_199_254_740_991,
-              d.rounded(.towardZero) == d else { return 0 }
-        return Int(d)
+        guard let n = strictInt(x), n >= 0, n <= 9_007_199_254_740_991 else { return 0 }
+        return n
     }
 }

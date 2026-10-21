@@ -188,6 +188,7 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .onAppear {
+            if let problem = model.draftSettingsProblem { model.actionError = problem }
             let s = model.draftSettings
             draftConfig = s.vaniConfig
             draftState = s.vaniStateDir

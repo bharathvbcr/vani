@@ -142,7 +142,14 @@ public final class SQLiteBankStore: @unchecked Sendable {
               let validated = try? BankValidator.validate(obj["bank"] ?? obj) else {
             return
         }
-        let rev = (obj["rev"] as? NSNumber)?.intValue ?? 1
+        // An absent rev is a bare bank (1); a present one that is not an integer is not migrated.
+        let rev: Int
+        if let raw = obj["rev"] {
+            guard let n = BankValidator.strictInt(raw), n >= 0 else { return }
+            rev = n
+        } else {
+            rev = 1
+        }
         try execute("BEGIN IMMEDIATE TRANSACTION;", db: db)
         do {
             try execute("UPDATE meta SET value = '\(rev)' WHERE key = 'rev';", db: db)
@@ -580,6 +587,7 @@ public final class SQLiteBankStore: @unchecked Sendable {
     }
 
     public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> ListResult {
+        let (offset, limit) = ListPaging.clamped(offset: offset, limit: limit)
         let db = try openConnection()
         defer { sqlite3_close(db) }
 

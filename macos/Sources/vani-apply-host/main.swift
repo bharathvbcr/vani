@@ -57,13 +57,14 @@ if let i = args.firstIndex(of: "--anthropic-account"), i + 1 < args.count {
     guard args[i + 1].hasPrefix("/") else { fail("--anthropic-account needs an absolute path") }
     launcher = URL(fileURLWithPath: args[i + 1])
 }
-let settings = DraftSettings.load(from: store.directory)
-let drafter = settings.runner(vaniBinary: vaniBinary,
-                              keys: args.contains("--no-keychain") ? .noKey : .anthropicAccount(launcher))
+// A draft-settings.json that is present but unreadable is not "defaults": the drafter then refuses
+// every draft with code "settings", and the Jobs backend refuses find/mark/ingest with the reason.
+let drafter = DraftSettings.runner(loadingFrom: store.directory, vaniBinary: vaniBinary,
+                                   keys: args.contains("--no-keychain") ? .noKey : .anthropicAccount(launcher))
 // The extension's find/mark ops read and write the Jobs marks through `vani jobs`.
 // Each is bounded under the extension's own 10 s wait, so a hung vani is a coded
 // error there instead of a host that never answers.
-let jobs = settings.jobsClient(vaniBinary: vaniBinary, timeout: 8)
+let jobs = DraftSettings.jobsBackend(loadingFrom: store.directory, vaniBinary: vaniBinary, timeout: 8)
 
 // Exit after 60 s with no request, but never while one is being answered: a
 // draft can take up to DraftRunner.timeout.

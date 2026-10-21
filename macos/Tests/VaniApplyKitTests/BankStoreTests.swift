@@ -379,4 +379,45 @@ final class BankStoreTests: XCTestCase {
             XCTAssertEqual(try s.listAnswers(search: "\"hi\" at C:\\temp").answers.map(\.key), ["quoted"])
         }
     }
+
+    // MARK: - listAnswers paging (B2-8)
+
+    /// The SQLite mirror, the bank.json fallback and the clamp itself agree on every offset and limit,
+    /// including the ones SQLite reads differently (a negative LIMIT is "no limit").
+    func testListAnswersClampsIdenticallyOnMirrorAndJSONPaths() throws {
+        let total = ListPaging.maxLimit + 120
+        let rows: [Answer] = (0..<total).map { i in
+            Answer(key: String(format: "k%04d", i), labels: ["l"], kind: .text, value: ["v"], sensitivity: .standard,
+                   signatures: [], uses: 0, fills: 0, updatedAt: String(format: "2026-01-01T00:%02d:%02d.%03dZ", i / 3600, (i / 60) % 60, i % 60 * 10 + 1), review: false)
+        }
+        let mirrored = BankStore(directory: try tempDir(self).appendingPathComponent("with"))
+        _ = try mirrored.patch(upsert: rows, deleteKeys: [])
+        XCTAssertNotNil(mirrored.sqlite)
+
+        let jsonDir = try tempDir(self).appendingPathComponent("without")
+        try FileManager.default.createDirectory(at: jsonDir.appendingPathComponent("bank.sqlite"), withIntermediateDirectories: true)
+        let jsonOnly = BankStore(directory: jsonDir)
+        XCTAssertNil(jsonOnly.sqlite)
+        _ = try jsonOnly.patch(upsert: rows, deleteKeys: [])
+        let direct = try XCTUnwrap(mirrored.sqlite)
+
+        for limit in [-1, 0, 1, 10_000_000, Int.min, Int.max] {
+            for offset in [-5, 0, 3, total - 1, total + 10, Int.min] {
+                let want = ListPaging.clamped(offset: offset, limit: limit)
+                XCTAssertGreaterThanOrEqual(want.limit, 1)
+                XCTAssertLessThanOrEqual(want.limit, ListPaging.maxLimit)
+                XCTAssertGreaterThanOrEqual(want.offset, 0)
+                let a = try mirrored.listAnswers(offset: offset, limit: limit).answers.map(\.key)
+                let b = try jsonOnly.listAnswers(offset: offset, limit: limit).answers.map(\.key)
+                let c = try direct.listAnswers(offset: offset, limit: limit).answers.map(\.key)
+                XCTAssertEqual(a, b, "mirror vs JSON at offset \(offset) limit \(limit)")
+                XCTAssertEqual(a, c, "BankStore vs SQLiteBankStore at offset \(offset) limit \(limit)")
+                XCTAssertEqual(a.count, max(0, min(want.limit, total - want.offset)), "offset \(offset) limit \(limit)")
+            }
+        }
+        XCTAssertEqual(try mirrored.listAnswers(offset: 0, limit: 10_000_000).answers.count, ListPaging.maxLimit)
+        XCTAssertEqual(try mirrored.listAnswers(offset: 0, limit: -1).answers.count, 1)
+        XCTAssertEqual(try jsonOnly.listAnswers(offset: 0, limit: -1).answers.count, 1)
+        XCTAssertEqual(try jsonOnly.listAnswers(offset: 0, limit: 0).answers.count, 1)
+    }
 }

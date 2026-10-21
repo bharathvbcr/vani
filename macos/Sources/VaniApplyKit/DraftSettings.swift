@@ -40,13 +40,35 @@ public struct DraftSettings: Codable, Equatable, Sendable {
         days.isFinite && days > 0 && days <= JobsClient.maxHalfLifeDays ? days : nil
     }
 
-    static func url(in directory: URL) -> URL { directory.appendingPathComponent("draft-settings.json") }
+    static func url(in directory: URL) -> URL { directory.appendingPathComponent(fileName) }
 
-    /// Missing or unreadable settings read as the defaults.
-    public static func load(from directory: URL) -> DraftSettings {
-        guard let data = try? Data(contentsOf: url(in: directory)),
-              let s = try? JSONDecoder().decode(DraftSettings.self, from: data) else { return DraftSettings() }
-        return s
+    /// The settings file exists but cannot be used. Reading it as defaults would point vani at the
+    /// wrong config and account, so every consumer must refuse or say so, never carry on.
+    public struct LoadError: Error, Equatable, CustomStringConvertible, Sendable {
+        public static let code = "settings"
+        public let reason: String
+        public var description: String {
+            "Draft settings (\(DraftSettings.fileName)) are unreadable: \(reason). Fix or delete the file, or save the settings again in Vani Apply."
+        }
+        public var reply: DraftReply { .failure(Self.code, description) }
+    }
+
+    static let fileName = "draft-settings.json"
+
+    /// A missing file is the defaults (nothing was ever saved). A file that is present but cannot
+    /// be read or decoded throws `LoadError`.
+    public static func load(from directory: URL) throws -> DraftSettings {
+        let data: Data
+        let file = url(in: directory)
+        do { data = try Data(contentsOf: file) } catch let e as CocoaError where e.code == .fileReadNoSuchFile && PathProbe.isAbsent(file) {
+            // Only a path lstat reports as absent is "never saved"; a dangling symlink is present but unreadable.
+            return DraftSettings()
+        } catch {
+            throw LoadError(reason: "cannot be read (\((error as NSError).domain) \((error as NSError).code))")
+        }
+        do { return try JSONDecoder().decode(DraftSettings.self, from: data) } catch {
+            throw LoadError(reason: "not valid settings JSON")
+        }
     }
 
     /// Paths must be absolute (or empty for the default). The account is
@@ -147,5 +169,25 @@ public struct DraftSettings: Codable, Equatable, Sendable {
                     stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,
                     keys: keys,
                     account: anthropicAccount.isEmpty ? nil : anthropicAccount)
+    }
+
+    /// The runner for the settings saved in `directory`. When the file is present but unreadable
+    /// the runner refuses every launch with code "settings" and the reason.
+    public static func runner(loadingFrom directory: URL, vaniBinary: URL,
+                              keys: DraftRunner.KeySource = .anthropicAccount(AnthropicAccount.locate())) -> DraftRunner {
+        do { return try load(from: directory).runner(vaniBinary: vaniBinary, keys: keys) } catch let e as LoadError {
+            return DraftRunner(vaniBinary: vaniBinary, keys: keys, refusal: e.reply)
+        } catch {
+            return DraftRunner(vaniBinary: vaniBinary, keys: keys, refusal: .failure(LoadError.code, String(describing: error)))
+        }
+    }
+
+    /// The Jobs backend for the settings saved in `directory`; with an unreadable file every call
+    /// throws the `LoadError`, so no mark or find runs against the default config and state.
+    public static func jobsBackend(loadingFrom directory: URL, vaniBinary: URL,
+                                   timeout: TimeInterval = JobsClient.timeout) -> JobsBackend {
+        do { return try load(from: directory).jobsClient(vaniBinary: vaniBinary, timeout: timeout) } catch {
+            return RefusingJobsBackend(error: BankError(String(describing: error)))
+        }
     }
 }
