@@ -35,8 +35,13 @@ func TestFirstWriteSyncsParentDirOnceThenNever(t *testing.T) {
 	if _, err := SetMark(dir, k1, Saved, t0); err != nil {
 		t.Fatal(err)
 	}
-	if len(*dirs) != 1 || (*dirs)[0] != dir {
-		t.Fatalf("first creation of marks.jsonl: want exactly one SyncDir(%s), got %v", dir, *dirs)
+	// The sync targets the resolved directory (t.TempDir is under a symlink on macOS).
+	want, err := filepath.EvalSymlinks(string(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*dirs) != 1 || (*dirs)[0] != want {
+		t.Fatalf("first creation of marks.jsonl: want exactly one SyncDir(%s), got %v", want, *dirs)
 	}
 	for i := range 3 {
 		if _, err := SetNote(dir, k1, fmt.Sprint("n", i), t0.Add(time.Duration(i+1)*time.Minute)); err != nil {

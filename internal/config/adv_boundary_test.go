@@ -77,7 +77,7 @@ func TestAdvLockSharedAcrossSpellings(t *testing.T) {
 
 func TestAdvLockFileMode0600(t *testing.T) {
 	path := savedConfig(t)
-	st, err := os.Stat(path + lockSuffix)
+	st, err := os.Stat(path + ".lock")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestAdvUnwritableDirIsAClearErrorWithNoPartial(t *testing.T) {
 	if err := Save(fresh, valid()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(fresh + lockSuffix); err != nil {
+	if err := os.Remove(fresh + ".lock"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(filepath.Dir(fresh), 0o500); err != nil {

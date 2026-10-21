@@ -10,31 +10,18 @@ import (
 func TestOpenAppendSymlinkAndDirectoryPaths(t *testing.T) {
 	dir := t.TempDir()
 
-	// A dangling symlink: O_EXCL does not follow it (EEXIST), the plain open
-	// does (ENOENT). Must end as an error, never loop forever or "create".
+	// A leaf symlink (dangling here) is refused, not replaced; the symlink
+	// contract is tested in symlink_test.go.
 	dangling := filepath.Join(dir, "dangling")
 	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	if f, created, err := OpenAppend(dangling, 0); err == nil {
-		f.Close()
-		t.Fatalf("dangling symlink opened: created=%v", created)
+	if f, _, err := OpenAppend(dangling, 0); !errors.Is(err, ErrLinkedLeaf) {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatalf("dangling symlink: err = %v, want ErrLinkedLeaf", err)
 	}
-
-	// A symlink to an existing file opens the target and is not a creation.
-	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	f, created, err := OpenAppend(link, 0)
-	if err != nil || created {
-		t.Fatalf("symlink to file: created=%v err=%v", created, err)
-	}
-	f.Close()
 
 	// A directory at the path is an error.
 	d := filepath.Join(dir, "adir")

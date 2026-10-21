@@ -3,6 +3,12 @@
 // exclusive (one), is held by the open file, and is released by Unlock or by
 // closing the file; callers Unlock before Close because Windows releases a
 // closed handle's locks only eventually.
+//
+// A file that is replaced by rename cannot carry its own lock, so its lock
+// lives beside it at path+".lock". The caller resolves path once (see
+// atomicfile.ResolveLeaf and atomicfile.Resolve) and uses that exact path for
+// both the lock and the write, so two runners cannot lock one file and write
+// another when a link is retargeted between the two steps.
 package filelock
 
 import "errors"

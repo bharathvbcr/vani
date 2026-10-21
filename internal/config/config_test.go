@@ -446,7 +446,7 @@ func TestSaveAtomicAndMode(t *testing.T) {
 	entries, _ := os.ReadDir(filepath.Dir(p))
 	var stray []os.DirEntry
 	for _, en := range entries {
-		if en.Name() != filepath.Base(p) && en.Name() != filepath.Base(p)+lockSuffix { // the lock file stays by design
+		if en.Name() != filepath.Base(p) && en.Name() != filepath.Base(p)+".lock" { // the lock file stays by design
 			stray = append(stray, en)
 		}
 	}

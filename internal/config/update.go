@@ -7,16 +7,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 )
 
 // ErrBusy means another process held the config's update lock for the whole
 // wait: nothing was read or written.
 var ErrBusy = errors.New("config: another process is updating the config; try again")
-
-// lockSuffix names the advisory lock file beside the config. The config itself
-// is replaced by rename, so a lock on it would be lost with each save.
-const lockSuffix = ".lock"
 
 const lockRetry = 10 * time.Millisecond
 
@@ -34,8 +31,10 @@ var lockWait = 10 * time.Second
 // unreadable config is an error, never an empty start. fn runs with the lock
 // held: keep it to editing the copy it is given, and do any slow check first.
 //
-// path may be a symlink: the lock and the write both use the resolved path, so
-// the link and its target share one lock and the edit lands in the target.
+// path may be a symlink: it is resolved once (lockConfig), and the lock, the
+// read and the write all use that target, so the link and its target share one
+// lock and the edit lands in the target with the link kept. The config path is
+// the one file Vani writes through a leaf link, because the operator named it.
 func Update(path string, fn func(*Config) error) error {
 	_, err := UpdateWithDeprecations(path, fn)
 	return err
@@ -46,71 +45,56 @@ func Update(path string, fn func(*Config) error) error {
 // about: the rewrite replaces them with the new names. The list is returned
 // whenever the file was read, even when fn or the write then failed.
 func UpdateWithDeprecations(path string, fn func(*Config) error) ([]string, error) {
-	path, unlock, err := lockConfig(path)
+	target, unlock, err := lockConfig(path)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	c, old, err := LoadWithDeprecations(path)
+	c, old, err := LoadWithDeprecations(target)
 	if err != nil {
 		return nil, err
 	}
 	if err := fn(&c); err != nil {
 		return old, err
 	}
-	return old, writeLocked(path, c)
+	return old, writeLocked(target, c)
 }
 
-// resolvePath is path with symlinks followed. A file that does not exist yet
-// resolves through its directory, so the path a later write creates is the one
-// every locker computes.
-func resolvePath(path string) (string, error) {
-	r, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return r, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("config: resolve %s: %w", path, err)
-	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+// lockConfig resolves path once (atomicfile.Resolve, links followed, leaf
+// included), takes the exclusive update lock beside that target, waiting up to
+// lockWait, and returns the target and the func that releases the lock; the
+// lock also dies with the process. Callers read and write the returned target,
+// never path again, so the lock always guards the file that is written. The
+// config itself is replaced by rename, so a lock on it would be lost with each
+// save.
+func lockConfig(path string) (target string, unlock func(), err error) {
+	target, err = atomicfile.Resolve(path)
 	if err != nil {
-		return "", fmt.Errorf("config: resolve %s: %w", filepath.Dir(path), err)
+		return "", nil, fmt.Errorf("config: %w", err)
 	}
-	return filepath.Join(dir, filepath.Base(path)), nil
-}
-
-// lockConfig resolves path (see resolvePath) and takes the exclusive update
-// lock beside the resolved file, waiting up to lockWait. It returns the
-// resolved path, which the caller must read and write instead of path, and a
-// func that releases the lock; the lock also dies with the process.
-func lockConfig(path string) (string, func(), error) {
-	path, err := resolvePath(path)
-	if err != nil {
-		return "", nil, err
+	lockPath := target + ".lock"
+	// A link into a directory that does not exist yet: the write creates it,
+	// and so must the lock.
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return "", nil, fmt.Errorf("config: open lock: %w", err)
 	}
-	unlock, err := lockResolved(path)
-	return path, unlock, err
-}
-
-// lockResolved locks path+lockSuffix; path is already resolved.
-func lockResolved(path string) (func(), error) {
-	f, err := os.OpenFile(path+lockSuffix, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("config: open lock: %w", err)
+		return "", nil, fmt.Errorf("config: open lock: %w", err)
 	}
 	deadline := time.Now().Add(lockWait)
 	for {
 		err := filelock.TryLock(f, true)
 		if err == nil {
-			return func() { _ = filelock.Unlock(f); _ = f.Close() }, nil
+			return target, func() { _ = filelock.Unlock(f); _ = f.Close() }, nil
 		}
 		if !errors.Is(err, filelock.ErrWouldBlock) {
 			_ = f.Close()
-			return nil, fmt.Errorf("config: lock: %w", err)
+			return "", nil, fmt.Errorf("config: lock: %w", err)
 		}
 		if time.Now().After(deadline) {
 			_ = f.Close()
-			return nil, ErrBusy
+			return "", nil, ErrBusy
 		}
 		time.Sleep(lockRetry)
 	}
