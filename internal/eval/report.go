@@ -51,11 +51,14 @@ type ShadowRow struct {
 	Labeled        int    // labeled postings this shadow was asked about for the slot
 	ShadowAnswered int
 	ShadowCorrect  int
-	BothAnswered   int // primary and shadow both answered
-	Agree          int
-	Disagree       int
-	PrimaryRight   int // among Disagree, primary equals the label
-	ShadowRight    int // among Disagree, shadow equals the label
+	// ShadowUnavailable counts the asked postings whose shadow reading was
+	// recorded as unavailable. A row with no answers shows it.
+	ShadowUnavailable int
+	BothAnswered      int // primary and shadow both answered
+	Agree             int
+	Disagree          int
+	PrimaryRight      int // among Disagree, primary equals the label
+	ShadowRight       int // among Disagree, shadow equals the label
 }
 
 // MinPromotionLabels is the fewest labeled postings a shadow must have been
@@ -119,9 +122,14 @@ func (p Promotion) ShadowLowerBound() float64 {
 // comparison on the postings both answered: at least MinDiscordant of them where
 // exactly one was right, and a lower bound on the shadow's share of those of at
 // least PromotionBound. Never "promotable" on too few disagreements.
-func (p Promotion) Verdict() string {
-	if p.Asked < MinPromotionLabels {
-		return fmt.Sprintf("insufficient labels (%d/%d)", p.Asked, MinPromotionLabels)
+func (p Promotion) Verdict() string { return p.verdict(MinPromotionLabels) }
+
+// verdict is Verdict with the asked and paired floor given: MinPromotionLabels
+// for the all-labels table, the split's own (Split.PromotionFloor) for the
+// held-out one. The discordant floor and the bound are the same for both.
+func (p Promotion) verdict(floor int) string {
+	if p.Asked < floor {
+		return fmt.Sprintf("insufficient labels (%d/%d)", p.Asked, floor)
 	}
 	switch {
 	case p.PrimaryAnswered == 0:
@@ -130,8 +138,8 @@ func (p Promotion) Verdict() string {
 		return "not promotable: the shadow answered none of these"
 	case p.ShadowAnswered < p.PrimaryAnswered:
 		return fmt.Sprintf("not promotable: coverage %d/%d < primary %d/%d", p.ShadowAnswered, p.Asked, p.PrimaryAnswered, p.Asked)
-	case p.Paired < MinPromotionLabels:
-		return fmt.Sprintf("insufficient paired labels (%d/%d)", p.Paired, MinPromotionLabels)
+	case p.Paired < floor:
+		return fmt.Sprintf("insufficient paired labels (%d/%d)", p.Paired, floor)
 	case p.Discordant() < MinDiscordant:
 		return fmt.Sprintf("insufficient disagreements (%d/%d)", p.Discordant(), MinDiscordant)
 	}
@@ -376,6 +384,9 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 				shadow[sk{sl.Name, sb}] = sr
 			}
 			sr.Labeled++
+			if r.Annotations[pre+ledger.AnnTriageSuffixShadowReading] == "unavailable" {
+				sr.ShadowUnavailable++
+			}
 			if answeredShadow {
 				sr.ShadowAnswered++
 				if sh == want {
@@ -413,9 +424,12 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 		if rows, ok := thr[sl.Name]; ok {
 			rep.Thresholds = append(rep.Thresholds, Threshold{Slot: sl.Name, Rows: rows})
 		}
+		// A shadow that was asked but answered nothing keeps its row: dropping
+		// it would hide a backend that is down behind the caption's "including
+		// ones where it was unavailable".
 		var shadows []string
-		for k, sr := range shadow {
-			if k.slot == sl.Name && sr.ShadowAnswered > 0 {
+		for k := range shadow {
+			if k.slot == sl.Name {
 				shadows = append(shadows, k.shadow)
 			}
 		}
@@ -499,8 +513,12 @@ func (r Report) Markdown() string {
 		b.WriteString("One row per shadow backend; \"labeled\" is the labeled postings that backend was asked about, including ones where it was unavailable.\n\n")
 		b.WriteString("| slot | shadow | labeled | shadow answered | shadow precision | both answered | agreement | disagree | primary right | shadow right |\n|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, s := range r.Shadow {
-			fmt.Fprintf(&b, "| %s | %s | %d | %d | %s | %d | %s | %d | %d | %d |\n", s.Slot, s.Shadow, s.Labeled, s.ShadowAnswered,
-				pct(s.ShadowCorrect, s.ShadowAnswered), s.BothAnswered, pct(s.Agree, s.BothAnswered),
+			answered, precision := strconv.Itoa(s.ShadowAnswered), pct(s.ShadowCorrect, s.ShadowAnswered)
+			if s.ShadowAnswered == 0 {
+				answered, precision = fmt.Sprintf("no answers (%d unavailable)", s.ShadowUnavailable), "n/a"
+			}
+			fmt.Fprintf(&b, "| %s | %s | %d | %s | %s | %d | %s | %d | %d | %d |\n", s.Slot, s.Shadow, s.Labeled, answered,
+				precision, s.BothAnswered, pct(s.Agree, s.BothAnswered),
 				s.Disagree, s.PrimaryRight, s.ShadowRight)
 		}
 	}
@@ -508,7 +526,7 @@ func (r Report) Markdown() string {
 	if len(r.Promotions) > 0 {
 		b.WriteString("\n## Promotion\n\n")
 		fmt.Fprintf(&b, "Shadow vs each primary backend on the labeled postings the shadow was asked about and that backend held. A verdict needs at least %d of them per row, a shadow that answers at least as often as the primary, and then a paired comparison on the postings both answered: at least %d where exactly one was right, and a one-sided 95%% exact lower bound on the shadow's share of those of at least %.2f. Promotion is a config change you make (decide.lappi.primary), never automatic.\n\n", MinPromotionLabels, MinDiscordant, PromotionBound)
-		legacy := writePromotions(&b, r.Promotions)
+		legacy := writePromotions(&b, r.Promotions, MinPromotionLabels)
 		b.WriteString("\n\"primary only\" and \"shadow only\" are paired postings where only that side matched the label. Postings recorded before the router wrote an unavailable shadow reading cannot show shadow failures.\n")
 		if legacy {
 			fmt.Fprintf(&b, "Shadow %q is a row recorded before the model was named in the backend (it pools whichever local model ran then; see docs/FOLLOWUPS.md).\n", LegacyLocalShadow)
@@ -518,7 +536,8 @@ func (r Report) Markdown() string {
 }
 
 // writePromotions writes the Promotion table rows and reports if any row has legacy local shadow.
-func writePromotions(b *strings.Builder, ps []Promotion) bool {
+// floor is the asked and paired floor each verdict is given.
+func writePromotions(b *strings.Builder, ps []Promotion, floor int) bool {
 	b.WriteString("| slot | shadow | primary | asked | shadow precision | shadow coverage | primary precision | primary coverage | shadow unavailable | paired | primary only | shadow only | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	legacy := false
 	for _, p := range ps {
@@ -528,7 +547,7 @@ func writePromotions(b *strings.Builder, ps []Promotion) bool {
 		fmt.Fprintf(b, "| %s | %s | %s | %d | %s | %s | %s | %s | %d | %d | %d | %d | %s |\n", p.Slot, p.Shadow, p.Primary, p.Asked,
 			pct(p.ShadowCorrect, p.ShadowAnswered), pct(p.ShadowAnswered, p.Asked),
 			pct(p.PrimaryCorrect, p.PrimaryAnswered), pct(p.PrimaryAnswered, p.Asked),
-			p.ShadowUnavailable, p.Paired, p.PrimaryOnly, p.ShadowOnly, p.Verdict())
+			p.ShadowUnavailable, p.Paired, p.PrimaryOnly, p.ShadowOnly, p.verdict(floor))
 	}
 	return legacy
 }

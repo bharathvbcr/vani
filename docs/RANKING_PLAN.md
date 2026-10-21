@@ -17,7 +17,7 @@ not re-read here; the repo carries no copy of it.
 | 2 Surfaces | **done for the digest, advance order and Jobs row contract** (Top open, one tie-break, age-neutral advance order). The recency red-team case is restated as policy. | `internal/digest`, `internal/jobview`, `advanceorder.go` |
 | 3 Cascade and spend | **done except the semantic floor.** Triage fallback Haiku, notes gate (floor 32) and notes cap, thin-description skip, reading inheritance, fail-open counters, exclusions. The floor before Liquid D is open (see owner decisions). | `internal/config/funnel.go`, `internal/pipeline` |
 | 4 Calibration | **fitter built, waits on labels** (needs ≥100 per backend): `vani rankfit --part platt` refuses below it | `internal/rankfit`, `rank_weights_file` |
-| 5 Weight fit | **fitter built, waits on labels** (needs ≥150 would_apply answers): `vani rankfit --part weights` refuses below it | `internal/rankfit`, `rank_weights_file` |
+| 5 Weight fit | **fitter built, waits on labels** (needs ≥150 would_apply answers): `vani rankfit --part weights` refuses below it, and writes only past the held-out gain interval | `internal/rankfit`, `rank_weights_file` |
 | 6 Lappi v2 | nothing to build until Lappi is served | — |
 
 Findings N1 to N10 and D1 to D11 of the later audit, and the advance-caller differences, are below.
@@ -182,10 +182,39 @@ How models agree:
   the inclusion probability. `vani audit answer` records one verdict. A drop class names the backend
   and slot only (`title:role_fit`), never a rule's value.
 - **Report:** `vani relevance` reports would_apply rates with 95% Wilson intervals, precision at K,
-  and the shadow's agreement on drop candidates. Nothing is weighted by p_select; the labelled set
-  is a stratified sample.
+  and the shadow's agreement on drop candidates. Nothing there is weighted by p_select; the labelled
+  set is a stratified sample. (The weight fit below does weight by it.)
+- **Held-out promotion floors:** the registered split holds out 30 postings, equal to
+  `MinPromotionLabels`, so a single skip would have made the held-out Promotion table
+  "insufficient" for good. Its asked and paired floors are the split size less
+  `HeldOutAllowedSkips` (3), so 27 of 30; the discordant floor (10) and the exact lower bound are
+  not scaled, and the all-labels table keeps its 30. A row that is still insufficient says why and
+  what would clear it (more labelled postings, or the split size the current labels would satisfy).
+  The split size is pre-registered and unchanged. A shadow that was asked and answered nothing keeps
+  its row in the shadow table, shown as "no answers (N unavailable)" with precision n/a.
 - **Cadence (weekly audit):** 5 minutes a day on the Explore picks, 15 minutes a week on the audit.
-  That is about 150 labels a month, so the weight fit can run around late November 2026.
+  That is about 150 labels a month, so the weight fit can run around late November 2026 (it needs
+  the held-out pairs and scored-stratum pairs below before it can write a file, so likely later).
+
+## Weight-fit gate
+
+`vani rankfit --part weights` writes a weights file only when `FitResult.Beats()` holds:
+
+- **n:** at least `MinHeldOutPairs` (200) held-out judged pairs, printed with the run.
+- **Interval:** a 95% percentile bootstrap of the accuracy gain (fitted minus hand), over the
+  held-out **items** (`BootstrapResamples` = 1000, fixed seed from `--seed`). Items, not pairs,
+  are resampled because pairs share postings and are correlated; a pair-level interval would be too
+  narrow. The lower end must be above 0. A bare `fitted > hand` was true in 5 of 20 null worlds
+  (labels drawn from the hand weights themselves).
+- **Strata:** each judgment is weighted by 1/`p_select` (Horvitz-Thompson), in the fit and in the
+  held-out accuracy, because the audit draws 10 dropped for 5 scored. A `p_select` outside (0, 1] on
+  a sampled label is refused. Held-out accuracy is also printed per stratum (scored, dropped, mixed),
+  and when the held-out set holds sampled postings, at least `MinScoredStratumPairs` (50) pairs must
+  be between two scored-stratum postings: the ranking orders scored postings, so a held-out set of
+  mostly dropped ones cannot carry the claim. Marks, impressions and manual labels carry no
+  inclusion probability and weigh 1.
+- More than `MaxHeldOutPairs` (2,000,000) held-out pairs is refused (lower `--holdout`), not
+  sampled. Otherwise `vani rankfit` returns "no gain", names the reason and writes nothing.
 
 ## Training: when and what
 
@@ -209,7 +238,8 @@ How models agree:
    drops. Exit: drop recall measured on the exploration pool.
 5. **Weight fit (needs ≥150 labels): open.** `vani rankfit --part weights` is built: it fits Score's
    shares from `vani audit answer`'s would_apply labels, marks and impressions, and writes a file
-   only when the fit beats the hand weights on held-out pairs; `rank_weights_file` applies it. Exit:
+   only when the fit clearly beats the hand weights on held-out pairs (see "Weight-fit gate" below);
+   `rank_weights_file` applies it. Exit:
    pairwise accuracy on held-out audit labels beats the hand weights, and the labelled set replaces
    the synthetic rankeval worlds.
 6. **Lappi v2 swap** when it is served. Exit: shadow agreement with Liquid D within the
