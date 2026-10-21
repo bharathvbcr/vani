@@ -89,6 +89,30 @@ function isRev(x: unknown): x is number {
   return typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
 }
 
+/**
+ * Mirrors Swift's NativeMessaging.chunkRanges: a chunk's JSON-string form must fit Chrome's 1 MiB
+ * reply minus 4096 bytes of envelope, and a raw byte costs at most 6 once escaped, so every chunk
+ * but the last holds at least this many bytes.
+ */
+const MIN_FULL_CHUNK_BYTES = Math.floor((1024 * 1024 - 4096) / 6);
+/** The most chunks a bank at the cap (Swift Limits.maxBankBytes = MAX_BANK_BYTES) can need. */
+export const MAX_CHUNK_COUNT = Math.ceil(MAX_BANK_BYTES / MIN_FULL_CHUNK_BYTES);
+
+/**
+ * The host's chunk count is untrusted input to a polling loop. Refuse before the first getChunk
+ * unless totalBytes is a positive safe integer within the bank cap and chunkCount is an integer in
+ * 1..min(totalBytes, MAX_CHUNK_COUNT) (each chunk carries at least one byte).
+ */
+function checkedChunkCount(count: unknown, totalBytes: unknown): number {
+  if (typeof totalBytes !== "number" || !Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BANK_BYTES) {
+    throw new ChunkIntegrityError(`chunked get reports an impossible totalBytes: ${String(totalBytes)}`);
+  }
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > Math.min(totalBytes, MAX_CHUNK_COUNT)) {
+    throw new ChunkIntegrityError(`chunked get reports an impossible chunkCount: ${String(count)}`);
+  }
+  return count;
+}
+
 interface Snapshot { rev: number; bank: Bank }
 
 function snapshot(r: Record<string, unknown>): Snapshot {
@@ -159,7 +183,7 @@ export function createStore(opts: StoreOptions = {}) {
     if (r.chunked === true) {
       const rev = r.rev;
       if (!isRev(rev)) throw new NativeError("chunked get reply has no valid rev");
-      const chunkCount = typeof r.chunkCount === "number" ? r.chunkCount : 1;
+      const chunkCount = checkedChunkCount(r.chunkCount, r.totalBytes);
       const chunks: string[] = [typeof r.chunk === "string" ? r.chunk : ""];
       for (let i = 1; i < chunkCount; i++) {
         const next = await call({ op: "getChunk", rev, chunkIndex: i });

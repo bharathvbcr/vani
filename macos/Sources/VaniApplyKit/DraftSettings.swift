@@ -59,7 +59,9 @@ public struct DraftSettings: Codable, Equatable, Sendable {
     /// be read or decoded throws `LoadError`.
     public static func load(from directory: URL) throws -> DraftSettings {
         let data: Data
-        do { data = try Data(contentsOf: url(in: directory)) } catch let e as CocoaError where e.code == .fileReadNoSuchFile {
+        let file = url(in: directory)
+        do { data = try Data(contentsOf: file) } catch let e as CocoaError where e.code == .fileReadNoSuchFile && PathProbe.isAbsent(file) {
+            // Only a path lstat reports as absent is "never saved"; a dangling symlink is present but unreadable.
             return DraftSettings()
         } catch {
             throw LoadError(reason: "cannot be read (\((error as NSError).domain) \((error as NSError).code))")

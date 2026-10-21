@@ -148,3 +148,29 @@ describe("chunked get: hostile host replies", () => {
     expect(h.writes()).toEqual([]);
   });
 });
+
+describe("chunked get: hostile chunkCount", () => {
+  test("a chunkCount that is not a sane integer is refused before any getChunk poll", async () => {
+    const [a] = halves();
+    const total = bytes(text());
+    const bad: unknown[] = [1_000_000, Infinity, -Infinity, NaN, 0, -1, 1.5, total + 1, 289, Number.MAX_SAFE_INTEGER, "2", null, undefined, true];
+    for (const count of bad) {
+      let chunkCalls = 0;
+      const h = host({ totalBytes: total, chunkCount: count, chunk: a }, i => { chunkCalls++; return { rev: 3, chunkIndex: i, chunkCount: count, chunk: "" }; });
+      const store = createStore({ transport: h.transport, local: new FakeLocal() });
+      const label = `${typeof count}:${String(count)}`;
+      await expect(store.loadBank(), label).rejects.toBeInstanceOf(ChunkIntegrityError);
+      await expect(store.updateBank(x => x), label).rejects.toBeInstanceOf(ChunkIntegrityError);
+      expect(chunkCalls, label).toBeLessThan(3);
+      expect(h.writes(), label).toEqual([]);
+    }
+  });
+
+  test("a totalBytes over the bank cap is refused before any getChunk poll", async () => {
+    const [a] = halves();
+    let chunkCalls = 0;
+    const h = host({ totalBytes: 50_000_001, chunkCount: 2, chunk: a }, i => { chunkCalls++; return { rev: 3, chunkIndex: i, chunkCount: 2, chunk: "" }; });
+    await expect(createStore({ transport: h.transport, local: new FakeLocal() }).loadBank()).rejects.toBeInstanceOf(ChunkIntegrityError);
+    expect(chunkCalls).toBe(0);
+  });
+});

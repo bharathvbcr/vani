@@ -87,8 +87,8 @@ public enum NativeProtocol {
             // Reuse the bytes already encoded for the size check.
             return ["rev": snap.rev, "bank": try JSONSerialization.jsonObject(with: rawData)]
         case "getChunk":
-            guard let rev = (req["rev"] as? NSNumber)?.intValue,
-                  let index = (req["chunkIndex"] as? NSNumber)?.intValue, index >= 0 else {
+            guard let rev = BankValidator.strictInt(req["rev"]),
+                  let index = BankValidator.strictInt(req["chunkIndex"]), index >= 0 else {
                 throw BankError("getChunk needs rev and chunkIndex")
             }
             let snap = try store.read()
@@ -108,8 +108,7 @@ public enum NativeProtocol {
                 "chunk": chunkStr
             ]
         case "put":
-            guard let baseRev = req["baseRev"], BankValidator.isNumber(baseRev),
-                  let base = (baseRev as? NSNumber)?.intValue, base >= 0 else {
+            guard let base = BankValidator.strictInt(req["baseRev"]), base >= 0 else {
                 throw BankError("put needs a non-negative baseRev")
             }
             guard let bank = req["bank"] else { throw BankError("put needs a bank") }
@@ -149,8 +148,8 @@ public enum NativeProtocol {
             let candidates = try store.queryCandidates(signatures: sigs, keys: keys, labels: labels)
             return ["ok": true, "candidates": try candidates.map { try $0.jsonObject() }]
         case "listAnswers":
-            let (offset, limit) = ListPaging.clamped(offset: (req["offset"] as? NSNumber)?.intValue ?? 0,
-                                                     limit: (req["limit"] as? NSNumber)?.intValue ?? 50)
+            let (offset, limit) = ListPaging.clamped(offset: try optionalInt(req, "offset") ?? 0,
+                                                     limit: try optionalInt(req, "limit") ?? 50)
             let search = req["search"] as? String
             let res = try store.listAnswers(offset: offset, limit: limit, search: search)
             return [
@@ -260,8 +259,8 @@ public enum NativeProtocol {
             var uses = 0, fills = 0
             for (name, slot) in [("uses", 0), ("fills", 1)] {
                 guard let v = row[name] else { continue }
-                guard BankValidator.isNumber(v), let n = (v as? NSNumber)?.intValue else {
-                    throw BankError("upsert row \(i): \(name) is not a number")
+                guard let n = BankValidator.strictInt(v) else {
+                    throw BankError("upsert row \(i): \(name) is not an integer")
                 }
                 if slot == 0 { uses = n } else { fills = n }
             }
@@ -282,9 +281,16 @@ public enum NativeProtocol {
 
     private static func patchBaseRev(_ raw: Any?) throws -> Int? {
         guard let raw else { return nil }
-        guard BankValidator.isNumber(raw), let n = (raw as? NSNumber)?.intValue, n >= 0 else {
-            throw BankError("patch baseRev must be a non-negative number")
+        guard let n = BankValidator.strictInt(raw), n >= 0 else {
+            throw BankError("patch baseRev must be a non-negative integer")
         }
+        return n
+    }
+
+    /// An absent field is nil; a present one must be a strict integer.
+    private static func optionalInt(_ req: [String: Any], _ name: String) throws -> Int? {
+        guard let v = req[name] else { return nil }
+        guard let n = BankValidator.strictInt(v) else { throw BankError("\(name) must be an integer") }
         return n
     }
 
@@ -356,11 +362,10 @@ public enum NativeProtocol {
             var out: [String: Int] = [:]
             for (k, v) in dict {
                 guard !k.isEmpty, k.count <= 32, k.unicodeScalars.allSatisfy({ countNameChars.contains($0) }),
-                      BankValidator.isNumber(v), let d = (v as? NSNumber)?.doubleValue,
-                      d >= 0, d <= 1_000_000, d.rounded(.towardZero) == d else {
+                      let n = BankValidator.strictInt(v), n >= 0, n <= 1_000_000 else {
                     throw BankError("log entry counts malformed")
                 }
-                out[k] = Int(d)
+                out[k] = n
             }
             counts = out
         }

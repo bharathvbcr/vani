@@ -296,7 +296,8 @@ final class AdversarialChunkTests: XCTestCase {
         }
         for off: Any in [1e300, -1e300, Double.greatestFiniteMagnitude, 9.3e18] {
             let r = NativeProtocol.handle(["op": "listAnswers", "offset": off, "limit": 5], store: json, source: .chrome)
-            XCTAssertNil(r["error"], "\(off) -> \(r)")
+            // An offset outside Int range is refused at the boundary (StrictIntegerTests), not clamped.
+            XCTAssertNotNil(r["error"], "\(off) -> \(r)")
         }
     }
 

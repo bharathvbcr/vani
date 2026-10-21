@@ -53,6 +53,15 @@ public struct ActivityEntry: Codable, Equatable, Sendable {
 
 /// The one clamp for listAnswers paging, used by the protocol and by both stores so the SQLite
 /// mirror and the bank.json fallback answer a hostile or sloppy offset/limit identically.
+enum PathProbe {
+    /// True only when lstat reports ENOENT: nothing at all, not even a symlink. A dangling symlink is
+    /// present (lstat succeeds), and so is any path lstat cannot answer for (permissions, ELOOP).
+    static func isAbsent(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) != 0 && errno == ENOENT
+    }
+}
+
 public enum ListPaging {
     public static let maxLimit = 500
 
@@ -321,13 +330,18 @@ public final class BankStore: @unchecked Sendable {
 
     private func readUnlocked() throws -> Snapshot {
         let data: Data
-        do { data = try Data(contentsOf: bankURL) } catch CocoaError.fileReadNoSuchFile {
-            return Snapshot(rev: 0, bank: .empty)
-        } catch let e as NSError where e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT) {
+        do { data = try Data(contentsOf: bankURL) } catch let e as NSError
+            where (e.domain == NSCocoaErrorDomain && e.code == CocoaError.fileReadNoSuchFile.rawValue)
+                || (e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT)) {
+            // Only a path that is truly absent is a bank never written. A dangling symlink answers
+            // "no such file" too, but something is there: it is unreadable, and writing would replace it.
+            guard PathProbe.isAbsent(bankURL) else {
+                throw BankError("the stored answer bank is unreadable (a link to a missing file); it was left untouched")
+            }
             return Snapshot(rev: 0, bank: .empty)
         }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let revNum = obj["rev"], BankValidator.isNumber(revNum), let rev = (revNum as? NSNumber)?.intValue, rev >= 0,
+              let rev = BankValidator.strictInt(obj["rev"]), rev >= 0,
               let rawBank = obj["bank"] else {
             throw BankError("the stored answer bank is unreadable; it was left untouched")
         }
