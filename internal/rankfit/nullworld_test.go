@@ -1,6 +1,9 @@
 package rankfit
 
 import (
+	"fmt"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -16,20 +19,33 @@ const nullSeeds = 20
 func TestNullWorldNeverBeatsTheHandWeights(t *testing.T) {
 	saved := plantedShares
 	plantedShares = SharesOf(jobinsight.DefaultWeights()).Array()
-	defer func() { plantedShares = saved }()
 
+	// Every seed is its own parallel subtest (a Fit shares nothing with another
+	// but the read-only planted shares, set before any of them starts). The
+	// group subtest returns only when all seeds are done, so the shares are
+	// restored after the last reader.
+	var mu sync.Mutex
 	var wins []uint64
-	for seed := uint64(1); seed <= nullSeeds; seed++ {
-		res, err := Fit(world(1000+seed, 1000, 300), jobinsight.DefaultWeights(), Options{Seed: seed})
-		if err != nil {
-			t.Fatalf("seed %d: %v", seed, err)
+	t.Run("seeds", func(t *testing.T) {
+		for seed := uint64(1); seed <= nullSeeds; seed++ {
+			t.Run(fmt.Sprintf("seed%02d", seed), func(t *testing.T) {
+				t.Parallel()
+				res, err := Fit(world(1000+seed, 1000, 300), jobinsight.DefaultWeights(), Options{Seed: seed})
+				if err != nil {
+					t.Fatalf("seed %d: %v", seed, err)
+				}
+				if res.Beats() {
+					mu.Lock()
+					wins = append(wins, seed)
+					mu.Unlock()
+				}
+				t.Logf("seed %2d: n=%d fitted %.4f hand %.4f beats=%v", seed, res.HeldOutPairs, res.FitAccuracy, res.HandAccuracy, res.Beats())
+			})
 		}
-		if res.Beats() {
-			wins = append(wins, seed)
-		}
-		t.Logf("seed %2d: n=%d fitted %.4f hand %.4f beats=%v", seed, res.HeldOutPairs, res.FitAccuracy, res.HandAccuracy, res.Beats())
-	}
+	})
+	plantedShares = saved
 	if len(wins) > 0 {
+		slices.Sort(wins)
 		t.Errorf("%d of %d null worlds were declared a win (seeds %v)", len(wins), nullSeeds, wins)
 	}
 }
