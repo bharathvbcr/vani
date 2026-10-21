@@ -75,7 +75,7 @@ The exit code is 0 even when some jobs were rejected.
   "queued": 12,
   "duplicates": 1,
   "rejected": [{"index": 3, "reason": "url is not http(s)"}],
-  "search": {"status": "added|exists|not_requested|unsupported|invalid",
+  "search": {"status": "added|exists|not_requested|unsupported|invalid|error",
              "ats": "gh", "token": "acme", "company": "Acme", "url": "...", "reason": "..."},
   "analysis": "daemon|next_run"
 }
@@ -105,6 +105,8 @@ The listing URL becomes one board. It is checked with `config.ValidBoard`, dedup
 | `{tenant}.wd{N}.myworkdayjobs.com/[locale/]{site}` | `wd/{tenant}/{site}`, with host set and the search taken from `q` when present. Only `q` is kept: the adapter applies no facets, so other URL parameters do not narrow the board. Before saving, Vani makes one limit-1 request to the board host (`workday.CheckSize`, through `egress`) for the search's total. A search over the adapter's 200-posting cap (`workday.MaxPostings`), which would fail every daily run, is not saved: status `invalid`, with a reason that says to narrow it with search terms. If the request fails, the search is not saved either: status `invalid`, with a reason that says it could not be checked and to try again. In both cases the jobs are still queued. |
 | A known aggregator: linkedin, indeed, glassdoor, ziprecruiter, wellfound, dice, monster, simplyhired, plus their subdomains | No board. Status is `unsupported`, with reason "{host} needs a signed-in browser; Vani cannot search it on its own". The jobs are still queued. |
 | Any other https page | A `pg` board, described below |
+
+If the config cannot be read or written (or another process holds its update lock for ten seconds), the status is `error` with a `reason`; the jobs are still queued and the exit code is 0. The saved URL drops query parameters that can carry a credential (any name with the word token, auth, key, secret, email, session or sid in it).
 
 For a `pg` board:
 

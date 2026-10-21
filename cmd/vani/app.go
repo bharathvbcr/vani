@@ -203,7 +203,8 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		}
 		return prev, nil
 	}
-	fresh, _, err := config.LoadWithDeprecations(e.configPath)
+	fresh, old, err := config.LoadWithDeprecations(e.configPath)
+	e.warnDeprecated(old)
 	var stale error
 	if err != nil {
 		stale = fmt.Errorf("%w; this run uses the previous watchlist, allowed_hosts and policy: %w", errConfigStale, err)

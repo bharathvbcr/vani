@@ -354,22 +354,32 @@ func (e *env) loadConfig() (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
+	e.warnDeprecated(old)
+	return cfg, nil
+}
+
+// updateConfig is config.UpdateWithDeprecations with the same warnings
+// loadConfig prints: an update rewrites the file with the new key names, so
+// the user is told which old ones it used.
+func (e *env) updateConfig(fn func(*config.Config) error) error {
+	old, err := config.UpdateWithDeprecations(e.configPath, fn)
+	e.warnDeprecated(old)
+	return err
+}
+
+func (e *env) warnDeprecated(old []string) {
 	for _, d := range old {
 		fmt.Fprintf(e.stderr, "vani: config %s: %s\n", e.configPath, d)
 	}
-	return cfg, nil
 }
 
 func (e *env) cmdInit(args []string) error {
 	if err := parse(e.newFlags("init"), args); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(e.configPath); err == nil {
+	if err := config.Create(e.configPath, config.Default()); errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("%s already exists; refusing to overwrite", e.configPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := config.Save(e.configPath, config.Default()); err != nil {
+	} else if err != nil {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "wrote %s\nstate dir: %s\n", e.configPath, e.stateDir)

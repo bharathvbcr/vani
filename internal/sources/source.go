@@ -9,6 +9,22 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
+// TokenProblem is why token cannot name a board, or "" when it can. It is the
+// one rule behind config.ValidBoard and srcutil.CheckBoard, so a token the
+// config accepts is one every adapter accepts. It holds what no adapter can
+// work around; the config is stricter on top (spaces, '?', '#', ".." and a '/'
+// outside Workday), because adapters escape those themselves.
+func TokenProblem(token string) string {
+	switch {
+	case strings.TrimSpace(token) == "":
+		return "is empty"
+	case strings.Contains(token, ":"):
+		// ':' separates key parts; Board.KeyPrefix would be ambiguous.
+		return "contains ':'"
+	}
+	return ""
+}
+
 // Board is one watchlist entry: a company's job board on one ATS, or its own
 // careers page.
 type Board struct {
