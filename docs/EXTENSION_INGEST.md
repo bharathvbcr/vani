@@ -126,7 +126,8 @@ For a `pg` board:
 - **Board and keys:** every batch is folded under a `pg` board. Its token is the saved board's token when that board is `pg`, and otherwise the host slug. Each job is keyed `posting.PageKey(token, url)`. No new ATS value is introduced, and no `Board` field is added.
 - **Duplicates:** when an ATS board later lists the same role, `twinOf`/`markWeakTwins` marks the weakly keyed record as the duplicate.
 - **`Reconciler.ReconcilePartial`:** it shares the listing loop with `Reconcile` but skips the absence pass. A scrape is not a full listing and must never age out records.
-- **Bad batch files:** a batch file that cannot be parsed is moved to `inbox/bad/` and reported. Neither the daemon nor the drain retries it.
+- **Bad batch files:** a batch file that cannot be parsed is moved to `inbox/bad/` and reported. Neither the daemon nor the drain retries it. `bad/` keeps the newest 200 files; a drain deletes older ones.
+- **Spool full:** with 1,000 batches already waiting, `jobs ingest` fails (exit 1, `error` in the JSON reply: "inbox: spool is full ...") and writes nothing. Drain the inbox (daemon or `vani run`) and send the batch again.
 - **Drain bounds:** at most 50 files per drain.
 
 ## Native op `jobsIngest`

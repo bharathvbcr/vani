@@ -229,11 +229,13 @@ func (s *Store) Put(l Entry) error {
 	if err != nil {
 		return fmt.Errorf("eval: open labels: %w", err)
 	}
-	if st, err := f.Stat(); err == nil && st.Size() > 0 {
-		var last [1]byte
-		if _, err := f.ReadAt(last[:], st.Size()-1); err == nil && last[0] != '\n' {
-			line = append([]byte{'\n'}, line...)
-		}
+	torn, err := atomicfile.TornTail(f)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("eval: labels: %w", err)
+	}
+	if torn {
+		line = append([]byte{'\n'}, line...)
 	}
 	line = append(line, '\n')
 	if _, err := f.Write(line); err != nil {

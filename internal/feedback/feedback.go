@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -274,13 +275,41 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 			return 0, fmt.Errorf("feedback: rotate %s: %w", ImpressionsFile, err)
 		}
 	}
-	f, err := os.OpenFile(live, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(live, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("feedback: %w", err)
 	}
-	if _, err := f.Write(buf.Bytes()); err != nil {
+	// Read before the write: a log that ends mid-row (a crash mid-append) would
+	// glue the first new row onto that fragment and lose both.
+	data := buf.Bytes()
+	torn, err := atomicfile.TornTail(f)
+	if err != nil {
 		_ = f.Close()
-		return 0, fmt.Errorf("feedback: write %s: %w", ImpressionsFile, err)
+		return 0, fmt.Errorf("feedback: %s: %w", ImpressionsFile, err)
+	}
+	if torn {
+		data = append([]byte{'\n'}, data...)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return 0, fmt.Errorf("feedback: stat %s: %w", ImpressionsFile, err)
+	}
+	if wrote, err := writeAll(f, data); err != nil {
+		// A short write leaves a partial row; cut it back so the log still ends
+		// on a row boundary and no reader counts it as junk forever.
+		err = fmt.Errorf("feedback: write %s: %w", ImpressionsFile, err)
+		// Truncate only if nothing else was appended since: another appender's
+		// row after our fragment would be cut off with it.
+		if now, serr := f.Stat(); serr != nil {
+			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back safely: %w", serr))
+		} else if now.Size() != st.Size()+int64(wrote) {
+			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back safely: %s changed by %d bytes besides ours", ImpressionsFile, now.Size()-st.Size()-int64(wrote)))
+		} else if terr := f.Truncate(st.Size()); terr != nil {
+			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back: %w", terr))
+		}
+		_ = f.Close()
+		return 0, err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -288,6 +317,9 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 	}
 	return n, f.Close()
 }
+
+// writeAll is f.Write; a variable only so a test can inject a short write.
+var writeAll = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
 
 type slateKey struct {
 	slate, surface string
