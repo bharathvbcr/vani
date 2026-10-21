@@ -111,12 +111,23 @@ func (req *Request) Validate() error {
 	return nil
 }
 
+// manualReason is the reason for a field the decision model read as a
+// category that is never drafted.
 var manualReason = map[string]string{
 	fieldtriage.Fact:     "A detail about you: answer it once and it is saved for the next form.",
-	fieldtriage.WorkAuth: "Work authorization: answer it yourself. It is never sent to a model.",
+	fieldtriage.WorkAuth: "Work authorization: answer it yourself. Vani never drafts it.",
 	fieldtriage.Consent:  "An agreement or policy: read it and answer it yourself.",
 	fieldtriage.SelfID:   "Voluntary self-identification: answer it yourself if you choose to.",
 	fieldtriage.Other:    "Not a question Vani drafts.",
+}
+
+// guardedReason is the reason for a label the guard patterns pinned: unlike a
+// model reading, these labels were not sent to the decision model at all.
+func guardedReason(category string) string {
+	if category == fieldtriage.WorkAuth {
+		return "Work authorization: answer it yourself. The question was not sent to a model."
+	}
+	return manualReason[category]
 }
 
 // Run triages every field, then drafts the essays in page order up to the
@@ -138,8 +149,14 @@ func (e Engine) Run(ctx context.Context, req Request) ([]Suggestion, error) {
 		if s.Status != "" {
 			continue // decided in triage (guarded or unsure)
 		}
+		// The one place a draft is decided: only an essay reading of a label no
+		// sensitive pattern flags (a pattern the guard missed still stops here).
 		if s.Category != fieldtriage.Essay {
 			s.Status, s.Reason = Manual, manualReason[s.Category]
+			continue
+		}
+		if c := fieldtriage.Sensitive(req.Fields[i].Label); c != "" {
+			s.Category, s.Status, s.Reason = c, Manual, manualReason[c]
 			continue
 		}
 		switch {
@@ -187,7 +204,7 @@ func (e Engine) triage(ctx context.Context, fields []fieldtriage.Field) []Sugges
 	for i, f := range fields {
 		out[i].ID = f.ID
 		if g := fieldtriage.Guard(f.Label); g != "" {
-			out[i].Category, out[i].Status, out[i].Reason = g, Manual, manualReason[g]
+			out[i].Category, out[i].Status, out[i].Reason = g, Manual, guardedReason(g)
 			continue
 		}
 		wg.Add(1)

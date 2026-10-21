@@ -13,8 +13,12 @@
 // What leaves the machine, per posting: the posting itself, the owner's
 // target-role summary (already part of every triage question) and a digest of
 // the knowledge base built from semantic.Profile, which holds only role titles,
-// stack terms and bullet text with organisation names, dates, locations, URLs and
-// e-mail addresses already removed. The digest is bounded and its hash is part
+// stack terms and bullet text. semantic.ProfileFromBank never reads an entry's
+// organisation, dates, location or contact fields, and its cleanBulletText
+// removes markdown, claim tokens, URLs and e-mail addresses from bullets; it does
+// not scrub names, so an organisation named inside a bullet's own words stays
+// (organisation names are not personal data here, and the drafter sends them on
+// purpose). The digest is bounded and its hash is part
 // of each stored answer, so an edit to the knowledge base re-asks. Nothing in the
 // question names the owner. Both sections and the posting sit inside the
 // backend's untrusted-content frame: none carries instructions to the model, and
@@ -31,6 +35,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/draft"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/semantic"
@@ -47,6 +52,8 @@ const (
 	// digest keeps.
 	MaxBulletsPerEntry = 3
 	maxBulletBytes     = 240
+	// MaxLocationRunes bounds the posting location in a question.
+	MaxLocationRunes = 120
 )
 
 // Prompt is the question, outside the untrusted frame. The options are the
@@ -166,7 +173,21 @@ func DigestOf(p semantic.Profile) (Digest, error) {
 	return Digest{Text: sb.String(), SHA256: hex.EncodeToString(sum[:]), Compact: compact.String()}, nil
 }
 
-// cutRunes cuts s to at most n bytes on a rune boundary.
+// cutRuneCount cuts s to at most n runes and reports whether it cut.
+func cutRuneCount(s string, n int) (string, bool) {
+	if len(s) <= n || utf8.RuneCountInString(s) <= n {
+		return s, false
+	}
+	i := 0
+	for range n {
+		_, w := utf8.DecodeRuneInString(s[i:])
+		i += w
+	}
+	return s[:i], true
+}
+
+// cutRunes cuts s to at most n bytes on a rune boundary (a boundary is
+// found even when s is not valid UTF-8, by backing up at most to byte 0).
 func cutRunes(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -189,8 +210,10 @@ func TextSHA256(p posting.Posting, summary string, d Digest) string {
 }
 
 // Question renders the question for p. The context stays within
-// jdtriage.MaxContextBytes: the posting body is cut to what the target summary
-// and knowledge base leave, and truncated says whether it was.
+// jdtriage.MaxContextBytes: the title and location are cut to draft.MaxTitleRunes
+// and MaxLocationRunes, the posting body to what the target summary and
+// knowledge base leave, the whole to the cap, and truncated says whether
+// anything was cut.
 //
 // With no focus the question carries the full digest. With focus (at most
 // MaxFocus lines an embedding model found closest to this posting) it carries the
@@ -219,19 +242,26 @@ func Question(p posting.Posting, summary string, d Digest, focus []Focus) (q dec
 		}
 	}
 	head.WriteString("\nJOB POSTING:\nTitle: ")
-	head.WriteString(strings.Join(strings.Fields(p.Title), " "))
+	title, cutTitle := cutRuneCount(strings.Join(strings.Fields(p.Title), " "), draft.MaxTitleRunes)
+	location, cutLocation := cutRuneCount(strings.Join(strings.Fields(p.Location), " "), MaxLocationRunes)
+	truncated = cutTitle || cutLocation
+	head.WriteString(title)
 	head.WriteString("\nLocation: ")
-	head.WriteString(strings.Join(strings.Fields(p.Location), " "))
+	head.WriteString(location)
 	head.WriteString("\n\n")
 	body := p.Description
 	room := max(jdtriage.MaxContextBytes-head.Len(), 0)
 	if len(body) > room {
 		body, truncated = cutRunes(body, room), true
 	}
+	rendered := head.String() + body
+	if len(rendered) > jdtriage.MaxContextBytes { // the target or digest alone overran
+		rendered, truncated = cutRunes(rendered, jdtriage.MaxContextBytes), true
+	}
 	return decide.Question{
 		Task:     Task,
 		Prompt:   Prompt,
-		Context:  []byte(head.String() + body),
+		Context:  []byte(rendered),
 		Slots:    []decide.Slot{{Name: Slot, Options: append([]string(nil), jobinsight.KBMatchOrder[:]...)}},
 		Facts:    map[string]string{jdtriage.FactContextTruncated: fmt.Sprint(truncated)},
 		RecordID: string(p.Key),
