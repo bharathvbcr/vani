@@ -114,26 +114,54 @@ func Question(f Field) decide.Question {
 	}
 }
 
-// Guard words. A label that matches one of these is never asked of a model
-// and never drafted, whatever a model would say: work authorization and
-// self-identification must not enter a prompt, and consent is the
-// applicant's own act.
+// Guard words. A label that matches one of these is not sent to the decision
+// model and is never drafted: the applicant answers it. The patterns are a
+// first line, not a proof: they read a form field's label (not a job
+// description) after folding lookalike characters, and a sensitive label they
+// miss is still stopped after the model reads it (Sensitive, and suggest.Run,
+// which drafts only an essay reading of a label no pattern flags).
 var (
-	workAuthRE = regexp.MustCompile(`(?i)\b(visa|sponsor(ship)?|work(ing)? authori[sz]ation|authori[sz]ed to work|right to work|citizenship|immigration|work permit|green card)\b`)
-	selfIDRE   = regexp.MustCompile(`(?i)\b(gender|race|ethnicity|hispanic|latin[oax]|veteran|disability|disabled|sexual orientation|transgender)\b`)
+	workAuthRE = regexp.MustCompile(`(?i)\b(visa|sponsor(ship)?|work(ing)? ?authori[sz]ation|authori[sz]ed to work|right to work|work rights|citizens?|citizenship|nationality|nationals|national of|immigration|work permit|green card|permanent residen(t|ts|ce|cy)|(eligible|eligibility|legally entitled) to work|legally (entitled|permitted|allowed|authori[sz]ed|eligible|able)|u\.? ?s\.? ?persons?|employment (authori[sz]ation|eligibility)|h-?1b|h-?4|l-?1|tn status|f[- ]?1 (visa|student|status))\b|\b(?-i:OPT|CPT)\b`)
+	selfIDRE   = regexp.MustCompile(`(?i)\b(gender|sex|sexual|sexuality|(fe)?male|race|racial|ethnic(ity|al)?|hispanic|latin[oax]|veteran|military|armed forces|uniformed services|disability|disabilit(y|ies)|disabled|handicap(ped)?|medical (condition|history)|health (condition|status)|sexual orientation|lgbt\w*|queer|gay|lesbian|bisexual|non-?binary|cisgender|transgender|african[- ]american|caucasian|native american|alaska(n)? native|american indian|pacific islander|native hawaiian|indigenous|asian|age|religio(n|us)|pronouns?|criminal|convict(ed|ion|ions)?|marital|marital status)\b|\b(over|under|above|below|older than|younger than|at least|age) (16|18|21|40|55|62|65)\b|\b(16|18|21|40|55|62|65) ?(\+|or (older|over|above|younger|under|more)|years old|years of age)|(^|[,/(]|\bor) ?(black|white)\b ?($|[,/)]|\bor\b)`)
 	consentRE  = regexp.MustCompile(`(?i)\b(agree|agreement|arbitrat\w*|consent|acknowledg\w*|certify|terms (and|&) conditions|privacy (notice|policy)|ai policy)\b`)
+	// broaderRE is what only the post-model defence checks: subjects no model
+	// reading should turn into a draft, but that are not pinned a category.
+	broaderRE = regexp.MustCompile(`(?i)\b(date of birth|birth ?date|dob|national origin|pregnan\w*|felony|arrest(ed|s)?|social security|ssn|passport)\b`)
 )
+
+// Sensitive returns the category a label is pinned to by Guard, SelfID for a
+// label only the broader pattern flags, or "" when no pattern matches. A
+// field Sensitive flags is never drafted, whatever a model read it as.
+func Sensitive(label string) string {
+	if g := Guard(label); g != "" {
+		return g
+	}
+	for _, form := range folds(label) {
+		if broaderRE.MatchString(form) {
+			return SelfID
+		}
+	}
+	return ""
+}
 
 // Guard returns the category a label is pinned to without asking a model,
 // or "" when the model may be asked.
 func Guard(label string) string {
-	switch {
-	case workAuthRE.MatchString(label):
-		return WorkAuth
-	case selfIDRE.MatchString(label):
-		return SelfID
-	case consentRE.MatchString(label):
-		return Consent
+	forms := folds(label)
+	for _, form := range forms {
+		if mixedScript(form) {
+			return SelfID
+		}
+	}
+	for _, form := range forms {
+		switch {
+		case workAuthRE.MatchString(form):
+			return WorkAuth
+		case selfIDRE.MatchString(form):
+			return SelfID
+		case consentRE.MatchString(form):
+			return Consent
+		}
 	}
 	return ""
 }
