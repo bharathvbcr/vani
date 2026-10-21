@@ -297,11 +297,14 @@ func (e *env) jobsShow(args []string) error {
 		if err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		snap, m, err := e.jobsStateFor(rowScope(func(ledger.Snapshot) (posting.Key, bool) { return k, true }))
 		if err != nil {
 			return err
 		}
-		r, ok := findRecord(snap, k)
+		r, ok, err := rowRecord(snap, k)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return fmt.Errorf("jobs show: no posting %q in the ledger", k)
 		}
@@ -374,11 +377,14 @@ func (e *env) jobsWrite(raw string, out *jobview.Job, set func(string, posting.K
 	if err != nil {
 		return err
 	}
-	snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
+	snap, err := ledger.ReadSnapshotScoped(filepath.Join(e.stateDir, "ledger"), rowScope(func(ledger.Snapshot) (posting.Key, bool) { return k, true }))
 	if err != nil {
 		return fmt.Errorf("jobs: read the ledger: %w", err)
 	}
-	r, ok := findRecord(snap, k)
+	r, ok, err := rowRecord(snap, k)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return fmt.Errorf("jobs: no posting %q in the ledger", k)
 	}
@@ -411,7 +417,52 @@ func checkJobKey(raw string) (posting.Key, error) {
 }
 
 func (e *env) jobsState() (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
-	snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
+	return e.jobsStateFor(nil)
+}
+
+// rowScope is the ledger.ReadSnapshotScoped scope for enriching one row: the
+// record pick names and every record of its company are read whole (what
+// newRowInsight learns from); every other record keeps its description out
+// (BodyEvicted) and is read only for rank context (NewRankContext) and URL
+// matching, which read no description. A nil pick result, or a key the ledger
+// lacks, loads nothing. A row with no company loads every record, as
+// newRowInsight then learns from all of them.
+func rowScope(pick func(ledger.Snapshot) (posting.Key, bool)) func(ledger.Snapshot) func(ledger.Record) bool {
+	return func(lean ledger.Snapshot) func(ledger.Record) bool {
+		k, ok := pick(lean)
+		if !ok {
+			return nil
+		}
+		r, ok := findRecord(lean, k)
+		if !ok {
+			return nil
+		}
+		co := companyKey(r.Posting.Company)
+		return func(x ledger.Record) bool { return co == "" || companyKey(x.Posting.Company) == co }
+	}
+}
+
+// rowRecord is findRecord for a snapshot read with rowScope: a row whose body
+// was left out is an error, never a record with an empty description.
+func rowRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool, error) {
+	r, ok := findRecord(snap, k)
+	if ok && r.BodyEvicted {
+		return ledger.Record{}, false, fmt.Errorf("jobs: %s: the posting text was not read", k)
+	}
+	return r, ok, nil
+}
+
+// jobsStateFor is jobsState reading the ledger with scope (nil: whole, via
+// ledger.ReadSnapshot). Records scope leaves bodiless are not matched against
+// exclusion rules, which can only drop a record from its own company's view.
+func (e *env) jobsStateFor(scope func(ledger.Snapshot) func(ledger.Record) bool) (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
+	var snap ledger.Snapshot
+	var err error
+	if scope == nil {
+		snap, err = ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
+	} else {
+		snap, err = ledger.ReadSnapshotScoped(filepath.Join(e.stateDir, "ledger"), scope)
+	}
 	if err != nil {
 		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read the ledger: %w", err)
 	}
@@ -435,7 +486,7 @@ func hideExcluded(recs []ledger.Record, m map[posting.Key]marks.Entry, x config.
 		return
 	}
 	for i, r := range recs {
-		if m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
+		if r.BodyEvicted || m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
 			continue
 		}
 		if _, ok := x.Match(r.Posting); ok {

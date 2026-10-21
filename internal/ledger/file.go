@@ -214,7 +214,19 @@ func packBodies(recs map[posting.Key]*slot) {
 // With rd (the file src reads, as an io.ReaderAt) it also evicts and restores
 // descriptions as evict.go describes; without, every body stays.
 func replay(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt) (good int64, torn bool, err error) {
-	r := bufio.NewReaderSize(src, 64*1024)
+	return replayWith(src, recs, rd, nil)
+}
+
+// replayWith is replay that, given lean, cuts each posting's description out of
+// its line before decoding (lean.go): the record folds with an empty
+// Description and BodyEvicted set, and lean remembers the line to read it back
+// from. lean is for the lock-free snapshot reader and is exclusive with rd.
+func replayWith(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt, lean *leanState) (good int64, torn bool, err error) {
+	bufSize := 64 * 1024
+	if lean != nil {
+		bufSize = 256 * 1024 // the scan reads every byte and decodes few
+	}
+	r := bufio.NewReaderSize(src, bufSize)
 	in := interner{}
 	for n := 1; ; n++ {
 		line, raw, hadNL, err := readLine(r)
@@ -228,7 +240,13 @@ func replay(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt) (good int
 			return good, true, nil // torn tail: the writer died (or is still writing) before the newline
 		}
 		var e Event
-		perr := json.Unmarshal(line, &e)
+		dec, cut := line, 0
+		if lean != nil {
+			if l, c, ok := stripDescription(line, lean.buf); ok {
+				dec, cut, lean.buf = l, c, l
+			}
+		}
+		perr := json.Unmarshal(dec, &e)
 		if perr == nil {
 			perr = validate(e)
 		}
@@ -241,6 +259,10 @@ func replay(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt) (good int
 		}
 		s := slotFor(recs, e)
 		fold(&s.Record, e, in)
+		if cut > 0 && e.Posting != nil {
+			s.BodyEvicted = true
+			lean.note(e.Key, good, raw, line)
+		}
 		if rd != nil {
 			if err := s.apply(e, good, raw, nil, nil, rd, good); err != nil {
 				return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
