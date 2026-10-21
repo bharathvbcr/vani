@@ -90,8 +90,8 @@ func TestTornTailEdgeBytes(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer f.Close()
-			if got := TornTail(f); got != tc.want {
-				t.Fatalf("TornTail(%q) = %v, want %v", tc.content, got, tc.want)
+			if got, err := TornTail(f); err != nil || got != tc.want {
+				t.Fatalf("TornTail(%q) = %v, %v, want %v", tc.content, got, err, tc.want)
 			}
 		})
 	}
@@ -113,13 +113,13 @@ func TestTornTailReadsOnlyTheLastByte(t *testing.T) {
 	if _, err := f.WriteAt([]byte("\n"), size-1); err != nil {
 		t.Fatal(err)
 	}
-	if TornTail(f) {
-		t.Fatal("file ending in newline reported torn")
+	if torn, err := TornTail(f); err != nil || torn {
+		t.Fatalf("file ending in newline: torn=%v err=%v", torn, err)
 	}
 	if _, err := f.WriteAt([]byte("x"), size-1); err != nil {
 		t.Fatal(err)
 	}
-	if !TornTail(f) {
-		t.Fatal("file ending in x not reported torn")
+	if torn, err := TornTail(f); err != nil || !torn {
+		t.Fatalf("file ending in x: torn=%v err=%v", torn, err)
 	}
 }

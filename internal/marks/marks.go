@@ -69,6 +69,11 @@ const (
 	// key may cost maxEscape bytes on disk. The worst case is a full-size note
 	// and a full-size key, both all '<', plus maxEnvelope for the rest of the
 	// line: 12,000 + 3,072 + 128, under the 16 KiB cap (a test pins it).
+	//
+	// Compatibility: a marks.jsonl written by this version may hold lines up to
+	// 16 KiB. Older binaries had an 8 KiB cap and return ErrCorrupt on such a
+	// line, so do not run an older vani against a store a newer one has written
+	// escape-heavy notes into.
 	maxLineBytes = 16 << 10
 	maxEscape    = 6
 	maxEnvelope  = 128

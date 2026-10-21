@@ -93,8 +93,8 @@ func TestTornTail(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer f.Close()
-			if got := TornTail(f); got != tc.want {
-				t.Fatalf("TornTail = %v, want %v", got, tc.want)
+			if got, err := TornTail(f); err != nil || got != tc.want {
+				t.Fatalf("TornTail = %v, %v, want %v", got, err, tc.want)
 			}
 		})
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // syncDir is SyncDir; a variable only so tests can see that Write reached it.
@@ -69,6 +70,9 @@ func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
 	for range 3 {
 		f, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
+			if st, serr := f.Stat(); serr == nil {
+				newFiles.Store(path, st)
+			}
 			return f, true, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
@@ -86,30 +90,53 @@ func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
 	return nil, false, err
 }
 
+// newFiles remembers, per path, the file OpenAppend just created, so SyncNew can
+// tell whether the path still names that very file. SyncNew consumes the entry.
+var newFiles sync.Map // path -> os.FileInfo
+
 // SyncNew makes the directory entry of a file OpenAppend just created durable.
-// If that fails the empty file is removed again, so the next open sees it as
-// new and syncs again rather than trusting an entry that may not survive a
-// crash; the caller closes f. sync is the caller's seam (SyncDir in
-// production).
-func SyncNew(path string, sync func(dir string) error) error {
-	if err := sync(filepath.Dir(path)); err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("syncing the directory of new %s: %w", filepath.Base(path), err)
+// If that fails the new file is removed again, so the next open sees it as new
+// and syncs again rather than trusting an entry that may not survive a crash;
+// the caller closes f. The removal is conservative: the file is deleted only if
+// the path still refers to the file OpenAppend created (os.SameFile) and it is
+// still empty. If another opener has appended to it, or the path was replaced,
+// the file is left alone and the sync error is returned. That narrows the race
+// but does not close it (check and remove are two steps), so callers must still
+// hold their lock across OpenAppend..SyncNew. syncFn is the caller's seam
+// (SyncDir in production).
+func SyncNew(path string, syncFn func(dir string) error) error {
+	want, _ := newFiles.LoadAndDelete(path)
+	err := syncFn(filepath.Dir(path))
+	if err == nil {
+		return nil
 	}
-	return nil
+	err = fmt.Errorf("syncing the directory of new %s: %w", filepath.Base(path), err)
+	st, serr := os.Stat(path)
+	if serr != nil || st.Size() != 0 {
+		return err
+	}
+	if orig, ok := want.(os.FileInfo); ok && !os.SameFile(orig, st) {
+		return err
+	}
+	_ = os.Remove(path)
+	return err
 }
 
 // TornTail reports whether f is non-empty and its last byte is not a newline:
 // a crash mid-append left a partial row, and a row appended now would be glued
-// onto it and lost with it. The caller writes a newline first.
-func TornTail(f *os.File) bool {
+// onto it and lost with it. The caller writes a newline first. An error means
+// the check could not run; it is never reported as "not torn".
+func TornTail(f *os.File) (bool, error) {
 	st, err := f.Stat()
-	if err != nil || st.Size() == 0 {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("torn-tail check: %w", err)
+	}
+	if st.Size() == 0 {
+		return false, nil
 	}
 	var last [1]byte
 	if _, err := f.ReadAt(last[:], st.Size()-1); err != nil {
-		return false
+		return false, fmt.Errorf("torn-tail check: %w", err)
 	}
-	return last[0] != '\n'
+	return last[0] != '\n', nil
 }

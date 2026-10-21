@@ -282,7 +282,12 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 	// Read before the write: a log that ends mid-row (a crash mid-append) would
 	// glue the first new row onto that fragment and lose both.
 	data := buf.Bytes()
-	if atomicfile.TornTail(f) {
+	torn, err := atomicfile.TornTail(f)
+	if err != nil {
+		_ = f.Close()
+		return 0, fmt.Errorf("feedback: %s: %w", ImpressionsFile, err)
+	}
+	if torn {
 		data = append([]byte{'\n'}, data...)
 	}
 	st, err := f.Stat()
@@ -290,11 +295,17 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 		_ = f.Close()
 		return 0, fmt.Errorf("feedback: stat %s: %w", ImpressionsFile, err)
 	}
-	if _, err := writeAll(f, data); err != nil {
+	if wrote, err := writeAll(f, data); err != nil {
 		// A short write leaves a partial row; cut it back so the log still ends
 		// on a row boundary and no reader counts it as junk forever.
 		err = fmt.Errorf("feedback: write %s: %w", ImpressionsFile, err)
-		if terr := f.Truncate(st.Size()); terr != nil {
+		// Truncate only if nothing else was appended since: another appender's
+		// row after our fragment would be cut off with it.
+		if now, serr := f.Stat(); serr != nil {
+			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back safely: %w", serr))
+		} else if now.Size() != st.Size()+int64(wrote) {
+			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back safely: %s changed by %d bytes besides ours", ImpressionsFile, now.Size()-st.Size()-int64(wrote)))
+		} else if terr := f.Truncate(st.Size()); terr != nil {
 			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back: %w", terr))
 		}
 		_ = f.Close()
