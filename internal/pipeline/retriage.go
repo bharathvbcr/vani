@@ -112,6 +112,7 @@ func reopen(ctx context.Context, l ledger.Ledger, now time.Time, dryRun bool, re
 func reopenEvent(r ledger.Record, now time.Time, reason string) ledger.Event {
 	forget := map[string]string{
 		ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnMissing: "", ledger.AnnBlocks: "", ledger.AnnExplanation: "",
+		ledger.AnnCategory: "", // derived from triage.category, so it goes with the triage
 	}
 	for k := range r.Annotations {
 		if strings.HasPrefix(k, ledger.AnnTriagePrefix) || k == AnnExcluded {

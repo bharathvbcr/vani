@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -304,6 +305,7 @@ type auditAnswerJSON struct {
 func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, scored, dropped int, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var snap ledger.Snapshot
+	var prev map[string]string // the posting's slot labels so far; the store keeps the latest entry whole
 	src, prob := source, p
 	if explicit {
 		var err error
@@ -317,6 +319,7 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		if _, ok := done[k].Labels[eval.WouldApply]; ok {
 			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is already answered", k)
 		}
+		prev = done[k].Labels
 		b, err := e.browse()
 		if err != nil {
 			return auditAnswerJSON{}, err
@@ -330,6 +333,7 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		if _, ok := d.done[k].Labels[eval.WouldApply]; ok {
 			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is already answered", k)
 		}
+		prev = d.done[k].Labels
 		i := slices.IndexFunc(d.picks, func(pk eval.AuditPick) bool { return pk.Key == k })
 		if i < 0 {
 			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the draw for seed %s; pass --source and --p-select", k, d.seed)
@@ -340,7 +344,10 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 	if !ok {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}
-	entry := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
+	merged := make(map[string]string, len(prev)+1)
+	maps.Copy(merged, prev)
+	merged[eval.WouldApply] = verdict
+	entry := eval.Entry{Key: k, Labels: merged, Source: src, PSelect: prob}
 	if err := entry.Validate(); err != nil {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %w", err)
 	}
