@@ -103,7 +103,10 @@ Ported from the drafting validator (`build/check-deciders.js`):
 - `employer_preferences` says `use: badge_and_rank` and `drops: false`; `prefer` holds only
   `cap_exempt_likely` and `nonprofit`, without duplicates.
 - Evidence ids exist in the knowledge-base bank when `kb.bank` is set; otherwise the command says
-  the evidence check was skipped.
+  the evidence check was skipped. A check that did not run (no `identifying-words.txt`, no
+  `kb.bank`) is never "ok": `track show` prints `check: incomplete (not run: ...)` and exits
+  non-zero, and `track use` refuses and leaves the config unchanged unless `--allow-unchecked`
+  is given (the unrun checks are still printed on stderr).
 - `title_signals.include` and `exclude` have at most 64 entries each; the config allows each entry
   at most 100 bytes, non-empty.
 - `title_signals.read` has at most 64 entries. Each names a triage slot other than `sponsorship`

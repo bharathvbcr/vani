@@ -70,12 +70,13 @@ const (
 
 // Digest sections an impression can name.
 const (
-	SectionRanked   = "ranked"
-	SectionUnranked = "not_ranked"
-	SectionUnsure   = "unsure"
-	SectionSaved    = "saved"
-	SectionTopOpen  = "top_open"
-	SectionExplore  = "explore"
+	SectionRanked          = "ranked"
+	SectionUnranked        = "not_ranked"
+	SectionCoverageUnknown = "coverage_unknown"
+	SectionUnsure          = "unsure"
+	SectionSaved           = "saved"
+	SectionTopOpen         = "top_open"
+	SectionExplore         = "explore"
 )
 
 // ErrBusy means another process held the feedback lock for the whole wait.

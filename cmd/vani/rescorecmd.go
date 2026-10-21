@@ -129,7 +129,9 @@ func rescoreWith(ctx context.Context, l ledger.Ledger, limit, workers int, resco
 	adv, err := pipeline.Advance(ctx, baseAdvancePlan(kindRescore, limit, workers, warnf), pipeline.AdvanceDeps{Records: recs, Advance: rescore})
 	rep.Advance = adv
 	for _, k := range keys {
-		if r, ok := l.Get(k); ok && r.Annotations[ledger.AnnRank] != "" {
+		// Left Unscored: a rank, or the coverage-unknown marker a NoMustHaves
+		// answer writes in place of one.
+		if r, ok := l.Get(k); ok && !pipeline.Unscored(r) {
 			rep.Rescored++
 		}
 	}

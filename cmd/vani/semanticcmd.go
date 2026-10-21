@@ -47,7 +47,12 @@ func (e *env) cmdSemanticWarm(args []string) error {
 	if err != nil {
 		return err
 	}
-	mk, _ := marks.ReadMarks(marks.Dir(e.stateDir)) // unreadable marks: the kept postings only
+	mk, err := marks.ReadMarks(marks.Dir(e.stateDir))
+	if err != nil {
+		// Marked postings are not warmed without the marks; say so rather than
+		// let a partial warm look complete.
+		fmt.Fprintf(e.stderr, "vani: semantic warm: the marks store is unreadable (%v); only the kept postings are warmed\n", err)
+	}
 	ctx, stop := signalContext()
 	defer stop()
 	rep := warmSemantic(ctx, cfg, e.stateDir, recs, mk, limit)
