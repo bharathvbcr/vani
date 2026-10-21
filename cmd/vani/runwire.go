@@ -219,6 +219,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	if err != nil {
 		return fmt.Errorf("exclusions: %w", err)
 	}
+	if ch.BodyUnavailable > 0 {
+		w.warnf("exclusions: %d posting(s) left as they are because their stored description could not be read back", ch.BodyUnavailable)
+	}
 	if len(ch.Drop) > 0 || len(ch.Reopen) > 0 {
 		w.warnf("exclusions: dropped %d posting(s), returned %d to live", len(ch.Drop), len(ch.Reopen))
 	}
@@ -338,7 +341,8 @@ func (w *wired) storedFor(b sources.Board) []posting.Posting {
 	var out []posting.Posting
 	for _, r := range w.led.All() {
 		if strings.HasPrefix(string(r.Key), prefix) {
-			out = append(out, r.Posting)
+			// A closed record's text is not resident; the adapter reuses it, so read it back.
+			out = append(out, ledger.Full(w.led, r).Posting)
 		}
 	}
 	return out

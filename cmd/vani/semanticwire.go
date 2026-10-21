@@ -89,6 +89,9 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 	}
 	titles := semantic.NewTitleIndex()
 	for _, r := range w.led.All() {
+		// A closed record has no resident text (BodyEvicted) and Add skips a blank
+		// one. The index is only asked about texts of postings the near-duplicate
+		// pass still considers, which leaves out Dead, Dropped and Duplicate ones.
 		titles.Add(r.Posting.Title, srcutil.SourceText(r.Posting.Description)) // the text the stage hands sim
 	}
 	return semantic.NewTitledSimilarity(emb, cache, titles), func() {
@@ -143,7 +146,10 @@ func notRun(rep semanticReport, why string, err error) semanticReport {
 func warmDocs(recs []ledger.Record, mk map[posting.Key]marks.Mark) []semantic.Doc {
 	var todo []ledger.Record
 	for _, r := range recs {
-		if jobview.InView("all", r, mk[r.Key]) {
+		// A closed job someone marked has no resident text (ledger.Record.BodyEvicted):
+		// embedding its title alone would score a different text than the Jobs views
+		// look up, so it is left out rather than warmed wrongly.
+		if jobview.InView("all", r, mk[r.Key]) && !r.BodyEvicted {
 			todo = append(todo, r)
 		}
 	}

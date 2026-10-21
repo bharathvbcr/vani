@@ -26,6 +26,11 @@ type Event struct {
 }
 
 // Record is the folded current state of one posting.
+//
+// Posting.Description may be empty when BodyEvicted is true: records from All()
+// of a Dead, Dropped or Duplicate posting keep no text in memory. A caller that
+// needs the text calls ledger.Full (or File.Get) for the records it needs; it
+// must not treat the empty Description as "the posting has no description".
 type Record struct {
 	Key         posting.Key       `json:"key"`
 	Status      posting.Status    `json:"status"`
@@ -36,6 +41,10 @@ type Record struct {
 	// MissedRuns counts consecutive board listings this posting was absent
 	// from; two in a row marks it dead.
 	MissedRuns int `json:"missed_runs"`
+	// BodyEvicted is true when Posting.Description was dropped from memory
+	// because Status is Dead, Dropped or Duplicate (see evict.go). It is not
+	// part of the stored or printed record.
+	BodyEvicted bool `json:"-"`
 }
 
 // Ledger appends events and answers from the folded state.

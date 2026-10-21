@@ -36,6 +36,9 @@ type ExclusionChange struct {
 	// could not read their location (DropPolicy.ExcludeUnreadable): the check
 	// could not run, which is not the same as passing it.
 	Unread []ledger.Record
+	// BodyUnavailable counts the records ApplyExclusions left untouched because
+	// their evicted description could not be read back from the ledger.
+	BodyUnavailable int
 }
 
 // ExclusionChanges reads what p's exclusions would do to recs, in their
@@ -69,7 +72,27 @@ func ExclusionChanges(recs []ledger.Record, p DropPolicy, protect func(posting.K
 // on it. It asks no backend. It writes in batches of at most exclusionBatch;
 // an error leaves the batches before it written, and the next run finishes.
 func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, protect func(posting.Key) bool, fo *FailOpen) (ExclusionChange, error) {
-	ch := ExclusionChanges(l.All(), p, protect)
+	all := l.All()
+	recs := all[:0:0]
+	unavailable := 0
+	for _, r := range all {
+		// An exclusion on descriptions is judged against the text, which a
+		// Dropped record keeps out of memory; without it the exclusion would
+		// look lifted and the record would be reopened.
+		if r.BodyEvicted && (Excluded(r) || excludable[r.Status]) {
+			if r = ledger.Full(l, r); r.BodyEvicted {
+				// The body cannot be read back, so the exclusions cannot be
+				// judged: leave the record as it is (a check that could not
+				// run is not a pass, and a refused reopen would fail the whole
+				// batch and starve every other drop), and count it.
+				unavailable++
+				continue
+			}
+		}
+		recs = append(recs, r)
+	}
+	ch := ExclusionChanges(recs, p, protect)
+	ch.BodyUnavailable = unavailable
 	for range ch.Unread {
 		fo.Note(CauseLocationUnreadable)
 	}
