@@ -23,7 +23,11 @@ func leanOracle(line []byte) string {
 	}
 	var orig Event
 	if err := json.Unmarshal(line, &orig); err != nil {
-		return "" // an undecodable original is checked by the laundering test
+		var got Event
+		if json.Unmarshal(lean, &got) == nil {
+			return "shortened line decodes although the original is refused: " + err.Error()
+		}
+		return ""
 	}
 	var got Event
 	if err := json.Unmarshal(lean, &got); err != nil {
@@ -101,13 +105,19 @@ func FuzzStripDescriptionCanonical(f *testing.F) {
 	})
 }
 
-// FuzzStripDescription is the raw variant: any bytes. The known key-confusion
-// classes (duplicate or case-folded keys, escaped key names, whitespace before
-// a colon) are deliberately not seeded: seeded, the run would fail before it
-// mutated anything. They are pinned by a deterministic test instead.
+// FuzzStripDescription is the raw variant: any bytes, seeded with the
+// key-confusion classes (duplicate or case-folded keys, escaped key names,
+// whitespace before a colon) and invalid description contents.
 func FuzzStripDescription(f *testing.F) {
 	for _, s := range hostileEvents() {
 		f.Add(s)
+	}
+	for _, s := range confusionLines {
+		f.Add([]byte(s))
+	}
+	bq := string(rune(92))
+	for _, d := range []string{"bad" + bq + "qx", "x" + bq + "u12", "a\nb", "a\x01b"} {
+		f.Add([]byte(hdr + `"posting":{"key":"gh:a:1","description":"` + d + `"}}`))
 	}
 	f.Fuzz(func(t *testing.T, line []byte) {
 		if msg := leanOracle(line); msg != "" {

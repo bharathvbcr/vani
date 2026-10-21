@@ -35,53 +35,136 @@ const (
 // stripDescription finds the description string of the event's posting object
 // in line (an event as Marshal writes it) and returns line with that string's
 // contents cut out (built in buf), and how many bytes were cut. ok is false
-// when the line does not have the expected shape (no posting, no description,
-// whitespace between a key and its colon, an escaped key name): the caller then
-// decodes the line whole, so an unusual line is never misread, only not
-// shortened. The cut is found by a structural scan that jumps from quote to
-// quote, so the description itself is never tokenised or copied; its escapes
-// are not validated (they are when a body is read back).
+// whenever the line is not unambiguously in the shape the ledger writer
+// produces; the caller then decodes the line whole, so an unusual line is never
+// misread, only not shortened. The cut is made only when all of these hold:
+//
+//   - there is no whitespace outside strings (Marshal's output is compact), so
+//     no key is separated from its colon or value;
+//   - no object key contains a backslash or a byte >= 0x80 (a key spelled with
+//     escapes, or one that matches only by Unicode case folding, would be read
+//     by encoding/json as a different name than the scan sees);
+//   - exactly one top-level key equals "posting" and exactly one key of that
+//     object equals "description", both ignoring ASCII case (encoding/json
+//     matches field names case-insensitively and takes the last duplicate, so
+//     any repeat makes the cut ambiguous);
+//   - the description is a string whose contents are valid JSON string
+//     contents (legal escapes, no control characters), so a line ReadSnapshot
+//     refuses as corrupt is not shortened here and is refused the same way.
+//
+// The structural scan jumps from quote to quote, so only the description is
+// examined byte by byte, and only for validity; it is never copied or tokenised.
 func stripDescription(line, buf []byte) (lean []byte, cut int, ok bool) {
 	depth, inPosting := 0, false
+	postings, descs := 0, 0
+	dstart, dend := 0, 0
 	for i := 0; i < len(line); {
-		switch line[i] {
-		case '{', '[':
+		c := line[i]
+		switch {
+		case c == '{' || c == '[':
 			depth++
 			i++
-		case '}', ']':
+		case c == '}' || c == ']':
 			depth--
 			i++
-		case '"':
+		case c <= ' ':
+			return nil, 0, false // whitespace outside a string: not a canonical line
+		case c == '"':
 			end := stringEnd(line, i)
 			if end < 0 {
 				return nil, 0, false
 			}
-			name := line[i+1 : end] // raw contents; escapes are left as written
+			name := line[i+1 : end] // raw contents
 			i = end + 1
 			if i >= len(line) || line[i] != ':' {
 				continue // a value, not a key
 			}
 			i++
+			if !plainKey(name) {
+				return nil, 0, false
+			}
 			switch {
 			case depth == 1:
-				inPosting = string(name) == postingKey
-			case depth == 2 && inPosting && string(name) == descriptionKey:
-				if i >= len(line) || line[i] != '"' {
+				inPosting = bytes.EqualFold(name, postingKeyB)
+				if inPosting {
+					if postings++; postings > 1 {
+						return nil, 0, false
+					}
+				}
+			case depth == 2 && inPosting && bytes.EqualFold(name, descriptionKeyB):
+				if descs++; descs > 1 || i >= len(line) || line[i] != '"' {
 					return nil, 0, false
 				}
 				vend := stringEnd(line, i)
-				if vend < 0 {
+				if vend < 0 || !validStringBody(line[i+1:vend]) {
 					return nil, 0, false
 				}
-				buf = append(buf[:0], line[:i+1]...)
-				buf = append(buf, line[vend:]...)
-				return buf, vend - i - 1, true
+				dstart, dend = i+1, vend
+				i = vend + 1
 			}
 		default:
 			i++
 		}
 	}
-	return nil, 0, false
+	if descs != 1 {
+		return nil, 0, false
+	}
+	buf = append(buf[:0], line[:dstart]...)
+	buf = append(buf, line[dend:]...)
+	return buf, dend - dstart, true
+}
+
+var (
+	postingKeyB     = []byte(postingKey)
+	descriptionKeyB = []byte(descriptionKey)
+)
+
+// plainKey reports whether an object key's raw contents are what the decoder
+// will read: ASCII with no escapes.
+func plainKey(name []byte) bool {
+	for _, c := range name {
+		if c == '\\' || c >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// validStringBody reports whether s (the bytes between a string's quotes) is
+// valid JSON string content by encoding/json's rules: no control character
+// below 0x20, and every backslash starts one of \" \\ \/ \b \f \n \r \t or
+// \uXXXX. Invalid UTF-8 is not an error to the decoder (it becomes U+FFFD), so
+// it is accepted here too.
+func validStringBody(s []byte) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= ' ' && c != '\\' {
+			continue
+		}
+		if c != '\\' {
+			return false
+		}
+		i++
+		if i >= len(s) {
+			return false
+		}
+		switch s[i] {
+		case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+		case 'u':
+			if i+4 >= len(s) {
+				return false
+			}
+			for _, h := range s[i+1 : i+5] {
+				if !('0' <= h && h <= '9' || 'a' <= h && h <= 'f' || 'A' <= h && h <= 'F') {
+					return false
+				}
+			}
+			i += 4
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // stringEnd returns the index of the quote that closes the string opening at
@@ -117,6 +200,7 @@ type leanBody struct {
 type leanState struct {
 	bodies map[posting.Key]leanBody
 	buf    []byte
+	whole  int // lines decoded whole because stripDescription would not cut them
 }
 
 // note records the line (n bytes at off, newline included) that carried k's

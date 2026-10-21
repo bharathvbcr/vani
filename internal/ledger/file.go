@@ -244,6 +244,8 @@ func replayWith(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt, lean 
 		if lean != nil {
 			if l, c, ok := stripDescription(line, lean.buf); ok {
 				dec, cut, lean.buf = l, c, l
+			} else {
+				lean.whole++
 			}
 		}
 		perr := json.Unmarshal(dec, &e)
