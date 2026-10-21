@@ -1,6 +1,7 @@
 package fieldtriage
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -86,14 +87,60 @@ func TestGuardLeavesNonSensitiveLabelsToTheModel(t *testing.T) {
 	}
 }
 
+// bestOf3 is the fastest of three runs of fn: the minimum filters scheduler
+// noise (a loaded machine or -race only ever adds time).
+func bestOf3(fn func()) time.Duration {
+	best := time.Duration(1<<63 - 1)
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		fn()
+		if d := time.Since(start); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// allocated returns the heap bytes fn allocates. Unlike wall-clock time it does
+// not move with machine speed, -race or load, so a ratio of two of them is a
+// stable measure of how the work grows with the input.
+func allocated(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// assertLinear fails when fn on 8x the input allocates more than 12x what it
+// allocates on the small input. Linear work gives at most 8 (fixed overhead
+// only lowers it); repeated concatenation or per-rune re-copying gives 64 or
+// more. The regexp engine is linear by construction (RE2, no backtracking), so
+// the allocation count is what a string-handling regression would move.
+func assertLinear(t *testing.T, name string, small, big string, fn func(string)) {
+	t.Helper()
+	fn(small) // warm regexp machines and allocator pools
+	as := allocated(func() { fn(small) })
+	ab := allocated(func() { fn(big) })
+	const maxRatio = 12
+	if as == 0 || float64(ab)/float64(as) > maxRatio {
+		t.Errorf("%s is super-linear: %d bytes allocated %d B, %d bytes allocated %d B (max ratio %d for an 8x input)",
+			name, len(small), as, len(big), ab, maxRatio)
+	}
+}
+
 func TestGuardIsLinearOnLongLabels(t *testing.T) {
-	long := strings.Repeat("Describe the stage you managed. ", 2<<10) // ~64 KB, far over the 1000-rune field cap
-	start := time.Now()
+	const unit = "Describe the stage you managed. "
+	long := strings.Repeat(unit, 2<<10) // 64 KB, far over the 1000-rune field cap
 	if got := Guard(long); got != "" {
 		t.Errorf("Guard(long) = %q", got)
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("Guard took %v on a 64 KB label", d)
+	assertLinear(t, "Guard", strings.Repeat(unit, 256), long, func(s string) { Guard(s) })
+	// A label at the field cap is the production size: it must stay far below a
+	// second even under -race on a loaded machine.
+	capped := strings.Repeat(unit, MaxLabelRunes/len(unit)+1)[:MaxLabelRunes]
+	if d := bestOf3(func() { Guard(capped) }); d > 2*time.Second {
+		t.Errorf("Guard took %v on a %d-rune label", d, MaxLabelRunes)
 	}
 	if got := Guard(long + " Are you a citizen?"); got != WorkAuth {
 		t.Errorf("a sensitive phrase after 64 KB was missed: %q", got)
