@@ -69,6 +69,15 @@ final class SQLiteBankStoreTests: XCTestCase {
                updatedAt: "2026-01-01T00:00:00.000Z", review: false)
     }
 
+    func testReadLoadsEveryAnswerRow() throws {
+        let store = try SQLiteBankStore(directory: try tempDir(self).appendingPathComponent("full_map"))
+        let keys = ["a_key", "b_key", "it's_key", "c_key"]
+        _ = try store.patch(upsert: keys.map { row($0, value: "v-\($0)") }, deleteKeys: [])
+        let answers = try store.read().bank.answers
+        XCTAssertEqual(Set(answers.keys), Set(keys))
+        for k in keys { XCTAssertEqual(answers[k]?.value, ["v-\(k)"]) }
+    }
+
     func testResyncReplacesRowsAndSetsRevision() throws {
         let store = try SQLiteBankStore(directory: try tempDir(self).appendingPathComponent("resync"))
         _ = try store.patch(upsert: [row("stale_row")], deleteKeys: [])

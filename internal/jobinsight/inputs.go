@@ -8,7 +8,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -168,7 +167,7 @@ const employerBoostSlack = 1e-6
 // InputsFor builds Score's Inputs for r.
 //
 // PreferredEmployer is derived from the ledger: the pipeline adds
-// pipeline.EmployerRankBoost to the rank of a preferred employer and records
+// ledger.EmployerRankBoost to the rank of a preferred employer and records
 // the unboosted must-have coverage separately, so a rank at least that far
 // above the coverage means the boost was applied. Nothing about which
 // employers the owner prefers is stored (see pipeline.Runner.preferredEmployer).
@@ -187,7 +186,7 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 	rank, hasRank := parseFloat(ann[ledger.AnnRank])
 	if cov, ok := parseFloat(ann[ledger.AnnCoverage]); ok {
 		in.Coverage, in.HasCoverage = cov, true
-		in.PreferredEmployer = hasRank && rank-cov >= pipeline.EmployerRankBoost-employerBoostSlack
+		in.PreferredEmployer = hasRank && rank-cov >= ledger.EmployerRankBoost-employerBoostSlack
 	} else if hasRank {
 		in.Coverage, in.HasCoverage = rank, true
 	}
