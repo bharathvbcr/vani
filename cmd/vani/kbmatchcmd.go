@@ -293,6 +293,8 @@ func (e *env) kbmatchRun(args []string) error {
 	// reads is what no other run can change before it saves, and the corrupt-store
 	// removal only ever happens under the lock. A dry run takes no lock, removes
 	// nothing and starts from an empty store in memory.
+	ctx, cancel := signalContext()
+	defer cancel()
 	var store *kbmatch.Store
 	var recovered error
 	if *dry {
@@ -303,7 +305,10 @@ func (e *env) kbmatchRun(args []string) error {
 		}
 	} else {
 		var unlock func()
-		store, unlock, recovered, err = kbmatch.OpenLocked(e.kbmatchPath(), kbmatchLockWait)
+		store, unlock, recovered, err = kbmatch.OpenLocked(ctx, e.kbmatchPath(), kbmatchLockWait)
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return fmt.Errorf("kbmatch: interrupted while waiting for another run to release the store; nothing was asked: %w", err)
+		}
 		if errors.Is(err, kbmatch.ErrBusy) {
 			return fmt.Errorf("kbmatch: another run is using the store (waited %s); try again when it finishes: %w", kbmatchLockWait, err)
 		}
@@ -316,7 +321,11 @@ func (e *env) kbmatchRun(args []string) error {
 	}
 	if recovered != nil {
 		// Nothing in it is irreplaceable: the model can be asked again.
-		fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", recovered)
+		if *dry {
+			fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); a real run would start it again\n", recovered)
+		} else {
+			fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", recovered)
+		}
 	}
 	kbmatchAfterOpen()
 	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
@@ -357,8 +366,6 @@ func (e *env) kbmatchRun(args []string) error {
 		return nil
 	}
 
-	ctx, cancel := signalContext()
-	defer cancel()
 	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
 	d, err := kbmatchDecider(ctx, w, backend)
 	if err != nil {

@@ -2,6 +2,7 @@ package kbmatch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,15 +223,26 @@ const lockRetry = 20 * time.Millisecond
 // LockWait is Lock that waits up to wait (at least one try) for another run to
 // let go, then gives ErrBusy. A run holds the lock for as long as it asks, so
 // the wait is short: it rides out a run that is only finishing, not one that is
-// working through its list.
-func LockWait(path string, wait time.Duration) (unlock func(), err error) {
+// working through its list. The wait ends when ctx does, with ctx.Err() and
+// without the lock.
+func LockWait(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
 	deadline := time.Now().Add(wait)
+	timer := time.NewTimer(lockRetry)
+	defer timer.Stop()
 	for {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		unlock, err = Lock(path)
 		if !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
 			return unlock, err
 		}
-		time.Sleep(lockRetry)
+		timer.Reset(lockRetry)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 
@@ -239,8 +251,8 @@ func LockWait(path string, wait time.Duration) (unlock func(), err error) {
 // saves. A corrupt store is removed here, under the lock, and recovered carries
 // why; the caller starts from an empty store. Nothing is removed without the
 // lock. The caller calls unlock when the run is done.
-func OpenLocked(path string, wait time.Duration) (st *Store, unlock func(), recovered error, err error) {
-	unlock, err = LockWait(path, wait)
+func OpenLocked(ctx context.Context, path string, wait time.Duration) (st *Store, unlock func(), recovered error, err error) {
+	unlock, err = LockWait(ctx, path, wait)
 	if err != nil {
 		return nil, nil, nil, err
 	}

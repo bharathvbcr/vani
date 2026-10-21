@@ -1,6 +1,7 @@
 package kbmatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -148,7 +149,7 @@ func TestOpenLockedWaitsThenBusyAndRemovesCorruptOnlyUnderTheLock(t *testing.T) 
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if _, _, _, err := OpenLocked(path, 100*time.Millisecond); !errors.Is(err, ErrBusy) {
+	if _, _, _, err := OpenLocked(context.Background(), path, 100*time.Millisecond); !errors.Is(err, ErrBusy) {
 		t.Fatalf("a held store should be ErrBusy, got %v", err)
 	}
 	if time.Since(start) < 90*time.Millisecond {
@@ -159,7 +160,7 @@ func TestOpenLockedWaitsThenBusyAndRemovesCorruptOnlyUnderTheLock(t *testing.T) 
 	}
 	// A holder that lets go within the wait lets the opener in.
 	go func() { time.Sleep(60 * time.Millisecond); held() }()
-	st, unlock, recovered, err := OpenLocked(path, 5*time.Second)
+	st, unlock, recovered, err := OpenLocked(context.Background(), path, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

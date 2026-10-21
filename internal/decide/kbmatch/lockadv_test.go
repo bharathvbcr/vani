@@ -2,6 +2,7 @@ package kbmatch
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -52,7 +53,7 @@ func TestLockReleasedWhenHolderIsKilled(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = cmd.Process.Wait()
-	unlock, err := LockWait(path, 2*time.Second)
+	unlock, err := LockWait(context.Background(), path, 2*time.Second)
 	if err != nil {
 		t.Fatalf("the OS did not release the lock of a killed process: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestLockWaitBounds(t *testing.T) {
 	}
 	for _, wait := range []time.Duration{0, -time.Second, -time.Hour} {
 		start := time.Now()
-		if _, err := LockWait(path, wait); !errors.Is(err, ErrBusy) {
+		if _, err := LockWait(context.Background(), path, wait); !errors.Is(err, ErrBusy) {
 			t.Errorf("wait %v: %v, want ErrBusy", wait, err)
 		}
 		if el := time.Since(start); el > 500*time.Millisecond {
@@ -81,7 +82,7 @@ func TestLockWaitBounds(t *testing.T) {
 	// wait <= 0 on a free lock still makes the one try.
 	held()
 	for _, wait := range []time.Duration{0, -time.Second} {
-		unlock, err := LockWait(path, wait)
+		unlock, err := LockWait(context.Background(), path, wait)
 		if err != nil {
 			t.Fatalf("free lock with wait %v: %v", wait, err)
 		}
@@ -91,7 +92,7 @@ func TestLockWaitBounds(t *testing.T) {
 	held, _ = Lock(path)
 	defer held()
 	start := time.Now()
-	if _, err := LockWait(path, 200*time.Millisecond); !errors.Is(err, ErrBusy) {
+	if _, err := LockWait(context.Background(), path, 200*time.Millisecond); !errors.Is(err, ErrBusy) {
 		t.Fatalf("got %v", err)
 	}
 	if el := time.Since(start); el < 200*time.Millisecond || el > 700*time.Millisecond {
@@ -106,7 +107,7 @@ func TestLockWaitGetsLockWhenReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(150 * time.Millisecond); held() }()
-	unlock, err := LockWait(path, 5*time.Second)
+	unlock, err := LockWait(context.Background(), path, 5*time.Second)
 	if err != nil {
 		t.Fatalf("waiter did not get the lock: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestOpenLockedRecovery(t *testing.T) {
 			if err := os.WriteFile(path, content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			st, unlock, recovered, err := OpenLocked(path, 0)
+			st, unlock, recovered, err := OpenLocked(context.Background(), path, 0)
 			if err != nil {
 				t.Fatalf("OpenLocked: %v", err)
 			}
@@ -171,7 +172,7 @@ func TestOpenLockedRecovery(t *testing.T) {
 		}
 		held, _ := Lock(path)
 		defer held()
-		if _, _, _, err := OpenLocked(path, 0); !errors.Is(err, ErrBusy) {
+		if _, _, _, err := OpenLocked(context.Background(), path, 0); !errors.Is(err, ErrBusy) {
 			t.Fatalf("got %v", err)
 		}
 		if raw, err := os.ReadFile(path); err != nil || string(raw) != "{bad" {
@@ -184,7 +185,7 @@ func TestOpenLockedRecovery(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(path, "inner"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		_, _, recovered, err := OpenLocked(path, 0)
+		_, _, recovered, err := OpenLocked(context.Background(), path, 0)
 		if err == nil || recovered != nil {
 			t.Fatalf("a directory at the store path: err=%v recovered=%v", err, recovered)
 		}
@@ -210,7 +211,7 @@ func TestOpenLockedRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-		_, _, recovered, err := OpenLocked(path, 0)
+		_, _, recovered, err := OpenLocked(context.Background(), path, 0)
 		if err == nil || recovered != nil || !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("err=%v recovered=%v, want a permission error", err, recovered)
 		}
@@ -238,7 +239,7 @@ func TestOpenLockedRecovery(t *testing.T) {
 		if err := os.Symlink(target, path); err != nil {
 			t.Fatal(err)
 		}
-		_, unlock, recovered, err := OpenLocked(path, 0)
+		_, unlock, recovered, err := OpenLocked(context.Background(), path, 0)
 		if err != nil || recovered == nil {
 			t.Fatalf("err=%v recovered=%v", err, recovered)
 		}
