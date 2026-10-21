@@ -140,6 +140,56 @@ All nine branches above are merged (`9b4af91`..`4ce02f4`); main is local and not
 - **New flake folded into ft-2673557b:** `cmd/vani TestJobsInsightScalesTo5000Postings` fails under `-race` with heavy
   parallel load.
 
+## Wave 3b merged; branches cleaned (2026-10-21)
+
+- **Merged:** the three wave-3b branches (`3b363f8`, `5a8cd87`, `e5a0ab0`).
+- **Checks after merging:**
+  - Go: no FAIL.
+  - Swift: 543 run, 0 failed.
+  - Extension: typecheck ok, and `bun test` shows 1,191 pass and 0 fail.
+- **Branches:** all agent branches are deleted. 27 were merged; the other 5 were patch-equivalent per `git cherry`.
+- **Worktrees:** all agent worktrees are unregistered. Nine directories are left half-deleted (Finder `.DS_Store`). Removing them needs `rm -rf`, which the gate holds.
+
+## Wave 3 — built off main e5a0ab0 on the owner's decision to build despite wt-jibe (not merged)
+
+| card | branch @ sha | status |
+|---|---|---|
+| G2 ft-84d4fe25 daemon run lifecycle (+ G4 app.go:217 gap) | `worktree-agent-a985d9bc1b3106024` @ 329dcb5 | review |
+| G7 ft-a1bb3507 prompt bounds + sensitive-field guard | `worktree-agent-ab77b5e2b6c8febd1` @ b5c86f6 | review |
+| G11 ft-debfd7bf CLI/digest honesty | `worktree-agent-a9dcbc14b3f0729a5` @ 3c8e067 | review |
+| ft-2673557b jobs mark/find perf | `worktree-agent-ab93511f45d208708` @ 8fbd552 | review (`find` <250 ms needs a quiet-machine rerun) |
+
+- **G2:**
+  - Config reload is now owned in one place, and process-lifetime fields (schedule, DevPrism binary and tools hash) are pinned with a note.
+  - A dead DevPrism is replaced, at most once per window.
+  - Panic recovery is bounded, and its text is length-capped.
+  - A poisoned inbox poll stops the daemon.
+  - A fatal error under cancellation is recorded as failed.
+  - `publishDigest` drops from 2,000 fsyncs to 1.
+  - Owner-marked closed records get their text back for the daily semantic warm-up.
+  - Adversarial fixes: a FIFO config path no longer hangs the run; a DevPrism binary change now logs a note; batches split by bytes as well as count; an unreadable body is counted instead of skipped silently.
+- **G7:**
+  - Title, location and context are bounded in the kbmatch prompt.
+  - The guard covers more phrasings and normalises labels structurally.
+  - A word mixing alphabets now fails closed.
+  - A model reading of a sensitive field never becomes a draft.
+  - The adversarial pass first found 30 sensitive labels being drafted; all 30 are now caught.
+  - Known misses: digits inserted inside a word ("c1tizen"), and a fully non-Latin lookalike word. Some false pins also happen (for example "military-grade"); they fail safe as a manual answer.
+- **G11:**
+  - `track show` no longer prints a false "check: ok", and `track use` refuses unless `--allow-unchecked`.
+  - The rescore count is now honest.
+  - `semantic warm` warns when the marks store is unreadable.
+  - The digest has a "Coverage unknown" section.
+  - Adversarial fixes: an empty words file no longer counts as a passed check; a posting dropped mid-pass is no longer counted as rescored.
+  - The coverage-unknown check now has one owner, `ledger.CoverageUnknown`.
+- **ft-2673557b:**
+  - A single-row lookup used to re-learn the whole ledger (introduced by commit 3255839). It now learns only that company's postings, and parity tests prove the rows are byte-identical.
+  - At 10k synthetic postings, min of 5 at load average 28–33: `jobs mark` went from 2,193 to 244 ms and `jobs find` from 2,094 to 255 ms. Allocations per call fell from 14.1M to 0.52–0.67M.
+  - The scale test now counts allocations, and the adversarial pass tightened its bound to at most 4.1x.
+- **Overlap at merge:** G2 and G11 both touch `internal/pipeline`, and G11 ran gofmt on `runner.go`. Expect a mechanical conflict there.
+- **Manvi:** `devcouncil_verify_task` can't judge any of these yet. It says "no task is checked out; call devcouncil_checkout_task first".
+- **Filed:** ft-0aa92138. The `vani semantic warm` CLI path doesn't hydrate marked closed records yet; build it after G11 merges.
+
 ## Deferred or blocked (and why)
 
 | card | reason |
