@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/filelock"
 )
 
 // appRunner stands in for /usr/bin/open: launch, when set, plays the app
@@ -70,15 +74,61 @@ func TestViaAppHandsTheNoticeToTheApp(t *testing.T) {
 func TestViaAppWaitsForALateLock(t *testing.T) {
 	lock := AppLockPath(t.TempDir())
 	fb := &countNotifier{}
+	// The "app" takes the lock on its own goroutine, after the launch returns,
+	// so the first poll may miss it. No wall-clock delay decides the outcome:
+	// the wait window is far longer than any scheduling stall, and the holder
+	// retries when its attempt collides with the daemon's momentary probe lock
+	// (the app would simply try again too).
+	type result struct {
+		f   *os.File
+		err error
+	}
+	held := make(chan result, 1)
 	r := &appRunner{launch: func() {
-		time.AfterFunc(30*time.Millisecond, func() { holdLock(t, lock) })
+		go func() {
+			f, err := holdLockWhenFree(lock)
+			held <- result{f, err}
+		}()
 	}}
-	if err := quick(lock, r, fb, &bytes.Buffer{}).Notify(context.Background(), "t", "b"); err != nil {
+	v := quick(lock, r, fb, &bytes.Buffer{})
+	v.wait = time.Minute
+	if err := v.Notify(context.Background(), "t", "b"); err != nil {
 		t.Fatal(err)
 	}
 	if fb.n != 0 {
 		t.Fatalf("fell back although the app took the lock: %d", fb.n)
 	}
+	got := <-held
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	t.Cleanup(func() { _ = got.f.Close() })
+}
+
+// holdLockWhenFree is holdLock for a goroutine: it reports errors instead of
+// failing the test from off the test goroutine, and retries while the daemon's
+// non-blocking probe holds the lock for an instant. The file stays open (and
+// locked) until the caller closes it.
+func holdLockWhenFree(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err = filelock.TryLock(f, true)
+		if !errors.Is(err, filelock.ErrWouldBlock) {
+			break
+		}
+		runtime.Gosched()
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 func TestViaAppFallsBackWhenTheAppIsMissing(t *testing.T) {
