@@ -214,9 +214,10 @@ func TestReadSkipsAndCountsBadLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The torn line and the next append share a line, so that line is junk too.
-	if len(got.Rows) != 1 || got.Skipped != 5 {
-		t.Fatalf("rows %d skipped %d, want 1 and 5", len(got.Rows), got.Skipped)
+	// The append after the torn line starts on a fresh line, so only the torn
+	// fragment itself is junk: the new row is kept.
+	if len(got.Rows) != 2 || got.Skipped != 5 {
+		t.Fatalf("rows %d skipped %d, want 2 and 5", len(got.Rows), got.Skipped)
 	}
 }
 

@@ -5,6 +5,7 @@
 package atomicfile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,4 +55,61 @@ func Write(path string, data []byte) (err error) {
 		return fmt.Errorf("atomic write %s: replaced, but syncing the directory failed: %w", name, serr)
 	}
 	return nil
+}
+
+// OpenAppend opens path read-write, mode 0600, creating it when absent. created
+// reports that this call made the file. Creation goes through an O_EXCL probe
+// first, so of any number of racing openers exactly one is told it created the
+// file and the rest open the file that won; the creator owes a SyncDir of the
+// parent (see SyncNew), because a file's own fsync does not make its directory
+// entry durable. extra is OR-ed into the flags (os.O_APPEND for an append-only
+// log).
+func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
+	flags := os.O_RDWR | extra
+	for range 3 {
+		f, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return f, true, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, false, err
+		}
+		f, err = os.OpenFile(path, flags, 0o600)
+		if err == nil {
+			return f, false, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, false, err
+		}
+		// Removed between the two opens: probe again.
+	}
+	return nil, false, err
+}
+
+// SyncNew makes the directory entry of a file OpenAppend just created durable.
+// If that fails the empty file is removed again, so the next open sees it as
+// new and syncs again rather than trusting an entry that may not survive a
+// crash; the caller closes f. sync is the caller's seam (SyncDir in
+// production).
+func SyncNew(path string, sync func(dir string) error) error {
+	if err := sync(filepath.Dir(path)); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("syncing the directory of new %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+// TornTail reports whether f is non-empty and its last byte is not a newline:
+// a crash mid-append left a partial row, and a row appended now would be glued
+// onto it and lost with it. The caller writes a newline first.
+func TornTail(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		return false
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], st.Size()-1); err != nil {
+		return false
+	}
+	return last[0] != '\n'
 }

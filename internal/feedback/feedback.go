@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -274,13 +275,30 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 			return 0, fmt.Errorf("feedback: rotate %s: %w", ImpressionsFile, err)
 		}
 	}
-	f, err := os.OpenFile(live, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(live, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("feedback: %w", err)
 	}
-	if _, err := f.Write(buf.Bytes()); err != nil {
+	// Read before the write: a log that ends mid-row (a crash mid-append) would
+	// glue the first new row onto that fragment and lose both.
+	data := buf.Bytes()
+	if atomicfile.TornTail(f) {
+		data = append([]byte{'\n'}, data...)
+	}
+	st, err := f.Stat()
+	if err != nil {
 		_ = f.Close()
-		return 0, fmt.Errorf("feedback: write %s: %w", ImpressionsFile, err)
+		return 0, fmt.Errorf("feedback: stat %s: %w", ImpressionsFile, err)
+	}
+	if _, err := writeAll(f, data); err != nil {
+		// A short write leaves a partial row; cut it back so the log still ends
+		// on a row boundary and no reader counts it as junk forever.
+		err = fmt.Errorf("feedback: write %s: %w", ImpressionsFile, err)
+		if terr := f.Truncate(st.Size()); terr != nil {
+			err = errors.Join(err, fmt.Errorf("feedback: the partial write could not be cut back: %w", terr))
+		}
+		_ = f.Close()
+		return 0, err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -288,6 +306,9 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 	}
 	return n, f.Close()
 }
+
+// writeAll is f.Write; a variable only so a test can inject a short write.
+var writeAll = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
 
 type slateKey struct {
 	slate, surface string

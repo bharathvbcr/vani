@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -74,6 +75,9 @@ var errBroken = errors.New("ledger: events file is in an unknown state after a f
 
 var _ Ledger = (*File)(nil)
 
+// syncDir is atomicfile.SyncDir; a variable only so a test can count its calls.
+var syncDir = atomicfile.SyncDir
+
 // Open locks dir, creating it (0700) if needed, and replays dir/events.jsonl.
 func Open(dir string) (*File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -90,10 +94,19 @@ func Open(dir string) (*File, error) {
 		}
 		return nil, fmt.Errorf("ledger: lock: %w", err)
 	}
-	ev, err := os.OpenFile(filepath.Join(dir, eventsName), os.O_RDWR|os.O_CREATE, 0o600)
+	evPath := filepath.Join(dir, eventsName)
+	ev, created, err := atomicfile.OpenAppend(evPath, 0)
 	if err != nil {
 		lock.Close()
 		return nil, fmt.Errorf("ledger: open events: %w", err)
+	}
+	if created {
+		// Appends fsync the file, not the directory entry that names it.
+		if err := atomicfile.SyncNew(evPath, syncDir); err != nil {
+			ev.Close()
+			lock.Close()
+			return nil, fmt.Errorf("ledger: %w", err)
+		}
 	}
 	f := &File{events: ev, lock: lock, recs: map[posting.Key]*Record{}}
 	if err := f.replay(); err != nil {
