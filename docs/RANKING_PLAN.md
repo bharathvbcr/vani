@@ -207,12 +207,16 @@ How models agree:
   narrow. The lower end must be above 0. A bare `fitted > hand` was true in 5 of 20 null worlds
   (labels drawn from the hand weights themselves).
 - **Strata:** each judgment is weighted by 1/`p_select` (Horvitz-Thompson), in the fit and in the
-  held-out accuracy, because the audit draws 10 dropped for 5 scored. A `p_select` outside (0, 1] on
+  held-out accuracy, because the audit draws 10 dropped for 5 scored. A `p_select` outside [1e-9, 1] on
   a sampled label is refused. Held-out accuracy is also printed per stratum (scored, dropped, mixed),
   and when the held-out set holds sampled postings, at least `MinScoredStratumPairs` (50) pairs must
   be between two scored-stratum postings: the ranking orders scored postings, so a held-out set of
   mostly dropped ones cannot carry the claim. Marks, impressions and manual labels carry no
   inclusion probability and weigh 1.
+- The scored-stratum floor (`MinScoredStratumPairs` = 50) needs at least 13 scored held-out items
+  (13 items make 78 pairs at most; 10 make 45), which in practice means roughly 200-250 labels, so
+  the first fit at 150 labels will often be refused by design (fail-closed). A `p_select` under
+  `eval.MinInclusionProbability` (1e-9) is refused too: its weight would overflow.
 - More than `MaxHeldOutPairs` (2,000,000) held-out pairs is refused (lower `--holdout`), not
   sampled. Otherwise `vani rankfit` returns "no gain", names the reason and writes nothing.
 

@@ -170,11 +170,11 @@ func (h HeldOut) Insufficiency(p Promotion) string {
 	floor := h.Split.PromotionFloor()
 	switch {
 	case p.Asked < floor:
-		return fmt.Sprintf("%d asked, needs %d (the split holds out %d and allows %d skips); label or record readings for %d more held-out postings, or a split of size %d or less would be cleared by the %d asked",
-			p.Asked, floor, h.Split.Size, HeldOutAllowedSkips, floor-p.Asked, p.Asked+HeldOutAllowedSkips, p.Asked)
+		return fmt.Sprintf("%d asked, needs %d (the split holds out %d and allows %d skips); label or record readings for %d more held-out postings, %s",
+			p.Asked, floor, h.Split.Size, HeldOutAllowedSkips, floor-p.Asked, smallerSplitAdvice(p.Asked, "asked"))
 	case p.ShadowAnswered > 0 && p.PrimaryAnswered > 0 && p.ShadowAnswered >= p.PrimaryAnswered && p.Paired < floor:
-		return fmt.Sprintf("%d paired, needs %d; %d more held-out postings both answered, or a split of size %d or less would be cleared by the %d paired",
-			p.Paired, floor, floor-p.Paired, p.Paired+HeldOutAllowedSkips, p.Paired)
+		return fmt.Sprintf("%d paired, needs %d; %d more held-out postings both answered, %s",
+			p.Paired, floor, floor-p.Paired, smallerSplitAdvice(p.Paired, "paired"))
 	case p.PrimaryAnswered > 0 && p.ShadowAnswered >= p.PrimaryAnswered && p.Paired >= floor && p.Discordant() < MinDiscordant:
 		why := fmt.Sprintf("%d discordant, needs %d; no split size lowers that threshold", p.Discordant(), MinDiscordant)
 		if d := p.Discordant(); d > 0 && len(h.HeldOut) > 0 {
@@ -185,6 +185,17 @@ func (h HeldOut) Insufficiency(p Promotion) string {
 		return why
 	}
 	return ""
+}
+
+// smallerSplitAdvice names the largest split the count would clear. A split of
+// size s needs max(s-HeldOutAllowedSkips, 1) answered, so a count of n >= 1
+// clears sizes up to n+HeldOutAllowedSkips, and a count of 0 clears none: no
+// split size is cleared by nothing.
+func smallerSplitAdvice(n int, what string) string {
+	if n < 1 {
+		return fmt.Sprintf("and no split size would be cleared by the %d %s", n, what)
+	}
+	return fmt.Sprintf("or a split of size %d or less would be cleared by the %d %s", n+HeldOutAllowedSkips, n, what)
 }
 
 // Markdown renders the held-out section: the split's facts, then the

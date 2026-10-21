@@ -1,7 +1,9 @@
 package rankfit
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"slices"
 )
@@ -82,6 +84,7 @@ type heldOutEval struct {
 	gainLo, gainHi   float64
 	strata           []StratumAccuracy
 	scoredPairs      int
+	scoredItems      int
 	stratified       bool // any held-out posting is audit-sampled
 	pairs, items     int
 	bootstrapSamples int
@@ -96,11 +99,11 @@ type heldOutEval struct {
 // the interval far too narrow; a sign test over pairs would share that fault.
 // The draws come from a generator seeded with seed, so the interval is a
 // function of its inputs.
-func evaluateHeldOut(items []Item, testItems []int, test []pair, b blend, fitted, hand [NumParts]float64, seed uint64) heldOutEval {
+func evaluateHeldOut(items []Item, testItems []int, test []pair, b blend, fitted, hand [NumParts]float64, seed uint64) (heldOutEval, error) {
 	var ev heldOutEval
 	ev.items, ev.pairs = len(testItems), len(test)
 	if len(test) == 0 {
-		return ev
+		return ev, nil
 	}
 	uf, uh := make([]float64, len(items)), make([]float64, len(items))
 	for i := range items {
@@ -112,6 +115,9 @@ func evaluateHeldOut(items []Item, testItems []int, test []pair, b blend, fitted
 		pos[i] = p
 		if Sampled(items[i].Source) {
 			ev.stratified = true
+		}
+		if items[i].stratum() == StratumScored {
+			ev.scoredItems++
 		}
 	}
 	names := map[string]int{}
@@ -146,6 +152,12 @@ func evaluateHeldOut(items []Item, testItems []int, test []pair, b blend, fitted
 	ev.fit, ev.hand = totF/totW, totH/totW
 	for i := range strata {
 		strata[i].FitAccuracy, strata[i].HandAccuracy = sf[i]/sw[i], sh[i]/sw[i]
+		if !finiteAll(strata[i].FitAccuracy, strata[i].HandAccuracy) {
+			return heldOutEval{}, errNonFinite
+		}
+	}
+	if !finiteAll(ev.fit, ev.hand, totW) {
+		return heldOutEval{}, errNonFinite
 	}
 	slices.SortFunc(strata, func(x, y StratumAccuracy) int {
 		switch {
@@ -182,7 +194,21 @@ func evaluateHeldOut(items []Item, testItems []int, test []pair, b blend, fitted
 	cut := int(gainAlpha * BootstrapResamples)
 	ev.gainLo, ev.gainHi = gains[cut], gains[BootstrapResamples-1-cut]
 	ev.bootstrapSamples = BootstrapResamples
-	return ev
+	if !finiteAll(ev.gainLo, ev.gainHi) {
+		return heldOutEval{}, errNonFinite
+	}
+	return ev, nil
+}
+
+var errNonFinite = errors.New("rankfit: a held-out weight or accuracy is not finite; refusing to report it")
+
+func finiteAll(vs ...float64) bool {
+	for _, v := range vs {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // NoGainReason says why the fit does not beat the hand weights, or "" when it
@@ -196,7 +222,7 @@ func (r FitResult) NoGainReason() string {
 	case r.HeldOutPairs < MinHeldOutPairs:
 		return fmt.Sprintf("only %d held-out pairs, fewer than the %d a gain needs", r.HeldOutPairs, MinHeldOutPairs)
 	case r.Stratified && r.ScoredPairs < MinScoredStratumPairs:
-		return fmt.Sprintf("only %d held-out pairs between scored-stratum postings, fewer than the %d needed", r.ScoredPairs, MinScoredStratumPairs)
+		return fmt.Sprintf("only %d held-out pairs between scored-stratum postings (from %d scored held-out items), fewer than the %d pairs needed", r.ScoredPairs, r.ScoredItems, MinScoredStratumPairs)
 	case !(r.GainLo > 0):
 		return fmt.Sprintf("the gain interval [%+.4f, %+.4f] does not clear 0", r.GainLo, r.GainHi)
 	}

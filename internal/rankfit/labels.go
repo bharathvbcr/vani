@@ -71,8 +71,8 @@ func StratumOf(source string) string {
 // negative weight.
 func checkInclusion(key, source string, p float64) error {
 	if Sampled(source) {
-		if !(p > 0 && p <= 1) {
-			return fmt.Errorf("rankfit: %s p_select %v must be in (0, 1]", key, p)
+		if !(p >= eval.MinInclusionProbability && p <= 1) {
+			return fmt.Errorf("rankfit: %s p_select %v must be in [%g, 1]", key, p, eval.MinInclusionProbability)
 		}
 		return nil
 	}

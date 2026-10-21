@@ -65,7 +65,10 @@ func TestAttackZeroGainEverywhereNeverBeats(t *testing.T) {
 		}
 	}
 	test := by.sample(1<<30, 0)
-	ev := evaluateHeldOut(items, testItems, test, blendOf(base), hand, hand, 1)
+	ev, err := evaluateHeldOut(items, testItems, test, blendOf(base), hand, hand, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ev.gainLo != 0 || ev.gainHi != 0 {
 		t.Fatalf("identical shares gave interval [%v, %v]", ev.gainLo, ev.gainHi)
 	}
@@ -177,7 +180,10 @@ func TestAttackBootstrapAtMaxPairsTime(t *testing.T) {
 	var ms0, ms1 runtime.MemStats
 	runtime.ReadMemStats(&ms0)
 	start := time.Now()
-	ev := evaluateHeldOut(items, testItems, test, blendOf(base), fitted, SharesOf(base).Array(), 1)
+	ev, err := evaluateHeldOut(items, testItems, test, blendOf(base), fitted, SharesOf(base).Array(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	el := time.Since(start)
 	runtime.ReadMemStats(&ms1)
 	t.Logf("TIMING %d pairs, %v, alloc %d MB, interval [%.4f, %.4f]", len(test), el, (ms1.TotalAlloc-ms0.TotalAlloc)>>20, ev.gainLo, ev.gainHi)
@@ -207,7 +213,10 @@ func TestAttackAllTiedPairs(t *testing.T) {
 	h := SharesOf(base).Array()
 	f := h
 	f[PartFit] *= 2
-	ev := evaluateHeldOut(items, testItems, test, blendOf(base), f, h, 1)
+	ev, err := evaluateHeldOut(items, testItems, test, blendOf(base), f, h, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !resultFinite(FitResult{FitAccuracy: ev.fit, HandAccuracy: ev.hand, GainLo: ev.gainLo, GainHi: ev.gainHi, Strata: ev.strata}) {
 		t.Fatalf("non-finite %+v", ev)
 	}

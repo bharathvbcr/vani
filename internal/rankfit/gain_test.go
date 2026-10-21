@@ -173,7 +173,7 @@ func TestHeldOutAdversarialInputs(t *testing.T) {
 	}
 
 	// No held-out pairs at all.
-	if ev := evaluateHeldOut(nil, nil, nil, blendOf(base), [NumParts]float64{}, [NumParts]float64{}, 1); ev.pairs != 0 || ev.bootstrapSamples != 0 {
+	if ev, err := evaluateHeldOut(nil, nil, nil, blendOf(base), [NumParts]float64{}, [NumParts]float64{}, 1); err != nil || ev.pairs != 0 || ev.bootstrapSamples != 0 {
 		t.Errorf("empty held-out set: %+v", ev)
 	}
 

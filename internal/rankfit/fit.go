@@ -88,7 +88,9 @@ type FitResult struct {
 	// condition for MinScoredStratumPairs to apply).
 	Strata      []StratumAccuracy `json:"strata,omitempty"`
 	ScoredPairs int               `json:"scored_pairs"`
-	Stratified  bool              `json:"stratified"`
+	// ScoredItems is how many held-out postings are from the scored stratum.
+	ScoredItems int  `json:"scored_items"`
+	Stratified  bool `json:"stratified"`
 	// TrainPairs were fitted, out of TrainPairsTotal possible (sampled above
 	// MaxPairs).
 	TrainItems      int `json:"train_items"`
@@ -204,8 +206,12 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 	dx, _, dconv := minimize(diag.objective, diag.start())
 	res.GateExp, res.FreshExp, res.DiagConverged = dx[NumParts+1], dx[NumParts+2], dconv
 
-	ev := evaluateHeldOut(items, testItems, test, b, fitted, hand, opt.Seed)
+	ev, err := evaluateHeldOut(items, testItems, test, b, fitted, hand, opt.Seed)
+	if err != nil {
+		return FitResult{}, err
+	}
 	res.HeldOutPairs = len(test)
+	res.ScoredItems = ev.scoredItems
 	res.HandAccuracy, res.FitAccuracy = ev.hand, ev.fit
 	res.GainLo, res.GainHi, res.Resamples = ev.gainLo, ev.gainHi, ev.bootstrapSamples
 	res.Strata, res.ScoredPairs, res.Stratified = ev.strata, ev.scoredPairs, ev.stratified
