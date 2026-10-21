@@ -172,7 +172,7 @@ public final class ExclusionsEditor {
         guard !busy else { return }
         busy = true
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.load() } }.value
+        let result = await BlockingWork.run { try c.load() }
         busy = false
         switch result {
         case let .success(x):
@@ -229,7 +229,7 @@ public final class ExclusionsEditor {
         while let saved, lists != saved.lists {
             let sending = lists
             let c = client()
-            let result = await Task.detached(priority: .userInitiated) { Result { try c.save(sending) } }.value
+            let result = await BlockingWork.run { try c.save(sending) }
             switch result {
             case let .success(x):
                 self.saved = x

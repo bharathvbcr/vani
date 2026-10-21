@@ -35,7 +35,7 @@ final class AuditModel {
         loading = true
         loadError = nil
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.draw() } }.value
+        let result = await BlockingWork.run { try c.draw() }
         loading = false
         switch result {
         case let .success(d):
@@ -57,7 +57,7 @@ final class AuditModel {
         cardError = nil
         guard let pick = session?.current else { return }
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.card(pick) } }.value
+        let result = await BlockingWork.run { try c.card(pick) }
         guard gen == cardGeneration else { return } // a newer card superseded this one
         switch result {
         case let .success(card):
@@ -77,9 +77,9 @@ final class AuditModel {
     private func reportImpression(of pick: AuditPick) async {
         guard let seed, let index = session?.index else { return }
         let jobs = client().jobs, section = pick.stratum
-        let result = await Task.detached(priority: .utility) {
-            Result { try jobs.logImpressions(surface: .audit, slate: seed, section: section, keys: [pick.key], firstPosition: index + 1) }
-        }.value
+        let result = await BlockingWork.run {
+            try jobs.logImpressions(surface: .audit, slate: seed, section: section, keys: [pick.key], firstPosition: index + 1)
+        }
         switch result {
         case .success: impressionsError = nil
         case let .failure(err): impressionsError = String(describing: err)
@@ -92,7 +92,7 @@ final class AuditModel {
         guard !saving, card != nil, let pick = session?.current, card?.key == pick.key else { return }
         saving = true
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.answer(pick, verdict) } }.value
+        let result = await BlockingWork.run { try c.answer(pick, verdict) }
         saving = false
         switch result {
         case .success:

@@ -111,6 +111,28 @@ public final class BankStore: @unchecked Sendable {
         return stamp
     }
 
+    /// What identifies bank.json's contents without reading it: size, modification time and inode.
+    /// A write replaces the file by rename, so even a same-size write in the same clock tick has a
+    /// new inode. A missing file stamps as all nil.
+    public struct BankStamp: Equatable, Sendable {
+        var size: Int64?
+        var modifiedNanoseconds: Int64?
+        var inode: UInt64?
+
+        init(size: Int64? = nil, modifiedNanoseconds: Int64? = nil, inode: UInt64? = nil) {
+            self.size = size
+            self.modifiedNanoseconds = modifiedNanoseconds
+            self.inode = inode
+        }
+    }
+
+    public func bankStamp() -> BankStamp {
+        var st = stat()
+        guard stat(bankURL.path, &st) == 0 else { return BankStamp() }
+        let modified = Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec)
+        return BankStamp(size: Int64(st.st_size), modifiedNanoseconds: modified, inode: UInt64(st.st_ino))
+    }
+
     /// The store in the App Group container shared by the app and both browser extensions.
     public static func shared() throws -> BankStore {
         try BankStore(directory: AppGroup.storeDirectory())
