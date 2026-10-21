@@ -326,8 +326,8 @@ flowchart LR
   and are matched by position (no request ids; the protocol is unchanged). Up to 4 calls are in
   flight and 64 pending in all; a call that times out (5 s) or a lost connection closes the port and
   rejects everything pending, since a late reply would be matched to the wrong call, and the next
-  call reconnects. Only read-only ops (`ping`, `get`, `getChunk`, `queryCandidates`, `listAnswers`,
-  `resumeGet`, `resumeInfo`) are retried once, and only after a disconnect. Ops that can take seconds
+  call reconnects. Only read-only ops (`ping`, `get`, `getChunk`, `resumeGet`, `resumeInfo`) are
+  retried once, and only after a disconnect. Ops that can take seconds
   (`draft`, `jobFind`, `jobMark`, `jobsIngest`) and any unknown op still use one process per message,
   as do all calls while the port is backing off after failed connections (1 s doubling to 30 s).
   Safari, and a Chrome without `connectNative`, keep the per-message path.
