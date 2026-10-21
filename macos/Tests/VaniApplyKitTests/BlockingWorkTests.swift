@@ -7,24 +7,46 @@ import XCTest
 final class BlockingWorkTests: XCTestCase {
     private var env: [String: String] { VaniProcess.environment(configPath: nil, stateDir: nil) }
 
-    /// More simultaneous two-second child calls than there are cores: an unrelated `Task {}`
-    /// must still start at once. With `Task.detached` around the same calls the pool is full and
-    /// it waits for one of them to finish.
-    func testUnrelatedTaskRunsWhileMoreCallsThanCoresBlock() async throws {
-        let sh = URL(fileURLWithPath: "/bin/sh"), env = self.env
-        let count = ProcessInfo.processInfo.activeProcessorCount + 4
-        let calls = (0..<count).map { _ in
-            Task {
-                await BlockingWork.run {
-                    VaniProcess.run(sh, arguments: ["-c", "sleep 2"], environment: env, timeout: 20, maxOutputBytes: 1024)
-                }
-            }
-        }
-        try await Task.sleep(nanoseconds: 500_000_000) // every call is inside its child by now
+    /// The pre-fix pattern, kept only as the oracle for the regression: a `Task.detached` that
+    /// blocks its cooperative-pool thread for the whole call. Not used by the app.
+    private static func oldPattern(_ work: @escaping @Sendable () -> Void) -> Task<Void, Never> {
+        Task.detached { work() }
+    }
+
+    /// Starts `count` blocking calls of `seconds` each through `launch`, then measures how long a
+    /// probe takes to start. The probe is `Task.detached`, so it needs a cooperative-pool thread
+    /// (a plain `Task {}` from a test inherits an actor and would not). Returns the probe latency.
+    private func probeLatency(count: Int, seconds: UInt32, launch: (@escaping @Sendable () -> Void) -> Task<Void, Never>) async throws -> TimeInterval {
+        let calls = (0..<count).map { _ in launch { usleep(seconds * 1_000_000) } }
+        try await Task.sleep(nanoseconds: 500_000_000) // every call has started by now
         let started = Date()
-        await Task {}.value
+        await Task.detached {}.value
         let latency = Date().timeIntervalSince(started)
-        XCTAssertLessThan(latency, 0.1, "an unrelated Task waited \(latency) s behind \(count) blocking calls")
+        for call in calls { await call.value }
+        return latency
+    }
+
+    /// B2-10. The same saturating load through the old pattern (the "before" arm) and through
+    /// BlockingWork. The cooperative pool is about one thread per core, so 3x the core count of
+    /// blocking calls fills it. The old arm's probe must wait for a call to end; the new arm's must
+    /// not. The old arm asserting a long latency is what proves this test can fail.
+    func testUnrelatedTaskRunsWhileMoreCallsThanCoresBlock() async throws {
+        let count = ProcessInfo.processInfo.activeProcessorCount * 3
+        let old = try await probeLatency(count: count, seconds: 2, launch: Self.oldPattern)
+        let new = try await probeLatency(count: count, seconds: 2) { work in
+            Task { await BlockingWork.value(work) }
+        }
+        print("B2-10 \(count) calls x 2 s: old-pattern probe \(old) s, BlockingWork probe \(new) s")
+        XCTAssertGreaterThan(old, 0.5, "the old pattern no longer starves the pool, so this test cannot fail")
+        XCTAssertLessThan(new, 0.1, "an unrelated Task waited \(new) s behind \(count) blocking calls")
+    }
+
+    /// Real child processes through BlockingWork still finish cleanly.
+    func testChildCallsThroughBlockingWorkComplete() async {
+        let sh = URL(fileURLWithPath: "/bin/sh"), env = self.env
+        let calls = (0..<4).map { _ in
+            Task { await BlockingWork.run { VaniProcess.run(sh, arguments: ["-c", "sleep 0.2"], environment: env, timeout: 20, maxOutputBytes: 1024) } }
+        }
         for call in calls {
             guard case let .success(outcome) = await call.value else { return XCTFail("a call threw") }
             XCTAssertEqual(outcome.status, 0)
