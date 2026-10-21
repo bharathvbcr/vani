@@ -76,20 +76,37 @@ func (e *env) jobsFind(args []string) error {
 		if err != nil {
 			return usagef("jobs find: --url: %v", err)
 		}
-		snap, m, err := e.jobsState()
+		// The match reads only links, so it runs on the ledger with the
+		// descriptions left out (and no marks, which it only copies into the
+		// reply); the matched row's company is then read whole, and the row is
+		// rebuilt from that record, its marks and its exclusion-adjusted status.
+		var matched jobFindJSON
+		snap, m, err := e.jobsStateFor(rowScope(func(lean ledger.Snapshot) (posting.Key, bool) {
+			matched = matchPageURL(lean, nil, page)
+			if matched.Job == nil {
+				return "", false
+			}
+			return matched.Job.Key, true
+		}))
 		if err != nil {
 			return err
 		}
-		out = matchPageURL(snap, m, page)
+		out = matched
 		if out.Job != nil {
-			if r, ok := findRecord(snap, out.Job.Key); ok {
+			r, ok, err := rowRecord(snap, out.Job.Key)
+			if err != nil {
+				return err
+			}
+			if ok {
 				in, err := e.newRowInsight(snap, m, r)
 				if err != nil {
 					return err
 				}
 				j := jobview.ToJob(r, m[r.Key])
 				in.Enrich(&j, r, 0)
-				out.Job.Row = j.Row
+				ref := newJobRef(j, out.Job.MatchedOn)
+				ref.Row = j.Row
+				out.Job = ref
 			}
 		}
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
@@ -161,9 +178,14 @@ func matchPageURL(snap ledger.Snapshot, m map[posting.Key]marks.Entry, page stri
 	default:
 		r := cands[0].r
 		j := jobview.ToJob(r, m[r.Key])
-		out.Job = &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: cands[0].on}
+		out.Job = newJobRef(j, cands[0].on)
 	}
 	return out
+}
+
+// newJobRef is the reply's view of j, matched on the named link.
+func newJobRef(j jobview.Job, on string) *jobRef {
+	return &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: on}
 }
 
 // exactLink says which of the posting's links is the page, or "". A link that
