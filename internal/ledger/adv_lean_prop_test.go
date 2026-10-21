@@ -205,7 +205,9 @@ func TestHydrationRace(t *testing.T) {
 		}},
 		{"swap two same-length lines", func(dir string) { writeEventsFile(t, dir, b+a) }},
 		{"overwrite a line with the other's bytes", func(dir string) { writeEventsFile(t, dir, b+b) }},
-		{"flip one byte inside the body", func(dir string) { writeEventsFile(t, dir, strings.Replace(a, "BODY-A-aaaaaaaa", "BODY-A-aaaaaaab", 1)+b) }},
+		{"flip one byte inside the body", func(dir string) {
+			writeEventsFile(t, dir, strings.Replace(a, "BODY-A-aaaaaaaa", "BODY-A-aaaaaaab", 1)+b)
+		}},
 		{"truncate mid first line", func(dir string) { writeEventsFile(t, dir, a[:len(a)/2]) }},
 		{"truncate to first line only", func(dir string) { writeEventsFile(t, dir, a) }},
 		{"truncate to empty", func(dir string) { writeEventsFile(t, dir, "") }},
