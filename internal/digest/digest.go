@@ -29,7 +29,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
 	"github.com/bharathvbcr/Vani/internal/marks"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -376,7 +375,7 @@ func Rank(r ledger.Record) (float64, bool) {
 // CoverageUnknown reports whether DevPrism scored the posting but found no
 // must-haves in it (the marker a NoMustHaves answer writes in place of a rank).
 func CoverageUnknown(r ledger.Record) bool {
-	return r.Annotations[pipeline.AnnCoverageUnknown] != ""
+	return ledger.CoverageUnknown(r)
 }
 
 // Coverage is the must-have coverage shown to the reader. The rank may carry

@@ -71,3 +71,20 @@ const (
 	// AnnCategory is the job category folder / career track classification.
 	AnnCategory = "category"
 )
+
+const (
+	// AnnCoverageUnknown marks a scored posting whose coverage is unknown and
+	// says why. It stops the score stage and Rescore from asking again.
+	AnnCoverageUnknown = "gap.coverage_unknown"
+	// CoverageNoMustHaves is AnnCoverageUnknown's value when DevPrism found no
+	// must-have requirement in the JD.
+	CoverageNoMustHaves = "no_must_haves"
+)
+
+// CoverageUnknown reports whether r carries the coverage-unknown marker: it
+// was scored, but DevPrism found no must-have in the JD, so its coverage is 0
+// of 0 and is recorded as unknown, not as a measured zero. The one owner of
+// this predicate; pipeline, digest and the rescore command all call it.
+func CoverageUnknown(r Record) bool {
+	return r.Annotations[AnnCoverageUnknown] != ""
+}

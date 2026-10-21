@@ -95,7 +95,7 @@ func (e *env) checked(cfg config.Config, id string) (d track.Decider, probs, not
 	}
 	if !words.Personal {
 		notRun = append(notRun, "personal-name words")
-		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; personal names were NOT checked (no %s in %s)\n", track.WordsFile, dir)
+		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; personal names were NOT checked (no terms in %s under %s)\n", track.WordsFile, dir)
 	}
 	var bank track.Bank
 	if cfg.KB.Bank == "" {

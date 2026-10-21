@@ -43,7 +43,7 @@ func TestRepairUnknownCoverageDigested(t *testing.T) {
 		t.Fatalf("wrote %v err %v", wrote, err)
 	}
 	got := rec(t, l, k)
-	if got.Status != posting.Digested || got.Annotations[AnnCoverageUnknown] != CoverageNoMustHaves ||
+	if got.Status != posting.Digested || got.Annotations[ledger.AnnCoverageUnknown] != ledger.CoverageNoMustHaves ||
 		got.Annotations[ledger.AnnRank] != "" || got.Annotations[ledger.AnnCoverage] != "" || !got.FirstSeen.Equal(before.FirstSeen) {
 		t.Fatalf("repaired: status %s ann %v", got.Status, got.Annotations)
 	}

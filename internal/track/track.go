@@ -188,8 +188,8 @@ var builtinWords = []string{
 // Words is the identifying-word list Check applies.
 type Words struct {
 	terms []string
-	// Personal is true when the owner's WordsFile was found and read; false
-	// means only the built-in list was checked.
+	// Personal is true when the owner's WordsFile supplied at least one term; false
+	// (missing, empty or comment-only file) means only the built-in list was checked.
 	Personal bool
 }
 
@@ -231,7 +231,7 @@ func LoadWords(dir string) (Words, error) {
 	if err := sc.Err(); err != nil {
 		return Words{}, fmt.Errorf("track: %s: %w", WordsFile, err)
 	}
-	w.Personal = true
+	w.Personal = n > 0
 	return w, nil
 }
 

@@ -36,7 +36,7 @@ func TestRepairUnknownCoverage(t *testing.T) {
 	}
 	got := rec(t, l, zero)
 	if got.Annotations[ledger.AnnCoverage] != "" || got.Annotations[ledger.AnnRank] != "" ||
-		got.Annotations[AnnCoverageUnknown] != CoverageNoMustHaves || got.Status != posting.Explained ||
+		got.Annotations[ledger.AnnCoverageUnknown] != ledger.CoverageNoMustHaves || got.Status != posting.Explained ||
 		got.Annotations[ledger.AnnExplanation] == "" || got.Annotations[ledger.AnnBlocks] != "8" {
 		t.Fatalf("repaired record: status %s ann %v", got.Status, got.Annotations)
 	}
@@ -53,7 +53,7 @@ func TestRepairUnknownCoverage(t *testing.T) {
 	if wrote, err := r2.RepairUnknownCoverage(ctx, genuine); err != nil || wrote {
 		t.Fatalf("genuine zero: wrote %v err %v", wrote, err)
 	}
-	if g := rec(t, l2, genuine); !g.LastEvent.Equal(before.LastEvent) || g.Annotations[ledger.AnnCoverage] != "0" || g.Annotations[AnnCoverageUnknown] != "" {
+	if g := rec(t, l2, genuine); !g.LastEvent.Equal(before.LastEvent) || g.Annotations[ledger.AnnCoverage] != "0" || g.Annotations[ledger.AnnCoverageUnknown] != "" {
 		t.Fatalf("genuine zero changed: %v", g.Annotations)
 	}
 	if sc.calls != 0 {

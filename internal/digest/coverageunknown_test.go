@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -17,7 +16,7 @@ func TestDigestSeparatesNeverScoredFromCoverageUnknown(t *testing.T) {
 	recs := []ledger.Record{
 		rec("gh:a:1", posting.Explained, "NeverScored", map[string]string{"explanation": "x"}),
 		rec("gh:a:2", posting.Explained, "NoMustHaves", map[string]string{
-			"explanation": "y", pipeline.AnnCoverageUnknown: pipeline.CoverageNoMustHaves,
+			"explanation": "y", ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves,
 		}),
 		rec("gh:a:3", posting.Explained, "Ranked", map[string]string{"rank": "70"}),
 	}

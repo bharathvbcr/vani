@@ -23,15 +23,6 @@ const (
 	CauseCoverageUnknown = "coverage_unknown"
 )
 
-const (
-	// AnnCoverageUnknown marks a scored posting whose coverage is unknown and
-	// says why. It stops the score stage and Rescore from asking again.
-	AnnCoverageUnknown = "gap.coverage_unknown"
-	// CoverageNoMustHaves is AnnCoverageUnknown's value when DevPrism found no
-	// must-have requirement in the JD.
-	CoverageNoMustHaves = "no_must_haves"
-)
-
 // FailOpenCounts is a run's fail-open tally, one counter per cause. It is
 // comparable so it can sit inside a report struct.
 type FailOpenCounts struct {

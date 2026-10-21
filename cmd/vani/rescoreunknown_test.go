@@ -11,7 +11,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -55,7 +54,7 @@ func unknownCoverageState(t *testing.T, n int) {
 		add("z"+string(rune('a'+i)), map[string]string{ledger.AnnRank: "0", ledger.AnnCoverage: "0"})
 	}
 	add("noscore", nil)
-	add("known", map[string]string{pipeline.AnnCoverageUnknown: pipeline.CoverageNoMustHaves})
+	add("known", map[string]string{ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves})
 }
 
 // `vani rescore` says how many 0-of-0 coverages it marked unknown, and the

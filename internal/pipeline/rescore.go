@@ -34,7 +34,7 @@ var rescorable = map[posting.Status]bool{posting.Scored: true, posting.Explained
 // ledger's folded record keeps no event reasons, so the missing rank is the
 // test.
 func Unscored(r ledger.Record) bool {
-	return rescorable[r.Status] && r.Annotations[ledger.AnnRank] == "" && r.Annotations[AnnCoverageUnknown] == ""
+	return rescorable[r.Status] && r.Annotations[ledger.AnnRank] == "" && !ledger.CoverageUnknown(r)
 }
 
 // ZeroOfZero reports whether r carries the stale 0-of-0 signature: a stored
@@ -50,7 +50,7 @@ func Unscored(r ledger.Record) bool {
 // because the daily footer counts them by last-event day (countsFor), and a
 // repair event would add them to today's count; neither is ranked or shown.
 func ZeroOfZero(r ledger.Record) bool {
-	if r.Status == posting.Dead || r.Status == posting.Dropped || r.Annotations[AnnCoverageUnknown] != "" {
+	if r.Status == posting.Dead || r.Status == posting.Dropped || ledger.CoverageUnknown(r) {
 		return false
 	}
 	cov, err := strconv.ParseFloat(strings.TrimSpace(r.Annotations[ledger.AnnCoverage]), 64)
@@ -74,7 +74,7 @@ func (r *Runner) RepairUnknownCoverage(ctx context.Context, key posting.Key) (bo
 		return false, nil
 	}
 	err := r.emit(ctx, key, rec.Status, "coverage_unknown_repaired", map[string]string{
-		ledger.AnnRank: "", ledger.AnnCoverage: "", AnnCoverageUnknown: CoverageNoMustHaves,
+		ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves,
 	})
 	return err == nil, err
 }

@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 func unknownAnn() map[string]string {
-	return map[string]string{"explanation": "y", pipeline.AnnCoverageUnknown: pipeline.CoverageNoMustHaves}
+	return map[string]string{"explanation": "y", ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves}
 }
 
 // Empty buckets print no heading: only a ranked role, so neither the Not ranked

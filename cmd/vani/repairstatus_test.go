@@ -50,13 +50,13 @@ func TestRepairUnknownCoverageAllStatuses(t *testing.T) {
 	after := recordsByKey(t, l)
 	for _, id := range []string{"1", "2", "4"} {
 		a, b := after[k(id)], before[k(id)]
-		if a.Status != b.Status || a.Annotations[pipeline.AnnCoverageUnknown] != pipeline.CoverageNoMustHaves ||
+		if a.Status != b.Status || a.Annotations[ledger.AnnCoverageUnknown] != ledger.CoverageNoMustHaves ||
 			a.Annotations[ledger.AnnCoverage] != "" || a.Annotations[ledger.AnnRank] != "" || !a.FirstSeen.Equal(b.FirstSeen) {
 			t.Fatalf("%s: status %s->%s ann %v", id, b.Status, a.Status, a.Annotations)
 		}
 	}
 	for _, id := range []string{"3", "5", "6", "7"} {
-		if !after[k(id)].LastEvent.Equal(before[k(id)].LastEvent) || after[k(id)].Annotations[pipeline.AnnCoverageUnknown] != "" {
+		if !after[k(id)].LastEvent.Equal(before[k(id)].LastEvent) || after[k(id)].Annotations[ledger.AnnCoverageUnknown] != "" {
 			t.Fatalf("%s must be untouched: %v", id, after[k(id)].Annotations)
 		}
 	}
