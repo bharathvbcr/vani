@@ -21,13 +21,16 @@ var syncDir = SyncDir
 // crash. An error after the rename says the file was replaced but its
 // durability is unknown; writing the same data again is safe.
 //
-// path is first resolved (see Resolve): the temp file, the rename and the
-// directory fsync all use the resolved target and its directory, so a symlinked
-// path (or one under a symlinked directory) keeps its link and the target gets
-// the write.
+// path is first resolved with ResolveLeaf: the directory part follows symlinks
+// (a state dir linked to iCloud keeps working), the leaf does not. A symlink at
+// the leaf is replaced by the regular file, never written through, so a planted
+// link cannot move the write outside the directory. A directory, FIFO or device
+// at the leaf is refused with ErrNotRegular. The operator-chosen config path,
+// which must be written through its link, resolves once with Resolve and passes
+// that result here.
 func Write(path string, data []byte) (err error) {
 	name := filepath.Base(path)
-	path, err = Resolve(path)
+	path, err = ResolveLeaf(path)
 	if err != nil {
 		return fmt.Errorf("atomic write %s: %w", name, err)
 	}
@@ -72,16 +75,18 @@ func Write(path string, data []byte) (err error) {
 // first, so of any number of racing openers exactly one is told it created the
 // file and the rest open the file that won; the creator owes a SyncDir of the
 // parent (see SyncNew), because a file's own fsync does not make its directory
-// entry durable. path is resolved first (see Resolve), so a dangling link is
-// created at its target. extra is OR-ed into the flags (os.O_APPEND for an append-only
-// log).
+// entry durable. path is resolved with ResolveLeaf: directories follow links,
+// the leaf does not. A symlink at the leaf is removed and replaced by a new
+// regular file (created is true), never opened through; a leaf that is not a
+// regular file is refused with ErrNotRegular. extra is OR-ed into the flags
+// (os.O_APPEND for an append-only log).
 func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
-	path, err = Resolve(path)
+	path, err = ResolveLeaf(path)
 	if err != nil {
 		return nil, false, err
 	}
 	flags := os.O_RDWR | extra
-	for range 3 {
+	for range 4 {
 		f, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
 			if st, serr := f.Stat(); serr == nil {
@@ -92,16 +97,41 @@ func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
 		if !errors.Is(err, os.ErrExist) {
 			return nil, false, err
 		}
-		f, err = os.OpenFile(path, flags, 0o600)
-		if err == nil {
-			return f, false, nil
+		st, lerr := os.Lstat(path)
+		if lerr != nil {
+			if errors.Is(lerr, os.ErrNotExist) {
+				continue // removed since the probe: probe again
+			}
+			return nil, false, lerr
 		}
-		if !errors.Is(err, os.ErrNotExist) {
+		if st.Mode()&os.ModeSymlink != 0 {
+			// O_EXCL refuses to create through a link, so removing it and
+			// probing again makes a regular file here and nothing outside.
+			if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				return nil, false, rerr
+			}
+			continue
+		}
+		if !st.Mode().IsRegular() {
+			return nil, false, fmt.Errorf("%s (%s): %w", path, st.Mode().Type(), ErrNotRegular)
+		}
+		f, err = os.OpenFile(path, flags, 0o600)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return nil, false, err
 		}
-		// Removed between the two opens: probe again.
+		// The open follows links, so prove it opened the leaf itself: a link
+		// planted between the Lstat and the open names a different file.
+		fst, ferr := f.Stat()
+		lst, lerr := os.Lstat(path)
+		if ferr == nil && lerr == nil && os.SameFile(fst, lst) {
+			return f, false, nil
+		}
+		_ = f.Close()
 	}
-	return nil, false, err
+	return nil, false, fmt.Errorf("open %s: the file kept changing underneath the open", filepath.Base(path))
 }
 
 // newFiles remembers, per path, the file OpenAppend just created, so SyncNew can
@@ -120,7 +150,7 @@ var newFiles sync.Map // path -> os.FileInfo
 // (SyncDir in production).
 func SyncNew(path string, syncFn func(dir string) error) error {
 	name := filepath.Base(path)
-	path, err := Resolve(path)
+	path, err := ResolveLeaf(path)
 	if err != nil {
 		return fmt.Errorf("syncing the directory of new %s: %w", name, err)
 	}
@@ -130,8 +160,8 @@ func SyncNew(path string, syncFn func(dir string) error) error {
 		return nil
 	}
 	err = fmt.Errorf("syncing the directory of new %s: %w", filepath.Base(path), err)
-	st, serr := os.Stat(path)
-	if serr != nil || st.Size() != 0 {
+	st, serr := os.Lstat(path)
+	if serr != nil || !st.Mode().IsRegular() || st.Size() != 0 {
 		return err
 	}
 	if orig, ok := want.(os.FileInfo); ok && !os.SameFile(orig, st) {

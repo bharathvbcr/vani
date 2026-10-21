@@ -7,15 +7,48 @@ import (
 	"path/filepath"
 )
 
+// ErrNotRegular means the leaf a program-named write would replace is a
+// directory, FIFO, socket or device. Replacing it would silently destroy
+// something that is not a data file (or block forever opening it), so the write
+// is refused.
+var ErrNotRegular = errors.New("atomicfile: not a regular file")
+
+// ResolveLeaf returns the path a write to a program-named file must target:
+// the directory part is resolved (Resolve), so a state dir symlinked to iCloud
+// or an external volume keeps working, but the leaf is NOT followed. If the
+// leaf is a symlink the write replaces the link itself with a regular file, so
+// a planted link can never carry a write out of the state directory, whether
+// it points at an existing file or dangles. A leaf that exists and is neither
+// a regular file nor a symlink fails with ErrNotRegular.
+//
+// The result is stable: ResolveLeaf of a result is the result. Callers that
+// lock and then write resolve once and hand this exact path to both.
+func ResolveLeaf(path string) (string, error) {
+	dir, err := Resolve(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	leaf := filepath.Join(dir, filepath.Base(path))
+	st, err := os.Lstat(leaf)
+	switch {
+	case err == nil:
+		if m := st.Mode(); !m.IsRegular() && m&os.ModeSymlink == 0 {
+			return "", fmt.Errorf("%s (%s): %w", leaf, m.Type(), ErrNotRegular)
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return "", fmt.Errorf("resolve %s: %w", leaf, err)
+	}
+	return leaf, nil
+}
+
 // maxLinkHops bounds how many symlinks Resolve follows while walking a path
 // whose final component or ancestors dangle, so a loop is an error, not a hang.
 const maxLinkHops = 16
 
-// Resolve returns the path a write to path must target: path with every
-// symlink followed. It is the one place Vani decides what a symlinked path
-// means, so Write, OpenAppend, SyncNew and every lock path agree on it (a state
-// dir moved to iCloud or an external volume and linked back is the realistic
-// case).
+// Resolve returns path with every symlink followed, the leaf included. Only a
+// path the operator chose (the config file) may be written this way; files
+// whose name the program picks use ResolveLeaf, which leaves the leaf alone.
+// Directory components are resolved by both.
 //
 // A path that does not exist yet resolves through its parent directory, so the
 // path a later write creates is the one every caller computes. A dangling

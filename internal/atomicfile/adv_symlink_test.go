@@ -19,9 +19,9 @@ func evalRoot(t *testing.T) string {
 	return r
 }
 
-// Characterization: a link planted in the state dir that points outside it is
-// written through. Before b9bcfd8 the link was replaced (contained).
-func TestWriteFollowsOutOfTreeLink(t *testing.T) {
+// A link planted in the state dir that points outside it is replaced, never
+// written through: the outside file is untouched.
+func TestWriteDoesNotFollowOutOfTreeLink(t *testing.T) {
 	root := evalRoot(t)
 	state := filepath.Join(root, "state")
 	outside := filepath.Join(root, "ssh", "authorized_keys")
@@ -40,14 +40,20 @@ func TestWriteFollowsOutOfTreeLink(t *testing.T) {
 	if err := atomicfile.Write(filepath.Join(state, "cache.json"), []byte("JD-TEXT")); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(outside)
-	if string(b) != "JD-TEXT" {
-		t.Fatalf("expected write-through, got %q", b)
+	if b, _ := os.ReadFile(outside); string(b) != "ORIGINAL" {
+		t.Fatalf("outside file was written through the link: %q", b)
+	}
+	leaf := filepath.Join(state, "cache.json")
+	if st, err := os.Lstat(leaf); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("leaf not replaced by a regular file: %v %v", st, err)
+	}
+	if b, _ := os.ReadFile(leaf); string(b) != "JD-TEXT" {
+		t.Fatalf("leaf = %q", b)
 	}
 }
 
-// A dangling link at a cache name creates a file outside the tree.
-func TestWriteCreatesOutsideFileThroughDanglingLink(t *testing.T) {
+// A dangling link at a cache name must not create a file outside the tree.
+func TestWriteDoesNotCreateOutsideFileThroughDanglingLink(t *testing.T) {
 	root := evalRoot(t)
 	state := filepath.Join(root, "state")
 	outside := filepath.Join(root, "elsewhere", "new")
@@ -60,8 +66,14 @@ func TestWriteCreatesOutsideFileThroughDanglingLink(t *testing.T) {
 	if err := atomicfile.Write(filepath.Join(state, "x"), []byte("D")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(outside); err != nil {
-		t.Fatalf("expected outside file created: %v", err)
+	if _, err := os.Lstat(outside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a file was created outside the state dir: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Dir(outside)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a directory was created outside the state dir: %v", err)
+	}
+	if st, err := os.Lstat(filepath.Join(state, "x")); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("leaf not replaced by a regular file: %v %v", st, err)
 	}
 }
 
@@ -97,7 +109,9 @@ func TestResolveRelativeChainAcrossDirs(t *testing.T) {
 	}
 }
 
-func TestWriteOntoDirectoryLinkFails(t *testing.T) {
+// A leaf link to a directory is replaced like any other leaf link; the
+// directory it named is untouched.
+func TestWriteOntoDirectoryLinkReplacesLink(t *testing.T) {
 	root := evalRoot(t)
 	real := filepath.Join(root, "realdir")
 	if err := os.Mkdir(real, 0o700); err != nil {
@@ -107,11 +121,17 @@ func TestWriteOntoDirectoryLinkFails(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicfile.Write(link, []byte("x")); err == nil {
-		t.Fatal("wrote a file over a directory reached by link")
+	if err := atomicfile.Write(link, []byte("x")); err != nil {
+		t.Fatal(err)
 	}
 	if st, e := os.Lstat(real); e != nil || !st.IsDir() {
 		t.Fatalf("directory damaged: %v", e)
+	}
+	if ents, _ := os.ReadDir(real); len(ents) != 0 {
+		t.Fatalf("directory behind the link was written into: %v", ents)
+	}
+	if st, e := os.Lstat(link); e != nil || !st.Mode().IsRegular() {
+		t.Fatalf("link not replaced: %v %v", st, e)
 	}
 	ents, _ := os.ReadDir(root)
 	for _, e := range ents {
@@ -179,28 +199,30 @@ func TestResolveUnicodeNFDAndCase(t *testing.T) {
 	if err := atomicfile.Write(filepath.Join(root, "Config.json"), []byte("new")); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(root, "config.json")); string(b) != "new" {
-		t.Errorf("config.json = %q", b)
+	if b, _ := os.ReadFile(filepath.Join(root, "config.json")); string(b) != "x" {
+		t.Errorf("config.json was written through the leaf link: %q", b)
 	}
 }
 
-// Link and target on different directories (volumes): temp file and fsync are
-// beside the target, the link's directory gains nothing.
-func TestWriteKeepsTempBesideTargetAcrossDirs(t *testing.T) {
+// A state dir linked to another volume: temp file and fsync are beside the real
+// directory, the link's directory gains nothing.
+func TestWriteKeepsTempBesideRealDirAcrossDirs(t *testing.T) {
 	a, b := evalRoot(t), evalRoot(t)
-	target := filepath.Join(b, "t.json")
-	link := filepath.Join(a, "l.json")
-	if err := os.Symlink(target, link); err != nil {
+	link := filepath.Join(a, "state")
+	if err := os.Symlink(b, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicfile.Write(link, []byte("v")); err != nil {
+	if err := atomicfile.Write(filepath.Join(link, "t.json"), []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := os.ReadFile(target); string(got) != "v" {
-		t.Fatalf("target = %q", got)
+	if got, _ := os.ReadFile(filepath.Join(b, "t.json")); string(got) != "v" {
+		t.Fatalf("real dir file = %q", got)
 	}
 	if ents, _ := os.ReadDir(a); len(ents) != 1 {
 		t.Errorf("link dir has stray entries: %v", ents)
+	}
+	if ents, _ := os.ReadDir(b); len(ents) != 1 {
+		t.Errorf("real dir has stray entries: %v", ents)
 	}
 }
 

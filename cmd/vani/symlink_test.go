@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/bharathvbcr/Vani/internal/atomicfile/symlinktest"
+	"github.com/bharathvbcr/Vani/internal/testutil/symlinktest"
 )
 
 func TestRunRecordThroughSymlinkedStateDir(t *testing.T) {

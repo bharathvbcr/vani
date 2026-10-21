@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bharathvbcr/Vani/internal/atomicfile/symlinktest"
+	"github.com/bharathvbcr/Vani/internal/testutil/symlinktest"
 )
 
 func TestSpoolThroughSymlinkedDir(t *testing.T) {

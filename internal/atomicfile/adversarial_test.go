@@ -11,9 +11,9 @@ func TestOpenAppendSymlinkAndDirectoryPaths(t *testing.T) {
 	dir := t.TempDir()
 
 	// A dangling symlink: O_EXCL does not follow it (EEXIST) and the plain open
-	// does (ENOENT), which used to be an error. OpenAppend resolves the link
-	// first, so it creates the target (once: created is true only the first
-	// time) and keeps the link.
+	// does (ENOENT), which used to be an error. OpenAppend does not follow a
+	// leaf link: it replaces it with a regular file (created is true only the
+	// first time) and creates nothing at the link's target.
 	dangling := filepath.Join(dir, "dangling")
 	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
 		t.Fatal(err)
@@ -25,14 +25,15 @@ func TestOpenAppendSymlinkAndDirectoryPaths(t *testing.T) {
 		}
 		f.Close()
 	}
-	if st, err := os.Lstat(dangling); err != nil || st.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("link not kept: %v %v", st, err)
+	if st, err := os.Lstat(dangling); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("link not replaced by a regular file: %v %v", st, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "nowhere")); err != nil {
-		t.Fatalf("target not created: %v", err)
+	if _, err := os.Lstat(filepath.Join(dir, "nowhere")); !os.IsNotExist(err) {
+		t.Fatalf("a file was created through the dangling link: %v", err)
 	}
 
-	// A symlink to an existing file opens the target and is not a creation.
+	// A symlink to an existing file is replaced too: a new file, so a creation,
+	// and the target keeps its content.
 	target := filepath.Join(dir, "target")
 	if err := os.WriteFile(target, []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -42,10 +43,13 @@ func TestOpenAppendSymlinkAndDirectoryPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, created, err := OpenAppend(link, 0)
-	if err != nil || created {
+	if err != nil || !created {
 		t.Fatalf("symlink to file: created=%v err=%v", created, err)
 	}
 	f.Close()
+	if b, _ := os.ReadFile(target); string(b) != "x\n" {
+		t.Fatalf("target changed: %q", b)
+	}
 
 	// A directory at the path is an error.
 	d := filepath.Join(dir, "adir")

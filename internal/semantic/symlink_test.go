@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/Vani/internal/atomicfile/symlinktest"
+	"github.com/bharathvbcr/Vani/internal/testutil/symlinktest"
 )
 
 func TestProfileSaveThroughSymlinks(t *testing.T) {

@@ -678,12 +678,12 @@ func Save(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	unlock, err := lockConfig(path)
+	target, unlock, err := lockConfig(path)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return writeLocked(path, c)
+	return writeLocked(target, c)
 }
 
 // Create writes c as a new file and fails with an error wrapping os.ErrExist
@@ -693,27 +693,24 @@ func Create(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	unlock, err := lockConfig(path)
+	// The file that would be created is the resolved target: a dangling link
+	// is not "already there", its target is.
+	target, unlock, err := lockConfig(path)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	// The file that would be created is the resolved target: a dangling link
-	// is not "already there", its target is.
-	path, err = atomicfile.Resolve(path)
-	if err != nil {
-		return fmt.Errorf("config: %w", err)
-	}
-	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("config: %s already exists: %w", path, os.ErrExist)
+	if _, err := os.Lstat(target); err == nil {
+		return fmt.Errorf("config: %s already exists: %w", target, os.ErrExist)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("config: %w", err)
 	}
-	return writeLocked(path, c)
+	return writeLocked(target, c)
 }
 
 // writeLocked validates c and writes it atomically with mode 0600 (see
-// atomicfile.Write). The caller holds the config's lock.
+// atomicfile.Write). The caller holds the config's lock and passes the target
+// lockConfig resolved: the lock and the write name one file.
 func writeLocked(path string, c Config) error {
 	if err := c.Validate(); err != nil {
 		return err

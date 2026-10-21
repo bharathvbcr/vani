@@ -3,7 +3,7 @@ package jdreasons
 import (
 	"testing"
 
-	"github.com/bharathvbcr/Vani/internal/atomicfile/symlinktest"
+	"github.com/bharathvbcr/Vani/internal/testutil/symlinktest"
 )
 
 func TestWriteThroughSymlinks(t *testing.T) {

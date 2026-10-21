@@ -3,8 +3,8 @@ package marks
 import (
 	"testing"
 
-	"github.com/bharathvbcr/Vani/internal/atomicfile/symlinktest"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/testutil/symlinktest"
 )
 
 func TestCompactedWriteThroughSymlinks(t *testing.T) {

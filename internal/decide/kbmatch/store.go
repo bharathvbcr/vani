@@ -200,10 +200,18 @@ func (s *Store) Save() error {
 // Lock takes the store's run lock without waiting: two runs would spend twice
 // and the later save would drop the earlier one's answers.
 func Lock(path string) (unlock func(), err error) {
-	lockPath, err := filelock.LockPath(path)
+	target, err := atomicfile.ResolveLeaf(path)
 	if err != nil {
 		return nil, fmt.Errorf("kbmatch: %w", err)
 	}
+	return lockAt(target)
+}
+
+// lockAt locks target, a path already resolved by atomicfile.ResolveLeaf. The
+// store is read, removed and saved at that same path, so the lock and the
+// writes can never name different files.
+func lockAt(target string) (unlock func(), err error) {
+	lockPath := target + ".lock"
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, fmt.Errorf("kbmatch: %w", err)
 	}
@@ -230,6 +238,14 @@ const lockRetry = 20 * time.Millisecond
 // working through its list. The wait ends when ctx does, with ctx.Err() and
 // without the lock.
 func LockWait(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
+	target, err := atomicfile.ResolveLeaf(path)
+	if err != nil {
+		return nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	return lockWaitAt(ctx, target, wait)
+}
+
+func lockWaitAt(ctx context.Context, target string, wait time.Duration) (unlock func(), err error) {
 	deadline := time.Now().Add(wait)
 	timer := time.NewTimer(lockRetry)
 	defer timer.Stop()
@@ -237,7 +253,7 @@ func LockWait(ctx context.Context, path string, wait time.Duration) (unlock func
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		unlock, err = Lock(path)
+		unlock, err = lockAt(target)
 		if !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
 			return unlock, err
 		}
@@ -256,7 +272,13 @@ func LockWait(ctx context.Context, path string, wait time.Duration) (unlock func
 // why; the caller starts from an empty store. Nothing is removed without the
 // lock. The caller calls unlock when the run is done.
 func OpenLocked(ctx context.Context, path string, wait time.Duration) (st *Store, unlock func(), recovered error, err error) {
-	unlock, err = LockWait(ctx, path, wait)
+	// Resolve once: the lock, the read, the corrupt-file removal and every later
+	// Save of the returned store all use this one path.
+	path, err = atomicfile.ResolveLeaf(path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	unlock, err = lockWaitAt(ctx, path, wait)
 	if err != nil {
 		return nil, nil, nil, err
 	}

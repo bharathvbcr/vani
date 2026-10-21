@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 )
 
 // TestLockHolderHelper is the child of the SIGKILL test: it takes the store lock,
@@ -192,10 +194,16 @@ func TestOpenLockedRecovery(t *testing.T) {
 		if _, serr := os.Stat(filepath.Join(path, "inner")); serr != nil {
 			t.Errorf("directory contents removed: %v", serr)
 		}
-		if u, lerr := Lock(path); lerr != nil {
-			t.Errorf("lock leaked on the error path: %v", lerr)
-		} else {
-			u()
+		// The directory is refused before anything is locked: no lock file is
+		// left behind and the refusal is the same on every try.
+		if !errors.Is(err, atomicfile.ErrNotRegular) {
+			t.Errorf("OpenLocked on a directory = %v, want ErrNotRegular", err)
+		}
+		if _, lerr := Lock(path); !errors.Is(lerr, atomicfile.ErrNotRegular) {
+			t.Errorf("Lock on a directory = %v, want ErrNotRegular", lerr)
+		}
+		if _, serr := os.Lstat(path + ".lock"); !errors.Is(serr, os.ErrNotExist) {
+			t.Errorf("a lock file was left for a refused path: %v", serr)
 		}
 	})
 
