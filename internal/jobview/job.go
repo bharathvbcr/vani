@@ -42,8 +42,11 @@ type InsightInfo struct {
 	HalfLifeDays float64 `json:"half_life_days"`
 	Vocab        int     `json:"vocab"`
 	// Boilerplate is how many company-blurb terms were left out (learn).
-	Boilerplate int    `json:"boilerplate"`
-	Warning     string `json:"warning,omitempty"`
+	Boilerplate int `json:"boilerplate"`
+	// Weights says which weights Score ranks by: "hand", or "fitted <date>"
+	// for a rank_weights_file (cmd/vani rankWeights).
+	Weights string `json:"weights"`
+	Warning string `json:"warning,omitempty"`
 }
 
 // Place is one place a posting's location names (internal/location).

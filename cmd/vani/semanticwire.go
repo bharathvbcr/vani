@@ -345,15 +345,20 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 	m, warning := semanticLookup(cfg, stateDir)
 	rules, titleRank := rankRules(cfg)
 	kb, kbWarning := kbmatchLookup(cfg, stateDir)
-	if kbWarning != "" {
+	weights, _, weightsWarning := rankWeights(cfg)
+	for _, w := range []string{kbWarning, weightsWarning} {
+		if w == "" {
+			continue
+		}
 		if warning != "" {
 			warning += "; "
 		}
-		warning += kbWarning
+		warning += w
 	}
 	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank, KBMatch: kb,
 		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies), HalfLifeDays: jobinsight.DefaultScoreHalfLifeDays,
-		TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(), ExploreDropped: cfg.DigestExploreDropped()}, warning
+		Weights: weights, TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(),
+		ExploreDropped: cfg.DigestExploreDropped()}, warning
 }
 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)

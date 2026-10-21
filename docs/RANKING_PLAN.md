@@ -16,8 +16,8 @@ not re-read here; the repo carries no copy of it.
 | 1 Measurement | **done in code.** Impressions (`vani impressions log`, the digest, audit cards, the Jobs tab), Explore picks, the weekly `vani audit`, `vani relevance`. Exit (7 days of impressions, the first batch judged) is owner time. | `internal/feedback`, `internal/eval`, `cmd/vani/auditcmd.go` |
 | 2 Surfaces | **done for the digest, advance order and Jobs row contract** (Top open, one tie-break, age-neutral advance order). The recency red-team case is restated as policy. | `internal/digest`, `internal/jobview`, `advanceorder.go` |
 | 3 Cascade and spend | **done except the semantic floor.** Triage fallback Haiku, notes gate (floor 32) and notes cap, thin-description skip, reading inheritance, fail-open counters, exclusions. The floor before Liquid D is open (see owner decisions). | `internal/config/funnel.go`, `internal/pipeline` |
-| 4 Calibration | **open** (needs ≥100 labels) | — |
-| 5 Weight fit | **open** (needs ≥150 labels) | — |
+| 4 Calibration | **fitter built, waits on labels** (needs ≥100 per backend): `vani rankfit --part platt` refuses below it | `internal/rankfit`, `rank_weights_file` |
+| 5 Weight fit | **fitter built, waits on labels** (needs ≥150 would_apply answers): `vani rankfit --part weights` refuses below it | `internal/rankfit`, `rank_weights_file` |
 | 6 Lappi v2 | nothing to build until Lappi is served | — |
 
 Findings N1 to N10 and D1 to D11 of the later audit, and the advance-caller differences, are below.
@@ -204,10 +204,14 @@ How models agree:
 2. **Surface consistency: done.** Top open, one tie-break, advance order reads the config.
 3. **Cascade and spend: done except the floor.** Haiku, notes gate and cap, thin-description skip,
    reading inheritance, exclusions. The semantic floor before Liquid D is open.
-4. **Calibration (needs ≥100 labels): open.** Per-backend Platt scaling, the agreement rule for
-   drops, store Workday listing drops. Exit: drop recall measured on the exploration pool.
-5. **Weight fit (needs ≥150 labels): open.** Exit: pairwise accuracy on held-out audit labels beats
-   the hand weights, and the labelled set replaces the synthetic rankeval worlds.
+4. **Calibration (needs ≥100 labels): open.** Per-backend Platt scaling (`vani rankfit --part platt`
+   is built and refuses below the threshold), the agreement rule for drops, store Workday listing
+   drops. Exit: drop recall measured on the exploration pool.
+5. **Weight fit (needs ≥150 labels): open.** `vani rankfit --part weights` is built: it fits Score's
+   shares from `vani audit answer`'s would_apply labels, marks and impressions, and writes a file
+   only when the fit beats the hand weights on held-out pairs; `rank_weights_file` applies it. Exit:
+   pairwise accuracy on held-out audit labels beats the hand weights, and the labelled set replaces
+   the synthetic rankeval worlds.
 6. **Lappi v2 swap** when it is served. Exit: shadow agreement with Liquid D within the
    `fitConfusion` band before promotion.
 

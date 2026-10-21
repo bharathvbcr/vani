@@ -344,6 +344,17 @@ flowchart TD
     matched on the posting's company, ignoring case): an undated posting of theirs is held at a
     flat freshness of 0.78 (a posting about a week old) instead of ageing from when Vani first
     saw it. A date the board gives still counts, and the Mac app says the age was held flat.
+  - `vani rankfit` learns the ranking's constants from judged labels (docs/RANKING_PLAN.md,
+    Phases 4–5): per-backend Platt calibration of triage confidence from `vani label`'s slot
+    labels (100 judged postings per backend), and Score's shares from `vani audit`'s judgments
+    (150 usable: yes above maybe above no), with saved/hidden marks and shown-but-unmarked
+    postings for volume. An unmarked posting is a negative only when an impression shows it was
+    shown. Below a threshold it says "could not run", exits 1
+    and writes nothing; `--dry-run` prints the counts. A weight fit that does not beat the hand
+    weights on held-out judged pairs is not written either. Point `rank_weights_file` (an
+    absolute path) at the file it writes to rank by it; `vani jobs` reports `"weights": "hand"`
+    or `"fitted <date>"`, and a configured file that is missing or invalid means the hand
+    weights with a warning, never silently.
   - The knowledge-base match (`internal/semantic`) leaves out lines that ask the same of every
     candidate (a degree, years of experience, communication skills, work authorization), scores
     a posting that offers few distinct lines lower than one that offers a full set, and no

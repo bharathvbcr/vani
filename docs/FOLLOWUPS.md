@@ -1036,17 +1036,15 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     `vani jobs list --sort priority --limit 20 --json` (`.jobs[].triage.seniority`), run with
     `VANI_CONFIG` and `VANI_STATE_DIR` set to the live `.state` paths. A `title_signals.read`
     for "Senior"/"Sr." is the other lever.
-  - Postings that went through the pipeline while `devprism.binary` was empty were marked Scored
-    with "scoring disabled" and no rank or coverage, and nothing re-scores them now that DevPrism
-    is configured. Every posting in the live top 20 takes the coverage prior (0.4), so the largest
-    signal is missing from the live ranking until they are re-scored. **Stale (2026-10-20):** a
-    fold of the live ledger found 2,287 of 2,301 digested postings with coverage and rank
-    (RANKING_PLAN R2), and `vani rescore` repairs the rest.
+  - ~~Postings scored while `devprism.binary` was empty lack coverage in the live top 20~~ —
+    resolved: on 2026-10-20 a fold of the live ledger found 2,287 of 2,301 digested postings with
+    coverage and rank (`vani rescore` exists for the rest).
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
-  - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
-    mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
-    Resolved 2026-10-20 as policy: the digest's Top open ranks by age-free relevance (RANKING_PLAN R3).
+  - Resolved by policy (2026-10-20, docs/RANKING_PLAN.md): at half-life 10 an excellent
+    21-day-old posting still ranks below a mediocre same-day one by priority ("what is new"), and
+    the digest's Top open section ranks by Relevance ("best open role"), where it leads.
+    `TestRTSharpRecencyBuriesExcellent` asserts that and no longer skips.
   - Closed on this branch: displayed `relevance` rests on the known parts (`relevance_known`);
     `vani jobs mark`/`note` rank with the marks as written; the digest ranks with the same drop-rule
     penalties, rank penalties and title signals as `vani jobs` (`cmd/vani/rankconfig.go`); the
@@ -1328,3 +1326,69 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **Merged into main** (2026-10-19). The only conflict was the `cmdJobs` usage string, which both
   sides rewrote; it now reads `"jobs: expected list, stats, gaps, folders, show, find, ingest, mark
   or note"`.
+
+## Ranking measurement (branch ranking-measure, 2026-10-20)
+
+- Plan, findings and phase status: `docs/RANKING_PLAN.md`.
+- Built: `internal/feedback` (impressions and audit judgments beside the ledger), the digest's
+  Top open and Explore sections (`digest.top_open`, `digest.explore`), `vani audit` and the
+  age-neutral advance order. The recency red-team case is policy now, not a skip.
+- Open: the Mac app's New / Top open sections and an audit sheet wait on the uncommitted
+  JobsView/JobsModel work in the main checkout. Fail-open counters, the semantic floor, the notes
+  gate and the agreement drop rule are the Phase 3 session's. The Go Platt and weight fitter is the
+  Phase 4-5 session's; they read `<state>/feedback/judgments.jsonl` and must refuse below 100 and
+  150 usable judgments.
+- An app that calls `vani jobs` does not log impressions yet: only the digest does. Adding a
+  `vani audit shown` (or similar) for the app's visible rows comes with the app work.
+
+## Rank learning: `vani rankfit` (built 2026-10-20, branch `claude/admiring-einstein-72e43c`, on `ranking-measure`)
+
+docs/RANKING_PLAN.md Phases 4–5, machinery only: nothing has been fitted on live data (0 audit
+judgments, 29 saves, 0 hides on 2026-10-20). The branch is rebased onto `ranking-measure` and
+merges after it.
+
+- **Merge with the exclude-config work.** `internal/config/config.go` gains `rank_weights_file`
+  (one field after `age_neutral_companies`, and one entry in the absolute-path check). The main
+  checkout has another session's uncommitted exclude work in that file: merge by hand, not by
+  overwriting either side.
+- **Labels.** The weight fit reads `internal/feedback`: `feedback.Latest` judgments (yes above
+  maybe above no; skip labels nothing; the threshold is `feedback.WeightFitMin` on usable ones),
+  then marks (saved/applied yes, hidden no), then impressions (shown and left unmarked is a no;
+  never shown is no label). Only judgments are held out and scored. Platt reads `vani label`'s
+  slot labels (`internal/eval`, read only), threshold `feedback.CalibrationMin` distinct postings
+  per backend. An audit judgment of a dropped posting is not used as a slot label: "would not
+  apply" does not say the reading was right.
+- **Recorded scores, one approximation.** A judged or shown posting is fitted on the factors
+  feedback recorded then, which is what the owner saw (`rankfit.ItemFromScores`). Those hold
+  known parts only, so an unknown role fit takes the prior. ScoreWith gives an option that is set
+  but unanswered its ordinal value instead; the record cannot carry that
+  (`TestItemFromScoresMatchesItemFrom` pins the one case). A mark nothing showed is scored now.
+  Recorded factors were computed under the calibration of their day, not this run's.
+- **Shown-but-unmarked negatives are many.** The digest logs every role it lists, so passed
+  postings will outnumber saves. Only held-out audit judgments decide whether the file is
+  written, so a mark-driven fit that does not order judgments better is refused. If passed
+  postings swamp the saves, weight them down or keep only those shown above a saved one.
+- **Per-slot calibration (owner decision).** Calibration pools every triage slot of a backend.
+  `vani label` asks every slot, so calibrating per (backend, slot) would cost no extra labels and
+  would keep easy slots from lifting role_fit's confidence. The change: `Slot.Name` from
+  `SlotOf`, calibration keyed `backend/slot`, and `PlattSamples` grouped the same way.
+- **The company factor is left out of the fit.** It is learned from the same marks the fit
+  trains on, so including it would reward the fit for reading its own labels. Accuracy is
+  reported on `log match + log gate + log fresh`, for the fitted and the hand shares alike; the
+  live Score still multiplies the company factor.
+- **Gate and freshness are not fitted, only diagnosed.** `Weights` has no exponent for them;
+  the file carries the seven shares and the calibration. `rankfit` also fits free gate and
+  freshness exponents and prints them: far from 1, they say the gate or freshness constants
+  (`Mismatch`, `UnsureGate`, `FreshFloor`, `HalfLifeDays`), not the shares, are what is off.
+- **Calibration is keyed by the backend as recorded.** Legacy `jev` rows calibrate separately
+  from `d1-ultra` rows (no `eval.Names` mapping at score time), so each needs its own 100
+  judged postings. kb_match readings carry no backend and stay uncalibrated.
+- **`advance` order ignores the file.** `cmd/vani/advanceorder.go` builds its own context from
+  run options, not the config's rank weights; it still ranks by the hand weights. `vani audit`
+  scores with the file (its context is `vani jobs`'s).
+- **`--dry-run` exits 0 even when it says "would refuse".** It is a count, not a readiness probe;
+  read its "would run" lines, or run without it.
+- **A weight fit that does not beat the hand weights is not written** (exit 1). Phase 5's exit
+  also asks that the labelled set replace the synthetic rankeval worlds: not done.
+- **Not run on the live state.** `vani rankfit --dry-run` against `.state/state` was not run
+  from this branch.

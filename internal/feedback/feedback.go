@@ -154,6 +154,10 @@ func (s Scores) check() error {
 	return nil
 }
 
+// ConfSuffix names a known part's confidence in Scores.Factors ("fit_conf").
+// A line written before it was recorded has none; read it as 1.
+const ConfSuffix = "_conf"
+
 // maxFactor bounds a factor value: Score's parts are 0-1 except the company
 // multiplier, which reaches jobinsight.CompanyMax (1.1).
 const maxFactor = 2
@@ -165,7 +169,9 @@ func ScoresOf(r jobinsight.Result) Scores {
 	f := map[string]float64{"match": r.Match, "gate": r.Gate, "fresh": r.Fresh, "company": r.Company}
 	for _, x := range r.Factors {
 		if _, multiplier := f[x.Name]; x.Known && !multiplier {
-			f[x.Name] = x.Value
+			// The blend weighs a known part by Weight x Conf, so the
+			// confidence is kept beside the value (rankfit.ItemFromScores).
+			f[x.Name], f[x.Name+ConfSuffix] = x.Value, x.Conf
 		}
 	}
 	for k, v := range f {

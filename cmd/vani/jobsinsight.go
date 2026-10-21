@@ -297,19 +297,29 @@ func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float
 	}
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
+	in.info.Weights = rankWeightsHand
 	if err == nil {
 		in.attachSemantic(cfg, stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 		var warn string
-		if in.rc.KBMatch, warn = kbmatchLookup(cfg, stateDir); warn != "" {
-			if in.info.Warning != "" {
-				in.info.Warning += "; "
-			}
-			in.info.Warning += warn
-		}
+		in.rc.KBMatch, warn = kbmatchLookup(cfg, stateDir)
+		in.warn(warn)
+		in.rc.Weights, in.info.Weights, warn = rankWeights(cfg)
+		in.warn(warn)
 	}
 	return in, nil
+}
+
+// warn appends a non-empty warning to the listing's.
+func (in *insight) warn(w string) {
+	if w == "" {
+		return
+	}
+	if in.info.Warning != "" {
+		in.info.Warning += "; "
+	}
+	in.info.Warning += w
 }
 
 // targetHits splits the distinct target terms a posting names into those its
@@ -352,7 +362,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 	hits = jobinsight.Without(hits, in.boiler[strings.ToLower(strings.TrimSpace(r.Posting.Company))])
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
-	res := jobinsight.Score(jobinsight.InputsFor(r, in.rc))
+	res := in.rc.ScoreOf(r)
 	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
 	j.RelevanceKnown = res.RelevanceKnown
 	j.Reasons = jobview.ParseReasons(j.Explanation)

@@ -98,6 +98,9 @@ type Options struct {
 	// the freshness bonus, as `vani jobs --half-life`. Outside (0, MaxHalfLifeDays]
 	// means the default.
 	HalfLifeDays float64
+	// Weights is jobinsight.RankContext.Weights: the fitted rank weights, nil
+	// for the hand weights.
+	Weights *jobinsight.Weights
 
 	// TopOpen lists this many of the best roles already digested and still
 	// open, by Relevance (fit alone, age left out), under "Top open": the
@@ -155,7 +158,7 @@ type scorer struct {
 func newScorer(all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) *scorer {
 	c := jobinsight.NewRankContext(all, m, now)
 	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
-	c.HalfLifeDays = o.HalfLifeDays
+	c.HalfLifeDays, c.Weights = o.HalfLifeDays, o.Weights
 	return &scorer{c: c, memo: map[posting.Key]jobinsight.Result{}}
 }
 
@@ -163,7 +166,7 @@ func (s *scorer) score(r ledger.Record) jobinsight.Result {
 	if res, ok := s.memo[r.Key]; ok {
 		return res
 	}
-	res := jobinsight.Score(jobinsight.InputsFor(r, s.c))
+	res := s.c.ScoreOf(r)
 	s.memo[r.Key] = res
 	return res
 }

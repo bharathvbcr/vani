@@ -29,6 +29,49 @@ type Slot struct {
 	Disagree bool
 	// ShadowBackend names the shadow that was asked ("" when none was).
 	ShadowBackend string
+	// Backend names the backend whose reading Value is, as the ledger recorded
+	// it; Weights.Calibration is keyed by it.
+	Backend string
+}
+
+// Calibration is one backend's Platt scaling, fitted by internal/rankfit on
+// judged labels: an answered reading's confidence is sigmoid(A*logit(p)+B),
+// or sigmoid(B) for a backend fitted without p (UsesP false), which then
+// stands in for AnsweredConf.
+type Calibration struct {
+	A     float64 `json:"a"`
+	B     float64 `json:"b"`
+	UsesP bool    `json:"uses_p"`
+}
+
+// MaxCalibrationCoef bounds |A| and |B|: beyond it a calibration is a fit
+// that ran away, not a measurement, and is not used.
+const MaxCalibrationCoef = 50.0
+
+// calibrationPClamp keeps logit(p) finite for a reading of p 0 or 1.
+const calibrationPClamp = 1e-6
+
+// Valid reports whether c can be used: both coefficients finite and bounded.
+func (c Calibration) Valid() bool {
+	return finite(c.A) && finite(c.B) && math.Abs(c.A) <= MaxCalibrationCoef && math.Abs(c.B) <= MaxCalibrationCoef
+}
+
+// Conf is the calibrated confidence of an answered reading with probability p
+// (when hasP). ok is false when c cannot read it: c is invalid, or c was
+// fitted on p and the reading has none.
+func (c Calibration) Conf(p float64, hasP bool) (conf float64, ok bool) {
+	if !c.Valid() {
+		return 0, false
+	}
+	x := 0.0
+	if c.UsesP {
+		if !hasP || !finite(p) {
+			return 0, false
+		}
+		q := clamp(p, calibrationPClamp, 1-calibrationPClamp)
+		x = math.Log(q / (1 - q))
+	}
+	return 1 / (1 + math.Exp(-(c.A*x + c.B))), true
 }
 
 // ShadowEscalate is the escalation backend's name in the ledger. It is asked
@@ -184,6 +227,10 @@ type Weights struct {
 	UnknownPrior float64
 	// AnsweredConf is the confidence of an answered reading with no decision-model p.
 	AnsweredConf float64
+	// Calibration, keyed by Slot.Backend, replaces AnsweredConf and the raw p
+	// for the backends it names (a rank weights file's Platt fits). A backend
+	// it does not name, or cannot read, keeps the rule above.
+	Calibration map[string]Calibration
 	// DisagreeConf multiplies a reading's confidence when the shadow
 	// backend disagreed, unless that shadow was ShadowEscalate.
 	DisagreeConf float64
@@ -317,8 +364,9 @@ func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 // conf is how far a slot's reading is trusted, in [0,1].
 func (w Weights) conf(s Slot) float64 {
-	c := 0.0
+	c, calibrated := w.calibrated(s)
 	switch {
+	case calibrated:
 	case s.HasP && finite(s.P):
 		c = clamp01(s.P)
 	case s.Answered:
@@ -328,6 +376,16 @@ func (w Weights) conf(s Slot) float64 {
 		c *= clamp01(w.DisagreeConf)
 	}
 	return c
+}
+
+// calibrated is s's confidence under its backend's Calibration; ok is false
+// when there is none for it or it cannot read s.
+func (w Weights) calibrated(s Slot) (float64, bool) {
+	cal, ok := w.Calibration[s.Backend]
+	if !ok || !s.Answered || s.Backend == "" {
+		return 0, false
+	}
+	return cal.Conf(s.P, s.HasP)
 }
 
 // ScoreWith ranks in by w. It is pure: the same inputs give the same Result,
