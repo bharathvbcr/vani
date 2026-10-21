@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
@@ -346,5 +349,101 @@ func TestKBMatchCorruptStoreStartsAgain(t *testing.T) {
 	}
 	if st, err := kbmatch.OpenStore(path); err != nil || st.Len() != 2 {
 		t.Errorf("store after the run: %v, %d", err, st.Len())
+	}
+}
+
+// A second run that starts while the first is between opening the store and
+// asking must not ask again: it waits for the lock (or is told the store is
+// busy) and, once let in, reads what the first run kept.
+func TestKBMatchRacingRunsDoNotDoubleSpend(t *testing.T) {
+	k := twoPostings(t)
+	f := &fakeKB{answer: byTitle(map[string]string{"Inference Engineer": "core", "Marketing Lead": "partial"})}
+	useFake(t, f)
+	oldWait, oldHook := kbmatchLockWait, kbmatchAfterOpen
+	t.Cleanup(func() { kbmatchLockWait, kbmatchAfterOpen = oldWait, oldHook })
+	kbmatchLockWait = 10 * time.Second
+
+	reached, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	kbmatchAfterOpen = func() {
+		if calls.Add(1) == 1 {
+			close(reached)
+			<-release
+		}
+	}
+	type result struct {
+		code int
+		o, e string
+	}
+	var results [2]result
+	var wg sync.WaitGroup
+	start := func(i int) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var o, e bytes.Buffer
+			code := run([]string{"kbmatch", "run"}, &o, &e)
+			results[i] = result{code, o.String(), e.String()}
+		}()
+	}
+	start(0)
+	<-reached
+	start(1)
+	// Give the second run time to get past (or be stopped at) the lock.
+	time.Sleep(300 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if results[0].code != 0 {
+		t.Fatalf("first run: exit %d\n%s\n%s", results[0].code, results[0].o, results[0].e)
+	}
+	if results[1].code != 0 && !strings.Contains(results[1].e, "another run is using the store") {
+		t.Errorf("second run failed for another reason: exit %d\n%s", results[1].code, results[1].e)
+	}
+	if len(f.contexts) != 2 {
+		t.Errorf("the model was asked %d times for 2 postings (double spend)", len(f.contexts))
+	}
+	st, err := kbmatch.OpenStore(filepath.Join(k.state, kbmatch.FileName))
+	if err != nil || st.Len() != 2 {
+		t.Errorf("both answers should survive: %v, %d", err, st.Len())
+	}
+}
+
+// A corrupt store is only ever removed by a run that holds the lock; a dry run
+// takes no lock and removes nothing.
+func TestKBMatchCorruptStoreIsNotRemovedWithoutTheLock(t *testing.T) {
+	k := twoPostings(t)
+	f := &fakeKB{answer: byTitle(map[string]string{"Inference Engineer": "core"})}
+	useFake(t, f)
+	oldWait := kbmatchLockWait
+	t.Cleanup(func() { kbmatchLockWait = oldWait })
+	kbmatchLockWait = 50 * time.Millisecond
+	path := filepath.Join(k.state, kbmatch.FileName)
+	if err := os.MkdirAll(k.state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := kbmatch.Lock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	code, _, e := do(t, "kbmatch", "run")
+	if code == 0 || !strings.Contains(e, "another run is using the store") {
+		t.Errorf("a run against a held store should say it is busy: exit %d, %s", code, e)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the corrupt store was removed without the lock: %v", err)
+	}
+	if len(f.contexts) != 0 {
+		t.Errorf("a busy run asked the model")
+	}
+	// A dry run needs no lock and leaves the file alone.
+	mustCode(t, 0, "kbmatch", "run", "--dry-run")
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("a dry run removed the corrupt store: %v", err)
 	}
 }
