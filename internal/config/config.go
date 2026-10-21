@@ -625,6 +625,15 @@ func Load(path string) (Config, error) {
 // LoadWithDeprecations is Load that also returns the deprecated key names the
 // file still uses (see Deprecations), for the caller to warn about.
 func LoadWithDeprecations(path string) (Config, []string, error) {
+	// Stat (following symlinks) before opening: opening a FIFO for reading
+	// blocks until a writer appears, and a device or directory is not a config.
+	st, err := os.Stat(path)
+	if err != nil {
+		return Config{}, nil, fmt.Errorf("config: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return Config{}, nil, fmt.Errorf("config: %s is not a regular file (%s)", path, st.Mode().Type())
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, nil, fmt.Errorf("config: %w", err)

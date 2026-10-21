@@ -105,6 +105,15 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 	}
 }
 
+// maxPanicText bounds a recovered panic's value where it is recorded or logged.
+const maxPanicText = 200
+
+// panicText is a recovered panic value as one bounded, control-free line. The
+// value can carry untrusted text (a JD in an index error or a parse failure),
+// so no recover site records it verbatim; like every other logged error
+// (oneLine(err.Error(), 200)) the full value is kept nowhere.
+func panicText(p any) string { return oneLine(fmt.Sprint(p), maxPanicText) }
+
 // maxPanicStack bounds the stack a recovered run panic prints.
 const maxPanicStack = 4096
 
@@ -119,8 +128,8 @@ func (e *env) guardedRun(ctx context.Context, app *App, cfg config.Config, opts 
 			if len(stack) > maxPanicStack {
 				stack = stack[:maxPanicStack]
 			}
-			fmt.Fprintf(e.stderr, "vani: the run panicked: %v\n%s\n", p, stack)
-			err = errors.Join(err, fmt.Errorf("%w: %v", errRunPanic, p))
+			fmt.Fprintf(e.stderr, "vani: the run panicked: %s\n%s\n", panicText(p), stack)
+			err = errors.Join(err, fmt.Errorf("%w: %s", errRunPanic, panicText(p)))
 			if berr := ledgerBroken(app.Ledger); berr != nil {
 				err = errors.Join(err, berr)
 			}
@@ -203,9 +212,11 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		}
 		fresh = prev
 	}
-	if fresh.Schedule != prev.Schedule {
-		fmt.Fprintf(e.stderr, "vani: config: the schedule changed (%s %s); it applies after the daemon restarts\n", fresh.Schedule.DailyAt, fresh.Schedule.Timezone)
-		fresh.Schedule = prev.Schedule
+	for _, p := range processPinned {
+		if p.differs(fresh, prev) {
+			fmt.Fprintf(e.stderr, "vani: config: %s changed; it applies after the daemon restarts\n", p.name)
+			p.pin(&fresh, prev)
+		}
 	}
 	e.setApplied(fresh)
 	if len(only) > 0 {
@@ -215,6 +226,23 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 	}
 	app.Reload(fresh)
 	return fresh, stale
+}
+
+// processPinned lists the config fields fixed for the process's life: the
+// daemon's schedule and the DevPrism binary and tools hash its scorer is
+// started with. reloadConfig keeps the running value of each and says so; add a
+// process-lifetime field here and nowhere else.
+var processPinned = []struct {
+	name    string
+	differs func(fresh, prev config.Config) bool
+	pin     func(fresh *config.Config, prev config.Config)
+}{
+	{"the schedule",
+		func(f, p config.Config) bool { return f.Schedule != p.Schedule },
+		func(f *config.Config, p config.Config) { f.Schedule = p.Schedule }},
+	{"devprism.binary or devprism.tools_hash",
+		func(f, p config.Config) bool { return f.DevPrism != p.DevPrism },
+		func(f *config.Config, p config.Config) { f.DevPrism = p.DevPrism }},
 }
 
 // lastApplied is the config the last reload left, or def before the first.
@@ -278,7 +306,9 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 			}
 		}
 		if limit > 0 {
-			rep := warmSemanticRun(ctx, cfg, e.stateDir, withMarkedText(app.Ledger, app.Ledger.All(), mk), mk, limit)
+			recs := withMarkedText(app.Ledger, app.Ledger.All(), mk)
+			rep := warmSemanticRun(ctx, cfg, e.stateDir, recs, mk, limit)
+			rep.noteUnreadable(unreadableMarked(recs, mk))
 			rec.Semantic = &rep
 			e.logSemantic(rep)
 		} else {

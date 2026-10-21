@@ -537,7 +537,7 @@ func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) erro
 	defer mu.Unlock()
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v", p)
+			err = fmt.Errorf("panic: %s", panicText(p))
 		}
 	}()
 	return poll(ctx)

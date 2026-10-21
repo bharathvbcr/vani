@@ -287,7 +287,7 @@ func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, run
 	fmt.Fprintf(e.stderr, "vani: run request: running the manual run asked for at %s\n", req.RequestedAt.UTC().Format(time.RFC3339))
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("manual run panicked: %v", p)
+			err = fmt.Errorf("manual run panicked: %s", panicText(p))
 		}
 	}()
 	return run(ctx, req.Options)

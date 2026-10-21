@@ -328,7 +328,8 @@ func (r *Runner) MarkDigested(ctx context.Context, keys []posting.Key) error {
 // daily run's publishDigest and Runner.MarkDigested). Every key is checked
 // before anything is written (an unknown key is an error and writes nothing),
 // already-digested keys and repeats are left alone, and the events go out in
-// batches of at most ledger.MaxBatchEvents: one fsync per batch, not per role.
+// batches of at most ledger.MaxBatchEvents events and appendBatched's byte
+// budget: one fsync per batch, not per role.
 // A failed batch returns its error at once and leaves the later batches
 // unwritten; each batch is all-or-nothing, so what was acknowledged is exactly
 // the earlier batches.
@@ -349,8 +350,11 @@ func MarkDigested(ctx context.Context, l ledger.Ledger, keys []posting.Key, at t
 		}
 		evs = append(evs, ledger.Event{V: ledger.SchemaVersion, At: at, Key: k, Status: posting.Digested, Reason: reason})
 	}
-	_, err := appendBatched(ctx, l, evs)
-	return err
+	done, err := appendBatched(ctx, l, evs)
+	if err != nil {
+		return fmt.Errorf("pipeline: digest marks: %d of %d written before: %w", done, len(evs), err)
+	}
+	return nil
 }
 
 func triageAnnotations(a decide.Answer) map[string]string {

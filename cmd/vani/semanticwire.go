@@ -199,6 +199,32 @@ func withMarkedText(l ledger.Ledger, recs []ledger.Record, mk map[posting.Key]ma
 	return recs
 }
 
+// unreadableMarked counts the records warmDocs would embed but whose stored
+// text is still evicted after withMarkedText (the ledger could not read it
+// back): they are left out of the warm, and the run says how many.
+func unreadableMarked(recs []ledger.Record, mk map[posting.Key]marks.Mark) int {
+	n := 0
+	for _, r := range recs {
+		if r.BodyEvicted && jobview.InView("all", r, mk[r.Key]) {
+			n++
+		}
+	}
+	return n
+}
+
+// noteUnreadable adds the count of marked postings left out of the warm to the
+// report's note. A count only, never any text.
+func (r *semanticReport) noteUnreadable(n int) {
+	if n == 0 {
+		return
+	}
+	msg := fmt.Sprintf("%d marked posting(s) not warmed: stored description unreadable", n)
+	if r.Note != "" {
+		msg = r.Note + "; " + msg
+	}
+	r.Note = msg
+}
+
 // warmSemanticRun is warmSemantic as the daily run calls it; a variable only so
 // a test can see the records the run hands the warm.
 var warmSemanticRun = warmSemantic
