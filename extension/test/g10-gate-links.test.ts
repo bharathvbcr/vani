@@ -1,45 +1,6 @@
-// Adversarial coverage for the typecheck gate's failure paths and the popup's link helper.
+// Adversarial coverage for the popup's link helper (the typecheck gate's failure paths moved to typecheck.test.ts).
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { isHttpUrl, openButton, titleElement } from "../src/joblink";
-
-const script = join(import.meta.dir, "../scripts/typecheck.sh");
-function run(env: Record<string, string>): { code: number; out: string; err: string } {
-  const r = Bun.spawnSync(["sh", script], { env: { PATH: process.env.PATH ?? "", VANI_SKIP_INSTALL: "1", ...env } });
-  return { code: r.exitCode ?? -1, out: r.stdout.toString(), err: r.stderr.toString() };
-}
-function fakeTsc(body: string, mode = 0o755): string {
-  const tsc = join(mkdtempSync(join(tmpdir(), "tsc-")), "tsc");
-  writeFileSync(tsc, body);
-  chmodSync(tsc, mode);
-  return tsc;
-}
-
-describe("adversarial: typecheck gate failure paths", () => {
-  test("a non-executable compiler file fails and never prints ok", () => {
-    const r = run({ VANI_TSC: fakeTsc("#!/bin/sh\necho 'typecheck: ok'\nexit 0\n", 0o644) });
-    expect(r.code).not.toBe(0);
-    expect(r.out).not.toContain("ok");
-    expect(r.err).toContain("not installed");
-  });
-
-  test("a compiler that prints success but exits non-zero, exits 127, or is killed by a signal fails the gate", () => {
-    for (const body of ["#!/bin/sh\necho 'all good'\nexit 1\n", "#!/bin/sh\nexit 127\n", "#!/bin/sh\nkill -9 $$\n", "#!/bin/sh\necho 'error TS2322' >&2\nexit 2\n"]) {
-      const r = run({ VANI_TSC: fakeTsc(body) });
-      expect([body, r.code]).not.toEqual([body, 0]);
-      expect(r.out).not.toContain("typecheck: ok");
-      expect(r.err).toContain("tsc reported errors");
-    }
-  });
-
-  test("bun install failing (bun not on PATH, the install step not skipped) fails the gate before the compiler is considered", () => {
-    const r = Bun.spawnSync(["/bin/sh", script], { env: { PATH: "/nonexistent", VANI_TSC: "/usr/bin/true" } });
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stdout.toString()).not.toContain("ok");
-  });
-});
 
 describe("adversarial: the popup's link helper", () => {
   const doc = { createElement: (tag: string) => ({ tagName: tag.toUpperCase(), textContent: "", className: "", href: undefined, target: undefined, onclick: null }) } as unknown as Pick<Document, "createElement">;

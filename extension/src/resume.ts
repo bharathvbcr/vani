@@ -93,6 +93,9 @@ export function checkResumeName(raw: unknown): string | null {
   const s = raw.trim();
   if (s.length > MAX_NAME_CHARS || !/\.pdf$/i.test(s) || s.length <= 4) return null;
   if (/[\u0000-\u001f\u007f-\u009f/\\]/.test(s)) return null;
+  // Shown in the page and the popup: no format characters (bidi overrides/isolates/marks, zero-width, BOM), no line or
+  // paragraph separators and no unpaired surrogate, any of which can disguise or break the text around it.
+  if (/[\p{Cf}\u2028\u2029]/u.test(s) || /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s)) return null;
   return s;
 }
 

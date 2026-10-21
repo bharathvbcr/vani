@@ -14,6 +14,7 @@ let local: Record<string, unknown> = {};
 /** When set, chrome.storage.local.set rejects with this message (a browser whose extension storage cannot be written). */
 let localSetFails: string | null = null;
 const removed: Array<(tabId: number) => void> = [];
+const updated: Array<(tabId: number, info: { status?: string }) => void> = [];
 /** What the background asked the (absent) Mac app, in order. */
 const nativeSent: object[] = [];
 /** The tab(s) chrome.tabs.query reports as active, and every message the background sent to a tab's frame. */
@@ -50,7 +51,7 @@ beforeAll(async () => {
       session: undefined,
     },
     tabs: {
-      onUpdated: on,
+      onUpdated: { addListener(cb: (tabId: number, info: { status?: string }) => void) { updated.push(cb); } },
       onRemoved: { addListener(cb: (tabId: number) => void) { removed.push(cb); } },
       query: async () => activeTabs,
       sendMessage: async (tabId: number, msg: unknown, opts?: { frameId?: number }) => {
@@ -76,7 +77,7 @@ async function ask(msg: unknown, sender: object = {}): Promise<{ async: boolean;
 }
 
 /** A content script's sender: always in a tab. The popup's is `{}`. */
-const content = { tab: { id: 3 }, frameId: 0 };
+const content = { tab: { id: 3 }, frameId: 0, url: "https://a.example/" };
 
 describe("background router", () => {
   test("registers one runtime.onMessage listener", () => {
@@ -132,20 +133,20 @@ describe("capture without the Mac app", () => {
 
 describe("frame registry messages", () => {
   test("a content script's frame registers; the popup lists a tab's frames; a content script only its own tab's", async () => {
-    expect(await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 5 })).toEqual({ async: true, replies: [{ ok: true }] });
-    expect(await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 0 })).toEqual({ async: true, replies: [{ ok: true }] });
+    expect(await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 5, url: "https://a.example/" })).toEqual({ async: true, replies: [{ ok: true }] });
+    expect(await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 0, url: "https://a.example/" })).toEqual({ async: true, replies: [{ ok: true }] });
     // The popup is in no tab and no frame: it cannot register one.
     expect(await ask({ type: "frameReady" }, {})).toEqual({ async: false, replies: [{ error: "frameReady is not accepted from the popup", code: "bad_request" }] });
     // A tab with no frame id is still not a frame.
     expect(await ask({ type: "frameReady" }, { tab: { id: 7 } })).toEqual({ async: true, replies: [{ error: "not from a frame", code: "bad_request" }] });
     expect(await ask({ type: "frames", tabId: 7 }, {})).toEqual({ async: true, replies: [{ frames: [5, 0] }] });
     // A content script in tab 8 naming tab 7 gets its own tab's (none), never tab 7's.
-    expect(await ask({ type: "frames", tabId: 7 }, { tab: { id: 8 }, frameId: 0 })).toEqual({ async: true, replies: [{ frames: [] }] });
+    expect(await ask({ type: "frames", tabId: 7 }, { tab: { id: 8 }, frameId: 0, url: "https://a.example/" })).toEqual({ async: true, replies: [{ frames: [] }] });
     expect(await ask({ type: "frames", tabId: "7" }, {})).toEqual({ async: false, replies: [{ error: "malformed frames message" }] });
   });
 
   test("a closed tab's frames are forgotten", async () => {
-    await ask({ type: "frameReady" }, { tab: { id: 11 }, frameId: 3 });
+    await ask({ type: "frameReady" }, { tab: { id: 11 }, frameId: 3, url: "https://a.example/" });
     expect(await ask({ type: "frames", tabId: 11 }, {})).toEqual({ async: true, replies: [{ frames: [3] }] });
     for (const cb of removed) cb(11);
     await new Promise(r => setTimeout(r, 10));
@@ -171,11 +172,11 @@ describe("attachResume routing", () => {
     activeTabs = [{ id: 9 }];
     for (const cb of removed) cb(7); // frames registered for tab 7 by an earlier test are forgotten
     await new Promise(r => setTimeout(r, 10));
-    await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 2 });
-    await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 6 });
-    await ask({ type: "frameReady" }, { tab: { id: 9 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 2, url: "https://a.example/" });
+    await ask({ type: "frameReady" }, { tab: { id: 7 }, frameId: 6, url: "https://a.example/" });
+    await ask({ type: "frameReady" }, { tab: { id: 9 }, frameId: 0, url: "https://a.example/" });
     tabReply = (tabId, frameId) => ({ outcomes: [{ label: `tab ${tabId} frame ${frameId}`, filled: true }] });
-    const r = await sendAttach({}, { tab: { id: 7 }, frameId: 2 });
+    const r = await sendAttach({}, { tab: { id: 7 }, frameId: 2, url: "https://a.example/" });
     expect(sentToTabs().map(s => [s.tabId, s.frameId])).toEqual([[7, 2], [7, 6]]);
     expect(r.replies).toEqual([{ outcomes: [{ label: "tab 7 frame 2", filled: true }, { label: "tab 7 frame 6", filled: true }] }]);
   });
@@ -183,9 +184,9 @@ describe("attachResume routing", () => {
   test("a pdf over the cap, a bad name, or a non-PDF is refused with an error before any frame is asked; exactly the cap is sent", async () => {
     reset();
     activeTabs = [{ id: 9 }];
-    await ask({ type: "frameReady" }, { tab: { id: 8 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 8 }, frameId: 0, url: "https://a.example/" });
     tabReply = () => ({ outcomes: [] });
-    const content = { tab: { id: 8 }, frameId: 0 };
+    const content = { tab: { id: 8 }, frameId: 0, url: "https://a.example/" };
     const refused: Array<[Record<string, unknown>, string]> = [
       [{ pdf: pdfOf(MAX_RESUME_BYTES + 1) }, "too_large"],
       [{ name: "" }, "bad_request"],
@@ -221,24 +222,91 @@ describe("attachResume routing", () => {
   test("a tab that has since closed (no listener anywhere) is an error reply, not a hang or an empty success", async () => {
     reset();
     tabReply = () => { throw new Error("Could not establish connection. Receiving end does not exist."); };
-    const r = await sendAttach({}, { tab: { id: 404 }, frameId: 0 });
-    expect(r.replies).toEqual([{ error: "Vani could not start on this page" }]);
+    const r = await sendAttach({}, { tab: { id: 404 }, frameId: 0, url: "https://a.example/" });
+    expect(r.replies).toEqual([{ error: "the page that offered this is no longer open in the tab" }]);
     expect(sentToTabs().every(s => s.tabId === 404)).toBe(true);
+  });
+
+  const A = "https://a.example/apply";
+  const B = "https://b.example/other";
+  const navigate = async (tabId: number) => {
+    for (const cb of updated) cb(tabId, { status: "loading" });
+    await new Promise(r => setTimeout(r, 10));
+  };
+
+  test("offer from origin A, the tab navigates to origin B (no frame has registered yet): no frame is asked and an error comes back", async () => {
+    reset();
+    for (const cb of removed) cb(70);
+    await new Promise(r => setTimeout(r, 10));
+    await ask({ type: "frameReady" }, { tab: { id: 70 }, frameId: 0, url: A });
+    await navigate(70);
+    tabReply = () => ({ outcomes: [{ label: "x", filled: true }] });
+    const r = await sendAttach({}, { tab: { id: 70 }, frameId: 0, url: A });
+    expect(sentToTabs()).toEqual([]);
+    expect(r.replies).toEqual([{ error: "the page that offered this is no longer open in the tab" }]);
+  });
+
+  test("the tab navigated to B and B's frame registered: an attach offered by A still asks no frame; B's own offer reaches it", async () => {
+    reset();
+    for (const cb of removed) cb(71);
+    await new Promise(r => setTimeout(r, 10));
+    await ask({ type: "frameReady" }, { tab: { id: 71 }, frameId: 0, url: A });
+    await navigate(71);
+    await ask({ type: "frameReady" }, { tab: { id: 71 }, frameId: 0, url: B });
+    tabReply = () => ({ outcomes: [] });
+    expect((await sendAttach({}, { tab: { id: 71 }, frameId: 0, url: A })).replies).toEqual([{ error: "the page that offered this is no longer open in the tab" }]);
+    expect(sentToTabs()).toEqual([]);
+    expect((await sendAttach({}, { tab: { id: 71 }, frameId: 0, url: B })).replies).toEqual([{ outcomes: [] }]);
+    expect(sentToTabs().map(s => s.frameId)).toEqual([0]);
+  });
+
+  test("even with no navigation event, a frame id reused by another origin is replaced, not matched by its old origin", async () => {
+    reset();
+    for (const cb of removed) cb(72);
+    await new Promise(r => setTimeout(r, 10));
+    await ask({ type: "frameReady" }, { tab: { id: 72 }, frameId: 0, url: A });
+    await ask({ type: "frameReady" }, { tab: { id: 72 }, frameId: 0, url: B });
+    tabReply = () => ({ outcomes: [] });
+    await sendAttach({}, { tab: { id: 72 }, frameId: 0, url: A }).then(r => expect(r.replies[0]).toMatchObject({ error: expect.any(String) }));
+    expect(sentToTabs()).toEqual([]);
+  });
+
+  test("frames of a different origin in the same tab (a cross-origin iframe) are not asked; same-origin frames are", async () => {
+    reset();
+    for (const cb of removed) cb(73);
+    await new Promise(r => setTimeout(r, 10));
+    await ask({ type: "frameReady" }, { tab: { id: 73 }, frameId: 0, url: A });
+    await ask({ type: "frameReady" }, { tab: { id: 73 }, frameId: 4, url: B });
+    await ask({ type: "frameReady" }, { tab: { id: 73 }, frameId: 5, url: "https://a.example/embedded", origin: "https://a.example" });
+    await ask({ type: "frameReady" }, { tab: { id: 73 }, frameId: 6 }); // no origin known: cannot be vouched for
+    tabReply = (_t, f) => ({ outcomes: [{ label: `frame ${f}`, filled: true }] });
+    const r = await sendAttach({}, { tab: { id: 73 }, frameId: 0, url: A });
+    expect(sentToTabs().map(s => s.frameId)).toEqual([0, 5]);
+    expect(r.replies).toEqual([{ outcomes: [{ label: "frame 0", filled: true }, { label: "frame 5", filled: true }] }]);
+  });
+
+  test("a sender with no usable origin (none, opaque, unparsable) is refused and nothing is asked", async () => {
+    reset();
+    await ask({ type: "frameReady" }, { tab: { id: 74 }, frameId: 0, url: A });
+    for (const sender of [{ tab: { id: 74 }, frameId: 0 }, { tab: { id: 74 }, frameId: 0, origin: "null" }, { tab: { id: 74 }, frameId: 0, url: "not a url" }, { tab: { id: 74 }, frameId: 0, url: "about:blank" }]) {
+      expect([sender, (await sendAttach({}, sender)).replies]).toEqual([sender, [{ error: "no origin" }]]);
+    }
+    expect(sentToTabs()).toEqual([]);
   });
 
   test("a frame that throws yields no outcomes from it and never reaches another tab", async () => {
     reset();
     activeTabs = [{ id: 9 }];
-    await ask({ type: "frameReady" }, { tab: { id: 12 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 12 }, frameId: 0, url: "https://a.example/" });
     tabReply = () => { throw new Error("boom"); };
-    const r = await sendAttach({}, { tab: { id: 12 }, frameId: 0 });
+    const r = await sendAttach({}, { tab: { id: 12 }, frameId: 0, url: "https://a.example/" });
     expect(r.replies).toEqual([{ outcomes: [] }]);
     expect(sentToTabs().every(s => s.tabId === 12)).toBe(true);
   });
 });
 
 describe("sender policy", () => {
-  const page = { tab: { id: 5 }, frameId: 0 };
+  const page = { tab: { id: 5 }, frameId: 0, url: "https://a.example/" };
   const types = () => Object.keys(SENDER_POLICY) as ToBackground["type"][];
   const own = "https://boards.greenhouse.io/acme/jobs/1";
   const bankJson = JSON.stringify({ version: 1, answers: {}, settings: { captureSelfId: true, disabledHosts: ["x.example"] } });

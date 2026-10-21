@@ -2,7 +2,7 @@
 // The background worker is the only writer to storage.
 import { isRecord } from "./guards";
 import type { Bank, FieldInfo, Settings } from "./types";
-import { type CaptureResult, MAX_BANK_BYTES } from "./bank";
+import { type CaptureResult, MAX_BANK_BYTES, utf8Within } from "./bank";
 import type { FillOutcome } from "./fill";
 import type { Coverage } from "./coverage";
 import type { DraftReply, JobInfo } from "./draft";
@@ -88,7 +88,7 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
   setSettings: m => isRecord(m.settings),
   deleteAnswer: m => typeof m.key === "string",
   editAnswer: m => typeof m.key === "string" && Array.isArray(m.value) && (m.review === undefined || typeof m.review === "boolean"),
-  replaceBank: m => typeof m.json === "string" && m.json.length <= MAX_BANK_BYTES,
+  replaceBank: m => typeof m.json === "string" && utf8Within(m.json, MAX_BANK_BYTES),
   draft: m => typeof m.question === "string",
   jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume",
   jobPoll: m => typeof m.job === "string",

@@ -91,6 +91,18 @@ export function toTabFrames<T>(msg: ToContent, timeoutMs?: number): Promise<FanO
   return toFrames<T>(msg, { registered: tabId => frameRegistry.list(tabId), timeoutMs });
 }
 
+/** The origin a content script's message comes from: the browser's own `sender.origin`, else the sender URL's; null when neither is an origin. */
+function senderOrigin(sender: chrome.runtime.MessageSender): string | null {
+  const ok = (o: string): boolean => o !== "" && o !== "null";
+  if (typeof sender.origin === "string") return ok(sender.origin) ? sender.origin : null;
+  try {
+    const o = new URL(sender.url ?? "").origin;
+    return ok(o) ? o : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The tab a message acts for. A content script is always its own tab, whatever it claims; the popup is no tab and names one. */
 function actingTab(sender: chrome.runtime.MessageSender, named: unknown): number | undefined {
   if (sender.tab) return sender.tab.id;
@@ -118,6 +130,8 @@ async function askTopToShow(tabId: number): Promise<boolean> {
 
 // Navigation clears a tab's badge; put it back while the question waits, and forget a closed tab's.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
+  // A top-level navigation ends every document the tab's frames were registered for; the new page registers its own.
+  if (info.status === "loading") void frameRegistry.forget(tabId);
   if (info.status === "complete") void applied.pending(tabId).then(o => { if (o) return badge(tabId, true); }, () => undefined);
 });
 chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); void frameRegistry.forget(tabId); });
@@ -286,7 +300,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "frameReady": {
       // Only a content script is in a frame; the popup has no tab and no frameId.
       if (sender.tab?.id === undefined || sender.frameId === undefined) return { error: "not from a frame", code: "bad_request" };
-      await frameRegistry.add(sender.tab.id, sender.frameId);
+      await frameRegistry.add(sender.tab.id, sender.frameId, senderOrigin(sender) ?? undefined);
       return { ok: true };
     }
     case "frames": {
@@ -328,12 +342,16 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       // The same checks the page runs, before any frame is asked.
       const file = checkResumeFile(msg.name, msg.pdf);
       if ("error" in file) return file;
+      // The file's name is the owner's: it goes only to frames of the page that offered it, never to whatever
+      // else the tab now shows (it may have navigated) or to a frame of another origin.
+      const origin = senderOrigin(sender);
+      if (origin === null) return { error: "no origin" };
       const r = await toFrames<FillReply>({
         type: "attachResume",
         name: file.name,
         pdf: msg.pdf,
         pickedAt: msg.pickedAt.slice(0, 40),
-      }, { registered: tid => frameRegistry.list(tid), tabId });
+      }, { registered: (tid, o) => frameRegistry.list(tid, o), tabId, origin });
       return { outcomes: mergeFill(r) };
     }
     default:

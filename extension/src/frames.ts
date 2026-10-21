@@ -104,8 +104,14 @@ export const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
 
 export interface ToFramesOptions {
   /** The frames of this tab whose content script registered (FrameRegistry.list, through the background from the popup). */
-  registered(tabId: number): Promise<number[]>;
+  registered(tabId: number, origin?: string): Promise<number[]>;
   timeoutMs?: number;
+  /**
+   * Pin the ask to the page that made the request: only registered frames whose recorded origin is this one are asked.
+   * Nothing is probed or injected (a frame the registry has no origin for cannot be vouched for), and no such frame
+   * is an error, never a fallback to the other frames of the tab.
+   */
+  origin?: string;
   /** The tab to ask. Absent, the active tab (the popup's and the shortcut's own); a content script's request names its own tab, never the active one. */
   tabId?: number;
 }
@@ -126,6 +132,12 @@ export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promis
   }
   const target = tabId;
   const accept = ACCEPT[msg.type] as (r: unknown) => r is T;
+  if (opts.origin !== undefined) {
+    const ids = await bounded(opts.registered(target, opts.origin), timeoutMs, "the background's frame list");
+    const pinned = await fanOut(ids, frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
+    if (pinned.asked === 0) throw new Error("the page that offered this is no longer open in the tab");
+    return pinned;
+  }
   const ask = async (): Promise<FanOut<T>> => {
     const [probed, registered] = await Promise.all([
       probeFrames(target, timeoutMs).catch((): number[] => []),
@@ -146,7 +158,8 @@ export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promis
 export const MAX_FRAMES_PER_TAB = 32;
 export const MAX_TABS = 64;
 
-interface TabFrames { frames: number[]; at: number }
+/** `origins` maps a frame id to the origin its content script reported; a frame with no entry has no known origin. */
+interface TabFrames { frames: number[]; at: number; origins?: Record<string, string> }
 
 /** Where the list is kept: chrome.storage.session survives the worker being stopped; without it, memory only. */
 export interface FrameStore {
@@ -155,9 +168,10 @@ export interface FrameStore {
 }
 
 export interface FrameRegistry {
-  /** A content script started in this frame. The newest MAX_FRAMES_PER_TAB frames of a tab are kept. */
-  add(tabId: number, frameId: number): Promise<void>;
-  list(tabId: number): Promise<number[]>;
+  /** A content script started in this frame (at `origin`, when known). The newest MAX_FRAMES_PER_TAB frames of a tab are kept. */
+  add(tabId: number, frameId: number, origin?: string): Promise<void>;
+  /** The tab's frames; with `origin`, only those registered at exactly that origin. */
+  list(tabId: number, origin?: string): Promise<number[]>;
   forget(tabId: number): Promise<void>;
 }
 
@@ -183,7 +197,14 @@ export function createFrameRegistry(d: { store?: FrameStore; now?: () => number 
     if (typeof m !== "object" || m === null) return out;
     for (const [k, v] of Object.entries(m)) {
       const e = v as Partial<TabFrames> | null;
-      if (e && Array.isArray(e.frames) && typeof e.at === "number") out[k] = { frames: e.frames.filter(isFrameId), at: e.at };
+      if (e && Array.isArray(e.frames) && typeof e.at === "number") {
+        const frames = e.frames.filter(isFrameId);
+        const origins: Record<string, string> = {};
+        if (typeof e.origins === "object" && e.origins !== null) {
+          for (const [f, o] of Object.entries(e.origins)) if (typeof o === "string" && frames.includes(Number(f))) origins[f] = o;
+        }
+        out[k] = { frames, at: e.at, origins };
+      }
     }
     return out;
   }
@@ -196,19 +217,29 @@ export function createFrameRegistry(d: { store?: FrameStore; now?: () => number 
   const slot = (tabId: number): string | null => (Number.isInteger(tabId) && tabId >= 0 ? String(tabId) : null);
 
   return {
-    add: (tabId, frameId) => locked(async () => {
+    add: (tabId, frameId, origin) => locked(async () => {
       const k = slot(tabId);
       if (k === null || !isFrameId(frameId)) return;
       const m = await read();
       // No reset when frame 0 registers: the popup injecting into a loaded top frame is not a new
       // document, and its iframes are still there. Frames that did go are dropped when asked (gone).
       const old = (m[k]?.frames ?? []).filter(f => f !== frameId);
-      m[k] = { frames: [...old, frameId].slice(-MAX_FRAMES_PER_TAB), at: now() };
+      const frames = [...old, frameId].slice(-MAX_FRAMES_PER_TAB);
+      // A frame id is reused by the next document in that frame: its origin is replaced, or dropped when not reported.
+      const origins: Record<string, string> = {};
+      for (const f of frames) {
+        const o = f === frameId ? origin : m[k]?.origins?.[String(f)];
+        if (typeof o === "string" && o !== "") origins[String(f)] = o;
+      }
+      m[k] = { frames, at: now(), origins };
       await write(m);
     }),
-    list: tabId => locked(async () => {
+    list: (tabId, origin) => locked(async () => {
       const k = slot(tabId);
-      return k === null ? [] : [...((await read())[k]?.frames ?? [])];
+      if (k === null) return [];
+      const e = (await read())[k];
+      if (!e) return [];
+      return origin === undefined ? [...e.frames] : e.frames.filter(f => e.origins?.[String(f)] === origin);
     }),
     forget: tabId => locked(async () => {
       const k = slot(tabId);

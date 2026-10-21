@@ -141,10 +141,10 @@ describe("adversarial: sender shapes", () => {
   test("an 'either' type from a page acts for the page's own tab even when the message names another tab or -1", async () => {
     for (const cb of removed) { cb(21); cb(22); }
     await new Promise(r => setTimeout(r, 10));
-    await ask({ type: "frameReady" }, { tab: { id: 21 }, frameId: 0 });
-    await ask({ type: "frameReady" }, { tab: { id: 22 }, frameId: 4 });
-    expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: 21 }, frameId: 0 })).replies).toEqual([{ frames: [0] }]);
-    expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: -1 }, frameId: 0 })).replies).toEqual([{ frames: [] }]);
+    await ask({ type: "frameReady" }, { tab: { id: 21 }, frameId: 0, url: "https://a.example/" });
+    await ask({ type: "frameReady" }, { tab: { id: 22 }, frameId: 4, url: "https://a.example/" });
+    expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: 21 }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ frames: [0] }]);
+    expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: -1 }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ frames: [] }]);
   });
 
   test("the deleted message types from every sender shape: one error reply, nothing written, nothing sent, no throw", async () => {
@@ -152,7 +152,7 @@ describe("adversarial: sender shapes", () => {
     const natives = nativeSent.length;
     const before = JSON.stringify(local);
     for (const t of ["queryCandidates", "listAnswers", "patchAnswers"]) {
-      for (const sender of [{}, { tab: { id: 5 }, frameId: 0 }, { tab: { id: 5 }, frameId: 2 }, { tab: null }]) {
+      for (const sender of [{}, { tab: { id: 5 }, frameId: 0, url: "https://a.example/" }, { tab: { id: 5 }, frameId: 2, url: "https://a.example/" }, { tab: null }]) {
         for (const body of [{}, { query: {}, upsert: [], deleteKeys: ["a"], offset: 0, limit: 5, search: "x", signatures: ["s"] }, { upsert: "x", deleteKeys: 7 }]) {
           expect(await ask({ type: t, ...body }, sender)).toEqual({ async: false, replies: [{ error: "unknown message type" }] });
         }
@@ -164,14 +164,14 @@ describe("adversarial: sender shapes", () => {
 });
 
 describe("adversarial: attachResume", () => {
-  const send = (over: Record<string, unknown>, sender: object = { tab: { id: 61 }, frameId: 0 }) =>
+  const send = (over: Record<string, unknown>, sender: object = { tab: { id: 61 }, frameId: 0, url: "https://a.example/" }) =>
     ask({ type: "attachResume", name: "Resume_Synthetic.pdf", pdf: pdfOf(64), pickedAt: "2026-10-19", ...over }, sender);
   const sent = () => tabSent.filter(s => (s.msg as { type?: string }).type === "attachResume");
   const fresh = () => { tabSent.length = 0; tabReply = () => ({ outcomes: [] }); activeTabs = [{ id: 99 }]; };
 
   test("sender.tab.id of -1 (TAB_ID_NONE) is never turned into the active tab: only tab -1 is asked", async () => {
     fresh();
-    const r = await send({}, { tab: { id: -1 }, frameId: 0 });
+    const r = await send({}, { tab: { id: -1 }, frameId: 0, url: "https://a.example/" });
     expect(tabSent.some(s => s.tabId === 99)).toBe(false);
     expect(sent().every(s => s.tabId === -1)).toBe(true);
     expect(r.replies.length).toBe(1);
@@ -191,8 +191,8 @@ describe("adversarial: attachResume", () => {
     fresh();
     for (const cb of removed) { cb(61); cb(62); }
     await new Promise(r => setTimeout(r, 10));
-    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0 });
-    await ask({ type: "frameReady" }, { tab: { id: 62 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0, url: "https://a.example/" });
+    await ask({ type: "frameReady" }, { tab: { id: 62 }, frameId: 0, url: "https://a.example/" });
     tabReply = tabId => ({ outcomes: [{ label: `tab ${tabId}`, filled: true }] });
     const r = await send({});
     expect(r.replies).toEqual([{ outcomes: [{ label: "tab 61", filled: true }] }]);
@@ -208,7 +208,7 @@ describe("adversarial: attachResume", () => {
 
   test("frames receive only the contract's fields, the trimmed name and a 40-char pickedAt", async () => {
     fresh();
-    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0, url: "https://a.example/" });
     await send({ name: "  Resume_Synthetic.pdf  ", pickedAt: "x".repeat(500), extra: "no" });
     const m = sent()[0]!.msg as Record<string, unknown>;
     expect(Object.keys(m).sort()).toEqual(["name", "pdf", "pickedAt", "type"]);
@@ -233,7 +233,7 @@ describe("adversarial: attachResume", () => {
 
   test("the size cap: cap-2..cap bytes are sent; cap+1..cap+4 are refused as too_large though the base64 length cap still passes", async () => {
     fresh();
-    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0, url: "https://a.example/" });
     for (const n of [MAX_RESUME_BYTES - 2, MAX_RESUME_BYTES - 1, MAX_RESUME_BYTES]) {
       tabSent.length = 0;
       const r = await send({ pdf: toBase64(pdfBytes(n)) });
@@ -258,7 +258,7 @@ describe("adversarial: attachResume", () => {
 
   test("the signature is strict: BOM, whitespace, junk, lower-case or short signatures are refused; a bare %PDF- is accepted", async () => {
     fresh();
-    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0 });
+    await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0, url: "https://a.example/" });
     const text = (s: string) => [...new TextEncoder().encode(s)];
     const enc = (b: number[]) => toBase64(Uint8Array.from(b));
     for (const body of [[0xef, 0xbb, 0xbf, ...text("%PDF-1.4")], [0x20, ...text("%PDF-1.4")], [0x0a, ...text("%PDF-1.4")], text("junk%PDF-1.4"), text("%pdf-1.4"), text("%PDF"), text("%PDF1.4"), [0x4d, 0x5a, 0x90, 0x00, 0x03]]) {
@@ -279,7 +279,7 @@ describe("adversarial: attachResume", () => {
     expect(sent()).toEqual([]);
     for (const name of ["CON.pdf", "NUL.pdf", "a..pdf", "..pdf", "résumé 日本語.PDF", `${"x".repeat(196)}.pdf`]) {
       tabSent.length = 0;
-      await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0 });
+      await ask({ type: "frameReady" }, { tab: { id: 61 }, frameId: 0, url: "https://a.example/" });
       const r = await send({ name });
       expect([name, r.replies]).toEqual([name, [{ outcomes: [] }]]);
       expect((sent()[0]!.msg as { name: string }).name).toBe(name);
