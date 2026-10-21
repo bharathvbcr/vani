@@ -11,10 +11,8 @@ package fieldtriage
 import (
 	"errors"
 	"fmt"
-	"html"
 	"regexp"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/decide"
@@ -123,43 +121,13 @@ func Question(f Field) decide.Question {
 // miss is still stopped after the model reads it (Sensitive, and suggest.Run,
 // which drafts only an essay reading of a label no pattern flags).
 var (
-	workAuthRE = regexp.MustCompile(`(?i)\b(visa|sponsor(ship)?|work(ing)? authori[sz]ation|authori[sz]ed to work|right to work|citizens?|citizenship|immigration|work permit|green card|(eligible|eligibility|legally entitled) to work|legally entitled|u\.? ?s\.? persons?|employment (authori[sz]ation|eligibility))\b`)
-	selfIDRE   = regexp.MustCompile(`(?i)\b(gender|race|racial|ethnic(ity|al)?|hispanic|latin[oax]|veteran|disability|disabled|sexual orientation|transgender|age|religio(n|us)|pronouns?|criminal|convict(ed|ion|ions)?|marital|marital status)\b`)
+	workAuthRE = regexp.MustCompile(`(?i)\b(visa|sponsor(ship)?|work(ing)? ?authori[sz]ation|authori[sz]ed to work|right to work|work rights|citizens?|citizenship|nationality|nationals|national of|immigration|work permit|green card|permanent residen(t|ts|ce|cy)|(eligible|eligibility|legally entitled) to work|legally (entitled|permitted|allowed|authori[sz]ed|eligible|able)|u\.? ?s\.? ?persons?|employment (authori[sz]ation|eligibility)|h-?1b|h-?4|l-?1|tn status|f[- ]?1 (visa|student|status))\b|\b(?-i:OPT|CPT)\b`)
+	selfIDRE   = regexp.MustCompile(`(?i)\b(gender|sex|sexual|sexuality|(fe)?male|race|racial|ethnic(ity|al)?|hispanic|latin[oax]|veteran|military|armed forces|uniformed services|disability|disabilit(y|ies)|disabled|handicap(ped)?|medical (condition|history)|health (condition|status)|sexual orientation|lgbt\w*|queer|gay|lesbian|bisexual|non-?binary|cisgender|transgender|african[- ]american|caucasian|native american|alaska(n)? native|american indian|pacific islander|native hawaiian|indigenous|asian|age|religio(n|us)|pronouns?|criminal|convict(ed|ion|ions)?|marital|marital status)\b|\b(over|under|above|below|older than|younger than|at least|age) (16|18|21|40|55|62|65)\b|\b(16|18|21|40|55|62|65) ?(\+|or (older|over|above|younger|under|more)|years old|years of age)|(^|[,/(]|\bor) ?(black|white)\b ?($|[,/)]|\bor\b)`)
 	consentRE  = regexp.MustCompile(`(?i)\b(agree|agreement|arbitrat\w*|consent|acknowledg\w*|certify|terms (and|&) conditions|privacy (notice|policy)|ai policy)\b`)
 	// broaderRE is what only the post-model defence checks: subjects no model
 	// reading should turn into a draft, but that are not pinned a category.
 	broaderRE = regexp.MustCompile(`(?i)\b(date of birth|birth ?date|dob|national origin|pregnan\w*|felony|arrest(ed|s)?|social security|ssn|passport)\b`)
 )
-
-// fold normalizes a label for the guard patterns: HTML entities decoded,
-// fullwidth forms mapped to ASCII, zero-width and soft-hyphen characters
-// dropped, any Unicode space collapsed to one ASCII space.
-//
-// An invisible character may sit inside a word ("Ci<ZWSP>tizen") or stand in
-// for a space ("to<ZWSP>work"), so folds returns both readings.
-func folds(label string) [2]string {
-	return [2]string{fold(label, false), fold(label, true)}
-}
-
-func fold(label string, invisibleIsSpace bool) string {
-	var b strings.Builder
-	b.Grow(len(label))
-	for _, r := range html.UnescapeString(label) {
-		switch {
-		case r >= 0xFF01 && r <= 0xFF5E:
-			b.WriteRune(r - 0xFEE0)
-		case r == 0x3000 || unicode.IsSpace(r):
-			b.WriteByte(' ')
-		case r == 0xAD || (r >= 0x200B && r <= 0x200F) || r == 0x2060 || r == 0xFEFF:
-			if invisibleIsSpace {
-				b.WriteByte(' ')
-			}
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
-}
 
 // Sensitive returns the category a label is pinned to by Guard, SelfID for a
 // label only the broader pattern flags, or "" when no pattern matches. A
@@ -179,7 +147,13 @@ func Sensitive(label string) string {
 // Guard returns the category a label is pinned to without asking a model,
 // or "" when the model may be asked.
 func Guard(label string) string {
-	for _, form := range folds(label) {
+	forms := folds(label)
+	for _, form := range forms {
+		if mixedScript(form) {
+			return SelfID
+		}
+	}
+	for _, form := range forms {
 		switch {
 		case workAuthRE.MatchString(form):
 			return WorkAuth
