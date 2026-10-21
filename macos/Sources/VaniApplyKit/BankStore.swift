@@ -51,6 +51,17 @@ public struct ActivityEntry: Codable, Equatable, Sendable {
 // A corrupt file is reported, never replaced: the next write would otherwise
 // erase every answer.
 
+/// The one clamp for listAnswers paging, used by the protocol and by both stores so the SQLite
+/// mirror and the bank.json fallback answer a hostile or sloppy offset/limit identically.
+public enum ListPaging {
+    public static let maxLimit = 500
+
+    /// offset >= 0 and 1 <= limit <= maxLimit.
+    public static func clamped(offset: Int, limit: Int) -> (offset: Int, limit: Int) {
+        (max(offset, 0), min(max(limit, 1), maxLimit))
+    }
+}
+
 public final class BankStore: @unchecked Sendable {
     public let directory: URL
     var bankURL: URL { directory.appendingPathComponent("bank.json") }
@@ -181,7 +192,8 @@ public final class BankStore: @unchecked Sendable {
     /// Paginated list and search for UI tables. Search matches key, value and labels, ASCII
     /// case-insensitively, with % _ and \ matching themselves, the same on both paths.
     public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> SQLiteBankStore.ListResult {
-        try readMirrorOrJSON({ try $0.listAnswers(offset: offset, limit: limit, search: search) }) { snap in
+        let (offset, limit) = ListPaging.clamped(offset: offset, limit: limit)
+        return try readMirrorOrJSON({ try $0.listAnswers(offset: offset, limit: limit, search: search) }) { snap in
             var all = Array(snap.bank.answers.values)
             if let s = search, !s.trimmingCharacters(in: .whitespaces).isEmpty {
                 let needle = Self.asciiLowercased(s)
@@ -190,7 +202,7 @@ public final class BankStore: @unchecked Sendable {
                 }
             }
             all.sort { $0.updatedAt > $1.updatedAt }
-            let slice = all.dropFirst(max(offset, 0)).prefix(max(limit, 0))
+            let slice = all.dropFirst(offset).prefix(limit)
             return SQLiteBankStore.ListResult(total: all.count, rev: snap.rev, answers: Array(slice))
         }
     }

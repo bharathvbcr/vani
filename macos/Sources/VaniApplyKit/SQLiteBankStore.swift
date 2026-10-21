@@ -580,6 +580,7 @@ public final class SQLiteBankStore: @unchecked Sendable {
     }
 
     public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> ListResult {
+        let (offset, limit) = ListPaging.clamped(offset: offset, limit: limit)
         let db = try openConnection()
         defer { sqlite3_close(db) }
 

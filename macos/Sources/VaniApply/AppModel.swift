@@ -81,7 +81,7 @@ final class AppModel {
     /// `vani run-once` for the Pipeline tab's Run Now: the pipeline calls
     /// decision models, so it gets the keys drafting gets.
     var manualRunLauncher: ManualRunLauncher {
-        ManualRunLauncher(runner: draftSettings.runner(vaniBinary: vaniBinary))
+        ManualRunLauncher(runner: draftRunner)
     }
 
     // MARK: - Agent
@@ -154,9 +154,26 @@ final class AppModel {
 
     // MARK: - Drafting
 
+    /// Why the saved draft settings cannot be used, or nil when they load (a missing file is fine).
+    var draftSettingsProblem: String? {
+        guard let dir = store?.directory else { return nil }
+        do { _ = try DraftSettings.load(from: dir) } catch { return String(describing: error) }
+        return nil
+    }
+
+    /// The settings for display and for the local read-only clients. A corrupt file shows as
+    /// defaults here, and `draftSettingsProblem` is what says so (Settings and reload() raise it).
+    /// Anything that launches vani with a model or an account (drafts, Run Now) goes through
+    /// `draftRunner`, which refuses instead.
     var draftSettings: DraftSettings {
         guard let dir = store?.directory else { return DraftSettings() }
-        return DraftSettings.load(from: dir)
+        do { return try DraftSettings.load(from: dir) } catch { return DraftSettings() }
+    }
+
+    /// The runner for the saved settings; it refuses every launch when the file is unreadable.
+    var draftRunner: DraftRunner {
+        guard let dir = store?.directory else { return DraftSettings().runner(vaniBinary: vaniBinary) }
+        return DraftSettings.runner(loadingFrom: dir, vaniBinary: vaniBinary)
     }
 
     func saveDraftSettings(_ s: DraftSettings) {
@@ -184,7 +201,7 @@ final class AppModel {
     /// Run one draft off the main thread. On the anthropic path the runner starts
     /// vani through anthropic-account, which reads the chosen account's key.
     func draft(_ request: DraftRequest) async -> DraftReply {
-        let runner = draftSettings.runner(vaniBinary: vaniBinary)
+        let runner = draftRunner
         let reply = await Task.detached(priority: .userInitiated) { runner.run(request) }.value
         try? store?.log(ActivityEntry(source: .app, event: .draft, counts: [reply.error == nil ? "drafted" : "failed": 1]))
         if let store { refreshActivity(store) }
@@ -211,6 +228,7 @@ final class AppModel {
             activity = []
             refreshActivity(store)
             storeError = nil
+            if let problem = draftSettingsProblem { actionError = problem }
         } catch {
             storeError = String(describing: error)
         }

@@ -72,9 +72,9 @@ public enum NativeProtocol {
             let snap = try store.read()
             let rawData = try snap.bank.encoded()
             if rawData.count > NativeMessaging.chunkThreshold {
-                let chunkCount = (rawData.count + NativeMessaging.chunkSize - 1) / NativeMessaging.chunkSize
-                let chunkEnd = min(NativeMessaging.chunkSize, rawData.count)
-                let chunkStr = String(decoding: rawData[..<chunkEnd], as: UTF8.self)
+                let ranges = NativeMessaging.chunkRanges(of: rawData)
+                let chunkCount = ranges.count
+                let chunkStr = String(decoding: rawData[ranges[0]], as: UTF8.self)
                 return [
                     "rev": snap.rev,
                     "chunked": true,
@@ -96,17 +96,15 @@ public enum NativeProtocol {
                 return ["conflict": true, "rev": snap.rev]
             }
             let rawData = try snap.bank.encoded()
-            let chunkCount = (rawData.count + NativeMessaging.chunkSize - 1) / NativeMessaging.chunkSize
-            guard index < chunkCount else {
+            let ranges = NativeMessaging.chunkRanges(of: rawData)
+            guard index < ranges.count else {
                 throw BankError("chunkIndex out of range")
             }
-            let start = index * NativeMessaging.chunkSize
-            let end = min(start + NativeMessaging.chunkSize, rawData.count)
-            let chunkStr = String(decoding: rawData[start..<end], as: UTF8.self)
+            let chunkStr = String(decoding: rawData[ranges[index]], as: UTF8.self)
             return [
                 "rev": snap.rev,
                 "chunkIndex": index,
-                "chunkCount": chunkCount,
+                "chunkCount": ranges.count,
                 "chunk": chunkStr
             ]
         case "put":
@@ -126,24 +124,18 @@ public enum NativeProtocol {
                 return ["conflict": true, "rev": snap.rev, "bank": try snap.bank.jsonObject()]
             }
         case "patch":
-            var upsertAnswers: [Answer] = []
-            if let upsertArr = req["upsert"] as? [[String: Any]] {
-                for raw in upsertArr {
-                    guard let key = raw["key"] as? String,
-                          let kindStr = raw["kind"] as? String, let kind = FieldKind(rawValue: kindStr),
-                          let val = raw["value"] as? [String] else { continue }
-                    let labels = raw["labels"] as? [String] ?? []
-                    let signatures = raw["signatures"] as? [String] ?? []
-                    let uses = (raw["uses"] as? NSNumber)?.intValue ?? 0
-                    let fills = (raw["fills"] as? NSNumber)?.intValue ?? 0
-                    let updatedAt = raw["updatedAt"] as? String ?? isoNow()
-                    let review = (raw["review"] as? Bool) ?? false
-                    let sens = Classifier.classify(kind: kind, label: ([key] + labels).joined(separator: " "), name: "", autocomplete: "")
-                    upsertAnswers.append(Answer(key: key, labels: labels, kind: kind, value: val, sensitivity: sens, signatures: signatures, uses: uses, fills: fills, updatedAt: updatedAt, review: review))
-                }
+            // Validate every row and the delete list before anything is applied: one bad row
+            // refuses the whole patch (nothing applied, rev unchanged), never a silent skip.
+            let upsertAnswers: [Answer]
+            let deleteKeys: [String]
+            let baseRev: Int?
+            do {
+                upsertAnswers = try patchRows(req["upsert"])
+                deleteKeys = try patchDeleteKeys(req["delete"])
+                baseRev = try patchBaseRev(req["baseRev"])
+            } catch {
+                return ["error": String(describing: error), "code": "bad_request"]
             }
-            let deleteKeys = req["delete"] as? [String] ?? []
-            let baseRev = (req["baseRev"] as? NSNumber)?.intValue
             do {
                 let res = try store.patch(upsert: upsertAnswers, deleteKeys: deleteKeys, baseRev: baseRev)
                 return ["ok": true, "rev": res.rev, "droppedSecret": res.droppedSecret]
@@ -157,8 +149,8 @@ public enum NativeProtocol {
             let candidates = try store.queryCandidates(signatures: sigs, keys: keys, labels: labels)
             return ["ok": true, "candidates": try candidates.map { try $0.jsonObject() }]
         case "listAnswers":
-            let offset = (req["offset"] as? NSNumber)?.intValue ?? 0
-            let limit = (req["limit"] as? NSNumber)?.intValue ?? 50
+            let (offset, limit) = ListPaging.clamped(offset: (req["offset"] as? NSNumber)?.intValue ?? 0,
+                                                     limit: (req["limit"] as? NSNumber)?.intValue ?? 50)
             let search = req["search"] as? String
             let res = try store.listAnswers(offset: offset, limit: limit, search: search)
             return [
@@ -243,6 +235,57 @@ public enum NativeProtocol {
         default:
             throw BankError("unknown op \(String(op.prefix(40)))")
         }
+    }
+
+    /// An absent field is fine; a present one of the wrong type is not.
+    private static func optional<T>(_ raw: [String: Any], _ name: String, _ type: T.Type, row: Int) throws -> T? {
+        guard let v = raw[name] else { return nil }
+        guard let typed = v as? T else { throw BankError("upsert row \(row): \(name) has the wrong type") }
+        return typed
+    }
+
+    private static func patchRows(_ raw: Any?) throws -> [Answer] {
+        guard let raw else { return [] }
+        guard let rows = raw as? [Any] else { throw BankError("patch upsert must be an array") }
+        var out: [Answer] = []
+        for (i, element) in rows.enumerated() {
+            guard let row = element as? [String: Any] else { throw BankError("upsert row \(i) is not an object") }
+            guard let key = row["key"] as? String else { throw BankError("upsert row \(i) needs a string key") }
+            guard let kindName = row["kind"] as? String, let kind = FieldKind(rawValue: kindName) else {
+                throw BankError("upsert row \(i) has an unknown kind")
+            }
+            guard let value = row["value"] as? [String] else { throw BankError("upsert row \(i) needs a value array of strings") }
+            let labels = try optional(row, "labels", [String].self, row: i) ?? []
+            let signatures = try optional(row, "signatures", [String].self, row: i) ?? []
+            var uses = 0, fills = 0
+            for (name, slot) in [("uses", 0), ("fills", 1)] {
+                guard let v = row[name] else { continue }
+                guard BankValidator.isNumber(v), let n = (v as? NSNumber)?.intValue else {
+                    throw BankError("upsert row \(i): \(name) is not a number")
+                }
+                if slot == 0 { uses = n } else { fills = n }
+            }
+            let updatedAt = try optional(row, "updatedAt", String.self, row: i) ?? isoNow()
+            let review = try optional(row, "review", Bool.self, row: i) ?? false
+            let sens = Classifier.classify(kind: kind, label: ([key] + labels).joined(separator: " "), name: "", autocomplete: "")
+            out.append(Answer(key: key, labels: labels, kind: kind, value: value, sensitivity: sens, signatures: signatures,
+                              uses: uses, fills: fills, updatedAt: updatedAt, review: review))
+        }
+        return out
+    }
+
+    private static func patchDeleteKeys(_ raw: Any?) throws -> [String] {
+        guard let raw else { return [] }
+        guard let keys = raw as? [String] else { throw BankError("patch delete must be an array of strings") }
+        return keys
+    }
+
+    private static func patchBaseRev(_ raw: Any?) throws -> Int? {
+        guard let raw else { return nil }
+        guard BankValidator.isNumber(raw), let n = (raw as? NSNumber)?.intValue, n >= 0 else {
+            throw BankError("patch baseRev must be a non-negative number")
+        }
+        return n
     }
 
     /// base64 of ResumeStore.maxBytes plus padding slack: a longer string is refused before it is decoded.

@@ -54,6 +54,10 @@ export interface LocalArea {
 class TransportError extends Error {}
 /** The host answered `{"error": ...}`. Never a reason to fall back: the bank lives there. */
 class NativeError extends Error {}
+/** A chunked bank arrived with a different byte length than the host said it had. Nothing is parsed or written back. */
+export class ChunkIntegrityError extends NativeError {
+  override name = "ChunkIntegrityError";
+}
 
 /** One host process per message: Safari's promise API when present, else Chrome's callback API. */
 export const spawnTransport: Transport = msg =>
@@ -167,7 +171,15 @@ export function createStore(opts: StoreOptions = {}) {
         }
         chunks.push(next.chunk);
       }
-      return { rev, bank: parseBank(chunks.join("")).bank };
+      const joined = chunks.join("");
+      // totalBytes is the UTF-8 byte length of the whole encoded bank (Swift's Data.count). A mismatch
+      // means a chunk was lost, doubled or cut inside a character: refuse rather than parse, and
+      // never let a damaged bank reach a write-back.
+      const received = new TextEncoder().encode(joined).length;
+      if (typeof r.totalBytes !== "number" || r.totalBytes !== received) {
+        throw new ChunkIntegrityError(`chunked bank is ${received} bytes but the host sent ${String(r.totalBytes)}`);
+      }
+      return { rev, bank: parseBank(joined).bank };
     }
     return snapshot(r);
   }

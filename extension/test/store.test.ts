@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type Answer, type Bank, emptyBank } from "../src/types";
 import { MAX_ANSWERS, MAX_BANK_BYTES, bankBytes, mergeBanks, parseBank } from "../src/bank";
-import { type LocalArea, type Transport, createStore } from "../src/store";
+import { ChunkIntegrityError, type LocalArea, type Transport, createStore } from "../src/store";
 import { classify } from "../src/classify";
 import { normalizeLabel } from "../src/normalize";
 import vectors from "./vectors/classify.json";
@@ -302,6 +302,47 @@ describe("store: native mode", () => {
     const store = createStore({ transport, local });
     const loaded = await store.loadBank();
     expect(loaded.answers.testKey?.value).toEqual(["chunkedValue"]);
+  });
+
+  describe("chunked get integrity", () => {
+    // A chunked host: `declared` is the totalBytes it reports; `damage` rewrites the joined text.
+    function chunkedHost(bank: Bank, declared: (actual: number) => unknown, damage: (s: string) => string = s => s) {
+      const text = damage(JSON.stringify(bank));
+      const mid = Math.floor(text.length / 2);
+      const parts = [text.slice(0, mid), text.slice(mid)];
+      const calls: string[] = [];
+      const transport: Transport = async msg => {
+        const m = msg as Record<string, unknown>;
+        calls.push(String(m.op));
+        if (m.op === "ping") return { ok: true, protocol: 1, rev: 3 };
+        if (m.op === "get") return { rev: 3, chunked: true, totalBytes: declared(new TextEncoder().encode(JSON.stringify(bank)).length), chunkIndex: 0, chunkCount: 2, chunk: parts[0] };
+        if (m.op === "getChunk") return { rev: 3, chunkIndex: 1, chunkCount: 2, chunk: parts[1] };
+        return { error: "unexpected" };
+      };
+      return { transport, calls };
+    }
+    const bank = () => bankOf(answer("kk", "café € \u{1F600}", "2026-01-01"));
+
+    test("a joined bank whose byte length differs from totalBytes is refused, and nothing is written back", async () => {
+      for (const [name, declared] of [["host says more", (n: number) => n + 1], ["host says fewer", (n: number) => n - 1], ["no total", () => undefined], ["total as a string", (n: number) => String(n)]] as const) {
+        const { transport, calls } = chunkedHost(bank(), declared);
+        const store = createStore({ transport, local: new FakeLocal() });
+        await expect(store.loadBank()).rejects.toBeInstanceOf(ChunkIntegrityError);
+        await expect(store.replaceBank(bank())).rejects.toBeInstanceOf(ChunkIntegrityError);
+        expect(calls.filter(c => c === "put" || c === "patch"), name).toEqual([]);
+      }
+    });
+
+    test("a chunk cut inside a character (U+FFFD in the join) no longer matches totalBytes and is refused", async () => {
+      const { transport } = chunkedHost(bank(), n => n, s => s.replace("€", "��"));
+      await expect(createStore({ transport, local: new FakeLocal() }).loadBank()).rejects.toBeInstanceOf(ChunkIntegrityError);
+    });
+
+    test("totalBytes counts UTF-8 bytes, not UTF-16 units: a multi-byte bank loads when it matches", async () => {
+      const { transport } = chunkedHost(bank(), n => n);
+      const loaded = await createStore({ transport, local: new FakeLocal() }).loadBank();
+      expect(loaded.answers.kk?.value).toEqual(["café € \u{1F600}"]);
+    });
   });
 
   test("patchAnswers updates and deletes answers atomically", async () => {
