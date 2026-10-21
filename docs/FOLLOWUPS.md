@@ -155,7 +155,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 ## Audit 2026-10-20: decisions and deviations the audit found unrecorded (recorded 2026-10-21)
 
 Each is a decision or a deviation from a card's criterion that lived only in a card log or a code
-comment, so the next audit would report it as a bug. Line numbers are on main at `2fcac90`.
+comment, so the next audit would report it as a bug. Line numbers are on main at `2fcac90`, except where an entry below was re-checked on `0c27a13` (2026-10-21).
 "Fable delegated" is the owner's delegation to the Fable advisor on 2026-10-21.
 
 - **A4-3, page half: page boards fail on http links off the default port, by design (2026-10-20,
@@ -230,17 +230,32 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   synthetic ledger fell from 100.7 MB to 34.3 MB (34%); `Open` ns/op rose 9.1% (148 to 162 ms, min of
   5, loaded), accepted by Fable (once per process, 66 MB saved). The one consumer that needed text,
   `warmSemantic`, hydrates only owner-marked closed records (`cmd/vani/semanticwire.go:188-193`,
-  `cmd/vani/app.go:310`); the `vani semantic warm` CLI does not yet (ft-0aa92138). There is no
-  `ReadSnapshotScoped` on main: `jobs find/mark/show/note` read the whole snapshot
-  (`cmd/vani/jobscmd.go:377,414`) but learn boilerplate only from the row's own company
-  (`newRowInsight`, `cmd/vani/jobsinsight.go:284`), which was the cost.
-- **ft-2673557b `jobs find` / `jobs mark` under 250 ms: PARTIAL, not verified on a quiet machine
-  (2026-10-21).** The card log's last word: interleaved min of 5 on a synthetic 10k-posting ledger at
-  load average 28-33: `mark` 2193 to 244 ms (met), `find` 2094 to 255 ms (2% over the target);
-  allocations 14.13M to 524k (mark) and 14.28M to 670k (find). The remainder is
-  `ledger.ReadSnapshot` I/O, inflated by load (664 / 366 ms at load 34-52). The merge (75732b2)
-  left criterion 2 pending a quiet-machine rerun, and no rerun is recorded. Do not cite either
-  number as met. Cause of the regression: commit 3255839 put the full-ledger learn on every `find`.
+  `cmd/vani/app.go:310`); the `vani semantic warm` CLI does not yet (ft-0aa92138). The single-row
+  `jobs` commands no longer read every body: see the next entry (`ReadSnapshotScoped`, on main).
+- **ft-2673557b `jobs find` / `jobs mark` under 250 ms: criterion 2 met in the cleaner measurement,
+  not re-verified on a quiet machine (2026-10-21; supersedes the first, partial entry).** Two merges.
+  First (75732b2): `newRowInsight` learns boilerplate only from the row's own company
+  (`cmd/vani/jobsinsight.go:284`); the regression was commit 3255839 putting the full-ledger learn
+  on every `find`. At load 28-33, `mark` 2193 to 244 ms and `find` 2094 to 255 ms; allocations 14.13M
+  to 524k and 14.28M to 670k. The rest was `ledger.ReadSnapshot` I/O. Second (0c27a13, commits
+  1f306aa, a810bd4, aefe615): `ledger.ReadSnapshotScoped` (`internal/ledger/lean.go:250`) cuts the
+  description out of each line before decoding for every record outside the row's company, then
+  hydrates the row's company by offset with a byte compare (a mismatch is `ErrBodyUnavailable`,
+  `lean.go:217-225`). `jobs show/mark/note/find` read through it (`rowScope`, `rowRecord`,
+  `cmd/vani/jobscmd.go:430,447`; `jobsStateFor` at `:458`; callers `jobscmd.go:300,380`,
+  `jobsfind.go:84`), and a record whose body was skipped is refused, never emitted. Fail-closed cut
+  (`stripDescription`, `lean.go:57`): only compact lines with exactly one posting and one
+  `description` key, no escaped or non-ASCII keys; the description's escapes are validated so
+  `ReadSnapshot` and `ReadSnapshotScoped` agree on a corrupt line; a canonical line never falls
+  back to the full decode. Rows are byte-identical to the full-read path
+  (`TestScopedReadRowsAreByteIdenticalToTheFullPath`). Fuzz: 10.7M + 4.0M execs, then 2.1M + 1.3M
+  after the fix, 0 crashers. **Numbers, synthetic 10k postings of about 6 KiB, interleaved min of 5,
+  Apple M5 Pro, measured on a loaded machine (load average about 17-20):** `mark` 136 to 90 ms,
+  `find` 130 to 94 ms; B/op 111 to 55 MB (`mark`), 119 to 62 MB (`find`); allocations unchanged.
+  After the fail-closed fix, at load 80-89: `mark` 205 ms, `find` 283 ms, which is not comparable
+  (the machine was saturated). So both are under 250 ms only in the cleaner run; wall-clock was never
+  taken on a quiet machine, and no rerun is recorded. State the criterion as met under load, not as
+  a quiet-machine figure.
 - **ft-b6b00b08 A2-3: marks line cap raised 8 to 16 KiB; a downgrade limit (Fable decision; 2026-10-21).**
   `maxLineBytes = 16 << 10` (`internal/marks/marks.go:77`; the downgrade warning is at `:74-76`).
   `marks.jsonl` written at or after this change may hold lines up to 16 KiB; an older binary with
@@ -259,6 +274,12 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   eval text cache and the logo cache; tests assert outside files stay untouched). Consequence: an
   append-only file (ledger, marks) that is itself a symlink now fails loud instead of starting an
   empty history; replace it with the file, or link its directory.
+  The refusal is wired at both append owners: `ledger.Open` opens its events log with
+  `atomicfile.OpenAppend` (`internal/ledger/file.go:100`) and `marks` its store
+  (`internal/marks/marks.go:447`), so a linked leaf returns `ErrLinkedLeaf` wrapped, with no empty log
+  created and no history replaced. Pinned by `internal/ledger/symlink_test.go:30,40`,
+  `internal/marks/symlink_test.go:29` and `internal/atomicfile/symlink_test.go:47,69` (a dangling link
+  too).
 - **ft-60d1dc8e: TypeScript 7.0.2 is not "no transitive packages" (accepted by Fable; 2026-10-21).**
   The exact pin (`extension/package.json:8`) is the native compiler: `typescript` plus 20 optional
   `@typescript/typescript-<platform>` packages, 21 entries with sha512 hashes in `extension/bun.lock`
@@ -278,9 +299,33 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   a manual answer, never a draft): "military-grade", "Asian market", and any label containing
   "criminal". The backstop is after the model: `suggest.Run` drafts only an `essay` reading of a label
   `fieldtriage.Sensitive` does not flag (`internal/suggest/suggest.go:158`,
-  `internal/decide/fieldtriage/fieldtriage.go:118-135`), and a word mixing Latin with another
-  alphabet is pinned `self_identification` (`fieldtriage.go:154`, `fold.go:171`). Not a personal-data
+  `internal/decide/fieldtriage/fieldtriage.go:135-146`), and a word mixing Latin with another
+  alphabet is pinned `self_identification` (`fieldtriage.go:153-157`, `fold.go:171`). Not a personal-data
   leak: only the job site's label text leaves.
+- **ft-a1bb3507 follow-up: the fieldtriage guard speedup is on main, not pending (939ec8e, merge
+  68dba78; 2026-10-21).** `folds` returns the four readings (invisible character as nothing or as a
+  space, tag joining or separating) once each: identical readings are dropped, so a plain label is
+  scanned by every pattern once, not four times (`internal/decide/fieldtriage/fold.go:36-59`).
+  `Sensitive` folds once and shares the result with `guardForms`
+  (`fieldtriage.go:135-146`, `:150-152`). The commit message's figures: `Guard` on 64 KB 224 to 50
+  ms, under `-race` 6.1 to 1.6 s (3-5x). The linearity tests no longer use a wall-clock bound: they
+  assert that allocated bytes grow at most 12x for an 8x input (`assertLinear`,
+  `internal/decide/fieldtriage/guard_test.go:115-131`) and keep a 2 s cap on a label at the
+  production 1,000-rune size (`guard_test.go:142`). An earlier note that this fix was unmerged was
+  wrong. Not re-measured here: the speedup figures are the commit's own.
+- **ft-c567ded5 follow-up: the rankfit objective is faster, bit for bit (merge e8f7726, commit
+  4ac9260; 2026-10-21).** `softplusSigmoid` takes both the loss term and its gradient weight from one
+  `exp` (`internal/rankfit/platt.go:209`, used at `internal/rankfit/fit.go:382`), and the
+  per-pair weights are computed once into `m.pw` (`fit.go:322-323`, read at `:381`). Loss and gradient
+  are bit-identical to the separate functions (`internal/rankfit/objective_parity_test.go:82,115`;
+  `FitResult` hashes unchanged on 6 seeds, per the commit). The null-world test went 68.8 to 6.3 s,
+  and under `-race` 144 to 31.5 s (figures from the build session that landed it; not re-run for
+  this entry). Separately, the null-world tests run in parallel: commit 42c4f64, from another
+  session, which gave the package `worldWith` (`internal/rankfit/fit_test.go:29`) so a test that
+  wants another label model no longer assigns the shared `plantedShares`, and took
+  `go test -race ./internal/rankfit` from 799.9 s (past Go's 10 minute default) to 167.6 s, a figure
+  taken before the objective speedup. The GOMAXPROCS determinism check stays sequential, 8 repeats
+  rather than 50.
 - **ft-8cd27d93 B1-2: a `kbmatch` run that waits more than 10 s for another run exits busy
   (2026-10-21; design note from the build, kept).** The whole run holds the store lock
   (`kbmatchLockWait = 10 * time.Second`, `cmd/vani/kbmatchcmd.go:64`; `OpenLocked` at `:308`; `ErrBusy`
