@@ -176,6 +176,13 @@ func boundedDuration(name string, v, def, max time.Duration) (time.Duration, err
 	return v, nil
 }
 
+// ValidAllowedHost reports why New would refuse raw as an allowlist entry, or
+// nil when it accepts it. It is the one rule: New runs the same normaliser.
+func ValidAllowedHost(raw string) error {
+	_, _, err := normalizeAllowed(raw)
+	return err
+}
+
 // normalizeAllowed canonicalises one allowlist entry. It returns the host (for
 // a wildcard, the suffix without "*.") and whether the entry was a wildcard.
 func normalizeAllowed(raw string) (host string, wildcard bool, err error) {

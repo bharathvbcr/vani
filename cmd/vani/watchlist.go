@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,14 +111,14 @@ func (e *env) watchlistAdd(args []string) error {
 	if err := config.ValidBoard(b); err != nil { // before the config is read: a bad flag is a usage error
 		return usagef("watchlist add: %v", err)
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
-	if err := addBoard(&cfg, b, *allow); err != nil {
-		return err
-	}
-	if err := config.Save(e.configPath, cfg); err != nil {
+	var addErr error
+	if err := config.Update(e.configPath, func(c *config.Config) error {
+		addErr = addBoard(c, b, *allow)
+		return addErr
+	}); err != nil {
+		if addErr != nil || errors.Is(err, config.ErrBusy) {
+			return err
+		}
 		return fmt.Errorf("%w\n(use --allow-host to add the board's API host to allowed_hosts)", err)
 	}
 	fmt.Fprintf(e.stdout, "added %s/%s (%s)\n", b.ATS, b.Token, b.Company)
@@ -170,25 +171,30 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 	if *ats == "" || *token == "" {
 		return usagef("%s: --ats and --token are required", name)
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
 	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
-	i := slices.IndexFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
-	if i < 0 {
-		return fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
-	}
-	b := cfg.Watchlist[i]
-	set(&b, *value)
-	if err := config.ValidBoard(b); err != nil {
-		return usagef("%s: %v", name, err)
-	}
-	cfg.Watchlist[i] = b
-	if *allow {
-		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, host(b))
-	}
-	if err := config.Save(e.configPath, cfg); err != nil {
+	var b sources.Board
+	var editErr error
+	if err := config.Update(e.configPath, func(c *config.Config) error {
+		i := slices.IndexFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
+		if i < 0 {
+			editErr = fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
+			return editErr
+		}
+		b = c.Watchlist[i]
+		set(&b, *value)
+		if err := config.ValidBoard(b); err != nil {
+			editErr = usagef("%s: %v", name, err)
+			return editErr
+		}
+		c.Watchlist[i] = b
+		if *allow {
+			c.AllowedHosts = allowHost(c.AllowedHosts, host(b))
+		}
+		return nil
+	}); err != nil {
+		if editErr != nil || errors.Is(err, config.ErrBusy) {
+			return err
+		}
 		return fmt.Errorf("%w\n(use --allow-host to add the %s host to allowed_hosts)", err, field)
 	}
 	if *value == "" {
@@ -210,16 +216,14 @@ func (e *env) watchlistRemove(args []string) error {
 		return usagef("watchlist remove: --ats and --token are required")
 	}
 	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
-	n := len(cfg.Watchlist)
-	cfg.Watchlist = slices.DeleteFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
-	if len(cfg.Watchlist) == n {
-		return fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
-	}
-	if err := config.Save(e.configPath, cfg); err != nil {
+	if err := config.Update(e.configPath, func(c *config.Config) error {
+		n := len(c.Watchlist)
+		c.Watchlist = slices.DeleteFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
+		if len(c.Watchlist) == n {
+			return fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "removed %s/%s\n", *ats, *token)

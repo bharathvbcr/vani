@@ -49,13 +49,10 @@ func CheckBoard(b sources.Board, want posting.ATS) error {
 	if b.ATS != want {
 		return fmt.Errorf("sources: board ats %q is not %q", b.ATS, want)
 	}
-	if strings.TrimSpace(b.Token) == "" {
-		return errors.New("sources: board token is empty")
-	}
-	// ':' separates key parts. The key builders refuse it, but only after the
-	// board's first fetch, and Board.KeyPrefix would already be ambiguous.
-	if strings.Contains(b.Token, ":") {
-		return fmt.Errorf("sources: board token %q contains ':'", b.Token)
+	// The same rule as config.ValidBoard (sources.TokenProblem). The key
+	// builders refuse ':' too, but only after the board's first fetch.
+	if why := sources.TokenProblem(b.Token); why != "" {
+		return fmt.Errorf("sources: board token %q %s", b.Token, why)
 	}
 	return nil
 }

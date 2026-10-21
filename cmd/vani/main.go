@@ -364,12 +364,9 @@ func (e *env) cmdInit(args []string) error {
 	if err := parse(e.newFlags("init"), args); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(e.configPath); err == nil {
+	if err := config.Create(e.configPath, config.Default()); errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("%s already exists; refusing to overwrite", e.configPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := config.Save(e.configPath, config.Default()); err != nil {
+	} else if err != nil {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "wrote %s\nstate dir: %s\n", e.configPath, e.stateDir)

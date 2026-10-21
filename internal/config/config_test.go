@@ -444,8 +444,14 @@ func TestSaveAtomicAndMode(t *testing.T) {
 		t.Fatalf("existing config damaged: %v", err)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(p))
-	if len(entries) != 1 {
-		t.Errorf("stray files after save: %v", entries)
+	var stray []os.DirEntry
+	for _, en := range entries {
+		if en.Name() != filepath.Base(p) && en.Name() != filepath.Base(p)+lockSuffix { // the lock file stays by design
+			stray = append(stray, en)
+		}
+	}
+	if len(stray) != 0 {
+		t.Errorf("stray files after save: %v", stray)
 	}
 }
 

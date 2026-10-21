@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -44,6 +45,7 @@ const (
 	searchNotRequested = "not_requested"
 	searchUnsupported  = "unsupported"
 	searchInvalid      = "invalid"
+	searchError        = "error" // the config could not be read or written; the jobs still queue
 
 	analysisDaemon  = "daemon"
 	analysisNextRun = "next_run"
@@ -133,7 +135,10 @@ func (e *env) ingest() (*ingestJSON, error) {
 	if req.SaveSearch {
 		res, board, err := e.saveSearch(req.Page, jobs, company)
 		if err != nil {
-			return nil, err
+			// The jobs were validated and queueing needs no config: only the
+			// search failed, and the reply says so.
+			fmt.Fprintf(e.stderr, "vani: search not saved: %v\n", err)
+			res, board = ingestSearchJSON{Status: searchError, Reason: err.Error()}, sources.Board{}
 		}
 		out.Search = res
 		if board.ATS == posting.Page && (res.Status == searchAdded || res.Status == searchExists) &&
@@ -211,7 +216,21 @@ func (e *env) saveSearch(page inbox.Page, jobs []inbox.Job, company string) (ing
 			return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: reason}, sources.Board{}, nil
 		}
 	}
-	if err := config.Save(e.configPath, cfg); err != nil {
+	// Everything slow is done: the lock is held only for the re-read and the
+	// save, and the board is applied to the config as it is now, so an edit made
+	// while the size check ran (config exclude --set, another add) is kept.
+	var addErr error
+	err = config.Update(e.configPath, func(c *config.Config) error {
+		addErr = addBoard(c, board, true)
+		return addErr
+	})
+	switch {
+	case errors.As(addErr, new(boardExistsError)):
+		res.Status = searchExists // added by someone else meanwhile
+		return res, board, nil
+	case errors.As(addErr, new(invalidBoardError)):
+		return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: errors.Unwrap(addErr).Error()}, sources.Board{}, nil
+	case err != nil:
 		return ingestSearchJSON{}, sources.Board{}, fmt.Errorf("jobs ingest: save search: %w", err)
 	}
 	res.Status = searchAdded
@@ -425,15 +444,65 @@ func linkPattern(jobs []inbox.Job) (pattern, reason string) {
 	return pattern, ""
 }
 
-// trackingParams are dropped from a saved listing URL. Search parameters
-// (q, location, department) are the search and stay.
+// trackingParam reports whether a query parameter is dropped from a saved
+// listing URL: a click tracker, or anything that can carry a credential. The
+// board URL is saved 0600 and fetched daily, so a signed-in page's access_token
+// must not ride along. Search parameters (q, location, department, keywords)
+// are the search and stay; an allowlist was rejected because they vary per ATS.
+//
+// The name is split into words at anything that is not a letter or digit and
+// at camelCase humps ("accessToken" = access, token). A word that is one of
+// token, auth, authorization, key, secret, email, session, sid, jsessionid
+// drops the parameter, as does one that starts with session or email, or ends
+// in token, secret or key ("apikey", "idtoken"; a word like "monkey" is
+// dropped too, the safe side). "keywords" and "author" are other words, and stay.
 func trackingParam(k string) bool {
-	k = strings.ToLower(k)
-	switch k {
-	case "gclid", "fbclid", "msclkid", "ref", "refid", "trk", "trackingid", "sid", "token":
+	switch lk := strings.ToLower(k); lk {
+	case "gclid", "fbclid", "msclkid", "ref", "refid", "trk", "trackingid":
 		return true
+	default:
+		if strings.HasPrefix(lk, "utm_") {
+			return true
+		}
 	}
-	return strings.HasPrefix(k, "utm_") || strings.HasPrefix(k, "session")
+	for _, w := range paramWords(k) {
+		switch w {
+		case "token", "auth", "authorization", "key", "secret", "email", "session", "sid", "jsessionid":
+			return true
+		}
+		if strings.HasPrefix(w, "session") || strings.HasPrefix(w, "email") ||
+			strings.HasSuffix(w, "token") || strings.HasSuffix(w, "secret") || strings.HasSuffix(w, "key") {
+			return true
+		}
+	}
+	return false
+}
+
+// paramWords lower-cases k's words (see trackingParam).
+func paramWords(k string) []string {
+	var words []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	var prev rune
+	for _, r := range k {
+		switch {
+		case !unicode.IsLetter(r) && !unicode.IsDigit(r):
+			flush()
+		case unicode.IsUpper(r) && unicode.IsLower(prev):
+			flush()
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+		prev = r
+	}
+	flush()
+	return words
 }
 
 // scrubPageURL is the page URL without tracking parameters, fragment or

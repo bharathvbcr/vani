@@ -671,9 +671,44 @@ func Parse(data []byte) (Config, error) {
 	return c, nil
 }
 
-// Save validates c and writes it atomically with mode 0600 (see
-// atomicfile.Write).
+// Save replaces the whole file with c: `vani init` and test fixtures, where
+// there is nothing to read first. It takes the same lock as Update. A change
+// to what the file holds already goes through Update, never Load then Save.
 func Save(path string, c Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	unlock, err := lockConfig(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return writeLocked(path, c)
+}
+
+// Create writes c as a new file and fails with an error wrapping os.ErrExist
+// when the path is already there, checked under the lock: two `vani init`
+// racing cannot both win.
+func Create(path string, c Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	unlock, err := lockConfig(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("config: %s already exists: %w", path, os.ErrExist)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("config: %w", err)
+	}
+	return writeLocked(path, c)
+}
+
+// writeLocked validates c and writes it atomically with mode 0600 (see
+// atomicfile.Write). The caller holds the config's lock.
+func writeLocked(path string, c Config) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -870,6 +905,9 @@ func ValidBoard(b sources.Board) error {
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
 	}
+	if why := sources.TokenProblem(b.Token); why != "" {
+		return fmt.Errorf("board (%s) token %q %s", b.ATS, b.Token, why)
+	}
 	if strings.ContainsAny(b.Token, " \t\r\n?#") || strings.Contains(b.Token, "..") {
 		return fmt.Errorf("board (%s) token %q has unsafe characters", b.ATS, b.Token)
 	}
@@ -1029,7 +1067,10 @@ func (c Config) Validate() error {
 	}
 
 	allowed := map[string]bool{}
-	for _, h := range c.AllowedHosts {
+	for i, h := range c.AllowedHosts {
+		if err := egress.ValidAllowedHost(h); err != nil {
+			add("allowed_hosts[%d]: %v", i, err)
+		}
 		allowed[strings.ToLower(strings.TrimSpace(h))] = true
 	}
 	var missing []string

@@ -82,11 +82,11 @@ func (e *env) cmdConfigExclude(args []string) error {
 }
 
 func (e *env) exclusions(set bool) (config.Exclude, error) {
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return config.Exclude{}, err
-	}
 	if !set {
+		cfg, err := e.loadConfig()
+		if err != nil {
+			return config.Exclude{}, err
+		}
 		return cfg.Exclude, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(excludeInput, maxExcludeInput+1))
@@ -100,11 +100,13 @@ func (e *env) exclusions(set bool) (config.Exclude, error) {
 	if err != nil {
 		return config.Exclude{}, err
 	}
-	cfg.Exclude = x
-	if err := config.Save(e.configPath, cfg); err != nil {
+	if err := config.Update(e.configPath, func(c *config.Config) error {
+		c.Exclude = x
+		return nil
+	}); err != nil {
 		return config.Exclude{}, err
 	}
-	return cfg.Exclude, nil
+	return x, nil
 }
 
 // parseExclude reads one JSON object of exclusion lists. Each entry is
