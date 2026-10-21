@@ -14,6 +14,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/semantic"
 )
@@ -254,6 +255,30 @@ func TestSemanticWarmIsBoundedAndFreshestFirst(t *testing.T) {
 		t.Errorf("scored %v: want only the two freshest (gh:a:3, gh:a:2)", have)
 	}
 	mustCode(t, 2, "semantic", "warm", "--max", "999999")
+}
+
+// An unreadable marks store is said on stderr (B1-8): the marked postings are
+// not warmed, and a silent skip would look like a clean warm. The warm itself
+// still runs on the kept postings.
+func TestSemanticWarmSaysWhenMarksAreUnreadable(t *testing.T) {
+	_, state := semanticSetup(t)
+	seedInsight(t, state, insightSeed{key: "gh:a:1", company: "Acme", title: "Engineer",
+		desc: "Run k8s services", status: posting.Explained, posted: daysAgo(2), seenAgo: time.Hour})
+	dir := marks.Dir(state)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A data file with no lock file is read as corrupt, not as an empty store.
+	if err := os.WriteFile(filepath.Join(dir, "marks.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut := mustCode(t, 0, "semantic", "warm")
+	if !strings.Contains(errOut, "marks") || !strings.Contains(errOut, "unreadable") {
+		t.Fatalf("no stderr line about the marks store: %q", errOut)
+	}
+	if !strings.Contains(out, "scored 1") {
+		t.Fatalf("warm output %q", out)
+	}
 }
 
 // A context that ends mid-warm returns promptly with a canceled report, even

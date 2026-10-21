@@ -273,8 +273,8 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 		r.FailOpen.Note(CauseCoverageUnknown)
 		return map[string]string{
 			ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnMissing: "",
-			ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
-			AnnCoverageUnknown: CoverageNoMustHaves,
+			ledger.AnnBlocks:          strconv.Itoa(len(sc.BlockIDs)),
+			ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves,
 		}, nil
 	}
 	rank := gap.CoveragePct
@@ -282,10 +282,10 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 		rank += EmployerRankBoost
 	}
 	ann := map[string]string{
-		ledger.AnnRank:     strconv.FormatFloat(rank, 'f', -1, 64),
-		ledger.AnnCoverage: strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64),
-		ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
-		AnnCoverageUnknown: "",
+		ledger.AnnRank:            strconv.FormatFloat(rank, 'f', -1, 64),
+		ledger.AnnCoverage:        strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64),
+		ledger.AnnBlocks:          strconv.Itoa(len(sc.BlockIDs)),
+		ledger.AnnCoverageUnknown: "",
 	}
 	if m := missingRequirements(gap); m != "" {
 		ann[ledger.AnnMissing] = m

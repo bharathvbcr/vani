@@ -40,7 +40,7 @@ func TestNoMustHavesIsUnknownCoverageNotZero(t *testing.T) {
 	if v, ok := ann[ledger.AnnRank]; !ok || v != "" {
 		t.Fatalf("rank must be cleared, got %q (present %v)", v, ok)
 	}
-	if ann[AnnCoverageUnknown] != CoverageNoMustHaves || ann[ledger.AnnBlocks] != "2" {
+	if ann[ledger.AnnCoverageUnknown] != ledger.CoverageNoMustHaves || ann[ledger.AnnBlocks] != "2" {
 		t.Fatalf("annotations %v", ann)
 	}
 	if got := fo.Counts(); got.CoverageUnknown != 1 || got.Total() != 1 {
@@ -58,7 +58,7 @@ func TestMeasuredZeroCoverageStaysZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ann[ledger.AnnCoverage] != "0" || ann[ledger.AnnRank] != "0" || ann[AnnCoverageUnknown] != "" {
+	if ann[ledger.AnnCoverage] != "0" || ann[ledger.AnnRank] != "0" || ann[ledger.AnnCoverageUnknown] != "" {
 		t.Fatalf("annotations %v", ann)
 	}
 	if fo.Counts().Total() != 0 {
@@ -69,7 +69,7 @@ func TestMeasuredZeroCoverageStaysZero(t *testing.T) {
 // A record scored as unknown is not Unscored, so a rescore pass does not ask
 // DevPrism about it again and again.
 func TestUnknownCoverageRecordIsNotUnscored(t *testing.T) {
-	rec := ledger.Record{Status: posting.Scored, Annotations: map[string]string{AnnCoverageUnknown: CoverageNoMustHaves}}
+	rec := ledger.Record{Status: posting.Scored, Annotations: map[string]string{ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves}}
 	if Unscored(rec) {
 		t.Fatal("unknown-coverage record reported Unscored")
 	}
@@ -83,7 +83,7 @@ func TestScoreStageSkipsPreScoredUnknown(t *testing.T) {
 	calls := 0
 	r := &Runner{Funnel: Funnel{ScoreFirst: true}, Scorer: countGap{gap: resume.Gap{NoMustHaves: true}, calls: &calls}}
 	rec := ledger.Record{Key: "gh:a:1", Posting: posting.Posting{Description: "x"},
-		Annotations: map[string]string{AnnCoverageUnknown: CoverageNoMustHaves}}
+		Annotations: map[string]string{ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves}}
 	if _, reason, err := r.scoreStage(context.Background(), rec); err != nil || reason != "scored" || calls != 0 {
 		t.Fatalf("reason %q err %v calls %d", reason, err, calls)
 	}

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resume"
 )
@@ -37,11 +36,11 @@ func TestRepairUnknownCoverageCommandPass(t *testing.T) {
 	recs := recordsByKey(t, l)
 	for _, id := range []string{"1", "2"} {
 		k, _ := posting.GreenhouseKey("acme", id)
-		if recs[k].Annotations[pipeline.AnnCoverageUnknown] != pipeline.CoverageNoMustHaves || recs[k].Annotations[ledger.AnnCoverage] != "" {
+		if recs[k].Annotations[ledger.AnnCoverageUnknown] != ledger.CoverageNoMustHaves || recs[k].Annotations[ledger.AnnCoverage] != "" {
 			t.Fatalf("%s not marked: %v", id, recs[k].Annotations)
 		}
 	}
-	if recs[k3].Annotations[ledger.AnnCoverage] != "0" || recs[k3].Annotations[pipeline.AnnCoverageUnknown] != "" {
+	if recs[k3].Annotations[ledger.AnnCoverage] != "0" || recs[k3].Annotations[ledger.AnnCoverageUnknown] != "" {
 		t.Fatalf("genuine zero touched: %v", recs[k3].Annotations)
 	}
 	k4, _ := posting.GreenhouseKey("acme", "4")

@@ -142,10 +142,13 @@ type Shown struct {
 const (
 	SectionRanked   = "ranked"
 	SectionUnranked = "not_ranked"
-	SectionUnsure   = "unsure"
-	SectionSaved    = "saved"
-	SectionTopOpen  = "top_open"
-	SectionExplore  = "explore"
+	// SectionCoverageUnknown holds roles DevPrism scored but found no
+	// must-haves in: rank-less, yet not "never scored".
+	SectionCoverageUnknown = "coverage_unknown"
+	SectionUnsure          = "unsure"
+	SectionSaved           = "saved"
+	SectionTopOpen         = "top_open"
+	SectionExplore         = "explore"
 )
 
 // scorer scores records with one RankContext, built once from the whole ledger
@@ -338,7 +341,7 @@ func savedWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) [
 // The digest has no keyword vocabulary, so that part takes its prior for every
 // role alike; the embedding part, rules and title signals come from Options, as
 // `vani jobs` applies them. A role DevPrism did not score stays behind the scored
-// ones: Render lists them under "Not ranked".
+// ones: Render lists them under "Not ranked" or "Coverage unknown", each still in this priority order.
 func sortDigest(out []ledger.Record, sc *scorer) {
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -367,6 +370,12 @@ func Rank(r ledger.Record) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// CoverageUnknown reports whether DevPrism scored the posting but found no
+// must-haves in it (the marker a NoMustHaves answer writes in place of a rank).
+func CoverageUnknown(r ledger.Record) bool {
+	return ledger.CoverageUnknown(r)
 }
 
 // Coverage is the must-have coverage shown to the reader. The rank may carry
@@ -411,7 +420,7 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	fmt.Fprintf(&b, "# Vani digest %s\n\n", date.Format("2006-01-02"))
 
 	// Select puts scored roles before unscored ones, so splitting keeps order.
-	var ranked, unranked, unsure []ledger.Record
+	var ranked, unranked, covUnknown, unsure []ledger.Record
 	for _, r := range sel {
 		_, ok := Rank(r)
 		switch {
@@ -419,6 +428,8 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 			unsure = append(unsure, r)
 		case ok:
 			ranked = append(ranked, r)
+		case CoverageUnknown(r):
+			covUnknown = append(covUnknown, r)
 		default:
 			unranked = append(unranked, r)
 		}
@@ -448,11 +459,22 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	// skipped stage pass for a ranking.
 	if len(unranked) > 0 {
 		fmt.Fprintf(&b, "## Not ranked (%d)\n\n", len(unranked))
-		b.WriteString("DevPrism did not score these, so they are in no particular order.\n\n")
+		b.WriteString("DevPrism did not score these, so they have no must-have coverage; they are listed by priority alone.\n\n")
 		for _, r := range unranked {
 			writeRole(&b, r)
 			keys = append(keys, r.Key)
 			show(r, SectionUnranked)
+		}
+	}
+	// Scored, but the posting names no must-have to measure: coverage is
+	// unknown, which is not the same as never scored.
+	if len(covUnknown) > 0 {
+		fmt.Fprintf(&b, "## Coverage unknown (%d)\n\n", len(covUnknown))
+		b.WriteString("DevPrism scored these but found no must-haves in the posting, so there is no coverage to rank by; they are listed by priority alone.\n\n")
+		for _, r := range covUnknown {
+			writeRole(&b, r)
+			keys = append(keys, r.Key)
+			show(r, SectionCoverageUnknown)
 		}
 	}
 	if len(unsure) > 0 {
@@ -583,6 +605,8 @@ func writeRoleSimilar(b *strings.Builder, r ledger.Record, similar int) {
 
 	if cov, ok := Coverage(r); ok {
 		fmt.Fprintf(b, "- Must-have coverage: %s%%\n", strconv.FormatFloat(cov, 'f', 0, 64))
+	} else if CoverageUnknown(r) {
+		b.WriteString("- Must-have coverage: unknown (DevPrism found no must-haves)\n")
 	} else {
 		b.WriteString("- Must-have coverage: not scored\n")
 	}

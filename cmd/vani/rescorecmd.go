@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -63,10 +64,10 @@ func planRescore(recs []ledger.Record) rescorePlan {
 			p.Eligible++
 		case pipeline.Unscored(r):
 			p.NoDescription++
-		case r.Status == posting.Digested && r.Annotations[ledger.AnnRank] == "" && r.Annotations[pipeline.AnnCoverageUnknown] == "":
+		case r.Status == posting.Digested && r.Annotations[ledger.AnnRank] == "" && !ledger.CoverageUnknown(r):
 			p.Digested++
 		}
-		if r.Annotations[pipeline.AnnCoverageUnknown] != "" && r.Status != posting.Dead && r.Status != posting.Dropped {
+		if ledger.CoverageUnknown(r) && r.Status != posting.Dead && r.Status != posting.Dropped {
 			p.Unknown++
 		}
 		if pipeline.ZeroOfZero(r) {
@@ -117,22 +118,31 @@ func (w *wired) rescore(ctx context.Context, limit int) (rescoreReport, error) {
 func rescoreWith(ctx context.Context, l ledger.Ledger, limit, workers int, rescore func(context.Context, posting.Key) error, warnf func(string, ...any)) (rescoreReport, error) {
 	recs := l.All()
 	rep := rescoreReport{Plan: planRescore(recs)}
-	var keys []posting.Key
-	for _, r := range recs {
-		if rescorable(r) {
-			keys = append(keys, r.Key)
+	// Count only what this pass scored: a key that was rescorable before the
+	// wrapped call and carries a rank, or the coverage-unknown marker a
+	// NoMustHaves answer writes in place of one, after it. A posting a
+	// concurrent writer dropped mid-pass, or one rescore skipped, carries
+	// neither and is not counted.
+	var mu sync.Mutex
+	scored := 0
+	counted := func(ctx context.Context, k posting.Key) error {
+		before, _ := l.Get(k)
+		if err := rescore(ctx, k); err != nil {
+			return err
 		}
+		if r, ok := l.Get(k); ok && rescorable(before) && (r.Annotations[ledger.AnnRank] != "" || ledger.CoverageUnknown(r)) {
+			mu.Lock()
+			scored++
+			mu.Unlock()
+		}
+		return nil
 	}
 	// The kindRescore plan leaves out the cap line, which names advance_per_run
 	// and the next daily run: wrong here (--limit, and the run does not
 	// rescore). The command prints how many are still unscored instead.
-	adv, err := pipeline.Advance(ctx, baseAdvancePlan(kindRescore, limit, workers, warnf), pipeline.AdvanceDeps{Records: recs, Advance: rescore})
+	adv, err := pipeline.Advance(ctx, baseAdvancePlan(kindRescore, limit, workers, warnf), pipeline.AdvanceDeps{Records: recs, Advance: counted})
 	rep.Advance = adv
-	for _, k := range keys {
-		if r, ok := l.Get(k); ok && r.Annotations[ledger.AnnRank] != "" {
-			rep.Rescored++
-		}
-	}
+	rep.Rescored = scored
 	return rep, err
 }
 
