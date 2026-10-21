@@ -63,7 +63,8 @@ type File struct {
 	events   *os.File
 	lock     *os.File
 	recs     map[posting.Key]*Record
-	goodSize int64 // end of the last intact line
+	ev       *evictor // where each key's last body lives; see evict.go
+	goodSize int64    // end of the last intact line
 	closed   bool
 	broken   error // set when the file past goodSize is unknown; every later Append returns it
 }
@@ -108,7 +109,7 @@ func Open(dir string) (*File, error) {
 			return nil, fmt.Errorf("ledger: %w", err)
 		}
 	}
-	f := &File{events: ev, lock: lock, recs: map[posting.Key]*Record{}}
+	f := &File{events: ev, lock: lock, recs: map[posting.Key]*Record{}, ev: newEvictor()}
 	if err := f.replay(); err != nil {
 		f.Close()
 		return nil, err
@@ -143,7 +144,7 @@ func readLine(r *bufio.Reader) (line []byte, raw int, hadNL bool, err error) {
 }
 
 func (f *File) replay() error {
-	off, torn, err := replay(f.events, f.recs)
+	off, torn, err := replay(f.events, f.recs, f.ev, f.events)
 	f.goodSize, f.Recovered = off, torn
 	return err
 }
@@ -154,7 +155,7 @@ func (f *File) replay() error {
 // Anything bad before the last line is ErrCorrupt, and so is a last line that
 // is whole JSON but not a valid event: that is a writer's finished line (a
 // newer schema, say), and treating it as torn would cut it off the file.
-func replay(src io.Reader, recs map[posting.Key]*Record) (good int64, torn bool, err error) {
+func replay(src io.Reader, recs map[posting.Key]*Record, ev *evictor, rd io.ReaderAt) (good int64, torn bool, err error) {
 	r := bufio.NewReaderSize(src, 64*1024)
 	for n := 1; ; n++ {
 		line, raw, hadNL, err := readLine(r)
@@ -179,6 +180,12 @@ func replay(src io.Reader, recs map[posting.Key]*Record) (good int64, torn bool,
 			return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
 		}
 		fold(recs, e)
+		if ev != nil {
+			reopen := func(k posting.Key) (string, error) { return ev.read(rd, k, good) }
+			if err := ev.apply(recs[e.Key], e, good, raw, reopen); err != nil {
+				return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
+			}
+		}
 		good += int64(raw)
 	}
 }
@@ -204,7 +211,7 @@ func ReadSnapshot(dir string) (Snapshot, error) {
 	}
 	defer ev.Close()
 	recs := map[posting.Key]*Record{}
-	_, torn, err := replay(ev, recs)
+	_, torn, err := replay(ev, recs, nil, nil) // no eviction: a one-shot read returns every body
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -244,6 +251,7 @@ func fold(recs map[posting.Key]*Record, e Event) {
 	r.Status = e.Status
 	if e.Posting != nil {
 		r.Posting = *e.Posting
+		r.BodyEvicted = false
 		r.MissedRuns = 0
 	}
 	for k, v := range e.Annotations {
@@ -283,6 +291,10 @@ func (f *File) Append(ctx context.Context, e Event) error {
 	if f.broken != nil {
 		return f.broken
 	}
+	pre, err := f.prepare([]Event{e})
+	if err != nil {
+		return err
+	}
 	if f.Recovered {
 		// Cut the torn tail so the new line starts on a clean boundary.
 		if err := f.events.Truncate(f.goodSize); err != nil {
@@ -311,8 +323,9 @@ func (f *File) Append(ctx context.Context, e Event) error {
 		}
 		return f.broken
 	}
+	off := f.goodSize
 	f.goodSize += int64(len(line))
-	fold(f.recs, e)
+	f.commit([]Event{e}, []int64{off}, []int{len(line)}, pre)
 	return nil
 }
 
@@ -337,6 +350,7 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 		return err
 	}
 	var buf bytes.Buffer
+	lens := make([]int, 0, len(evs))
 	for _, e := range evs {
 		if err := validate(e); err != nil {
 			return err
@@ -353,6 +367,7 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 		}
 		buf.Write(line)
 		buf.WriteByte('\n')
+		lens = append(lens, len(line)+1)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -361,6 +376,10 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 	}
 	if f.broken != nil {
 		return f.broken
+	}
+	pre, err := f.prepare(evs)
+	if err != nil {
+		return err
 	}
 	if f.Recovered {
 		if err := f.events.Truncate(f.goodSize); err != nil {
@@ -382,10 +401,13 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 		}
 		return f.broken
 	}
-	f.goodSize += int64(buf.Len())
-	for _, e := range evs {
-		fold(f.recs, e)
+	offs := make([]int64, len(evs))
+	at := f.goodSize
+	for i, n := range lens {
+		offs[i], at = at, at+int64(n)
 	}
+	f.goodSize = at
+	f.commit(evs, offs, lens, pre)
 	return nil
 }
 
@@ -407,7 +429,10 @@ func cloneRecord(r *Record) Record {
 	return c
 }
 
-// Get returns a copy of the record for k.
+// Get returns a copy of the record for k with its description: an evicted body
+// is read back from the events file. If it cannot be (ErrBodyUnavailable, see
+// Hydrate) the record comes back with an empty Description and BodyEvicted
+// true, never with another body.
 func (f *File) Get(k posting.Key) (Record, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -415,10 +440,18 @@ func (f *File) Get(k posting.Key) (Record, bool) {
 	if !ok {
 		return Record{}, false
 	}
-	return cloneRecord(r), true
+	out := cloneRecord(r)
+	if r.BodyEvicted && !f.closed {
+		if d, err := f.ev.read(f.events, k, f.goodSize); err == nil {
+			out.Posting.Description, out.BodyEvicted = d, false
+		}
+	}
+	return out, true
 }
 
-// All returns copies of every record, sorted by Key.
+// All returns copies of every record, sorted by Key. A Dead, Dropped or
+// Duplicate record comes back without its Description and with BodyEvicted
+// true; All reads nothing from disk. Use Get, Hydrate or Full for the text.
 func (f *File) All() []Record {
 	f.mu.Lock()
 	defer f.mu.Unlock()

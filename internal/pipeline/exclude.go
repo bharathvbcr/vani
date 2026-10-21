@@ -69,7 +69,16 @@ func ExclusionChanges(recs []ledger.Record, p DropPolicy, protect func(posting.K
 // on it. It asks no backend. It writes in batches of at most exclusionBatch;
 // an error leaves the batches before it written, and the next run finishes.
 func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, protect func(posting.Key) bool, fo *FailOpen) (ExclusionChange, error) {
-	ch := ExclusionChanges(l.All(), p, protect)
+	recs := l.All()
+	for i, r := range recs {
+		// An exclusion on descriptions is judged against the text, which a
+		// Dropped record keeps out of memory; without it the exclusion would
+		// look lifted and the record would be reopened.
+		if r.BodyEvicted && (Excluded(r) || excludable[r.Status]) {
+			recs[i] = ledger.Full(l, r)
+		}
+	}
+	ch := ExclusionChanges(recs, p, protect)
 	for range ch.Unread {
 		fo.Note(CauseLocationUnreadable)
 	}

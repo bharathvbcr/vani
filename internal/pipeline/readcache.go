@@ -118,6 +118,8 @@ func (c *ReadCache) seed(l ledger.Ledger, modelID string) {
 		if !inheritable(rec, modelID) {
 			continue
 		}
+		// readKey hashes the description, which a Dropped record keeps out of memory.
+		rec = ledger.Full(l, rec)
 		k := readKey(rec.Posting, modelID)
 		if _, dup := c.entries[k]; dup {
 			continue

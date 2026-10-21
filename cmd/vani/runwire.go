@@ -338,7 +338,8 @@ func (w *wired) storedFor(b sources.Board) []posting.Posting {
 	var out []posting.Posting
 	for _, r := range w.led.All() {
 		if strings.HasPrefix(string(r.Key), prefix) {
-			out = append(out, r.Posting)
+			// A closed record's text is not resident; the adapter reuses it, so read it back.
+			out = append(out, ledger.Full(w.led, r).Posting)
 		}
 	}
 	return out
