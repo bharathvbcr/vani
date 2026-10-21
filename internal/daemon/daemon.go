@@ -152,10 +152,17 @@ func waitUntil(ctx context.Context, clock Clock, t time.Time) bool {
 			return ctx.Err() == nil
 		}
 		d = min(d, wakeSlice)
+		timer := clock.After(d)
+		// Re-check after arming: time that passed between the read above and
+		// After (a clock jump, a stalled goroutine) would otherwise be added to
+		// the wait, since After measures from its own call.
+		if !clock.Now().Before(t) {
+			return ctx.Err() == nil
+		}
 		select {
 		case <-ctx.Done():
 			return false
-		case <-clock.After(d):
+		case <-timer:
 		}
 	}
 }
