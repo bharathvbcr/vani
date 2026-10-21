@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sort"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
-	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // App is everything the long-running commands need from the rest of Vani.
@@ -30,9 +30,9 @@ type App struct {
 	// RunReport returns what the last RunOnce reported about itself (the
 	// advance phase, backend errors) for the run record. Nil means none.
 	RunReport func() runDetail
-	// Reload hands the app the watchlist and allowed hosts the config file holds
-	// now, before each daily run. Nil means the app keeps its own.
-	Reload func(watchlist []sources.Board, allowedHosts []string)
+	// Reload hands the app the config the file holds now, before each run. Nil
+	// means the app keeps its own.
+	Reload func(cfg config.Config)
 	// PollInbox folds the jobs the extension spooled (internal/inbox) and
 	// advances the new ones. The daemon calls it between daily runs, never
 	// while a run is going. Nil means no polling.
@@ -66,6 +66,13 @@ var buildApp = wireApp
 // it starts and again when it ends, however it ends. trigger says who started
 // it (triggerSchedule, triggerManual) and opts are a manual run's overrides;
 // the daemon's runs take none.
+//
+// A panic in the run's own goroutine is recovered (guardedRun) and recorded as a
+// failed run, so the record never stays "running" and the failure is announced.
+// A panic in a goroutine the pipeline started cannot be recovered here and
+// ends the process, as any unrecovered goroutine panic does; launchd's
+// KeepAlive restarts the daemon, and the record stays "running" until the next
+// run replaces it.
 func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOptions) daemon.Job {
 	return func(ctx context.Context) error {
 		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning, Trigger: trigger, Options: opts.recorded()}
@@ -73,16 +80,7 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 			rec.CountsBefore = statusCounts(app.Ledger.All())
 		}
 		e.saveRunRecord(rec)
-		stage, err := stagePipeline, ledgerBroken(app.Ledger)
-		if err == nil {
-			err = tuneRun(app, opts)
-		}
-		if err == nil {
-			stage, err = e.dailySteps(ctx, app, cfg, opts, &rec)
-			if berr := ledgerBroken(app.Ledger); berr != nil {
-				err = errors.Join(err, berr)
-			}
-		}
+		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
 		rec.FinishedAt = now()
 		if app.RunReport != nil {
 			rec.runDetail = app.RunReport()
@@ -93,7 +91,9 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		switch {
 		case err == nil:
 			rec.Outcome = outcomeOK
-		case errors.Is(err, context.Canceled):
+		case errors.Is(err, context.Canceled) && !errors.Is(err, daemon.ErrFatal) && !errors.Is(err, errRunPanic):
+			// Someone stopped the run. A ledger that failed, or a panic, while it
+			// was being stopped is still a failure and says so below.
 			rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
 		default:
 			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
@@ -103,6 +103,49 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		e.announceFailure(ctx, app, rec)
 		return err
 	}
+}
+
+// maxPanicText bounds a recovered panic's value where it is recorded or logged.
+const maxPanicText = 200
+
+// panicText is a recovered panic value as one bounded, control-free line. The
+// value can carry untrusted text (a JD in an index error or a parse failure),
+// so no recover site records it verbatim; like every other logged error
+// (oneLine(err.Error(), 200)) the full value is kept nowhere.
+func panicText(p any) string { return oneLine(fmt.Sprint(p), maxPanicText) }
+
+// maxPanicStack bounds the stack a recovered run panic prints.
+const maxPanicStack = 4096
+
+// guardedRun is the run between its first and last record write. A panic comes
+// back as an error wrapping errRunPanic, joined with whatever the run had
+// already failed with, and the stack goes to stderr.
+func (e *env) guardedRun(ctx context.Context, app *App, cfg config.Config, opts runOptions, rec *runRecord) (stage string, err error) {
+	stage = stagePipeline
+	defer func() {
+		if p := recover(); p != nil {
+			stack := debug.Stack()
+			if len(stack) > maxPanicStack {
+				stack = stack[:maxPanicStack]
+			}
+			fmt.Fprintf(e.stderr, "vani: the run panicked: %s\n%s\n", panicText(p), stack)
+			err = errors.Join(err, fmt.Errorf("%w: %s", errRunPanic, panicText(p)))
+			if berr := ledgerBroken(app.Ledger); berr != nil {
+				err = errors.Join(err, berr)
+			}
+		}
+	}()
+	if err = ledgerBroken(app.Ledger); err != nil {
+		return stage, err
+	}
+	if err = tuneRun(app, opts); err != nil {
+		return stage, err
+	}
+	stage, err = e.dailySteps(ctx, app, cfg, opts, rec)
+	if berr := ledgerBroken(app.Ledger); berr != nil {
+		err = errors.Join(err, berr)
+	}
+	return stage, err
 }
 
 // ledgerBroken reports a ledger a failed write left unusable, as a
@@ -121,9 +164,9 @@ func ledgerBroken(l ledger.Ledger) error {
 
 // dailySteps is the run itself; stage names where it stopped when it fails.
 //
-// The watchlist and allowed hosts are re-read from the config file first, so a
-// board saved while the daemon runs is searched from this run on. If the file
-// cannot be read the run goes on with the previous values and the failure is
+// The config is re-read from the file first (reloadConfig), so a board or an
+// exclusion saved while the daemon runs applies from this run on. If the file
+// cannot be read the run goes on with the previous config and the failure is
 // joined into the run's error: the run record says the config was stale, and
 // the run is not reported as a clean one.
 //
@@ -132,7 +175,7 @@ func ledgerBroken(l ledger.Ledger) error {
 // A selection the watchlist no longer satisfies stops the run before it lists
 // anything.
 func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts runOptions, rec *runRecord) (stage string, err error) {
-	reloadErr := e.reloadBoards(app, cfg, opts.Boards)
+	cfg, reloadErr := e.reloadConfig(app, cfg, opts.Boards)
 	if errors.Is(reloadErr, errBoardSelection) {
 		return stagePipeline, reloadErr
 	}
@@ -140,33 +183,82 @@ func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts 
 	return stage, errors.Join(reloadErr, err)
 }
 
-// reloadBoards applies the config file's watchlist and allowed hosts to app,
-// cut to the boards only names when it names any. When the file cannot be read
-// the selection is cut from cfg, the config this process started with.
-func (e *env) reloadBoards(app *App, cfg config.Config, only []string) error {
+// reloadConfig is the one place a run's config is refreshed: it reads the whole
+// config file, hands it to app (App.Reload), and returns what the run reads, so
+// edits saved while the daemon runs (the Mac app's exclusions, a board, a
+// weights file) apply from the next run on.
+//
+// The schedule is fixed for the process's life (daemon.Run holds it), as are
+// the state dir and the ledger path, which no config key sets; a changed
+// schedule keeps the running one and says so. When the file cannot be read or
+// is invalid, the run goes on with the last config a run applied (cfg, the
+// config the process started with, before the first) and the error is
+// errConfigStale. The watchlist is cut to the boards only names when it names
+// any; the cut is this run's and is never remembered.
+func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.Config, error) {
+	prev := e.lastApplied(cfg)
 	if app.Reload == nil {
 		if len(only) > 0 {
-			return fmt.Errorf("%w: this app cannot limit a run to some boards", errBoardSelection)
+			return prev, fmt.Errorf("%w: this app cannot limit a run to some boards", errBoardSelection)
 		}
-		return nil
+		return prev, nil
 	}
 	fresh, _, err := config.LoadWithDeprecations(e.configPath)
 	var stale error
 	if err != nil {
-		stale = fmt.Errorf("%w; this run uses the previous watchlist and allowed_hosts: %w", errConfigStale, err)
+		stale = fmt.Errorf("%w; this run uses the previous watchlist, allowed_hosts and policy: %w", errConfigStale, err)
 		if len(only) == 0 {
-			return stale
+			return prev, stale
 		}
-		fresh = cfg
+		fresh = prev
 	}
-	watchlist := fresh.Watchlist
+	for _, p := range processPinned {
+		if p.differs(fresh, prev) {
+			fmt.Fprintf(e.stderr, "vani: config: %s changed; it applies after the daemon restarts\n", p.name)
+			p.pin(&fresh, prev)
+		}
+	}
+	e.setApplied(fresh)
 	if len(only) > 0 {
-		if watchlist, err = selectBoards(fresh.Watchlist, only); err != nil {
-			return errors.Join(stale, err)
+		if fresh.Watchlist, err = selectBoards(fresh.Watchlist, only); err != nil {
+			return prev, errors.Join(stale, err)
 		}
 	}
-	app.Reload(watchlist, fresh.AllowedHosts)
-	return stale
+	app.Reload(fresh)
+	return fresh, stale
+}
+
+// processPinned lists the config fields fixed for the process's life: the
+// daemon's schedule and the DevPrism binary and tools hash its scorer is
+// started with. reloadConfig keeps the running value of each and says so; add a
+// process-lifetime field here and nowhere else.
+var processPinned = []struct {
+	name    string
+	differs func(fresh, prev config.Config) bool
+	pin     func(fresh *config.Config, prev config.Config)
+}{
+	{"the schedule",
+		func(f, p config.Config) bool { return f.Schedule != p.Schedule },
+		func(f *config.Config, p config.Config) { f.Schedule = p.Schedule }},
+	{"devprism.binary or devprism.tools_hash",
+		func(f, p config.Config) bool { return f.DevPrism != p.DevPrism },
+		func(f *config.Config, p config.Config) { f.DevPrism = p.DevPrism }},
+}
+
+// lastApplied is the config the last reload left, or def before the first.
+func (e *env) lastApplied(def config.Config) config.Config {
+	e.appliedMu.Lock()
+	defer e.appliedMu.Unlock()
+	if e.applied == nil {
+		return def
+	}
+	return *e.applied
+}
+
+func (e *env) setApplied(cfg config.Config) {
+	e.appliedMu.Lock()
+	defer e.appliedMu.Unlock()
+	e.applied = &cfg
 }
 
 // tuneRun hands the run's advance overrides to the app, and resets them for a
@@ -214,7 +306,9 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 			}
 		}
 		if limit > 0 {
-			rep := warmSemantic(ctx, cfg, e.stateDir, app.Ledger.All(), mk, limit)
+			recs := withMarkedText(app.Ledger, app.Ledger.All(), mk)
+			rep := warmSemanticRun(ctx, cfg, e.stateDir, recs, mk, limit)
+			rep.noteUnreadable(unreadableMarked(recs, mk))
 			rec.Semantic = &rep
 			e.logSemantic(rep)
 		} else {
@@ -222,7 +316,11 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 			e.logSemantic(*rec.Semantic)
 		}
 	}
-	dopts, _ := digestOptions(cfg, e.stateDir) // the warm's note already said why there are no scores
+	dopts, warning := digestOptions(cfg, e.stateDir)
+	if warning != "" {
+		rec.DigestWarning = warning
+		fmt.Fprintf(e.stderr, "vani: digest: %s\n", warning)
+	}
 	var pub published
 	pub, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
 	rec.DigestRoles, rec.ImpressionsError = pub.roles, pub.impressionsError
@@ -287,12 +385,9 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		fmt.Fprintf(e.stderr, "vani: the digest's impressions were not recorded, so this run's ranking cannot be measured: %v\n", err)
 	}
 	n := len(keys)
-	var errs []error
-	for _, k := range keys {
-		ev := ledger.Event{V: 1, At: now(), Key: k, Status: posting.Digested, Reason: "digest " + date.Format("2006-01-02")}
-		if err := app.Ledger.Append(ctx, ev); err != nil {
-			errs = append(errs, fmt.Errorf("mark %s digested: %w", k, err))
-		}
+	var markErr error
+	if err := pipeline.MarkDigested(ctx, app.Ledger, keys, now(), "digest "+date.Format("2006-01-02")); err != nil {
+		markErr = fmt.Errorf("mark the digest's roles digested: %w", err)
 	}
 	fmt.Fprintf(e.stdout, "digest: %s (%d roles)\n", path, len(keys))
 	if len(keys) > 0 && app.Notifier != nil {
@@ -301,7 +396,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		}
 	}
 	pub.roles = &n
-	return pub, errors.Join(errs...)
+	return pub, markErr
 }
 
 // published is what publishDigest did: roles is how many new roles the digest

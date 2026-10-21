@@ -79,6 +79,7 @@ func TestRunRecordCauseAndDigestRoles(t *testing.T) {
 		{name: "pipeline failed", code: 1, err: errors.New("all boards down"), out: outcomeFailed, stage: stagePipeline},
 		{name: "ledger fatal", code: 1, err: fmt.Errorf("%w: fsync", daemon.ErrFatal), out: outcomeFailed, stage: stagePipeline, cause: causeLedgerFatal},
 		{name: "cancelled has no cause", code: 1, err: fmt.Errorf("%w: %w", context.Canceled, errConfigStale), out: outcomeCancelled, stage: stagePipeline},
+		{name: "ledger fatal joined with a cancellation", code: 1, err: errors.Join(context.Canceled, fmt.Errorf("%w: fsync", daemon.ErrFatal)), out: outcomeFailed, stage: stagePipeline, cause: causeLedgerFatal},
 		{name: "digest held back", code: 1, out: outcomeFailed, stage: stageDigest, cause: causeDigestHeldBack,
 			arm: func(t *testing.T, _, stateDir string) { corruptMarks(t, marks.Dir(stateDir)) }},
 	}

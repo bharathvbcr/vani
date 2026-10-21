@@ -100,6 +100,10 @@ type runRecord struct {
 	// 0 when nothing was new. Nil when no digest was written: the run stopped
 	// before it, it was held back, or writing it failed.
 	DigestRoles *int `json:"digest_roles,omitempty"`
+	// DigestWarning is why the digest ranked on less than the config asked for
+	// (a missing rank_weights_file, an unreadable knowledge base); "" when it
+	// ranked as configured.
+	DigestWarning string `json:"digest_warning,omitempty"`
 	// ImpressionsError says the digest was written but what it showed was not
 	// recorded (internal/feedback), so the ranking's measurement has a gap for
 	// this run; "" when they were recorded or no digest was written.

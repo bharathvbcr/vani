@@ -6,6 +6,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -276,13 +277,36 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	return s, nil
 }
 
-// appendBatched writes evs in batches of at most ledger.MaxBatchEvents and
-// returns how many events were acknowledged. Each batch is all-or-nothing, so a
-// failure leaves exactly the earlier batches written.
+// batchByteBudget is how much encoded event data appendBatched puts in one
+// batch: ledger.MaxBatchBytes less headroom for the ledger's own re-encoding.
+const batchByteBudget = ledger.MaxBatchBytes - 1<<20
+
+// appendBatched writes evs in batches of at most ledger.MaxBatchEvents events
+// and batchByteBudget encoded bytes, and returns how many events were
+// acknowledged. Each batch is all-or-nothing, so a failure leaves exactly the
+// earlier batches written. An event that alone exceeds the byte budget is an
+// error naming its key, before that event is written.
 func appendBatched(ctx context.Context, l ledger.Ledger, evs []ledger.Event) (int, error) {
 	done := 0
 	for len(evs) > 0 {
-		n := min(len(evs), ledger.MaxBatchEvents)
+		n, size := 0, 0
+		for n < len(evs) && n < ledger.MaxBatchEvents {
+			b, err := json.Marshal(evs[n])
+			if err != nil {
+				return done, fmt.Errorf("pipeline: encode event for %q: %w", evs[n].Key, err)
+			}
+			if len(b)+1 > batchByteBudget {
+				if n == 0 {
+					return done, fmt.Errorf("pipeline: event for %q encodes to %d bytes, over the %d-byte batch limit", evs[n].Key, len(b)+1, batchByteBudget)
+				}
+				break
+			}
+			if size+len(b)+1 > batchByteBudget {
+				break
+			}
+			size += len(b) + 1
+			n++
+		}
 		if err := l.AppendBatch(ctx, evs[:n]); err != nil {
 			return done, err
 		}

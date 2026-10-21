@@ -185,6 +185,50 @@ func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs 
 	return warmSemanticDocs(ctx, cfg, stateDir, warmDocs(recs, mk), max)
 }
 
+// withMarkedText returns recs with the description of every record warmDocs
+// would embed but All() left empty: a closed job (Dead, Dropped, Duplicate) the
+// owner marked has its text evicted from memory (ledger.Record.BodyEvicted),
+// and without it the job would lose its semantic score. Only those records are
+// read back from l, never every closed job.
+func withMarkedText(l ledger.Ledger, recs []ledger.Record, mk map[posting.Key]marks.Mark) []ledger.Record {
+	for i, r := range recs {
+		if r.BodyEvicted && jobview.InView("all", r, mk[r.Key]) {
+			recs[i] = ledger.Full(l, r)
+		}
+	}
+	return recs
+}
+
+// unreadableMarked counts the records warmDocs would embed but whose stored
+// text is still evicted after withMarkedText (the ledger could not read it
+// back): they are left out of the warm, and the run says how many.
+func unreadableMarked(recs []ledger.Record, mk map[posting.Key]marks.Mark) int {
+	n := 0
+	for _, r := range recs {
+		if r.BodyEvicted && jobview.InView("all", r, mk[r.Key]) {
+			n++
+		}
+	}
+	return n
+}
+
+// noteUnreadable adds the count of marked postings left out of the warm to the
+// report's note. A count only, never any text.
+func (r *semanticReport) noteUnreadable(n int) {
+	if n == 0 {
+		return
+	}
+	msg := fmt.Sprintf("%d marked posting(s) not warmed: stored description unreadable", n)
+	if r.Note != "" {
+		msg = r.Note + "; " + msg
+	}
+	r.Note = msg
+}
+
+// warmSemanticRun is warmSemantic as the daily run calls it; a variable only so
+// a test can see the records the run hands the warm.
+var warmSemanticRun = warmSemantic
+
 // The daily run spends semantic.warm_per_run (L) in two warms, so the posting
 // the decision model reads first is already scored and the digest's kept
 // postings are too. Before the advance phase it may embed up to

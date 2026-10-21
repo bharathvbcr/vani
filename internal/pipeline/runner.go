@@ -321,17 +321,38 @@ func missingRequirements(g resume.Gap) string {
 // MarkDigested records that keys were included in a digest. Already-digested
 // keys are left alone; an unknown key is an error.
 func (r *Runner) MarkDigested(ctx context.Context, keys []posting.Key) error {
+	return MarkDigested(ctx, r.Ledger, keys, r.now(), "digested")
+}
+
+// MarkDigested is the one path that records a digest's roles as Digested (the
+// daily run's publishDigest and Runner.MarkDigested). Every key is checked
+// before anything is written (an unknown key is an error and writes nothing),
+// already-digested keys and repeats are left alone, and the events go out in
+// batches of at most ledger.MaxBatchEvents events and appendBatched's byte
+// budget: one fsync per batch, not per role.
+// A failed batch returns its error at once and leaves the later batches
+// unwritten; each batch is all-or-nothing, so what was acknowledged is exactly
+// the earlier batches.
+func MarkDigested(ctx context.Context, l ledger.Ledger, keys []posting.Key, at time.Time, reason string) error {
+	evs := make([]ledger.Event, 0, len(keys))
+	seen := make(map[posting.Key]bool, len(keys))
 	for _, k := range keys {
-		rec, ok := r.Ledger.Get(k)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		rec, ok := l.Get(k)
 		if !ok {
 			return fmt.Errorf("pipeline: digest unknown key %q", k)
 		}
 		if rec.Status == posting.Digested {
 			continue
 		}
-		if err := r.emit(ctx, k, posting.Digested, "digested", nil); err != nil {
-			return err
-		}
+		evs = append(evs, ledger.Event{V: ledger.SchemaVersion, At: at, Key: k, Status: posting.Digested, Reason: reason})
+	}
+	done, err := appendBatched(ctx, l, evs)
+	if err != nil {
+		return fmt.Errorf("pipeline: digest marks: %d of %d written before: %w", done, len(evs), err)
 	}
 	return nil
 }

@@ -12,7 +12,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
-	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // noticeApp wires an App whose run fails with runErr and reports adv, and
@@ -32,7 +31,7 @@ func noticeApp(t *testing.T, n *fakeNotifier, runErr error, adv *advanceReport, 
 			Notifier:  n,
 			RunOnce:   func(context.Context) error { return runErr },
 			RunReport: func() runDetail { return runDetail{Advance: adv} },
-			Reload:    func([]sources.Board, []string) {},
+			Reload:    func(config.Config) {},
 		}, nil
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ type lazyScorer struct {
 	client   scorerClient
 	err      error
 	failedAt time.Time
+	// gone is set when the client's process exited and it was dropped;
+	// restartedAt is when the last such restart started, so a replacement that
+	// dies too is not restarted again within scorerRetry.
+	gone        bool
+	restartedAt time.Time
 }
 
 func (s *lazyScorer) get(ctx context.Context) (scorerClient, error) {
@@ -59,6 +65,11 @@ func (s *lazyScorer) get(ctx context.Context) (scorerClient, error) {
 	}
 	if s.err != nil && now().Sub(s.failedAt) < scorerRetry {
 		return nil, fmt.Errorf("devprism: %w", s.err)
+	}
+	if s.gone && !s.restartedAt.IsZero() && now().Sub(s.restartedAt) < scorerRetry {
+		// A replacement died too, within scorerRetry of the restart that made it:
+		// do not restart a binary that keeps dying for every posting.
+		return nil, fmt.Errorf("devprism: %w", resume.ErrServerGone)
 	}
 	start := s.start
 	if start == nil {
@@ -80,6 +91,9 @@ func (s *lazyScorer) get(ctx context.Context) (scorerClient, error) {
 		return nil, fmt.Errorf("devprism: %w", err)
 	}
 	s.client, s.err = c, nil
+	if s.gone {
+		s.gone, s.restartedAt = false, now()
+	}
 	return c, nil
 }
 
@@ -88,7 +102,9 @@ func (s *lazyScorer) Gap(ctx context.Context, jd, persona string) (resume.Gap, e
 	if err != nil {
 		return resume.Gap{}, err
 	}
-	return c.Gap(ctx, jd, persona)
+	g, err := c.Gap(ctx, jd, persona)
+	s.dropIfGone(ctx, c, err)
+	return g, err
 }
 
 func (s *lazyScorer) Score(ctx context.Context, jd, persona string) (resume.Score, error) {
@@ -96,7 +112,28 @@ func (s *lazyScorer) Score(ctx context.Context, jd, persona string) (resume.Scor
 	if err != nil {
 		return resume.Score{}, err
 	}
-	return c.Score(ctx, jd, persona)
+	sc, err := c.Score(ctx, jd, persona)
+	s.dropIfGone(ctx, c, err)
+	return sc, err
+}
+
+// dropIfGone closes and forgets c when err says its DevPrism process exited
+// (resume.ErrServerGone), so the next use starts a fresh one: a daemon never
+// exits on its own, so a client kept after its process died would fail every
+// later run. It restarts at most once per scorerRetry (see get). A cancelled
+// ctx says nothing about the process and never counts, and only the client
+// that failed is dropped, not a replacement another caller already started.
+func (s *lazyScorer) dropIfGone(ctx context.Context, c scorerClient, err error) {
+	if err == nil || ctx.Err() != nil || !errors.Is(err, resume.ErrServerGone) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client != c {
+		return
+	}
+	s.client, s.gone = nil, true
+	_ = c.Close() // the process is already gone; Close only reaps it
 }
 
 func (s *lazyScorer) Close() error {

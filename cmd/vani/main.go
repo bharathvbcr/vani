@@ -203,6 +203,11 @@ type env struct {
 	stateDir   string
 	stdout     io.Writer
 	stderr     io.Writer
+
+	// applied is the config the last run's reload left (reloadConfig); nil
+	// before the first. A run whose config file cannot be read falls back to it.
+	appliedMu sync.Mutex
+	applied   *config.Config
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
@@ -425,7 +430,19 @@ func (e *env) cmdDaemon(args []string) error {
 	// A manual run that leaves the ledger unusable ends the daemon as a
 	// scheduled one does: cancelling ctx ends daemon.Run, and fatal is returned.
 	ctx, cancel := context.WithCancel(sigCtx)
-	var fatal error
+	var (
+		fatal   error
+		fatalMu sync.Mutex
+	)
+	// setFatal records the first error that must end the daemon and stops it.
+	setFatal := func(err error) {
+		fatalMu.Lock()
+		if fatal == nil {
+			fatal = err
+		}
+		fatalMu.Unlock()
+		cancel()
+	}
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
 	// The daily run, the inbox poll and a requested manual run all write the
 	// ledger: one at a time.
@@ -447,7 +464,9 @@ func (e *env) cmdDaemon(args []string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.pollInboxLoop(ctx, app.PollInbox, &ledgerMu)
+			if err := e.pollInboxLoop(ctx, e.inboxPoll(app, cfg), &ledgerMu, app.Ledger); err != nil {
+				setFatal(err)
+			}
 		}()
 	}
 	manual := func(ctx context.Context, opts runOptions) error {
@@ -458,13 +477,14 @@ func (e *env) cmdDaemon(args []string) error {
 		defer wg.Done()
 		if err := e.pollRequestLoop(ctx, manual, &ledgerMu); err != nil {
 			fmt.Fprintf(e.stderr, "vani: requested manual run failed, exiting: %v\n", err)
-			fatal = err
-			cancel()
+			setFatal(err)
 		}
 	}()
 	err = daemon.Run(ctx, cfg.Schedule, job, daemonClock)
 	cancel()
 	wg.Wait()
+	fatalMu.Lock()
+	defer fatalMu.Unlock()
 	if err == nil {
 		err = fatal
 	}
@@ -477,19 +497,38 @@ var inboxPollInterval = 2 * time.Minute
 
 // pollInboxLoop calls poll every inboxPollInterval, holding mu so it never
 // overlaps the daily run, until ctx ends. A failed or panicking poll is
-// reported and the loop goes on: the spooled files stay for the next one.
-func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex) {
+// reported and the loop goes on: the spooled files stay for the next one. A
+// poll that leaves the ledger unusable ends the loop with daemon.ErrFatal, as a
+// run does (ledgerBroken): the daemon exits within one poll interval instead of
+// holding a poisoned ledger until the next daily slot.
+func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex, led ledger.Ledger) error {
 	t := time.NewTicker(inboxPollInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-t.C:
 		}
 		if err := e.pollInboxOnce(ctx, poll, mu); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
 		}
+		if err := ledgerBroken(led); err != nil {
+			return err
+		}
+	}
+}
+
+// inboxPoll is app.PollInbox as the daemon calls it: the config is re-read
+// first, as a run does (reloadConfig), so a poll advances new postings under
+// the exclusions saved since the last one. An unreadable config is said and the
+// poll goes on with the previous one.
+func (e *env) inboxPoll(app *App, cfg config.Config) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if _, err := e.reloadConfig(app, cfg, nil); err != nil {
+			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
+		}
+		return app.PollInbox(ctx)
 	}
 }
 
@@ -498,7 +537,7 @@ func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) erro
 	defer mu.Unlock()
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v", p)
+			err = fmt.Errorf("panic: %s", panicText(p))
 		}
 	}()
 	return poll(ctx)

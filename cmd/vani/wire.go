@@ -17,7 +17,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
-	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/decide"
 	"github.com/bharathvbcr/decide/jev"
 	"github.com/bharathvbcr/decide/lappi"
@@ -83,7 +82,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		Ledger:    led,
 		RunOnce:   w.runOnce,
 		RunReport: w.runReport,
-		Reload:    w.setBoards,
+		Reload:    w.reload,
 		PollInbox: w.pollInbox,
 		Rescore:   w.rescore,
 		Tune:      w.tune,
@@ -95,13 +94,13 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 	}, nil
 }
 
-// setBoards replaces the watchlist and allowed hosts the next run reads (the
-// daily job re-reads them from the config file, so a board saved while the
-// daemon runs is searched from then on). Callers do not overlap it with a run.
-func (w *wired) setBoards(watchlist []sources.Board, allowed []string) {
+// reload replaces the config the next run, inbox poll or rescore reads
+// (App.Reload; env.reloadConfig has already pinned the process-lifetime
+// fields). Callers do not overlap it with a run.
+func (w *wired) reload(cfg config.Config) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.cfg.Watchlist, w.cfg.AllowedHosts = watchlist, allowed
+	w.cfg = cfg
 }
 
 // tune sets the next run's advance cap (0 keeps advance_per_run) and whether
