@@ -1,8 +1,10 @@
 package atomicfile_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
@@ -25,7 +27,9 @@ func TestWriteOfResolvedPathFollowsLeafSymlinks(t *testing.T) {
 	})
 }
 
-func TestOpenAppendDoesNotFollowLeafSymlinks(t *testing.T) {
+// An append-only log behind a leaf link must not be replaced by a new empty
+// file: the append is refused, and the link and its target are left alone.
+func TestOpenAppendRefusesLeafSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "events")
 	if err := os.WriteFile(target, []byte("a\n"), 0o600); err != nil {
@@ -35,25 +39,25 @@ func TestOpenAppendDoesNotFollowLeafSymlinks(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	// Existing target: the link is replaced by a new empty regular file.
-	f, created, err := atomicfile.OpenAppend(link, os.O_APPEND)
-	if err != nil || !created {
-		t.Fatalf("link to an existing file: created=%v err=%v", created, err)
+	f, _, err := atomicfile.OpenAppend(link, os.O_APPEND)
+	if err == nil {
+		f.Close()
+		t.Fatal("append through a link to an existing log was accepted")
 	}
-	_, _ = f.WriteString("b\n")
-	f.Close()
+	if !errors.Is(err, atomicfile.ErrLinkedLeaf) || !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("error = %v, want ErrLinkedLeaf naming the symbolic link", err)
+	}
 	if b, _ := os.ReadFile(target); string(b) != "a\n" {
-		t.Errorf("the file behind the link was appended to: %q", b)
+		t.Errorf("target content changed: %q", b)
 	}
-	if st, err := os.Lstat(link); err != nil || !st.Mode().IsRegular() {
-		t.Errorf("link not replaced: %v %v", st, err)
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link was removed or replaced: %v %v", st, err)
 	}
-	if b, _ := os.ReadFile(link); string(b) != "b\n" {
-		t.Errorf("link's replacement = %q", b)
+	if got, _ := os.Readlink(link); got != target {
+		t.Errorf("link now points at %q", got)
 	}
 
-	// Dangling: nothing is created at the target; SyncNew syncs the leaf's
-	// own directory.
+	// Dangling: refused, and nothing is created at the target or in its place.
 	realDir := filepath.Join(dir, "real")
 	if err := os.Mkdir(realDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -62,34 +66,29 @@ func TestOpenAppendDoesNotFollowLeafSymlinks(t *testing.T) {
 	if err := os.Symlink(filepath.Join(realDir, "new"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	f, created, err = atomicfile.OpenAppend(dangling, 0)
-	if err != nil || !created {
-		t.Fatalf("dangling: created=%v err=%v", created, err)
-	}
-	f.Close()
-	var synced []string
-	if err := atomicfile.SyncNew(dangling, func(d string) error { synced = append(synced, d); return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if want, _ := filepath.EvalSymlinks(dir); len(synced) != 1 || synced[0] != want {
-		t.Errorf("synced %v, want the leaf's directory %s", synced, want)
+	if f, _, err := atomicfile.OpenAppend(dangling, 0); err == nil || !errors.Is(err, atomicfile.ErrLinkedLeaf) {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatalf("dangling link: err = %v, want ErrLinkedLeaf", err)
 	}
 	if _, err := os.Lstat(filepath.Join(realDir, "new")); !os.IsNotExist(err) {
 		t.Errorf("a file was created through the dangling link: %v", err)
 	}
-	if st, err := os.Lstat(dangling); err != nil || !st.Mode().IsRegular() {
-		t.Errorf("dangling link not replaced: %v %v", st, err)
+	if st, err := os.Lstat(dangling); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("dangling link removed or replaced: %v %v", st, err)
 	}
 
-	// A loop at the leaf is only a link to replace.
+	// A loop at the leaf is refused the same way.
 	loopA, loopB := filepath.Join(dir, "la"), filepath.Join(dir, "lb")
 	_ = os.Symlink(loopB, loopA)
 	_ = os.Symlink(loopA, loopB)
-	f, created, err = atomicfile.OpenAppend(loopA, 0)
-	if err != nil || !created {
-		t.Fatalf("loop leaf: created=%v err=%v", created, err)
+	if f, _, err := atomicfile.OpenAppend(loopA, 0); err == nil || !errors.Is(err, atomicfile.ErrLinkedLeaf) {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatalf("loop leaf: err = %v, want ErrLinkedLeaf", err)
 	}
-	f.Close()
 }
 
 func TestOpenAppendThroughSymlinkedDir(t *testing.T) {

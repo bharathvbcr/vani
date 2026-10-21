@@ -12,6 +12,11 @@ import (
 	"sync"
 )
 
+// ErrLinkedLeaf means the leaf an append would open is a symbolic link. Whole
+// file rewrites (Write) replace such a link, since they supply the full content;
+// an append cannot, so it refuses rather than discard the history behind it.
+var ErrLinkedLeaf = errors.New("atomicfile: leaf is a symbolic link")
+
 // syncDir is SyncDir; a variable only so tests can see that Write reached it.
 var syncDir = SyncDir
 
@@ -76,9 +81,10 @@ func Write(path string, data []byte) (err error) {
 // file and the rest open the file that won; the creator owes a SyncDir of the
 // parent (see SyncNew), because a file's own fsync does not make its directory
 // entry durable. path is resolved with ResolveLeaf: directories follow links,
-// the leaf does not. A symlink at the leaf is removed and replaced by a new
-// regular file (created is true), never opened through; a leaf that is not a
-// regular file is refused with ErrNotRegular. extra is OR-ed into the flags
+// the leaf does not. A symlink at the leaf (live or dangling) is refused with
+// ErrLinkedLeaf and nothing is created or removed, because replacing it would
+// silently start an append-only log empty; a leaf that is not a regular file is
+// refused with ErrNotRegular. extra is OR-ed into the flags
 // (os.O_APPEND for an append-only log).
 func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
 	path, err = ResolveLeaf(path)
@@ -105,12 +111,9 @@ func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
 			return nil, false, lerr
 		}
 		if st.Mode()&os.ModeSymlink != 0 {
-			// O_EXCL refuses to create through a link, so removing it and
-			// probing again makes a regular file here and nothing outside.
-			if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-				return nil, false, rerr
-			}
-			continue
+			// Nothing is created or removed: replacing the link would start an
+			// append-only history empty.
+			return nil, false, fmt.Errorf("%s is a symbolic link; Vani will not append through it - replace it with the file itself or link its directory instead: %w", path, ErrLinkedLeaf)
 		}
 		if !st.Mode().IsRegular() {
 			return nil, false, fmt.Errorf("%s (%s): %w", path, st.Mode().Type(), ErrNotRegular)

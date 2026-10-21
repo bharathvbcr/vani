@@ -10,45 +10,17 @@ import (
 func TestOpenAppendSymlinkAndDirectoryPaths(t *testing.T) {
 	dir := t.TempDir()
 
-	// A dangling symlink: O_EXCL does not follow it (EEXIST) and the plain open
-	// does (ENOENT), which used to be an error. OpenAppend does not follow a
-	// leaf link: it replaces it with a regular file (created is true only the
-	// first time) and creates nothing at the link's target.
+	// A leaf symlink (dangling here) is refused, not replaced; the symlink
+	// contract is tested in symlink_test.go.
 	dangling := filepath.Join(dir, "dangling")
 	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	for i, wantCreated := range []bool{true, false} {
-		f, created, err := OpenAppend(dangling, 0)
-		if err != nil || created != wantCreated {
-			t.Fatalf("dangling symlink, open %d: created=%v err=%v, want created=%v", i, created, err, wantCreated)
+	if f, _, err := OpenAppend(dangling, 0); !errors.Is(err, ErrLinkedLeaf) {
+		if f != nil {
+			f.Close()
 		}
-		f.Close()
-	}
-	if st, err := os.Lstat(dangling); err != nil || !st.Mode().IsRegular() {
-		t.Fatalf("link not replaced by a regular file: %v %v", st, err)
-	}
-	if _, err := os.Lstat(filepath.Join(dir, "nowhere")); !os.IsNotExist(err) {
-		t.Fatalf("a file was created through the dangling link: %v", err)
-	}
-
-	// A symlink to an existing file is replaced too: a new file, so a creation,
-	// and the target keeps its content.
-	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	f, created, err := OpenAppend(link, 0)
-	if err != nil || !created {
-		t.Fatalf("symlink to file: created=%v err=%v", created, err)
-	}
-	f.Close()
-	if b, _ := os.ReadFile(target); string(b) != "x\n" {
-		t.Fatalf("target changed: %q", b)
+		t.Fatalf("dangling symlink: err = %v, want ErrLinkedLeaf", err)
 	}
 
 	// A directory at the path is an error.
