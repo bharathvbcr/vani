@@ -1,188 +1,229 @@
-# Vani Repository Deep Audit Report
+# Vani deep audit — 2026-10-20
 
-**Date:** 2026-10-19  
-**Repository:** `/Users/bharath/Code/apps/Vani`  
-**GitPulse Task Board:** 13 Cards Filed (Audit Label: `audit-2026-10-19`)  
-**Baseline Test Status:** 34 Go packages passed, 103 Extension Bun tests passed, 60 macOS Swift tests passed.  
-**Source Modifications:** 0 source files modified. Pure audit & GitPulse backlog population.
+Repo `/Users/bharath/Code/apps/Vani`, `main` @ `d5c4097`, clean worktree. Read-only audit: no source, config or
+dependency was changed. The only writes were GitPulse board writes and this file (uncommitted). This file replaces
+the 2026-10-19 audit report that was committed at this path; that version is intact in git
+(`git show 365a405:AUDIT_REPORT.md`), so restore it or keep both under different names.
 
----
+Pipeline: six Sonnet auditors (≤4 at once, two waves) → three Opus verifiers → Fable advisor (grouping, priority,
+fold-vs-new, waves) → board filing. Working files (findings, verifier reports, Fable plan) are in the session
+scratchpad: `…/scratchpad/audit/{A1,A2,A4,B1,B2,B3}-*.md`, `VERIFY-1.md`, `VERIFY-3.md`, `FABLE.md`, and the sibling
+dir `…-Vani-d56b4dec…/scratchpad/audit/{A3-decide-semantic-eval,VERIFY-2}.md`.
 
-## 1. Executive Summary & Audit Scope
+Slices: A1 cmd/vani run/daemon wiring · A2 pipeline/posting/ledger/marks/digest/jobview/jobinsight · A3
+decide/semantic/rankfit/eval/kbsync/resume · A4 egress/sources/config/vault/lca/employer · B1 other cmd/vani commands ·
+B2 macOS Swift · B3 browser extension.
 
-A comprehensive deep audit of the Vani repository was performed across 4 logical slices covering all 8 mandatory engineering dimensions:
-1. **Modular Architecture & Clean Seams**
-2. **Strict Typing & Domain Types**
-3. **Defensive Validation at Trust Boundaries**
-4. **Async Error Boundaries, Cancellation & Lifecycle Management**
-5. **Deterministic Testability & Adversarial Hardening**
-6. **Performance, Benchmarks & Memory Allocations**
-7. **Cross-Platform Correctness (macOS, Linux, Windows)**
-8. **Security, Credentials & Process Isolation**
+## Headline
 
-A total of **58 findings** were identified by Sonnet subagents, verified by Opus against tracked source code, prioritized and grouped by Fable into **13 cohesive GitPulse task cards** (2 Critical / P0, 7 High / P1, 4 Medium / P2), and filed directly on the GitPulse task board.
+- **59 raw findings → 58 distinct** (A1-6 = B1-1). After Opus verification: **2 high, 8 medium, 43 low, 0 critical**;
+  4 rejected, 1 turned into an owner question (A2-4).
+- **One data-loss bug (B2-1):** the Mac host splits the answer bank into 500,000-byte chunks at raw byte offsets, so a
+  multi-byte character on a boundary becomes U+FFFD. The JSON stays valid, so nobody notices, and the extension writes
+  the damaged bank back on the next edit. Reproduced with `swift -e`. This applies to banks over 750 KB with
+  non-ASCII text. **Whether it has already happened to the live bank is unknown.** The audit did not read the bank
+  (personal data); see owner decision 1.
+- **One product-loop bug (A1-5):** the daemon's scheduler sleeps on a timer that doesn't advance while the Mac sleeps.
+  A laptop asleep across 08:30 for more than about 6 h skips the daily run as "missed", every day. Verified from Go
+  runtime source; not reproduced on hardware.
+- **Board:** 13 new cards and 2 folds. Every one of the 13 `review` cards from audit-2026-10-19 got a verification
+  section, with each criterion marked MET, NOT MET or declined. Two review cards had unmet criteria and moved to
+  backlog: ft-3d83 had three unmet and unrecorded; ft-e97a's detail-404 fix was only half done. Nothing was moved to
+  done. The board now holds 27 cards.
 
----
+## Severity × dimension (final, after verification; rejected excluded)
 
-## 2. Severity × Dimension Matrix
+| dimension | critical | high | medium | low | total |
+|---|---|---|---|---|---|
+| modular architecture | 0 | 0 | 0 | 0 | 0 |
+| strict typing | 0 | 0 | 1 (B3-4) | 0 | 1 |
+| defensive validation at trust boundaries | 0 | 0 | 1 (A4-1) | 8 | 9 |
+| async / error boundaries | 0 | 0 | 2 (A1-2, A1-3) | 10 | 12 |
+| deterministic testability | 0 | 0 | 0 | 0 | 0 |
+| performance & benchmarks | 0 | 0 | 1 (A2-1) | 6 | 7 |
+| correctness (macOS/Linux/Windows) | 0 | 2 (A1-5, B2-1) | 3 (A1-1, B1-1, B3-1) | 14 | 19 |
+| security | 0 | 0 | 0 | 5 | 5 |
+| **total** | **0** | **2** | **8** | **43** | **53** |
 
-| Dimension | Critical (P0) | High (P1) | Medium (P2) | Low (P3) | Total Findings |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| 1. Modular Architecture & Clean Seams | 1 | 0 | 4 | 2 | 7 |
-| 2. Strict Typing & Domain Types | 0 | 2 | 0 | 2 | 4 |
-| 3. Defensive Validation at Trust Boundaries | 0 | 4 | 4 | 3 | 11 |
-| 4. Async Error Boundaries & Lifecycle | 2 | 3 | 3 | 0 | 8 |
-| 5. Deterministic Testability | 0 | 0 | 2 | 0 | 2 |
-| 6. Performance & Benchmarks | 0 | 2 | 6 | 4 | 12 |
-| 7. Cross-Platform Correctness (Win/Mac/Linux) | 0 | 1 | 4 | 2 | 7 |
-| 8. Security, Credentials & Isolation | 0 | 2 | 4 | 1 | 7 |
-| **Total** | **3** | **14** | **27** | **14** | **58** |
+Lows by dimension: validation A2-3, A2-10, A3-4, A4-2, B1-3, B2-5, B2-7, B2-8; async/error A1-4, A1-9, A1-10, A3-6,
+A3-8, B1-7, B1-8, B2-4, B2-9, B2-10; performance A2-2, A4-4, A4-5, B1-6, B2-2, B2-3; correctness A1-8, A2-5, A2-6, A2-7,
+A2-8, A2-9, A3-1, A3-2, A3-3, A3-9, A4-3 (page half), A4-6, B1-2, B1-4; security A3-5, A3-10, B1-5, B3-2, B3-3. No
+security finding is a page-reachable exposure or a personal-data leak once verified: A3-5's guard gaps leak no
+applicant data, B3-2 isn't reachable by web pages, and B1-3 is CLI-only. Testability gaps show up inside the cards as
+missing tests (e.g. the B3-1 route, ASCII-only protocol tests). No architecture finding met the evidence bar.
 
-*(Note: 57 findings confirmed as actionable defects; 1 finding documented as an architectural specification reconciliation note).*
+## Top 10 risks (Fable ranking)
 
----
+1. **B2-1** — silent, persistent corruption of the answer bank (>750 KB, non-ASCII); it may already have happened. → ft-6dc4d776
+2. **A1-5** — a sleeping Mac never gets its scheduled run, so the core loop is off on a normal laptop. → ft-c9ff7380
+3. **B3-1** — the resume PDF (whose file name carries the owner's name) can be attached in whichever ATS tab is
+   active, and the owner is told it was *not* attached. This is live on the fallback path. → ft-60d1dc8e
+4. **A1-2** — one DevPrism death makes every daily run fail until a human restarts the daemon. → ft-84d4fe25
+5. **A1-1** — exclusions saved in Mac Settings are ignored by the daemon until a restart nobody is told to do. → ft-84d4fe25
+6. **B1-1 / A1-6** — Settings edits and extension save_search can erase each other with exit 0, across a 10 s network window. → ft-b756b6a3
+7. **A4-1** — one malformed `allowed_hosts` entry stops every run while `config check` prints ok. → ft-b756b6a3
+8. **ft-3d83** — a "review" card with three criteria unmet and unrecorded; ledger resident memory grows with every key ever seen (A2-1). → ft-3d83 (reopened)
+9. **B3-4** — there is no in-repo typecheck, HEAD already fails tsc, and the mapped-type guard that should have
+   caught B3-1 can't run. → ft-60d1dc8e
+10. **Process: the wt-jibe lane** — 8 of 15 cards wait on a 92-file uncommitted branch that also carries pre-split
+    copies of code these cards change (wire.go lazyScorer, the srcutil retry path).
 
-## 3. Top 10 Critical & High Risks
+## Cards filed
 
-### Risk 1: Asynchronous Pipe Deadlock in `VaniProcess` (`slice4-1`, P0, Critical)
-- **Evidence:** `macos/Sources/VaniApplyKit/VaniProcess.swift:51-61`
-- **Root Cause:** In `VaniProcess.run`, the reading thread sequentially blocks on `outPipe.fileHandleForReading.readData(upTo: maxOutputBytes)` before ever reading from `errPipe`.
-- **Failure Scenario:** If a subprocess (`vani draft` or `vani jobs`) writes >64 KB (macOS default pipe buffer) to `stderr` while generating output, the child process blocks in `write()` on `stderr`. Because the parent is waiting for `stdout` to reach EOF, and the child cannot proceed to produce `stdout` or exit, an unrecoverable pipe deadlock occurs. The parent thread hangs until the 150-second timeout fires, killing the child and failing the draft.
+### New (13) — label `audit-2026-10-20`
 
-### Risk 2: Digested Postings Excluded from Board Absence Reconcile Never Become Dead (`slice2-01`, P0, Critical)
-- **Evidence:** `internal/posting/posting.go:75-81`, `internal/pipeline/reconcile.go:163-168, 174-177`, `cmd/vani/jobscmd.go:42-51`
-- **Root Cause:** `posting.Status.Terminal()` defines `Digested` as terminal (`case Dead, Duplicate, Dropped, Digested`). `reconcile.go` skips all terminal postings from absence tracking (`!r.Status.Terminal()`).
-- **Failure Scenario:** When an employer deletes or unpublishes a previously digested job posting from their ATS board, the posting is excluded from `absent`, its `MissedRuns` never increments, and it never transitions to `posting.Dead`. In `cmd/vani/jobscmd.go:keptStatus()`, `Digested` is included as a kept active status. The local database permanently displays closed/filled jobs in `vani jobs list --view new`.
+| group | item_id | title (short) | prio | sev | status | wave | findings |
+|---|---|---|---|---|---|---|---|
+| G1 | ft-c9ff73806ffa9c5ed8e80b913c135b31 | Daemon scheduler waits in wall-time slices | 1 | high | ready | 1 | A1-5 |
+| G8 | ft-6dc4d776b2b04ffbdf04e58c4a315bf6 | Mac native protocol integrity (UTF-8 chunks, patch, listAnswers, draft settings) | 1 | high | ready | 1 | B2-1, B2-7, B2-8, B2-9 |
+| G6 | ft-c567ded58985474e7c2e77fecf1b874f | Rankfit/eval verdicts statistically honest | 2 | low | ready | 1 | A3-1, A3-2, A3-3, A3-9 |
+| G15 | ft-d30b8cdcf63c8f4bcf772dd775455dc8 | Benchmark baselines for the audit's perf findings | 2 | low | ready | 1 | B1-6; baselines for A2-1, A4-4, A4-5 |
+| G10 | ft-60d1dc8eb4d3065fbc0afda7a1767388 | Extension routing & trust (attachResume, tsc gate, sender policy, URL schemes) | 1 | medium | ready | 2 | B3-1, B3-4, B3-2, B3-3 |
+| G5 | ft-b6b00b08e8b50cd9613fd149c17698ec | Storage write-path gaps beside ft-bcf3 | 3 | low | ready | 2 | A2-8, A3-6, A2-3, A3-8, A2-7, A2-10 |
+| G9 | ft-bafd750094720ac26a73280954b5c717 | Mac app main-thread & subprocess boundaries | 3 | low | ready | 2 | B2-2, B2-3, B2-10, B2-4, B2-5 |
+| G2 | ft-84d4fe2545e64bdaa9678e18b45a5e6d | Daemon run lifecycle (config reload, DevPrism restart, panics, poison, warnings, batched marks) | 1 | medium | backlog | 3 | A1-1, A1-2, A1-3, A1-4, A1-9, A1-10, A2-2 |
+| G7 | ft-a1bb3507a791c0bd7301ada1eb94ec56 | Decision-prompt bounds & sensitive-field guard | 2 | low | backlog | 3 | A3-4, A3-5, A3-10 |
+| G11 | ft-debfd7bf523d636982476a176a6feb0c | CLI & digest honesty | 2 | low | backlog | 3 | B1-3, A2-9, B1-8, A2-6 |
+| G3 | ft-b756b6a3f9d316b68f53b5445feee841 | Config file boundary (locked Update, Validate↔egress, URL scrub) | 2 | medium | backlog | 4 | B1-1(=A1-6), A4-1, A4-2, B1-5, B1-7 |
+| G12 | ft-8cd27d934e1620b035a892bdaaa6357f | Store write & lock correctness in commands | 3 | low | backlog | 4 | A2-5, B1-4, B1-2, A1-8 |
+| G14 | ft-da6154b825e659d68aa9d6870b564ec5 | FOLLOWUPS bookkeeping for unrecorded declines | 3 | low | backlog | 5 | A4-3 record, ft-bcf3 c4, D17/D18, A2-4 residual, B2-6, ft-3189 c2 |
 
-### Risk 3: Stdin Pipe Deadlock in DevPrism MCP Client (`slice3-11`, P1, High)
-- **Evidence:** `internal/resume/client.go:350-362`, `internal/resume/client.go:136`
-- **Root Cause:** `writeLocked` synchronously writes JSON bytes to `cmd.StdinPipe()` while holding `c.mu.Lock()`.
-- **Failure Scenario:** If DevPrism hangs, deadlocks, or stops draining `stdin`, Go's synchronous pipe write blocks indefinitely in the kernel once the 64 KB OS buffer fills. Because pipe writes in Go standard library do not honor `context.Context`, `c.mu` is locked forever. All future calls to `Client.Close()`, `Client.Restart()`, or `Client.CallTool()` deadlock permanently.
+### Folded into existing cards (2)
 
-### Risk 4: Top-Level Window Masks Form Filling in Iframes (`slice4-2`, P1, High)
-- **Evidence:** `extension/src/content.ts:318`, `extension/src/popup.ts:13-24, 165-179`
-- **Root Cause:** In `content.ts:318`, `silent(r)` unconditionally returns `false` if `window.top === window`.
-- **Failure Scenario:** Modern ATS forms (Greenhouse, Lever, Workday) frequently embed applicant questionnaires inside `<iframe>` containers. When `popup.ts` broadcasts a `fill` message across all frames in a tab, `window.top` (having 0 fields) executes in 0ms and responds with `{ outcomes: [] }`. Because `chrome.tabs.sendMessage` resolves with the first frame response received, the popup reports "Filled 0 (0 to review)", while the actual form in the iframe responds 50ms later and is discarded.
+| group | item_id | what was added | status change |
+|---|---|---|---|
+| G4 | ft-3d83fba9b9d4b87feb9160056d072624 | Criteria 2, 4, 5 marked NOT MET (not recorded as declined); amended criteria tied to G15 numbers; Fable's build/decline per criterion; findings A2-1, A4-4, A4-5 | review → **backlog** (wave 4) |
+| G13 | ft-e97abbbf30ed5b366274a269a2b658ed | New criterion 7: Eightfold/Apple detail 404s bounded like Workday (A4-6); criterion 3 amended (page http:port refusal is deliberate, to be recorded) | review → **backlog** (wave 3) |
 
-### Risk 5: Silent Message Port Leak in Content Script Handler (`slice4-3`, P1, High)
-- **Evidence:** `extension/src/content.ts:314-325`
-- **Root Cause:** `chrome.runtime.onMessage.addListener` returns `true` (signaling an asynchronous response), but skips calling `sendResponse(r)` whenever `silent(r)` is `true`.
-- **Failure Scenario:** Subframes with 0 fields or no changes return `silent(r) == true`. Because `sendResponse` is never called, the browser keeps the internal IPC message channel open indefinitely, triggering browser console warnings ("The message port closed before a response was received") and hanging senders waiting for targeted frame replies.
+Priority and severity were kept on both; nothing was lowered.
 
-### Risk 6: Unvalidated `drop_rules.slot` Silently Classifies 100% of Jobs as `Unsure` (`slice2-02`, P1, High)
-- **Evidence:** `internal/config/config.go:627-640`, `internal/pipeline/runner.go:348-372`
-- **Root Cause:** `config.Validate()` validates `r.Slot != ""` but does not validate slot names against registered `jdtriage.Slots`.
-- **Failure Scenario:** A user configures a drop rule with a minor typo in the slot name (e.g. `slot = "seniority_level"` instead of `"seniority"`). `vani config check` passes with 0 errors. At runtime, `DropPolicy.Evaluate()` cannot find the slot in the decider answer, treats it as missing, and classifies every single job posting as `posting.Unsure`, completely breaking drop filtering and flooding the review queue.
+## Verified-stale / verification sections on review cards
 
-### Risk 7: Pipeline Circuit Breaker Swallows Errors and Publishes Empty Digest (`slice2-03`, P1, High)
-- **Evidence:** `cmd/vani/wire.go:224-273`, `cmd/vani/app.go:44-57`
-- **Root Cause:** `advanceAll` only tracks consecutive errors for `errors.Is(err, pipeline.ErrTriageUnavailable)`. All other errors reset the streak to 0 and are swallowed.
-- **Failure Scenario:** If DevPrism scoring is down or the explainer crashes, 100% of eligible postings fail advancement. `advanceAll` logs warnings but returns `nil` at line 272. `app.go` proceeds straight to `w.PublishDigest(ctx)`, notifying the user that zero jobs matched and completely masking the external service failure.
+Every review card now carries a "Verification 2026-10-20" section, with each criterion prefixed by its verdict.
 
-### Risk 8: Daemon Permanently Bricks DevPrism Scoring on Transient Startup Error (`slice2-04`, P1, High)
-- **Evidence:** `cmd/vani/wire.go:585-610`, `cmd/vani/main.go:240-257`
-- **Root Cause:** `lazyScorer` uses `sync.Once` across the entire lifetime of `*wired`.
-- **Failure Scenario:** When `vani daemon` starts, if DevPrism fails on its very first attempt (e.g. temporary binary lock, reboot race), `s.err` is latched permanently. On day 2, day 3, and all future scheduled runs, `lazyScorer.get()` returns the cached error without ever attempting to start DevPrism again until the daemon is killed.
+| card | result |
+|---|---|
+| ft-02a32a35 subprocess deadlocks | 4/4 MET (Swift tests 6/6; Go resume tests pass). Residual SIGKILL/exit bound → G9 |
+| ft-b31f1578 reconcile Digested→Dead | 3/3 MET (tests pass). reconcile.go is dirty in wt-jibe; re-verify after it lands |
+| ft-edfabd86 extension frames | 5/5 MET. **Stale log claim:** "tsc is clean" is false at HEAD (attachResume landed after) → G10 |
+| ft-5d181a02 drop rules / breaker / lazyScorer | 3/3 MET. Adjacent gap, a DevPrism dying mid-life → G2 |
+| ft-d74590ed egress CONNECT/SSRF | 5/5 MET (c1 "in effect": Go net/http already takes the CONNECT target from the request line) |
+| ft-3189102e siteKey / title norm | c1 MET; c2 PARTIAL (14 second levels only; limitation to record); c3 not re-verified |
+| ft-e97abbbf sources resilience | c1,2,4,5,6 MET; c3 PARTIAL by design; class gap folded as c7 → **backlog** |
+| ft-bcf3eb75 storage atomicity | c1–3 MET; **c4 NOT MET as written** (every 16 blocks + final; better than written; amendment pending) |
+| ft-1045267a portability / vault / host | c1–4, 6 MET; c5 PARTIAL (device declined D17); c7 NOT MET, declined D18 (reasoning verified; recorded only in code) |
+| ft-3d83fba9 LCA view / memory | c1, c3 MET; **c2, c4, c5 NOT MET, not recorded** → **backlog** |
+| ft-ade10aab Mac models / polling / RO CLI | c1 declined (recorded); c2–5 MET (c2 purpose half-met: bank.json tick → G9) |
+| ft-df45cd8e prompt framing / clamp / kbsync | c1, c2 PARTIAL (declined parts recorded); c3–5 MET; fixture sha pin MET |
+| ft-2a0aff54 benchmarks / marks | c1, c3, c5 MET; c4 declined (recorded); c2 not re-verified |
+| ft-7099bd3b (owner-written backlog) | **not touched.** Recommendation only (A3-3 vs its criterion 6), see owner decision 11 |
 
-### Risk 9: Multi-Part ccTLD Suffix Collision in WebExtension Form Signatures (`slice4-5`, P1, High)
-- **Evidence:** `extension/src/normalize.ts:107-111`, `extension/src/match.ts:80-83`
-- **Root Cause:** `siteKey(host)` takes `parts.slice(-2).join(".")` blindly.
-- **Failure Scenario:** For domains operating under two-part ccTLDs (e.g. `jobs.companyA.co.uk` and `jobs.companyB.co.uk`), `siteKey` extracts `"co.uk"`. Field signatures are recorded under `"co.uk|<field_id>"`. When the user applies to Company B, Tier 1 signature matching treats Company B as the identical site as Company A, cross-filling Company A's custom answers into Company B's form.
+## Build order (Fable): waves of ≤4, no shared files inside a wave
 
-### Risk 10: CONNECT Proxy Request Parsing RFC 9110 Violation & Smuggling (`slice1-1`, P1, High)
-- **Evidence:** `internal/egress/proxy.go:238-246, 263`
-- **Root Cause:** Destination host and port are extracted from `r.Host` via `net.SplitHostPort(r.Host)` rather than the request-target line per RFC 9110 §9.3.6.
-- **Failure Scenario:** Standard HTTP clients omitting port 443 in the `Host:` header (e.g. `CONNECT allowed.com:443 HTTP/1.1\r\nHost: allowed.com\r\n`) trigger a 400 Bad Request error ("missing port in address"). In addition, intermediaries sending differing request-target and `Host` headers dial based on `Host:`, exposing virtual host desynchronization.
+| wave | cards | gate |
+|---|---|---|
+| 1 | G1 ft-c9ff7380 · G15 ft-d30b8cdc · G8 ft-6dc4d776 · G6 ft-c567ded5 | now: no wt-jibe file, file-disjoint |
+| 2 | G10 ft-60d1dc8e · G5 ft-b6b00b08 · G9 ft-bafd7500 | after wave 1 (G10 and G9 share store.ts/BankStore.swift with G8) |
+| 3 | G2 ft-84d4fe25 · G7 ft-a1bb3507 · G13 ft-e97abbbf · G11 ft-debfd7bf | **after wt-jibe lands** |
+| 4 | G3 ft-b756b6a3 · G4 ft-3d83fba9 · G12 ft-8cd27d93 | after wave 3 |
+| 5 | G14 ft-da6154b8 (docs/FOLLOWUPS.md only) | last, once the G4/G13 decisions are final |
 
----
+Fable showed the shared-file check per wave in FABLE.md §4: wire.go, app.go and main.go are touched only by G2 in
+wave 3; config.go only by G3 in wave 4; ledger/file.go by G5 (wave 2) and G4 (wave 4). If wt-jibe stalls, G7 and the
+ledger/lca half of G4 can start in worktrees and rebase.
 
-## 4. GitPulse Task Backlog (All 13 Cards Filed)
+## Rejected findings
 
-| Wave | Task ID | Item ID | Title | Priority | Severity | Planned Files |
-| :---: | :--- | :--- | :--- | :---: | :---: | :--- |
-| **W1** | `gp-pipe-deadlock-immunity` | `ft-02a32a35fe28ae1664551c412941a273` | Eliminate subprocess pipe and stdin deadlocks in VaniProcess and resume Client | P0 | Critical | `macos/Sources/VaniApplyKit/VaniProcess.swift`, `internal/resume/client.go` |
-| **W1** | `gp-posting-lifecycle-reconcile` | `ft-b31f157835e8b1fd943c80a825286ba2` | Track absent Digested postings in reconcile and fix retriage accounting | P0 | Critical | `internal/posting/posting.go`, `internal/pipeline/reconcile.go`, `internal/pipeline/retriage.go`, `cmd/vani/jobscmd.go` |
-| **W1** | `gp-ext-frame-port-lifecycle` | `ft-edfabd86f822e6bd834f897f3802cdd0` | Fix WebExtension iframe masking, port leaks, message routing, and type shims | P1 | High | `extension/src/content.ts`, `extension/src/popup.ts`, `extension/src/background.ts`, `extension/src/chrome.d.ts` |
-| **W2** | `gp-pipeline-circuit-breaker` | `ft-5d181a0230b1576803bf6f393161a159` | Harden pipeline drop rule validation, advance circuit breaker, and daemon lazyScorer retry | P1 | High | `internal/config/config.go`, `cmd/vani/wire.go`, `cmd/vani/app.go` |
-| **W2** | `gp-egress-rfc-ssrf-hardening` | `ft-d74590ed099a1fb44f66be99ca7c712f` | Align CONNECT proxy with RFC 9110, fix FQDN dot dial, enforce tunnel pacing, and block NAT64 SSRF | P1 | High | `internal/egress/proxy.go`, `internal/egress/proxy_dial.go`, `internal/egress/client.go` |
-| **W2** | `gp-cctld-title-normalization` | `ft-3189102eda5dfcfab5fe9039cc3405ad` | Support multi-part ccTLDs in siteKey and preserve technical language punctuation in title norm | P1 | High | `extension/src/normalize.ts`, `internal/posting/posting.go` |
-| **W3** | `gp-ats-page-ingestion-resilience` | `ft-e97abbbf30ed5b366274a269a2b658ed` | Tolerate 404s in Workday detail, fix relative URLs, handle HTTP links, and enhance JSON-LD parsing | P1 | High | `internal/sources/workday/workday.go`, `internal/sources/page/page.go`, `internal/sources/page/jsonld.go`, `internal/sources/srcutil/srcutil.go` |
-| **W3** | `gp-storage-atomicity-durability` | `ft-bcf3eb75c7687cc418557351e1a61c7d` | Harden atomic directory fsync, ledger truncate recovery, EOF replay durability, and kbsync state batching | P1 | High | `internal/lca/index.go`, `internal/ledger/file.go`, `internal/marks/marks.go`, `internal/kbsync/apply.go`, `internal/kbsync/state.go` |
-| **W3** | `gp-cross-platform-portability-security` | `ft-1045267a269b4250341c5d5d69acf653` | Enable Windows/Linux portability for flock, paths, and localserver, and secure vault allowlist and native host | P1 | High | `internal/ledger/file.go`, `internal/marks/marks.go`, `internal/vault/vault.go`, `internal/sources/page/exec.go`, `internal/localserver/localserver.go`, `internal/config/config.go`, `macos/Sources/vani-apply-host/main.swift` |
-| **W4** | `gp-lca-binary-view-opt` | `ft-3d83fba9b9d4b87feb9160056d072624` | Compile compact binary view for LCA, eliminate JSON re-checksumming, and index reconcile tuples | P2 | High | `internal/lca/index.go`, `internal/lca/view.go`, `internal/employer/index.go`, `cmd/vani/wire.go`, `internal/pipeline/reconcile.go`, `internal/ledger/file.go`, `internal/sources/srcutil/srcutil.go` |
-| **W4** | `gp-mac-app-state-decoupling` | `ft-ade10aab983419e9bd4a0fcb722d74ac` | Decouple Mac app models for testing, throttle activity polling, and allow concurrent read-only CLI commands | P2 | Medium | `macos/Sources/VaniApply/AppModel.swift`, `macos/Sources/VaniApply/ActivityView.swift`, `macos/Sources/VaniApplyKit/BankStore.swift`, `macos/Package.swift`, `cmd/vani/main.go`, `cmd/vani/wire.go` |
-| **W4** | `gp-llm-prompt-kbsync-confirm` | `ft-df45cd8e6e42605f5bd983d5e9677aa4` | Frame trusted facts outside untrusted prompt delimiters, clamp tokens, and support kbsync migrations | P2 | Medium | `internal/decide/jdreasons/jdreasons.go`, `internal/decide/llmbackend/llm.go`, `internal/eval/report.go`, `internal/kbsync/apply.go`, `internal/kbsync/blocks.go` |
-| **W4** | `gp-perf-benchmark-baselines` | `ft-2a0aff5427a893bd2d218b958dbf01ec` | Establish committed benchmark baselines, optimize htmltext memory, and add marks compaction | P2 | Medium | `internal/sources/htmltext/htmltext.go`, `internal/sources/htmltext/htmltext_test.go`, `internal/posting/posting_test.go`, `internal/marks/marks.go`, `extension/src/extract.ts` |
+| id | reason |
+|---|---|
+| A1-7 OpenRouter spend cap overshoot | By design and recorded (decide/spend.go:40-44; FOLLOWUPS:472-477). Belongs in the decide repo if pursued. |
+| A3-7 drop class names the slot | Recorded owner design (eval/queue.go:20-25; RANKING_PLAN.md:182-183): names backend and slot, never a value; slot names are the pinned public contract. |
+| A4-7 proxy token in lightpanda argv | Already a recorded known limit (FOLLOWUPS:929-933). |
+| A4-3 Workday half ("404 not logged") | Wrong: runwire.go:162-167 wires Report to warnf; workday.go:200-206 reports Gone:N. The page half is kept (G13/G14). |
+| B2-6 native host origin check | Not a defect: the D18 reasoning holds (argv comes from the launcher; Chrome enforces allowed_origins). A parent-signature check is a new optional control → owner decision 7. |
+| A2-4 empty listing ages the board | Downgraded to an owner question: the contract is recorded (FOLLOWUPS:822-832) and page.go refuses an empty match. Residual → owner decision 6 / G14. |
+| Relabels (kept as findings) | B2-2, A1-8, A1-2 are adjacent gaps, not stale claims, because the cited criteria are MET as worded. A3-1's Platt sub-claim was dropped. A3-5 was rejected *as a personal-data leak*; its regex gaps, false UI text and attestation draft are kept. |
 
----
+## Decisions made without asking (logged)
 
-## 5. Verified-Stale Cards
+1. **Scope of "audit":** main @ d5c4097 only. wt-jibe's 92 uncommitted files, including the new `cmd/vani/keychain.go` and
+   `internal/vault/modelkey.go`, were not audited; findings in those files are tagged in-flight.
+2. **B2-1 data loss did not stop the run.** The stop rule covers data loss; I read it as "stop before an action of mine
+   could cause or expose data loss". Filing a card is non-destructive, and the bug is live either way, so I filed it
+   at p1/high and put the only decision it needs (repairing already-damaged banks) at the top of the owner list.
+3. **Overwrite safety:** I tested overwrite on one card (ft-5d181a02) and re-read it before touching the rest. Logs,
+   column and position were preserved, so the other 12 overwrites went ahead.
+4. **ft-3d83 and ft-e97a moved review → backlog.** Unmet or newly added criteria scheduled for waves 3–4 shouldn't sit
+   in "review" (the claimed-done column). No card was moved to done; done needs Manvi verification.
+5. **Criterion marks:** existing criteria text was kept verbatim with a `[MET — verified in source]`, `[PARTIAL …]`,
+   `[NOT MET …]` or `[not re-verified]` prefix. Amendments were appended after "— amended 2026-10-20:", not substituted.
+6. **related_tasks_exist refusals:** every listed card had been read in full this session, and Fable had already
+   judged each group separate work, so I retried with `reviewed_related` instead of folding. The new cards name the
+   related cards in their descriptions.
+7. **New cards' status:** waves 1–2 are `ready` (no in-flight files); waves 3–5 are `backlog` (blocked on wt-jibe).
+8. **Fable's design calls, adopted:** A1-1 reloads config per run; A2-7 makes rekey refuse on Windows; B1-3 makes `track
+   use` refuse unless `--allow-unchecked`; G11 runs at p2 (Opus had p3); the ft-3d83 criteria are built or declined
+   depending on the G15 numbers.
+9. **ft-7099 (owner-written)** was not modified.
+10. **Tool gaps worked around:** GitPulse `active_changes` was rate-limited until the third retry (the in-flight list
+    is in the scratchpad's INFLIGHT.md). Most DevMap neighbor and impact walks came back `walk_incomplete`, and DevMap
+    doesn't resolve `chrome.*` receivers or prove Swift's confident tier. Many caller claims therefore rest on `rg`
+    (some with `-uu`) and are labelled that way in the findings files. The shell gate blocked `git -C`,
+    out-of-repo `go run` and tsc, so A2-3 and A2-7 were settled from stdlib source rather than executed, and tsc
+    wasn't run.
 
-- **Initial Board State:** 0 cards were present on the GitPulse board when the audit commenced (`repository: null` / `returned: 0`).
-- **Result:** No cards required marking `[MET — verified in source]` or updating. All 13 cards represent fresh, verified audit findings.
+## Owner decisions — decided by Fable under delegation (2026-10-21)
 
----
+The owner delegated these to Fable ("For decision ask fable"). Full reasoning:
+`…/scratchpad/audit/FABLE-DECISIONS.md`. Each decision is appended to its card under "### Owner decision (Fable,
+delegated 2026-10-21)", and criteria were replaced where noted. **One item stays with the owner:** carrying out any
+restore or repair of the live bank (part of decision 1).
 
-## 6. Fable's Waves & Build Order
+| # | decision | cards updated |
+|---|---|---|
+| 1 | B2-1: a read-only U+FFFD scan is step 0 of G8, run before any edit and again after the fix. It outputs counts, sizes and field keys only, never answer text, and a scan that could not run is logged as such. Correction: quarantined banks are sibling `bank.corrupt-*.json` files, not a directory. If damage is found, the builder stops and you repair (by hand in the app by default, with a Time Machine copy as reference); nothing is ever auto-rewritten. **Doing the restore or repair is yours, not delegated.** | ft-6dc4d776 (criterion 5 replaced) |
+| 2 | ft-bcf3 c4 amended to "at most ceil(n/16)+1 writes per pass"; no rebuild; recorded via G14 | ft-bcf3eb75 (c4 replaced), ft-da6154b8 |
+| 3 | ft-3d83: build c4; build c2 only if G15 measures BenchmarkLoad ≥100 ms (the builder applies this without asking); decline c5, reopening if any board body reaches 32 MiB | ft-3d83fba9 (c5 replaced) |
+| 4 | TypeScript devDependency **approved**: exact pin read from the registry at build time, `"private": true`, devDependency only, committed `bun.lock`, `--frozen-lockfile`, the installed `tsc` (never `bunx`), `node_modules` gitignored, nothing shipped in the bundle. Security impact: build-time only; no access widened. | ft-60d1dc8e (c2 replaced) |
+| 5 | Delete the three unsent message types, their handlers and the now-callerless `store.queryCandidates`/`store.listAnswers` (keep the `patchAnswers` function). G8 clamps the native ops, and a follow-up card deletes them after G10. | ft-60d1dc8e (c3 replaced), ft-6dc4d776 |
+| 6 | A2-4 empty-listing floor declined; recorded via G14 | ft-da6154b8 |
+| 7 | B2-6 signature check and `#if DEBUG` gating declined; security impact: none; revisit trigger named; recorded via G14 | ft-da6154b8 |
+| 8 | A1-1: reload config per run confirmed | ft-84d4fe25 |
+| 9 | A2-7: rekey refuses on Windows confirmed; recorded via G14 | ft-b6b00b08, ft-da6154b8 |
+| 10 | B1-3: `--allow-unchecked` refusal confirmed; the words file is not required | ft-debfd7bf |
+| 11 | ft-7099 criterion 6 **not amended**; the pre-registered 30-item held-out split is a Lappi-decision matter, so A3-3 stays on G6. A note only was appended to your card; its criteria are unchanged (re-read to confirm). | ft-7099bd3b (note), ft-c567ded5 |
+| 12 | G13 criterion 7 stays on ft-e97a in wave 3; it is not handed to wt-jibe. It may start in a worktree if wt-jibe hasn't landed when wave 2 ends. | ft-e97abbbf |
 
-To guarantee conflict-free concurrent and sequential implementation, Fable organized the cards into **4 waves** of ≤ 4 cards each, with **zero overlapping planned files** within any single wave:
+Board writes on 2026-10-21: 12 card overwrites, each re-pulled first with revisions unchanged. Log, column and
+position were preserved.
 
-### Wave 1: Urgent Critical & Core Stability (3 cards)
-- `gp-pipe-deadlock-immunity` (`VaniProcess.swift`, `resume/client.go`)
-- `gp-posting-lifecycle-reconcile` (`posting.go`, `reconcile.go`, `retriage.go`, `jobscmd.go`)
-- `gp-ext-frame-port-lifecycle` (`content.ts`, `popup.ts`, `background.ts`, `chrome.d.ts`)
-*Verification: Swift/Go IPC vs Pipeline Reconcile vs TypeScript Extension. Zero shared files.*
+## Owner decisions as originally listed (2026-10-20, superseded by the table above)
 
-### Wave 2: Network, Ingestion & Pipeline Robustness (3 cards)
-- `gp-pipeline-circuit-breaker` (`config.go`, `wire.go`, `app.go`)
-- `gp-egress-rfc-ssrf-hardening` (`proxy.go`, `proxy_dial.go`, `client.go`)
-- `gp-cctld-title-normalization` (`normalize.ts`, `posting/posting.go`)
-*Verification: Config/Wire vs Egress Network vs Extension Normalize. Zero shared files.*
+1. **B2-1 recovery (G8, before it lands):** run a read-only scan of the live `bank.json` and the quarantine dir for
+   U+FFFD. If it finds damage, choose between restoring from a pre-corruption copy, hand-fixing the affected answers,
+   or accepting the loss. The fix itself needs no decision.
+2. **ft-bcf3 criterion 4:** amend it to "no per-block save; at most ceil(n/16)+1 writes per pass" and record it
+   (recommended), or rebuild the batching as a single write.
+3. **ft-3d83 criteria 2/4/5:** build c4 (in-memory eviction); build c2 only if G15 measures LCA Load above 100 ms;
+   decline and record c5 (recommended). The alternative for c4 is events.jsonl compaction, which is larger and
+   rewrites the on-disk history.
+4. **TypeScript devDependency (G10):** `bun add -d typescript` creates extension/package.json and a lockfile. This is
+   a new dependency (recommended: add it). The alternative is a script that never reports "ok" when tsc is absent.
+5. **Delete the three unsent extension message types** (queryCandidates, listAnswers, patchAnswers-as-message). The
+   evidence is rg, not the code graph. Recommended: delete in the extension; clamp, don't delete, the native op.
+6. **A2-4 residual:** should a board with ≥M open records that suddenly lists 0 be treated as suspect rather than
+   aged? Recommended: decline and record.
+7. **B2-6:** add a parent-process code-signature check to vani-apply-host and compile its test flags only under
+   `#if DEBUG`? Recommended: decline for now and record.
+8. **A1-1 (G2):** object now if you'd rather "document that the daemon needs a restart" than reload config per run.
+9. **A2-7 (G5):** object now if you'd rather support rekey on Windows than refuse there.
+10. **B1-3 (G11):** object now if you'd rather require the words file than add a `--allow-unchecked` refusal.
+11. **ft-7099 criterion 6 (your card):** consider sizing the held-out split above MinPromotionLabels plus allowed
+    skips. If you do, drop A3-3 from G6.
+12. **G13 placement:** keep criterion 7 on ft-e97a (done), or hand it to the wt-jibe session, which is already editing
+    eightfold.go and apple.go.
 
-### Wave 3: Ingestion Resilience, Data Durability & Platform Portability (3 cards)
-- `gp-ats-page-ingestion-resilience` (`workday.go`, `page.go`, `jsonld.go`, `srcutil.go`)
-- `gp-storage-atomicity-durability` (`lca/index.go`, `ledger/file.go`, `marks.go`, `kbsync/apply.go`, `kbsync/state.go`)
-- `gp-cross-platform-portability-security` (`vault.go`, `page/exec.go`, `localserver.go`, `vani-apply-host/main.swift`)
-*Verification: Scraping Sources vs Storage Files vs Platform Wrappers. Zero shared files.*
+No Opus/Fable disagreement changes scope. Fable raised G11's priority and noted ft-ade10 c2's purpose clause; the
+work is the same either way.
 
-### Wave 4: Scalability, Client Architecture & Benchmarks (4 cards)
-- `gp-lca-binary-view-opt` (`lca/view.go`, `employer/index.go`)
-- `gp-mac-app-state-decoupling` (`AppModel.swift`, `ActivityView.swift`, `BankStore.swift`, `Package.swift`)
-- `gp-llm-prompt-kbsync-confirm` (`jdreasons.go`, `llmbackend/llm.go`, `eval/report.go`, `kbsync/blocks.go`)
-- `gp-perf-benchmark-baselines` (`htmltext.go`, `marks.go`, `extract.ts`)
-*Verification: Binary Views vs Mac AppKit vs LLM Prompting vs Benchmarks. Zero shared files.*
-
----
-
-## 7. Rejected / Non-Defect Findings
-
-- **`slice3-15`: Architectural Discrepancy (SQLite Ledger vs JSONL)**
-  - *Finding Description:* The audit scope prompt described `internal/ledger` as an SQLite ledger with migrations and `internal/lca` as supporting wage lookups.
-  - *Evaluation:* Direct inspection of `internal/ledger/types.go:1-4` and `CLAUDE.md` confirms that Vani's ledger is intentionally designed as an append-only JSONL file where all state is derived in memory. DOL LCA disclosure import intentionally captures counts rather than wages to keep lookups fast.
-  - *Verdict:* **Rejected as a code defect.** No code is broken; JSONL is the intended architectural design. No task card filed for converting the ledger to SQLite.
-
----
-
-## 8. Decisions Made Without Asking (Autonomy Log)
-
-1. **Subagent Model Tier Inheritance:** Used `inherit` model selection across all 4 subagent invocations per engineering instructions.
-2. **Task Grouping over Fragmentation:** Collapsed 57 verified findings into 13 concern-centric task cards rather than cluttering the board with 57 single-issue cards.
-3. **Card Priority Assignments:** Upgraded `VaniProcess` pipe deadlock (`slice4-1`) and `Digested` absence reconcile exclusion (`slice2-01`) to Priority 0 (Critical), as both cause unrecoverable hangs or silent permanent data staleness.
-4. **Resolution of Related Task Refusals:** When `gitpulse_add_task` returned `related_tasks_exist` refusals due to shared audit tags and common words (e.g. "harden", "eliminate", "reconcile", "kbsync"), verified the distinct scope of each card and retried with `reviewed_related` explicitly naming every listed item ID.
-5. **Committed Benchmark Baseline Card:** Added Card 13 (`gp-perf-benchmark-baselines`) as instructed by Fable, ensuring that performance findings (`htmltext.Text` allocations, DOM scanning, marks replay) carry committed regression benchmarks.
-
----
-
-## 9. Owner Decisions Needed Before Building
-
-1. **`kbsync` Confirmation on Duplicate Work History Blocks:**
-   - As documented in `docs/FOLLOWUPS.md`, 5 of rkb's 8 `work` blocks duplicate 4 existing DevPrism `experience` blocks in `career.db` (holding 8 bullets and 4 facts not in rkb).
-   - Before building Card 12 (`gp-llm-prompt-kbsync-confirm`), the owner must decide whether to migrate the 8 bullets into rkb or delete the 4 old blocks in DevPrism. A backup of `career.db` is mandatory before the first live sync.
-2. **Decide Module Egress Convergence:**
-   - Egress logic in `internal/egress` re-implements `manvi/fetch` policy because `manvi/fetch` was GET-only. Converging egress with Manvi requires a Manvi library change and Jarvis pin bump. Card 5 implements local egress fixes without breaking the existing contract.
-3. **Lappi Triage Family Training:**
-   - Lappi-decision currently has no trained `career.jd_triage` model. The pipeline currently runs `liquid/d1-ultra` over Decisions API. No code changes required until Lappi training is scheduled by the owner.
-
----
-
-*End of Audit Report. Ready for instructions to begin building.*
+Stopped here, awaiting your go-ahead to build.
