@@ -713,3 +713,69 @@ describe("scraped links are http(s) or empty", () => {
     expect(exportJobsAsJSON(r.jobs)).not.toContain("javascript");
   });
 });
+
+describe("adversarial: scraped link shapes", () => {
+  const posting = (url: unknown) => makeDoc([
+    el("script", { type: "application/ld+json" }, JSON.stringify({ "@type": "JobPosting", title: "Backend Engineer", description: "Go services", hiringOrganization: { name: "Acme" }, url })),
+  ]);
+  const jobs = (url: unknown) => scrapePageJobs(posting(url), "acme.com").jobs;
+  const urlOf = (url: unknown) => jobs(url)[0]!.url;
+  const isHttp = (u: string) => u === "" || /^https?:\/\//.test(u);
+
+  test("scheme tricks: no host, protocol-relative, case, tab/newline smuggling, blob, about, chrome-extension, vbscript", () => {
+    for (const bad of ["javascript:alert(1)", "java\nscript:alert(1)", "java\tscript:alert(1)", "java\r\nscript:alert(1)", "\u0000javascript:alert(1)",
+      "vbscript:msgbox(1)", "blob:https://acme.com/1", "about:blank", "about:srcdoc", "chrome-extension://abc/popup.html", "moz-extension://abc/x", "safari-web-extension://abc/x", "chrome://settings", "view-source:https://acme.com", "ws://acme.com/x", "wss://acme.com/x", "tel:+15555550100"]) {
+      expect([bad, urlOf(bad)]).toEqual([bad, ""]);
+    }
+    // These parse as http(s) in the URL parser (the scheme is folded, whitespace dropped, a missing host after a special scheme is read from what follows).
+    for (const odd of ["https:", "jav&#x61;script:alert(1)", "javascript\u200b:alert(1)", "HTTPS://acme.com/jobs/1", "\thttps://acme.com/jobs/1", " https://acme.com/jobs/1", "https:acme.com/jobs/1", "http:/acme.com/jobs/1", "https:///acme.com/jobs/1", "//acme.com/jobs/1"]) {
+      const u = urlOf(odd);
+      expect([odd, isHttp(u)]).toEqual([odd, true]);
+    }
+    // No usable host at all: refused.
+    for (const nohost of ["http:", "https://", "http://:80", "http://?x", "https://#frag", "http://[::1"]) {
+      expect([nohost, urlOf(nohost)]).toEqual([nohost, ""]);
+    }
+  });
+
+  test("a protocol-relative '//evil' link resolves against the page's scheme: it is http(s), on whatever host it names (the page's own listing)", () => {
+    const u = urlOf("//evil.example/jobs/1");
+    expect(u).toMatch(/^https?:\/\/evil\.example\/jobs\/1$/);
+  });
+
+  test("a relative link resolved against a hostile base (javascript:, data:, about:blank) is empty, never that base", () => {
+    const saved = (globalThis as { location?: unknown }).location;
+    try {
+      for (const href of ["javascript:alert(1)", "data:text/html,x", "about:blank", "blob:https://acme.com/1", "chrome-extension://abc/popup.html"]) {
+        (globalThis as { location?: unknown }).location = { href, hostname: "acme.com" };
+        for (const rel of ["/jobs/1", "jobs/1", "?id=1", "#x", ""]) {
+          const u = urlOf(rel === "" ? undefined : rel);
+          expect([href, rel, isHttp(u)]).toEqual([href, rel, true]);
+        }
+      }
+    } finally {
+      (globalThis as { location?: unknown }).location = saved;
+    }
+  });
+
+  test("a JSON-LD url that is an array, object, number, boolean or null never yields a non-http(s) link", () => {
+    for (const v of [["https://acme.com/a", "javascript:alert(1)"], ["javascript:alert(1)"], { "@id": "javascript:alert(1)" }, { url: "javascript:alert(1)" }, 42, true, null, [], {}, [[]], "[object Object]"]) {
+      const j = jobs(v);
+      expect(j.length).toBe(1);
+      expect([JSON.stringify(v), isHttp(j[0]!.url)]).toEqual([JSON.stringify(v), true]);
+      expect(j[0]!.url).not.toMatch(/javascript/i);
+    }
+  });
+
+  test("an extremely long url (1 MB) neither throws nor produces a non-http(s) link, and its size is bounded for the ingest message", () => {
+    for (const long of [`https://acme.com/${"a".repeat(1_000_000)}`, `javascript:${"a".repeat(1_000_000)}`, `/${"a".repeat(1_000_000)}`]) {
+      const j = jobs(long);
+      expect(j.length).toBe(1);
+      expect(isHttp(j[0]!.url)).toBe(true);
+    }
+    // the ingest bound (2048 bytes) refuses what is too long rather than truncating it into another link
+    const long = jobs(`https://acme.com/${"a".repeat(1_000_000)}`)[0]!;
+    const r = prepareIngest({ pageUrl: "https://acme.com/careers", pageTitle: "Jobs", jobs: [long] }, false);
+    expect(JSON.stringify(r)).not.toContain("a".repeat(4096));
+  });
+});
