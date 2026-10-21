@@ -1,12 +1,67 @@
 # Vani build report — 2026-10-21
 
-Backlog worked in AUDIT_REPORT.md's wave order (waves 1–2 complete, wave 3 partly started). Every card below went
-through the same loop: an Opus brief, a Sonnet build in its own worktree, and a separate Sonnet adversarial pass. Any
-break went back for a fix. Opus reviewed every diff, and Fable made the judgement calls.
+## Current status (end of session, main @ 7e9ce14, local, not pushed)
 
-**Nothing is merged to `main`.** Merging needs your approval. Every result lives on a worktree branch under
-`.claude/worktrees/`, listed with its final commit. Done is evidence-gated by Manvi, so every card sits in **review**.
-None was moved to done.
+**Every audit card the session could build is built, verified and merged to `main`, on your instructions ("merge all",
+"build on main anyway", "leave no gaps").** The history below is the log of how it got there; its "nothing is merged"
+and "merge-approval ask" sections describe the morning state.
+
+- **On main:**
+  - Audit waves 1–5: G1, G15, G8, G6, G5, G10, G9, G4, G13, G2, G7, G11, G3, G12 and G14.
+  - Follow-ups:
+    - ft-5ddec968 (native op deletion) and ft-fa1f7de7 (notify flake).
+    - ft-2673557b (jobs mark/find, now with a scoped ledger read).
+    - ft-0aa92138 (no gap; regression tests).
+    - ft-a343da41 (loose ends).
+    - ft-22d7da5f (symlink-safe atomic writes).
+    - The fieldtriage guard speedup and the rankfit objective speedup.
+  - Each passed an adversarial pass, and every break went back for a fix. That covers everything except the
+    test-only, deletion-only and behaviour-preserving cards, which are stated on their cards.
+- **Last full checks on main:**
+  - Go: `go vet ./...` clean and `go test ./...` with no FAIL, at 0c27a13 with only docs after it.
+  - Swift: `swift test` with 544 run, 7 skipped and 0 failed, at 52f218b. Later merges touched no Swift.
+  - Extension: typecheck gate ok and `bun test` with 1,191 pass and 0 fail, at e5a0ab0. Later merges touched no
+    extension code.
+- **Board:** every built card is in **review**. Done is gated on a Manvi verification record, and Manvi's task store
+  doesn't know GitPulse task ids (`manvi tool devcouncil_get_task` returns "no task ft-…"). No card filed through
+  GitPulse can reach done from an agent session. That is a GitPulse↔Manvi integration gap, recorded in
+  docs/FOLLOWUPS.md.
+- **Branches and worktrees:** all agent branches were merged or patch-equivalent and are deleted, except four whose
+  worktrees are harness-locked (all merged; remove them with `git worktree remove -f -f`). Some half-deleted
+  directories remain under `.claude/worktrees/`, held by Finder `.DS_Store`.
+
+### Still open: needs you, or can't be done from here
+1. **ft-8d8ca2ea, "A clean clone of Vani cannot build".** `go.mod` replaces `decide` and `tessl` with relative
+   sibling paths, and Manvi needs the ignored `go.work`. The repo rules forbid editing `go.mod`/`go.work` without
+   you, so choose pinning, vendoring, a committed workspace, or a named path layout. Every agent worktree today hit
+   this.
+2. **ft-52b6e7d3, "Decide how v0.1.0 is signed, published, and rolled back".** This is a release decision.
+3. **G1 hardware check.** Run a `pmset` sleep check across a scheduled minute. I didn't, because sleeping the Mac
+   suspends the live sessions.
+4. **G8 install and rescan.** Install the built `macos/build/Vani Apply.app`, which replaces
+   `/Applications/Vani Apply.app` and re-registers its agent and Chrome link. Then run
+   `python3 -I tmp/scan/fffd_scan.py "$HOME/Library/Group Containers/HAUHVD8M37.dev.vbcr.vani/apply"`. Both scans so
+   far show 0 U+FFFD.
+5. **ft-2673557b on a quiet machine.** `jobs mark`/`find` measured 90/94 ms min at load 17–20, under the 250 ms target.
+   The machine never went quiet (load 17–89 all day), so the number carries a load caveat.
+6. **wt-jibe** (`tmp/wt-jibe`, 92 uncommitted files, idle since 2026-10-20). It will conflict on everything built on
+   main today: config, daemon wiring, digest, sources, fieldtriage, kbmatch and FOLLOWUPS. G3's criterion 6 (its
+   config writers) can only be closed when it lands.
+7. **Manvi↔GitPulse verification gap** (above). Until it's resolved, cards stay in review.
+8. **Cleanup.** Remove the four locked worktrees and the half-deleted `.claude/worktrees/agent-*` directories, which
+   needs `rm -rf`; the gate holds it for me.
+
+---
+
+# Session log
+
+Backlog worked in AUDIT_REPORT.md's wave order. Every card below went through the same loop: an Opus brief, a Sonnet
+build in its own worktree, and a separate Sonnet adversarial pass. Any break went back for a fix. Opus reviewed every
+diff, and Fable made the judgement calls.
+
+**(Morning state)** Nothing merged to `main` yet. Merging needed your approval. Every result lived on a worktree
+branch under `.claude/worktrees/`, listed with its final commit. Done is evidence-gated by Manvi, so every card sat in
+**review**.
 
 ## Merge-approval ask (Fable's order)
 
