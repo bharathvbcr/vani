@@ -169,7 +169,9 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			// new answer abstained on) is forgotten, so the eval never pairs
 			// this run's primary with another run's shadow.
 			for k := range rec.Annotations {
-				if _, set := ann[k]; !set && strings.HasPrefix(k, ledger.AnnTriagePrefix) {
+				if _, set := ann[k]; !set && (strings.HasPrefix(k, ledger.AnnTriagePrefix) || k == ledger.AnnCategory) {
+					// The category is derived from the triage.category reading
+					// (triageAnnotations), so an answer with none forgets it too.
 					ann[k] = ""
 				}
 			}

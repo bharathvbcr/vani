@@ -310,13 +310,6 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		if s, err = e.openEvalStore(labels); err != nil {
 			return auditAnswerJSON{}, err
 		}
-		done, _, err := s.Labels()
-		if err != nil {
-			return auditAnswerJSON{}, fmt.Errorf("labels unreadable, refusing to answer: %w", err)
-		}
-		if _, ok := done[k].Labels[eval.WouldApply]; ok {
-			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is already answered", k)
-		}
 		b, err := e.browse()
 		if err != nil {
 			return auditAnswerJSON{}, err
@@ -340,16 +333,24 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 	if !ok {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}
-	entry := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
-	if err := entry.Validate(); err != nil {
+	answer := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
+	if err := answer.Validate(); err != nil {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %w", err)
 	}
 	hash, err := s.PutText(r.Posting.Description)
 	if err != nil {
 		return auditAnswerJSON{}, err
 	}
-	entry.TextSHA256 = hash
-	if err := s.Put(entry); err != nil {
+	answer.TextSHA256 = hash
+	// The already-answered check and the write share the store's lock, so of
+	// concurrent answers for one key exactly one lands.
+	err = s.Update(k, func(prev eval.Entry, _ bool) (eval.Entry, error) {
+		if _, ok := prev.Labels[eval.WouldApply]; ok {
+			return eval.Entry{}, fmt.Errorf("audit answer: %s is already answered", k)
+		}
+		return eval.Merge(prev, answer), nil
+	})
+	if err != nil {
 		return auditAnswerJSON{}, err
 	}
 	return auditAnswerJSON{Key: k, Verdict: verdict, Stratum: src, PSelect: prob}, nil
