@@ -102,7 +102,8 @@ public enum VaniProcess {
             }
         }
         let outFd = outPipe.fileHandleForReading.fileDescriptor, errFd = errPipe.fileHandleForReading.fileDescriptor
-        spawn(done) { box.out = drain(outFd, limit: maxOutputBytes, cancel: cancel) }
+        // One byte past the ceiling is read, so a reply of exactly the ceiling is told from a longer one.
+        spawn(done) { box.out = drain(outFd, limit: maxOutputBytes + 1, cancel: cancel) }
         spawn(done) { box.err = drain(errFd, limit: 64 * 1024, cancel: cancel) }
         defer {
             // Whatever happened, no thread is left on these descriptors when they are closed.
@@ -115,8 +116,9 @@ public enum VaniProcess {
             stop(p, exited: exited)
             return Outcome(status: nil, stdout: Data(), timedOut: true, launchError: nil)
         }
-        return Outcome(status: p.terminationStatus, stdout: box.out, timedOut: false, launchError: nil,
-                       truncated: box.out.count >= maxOutputBytes, stderr: box.err)
+        let truncated = box.out.count > maxOutputBytes
+        return Outcome(status: p.terminationStatus, stdout: truncated ? Data(box.out.prefix(maxOutputBytes)) : box.out,
+                       timedOut: false, launchError: nil, truncated: truncated, stderr: box.err)
     }
 
     /// SIGTERM, then SIGKILL after the grace period, then a last short wait for the exit to be
@@ -199,9 +201,19 @@ extension VaniProcess {
         guard out.status == 0 else { throw failure(out, name: name, decoder: decoder, tooOld: tooOld) }
         // A reply of another contract version is named as that before anything else is read from it:
         // its shape is not this app's to judge.
-        if let versioned = T.self as? VersionedReply.Type,
-           let seen = (try? decoder.decode(VersionProbe.self, from: out.stdout))?.version, seen != versioned.supportedVersion {
-            throw BankError("\(name) reports reply version \(seen); this app reads version \(versioned.supportedVersion). Rebuild the app.")
+        if let versioned = T.self as? VersionedReply.Type {
+            do {
+                if let seen = try decoder.decode(VersionProbe.self, from: out.stdout).version, seen != versioned.supportedVersion {
+                    throw BankError("\(name) reports reply version \(seen); this app reads version \(versioned.supportedVersion). Rebuild the app.")
+                }
+            } catch is DecodingError {
+                // JSON whose version this app cannot hold (1.5, a string, 10^23) is a version problem,
+                // named without the value; only non-JSON is "without a reply".
+                if let object = (try? JSONSerialization.jsonObject(with: out.stdout)) as? [String: Any],
+                   let raw = object["version"], !(raw is NSNull) {
+                    throw BankError("\(name) sent a reply this app cannot read: version is not an integer this app can hold. Rebuild the app.")
+                }
+            }
         }
         do {
             return try decoder.decode(T.self, from: out.stdout)

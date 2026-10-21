@@ -45,6 +45,30 @@ final class VaniProcessDecodeAdversarialTests: XCTestCase {
         }
     }
 
+    func testFractionalVersionIsNamedAsAVersionProblem() throws {
+        XCTAssertThrowsError(try call(Reply.self, #"{"version":1.5,"items":[]}"#)) {
+            let text = String(describing: $0)
+            XCTAssertTrue(text.contains("version"), text)
+            XCTAssertFalse(text.contains("without a reply"), text)
+            XCTAssertFalse(text.contains("1.5"), text)
+        }
+    }
+
+    func testHugeVersionIsNamedAsAVersionProblem() throws {
+        XCTAssertThrowsError(try call(Reply.self, #"{"version":99999999999999999999999,"items":[]}"#)) {
+            let text = String(describing: $0)
+            XCTAssertTrue(text.contains("version"), text)
+            XCTAssertFalse(text.contains("without a reply"), text)
+            XCTAssertFalse(text.contains("99999999999999999999999"), text)
+        }
+    }
+
+    func testNonJSONStillSaysNoReply() throws {
+        XCTAssertThrowsError(try call(Reply.self, "not json")) {
+            XCTAssertTrue(String(describing: $0).contains("without a reply"), "\($0)")
+        }
+    }
+
     func testMissingVersionNamesTheKey() throws {
         XCTAssertThrowsError(try call(Reply.self, #"{"items":[]}"#)) {
             XCTAssertTrue(String(describing: $0).contains("version is missing"), "\($0)")

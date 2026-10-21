@@ -26,6 +26,28 @@ final class VaniProcessBoundsTests: XCTestCase {
         return box.value.map { ($0, Date().timeIntervalSince(started)) }
     }
 
+    private func zeros(_ count: Int, max: Int) -> VaniProcess.Outcome {
+        VaniProcess.run(sh, arguments: ["-c", "head -c \(count) /dev/zero"], environment: env, timeout: 10, maxOutputBytes: max)
+    }
+
+    func testReplyOfExactlyTheCeilingIsNotTruncated() {
+        let out = zeros(1000, max: 1000)
+        XCTAssertEqual(out.stdout.count, 1000)
+        XCTAssertFalse(out.truncated)
+    }
+
+    func testReplyOneByteOverTheCeilingIsTruncatedAndCapped() {
+        let out = zeros(1001, max: 1000)
+        XCTAssertEqual(out.stdout.count, 1000)
+        XCTAssertTrue(out.truncated)
+    }
+
+    func testReplyOneByteUnderTheCeilingIsNotTruncated() {
+        let out = zeros(999, max: 1000)
+        XCTAssertEqual(out.stdout.count, 999)
+        XCTAssertFalse(out.truncated)
+    }
+
     /// The pid the script wrote is no longer a live process (it was killed and reaped).
     private func assertGone(_ pidFile: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let pid = try XCTUnwrap(Int32(String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)), file: file, line: line)
