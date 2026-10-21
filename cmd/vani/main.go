@@ -354,10 +354,23 @@ func (e *env) loadConfig() (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
+	e.warnDeprecated(old)
+	return cfg, nil
+}
+
+// updateConfig is config.UpdateWithDeprecations with the same warnings
+// loadConfig prints: an update rewrites the file with the new key names, so
+// the user is told which old ones it used.
+func (e *env) updateConfig(fn func(*config.Config) error) error {
+	old, err := config.UpdateWithDeprecations(e.configPath, fn)
+	e.warnDeprecated(old)
+	return err
+}
+
+func (e *env) warnDeprecated(old []string) {
 	for _, d := range old {
 		fmt.Fprintf(e.stderr, "vani: config %s: %s\n", e.configPath, d)
 	}
-	return cfg, nil
 }
 
 func (e *env) cmdInit(args []string) error {

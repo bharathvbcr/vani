@@ -220,7 +220,7 @@ func (e *env) saveSearch(page inbox.Page, jobs []inbox.Job, company string) (ing
 	// save, and the board is applied to the config as it is now, so an edit made
 	// while the size check ran (config exclude --set, another add) is kept.
 	var addErr error
-	err = config.Update(e.configPath, func(c *config.Config) error {
+	err = e.updateConfig(func(c *config.Config) error {
 		addErr = addBoard(c, board, true)
 		return addErr
 	})
@@ -452,10 +452,14 @@ func linkPattern(jobs []inbox.Job) (pattern, reason string) {
 //
 // The name is split into words at anything that is not a letter or digit and
 // at camelCase humps ("accessToken" = access, token). A word that is one of
-// token, auth, authorization, key, secret, email, session, sid, jsessionid
-// drops the parameter, as does one that starts with session or email, or ends
-// in token, secret or key ("apikey", "idtoken"; a word like "monkey" is
-// dropped too, the safe side). "keywords" and "author" are other words, and stay.
+// token, auth, authorization, secret, email, session, sid, jsessionid,
+// password, passwd, pwd, jwt, bearer, signature, sig, csrf, xsrf, otp drops the
+// parameter, as does one that starts with session, email, password or
+// credential, contains "sessid" (PHPSESSID), or ends in token, secret or jwt
+// ("idtoken"). "key" drops it only as the word on its own or after api, access,
+// secret or private ("api_key", "apiKey", "apikey"): jobKey, sortKey and
+// "monkey" are not credentials and stay, as do "keywords", "author", "state"
+// (a US state) and "code" (a job code).
 func trackingParam(k string) bool {
 	switch lk := strings.ToLower(k); lk {
 	case "gclid", "fbclid", "msclkid", "ref", "refid", "trk", "trackingid":
@@ -465,13 +469,28 @@ func trackingParam(k string) bool {
 			return true
 		}
 	}
-	for _, w := range paramWords(k) {
+	words := paramWords(k)
+	for i, w := range words {
 		switch w {
-		case "token", "auth", "authorization", "key", "secret", "email", "session", "sid", "jsessionid":
+		case "token", "auth", "authorization", "secret", "email", "session", "sid", "jsessionid",
+			"password", "passwd", "pwd", "jwt", "bearer", "signature", "sig", "csrf", "xsrf", "otp",
+			"apikey", "accesskey", "secretkey", "privatekey":
 			return true
+		case "key":
+			if i == 0 && len(words) == 1 {
+				return true
+			}
+			if i > 0 {
+				switch words[i-1] {
+				case "api", "access", "secret", "private":
+					return true
+				}
+			}
 		}
 		if strings.HasPrefix(w, "session") || strings.HasPrefix(w, "email") ||
-			strings.HasSuffix(w, "token") || strings.HasSuffix(w, "secret") || strings.HasSuffix(w, "key") {
+			strings.HasPrefix(w, "password") || strings.HasPrefix(w, "credential") ||
+			strings.Contains(w, "sessid") ||
+			strings.HasSuffix(w, "token") || strings.HasSuffix(w, "secret") || strings.HasSuffix(w, "jwt") {
 			return true
 		}
 	}

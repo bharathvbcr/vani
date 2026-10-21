@@ -225,7 +225,7 @@ func (e *env) trackUse(args []string) error {
 	// The preview above came from the config as read before; the write applies
 	// the track to the config as it is under the lock, so an edit made in
 	// between (a drop rule, the watchlist) is kept.
-	if err := config.Update(e.configPath, func(c *config.Config) error {
+	if err := e.updateConfig(func(c *config.Config) error {
 		o, _, err := track.Apply(*c, d, prev)
 		if err != nil {
 			return fmt.Errorf("track %s not applied: %w", id, err)

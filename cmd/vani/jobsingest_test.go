@@ -236,13 +236,15 @@ func TestIngestSaveSearchFailureStillSpools(t *testing.T) {
 func TestScrubPageURLDropsCredentials(t *testing.T) {
 	const base = "https://x.example/s?"
 	for _, drop := range []string{"access_token", "accessToken", "auth", "Authorization", "jsessionid", "JSESSIONID", "email", "user_email",
-		"key", "api_key", "apikey", "secret", "client-secret", "session", "sessionid", "sid", "id_token", "token"} {
+		"key", "api_key", "apiKey", "apikey", "access_key", "secret_key", "private_key", "secret", "client-secret", "session", "sessionid", "sid", "id_token", "token",
+		"PHPSESSID", "password", "passwd", "pwd", "jwt", "bearer", "signature", "sig", "x-amz-signature", "csrf", "xsrfToken", "otp", "credential", "credentials"} {
 		got := scrubPageURL(base + "q=go&" + drop + "=v&location=Remote")
 		if got != base+"location=Remote&q=go" {
 			t.Errorf("scrubPageURL kept %q: %s", drop, got)
 		}
 	}
-	for _, keep := range []string{"q", "location", "department", "keyword", "keywords", "search", "team", "author", "remote", "page"} {
+	for _, keep := range []string{"q", "location", "department", "keyword", "keywords", "search", "team", "author", "remote", "page",
+		"state", "code", "jobkey", "jobKey", "sortKey", "categoryKey", "department_key", "monkey", "turkey", "hockey"} {
 		in := base + keep + "=v"
 		if got := scrubPageURL(in); got != in {
 			t.Errorf("scrubPageURL(%q) = %q, want the parameter kept", in, got)

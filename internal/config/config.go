@@ -678,7 +678,7 @@ func Save(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	unlock, err := lockConfig(path)
+	path, unlock, err := lockConfig(path)
 	if err != nil {
 		return err
 	}
@@ -693,7 +693,7 @@ func Create(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	unlock, err := lockConfig(path)
+	path, unlock, err := lockConfig(path)
 	if err != nil {
 		return err
 	}
@@ -1066,16 +1066,14 @@ func (c Config) Validate() error {
 		}
 	}
 
-	allowed := map[string]bool{}
 	for i, h := range c.AllowedHosts {
 		if err := egress.ValidAllowedHost(h); err != nil {
 			add("allowed_hosts[%d]: %v", i, err)
 		}
-		allowed[strings.ToLower(strings.TrimSpace(h))] = true
 	}
 	var missing []string
 	for _, h := range c.RequiredHosts() {
-		if !allowed[h] {
+		if !egress.AllowsHost(c.AllowedHosts, h) {
 			missing = append(missing, h)
 		}
 	}

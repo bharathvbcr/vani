@@ -60,7 +60,7 @@ func TestAdvLockSharedAcrossSpellings(t *testing.T) {
 		t.Fatal(err)
 	}
 	spellings := map[string]string{
-		"dotdot":       filepath.Join(realDir, "..", "real", "config.json"),
+		"dotdot":      filepath.Join(realDir, "..", "real", "config.json"),
 		"dir symlink": filepath.Join(dirLink, "config.json"),
 	}
 	_ = fileLink // a file symlink takes a different lock: see adv_failing_test.go

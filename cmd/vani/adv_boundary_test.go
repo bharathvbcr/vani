@@ -75,20 +75,20 @@ func TestAdvScrubPageURLParamClasses(t *testing.T) {
 			t.Errorf("credential-like %q survived: %s", n, got)
 		}
 	}
-	for _, n := range []string{"PHPSESSID", "password", "passwd", "pwd", "jwt", "bearer", "signature", "sig", "code", "state", "otp", "csrf", "x-amz-signature", "credential"} {
+	for _, n := range []string{"PHPSESSID", "password", "passwd", "pwd", "jwt", "bearer", "signature", "sig", "otp", "csrf", "x-amz-signature", "credential", "credentials"} {
 		if got := scrubPageURL(base + n + "=v"); strings.Contains(got, n+"=v") {
-			t.Logf("INFO credential-like %q is kept: %s", n, got)
+			t.Errorf("credential-like %q is kept: %s", n, got)
 		}
 	}
 	// A real ATS search URL's parameters must survive.
-	for _, n := range []string{"keyword", "keywords", "jk", "currentJobId", "gh_jid", "gh_src", "lever-source", "location", "department", "team", "q", "page", "author", "authority"} {
+	for _, n := range []string{"keyword", "keywords", "jk", "currentJobId", "gh_jid", "gh_src", "lever-source", "location", "department", "team", "q", "page", "author", "authority", "code", "state"} {
 		if !scrubKept(base+n+"=v", n) {
 			t.Errorf("search parameter %q was dropped from %s", n, base+n+"=v")
 		}
 	}
 	for _, n := range []string{"monkey", "turkey", "hockey", "jobkey", "sortKey", "department_key", "jobKey", "categoryKey"} {
 		if !scrubKept(base+n+"=v", n) {
-			t.Logf("INFO false drop: %q is dropped (key-suffix rule)", n)
+			t.Errorf("false drop: %q is dropped", n)
 		}
 	}
 }

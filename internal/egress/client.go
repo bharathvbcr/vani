@@ -233,12 +233,38 @@ func (c *Client) allows(host string) bool {
 	if _, ok := c.exact[host]; ok {
 		return true
 	}
-	for _, suf := range c.suffixes {
+	return suffixMatch(c.suffixes, host)
+}
+
+func suffixMatch(suffixes []string, host string) bool {
+	for _, suf := range suffixes {
 		if len(host) > len(suf)+1 && strings.HasSuffix(host, "."+suf) {
 			return true
 		}
 	}
 	return false
+}
+
+// AllowsHost reports whether a client built with these allowlist entries would
+// let host through the allowlist: the same normaliser and matching as New and
+// Do (case, trailing dot, "*.suffix" wildcards). Entries New would refuse are
+// ignored, as they would not be on the list.
+func AllowsHost(entries []string, host string) bool {
+	host = normHost(strings.TrimSpace(host))
+	var suffixes []string
+	for _, raw := range entries {
+		h, wildcard, err := normalizeAllowed(raw)
+		if err != nil {
+			continue
+		}
+		if !wildcard && h == host {
+			return true
+		}
+		if wildcard {
+			suffixes = append(suffixes, h)
+		}
+	}
+	return suffixMatch(suffixes, host)
 }
 
 // Do sends req under the egress policy. The caller closes the response body,

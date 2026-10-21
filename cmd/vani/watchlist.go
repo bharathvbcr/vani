@@ -112,7 +112,7 @@ func (e *env) watchlistAdd(args []string) error {
 		return usagef("watchlist add: %v", err)
 	}
 	var addErr error
-	if err := config.Update(e.configPath, func(c *config.Config) error {
+	if err := e.updateConfig(func(c *config.Config) error {
 		addErr = addBoard(c, b, *allow)
 		return addErr
 	}); err != nil {
@@ -174,7 +174,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
 	var b sources.Board
 	var editErr error
-	if err := config.Update(e.configPath, func(c *config.Config) error {
+	if err := e.updateConfig(func(c *config.Config) error {
 		i := slices.IndexFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
 		if i < 0 {
 			editErr = fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
@@ -216,7 +216,7 @@ func (e *env) watchlistRemove(args []string) error {
 		return usagef("watchlist remove: --ats and --token are required")
 	}
 	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
-	if err := config.Update(e.configPath, func(c *config.Config) error {
+	if err := e.updateConfig(func(c *config.Config) error {
 		n := len(c.Watchlist)
 		c.Watchlist = slices.DeleteFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
 		if len(c.Watchlist) == n {

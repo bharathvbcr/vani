@@ -69,7 +69,7 @@ func (e *env) motivationNotes(set bool) (string, error) {
 		return "", fmt.Errorf("config motivation: input larger than %d bytes", maxNotesInput)
 	}
 	notes := strings.TrimSpace(string(raw))
-	if err := config.Update(e.configPath, func(c *config.Config) error {
+	if err := e.updateConfig(func(c *config.Config) error {
 		c.MotivationNotes = notes
 		return nil
 	}); err != nil {

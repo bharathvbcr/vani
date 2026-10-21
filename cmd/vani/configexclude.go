@@ -100,7 +100,7 @@ func (e *env) exclusions(set bool) (config.Exclude, error) {
 	if err != nil {
 		return config.Exclude{}, err
 	}
-	if err := config.Update(e.configPath, func(c *config.Config) error {
+	if err := e.updateConfig(func(c *config.Config) error {
 		c.Exclude = x
 		return nil
 	}); err != nil {
