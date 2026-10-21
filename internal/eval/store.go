@@ -16,11 +16,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -83,7 +83,6 @@ var WouldApplyOptions = []string{"yes", "maybe", "no"}
 type Store struct {
 	labelDir string
 	textDir  string
-	mu       sync.Mutex
 	// Now stamps new labels; nil means time.Now.
 	Now func() time.Time
 }
@@ -210,6 +209,115 @@ func validHash(h string) bool {
 // LabeledAt are filled in. If the file ends in a torn line (a crash mid-write)
 // a newline is written first so the new line is never glued onto it.
 func (s *Store) Put(l Entry) error {
+	if err := l.Validate(); err != nil { // what the caller gave must stand alone
+		return err
+	}
+	return s.Update(l.Key, func(prev Entry, _ bool) (Entry, error) { return Merge(prev, l), nil })
+}
+
+// Merge is the rule every label write follows, because the store keeps the
+// latest line per key whole. The entry holds two kinds of label and next
+// replaces only the kinds it carries: triage slots (a next with any slot
+// replaces the whole set, so a re-label does not leave stale slots) and
+// would_apply, whose Source and PSelect travel with it. A next with no triage
+// slot keeps prev's; a next with no would_apply keeps prev's, with its
+// sampling fields. TextSHA256 is next's when it has one. next's V and
+// LabeledAt are kept as given, so Update stamps them.
+func Merge(prev, next Entry) Entry {
+	out := next
+	out.Labels = make(map[string]string, len(prev.Labels)+len(next.Labels))
+	_, nextWA := next.Labels[WouldApply]
+	nextSlots := len(next.Labels) > 1 || (len(next.Labels) == 1 && !nextWA)
+	for slot, v := range prev.Labels {
+		if (slot == WouldApply && !nextWA) || (slot != WouldApply && !nextSlots) {
+			out.Labels[slot] = v
+		}
+	}
+	for slot, v := range next.Labels {
+		out.Labels[slot] = v
+	}
+	if !nextWA {
+		if _, ok := prev.Labels[WouldApply]; ok {
+			out.Source, out.PSelect = prev.Source, prev.PSelect
+		}
+	}
+	if out.TextSHA256 == "" {
+		out.TextSHA256 = prev.TextSHA256
+	}
+	return out
+}
+
+const (
+	// labelsLockFile is the flock that serialises label writes across
+	// processes; it sits beside labels.jsonl and is never read.
+	labelsLockFile = "labels.lock"
+	lockRetry      = 5 * time.Millisecond
+)
+
+// lockWait bounds how long a write waits for the labels lock; a variable only
+// so a test need not wait it out.
+var lockWait = 10 * time.Second
+
+// ErrBusy is returned when the labels lock could not be taken in time. Update
+// holds it for the length of fn, so an fn that itself writes to the store
+// meets this rather than deadlocking.
+var ErrBusy = errors.New("eval: labels are locked by another writer")
+
+// lockLabels takes the exclusive labels flock, polling until lockWait passes.
+// Each call opens its own file, so writers in one process exclude each other
+// as well as writers in other processes.
+func (s *Store) lockLabels() (unlock func(), err error) {
+	f, err := os.OpenFile(filepath.Join(s.labelDir, labelsLockFile), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("eval: open labels lock: %w", err)
+	}
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := filelock.TryLock(f, true)
+		if err == nil {
+			return func() { _ = filelock.Unlock(f); _ = f.Close() }, nil
+		}
+		if !errors.Is(err, filelock.ErrWouldBlock) {
+			_ = f.Close()
+			return nil, fmt.Errorf("eval: lock labels: %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			_ = f.Close()
+			return nil, ErrBusy
+		}
+		time.Sleep(lockRetry)
+	}
+}
+
+// Update is the store's one read-modify-write: under the labels lock it reads
+// the latest entry for key (exists is false when there is none), calls fn, and
+// appends what fn returns, validated and stamped as Put does. The read and the
+// append share the lock, so no writer can land between them and a stale prev
+// cannot overwrite a newer entry. An error from fn is returned as is and
+// nothing is written. fn runs with the lock held: keep it pure (no I/O, no
+// store calls, nothing slow); one that writes to the store gets ErrBusy after
+// lockWait. fn must return an entry for key.
+func (s *Store) Update(key posting.Key, fn func(prev Entry, exists bool) (Entry, error)) error {
+	if s == nil {
+		return errors.New("eval: no label store")
+	}
+	unlock, err := s.lockLabels()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	all, _, err := s.Labels()
+	if err != nil {
+		return err
+	}
+	prev, exists := all[key]
+	l, err := fn(prev, exists)
+	if err != nil {
+		return err
+	}
+	if l.Key != key {
+		return fmt.Errorf("eval: update of %q returned an entry for %q", key, l.Key)
+	}
 	if l.V == 0 {
 		l.V = SchemaVersion
 	}
@@ -223,8 +331,6 @@ func (s *Store) Put(l Entry) error {
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	f, err := os.OpenFile(s.labelsPath(), os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o644)
 	if err != nil {
 		return fmt.Errorf("eval: open labels: %w", err)
