@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
@@ -59,6 +59,12 @@ var (
 	kbmatchProvider = func(ctx context.Context, w *wired) (llm.Provider, error) { return w.provider(ctx) }
 	// kbmatchEndpoint points the decision model's client at a test server; empty is OpenRouter.
 	kbmatchEndpoint string
+	// kbmatchLockWait is how long a run waits for another run's lock before it
+	// says the store is busy.
+	kbmatchLockWait = 10 * time.Second
+	// kbmatchAfterOpen runs once the store is open (a seam for tests; a real run
+	// does nothing here).
+	kbmatchAfterOpen = func() {}
 	// kbmatchDoer is the egress client the decision model's backend uses.
 	kbmatchDoer = func(cfg config.Config) (egress.Doer, error) {
 		return egress.New(egress.Config{AllowedHosts: cfg.AllowedHosts})
@@ -283,21 +289,36 @@ func (e *env) kbmatchRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := kbmatch.OpenStore(e.kbmatchPath())
-	if errors.Is(err, kbmatch.ErrCorrupt) {
-		// Nothing in it is irreplaceable: the model can be asked again. A dry run
-		// only reads, so it starts from an empty store in memory.
-		fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", err)
-		if !*dry {
-			if rerr := os.Remove(e.kbmatchPath()); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-				return rerr
-			}
+	// A run that will ask takes the run lock before it reads the store, so what it
+	// reads is what no other run can change before it saves, and the corrupt-store
+	// removal only ever happens under the lock. A dry run takes no lock, removes
+	// nothing and starts from an empty store in memory.
+	var store *kbmatch.Store
+	var recovered error
+	if *dry {
+		store, err = kbmatch.OpenStore(e.kbmatchPath())
+		if errors.Is(err, kbmatch.ErrCorrupt) {
+			recovered = err
+			store, err = kbmatch.NewStore(e.kbmatchPath()), nil
 		}
-		store, err = kbmatch.NewStore(e.kbmatchPath()), nil
+	} else {
+		var unlock func()
+		store, unlock, recovered, err = kbmatch.OpenLocked(e.kbmatchPath(), kbmatchLockWait)
+		if errors.Is(err, kbmatch.ErrBusy) {
+			return fmt.Errorf("kbmatch: another run is using the store (waited %s); try again when it finishes: %w", kbmatchLockWait, err)
+		}
+		if err == nil {
+			defer unlock()
+		}
 	}
 	if err != nil {
 		return err
 	}
+	if recovered != nil {
+		// Nothing in it is irreplaceable: the model can be asked again.
+		fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", recovered)
+	}
+	kbmatchAfterOpen()
 	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
 	if err != nil {
 		return err
@@ -336,11 +357,6 @@ func (e *env) kbmatchRun(args []string) error {
 		return nil
 	}
 
-	unlock, err := kbmatch.Lock(e.kbmatchPath())
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	ctx, cancel := signalContext()
 	defer cancel()
 	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}

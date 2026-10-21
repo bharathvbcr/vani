@@ -135,6 +135,46 @@ func TestStorePutValidatesAndBounds(t *testing.T) {
 	}
 }
 
+func TestOpenLockedWaitsThenBusyAndRemovesCorruptOnlyUnderTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", FileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := Lock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, _, _, err := OpenLocked(path, 100*time.Millisecond); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a held store should be ErrBusy, got %v", err)
+	}
+	if time.Since(start) < 90*time.Millisecond {
+		t.Errorf("OpenLocked did not wait for the lock")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the corrupt store was removed without the lock: %v", err)
+	}
+	// A holder that lets go within the wait lets the opener in.
+	go func() { time.Sleep(60 * time.Millisecond); held() }()
+	st, unlock, recovered, err := OpenLocked(path, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if !errors.Is(recovered, ErrCorrupt) || st.Len() != 0 {
+		t.Errorf("recovered %v, len %d", recovered, st.Len())
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the corrupt store should be gone under the lock: %v", err)
+	}
+	if _, err := Lock(path); !errors.Is(err, ErrBusy) {
+		t.Errorf("the lock should still be held, got %v", err)
+	}
+}
+
 func TestLockExcludesASecondRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", FileName)
 	unlock, err := Lock(path)

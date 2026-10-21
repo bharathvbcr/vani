@@ -215,3 +215,47 @@ func Lock(path string) (unlock func(), err error) {
 	}
 	return func() { _ = filelock.Unlock(f); _ = f.Close() }, nil
 }
+
+// lockRetry is how often LockWait tries again while another run holds the lock.
+const lockRetry = 20 * time.Millisecond
+
+// LockWait is Lock that waits up to wait (at least one try) for another run to
+// let go, then gives ErrBusy. A run holds the lock for as long as it asks, so
+// the wait is short: it rides out a run that is only finishing, not one that is
+// working through its list.
+func LockWait(path string, wait time.Duration) (unlock func(), err error) {
+	deadline := time.Now().Add(wait)
+	for {
+		unlock, err = Lock(path)
+		if !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
+			return unlock, err
+		}
+		time.Sleep(lockRetry)
+	}
+}
+
+// OpenLocked takes the run lock, waiting up to wait, and only then opens the
+// store, so what the caller reads is what no other run can change before it
+// saves. A corrupt store is removed here, under the lock, and recovered carries
+// why; the caller starts from an empty store. Nothing is removed without the
+// lock. The caller calls unlock when the run is done.
+func OpenLocked(path string, wait time.Duration) (st *Store, unlock func(), recovered error, err error) {
+	unlock, err = LockWait(path, wait)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	st, err = OpenStore(path)
+	if errors.Is(err, ErrCorrupt) {
+		recovered = err
+		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			unlock()
+			return nil, nil, nil, rerr
+		}
+		st, err = NewStore(path), nil
+	}
+	if err != nil {
+		unlock()
+		return nil, nil, nil, err
+	}
+	return st, unlock, recovered, nil
+}
