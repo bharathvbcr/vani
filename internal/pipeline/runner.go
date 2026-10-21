@@ -77,7 +77,7 @@ type Runner struct {
 	Employer EmployerLookup
 	// PreferEmployers are the employer attributes the active track favours.
 	// A posting whose confident employer attributes include one has
-	// EmployerRankBoost added to its rank at scoring. Status never changes.
+	// ledger.EmployerRankBoost added to its rank at scoring. Status never changes.
 	PreferEmployers []string
 	// Funnel holds the spend and fail-open hooks (see triagestep.go).
 	Funnel
@@ -99,11 +99,6 @@ type EmployerInfo struct {
 type EmployerLookup interface {
 	Employer(company string) EmployerInfo
 }
-
-// EmployerRankBoost is added to the rank (must-have coverage, 0-100) of a
-// posting at a preferred employer: enough to lift it over a near-equal
-// match, not over a much better one.
-const EmployerRankBoost = 10.0
 
 // preferredEmployer reports whether company's confident employer attributes
 // include one the active track prefers. It looks the company up again rather
@@ -249,7 +244,7 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 }
 
 // scoreAnnotations asks DevPrism about rec's description and returns what a
-// score records: the rank (must-have coverage, plus EmployerRankBoost at a
+// score records: the rank (must-have coverage, plus ledger.EmployerRankBoost at a
 // preferred employer), the coverage, the matched block count and the uncovered
 // must-haves. It is the one owner of those annotations; Advance and Rescore
 // both write what it returns.
@@ -279,7 +274,7 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 	}
 	rank := gap.CoveragePct
 	if r.preferredEmployer(rec.Posting.Company) {
-		rank += EmployerRankBoost
+		rank += ledger.EmployerRankBoost
 	}
 	ann := map[string]string{
 		ledger.AnnRank:            strconv.FormatFloat(rank, 'f', -1, 64),

@@ -9,6 +9,11 @@ const (
 	AnnRank = "rank"
 	// AnnCoverage is DevPrism resume_gap_analysis coveragePercentage.
 	AnnCoverage = "gap.coverage_pct"
+	// EmployerRankBoost is added to the rank (must-have coverage, 0-100) of a
+	// posting at a preferred employer: enough to lift it over a near-equal
+	// match, not over a much better one. A rank at least this far above
+	// AnnCoverage is how readers see the boost was applied.
+	EmployerRankBoost = 10.0
 	// AnnMissing lists must-have requirements DevPrism found missing or weak
 	// ("a; b; c (weak)"). JD-derived, so untrusted text.
 	AnnMissing = "gap.missing"

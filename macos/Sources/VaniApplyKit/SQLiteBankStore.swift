@@ -302,19 +302,14 @@ public final class SQLiteBankStore: @unchecked Sendable {
         try execute("DELETE FROM signatures WHERE answer_key = '\(key.replacingOccurrences(of: "'", with: "''"))';", db: db)
     }
 
-    /// `whereClause` is SQL text built by this file with `?` placeholders only; user text goes in `binds`.
-    private func loadAnswersMap(whereClause: String = "", binds: [String] = [], db: OpaquePointer) throws -> [String: Answer] {
+    private func loadAnswersMap(db: OpaquePointer) throws -> [String: Answer] {
         var answers: [String: Answer] = [:]
-        let sql = "SELECT key, kind, value_json, sensitivity, uses, fills, updated_at, review FROM answers \(whereClause);"
+        let sql = "SELECT key, kind, value_json, sensitivity, uses, fills, updated_at, review FROM answers;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw StoreError.prepareFailed("loadAnswers prepare failed")
         }
         defer { sqlite3_finalize(stmt) }
-        for (i, text) in binds.enumerated() {
-            sqlite3_bind_text(stmt, Int32(i + 1), text, -1, SQLITE_TRANSIENT)
-        }
-
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let k = sqlite3_column_text(stmt, 0),
                   let kindStr = sqlite3_column_text(stmt, 1),

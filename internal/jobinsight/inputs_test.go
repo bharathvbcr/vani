@@ -10,7 +10,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -118,7 +117,7 @@ func TestDisagreeConfSkipsEscalation(t *testing.T) {
 }
 
 func TestInputsForCoverageAndPreferredEmployer(t *testing.T) {
-	boost := pipeline.EmployerRankBoost
+	boost := ledger.EmployerRankBoost
 	for _, c := range []struct {
 		name       string
 		rank, cov  string
