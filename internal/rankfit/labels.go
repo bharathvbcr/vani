@@ -1,6 +1,7 @@
 package rankfit
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -32,6 +33,53 @@ type Target struct {
 	// surface last showed the posting. Nil means none were recorded and the
 	// caller scores the posting now.
 	Scores *feedback.Scores
+	// Source and PSelect are the audit's sampling stratum and inclusion
+	// probability of a judgment (eval.Entry). A judgment drawn by the audit has
+	// both; a manual one, a mark and an impression have neither, and train at
+	// weight 1.
+	Source  string
+	PSelect float64
+}
+
+// Sampled reports whether source names an audit stratum, so the label carries
+// an inclusion probability. Empty and eval.SourceManual do not.
+func Sampled(source string) bool { return source != "" && source != eval.SourceManual }
+
+// The audit's strata for the per-stratum held-out report: what the ranking
+// actually orders (a scored decile) against what the engine dropped, which the
+// audit oversamples (eval.AuditDropped against eval.AuditScored).
+const (
+	StratumScored  = "scored"
+	StratumDropped = "dropped"
+)
+
+// StratumOf names the stratum of an audit source ("decile:10" is scored,
+// "dropped:<class>" is dropped); "" for anything else.
+func StratumOf(source string) string {
+	switch {
+	case strings.HasPrefix(source, "decile:"):
+		return StratumScored
+	case strings.HasPrefix(source, "dropped:"):
+		return StratumDropped
+	}
+	return ""
+}
+
+// checkInclusion validates a label's sampling: a sampled one needs PSelect in
+// (0, 1] (false for NaN), any other carries none. It is the fit's boundary, so
+// a bad probability is refused here rather than turned into an infinite or
+// negative weight.
+func checkInclusion(key, source string, p float64) error {
+	if Sampled(source) {
+		if !(p >= eval.MinInclusionProbability && p <= 1) {
+			return fmt.Errorf("rankfit: %s p_select %v must be in [%g, 1]", key, p, eval.MinInclusionProbability)
+		}
+		return nil
+	}
+	if p != 0 {
+		return fmt.Errorf("rankfit: %s has p_select %v but no sampling stratum", key, p)
+	}
+	return nil
 }
 
 // TargetCounts says what Targets rests on.
@@ -56,7 +104,11 @@ func (c TargetCounts) Judged() int { return c.Yes + c.Maybe + c.No }
 // unmarked is a no; an unmarked posting nothing shows was ever shown is no
 // label at all. Scores come from the newest impression; a posting no surface
 // showed has none, and the caller scores it now.
-func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m map[posting.Key]marks.Mark) (map[posting.Key]Target, TargetCounts) {
+//
+// A judgment keeps its stratum and inclusion probability (Source, PSelect),
+// which Fit turns into a Horvitz-Thompson weight; a sampled judgment whose
+// probability is not in (0, 1] is an error, not a label.
+func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m map[posting.Key]marks.Mark) (map[posting.Key]Target, TargetCounts, error) {
 	var c TargetCounts
 	newest := map[posting.Key]int{} // index of each key's newest impression
 	for i, im := range shown {
@@ -77,7 +129,11 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 		if !ok {
 			continue // a triage-slot label only
 		}
-		t := Target{Judged: true, Scores: scores(k)}
+		e := labels[k]
+		if err := checkInclusion(string(k), e.Source, e.PSelect); err != nil {
+			return nil, TargetCounts{}, err
+		}
+		t := Target{Judged: true, Scores: scores(k), Source: e.Source, PSelect: e.PSelect}
 		switch v {
 		case "yes":
 			t.Grade = GradeYes
@@ -114,7 +170,7 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 		out[k] = Target{Grade: GradeNo, Scores: scores(k)}
 		c.Passed++
 	}
-	return out, c
+	return out, c, nil
 }
 
 // PlattSamples sets each labelled triage slot (internal/eval, read only)

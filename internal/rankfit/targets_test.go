@@ -31,7 +31,7 @@ func TestTargets(t *testing.T) {
 		{At: at(3), Key: "gh:a:passed", Scores: sc(51)}, // newest impression's scores
 		{At: at(2), Key: "gh:a:passed", Scores: sc(49)},
 		{At: at(1), Key: "gh:a:saved", Scores: sc(60)},
-		{At: at(1), Key: "gh:a:skip", Scores: sc(70)}, // a skip labels nothing; shown, it is passed
+		{At: at(1), Key: "gh:a:skip", Scores: sc(70)},  // a skip labels nothing; shown, it is passed
 		{At: at(1), Key: "gh:a:maybe", Scores: sc(30)}, // a judgment takes the scores the owner was shown
 	}
 	m := map[posting.Key]marks.Mark{
@@ -39,7 +39,10 @@ func TestTargets(t *testing.T) {
 		"gh:a:overrules": marks.Saved, "gh:a:skipsaved": marks.Saved, "gh:a:unshown": marks.None,
 		"gh:a:slotonly": marks.Hidden,
 	}
-	got, c := Targets(labels, shown, m)
+	got, c, err := Targets(labels, shown, m)
+	if err != nil {
+		t.Fatal(err)
+	}
 	type want struct {
 		grade    int
 		judged   bool
@@ -76,7 +79,7 @@ func TestTargets(t *testing.T) {
 	if c != (TargetCounts{Yes: 1, Maybe: 1, No: 1, Saved: 3, Hidden: 2, Passed: 2, Skipped: 2}) || c.Judged() != 3 {
 		t.Errorf("counts %+v", c)
 	}
-	if got, c := Targets(nil, nil, nil); len(got) != 0 || c != (TargetCounts{}) {
+	if got, c, err := Targets(nil, nil, nil); err != nil || len(got) != 0 || c != (TargetCounts{}) {
 		t.Error("nothing in gave targets")
 	}
 }

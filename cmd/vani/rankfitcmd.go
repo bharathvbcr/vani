@@ -23,7 +23,7 @@ var rankfitParts = []string{"all", "platt", "weights"}
 
 // errRankfitNoGain is a weight fit that ran but did not beat the hand weights
 // on the held-out pairs: nothing is written.
-var errRankfitNoGain = errors.New("rankfit: the fitted shares do not beat the hand weights on the held-out judged pairs; nothing written (--part platt keeps a calibration alone)")
+var errRankfitNoGain = errors.New("rankfit: the fitted shares do not clearly beat the hand weights on the held-out judged pairs (too few pairs, or the gain interval does not clear 0); nothing written (--part platt keeps a calibration alone)")
 
 // cmdRankfit learns Score's constants from judged labels (internal/rankfit):
 // per-backend Platt calibration from the eval slot labels, and the shares from
@@ -93,7 +93,10 @@ func (e *env) cmdRankfit(args []string) error {
 		fmt.Fprintf(e.stderr, "vani: impressions: %d unreadable lines skipped, %d older lines past the read cap left out\n", shown.Skipped, shown.Capped)
 	}
 
-	targets, tc := rankfit.Targets(lab, shown.Rows, mk)
+	targets, tc, err := rankfit.Targets(lab, shown.Rows, mk)
+	if err != nil {
+		return fmt.Errorf("rankfit could not run: %w", err)
+	}
 	rep := rankfit.Report{Labels: len(lab), Targets: tc}
 	samples, missing := rankfit.PlattSamples(snap.Records, lab)
 	w := e.stdout
@@ -169,6 +172,7 @@ func (e *env) cmdRankfit(args []string) error {
 		}
 		rep.Weights = &res
 		if !res.Beats() {
+			fmt.Fprintf(w, "no gain: %s\n", res.NoGainReason())
 			return errRankfitNoGain
 		}
 		f.Shares = &res.Shares
@@ -228,7 +232,16 @@ func (e *env) rankfitWeights(snap ledger.Snapshot, me map[posting.Key]marks.Entr
 	}
 	fmt.Fprintf(w, "weight fit: %d training items, %d of %d pairs used; %d held-out items, %d pairs\n",
 		res.TrainItems, res.TrainPairs, res.TrainPairsTotal, res.HeldOutItems, res.HeldOutPairs)
-	fmt.Fprintf(w, "held-out pairwise accuracy: fitted %.4f, hand %.4f\n", res.FitAccuracy, res.HandAccuracy)
+	fmt.Fprintf(w, "held-out pairwise accuracy: fitted %.4f, hand %.4f (pairs weighted by 1/p_select); n = %d held-out pairs\n",
+		res.FitAccuracy, res.HandAccuracy, res.HeldOutPairs)
+	fmt.Fprintf(w, "gain interval (95%%, %d item resamples): [%+.4f, %+.4f]; a gain needs n >= %d and the lower end above 0\n",
+		res.Resamples, res.GainLo, res.GainHi, rankfit.MinHeldOutPairs)
+	for _, s := range res.Strata {
+		fmt.Fprintf(w, "  stratum %-12s %6d pairs: fitted %.4f, hand %.4f\n", s.Stratum, s.Pairs, s.FitAccuracy, s.HandAccuracy)
+	}
+	if res.Stratified {
+		fmt.Fprintf(w, "scored-stratum pairs: %d (a gain needs %d)\n", res.ScoredPairs, rankfit.MinScoredStratumPairs)
+	}
 	hand, fit := res.Hand.Array(), res.Shares.Array()
 	for i, n := range rankfit.PartNames {
 		fmt.Fprintf(w, "  %-9s hand %.4f  fitted %.4f\n", n, hand[i], fit[i])

@@ -71,11 +71,26 @@ type FitResult struct {
 	Hand   Shares `json:"hand"`
 	// FitAccuracy and HandAccuracy are the share of held-out judged pairs
 	// (two judgments of different verdicts) each ranks the right way round (a tie
-	// counts half). HeldOutPairs is how many there were.
+	// counts half), each pair weighted by its postings' Horvitz-Thompson weights
+	// (1/PSelect). HeldOutPairs is how many there were: the n of the gain.
 	FitAccuracy  float64 `json:"fit_accuracy"`
 	HandAccuracy float64 `json:"hand_accuracy"`
 	HeldOutPairs int     `json:"held_out_pairs"`
 	HeldOutItems int     `json:"held_out_items"`
+	// GainLo and GainHi are the 95% percentile-bootstrap interval of
+	// FitAccuracy - HandAccuracy, resampling held-out items Resamples times.
+	GainLo    float64 `json:"gain_lo"`
+	GainHi    float64 `json:"gain_hi"`
+	Resamples int     `json:"resamples"`
+	// Strata is the held-out accuracy by the pairs' audit stratum. ScoredPairs
+	// counts the pairs between two scored-stratum postings, and Stratified is
+	// true when the held-out set holds any audit-sampled posting (the
+	// condition for MinScoredStratumPairs to apply).
+	Strata      []StratumAccuracy `json:"strata,omitempty"`
+	ScoredPairs int               `json:"scored_pairs"`
+	// ScoredItems is how many held-out postings are from the scored stratum.
+	ScoredItems int  `json:"scored_items"`
+	Stratified  bool `json:"stratified"`
 	// TrainPairs were fitted, out of TrainPairsTotal possible (sampled above
 	// MaxPairs).
 	TrainItems      int `json:"train_items"`
@@ -99,10 +114,6 @@ type FitResult struct {
 	Lambda     float64 `json:"lambda"`
 	Seed       uint64  `json:"seed"`
 }
-
-// Beats reports whether the fitted shares order the held-out pairs better
-// than the hand weights (Phase 5's exit test).
-func (r FitResult) Beats() bool { return r.FitAccuracy > r.HandAccuracy }
 
 type pair struct{ win, lose int }
 
@@ -172,7 +183,15 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 	res.TrainPairsTotal = trainBy.pairs()
 	train := trainBy.sample(opt.MaxPairs, opt.Seed)
 	res.TrainPairs = len(train)
+	if n := testBy.pairs(); n > MaxHeldOutPairs {
+		return res, fmt.Errorf("rankfit: %d held-out pairs, max %d (lower --holdout)", n, MaxHeldOutPairs)
+	}
 	test := testBy.sample(math.MaxInt, 0)
+	var testItems []int
+	for _, g := range testBy {
+		testItems = append(testItems, g...)
+	}
+	slices.Sort(testItems)
 
 	b := blendOf(base)
 	hand := res.Hand.Array()
@@ -187,13 +206,22 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 	dx, _, dconv := minimize(diag.objective, diag.start())
 	res.GateExp, res.FreshExp, res.DiagConverged = dx[NumParts+1], dx[NumParts+2], dconv
 
+	ev, err := evaluateHeldOut(items, testItems, test, b, fitted, hand, opt.Seed)
+	if err != nil {
+		return FitResult{}, err
+	}
 	res.HeldOutPairs = len(test)
-	res.HandAccuracy = accuracy(items, test, b, hand)
-	res.FitAccuracy = accuracy(items, test, b, fitted)
+	res.ScoredItems = ev.scoredItems
+	res.HandAccuracy, res.FitAccuracy = ev.hand, ev.fit
+	res.GainLo, res.GainHi, res.Resamples = ev.gainLo, ev.gainHi, ev.bootstrapSamples
+	res.Strata, res.ScoredPairs, res.Stratified = ev.strata, ev.scoredPairs, ev.stratified
 	return res, nil
 }
 
 func (it *Item) check() error {
+	if err := checkInclusion(it.Key, it.Source, it.PSelect); err != nil {
+		return err
+	}
 	if it.Grade < GradeNo || it.Grade > GradeYes {
 		return fmt.Errorf("rankfit: %s grade %d, want %d..%d", it.Key, it.Grade, GradeNo, GradeYes)
 	}
@@ -270,27 +298,6 @@ func utility(it *Item, b blend, s *[NumParts]float64, gateExp, freshExp float64)
 	return b.logMatch(it, s, nil) + gateExp*math.Log(max(it.Gate, logFloor)) + freshExp*math.Log(max(it.Fresh, logFloor))
 }
 
-// accuracy is the share of pairs s orders winner first; a tie counts half.
-func accuracy(items []Item, pairs []pair, b blend, s [NumParts]float64) float64 {
-	if len(pairs) == 0 {
-		return 0
-	}
-	u := make([]float64, len(items))
-	for i := range items {
-		u[i] = utility(&items[i], b, &s, 1, 1)
-	}
-	right := 0.0
-	for _, p := range pairs {
-		switch d := u[p.win] - u[p.lose]; {
-		case d > 0:
-			right++
-		case d == 0:
-			right += 0.5
-		}
-	}
-	return right / float64(len(pairs))
-}
-
 // model is the penalized pair loss over x = (log-shares..., log tau[,
 // gate exponent, fresh exponent]). A part whose hand share is 0 stays 0.
 type model struct {
@@ -300,12 +307,19 @@ type model struct {
 	theta0 [NumParts]float64
 	free   [NumParts]bool
 	lambda float64
-	scale  float64 // training items per pair
+	scale  float64 // training items per unit of pair weight
 	diag   bool
 }
 
 func newModel(items []Item, pairs []pair, b blend, hand [NumParts]float64, lambda, trainItems float64, diag bool) *model {
-	m := &model{items: items, pairs: pairs, b: b, lambda: lambda, diag: diag, scale: trainItems / float64(len(pairs))}
+	// A pair counts the product of its postings' Horvitz-Thompson weights; the
+	// loss is scaled so those weights total as many pairs-worth as training
+	// items, as before when every weight is 1.
+	var total float64
+	for _, p := range pairs {
+		total += items[p.win].weight() * items[p.lose].weight()
+	}
+	m := &model{items: items, pairs: pairs, b: b, lambda: lambda, diag: diag, scale: trainItems / total}
 	for i, s := range hand {
 		if s > 0 {
 			m.theta0[i], m.free[i] = math.Log(s), true
@@ -361,8 +375,9 @@ func (m *model) objective(x, g []float64) float64 {
 	loss, dtau := 0.0, 0.0
 	for _, p := range m.pairs {
 		d := u[p.win] - u[p.lose]
-		loss += softplus(-tau * d)
-		c := -sigmoid(-tau * d) // d softplus(-tau d) / d(tau d)
+		pw := m.items[p.win].weight() * m.items[p.lose].weight()
+		loss += pw * softplus(-tau*d)
+		c := -sigmoid(-tau*d) * pw // d (pw softplus(-tau d)) / d(tau d)
 		coef[p.win] += c * tau
 		coef[p.lose] -= c * tau
 		dtau += c * d

@@ -240,11 +240,17 @@ func seedJudgments(t *testing.T, stateDir string, n int) {
 			v = "maybe"
 		}
 		k := posting.Key(fmt.Sprintf("gh:j:%04d", i))
-		if err := s.Put(eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: v}, Source: "dropped:d1-ultra:sponsorship", PSelect: 0.5}); err != nil {
+		// Half from the dropped stratum (oversampled), half from a scored
+		// decile: the held-out gain needs scored-stratum pairs.
+		src, p := "dropped:d1-ultra:sponsorship", 0.5
+		if i%2 == 1 {
+			src, p = "decile:5", 0.25
+		}
+		if err := s.Put(eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: v}, Source: src, PSelect: p}); err != nil {
 			t.Fatal(err)
 		}
 		rows = append(rows, feedback.Impression{At: jobsT0, SlateID: "audit-seed", Surface: feedback.SurfaceAudit, Key: k, Position: i + 1,
-			DropReason: "sponsorship=no_sponsorship", Source: "dropped:d1-ultra:sponsorship", PSelect: 0.5,
+			DropReason: "sponsorship=no_sponsorship", Source: src, PSelect: p,
 			Scores: feedback.ScoresOf(jobinsight.Score(in))})
 	}
 	for len(rows) > 0 {
@@ -275,7 +281,7 @@ func TestRankfitWeightsFromAuditJudgments(t *testing.T) {
 	mustCode(t, 0, "init")
 	seedJudgments(t, stateDir, 400)
 	o, e := mustCode(t, 0, "rankfit", "--part", "weights")
-	for _, want := range []string{"audit judgments: ", "400 labelled postings with the scores recorded when judged or shown, 0 scored now", "held-out pairwise accuracy: fitted", "wrote "} {
+	for _, want := range []string{"audit judgments: ", "400 labelled postings with the scores recorded when judged or shown, 0 scored now", "held-out pairwise accuracy: fitted", "held-out pairs", "gain interval (95%, 1000 item resamples): [+", "stratum scored", "stratum dropped", "wrote "} {
 		if !strings.Contains(o, want) {
 			t.Errorf("output lacks %q:\n%s", want, o)
 		}

@@ -65,6 +65,15 @@ const (
 	SourceManual = "manual"
 	// maxSourceBytes bounds a Source.
 	maxSourceBytes = 64
+	// MinInclusionProbability is the smallest p_select a label may carry. The
+	// audit draws a stratum's places over its unlabelled pool, so a pick's
+	// probability is at least 1/(strata x pool): with a pool of a million
+	// postings and tens of strata that is about 1e-8, and 1e-9 leaves room for a
+	// ledger a hundred times larger. Below it a value is not something the
+	// sampler produced. A pair is weighted 1/(p_i p_j), so the floor also keeps
+	// every weight (at most 1e18) and every sum of them finite; without it a
+	// p_select under 1e-154 overflows the weight to +Inf and poisons the fit.
+	MinInclusionProbability = 1e-9
 )
 
 // WouldApplyOptions are the would_apply values besides Skip.
@@ -154,8 +163,8 @@ func (l Entry) checkSampling() error {
 		}
 		return nil
 	}
-	if !(l.PSelect > 0 && l.PSelect <= 1) { // false for NaN
-		return fmt.Errorf("eval: p_select %v must be in (0, 1]", l.PSelect)
+	if !(l.PSelect >= MinInclusionProbability && l.PSelect <= 1) { // false for NaN
+		return fmt.Errorf("eval: p_select %v must be in [%g, 1]", l.PSelect, MinInclusionProbability)
 	}
 	return nil
 }

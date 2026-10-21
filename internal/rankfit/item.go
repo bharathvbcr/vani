@@ -46,13 +46,30 @@ type Item struct {
 	// it is an audit judgment rather than a mark or an impression.
 	Grade  int
 	Judged bool
+	// Source and PSelect are the audit stratum and inclusion probability of a
+	// judgment (Target). A sampled item counts 1/PSelect in the fit and in the
+	// held-out accuracy (Horvitz-Thompson); any other item counts 1.
+	Source  string
+	PSelect float64
 }
+
+// weight is the item's Horvitz-Thompson weight: the number of postings in the
+// population it stands for. check has made PSelect usable.
+func (it *Item) weight() float64 {
+	if Sampled(it.Source) {
+		return 1 / it.PSelect
+	}
+	return 1
+}
+
+// stratum is the item's audit stratum, "" when it has none.
+func (it *Item) stratum() string { return StratumOf(it.Source) }
 
 // ItemFrom reads an Item from r, which must be ScoreWith's answer for the
 // posting: its Factors hold every part the fit needs, unknown ones included,
 // so the Item is exactly what ScoreWith ranked.
 func ItemFrom(key string, r jobinsight.Result, t Target) (Item, error) {
-	it := Item{Key: key, Grade: t.Grade, Judged: t.Judged, Gate: math.NaN(), Fresh: math.NaN()}
+	it := Item{Key: key, Grade: t.Grade, Judged: t.Judged, Source: t.Source, PSelect: t.PSelect, Gate: math.NaN(), Fresh: math.NaN()}
 	index := map[string]int{}
 	for i, n := range PartNames {
 		index[n] = i
@@ -104,7 +121,7 @@ func ItemFrom(key string, r jobinsight.Result, t Target) (Item, error) {
 // reads each known part's as 1.
 func ItemFromScores(key string, s feedback.Scores, base jobinsight.Weights, t Target) (Item, error) {
 	prior := blendOf(base).prior
-	it := Item{Key: key, Grade: t.Grade, Judged: t.Judged}
+	it := Item{Key: key, Grade: t.Grade, Judged: t.Judged, Source: t.Source, PSelect: t.PSelect}
 	for i, n := range PartNames {
 		v, ok := s.Factors[n]
 		c, hasConf := s.Factors[n+feedback.ConfSuffix]
