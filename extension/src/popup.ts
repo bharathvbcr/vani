@@ -17,6 +17,7 @@ import { templateTailoring, generateTailoredDraft } from "./tailor";
 import type { JobInfo } from "./draft";
 import { formatJobDetails } from "./jobinfo";
 import { resumeRow } from "./resumerow";
+import { isHttpUrl, openButton, titleElement } from "./joblink";
 import { type HomeView, bankSummary, basicsCompleteness, compactCount, friendlyError, homeHeadline, homeState, meterModel, nextStep, ratedFrame, viewSections } from "./home";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -973,7 +974,7 @@ function renderMissedChecklist(audit?: FormAuditReport): void {
     descWrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;overflow:hidden;";
 
     const icon = document.createElement("span");
-    icon.textContent = m.type === "required" ? "⚠️" : "❌";
+    icon.textContent = m.reason === "invalid" ? "❌" : "⚠️";
     icon.style.cssText = "font-size:12px;flex-shrink:0;";
 
     const desc = document.createElement("span");
@@ -1045,10 +1046,7 @@ function renderScraper(): void {
     topRow.className = "row-between";
     topRow.style.margin = "0 0 4px";
 
-    const titleEl = document.createElement("a");
-    titleEl.href = j.url;
-    titleEl.target = "_blank";
-    titleEl.textContent = j.title;
+    const titleEl = titleElement(document, j.title, j.url);
     titleEl.style.cssText = "font-weight:600;font-size:13px;color:var(--text);text-decoration:none;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     titleEl.title = j.title;
 
@@ -1133,14 +1131,9 @@ function renderScraper(): void {
       }
     };
 
-    const openBtn = document.createElement("button");
-    openBtn.className = "sm primary";
-    openBtn.textContent = "Open role";
-    openBtn.onclick = () => {
-      window.open(j.url, "_blank");
-    };
+    const openBtn = openButton(document, j.url, (u, t) => window.open(u, t));
 
-    actRow.append(copyDetailsBtn, copyBtn, trackBtn, openBtn);
+    actRow.append(copyDetailsBtn, ...(isHttpUrl(j.url) ? [copyBtn] : []), trackBtn, ...(openBtn ? [openBtn] : []));
     card.append(topRow, subRow, skillsRow, actRow);
     list.append(card);
   }

@@ -22,6 +22,7 @@ import {
   checkToContent, isCaptureReply, isFillReply, isScanReply,
 } from "./messages";
 import type { FillOutcome } from "./fill";
+import { checkResumeFile } from "./resume";
 
 declare global {
   interface Window {
@@ -88,7 +89,7 @@ async function probeFrames(tabId: number, timeoutMs: number): Promise<number[]> 
   return rs.filter(r => r.result === true).map(r => r.frameId);
 }
 
-const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
+export const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
   scan: isScanReply,
   fill: isFillReply,
   capture: isCaptureReply,
@@ -98,35 +99,43 @@ const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
   getRelevance: r => typeof r === "object" && r !== null,
   jumpToMissed: () => true,
   insertTailored: () => true,
+  attachResume: isFillReply,
 };
 
 export interface ToFramesOptions {
   /** The frames of this tab whose content script registered (FrameRegistry.list, through the background from the popup). */
   registered(tabId: number): Promise<number[]>;
   timeoutMs?: number;
+  /** The tab to ask. Absent, the active tab (the popup's and the shortcut's own); a content script's request names its own tab, never the active one. */
+  tabId?: number;
 }
 
 /**
- * Send a message to every frame of the active tab that runs Vani and collect each frame's answer.
- * Where no frame has a live listener, the content script is injected into every frame the extension
- * may script (activeTab grants the popup's page, for this click) and the frames are asked again.
+ * Send a message to every frame of a tab that runs Vani (the active tab unless `tabId` names one) and
+ * collect each frame's answer. Where no frame has a live listener, the content script is injected into
+ * every frame the extension may script (activeTab grants the popup's page, for this click) and the frames
+ * are asked again.
  */
 export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promise<FanOut<T>> {
   const timeoutMs = opts.timeoutMs ?? FRAME_REPLY_MS;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id === undefined) throw new Error("no active tab");
-  const tabId = tab.id;
+  let tabId = opts.tabId;
+  if (tabId === undefined) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id === undefined) throw new Error("no active tab");
+    tabId = tab.id;
+  }
+  const target = tabId;
   const accept = ACCEPT[msg.type] as (r: unknown) => r is T;
   const ask = async (): Promise<FanOut<T>> => {
     const [probed, registered] = await Promise.all([
-      probeFrames(tabId, timeoutMs).catch((): number[] => []),
-      bounded(opts.registered(tabId), timeoutMs, "the background's frame list").catch((): number[] => []),
+      probeFrames(target, timeoutMs).catch((): number[] => []),
+      bounded(opts.registered(target), timeoutMs, "the background's frame list").catch((): number[] => []),
     ]);
-    return fanOut([...probed, ...registered], frameId => chrome.tabs.sendMessage(tabId, msg, { frameId }), accept, timeoutMs);
+    return fanOut([...probed, ...registered], frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
   };
   const first = await ask();
   if (first.asked > 0) return first;
-  await bounded(chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["content.js"] }), timeoutMs, "starting Vani on the page");
+  await bounded(chrome.scripting.executeScript({ target: { tabId: target, allFrames: true }, files: ["content.js"] }), timeoutMs, "starting Vani on the page");
   const second = await ask();
   if (second.asked === 0) throw new Error("Vani could not start on this page");
   return second;
@@ -289,6 +298,9 @@ export function contentListener(h: ContentHandlers): Listener {
       return true;
     }
     if (msg.type === "attachResume") {
+      // The file is checked again here: whoever sent this, a page never gets a name or bytes the checks refuse.
+      const file = checkResumeFile(msg.name, msg.pdf);
+      if ("error" in file) { sendResponse({ error: file.error }); return false; }
       void Promise.resolve().then(() => h.attachResume?.(msg.name, msg.pdf, msg.pickedAt)).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
       return true;
     }

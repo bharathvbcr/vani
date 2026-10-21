@@ -1,4 +1,5 @@
-// Build the extension with Bun (no npm dependencies):
+// Build the extension with Bun (no runtime dependencies; the one devDependency, typescript, is only for
+// scripts/typecheck.sh and is never bundled or copied):
 //   bun run /Users/bharath/Code/apps/Vani/extension/build.ts
 // Writes dist-chrome/ (load unpacked in Chrome), dist-safari/ (input for the
 // Safari web extension converter / Xcode project) and dist-test/ (DOM test page).

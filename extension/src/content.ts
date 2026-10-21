@@ -31,7 +31,7 @@ import { type JobRow, applyVaniRow, scoreWord, withRowError } from "./jobrow";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
-import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, fromBase64, isPdf, isResumeField, parseResumeGet, toBase64 } from "./resume";
+import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, checkResumeFile, isResumeField, parseResumeGet, toBase64 } from "./resume";
 import { type OfferAction, type OfferUi, type PickedFile, createResumeOffer } from "./resumeoffer";
 import { emptyBank, type Match } from "./types";
 import { createBankMemo } from "./bankcache";
@@ -1279,12 +1279,13 @@ if (!window.__vaniApply && !coveredByParent()) {
       }
     },
     attachResume: async (name, pdf, pickedAt) => {
-      const bytes = fromBase64(pdf);
-      if (!bytes || !isPdf(bytes)) return { outcomes: [] };
+      const file = checkResumeFile(name, pdf);
+      if ("error" in file) return { error: file.error };
+      const bytes = file.bytes;
       const refs = scanForm(document).refs.filter(x => x.info.kind === "file" && isResumeField(x.info));
       if (refs.length === 0) return { outcomes: [] };
       const outcomes = await fillAll(refs, emptyBank(), location.hostname, {
-        resume: async () => ({ ok: true, name, bytes, pickedAt }),
+        resume: async () => ({ ok: true, name: file.name, bytes, pickedAt }),
         overwrite: true,
       });
       return { outcomes };

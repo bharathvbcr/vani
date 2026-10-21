@@ -548,7 +548,7 @@ async function attachResume(ref: FieldRef, get: () => Promise<ResumeFetch>, opts
   const w = winOf(el);
   try {
     const dt = new w.DataTransfer();
-    dt.items.add(new w.File([r.bytes], r.name, { type: "application/pdf" }));
+    dt.items.add(new w.File([r.bytes.slice()], r.name, { type: "application/pdf" }));
     el.files = dt.files;
   } catch {
     return { label, filled: false, reason: "refused", detail: "this page did not take the file; attach it by hand" };

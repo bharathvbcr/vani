@@ -55,13 +55,20 @@ export interface ScrapeResult {
   jobs: ScrapedJob[];
 }
 
+/**
+ * A scraped link as an absolute http(s) URL, or "" for anything else: a javascript:, data:, file: or
+ * other-scheme link (page content is untrusted, and the popup turns this into an anchor and window.open),
+ * or one that does not parse. The URL parser already drops leading whitespace and folds the scheme's case,
+ * so the check is on the parsed protocol, never on the raw text.
+ */
 function resolveUrl(href: string | null | undefined, base?: string): string {
   if (!href) return "";
   const baseHref = base ?? (globalThis.location ? globalThis.location.href : "https://example.com");
   try {
-    return new URL(href, baseHref).href;
+    const u = new URL(href, baseHref);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
   } catch {
-    return href;
+    return "";
   }
 }
 

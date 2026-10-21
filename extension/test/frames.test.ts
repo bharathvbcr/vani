@@ -8,9 +8,10 @@
 // - a message to a frame with no listener fails "Receiving end does not exist".
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  type FrameStore, MAX_FRAMES_PER_TAB, MAX_TABS, contentListener, createFrameRegistry, mergeFill, notAnswered, sumCaptures, toFrames,
+  ACCEPT, type FrameStore, MAX_FRAMES_PER_TAB, MAX_TABS, contentListener, createFrameRegistry, mergeFill, notAnswered, sumCaptures, toFrames,
 } from "../src/frames";
-import type { CaptureReply, FillReply, ScanReply } from "../src/messages";
+import { type CaptureReply, type FillReply, type ScanReply, SENDER_POLICY, TO_BACKGROUND, TO_CONTENT } from "../src/messages";
+import { MAX_RESUME_BYTES, toBase64 } from "../src/resume";
 
 const g = globalThis as Record<string, unknown>;
 const saved = { chrome: g.chrome, window: g.window };
@@ -194,6 +195,63 @@ describe("fill and save across frames", () => {
   });
 });
 
+describe("attachResume and tabId across frames", () => {
+  const attach = { type: "attachResume", name: "Resume_Synthetic.pdf", pdf: "JVBERi0=", pickedAt: "" } as const;
+  /** A chrome whose active tab is 42 and whose tabs reply as `reply` says; records every tab and frame asked. */
+  function twoTabs(reply: (tabId: number, frameId: number) => unknown) {
+    const asked: Array<[number, number | undefined]> = [];
+    const queried = { n: 0 };
+    g.chrome = {
+      tabs: {
+        query: async () => { queried.n++; return [{ id: 42 }]; },
+        sendMessage: async (tabId: number, _msg: unknown, o?: { frameId?: number }) => { asked.push([tabId, o?.frameId]); return reply(tabId, o?.frameId ?? 0); },
+      },
+      scripting: { executeScript: async () => [] },
+    };
+    return { asked, queried };
+  }
+
+  test("attachResume is accepted by its own check: a reply with outcomes answers, anything else is a failed frame", async () => {
+    twoTabs((_t, f) => (f === 3 ? { nope: true } : { outcomes: [{ label: "Resume", filled: true }] }));
+    const r = await toFrames<FillReply>(attach, { registered: async () => [0, 3], tabId: 42 });
+    expect(r.answered.map(a => a.frameId)).toEqual([0]);
+    expect(r.failed).toEqual([{ frameId: 3, error: "malformed reply" }]);
+    expect(mergeFill(r).map(o => o.label)).toEqual(["Resume"]);
+  });
+
+  test("tabId asks that tab's frames and never looks up the active tab", async () => {
+    const { asked, queried } = twoTabs((t, f) => ({ outcomes: [{ label: `tab ${t} frame ${f}`, filled: true }] }));
+    const r = await toFrames<FillReply>(attach, { registered: async tabId => (tabId === 7 ? [0, 4] : [9]), tabId: 7 });
+    expect(asked).toEqual([[7, 0], [7, 4]]);
+    expect(queried.n).toBe(0);
+    expect(mergeFill(r).map(o => o.label)).toEqual(["tab 7 frame 0", "tab 7 frame 4"]);
+  });
+
+  test("without tabId the active tab is asked, as before", async () => {
+    const { asked, queried } = twoTabs(() => ({ outcomes: [] }));
+    await toFrames<FillReply>(attach, { registered: async () => [0] });
+    expect(asked).toEqual([[42, 0]]);
+    expect(queried.n).toBe(1);
+  });
+
+  test("a tabId whose tab has gone (no listener anywhere) is an error, not an empty success", async () => {
+    twoTabs(() => { throw new Error("Could not establish connection. Receiving end does not exist."); });
+    await expect(toFrames<FillReply>(attach, { registered: async () => [0], tabId: 7 })).rejects.toThrow("Vani could not start on this page");
+  });
+
+  test("a frame that throws is reported as failed, with its error", async () => {
+    twoTabs(() => { throw new Error("boom"); });
+    const r = await toFrames<FillReply>(attach, { registered: async () => [0], tabId: 7 });
+    expect(r.failed).toEqual([{ frameId: 0, error: "boom" }]);
+    expect(mergeFill(r)).toEqual([]);
+  });
+
+  test("every ToContent type has an ACCEPT check, and the shape tables list the same types", () => {
+    expect(Object.keys(ACCEPT).sort()).toEqual(Object.keys(TO_CONTENT).sort());
+    expect(Object.keys(SENDER_POLICY).sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
+  });
+});
+
 describe("frame registry", () => {
   test("frames of a tab register, are listed newest last, and are forgotten with the tab", async () => {
     const r = createFrameRegistry();
@@ -311,6 +369,24 @@ describe("content script replies", () => {
     const reply = await ask(l, { type: "attachResume", name: "test.pdf", pdf: "JVBERi0=", pickedAt: "2026-10-19" });
     expect(received).toEqual(["test.pdf", "JVBERi0=", "2026-10-19"]);
     expect(reply.replies).toEqual([{ outcomes: [{ label: "Resume", filled: true }] }]);
+  });
+
+  test("attachResume refuses a bad name, a non-PDF or an over-cap file with an error, and never calls the handler", async () => {
+    let ran = 0;
+    const l = subframe({ attachResume: async () => { ran++; return { outcomes: [] }; } });
+    const pdf = (n: number, sig = "%PDF-") => { const b = new Uint8Array(n).fill(0x20); b.set(new TextEncoder().encode(sig).subarray(0, n)); return toBase64(b); };
+    const good = { type: "attachResume", name: "Resume_Synthetic.pdf", pdf: pdf(32), pickedAt: "" };
+    for (const bad of [
+      { name: "" }, { name: "a/b.pdf" }, { name: "..\\x.pdf" }, { name: "x.txt" }, { pdf: pdf(32, "<html") }, { pdf: "!!!" }, { pdf: pdf(MAX_RESUME_BYTES + 1) },
+    ]) {
+      const r = await ask(l, { ...good, ...bad });
+      expect(r.async).toBe(false);
+      expect(r.replies.length).toBe(1);
+      expect((r.replies[0] as { error?: string }).error).toBeTruthy();
+    }
+    expect(ran).toBe(0);
+    expect(await ask(l, { ...good, pdf: pdf(MAX_RESUME_BYTES) })).toEqual({ async: true, replies: [{ outcomes: [] }] });
+    expect(ran).toBe(1);
   });
 
   test("a message that is not one of ours is answered with an error and runs nothing", async () => {

@@ -4,25 +4,22 @@ import { createLock } from "./guards";
 import type { Answer, Bank } from "./types";
 import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
 import {
-  type CandidateQuery,
-  listAnswers,
   logActivity,
   loadBank,
   loadSnapshot,
   migrationNote,
   nativeTransport,
   patchAnswers,
-  queryCandidates,
   replaceBank,
   storageMode,
   updateBank,
 } from "./store";
-import { type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkToBackground } from "./messages";
-import { type FanOut, type FrameStore, createFrameRegistry, toFrames } from "./frames";
+import { type FillReply, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
+import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
 import { parseFindRow } from "./jobrow";
-import { resumeKey, runResume } from "./resume";
+import { checkResumeFile, resumeKey, runResume } from "./resume";
 
 const draft = createDrafter();
 
@@ -222,24 +219,6 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       await patchAnswers([], [msg.key]);
       void logActivity({ event: "delete" });
       return { ok: true };
-    case "queryCandidates": {
-      const query = typeof msg.query === "object" && msg.query !== null ? msg.query : {};
-      const candidates = await queryCandidates(query as CandidateQuery);
-      return { candidates };
-    }
-    case "listAnswers": {
-      const offset = typeof msg.offset === "number" ? msg.offset : 0;
-      const limit = typeof msg.limit === "number" ? msg.limit : 50;
-      const search = typeof msg.search === "string" ? msg.search : undefined;
-      const res = await listAnswers(offset, limit, search);
-      return res;
-    }
-    case "patchAnswers": {
-      const upsert = Array.isArray(msg.upsert) ? (msg.upsert as Answer[]) : [];
-      const del = Array.isArray(msg.delete) ? (msg.delete as string[]) : [];
-      const res = await patchAnswers(upsert, del);
-      return res;
-    }
     case "editAnswer":
       await update(b => {
         const a = b.answers[msg.key];
@@ -329,8 +308,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "resumeInfo":
     case "resumePut":
     case "resumeDelete": {
-      // The bytes go only to the content script that asked, for its own tab; the popup gets the name, never the file.
-      if (msg.type === "resumeGet" && !sender.tab) return { error: "only a page being filled gets the resume", code: "bad_request" };
+      // The bytes go only to the content script that asked, for its own tab (resumeGet is content-only in
+      // the sender policy); the popup gets the name, never the file.
       // A content script acts for its own frame: the key is that frame's URL, never the one its message claims.
       // The popup is in no tab and names the active tab's page.
       const r = await runResume({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url }, native);
@@ -342,16 +321,20 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return r;
     }
     case "attachResume": {
-      const tabId = actingTab(sender, msg.tabId);
+      // Only a content script sends this (sender policy), and it acts for its own tab: never the active one,
+      // which may be a different page by the time this runs.
+      const tabId = sender.tab?.id;
       if (tabId === undefined) return { error: "no tab" };
-      const r = await toFrames<{ outcomes?: unknown[] }>({
+      // The same checks the page runs, before any frame is asked.
+      const file = checkResumeFile(msg.name, msg.pdf);
+      if ("error" in file) return file;
+      const r = await toFrames<FillReply>({
         type: "attachResume",
-        name: msg.name,
+        name: file.name,
         pdf: msg.pdf,
-        pickedAt: msg.pickedAt,
+        pickedAt: msg.pickedAt.slice(0, 40),
       }, { registered: tid => frameRegistry.list(tid), tabId });
-      const outcomes = r.answered.flatMap(a => (Array.isArray(a.reply.outcomes) ? a.reply.outcomes : []));
-      return { outcomes };
+      return { outcomes: mergeFill(r) };
     }
     default:
       // Unreachable for a message that passed checkToBackground; kept so a missed case answers, never `undefined`.
@@ -363,6 +346,12 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   const c = checkToBackground(raw);
   if ("error" in c) {
     sendResponse({ error: c.error });
+    return false;
+  }
+  // Who may send this type (messages.ts SENDER_POLICY): a refused sender gets an error and nothing runs.
+  const refused = checkSender(c.msg.type, sender);
+  if (refused) {
+    sendResponse(refused);
     return false;
   }
   handle(c.msg, sender).then(

@@ -683,3 +683,33 @@ describe("the role excerpt Vani is sent is longer than the listing snippet", () 
     expect(exportJobsAsJSON(r.jobs)).not.toContain("description");
   });
 });
+
+describe("scraped links are http(s) or empty", () => {
+  const posting = (url: unknown) => makeDoc([
+    el("script", { type: "application/ld+json" }, JSON.stringify({ "@type": "JobPosting", title: "Backend Engineer", description: "Go services", hiringOrganization: { name: "Acme" }, url })),
+  ]);
+  const urlOf = (url: unknown) => scrapePageJobs(posting(url), "acme.com").jobs[0]!.url;
+
+  test("javascript:, data:, file: and other schemes yield an empty url, whatever the case or leading whitespace", () => {
+    for (const bad of [
+      "javascript:alert(1)", "  JaVaScRiPt:alert(1)", "\tjavascript:alert(1)", "\njavascript:void(0)", "JAVASCRIPT:alert(1)",
+      "data:text/html,<b>x</b>", " DATA:text/html;base64,AAAA", "file:///etc/hosts", "  FiLe:///etc/hosts",
+      "ftp://acme.com/jobs/1", "chrome-extension://abc/page.html", "blob:https://acme.com/1", "mailto:jobs@acme.com", "vbscript:x",
+    ]) {
+      expect(urlOf(bad)).toBe("");
+    }
+  });
+
+  test("http(s) links, absolute or relative to the page, are kept", () => {
+    expect(urlOf("https://acme.com/jobs/101")).toBe("https://acme.com/jobs/101");
+    expect(urlOf("  HTTP://acme.com/jobs/102")).toBe("http://acme.com/jobs/102");
+    expect(urlOf("/jobs/103")).toMatch(/^https?:\/\/[^/]+\/jobs\/103$/);
+  });
+
+  test("a posting with a hostile link is still listed, with no link", () => {
+    const r = scrapePageJobs(posting("javascript:alert(1)"), "acme.com");
+    expect(r.totalFound).toBe(1);
+    expect(r.jobs[0]!.title).toBe("Backend Engineer");
+    expect(exportJobsAsJSON(r.jobs)).not.toContain("javascript");
+  });
+});

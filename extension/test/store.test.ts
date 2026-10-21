@@ -121,34 +121,6 @@ class FakeHost {
         this.bank = { ...this.bank, answers };
         return { op: "patch", rev: this.rev, droppedSecret: dropped };
       }
-      case "queryCandidates": {
-        const sigs = new Set(Array.isArray(m.signatures) ? (m.signatures as string[]) : []);
-        const keys = new Set(Array.isArray(m.keys) ? (m.keys as string[]) : []);
-        const labels = new Set(Array.isArray(m.labels) ? (m.labels as string[]) : []);
-        const matches = Object.values(this.bank.answers).filter(a =>
-          keys.has(a.key) ||
-          a.signatures.some(s => sigs.has(s)) ||
-          a.labels.some(l => labels.has(l))
-        );
-        return { ok: true, candidates: matches };
-      }
-      case "listAnswers": {
-        const offset = typeof m.offset === "number" ? m.offset : 0;
-        const limit = typeof m.limit === "number" ? m.limit : 50;
-        const s = typeof m.search === "string" ? m.search.toLowerCase() : "";
-        let list = Object.values(this.bank.answers);
-        if (s) {
-          list = list.filter(a =>
-            a.key.toLowerCase().includes(s) ||
-            a.value.some(v => v.toLowerCase().includes(s)) ||
-            a.labels.some(l => l.toLowerCase().includes(s))
-          );
-        }
-        list.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-        const total = list.length;
-        const slice = list.slice(offset, offset + limit);
-        return { op: "answersList", answers: slice, total, rev: this.rev };
-      }
       default: return { error: "unknown op" };
     }
   };
@@ -359,41 +331,6 @@ describe("store: native mode", () => {
     expect(host.bank.answers.newAnswer?.value).toEqual(["val"]);
     expect(host.bank.answers.secretField).toBeUndefined();
   });
-
-  test("queryCandidates filters candidate answers by signature, key, or label", async () => {
-    const { host, store } = setup();
-    host.bank = bankOf(
-      answer("firstName", "John", "2026-01-01", { signatures: ["gh|first_name"] }),
-      answer("lastName", "Doe", "2026-01-01", { labels: ["family name"] }),
-      answer("unrelated", "something", "2026-01-01")
-    );
-    const candidates = await store.queryCandidates({
-      signatures: ["gh|first_name"],
-      labels: ["family name"],
-      keys: ["otherKey"],
-    });
-    expect(candidates.length).toBe(2);
-    const keys = candidates.map(c => c.key).sort();
-    expect(keys).toEqual(["firstName", "lastName"]);
-  });
-
-  test("listAnswers returns paginated and searched answers", async () => {
-    const { host, store } = setup();
-    host.bank = bankOf(
-      answer("apple", "pie", "2026-01-01"),
-      answer("banana", "split", "2026-02-01"),
-      answer("cherry", "tart", "2026-03-01")
-    );
-    const page = await store.listAnswers(0, 2);
-    expect(page.total).toBe(3);
-    expect(page.answers.length).toBe(2);
-    expect(page.answers[0]?.key).toBe("cherry");
-    expect(page.answers[1]?.key).toBe("banana");
-
-    const searchRes = await store.listAnswers(0, 10, "pie");
-    expect(searchRes.total).toBe(1);
-    expect(searchRes.answers[0]?.key).toBe("apple");
-  });
 });
 
 describe("store: browser (local) mode", () => {
@@ -495,42 +432,6 @@ describe("store: browser (local) mode", () => {
     expect(stored.newAnswer?.value).toEqual(["val"]);
     expect(stored.secretField).toBeUndefined();
   });
-
-  test("queryCandidates in browser mode filters local bank", async () => {
-    const { host, store, local } = setup();
-    host.down = true;
-    local.data.vaniBank = bankOf(
-      answer("firstName", "John", "2026-01-01", { signatures: ["gh|first_name"] }),
-      answer("lastName", "Doe", "2026-01-01", { labels: ["family name"] }),
-      answer("unrelated", "something", "2026-01-01")
-    );
-    const candidates = await store.queryCandidates({
-      signatures: ["gh|first_name"],
-      labels: ["family name"],
-    });
-    expect(candidates.length).toBe(2);
-    const keys = candidates.map(c => c.key).sort();
-    expect(keys).toEqual(["firstName", "lastName"]);
-  });
-
-  test("listAnswers in browser mode paginates and filters local bank", async () => {
-    const { host, store, local } = setup();
-    host.down = true;
-    local.data.vaniBank = bankOf(
-      answer("apple", "pie", "2026-01-01"),
-      answer("banana", "split", "2026-02-01"),
-      answer("cherry", "tart", "2026-03-01")
-    );
-    const page = await store.listAnswers(0, 2);
-    expect(page.total).toBe(3);
-    expect(page.answers.length).toBe(2);
-    expect(page.answers[0]?.key).toBe("cherry");
-    expect(page.answers[1]?.key).toBe("banana");
-
-    const searchRes = await store.listAnswers(0, 10, "pie");
-    expect(searchRes.total).toBe(1);
-    expect(searchRes.answers[0]?.key).toBe("apple");
-  });
 });
 
 describe("store: migration from chrome.storage.local", () => {
@@ -620,20 +521,6 @@ describe("shared classifier vectors", () => {
       const got = classify({ kind: v.kind as Answer["kind"], label: v.label, name: v.name, autocomplete: v.autocomplete });
       expect({ label: v.label, got }).toEqual({ label: v.label, got: v.want });
     }
-  });
-});
-
-describe("store: queryCandidates reply shape", () => {
-  test("reads the candidates key the macOS host replies with", async () => {
-    const wanted = answer("firstName", "John", "2026-01-01");
-    const transport: Transport = async msg => {
-      const m = msg as Record<string, unknown>;
-      if (m.op === "ping") return { ok: true, protocol: 1, rev: 1 };
-      if (m.op === "queryCandidates") return { ok: true, candidates: [wanted] };
-      return { error: "unexpected op" };
-    };
-    const store = createStore({ transport, local: new FakeLocal(), timeoutMs: 50, now: () => 1_000 });
-    expect(await store.queryCandidates({ keys: ["firstName"] })).toEqual([wanted]);
   });
 });
 

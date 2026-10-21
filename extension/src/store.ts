@@ -15,23 +15,11 @@ const MAX_ATTEMPTS = 3;
 
 export type StorageMode = "mac-app" | "browser";
 
-export interface CandidateQuery {
-  signatures?: string[];
-  keys?: string[];
-  labels?: string[];
-}
-
 export interface PatchOutcome {
   rev: number;
   droppedSecret: number;
   /** Set only when a `baseRev` was given and the Mac app's bank had moved on: nothing was written, `rev` is its current one. */
   conflict?: boolean;
-}
-
-export interface AnswerListResult {
-  answers: Answer[];
-  total: number;
-  rev: number;
 }
 
 export interface LogEntry {
@@ -443,62 +431,6 @@ export function createStore(opts: StoreOptions = {}) {
         return { rev: 0, droppedSecret };
       });
     },
-
-    /** Granular indexed candidate lookup for form matching without transferring the full bank. */
-    async queryCandidates(query: CandidateQuery): Promise<Answer[]> {
-      if (await useNative()) {
-        const r = await call({
-          op: "queryCandidates",
-          signatures: query.signatures ?? [],
-          keys: query.keys ?? [],
-          labels: query.labels ?? [],
-        });
-        if (Array.isArray(r.candidates)) {
-          return r.candidates as Answer[];
-        }
-        return [];
-      }
-      const current = await localLoad();
-      const sigSet = new Set(query.signatures ?? []);
-      const keySet = new Set(query.keys ?? []);
-      const labelSet = new Set(query.labels ?? []);
-      return Object.values(current.answers).filter(a => {
-        if (keySet.has(a.key)) return true;
-        if (a.signatures.some(s => sigSet.has(s))) return true;
-        if (a.labels.some(l => labelSet.has(l))) return true;
-        return false;
-      });
-    },
-
-    /** Paginated listing and search for UI tables without transferring the full bank. */
-    async listAnswers(offset = 0, limit = 50, search?: string): Promise<AnswerListResult> {
-      if (await useNative()) {
-        const r = await call({
-          op: "listAnswers",
-          offset,
-          limit,
-          search: search ?? "",
-        });
-        const answers = Array.isArray(r.answers) ? (r.answers as Answer[]) : [];
-        const total = typeof r.total === "number" ? r.total : answers.length;
-        const rev = isRev(r.rev) ? r.rev : 0;
-        return { answers, total, rev };
-      }
-      const current = await localLoad();
-      let all = Object.values(current.answers);
-      if (search && search.trim().length > 0) {
-        const s = search.toLowerCase();
-        all = all.filter(a =>
-          a.key.toLowerCase().includes(s) ||
-          a.value.some(v => v.toLowerCase().includes(s)) ||
-          a.labels.some(l => l.toLowerCase().includes(s))
-        );
-      }
-      all.sort((x, y) => (y.updatedAt ?? "").localeCompare(x.updatedAt ?? ""));
-      const total = all.length;
-      const slice = all.slice(offset, offset + limit);
-      return { answers: slice, total, rev: 0 };
-    },
   };
 }
 
@@ -511,5 +443,3 @@ export const storageMode = store.storageMode;
 export const migrationNote = store.migrationNote;
 export const logActivity = store.logActivity;
 export const patchAnswers = store.patchAnswers;
-export const queryCandidates = store.queryCandidates;
-export const listAnswers = store.listAnswers;
