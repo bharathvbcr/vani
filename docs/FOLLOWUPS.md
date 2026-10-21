@@ -149,6 +149,160 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **`TestJobsInsightScalesTo5000Postings` has a tight bound under load.** It ran 5.7-6.5 s under
   `-race` on a quiet machine and passed its 10 s bound, but crossed it twice while a Swift build
   ran alongside. Not a code fault; raise the bound or skip it under `-race` if it recurs.
+  (Superseded 2026-10-21: ft-2673557b made the test count allocations, 4.00x for 4x postings,
+  instead of wall time, `cmd/vani/jobsscale_test.go`.)
+
+## Audit 2026-10-20: decisions and deviations the audit found unrecorded (recorded 2026-10-21)
+
+Each is a decision or a deviation from a card's criterion that lived only in a card log or a code
+comment, so the next audit would report it as a bug. Line numbers are on main at `2fcac90`.
+"Fable delegated" is the owner's delegation to the Fable advisor on 2026-10-21.
+
+- **A4-3, page half: page boards fail on http links off the default port, by design (2026-10-20,
+  ft-e97abbbf criterion 3, amended).** `upgradeHTTP` (`internal/sources/page/page.go:446-457`)
+  rewrites an http link on port 80 or no port to https and leaves any other port alone; a posting
+  the operator's pattern selects but that is not https then fails the board in `fetchableURL`
+  (`page.go:414-418`, `:334`) instead of being fetched somewhere else or skipped (a skip would mark
+  it dead). Pinned by `internal/sources/page/page_test.go:305-309`. The https form of another port
+  is a guess.
+- **ft-bcf3eb75 criterion 4: kbsync saves every 16 blocks and once at the end (2026-10-20; amended
+  and DECIDED 2026-10-21, Fable delegated, decision 2).** At most `ceil(n/16)+1` writes per pass,
+  not one per block: `flushEvery = 16` (`internal/kbsync/state.go:96-99`), the batch flush at
+  `internal/kbsync/apply.go:150-151` and the final flush on every return (`apply.go:79`, which does
+  nothing when nothing is unsaved, so an exact multiple of 16 saves `n/16` times). A crash between
+  saves loses at most 15 records, whose blocks are sent again unchanged (state never runs ahead of
+  DevPrism). `internal/kbsync/batch_test.go:48` pins 3 saves for 40 blocks.
+- **ft-1045267a D17: the llama-server device is fixed to Metal, not configurable (Fable D17;
+  decided before the 2026-10-20 audit, date not recorded; first written here 2026-10-21).** `internal/localserver/localserver.go:71-81`
+  passes `--device MTL0 -ngl all` always. The owner's rule of 2026-10-18 is that the served path is
+  Metal and CPU is never a fallback; a configurable device was declined on that ground. Without
+  MTL0 llama.cpp exits at once ("invalid device") and the run goes on without the shadow, rather than
+  measuring a different numeric path.
+- **ft-1045267a D18: the native host does not check the extension id (Fable D18; decided before
+  the 2026-10-20 audit, date not recorded; first written here 2026-10-21).** `macos/Sources/vani-apply-host/main.swift:20-29` requires only a
+  `chrome-extension://` prefix. The boundary is Chrome's `allowed_origins` in the manifest that
+  `ChromeConnector` writes; the argument comes from whoever launched the process, so an exact-id
+  match in the host would add no protection (a same-user process can pass any id), and the id the
+  user chose is in the app's defaults, which the host cannot read.
+- **B2-6: the native host is a same-user deputy; a parent-process code-signature check and
+  `#if DEBUG` gating of `--store-dir`, `--vani`, `--anthropic-account` and `--no-keychain` are
+  DECLINED (audit 2026-10-20; decided 2026-10-21, Fable delegated).** The host runs as the user
+  (`main.swift:20-29`) and the flags (`main.swift:31-58`) grant nothing a same-user process does
+  not already have. Security impact: no change. Revisit if the host gains a capability the same
+  user cannot exercise directly, for example a Keychain ACL bound to the host's signature.
+- **A2-4 residual: a well-formed empty listing during an ATS outage ages the board; no floor
+  (audit 2026-10-20; DECLINED 2026-10-21, Fable delegated).** The reasons and the contract are in
+  "Known limits" under "Absence ages every open posting" (the Residual bullet).
+- **ft-3189102e criterion 2: `COUNTRY_SECOND_LEVELS` is 14 second levels, so `a.me.uk` and `b.me.uk`
+  collide (2026-10-20).** `extension/src/normalize.ts:124-141` (`ac co com edu go gob gov ltd mil ne
+  net or org plc`); `siteKey` keeps the last two labels for any other suffix, so `me.uk` is one key
+  for every `x.me.uk` (and `ltd.uk` is covered, `me.uk` is not). It is not a full public-suffix
+  list. Per-tenant ATS subdomains collapse by design: `acme.greenhouse.io` and `boards.greenhouse.io`
+  are the key `greenhouse.io` (the comment's own example), so a field signature is per ATS, not per
+  tenant. A public-suffix list would be a new dependency and needs the owner's go-ahead.
+- **A2-7: `rekey` refuses on Windows (decision 9; 2026-10-21, Opus build session).** A platform
+  limit, not a defect: `rekey.Run` returns `ErrUnsupported` on `GOOS=windows` before writing
+  anything (`internal/rekey/rekey.go:101-102`, `:118-121`), because the ledger stays open (locked)
+  while its events file is replaced and Windows cannot rename over an open file.
+
+### Built-session additions (2026-10-21, Opus build session; owner or Fable delegated where named)
+
+- **ft-3d83fba9 criterion 2 was BUILT, not declined; the size measured was synthetic.** The
+  decision-3 rule (build if `BenchmarkLoad` is at least 100 ms) fired: G15 measured 0.832 s
+  interleaved min (1.222 s block min, n = 5) on a synthetic 200k-employer x 3 FY index, because no
+  production LCA index exists in the live state (`internal/lca/load_bench_test.go:34`). Result:
+  `LoadView` 19 ms against 947 ms for a fresh-process `Load`, 57 allocs against 4.80M
+  (`internal/lca/view.go:288`, `view_bench_test.go:21`). There is therefore no decline to record.
+- **ft-3d83fba9 criterion 5: `srcutil.GetJSON` streaming DECLINED (decision 3; 2026-10-21, Fable
+  delegated).** Measured (G15 `BenchmarkGetJSON20MiB`, synthetic 20 MiB body, fake `Doer`,
+  `MaxBody` 64 MiB, interleaved min): 76.8 MB/op, 22.1k allocs/op, 26.3 ms.
+  The gain would be memory only; bodies are capped at 64 MiB (`internal/sources/srcutil/srcutil.go:31`);
+  boards run serially; `json.Unmarshal` already rejects trailing data (`srcutil.go:169`); the body is
+  read once with `io.ReadAll(io.LimitReader(...))` (`srcutil.go:243`). Reopen trigger: a board body
+  at or above 32 MiB (half the cap).
+- **ft-3d83fba9 criterion 4: `ledger.Record` contract delta (Fable, delegated; 2026-10-21).**
+  `Record.BodyEvicted` (`json:"-"`, `internal/ledger/types.go:26-47`) is true when a Dead, Dropped or
+  Duplicate record's `Description` was dropped from memory. `File.All()` returns those records with
+  an empty `Description` and reads nothing from disk (`internal/ledger/file.go:576-583`); a caller
+  that needs the text uses `ledger.Full` (`internal/ledger/evict.go:171-174`), `File.Get`
+  (`file.go:560`) or `File.Hydrate` (`evict.go:149`), which fail with `ErrBodyUnavailable`
+  (`evict.go:50`) rather than return another body. Heap after `Open` of a 20k-record, 80%-dead
+  synthetic ledger fell from 100.7 MB to 34.3 MB (34%); `Open` ns/op rose 9.1% (148 to 162 ms, min of
+  5, loaded), accepted by Fable (once per process, 66 MB saved). The one consumer that needed text,
+  `warmSemantic`, hydrates only owner-marked closed records (`cmd/vani/semanticwire.go:188-193`,
+  `cmd/vani/app.go:310`); the `vani semantic warm` CLI does not yet (ft-0aa92138). There is no
+  `ReadSnapshotScoped` on main: `jobs find/mark/show/note` read the whole snapshot
+  (`cmd/vani/jobscmd.go:377,414`) but learn boilerplate only from the row's own company
+  (`newRowInsight`, `cmd/vani/jobsinsight.go:284`), which was the cost.
+- **ft-2673557b `jobs find` / `jobs mark` under 250 ms: PARTIAL, not verified on a quiet machine
+  (2026-10-21).** The card log's last word: interleaved min of 5 on a synthetic 10k-posting ledger at
+  load average 28-33: `mark` 2193 to 244 ms (met), `find` 2094 to 255 ms (2% over the target);
+  allocations 14.13M to 524k (mark) and 14.28M to 670k (find). The remainder is
+  `ledger.ReadSnapshot` I/O, inflated by load (664 / 366 ms at load 34-52). The merge (75732b2)
+  left criterion 2 pending a quiet-machine rerun, and no rerun is recorded. Do not cite either
+  number as met. Cause of the regression: commit 3255839 put the full-ledger learn on every `find`.
+- **ft-b6b00b08 A2-3: marks line cap raised 8 to 16 KiB; a downgrade limit (Fable decision; 2026-10-21).**
+  `maxLineBytes = 16 << 10` (`internal/marks/marks.go:77`; the downgrade warning is at `:74-76`).
+  `marks.jsonl` written at or after this change may hold lines up to 16 KiB; an older binary with
+  the 8 KiB cap returns `ErrCorrupt` on such a line, so do not run an older `vani` against a store a
+  newer one has written escape-heavy notes into. Not a migration: no bytes are rewritten.
+- **ft-22d7da5f: atomic writes and symlinks (Opus design decision, accepted 2026-10-21; merged
+  2fcac90).** Directory components resolve, so a state directory that is itself a symlink works
+  (iCloud, an external disk). A program-named leaf is never written through a symlink:
+  `atomicfile.Write` replaces the link with a regular file, as before
+  (`internal/atomicfile/atomicfile.go:28-37`), `OpenAppend` refuses a linked leaf with
+  `ErrLinkedLeaf` and creates or removes nothing (`atomicfile.go:85-116`, error at `:18`), and a
+  directory, FIFO, socket or device leaf is `ErrNotRegular` (`internal/atomicfile/resolve.go:10-36`).
+  Only the operator-chosen config path follows its link, resolved once and used for both the lock and
+  the write. Security impact: no widening against the pre-change code; a planted link in a state
+  directory still cannot move a write outside it (the first version of this fix could, through the
+  eval text cache and the logo cache; tests assert outside files stay untouched). Consequence: an
+  append-only file (ledger, marks) that is itself a symlink now fails loud instead of starting an
+  empty history; replace it with the file, or link its directory.
+- **ft-60d1dc8e: TypeScript 7.0.2 is not "no transitive packages" (accepted by Fable; 2026-10-21).**
+  The exact pin (`extension/package.json:8`) is the native compiler: `typescript` plus 20 optional
+  `@typescript/typescript-<platform>` packages, 21 entries with sha512 hashes in `extension/bun.lock`
+  (`typescript` at line 52). Opus verified that all 21 share one maintainer set. The typecheck gate
+  requires `tsc --version` to equal `Version <pin>` and never reports ok without running tsc
+  (`extension/scripts/typecheck.sh:26-29`).
+- **ft-c567ded5: rankfit floors (Fable kept the constants, decision 4; 2026-10-21).**
+  `MinHeldOutPairs` 200 and `MinScoredStratumPairs` 50 (`internal/rankfit/gain.go:15,21`), which needs
+  at least 13 scored held-out items, about 200-250 labels, so the first fit at 150 is often refused
+  by design (fail closed); `HeldOutAllowedSkips` 3 of a 30-item split, so 27 (`internal/eval/heldout.go:43`);
+  `MinInclusionProbability` 1e-9 (`internal/eval/store.go:76`; below about 1e-154 the weights overflowed
+  to NaN). The reasoning is in `docs/RANKING_PLAN.md` ("Rank learning", the `Beats()` rules, lines
+  203-219); not repeated here.
+- **ft-a1bb3507: the fieldtriage guard is a first line, not a proof (Opus decision; 2026-10-21).**
+  Known misses: a digit or punctuation inserted inside a word ("c1tizen", "c.i.t.i.z.e.n") and a word
+  written wholly in a non-Latin lookalike script. Fail-safe false pins, kept on purpose (they become
+  a manual answer, never a draft): "military-grade", "Asian market", and any label containing
+  "criminal". The backstop is after the model: `suggest.Run` drafts only an `essay` reading of a label
+  `fieldtriage.Sensitive` does not flag (`internal/suggest/suggest.go:158`,
+  `internal/decide/fieldtriage/fieldtriage.go:118-135`), and a word mixing Latin with another
+  alphabet is pinned `self_identification` (`fieldtriage.go:154`, `fold.go:171`). Not a personal-data
+  leak: only the job site's label text leaves.
+- **ft-8cd27d93 B1-2: a `kbmatch` run that waits more than 10 s for another run exits busy
+  (2026-10-21; design note from the build, kept).** The whole run holds the store lock
+  (`kbmatchLockWait = 10 * time.Second`, `cmd/vani/kbmatchcmd.go:64`; `OpenLocked` at `:308`; `ErrBusy`
+  at `internal/decide/kbmatch/store.go:39`), so the loser asks nothing that day and says so. Fail-safe by design.
+- **ft-84d4fe25 A1-1: the DevPrism binary and tools hash are pinned for the process lifetime
+  (Fable, delegated; 2026-10-21).** The daemon reloads the whole config per run, except the schedule
+  and `devprism.binary` / `devprism.tools_hash`, which its scorer was started with: a change logs
+  "applies after the daemon restarts" and the running value is kept (`cmd/vani/app.go:216-218`, table
+  at `:232-246`). Restart the daemon to apply a DevPrism change.
+- **ft-bafd7500 (Mac app), two accepted limits (2026-10-21).** `BlockingWork`
+  (`macos/Sources/VaniApplyKit/BlockingWork.swift:13`) runs on a GCD concurrent queue whose width the
+  system caps at about 90-100 threads: a 1000-call burst peaked +19 threads, and a short call queued
+  behind 300 one-second calls waited about 3 s. `BankStamp` (size, nanosecond mtime, inode;
+  `macos/Sources/VaniApplyKit/BankStore.swift:103-106`) cannot see an in-place same-size edit that
+  restores the mtime (`cp -p`, `rsync --inplace -t`); `BankStore` writes replace the file by rename,
+  so only a hand edit does this.
+- **Process: no card filed through GitPulse can reach "done" from an agent session (2026-10-21;
+  a tooling gap, not a Vani defect).** GitPulse gates "done" on a Manvi verification record, but
+  Manvi's task store does not know GitPulse task ids (`devcouncil_verify_task`: "no task is checked
+  out", and "no verification record exists for this task: Manvi's work.verify.task has not judged
+  it"), so every card of the 2026-10-20 audit sits in `review`. The `review` column is not
+  unfinished work: read each card's log for what was built and measured, and do not re-report it.
 
 ## Title prefilter (built 2026-10-19; live since the 2026-10-20 ranking audit, per RANKING_PLAN)
 
@@ -837,6 +991,14 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - Jibe (`jb`, AMD) fails the board when a page adds nothing before `totalCount` is reached,
     as Eightfold does. Live on 2026-10-19 the unsearched AMD listing read 1278 of 1278 in 13
     pages, so an overstated total has not been seen.
+  - **Residual (audit A2-4, 2026-10-20; floor DECLINED 2026-10-21, decision delegated to Fable):** a
+    well-formed empty listing during an ATS outage still ages the board. It is treated as aged,
+    not suspect, and there is no floor ("never age a board to zero in one run"). Unreadable replies are
+    already refused by each adapter (above); `Dead` needs `MissesToDead` (2) consecutive misses
+    (`internal/pipeline/reconcile.go:31`, applied at `:258-264`); `died_from` restores the posting when
+    its content is listed again (`reconcile.go:191-195`); and a floor would hide a board that was
+    genuinely emptied. Revisit if an adapter is seen returning a well-formed empty list while the
+    service is down. Also recorded in "Audit 2026-10-19: criteria not built as written".
 
 - **Jibe postings are never marked remote (2026-10-19).** The AMD payload has no remote field.
   It marks some home-office roles only in `location_name` (`"RO,Home Office"`), which
