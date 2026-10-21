@@ -219,6 +219,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	if err != nil {
 		return fmt.Errorf("exclusions: %w", err)
 	}
+	if ch.BodyUnavailable > 0 {
+		w.warnf("exclusions: %d posting(s) left as they are because their stored description could not be read back", ch.BodyUnavailable)
+	}
 	if len(ch.Drop) > 0 || len(ch.Reopen) > 0 {
 		w.warnf("exclusions: dropped %d posting(s), returned %d to live", len(ch.Drop), len(ch.Reopen))
 	}

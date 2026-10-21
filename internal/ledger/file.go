@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -168,6 +169,11 @@ const (
 // spans in use. The copies are packed back to back and the originals' spans
 // empty out. A chunk is freed once every body in it is gone, so this only
 // applies to what Open itself loaded: bodies added later are separate strings.
+//
+// Cost and benefit (BenchmarkOpen20k, 20k postings, 80% dead): Open runs once
+// per process, and this pass adds about 14 ms to it (+9% min-of-5 on a loaded
+// machine) for 66 MB less resident memory afterwards. Append, AppendBatch and
+// ReconcileRun are neutral or faster.
 func packBodies(recs map[posting.Key]*slot) {
 	var todo []*slot
 	size := 0
@@ -352,6 +358,32 @@ func fold(r *Record, e Event, in interner) {
 	}
 }
 
+// invalidUTF8Mark is how encoding/json writes a byte that is not valid UTF-8:
+// the escape of U+FFFD, in place of the byte.
+var invalidUTF8Mark = []byte(`�`)
+
+// wireForm returns the event as replay will read it back from line (e's
+// encoding). Marshal replaces every invalid UTF-8 byte of a string with U+FFFD,
+// so an event holding such text decodes to different text than it was given;
+// folding e as given would make memory differ from the next Open (and a body
+// fingerprint taken of the raw text could never match the line). Folding the
+// decoded form keeps live and replayed records identical. Only a line carrying
+// the marker (or a literal backslash-ufffd, which merely costs a redundant
+// decode) is decoded again; any other event is its own wire form.
+func wireForm(e Event, line []byte) (Event, error) {
+	if !bytes.Contains(line, invalidUTF8Mark) {
+		return e, nil
+	}
+	var w Event
+	if err := json.Unmarshal(line, &w); err != nil {
+		return e, fmt.Errorf("ledger: re-read %s: %w", e.Key, err)
+	}
+	if err := validate(w); err != nil {
+		return e, err
+	}
+	return w, nil
+}
+
 // Append validates e, writes it durably, then folds it into memory.
 func (f *File) Append(ctx context.Context, e Event) error {
 	if err := ctx.Err(); err != nil {
@@ -363,6 +395,9 @@ func (f *File) Append(ctx context.Context, e Event) error {
 	line, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("ledger: marshal: %w", err)
+	}
+	if e, err = wireForm(e, line); err != nil {
+		return err
 	}
 	line = append(line, '\n')
 	if len(line) > MaxLineBytes {
@@ -436,13 +471,17 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 	}
 	var buf bytes.Buffer
 	lens := make([]int, 0, len(evs))
-	for _, e := range evs {
+	evs = slices.Clone(evs) // wireForm may replace entries; the caller's slice stays as given
+	for i, e := range evs {
 		if err := validate(e); err != nil {
 			return err
 		}
 		line, err := json.Marshal(e)
 		if err != nil {
 			return fmt.Errorf("ledger: marshal: %w", err)
+		}
+		if evs[i], err = wireForm(e, line); err != nil {
+			return err
 		}
 		if len(line)+1 > MaxLineBytes {
 			return ErrLineTooLong

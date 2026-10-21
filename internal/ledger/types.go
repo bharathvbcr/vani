@@ -26,6 +26,11 @@ type Event struct {
 }
 
 // Record is the folded current state of one posting.
+//
+// Posting.Description may be empty when BodyEvicted is true: records from All()
+// of a Dead, Dropped or Duplicate posting keep no text in memory. A caller that
+// needs the text calls ledger.Full (or File.Get) for the records it needs; it
+// must not treat the empty Description as "the posting has no description".
 type Record struct {
 	Key         posting.Key       `json:"key"`
 	Status      posting.Status    `json:"status"`

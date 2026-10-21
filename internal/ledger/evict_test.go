@@ -320,6 +320,24 @@ func TestEvictConcurrentAppendDuringHydrate(t *testing.T) {
 	}
 }
 
+// wireOf is e as a replay reads it from the events file: encoding/json writes
+// each invalid UTF-8 byte of a string as U+FFFD. Before eviction existed the
+// live File folded the raw event, so for invalid UTF-8 live and replayed records
+// already differed; Append and AppendBatch now fold this form, so the oracle
+// folds it too (replay never saw the raw text, so it is the one true form).
+func wireOf(t *testing.T, e Event) Event {
+	t.Helper()
+	line, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w Event
+	if err := json.Unmarshal(line, &w); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
 // refFold is the fold as it was before eviction existed: the oracle.
 func refFold(recs map[posting.Key]*Record, e Event) {
 	r, ok := recs[e.Key]
@@ -352,7 +370,8 @@ var allStatuses = []posting.Status{posting.Discovered, posting.Live, posting.Tri
 func randomStream(rng *rand.Rand) []Event {
 	nkeys := 1 + rng.Intn(6)
 	n := 1 + rng.Intn(40)
-	descs := []string{"", "short", body(50, "m-"), body(3000, "big-"), "same body", body(40000, "huge-")}
+	descs := []string{"", "short", body(50, "m-"), body(3000, "big-"), "same body", body(40000, "huge-"),
+		"bad \xff\xfe bytes", "tail \xc3", "ok � and   and \xe2\x80", body(3000, "bad\xff-")}
 	evs := make([]Event, 0, n)
 	for i := range n {
 		k := posting.Key("gh:a:" + strconv.Itoa(rng.Intn(nkeys)))
@@ -383,7 +402,7 @@ func TestEvictReplayEqualsReferenceFold(t *testing.T) {
 		evs := randomStream(rng)
 		want := map[posting.Key]*Record{}
 		for _, e := range evs {
-			refFold(want, e)
+			refFold(want, wireOf(t, e))
 		}
 		var buf bytes.Buffer
 		for _, e := range evs {
