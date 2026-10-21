@@ -15,9 +15,18 @@ import (
 // world draws n postings whose labels follow plantedShares, not the hand
 // weights: coverage carries the blend. judged of them carry an audit
 // judgement; the rest are marks.
+//
+// plantedShares is read-only after init. The tests run in parallel, so a
+// test that wants another label model calls worldWith instead of assigning
+// this variable.
 var plantedShares = [NumParts]float64{0.05, 0.60, 0.05, 0.03, 0.10, 0.05, 0.12}
 
 func world(seed uint64, n, judged int) []Item {
+	return worldWith(plantedShares, seed, n, judged)
+}
+
+// worldWith is world with an explicit label model.
+func worldWith(shares [NumParts]float64, seed uint64, n, judged int) []Item {
 	rng := rand.New(rand.NewPCG(seed, 99))
 	b := blendOf(jobinsight.DefaultWeights())
 	items := make([]Item, n)
@@ -38,7 +47,7 @@ func world(seed uint64, n, judged int) []Item {
 		it.Known[PartEmployer] = it.Value[PartEmployer] == 1
 		it.Conf[PartEmployer] = 1 // ScoreWith always weighs the employer part
 		items[i] = it
-		s := plantedShares
+		s := shares
 		u[i] = utility(&items[i], b, &s, 1, 1) + 0.15*math.Log(1/rng.Float64()-1) // logistic noise
 	}
 	sorted := append([]float64(nil), u...)
@@ -76,6 +85,7 @@ func share(s Shares, k int) float64 {
 // and order the held-out judged pairs better than the hand weights do. This is
 // Phase 5's exit test, asserted, on a world where it is true by construction.
 func TestFitRecoversPlantedShares(t *testing.T) {
+	t.Parallel()
 	items := world(1, 1200, 400)
 	res, err := Fit(items, jobinsight.DefaultWeights(), Options{Seed: 1})
 	if err != nil {
@@ -106,10 +116,8 @@ func TestFitRecoversPlantedShares(t *testing.T) {
 // A world labelled by the hand weights themselves: the prior is right, so
 // the fit must not wander off it.
 func TestFitStaysNearHandWhenHandIsRight(t *testing.T) {
-	saved := plantedShares
-	plantedShares = SharesOf(jobinsight.DefaultWeights()).Array()
-	defer func() { plantedShares = saved }()
-	res, err := Fit(world(2, 1000, 300), jobinsight.DefaultWeights(), Options{Seed: 2})
+	t.Parallel()
+	res, err := Fit(worldWith(SharesOf(jobinsight.DefaultWeights()).Array(), 2, 1000, 300), jobinsight.DefaultWeights(), Options{Seed: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +132,7 @@ func TestFitStaysNearHandWhenHandIsRight(t *testing.T) {
 }
 
 func TestFitIsDeterministic(t *testing.T) {
+	t.Parallel()
 	items := world(3, 600, 200)
 	a, err := Fit(items, jobinsight.DefaultWeights(), Options{Seed: 9})
 	if err != nil {
@@ -162,6 +171,7 @@ func TestFitIsDeterministic(t *testing.T) {
 }
 
 func TestFitRefusals(t *testing.T) {
+	t.Parallel()
 	base := jobinsight.DefaultWeights()
 	short := world(4, 3000, MinJudged-1) // marks do not count toward the threshold
 	allYes := world(5, 400, 200)
@@ -201,6 +211,7 @@ func setAll(items []Item, grade int) []Item {
 }
 
 func TestFitRejectsBadItems(t *testing.T) {
+	t.Parallel()
 	base := jobinsight.DefaultWeights()
 	for name, mutate := range map[string]func([]Item){
 		"duplicate key": func(w []Item) { w[5].Key = w[4].Key },
@@ -223,6 +234,7 @@ func TestFitRejectsBadItems(t *testing.T) {
 }
 
 func TestFitBounds(t *testing.T) {
+	t.Parallel()
 	base := jobinsight.DefaultWeights()
 	w := world(11, 400, 200)
 	for name, opt := range map[string]Options{
@@ -255,6 +267,7 @@ func TestFitBounds(t *testing.T) {
 // The held-out split is a seeded hash of the key: about the asked share, and
 // the same key always lands on the same side.
 func TestHeldOutSplitIsByKey(t *testing.T) {
+	t.Parallel()
 	in, out := 0, 0
 	for i := range 10000 {
 		if heldOut(fmt.Sprintf("gh:x:%d", i), 1, 30) {

@@ -29,8 +29,11 @@ const maxEntityPasses = 3
 // an invisible character may sit inside a word ("Ci<ZWSP>tizen") or stand in
 // for a space ("to<ZWSP>work"), and a tag may join text ("citi<b>zen") or
 // separate it ("a<br>citizen"; the tag is then just punctuation). Four
-// readings, each one linear pass: the cost stays linear in the label.
-func folds(label string) [4]string {
+// readings, each one linear pass: the cost stays linear in the label. Readings
+// that came out identical (a label with no invisible character and no tag, the
+// usual case) are returned once, so the patterns scan the text once, not four
+// times; the dropped copies could not change any pattern's answer.
+func folds(label string) []string {
 	for i := 0; i < maxEntityPasses; i++ {
 		next := html.UnescapeString(label)
 		if next == label {
@@ -38,10 +41,21 @@ func folds(label string) [4]string {
 		}
 		label = next
 	}
-	return [4]string{
-		fold(label, false, false), fold(label, true, false),
-		fold(label, false, true), fold(label, true, true),
+	out := make([]string, 0, 4)
+	for _, v := range [4][2]bool{{false, false}, {true, false}, {false, true}, {true, true}} {
+		s := fold(label, v[0], v[1])
+		dup := false
+		for _, o := range out {
+			if o == s {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, s)
+		}
 	}
+	return out
 }
 
 func fold(label string, invisibleIsSpace, joinTags bool) string {

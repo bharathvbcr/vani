@@ -133,10 +133,11 @@ var (
 // label only the broader pattern flags, or "" when no pattern matches. A
 // field Sensitive flags is never drafted, whatever a model read it as.
 func Sensitive(label string) string {
-	if g := Guard(label); g != "" {
+	forms := folds(label)
+	if g := guardForms(forms); g != "" {
 		return g
 	}
-	for _, form := range folds(label) {
+	for _, form := range forms {
 		if broaderRE.MatchString(form) {
 			return SelfID
 		}
@@ -146,8 +147,9 @@ func Sensitive(label string) string {
 
 // Guard returns the category a label is pinned to without asking a model,
 // or "" when the model may be asked.
-func Guard(label string) string {
-	forms := folds(label)
+func Guard(label string) string { return guardForms(folds(label)) }
+
+func guardForms(forms []string) string {
 	for _, form := range forms {
 		if mixedScript(form) {
 			return SelfID

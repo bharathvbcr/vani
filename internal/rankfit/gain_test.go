@@ -14,6 +14,7 @@ import (
 // A planted gain: the result carries the held-out n and an interval that
 // brackets the point gain and clears 0.
 func TestPlantedGainCarriesNAndInterval(t *testing.T) {
+	t.Parallel()
 	res, err := Fit(world(1, 1200, 400), jobinsight.DefaultWeights(), Options{Seed: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +34,7 @@ func TestPlantedGainCarriesNAndInterval(t *testing.T) {
 
 // The gate's own boundaries, on a hand-built result.
 func TestBeatsBoundaries(t *testing.T) {
+	t.Parallel()
 	ok := FitResult{HeldOutPairs: MinHeldOutPairs, GainLo: 0.001, GainHi: 0.05, Resamples: BootstrapResamples}
 	if !ok.Beats() || ok.NoGainReason() != "" {
 		t.Fatalf("baseline should win: %s", ok.NoGainReason())
@@ -67,6 +69,7 @@ func TestBeatsBoundaries(t *testing.T) {
 // apart, and a held-out set with no scored pair cannot win, however well the
 // dropped pairs go.
 func TestHeldOutAccuracyIsReportedPerStratum(t *testing.T) {
+	t.Parallel()
 	scored := stratumWorld("sc", 31, 3000, scoredShares)
 	dropped := stratumWorld("dr", 32, 3000, droppedShares)
 	sample := sampleStrata(7, scored, dropped, 0.1, 1.0)
@@ -108,6 +111,7 @@ func TestHeldOutAccuracyIsReportedPerStratum(t *testing.T) {
 // PSelect is validated where it enters: Targets and Fit refuse NaN, 0,
 // negative, infinite and above 1, and take 1 and a tiny positive value.
 func TestPSelectIsValidatedAtTheBoundary(t *testing.T) {
+	t.Parallel()
 	bad := map[string]float64{"NaN": math.NaN(), "zero": 0, "negative": -0.1, "above one": 1.0000001, "+Inf": math.Inf(1), "-Inf": math.Inf(-1)}
 	for name, p := range bad {
 		labels := map[posting.Key]eval.Entry{"gh:a:x": {Labels: map[string]string{eval.WouldApply: "yes"}, Source: "decile:3", PSelect: p}}
@@ -152,6 +156,7 @@ func TestPSelectIsValidatedAtTheBoundary(t *testing.T) {
 
 // Adversarial held-out sets: all ties, nothing, and too many pairs.
 func TestHeldOutAdversarialInputs(t *testing.T) {
+	t.Parallel()
 	base := jobinsight.DefaultWeights()
 
 	// Every posting scores the same: both share sets tie every pair, the gain
@@ -187,6 +192,7 @@ func TestHeldOutAdversarialInputs(t *testing.T) {
 
 // The interval is a function of the seed: the same call twice agrees.
 func TestGainIntervalIsDeterministic(t *testing.T) {
+	t.Parallel()
 	items := world(3, 600, 200)
 	a, err := Fit(items, jobinsight.DefaultWeights(), Options{Seed: 9})
 	if err != nil {

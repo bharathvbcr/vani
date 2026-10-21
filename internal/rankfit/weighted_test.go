@@ -19,10 +19,7 @@ var (
 
 // stratumWorld is n postings labelled by shares, keys prefixed by tag.
 func stratumWorld(tag string, seed uint64, n int, shares [NumParts]float64) []Item {
-	saved := plantedShares
-	plantedShares = shares
-	defer func() { plantedShares = saved }()
-	items := world(seed, n, n)
+	items := worldWith(shares, seed, n, n)
 	for i := range items {
 		items[i].Key = fmt.Sprintf("%s:%05d", tag, i)
 	}
@@ -65,6 +62,7 @@ func sampleStrata(seed uint64, scored, dropped []Item, pScored, pDropped float64
 // unweighted fit of the same sample does not (it learns the dropped stratum's
 // shares). Both are pinned.
 func TestWeightedFitRecoversPopulationSharesUnderOversampling(t *testing.T) {
+	t.Parallel()
 	scored := stratumWorld("sc", 31, 3000, scoredShares)
 	dropped := stratumWorld("dr", 32, 3000, droppedShares)
 	base := jobinsight.DefaultWeights()

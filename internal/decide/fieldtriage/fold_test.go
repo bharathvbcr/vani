@@ -116,11 +116,19 @@ func TestNewPatternsKeepNearMissesUnpinned(t *testing.T) {
 }
 
 func TestFoldIsBoundedAndLinear(t *testing.T) {
-	long := strings.Repeat("&amp;amp;amp;amp;<b>x</b>​", 1<<12)
-	start := time.Now()
-	_ = Sensitive(long)
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("Sensitive took %v", d)
+	// Entities, tags and an invisible character: all four readings differ.
+	const unit = "&amp;amp;amp;amp;<b>x</b>​"
+	long := strings.Repeat(unit, 1<<12) // ~140 KB
+	assertLinear(t, "Sensitive", strings.Repeat(unit, 1<<7), strings.Repeat(unit, 1<<10), func(s string) { _ = Sensitive(s) })
+	if n := len(folds(long)); n != 4 {
+		t.Errorf("folds returned %d readings, want 4 distinct ones", n)
+	}
+	if n := len(folds("Describe the stage")); n != 1 {
+		t.Errorf("a plain label folded to %d readings, want 1", n)
+	}
+	capped := strings.Repeat("x<b>", MaxLabelRunes/4)
+	if d := bestOf3(func() { _ = Sensitive(capped) }); d > 2*time.Second {
+		t.Errorf("Sensitive took %v on a %d-rune label", d, MaxLabelRunes)
 	}
 	// Entity decoding stops at the bound: a fourth layer is not decoded.
 	if got := Guard("citi&amp;amp;amp;amp;lt;b&amp;amp;amp;amp;gt;zen"); got != "" {

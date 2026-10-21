@@ -303,6 +303,7 @@ func utility(it *Item, b blend, s *[NumParts]float64, gateExp, freshExp float64)
 type model struct {
 	items  []Item
 	pairs  []pair
+	pw     []float64 // each pair's Horvitz-Thompson weight, once, not per evaluation
 	b      blend
 	theta0 [NumParts]float64
 	free   [NumParts]bool
@@ -316,10 +317,12 @@ func newModel(items []Item, pairs []pair, b blend, hand [NumParts]float64, lambd
 	// loss is scaled so those weights total as many pairs-worth as training
 	// items, as before when every weight is 1.
 	var total float64
-	for _, p := range pairs {
-		total += items[p.win].weight() * items[p.lose].weight()
+	pw := make([]float64, len(pairs))
+	for k, p := range pairs {
+		pw[k] = items[p.win].weight() * items[p.lose].weight()
+		total += pw[k]
 	}
-	m := &model{items: items, pairs: pairs, b: b, lambda: lambda, diag: diag, scale: trainItems / total}
+	m := &model{items: items, pairs: pairs, pw: pw, b: b, lambda: lambda, diag: diag, scale: trainItems / total}
 	for i, s := range hand {
 		if s > 0 {
 			m.theta0[i], m.free[i] = math.Log(s), true
@@ -373,11 +376,12 @@ func (m *model) objective(x, g []float64) float64 {
 	}
 	coef := make([]float64, n) // d loss / d u_i
 	loss, dtau := 0.0, 0.0
-	for _, p := range m.pairs {
+	for k, p := range m.pairs {
 		d := u[p.win] - u[p.lose]
-		pw := m.items[p.win].weight() * m.items[p.lose].weight()
-		loss += pw * softplus(-tau*d)
-		c := -sigmoid(-tau*d) * pw // d (pw softplus(-tau d)) / d(tau d)
+		pw := m.pw[k]
+		sp, sg := softplusSigmoid(-tau * d)
+		loss += pw * sp
+		c := -sg * pw // d (pw softplus(-tau d)) / d(tau d)
 		coef[p.win] += c * tau
 		coef[p.lose] -= c * tau
 		dtau += c * d

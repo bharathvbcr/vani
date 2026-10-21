@@ -13,6 +13,7 @@ func rec(key string, ann map[string]string) ledger.Record {
 }
 
 func TestPlattSamples(t *testing.T) {
+	t.Parallel()
 	recs := []ledger.Record{
 		rec("gh:a:1", map[string]string{
 			"triage.role_fit": "strong_fit", "triage.role_fit.reading": "answered", "triage.role_fit.backend": "d1-ultra", "triage.role_fit.p": "0.8000",

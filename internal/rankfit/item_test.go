@@ -31,6 +31,7 @@ func handItems() []Item {
 }
 
 func TestLogMatchHandComputed(t *testing.T) {
+	t.Parallel()
 	b := blendOf(jobinsight.DefaultWeights())
 	s := SharesOf(jobinsight.DefaultWeights()).Array()
 	items := handItems()
@@ -47,6 +48,7 @@ func TestLogMatchHandComputed(t *testing.T) {
 // softplus(-gap) = ln(1 + e^-2.833073422) = .057166188. One pair, two training
 // items: the loss is scaled by 2/1, and every prior term is 0 at the start.
 func TestPairLossHandComputed(t *testing.T) {
+	t.Parallel()
 	items := handItems()
 	base := jobinsight.DefaultWeights()
 	m := newModel(items, []pair{{0, 1}}, blendOf(base), SharesOf(base).Array(), 1, 2, false)
@@ -58,6 +60,7 @@ func TestPairLossHandComputed(t *testing.T) {
 }
 
 func TestObjectiveGradientMatchesFiniteDifferences(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewPCG(7, 7))
 	base := jobinsight.DefaultWeights()
 	var items []Item
@@ -144,6 +147,7 @@ func randomInputs(rng *rand.Rand) jobinsight.Inputs {
 // learns are for a different ranker. Items are built under the base weights
 // and re-scored under other shares; ScoreWith is asked under the same ones.
 func TestLogMatchIsScoreWithsMatch(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewPCG(1, 2))
 	bases := []jobinsight.Weights{jobinsight.DefaultWeights()}
 	off := jobinsight.DefaultWeights()
@@ -180,6 +184,7 @@ func TestLogMatchIsScoreWithsMatch(t *testing.T) {
 }
 
 func TestLogMatchGradientMatchesFiniteDifferences(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewPCG(3, 4))
 	base := jobinsight.DefaultWeights()
 	b := blendOf(base)
@@ -207,6 +212,7 @@ func TestLogMatchGradientMatchesFiniteDifferences(t *testing.T) {
 }
 
 func TestItemFromRefusesMalformedResults(t *testing.T) {
+	t.Parallel()
 	good := jobinsight.ScoreWith(jobinsight.Inputs{}, jobinsight.DefaultWeights())
 	if _, err := ItemFrom("k", good, Target{}); err != nil {
 		t.Fatalf("a real result: %v", err)
@@ -246,6 +252,7 @@ func TestItemFromRefusesMalformedResults(t *testing.T) {
 // except for the one case the record cannot carry: an unknown role fit whose
 // option was set took the ordinal value, not the prior.
 func TestItemFromScoresMatchesItemFrom(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewPCG(5, 6))
 	base := jobinsight.DefaultWeights()
 	prior := blendOf(base).prior

@@ -15,6 +15,7 @@ import (
 // never reaches the fit as a silent weight 1; a manual row is the only
 // unweighted judgment.
 func TestAttackLegacyRowWithoutSourceIsNotSilentlyWeightOne(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s, err := eval.NewStore(filepath.Join(dir, "labels"), filepath.Join(dir, "text"))
 	if err != nil {
@@ -45,6 +46,7 @@ func TestAttackLegacyRowWithoutSourceIsNotSilentlyWeightOne(t *testing.T) {
 // audit's 1/p; the result is finite and deterministic, and the audit stratum
 // counts in the strata while the manual one is "unstratified".
 func TestAttackMixedManualAndAuditItems(t *testing.T) {
+	t.Parallel()
 	items := world(21, 900, 600)
 	for i := range items {
 		switch {
@@ -83,6 +85,7 @@ func TestAttackMixedManualAndAuditItems(t *testing.T) {
 
 // Targets keeps a would_apply label's source and p exactly as read.
 func TestAttackTargetsRefusesManualWithP(t *testing.T) {
+	t.Parallel()
 	labels := map[posting.Key]eval.Entry{"gh:a:x": {Labels: map[string]string{eval.WouldApply: "yes"}, Source: eval.SourceManual, PSelect: 0.5}}
 	if _, _, err := Targets(labels, nil, nil); err == nil {
 		t.Error("a manual label carrying p_select was accepted")

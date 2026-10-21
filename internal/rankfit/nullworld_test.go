@@ -14,13 +14,11 @@ const nullSeeds = 20
 // must not declare a win for any of the seeds (A3-1: it used to be a bare
 // FitAccuracy > HandAccuracy, which is true for about half of them).
 func TestNullWorldNeverBeatsTheHandWeights(t *testing.T) {
-	saved := plantedShares
-	plantedShares = SharesOf(jobinsight.DefaultWeights()).Array()
-	defer func() { plantedShares = saved }()
-
+	t.Parallel()
+	hand := SharesOf(jobinsight.DefaultWeights()).Array()
 	var wins []uint64
 	for seed := uint64(1); seed <= nullSeeds; seed++ {
-		res, err := Fit(world(1000+seed, 1000, 300), jobinsight.DefaultWeights(), Options{Seed: seed})
+		res, err := Fit(worldWith(hand, 1000+seed, 1000, 300), jobinsight.DefaultWeights(), Options{Seed: seed})
 		if err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
