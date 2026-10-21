@@ -188,6 +188,7 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .onAppear {
+            model.refreshDraftSettings()
             if let problem = model.draftSettingsProblem { model.actionError = problem }
             let s = model.draftSettings
             draftConfig = s.vaniConfig
@@ -309,7 +310,7 @@ struct SettingsView: View {
         let client = notesClient
         notesBusy = true
         Task {
-            let result = await Task.detached { Result { try op(client) } }.value
+            let result = await BlockingWork.run { try op(client) }
             notesBusy = false
             switch result {
             case let .success(n):

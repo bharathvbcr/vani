@@ -96,7 +96,7 @@ final class PipelineModel {
         let gen = generation
         loading = true
         let c = client()
-        let result = await Task.detached(priority: .utility) { Result { try c.status() } }.value
+        let result = await BlockingWork.run { try c.status() }
         guard gen == generation else { return } // a newer read superseded this one
         loading = false
         checkedAt = Date()
@@ -145,9 +145,9 @@ final class PipelineModel {
                 await self.runExited(code, job: job)
             }
         }
-        let result = await Task.detached(priority: .userInitiated) {
-            Result { try launcher.start(options, stateDir: stateDir, onExit: onExit) }
-        }.value
+        let result = await BlockingWork.run {
+            try launcher.start(options, stateDir: stateDir, onExit: onExit)
+        }
         startingRun = false
         switch result {
         case let .success(job):
@@ -175,7 +175,7 @@ final class PipelineModel {
         startingRun = true
         if let data = try? JSONEncoder().encode(options) { defaults.set(data, forKey: Self.optionsKey) }
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.requestRun(options) } }.value
+        let result = await BlockingWork.run { try c.requestRun(options) }
         startingRun = false
         switch result {
         case let .success(reply):

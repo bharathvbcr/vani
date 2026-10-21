@@ -246,7 +246,7 @@ private struct RunNowSheet: View {
 
     private func loadBoards() async {
         let client = model.jobsClient
-        let result = await Task.detached(priority: .userInitiated) { Result { try client.watchlist() } }.value
+        let result = await BlockingWork.run { try client.watchlist() }
         loadingBoards = false
         switch result {
         case let .success(list):

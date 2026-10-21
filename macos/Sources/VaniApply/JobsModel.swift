@@ -105,7 +105,7 @@ final class JobsModel {
     func loadLabels() async {
         guard !labelsLoaded else { return }
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.labels() } }.value
+        let result = await BlockingWork.run { try c.labels() }
         switch result {
         case let .success(table):
             Labels.install(table)
@@ -123,12 +123,12 @@ final class JobsModel {
         let gen = listGeneration
         loading = true
         let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights
-        async let listed = Task.detached(priority: .userInitiated) { Result { try c.list(v, query: q, sort: s, filter: f) } }.value
+        async let listed = BlockingWork.run { try c.list(v, query: q, sort: s, filter: f) }
         async let counted: Result<JobsStats, Error>? = wantStats
-            ? Task.detached(priority: .utility) { Result { try c.stats(v, query: q, filter: f) } }.value
+            ? BlockingWork.run { try c.stats(v, query: q, filter: f) }
             : nil
         async let gapped: Result<JobsGaps, Error>? = wantStats
-            ? Task.detached(priority: .utility) { Result { try c.gaps(v, query: q, filter: f) } }.value
+            ? BlockingWork.run { try c.gaps(v, query: q, filter: f) }
             : nil
         let (result, statsResult, gapsResult) = await (listed, counted, gapped)
         guard gen == listGeneration else { return } // a newer list superseded this one
@@ -172,9 +172,9 @@ final class JobsModel {
     /// refreshing again the same day logs only what is new.
     private func reportImpressions(_ keys: [String], view: JobView) async {
         let c = client(), slate = JobsClient.jobsSlate(view: view, day: Date())
-        let result = await Task.detached(priority: .utility) {
-            Result { try c.logImpressions(surface: .jobs, slate: slate, section: view.rawValue, keys: keys) }
-        }.value
+        let result = await BlockingWork.run {
+            try c.logImpressions(surface: .jobs, slate: slate, section: view.rawValue, keys: keys)
+        }
         switch result {
         case .success: impressionsError = nil
         case let .failure(err): impressionsError = String(describing: err)
@@ -192,7 +192,7 @@ final class JobsModel {
         let gen = searchesGeneration
         searchesLoading = true
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.watchlist() } }.value
+        let result = await BlockingWork.run { try c.watchlist() }
         guard gen == searchesGeneration else { return }
         searchesLoading = false
         switch result {
@@ -216,7 +216,7 @@ final class JobsModel {
         if detail?.key != key { detail = nil }
         let c = client()
         Task {
-            let result = await Task.detached(priority: .userInitiated) { Result { try c.show(key) } }.value
+            let result = await BlockingWork.run { try c.show(key) }
             guard gen == detailGeneration else { return }
             switch result {
             case let .success(j): detail = j
@@ -231,7 +231,7 @@ final class JobsModel {
     func setMark(_ key: String, _ mark: JobMark?) async {
         let index = jobs.firstIndex { $0.key == key }
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.mark(key, mark) } }.value
+        let result = await BlockingWork.run { try c.mark(key, mark) }
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }
@@ -269,7 +269,7 @@ final class JobsModel {
     func saveNote(_ key: String, _ text: String) async -> Bool {
         let c = client()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.note(key, trimmed) } }.value
+        let result = await BlockingWork.run { try c.note(key, trimmed) }
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }

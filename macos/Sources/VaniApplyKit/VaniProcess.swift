@@ -53,6 +53,16 @@ public enum VaniProcess {
         return env
     }
 
+    /// How long a child gets to act on SIGTERM before SIGKILL, and again to be reaped after it.
+    public static let terminationGrace: TimeInterval = 1
+    /// How often a reader or writer thread looks at its cancel flag while it waits on a pipe.
+    private static let pollMilliseconds: Int32 = 100
+
+    /// Runs `binary` and returns when it has exited and both of its pipes have ended, or at
+    /// `timeout` seconds. A child still running then gets SIGTERM, and SIGKILL after
+    /// `terminationGrace` if it ignores that, and the call reports `timedOut` however the child
+    /// behaved (closed its pipes and sat, ignored TERM, left a grandchild holding the pipes). The
+    /// I/O threads always end with the call: they poll their pipes and stop when told to.
     public static func run(_ binary: URL, arguments: [String], environment: [String: String],
                            input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int) -> Outcome {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
@@ -67,6 +77,9 @@ public enum VaniProcess {
         p.standardInput = inPipe ?? FileHandle.nullDevice
         p.standardOutput = outPipe
         p.standardError = errPipe
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
+        let deadline = DispatchTime.now() + timeout
         do { try p.run() } catch {
             return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: "could not start vani: \(error.localizedDescription)")
         }
@@ -75,32 +88,101 @@ public enum VaniProcess {
         // while the parent waits on a different one stall until the timeout.
         let done = DispatchGroup()
         let box = OutputBox()
+        let cancel = CancelFlag()
         if let inPipe, let input {
             let writer = inPipe.fileHandleForWriting
+            let fd = writer.fileDescriptor
             // A child that exits without reading its input must not raise
             // SIGPIPE in this process; the write then fails with EPIPE instead.
-            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
-            DispatchQueue.global().async(group: done) {
-                try? writer.write(contentsOf: input)
+            _ = fcntl(fd, F_SETNOSIGPIPE, 1)
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+            spawn(done) {
+                feed(input, to: fd, cancel: cancel)
                 try? writer.close()
             }
         }
-        DispatchQueue.global().async(group: done) {
-            box.out = outPipe.fileHandleForReading.readData(upTo: maxOutputBytes)
+        let outFd = outPipe.fileHandleForReading.fileDescriptor, errFd = errPipe.fileHandleForReading.fileDescriptor
+        spawn(done) { box.out = drain(outFd, limit: maxOutputBytes, cancel: cancel) }
+        spawn(done) { box.err = drain(errFd, limit: 64 * 1024, cancel: cancel) }
+        defer {
+            // Whatever happened, no thread is left on these descriptors when they are closed.
+            cancel.set()
+            _ = done.wait(timeout: .now() + terminationGrace)
+            try? outPipe.fileHandleForReading.close()
+            try? errPipe.fileHandleForReading.close()
         }
-        DispatchQueue.global().async(group: done) {
-            box.err = errPipe.fileHandleForReading.readData(upTo: 64 * 1024)
-        }
-        if done.wait(timeout: .now() + timeout) == .timedOut {
-            p.terminate()
-            _ = done.wait(timeout: .now() + 2)
+        if done.wait(timeout: deadline) == .timedOut || exited.wait(timeout: deadline) == .timedOut {
+            stop(p, exited: exited)
             return Outcome(status: nil, stdout: Data(), timedOut: true, launchError: nil)
         }
-        p.waitUntilExit()
         return Outcome(status: p.terminationStatus, stdout: box.out, timedOut: false, launchError: nil,
                        truncated: box.out.count >= maxOutputBytes, stderr: box.err)
     }
+
+    /// SIGTERM, then SIGKILL after the grace period, then a last short wait for the exit to be
+    /// reaped. Foundation reaps the child before it reports it no longer running, so a pid is
+    /// signalled only while `isRunning` still says this process owns it: a reused pid is never hit.
+    private static func stop(_ p: Process, exited: DispatchSemaphore) {
+        if p.isRunning { p.terminate() }
+        guard exited.wait(timeout: .now() + terminationGrace) == .timedOut else { return }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        _ = exited.wait(timeout: .now() + terminationGrace)
+    }
+
+    /// One short-lived thread per pipe. Not the dispatch pool: a call can sit here for as long as
+    /// its timeout, and parked pool threads are what starves everything else.
+    private static func spawn(_ group: DispatchGroup, _ body: @escaping @Sendable () -> Void) {
+        group.enter()
+        let thread = Thread {
+            body()
+            group.leave()
+        }
+        thread.stackSize = 256 * 1024
+        thread.start()
+    }
+
+    /// Read `fd` to end of file, keeping at most `limit` bytes (the rest is drained and dropped),
+    /// or until `cancel` is set. It waits in poll(2), so it notices `cancel` within `pollMilliseconds`
+    /// even when a grandchild keeps the pipe open and silent.
+    private static func drain(_ fd: Int32, limit: Int, cancel: CancelFlag) -> Data {
+        var out = Data()
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+        while !cancel.isSet {
+            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&p, 1, pollMilliseconds)
+            if ready < 0 { if errno == EINTR { continue } else { break } }
+            if ready == 0 { continue }
+            let n = read(fd, &chunk, chunk.count)
+            if n < 0 { if errno == EINTR || errno == EAGAIN { continue } else { break } }
+            if n == 0 { break }
+            if out.count < limit { out.append(contentsOf: chunk.prefix(min(n, limit - out.count))) }
+        }
+        return out
+    }
+
+    /// Write all of `data` to the non-blocking `fd`, giving up on any error (EPIPE: the child
+    /// is gone) or when `cancel` is set.
+    private static func feed(_ data: Data, to fd: Int32, cancel: CancelFlag) {
+        var offset = 0
+        while offset < data.count, !cancel.isSet {
+            let n = data.withUnsafeBytes { write(fd, $0.baseAddress! + offset, data.count - offset) }
+            if n >= 0 { offset += n; continue }
+            if errno == EINTR { continue }
+            guard errno == EAGAIN else { return }
+            var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            _ = poll(&p, 1, pollMilliseconds)
+        }
+    }
 }
+
+/// A reply type that carries the contract version vani wrote it under (PipelineStatus).
+protocol VersionedReply {
+    static var supportedVersion: Int { get }
+}
+
+extension PipelineStatus: VersionedReply {}
+
+private struct VersionProbe: Decodable { var version: Int? }
 
 extension VaniProcess {
     private struct Failure: Decodable { var error: String }
@@ -114,10 +196,44 @@ extension VaniProcess {
                                    decoder: JSONDecoder = JSONDecoder(), tooOld: String) throws -> T {
         let (out, name) = try finished(binary, args, configPath: configPath, stateDir: stateDir, input: input,
                                        timeout: timeout, maxOutputBytes: maxOutputBytes)
-        if out.status == 0, let value = try? decoder.decode(T.self, from: out.stdout) {
-            return value
+        guard out.status == 0 else { throw failure(out, name: name, decoder: decoder, tooOld: tooOld) }
+        // A reply of another contract version is named as that before anything else is read from it:
+        // its shape is not this app's to judge.
+        if let versioned = T.self as? VersionedReply.Type,
+           let seen = (try? decoder.decode(VersionProbe.self, from: out.stdout))?.version, seen != versioned.supportedVersion {
+            throw BankError("\(name) reports reply version \(seen); this app reads version \(versioned.supportedVersion). Rebuild the app.")
         }
-        throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+        do {
+            return try decoder.decode(T.self, from: out.stdout)
+        } catch let error as DecodingError {
+            if let reported = try? decoder.decode(Failure.self, from: out.stdout) { throw BankError(reported.error) }
+            if let place = describe(error) { throw BankError("\(name) sent a reply this app cannot read: \(place)") }
+            throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+        } catch {
+            throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+        }
+    }
+
+    /// Where a reply of the wrong shape went wrong, as a path of keys and positions and the kind
+    /// of mismatch, never the value found there (it may be a secret). Nil for text that is not
+    /// JSON at all, which has no path to give.
+    static func describe(_ error: DecodingError) -> String? {
+        let context: DecodingError.Context, what: String
+        switch error {
+        case let .typeMismatch(_, c): (context, what) = (c, "has the wrong type")
+        case let .valueNotFound(_, c): (context, what) = (c, "is missing a value")
+        case let .keyNotFound(key, c):
+            return "\(path(c.codingPath + [key])) is missing"
+        default: return nil
+        }
+        return "\(path(context.codingPath)) \(what)"
+    }
+
+    private static func path(_ keys: [CodingKey]) -> String {
+        guard !keys.isEmpty else { return "the reply" }
+        return keys.reduce(into: "") { out, key in
+            if let index = key.intValue { out += "[\(index)]" } else { out += (out.isEmpty ? "" : ".") + key.stringValue }
+        }
     }
 
     /// Like `call`, but the reply is handed back as the bytes vani wrote, unchanged:
@@ -233,14 +349,10 @@ private final class OutputBox: @unchecked Sendable {
     var err = Data()
 }
 
-extension FileHandle {
-    /// Read to end of file, keeping at most `limit` bytes (the rest is drained and dropped).
-    func readData(upTo limit: Int) -> Data {
-        var out = Data()
-        while true {
-            guard let chunk = try? read(upToCount: 64 * 1024), !chunk.isEmpty else { break }
-            if out.count < limit { out.append(chunk.prefix(limit - out.count)) }
-        }
-        return out
-    }
+/// Set once to tell a pipe thread to stop.
+private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }
