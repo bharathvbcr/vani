@@ -457,9 +457,26 @@ PATH`) and `openssl`.
 
 `test/dom.html` runs the DOM tests in a real browser. It captures a hand-filled Greenhouse-style
 form, then fills a reworded Lever-style form, and checks what must and must not be filled. The page
-title reads `PASS n/n`. Type-checking uses `tsc` with `tsconfig.json` (no TypeScript dependency is
-installed here; `src/chrome.d.ts` declares the Chrome API surface used). The type-check used here is
-`/Users/bharath/Code/apps/SalEdge/node_modules/typescript/bin/tsc -p tsconfig.json --noEmit`.
+title reads `PASS n/n`.
+
+### Type-check gate
+
+`bun test` does not type-check. The gate is one command, run from `extension/`:
+
+```bash
+sh scripts/typecheck.sh        # or: bun run typecheck
+```
+
+It runs `bun install --frozen-lockfile` (the compiler is `typescript`, an exact-pinned devDependency
+in `package.json`, locked in `bun.lock`; `node_modules/` is git-ignored and never shipped, since
+`build.ts` bundles `src/` and copies `static/` only), then the installed
+`./node_modules/.bin/tsc -p tsconfig.json --noEmit` against `src/` (`src/chrome.d.ts` declares the
+Chrome API surface used). Before it runs, `tsc --version` must name exactly the version pinned in
+`package.json`. A missing, empty or foreign compiler exits non-zero and says to run the install step; the
+script never prints `typecheck: ok` unless the pinned `tsc` ran and exited zero, and it has no
+environment overrides (its tests run a copy in a scratch directory with a stub `bun`). It never uses `bunx` or `npx`,
+which download a missing package. Bumping the compiler is a reviewed change to `package.json` and
+`bun.lock`.
 
 `bun test` also covers the store (fake native host and fake `chrome.storage`) and replays
 `test/vectors/classify.json`, the classifier vectors shared with the Mac app's Swift tests; do not

@@ -93,6 +93,9 @@ export function checkResumeName(raw: unknown): string | null {
   const s = raw.trim();
   if (s.length > MAX_NAME_CHARS || !/\.pdf$/i.test(s) || s.length <= 4) return null;
   if (/[\u0000-\u001f\u007f-\u009f/\\]/.test(s)) return null;
+  // Shown in the page and the popup: no format characters (bidi overrides/isolates/marks, zero-width, BOM), no line or
+  // paragraph separators and no unpaired surrogate, any of which can disguise or break the text around it.
+  if (/[\p{Cf}\u2028\u2029]/u.test(s) || /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s)) return null;
   return s;
 }
 
@@ -153,14 +156,26 @@ export function resumeOp(m: ResumeMessage): Record<string, unknown> | { error: s
   const key = resumeKey(m.url);
   if (!key) return { error: "this page has no job address a resume can be chosen for", code: "bad_request" };
   if (m.type !== "resumePut") return { op: m.type, key };
-  const name = checkResumeName(m.name);
+  const file = checkResumeFile(m.name, m.pdf);
+  if ("error" in file) return file;
+  return { op: "resumePut", key, name: file.name, pdf: m.pdf };
+}
+
+/**
+ * A resume as it crosses a message (a resumePut, or an attachResume to a page): a bounded .pdf name and
+ * base64 that decodes to a PDF of at most MAX_RESUME_BYTES (exactly that many is fine). The one check
+ * every path runs before the bytes are stored or placed in a page.
+ */
+export function checkResumeFile(rawName: unknown, pdf: unknown): { name: string; bytes: Uint8Array } | { error: string; code: "bad_request" | "too_large" } {
+  const name = checkResumeName(rawName);
   if (!name) return { error: `choose a .pdf file with a name of at most ${MAX_NAME_CHARS} characters`, code: "bad_request" };
-  if (m.pdf.length > MAX_BASE64) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
-  const bytes = fromBase64(m.pdf);
+  if (typeof pdf !== "string") return { error: "the file could not be read", code: "bad_request" };
+  if (pdf.length > MAX_BASE64) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
+  const bytes = fromBase64(pdf);
   if (!bytes || bytes.length === 0) return { error: "the file could not be read", code: "bad_request" };
   if (bytes.length > MAX_RESUME_BYTES) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
   if (!isPdf(bytes)) return { error: "that file is not a PDF", code: "bad_request" };
-  return { op: "resumePut", key, name, pdf: m.pdf };
+  return { name, bytes };
 }
 
 const isError = (r: unknown): boolean => isRecord(r) && typeof r.error === "string";

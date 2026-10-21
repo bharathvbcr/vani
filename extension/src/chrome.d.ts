@@ -3,7 +3,7 @@
 declare namespace chrome {
   namespace runtime {
     /** `tab` is absent for an extension page such as the popup; `frameId` is 0 for a tab's top frame. */
-    interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number; url?: string }
+    interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number; url?: string; origin?: string }
     const lastError: { message?: string } | undefined;
     function sendMessage<T = unknown>(message: unknown): Promise<T>;
     /** Callback form only: Chrome does not return a promise from this call. The reply is whatever JSON the host sent: check it before use. */
@@ -42,7 +42,7 @@ declare namespace chrome {
     function query(q: { active: boolean; currentWindow: boolean }): Promise<Tab[]>;
     /** Without `frameId` every frame with a listener receives it and the promise takes the first reply; frames.ts always names one. */
     function sendMessage<T = unknown>(tabId: number, message: unknown, options?: { frameId?: number }): Promise<T>;
-    const onUpdated: { addListener(cb: (tabId: number, changeInfo: { status?: string }) => void): void };
+    const onUpdated: { addListener(cb: (tabId: number, changeInfo: { status?: string; url?: string }) => void): void };
     const onRemoved: { addListener(cb: (tabId: number) => void): void };
   }
   /** The toolbar button; a badge marks a tab with a question waiting. May be absent (Safari). */

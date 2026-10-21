@@ -1,8 +1,8 @@
 // Messages between the content script, the popup and the background worker.
 // The background worker is the only writer to storage.
 import { isRecord } from "./guards";
-import type { Answer, Bank, FieldInfo, Settings } from "./types";
-import type { CaptureResult } from "./bank";
+import type { Bank, FieldInfo, Settings } from "./types";
+import { type CaptureResult, MAX_BANK_BYTES, utf8Within } from "./bank";
 import type { FillOutcome } from "./fill";
 import type { Coverage } from "./coverage";
 import type { DraftReply, JobInfo } from "./draft";
@@ -42,10 +42,6 @@ export type ToBackground =
   | { type: "frames"; tabId?: number }
   /** Scraped jobs for Vani (docs/EXTENSION_INGEST.md); `saveSearch` also saves the page as a daily search. Bounds: ingest.ts. */
   | { type: "ingestJobs"; page: IngestPage; saveSearch: boolean; jobs: IngestJob[] }
-  /** Granular operations without transferring the full bank */
-  | { type: "queryCandidates"; query: { signatures?: string[]; keys?: string[]; labels?: string[] } }
-  | { type: "listAnswers"; offset?: number; limit?: number; search?: string }
-  | { type: "patchAnswers"; upsert?: Answer[]; delete?: string[] }
   // The resume chosen for a job (resume.ts), keyed by the page's pageKey. A content script asks for the bytes
   // to fill its own tab; the popup shows, binds and unbinds the one for the active tab's page.
   | { type: "resumeGet"; url: string }
@@ -53,7 +49,7 @@ export type ToBackground =
   /** pdf is base64, at most MAX_RESUME_BYTES decoded; name ends in .pdf. */
   | { type: "resumePut"; url: string; name: string; pdf: string }
   | { type: "resumeDelete"; url: string }
-  | { type: "attachResume"; name: string; pdf: string; pickedAt: string; tabId?: number };
+  | { type: "attachResume"; name: string; pdf: string; pickedAt: string };
 
 export type DraftResponse = DraftReply;
 
@@ -85,14 +81,14 @@ const optBool = (x: unknown) => x === undefined || typeof x === "boolean";
 const optTab = (m: Record<string, unknown>) => m.tabId === undefined || typeof m.tabId === "number";
 
 /** One check per message type; the mapped type makes a new message type fail to compile until it has one. */
-const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>) => boolean } = {
+export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>) => boolean } = {
   getBank: () => true,
   capture: m => Array.isArray(m.fields) && typeof m.host === "string",
   filled: m => Array.isArray(m.keys) && m.keys.every(k => typeof k === "string"),
   setSettings: m => isRecord(m.settings),
   deleteAnswer: m => typeof m.key === "string",
   editAnswer: m => typeof m.key === "string" && Array.isArray(m.value) && (m.review === undefined || typeof m.review === "boolean"),
-  replaceBank: m => typeof m.json === "string",
+  replaceBank: m => typeof m.json === "string" && utf8Within(m.json, MAX_BANK_BYTES),
   draft: m => typeof m.question === "string",
   jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume",
   jobPoll: m => typeof m.job === "string",
@@ -104,17 +100,56 @@ const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>)
   frameReady: () => true,
   frames: optTab,
   ingestJobs: m => ingestJobsProblem(m) === null,
-  queryCandidates: m => isRecord(m.query),
-  listAnswers: m => (m.offset === undefined || typeof m.offset === "number") && (m.limit === undefined || typeof m.limit === "number") && (m.search === undefined || typeof m.search === "string"),
-  patchAnswers: m => (m.upsert === undefined || Array.isArray(m.upsert)) && (m.delete === undefined || Array.isArray(m.delete)),
   resumeGet: m => typeof m.url === "string",
   resumeInfo: m => typeof m.url === "string",
   resumePut: m => typeof m.url === "string" && typeof m.name === "string" && typeof m.pdf === "string",
   resumeDelete: m => typeof m.url === "string",
-  attachResume: m => typeof m.name === "string" && typeof m.pdf === "string" && typeof m.pickedAt === "string" && optTab(m),
+  attachResume: m => typeof m.name === "string" && typeof m.pdf === "string" && typeof m.pickedAt === "string",
 };
 
-const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {
+/**
+ * Who may send each background message. "popup" is a sender with no tab (the toolbar popup); "content" is a
+ * content script, which always has a tab; "either" is both. The background refuses any other sender with
+ * `bad_request` before it reads or writes anything, so a confused content script cannot rewrite the bank or
+ * its settings, and the popup cannot ask for what only a page gets. The mapped type makes a new message
+ * type fail to compile until it has a policy.
+ */
+export type SenderPolicy = "popup" | "content" | "either";
+export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
+  getBank: "either",
+  capture: "either",
+  filled: "content",
+  setSettings: "popup",
+  deleteAnswer: "popup",
+  editAnswer: "popup",
+  replaceBank: "popup",
+  draft: "content",
+  jobStart: "content",
+  jobPoll: "content",
+  appliedSignal: "either",
+  appliedPending: "either",
+  jobRow: "content",
+  appliedMark: "either",
+  appliedDismiss: "either",
+  frameReady: "content",
+  frames: "either",
+  ingestJobs: "either",
+  resumeGet: "content",
+  resumeInfo: "popup",
+  resumePut: "either",
+  resumeDelete: "popup",
+  attachResume: "content",
+};
+
+/** Null when `sender` may send `type`; otherwise the refusal to reply with. */
+export function checkSender(type: ToBackground["type"], sender: { tab?: unknown }): { error: string; code: "bad_request" } | null {
+  const policy = SENDER_POLICY[type];
+  const fromContent = sender.tab !== undefined && sender.tab !== null;
+  if (policy === "either" || (policy === "content") === fromContent) return null;
+  return { error: `${type} is not accepted from ${fromContent ? "a page" : "the popup"}`, code: "bad_request" };
+}
+
+export const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {
   scan: () => true,
   fill: m => optBool(m.overwrite) && optBool(m.typeahead),
   capture: () => true,

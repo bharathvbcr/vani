@@ -1,0 +1,10 @@
+{
+  "name": "vani-apply-extension",
+  "private": true,
+  "scripts": {
+    "typecheck": "sh scripts/typecheck.sh"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
