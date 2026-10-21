@@ -23,6 +23,8 @@ var (
 	// errConfigStale marks a run that went on with the previous watchlist
 	// because the config file could not be re-read.
 	errConfigStale = errors.New("config reload failed")
+	// errRunPanic marks a run that panicked and was recovered (dailyJob).
+	errRunPanic = errors.New("panic")
 )
 
 const seeStatus = " Run vani status for details."

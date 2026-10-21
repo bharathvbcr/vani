@@ -186,9 +186,11 @@ func TestRunOnceDrainsTheInboxBeforeTheBoards(t *testing.T) {
 	}
 }
 
-func TestSetBoardsReplacesWatchlistAndHosts(t *testing.T) {
+func TestReloadReplacesTheWiredConfig(t *testing.T) {
 	w, _ := openWired(t, config.Default())
-	w.setBoards([]sources.Board{{ATS: posting.Ashby, Token: "x", Company: "X"}}, []string{"api.ashbyhq.com"})
+	c := w.cfg
+	c.Watchlist, c.AllowedHosts = []sources.Board{{ATS: posting.Ashby, Token: "x", Company: "X"}}, []string{"api.ashbyhq.com"}
+	w.reload(c)
 	if len(w.cfg.Watchlist) != 1 || len(w.cfg.AllowedHosts) != 1 || w.cfg.Schedule.DailyAt == "" {
 		t.Fatalf("%+v", w.cfg)
 	}
@@ -204,7 +206,7 @@ func wireReload(t *testing.T, l *brokenLedger, reloads *[][]sources.Board, run f
 	daemonClock, now = clock, clock.Now
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
 		return &App{Ledger: l, Notifier: &fakeNotifier{}, RunOnce: run,
-			Reload: func(wl []sources.Board, _ []string) { *reloads = append(*reloads, wl) }}, nil
+			Reload: func(c config.Config) { *reloads = append(*reloads, c.Watchlist) }}, nil
 	}
 }
 

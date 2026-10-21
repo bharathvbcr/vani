@@ -185,6 +185,24 @@ func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs 
 	return warmSemanticDocs(ctx, cfg, stateDir, warmDocs(recs, mk), max)
 }
 
+// withMarkedText returns recs with the description of every record warmDocs
+// would embed but All() left empty: a closed job (Dead, Dropped, Duplicate) the
+// owner marked has its text evicted from memory (ledger.Record.BodyEvicted),
+// and without it the job would lose its semantic score. Only those records are
+// read back from l, never every closed job.
+func withMarkedText(l ledger.Ledger, recs []ledger.Record, mk map[posting.Key]marks.Mark) []ledger.Record {
+	for i, r := range recs {
+		if r.BodyEvicted && jobview.InView("all", r, mk[r.Key]) {
+			recs[i] = ledger.Full(l, r)
+		}
+	}
+	return recs
+}
+
+// warmSemanticRun is warmSemantic as the daily run calls it; a variable only so
+// a test can see the records the run hands the warm.
+var warmSemanticRun = warmSemantic
+
 // The daily run spends semantic.warm_per_run (L) in two warms, so the posting
 // the decision model reads first is already scored and the digest's kept
 // postings are too. Before the advance phase it may embed up to

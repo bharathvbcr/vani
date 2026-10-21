@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,5 +105,66 @@ func TestLedgerBrokenIsFatal(t *testing.T) {
 	l.poison(cause)
 	if err := ledgerBroken(l); !errors.Is(err, daemon.ErrFatal) || !errors.Is(err, cause) {
 		t.Fatalf("%v, want daemon.ErrFatal wrapping the cause", err)
+	}
+}
+
+// idleClock never fires a wait: the daemon sits between daily runs, so only
+// the inbox poll runs.
+type idleClock struct{}
+
+func (idleClock) Now() time.Time                       { return time.Date(2026, 10, 18, 6, 0, 0, 0, time.UTC) }
+func (idleClock) After(time.Duration) <-chan time.Time { return make(chan time.Time) }
+
+// A poll that leaves the ledger poisoned ends the daemon within a poll
+// interval, not at the next daily slot hours away.
+func TestPoisonedByAnInboxPollEndsTheDaemon(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	l := &brokenLedger{memLedger: fixture()}
+	oldBuild, oldClock, oldInterval, oldSig := buildApp, daemonClock, inboxPollInterval, signalContext
+	t.Cleanup(func() {
+		buildApp, daemonClock, inboxPollInterval, signalContext = oldBuild, oldClock, oldInterval, oldSig
+	})
+	daemonClock, inboxPollInterval = idleClock{}, 5*time.Millisecond
+	stop := make(chan struct{})
+	signalContext = func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-stop; cancel() }()
+		return ctx, cancel
+	}
+	var polls atomic.Int32
+	buildApp = func(config.Config, string, io.Writer) (*App, error) {
+		return &App{Ledger: l, Notifier: &fakeNotifier{}, RunOnce: func(context.Context) error { return nil },
+			PollInbox: func(context.Context) error {
+				polls.Add(1)
+				l.poison(errors.New("ledger: fsync failed: input/output error"))
+				return nil
+			}}, nil
+	}
+	type result struct {
+		code   int
+		stderr string
+	}
+	done := make(chan result, 1)
+	started := time.Now()
+	go func() {
+		code, _, stderr := do(t, "daemon")
+		done <- result{code, stderr}
+	}()
+	select {
+	case r := <-done:
+		if r.code != exitRuntime || !strings.Contains(r.stderr, "fsync failed") {
+			t.Errorf("exit %d, stderr:\n%s", r.code, r.stderr)
+		}
+		if n := polls.Load(); n != 1 {
+			t.Errorf("%d polls, want the daemon to stop after the one that poisoned the ledger", n)
+		}
+		if took := time.Since(started); took > 2*time.Second {
+			t.Errorf("took %v to end", took)
+		}
+	case <-time.After(3 * time.Second):
+		close(stop)
+		<-done
+		t.Fatal("the daemon kept running with a poisoned ledger after an inbox poll")
 	}
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
-	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // The config's bounds are the digest's own: a value the config accepts is never
@@ -70,7 +69,7 @@ func runWith(t *testing.T, l *memLedger, adv *advanceReport) string {
 			Ledger: l, Notifier: &fakeNotifier{},
 			RunOnce:   func(context.Context) error { return nil },
 			RunReport: func() runDetail { return runDetail{Advance: adv} },
-			Reload:    func([]sources.Board, []string) {},
+			Reload:    func(config.Config) {},
 		}, nil
 	}
 	mustCode(t, 0, "run-once")
