@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,37 +41,63 @@ func scaleSnapshot(n int) ledger.Snapshot {
 // context with target-keyword hits, so the pass includes the score.
 func scaleInsight(v *jobinsight.Vocab, snap ledger.Snapshot) *insight {
 	in := &insight{vocab: v, target: v.Terms("Inference in Go and Rust."), now: jobsT0, halfLife: jobinsight.DefaultScoreHalfLifeDays}
-	in.learn(snap, nil)
+	in.learn(snap, nil, "")
 	in.rc = jobinsight.NewRankContext(snap.Records, nil, jobsT0)
 	in.rc.Target, in.rc.Hits, in.rc.HalfLifeDays = true, in.targetHits, in.halfLife
 	return in
 }
 
-// The whole insight pass for one `jobs list` (learn every posting's keywords,
-// then select, enrich and sort) stays interactive at 5,000 postings: the Mac
-// app runs it on every list, mark and note.
+// scaleAllocsPerPosting bounds the allocations one posting costs in the pass
+// (measured ~1,455 for the ~6 KiB scaleSnapshot descriptions, identical with
+// and without -race).
+const scaleAllocsPerPosting = 2000
+
+// insightPass runs the whole insight pass for one `jobs list` over snap (learn
+// every posting's keywords, then select, enrich and sort) and returns how many
+// jobs it selected and how many heap allocations it made. The allocation count
+// is the work done: unlike wall time it does not move with machine load or
+// -race, and a pass that re-reads every posting per row shows up in it as
+// super-linear growth.
+func insightPass(t *testing.T, v *jobinsight.Vocab, snap ledger.Snapshot) (selected int, mallocs uint64) {
+	t.Helper()
+	o := jobsOpts{Opts: jobview.Opts{View: "all", Sort: "priority", HalfLife: jobinsight.DefaultScoreHalfLifeDays}}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	in := scaleInsight(v, snap)
+	sel, _ := jobview.Select(snap, nil, &o.Opts, in, listKeywords)
+	jobview.Sort(sel, o.View, o.Sort)
+	runtime.ReadMemStats(&after)
+	return len(sel), after.Mallocs - before.Mallocs
+}
+
+// The whole insight pass stays interactive at 5,000 postings (the Mac app runs
+// it on every list and note), asserted as work, not wall time: the pass over 4x
+// the postings makes at most 5x the allocations (linear; a per-row rescan of the
+// ledger would make 16x), and each posting costs a bounded number of them. The
+// 10 s wall bound this replaced failed under -race with the whole suite running
+// in parallel.
 func TestJobsInsightScalesTo5000Postings(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scale check")
 	}
-	snap := scaleSnapshot(5000)
 	v, err := jobinsight.Default()
 	if err != nil {
 		t.Fatal(err)
 	}
+	insightPass(t, v, scaleSnapshot(50)) // one-time initialisation out of the counts
+	const small, large = 1250, 5000
 	start := time.Now()
-	in := scaleInsight(v, snap)
-	o := jobsOpts{Opts: jobview.Opts{View: "all", Sort: "priority", HalfLife: jobinsight.DefaultScoreHalfLifeDays}}
-	sel, _ := jobview.Select(snap, nil, &o.Opts, in, listKeywords)
-	jobview.Sort(sel, o.View, o.Sort)
-	took := time.Since(start)
-	if len(sel) != 5000 {
-		t.Fatalf("selected %d", len(sel))
+	nSmall, aSmall := insightPass(t, v, scaleSnapshot(small))
+	nLarge, aLarge := insightPass(t, v, scaleSnapshot(large))
+	t.Logf("%d postings: %d allocs; %d postings: %d allocs (%.2fx); both passes %s", small, aSmall, large, aLarge, float64(aLarge)/float64(aSmall), time.Since(start))
+	if nSmall != small || nLarge != large {
+		t.Fatalf("selected %d of %d and %d of %d", nSmall, small, nLarge, large)
 	}
-	t.Logf("5000 postings: %s", took)
-	// Generous bound for -race and a loaded machine; the app's call timeout is 30 s.
-	if took > 10*time.Second {
-		t.Errorf("insight pass took %s for 5000 postings", took)
+	if aSmall == 0 || aLarge > 5*aSmall {
+		t.Errorf("work grew %dx the postings into %d -> %d allocations: super-linear", large/small, aSmall, aLarge)
+	}
+	if per := aLarge / large; per > scaleAllocsPerPosting {
+		t.Errorf("%d allocations per posting, budget %d", per, scaleAllocsPerPosting)
 	}
 }
 

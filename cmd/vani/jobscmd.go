@@ -305,7 +305,7 @@ func (e *env) jobsShow(args []string) error {
 		if !ok {
 			return fmt.Errorf("jobs show: no posting %q in the ledger", k)
 		}
-		in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
+		in, err := e.newRowInsight(snap, m, r)
 		if err != nil {
 			return err
 		}
@@ -393,7 +393,7 @@ func (e *env) jobsWrite(raw string, out *jobview.Job, set func(string, posting.K
 	if err != nil {
 		return fmt.Errorf("jobs: read marks: %w", err)
 	}
-	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
+	in, err := e.newRowInsight(snap, m, r)
 	if err != nil {
 		return err
 	}
