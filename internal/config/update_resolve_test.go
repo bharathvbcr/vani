@@ -51,7 +51,7 @@ func TestCreateThroughSymlinkedDirectory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(realDir, "config.json")); err != nil {
 		t.Errorf("config not created in the resolved directory: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(realDir, "config.json"+lockSuffix)); err != nil {
+	if _, err := os.Stat(filepath.Join(realDir, "config.json"+".lock")); err != nil {
 		t.Errorf("lock not beside the resolved file: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(linkDir, "config.json")); err != nil {

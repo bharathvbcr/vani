@@ -20,8 +20,17 @@ var syncDir = SyncDir
 // directory after it, so once Write returns nil the new contents survive a
 // crash. An error after the rename says the file was replaced but its
 // durability is unknown; writing the same data again is safe.
+//
+// path is first resolved (see Resolve): the temp file, the rename and the
+// directory fsync all use the resolved target and its directory, so a symlinked
+// path (or one under a symlinked directory) keeps its link and the target gets
+// the write.
 func Write(path string, data []byte) (err error) {
 	name := filepath.Base(path)
+	path, err = Resolve(path)
+	if err != nil {
+		return fmt.Errorf("atomic write %s: %w", name, err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("atomic write %s: create directory: %w", name, err)
@@ -63,9 +72,14 @@ func Write(path string, data []byte) (err error) {
 // first, so of any number of racing openers exactly one is told it created the
 // file and the rest open the file that won; the creator owes a SyncDir of the
 // parent (see SyncNew), because a file's own fsync does not make its directory
-// entry durable. extra is OR-ed into the flags (os.O_APPEND for an append-only
+// entry durable. path is resolved first (see Resolve), so a dangling link is
+// created at its target. extra is OR-ed into the flags (os.O_APPEND for an append-only
 // log).
 func OpenAppend(path string, extra int) (f *os.File, created bool, err error) {
+	path, err = Resolve(path)
+	if err != nil {
+		return nil, false, err
+	}
 	flags := os.O_RDWR | extra
 	for range 3 {
 		f, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
@@ -105,8 +119,13 @@ var newFiles sync.Map // path -> os.FileInfo
 // hold their lock across OpenAppend..SyncNew. syncFn is the caller's seam
 // (SyncDir in production).
 func SyncNew(path string, syncFn func(dir string) error) error {
+	name := filepath.Base(path)
+	path, err := Resolve(path)
+	if err != nil {
+		return fmt.Errorf("syncing the directory of new %s: %w", name, err)
+	}
 	want, _ := newFiles.LoadAndDelete(path)
-	err := syncFn(filepath.Dir(path))
+	err = syncFn(filepath.Dir(path))
 	if err == nil {
 		return nil
 	}

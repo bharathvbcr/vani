@@ -30,8 +30,13 @@ func TestOpenSyncsParentDirOnceOnFirstCreateOnly(t *testing.T) {
 	dirs := countSyncDir(t, nil)
 
 	f := mustOpen(t, dir)
-	if len(*dirs) != 1 || (*dirs)[0] != dir {
-		t.Fatalf("first creation of events.jsonl: want exactly one SyncDir(%s), got %v", dir, *dirs)
+	// The sync targets the resolved directory (t.TempDir is under a symlink on macOS).
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*dirs) != 1 || (*dirs)[0] != want {
+		t.Fatalf("first creation of events.jsonl: want exactly one SyncDir(%s), got %v", want, *dirs)
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)

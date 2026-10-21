@@ -678,7 +678,7 @@ func Save(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	path, unlock, err := lockConfig(path)
+	unlock, err := lockConfig(path)
 	if err != nil {
 		return err
 	}
@@ -693,11 +693,17 @@ func Create(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	path, unlock, err := lockConfig(path)
+	unlock, err := lockConfig(path)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	// The file that would be created is the resolved target: a dangling link
+	// is not "already there", its target is.
+	path, err = atomicfile.Resolve(path)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 	if _, err := os.Lstat(path); err == nil {
 		return fmt.Errorf("config: %s already exists: %w", path, os.ErrExist)
 	} else if !errors.Is(err, os.ErrNotExist) {

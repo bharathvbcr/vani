@@ -10,15 +10,26 @@ import (
 func TestOpenAppendSymlinkAndDirectoryPaths(t *testing.T) {
 	dir := t.TempDir()
 
-	// A dangling symlink: O_EXCL does not follow it (EEXIST), the plain open
-	// does (ENOENT). Must end as an error, never loop forever or "create".
+	// A dangling symlink: O_EXCL does not follow it (EEXIST) and the plain open
+	// does (ENOENT), which used to be an error. OpenAppend resolves the link
+	// first, so it creates the target (once: created is true only the first
+	// time) and keeps the link.
 	dangling := filepath.Join(dir, "dangling")
 	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	if f, created, err := OpenAppend(dangling, 0); err == nil {
+	for i, wantCreated := range []bool{true, false} {
+		f, created, err := OpenAppend(dangling, 0)
+		if err != nil || created != wantCreated {
+			t.Fatalf("dangling symlink, open %d: created=%v err=%v, want created=%v", i, created, err, wantCreated)
+		}
 		f.Close()
-		t.Fatalf("dangling symlink opened: created=%v", created)
+	}
+	if st, err := os.Lstat(dangling); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link not kept: %v %v", st, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "nowhere")); err != nil {
+		t.Fatalf("target not created: %v", err)
 	}
 
 	// A symlink to an existing file opens the target and is not a creation.

@@ -199,10 +199,14 @@ func (s *Store) Save() error {
 // Lock takes the store's run lock without waiting: two runs would spend twice
 // and the later save would drop the earlier one's answers.
 func Lock(path string) (unlock func(), err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	lockPath, err := filelock.LockPath(path)
+	if err != nil {
 		return nil, fmt.Errorf("kbmatch: %w", err)
 	}
-	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("kbmatch: %w", err)
 	}

@@ -25,7 +25,11 @@ func countSyncs(t *testing.T, fail error) *[]string {
 
 func TestWriteReplacesAndSyncsTheDirectory(t *testing.T) {
 	dirs := countSyncs(t, nil)
-	dir := t.TempDir()
+	// Write syncs the resolved directory (t.TempDir is under a symlink on macOS).
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "state.json")
 	for _, body := range []string{"one", "two"} {
 		if err := Write(path, []byte(body)); err != nil {
