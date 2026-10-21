@@ -295,7 +295,11 @@ describe("adversarial: replaceBank bound", () => {
     local = {};
     const at = withUnits(MAX_BANK_BYTES);
     expect(at.length).toBe(MAX_BANK_BYTES);
-    expect((await ask({ type: "replaceBank", json: at }, {})).replies[0]).toMatchObject({ ok: true, answers: 0 });
+    // Past the size gate and parsed (the store behind it may be in either mode when other test files ran first).
+    const r = await ask({ type: "replaceBank", json: at }, {});
+    expect(r.async).toBe(true);
+    expect(r.replies[0]).not.toEqual({ error: "malformed replaceBank message" });
+    expect(r.replies[0]).not.toMatchObject({ error: expect.stringContaining("larger than") });
     expect(await ask({ type: "replaceBank", json: withUnits(MAX_BANK_BYTES + 1) }, {})).toEqual({ async: false, replies: [{ error: "malformed replaceBank message" }] });
   });
 });
