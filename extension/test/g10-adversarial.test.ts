@@ -125,7 +125,8 @@ describe("adversarial: sender shapes", () => {
 
   test("a content script in a sub-frame (frameId 5) may send content-only types, and is refused popup-only ones", async () => {
     const sub = { tab: { id: 31, url: "https://boards.greenhouse.io/acme/jobs/1" }, frameId: 5, url: "https://job-boards.greenhouse.io/embed/job_app?for=acme" };
-    expect((await ask({ type: "filled", keys: [] }, sub)).replies).toEqual([{ ok: true }]);
+    // runs the handler (a bad job id is its own reply) without touching the store, whose mode other test files leave behind
+    expect((await ask({ type: "jobPoll", job: "" }, sub)).replies).toEqual([{ error: "bad job id", code: "bad_request" }]);
     expect((await ask({ type: "frameReady" }, sub)).replies).toEqual([{ ok: true }]);
     for (const t of types().filter(t => SENDER_POLICY[t] === "popup")) {
       expect((await ask({ type: t, ...valid[t] }, sub)).replies).toEqual([{ error: `${t} is not accepted from a page`, code: "bad_request" }]);
