@@ -170,6 +170,16 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Workday] = wd
+	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
+		Report: func(b sources.Board, st eightfold.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+		},
+	})
+	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
+		Report: func(b sources.Board, st apple.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+		},
+	})
 	var pageErr error
 	if w.hasPageBoard() {
 		src, stop, err := w.pageSource(ctx, d)

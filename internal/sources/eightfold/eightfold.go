@@ -50,13 +50,40 @@ var (
 	domainRE = hostRE
 )
 
+// errDetailGone is a position detail answering 404 under a search that
+// answered: the position closed after it was listed.
+var errDetailGone = errors.New("detail is gone (HTTP 404)")
+
+// maxGone is how many of n listed positions may come back gone before the
+// board fails: a tenth, at least one (workday's bound).
+func maxGone(n int) int { return max(1, n/10) }
+
+// Stats counts what one List did: the positions listed and the ones whose
+// detail answered 404 (closed since listing).
+type Stats struct {
+	Listed int `json:"listed"`
+	Gone   int `json:"gone,omitempty"`
+}
+
+// Options configures NewWith.
+type Options struct {
+	// Report, when set, receives each listed board's counts.
+	Report func(sources.Board, Stats)
+}
+
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	opt *Options
 }
 
 // New returns the Eightfold source, sending requests through d.
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+
+// NewWith is New with the board report of opt.
+func NewWith(d egress.Doer, opt Options) sources.Source {
+	return &source{d: d, now: time.Now, opt: &opt}
+}
 
 func (*source) ATS() posting.ATS { return posting.Eightfold }
 
@@ -130,11 +157,26 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(ids))
+	st := Stats{Listed: len(ids)}
+	if s.opt != nil && s.opt.Report != nil {
+		defer func() { s.opt.Report(b, st) }()
+	}
+	allowed := maxGone(len(ids))
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		p, err := s.detail(ctx, base, host, domain, id, b, seen)
+		if errors.Is(err, errDetailGone) {
+			// The position closed between the search and its detail; leaving it
+			// out is the truth. Many at once is the detail endpoint failing. The
+			// error is deliberately not ErrBoardNotFound: the search answered.
+			if st.Gone++; st.Gone > allowed || st.Gone == len(ids) {
+				return nil, fmt.Errorf("eightfold %q: %d of %d position details are gone (HTTP 404); the detail endpoint is not answering",
+					b.Token, st.Gone, len(ids))
+			}
+			continue
+		}
 		if err != nil {
 			// A partial listing would age healthy postings as absent.
 			return nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, id, err)
@@ -228,6 +270,9 @@ func (s *source) detail(ctx context.Context, base, host, domain, id string, b so
 	q.Set("hl", "en")
 	var d details
 	if err := s.get(ctx, base+"position_details?"+q.Encode(), &d); err != nil {
+		if errors.Is(err, srcutil.ErrBoardNotFound) {
+			return posting.Posting{}, errDetailGone
+		}
 		return posting.Posting{}, err
 	}
 	if d.ID.String() != id {
