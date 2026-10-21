@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/joburl"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -84,7 +83,7 @@ func (e *env) jobsFind(args []string) error {
 		out = matchPageURL(snap, m, page)
 		if out.Job != nil {
 			if r, ok := findRecord(snap, out.Job.Key); ok {
-				in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
+				in, err := e.newRowInsight(snap, m, r)
 				if err != nil {
 					return err
 				}

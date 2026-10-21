@@ -239,11 +239,20 @@ type insight struct {
 // learn extracts the keywords of every posting the Jobs views can show (kept
 // or marked) once, and learns each company's blurb from them, so a term every
 // one of a company's postings repeats is not counted as that posting's ask.
-func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry) {
+//
+// A non-empty only (a companyKey) restricts that to one company: a blurb is
+// learned from a company's own postings alone, so one row's hits and boilerplate
+// come out the same as in the full pass at the cost of that company's postings,
+// not the ledger's. in.info.Boilerplate then counts only that company's terms,
+// which is listing metadata no single row carries.
+func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) {
 	in.hits = map[posting.Key][]jobinsight.Hit{}
 	var companies []string
 	var all [][]jobinsight.Hit
 	for _, r := range snap.Records {
+		if only != "" && companyKey(r.Posting.Company) != only {
+			continue
+		}
 		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
@@ -268,10 +277,25 @@ func (e *env) newInsight(halfLife float64, snap ledger.Snapshot, m map[posting.K
 	return newInsightFor(cfg, err, e.stateDir, halfLife, snap, m)
 }
 
+// newRowInsight is newInsight for enriching the one record r (jobs find, show,
+// mark, note). It learns only r's company, which is all r's keywords and score
+// read, so the row is byte-identical to the full pass's
+// (TestRowInsightParity) without tokenising every other company's postings.
+func (e *env) newRowInsight(snap ledger.Snapshot, m map[posting.Key]marks.Entry, r ledger.Record) (*insight, error) {
+	cfg, err := e.loadConfig()
+	return newInsightScoped(cfg, err, e.stateDir, jobinsight.DefaultScoreHalfLifeDays, snap, m, companyKey(r.Posting.Company))
+}
+
 // newInsightFor is newInsight over a config already read (cfgErr is why it
 // could not be). The daily run builds the notes gate's relevance from it, so
 // the gate and the Jobs views rank with one context.
 func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry) (*insight, error) {
+	return newInsightScoped(cfg, err, stateDir, halfLife, snap, m, "")
+}
+
+// newInsightScoped is newInsightFor learning only the company only names (see
+// learn); "" learns every company.
+func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) (*insight, error) {
 	v, verr := jobinsight.Default()
 	if verr != nil {
 		return nil, verr
@@ -290,7 +314,7 @@ func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float
 		in.target = v.Terms(cfg.TargetSummary)
 		in.info.Target, in.info.TargetTerms = true, len(in.target)
 	}
-	in.learn(snap, m)
+	in.learn(snap, m, only)
 	marked := make(map[posting.Key]marks.Mark, len(m))
 	for k, e := range m {
 		marked[k] = e.Mark
@@ -326,7 +350,7 @@ func (in *insight) warn(w string) {
 // title names and those only the rest of it names (a term in both counts once,
 // as a title term), with the company's blurb terms left out.
 func (in *insight) targetHits(r ledger.Record) (title, body int) {
-	boiler := in.boiler[strings.ToLower(strings.TrimSpace(r.Posting.Company))]
+	boiler := in.boiler[companyKey(r.Posting.Company)]
 	inTitle := map[string]bool{}
 	for _, h := range jobinsight.Without(in.vocab.Extract(r.Posting.Title), boiler) {
 		if in.target[h.Term] {
@@ -345,6 +369,10 @@ func (in *insight) targetHits(r ledger.Record) (title, body int) {
 	return len(inTitle), body
 }
 
+// companyKey is the key Boilerplate files a company under (and the rank
+// context's companyKey in internal/jobinsight).
+func companyKey(name string) string { return strings.ToLower(strings.TrimSpace(name)) }
+
 func oneLine(s string, n int) string { return jobview.CleanText(s, n, false) }
 
 // enrich fills j's insight fields from r and returns the posting's full
@@ -359,7 +387,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 	if !ok {
 		hits = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
 	}
-	hits = jobinsight.Without(hits, in.boiler[strings.ToLower(strings.TrimSpace(r.Posting.Company))])
+	hits = jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
 	res := in.rc.ScoreOf(r)
