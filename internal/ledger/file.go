@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
@@ -62,9 +63,8 @@ type File struct {
 	mu       sync.Mutex
 	events   *os.File
 	lock     *os.File
-	recs     map[posting.Key]*Record
-	ev       *evictor // where each key's last body lives; see evict.go
-	goodSize int64    // end of the last intact line
+	recs     map[posting.Key]*slot // each key's record and where its body lives; see evict.go
+	goodSize int64                 // end of the last intact line
 	closed   bool
 	broken   error // set when the file past goodSize is unknown; every later Append returns it
 }
@@ -109,7 +109,7 @@ func Open(dir string) (*File, error) {
 			return nil, fmt.Errorf("ledger: %w", err)
 		}
 	}
-	f := &File{events: ev, lock: lock, recs: map[posting.Key]*Record{}, ev: newEvictor()}
+	f := &File{events: ev, lock: lock, recs: map[posting.Key]*slot{}}
 	if err := f.replay(); err != nil {
 		f.Close()
 		return nil, err
@@ -119,12 +119,17 @@ func Open(dir string) (*File, error) {
 
 // readLine returns one line without its newline. hadNL is false for a final
 // line the file ended in the middle of. A line past MaxLineBytes is an error.
+// A line that fits the reader's buffer is returned as a view of it, valid only
+// until the next read from r (a long line is copied).
 func readLine(r *bufio.Reader) (line []byte, raw int, hadNL bool, err error) {
 	for {
 		chunk, e := r.ReadSlice('\n')
 		raw += len(chunk)
 		if raw > MaxLineBytes {
 			return nil, raw, false, ErrLineTooLong
+		}
+		if e == nil && line == nil {
+			return chunk[:len(chunk)-1], raw, true, nil
 		}
 		line = append(line, chunk...)
 		switch {
@@ -144,9 +149,53 @@ func readLine(r *bufio.Reader) (line []byte, raw int, hadNL bool, err error) {
 }
 
 func (f *File) replay() error {
-	off, torn, err := replay(f.events, f.recs, f.ev, f.events)
+	off, torn, err := replay(f.events, f.recs, f.events)
 	f.goodSize, f.Recovered = off, torn
+	if err == nil {
+		packBodies(f.recs)
+	}
 	return err
+}
+
+const (
+	packChunk = 64 << 10 // bytes of description per packed chunk
+	packMax   = packChunk / 2
+)
+
+// packBodies copies the descriptions still resident after replay into dense
+// chunks. Replay decoded every body, closed or not, into the same size class, so
+// the ones that stay sit one to a span among freed neighbours and keep all those
+// spans in use. The copies are packed back to back and the originals' spans
+// empty out. A chunk is freed once every body in it is gone, so this only
+// applies to what Open itself loaded: bodies added later are separate strings.
+func packBodies(recs map[posting.Key]*slot) {
+	var todo []*slot
+	size := 0
+	flush := func() {
+		var sb strings.Builder
+		sb.Grow(size)
+		for _, s := range todo {
+			sb.WriteString(s.Posting.Description)
+		}
+		all, off := sb.String(), 0
+		for _, s := range todo {
+			n := len(s.Posting.Description)
+			s.Posting.Description = all[off : off+n]
+			off += n
+		}
+		todo, size = todo[:0], 0
+	}
+	for _, s := range recs {
+		n := len(s.Posting.Description)
+		if n == 0 || n > packMax {
+			continue
+		}
+		if size+n > packChunk {
+			flush()
+		}
+		todo, size = append(todo, s), size+n
+	}
+	flush()
 }
 
 // replay folds every intact event line of r into recs. It returns the end of
@@ -155,8 +204,12 @@ func (f *File) replay() error {
 // Anything bad before the last line is ErrCorrupt, and so is a last line that
 // is whole JSON but not a valid event: that is a writer's finished line (a
 // newer schema, say), and treating it as torn would cut it off the file.
-func replay(src io.Reader, recs map[posting.Key]*Record, ev *evictor, rd io.ReaderAt) (good int64, torn bool, err error) {
+//
+// With rd (the file src reads, as an io.ReaderAt) it also evicts and restores
+// descriptions as evict.go describes; without, every body stays.
+func replay(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt) (good int64, torn bool, err error) {
 	r := bufio.NewReaderSize(src, 64*1024)
+	in := interner{}
 	for n := 1; ; n++ {
 		line, raw, hadNL, err := readLine(r)
 		if errors.Is(err, io.EOF) {
@@ -174,15 +227,16 @@ func replay(src io.Reader, recs map[posting.Key]*Record, ev *evictor, rd io.Read
 			perr = validate(e)
 		}
 		if perr != nil {
-			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) && !json.Valid(line) {
+			valid := json.Valid(line) // before Peek: line may be a view of r's buffer
+			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) && !valid {
 				return good, true, nil
 			}
 			return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
 		}
-		fold(recs, e)
-		if ev != nil {
-			reopen := func(k posting.Key) (string, error) { return ev.read(rd, k, good) }
-			if err := ev.apply(recs[e.Key], e, good, raw, reopen); err != nil {
+		s := slotFor(recs, e)
+		fold(&s.Record, e, in)
+		if rd != nil {
+			if err := s.apply(e, good, raw, nil, nil, rd, good); err != nil {
 				return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
 			}
 		}
@@ -210,8 +264,8 @@ func ReadSnapshot(dir string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("ledger: %w", err)
 	}
 	defer ev.Close()
-	recs := map[posting.Key]*Record{}
-	_, torn, err := replay(ev, recs, nil, nil) // no eviction: a one-shot read returns every body
+	recs := map[posting.Key]*slot{}
+	_, torn, err := replay(ev, recs, nil) // no eviction: a one-shot read returns every body
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -240,17 +294,48 @@ func validate(e Event) error {
 	return nil
 }
 
-// fold applies a validated event to the in-memory state.
-func fold(recs map[posting.Key]*Record, e Event) {
-	r, ok := recs[e.Key]
+// slotFor returns the slot e folds into, creating it on the key's first event.
+func slotFor(recs map[posting.Key]*slot, e Event) *slot {
+	s, ok := recs[e.Key]
 	if !ok {
-		r = &Record{Key: e.Key, Annotations: map[string]string{}, FirstSeen: e.At}
-		recs[e.Key] = r
+		s = &slot{Record: Record{Key: e.Key, Annotations: map[string]string{}, FirstSeen: e.At}}
+		recs[e.Key] = s
 	}
+	return s
+}
+
+// interner makes equal short strings share one allocation. Replay decodes every
+// line into fresh strings, and annotation names and values, companies and
+// locations repeat across thousands of records; keeping one copy of each cuts
+// what the replayed ledger holds. It is bounded (internMax strings of at most
+// internLen bytes) and nil means no interning.
+type interner map[string]string
+
+const (
+	internMax = 8192
+	internLen = 64
+)
+
+func (in interner) of(s string) string {
+	if in == nil || len(s) > internLen {
+		return s
+	}
+	if c, ok := in[s]; ok {
+		return c
+	}
+	if len(in) < internMax {
+		in[s] = s
+	}
+	return s
+}
+
+// fold applies a validated event to the in-memory state.
+func fold(r *Record, e Event, in interner) {
 	r.LastEvent = e.At
 	r.Status = e.Status
 	if e.Posting != nil {
 		r.Posting = *e.Posting
+		r.Posting.Company, r.Posting.Location, r.Posting.Department = in.of(r.Posting.Company), in.of(r.Posting.Location), in.of(r.Posting.Department)
 		r.BodyEvicted = false
 		r.MissedRuns = 0
 	}
@@ -263,7 +348,7 @@ func fold(recs map[posting.Key]*Record, e Event) {
 			delete(r.Annotations, k) // an empty value forgets the key
 			continue
 		}
-		r.Annotations[k] = v
+		r.Annotations[in.of(k)] = in.of(v)
 	}
 }
 
@@ -436,13 +521,13 @@ func cloneRecord(r *Record) Record {
 func (f *File) Get(k posting.Key) (Record, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, ok := f.recs[k]
+	s, ok := f.recs[k]
 	if !ok {
 		return Record{}, false
 	}
-	out := cloneRecord(r)
-	if r.BodyEvicted && !f.closed {
-		if d, err := f.ev.read(f.events, k, f.goodSize); err == nil {
+	out := cloneRecord(&s.Record)
+	if s.BodyEvicted && !f.closed {
+		if d, err := s.read(f.events, f.goodSize); err == nil {
 			out.Posting.Description, out.BodyEvicted = d, false
 		}
 	}
@@ -458,10 +543,10 @@ func (f *File) All() []Record {
 	return sorted(f.recs)
 }
 
-func sorted(recs map[posting.Key]*Record) []Record {
+func sorted(recs map[posting.Key]*slot) []Record {
 	out := make([]Record, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, cloneRecord(r))
+		out = append(out, cloneRecord(&r.Record))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out

@@ -20,13 +20,13 @@ import (
 // marked Record.BodyEvicted instead.
 //
 // The body is not lost: the events file is the source of truth and still holds
-// the event that carried it. evictor remembers, per key, where the last
-// Posting-bearing line starts and how long it is, plus the length and a hash of
-// the body it replaced. Hydrate reads exactly that line back, and accepts it
-// only if it decodes, names the same key, carries a posting for that key, and
-// its description has the evicted body's length and hash. Anything else (the
-// file was truncated, rewritten or edited after Open) is ErrBodyUnavailable,
-// never another body.
+// the event that carried it. Each slot remembers where the last Posting-bearing
+// line of its key starts and how long it is, plus the length and a hash of the
+// body it replaced. Hydrate reads exactly that line back, and accepts it only if
+// it decodes, names the same key, carries a posting for that key, and its
+// description has the evicted body's length and hash. Anything else (the file
+// was truncated, rewritten or edited after Open) is ErrBodyUnavailable, never
+// another body.
 //
 // Semantics, by entry point:
 //
@@ -72,57 +72,54 @@ type bodyRef struct {
 	sum  uint64
 }
 
-// evictor is the eviction state of one File.
-type evictor struct {
-	refs map[posting.Key]bodyRef
-	// stash holds bodies evicted during one Append or AppendBatch, so a later
-	// event of the same batch can reopen the record without reading lines that
-	// are not on disk yet. It is nil outside a commit.
-	stash map[posting.Key]string
+// slot is one key's folded record and where its body lives on disk.
+type slot struct {
+	Record
+	ref bodyRef
 }
 
-func newEvictor() *evictor { return &evictor{refs: map[posting.Key]bodyRef{}} }
-
-// apply is called with the record already folded from e, the event line that
-// starts at off and is n bytes long. It records where e's posting lives and
-// evicts or restores r's description to match its status. reopen supplies the
-// body of a record that leaves the evicting statuses without a new posting.
-func (v *evictor) apply(r *Record, e Event, off int64, n int, reopen func(posting.Key) (string, error)) error {
+// apply is called with s already folded from e, the event line that starts at
+// off and is n bytes long. It records where e's posting lives and evicts or
+// restores the description to match the status. A record that leaves the
+// evicting statuses without a new posting gets its body from stash (evicted
+// earlier in the same commit), then pre (read before the write), then the file
+// itself below limit.
+func (s *slot) apply(e Event, off int64, n int, stash, pre map[posting.Key]string, rd io.ReaderAt, limit int64) error {
 	if e.Posting != nil {
-		v.refs[e.Key] = bodyRef{off: off, n: int32(n)}
+		s.ref = bodyRef{off: off, n: int32(n)}
 	}
 	switch {
-	case evicts(r.Status):
-		d := r.Posting.Description
+	case evicts(s.Status):
+		d := s.Posting.Description
 		if d == "" {
 			return nil
 		}
-		ref := v.refs[e.Key]
-		ref.dlen, ref.sum = int32(len(d)), maphash.String(bodySeed, d)
-		v.refs[e.Key] = ref
-		if v.stash != nil {
-			v.stash[e.Key] = d
+		s.ref.dlen, s.ref.sum = int32(len(d)), maphash.String(bodySeed, d)
+		if stash != nil {
+			stash[s.Key] = d
 		}
-		r.Posting.Description, r.BodyEvicted = "", true
-	case r.BodyEvicted:
-		if d, ok := v.stash[e.Key]; ok {
-			r.Posting.Description, r.BodyEvicted = d, false
-			return nil
+		s.Posting.Description, s.BodyEvicted = "", true
+	case s.BodyEvicted:
+		d, ok := stash[s.Key]
+		if !ok {
+			d, ok = pre[s.Key]
 		}
-		d, err := reopen(e.Key)
-		if err != nil {
-			return err
+		if !ok {
+			var err error
+			if d, err = s.read(rd, limit); err != nil {
+				return err
+			}
 		}
-		r.Posting.Description, r.BodyEvicted = d, false
+		s.Posting.Description, s.BodyEvicted = d, false
 	}
 	return nil
 }
 
-// read returns the evicted description of k, read from rd below limit (the end
-// of the intact events). It verifies the line before trusting it.
-func (v *evictor) read(rd io.ReaderAt, k posting.Key, limit int64) (string, error) {
-	ref, ok := v.refs[k]
-	if !ok || ref.n <= 0 || ref.n > MaxLineBytes || ref.off < 0 || ref.off+int64(ref.n) > limit {
+// read returns the evicted description, read from rd below limit (the end of
+// the intact events). It verifies the line before trusting it.
+func (s *slot) read(rd io.ReaderAt, limit int64) (string, error) {
+	k, ref := s.Key, s.ref
+	if ref.n <= 0 || ref.n > MaxLineBytes || ref.off < 0 || ref.off+int64(ref.n) > limit {
 		return "", fmt.Errorf("%w: %s: no intact line for it", ErrBodyUnavailable, k)
 	}
 	buf := make([]byte, ref.n)
@@ -155,15 +152,15 @@ func (f *File) Hydrate(k posting.Key) (Record, error) {
 	if f.closed {
 		return Record{}, ErrClosed
 	}
-	r, ok := f.recs[k]
+	s, ok := f.recs[k]
 	if !ok {
 		return Record{}, fmt.Errorf("ledger: no record %s", k)
 	}
-	out := cloneRecord(r)
-	if !r.BodyEvicted {
+	out := cloneRecord(&s.Record)
+	if !s.BodyEvicted {
 		return out, nil
 	}
-	d, err := f.ev.read(f.events, k, f.goodSize)
+	d, err := s.read(f.events, f.goodSize)
 	if err != nil {
 		return out, err
 	}
@@ -198,14 +195,14 @@ func (f *File) prepare(evs []Event) (map[posting.Key]string, error) {
 		if evicts(e.Status) || posted[e.Key] {
 			continue
 		}
-		r := f.recs[e.Key]
-		if r == nil || !r.BodyEvicted {
+		s := f.recs[e.Key]
+		if s == nil || !s.BodyEvicted {
 			continue
 		}
 		if _, done := pre[e.Key]; done {
 			continue
 		}
-		d, err := f.ev.read(f.events, e.Key, f.goodSize)
+		d, err := s.read(f.events, f.goodSize)
 		if err != nil {
 			return nil, fmt.Errorf("ledger: reopening %s: %w", e.Key, err)
 		}
@@ -223,17 +220,11 @@ func (f *File) prepare(evs []Event) (map[posting.Key]string, error) {
 // file changes underneath it anyway, the record stays evicted and the ledger is
 // marked broken, since the file is no longer the one Open replayed.
 func (f *File) commit(evs []Event, offs []int64, lens []int, pre map[posting.Key]string) {
-	f.ev.stash = map[posting.Key]string{}
-	defer func() { f.ev.stash = nil }()
-	reopen := func(k posting.Key) (string, error) {
-		if d, ok := pre[k]; ok {
-			return d, nil
-		}
-		return f.ev.read(f.events, k, f.goodSize)
-	}
+	stash := map[posting.Key]string{}
 	for i, e := range evs {
-		fold(f.recs, e)
-		if err := f.ev.apply(f.recs[e.Key], e, offs[i], lens[i], reopen); err != nil && f.broken == nil {
+		s := slotFor(f.recs, e)
+		fold(&s.Record, e, nil)
+		if err := s.apply(e, offs[i], lens[i], stash, pre, f.events, f.goodSize); err != nil && f.broken == nil {
 			f.broken = fmt.Errorf("%w: %v", errBroken, err)
 		}
 	}

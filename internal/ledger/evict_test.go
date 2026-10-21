@@ -352,7 +352,7 @@ var allStatuses = []posting.Status{posting.Discovered, posting.Live, posting.Tri
 func randomStream(rng *rand.Rand) []Event {
 	nkeys := 1 + rng.Intn(6)
 	n := 1 + rng.Intn(40)
-	descs := []string{"", "short", body(50, "m-"), body(3000, "big-"), "same body"}
+	descs := []string{"", "short", body(50, "m-"), body(3000, "big-"), "same body", body(40000, "huge-")}
 	evs := make([]Event, 0, n)
 	for i := range n {
 		k := posting.Key("gh:a:" + strconv.Itoa(rng.Intn(nkeys)))
