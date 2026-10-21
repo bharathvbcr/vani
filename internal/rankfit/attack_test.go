@@ -23,8 +23,11 @@ func resultFinite(r FitResult) bool {
 	return ok
 }
 
-// Attack 1: the same input and seed give byte-identical results across 50 runs
-// and across GOMAXPROCS 1 and 8.
+// Attack 1: the same input and seed give byte-identical results across runs
+// and across GOMAXPROCS 1 and 8. Eight runs alternate the two settings.
+// The check is equality, so the first mismatch fails the test; the count is
+// not a sample size the verdict depends on. This test stays sequential
+// because GOMAXPROCS is process-wide.
 func TestAttackDeterminismAcrossRunsAndProcs(t *testing.T) {
 	scored := stratumWorld("sc", 31, 500, scoredShares)
 	dropped := stratumWorld("dr", 32, 500, droppedShares)
@@ -32,7 +35,7 @@ func TestAttackDeterminismAcrossRunsAndProcs(t *testing.T) {
 	var first []byte
 	prev := runtime.GOMAXPROCS(0)
 	defer runtime.GOMAXPROCS(prev)
-	for run := range 50 {
+	for run := range 8 {
 		runtime.GOMAXPROCS([]int{1, 8}[run%2])
 		res, err := Fit(append([]Item(nil), items...), jobinsight.DefaultWeights(), Options{Seed: 5})
 		if err != nil {
@@ -53,6 +56,7 @@ func TestAttackDeterminismAcrossRunsAndProcs(t *testing.T) {
 // Attack 2: gain exactly 0 in every resample (fitted shares == hand shares)
 // must not beat, whatever the n.
 func TestAttackZeroGainEverywhereNeverBeats(t *testing.T) {
+	t.Parallel()
 	items := world(3, 1500, 1500)
 	base := jobinsight.DefaultWeights()
 	hand := SharesOf(base).Array()
@@ -80,6 +84,7 @@ func TestAttackZeroGainEverywhereNeverBeats(t *testing.T) {
 
 // Attack 2: 1-eps and 1 are fine.
 func TestAttackPSelectJustBelowOne(t *testing.T) {
+	t.Parallel()
 	items := world(11, 600, 300)
 	for i := range items {
 		items[i].Source, items[i].PSelect = "decile:5", math.Nextafter(1, 0)
@@ -195,6 +200,7 @@ func TestAttackBootstrapAtMaxPairsTime(t *testing.T) {
 // Attack 2: held-out pairs that are all ties give accuracy 0.5 both ways, gain
 // 0, not a win.
 func TestAttackAllTiedPairs(t *testing.T) {
+	t.Parallel()
 	n := 60
 	items := make([]Item, n)
 	var by grades

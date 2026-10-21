@@ -26,6 +26,7 @@ func samples(right, wrong int, p float64, hasP bool) []PlattSample {
 // sigmoid(B) is the mean of Platt's targets. 75 right and 25 wrong give
 // targets 76/77 and 1/27, so conf = (75*76/77 + 25/27) / 100 = .749519...
 func TestPlattInterceptHandComputed(t *testing.T) {
+	t.Parallel()
 	fit, err := FitPlatt("claude", samples(75, 25, 0, false), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestPlattInterceptHandComputed(t *testing.T) {
 // stays at the identity. Readings that are right less often than p says are
 // pulled down.
 func TestPlattOnP(t *testing.T) {
+	t.Parallel()
 	var cal []PlattSample
 	for _, p := range []float64{0.1, 0.3, 0.5, 0.7, 0.9} {
 		n := 1000
@@ -77,6 +79,7 @@ func TestPlattOnP(t *testing.T) {
 }
 
 func TestPlattRefusesBelowThreshold(t *testing.T) {
+	t.Parallel()
 	for name, s := range map[string][]PlattSample{
 		"none":   nil,
 		"99":     samples(60, 39, 0.9, true),
@@ -110,6 +113,7 @@ func TestPlattRefusesBelowThreshold(t *testing.T) {
 // One class only, or every p the same: Platt's targets keep the fit finite
 // and the confidence below 1, and a constant p is fitted as the intercept.
 func TestPlattOneClassAndConstantP(t *testing.T) {
+	t.Parallel()
 	for name, s := range map[string][]PlattSample{
 		"all right, no p":    samples(120, 0, 0, false),
 		"all wrong, no p":    samples(0, 120, 0, false),
@@ -148,6 +152,7 @@ func TestPlattOneClassAndConstantP(t *testing.T) {
 // reading that claims a p it does not have is not evidence of either kind.
 // When that leaves too few, the fit refuses and counts only the usable ones.
 func TestPlattInvalidP(t *testing.T) {
+	t.Parallel()
 	var nr *NotRunError
 	if _, err := FitPlatt("b", samples(80, 40, math.NaN(), true), DefaultPlattRidge); !errors.As(err, &nr) || nr.Have != 0 {
 		t.Fatalf("120 NaN p: %v, want a refusal counting 0", err)
@@ -172,6 +177,7 @@ func TestPlattInvalidP(t *testing.T) {
 }
 
 func TestPlattDeterministic(t *testing.T) {
+	t.Parallel()
 	var s []PlattSample
 	for i := range 400 {
 		s = append(s, PlattSample{Key: posting.Key(fmt.Sprintf("gh:d:%d", i)), P: float64(i%97) / 97, HasP: true, Correct: i%7 < 4})

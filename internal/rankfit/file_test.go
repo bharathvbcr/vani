@@ -21,6 +21,7 @@ func goodFile() File {
 }
 
 func TestFileRoundTripAndApply(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rank", "weights.json")
 	if err := Write(path, goodFile()); err != nil {
 		t.Fatal(err)
@@ -53,6 +54,7 @@ func TestFileRoundTripAndApply(t *testing.T) {
 }
 
 func TestLoadRefusesDefectiveFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		p := filepath.Join(dir, name)
@@ -95,6 +97,7 @@ func TestLoadRefusesDefectiveFiles(t *testing.T) {
 }
 
 func TestWriteRefusesAnInvalidFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "w.json")
 	f := goodFile()
 	f.Shares.Semantic = math.NaN()

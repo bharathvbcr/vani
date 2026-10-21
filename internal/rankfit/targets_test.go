@@ -11,6 +11,7 @@ import (
 )
 
 func TestTargets(t *testing.T) {
+	t.Parallel()
 	at := func(h int) time.Time { return time.Date(2026, 10, 20, h, 0, 0, 0, time.UTC) }
 	sc := func(p float64) feedback.Scores {
 		return feedback.Scores{Priority: p, Factors: map[string]float64{"gate": 1, "fresh": 1}}

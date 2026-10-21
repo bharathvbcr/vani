@@ -24,6 +24,7 @@ func flatItems(n int, grade func(i int) int) []Item {
 // Attack 8: a held-out set above MaxHeldOutPairs is refused before any fit or
 // resample runs, with the lever named.
 func TestAttackMaxHeldOutPairsRefused(t *testing.T) {
+	t.Parallel()
 	items := flatItems(3300, func(i int) int { return i % 3 })
 	_, err := Fit(items, jobinsight.DefaultWeights(), Options{Seed: 1, HoldoutPct: 90})
 	if err == nil || !strings.Contains(err.Error(), "held-out pairs, max") {
@@ -34,6 +35,7 @@ func TestAttackMaxHeldOutPairsRefused(t *testing.T) {
 // Attack 2: all held-out items share one label (or the held-out set is a single
 // item) is a NotRunError, not a result.
 func TestAttackDegenerateHeldOut(t *testing.T) {
+	t.Parallel()
 	// Every judged item is a yes; marks supply the other grades to train on.
 	items := flatItems(300, func(i int) int { return GradeYes })
 	for i := 200; i < 300; i++ {

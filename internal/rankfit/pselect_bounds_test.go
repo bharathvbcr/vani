@@ -13,6 +13,7 @@ import (
 // leave NaN accuracies, a [0, 0] gain and hand shares, silently. Refusal must
 // be an error, never a result; the floor itself is accepted and finite.
 func TestTinyPSelectIsRefusedNotSilentlyPoisoned(t *testing.T) {
+	t.Parallel()
 	build := func(p float64) []Item {
 		items := world(10, 600, 300)
 		for i := range items {
@@ -39,6 +40,7 @@ func TestTinyPSelectIsRefusedNotSilentlyPoisoned(t *testing.T) {
 // The held-out evaluation itself refuses a non-finite weight even when the
 // boundary check was bypassed (a caller building Items by hand).
 func TestHeldOutEvaluationRefusesNonFiniteWeight(t *testing.T) {
+	t.Parallel()
 	items := world(11, 40, 40)
 	for i := range items {
 		items[i].Source, items[i].PSelect = "decile:5", 1e-200
