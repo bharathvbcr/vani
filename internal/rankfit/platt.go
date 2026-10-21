@@ -203,6 +203,18 @@ func sigmoid(z float64) float64 {
 	return e / (1 + e)
 }
 
+// softplusSigmoid is softplus(z) and sigmoid(z) from one exponential: both
+// are built from e = exp(-|z|), so the pair loop pays for it once. Each
+// result is bit-identical to the separate function's.
+func softplusSigmoid(z float64) (sp, sg float64) {
+	e := math.Exp(-math.Abs(z))
+	sp = max(z, 0) + math.Log1p(e)
+	if z >= 0 {
+		return sp, 1 / (1 + e)
+	}
+	return sp, e / (1 + e)
+}
+
 // softplus is log(1+e^z), computed without overflow.
 func softplus(z float64) float64 {
 	return max(z, 0) + math.Log1p(math.Exp(-math.Abs(z)))
