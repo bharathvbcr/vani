@@ -5,19 +5,21 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// sampleSeq gives every sample samples makes its own posting.
-var sampleSeq int
+// sampleSeq gives every sample samples makes its own posting. Atomic because
+// the tests call samples in parallel.
+var sampleSeq atomic.Int64
 
 func samples(right, wrong int, p float64, hasP bool) []PlattSample {
 	var out []PlattSample
 	for i := range right + wrong {
-		sampleSeq++
-		out = append(out, PlattSample{Key: posting.Key(fmt.Sprintf("gh:p:%d", sampleSeq)), P: p, HasP: hasP, Correct: i < right})
+		n := sampleSeq.Add(1)
+		out = append(out, PlattSample{Key: posting.Key(fmt.Sprintf("gh:p:%d", n)), P: p, HasP: hasP, Correct: i < right})
 	}
 	return out
 }
