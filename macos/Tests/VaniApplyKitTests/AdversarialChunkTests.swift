@@ -273,34 +273,6 @@ final class AdversarialChunkTests: XCTestCase {
         }
     }
 
-    // MARK: 4. paging parity
-
-    func testPagingExtremeOffsetsIdenticalOnBothStores() throws {
-        let withSQL = BankStore(directory: try tempDir(self))
-        let noSQLDir = try tempDir(self)
-        try FileManager.default.createDirectory(at: noSQLDir.appendingPathComponent("bank.sqlite"), withIntermediateDirectories: true)
-        let json = BankStore(directory: noSQLDir)
-        XCTAssertNotNil(withSQL.sqlite)
-        XCTAssertNil(json.sqlite)
-        let bank = bankJSON((0..<25).map { answerJSON(String(format: "k%02d", $0), extra: ["updatedAt": String(format: "2026-10-18T00:00:%02d.000Z", $0)]) })
-        _ = try withSQL.put(baseRev: 0, bank: bank)
-        _ = try json.put(baseRev: 0, bank: bank)
-        let cases: [(Int, Int)] = [(Int.min, 5), (Int.max, 5), (Int.max, Int.max), (Int.min, Int.min), (0, Int.max), (0, Int.min),
-                                   (25, 10), (24, 10), (26, 10), (-1, 0), (3, 7), (Int.max - 1, 1)]
-        for (o, l) in cases {
-            let a = try withSQL.listAnswers(offset: o, limit: l)
-            let b = try json.listAnswers(offset: o, limit: l)
-            XCTAssertEqual(a.answers.map(\.key), b.answers.map(\.key), "offset \(o) limit \(l)")
-            XCTAssertEqual(a.total, b.total)
-            if o >= 25 { XCTAssertTrue(a.answers.isEmpty, "offset \(o) is past the end") }
-        }
-        for off: Any in [1e300, -1e300, Double.greatestFiniteMagnitude, 9.3e18] {
-            let r = NativeProtocol.handle(["op": "listAnswers", "offset": off, "limit": 5], store: json, source: .chrome)
-            // An offset outside Int range is refused at the boundary (StrictIntegerTests), not clamped.
-            XCTAssertNotNil(r["error"], "\(off) -> \(r)")
-        }
-    }
-
     // MARK: 5. DraftSettings
 
     func testDraftSettingsEdgeCases() throws {

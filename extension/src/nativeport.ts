@@ -42,11 +42,11 @@ export interface PortTransportOptions {
 /** Ops answered from the bank file or the agent at once. Anything else (draft, jobFind, jobMark, jobsIngest, unknown) runs a
  *  subprocess in the host or is not known to be quick, and goes per-message so it cannot hold up the serial host's bank ops. */
 const PORT_OPS = new Set([
-  "ping", "get", "getChunk", "put", "patch", "queryCandidates", "listAnswers", "log",
+  "ping", "get", "getChunk", "put", "patch", "log",
   "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "jobStart", "jobResult",
 ]);
 /** Ops that change nothing, so running one twice is harmless. */
-const READ_ONLY_OPS = new Set(["ping", "get", "getChunk", "queryCandidates", "listAnswers", "resumeGet", "resumeInfo"]);
+const READ_ONLY_OPS = new Set(["ping", "get", "getChunk", "resumeGet", "resumeInfo"]);
 
 interface Pending {
   msg: object;

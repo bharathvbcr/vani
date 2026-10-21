@@ -99,7 +99,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(parsedAnswers?.count, 100)
     }
 
-    func testGranularPatchAndCandidatesQuery() throws {
+    func testGranularPatchUpsertAndDelete() throws {
         let store = BankStore(directory: try tempDir(self))
         let a1: [String: Any] = [
             "key": "first_name",
@@ -120,57 +120,11 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(patchRes["ok"] as? Bool, true)
         XCTAssertEqual(patchRes["rev"] as? Int, 1)
 
-        // Query candidates by signature
-        let sigQuery = try roundTrip(["op": "queryCandidates", "signatures": ["gh:fn:1"]], store)
-        let candidates = sigQuery["candidates"] as? [[String: Any]]
-        XCTAssertEqual(candidates?.count, 1)
-        XCTAssertEqual(candidates?.first?["key"] as? String, "first_name")
-        XCTAssertEqual(candidates?.first?["value"] as? [String], ["Ada"])
-
-        // Query candidates by label
-        let lblQuery = try roundTrip(["op": "queryCandidates", "labels": ["email address"]], store)
-        let emailCandidates = lblQuery["candidates"] as? [[String: Any]]
-        XCTAssertEqual(emailCandidates?.count, 1)
-        XCTAssertEqual(emailCandidates?.first?["key"] as? String, "email")
-
         // Patch delete
         let delRes = try roundTrip(["op": "patch", "upsert": [], "delete": ["first_name"]], store)
         XCTAssertEqual(delRes["ok"] as? Bool, true)
         XCTAssertEqual(delRes["rev"] as? Int, 2)
-
-        let afterDel = try roundTrip(["op": "queryCandidates", "signatures": ["gh:fn:1"]], store)
-        XCTAssertEqual((afterDel["candidates"] as? [[String: Any]])?.count, 0)
-    }
-
-    func testListAnswersPaginationAndSearch() throws {
-        let store = BankStore(directory: try tempDir(self))
-        var upsert: [[String: Any]] = []
-        for i in 0..<10 {
-            upsert.append([
-                "key": "key_\(i)",
-                "kind": "text",
-                "value": ["val_\(i)"],
-                "labels": ["lbl_\(i)"]
-            ])
-        }
-        _ = try roundTrip(["op": "patch", "upsert": upsert, "delete": []], store)
-
-        // First page
-        let page1 = try roundTrip(["op": "listAnswers", "offset": 0, "limit": 4], store)
-        XCTAssertEqual(page1["total"] as? Int, 10)
-        let ans1 = page1["answers"] as? [[String: Any]]
-        XCTAssertEqual(ans1?.count, 4)
-
-        // Second page
-        let page2 = try roundTrip(["op": "listAnswers", "offset": 4, "limit": 4], store)
-        let ans2 = page2["answers"] as? [[String: Any]]
-        XCTAssertEqual(ans2?.count, 4)
-
-        // Search
-        let searchRes = try roundTrip(["op": "listAnswers", "offset": 0, "limit": 10, "search": "key_3"], store)
-        XCTAssertEqual(searchRes["total"] as? Int, 1)
-        let found = searchRes["answers"] as? [[String: Any]]
-        XCTAssertEqual(found?.first?["key"] as? String, "key_3")
+        XCTAssertEqual(Set(try store.read().bank.answers.keys), ["email"])
     }
 
     // MARK: patch validation (B2-7)
@@ -213,25 +167,6 @@ final class ProtocolTests: XCTestCase {
         // A valid patch, and a delete-only one with no upsert key, still apply.
         XCTAssertEqual(try roundTrip(["op": "patch", "upsert": [fresh]], store)["rev"] as? Int, 2)
         XCTAssertEqual(try roundTrip(["op": "patch", "delete": ["fresh"]], store)["rev"] as? Int, 3)
-    }
-
-    // MARK: listAnswers paging (B2-8)
-
-    func testListAnswersOverTheProtocolClampsOffsetAndLimit() throws {
-        let store = BankStore(directory: try tempDir(self))
-        let rows: [[String: Any]] = (0..<(ListPaging.maxLimit + 20)).map {
-            ["key": String(format: "k%04d", $0), "kind": "text", "value": ["v"]]
-        }
-        _ = try roundTrip(["op": "patch", "upsert": rows], store)
-        func count(_ offset: Int, _ limit: Int) throws -> Int {
-            ((try roundTrip(["op": "listAnswers", "offset": offset, "limit": limit], store))["answers"] as? [Any])?.count ?? -1
-        }
-        XCTAssertEqual(try count(0, -1), 1)
-        XCTAssertEqual(try count(0, 0), 1)
-        XCTAssertEqual(try count(0, 1), 1)
-        XCTAssertEqual(try count(-10, 3), 3)
-        XCTAssertEqual(try count(0, 10_000_000), ListPaging.maxLimit)
-        XCTAssertEqual(try count(ListPaging.maxLimit + 19, 10), 1)
     }
 
     // MARK: chunked get (B2-1)

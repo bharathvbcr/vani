@@ -141,23 +141,6 @@ public enum NativeProtocol {
             } catch SQLiteBankStore.StoreError.conflict(let currentRev) {
                 return ["conflict": true, "rev": currentRev]
             }
-        case "queryCandidates":
-            let sigs = req["signatures"] as? [String] ?? []
-            let keys = req["keys"] as? [String] ?? []
-            let labels = req["labels"] as? [String] ?? []
-            let candidates = try store.queryCandidates(signatures: sigs, keys: keys, labels: labels)
-            return ["ok": true, "candidates": try candidates.map { try $0.jsonObject() }]
-        case "listAnswers":
-            let (offset, limit) = ListPaging.clamped(offset: try optionalInt(req, "offset") ?? 0,
-                                                     limit: try optionalInt(req, "limit") ?? 50)
-            let search = req["search"] as? String
-            let res = try store.listAnswers(offset: offset, limit: limit, search: search)
-            return [
-                "ok": true,
-                "total": res.total,
-                "rev": res.rev,
-                "answers": try res.answers.map { try $0.jsonObject() }
-            ]
         case "log":
             try store.log(try activityEntry(req["entry"], source: source))
             return ["ok": true]
@@ -284,13 +267,6 @@ public enum NativeProtocol {
         guard let n = BankValidator.strictInt(raw), n >= 0 else {
             throw BankError("patch baseRev must be a non-negative integer")
         }
-        return n
-    }
-
-    /// An absent field is nil; a present one must be a strict integer.
-    private static func optionalInt(_ req: [String: Any], _ name: String) throws -> Int? {
-        guard let v = req[name] else { return nil }
-        guard let n = BankValidator.strictInt(v) else { throw BankError("\(name) must be an integer") }
         return n
     }
 

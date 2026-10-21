@@ -51,23 +51,12 @@ public struct ActivityEntry: Codable, Equatable, Sendable {
 // A corrupt file is reported, never replaced: the next write would otherwise
 // erase every answer.
 
-/// The one clamp for listAnswers paging, used by the protocol and by both stores so the SQLite
-/// mirror and the bank.json fallback answer a hostile or sloppy offset/limit identically.
 enum PathProbe {
     /// True only when lstat reports ENOENT: nothing at all, not even a symlink. A dangling symlink is
     /// present (lstat succeeds), and so is any path lstat cannot answer for (permissions, ELOOP).
     static func isAbsent(_ url: URL) -> Bool {
         var st = stat()
         return lstat(url.path, &st) != 0 && errno == ENOENT
-    }
-}
-
-public enum ListPaging {
-    public static let maxLimit = 500
-
-    /// offset >= 0 and 1 <= limit <= maxLimit.
-    public static func clamped(offset: Int, limit: Int) -> (offset: Int, limit: Int) {
-        (max(offset, 0), min(max(limit, 1), maxLimit))
     }
 }
 
@@ -208,71 +197,6 @@ public final class BankStore: @unchecked Sendable {
         guard let sqlite else { return }
         do { try sqlite.resync(snapshot) } catch {
             FileHandle.standardError.write(Data("vani: bank.sqlite mirror not updated (\(error)); bank.json is unaffected\n".utf8))
-        }
-    }
-
-    /// Fast indexed lookup for form matching candidates based on signatures, keys, and labels.
-    public func queryCandidates(signatures: [String] = [], keys: [String] = [], labels: [String] = []) throws -> [Answer] {
-        try readMirrorOrJSON({ try $0.queryCandidates(signatures: signatures, keys: keys, labels: labels) }) { snap in
-            snap.bank.answers.values.filter { a in
-                keys.contains(a.key) || a.signatures.contains(where: signatures.contains) || a.labels.contains(where: labels.contains)
-            }
-        }
-    }
-
-    /// Paginated list and search for UI tables. Search matches key, value and labels, ASCII
-    /// case-insensitively, with % _ and \ matching themselves, the same on both paths.
-    public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> SQLiteBankStore.ListResult {
-        let (offset, limit) = ListPaging.clamped(offset: offset, limit: limit)
-        return try readMirrorOrJSON({ try $0.listAnswers(offset: offset, limit: limit, search: search) }) { snap in
-            var all = Array(snap.bank.answers.values)
-            if let s = search, !s.trimmingCharacters(in: .whitespaces).isEmpty {
-                let needle = Self.asciiLowercased(s)
-                all = all.filter { a in
-                    ([a.key] + a.value + a.labels).contains { Self.asciiLowercased($0).contains(needle) }
-                }
-            }
-            all.sort { $0.updatedAt > $1.updatedAt }
-            let slice = all.dropFirst(offset).prefix(limit)
-            return SQLiteBankStore.ListResult(total: all.count, rev: snap.rev, answers: Array(slice))
-        }
-    }
-
-    /// SQLite's LIKE folds ASCII case only; the JSON path folds the same way so the two agree.
-    private static func asciiLowercased(_ s: String) -> String {
-        String(String.UnicodeScalarView(s.unicodeScalars.map { ("A"..."Z").contains($0) ? Unicode.Scalar($0.value + 32)! : $0 }))
-    }
-
-    /// Answer from the SQLite mirror only while it is at bank.json's revision, checked under the
-    /// shared lock (writers hold the exclusive one, so the mirror cannot move mid-read). When it is
-    /// behind, ahead or unreadable, answer from bank.json, the source of truth, and afterwards try
-    /// to repair the mirror. The repair waits only briefly for the exclusive lock, so a read is
-    /// never held up by a writer.
-    private func readMirrorOrJSON<T>(_ fromMirror: (SQLiteBankStore) throws -> T, _ fromJSON: (Snapshot) -> T) throws -> T {
-        var mirrorStale = false
-        let result: T = try withLock(exclusive: false) {
-            let snap = try readUnlocked()
-            if let sqlite {
-                if (try? sqlite.currentRevision()) == snap.rev, let fromSQLite = try? fromMirror(sqlite) { return fromSQLite }
-                mirrorStale = true
-            }
-            return fromJSON(snap)
-        }
-        if mirrorStale { repairMirror() }
-        return result
-    }
-
-    /// Best-effort: resync the mirror to bank.json if it is still out of step once the exclusive lock
-    /// is held. A failure is noted on stderr (no bank content) and never reaches the reader.
-    private func repairMirror() {
-        guard let sqlite else { return }
-        do {
-            try withFileLock(lockURL, exclusive: true, wait: min(lockWait, 0.25), what: "the answer bank") {
-                let snap = try readUnlocked()
-                if (try? sqlite.currentRevision()) != snap.rev { try sqlite.resync(snap) }
-            }
-        } catch {
-            FileHandle.standardError.write(Data("vani: bank.sqlite mirror not repaired (\(error)); bank.json is unaffected\n".utf8))
         }
     }
 

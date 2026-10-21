@@ -58,7 +58,7 @@ final class StrictIntegerTests: XCTestCase {
         XCTAssertEqual(reply["rev"] as? Int, 2, "\(reply)")
     }
 
-    func testPutGetChunkAndListAnswersRefuseFractions() throws {
+    func testPutAndGetChunkRefuseFractions() throws {
         let store = try seeded()
         let bank = try store.read().bank.jsonObject()
         for (name, bad) in badNumbers {
@@ -69,13 +69,7 @@ final class StrictIntegerTests: XCTestCase {
         for (name, bad) in [("1.9", 1.9), ("true", true), ("1e300", 1e300)] as [(String, Any)] {
             XCTAssertNotNil(try roundTrip(["op": "getChunk", "rev": bad, "chunkIndex": 0], store)["error"], "getChunk rev \(name)")
             XCTAssertNotNil(try roundTrip(["op": "getChunk", "rev": 1, "chunkIndex": bad], store)["error"], "getChunk chunkIndex \(name)")
-            XCTAssertNotNil(try roundTrip(["op": "listAnswers", "offset": bad], store)["error"], "listAnswers offset \(name)")
-            XCTAssertNotNil(try roundTrip(["op": "listAnswers", "limit": bad], store)["error"], "listAnswers limit \(name)")
         }
-        XCTAssertNotNil(try roundTrip(["op": "listAnswers", "limit": 2.7], store)["error"])
-        // Absent stays the default; integral is fine.
-        XCTAssertEqual(try roundTrip(["op": "listAnswers"], store)["ok"] as? Bool, true)
-        XCTAssertEqual(try roundTrip(["op": "listAnswers", "offset": 0, "limit": 10.0], store)["ok"] as? Bool, true)
     }
 
     func testStrictIntParserDirectly() {
