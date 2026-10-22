@@ -366,8 +366,10 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	}
 	recs := app.Ledger.All()
 	var adv *pipeline.AdvanceReport
+	var stats map[string]backendStat
 	if app.RunReport != nil {
-		adv = app.RunReport().Advance
+		rd := app.RunReport()
+		adv, stats = rd.Advance, rd.BackendStats
 	}
 	counts := countsFor(recs, date, loc)
 	if adv != nil {
@@ -392,7 +394,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	}
 	fmt.Fprintf(e.stdout, "digest: %s (%d roles)\n", path, len(keys))
 	if len(keys) > 0 && app.Notifier != nil {
-		if err := app.Notifier.Notify(ctx, "Vani digest", digestBody(len(keys), adv)); err != nil {
+		if err := app.Notifier.Notify(ctx, "Vani digest", digestBody(len(keys), adv, stats)); err != nil {
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}

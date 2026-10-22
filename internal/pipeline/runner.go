@@ -373,7 +373,9 @@ func triageAnnotations(a decide.Answer) map[string]string {
 		if sr.Lappi != nil {
 			ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixLappiScore] = strconv.FormatFloat(sr.Lappi.Score, 'f', 4, 64)
 		}
-		if sh, ok := a.Shadow[name]; ok {
+		// A NotAsked shadow reading (a slot-filtered shadow, or a slot the
+		// shadow never ran) is not a shadow reading: record nothing for it.
+		if sh, ok := a.Shadow[name]; ok && sh.Reading != decide.NotAsked {
 			ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadowReading] = string(sh.Reading)
 			if b := slotBackend(decide.Answer{}, sh); b != "" {
 				ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadowBackend] = b

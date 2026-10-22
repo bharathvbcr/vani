@@ -399,12 +399,42 @@ type LocalServer struct {
 // MaxLappiTimeoutMS is the caller contract's batch ceiling (10 s).
 const MaxLappiTimeoutMS = 10_000
 
+// Bounds on decide.lappi.primary_slots validation: the slot set has four
+// members, so a list over maxPrimarySlotsListed is refused outright, and
+// per-entry problems are reported only up to maxPrimarySlotProblems.
+const (
+	maxPrimarySlotsListed  = 16
+	maxPrimarySlotProblems = 5
+)
+
 // Lappi locates the agent. Socket empty means LAPPI_SOCKET or
 // ~/Library/Caches/qd/qd.sock; TimeoutMS zero means 5 s.
 type Lappi struct {
 	Socket    string `json:"socket,omitempty"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
-	Primary   bool   `json:"primary,omitempty"`
+	// Primary puts Lappi first for every triage slot.
+	Primary bool `json:"primary,omitempty"`
+	// PrimarySlots promotes Lappi slot by slot: each named slot goes to Lappi
+	// first and the OpenRouter decision model no longer answers it, while the
+	// other slots keep the arrangement they have (shadow, or the chain alone).
+	// Exclusive with Primary; every name must be a triage slot.
+	PrimarySlots []string `json:"primary_slots,omitempty"`
+}
+
+// PromotedSlots returns the slots routed to Lappi first under PrimarySlots, in
+// the triage fixture's order. Primary (all slots) is not reported here: it
+// keeps its own, older arrangement.
+func (l *Lappi) PromotedSlots() []string {
+	if l == nil || len(l.PrimarySlots) == 0 {
+		return nil
+	}
+	var out []string
+	for _, f := range jdtriage.Families {
+		if slices.Contains(l.PrimarySlots, f.Slot.Name) {
+			out = append(out, f.Slot.Name)
+		}
+	}
+	return out
 }
 
 // DailyUSD holds the per-engine daily spend caps in US dollars.
@@ -1250,10 +1280,53 @@ func (c Config) Validate() error {
 		if l.TimeoutMS < 0 || l.TimeoutMS > MaxLappiTimeoutMS {
 			add("decide.lappi.timeout_ms %d must be within 0..%d", l.TimeoutMS, MaxLappiTimeoutMS)
 		}
+		slotsOK := true
+		if len(l.PrimarySlots) > 0 {
+			if l.Primary {
+				slotsOK = false
+				add("decide.lappi.primary (all slots) and decide.lappi.primary_slots are exclusive: set one")
+			}
+			known := map[string]bool{}
+			names := make([]string, 0, len(jdtriage.Families))
+			for _, f := range jdtriage.Families {
+				known[f.Slot.Name] = true
+				names = append(names, f.Slot.Name)
+			}
+			seen := map[string]bool{}
+			problems := 0
+			problem := func(format string, a ...any) {
+				slotsOK = false
+				if problems++; problems <= maxPrimarySlotProblems {
+					add(format, a...)
+				}
+			}
+			if len(l.PrimarySlots) > maxPrimarySlotsListed {
+				// The slot set is tiny; a list this long is a broken or hostile
+				// file, refused without reading its entries.
+				slotsOK = false
+				add("decide.lappi.primary_slots lists %d entries; at most %d are accepted (there are only %d slots)", len(l.PrimarySlots), maxPrimarySlotsListed, len(names))
+			} else {
+				for _, s := range l.PrimarySlots {
+					switch {
+					case !known[s]:
+						problem("decide.lappi.primary_slots: %.64q is not a triage slot (%s)", s, strings.Join(names, ", "))
+					case seen[s]:
+						problem("decide.lappi.primary_slots: %q is listed twice", s)
+					}
+					seen[s] = true
+				}
+				if problems > maxPrimarySlotProblems {
+					add("decide.lappi.primary_slots: and %d more problem(s)", problems-maxPrimarySlotProblems)
+				}
+			}
+		}
 		switch {
 		case l.Primary && c.Decide.Shadow == "lappi":
 			add("decide.lappi.primary and decide.shadow lappi are exclusive")
-		case !l.Primary && c.Decide.Shadow != "lappi":
+		case slotsOK && len(l.PrimarySlots) >= len(jdtriage.Families) && c.Decide.Shadow == "lappi":
+			// Every slot promoted leaves the shadow nothing to read.
+			add("decide.lappi.primary_slots names every slot, so decide.shadow lappi has nothing to read: use decide.lappi.primary or drop the shadow")
+		case !l.Primary && len(l.PrimarySlots) == 0 && c.Decide.Shadow != "lappi":
 			add("decide.lappi is configured but unused: set decide.shadow to lappi, or decide.lappi.primary after `vani eval` says promotable")
 		}
 	}

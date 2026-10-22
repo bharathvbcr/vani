@@ -232,7 +232,7 @@ func TestDigestBody(t *testing.T) {
 		{1, &advanceReport{Unread: 1}, "1 role to review; 1 posting could not be read or scored and waits for the next run"},
 		{5, &advanceReport{Unread: 3, Failed: 4, Deferred: 9}, "5 roles to review; 7 postings could not be read or scored and wait for the next run"},
 	} {
-		if got := digestBody(c.roles, c.adv); got != c.want {
+		if got := digestBody(c.roles, c.adv, nil); got != c.want {
 			t.Errorf("digestBody(%d, %+v) = %q, want %q", c.roles, c.adv, got, c.want)
 		}
 	}

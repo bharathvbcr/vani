@@ -328,7 +328,8 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 				thr[sl.Name] = rows
 			}
 
-			if shReading, asked := r.Annotations[pre+ledger.AnnTriageSuffixShadowReading]; asked {
+			shReading, asked := shadowAsked(r.Annotations, pre, backend)
+			if asked {
 				sb := r.Annotations[pre+ledger.AnnTriageSuffixShadowBackend]
 				if sb == "" {
 					sb = UnknownBackend
@@ -369,7 +370,6 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 			}
 
 			// One row per shadow backend: two candidate models never pool.
-			_, asked := r.Annotations[pre+ledger.AnnTriageSuffixShadowReading]
 			sh, answeredShadow := r.Annotations[pre+ledger.AnnTriageSuffixShadow]
 			if !asked && !answeredShadow {
 				continue
@@ -550,4 +550,19 @@ func writePromotions(b *strings.Builder, ps []Promotion, floor int) bool {
 			p.ShadowUnavailable, p.Paired, p.PrimaryOnly, p.ShadowOnly, p.verdict(floor))
 	}
 	return legacy
+}
+
+// shadowAsked reports the shadow reading recorded under pre and whether a shadow
+// really read the slot. "not_asked" (older records from a slot-filtered shadow)
+// is not a shadow reading, and a shadow backend equal to the slot's primary
+// backend is the primary paired against itself; neither makes a report row.
+func shadowAsked(ann map[string]string, pre, primary string) (string, bool) {
+	rd, ok := ann[pre+ledger.AnnTriageSuffixShadowReading]
+	if !ok || rd == "not_asked" {
+		return rd, false
+	}
+	if sb := ann[pre+ledger.AnnTriageSuffixShadowBackend]; sb != "" && sb == primary {
+		return rd, false
+	}
+	return rd, true
 }
