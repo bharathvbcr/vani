@@ -399,6 +399,14 @@ type LocalServer struct {
 // MaxLappiTimeoutMS is the caller contract's batch ceiling (10 s).
 const MaxLappiTimeoutMS = 10_000
 
+// Bounds on decide.lappi.primary_slots validation: the slot set has four
+// members, so a list over maxPrimarySlotsListed is refused outright, and
+// per-entry problems are reported only up to maxPrimarySlotProblems.
+const (
+	maxPrimarySlotsListed  = 16
+	maxPrimarySlotProblems = 5
+)
+
 // Lappi locates the agent. Socket empty means LAPPI_SOCKET or
 // ~/Library/Caches/qd/qd.sock; TimeoutMS zero means 5 s.
 type Lappi struct {
@@ -1285,16 +1293,31 @@ func (c Config) Validate() error {
 				names = append(names, f.Slot.Name)
 			}
 			seen := map[string]bool{}
-			for _, s := range l.PrimarySlots {
-				switch {
-				case !known[s]:
-					slotsOK = false
-					add("decide.lappi.primary_slots: %q is not a triage slot (%s)", s, strings.Join(names, ", "))
-				case seen[s]:
-					slotsOK = false
-					add("decide.lappi.primary_slots: %q is listed twice", s)
+			problems := 0
+			problem := func(format string, a ...any) {
+				slotsOK = false
+				if problems++; problems <= maxPrimarySlotProblems {
+					add(format, a...)
 				}
-				seen[s] = true
+			}
+			if len(l.PrimarySlots) > maxPrimarySlotsListed {
+				// The slot set is tiny; a list this long is a broken or hostile
+				// file, refused without reading its entries.
+				slotsOK = false
+				add("decide.lappi.primary_slots lists %d entries; at most %d are accepted (there are only %d slots)", len(l.PrimarySlots), maxPrimarySlotsListed, len(names))
+			} else {
+				for _, s := range l.PrimarySlots {
+					switch {
+					case !known[s]:
+						problem("decide.lappi.primary_slots: %.64q is not a triage slot (%s)", s, strings.Join(names, ", "))
+					case seen[s]:
+						problem("decide.lappi.primary_slots: %q is listed twice", s)
+					}
+					seen[s] = true
+				}
+				if problems > maxPrimarySlotProblems {
+					add("decide.lappi.primary_slots: and %d more problem(s)", problems-maxPrimarySlotProblems)
+				}
 			}
 		}
 		switch {

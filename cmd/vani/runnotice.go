@@ -76,10 +76,14 @@ func (e *env) announceFailure(ctx context.Context, app *App, rec runRecord) {
 // digestBody is the digest notification's text: how many roles to review and,
 // when the advance phase left postings it could not read or score, how many
 // wait for the next run.
-func digestBody(roles int, adv *pipeline.AdvanceReport) string {
+func digestBody(roles int, adv *pipeline.AdvanceReport, stats map[string]backendStat) string {
 	body := fmt.Sprintf("%d roles to review", roles)
 	if roles == 1 {
 		body = "1 role to review"
+	}
+	// Lappi is free; a question it could not read went to the paid tiers.
+	if n := stats["lappi"].FellThrough; n > 0 {
+		body += fmt.Sprintf("; %d question(s) went to the paid model because Lappi was down", n)
 	}
 	if adv == nil {
 		return body
@@ -169,7 +173,7 @@ func decideNotice(f lastRunFacet, at time.Time, loc *time.Location) noticeFacet 
 	case roles <= 0:
 		return skip("the digest listed no roles")
 	}
-	n.Title, n.Body = "Vani digest", digestBody(roles, f.Advance)
+	n.Title, n.Body = "Vani digest", digestBody(roles, f.Advance, f.BackendStats)
 	return n
 }
 

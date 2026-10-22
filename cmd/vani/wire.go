@@ -292,7 +292,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		if err != nil {
 			w.warnf("lappi disabled: %v", err)
 		} else if len(promoted) > 0 {
-			backends = append([]decide.Backend{onlySlots(logErrors(lb, w.warnf, w.backendErrs), promoted)}, backends...)
+			backends = append([]decide.Backend{onlySlots(logFallback(lb, w.warnf, w.backendErrs), promoted)}, backends...)
 			if w.cfg.Decide.Shadow == "lappi" {
 				// The shadow is its own client over the slots not yet promoted:
 				// one backend cannot be both in the chain and the shadow.
@@ -303,7 +303,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 				}
 			}
 		} else if l.Primary {
-			backends = append([]decide.Backend{logErrors(lb, w.warnf, w.backendErrs)}, backends...)
+			backends = append([]decide.Backend{logFallback(lb, w.warnf, w.backendErrs)}, backends...)
 		} else {
 			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
 		}
