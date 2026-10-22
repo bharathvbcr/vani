@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 )
@@ -99,6 +100,9 @@ func (e *env) cmdLabel(args []string) error {
 		*n = min(*n, free)
 		qopts.ShadowOnly = true
 	}
+	if t := e.teacherReadings(); t != nil {
+		qopts.Teacher = t
+	}
 	if _, bad, err := s.Labels(); err != nil {
 		return fmt.Errorf("labels unreadable, refusing to queue (would repeat work): %w", err)
 	} else if bad > 0 {
@@ -131,6 +135,44 @@ func (e *env) cmdLabel(args []string) error {
 		return nil
 	}
 	return err
+}
+
+// teacherReadings opens the second teacher's readings log for the label queue,
+// as the default teacher model (llm.triage_model, else llm.model) and the
+// configured target summary ask it now; a reading made under another model or
+// prompt is not current and does not order the queue. It reads without the run
+// lock (rows are appended whole and a torn tail is skipped). Everything that
+// is not a usable store (never written, empty, unreadable, a config that does
+// not name a model or summary) yields nil, the queue's order without a
+// teacher: labelling is never blocked by it. Only an unreadable store or a
+// bad summary is worth a warning; a missing store is the normal case.
+func (e *env) teacherReadings() eval.TeacherReadings {
+	path := filepath.Join(e.stateDir, eval.TeacherFile)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return nil // evalNames reports an unloadable config
+	}
+	model := cfg.LLM.EffectiveTriageModel()
+	if model == "" {
+		return nil
+	}
+	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: teacher readings not used for the queue: %v\n", err)
+		return nil
+	}
+	store, err := eval.OpenTeacherStore(path)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: teacher readings unreadable, queueing without them: %v\n", err)
+		return nil
+	}
+	if store.Len() == 0 {
+		return nil
+	}
+	return store.Current(model, summary)
 }
 
 func (e *env) cmdEval(args []string) error {

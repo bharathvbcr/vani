@@ -109,13 +109,15 @@ type TeacherStore struct {
 	mu   sync.Mutex
 	seen map[string]struct{}
 	rows int
+	// byKey keeps every valid row per posting, in file order, for Current.
+	byKey map[posting.Key][]TeacherRow
 	// Skipped counts lines that were not valid rows (a torn tail, a hand edit).
 	Skipped int
 }
 
 // OpenTeacherStore reads path (a missing file is an empty store).
 func OpenTeacherStore(path string) (*TeacherStore, error) {
-	s := &TeacherStore{path: path, seen: map[string]struct{}{}}
+	s := &TeacherStore{path: path, seen: map[string]struct{}{}, byKey: map[posting.Key][]TeacherRow{}}
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -135,6 +137,7 @@ func OpenTeacherStore(path string) (*TeacherStore, error) {
 				s.Skipped++
 			} else {
 				s.seen[TeacherIdent{r.TextSHA256, r.Model, r.FixtureSHA, r.PromptHash}.key(r.Key)] = struct{}{}
+				s.byKey[r.Key] = append(s.byKey[r.Key], r)
 				s.rows++
 			}
 		}
@@ -231,8 +234,53 @@ func (s *TeacherStore) Append(r TeacherRow) error {
 		return fmt.Errorf("teacher: sync readings: %w", err)
 	}
 	s.seen[TeacherIdent{r.TextSHA256, r.Model, r.FixtureSHA, r.PromptHash}.key(r.Key)] = struct{}{}
+	s.byKey[r.Key] = append(s.byKey[r.Key], r)
 	s.rows++
 	return nil
+}
+
+// CurrentReadings is the store seen through one identity: the model, the
+// shared fixture and the prompt (target summary included) as they are now.
+// It implements TeacherReadings.
+type CurrentReadings struct {
+	s                      *TeacherStore
+	model, fixture, prompt string
+}
+
+// Current returns the store's readings as the label queue reads them. Only
+// rows whose model, fixture_sha and prompt_hash equal the current ones count:
+// a reading made under an older prompt answered a different question and must
+// not decide what a person labels first. The posting text hash is not part of
+// the match (the queue holds the key, and bodies may be evicted), so an edited
+// description keeps its reading; it only reorders the queue, never a label.
+func (s *TeacherStore) Current(model, summary string) CurrentReadings {
+	return CurrentReadings{s: s, model: model, fixture: FixtureSHA(), prompt: PromptHash(summary)}
+}
+
+// Reading returns the newest current-identity reading of key: each slot the
+// teacher answered, with its value. Abstained, failed and valueless slots are
+// left out, so they are never a disagreement. ok is false when none exists.
+func (c CurrentReadings) Reading(key string) (map[string]string, bool) {
+	if c.s == nil {
+		return nil, false
+	}
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	rows := c.s.byKey[posting.Key(key)]
+	for i := len(rows) - 1; i >= 0; i-- {
+		r := rows[i]
+		if r.Model != c.model || r.FixtureSHA != c.fixture || r.PromptHash != c.prompt {
+			continue
+		}
+		out := map[string]string{}
+		for name, sl := range r.Slots {
+			if sl.Reading == string(decide.Answered) && sl.Value != "" {
+				out[name] = sl.Value
+			}
+		}
+		return out, len(out) > 0
+	}
+	return nil, false
 }
 
 // ErrTeacherBusy means another run holds the readings log.
