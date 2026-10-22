@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // `vani status --json` is the pipeline's health in one object: did the last
@@ -141,6 +142,11 @@ type scheduleFacet struct {
 	DailyAt  string    `json:"daily_at,omitempty"`
 	Timezone string    `json:"timezone,omitempty"`
 	NextRun  time.Time `json:"next_run,omitzero"`
+	// Kept is whether a daemon is running to fire the schedule; nil when that
+	// could not be told. Unkept is what it has cost while Kept is false
+	// (schedulekept.go). Both are additive: an older reader ignores them.
+	Kept   *bool           `json:"kept,omitempty"`
+	Unkept *unkeptSchedule `json:"unkept,omitempty"`
 }
 
 type backendsFacet struct {
@@ -205,10 +211,17 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	notice := decideNotice(out.LastRun, at, time.Local)
 	out.LastRun.Notice = &notice
+	out.Daemon = e.daemonFacet()
 	out.Schedule = scheduleOf(cfg, cfgErr, at)
+	if cfgErr == nil {
+		var live *int
+		if out.Ledger.OK && out.Ledger.Exists {
+			live = new(out.Ledger.ByStatus[string(posting.Live)])
+		}
+		out.Schedule = scheduleKeeping(cfg, out.Schedule, out.Daemon, out.LastRun, live, at)
+	}
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
-	out.Daemon = e.daemonFacet()
 	out.RunRequest = e.runRequestFacet(at)
 	return out
 }

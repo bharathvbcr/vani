@@ -29,7 +29,7 @@ private func iso(_ d: Date) -> String {
 
 /// What `vani status --json` printed for a healthy install, with Go's times.
 private func statusReply(lastRun: String? = nil, backends: String? = nil, ledgerOK: Bool = true,
-                         version: Int = 1, generated: Date = now) -> String {
+                         version: Int = 1, generated: Date = now, scheduleExtra: String = "") -> String {
     let finished = iso(now.addingTimeInterval(-3 * 3600))
     let started = iso(now.addingTimeInterval(-3 * 3600 - 312))
     return """
@@ -37,7 +37,7 @@ private func statusReply(lastRun: String? = nil, backends: String? = nil, ledger
     "config":{"ok":true,"boards":42},\
     "ledger":{"ok":\(ledgerOK),\(ledgerOK ? "" : #""reason":"ledger: corrupt events file","#)"exists":true,"path":"/s/ledger","total":812,"by_status":{"digested":300,"dead":200,"dropped":250,"unsure":12,"live":50}},\
     "last_run":\(lastRun ?? #"{"ok":true,"state":"ok","started_at":"\#(started)","finished_at":"\#(finished)","duration_sec":312.4,"postings_before":780,"postings_after":812,"counts_before":{"live":10,"digested":300,"dropped":240,"dead":200,"unsure":30},"counts_after":{"live":50,"digested":300,"dropped":250,"dead":200,"unsure":12}}"#),\
-    "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-15T15:30:00Z"},\
+    "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-15T15:30:00Z"\(scheduleExtra)},\
     "backends":\(backends ?? #"{"ok":true,"day":"2026-10-14","items":[{"ok":true,"name":"d1-ultra","kind":"openrouter","cap_usd":0.25,"spent_usd":0.1,"remaining_usd":0.15},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0.7,"remaining_usd":0.3}]}"#),\
     "decide":{"ok":true,"shadow":"local","local_configured":true,"local_mode":"server","local_model":"d1-3b","lappi_configured":false}}
     """
@@ -76,6 +76,62 @@ final class PipelineTests: XCTestCase {
         XCTAssertTrue(s.decide.localConfigured)
         XCTAssertEqual(s.issues(at: now), [])
         XCTAssertEqual(s.health(at: now), .healthy)
+    }
+
+    // MARK: - The schedule is only kept by a running daemon
+
+    private func unkept(overdue: Bool = true, awaiting: Int? = 8525, lastRunHoursAgo: Double? = 30) -> String {
+        var f = [#""why":"no daemon has announced itself""#, #""overdue":\#(overdue)"#, #""hint":"a daemon keeps the schedule""#]
+        if let h = lastRunHoursAgo { f.append(#""last_run_at":"\#(iso(now.addingTimeInterval(-h * 3600)))""#) }
+        if let n = awaiting { f.append(#""awaiting_triage":\#(n),"advance_per_run":750,"runs_needed":\#((n + 749) / 750)"#) }
+        return #","kept":false,"unkept":{\#(f.joined(separator: ","))}"#
+    }
+
+    func testAScheduleNothingKeepsIsAWarningWithWhatItCost() throws {
+        let s = try decode(statusReply(scheduleExtra: unkept()))
+        let issue = try XCTUnwrap(s.issues(at: now).first)
+        XCTAssertEqual(issue.title, "The daily schedule is not being kept")
+        XCTAssertEqual(issue.severity, .warning)
+        let detail = try XCTUnwrap(issue.detail)
+        for want in ["No daemon is running, so nothing fires the 08:30 run.", "Last run 30 h ago and the scheduled run is overdue.",
+                     "8525 postings await triage (about 12 runs at advance_per_run 750).", "Use Run Now with a higher advance cap."] {
+            XCTAssertTrue(detail.contains(want), "\(want) missing from: \(detail)")
+        }
+        XCTAssertEqual(s.health(at: now), .warning)
+    }
+
+    func testAKeptScheduleAndOldAndUnknownReportsAreQuiet() throws {
+        // A running daemon, a vani that predates the field, and one that could not
+        // tell (kept absent) all raise nothing about the schedule.
+        for extra in [#","kept":true"#, ""] {
+            XCTAssertEqual(try decode(statusReply(scheduleExtra: extra)).issues(at: now), [], extra)
+        }
+    }
+
+    func testAnUnkeptScheduleWithNothingOverdueOrWaitingIsQuiet() throws {
+        let s = try decode(statusReply(scheduleExtra: unkept(overdue: false, awaiting: 0)))
+        XCTAssertEqual(s.issues(at: now), [])
+        // Not knowing the backlog or the overdue state is not "nothing waits".
+        let unknown = try decode(statusReply(scheduleExtra: #","kept":false,"unkept":{"hint":"h"}"#))
+        XCTAssertEqual(unknown.issues(at: now), [])
+    }
+
+    func testEitherOverdueOrABacklogIsEnoughToWarn() throws {
+        let overdueOnly = try decode(statusReply(scheduleExtra: unkept(overdue: true, awaiting: 0)))
+        XCTAssertEqual(overdueOnly.issues(at: now).map(\.title), ["The daily schedule is not being kept"])
+        XCTAssertFalse(try XCTUnwrap(overdueOnly.issues(at: now).first?.detail).contains("await triage"))
+        let backlogOnly = try decode(statusReply(scheduleExtra: unkept(overdue: false, awaiting: 1, lastRunHoursAgo: 1)))
+        let detail = try XCTUnwrap(backlogOnly.issues(at: now).first?.detail)
+        XCTAssertTrue(detail.contains("1 posting awaits triage"), detail)
+        XCTAssertTrue(detail.contains("about 1 run at advance_per_run 750"), detail)
+        XCTAssertFalse(detail.contains("overdue"), detail)
+    }
+
+    func testNoRunRecordedReadsAsOverdueWithNoLastRunTime() throws {
+        let s = try decode(statusReply(scheduleExtra: unkept(lastRunHoursAgo: nil)))
+        let detail = try XCTUnwrap(s.issues(at: now).first?.detail)
+        XCTAssertTrue(detail.contains("No run is recorded, so the scheduled run is overdue."), detail)
+        XCTAssertFalse(detail.contains("Last run"), detail)
     }
 
     /// Captured from `vani status --json` on a fresh state folder with a failed

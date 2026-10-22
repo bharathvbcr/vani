@@ -72,6 +72,35 @@ func TestNextRunDST(t *testing.T) {
 	}
 }
 
+func TestPrevRun(t *testing.T) {
+	loc := la(t)
+	at := func(y int, m time.Month, d, h, mi int) time.Time { return time.Date(y, m, d, h, mi, 0, 0, loc) }
+	cases := []struct {
+		name       string
+		now, want  time.Time
+		hour, mins int
+	}{
+		{"before today's slot", at(2026, 10, 18, 7, 0), at(2026, 10, 17, 8, 30), 8, 30},
+		{"after today's slot", at(2026, 10, 18, 9, 0), at(2026, 10, 18, 8, 30), 8, 30},
+		{"exactly on the slot counts as passed", at(2026, 10, 18, 8, 30), at(2026, 10, 18, 8, 30), 8, 30},
+		{"a minute before the slot", at(2026, 10, 18, 8, 29), at(2026, 10, 17, 8, 30), 8, 30},
+		{"spring-forward day, slot in the gap", at(2026, 3, 8, 12, 0), at(2026, 3, 8, 3, 0), 2, 30},
+		{"day after the gap", at(2026, 3, 9, 1, 0), at(2026, 3, 8, 3, 0), 2, 30},
+		{"fall-back day, second 01:30 is not a slot", at(2026, 11, 1, 1, 30).Add(time.Hour), at(2026, 11, 1, 1, 30), 1, 30},
+		{"a month idle", at(2026, 12, 20, 6, 0), at(2026, 12, 19, 8, 30), 8, 30},
+	}
+	for _, c := range cases {
+		if got := PrevRun(c.now, c.hour, c.mins, loc); !got.Equal(c.want) {
+			t.Errorf("%s: PrevRun(%v) = %v, want %v", c.name, c.now, got, c.want)
+		}
+		// The slot found and the next one bracket the instant.
+		got := PrevRun(c.now, c.hour, c.mins, loc)
+		if got.After(c.now) || !NextRun(got, c.hour, c.mins, loc).After(c.now) {
+			t.Errorf("%s: %v does not bracket %v", c.name, got, c.now)
+		}
+	}
+}
+
 type waiter struct {
 	at time.Time
 	ch chan time.Time

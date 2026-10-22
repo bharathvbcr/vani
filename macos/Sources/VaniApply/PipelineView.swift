@@ -411,7 +411,17 @@ private struct LastRunSection: View {
                     BackendErrorRows(errors: errs)
                 }
             }
-            if let next = status.schedule.nextRun {
+            if status.schedule.isUnkept {
+                // Nothing fires the schedule, so no "next run" is promised.
+                let at = status.schedule.dailyAt.map { "daily at \($0) \(status.schedule.timezone ?? "")" } ?? "daily"
+                Row(label: "Schedule", value: "Not kept: no daemon is running, so the run set \(at) does not happen on its own")
+                if let why = status.schedule.unkept?.why, !why.isEmpty {
+                    Row(label: "Daemon", value: why, secondary: true)
+                }
+                if let hint = status.schedule.unkept?.hint, !hint.isEmpty {
+                    Row(label: "To keep it", value: hint, secondary: true)
+                }
+            } else if let next = status.schedule.nextRun {
                 Row(label: "Next run", value: next.formatted(date: .abbreviated, time: .shortened)
                     + (status.schedule.dailyAt.map { " (daily at \($0) \(status.schedule.timezone ?? ""))" } ?? ""), secondary: true)
             } else if !status.schedule.ok {
