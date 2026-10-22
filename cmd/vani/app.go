@@ -487,6 +487,14 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	for _, s := range statuses {
 		fmt.Fprintf(e.stdout, "  %-10s %d\n", s, by[s])
 	}
-	fmt.Fprintf(e.stdout, "schedule: %s %s\nstate dir: %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone, e.stateDir)
+	fmt.Fprintf(e.stdout, "schedule: %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
+	// Whether anything fires that schedule: the same answer `status --json` gives.
+	at := now()
+	live := by[string(posting.Live)]
+	sched := scheduleKeeping(cfg, scheduleOf(cfg, nil, at), e.daemonFacet(), e.lastRunFacet(at), &live, at)
+	for _, l := range unkeptLines(sched, at) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	fmt.Fprintf(e.stdout, "state dir: %s\n", e.stateDir)
 	return nil
 }

@@ -644,11 +644,93 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var dailyAt: String?
         public var timezone: String?
         public var nextRun: Date?
+        /// Whether a daemon is running to fire the schedule. Nil from a vani
+        /// that does not report it, and when vani could not tell: never read
+        /// nil as kept or as not kept.
+        public var kept: Bool?
+        /// What the schedule not being kept has cost; present only when `kept`
+        /// is false.
+        public var unkept: Unkept?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, timezone
+            case ok, reason, timezone, kept, unkept
             case dailyAt = "daily_at"
             case nextRun = "next_run"
+        }
+
+        /// The schedule is configured but nothing fires it.
+        public var isUnkept: Bool { ok && kept == false }
+
+        /// `vani status --json`'s `schedule.unkept`. Decoded leniently: a field
+        /// that does not decode is absent, never a failed status read.
+        public struct Unkept: Decodable, Equatable, Sendable {
+            /// Why no daemon is keeping the schedule.
+            public var why: String?
+            public var lastRunAt: Date?
+            /// The most recent scheduled slot, the one a daemon would have run.
+            public var dueAt: Date?
+            /// No run has started since `dueAt`; nil when the last run could not be read.
+            public var overdue: Bool?
+            /// Live postings no run has triaged yet; nil when they could not be counted.
+            public var awaitingTriage: Int?
+            public var advancePerRun: Int?
+            public var runsNeeded: Int?
+            /// How to get the schedule kept, and what that needs (vani's words).
+            public var hint: String?
+
+            enum CodingKeys: String, CodingKey {
+                case why, overdue, hint
+                case lastRunAt = "last_run_at"
+                case dueAt = "due_at"
+                case awaitingTriage = "awaiting_triage"
+                case advancePerRun = "advance_per_run"
+                case runsNeeded = "runs_needed"
+            }
+
+            public init(why: String? = nil, lastRunAt: Date? = nil, dueAt: Date? = nil, overdue: Bool? = nil, awaitingTriage: Int? = nil,
+                        advancePerRun: Int? = nil, runsNeeded: Int? = nil, hint: String? = nil) {
+                self.why = why
+                self.lastRunAt = lastRunAt
+                self.dueAt = dueAt
+                self.overdue = overdue
+                self.awaitingTriage = awaitingTriage
+                self.advancePerRun = advancePerRun
+                self.runsNeeded = runsNeeded
+                self.hint = hint
+            }
+
+            public init(from decoder: Decoder) throws {
+                guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+                    self.init()
+                    return
+                }
+                self.init(why: try? c.decodeIfPresent(String.self, forKey: .why),
+                          lastRunAt: try? c.decodeIfPresent(Date.self, forKey: .lastRunAt),
+                          dueAt: try? c.decodeIfPresent(Date.self, forKey: .dueAt),
+                          overdue: try? c.decodeIfPresent(Bool.self, forKey: .overdue),
+                          awaitingTriage: try? c.decodeIfPresent(Int.self, forKey: .awaitingTriage),
+                          advancePerRun: try? c.decodeIfPresent(Int.self, forKey: .advancePerRun),
+                          runsNeeded: try? c.decodeIfPresent(Int.self, forKey: .runsNeeded),
+                          hint: try? c.decodeIfPresent(String.self, forKey: .hint))
+            }
+
+            /// "schedule not kept" in one sentence for the Pipeline warning: no
+            /// daemon, how long since the last run, and the backlog in runs.
+            public func summary(dailyAt: String?, now: Date) -> String {
+                var parts = ["No daemon is running, so nothing fires\(dailyAt.map { " the \($0)" } ?? " the daily") run."]
+                if let last = lastRunAt {
+                    parts.append("Last run \(PipelineStatus.age(now.timeIntervalSince(last))) ago\(overdue == true ? " and the scheduled run is overdue" : "").")
+                } else if overdue == true {
+                    parts.append("No run is recorded, so the scheduled run is overdue.")
+                }
+                if let n = awaitingTriage, n > 0 {
+                    var s = "\(n) posting\(n == 1 ? " awaits" : "s await") triage"
+                    if let runs = runsNeeded, let cap = advancePerRun { s += " (about \(runs) run\(runs == 1 ? "" : "s") at advance_per_run \(cap))" }
+                    parts.append(s + ".")
+                }
+                parts.append("Use Run Now with a higher advance cap.")
+                return parts.joined(separator: " ")
+            }
         }
     }
 
@@ -771,6 +853,16 @@ extension PipelineStatus {
         }
 
         if !schedule.ok { add(.warning, "The schedule could not be read", schedule.reason) }
+        // A schedule nothing fires reads as fine everywhere else: say it. Quiet
+        // only when nothing is overdue and nothing waits; the schedule row still
+        // says it is not kept.
+        if schedule.isUnkept {
+            // `kept: false` without its details is a vani we cannot qualify: warn.
+            let u = schedule.unkept ?? PipelineStatus.Schedule.Unkept(overdue: true)
+            if u.overdue == true || (u.awaitingTriage ?? 0) > 0 {
+                add(.warning, "The daily schedule is not being kept", u.summary(dailyAt: schedule.dailyAt, now: now))
+            }
+        }
         if !backends.ok { add(.warning, "Spend and caps are unknown", backends.reason) }
         for b in backends.items {
             if !b.ok {

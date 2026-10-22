@@ -69,6 +69,21 @@ func NextRun(after time.Time, hour, minute int, loc *time.Location) time.Time {
 	return wallTime(y, m, d+3, hour, minute, loc)
 }
 
+// PrevRun returns the latest scheduled instant at or before `at`, on the same
+// schedule NextRun reads: hour:minute on the wall clock of loc. It starts two
+// days back, which always holds a slot, and steps forward to the last one not
+// after `at`.
+func PrevRun(at time.Time, hour, minute int, loc *time.Location) time.Time {
+	prev := NextRun(at.Add(-48*time.Hour), hour, minute, loc)
+	for {
+		next := NextRun(prev, hour, minute, loc)
+		if next.After(at) {
+			return prev
+		}
+		prev = next
+	}
+}
+
 // wallTime is the instant at which loc's wall clock first reads hour:minute on
 // the given date, or the first instant after the gap if it never does.
 func wallTime(y int, m time.Month, d, hour, minute int, loc *time.Location) time.Time {

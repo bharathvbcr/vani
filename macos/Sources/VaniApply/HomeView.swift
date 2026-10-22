@@ -510,7 +510,10 @@ private struct PipelineCard: View {
                 if issues.count > 3 {
                     Text("and \(issues.count - 3) more").font(.caption).foregroundStyle(.secondary)
                 }
-                if let next = s.schedule.nextRun {
+                if s.schedule.isUnkept {
+                    Label("Schedule not kept: no daemon is running", systemImage: "calendar.badge.exclamationmark")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if let next = s.schedule.nextRun {
                     Label("Next run \(next.formatted(date: .abbreviated, time: .shortened))", systemImage: "calendar")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if !s.schedule.ok {

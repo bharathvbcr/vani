@@ -36,6 +36,12 @@ banner. Both facets decode leniently and are absent from an older `vani`, which 
 The app keeps its request's time only in memory: after a relaunch a pending request still blocks
 Run Now ("A run request is already waiting") and its run shows from the record once the daemon
 makes it, but a request the daemon then drops is not reported.
+The Pipeline tab also says when the schedule is not kept: `schedule.kept` is false while no daemon runs, since
+nothing else fires `schedule.daily_at`. The schedule row then reads "Not kept" instead of a next run, and a warning
+gives the last run's age, whether a run is overdue and how many postings await triage (about how many runs at
+`advance_per_run`), with Run Now's higher advance cap as the way to catch up. `schedule.kept` and `schedule.unkept`
+are additive (status version stays 1) and absent from an older `vani`; `kept` is absent, never false, when vani could
+not tell whether a daemon runs.
 Its **Audit** tab is the weekly "would you apply?" sample: it fetches `vani audit --json --blind`
 (keys, strata and inclusion probabilities, no posting text), shows one card at a time (title, company and
 place from the jobs row contract, `JobRow`, via `vani jobs show`; the description as plain text) and
