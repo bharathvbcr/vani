@@ -269,7 +269,10 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	}
 	// Lappi is local and free. It is the shadow until `vani eval` reports it
 	// promotable; promoted, it goes first so the OpenRouter model and the LLM only see what it
-	// abstained on.
+	// abstained on. Per slot (primary_slots), a promoted slot goes to Lappi first
+	// and the OpenRouter model stops answering it; the other slots keep the shadow.
+	var lappiShadow decide.Backend
+	promoted := w.cfg.Decide.Lappi.PromotedSlots()
 	if l := w.cfg.Decide.Lappi; l != nil {
 		// Lappi trains one slot per family, so each triage slot goes to its
 		// own family with the fixture's exact question.
@@ -277,14 +280,28 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		for i, f := range jdtriage.Families {
 			routes[i] = lappi.Route{Task: jdtriage.Task, Slot: f.Slot.Name, Family: f.Task, Question: f.Question}
 		}
-		lb, err := lappi.NewBackend(lappi.BackendConfig{
-			App:     "vani",
-			Routes:  routes,
-			Socket:  l.Socket,
-			Timeout: time.Duration(l.TimeoutMS) * time.Millisecond,
-		})
+		newLappi := func() (*lappi.Backend, error) {
+			return lappi.NewBackend(lappi.BackendConfig{
+				App:     "vani",
+				Routes:  routes,
+				Socket:  l.Socket,
+				Timeout: time.Duration(l.TimeoutMS) * time.Millisecond,
+			})
+		}
+		lb, err := newLappi()
 		if err != nil {
 			w.warnf("lappi disabled: %v", err)
+		} else if len(promoted) > 0 {
+			backends = append([]decide.Backend{onlySlots(logErrors(lb, w.warnf, w.backendErrs), promoted)}, backends...)
+			if w.cfg.Decide.Shadow == "lappi" {
+				// The shadow is its own client over the slots not yet promoted:
+				// one backend cannot be both in the chain and the shadow.
+				if sb, err := newLappi(); err != nil {
+					w.warnf("lappi shadow disabled: %v", err)
+				} else {
+					lappiShadow = exceptSlots(logErrors(sb, w.warnf, w.backendErrs), promoted)
+				}
+			}
 		} else if l.Primary {
 			backends = append([]decide.Backend{logErrors(lb, w.warnf, w.backendErrs)}, backends...)
 		} else {
@@ -311,7 +328,9 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	// The shadow backend is asked alongside the chain and never decides, so it
 	// leaves the chain: asking it twice would pay twice for one answer.
 	var shadow decide.Backend
-	if name := w.shadowName(); name != "" {
+	if lappiShadow != nil {
+		shadow = lappiShadow
+	} else if name := w.shadowName(); name != "" && !(len(promoted) > 0 && name == "lappi") {
 		for i, b := range backends {
 			if b.Name() == name {
 				shadow = b
@@ -321,6 +340,16 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 		if shadow == nil {
 			w.warnf("shadow %q unavailable; running without a shadow", name)
+		}
+	}
+	// d1-ultra is retired per promoted slot: the OpenRouter model no longer
+	// answers them (Lappi does; if Lappi is down the slot falls to the LLM or
+	// reads unsure, never to d1-ultra). As the shadow it keeps reading them.
+	if on := w.openRouterName(); len(promoted) > 0 && on != "" {
+		for i, b := range backends {
+			if b.Name() == on {
+				backends[i] = exceptSlots(b, promoted)
+			}
 		}
 	}
 	if len(backends) == 0 {

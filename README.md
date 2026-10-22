@@ -252,6 +252,17 @@ flowchart TD
 - **Lappi** (`decide.lappi`, socket default `~/Library/Caches/qd/qd.sock`): local and free. With no
   agent running every ask reads `unavailable/socket_not_found` and the chain carries on; the first
   `task_not_trained` refusal stops Vani asking for the rest of the process.
+  - `decide.lappi.primary_slots: ["<slot>", ...]` promotes Lappi one slot at a time (slot names are
+    the triage slots in `fixture.json`; an unknown or repeated name is refused, naming it). Each
+    named slot goes to Lappi first and the OpenRouter model (d1-ultra) no longer answers it; the
+    other slots keep their arrangement, and with `decide.shadow: lappi` Lappi keeps shadowing them
+    (it has nothing left to shadow once every slot is promoted, which is refused: use `primary`).
+    It is exclusive with `primary: true`, which still means all four slots and keeps d1-ultra as
+    its fallback. If Lappi is down for a promoted slot, d1-ultra does not take it back: the next
+    chain backend (the LLM, when configured) answers it, otherwise it reads `unavailable` and the
+    posting is kept as unsure. A config with `primary_slots` gets its own reading cache id (naming
+    the promoted set), so readings made under other routing are re-asked; configs without it keep
+    theirs. A Vani binary that predates the key refuses to load the config (unknown field).
 - **Cloud shadow (recommended setup):** the OpenRouter model decides and a Claude Haiku reads every
   drop candidate as the second opinion, with no local model or server to run. In the config:
 

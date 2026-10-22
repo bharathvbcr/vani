@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -37,6 +38,12 @@ func triageModelID(cfg config.Config) string {
 		lappi = "shadow"
 		if l.Primary {
 			lappi = "primary"
+		}
+		// Per-slot promotion is a new routing, so it gets a new id that names
+		// the promoted set. The three old values above stay byte-identical, or
+		// every cached reading would be discarded.
+		if ps := l.PromotedSlots(); len(ps) > 0 && !l.Primary {
+			lappi = "slots:" + strings.Join(ps, "+")
 		}
 	}
 	return fmt.Sprintf("or=%s;llm=%s/%s;lappi=%s;ctx=%s", cfg.Decide.OpenRouterModel, cfg.LLM.Provider, cfg.LLM.Model, lappi,
