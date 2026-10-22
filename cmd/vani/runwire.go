@@ -90,6 +90,14 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 	return p
 }
 
+// skipsAdvance reports whether the run being started is a --list-only one (the
+// tuned override), which never asks a decision backend anything.
+func (w *wired) skipsAdvance() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.listOnly
+}
+
 // runOnce lists every board, reconciles it, then advances postings. It fails
 // as a whole only when no board could be read or the ledger fails; a single
 // bad board is a warning, and its postings are left untouched (an unread
@@ -106,7 +114,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 		Start: func(ctx context.Context) (func(), error) {
 			var stop func()
 			var err error
-			d, runner, stop, err = w.startRun(ctx)
+			d, runner, stop, err = w.startRun(ctx, !w.skipsAdvance())
 			return stop, err
 		},
 		Drain: func(ctx context.Context) { w.drainSpool(ctx) },
@@ -240,8 +248,11 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 
 // startRun readies what one pass over the ledger needs to triage: the egress
 // client, the decision stages and, when configured, the local decision model's
-// server. stop ends the server; call it when the pass is done.
-func (w *wired) startRun(ctx context.Context) (*egress.Client, *pipeline.Runner, func(), error) {
+// server. stop ends the server; call it when the pass is done. advance says
+// whether the pass will ask a decision backend anything: one that will fails
+// here, before any board is read, when none can be built (runnerFor); a
+// --list-only run does not need one.
+func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pipeline.Runner, func(), error) {
 	d, err := egress.New(egress.Config{AllowedHosts: w.cfg.AllowedHosts, MaxBodyBytes: maxBoardBytes})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("egress: %w", err)
@@ -269,7 +280,7 @@ func (w *wired) startRun(ctx context.Context) (*egress.Client, *pipeline.Runner,
 			w.localEndpoint = srv.Endpoint
 		}
 	}
-	runner, err := w.runner(ctx, d)
+	runner, err := w.runnerFor(ctx, d, advance)
 	if err != nil {
 		stop()
 		return nil, nil, nil, err
@@ -324,7 +335,7 @@ func (w *wired) pollInbox(ctx context.Context) error {
 	if testHookAdvanceNew != nil {
 		return testHookAdvanceNew(ctx, recs)
 	}
-	_, runner, stop, err := w.startRun(ctx)
+	_, runner, stop, err := w.startRun(ctx, true)
 	if err != nil {
 		// No backend, no egress: the postings stay Live for the next run.
 		w.warnf("inbox: %d new job(s) wait for the next run: %v", len(recs), err)

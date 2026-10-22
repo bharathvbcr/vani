@@ -226,6 +226,17 @@ func localBackendNamed(l *config.Local, endpoint, name string) (decide.Backend, 
 // runner assembles today's pipeline stages. The LLM pieces are rebuilt per
 // run so the daily budget ledger rolls over with the date.
 func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, error) {
+	return w.runnerFor(ctx, d, true)
+}
+
+// runnerFor is runner, where advance says whether the pass will ask a decision
+// backend anything. A pass that will not (a --list-only run, which skips the
+// advance phase) is built without one when none is available: the runner's
+// other stages (drop policy, scoring, notes) do not need one, and the empty
+// router it gets answers nothing (every slot NotAsked), so a posting it were
+// asked about would read unsure and stay Live. A pass that advances still fails here, before any board
+// is read, when no backend can be built.
+func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pipeline.Runner, error) {
 	var backends []decide.Backend
 	// One cap for every OpenRouter client this run (triage and notes): two
 	// DailyCaps on one file would each lock only themselves. The spend key keeps its
@@ -356,7 +367,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 			}
 		}
 	}
-	if len(backends) == 0 {
+	if len(backends) == 0 && advance {
 		return nil, errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
 	}
 	router := decide.NewRouter(backends...)

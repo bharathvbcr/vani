@@ -34,9 +34,9 @@ type runOptions struct {
 	// empty lists every board. Postings of the boards left out are untouched.
 	Boards []string `json:"boards,omitempty"`
 	// ListOnly lists and reconciles boards and skips the advance phase: nothing
-	// is triaged, scored or explained, and no decision model is called. The
-	// run still builds its decision stages first (Workday's title drops read
-	// their policy), so a decision backend must still be configured.
+	// is triaged, scored or explained, and no decision model is called, so none
+	// needs to be configured (the runner is built without a backend, wire.go
+	// runnerFor). Title drops, exclusions, near-duplicates and logos still run.
 	ListOnly bool `json:"list_only,omitempty"`
 	// NoDigest skips the digest and the knowledge-base warm made for it. The
 	// run's roles stay pending and the next digest lists them.
@@ -66,7 +66,7 @@ func runOptionFlags(fs *flag.FlagSet) (*runOptions, *boardRefs) {
 	var boards boardRefs
 	fs.IntVar(&opts.Advance, "advance", 0, fmt.Sprintf("triage, score and explain at most N postings this run (1..%d; default advance_per_run)", config.MaxAdvancePerRun))
 	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
-	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (a decision backend must still be configured; none is called)")
+	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (no decision backend is called, and none needs to be configured)")
 	fs.BoolVar(&opts.NoDigest, "no-digest", false, "write no digest: the run's roles wait for the next one")
 	return &opts, &boards
 }

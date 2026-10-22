@@ -149,7 +149,7 @@ private struct RunNowSheet: View {
                 }
                 Section("Triage, scoring and explaining") {
                     Toggle("Advance new postings this run", isOn: $advance)
-                        .help("Off lists and reconciles boards only: new postings stay live for the next run. No decision model is called, but one must still be configured.")
+                        .help("Off lists and reconciles boards only: new postings stay live for the next run. No decision model is called, and none needs to be configured.")
                     if advance {
                         Toggle("Cap the postings advanced this run (instead of advance_per_run)", isOn: $capOn)
                         if capOn {

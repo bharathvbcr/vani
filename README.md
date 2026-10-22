@@ -312,7 +312,7 @@ flowchart TD
   `--board ats:token` (repeatable) lists only those watchlist boards (the others' postings are
   untouched; a board no longer on the watchlist stops the run before it lists anything),
   `--list-only` lists and reconciles without triage, scoring or explaining (no decision model is
-  called, but one must still be configured: the run builds its stages first), and `--no-digest`
+  called, and none needs to be configured; a run that advances still needs one), and `--no-digest`
   leaves the run's roles for the next digest. A digest from a manual run marks its roles digested,
   so the next daily digest does not list them again. `run-once` is refused at once while the daemon
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
@@ -585,7 +585,7 @@ Company icons: a board's optional `domain` is the host of the company's own webs
 (`watchlist add … --domain www.acme.com`, or `watchlist domain --ats gh --token acme --domain
 www.acme.com` for a board you have; `--allow-host` adds it to `allowed_hosts`, which must list it).
 Each run asks that host for `/apple-touch-icon.png`, then `/favicon.ico`, then `/favicon.png`, and
-keeps the first reply that is a PNG, ICO or JPEG of at most 256 KiB in `<state dir>/logos/`. It never
+keeps the first reply that is a PNG, ICO or JPEG of at most 1 MiB in `<state dir>/logos/`. It never
 reads the site's pages or follows their links, and a redirect to another host is refused, so give the
 host that serves the icon (often the `www.` one). A site that names its icon only in its HTML (Databricks,
 Modal, Qualcomm, Together AI) needs the URL set by hand: `watchlist icon --ats gh --token acme --url

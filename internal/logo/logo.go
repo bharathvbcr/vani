@@ -41,7 +41,12 @@ type Source struct {
 
 const (
 	// MaxBytes bounds an icon; a larger reply is refused, never truncated.
-	MaxBytes = 256 << 10
+	// 1 MiB, because some sites serve only a large multi-size favicon.ico
+	// (status.openai.com's is 285,478 bytes). The egress client that carries
+	// the request is capped at MaxBytes+1 (cmd/vani logoEgressConfig) so this
+	// package is what reports an overrun, and the Jobs list decodes the file
+	// by its extension with no size assumption of its own.
+	MaxBytes = 1 << 20
 	// RefreshAfter is how long a cached icon is kept before it is fetched again.
 	RefreshAfter = 30 * 24 * time.Hour
 	// RetryAfter is how long a domain whose fetch failed waits for another try.

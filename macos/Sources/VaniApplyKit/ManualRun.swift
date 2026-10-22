@@ -25,7 +25,8 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     /// The watchlist boards to list, as "ats:token"; empty lists every board.
     public var boards: [String]
     /// List and reconcile boards only: no triage, scoring or explaining. No
-    /// decision model is called, but one must still be configured.
+    /// decision model is called, and none needs to be configured (a run that
+    /// advances postings still needs one).
     public var listOnly: Bool
     /// Write no digest: the run's roles wait for the next one.
     public var noDigest: Bool
