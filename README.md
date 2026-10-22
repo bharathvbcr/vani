@@ -307,6 +307,24 @@ flowchart TD
   sidebar. A run the daemon skips for starting too late is logged but not recorded. The record's
   `trigger` says who started the run (`schedule`, the daemon; `manual`, `run-once`) and `options`
   what a manual run changed.
+- **Run history and failure reports (`vani runs`):** `last.json` is only the latest run. When a run
+  ends (any outcome but `running`) its record is also written, byte for byte, to
+  `<state dir>/runs/history/<id>.json`, where the id is the start in UTC to the millisecond and the
+  pid (`20261022T090000.123Z-4242`), and the directory is pruned to the newest 30 records and 4 MiB
+  (the newest is always kept). A run that never ended (its process died) is `last.json` only, until
+  the next run replaces it. A history write that fails is a warning on stderr, never a failed run.
+  `vani runs list [--json]` lists them newest first (`*` marks the one `status` reports; a file that
+  cannot be read is listed as unreadable with its reason, never dropped), `vani runs show [--json]
+  [ID]` prints one run (default the latest; `--json` is the whole record), and `vani runs failures
+  [--json] [ID]` prints the plain-text failure report: run, trigger, times, outcome, the run's
+  stage/error/cause, each failed board as `ats:token (Company): error`, the backend error causes,
+  and the paths of the run record and of the logs that exist (`runs/manual.log`,
+  `logs/vani.err.log`, `logs/vani.out.log`, with size and last write; which of them holds this
+  run's output is not recorded). The report is bounded (a line is cut at 600 characters, the whole at
+  24 KiB, and its last line says how many lines were shortened or cut) and a key, bearer token or
+  auth header pasted into an error is replaced by `[redacted]`. It is the one formatter: the Mac
+  app's Pipeline tab > Copy failures runs `vani runs failures --json` and copies its `text`.
+  Records and reports hold board names, HTTP and backend errors and file paths only.
 - **Manual runs (`vani run-once`, the Mac app's Pipeline tab › Run Now):** the flags change one run
   and never the config: `--advance N` caps the advance phase at N in place of `advance_per_run`,
   `--board ats:token` (repeatable) lists only those watchlist boards (the others' postings are
@@ -316,7 +334,9 @@ flowchart TD
   leaves the run's roles for the next digest. A digest from a manual run marks its roles digested,
   so the next daily digest does not list them again. `run-once` is refused at once while the daemon
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
-  writes its output to `<state dir>/runs/manual.log`, follows it through `vani status --json`, and
+  writes its output to `<state dir>/runs/manual.log` (before each run it moves the previous log to
+  `runs/history/manual-<UTC time of its last write>.log`; it keeps the newest 20 within 8 MiB, and a
+  single log over 8 MiB is removed, not kept), follows it through `vani status --json`, and
   can stop a run it started (SIGTERM; recorded `cancelled`), never one the daemon started.
 - **Run requests (`vani run-request`, Run Now while the daemon runs):** the daemon holds the ledger
   for its whole life, so a manual run is asked of it instead. `vani run-request [--json]` takes

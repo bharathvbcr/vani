@@ -1644,3 +1644,5 @@ Left open:
   Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
 - **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every
   request.
+- **An interrupted run never reaches the run history.** A run whose process died leaves a `running` record in `last.json`, and the next run replaces it before it is ever written to `runs/history/`. Archiving a dead-pid `running` record at the next start would keep it.
+- **Nothing ties a log to its run.** `vani runs failures` names the logs that exist, with size and last write time; the run record does not say which log holds its output, and a rotated `manual-<time>.log` is named by its last write, not by run id. Recording the log path in the run record would let the report say which.

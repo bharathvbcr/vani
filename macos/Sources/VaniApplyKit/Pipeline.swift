@@ -288,6 +288,20 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             }
         }
 
+        /// Whether the run has anything to report: a failed or interrupted run, a run
+        /// error, a board that failed to list, or a backend error. It decides whether
+        /// Copy failures is offered, and is the rule vani's `runs failures` reports as
+        /// has_failures (cmd/vani/runscmd.go runHasFailures); a contract test holds the
+        /// two together. A last run vani could not read has none to report.
+        public var hasFailures: Bool {
+            guard ok else { return false }
+            if state == .failed || state == .interrupted { return true }
+            if let e = error, !e.isEmpty { return true }
+            if let b = boards, b.failed > 0 || b.items.contains(where: { $0.outcome == .failed }) { return true }
+            if let be = backendErrors, !be.causes.isEmpty || be.unrecorded > 0 { return true }
+            return false
+        }
+
         /// Postings the run added to the ledger (a ledger-derived difference, not
         /// an engine count). Nil when either end was not recorded.
         public var postingsAdded: Int? {
@@ -359,6 +373,18 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     self.listed = listed
                     self.error = error
                 }
+
+                /// The board and its error as one line, "ats:token (Company): error": what
+                /// a row's Copy error puts on the pasteboard. It is the line vani's failure
+                /// report (`vani runs failures`, cmd/vani/runscmd.go boardLine) prints for
+                /// the board, and a contract test holds the two equal; the report itself is
+                /// vani's, never worded here. The error is untrusted text, kept to one line
+                /// of `FailureReport.maxLine` characters.
+                public var copyLine: String {
+                    let name = company.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+                    let why = PipelineStatus.bounded(error ?? "", max: FailureReport.maxLine)
+                    return PipelineStatus.bounded("\(ats):\(token)\(name): \(why.isEmpty ? "none" : why)", max: FailureReport.maxLine)
+                }
             }
 
             /// A board that was not read, ready to show: one bounded line each.
@@ -368,6 +394,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 /// "failed", "skipped", or a newer vani's outcome as written.
                 public var outcome: String
                 public var error: String
+                /// What Copy error copies: the board's `Item.copyLine`, its whole error.
+                public var copyText: String
             }
 
             /// Longest error shown, in characters.
@@ -445,7 +473,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     }
                     return Line(board: PipelineStatus.bounded(name.map { "\($0) (\(where_))" } ?? where_, max: 80),
                                 outcome: outcome,
-                                error: PipelineStatus.bounded(item.error ?? "", max: Self.maxError))
+                                error: PipelineStatus.bounded(item.error ?? "", max: Self.maxError),
+                                copyText: item.copyLine)
                 }
             }
 
@@ -959,6 +988,66 @@ public struct PipelineClient: Sendable {
         try VaniProcess.call(vaniBinary, options.arguments(command: "run-request") + ["--json"], configPath: configPath, stateDir: stateDir,
                              timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: JobsClient.decoder,
                              tooOld: "this vani cannot hand a run to the daemon; rebuild the app")
+    }
+}
+
+extension PipelineClient {
+    /// The latest run's failure report (`vani runs failures --json`), the one text
+    /// Copy failures puts on the pasteboard. vani words it (the failed boards, the
+    /// backend errors, the run's error, the log files) and bounds it; this app only
+    /// carries it. An older vani has no such command (exit 2) and says so; a reply
+    /// with no text is an error, never an empty copy.
+    public func failureReport() throws -> FailureReport {
+        let report: FailureReport = try VaniProcess.call(vaniBinary, ["runs", "failures", "--json"], configPath: configPath, stateDir: stateDir,
+                                                         timeout: timeout, maxOutputBytes: FailureReport.maxReplyBytes, decoder: JobsClient.decoder,
+                                                         tooOld: "this vani cannot report failures; rebuild the app")
+        guard !report.text.isEmpty else { throw BankError("vani sent an empty failure report") }
+        return report
+    }
+}
+
+/// `vani runs failures --json`'s reply (cmd/vani/runscmd.go runFailuresJSON).
+public struct FailureReport: Decodable, Equatable, Sendable {
+    /// The contract version this app reads.
+    public static let supportedVersion = 1
+    /// vani cuts a report line at this many characters (maxReportLine).
+    public static let maxLine = 600
+    /// vani bounds the report at 24 KiB (maxReportBytes); the reply is that and its JSON framing.
+    static let maxReplyBytes = 128 << 10
+
+    public var id: String
+    /// vani's own verdict (runHasFailures); the app's `LastRun.hasFailures` is the same rule.
+    public var hasFailures: Bool
+    /// The report, plain text. When there are no failures it says so.
+    public var text: String
+    /// Lines the report's bounds took out of `text`, and lines they shortened; both
+    /// are also said in its last line. Zero from a vani that bounds nothing.
+    public var cutLines: Int
+    public var shortenedLines: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, text
+        case hasFailures = "has_failures"
+        case cutLines = "cut_lines"
+        case shortenedLines = "shortened_lines"
+    }
+
+    public init(id: String, hasFailures: Bool, text: String, cutLines: Int = 0, shortenedLines: Int = 0) {
+        self.id = id
+        self.hasFailures = hasFailures
+        self.text = text
+        self.cutLines = cutLines
+        self.shortenedLines = shortenedLines
+    }
+
+    /// Lenient: the bound counts are absent when zero (Go omits them).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        hasFailures = try c.decode(Bool.self, forKey: .hasFailures)
+        text = try c.decode(String.self, forKey: .text)
+        cutLines = try c.decodeIfPresent(Int.self, forKey: .cutLines) ?? 0
+        shortenedLines = try c.decodeIfPresent(Int.self, forKey: .shortenedLines) ?? 0
     }
 }
 

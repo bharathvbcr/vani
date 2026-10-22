@@ -23,7 +23,17 @@ Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R)
 `vani run-once` with options for that run only: every board or the ones you pick from the watchlist,
 whether to triage, score and explain (and a cap in place of `advance_per_run`), and whether to write a
 digest. The last choices are remembered. The run gets the keys drafting gets, writes its output to
-`<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes.
+`<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes. Before each run
+the app moves the previous `manual.log` to `<state>/runs/history/manual-<time>.log` (newest 20, 8 MiB;
+`ManualRunLog`), because the app is what truncates it; vani keeps every finished run's record in the same
+folder (`vani runs list`).
+The Last run panel has **Copy failures** when the run has something to report (a failed or interrupted run,
+a run error, a board that failed to list, a backend error; `LastRun.hasFailures`): it runs
+`vani runs failures --json` (15 s limit) and copies the report text vani wrote, so the CLI and the app share
+one wording. If vani is too old to have the command, times out or sends nothing, nothing is copied and the
+reason shows under the button. Right-click a board row for **Copy error** (`ats:token (Company): error`,
+the same line the report has for that board). The **Logs** menu opens or reveals `manual.log`, the run
+record (`last.json`) and the history folder, each only when it exists when the panel is drawn.
 **Stop** sends the run this app started SIGTERM, which vani records as cancelled; a run the daemon
 or a shell started is shown but never signalled. A run vani refuses before it starts (another run
 holds the ledger) shows vani's reason from the log. The run is a separate process, so quitting the
