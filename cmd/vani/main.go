@@ -103,6 +103,12 @@ commands:
                              the target summary and a bounded digest of the bank to the provider;
                              the answers only order and explain)
   kbmatch status             how many answers are kept and current
+  teacher [--dry-run] [--budget-usd N] [--model M] [--of BACKEND] [--concurrency N] [--max N]
+                             have the llm tier re-read the postings the decision model triaged,
+                             with the same question, and keep its readings (teacher_readings.jsonl)
+                             for Lappi's agreement filter; --dry-run prices it and asks nothing;
+                             a real run needs --budget-usd and stops at the lesser of it and the
+                             daily llm cap's headroom
   impressions log --surface jobs|audit --slate ID [--section S] [--json]
                              record the rows a screen shows ({"rows":[{"key","position"}]} on
                              stdin), once per slate; keys and positions only, never a title
@@ -274,6 +280,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdResume(args[1:])
 	case "reasons":
 		cmdErr = e.cmdReasons(args[1:])
+	case "teacher":
+		cmdErr = e.cmdTeacher(args[1:])
 	case "kbmatch":
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":
