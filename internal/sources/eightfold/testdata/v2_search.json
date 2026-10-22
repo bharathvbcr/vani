@@ -1,0 +1,58 @@
+{
+  "count": 2,
+  "domain": "netflix.com",
+  "positions": [
+    {
+      "ats_job_id": "JR40988",
+      "business_unit": "Streaming",
+      "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790316208720",
+      "department": "Data \u0026 Insights",
+      "display_job_id": "JR40988",
+      "hot": 0,
+      "id": 790316208720,
+      "id_locale": "JR40988-en-US",
+      "isPrivate": false,
+      "job_description": "",
+      "locale": "en-US",
+      "location": "Remote, United States",
+      "location_flexibility": null,
+      "locations": [
+        "Remote, United States"
+      ],
+      "medallionProgram": null,
+      "name": "Machine Learning Scientist 5 - Ads Demand Science",
+      "posting_name": "Machine Learning Scientist 5 - Ads Demand Science",
+      "stars": 0,
+      "t_create": 1790553600,
+      "t_update": 1790553600,
+      "type": "ATS",
+      "work_location_option": "onsite"
+    },
+    {
+      "ats_job_id": "JR41857",
+      "business_unit": "Streaming",
+      "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790317580317",
+      "department": "Data \u0026 Insights",
+      "display_job_id": "JR41857",
+      "hot": 0,
+      "id": 790317580317,
+      "id_locale": "JR41857-en-US",
+      "isPrivate": false,
+      "job_description": "",
+      "locale": "en-US",
+      "location": "Los Gatos,California,United States of America",
+      "location_flexibility": null,
+      "locations": [
+        "Los Gatos,California,United States of America"
+      ],
+      "medallionProgram": null,
+      "name": "Machine Learning Engineer 5 - Ads Measurement",
+      "posting_name": "Machine Learning Engineer 5 - Ads Measurement",
+      "stars": 0,
+      "t_create": 1785283200,
+      "t_update": 1785283200,
+      "type": "ATS",
+      "work_location_option": "remote_local"
+    }
+  ]
+}

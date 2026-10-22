@@ -1,15 +1,30 @@
-// Package eightfold lists postings from an Eightfold "PCSX" careers site,
-// the system behind apply.careers.microsoft.com and careers.qualcomm.com
-// (verified 2026-10-19; Netflix's explore.jobs.netflix.net answered 403).
+// Package eightfold lists postings from an Eightfold careers site, the
+// system behind apply.careers.microsoft.com, careers.qualcomm.com and
+// explore.jobs.netflix.net. A site answers one of two APIs and refuses the
+// other with 403: Microsoft and Qualcomm answer v2 with "Not authorized for
+// PCSX", Netflix answers pcsx with "PCSX is not enabled for this user."
+// (verified 2026-10-22).
+//
+// PCSX (Microsoft, Qualcomm), tried first:
 //
 //	GET https://{host}/api/pcsx/search?domain={domain}&query={term}&start={n}&num=10
 //	GET https://{host}/api/pcsx/position_details?position_id={id}&domain={domain}&hl=en
 //
-// The board token is the company's domain and Host its careers site.
-// Microsoft's robots.txt disallows everything but /careers and /api/pcsx
-// (among a few others), which is exactly what this source reads. Search
-// results carry no description, so each posting costs a details request;
-// a term over the board cap fails the board rather than being truncated.
+// v2 (Netflix), used only when the first pcsx search of a board answers 403:
+//
+//	GET https://{host}/api/apply/v2/jobs?domain={domain}&query={term}&start={n}&num=10
+//	GET https://{host}/api/apply/v2/jobs/{id}?domain={domain}
+//
+// The board token is the company's domain and Host its careers site. Both
+// APIs are Allow:ed in the robots.txt of all three sites, but a v2 request is
+// sent only after the host's own robots.txt is read and permits
+// /api/apply/v2/jobs. Search results carry no description (v2 rows have an
+// empty job_description), so each posting costs a details request; a term over
+// the board cap fails the board rather than being truncated.
+//
+// A board is read through one API end to end: ids of the two are never mixed,
+// and a 403 after the first pcsx search answered is an outage, not a reason to
+// switch. A v2 attempt that also fails reports both errors.
 package eightfold
 
 import (
@@ -18,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -29,6 +45,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/htmltext"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
@@ -36,9 +53,18 @@ const (
 	// MaxPostings bounds one board: each posting costs a details request.
 	MaxPostings = 200
 	// pageSize is what the search returns at most per request (asking for
-	// 100 still returned 10 on 2026-10-19).
+	// 100 still returned 10 on 2026-10-19; v2 on 2026-10-22).
 	pageSize = 10
 	maxPages = MaxPostings/pageSize + 2
+
+	// A v2 search page is 22 KB and a detail 8 KB for Netflix, most of the page
+	// branding this source ignores: a few MiB bounds either far more tightly
+	// than srcutil's 64 MiB default.
+	v2SearchMaxBody = 4 << 20
+	v2DetailMaxBody = 2 << 20
+
+	// v2Path is the robots.txt path the v2 requests fall under.
+	v2Path = "/api/apply/v2/jobs"
 )
 
 // ErrShape is a response whose layout is not the one this source knows.
@@ -63,6 +89,9 @@ func maxGone(n int) int { return max(1, n/10) }
 type Stats struct {
 	Listed int `json:"listed"`
 	Gone   int `json:"gone,omitempty"`
+	// V2 is set when the board was read through /api/apply/v2 because its
+	// pcsx search answered 403.
+	V2 bool `json:"v2,omitempty"`
 }
 
 // Options configures NewWith.
@@ -98,10 +127,62 @@ type searchData struct {
 	Positions []position `json:"positions"`
 }
 
+// position is one search row. WorkLocationOption is v2's: its detail
+// answers null for the field the search row carries.
 type position struct {
-	ID   json.Number `json:"id"`
-	Name string      `json:"name"`
+	ID                 json.Number `json:"id"`
+	Name               string      `json:"name"`
+	WorkLocationOption string      `json:"work_location_option"`
 }
+
+// listing is one position a search found: its id, and the work location
+// option of its v2 row ("" for pcsx, whose detail has it).
+type listing struct{ id, work string }
+
+// api is the Eightfold API a board is read through: its URL prefix and which
+// of the two it is.
+type api struct {
+	base string
+	v2   bool
+}
+
+func pcsxAPI(host string) api { return api{base: "https://" + host + "/api/pcsx/"} }
+func v2API(host string) api   { return api{base: "https://" + host + "/api/apply/v2/", v2: true} }
+
+// v2Details is a v2 position detail: no envelope, snake_case fields.
+type v2Details struct {
+	ID                 json.Number `json:"id"`
+	Name               string      `json:"name"`
+	Locations          []string    `json:"locations"`
+	CreatedTs          *int64      `json:"t_create"`
+	Department         string      `json:"department"`
+	JobDescription     string      `json:"job_description"`
+	CanonicalURL       string      `json:"canonicalPositionUrl"`
+	WorkLocationOption string      `json:"work_location_option"`
+}
+
+// details is v as the pcsx shape. Netflix's detail names its page with a
+// "?microsite=netflix.com" query its search row lacks (seen 2026-10-22); the
+// query is dropped so both are checked against the same page URL. The stored
+// URL is built from the host and id, never taken from the response.
+func (v v2Details) details() details {
+	canonical := v.CanonicalURL
+	if u, err := url.Parse(canonical); err == nil && u.RawQuery != "" {
+		u.RawQuery = ""
+		canonical = u.String()
+	}
+	return details{
+		ID: v.ID, Name: v.Name, Locations: v.Locations, PostedTs: v.CreatedTs, Department: v.Department,
+		JobDescription: v.JobDescription, PublicURL: canonical, WorkLocationOption: v.WorkLocationOption,
+	}
+}
+
+// pcsxForbidden is the first pcsx search of a board answering HTTP 403: the
+// site does not serve pcsx, and the one signal that tries v2.
+type pcsxForbidden struct{ err error }
+
+func (e *pcsxForbidden) Error() string { return e.err.Error() }
+func (e *pcsxForbidden) Unwrap() error { return e.err }
 
 type details struct {
 	ID                 json.Number `json:"id"`
@@ -136,18 +217,25 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err := sources.CheckFilters(posting.Eightfold, b.Filters); err != nil {
 		return nil, fmt.Errorf("eightfold %q: %w", b.Token, err)
 	}
-	base := "https://" + host + "/api/pcsx/"
-	var ids []string
+	a := pcsxAPI(host)
+	var ids []listing
 	have := map[string]bool{}
-	for _, term := range terms {
-		got, err := s.search(ctx, base, domain, term, b.Filters)
+	for i, term := range terms {
+		got, err := s.search(ctx, a, domain, term, b.Filters, i == 0 && !a.v2)
+		var denied *pcsxForbidden
+		if errors.As(err, &denied) {
+			// The site does not serve pcsx. Read the whole board through v2 from
+			// this term on; a v2 that fails too reports both.
+			a = v2API(host)
+			got, err = s.searchV2(ctx, a, host, domain, term, b.Filters, denied)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("eightfold %q: search %q: %w", b.Token, term, err)
 		}
-		for _, id := range got {
-			if !have[id] {
-				have[id] = true
-				ids = append(ids, id)
+		for _, l := range got {
+			if !have[l.id] {
+				have[l.id] = true
+				ids = append(ids, l)
 			}
 		}
 		if len(ids) > MaxPostings {
@@ -157,16 +245,16 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(ids))
-	st := Stats{Listed: len(ids)}
+	st := Stats{Listed: len(ids), V2: a.v2}
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, st) }()
 	}
 	allowed := maxGone(len(ids))
-	for _, id := range ids {
+	for _, l := range ids {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, err := s.detail(ctx, base, host, domain, id, b, seen)
+		p, err := s.detail(ctx, a, host, domain, l, b, seen)
 		if errors.Is(err, errDetailGone) {
 			// The position closed between the search and its detail; leaving it
 			// out is the truth. Many at once is the detail endpoint failing. The
@@ -179,7 +267,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 		if err != nil {
 			// A partial listing would age healthy postings as absent.
-			return nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, id, err)
+			return nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, l.id, err)
 		}
 		out = append(out, p)
 	}
@@ -204,7 +292,29 @@ func (s *source) get(ctx context.Context, u string, v any) error {
 	return nil
 }
 
-func searchURL(base, domain, term string, filters map[string][]string, start int) string {
+// getV2 fetches one v2 endpoint, which answers its data at the top level with
+// no envelope, and decodes it into v. A body that is not the JSON this source
+// reads is ErrShape; a 404 is srcutil.ErrBoardNotFound, a body over limit
+// srcutil.ErrBodyTooLarge, as for pcsx.
+func (s *source) getV2(ctx context.Context, u string, limit int64, v any) error {
+	var raw json.RawMessage
+	if err := srcutil.GetJSONLimit(ctx, s.d, u, limit, &raw); err != nil {
+		var syn *json.SyntaxError
+		if errors.As(err, &syn) {
+			return fmt.Errorf("%w: %v", ErrShape, err)
+		}
+		return err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return fmt.Errorf("%w: no data", ErrShape)
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("%w: data: %v", ErrShape, err)
+	}
+	return nil
+}
+
+func searchURL(a api, domain, term string, filters map[string][]string, start int) string {
 	q := url.Values{}
 	q.Set("domain", domain)
 	q.Set("query", term)
@@ -215,20 +325,65 @@ func searchURL(base, domain, term string, filters map[string][]string, start int
 			q.Add(k, v)
 		}
 	}
-	return base + "search?" + q.Encode()
+	if a.v2 {
+		return a.base + "jobs?" + q.Encode()
+	}
+	return a.base + "search?" + q.Encode()
 }
 
-// search pages one term to its count; a count over the cap fails first.
-func (s *source) search(ctx context.Context, base, domain, term string, filters map[string][]string) ([]string, error) {
-	var ids []string
+// searchPage fetches one page of a search through a.
+func (s *source) searchPage(ctx context.Context, a api, u string, sd *searchData) error {
+	if a.v2 {
+		return s.getV2(ctx, u, v2SearchMaxBody, sd)
+	}
+	return s.get(ctx, u, sd)
+}
+
+// searchV2 is the search of a board whose pcsx search answered 403 (denied):
+// the term read through v2, provided the host's robots.txt permits it. Every
+// way it can fail reports denied as well, and ErrBoardNotFound,
+// ErrTooManyPostings and the like stay reachable through errors.Is.
+func (s *source) searchV2(ctx context.Context, a api, host, domain, term string, filters map[string][]string, denied *pcsxForbidden) ([]listing, error) {
+	both := func(err error) ([]listing, error) {
+		return nil, fmt.Errorf("pcsx search: %w; v2 fallback: %w", denied.err, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	allowed, err := page.RobotsAllows(ctx, s.d, host, v2Path)
+	if err != nil {
+		return both(fmt.Errorf("not tried, robots.txt could not be read: %w", err))
+	}
+	if !allowed {
+		return both(fmt.Errorf("not tried, robots.txt of %s disallows %s", host, v2Path))
+	}
+	got, err := s.search(ctx, a, domain, term, filters, false)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		return both(err)
+	}
+	return got, nil
+}
+
+// search pages one term to its count; a count over the cap fails first. probe
+// marks the first search of a board over pcsx: its first page answering 403
+// is a *pcsxForbidden rather than a plain error.
+func (s *source) search(ctx context.Context, a api, domain, term string, filters map[string][]string, probe bool) ([]listing, error) {
+	var ids []listing
 	have := map[string]bool{}
 	count := -1
-	for page := 0; page < maxPages; page++ {
+	for pg := 0; pg < maxPages; pg++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		var sd searchData
-		if err := s.get(ctx, searchURL(base, domain, term, filters, len(ids)), &sd); err != nil {
+		if err := s.searchPage(ctx, a, searchURL(a, domain, term, filters, len(ids)), &sd); err != nil {
+			var se *egress.StatusError
+			if probe && pg == 0 && errors.As(err, &se) && se.Code == http.StatusForbidden {
+				return nil, &pcsxForbidden{err: err}
+			}
 			return nil, err
 		}
 		if sd.Count == nil || *sd.Count < 0 {
@@ -249,7 +404,7 @@ func (s *source) search(ctx context.Context, base, domain, term string, filters 
 			}
 			if !have[id] {
 				have[id] = true
-				ids = append(ids, id)
+				ids = append(ids, listing{id: id, work: strings.TrimSpace(p.WorkLocationOption)})
 				added++
 			}
 		}
@@ -263,17 +418,35 @@ func (s *source) search(ctx context.Context, base, domain, term string, filters 
 	return nil, fmt.Errorf("%w: listing did not end within %d pages", ErrShape, maxPages)
 }
 
-func (s *source) detail(ctx context.Context, base, host, domain, id string, b sources.Board, seen time.Time) (posting.Posting, error) {
-	q := url.Values{}
-	q.Set("position_id", id)
-	q.Set("domain", domain)
-	q.Set("hl", "en")
+// fetchDetail reads one position's detail through a. A 404 is errDetailGone.
+func (s *source) fetchDetail(ctx context.Context, a api, domain, id string) (details, error) {
 	var d details
-	if err := s.get(ctx, base+"position_details?"+q.Encode(), &d); err != nil {
-		if errors.Is(err, srcutil.ErrBoardNotFound) {
-			return posting.Posting{}, errDetailGone
-		}
+	var err error
+	if a.v2 {
+		var v v2Details
+		err = s.getV2(ctx, a.base+"jobs/"+id+"?"+url.Values{"domain": {domain}}.Encode(), v2DetailMaxBody, &v)
+		d = v.details()
+	} else {
+		q := url.Values{}
+		q.Set("position_id", id)
+		q.Set("domain", domain)
+		q.Set("hl", "en")
+		err = s.get(ctx, a.base+"position_details?"+q.Encode(), &d)
+	}
+	if errors.Is(err, srcutil.ErrBoardNotFound) {
+		return details{}, errDetailGone
+	}
+	return d, err
+}
+
+func (s *source) detail(ctx context.Context, a api, host, domain string, l listing, b sources.Board, seen time.Time) (posting.Posting, error) {
+	id := l.id
+	d, err := s.fetchDetail(ctx, a, domain, id)
+	if err != nil {
 		return posting.Posting{}, err
+	}
+	if strings.TrimSpace(d.WorkLocationOption) == "" {
+		d.WorkLocationOption = l.work // v2 answers it on the search row, null on the detail
 	}
 	if d.ID.String() != id {
 		return posting.Posting{}, fmt.Errorf("%w: details are for position %q", ErrShape, d.ID.String())
@@ -302,7 +475,7 @@ func (s *source) detail(ctx context.Context, base, host, domain, id string, b so
 		Title:       title,
 		Location:    joinUnique(d.Locations),
 		Department:  strings.TrimSpace(d.Department),
-		Remote:      strings.EqualFold(d.WorkLocationOption, "remote"),
+		Remote:      isRemote(d.WorkLocationOption),
 		URL:         u,
 		Description: description(d),
 		SeenAt:      seen,
@@ -311,6 +484,14 @@ func (s *source) detail(ctx context.Context, base, host, domain, id string, b so
 		p.PostedAt = time.Unix(*d.PostedTs, 0).UTC()
 	}
 	return p, nil
+}
+
+// isRemote reads a work location option: pcsx says "remote", v2 also
+// "remote_local" (Netflix's remote-within-a-location roles, seen 2026-10-22).
+// Other values ("onsite", "hybrid") are not remote.
+func isRemote(opt string) bool {
+	opt = strings.ToLower(strings.TrimSpace(opt))
+	return opt == "remote" || strings.HasPrefix(opt, "remote_")
 }
 
 func joinUnique(ss []string) string {
