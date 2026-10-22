@@ -229,7 +229,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "vani: %v\n", err)
 		return exitRuntime
 	}
-	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: stdout, stderr: stderr}
+	return runEnv(&env{configPath: cfgPath, stateDir: stateDir, stdout: stdout, stderr: stderr}, args)
+}
+
+// runEnv dispatches args against an already-resolved env. run builds the env
+// from the process environment; tests that must run in parallel build their
+// own, since t.Setenv cannot be used under t.Parallel.
+func runEnv(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	if len(args) == 0 {
+		fmt.Fprint(stderr, usageText)
+		return exitUsage
+	}
 
 	var cmdErr error
 	switch args[0] {

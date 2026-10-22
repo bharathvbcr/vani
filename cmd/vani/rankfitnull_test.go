@@ -85,23 +85,28 @@ func seedNullJudgments(t *testing.T, stateDir string, n int, seed uint64) {
 
 // A null world through the whole command: for each of 20 seeds the run must
 // refuse with errRankfitNoGain and write no file (A3-1). A bare accuracy
-// comparison wrote a weights file for a good share of them.
+// comparison wrote a weights file for a good share of them. The seeds share no
+// state (each builds its own env, so no t.Setenv), so they run as parallel
+// subtests; the clock is pinned once, before they start.
 func TestRankfitNullWorldWritesNothing(t *testing.T) {
 	const seeds = 20
+	fixedNow(t)
 	for seed := uint64(1); seed <= seeds; seed++ {
-		_, stateDir := setup(t)
-		fixedNow(t)
-		mustCode(t, 0, "init")
-		seedNullJudgments(t, stateDir, 400, 500+seed)
-		o, e := mustCode(t, 1, "rankfit", "--part", "weights", "--seed", fmt.Sprint(seed))
-		if !strings.Contains(e, errRankfitNoGain.Error()) {
-			t.Errorf("seed %d: stderr lacks the no-gain refusal:\n%s\n%s", seed, o, e)
-		}
-		if !strings.Contains(o, "held-out pairs") || !strings.Contains(o, "gain interval") {
-			t.Errorf("seed %d: output does not print n and the interval:\n%s", seed, o)
-		}
-		if _, err := os.Stat(weightsPath(stateDir)); !os.IsNotExist(err) {
-			t.Errorf("seed %d: a refused run left a weights file: %v", seed, err)
-		}
+		t.Run(fmt.Sprintf("seed%02d", seed), func(t *testing.T) {
+			t.Parallel()
+			x := newIsoEnv(t)
+			x.mustCode(t, 0, "init")
+			seedNullJudgments(t, x.stateDir, 400, 500+seed)
+			o, e := x.mustCode(t, 1, "rankfit", "--part", "weights", "--seed", fmt.Sprint(seed))
+			if !strings.Contains(e, errRankfitNoGain.Error()) {
+				t.Errorf("seed %d: stderr lacks the no-gain refusal:\n%s\n%s", seed, o, e)
+			}
+			if !strings.Contains(o, "held-out pairs") || !strings.Contains(o, "gain interval") {
+				t.Errorf("seed %d: output does not print n and the interval:\n%s", seed, o)
+			}
+			if _, err := os.Stat(weightsPath(x.stateDir)); !os.IsNotExist(err) {
+				t.Errorf("seed %d: a refused run left a weights file: %v", seed, err)
+			}
+		})
 	}
 }
