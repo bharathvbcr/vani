@@ -1,6 +1,8 @@
 package jobview
 
 import (
+	"bytes"
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -238,13 +240,57 @@ type Job struct {
 	Logo string `json:"logo,omitempty"`
 	// Row is the versioned contract every surface reads (internal/jobview).
 	Row *Row `json:"row,omitempty"`
+
+	// Untriaged marks a posting no run has triaged yet (status live): it has no
+	// fit, relevance, priority, keywords or row, and the reply carries none of
+	// them (absent is "not known", never 0). It is set from the status, so a
+	// live posting the owner saved or hid is flagged in its mark view too.
+	Untriaged bool `json:"untriaged,omitempty"`
+	// PrefilterDrop says the next run's prefilter would drop this untriaged
+	// posting before triage: "excluded" (the config's exclusions) or "title"
+	// (a title_signals.read reading a drop rule names). Only the kind, never
+	// the rule: rule values can reveal the owner's work authorization.
+	PrefilterDrop string `json:"prefilter_drop,omitempty"`
 }
 
-// InView reports whether a record with mark belongs in view.
+// MarshalJSON writes a Job as its struct tags say, except that an untriaged
+// posting's relevance and priority are left out instead of written as 0, which
+// readers would take for a very low score. Every other Job is byte-identical to
+// the default encoding (HTML is not escaped, as the jobs replies are encoded).
+func (j Job) MarshalJSON() ([]byte, error) {
+	type plain Job // no methods, so no recursion
+	var v any = plain(j)
+	if j.Untriaged {
+		v = struct {
+			plain
+			Relevance      *float64 `json:"relevance,omitempty"`
+			Priority       *float64 `json:"priority,omitempty"`
+			RelevanceKnown *float64 `json:"relevance_known,omitempty"`
+		}{plain: plain(j)}
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
+// ViewPending is the view of postings no run has triaged yet (status live).
+// It is the only view with no fit, relevance or priority to show, and it is
+// never mixed into the others: "new" and "all" list triaged roles only.
+const ViewPending = "pending"
+
+// InView reports whether a record with mark belongs in view. The pending view,
+// like "new", leaves out what the owner marked: a saved or hidden posting is in
+// its mark view, so Pending.Total and the view's count agree.
 func InView(view string, r ledger.Record, mark marks.Mark) bool {
 	switch view {
 	case "new":
 		return mark == marks.None && KeptStatus(r.Status)
+	case ViewPending:
+		return mark == marks.None && r.Status == posting.Live
 	case "all":
 		return mark != marks.None || KeptStatus(r.Status)
 	}
@@ -263,6 +309,7 @@ func ToJob(r ledger.Record, entry marks.Entry) Job {
 		Department:  CleanText(p.Department, FieldRunes, false),
 		Status:      r.Status,
 		Closed:      r.Status == posting.Dead,
+		Untriaged:   r.Status == posting.Live,
 		Explanation: CleanText(ann[ledger.AnnExplanation], NoteRunes, false),
 		Missing:     CleanText(ann[ledger.AnnMissing], NoteRunes, false),
 		LCA:         CleanText(ann[ledger.AnnLCA], FieldRunes, false),

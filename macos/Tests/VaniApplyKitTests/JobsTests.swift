@@ -33,7 +33,9 @@ final class JobsTests: XCTestCase {
     /// views keep the standard order, which lists them by when they were marked.
     func testDefaultSortPerView() {
         XCTAssertEqual(JobSort.defaultSort(for: .new), .priority)
-        for view in JobView.allCases where view != .new {
+        // Awaiting triage has no scores: newest first.
+        XCTAssertEqual(JobSort.defaultSort(for: .pending), .fresh)
+        for view in JobView.allCases where view != .new && view != .pending {
             XCTAssertEqual(JobSort.defaultSort(for: view), .standard, "\(view)")
         }
     }

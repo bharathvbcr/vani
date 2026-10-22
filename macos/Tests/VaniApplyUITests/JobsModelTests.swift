@@ -201,4 +201,46 @@ final class JobsModelTests: XCTestCase {
         XCTAssertEqual(m.sort, .fresh)
         try await eventually("the fresh order") { m.jobs.map(\.key) == JobsFixture.freshOrder }
     }
+
+    /// Awaiting triage opens newest first, and a priority order picked in another
+    /// view (which it cannot offer) gives way to it.
+    func testAwaitingTriageOpensNewestFirstAndDropsAnOrderItCannotOffer() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        m.sort = .relevance
+        m.view = .pending
+        XCTAssertEqual(m.sort, .fresh, "relevance needs scores these postings do not have")
+        try await eventually("the pending list") { f.calls().contains { $0.hasPrefix("jobs list") && $0.contains("--view pending") && $0.contains("--sort fresh") } }
+        m.sort = .company
+        m.view = .applied
+        XCTAssertEqual(m.sort, .company, "an order the owner picked that both views offer is kept")
+        m.view = .pending
+        XCTAssertEqual(m.sort, .company)
+        m.view = .new
+        XCTAssertEqual(m.sort, .company)
+    }
+
+    /// Stats and gaps of unranked postings are refused by vani, and no impression
+    /// is logged for rows that were never ranked: the app asks for neither.
+    func testAwaitingTriageAsksNoStatsGapsOrImpressions() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        m.showInsights = true // starts a reload; the one that ends last is the one that reports
+        await m.refresh()
+        try await eventually("a ranked view's stats and impressions") {
+            f.calls().contains { $0.hasPrefix("jobs stats") && $0.contains("--view new") }
+                && f.calls().contains { $0.hasPrefix("impressions log") && $0.contains("--slate new-") }
+        }
+
+        m.view = .pending
+        try await eventually("the pending list") { f.calls().contains { $0.hasPrefix("jobs list") && $0.contains("--view pending") } }
+        await m.refresh()
+        try await eventually("settled") { !m.loading }
+        let calls = f.calls()
+        XCTAssertFalse(calls.contains { $0.contains("--view pending") && ($0.hasPrefix("jobs stats") || $0.hasPrefix("jobs gaps")) }, "\(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("impressions log") && $0.contains("pending") }, "\(calls)")
+        XCTAssertNil(m.statsError)
+        XCTAssertNil(m.gapsError)
+        XCTAssertNil(m.impressionsError)
+    }
 }

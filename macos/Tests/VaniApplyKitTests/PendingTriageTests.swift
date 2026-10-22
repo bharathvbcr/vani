@@ -14,10 +14,10 @@ final class PendingTriageTests: XCTestCase {
         let page = try JobsClient.decoder.decode(JobsPage.self, from: Data(reply.utf8))
         let p = try XCTUnwrap(page.pending)
         XCTAssertEqual(p, PendingTriage(total: 2639, matching: 656, companies: [.init(company: "Databricks", n: 895), .init(company: "Anthropic", n: 656)]))
-        XCTAssertEqual(p.footerNote, "· 2639 awaiting triage")
+        XCTAssertEqual(p.footerNote, "· 2639 awaiting triage (see the Awaiting triage view)")
         XCTAssertTrue(p.footerHelp.contains("(Databricks 895, Anthropic 656)"), p.footerHelp)
         XCTAssertEqual(p.emptySearchNote(query: "anthropic"),
-                       "656 postings matching “anthropic” are awaiting triage; they appear here once a run triages them.")
+                       "656 postings matching “anthropic” are awaiting triage; see them, unranked, in the Awaiting triage view.")
     }
 
     func testAReplyWithoutPendingStillDecodes() throws {
@@ -38,6 +38,6 @@ final class PendingTriageTests: XCTestCase {
     func testOneWaitingIsSingular() {
         let one = PendingTriage(total: 1, matching: 1, companies: [.init(company: "Acme", n: 1)])
         XCTAssertEqual(one.emptySearchNote(query: "acme"),
-                       "1 posting matching “acme” is awaiting triage; it appears here once a run triages it.")
+                       "1 posting matching “acme” is awaiting triage; see it, unranked, in the Awaiting triage view.")
     }
 }

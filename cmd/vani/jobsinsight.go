@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
 	"github.com/bharathvbcr/Vani/internal/marks"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/semantic"
 )
@@ -44,10 +45,12 @@ type jobsOpts struct {
 	fit, workMode, sponsor string     // comma lists of fixture option values, or "none"
 	state, area            string     // comma lists: USPS codes or state names; areas; "none"
 	more                   jobsFilter // pay, seniority, company, title, relevance (jobsfilter.go)
+	// pendingOK lets --view pending through check: only `jobs list` sets it.
+	pendingOK bool
 }
 
 func addSelectFlags(fs *flag.FlagSet, o *jobsOpts) {
-	fs.StringVar(&o.View, "view", "new", "new, saved, applied, hidden or all")
+	fs.StringVar(&o.View, "view", "new", "new, saved, applied, hidden or all (jobs list also: pending, the unranked postings no run has triaged yet)")
 	fs.StringVar(&o.Query, "q", "", "only jobs whose title, company, location, team or note contains this")
 	fs.StringVar(&o.fit, "fit", "", "only these role_fit readings (comma list; none = no reading)")
 	fs.StringVar(&o.workMode, "work-mode", "", "only these work_mode readings (comma list; none = no reading)")
@@ -68,6 +71,10 @@ func (o *jobsOpts) check(cmd string, sortable bool) error {
 	switch {
 	case !slices.Contains(jobview.Views, o.View):
 		return usagef("%s: --view must be one of %s", cmd, strings.Join(jobview.Views, ", "))
+	case o.View == jobview.ViewPending && !o.pendingOK:
+		// Untriaged postings have no fit, relevance or priority, so there is
+		// nothing for stats, gaps or the audit to aggregate or sample.
+		return usagef("%s: --view pending lists postings no run has triaged, which have no fit, relevance or priority; only `jobs list --view pending` takes it", cmd)
 	case len(o.Query) > maxQueryBytes || !utf8.ValidString(o.Query):
 		return usagef("%s: --q must be UTF-8 and at most %d bytes", cmd, maxQueryBytes)
 	case sortable && !slices.Contains(jobview.Sorts, o.Sort):
@@ -234,6 +241,10 @@ type insight struct {
 	// logos finds each posting's cached company icon; nil when the config
 	// could not be read (every job then shows its monogram).
 	logos *logoIndex
+	// drop is the config's prefilter (exclusions and title readings, as `vani
+	// prefilter` and the run apply it); nil when the config sets none or could
+	// not be read.
+	drop *pipeline.DropPolicy
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -325,6 +336,9 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	if err == nil {
 		in.attachSemantic(cfg, stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
+		if p := dropPolicy(cfg, cfg.Decide.OpenRouterName()); p.Prefilters() {
+			in.drop = &p
+		}
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 		var warn string
 		in.rc.KBMatch, warn = kbmatchLookup(cfg, stateDir)
@@ -383,6 +397,10 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 		age := jobinsight.AgeDays(at, in.now)
 		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
 	}
+	if j.Untriaged {
+		in.enrichUntriaged(j, r)
+		return nil
+	}
 	hits, ok := in.hits[r.Key]
 	if !ok {
 		hits = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
@@ -400,6 +418,26 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 	row := jobview.RowOf(*j)
 	j.Row = &row
 	return hits
+}
+
+// enrichUntriaged is Enrich for a posting no run has triaged: where it is, how
+// fresh, its company's icon, and whether the next run's prefilter would drop
+// it. It scores nothing, so it reads no keywords and builds no row: those need
+// a triage reading, and a score computed without one would look like a rank.
+func (in *insight) enrichUntriaged(j *jobview.Job, r ledger.Record) {
+	j.Logo = in.logos.path(r.Key, r.Posting.Company)
+	// Marked postings are never dropped by exclusions (hideExcluded, protectMarked).
+	if in.drop == nil || r.BodyEvicted || j.Mark != marks.None {
+		return
+	}
+	// The kind is the backend the policy names, not its reason text, which
+	// carries the rule.
+	if a, _, dropped := in.drop.EvaluatePosting(r.Posting); dropped {
+		j.PrefilterDrop = "title"
+		if a.Backend == pipeline.ExcludeBackend {
+			j.PrefilterDrop = "excluded"
+		}
+	}
 }
 
 // --- stats ---
