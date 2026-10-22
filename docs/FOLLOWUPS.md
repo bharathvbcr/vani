@@ -1659,5 +1659,7 @@ Left open:
   outwait the second. The board now ends `rate_limited` and is retried next run. Pacing stays egress's 1 s per
   host; no `Crawl-delay` is in that robots.txt. A rate-limited host is not remembered across boards, so two
   boards on one host each spend their own budget. Every srcutil source now retries up to 5 times, not 3.
+  The 2-minute budget is per board with no run-level cap, so a run where many hosts throttle can
+  stretch by up to that much per board. A host that blocks for days is still asked on every run.
 - **An interrupted run never reaches the run history.** A run whose process died leaves a `running` record in `last.json`, and the next run replaces it before it is ever written to `runs/history/`. Archiving a dead-pid `running` record at the next start would keep it.
 - **Nothing ties a log to its run.** `vani runs failures` names the logs that exist, with size and last write time; the run record does not say which log holds its output, and a rotated `manual-<time>.log` is named by its last write, not by run id. Recording the log path in the run record would let the report say which.
