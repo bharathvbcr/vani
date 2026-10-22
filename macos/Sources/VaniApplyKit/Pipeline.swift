@@ -314,6 +314,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     case read
                     /// Listing or reconciling failed; the board's postings were left as they were.
                     case failed
+                    /// The host kept answering HTTP 429 through vani's retries: not broken,
+                    /// the board's postings were left as they were and it is tried next run.
+                    case rateLimited
                     /// No adapter, or the careers-page source was disabled this run.
                     case skipped
                     /// An outcome a newer vani adds: shown as written, never as read.
@@ -323,6 +326,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                         switch raw {
                         case "read": self = .read
                         case "failed": self = .failed
+                        case "rate_limited": self = .rateLimited
                         case "skipped": self = .skipped
                         default: self = .unknown(raw)
                         }
@@ -365,7 +369,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public struct Line: Equatable, Sendable {
                 /// "Intel (wd intel/External)"
                 public var board: String
-                /// "failed", "skipped", or a newer vani's outcome as written.
+                /// "failed", "rate limited", "skipped", or a newer vani's outcome as written.
                 public var outcome: String
                 public var error: String
             }
@@ -375,7 +379,11 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
             public var configured: Int
             public var read: Int
+            /// Every board whose listing failed, the rate-limited ones included.
             public var failed: Int
+            /// The part of `failed` the host rate limited (HTTP 429); 0 from a vani that
+            /// does not report it.
+            public var rateLimited: Int
             public var skipped: Int
             /// Boards never tried: the run ended before them.
             public var notReached: Int
@@ -388,6 +396,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             enum CodingKeys: String, CodingKey {
                 case configured, read, failed, skipped, listed, items, unrecorded
                 case notReached = "not_reached"
+                case rateLimited = "rate_limited"
             }
 
             public init(from decoder: Decoder) throws {
@@ -395,6 +404,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 configured = try c.decode(Int.self, forKey: .configured)
                 read = try c.decode(Int.self, forKey: .read)
                 failed = try c.decode(Int.self, forKey: .failed)
+                rateLimited = try c.decodeIfPresent(Int.self, forKey: .rateLimited) ?? 0
                 skipped = try c.decode(Int.self, forKey: .skipped)
                 listed = try c.decode(Int.self, forKey: .listed)
                 notReached = try c.decodeIfPresent(Int.self, forKey: .notReached) ?? 0
@@ -402,11 +412,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
             }
 
-            public init(configured: Int, read: Int, failed: Int = 0, skipped: Int = 0, notReached: Int = 0,
+            public init(configured: Int, read: Int, failed: Int = 0, rateLimited: Int = 0, skipped: Int = 0, notReached: Int = 0,
                         listed: Int, items: [Item] = [], unrecorded: Int = 0) {
                 self.configured = configured
                 self.read = read
                 self.failed = failed
+                self.rateLimited = rateLimited
                 self.skipped = skipped
                 self.notReached = notReached
                 self.listed = listed
@@ -425,7 +436,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             /// How the boards that were not read went, or nil when every board was read.
             public var outcome: String? {
                 var parts: [String] = []
-                if failed > 0 { parts.append("\(failed) failed") }
+                if failed > 0 {
+                    // A rate-limited board is counted in `failed`; name the part that is
+                    // the host throttling vani rather than the board being broken.
+                    let limited = min(max(rateLimited, 0), failed)
+                    parts.append(limited > 0 ? "\(failed) failed (\(limited) rate limited, tried again next run)" : "\(failed) failed")
+                }
                 if skipped > 0 { parts.append("\(skipped) skipped") }
                 if notReached > 0 { parts.append("\(notReached) not reached") }
                 guard !parts.isEmpty else { return nil }
@@ -440,6 +456,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     let outcome: String = switch item.outcome {
                     case .read: "read"
                     case .failed: "failed"
+                    case .rateLimited: "rate limited"
                     case .skipped: "skipped"
                     case .unknown(let raw): PipelineStatus.bounded(raw, max: 30)
                     }
