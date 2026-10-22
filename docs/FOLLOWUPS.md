@@ -1653,3 +1653,9 @@ Left open:
   Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
 - **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every
   request.
+- **Microsoft Eightfold 429 is unexplained.** On 2026-10-22 `apply.careers.microsoft.com` answered every
+  pcsx search with 429, no `Retry-After`, an HTML 22-byte body, minutes after the last run. Whether it is a
+  burst limit or a sustained edge block is not known; backoff (about 2-16 s, one board budget of 2 min) cannot
+  outwait the second. The board now ends `rate_limited` and is retried next run. Pacing stays egress's 1 s per
+  host; no `Crawl-delay` is in that robots.txt. A rate-limited host is not remembered across boards, so two
+  boards on one host each spend their own budget. Every srcutil source now retries up to 5 times, not 3.

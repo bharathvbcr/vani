@@ -322,6 +322,33 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(s.health(at: now), .healthy)
     }
 
+    /// The Microsoft case: a host kept answering 429, so the board is `failed` in the
+    /// totals (older readers count it) and `rate_limited` on its own entry.
+    private static let runWithRateLimitedBoard = #"{"ok":true,"state":"ok","boards":{"configured":3,"read":1,"failed":2,"rate_limited":1,"skipped":0,"listed":4,"items":[{"ats":"ef","token":"microsoft.com","company":"Microsoft","outcome":"rate_limited","error":"eightfold \"microsoft.com\": search \"LLM inference\": sources: rate limited by apply.careers.microsoft.com (HTTP 429), retry next run (GET /api/pcsx/search: gave up after 5 attempts)"},{"ats":"wd","token":"intel/External","company":"Intel","outcome":"failed","error":"http 500"},{"ats":"gh","token":"a","outcome":"read","listed":4}]}}"#
+
+    func testARateLimitedBoardIsToldApartFromABrokenOne() throws {
+        let s = try decode(statusReply(lastRun: Self.runWithRateLimitedBoard))
+        let b = try XCTUnwrap(s.lastRun.boards)
+        XCTAssertEqual(b.items.map(\.outcome), [.rateLimited, .failed, .read])
+        XCTAssertEqual(b.rateLimited, 1)
+        XCTAssertEqual(b.unreadCount, 2, "a rate-limited board is still a board that was not read")
+        XCTAssertEqual(b.outcome, "2 failed (1 rate limited, tried again next run); their postings were left as they were")
+        XCTAssertEqual(b.problems().map(\.outcome), ["rate limited", "failed"])
+        XCTAssertTrue(try XCTUnwrap(b.problems().first).error.contains("rate limited by apply.careers.microsoft.com (HTTP 429), retry next run"))
+        XCTAssertNil(b.moreNote())
+        XCTAssertEqual(s.health(at: now), .warning)
+    }
+
+    func testAVaniWithoutTheRateLimitedKeyDecodesAsBefore() throws {
+        // runWithBoards has no rate_limited total: 0, and the wording is the old one.
+        let b = try XCTUnwrap(try decode(statusReply(lastRun: Self.runWithBoards)).lastRun.boards)
+        XCTAssertEqual(b.rateLimited, 0)
+        XCTAssertEqual(b.outcome, "1 failed, 1 skipped; their postings were left as they were")
+        // A total that claims more rate-limited boards than failed ones is clamped, not echoed.
+        let odd = PipelineStatus.LastRun.Boards(configured: 1, read: 0, failed: 1, rateLimited: 7, listed: 0)
+        XCTAssertEqual(odd.outcome, "1 failed (1 rate limited, tried again next run); their postings were left as they were")
+    }
+
     func testBoardsCutByVaniAndNotReached() throws {
         // A cancelled run: one read, one failed mid-listing, one never tried;
         // and a report whose items vani cut (only the totals are whole).

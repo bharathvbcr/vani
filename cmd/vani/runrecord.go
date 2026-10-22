@@ -145,6 +145,10 @@ const (
 	boardRead    = "read"
 	boardFailed  = "failed"  // listing or reconciling failed; its postings are untouched
 	boardSkipped = "skipped" // no adapter, or the careers-page source is disabled this run
+	// boardRateLimited is a board whose host kept answering HTTP 429 through the
+	// retries: not broken, left untouched, tried again next run. Older readers
+	// show an outcome they do not know as written.
+	boardRateLimited = "rate_limited"
 )
 
 // boardsReport is what one run's listing phase did. The totals count every
@@ -153,8 +157,13 @@ type boardsReport struct {
 	// Configured is the watchlist's size.
 	Configured int `json:"configured"`
 	Read       int `json:"read"`
-	Failed     int `json:"failed"`
-	Skipped    int `json:"skipped"`
+	// Failed counts every board whose listing failed, the rate-limited ones
+	// included, so a reader that does not know RateLimited still counts them.
+	Failed int `json:"failed"`
+	// RateLimited is the part of Failed that ended in HTTP 429 (outcome
+	// rate_limited). Additive: readers that do not know the key ignore it.
+	RateLimited int `json:"rate_limited,omitempty"`
+	Skipped     int `json:"skipped"`
 	// NotReached boards were never tried: the run ended (cancelled, a ledger
 	// failure) before them.
 	NotReached int `json:"not_reached,omitempty"`

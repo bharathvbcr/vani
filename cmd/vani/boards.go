@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 // Bounds on the run record's board report. Totals stay exact past them; only
@@ -56,14 +58,23 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 			tried = append(tried, e)
 			continue
 		}
-		listed, err := src.List(ctx, b)
+		// One retry budget per board: waiting out a host's 429s is bounded for
+		// the board as a whole, not only for each of its requests.
+		listed, err := src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
 		if err != nil {
 			e.Outcome, e.Error = boardFailed, oneLine(err.Error(), maxBoardErrorRunes)
+			next := "left unchanged"
+			if errors.Is(err, srcutil.ErrRateLimited) {
+				// The host is throttling, not broken: say so. The postings are
+				// untouched and the board is tried again next run.
+				e.Outcome = boardRateLimited
+				next = "left unchanged, will retry next run"
+			}
 			tried = append(tried, e)
 			if ctx.Err() != nil {
 				return report(), ctx.Err()
 			}
-			warnf("board %s/%s: %v; left unchanged", b.ATS, b.Token, err)
+			warnf("board %s/%s: %v; %s", b.ATS, b.Token, err, next)
 			continue
 		}
 		n := len(listed)
@@ -101,6 +112,9 @@ func boardsReportOf(configured int, tried []boardReport) boardsReport {
 			}
 		case boardFailed:
 			r.Failed++
+		case boardRateLimited:
+			r.Failed++
+			r.RateLimited++
 		case boardSkipped:
 			r.Skipped++
 		}
