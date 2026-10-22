@@ -1076,6 +1076,13 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     Stored postings are reused, and new ones the title rule drops are not fetched. Tested on a fake
     NVIDIA-shaped board only; **not yet run live from the daemon.** The installed app's bundled
     `vani` predates it.
+  - **Fixed 2026-10-22, wrap at the total:** `salesforce/External_Career_Site` "machine learning"
+    counts 40 on its first page and 0 on every later one, and answers offset 40 with page 1 again.
+    The walk paged until a short page, so a total that is a multiple of 20 sent it to offset 40 and
+    refused a complete listing. It now stops at the first page's total (when that is a positive
+    integer under the window and at least the page's rows) and asks for no offset at or past it. A
+    wrap before the total still fails the board, and so does a wrap with no usable total. A later
+    page's total is ignored. A board that shrinks onto a full page mid-walk fails that run.
   - **Open, ingest bound:** a crawled job's description reaches Vani only as the 4000-byte
     `snippet` (`docs/EXTENSION_INGEST.md`). The crawl sends the part that describes the role, not
     the company boilerplate, but triage and scoring see that excerpt, not the whole posting.
