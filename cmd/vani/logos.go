@@ -61,6 +61,13 @@ func logoSources(cfg config.Config) (sources []logo.Source, hosts, missing []str
 	return sources, slices.Compact(hosts), slices.Compact(missing)
 }
 
+// logoEgressConfig is the egress policy of an icon fetch. The body cap is one
+// byte past logo.MaxBytes, so a reply of exactly MaxBytes is read whole and a
+// longer one is refused by logo.Fetch (never cut) rather than by egress.
+func logoEgressConfig(hosts []string) egress.Config {
+	return egress.Config{AllowedHosts: hosts, MaxBodyBytes: logo.MaxBytes + 1, Timeout: logoRequestTimeout}
+}
+
 // refreshLogos fetches the icons the cache lacks or holds stale. The egress
 // client allows only the board domains and icon hosts, so a redirect
 // elsewhere, even to another allowed board host, is refused and named in the
@@ -70,7 +77,7 @@ func refreshLogos(ctx context.Context, cfg config.Config, stateDir string, now t
 	if len(sources) == 0 {
 		return logo.Result{}, missing, nil
 	}
-	d, err := egress.New(egress.Config{AllowedHosts: hosts, MaxBodyBytes: logo.MaxBytes + 1, Timeout: logoRequestTimeout})
+	d, err := egress.New(logoEgressConfig(hosts))
 	if err != nil {
 		return logo.Result{}, missing, fmt.Errorf("logos: egress: %w", err)
 	}

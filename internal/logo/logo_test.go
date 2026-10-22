@@ -103,6 +103,44 @@ func TestFetchRefusesOversized(t *testing.T) {
 	}
 }
 
+// padded returns head followed by zero bytes, n bytes in all.
+func padded(head []byte, n int) []byte {
+	return append(append([]byte{}, head...), make([]byte, n-len(head))...)
+}
+
+func TestFetchBoundIsExact(t *testing.T) {
+	// status.openai.com/favicon.ico is the one reachable OpenAI icon: an
+	// image/x-icon of 285,478 bytes, which the old 256 KiB bound refused.
+	for _, c := range []struct {
+		name string
+		body []byte
+		kind string
+		want bool
+	}{
+		{"openai-sized ico", padded(icoBytes, 285478), "ico", true},
+		{"exactly MaxBytes", padded(icoBytes, MaxBytes), "ico", true},
+		{"MaxBytes+1", padded(icoBytes, MaxBytes+1), "", false},
+		{"far over", padded(icoBytes, 4*MaxBytes), "", false},
+	} {
+		d := srctest.New(map[string]srctest.Reply{
+			"https://www.acme.com/apple-touch-icon.png": {Status: 200, Body: c.body},
+		})
+		b, kind, err := Fetch(context.Background(), d, "www.acme.com", "")
+		if c.want {
+			if err != nil || kind != c.kind || len(b) != len(c.body) {
+				t.Errorf("%s: Fetch = %d bytes, %q, %v; want the whole %d-byte body", c.name, len(b), kind, err, len(c.body))
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("larger than %d bytes", MaxBytes)) || b != nil {
+			t.Errorf("%s: Fetch = %d bytes, %q, %v; want refused whole, never cut", c.name, len(b), kind, err)
+		}
+	}
+	if MaxBytes != 1<<20 {
+		t.Errorf("MaxBytes = %d, want 1 MiB", MaxBytes)
+	}
+}
+
 func TestFetchNamesTheRefusedHost(t *testing.T) {
 	// The egress client refuses a redirect to a host not in allowed_hosts; the
 	// error must reach the warning so the owner can fix the domain.
