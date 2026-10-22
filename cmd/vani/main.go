@@ -29,7 +29,8 @@ const (
 const usageText = `usage: vani <command> [flags]
 
 commands:
-  init                       write a default config (refuses to overwrite)
+  version                    print the product version ("dev" unless built by scripts/release.sh)
+  init                    write a default config (refuses to overwrite)
   config check               validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
   config exclude [--set]     print the exclusions (titles, title_unless, companies, locations,
@@ -247,6 +248,8 @@ func runEnv(e *env, args []string) int {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usageText)
 		return exitOK
+	case "version", "--version":
+		cmdErr = e.cmdVersion(args[1:])
 	case "init":
 		cmdErr = e.cmdInit(args[1:])
 	case "config":

@@ -798,3 +798,10 @@ relative replaces in `go.mod` point outside the tree. The default build leaves t
 go -C /Users/bharath/Code/apps/Vani vet ./...
 go -C /Users/bharath/Code/apps/Vani test -race ./...
 ```
+
+## Releasing
+
+A release is private: a GitHub release in the private repo, signed with the Apple Development
+identity, not notarized, and rolled back by reinstalling the previous release's zip. Cut one with
+`scripts/release.sh vX.Y.Z [--dry-run]`; the policy, commands, install and rollback steps are in
+[docs/RELEASE.md](docs/RELEASE.md).
