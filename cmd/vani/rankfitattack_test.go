@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
@@ -29,13 +31,37 @@ func requireFileIffSuccess(t *testing.T, name, stateDir string, code int) {
 // Attack 7: --seed omitted is the deterministic default 1; two runs print the
 // same bytes and match an explicit --seed 1.
 func TestAttackRankfitDefaultSeedIsDeterministic(t *testing.T) {
-	_, stateDir := setup(t)
+	cfgPath, stateDir := setup(t)
 	fixedNow(t)
 	mustCode(t, 0, "init")
 	seedJudgments(t, stateDir, 400)
-	o1, _ := mustCode(t, 0, "rankfit", "--part", "weights", "--out", filepath.Join(t.TempDir(), "a.json"))
-	o2, _ := mustCode(t, 0, "rankfit", "--part", "weights", "--out", filepath.Join(t.TempDir(), "b.json"))
-	o3, _ := mustCode(t, 0, "rankfit", "--part", "weights", "--seed", "1", "--out", filepath.Join(t.TempDir(), "c.json"))
+	// The three runs only read the judgments and write to distinct --out
+	// files, so they run concurrently, each with its own env and buffers.
+	argv := [][]string{
+		{"rankfit", "--part", "weights", "--out", filepath.Join(t.TempDir(), "a.json")},
+		{"rankfit", "--part", "weights", "--out", filepath.Join(t.TempDir(), "b.json")},
+		{"rankfit", "--part", "weights", "--seed", "1", "--out", filepath.Join(t.TempDir(), "c.json")},
+	}
+	outs := make([]string, len(argv))
+	codes := make([]int, len(argv))
+	errs := make([]string, len(argv))
+	var wg sync.WaitGroup
+	for i := range argv {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var o, e bytes.Buffer
+			codes[i] = runEnv(&env{configPath: cfgPath, stateDir: stateDir, stdout: &o, stderr: &e}, argv[i])
+			outs[i], errs[i] = o.String(), e.String()
+		}()
+	}
+	wg.Wait()
+	for i := range argv {
+		if codes[i] != 0 {
+			t.Fatalf("vani %v: exit %d, want 0\nstdout: %s\nstderr: %s", argv[i], codes[i], outs[i], errs[i])
+		}
+	}
+	o1, o2, o3 := outs[0], outs[1], outs[2]
 	strip := func(s string) string { // the --out path differs by design
 		var keep []string
 		for _, l := range strings.Split(s, "\n") {
@@ -53,21 +79,25 @@ func TestAttackRankfitDefaultSeedIsDeterministic(t *testing.T) {
 // Attack 7: zero judgments, exactly MinJudged, one under, and a corrupt labels
 // file: exit codes and files agree; nothing is written on any refusal.
 func TestAttackRankfitRefusalPathsWriteNothing(t *testing.T) {
+	fixedNow(t) // once, before the parallel subtests start
 	t.Run("zero judgments", func(t *testing.T) {
-		_, stateDir := setup(t)
-		mustCode(t, 0, "init")
-		code, _, e := do(t, "rankfit", "--part", "weights")
+		t.Parallel()
+		x := newIsoEnv(t)
+		stateDir := x.stateDir
+		x.mustCode(t, 0, "init")
+		code, _, e := x.do("rankfit", "--part", "weights")
 		if code != 1 || !strings.Contains(e, "has 0") {
 			t.Errorf("exit %d: %s", code, e)
 		}
 		requireFileIffSuccess(t, "zero", stateDir, code)
 	})
 	t.Run("exactly MinJudged", func(t *testing.T) {
-		_, stateDir := setup(t)
-		fixedNow(t)
-		mustCode(t, 0, "init")
+		t.Parallel()
+		x := newIsoEnv(t)
+		stateDir := x.stateDir
+		x.mustCode(t, 0, "init")
 		seedJudgments(t, stateDir, rankfit.MinJudged)
-		code, o, e := do(t, "rankfit", "--part", "weights")
+		code, o, e := x.do("rankfit", "--part", "weights")
 		t.Logf("exit %d\n%s\n%s", code, o, e)
 		if code != 0 && code != 1 {
 			t.Errorf("exit %d", code)
@@ -78,9 +108,10 @@ func TestAttackRankfitRefusalPathsWriteNothing(t *testing.T) {
 		requireFileIffSuccess(t, "MinJudged", stateDir, code)
 	})
 	t.Run("corrupt labels file", func(t *testing.T) {
-		_, stateDir := setup(t)
-		fixedNow(t)
-		mustCode(t, 0, "init")
+		t.Parallel()
+		x := newIsoEnv(t)
+		stateDir := x.stateDir
+		x.mustCode(t, 0, "init")
 		seedJudgments(t, stateDir, 400)
 		f, err := os.OpenFile(labelsFile(stateDir), os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -94,15 +125,17 @@ func TestAttackRankfitRefusalPathsWriteNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.Close()
-		code, o, e := do(t, "rankfit", "--part", "weights")
+		code, o, e := x.do("rankfit", "--part", "weights")
 		if !strings.Contains(e, "malformed label lines skipped") {
 			t.Errorf("corrupt lines not reported (exit %d):\n%s\n%s", code, o, e)
 		}
 		requireFileIffSuccess(t, "corrupt", stateDir, code)
 	})
 	t.Run("unreadable labels", func(t *testing.T) {
-		_, stateDir := setup(t)
-		mustCode(t, 0, "init")
+		t.Parallel()
+		x := newIsoEnv(t)
+		stateDir := x.stateDir
+		x.mustCode(t, 0, "init")
 		seedJudgments(t, stateDir, 200)
 		if err := os.Remove(labelsFile(stateDir)); err != nil {
 			t.Fatal(err)
@@ -110,18 +143,19 @@ func TestAttackRankfitRefusalPathsWriteNothing(t *testing.T) {
 		if err := os.Mkdir(labelsFile(stateDir), 0o700); err != nil { // a directory where the file should be
 			t.Fatal(err)
 		}
-		code, _, e := do(t, "rankfit", "--part", "weights")
+		code, _, e := x.do("rankfit", "--part", "weights")
 		if code == 0 {
 			t.Errorf("exit 0 on unreadable labels: %s", e)
 		}
 		requireFileIffSuccess(t, "unreadable", stateDir, code)
 	})
 	t.Run("part all, no gain keeps no calibration", func(t *testing.T) {
-		_, stateDir := setup(t)
-		fixedNow(t)
-		mustCode(t, 0, "init")
+		t.Parallel()
+		x := newIsoEnv(t)
+		stateDir := x.stateDir
+		x.mustCode(t, 0, "init")
 		seedNullJudgments(t, stateDir, 400, 501)
-		code, _, _ := do(t, "rankfit", "--seed", "1")
+		code, _, _ := x.do("rankfit", "--seed", "1")
 		requireFileIffSuccess(t, "all/no-gain", stateDir, code)
 	})
 }
