@@ -64,6 +64,7 @@ commands:
                              today's spend against each cap and the decision-model setup
                              (reads the ledger without its lock)
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
+  export heldout [--out PATH] owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N]
                              weekly stratified would-I-apply sample (deciles + drop classes);
@@ -257,6 +258,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdTrack(args[1:])
 	case "label":
 		cmdErr = e.cmdLabel(args[1:])
+	case "export":
+		cmdErr = e.cmdExport(args[1:])
 	case "eval":
 		cmdErr = e.cmdEval(args[1:])
 	case "rankfit":

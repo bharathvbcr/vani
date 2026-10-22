@@ -85,6 +85,11 @@ type Store struct {
 	textDir  string
 	// Now stamps new labels; nil means time.Now.
 	Now func() time.Time
+	// AfterWrite, when set, runs after each label is appended, with the
+	// labels lock released. It is how a caller re-exports the held-out keys
+	// whenever a posting is newly labelled, through every write path (label,
+	// audit answer) with one hook. It cannot fail a write that has landed.
+	AfterWrite func()
 }
 
 func (s *Store) now() time.Time {
@@ -301,6 +306,16 @@ func (s *Store) Update(key posting.Key, fn func(prev Entry, exists bool) (Entry,
 	if s == nil {
 		return errors.New("eval: no label store")
 	}
+	if err := s.update(key, fn); err != nil {
+		return err
+	}
+	if s.AfterWrite != nil {
+		s.AfterWrite()
+	}
+	return nil
+}
+
+func (s *Store) update(key posting.Key, fn func(prev Entry, exists bool) (Entry, error)) error {
 	unlock, err := s.lockLabels()
 	if err != nil {
 		return err

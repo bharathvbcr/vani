@@ -27,7 +27,12 @@ func (e *env) openEvalStore(labels string) (*eval.Store, error) {
 	if labels == "" {
 		labels = filepath.Join(e.stateDir, "eval", "labels")
 	}
-	return eval.NewStore(labels, filepath.Join(e.stateDir, "eval", "text"))
+	s, err := eval.NewStore(labels, filepath.Join(e.stateDir, "eval", "text"))
+	if err != nil {
+		return nil, err
+	}
+	s.AfterWrite = func() { e.reexportHeldout(s) }
+	return s, nil
 }
 
 // ledgerRecords reads the ledger for commands that only read it. It takes no
