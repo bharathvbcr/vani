@@ -94,6 +94,51 @@ func classToken(s string) string {
 // Queue returns the error and no postings, as `label` does, because a queue
 // built without them could repeat labelled work. A nil s means no label check.
 func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand, rules []DropRule) ([]ledger.Record, error) {
+	return QueueWith(recs, s, n, rng, rules, QueueOptions{})
+}
+
+// TeacherReadings is the Haiku second-teacher's store as the queue reads it:
+// the teacher's value per triage slot for the posting with the given key.
+type TeacherReadings interface {
+	Reading(key string) (slots map[string]string, ok bool)
+}
+
+// QueueOptions are Queue's optional inputs; the zero value is Queue.
+type QueueOptions struct {
+	// Teacher, when non-nil, puts the postings where its reading differs from
+	// the recorded primary reading on some slot ahead of every other tier.
+	// A nil Teacher (or a typed nil it reports no readings for) leaves the
+	// order exactly as Queue gives it without one.
+	Teacher TeacherReadings
+	// ShadowOnly keeps only postings the shadow was asked about (any
+	// "triage.<slot>.shadow_reading"): the postings a label window takes.
+	ShadowOnly bool
+}
+
+// teacherDisagrees reports whether t holds a reading for r whose value on
+// some triage slot differs from the primary's recorded value for that slot.
+// A slot either side has no value for is not a disagreement.
+func teacherDisagrees(t TeacherReadings, r ledger.Record) bool {
+	if t == nil {
+		return false
+	}
+	slots, ok := t.Reading(string(r.Key))
+	if !ok {
+		return false
+	}
+	for slot, want := range slots {
+		got := strings.TrimSpace(r.Annotations[ledger.AnnTriagePrefix+slot])
+		if want = strings.TrimSpace(want); want != "" && got != "" && got != want {
+			return true
+		}
+	}
+	return false
+}
+
+// QueueWith is Queue with opts: when a teacher is given, its disagreements
+// with the primary form a first tier (key order, then shuffled like the
+// others); otherwise the tiers and their order are Queue's.
+func QueueWith(recs []ledger.Record, s *Store, n int, rng *rand.Rand, rules []DropRule, opts QueueOptions) ([]ledger.Record, error) {
 	if n <= 0 {
 		return nil, nil
 	}
@@ -105,7 +150,7 @@ func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand, rules []DropRu
 		}
 		labeled = l
 	}
-	var disagree, unsure, rest, oldUnsure, oldRest, drops []ledger.Record
+	var teacher, disagree, unsure, rest, oldUnsure, oldRest, drops []ledger.Record
 	for _, r := range recs {
 		if r.Status == posting.Dead || r.Status == posting.Duplicate {
 			continue
@@ -113,12 +158,17 @@ func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand, rules []DropRu
 		if _, done := labeled[r.Key]; done || Inherited(r) {
 			continue // a copied reading is not worth a label: it is not counted
 		}
+		seen := hasShadowReading(r)
+		if opts.ShadowOnly && !seen {
+			continue
+		}
 		if r.Status == posting.Dropped {
 			drops = append(drops, r)
 			continue
 		}
-		seen := hasShadowReading(r)
 		switch {
+		case teacherDisagrees(opts.Teacher, r):
+			teacher = append(teacher, r)
 		case hasDisagree(r):
 			disagree = append(disagree, r)
 		case r.Status == posting.Unsure || r.Annotations[ledger.AnnTriageUnsure] != "":
@@ -145,7 +195,7 @@ func Queue(recs []ledger.Record, s *Store, n int, rng *rand.Rand, rules []DropRu
 	// the tiers, and a short tier list lends its places to the stratum.
 	nDrop := min(len(drops), n/3)
 	var out []ledger.Record
-	for _, tier := range [][]ledger.Record{disagree, unsure, rest, oldUnsure, oldRest} {
+	for _, tier := range [][]ledger.Record{teacher, disagree, unsure, rest, oldUnsure, oldRest} {
 		shuffle(tier)
 		out = append(out, tier...)
 		if len(out) >= n-nDrop {

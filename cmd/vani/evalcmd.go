@@ -53,6 +53,7 @@ func (e *env) cmdLabel(args []string) error {
 	n := fs.Int("n", 20, "how many postings to label this session")
 	labels := fs.String("labels", "", "label directory (default: state dir; use the repo's eval/jd_triage to keep labels in git)")
 	seed := fs.Int64("seed", 0, "shuffle seed (0: time-based)")
+	window := fs.String("window", "", "label only postings the shadow was asked about, for this window ("+strings.Join(eval.WindowNames(), ", ")+"); it must be the window now filling")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -67,6 +68,32 @@ func (e *env) cmdLabel(args []string) error {
 	if err != nil {
 		return err
 	}
+	var qopts eval.QueueOptions
+	if *window != "" {
+		w, err := eval.LookupWindow(*window)
+		if err != nil {
+			return usagef("label: %v", err)
+		}
+		if _, err := s.SyncWindows(recs); err != nil {
+			return err
+		}
+		open, ok, err := s.OpenWindow()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("label: every window is closed")
+		}
+		if open.Name != w.Name {
+			return usagef("label: %s is not filling; labels go to %s first", w.Name, open.Name)
+		}
+		free, err := s.WindowFree(w)
+		if err != nil {
+			return err
+		}
+		*n = min(*n, free)
+		qopts.ShadowOnly = true
+	}
 	if _, bad, err := s.Labels(); err != nil {
 		return fmt.Errorf("labels unreadable, refusing to queue (would repeat work): %w", err)
 	} else if bad > 0 {
@@ -76,7 +103,7 @@ func (e *env) cmdLabel(args []string) error {
 	if sd == 0 {
 		sd = now().UnixNano()
 	}
-	queue, err := eval.Queue(recs, s, *n, rand.New(rand.NewSource(sd)), e.dropRules())
+	queue, err := eval.QueueWith(recs, s, *n, rand.New(rand.NewSource(sd)), e.dropRules(), qopts)
 	if err != nil {
 		return fmt.Errorf("labels unreadable, refusing to queue (would repeat work): %w", err)
 	}
@@ -90,6 +117,11 @@ func (e *env) cmdLabel(args []string) error {
 	}
 	done, err := eval.Label(stdin, e.stdout, queue, s, names)
 	fmt.Fprintf(e.stdout, "labelled %d of %d queued\n", done, len(queue))
+	if *window != "" {
+		if _, serr := s.SyncWindows(recs); serr != nil && err == nil {
+			err = serr
+		}
+	}
 	if errors.Is(err, io.EOF) {
 		return nil
 	}
@@ -100,6 +132,7 @@ func (e *env) cmdEval(args []string) error {
 	fs := e.newFlags("eval")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	heldOut := fs.String("held-out", "", "also report Promotion over a registered held-out split ("+strings.Join(eval.SplitNames(), ", ")+")")
+	windows := fs.Bool("window", false, "also report each label window's Promotion table and the per-slot verdict (promotable only if every window is closed and promotable)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -123,8 +156,20 @@ func (e *env) cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Window tables are built before anything is printed, like the held-out one.
+	var winMD string
+	if *windows {
+		if _, err := s.SyncWindows(recs); err != nil {
+			return err
+		}
+		wr, err := eval.BuildWindows(recs, s, names)
+		if err != nil {
+			return err
+		}
+		winMD = wr.Markdown()
+	}
 	if *heldOut == "" {
-		fmt.Fprint(e.stdout, eval.BuildReport(recs, s, names).Markdown())
+		fmt.Fprint(e.stdout, eval.BuildReport(recs, s, names).Markdown()+winMD)
 		return nil
 	}
 	// The held-out table is built before anything is printed, so a label file
@@ -133,7 +178,7 @@ func (e *env) cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(e.stdout, all.Markdown()+h.Markdown())
+	fmt.Fprint(e.stdout, all.Markdown()+h.Markdown()+winMD)
 	return nil
 }
 
