@@ -169,9 +169,9 @@ func TestTeacherRunReadsDroppedTextKeepsItPrivateAndResumes(t *testing.T) {
 	e := tcSetup(t)
 	f := &tcFake{}
 	tcUse(t, f)
-	// $0.0015 admits two questions at the worst case this posting size prices to;
+	// $0.0024 admits two questions at the worst case (prompt bytes + output budget) this posting size prices to;
 	// the third could pass it.
-	o, _ := mustCode(t, 0, "teacher", "--of", "d1-ultra", "--budget-usd", "0.0015", "--concurrency", "1")
+	o, _ := mustCode(t, 0, "teacher", "--of", "d1-ultra", "--budget-usd", "0.0024", "--concurrency", "1")
 	if !strings.Contains(o, "asked 2, stored 2") {
 		t.Fatalf("output:\n%s", o)
 	}
@@ -213,7 +213,7 @@ func TestTeacherRunStopsAtTheLimitCleanlyThenResumes(t *testing.T) {
 	e := tcSetup(t)
 	f := &tcFake{}
 	tcUse(t, f)
-	o, _ := mustCode(t, 0, "teacher", "--of", "d1-ultra", "--budget-usd", "0.0009", "--concurrency", "1")
+	o, _ := mustCode(t, 0, "teacher", "--of", "d1-ultra", "--budget-usd", "0.0016", "--concurrency", "1")
 	if !strings.Contains(o, "asked 1, stored 1") || !strings.Contains(o, "stopped: "+eval.TeacherStoppedAtLimit) || !strings.Contains(o, "run again to resume") {
 		t.Fatalf("output:\n%s", o)
 	}

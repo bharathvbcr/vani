@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -35,12 +36,32 @@ import (
 const (
 	defaultTeacherConcurrency = 4
 	teacherTypicalOut         = 150 // a typical reply, for the typical-cost line
-	// teacherTokenMargin pads the estimated prompt tokens (percent over) in the
-	// worst-case bound the spend gate uses, because the estimate is not a
-	// tokenizer.
-	teacherTokenMargin = 25
-	teacherLockWait    = 10 * time.Second
+	// teacherPromptOverhead is the tokens added to the byte count of the exact
+	// messages for the request envelope (role markers, framing the provider adds).
+	teacherPromptOverhead = 256
+	teacherLockWait       = 10 * time.Second
 )
+
+// teacherCeilingTokens is a physical upper bound on the input tokens of the
+// messages sys and user: a token spans at least one byte, so the prompt cannot
+// carry more tokens than bytes, whatever the text density (base64, minified
+// code, non-Latin scripts). The estimate (prompt.EstimateTokens) is a typical
+// figure and can be low for dense text; this bound cannot be.
+func teacherCeilingTokens(sys, user string) int {
+	return len(sys) + len(user) + teacherPromptOverhead
+}
+
+// teacherWorstNano is the most one question for q can cost at prices p: the
+// ceiling of its prompt tokens plus every output token the request allows.
+// A bound that cannot be computed admits nothing (fail closed).
+func teacherWorstNano(p budget.Prices, q decide.Question) int64 {
+	sys, user := llmbackend.Messages(q)
+	w, err := p.Reserve(teacherCeilingTokens(sys, user), llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom)
+	if err != nil {
+		return math.MaxInt64 / 4
+	}
+	return w
+}
 
 // The seams tests replace.
 var (
@@ -64,6 +85,11 @@ var (
 			return 0, err
 		}
 		return s.CommittedNanoUSD(), nil
+	}
+	// teacherSettled reads the budget ledger at path as it stands, for the
+	// run's report (settled spend, kept reservations).
+	teacherSettled = func(ctx context.Context, path string) (budget.Snapshot, error) {
+		return budget.Inspect(ctx, path)
 	}
 )
 
@@ -171,9 +197,9 @@ func (e *env) cmdTeacher(args []string) error {
 
 	// Measure what each question would send: the Triager builds it exactly as a
 	// real run does, and the capture stops it there.
-	toks := make([]int, len(pending))
+	toks := make([]teacherPrompt, len(pending))
 	for i, c := range pending {
-		toks[i] = teacherTokens(c, summary)
+		toks[i] = teacherMeasure(c, summary)
 	}
 	capNano := int64(cfg.Decide.DailyUSD.LLM * 1e9)
 	e.teacherReport(cfg, model, first, source, prices, sel, already, toks, capNano)
@@ -181,17 +207,21 @@ func (e *env) cmdTeacher(args []string) error {
 		return nil
 	}
 
+	// One budget day for the whole run: the provider's ledger file and the
+	// gate's spend reads both come from w.budgetDay, so a run that crosses UTC
+	// midnight never reads one day's cap and meters into another's.
 	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
+	ledgerPath := w.budgetLedgerPath()
 	d, err := teacherDecider(ctx, w, model)
 	if err != nil {
 		return err
 	}
-	ledgerPath := filepath.Join(e.stateDir, "budget", "llm-"+time.Now().UTC().Format("2006-01-02")+".json")
 	spent := func(c context.Context) (int64, error) { return teacherSpent(c, ledgerPath) }
 	committed, err := spent(ctx)
 	if err != nil {
 		return fmt.Errorf("teacher: reading today's llm spend: %w", err)
 	}
+	before, beforeErr := teacherSettled(ctx, ledgerPath)
 	limit := min(int64(*budgetUSD*1e9), capNano-committed)
 	if limit <= 0 {
 		return fmt.Errorf("teacher: today's llm cap ($%.2f) is already spent; nothing was asked", cfg.Decide.DailyUSD.LLM)
@@ -200,44 +230,65 @@ func (e *env) cmdTeacher(args []string) error {
 	run := eval.TeacherRun{
 		D: d, Model: model, Summary: summary, Store: store, Concurrency: *conc,
 		LimitNano: limit, Spent: spent, Now: now,
-		Worst: func(q decide.Question) int64 {
-			sys, user := llmbackend.Messages(q)
-			n := prompt.EstimateTokens(sys+"\n"+user) * (100 + teacherTokenMargin) / 100
-			w, werr := prices.Reserve(max(n, 1), llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom)
-			if werr != nil {
-				return math.MaxInt64 / 4 // fail closed: a bound that cannot be computed admits nothing
-			}
-			return w
-		},
+		Worst: func(q decide.Question) int64 { return teacherWorstNano(prices, q) },
 	}
 	res, err := run.Run(ctx, pending)
-	fmt.Fprintf(e.stdout, "teacher: asked %d, stored %d (%d with an unusable slot), no reading %d, already stored %d; metered spend %s\n",
-		res.Asked, res.Stored, res.Unusable, res.Unread, res.Skipped+already, usd(res.SpentNano))
+	after, afterErr := teacherSettled(context.WithoutCancel(ctx), ledgerPath)
+	e.teacherSummary(res, already, len(pending), before, beforeErr, after, afterErr, capNano)
 	if err != nil {
 		return fmt.Errorf("teacher: %w", err)
 	}
-	if res.Stopped != "" {
-		fmt.Fprintf(e.stdout, "teacher: stopped: %s; run again to resume\n", res.Stopped)
-		if res.Stopped != eval.TeacherStoppedAtLimit {
-			return errors.New("teacher: " + res.Stopped)
-		}
+	if res.Stopped != "" && res.Stopped != eval.TeacherStoppedAtLimit {
+		return errors.New("teacher: " + res.Stopped)
 	}
 	return nil
 }
 
-// teacherTokens is the estimated input tokens of the question for c: the
-// system prompt and user message the backend would send, counted with Manvi's
-// documented BPE estimator (prompt.EstimateTokens). It is an estimate, not a
-// tokenizer; the worst-case bound pads it.
-func teacherTokens(c eval.TeacherCandidate, summary string) int {
-	var n int
+// teacherSummary reports what the run did. Spend is the Manvi ledger's own
+// settled delta (provider-reported usage), not an estimate; reservations kept
+// because a charge could not be proven are reported beside it, and the budget
+// remaining is the day's cap less everything the ledger counts against it.
+// "Run again" is said only when something remains to ask.
+func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, before budget.Snapshot, beforeErr error, after budget.Snapshot, afterErr error, capNano int64) {
+	fmt.Fprintf(e.stdout, "teacher: asked %d, stored %d (%d with an unusable slot), no reading %d, already stored %d\n",
+		res.Asked, res.Stored, res.Unusable, res.Unread, res.Skipped+already)
+	if err := cmp.Or(beforeErr, afterErr); err != nil {
+		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (committed delta, not settled) %s\n", err, usd(res.SpentNano))
+	} else {
+		fmt.Fprintf(e.stdout, "teacher: settled spend %s (ledger delta, provider-reported usage), plus %s of reservations kept unproven; budget remaining today %s of %s\n",
+			usd(after.SpentNanoUSD-before.SpentNanoUSD), usd(after.RetainedNanoUSD-before.RetainedNanoUSD),
+			usd(max(capNano-after.CommittedNanoUSD(), 0)), usd(capNano))
+	}
+	remaining := planned - res.Stored // an unread question stored nothing and is asked again
+	switch {
+	case res.Stopped != "":
+		fmt.Fprintf(e.stdout, "teacher: stopped: %s; %d of the %d planned postings were not asked", res.Stopped, max(remaining, 0), planned)
+		if remaining > 0 {
+			fmt.Fprint(e.stdout, "; run again to resume")
+		}
+		fmt.Fprintln(e.stdout)
+	case remaining > 0:
+		fmt.Fprintf(e.stdout, "teacher: %d planned postings were not asked; run again to resume\n", remaining)
+	}
+}
+
+// teacherPrompt measures one question's prompt: Estimate is the typical input
+// tokens, the system prompt and user message the backend would send counted
+// with Manvi's documented BPE estimator (prompt.EstimateTokens), an estimate and
+// not a tokenizer; Ceiling is the physical upper bound the spend gate reserves.
+type teacherPrompt struct{ Estimate, Ceiling int }
+
+// teacherMeasure builds the question for c exactly as a real run does and
+// measures it.
+func teacherMeasure(c eval.TeacherCandidate, summary string) teacherPrompt {
+	var m teacherPrompt
 	tr := jdtriage.Triager{TargetSummary: summary, D: deciderFunc(func(_ context.Context, q decide.Question) (decide.Answer, error) {
 		sys, user := llmbackend.Messages(q)
-		n = prompt.EstimateTokens(sys + "\n" + user)
+		m = teacherPrompt{Estimate: prompt.EstimateTokens(sys + "\n" + user), Ceiling: teacherCeilingTokens(sys, user)}
 		return decide.Answer{}, nil
 	})}
 	_, _ = tr.Triage(context.Background(), c.Posting)
-	return n
+	return m
 }
 
 // teacherPrices are the prices the llm provider meters model at: the operator's
@@ -261,7 +312,7 @@ func teacherPrices(cfg config.Config, model string) (budget.Prices, string, erro
 // usd formats nano-USD with the four decimals a per-posting price needs.
 func usd(nano int64) string { return fmt.Sprintf("$%.4f", float64(nano)/1e9) }
 
-func (e *env) teacherReport(cfg config.Config, model, first, source string, p budget.Prices, sel eval.TeacherSelection, already int, toks []int, capNano int64) {
+func (e *env) teacherReport(cfg config.Config, model, first, source string, p budget.Prices, sel eval.TeacherSelection, already int, toks []teacherPrompt, capNano int64) {
 	fmt.Fprintf(e.stdout, "teacher: %d postings read by %s (left out: %d with no text, %d copied readings); %d already stored for this model, fixture and prompt; %d to ask\n",
 		len(sel.Candidates), first, sel.NoText, sel.Inherited, already, len(toks))
 	if len(toks) == 0 {
@@ -270,7 +321,8 @@ func (e *env) teacherReport(cfg config.Config, model, first, source string, p bu
 	var sum, lo, hi, long int
 	lo = math.MaxInt
 	var typical, worst int64
-	for _, n := range toks {
+	for _, m := range toks {
+		n := m.Estimate
 		sum += n
 		lo, hi = min(lo, n), max(hi, n)
 		if p.LongPromptAbove > 0 && n > p.LongPromptAbove {
@@ -279,7 +331,7 @@ func (e *env) teacherReport(cfg config.Config, model, first, source string, p bu
 		if c, err := p.Charge(llm.Usage{InputTokens: max(n, 1), OutputTokens: teacherTypicalOut}); err == nil {
 			typical += c
 		}
-		if w, err := p.Reserve(max(n*(100+teacherTokenMargin)/100, 1), llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom); err == nil {
+		if w, err := p.Reserve(m.Ceiling, llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom); err == nil {
 			worst += w
 		}
 	}
@@ -290,8 +342,8 @@ func (e *env) teacherReport(cfg config.Config, model, first, source string, p bu
 		fmt.Fprintf(e.stdout, "; above %d prompt tokens input $%.4f and output $%.4f (%d postings are that long)", p.LongPromptAbove, float64(p.LongRates.Input)/1000, float64(p.LongRates.Output)/1000, long)
 	}
 	fmt.Fprintln(e.stdout)
-	fmt.Fprintf(e.stdout, "teacher: typically about %s (replies of %d tokens), at most %s counting every reply at its full budget and prompts %d%% over the estimate\n",
-		usd(typical), teacherTypicalOut, usd(worst), teacherTokenMargin)
+	fmt.Fprintf(e.stdout, "teacher: typically about %s (replies of %d tokens), at most %s counting every reply at its full budget and every prompt at its physical ceiling (one token per byte, plus %d for the envelope), the bound the spend gate reserves\n",
+		usd(typical), teacherTypicalOut, usd(worst), teacherPromptOverhead)
 	if capNano > 0 {
 		days := (worst + capNano - 1) / capNano
 		fmt.Fprintf(e.stdout, "teacher: the daily llm cap is $%.2f: at most %d day(s) at the worst case if nothing else spends from it\n", cfg.Decide.DailyUSD.LLM, days)

@@ -424,7 +424,9 @@ func (s *teacherState) release(worst int64) {
 // Run asks about each candidate whose reading is not already stored, keeping
 // each reading as it arrives. It stops when ctx ends, when the next question
 // could pass LimitNano, or after TeacherStopAfter questions in a row went
-// unread; what was stored stays stored, and a later run resumes from it.
+// unread; what was stored stays stored, and a later run resumes from it. A stop
+// other than ctx ending issues no further question but lets those in flight
+// finish and stores their answers, since they are already paid for.
 func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherResult, error) {
 	var res TeacherResult
 	if r.D == nil || r.Store == nil || r.Spent == nil || r.Worst == nil || r.Model == "" {
@@ -463,20 +465,32 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 		todo = append(todo, c)
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// A stop (the limit, a run of unread questions, an unwritable log) ends the
+	// ISSUING of questions, never the questions already in flight: those are paid
+	// for whether or not their answer is kept, so each is allowed to finish
+	// (bounded by Timeout, D's own bounds and ctx) and is stored. Only ctx, the
+	// caller's interrupt, cancels a question in flight.
 	var (
-		mu      sync.Mutex // guards res and streak
+		mu      sync.Mutex // guards res, streak, fatal and stopped
 		streak  int
 		fatal   error
 		stopped string
 		wg      sync.WaitGroup
 	)
-	stop := func(why string) {
+	halt := make(chan struct{})
+	stop := func(why string) { // mu held
 		if stopped == "" {
 			stopped = why
+			close(halt)
 		}
-		cancel()
+	}
+	halted := func() bool {
+		select {
+		case <-halt:
+			return true
+		default:
+			return false
+		}
 	}
 	jobs := make(chan TeacherCandidate)
 	for range r.Concurrency {
@@ -484,17 +498,17 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 		go func() {
 			defer wg.Done()
 			for c := range jobs {
-				if runCtx.Err() != nil {
+				if ctx.Err() != nil || halted() {
 					continue
 				}
 				var q decide.Question
 				tr := jdtriage.Triager{D: teacherGate{run: &r, st: st, q: &q}, TargetSummary: r.Summary}
-				ans, err := tr.Triage(runCtx, c.Posting)
+				ans, err := tr.Triage(ctx, c.Posting)
 				mu.Lock()
 				switch {
 				case errors.Is(err, errTeacherLimit):
 					stop(TeacherStoppedAtLimit)
-				case err != nil && runCtx.Err() != nil:
+				case err != nil && ctx.Err() != nil:
 					stop("interrupted")
 				case err != nil:
 					res.Asked++
@@ -507,7 +521,7 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 					streak = 0
 					row := teacherRow(c.Posting, r.Model, fixture, prompt, q, ans, now())
 					if aerr := r.Store.Append(row); aerr != nil {
-						fatal = aerr
+						fatal = errors.Join(fatal, aerr)
 						stop("the readings log could not be written")
 					} else {
 						res.Stored++
@@ -527,7 +541,9 @@ feed:
 	for _, c := range todo {
 		select {
 		case jobs <- c:
-		case <-runCtx.Done():
+		case <-halt:
+			break feed
+		case <-ctx.Done():
 			break feed
 		}
 	}

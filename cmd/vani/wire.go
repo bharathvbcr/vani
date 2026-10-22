@@ -121,6 +121,10 @@ type wired struct {
 	mu     sync.Mutex
 	scorer *lazyScorer
 
+	// day is the llm budget day (budgetLedgerPath), fixed on first use.
+	dayOnce sync.Once
+	day     string
+
 	// advanceCap and listOnly are the run's overrides (tune): a cap other
 	// than advance_per_run when above 0, and skipping the advance phase.
 	advanceCap int

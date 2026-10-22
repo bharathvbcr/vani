@@ -15,6 +15,18 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
+// budgetClock is the one clock the llm budget day comes from (a seam for tests).
+var budgetClock = time.Now
+
+// budgetLedgerPath is the llm budget ledger file for this run's UTC day. The day
+// is read from budgetClock once and kept, so the provider that meters into the
+// ledger and anything that reads the day's spend or cap (vani teacher) name the
+// same file even when the run crosses UTC midnight.
+func (w *wired) budgetLedgerPath() string {
+	w.dayOnce.Do(func() { w.day = budgetClock().UTC().Format("2006-01-02") })
+	return filepath.Join(w.stateDir, "budget", "llm-"+w.day+".json")
+}
+
 // provider builds the configured Manvi adapter, metered by a budget ledger
 // that is one file per UTC day, so decide.daily_usd.llm is a daily cap.
 func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
@@ -44,9 +56,8 @@ func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown provider %q", name)
 	}
-	day := time.Now().UTC().Format("2006-01-02")
 	limit := int64(w.cfg.Decide.DailyUSD.LLM * 1e9)
-	l, err := budget.Open(ctx, filepath.Join(w.stateDir, "budget", "llm-"+day+".json"), limit)
+	l, err := budget.Open(ctx, w.budgetLedgerPath(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("llm budget: %w", err)
 	}
