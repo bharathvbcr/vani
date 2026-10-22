@@ -7,12 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -39,27 +43,33 @@ func isSpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f
 // held-out export. It matches Lappi-decision's
 // python/qd_data/minhash.py shingle() preprocessing, in the same order:
 //
-//  1. cut to at most MaxNormalizedBytes bytes, backing off to a rune
-//     boundary so no partial sequence is kept;
-//  2. replace every run of Unicode whitespace (isSpace) with one space;
-//  3. trim leading and trailing space.
+//  1. drop every byte that is not part of a valid UTF-8 sequence, as
+//     bytes.decode("utf-8", errors="ignore") does: a lone continuation byte,
+//     an invalid lead byte, an overlong or surrogate encoding, and a
+//     truncated multi-byte sequence all vanish (nothing is substituted);
+//  2. cut the valid bytes at MaxNormalizedBytes (encode, slice, then
+//     decode("utf-8", errors="ignore") in Python), so a sequence the cap
+//     splits is dropped whole;
+//  3. replace every run of Unicode whitespace (isSpace) with one space;
+//  4. trim leading and trailing space.
 //
-// Case is kept and nothing else is changed. Bytes that are not valid UTF-8
-// become U+FFFD before step 1 (Python never sees them; a Go string can hold
-// them). Text that is empty after step 3 returns ErrEmptyText.
+// Steps 1 and 2 are one pass: invalid bytes cost no budget, as in Python,
+// where they are gone before the cap is applied. Case is kept and nothing
+// else is changed. Text that is empty after step 4 returns ErrEmptyText.
 func NormalizeText(text string) (string, error) {
-	text = strings.ToValidUTF8(text, "�")
-	if len(text) > MaxNormalizedBytes {
-		cut := MaxNormalizedBytes
-		for cut > 0 && !utf8.RuneStart(text[cut]) {
-			cut--
-		}
-		text = text[:cut]
-	}
 	var b strings.Builder
-	b.Grow(len(text))
+	b.Grow(min(len(text), MaxNormalizedBytes))
 	pendingSpace := false
-	for _, r := range text {
+	valid := 0 // bytes of valid UTF-8 consumed so far, spaces included
+	for i := 0; i < len(text); {
+		r, w := utf8.DecodeRuneInString(text[i:])
+		i += w
+		if r == utf8.RuneError && w == 1 {
+			continue // invalid byte: dropped, not replaced
+		}
+		if valid += w; valid > MaxNormalizedBytes {
+			break // the cap splits this rune: it and the rest are cut
+		}
 		if isSpace(r) {
 			pendingSpace = b.Len() > 0
 			continue
@@ -177,4 +187,57 @@ func BuildHeldoutExport(s *Store, ledgerText func(posting.Key) (string, bool)) (
 // replaced, never written through).
 func WriteHeldoutExport(path string, x HeldoutExport) error {
 	return atomicfile.Write(path, x.Data)
+}
+
+// exportLockWait bounds how long an export waits for another one; a variable
+// only so a test need not wait it out.
+var exportLockWait = 30 * time.Second
+
+// ErrExportBusy is returned when another export held the export lock for the
+// whole of exportLockWait.
+var ErrExportBusy = errors.New("eval: another held-out export is running")
+
+// ExportHeldoutLocked builds the export from s and replaces path with it,
+// with exports serialised on an flock beside the output (the resolved path
+// plus ".lock", the repo's convention: the file itself is replaced by rename,
+// so a lock on it would be lost). The label snapshot is read inside the lock,
+// so of two racing exports whichever writes last has read the freshest labels
+// and no older snapshot can land over a newer one. ledgerText is as in
+// BuildHeldoutExport and is called inside the lock.
+func ExportHeldoutLocked(path string, s *Store, ledgerText func(posting.Key) (string, bool)) (HeldoutExport, error) {
+	target, err := atomicfile.ResolveLeaf(path)
+	if err != nil {
+		return HeldoutExport{}, fmt.Errorf("eval: export path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return HeldoutExport{}, fmt.Errorf("eval: export dir: %w", err)
+	}
+	f, err := os.OpenFile(target+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return HeldoutExport{}, fmt.Errorf("eval: open export lock: %w", err)
+	}
+	defer f.Close()
+	deadline := time.Now().Add(exportLockWait)
+	for {
+		err := filelock.TryLock(f, true)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, filelock.ErrWouldBlock) {
+			return HeldoutExport{}, fmt.Errorf("eval: lock export: %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			return HeldoutExport{}, ErrExportBusy
+		}
+		time.Sleep(lockRetry)
+	}
+	defer func() { _ = filelock.Unlock(f) }()
+	x, err := BuildHeldoutExport(s, ledgerText)
+	if err != nil {
+		return HeldoutExport{}, err
+	}
+	if err := WriteHeldoutExport(target, x); err != nil {
+		return HeldoutExport{}, err
+	}
+	return x, nil
 }

@@ -88,8 +88,14 @@ func TestExportHeldoutCustomOutReplacesAtomicallyAndNoFollow(t *testing.T) {
 	if fi, err := os.Lstat(out); err != nil || !fi.Mode().IsRegular() {
 		t.Fatalf("out is not a regular file: %v", err)
 	}
-	if ents, _ := os.ReadDir(dir); len(ents) != 2 {
-		t.Errorf("temp files left behind: %v", ents)
+	// The export lock sits beside the output as <out>.lock; nothing else.
+	ents, _ := os.ReadDir(dir)
+	var names []string
+	for _, ent := range ents {
+		names = append(names, ent.Name())
+	}
+	if len(names) != 3 || names[0] != "owner.jsonl" || names[1] != "owner.jsonl.lock" || names[2] != "victim" {
+		t.Errorf("temp files left behind: %v", names)
 	}
 }
 

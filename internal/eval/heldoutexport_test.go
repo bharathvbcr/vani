@@ -25,7 +25,7 @@ func TestNormalizeTextTable(t *testing.T) {
 		{"python-only separators", "a\x1c\x1d\x1e\x1fb", "a b"},
 		{"case kept", "Go  GO go", "Go GO go"},
 		{"punctuation kept", "a, b.", "a, b."},
-		{"invalid utf8 becomes U+FFFD", "a\xffb", "a�b"},
+		{"invalid utf8 is dropped, as Python's errors=ignore", "a\xffb", "ab"},
 	}
 	for _, c := range cases {
 		got, err := NormalizeText(c.in)

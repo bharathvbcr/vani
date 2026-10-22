@@ -23,7 +23,7 @@ cases = json.load(open(sys.argv[1]))
 out = []
 for c in cases:
     raw0 = base64.b64decode(c["b64"])
-    text = raw0.decode("utf-8", errors=c["mode"])
+    text = raw0.decode("utf-8", errors=c["mode"])  # how the str reaches shingle()
     raw = text.encode("utf-8")
     if len(raw) > 262144:
         raw = raw[:262144]

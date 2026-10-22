@@ -56,14 +56,11 @@ func (e *env) exportHeldout(s *eval.Store, path string) (int, []posting.Key, err
 		return 0, nil, err
 	}
 	snap := ledger.Snapshot{Records: recs}
-	x, err := eval.BuildHeldoutExport(s, func(k posting.Key) (string, bool) {
+	x, err := eval.ExportHeldoutLocked(path, s, func(k posting.Key) (string, bool) {
 		r, ok := findRecord(snap, k)
 		return r.Posting.Description, ok
 	})
 	if err != nil {
-		return 0, nil, err
-	}
-	if err := eval.WriteHeldoutExport(path, x); err != nil {
 		return 0, nil, err
 	}
 	return x.Rows, x.Missing, nil
@@ -73,6 +70,12 @@ func (e *env) exportHeldout(s *eval.Store, path string) (int, []posting.Key, err
 // every newly written label. A failure is reported, never fatal, because the
 // label itself has been saved; `vani export heldout` repeats it.
 func (e *env) reexportHeldout(s *eval.Store) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Never print r: a panic value may carry posting text.
+			fmt.Fprintln(e.stderr, "vani: held-out export panicked and was not updated; the label was saved")
+		}
+	}()
 	_, missing, err := e.exportHeldout(s, e.heldoutExportPath())
 	if err != nil {
 		fmt.Fprintf(e.stderr, "vani: held-out export not updated: %v\n", err)
