@@ -1599,3 +1599,48 @@ merges after it.
   also asks that the labelled set replace the synthetic rankeval worlds: not done.
 - **Not run on the live state.** `vani rankfit --dry-run` against `.state/state` was not run
   from this branch.
+
+## Board expansion and the triage backlog (2026-10-22)
+
+The owner added 60 boards (79 in all). A list-only run put 8,525 untriaged postings in the ledger,
+and the owner read the empty Jobs tab as a sync failure. Five branches merged on main (`61b7397`,
+`6af2490`, `c65bc60`, `dde9125`, `9218e2a`):
+- the Eightfold v2 fallback (Netflix)
+- Workday `wdN.myworkdaysite.com` hosts (Snap)
+- Ashby `board_name` (Hippocratic AI)
+- a 1 MiB icon cap (OpenAI)
+- list-only runs that need no backend
+- `jobs list --view pending` and the Awaiting triage tab
+- the `schedule not kept` warning in `status` and the Pipeline tab
+
+Verified on merged main: `go test ./...` (60 packages ok), `swift test` (564, 0 failures), and
+`bun test extension/test/` (1192, typecheck ok). A list-only run of Snap, Hippocratic and Netflix
+against a scratch state dir (`tmp/e2e-newsources`) listed 28, 50 and 77 postings with no key.
+
+Left open:
+- **Contract change.** `sources.Board` gained `board_name` (Ashby only). Any vani built before
+  `6af2490` refuses a config that uses it, and it refuses `myworkdaysite.com` hosts too. Rebuild
+  every installed vani (the app's helper, any daemon) before adding those boards.
+- **Extension.** The extension does not recognise `myworkdaysite.com` pages as Workday
+  (`crawler.ts` `WD_HOST`, `scraper.ts`, `portal.ts`). Only `applied.ts` `postingKey` folds them.
+- **`jobs find --url` on a live posting returns no `row`.** `extension/src/jobrow.ts`
+  `parseFindRow` treats that as "no row". This was read in the code, not run in a browser.
+- **Swift decoding.** `Job.untriaged` and `Job.prefilterDrop` are plain optionals, not
+  `Lenient<>`, so a wrong-typed value fails the whole list decode.
+- **Speed.** The custom `Job` JSON encoder on the list path is not benchmarked.
+- **v2 and pcsx ids are inferred, not verified, to be the same.** No host serves both APIs. Keys
+  stay `ef:netflix.com:{id}`.
+- **Robots parsing is duplicated.** `page.parseAllowed` repeats `parseCrawlDelay`'s robots.txt
+  group state machine.
+- **Netflix costs one extra request per run.** The 403 pcsx probe runs every time; the result is
+  not cached.
+- **List-only still starts the local llama.cpp server.** `startRun` does so when
+  `decide.local.server` is set.
+- **Non-ASCII board names are refused.** For example, a `board_name` of `Zürich`.
+- **The schedule is not kept.** `vani launchd plist` puts no decision-model key in the agent's
+  environment, so a daemon from it triages nothing until the owner adds `OPENROUTER_API_KEY` to
+  its `EnvironmentVariables`. Whether to install one is the owner's decision.
+- **Unsupported job sites.** Meta, Uber, Groq (Gem), Hugging Face (Workable), Modular (no board),
+  Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
+- **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every
+  request.
