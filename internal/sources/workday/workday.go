@@ -255,7 +255,7 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 				continue // another board's posting is never this board's row
 			}
 			storedKeys[p.Key] = true
-			if path, ok := storedPath(p.URL, host, site); ok {
+			if path, ok := storedPath(p.URL, host, pagePrefix(host, tenant, site)); ok {
 				stored[path] = p
 			} else {
 				unmatched++
@@ -371,22 +371,41 @@ func refreshTurn(path string, day int) bool {
 	return int(h.Sum32()%refreshDays) == day%refreshDays
 }
 
+// pagePrefix is the leading path of a posting's public page on host: "{site}"
+// on a tenant host "{tenant}.wd{N}.myworkdayjobs.com", and
+// "recruiting/{tenant}/{site}" on the shared host "wd{N}.myworkdaysite.com",
+// which has no tenant label to say whose site it is. Its segments are
+// unescaped; parseToken has limited them to letters, digits, '-' and '_'.
+func pagePrefix(host, tenant, site string) string {
+	if sources.WorkdaySiteHost(host) {
+		return "recruiting/" + tenant + "/" + site
+	}
+	return site
+}
+
 // storedPath is the listing externalPath a stored posting's URL carries: the
-// path after the site segment (and an optional locale before it) on host.
-// ok is false for a URL of another host or site, which is then never reused.
-func storedPath(raw, host, site string) (string, bool) {
+// path after the page prefix (pagePrefix; a bare site name works too) and an
+// optional locale before it, on host. ok is false for a URL of another host or
+// site, which is then never reused.
+func storedPath(raw, host, prefix string) (string, bool) {
 	u, err := url.Parse(raw)
 	if err != nil || !strings.EqualFold(u.Hostname(), host) {
 		return "", false
 	}
+	want := strings.Split(prefix, "/")
 	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(segs) > 1 && !strings.EqualFold(segs[0], site) && locale.MatchString(segs[0]) {
+	if len(segs) > 1 && !strings.EqualFold(segs[0], want[0]) && locale.MatchString(segs[0]) {
 		segs = segs[1:]
 	}
-	if len(segs) < 2 || !strings.EqualFold(segs[0], site) {
+	if len(segs) < len(want)+1 {
 		return "", false
 	}
-	return "/" + strings.Join(segs[1:], "/"), true
+	for i, w := range want {
+		if !strings.EqualFold(segs[i], w) {
+			return "", false
+		}
+	}
+	return "/" + strings.Join(segs[len(want):], "/"), true
 }
 
 var locale = regexp.MustCompile(`^[a-z]{2}(-[A-Za-z]{2,4})?$`)
@@ -418,7 +437,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	}
 	pubURL := info.ExternalURL
 	if pubURL == "" {
-		pubURL = "https://" + host + "/" + url.PathEscape(site) + path
+		pubURL = "https://" + host + "/" + pagePrefix(host, url.PathEscape(tenant), url.PathEscape(site)) + path
 	}
 	if err := srcutil.CheckURL("externalUrl", pubURL); err != nil {
 		return posting.Posting{}, err
@@ -501,8 +520,11 @@ func validName(s string) bool {
 	return true
 }
 
-// checkHost requires a bare hostname whose first label is the tenant, so a
-// board cannot send its requests to a host its token does not name.
+// checkHost requires a bare hostname that is either Workday's shared host
+// "wd{N}.myworkdaysite.com" (no tenant label; the token's tenant, already
+// checked by parseToken, picks the site) or one whose first label is the
+// tenant, so a board cannot send its requests to a host its token does not
+// name.
 func checkHost(host, tenant string) (string, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
@@ -512,6 +534,9 @@ func checkHost(host, tenant string) (string, error) {
 		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.') {
 			return "", fmt.Errorf("board host %q is not a bare hostname", host)
 		}
+	}
+	if sources.WorkdaySiteHost(host) {
+		return host, nil
 	}
 	first, _, _ := strings.Cut(host, ".")
 	if first != strings.ToLower(tenant) {

@@ -327,7 +327,17 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		if first == "" {
 			return fail(searchInvalid, "the page URL names no Ashby board")
 		}
-		return sources.Board{ATS: posting.Ashby, Token: first, Company: company}, ingestSearchJSON{}
+		b := sources.Board{ATS: posting.Ashby, Token: first, Company: company}
+		if strings.Contains(first, " ") {
+			// A name with a space ("Hippocratic AI") cannot be a token, which
+			// every posting key is built from: the token is its slug and the
+			// name stays what the API is asked for. A name the rule refuses
+			// (BoardNameProblem) keeps its token and is refused as before.
+			if sources.BoardNameProblem(first) == "" {
+				b.Token, b.BoardName = strings.ToLower(strings.ReplaceAll(first, " ", "-")), first
+			}
+		}
+		return b, ingestSearchJSON{}
 	}
 	if m := workdayHostRE.FindStringSubmatch(host); m != nil {
 		if len(segs) > 0 && workdayLocaleRE.MatchString(segs[0]) {
@@ -337,6 +347,19 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 			return fail(searchInvalid, "the page URL names no Workday site")
 		}
 		return sources.Board{ATS: posting.Workday, Token: m[1] + "/" + segs[0], Company: company, Host: host,
+			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
+	}
+
+	if sources.WorkdaySiteHost(host) {
+		// The shared host's pages are /recruiting/{tenant}/{site}[/...]: the
+		// host names no tenant, so the path does.
+		if len(segs) > 0 && workdayLocaleRE.MatchString(segs[0]) {
+			segs = segs[1:]
+		}
+		if len(segs) < 3 || segs[0] != "recruiting" {
+			return fail(searchInvalid, "the page URL names no Workday site")
+		}
+		return sources.Board{ATS: posting.Workday, Token: segs[1] + "/" + segs[2], Company: company, Host: host,
 			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
 	}
 

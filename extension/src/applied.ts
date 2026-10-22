@@ -72,6 +72,8 @@ export function pageKey(raw: unknown): string | null {
 }
 
 const WORKDAY_HOST = /\.myworkdayjobs\.com$/;
+/** Workday's shared host (Go: sources.WorkdaySiteHost): no tenant label, its pages are /recruiting/{tenant}/{site}/job/.... */
+const WORKDAY_SHARED_HOST = /^wd[0-9]{1,3}\.myworkdaysite\.com$/;
 /** Workday's language-region path prefix (en-US, fr-CA). A site called "ext" or "careers" never has this shape. */
 const WORKDAY_LOCALE = /^[a-z]{2}-[A-Z]{2}$/;
 
@@ -88,10 +90,19 @@ export function postingKey(raw: unknown): string | null {
   const page = pageKey(raw);
   if (page === null) return null;
   const u = new URL(page);
-  if (!WORKDAY_HOST.test(u.hostname)) return page;
+  const shared = WORKDAY_SHARED_HOST.test(u.hostname);
+  if (!shared && !WORKDAY_HOST.test(u.hostname)) return page;
   const segs = u.pathname.split("/").filter(Boolean);
   if (segs.length > 0 && WORKDAY_LOCALE.test(segs[0]!)) segs.shift();
-  const [site, kind, ...rest] = segs;
+  // On the shared host the site is recruiting/{tenant}/{site}; elsewhere it is the first segment.
+  let site: string | undefined;
+  if (shared) {
+    if (segs[0] !== "recruiting" || segs.length < 3) return page;
+    site = segs.splice(0, 3).join("/");
+  } else {
+    site = segs.shift();
+  }
+  const [kind, ...rest] = segs;
   if (site === undefined || (kind !== "job" && kind !== "details")) return page;
   const apply = rest.findIndex(s => s.toLowerCase() === "apply");
   const posting = apply < 0 ? rest : rest.slice(0, apply);
