@@ -48,8 +48,9 @@ func listedOnce(t *testing.T, rows []listedJob, want int) {
 }
 
 // A total that is an exact multiple of the page size ends on a full page; the
-// next offset would be the wrap, so the walk must not ask for it.
-func TestListingEndingOnAFullPageIsCompleteAndAsksNoMore(t *testing.T) {
+// next page is Workday's wrap, which ends a listing that has read every counted
+// job. The walk asks for that one page (never assumes it) and no further.
+func TestListingEndingOnAFullPageEndsOnTheWrap(t *testing.T) {
 	for _, n := range []int{1, 19, 20, 21, 39, 40, 41, 60, 100, 1980, 1999} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			fb := liveBoard(n)
@@ -59,11 +60,14 @@ func TestListingEndingOnAFullPageIsCompleteAndAsksNoMore(t *testing.T) {
 			}
 			listedOnce(t, rows, n)
 			pages := (n + pageSize - 1) / pageSize
+			if n%pageSize == 0 {
+				pages++ // the page past the total, which wraps
+			}
 			if w.requests != pages || fb.posts != pages {
 				t.Errorf("%d requests (%d posted) for %d pages; offsets %v", w.requests, fb.posts, pages, fb.offsets)
 			}
 			for _, o := range fb.offsets {
-				if o >= n {
+				if o > n || (o == n && n%pageSize != 0) {
 					t.Errorf("asked for offset %d on a board of %d", o, n)
 				}
 			}
@@ -106,8 +110,8 @@ func TestListWithTotalOnFirstPageOnly(t *testing.T) {
 	if err != nil || len(got) != 40 {
 		t.Fatalf("got %d postings, %v", len(got), err)
 	}
-	if fmt.Sprint(offsets) != "[0 20]" {
-		t.Errorf("offsets %v, want [0 20]", offsets)
+	if fmt.Sprint(offsets) != "[0 20 40]" {
+		t.Errorf("offsets %v, want [0 20 40] (offset 40 is the wrap that ends it)", offsets)
 	}
 }
 
@@ -214,8 +218,8 @@ func TestTotalChangingMidWalk(t *testing.T) {
 			t.Fatal(err)
 		}
 		listedOnce(t, rows, 40)
-		if fmt.Sprint(fb.offsets) != "[0 20]" {
-			t.Errorf("offsets %v, want [0 20]", fb.offsets)
+		if fmt.Sprint(fb.offsets) != "[0 20 40]" {
+			t.Errorf("offsets %v, want [0 20 40]", fb.offsets)
 		}
 	})
 	t.Run("board shrinks to a short last page", func(t *testing.T) {
@@ -249,12 +253,10 @@ func TestTotalChangingMidWalk(t *testing.T) {
 	})
 }
 
-// The one trade the stop makes: a first-page total that is believed (a positive
-// integer, at least the page's rows) is the listing's end, even when the board
-// would serve rows past it. Those rows are not asked for (Workday wraps at the
-// total, and the owner's rule is to request nothing past it). A total under the
-// page's own rows is not believed, and the walk reads by rows alone.
-func TestBelievedTotalThatUnderstatesEndsTheListing(t *testing.T) {
+// A first-page total that understates the board never ends the listing on its
+// own: only the wrap does, so rows past the total are still read, and a board
+// is never cut short (its unread postings aged as absent) on a low count.
+func TestUnderstatedTotalStillListsEveryRow(t *testing.T) {
 	for _, claim := range []string{"20", "40", "100"} {
 		t.Run("claims "+claim, func(t *testing.T) {
 			fb := nvidiaBoard(300) // runs dry on an empty page, never wraps
@@ -264,9 +266,7 @@ func TestBelievedTotalThatUnderstatesEndsTheListing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := 0
-			fmt.Sscan(claim, &want)
-			listedOnce(t, rows, want)
+			listedOnce(t, rows, 300)
 		})
 	}
 	fb := nvidiaBoard(300)
@@ -343,8 +343,8 @@ func TestKnownTotalNeverPassesTheWindow(t *testing.T) {
 }
 
 // Every search term is walked to its own first-page total and the union listed
-// once. "senior" matches exactly one page (20 of 30), the case that asked for
-// the wrap.
+// once. "senior" matches exactly one page (20 of 30): its next page is the wrap,
+// which ends that term cleanly.
 func TestSearchTermsEachStopAtTheirOwnTotal(t *testing.T) {
 	fb := liveBoard(30)
 	b := board
@@ -362,6 +362,9 @@ func TestSearchTermsEachStopAtTheirOwnTotal(t *testing.T) {
 			}
 		}
 		wantPages += max(1, (hits+pageSize-1)/pageSize)
+		if hits > 0 && hits%pageSize == 0 {
+			wantPages++ // the page past the total, which wraps
+		}
 	}
 	for _, j := range fb.jobs {
 		l := strings.ToLower(j.title)

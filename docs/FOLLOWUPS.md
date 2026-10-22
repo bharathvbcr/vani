@@ -1079,9 +1079,11 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   - **Fixed 2026-10-22, wrap at the total:** `salesforce/External_Career_Site` "machine learning"
     counts 40 on its first page and 0 on every later one, and answers offset 40 with page 1 again.
     The walk paged until a short page, so a total that is a multiple of 20 sent it to offset 40 and
-    refused a complete listing. It now stops at the first page's total (when that is a positive
-    integer under the window and at least the page's rows) and asks for no offset at or past it. A
-    wrap before the total still fails the board, and so does a wrap with no usable total. A later
+    refused a complete listing. It now treats the wrap as the end once every job the first page
+    counts has been read (when the total is a positive integer under the window and at least the
+    page's rows). It still asks for the page past the total, one extra request, so a first total
+    that understates the board cannot cut the listing short and age unread postings. A wrap
+    before the total still fails the board, and so does a wrap with no usable total. A later
     page's total is ignored. A board that shrinks onto a full page mid-walk fails that run.
   - **Open, ingest bound:** a crawled job's description reaches Vani only as the 4000-byte
     `snippet` (`docs/EXTENSION_INGEST.md`). The crawl sends the part that describes the role, not

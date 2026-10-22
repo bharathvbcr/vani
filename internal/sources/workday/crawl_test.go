@@ -285,9 +285,9 @@ func TestNVIDIABoardListsEveryJob(t *testing.T) {
 	if split == 0 || w.queries != 16 {
 		t.Errorf("queries %d (split requests %d), want the board plus its 15 jobFamilyGroup buckets", w.queries, split)
 	}
-	// 1 + 75 (the 1500 bucket: 75 full pages, no page asked for past its
-	// total) + 14 buckets of 89 or 90 rows at 5 pages each.
-	if w.requests != 1+75+14*5 {
+	// 1 + 76 (the 1500 bucket: 75 full pages and the one past its total that
+	// ends it) + 14 buckets of 89 or 90 rows at 5 pages each.
+	if w.requests != 1+76+14*5 {
 		t.Errorf("%d listing requests", w.requests)
 	}
 }

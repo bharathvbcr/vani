@@ -433,24 +433,22 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 	// later page (checked live, salesforce/External_Career_Site, 2026-10-22),
 	// and a later page's total, when it differs, is not followed: a stop that
 	// waited on a moving count could not be told from a wrap, and a posting
-	// closing mid-walk only moves rows up a page. The first total is believed
-	// even when it understates the rows the board would serve past it; those
-	// rows are not asked for. Workday also answers an offset at or past
-	// the total with page 1 again, so a total that is an exact multiple of the
-	// page size ends on a full page and the next request would be the wrap: the
-	// walk stops there instead of asking. A total that cannot be believed (see
-	// pagedTotal) sets no stop and the walk reads the rows alone, as before.
+	// closing mid-walk only moves rows up a page. Workday answers an offset at
+	// or past the total with page 1 again, so a total that is an exact multiple
+	// of the page size ends on a full page and the next page is that wrap: once
+	// every counted job has been read, the wrap ends the listing. The page past
+	// the total is still asked for, never assumed, so a first total that
+	// understates the board cannot end the listing early: rows past it are read
+	// as rows (and absent postings are never aged on a guess). A total that
+	// cannot be believed (see pagedTotal) sets no stop and the walk reads the
+	// rows alone, as before.
 	stop, known := pagedTotal(first)
-	ended := len(first.rows) < pageSize || (known && pageSize >= stop)
+	ended := len(first.rows) < pageSize
 	firstPath := ""
 	if len(first.rows) > 0 {
 		firstPath = first.rows[0].ExternalPath
 	}
 	for offset := pageSize; !ended && offset < window; offset += pageSize {
-		if known && offset >= stop {
-			ended = true // every job the board counts has been asked for
-			break
-		}
 		p, err := w.page(ctx, applied, offset)
 		if err != nil {
 			return nil, err
@@ -460,6 +458,10 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 			break
 		}
 		if firstPath != "" && p.rows[0].ExternalPath == firstPath {
+			if known && offset >= stop && len(here) >= stop {
+				ended = true // the wrap past the total: every counted job was read
+				break
+			}
 			if known {
 				return nil, fmt.Errorf("%w: the board served its first page again at offset %d, after %d jobs, short of the %d it counts", errIncomplete, offset, len(here), stop)
 			}
