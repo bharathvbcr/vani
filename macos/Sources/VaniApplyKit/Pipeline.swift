@@ -297,7 +297,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             guard ok else { return false }
             if state == .failed || state == .interrupted { return true }
             if let e = error, !e.isEmpty { return true }
-            if let b = boards, b.failed > 0 || b.items.contains(where: { $0.outcome == .failed }) { return true }
+            if let b = boards, b.failed > 0 || b.items.contains(where: { $0.outcome == .failed || $0.outcome == .rateLimited }) { return true }
             if let be = backendErrors, !be.causes.isEmpty || be.unrecorded > 0 { return true }
             return false
         }

@@ -303,6 +303,29 @@ func TestRunsFailuresOneFailedBoard(t *testing.T) {
 	}
 }
 
+// A rate-limited board counts in Failed (cmd/vani/boards.go); the report names
+// it like a failed one, never as a board the record dropped.
+func TestRunsFailuresNamesARateLimitedBoard(t *testing.T) {
+	_, stateDir := setup(t)
+	r := histRec(1, outcomeOK)
+	r.Boards = &boardsReport{Configured: 2, Read: 1, Failed: 1, RateLimited: 1, Items: []boardReport{
+		{ATS: "gh", Token: "a", Company: "A", Outcome: boardRead},
+		{ATS: "ef", Token: "microsoft.com", Company: "Microsoft", Outcome: boardRateLimited,
+			Error: "rate limited by apply.careers.microsoft.com (HTTP 429), retry next run"},
+	}}
+	writeLast(t, stateDir, r)
+	rep := failuresOf(t)
+	if !rep.HasFailures {
+		t.Fatal("a run with a rate-limited board has failures")
+	}
+	if !strings.Contains(rep.Text, "ef:microsoft.com (Microsoft): rate limited by apply.careers.microsoft.com (HTTP 429), retry next run") {
+		t.Errorf("report lacks the rate-limited board:\n%s", rep.Text)
+	}
+	if strings.Contains(rep.Text, "not in the record") {
+		t.Errorf("report says a recorded board was dropped:\n%s", rep.Text)
+	}
+}
+
 func TestRunsFailuresManyFailures(t *testing.T) {
 	_, stateDir := setup(t)
 	r := histRec(1, outcomeFailed)

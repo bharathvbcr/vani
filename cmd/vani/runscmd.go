@@ -197,11 +197,18 @@ func runHasFailures(r runRecord, at time.Time) bool {
 func failedBoardItems(b *boardsReport) int {
 	n := 0
 	for _, it := range b.Items {
-		if it.Outcome == boardFailed {
+		if boardDidNotList(it.Outcome) {
 			n++
 		}
 	}
 	return n
+}
+
+// boardDidNotList is whether a board item is a failure the report names: a
+// board that failed, or one a host's rate limit stopped (it counts in Failed
+// too, see cmd/vani/boards.go).
+func boardDidNotList(outcome string) bool {
+	return outcome == boardFailed || outcome == boardRateLimited
 }
 
 func (e *env) runsList(args []string) error {
@@ -466,7 +473,7 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 	if r.Boards != nil {
 		failed := 0
 		for _, it := range r.Boards.Items {
-			if it.Outcome != boardFailed {
+			if !boardDidNotList(it.Outcome) {
 				continue
 			}
 			failed++

@@ -59,6 +59,8 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"cancelled","error":"context canceled"}"#,
             // A board that failed under a run that still counts as ok.
             #"{"ok":true,"state":"ok","boards":{"configured":3,"read":2,"failed":1,"skipped":0,"listed":9,"items":[{"ats":"wd","token":"x","outcome":"failed","error":"429"}]}}"#,
+            // A board a host's rate limit stopped, recorded by a vani whose counts omit it.
+            #"{"ok":true,"state":"ok","boards":{"configured":2,"read":1,"failed":0,"skipped":0,"listed":9,"items":[{"ats":"ef","token":"microsoft.com","outcome":"rate_limited","error":"rate limited by apply.careers.microsoft.com (HTTP 429), retry next run"}]}}"#,
             // The counts say a board failed though the items were bounded away.
             #"{"ok":true,"state":"ok","boards":{"configured":3,"read":2,"failed":1,"skipped":0,"listed":9,"items":[]}}"#,
             #"{"ok":true,"state":"ok","backend_errors":{"causes":[{"backend":"openrouter","count":2,"example":"402"}]}}"#,
@@ -205,6 +207,7 @@ final class RunFailuresTests: XCTestCase {
         let cases: [(name: String, json: String)] = [
             ("clean", record(outcome: "ok", extra: #","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"items":[\#(read)]}"#)),
             ("two failed boards", record(outcome: "ok", extra: #","boards":{"configured":3,"read":1,"failed":2,"skipped":0,"listed":3,"items":[\#(read),\#(board),\#(board2)]}"#)),
+            ("rate-limited board", record(outcome: "ok", extra: #","boards":{"configured":2,"read":1,"failed":1,"rate_limited":1,"skipped":0,"listed":3,"items":[\#(read),{"ats":"ef","token":"microsoft.com","company":"Microsoft","outcome":"rate_limited","error":"rate limited by apply.careers.microsoft.com (HTTP 429), retry next run"}]}"#)),
             ("failed run", record(outcome: "failed", extra: #","stage":"pipeline","error":"pipeline: no decision backend read 20 postings in a row""#)),
             ("backend errors only", record(outcome: "ok", extra: #","backend_errors":{"causes":[{"backend":"openrouter","count":2,"example":"http 402"}],"unrecorded":1}"#)),
             ("cancelled", record(outcome: "cancelled")),
@@ -219,7 +222,7 @@ final class RunFailuresTests: XCTestCase {
             XCTAssertFalse(report.text.isEmpty, name)
             XCTAssertTrue(report.text.contains("Run record: \(runs.path)/last.json"), "\(name): the report names the run record\n\(report.text)")
             let lines = Set(report.text.split(separator: "\n").map(String.init))
-            for item in status.lastRun.boards?.items.filter({ $0.outcome == .failed }) ?? [] {
+            for item in status.lastRun.boards?.items.filter({ $0.outcome == .failed || $0.outcome == .rateLimited }) ?? [] {
                 XCTAssertTrue(lines.contains(item.copyLine), "\(name): vani's report has no line equal to the row's copy\n\(item.copyLine)\n\(report.text)")
             }
             if !report.hasFailures { XCTAssertTrue(report.text.contains("No failures in this run."), name) }
