@@ -2,7 +2,7 @@ import Foundation
 
 // A run started from the Pipeline tab is `vani run-once` (cmd/vani/main.go)
 // with the overrides chosen in the app, started as a long job whose output goes
-// to <state dir>/runs/manual.log. Its progress and outcome are the run record,
+// to <state dir>/runs/manual.log (the previous run's log is kept in runs/history). Its progress and outcome are the run record,
 // read through `vani status --json` like every other run: the app parses no
 // output of the run itself.
 //
@@ -104,7 +104,8 @@ public struct ManualRunLauncher: Sendable {
     }
 
     /// Where a manual run's output goes: <state dir>/runs/manual.log, beside
-    /// the run record. Each run replaces it.
+    /// the run record. Each run replaces it, after moving the previous one to
+    /// runs/history/manual-<time>.log (`ManualRunLog.rotate`, newest 20 within 8 MiB).
     public static func logURL(stateDir: String) -> URL {
         URL(fileURLWithPath: stateDir).appendingPathComponent("runs/manual.log")
     }
@@ -121,6 +122,8 @@ public struct ManualRunLauncher: Sendable {
         case let .refused(reply):
             throw BankError(reply.error ?? "vani could not be started")
         case let .launch(l):
+            // The launch truncates manual.log: keep the previous run's first (RunLogs.swift).
+            try ManualRunLog.rotate(stateDir: stateDir)
             return try VaniProcess.launch(l.program, arguments: l.arguments, environment: l.environment,
                                           log: Self.logURL(stateDir: stateDir), onExit: onExit)
         }

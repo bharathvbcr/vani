@@ -328,11 +328,20 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 	return stageDigest, err
 }
 
-// saveRunRecord writes the record; a failure is a warning, never a failed run:
-// the run's work is in the ledger either way.
+// saveRunRecord writes the record, and a finished one to the run history too;
+// a failure is a warning, never a failed run: the run's work is in the ledger
+// either way. last.json is written first, so a history failure never costs the
+// record status reads.
 func (e *env) saveRunRecord(r runRecord) {
 	if err := writeRunRecord(e.stateDir, r); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not record the run: %v\n", err)
+		return
+	}
+	if r.Outcome == outcomeRunning {
+		return
+	}
+	if err := writeRunHistory(e.stateDir, r); err != nil {
+		fmt.Fprintf(e.stderr, "vani: could not keep the run in the history: %v\n", err)
 	}
 }
 

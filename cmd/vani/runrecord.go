@@ -20,7 +20,8 @@ import (
 // `vani status --json` (and the Mac app's Pipeline tab) can say whether it ran,
 // failed or is still going. dailyJob writes it, so the daemon and run-once
 // record identically. It lives at <state dir>/runs/last.json and holds only the
-// latest run: the ledger and the digests are the history.
+// latest run; every finished run is also kept in runs/history/ (runhistory.go),
+// and the ledger and the digests are the record of what the runs did.
 //
 // A record with no finished_at is either a run in progress or one whose process
 // died; the pid and the age tell them apart (runState).
@@ -214,18 +215,30 @@ func runRecordPath(stateDir string) string {
 // writeRunRecord replaces the record atomically: a reader sees the old record
 // or the new one, never half of either.
 func writeRunRecord(stateDir string, r runRecord) error {
-	r.V = runRecordVersion
-	raw, err := json.MarshalIndent(r, "", "  ")
+	raw, err := marshalRunRecord(r)
 	if err != nil {
 		return err
 	}
 	return atomicfile.Write(runRecordPath(stateDir), raw)
 }
 
+// marshalRunRecord is the record's one encoding: last.json and the history's
+// copy of it (runhistory.go) are the same bytes.
+func marshalRunRecord(r runRecord) ([]byte, error) {
+	r.V = runRecordVersion
+	return json.MarshalIndent(r, "", "  ")
+}
+
 // readRunRecord returns the last record. A missing file is (nil, nil): no run
 // has been recorded. Anything unreadable is an error, never "no run".
 func readRunRecord(stateDir string) (*runRecord, error) {
-	f, err := os.Open(runRecordPath(stateDir))
+	return readRunRecordFile(runRecordPath(stateDir))
+}
+
+// readRunRecordFile is readRunRecord for any record file: last.json or a
+// history entry.
+func readRunRecordFile(path string) (*runRecord, error) {
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

@@ -64,6 +64,12 @@ commands:
   status [--json]            show ledger counts by status; --json adds the last run's outcome,
                              today's spend against each cap and the decision-model setup
                              (reads the ledger without its lock)
+  runs list [--json]         the finished runs, newest first: every run's record is kept in
+                             <state dir>/runs/history/ (the newest 30, 4 MiB); * marks the latest
+  runs show [--json] [ID]    one run's record and failures (ID from runs list; default the latest)
+  runs failures [--json] [ID]
+                             the plain-text failure report for a run: its failed boards, backend
+                             errors, error and the log files; the Mac app's "Copy failures"
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   export heldout [--out PATH] owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
@@ -270,6 +276,8 @@ func runEnv(e *env, args []string) int {
 		cmdErr = e.cmdDigest(args[1:])
 	case "status":
 		cmdErr = e.cmdStatus(args[1:])
+	case "runs":
+		cmdErr = e.cmdRuns(args[1:])
 	case "launchd":
 		cmdErr = e.cmdLaunchd(args[1:])
 	case "lca":

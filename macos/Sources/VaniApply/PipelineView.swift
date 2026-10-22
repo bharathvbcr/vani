@@ -411,6 +411,7 @@ private struct LastRunSection: View {
                     BackendErrorRows(errors: errs)
                 }
             }
+            RunToolsRow(status: status)
             if status.schedule.isUnkept {
                 // Nothing fires the schedule, so no "next run" is promised.
                 let at = status.schedule.dailyAt.map { "daily at \($0) \(status.schedule.timezone ?? "")" } ?? "daily"
@@ -457,6 +458,78 @@ private struct LastRunSection: View {
     }
 }
 
+/// Copy failures and the run's files. The failure text is vani's (`vani runs
+/// failures`): this row asks for it and copies it, and says so when it cannot.
+/// The button is there only when the last run has something to report; the
+/// Logs menu lists only the files that exist when the row is drawn.
+private struct RunToolsRow: View {
+    @Environment(PipelineModel.self) private var pipeline
+    let status: PipelineStatus
+
+    var body: some View {
+        let files = RunFiles.existing(stateDir: status.stateDir)
+        let hasFailures = status.lastRun.hasFailures
+        if hasFailures || !files.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if hasFailures { copyButton }
+                    if !files.isEmpty { logsMenu(files) }
+                    Spacer(minLength: 0)
+                }
+                if case let .failed(message) = pipeline.failureCopy {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(message).foregroundStyle(.red).textSelection(.enabled)
+                        Button("Dismiss") { pipeline.resetFailureCopy() }.buttonStyle(.link)
+                    }
+                    .font(.callout)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private var copyButton: some View {
+        Button {
+            Task {
+                await pipeline.copyFailures { text in
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+                if pipeline.failureCopy == .copied {
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    pipeline.resetFailureCopy()
+                }
+            }
+        } label: {
+            switch pipeline.failureCopy {
+            case .copying: Label("Copying…", systemImage: "doc.on.doc")
+            case .copied: Label("Copied", systemImage: "checkmark")
+            default: Label("Copy failures", systemImage: "doc.on.doc")
+            }
+        }
+        .disabled(pipeline.failureCopy == .copying)
+        .help("Copy the last run's failed boards, backend errors, error and log paths as plain text")
+    }
+
+    private func logsMenu(_ files: RunFiles) -> some View {
+        Menu("Logs") {
+            if let log = files.manualLog {
+                Button("Open Log") { NSWorkspace.shared.open(log) }
+                Button("Show Log in Finder") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
+            }
+            if let record = files.record {
+                Button("Open Run Record") { NSWorkspace.shared.open(record) }
+                Button("Show Run Record in Finder") { NSWorkspace.shared.activateFileViewerSelecting([record]) }
+            }
+            if let history = files.historyFolder {
+                Button("Show Run History in Finder") { NSWorkspace.shared.open(history) }
+            }
+        }
+        .fixedSize()
+        .help("Open or reveal the last manual run's log, the run record, and the kept history of earlier runs")
+    }
+}
+
 /// Which boards the run read, and why any was not: a board that fails to list
 /// leaves its postings as they were, so without this it looks like a quiet board.
 private struct BoardRows: View {
@@ -480,6 +553,14 @@ private struct BoardRows: View {
                     }
                 }
                 Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .contextMenu {
+                // The same line vani's failure report prints for this board.
+                Button("Copy error") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(line.copyText, forType: .string)
+                }
             }
         }
         if let more = boards.moreNote() {

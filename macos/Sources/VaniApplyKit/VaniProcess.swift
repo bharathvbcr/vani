@@ -183,6 +183,7 @@ protocol VersionedReply {
 }
 
 extension PipelineStatus: VersionedReply {}
+extension FailureReport: VersionedReply {}
 
 private struct VersionProbe: Decodable { var version: Int? }
 

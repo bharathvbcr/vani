@@ -38,6 +38,17 @@ final class PipelineModel {
     private(set) var lastLog: URL?
     /// When this app asked the daemon for a run that has not started yet.
     private(set) var requestedAt: Date?
+    /// Where Copy failures stands: vani words the report, so copying is a call to it.
+    private(set) var failureCopy = FailureCopy.idle
+
+    enum FailureCopy: Equatable {
+        case idle
+        case copying
+        /// The report is on the pasteboard.
+        case copied
+        /// Nothing was copied, and why (vani too old, timed out, empty reply).
+        case failed(String)
+    }
 
     private let client: () -> PipelineClient
     private let launcher: () -> ManualRunLauncher?
@@ -111,6 +122,29 @@ final class PipelineModel {
             error = String(describing: err)
             announcer?.unreadable(String(describing: err))
         }
+    }
+
+    /// Ask vani for the latest run's failure report (`vani runs failures`) and hand
+    /// its text to `write`, the pasteboard. The call is bounded by the client's
+    /// timeout; when it fails nothing is written and `failureCopy` says why, so the
+    /// pasteboard never gets an empty or half report.
+    func copyFailures(write: (String) -> Void) async {
+        guard failureCopy != .copying else { return }
+        failureCopy = .copying
+        let c = client()
+        let result = await BlockingWork.run { try c.failureReport() }
+        switch result {
+        case let .success(report):
+            write(report.text)
+            failureCopy = .copied
+        case let .failure(err):
+            failureCopy = .failed("Could not copy the failures: \(err)")
+        }
+    }
+
+    /// Forget a copy's outcome (the checkmark times out; a failure is dismissed).
+    func resetFailureCopy() {
+        if failureCopy != .copying { failureCopy = .idle }
     }
 
     /// Re-read until the task is cancelled (AppDelegate owns it, so the poll
