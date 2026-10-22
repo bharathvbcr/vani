@@ -55,7 +55,8 @@ else
   else
     echo "bundle.sh: building vani without -tags tessl (no Apple silicon or no $TESSL_ARCHIVE): semantic matching will report \"not run\"" >&2
   fi
-  go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
+  # VANI_VERSION (scripts/release.sh) stamps `vani version`; unset, it says "dev".
+  go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} ${VANI_VERSION:+-ldflags "-X main.version=$VANI_VERSION"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
 fi
 cp "$MACOS/Support/Extension-Info.plist" "$APPEX/Contents/Info.plist"
 cp "$BIN/VaniApplyExtension" "$APPEX/Contents/MacOS/VaniApplyExtension"
