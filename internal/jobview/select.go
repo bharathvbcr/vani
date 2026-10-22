@@ -14,8 +14,10 @@ import (
 
 // Views. "new" is every kept posting the user has not marked; the mark views
 // show marked postings whatever became of them since (a saved role that
-// closed stays saved, flagged closed); "all" is kept plus marked.
-var Views = []string{"new", "saved", "applied", "hidden", "all"}
+// closed stays saved, flagged closed); "all" is kept plus marked; "pending" is
+// the postings no run has triaged yet, unmarked, which no other view lists
+// (ViewPending): it is unranked, and only `jobs list` takes it.
+var Views = []string{"new", "saved", "applied", "hidden", "all", ViewPending}
 
 // Sorts are the orders `jobs list` takes.
 var Sorts = []string{"default", "priority", "relevance", "fresh", "company", "salary"}
@@ -172,7 +174,7 @@ type List struct {
 
 // BuildList selects, sorts, folds and limits the jobs o names.
 func BuildList(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ranker, info InsightInfo, kwLimit, limit int) List {
-	out := List{View: o.View, Query: o.Query, Sort: o.Sort, Torn: snap.Torn, Jobs: []Job{}, Insight: info}
+	out := List{View: o.View, Query: o.Query, Sort: EffectiveSort(o.View, o.Sort), Torn: snap.Torn, Jobs: []Job{}, Insight: info}
 	sel, counts := Select(snap, m, o, rk, kwLimit)
 	out.Counts = counts
 	Sort(sel, o.View, o.Sort)
@@ -218,6 +220,18 @@ func Diversify(sel []Selected, view, by string) []Selected {
 	return out
 }
 
+// EffectiveSort is the order a view really uses for the order asked. Untriaged
+// postings have no priority or relevance, so the default, priority and
+// relevance orders (which all rank by them) become "fresh": newest first, the
+// only signal they have that is not a score. Replies report this, never the
+// order that was asked for and not applied.
+func EffectiveSort(view, by string) string {
+	if view == ViewPending && (by == "default" || by == "priority" || by == "relevance") {
+		return "fresh"
+	}
+	return by
+}
+
 // resultOf is the two numbers an order reads, as jobinsight's comparators take them.
 func resultOf(j Job) jobinsight.Result {
 	return jobinsight.Result{Score: j.Priority, Relevance: j.Relevance}
@@ -228,6 +242,7 @@ func resultOf(j Job) jobinsight.Result {
 // relevance, then key (jobinsight.ComparePriority, the one tie-break).
 // Every order ends on the key, so it is total and stable across calls.
 func Sort(sel []Selected, view, by string) {
+	by = EffectiveSort(view, by)
 	byMarkTime := by == "default" && (view == "saved" || view == "applied" || view == "hidden")
 	sort.SliceStable(sel, func(i, j int) bool {
 		a, b := sel[i].Job, sel[j].Job
@@ -242,6 +257,11 @@ func Sort(sel []Selected, view, by string) {
 			}
 			if !a.FreshAt.Equal(b.FreshAt) {
 				return a.FreshAt.After(b.FreshAt)
+			}
+			// A board read in one sweep dates many postings alike; with no
+			// scores to separate them, group them by company.
+			if ca, cb := strings.ToLower(a.Company), strings.ToLower(b.Company); view == ViewPending && ca != cb {
+				return ca < cb
 			}
 			if a.Relevance != b.Relevance {
 				return a.Relevance > b.Relevance
@@ -277,11 +297,12 @@ func Sort(sel []Selected, view, by string) {
 // MaxPendingCompanies bounds Pending.Companies; Total still counts all.
 const MaxPendingCompanies = 20
 
-// Pending is what the ledger holds that no view lists yet: postings read
-// from a board but not triaged (status live). Views list only postings that
-// passed triage (KeptStatus), so without this a board whose postings are still
-// waiting — the per-run cap reached, or every backend refused — looks like a
-// board with no jobs at all.
+// Pending is what the ledger holds that no ranked view lists: postings read
+// from a board but not triaged (status live) and not marked. The ranked views
+// list only postings that passed triage (KeptStatus), so without this a board
+// whose postings are still waiting — the per-run cap reached, or every backend
+// refused — looks like a board with no jobs at all. Total is the size of the
+// pending view (counts["pending"]); a marked posting is in its mark view.
 type Pending struct {
 	// Total is every posting awaiting triage.
 	Total int `json:"total"`
@@ -304,7 +325,7 @@ func PendingOf(snap ledger.Snapshot, m map[posting.Key]marks.Entry, q string) Pe
 	out := Pending{Companies: []PendingCompany{}}
 	by := map[string]int{}
 	for _, r := range snap.Records {
-		if r.Status != posting.Live {
+		if !InView(ViewPending, r, m[r.Key].Mark) {
 			continue
 		}
 		out.Total++

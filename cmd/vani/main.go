@@ -115,18 +115,20 @@ commands:
                              stdin), once per slate; keys and positions only, never a title
   labels [--json]            the label vocabularies (fit, status, category, triage options) as
                              value and display string in display order; reads no state
-  jobs list [--json] [--view new|saved|applied|hidden|all] [--q TEXT] [--limit N]
+  jobs list [--json] [--view new|saved|applied|hidden|all|pending] [--q TEXT] [--limit N]
             [--sort default|priority|relevance|fresh|company] [--fit LIST]
             [--work-mode LIST] [--sponsorship LIST] [--max-age DAYS] [--open] [--half-life DAYS]
             [--state LIST] [--area LIST] [--remote | --or-remote]
                              browse retrieved roles (reads the ledger without its lock), with
                              freshness, display-only relevance/priority scores, keywords, and the
                              places and remote listing the board's location names (--or-remote:
-                             in those states/areas, or listed as remote)
+                             in those states/areas, or listed as remote). --view pending lists
+                             the postings no run has triaged yet, unranked (no fit, relevance or
+                             priority), freshest first; only list and folders take it
   jobs stats [--json] [same selection flags as list]
                              distributions over the selection: fit, age, scores, companies, keywords,
                              US states, areas and remote listings
-  jobs folders [--json] [--view new|saved|applied|hidden|all]
+  jobs folders [--json] [--view new|saved|applied|hidden|all|pending]
                              category folder counts for the selection (career tracks from drafts/deciders)
   jobs show [--json] KEY     one role with its description
   jobs find [--json] --url URL

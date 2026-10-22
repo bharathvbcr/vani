@@ -15,7 +15,9 @@ final class JobsModel {
             // A sort still at the old view's default follows the view; one the owner
             // picked stays. Setting `sort` relists, so only one list is asked for.
             let next = JobSort.defaultSort(for: view)
-            if sort == JobSort.defaultSort(for: oldValue), sort != next {
+            // A picked order the new view cannot offer (priority in Awaiting triage)
+            // also gives way to the view's own.
+            if (sort == JobSort.defaultSort(for: oldValue) || !JobSort.options(for: view).contains(sort)), sort != next {
                 sort = next
             } else {
                 reload()
@@ -122,7 +124,9 @@ final class JobsModel {
         listGeneration += 1
         let gen = listGeneration
         loading = true
-        let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights
+        // Stats and gaps chart fit, relevance and priority, which postings awaiting
+        // triage have none of: vani refuses them, so they are not asked.
+        let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights && view.isRanked
         async let listed = BlockingWork.run { try c.list(v, query: q, sort: s, filter: f) }
         async let counted: Result<JobsStats, Error>? = wantStats
             ? BlockingWork.run { try c.stats(v, query: q, filter: f) }
@@ -137,7 +141,11 @@ final class JobsModel {
         case let .success(p):
             page = p
             error = nil
-            await reportImpressions(p.jobs.prefix(JobsClient.impressionRows).map(\.key), view: v)
+            // Only ranked roles were put in front of the owner to pass over; an
+            // unranked posting awaiting triage is not "seen and passed".
+            if v.isRanked {
+                await reportImpressions(p.jobs.prefix(JobsClient.impressionRows).map(\.key), view: v)
+            }
         case let .failure(err):
             error = String(describing: err)
         }

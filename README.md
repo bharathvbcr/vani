@@ -643,7 +643,12 @@ with the primary on drop candidates, per slot: asked, unavailable, answered, agr
 95% Wilson interval, and how many disagreements carry an owner `would_apply` label (and how many
 of those say yes or maybe); with nothing asked it says "no data". The rest stay `live` for the next run. Only triaged
 postings are listed in Jobs, so `jobs list`/`jobs stats` (`pending` in `--json`), the digest
-footer and the Jobs tab footer say how many are still awaiting triage. `status --json` shows
+footer and the Jobs tab footer say how many are still awaiting triage, and `jobs list --view pending`
+(the app's Awaiting triage tab) lists them: unranked (no fit, relevance or priority in the reply, and
+no `row`), newest first where the age is known, never mixed into new/saved/applied/hidden/all, with a
+`prefilter_drop` flag ("excluded" or "title", never the rule) on those the next run's prefilter would
+drop. Only `jobs list` and `jobs folders` take `--view pending`; `jobs stats` and `jobs gaps` refuse
+it. `status --json` shows
 the last run's `advance` report (eligible, attempted, unread, deferred, why it stopped) and
 `backend_errors`: every decision-backend call that failed, counted by cause, with one example.
 

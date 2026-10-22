@@ -102,6 +102,7 @@ func (e *env) jobsList(args []string) error {
 		if *limit < 1 || *limit > maxJobsLimit {
 			return usagef("jobs list: --limit must be 1-%d", maxJobsLimit)
 		}
+		o.pendingOK = true
 		if err := o.check("jobs list", true); err != nil {
 			return err
 		}
@@ -136,7 +137,16 @@ func (e *env) jobsList(args []string) error {
 			if pay != "" {
 				pay = "  " + pay
 			}
-			fmt.Fprintf(e.stdout, "%s  %5.1f  %s  %-7s  %s: %s%s%s  [%s]\n", rank, j.Priority, age, mark, j.Company, j.Title, pay, whereText(j), j.Key)
+			// An untriaged posting has no priority: a dash, never 0.0.
+			priority := fmt.Sprintf("%5.1f", j.Priority)
+			if j.Untriaged {
+				priority = "    -"
+			}
+			flag := ""
+			if j.PrefilterDrop != "" {
+				flag = "  (the prefilter would drop it)"
+			}
+			fmt.Fprintf(e.stdout, "%s  %s  %s  %-7s  %s: %s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag, j.Key)
 		}
 		fmt.Fprintf(e.stdout, "%s: %d of %d shown\n", out.View, out.Shown, out.Total)
 		e.printPending(out.Pending, out.Query)

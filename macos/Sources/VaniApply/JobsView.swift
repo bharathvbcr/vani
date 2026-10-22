@@ -46,7 +46,7 @@ struct JobsView: View {
             ToolbarItemGroup {
                 Menu {
                     Picker("Sort", selection: $jobs.sort) {
-                        ForEach(JobSort.allCases) { Text($0.title).tag($0) }
+                        ForEach(JobSort.options(for: jobs.view)) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.inline)
                 } label: {
@@ -190,8 +190,10 @@ private struct ViewSwitcher: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(n.map { "\(v.title): \($0) \($0 == 1 ? "role" : "roles")" } ?? v.title)
-        .accessibilityLabel(n.map { "\(v.title), \($0)" } ?? v.title)
+        .help(v.isRanked
+              ? (n.map { "\(v.title): \($0) \($0 == 1 ? "role" : "roles")" } ?? v.title)
+              : "\(v.label(count: n)): read from the boards, not yet triaged, so unranked and not mixed into the other views")
+        .accessibilityLabel(v.label(count: n))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -624,17 +626,22 @@ private struct JobList: View {
     /// postings waiting for triage, a capped list, a run still writing.
     @ViewBuilder
     private func listHeader(_ page: JobsPage) -> some View {
-        let triage = JobListPresentation.triageBanner(page.pending)
+        // In the Awaiting triage view the list itself is the backlog: no pill for it.
+        let triage = jobs.view == .pending ? nil : JobListPresentation.triageBanner(page.pending)
         let cap = JobListPresentation.capNotice(shown: page.shown, total: page.total)
         VStack(alignment: .leading, spacing: 6) {
-            Text(JobListPresentation.sortCaption(jobs.sort))
+            Text(JobListPresentation.sortCaption(jobs.sort, view: jobs.view))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if triage != nil || cap != nil || page.torn == true {
                 WrapLayout(spacing: 6) {
                     if let triage, let pending = page.pending {
-                        StatePill(symbol: "hourglass", text: triage, tint: .orange)
-                            .help(pending.footerHelp)
+                        // A button, so the backlog is one click from the ranked views.
+                        Button { jobs.view = .pending } label: {
+                            StatePill(symbol: "hourglass", text: triage, tint: .orange)
+                        }
+                        .buttonStyle(.plain)
+                        .help(pending.footerHelp)
                     }
                     if let cap {
                         StatePill(symbol: "line.3.horizontal.decrease", text: cap + " · search for more", tint: .blue)
@@ -689,6 +696,7 @@ private struct JobList: View {
         case .applied: return "No applications yet"
         case .hidden: return "Nothing hidden"
         case .all: return "No roles yet"
+        case .pending: return "Nothing awaiting triage"
         }
     }
 
@@ -697,15 +705,18 @@ private struct JobList: View {
     }
 
     private var emptyText: String {
-        let waiting = jobs.page?.pending?.emptySearchNote(query: jobs.query).map { " " + $0 } ?? ""
+        let waiting = jobs.page?.pending?.emptySearchNote(query: jobs.query, in: jobs.view).map { " " + $0 } ?? ""
         if !jobs.filter.isEmpty { return "No role in this view passes the filters. Clear them from the Filter menu." + waiting }
         if !jobs.query.isEmpty { return "No role in this view matches “\(jobs.query)”." + waiting }
         switch jobs.view {
-        case .new: return "Every role Vani kept has been saved, applied to or hidden. New ones arrive with the daily run."
+        case .new:
+            return "Every role Vani kept has been saved, applied to or hidden. New ones arrive with the daily run."
+                + (jobs.page?.pending?.emptyListNote(in: jobs.view).map { " " + $0 } ?? "")
         case .saved: return "Save a role (⌘S) to keep it here."
         case .applied: return "Mark a role Applied (⇧⌘A) to track it here with the date."
         case .hidden: return "Hidden roles (⌘⌫) leave New and wait here."
         case .all: return "Run `vani run-once` to retrieve roles."
+        case .pending: return "Every posting Vani read from the boards has been triaged. New ones wait here until a run reads them."
         }
     }
 }
@@ -756,6 +767,9 @@ private struct JobRow: View {
                     }
                     if let rank = job.rank { Chip(text: "Rank \(Int(rank.rounded()))", tint: .accentColor) }
                     if job.closed == true { Chip(text: "Closed", tint: .red) }
+                    // No fit, rank or score for these: say so where they would be.
+                    if job.isUntriaged { Chip(text: "Not triaged yet", tint: .orange).help(Job.untriagedNote) }
+                    if let drop = job.prefilterNote { Chip(text: "Next run drops it", tint: .secondary).help(drop) }
                     ForEach(targetKeywords, id: \.term) { Chip(text: $0.term, tint: .secondary) }
                 }
                 if let first = job.reasons.first, first.kind != .other {
@@ -825,6 +839,7 @@ private struct JobRow: View {
     private var accessibilityText: String {
         var parts = [job.title, subtitle]
         if let fit = job.fitLabel { parts.append(fit) }
+        if job.isUntriaged { parts.append("not triaged yet") }
         if let pay = job.payLabel(preferring: jobs.filter.currency) { parts.append("pay " + pay) }
         if let age = job.ageDays { parts.append(job.freshSource == .seen ? "first seen \(age) days ago" : "posted \(age) days ago") }
         if let p = JobScore.display(job.priority) { parts.append("priority \(p)") }
@@ -1055,6 +1070,17 @@ private struct JobDetailContent: View {
             HStack(alignment: .top, spacing: 14) {
                 CompanyAvatar(company: job.company, logo: job.logoPath, size: 52)
                 header
+            }
+            if job.isUntriaged {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(Job.untriagedNote, systemImage: "hourglass")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    if let drop = job.prefilterNote {
+                        Text(drop).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             if job.relevance != nil || job.ageDays != nil {
                 Divider()
@@ -1737,6 +1763,7 @@ private struct JobBadge: View {
         case .applied: "checkmark.seal"
         case .hidden: "eye.slash"
         case .all: "briefcase"
+        case .pending: "hourglass"
         }
     }
 

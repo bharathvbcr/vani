@@ -8,7 +8,9 @@ A Mac app that holds the Vani Apply answer bank for both Chrome and Safari, and 
 it: view, add, edit and delete answers, turn self-identification on or off, turn the extension off per
 site, import and export, and see what each browser saved and filled.
 
-Its **Jobs** tab browses the roles Vani retrieved (New, Saved, Applied, Hidden, All), with the picked
+Its **Jobs** tab browses the roles Vani retrieved (New, Saved, Applied, Hidden, All, and **Awaiting
+triage (N)**: postings read from the boards that no run has triaged yet, shown with no fit or score,
+newest first, and charted nowhere; `vani jobs list --view pending`), with the picked
 "Fits / Gap / Check" note, triage readings and the job description, and lets you Save (⌘S), mark
 Applied (⇧⌘A), Hide (⌘⌫) and keep a private note per role. It is a client of `vani jobs … --json`
 (cmd/vani/jobscmd.go) run from `Contents/Helpers/vani` with the Vani config and state folder set in
