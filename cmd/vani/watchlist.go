@@ -69,8 +69,9 @@ func (e *env) watchlistAdd(args []string) error {
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe) or pg (careers page)")
 	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; pg: a short slug)")
 	company := fs.String("company", "", "company display name")
+	boardName := fs.String("board-name", "", "the board's literal name on the ATS when it is not --token (ab only): --token hippocratic-ai --board-name \"Hippocratic AI\"")
 	region := fs.String("region", "", "regional host (eu, lever only)")
-	host := fs.String("host", "", "workday tenant host (acme.wd5.myworkdayjobs.com), or eightfold or jibe careers host (careers.amd.com)")
+	host := fs.String("host", "", "workday host (acme.wd5.myworkdayjobs.com, or wd1.myworkdaysite.com whose tenant is the token's), or eightfold or jibe careers host (careers.amd.com)")
 	var searches []string
 	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef, jb); the board lists their union", func(s string) error {
 		searches = append(searches, s)
@@ -99,7 +100,7 @@ func (e *env) watchlistAdd(args []string) error {
 	if *ats == "" || *token == "" || *company == "" {
 		return usagef("watchlist add: --ats, --token and --company are required")
 	}
-	b := sources.Board{ATS: posting.ATS(*ats), Token: *token, Company: *company, Region: *region,
+	b := sources.Board{ATS: posting.ATS(*ats), Token: *token, Company: *company, Region: *region, BoardName: *boardName,
 		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters, Domain: *domain, Icon: *icon}
 	switch len(searches) {
 	case 0:

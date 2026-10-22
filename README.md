@@ -560,7 +560,12 @@ or state means regenerating the plist and bootstrapping it again. Nothing else f
 is written into the plist, API keys included.
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
---search "query"`. Search sites take repeated `--search` (up to 10 terms; the board lists their union)
+--search "query"`; a site on Workday's shared host takes `--host wd1.myworkdaysite.com` with the
+tenant in the token only (`--token snapchat/snap`). An Ashby board whose name has a space
+(`Hippocratic AI`) takes a slug token and the literal name: `--ats ab --token hippocratic-ai
+--board-name "Hippocratic AI"`; the token is what keys and `--board ab:hippocratic-ai` use. A config
+holding `board_name` needs a `vani` built with the field (the config loader refuses unknown
+fields). Search sites take repeated `--search` (up to 10 terms; the board lists their union)
 and, where verified, `--filter name=value`: `az --token amazon` (`normalized_country_code[]`,
 `category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its

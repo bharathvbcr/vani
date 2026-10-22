@@ -95,7 +95,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, err
 	}
 	var resp response
-	endpoint := baseURL + url.PathEscape(b.Token) + "?includeCompensation=true"
+	endpoint := baseURL + url.PathEscape(b.APIName()) + "?includeCompensation=true"
 	if err := srcutil.GetJSON(ctx, s.d, endpoint, &resp); err != nil {
 		return nil, fmt.Errorf("ashby %q: %w", b.Token, err)
 	}

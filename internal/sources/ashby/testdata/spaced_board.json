@@ -1,0 +1,35 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "91ffd74b-ff35-407c-b2b1-686172cfc029",
+      "title": "HCP Evaluator (PT 10-20 hrs)",
+      "department": "Research & Development",
+      "team": "AI Evaluations",
+      "employmentType": "PartTime",
+      "location": "United States",
+      "publishedAt": "2026-10-02T17:58:13.288+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "jobUrl": "https://jobs.ashbyhq.com/Hippocratic%20AI/91ffd74b-ff35-407c-b2b1-686172cfc029",
+      "applyUrl": "https://jobs.ashbyhq.com/Hippocratic%20AI/91ffd74b-ff35-407c-b2b1-686172cfc029/application",
+      "descriptionPlain": "(description omitted)"
+    },
+    {
+      "id": "e35e118e-741e-4273-862e-743131e4ea63",
+      "title": "Integration Engineer ",
+      "department": "Customer Experience",
+      "team": "Customer Site Engineering",
+      "employmentType": "FullTime",
+      "location": "United States",
+      "publishedAt": "2026-10-20T17:41:57.685+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "jobUrl": "https://jobs.ashbyhq.com/Hippocratic%20AI/e35e118e-741e-4273-862e-743131e4ea63",
+      "applyUrl": "https://jobs.ashbyhq.com/Hippocratic%20AI/e35e118e-741e-4273-862e-743131e4ea63/application",
+      "descriptionPlain": "(description omitted)"
+    }
+  ]
+}

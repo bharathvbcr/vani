@@ -54,6 +54,14 @@ func CheckBoard(b sources.Board, want posting.ATS) error {
 	if why := sources.TokenProblem(b.Token); why != "" {
 		return fmt.Errorf("sources: board token %q %s", b.Token, why)
 	}
+	if b.BoardName != "" {
+		if want != posting.Ashby {
+			return fmt.Errorf("sources: board_name applies to ab only, not %s/%s", b.ATS, b.Token)
+		}
+		if why := sources.BoardNameProblem(b.BoardName); why != "" {
+			return fmt.Errorf("sources: board %q board_name %q %s", b.Token, b.BoardName, why)
+		}
+	}
 	return nil
 }
 

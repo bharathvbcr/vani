@@ -4,6 +4,8 @@ package sources
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -25,6 +27,54 @@ func TokenProblem(token string) string {
 	return ""
 }
 
+// MaxBoardNameLen bounds Board.BoardName.
+const MaxBoardNameLen = 64
+
+// BoardNameProblem is why name cannot be a Board.BoardName, or "" when it can:
+// 1..MaxBoardNameLen ASCII letters, digits, '-' and '_', with single spaces
+// between them. It is the one rule behind config.ValidBoard and
+// srcutil.CheckBoard. No '.', '/', '?', '#', ':' or '%' is allowed, so a name
+// cannot change the request path (".." included), and the name is only ever
+// sent through url.PathEscape.
+func BoardNameProblem(name string) string {
+	if name == "" || len(name) > MaxBoardNameLen {
+		return fmt.Sprintf("must be 1..%d bytes", MaxBoardNameLen)
+	}
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") || strings.Contains(name, "  ") {
+		return "must not start or end with a space or hold two in a row"
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == ' ':
+		default:
+			return "may hold only letters, digits, '-', '_' and single spaces"
+		}
+	}
+	return ""
+}
+
+// APIName is the name the ATS knows the board by: BoardName when set, else
+// Token. The key and KeyPrefix always use Token.
+func (b Board) APIName() string {
+	if b.BoardName != "" {
+		return b.BoardName
+	}
+	return b.Token
+}
+
+// workdaySiteHost is Workday's shared host, "wd{N}.myworkdaysite.com". Unlike
+// "{tenant}.wd{N}.myworkdayjobs.com" its name carries no tenant, so a board on
+// it names the tenant only in its token, and its public pages live under
+// /recruiting/{tenant}/{site}/ rather than /{site}/.
+var workdaySiteHost = regexp.MustCompile(`^wd[0-9]{1,3}\.myworkdaysite\.com$`)
+
+// WorkdaySiteHost reports whether host, as written (a bare host name, any
+// case), is a shared Workday host "wd{N}.myworkdaysite.com". A port, path,
+// userinfo or extra label is not one.
+func WorkdaySiteHost(host string) bool {
+	return workdaySiteHost.MatchString(strings.ToLower(strings.TrimSpace(host)))
+}
+
 // Board is one watchlist entry: a company's job board on one ATS, or its own
 // careers page.
 type Board struct {
@@ -34,6 +84,13 @@ type Board struct {
 	// domain, Jibe client code ("amd"), or a short slug you choose for a
 	// careers page.
 	Token string `json:"token"`
+	// BoardName is the board's literal name on the ATS where that cannot be
+	// the Token, Ashby only: Hippocratic AI's board is "Hippocratic AI", with
+	// a space, which no posting key, --board ref or Mac-app key check takes
+	// (JobLinks.checkedKey refuses whitespace), so its Token is a slug such as
+	// "hippocratic-ai" and this field names the board in the request. Empty
+	// means the Token is the name, as it is for every board that predates it.
+	BoardName string `json:"board_name,omitempty"`
 	// Company is the display name; adapters fall back to it when the ATS
 	// payload carries none.
 	Company string `json:"company"`
@@ -54,7 +111,9 @@ type Board struct {
 
 	// Host is the board's API host where the ATS does not fix one: the
 	// Workday tenant host "{tenant}.wd{N}.myworkdayjobs.com" (its tenant label
-	// must match Token's tenant), or an Eightfold or Jibe careers host such as
+	// must match Token's tenant), the shared Workday host
+	// "wd{N}.myworkdaysite.com" (WorkdaySiteHost; no tenant label, the tenant
+	// is Token's), or an Eightfold or Jibe careers host such as
 	// "apply.careers.microsoft.com" or "careers.amd.com".
 	Host string `json:"host,omitempty"`
 	// Search narrows a search-based listing (Workday's searchText, Jibe's

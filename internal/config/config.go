@@ -817,6 +817,10 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 // workdayHost matches "{tenant}.wd{N}.myworkdayjobs.com".
 var workdayHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
 
+// workdayName matches a Workday "tenant/site" token whose parts are the safe
+// path names the adapter accepts (workday.parseToken).
+var workdayName = regexp.MustCompile(`^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`)
+
 // maxLinkPattern bounds a page board's regexp source.
 const maxLinkPattern = 256
 
@@ -944,6 +948,16 @@ func ValidBoard(b sources.Board) error {
 	if strings.ContainsAny(b.Token, " \t\r\n?#") || strings.Contains(b.Token, "..") {
 		return fmt.Errorf("board (%s) token %q has unsafe characters", b.ATS, b.Token)
 	}
+	if b.BoardName != "" {
+		// The token stays the safe slug every key and ref is built from; the
+		// literal name ("Hippocratic AI") only ever reaches the request URL.
+		if b.ATS != posting.Ashby {
+			return fmt.Errorf("board %s/%s: board_name applies to ab only", b.ATS, b.Token)
+		}
+		if why := sources.BoardNameProblem(b.BoardName); why != "" {
+			return fmt.Errorf("board (%s) %s board_name %q %s", b.ATS, b.Token, b.BoardName, why)
+		}
+	}
 	if strings.HasSuffix(strings.ToLower(b.Token), ScrapeSuffix) {
 		return fmt.Errorf("board token %q ends in %q, which is reserved for jobs scraped in the browser", b.Token, ScrapeSuffix)
 	}
@@ -952,12 +966,20 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("workday token %q must be tenant/site", b.Token)
 		}
 		tenant, _, _ := strings.Cut(strings.ToLower(b.Token), "/")
-		m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
-		if m == nil {
-			return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com, got %q", b.Token, b.Host)
-		}
-		if m[1] != tenant {
-			return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
+		if sources.WorkdaySiteHost(b.Host) {
+			// The shared host names no tenant, so the token is all that keeps a
+			// board on it from reaching another tenant's paths.
+			if !workdayName.MatchString(b.Token) {
+				return fmt.Errorf("workday token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
+			}
+		} else {
+			m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
+			if m == nil {
+				return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com or wd{N}.myworkdaysite.com, got %q", b.Token, b.Host)
+			}
+			if m[1] != tenant {
+				return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
+			}
 		}
 	} else if strings.Contains(b.Token, "/") {
 		return fmt.Errorf("board (%s) token %q must not contain '/'", b.ATS, b.Token)
