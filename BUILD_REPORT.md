@@ -30,6 +30,18 @@ and "merge-approval ask" sections describe the morning state.
   worktrees are harness-locked (all merged; remove them with `git worktree remove -f -f`). Some half-deleted
   directories remain under `.claude/worktrees/`, held by Finder `.DS_Store`.
 
+### ft-7099 (Lappi v2 caller side): first wave merged (main f1f3319)
+- **P1, held-out export:** `vani export heldout` exports keys and text hashes, with normalisation that matches Lappi's Python and a locked re-export after each label write. It writes no MinHash signature yet; that waits on your x/crypto OK and Lappi's format.
+- **P2, Haiku teacher, and the run:** `vani teacher` was run on your instruction on 2026-10-21. It asked 3,668 postings and stored all 3,668 readings, with none unusable. Spend was **$1.60 settled** (Manvi ledger delta), against an estimate of $1.02 and a ceiling of $6.34.
+- **P3, label windows:** label windows with frozen labels, and a two-window per-slot promotion verdict. `vani label` puts teacher disagreements first.
+- **P4, per-slot routing:** `decide.lappi.primary_slots` routes Lappi per slot. A Lappi outage trips the circuit breaker and is reported.
+- **Race suite:** `cmd/vani`'s race suite went from 519 s to 284 s, so `go test -race ./...` fits the default 10-minute timeout again.
+- **Still open on ft-7099:**
+  - Your ~230 labels and `decide.shadow_every: 1`.
+  - The decide-module release-identity change, which Fable left for you.
+  - The MinHash format with Lappi.
+  - The fixture bump, blocked on Lappi cards.
+
 ### Still open: needs you, or can't be done from here
 1. **ft-8d8ca2ea, "A clean clone of Vani cannot build".** `go.mod` replaces `decide` and `tessl` with relative
    sibling paths, and Manvi needs the ignored `go.work`. The repo rules forbid editing `go.mod`/`go.work` without
