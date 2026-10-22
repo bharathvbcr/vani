@@ -2,6 +2,7 @@ package eval
 
 import (
 	"math/rand"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -115,11 +116,25 @@ type QueueOptions struct {
 	ShadowOnly bool
 }
 
+// isNilTeacher reports whether t is nil or an interface holding a nil pointer,
+// map, slice, func or channel: a typed nil that passes "t == nil" and then
+// panics in its method.
+func isNilTeacher(t TeacherReadings) bool {
+	if t == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(t); v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	}
+	return false
+}
+
 // teacherDisagrees reports whether t holds a reading for r whose value on
 // some triage slot differs from the primary's recorded value for that slot.
 // A slot either side has no value for is not a disagreement.
 func teacherDisagrees(t TeacherReadings, r ledger.Record) bool {
-	if t == nil {
+	if isNilTeacher(t) {
 		return false
 	}
 	slots, ok := t.Reading(string(r.Key))

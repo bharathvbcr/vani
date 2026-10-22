@@ -189,7 +189,7 @@ func TestSlotPromotableInOnlyOneWindowIsRefused(t *testing.T) {
 	if v.Promotable {
 		t.Fatalf("promotable in one window only: %+v", v)
 	}
-	if v.Windows[0].Verdict != "promotable" || !strings.HasPrefix(v.Windows[1].Verdict, "not promotable") {
+	if v.Windows[0].Verdict != "promotable" || !strings.Contains(v.Windows[1].Verdict, "not promotable") {
 		t.Fatalf("per-window verdicts: %+v", v.Windows)
 	}
 	if !strings.Contains(v.Why, "window-2") || strings.Contains(v.Why, "window-1") {

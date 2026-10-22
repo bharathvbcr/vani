@@ -214,14 +214,14 @@ func TestLabelWindowTwoProcesses(t *testing.T) {
 	}
 	var wf struct {
 		V       int
-		Members map[string]string
+		Members map[string]struct{ Window string }
 	}
 	if err := json.Unmarshal(raw, &wf); err != nil {
 		t.Fatalf("windows.json corrupt after two writers: %v\n%s", err, raw)
 	}
 	counts := map[string]int{}
 	for _, w := range wf.Members {
-		counts[w]++
+		counts[w.Window]++
 	}
 	if counts["window-1"] != 100 {
 		t.Fatalf("window-1 holds %d: %v", counts["window-1"], counts)
@@ -288,7 +288,7 @@ func TestEvalWindowRefusals(t *testing.T) {
 	seedEval(t, stateDir, 5)
 	labels := filepath.Join(stateDir, "eval", "labels")
 
-	if err := os.WriteFile(filepath.Join(labels, eval.WindowsFile), []byte(`{"v":1,"windows":[{"name":"window-1","size":50}],"members":{}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(labels, eval.WindowsFile), []byte(`{"v":2,"windows":[{"name":"window-1","size":50}],"members":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	mustCode(t, 0, "eval")
@@ -296,7 +296,7 @@ func TestEvalWindowRefusals(t *testing.T) {
 	if o != "" || !strings.Contains(e, "pre-registered") {
 		t.Fatalf("changed registration: stdout %q stderr %q", o, e)
 	}
-	if err := os.WriteFile(filepath.Join(labels, eval.WindowsFile), []byte(`{"v":1,"win`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(labels, eval.WindowsFile), []byte(`{"v":2,"win`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	o, e = mustCode(t, 1, "eval", "--window")

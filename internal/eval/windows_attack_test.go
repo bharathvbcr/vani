@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -22,8 +23,8 @@ func windowRow(t *testing.T, rep WindowReport, w string) Promotion {
 }
 
 // A member whose label is edited to all-skip stays a member (it is counted
-// toward the 100) but scores on no slot: the window is "closed" with 99
-// scorable postings. Pins the behaviour.
+// toward the 100) and, labels being frozen as filed, still scores as filed; the
+// edit is reported as a changed label.
 func TestAttackSkipAfterFilingKeepsMemberButNotAsked(t *testing.T) {
 	s, _, _ := newStore(t)
 	tick(s)
@@ -41,8 +42,8 @@ func TestAttackSkipAfterFilingKeepsMemberButNotAsked(t *testing.T) {
 	if got := memberCount(t, s); got["window-1"] != 100 {
 		t.Fatalf("members %v: a filed posting never moves", got)
 	}
-	if p := windowRow(t, rep, "window-1"); p.Asked != 99 {
-		t.Fatalf("asked %d, want 99 (the skipped member scores nowhere)", p.Asked)
+	if p := windowRow(t, rep, "window-1"); p.Asked != 100 || rep.Changed["window-1"] != 1 {
+		t.Fatalf("asked %d changed %d, want 100 and 1 (labels are frozen as filed; the edit is reported)", p.Asked, rep.Changed["window-1"])
 	}
 	if rep.Members["window-1"] != 100 {
 		t.Fatalf("members %d", rep.Members["window-1"])
@@ -110,18 +111,21 @@ func writeWindows(t *testing.T, s *Store, body string) {
 func TestAttackWindowsFileCorruptionRefused(t *testing.T) {
 	reg := `[{"name":"window-1","size":100},{"name":"window-2","size":100}]`
 	cases := map[string]string{
-		"empty":             "",
-		"truncated":         `{"v":1,"windows":[{"name":"window-1","size":100},{"na`,
-		"null":              `null`,
-		"array":             `[]`,
-		"future version":    `{"v":2,"windows":` + reg + `,"members":{}}`,
-		"version zero":      `{"windows":` + reg + `,"members":{}}`,
-		"no registration":   `{"v":1,"members":{}}`,
-		"extra window":      `{"v":1,"windows":[{"name":"window-1","size":100},{"name":"window-2","size":100},{"name":"window-3","size":100}],"members":{}}`,
-		"renamed window":    `{"v":1,"windows":[{"name":"w1","size":100},{"name":"window-2","size":100}],"members":{}}`,
-		"unknown member":    `{"v":1,"windows":` + reg + `,"members":{"k":"window-9"}}`,
-		"empty window name": `{"v":1,"windows":` + reg + `,"members":{"k":""}}`,
-		"member not string": `{"v":1,"windows":` + reg + `,"members":{"k":1}}`,
+		"empty":                 "",
+		"truncated":             `{"v":2,"windows":[{"name":"window-1","size":100},{"na`,
+		"null":                  `null`,
+		"array":                 `[]`,
+		"v1 bare-string member": `{"v":1,"windows":` + reg + `,"members":{"k":"window-1"}}`,
+		"forged member":         `{"v":2,"windows":` + reg + `,"members":{"k":{"window":"window-1","labeled_at":"2026-10-01T00:00:00Z","labels":{"work_mode":"remote"},"label_sha256":"00"}}}`,
+		"unknown field":         `{"v":2,"windows":` + reg + `,"members":{},"closed_at":{}}`,
+		"future version":        `{"v":3,"windows":` + reg + `,"members":{}}`,
+		"version zero":          `{"windows":` + reg + `,"members":{}}`,
+		"no registration":       `{"v":2,"members":{}}`,
+		"extra window":          `{"v":2,"windows":[{"name":"window-1","size":100},{"name":"window-2","size":100},{"name":"window-3","size":100}],"members":{}}`,
+		"renamed window":        `{"v":2,"windows":[{"name":"w1","size":100},{"name":"window-2","size":100}],"members":{}}`,
+		"unknown member":        `{"v":2,"windows":` + reg + `,"members":{"k":{"window":"window-9"}}}`,
+		"empty window name":     `{"v":2,"windows":` + reg + `,"members":{"k":{"window":""}}}`,
+		"member not object":     `{"v":2,"windows":` + reg + `,"members":{"k":1}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -147,12 +151,15 @@ func TestAttackWindowsFileCorruptionRefused(t *testing.T) {
 func TestAttackWindowsFileOverfullRefused(t *testing.T) {
 	s, _, _ := newStore(t)
 	var b strings.Builder
-	b.WriteString(`{"v":1,"windows":[{"name":"window-1","size":100},{"name":"window-2","size":100}],"members":{`)
+	b.WriteString(`{"v":2,"windows":[{"name":"window-1","size":100},{"name":"window-2","size":100}],"members":{`)
 	for i := 0; i < 101; i++ {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		fmt.Fprintf(&b, `"k%03d":"window-1"`, i)
+		key := posting.Key(fmt.Sprintf("k%03d", i))
+		at := time.Date(2026, 10, 1, 0, 0, i, 0, time.UTC)
+		labels := map[string]string{"work_mode": "remote"}
+		fmt.Fprintf(&b, `"%s":{"window":"window-1","labeled_at":"%s","labels":{"work_mode":"remote"},"label_sha256":"%s"}`, key, at.Format(time.RFC3339), labelIdentity(key, at, labels))
 	}
 	b.WriteString(`}}`)
 	writeWindows(t, s, b.String())

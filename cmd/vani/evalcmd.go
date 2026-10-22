@@ -159,9 +159,8 @@ func (e *env) cmdEval(args []string) error {
 	// Window tables are built before anything is printed, like the held-out one.
 	var winMD string
 	if *windows {
-		if _, err := s.SyncWindows(recs); err != nil {
-			return err
-		}
+		// BuildWindows files in memory only: `vani label --window` is the one
+		// writer of windows.json.
 		wr, err := eval.BuildWindows(recs, s, names)
 		if err != nil {
 			return err
