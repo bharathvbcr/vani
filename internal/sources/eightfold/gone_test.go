@@ -36,7 +36,7 @@ func goneSite(t *testing.T, n int, replies map[string]srctest.Reply) *source {
 		}
 		return f.handle(r)
 	})
-	return &source{d: d, now: func() time.Time { return fixedNow }}
+	return &source{d: d, now: func() time.Time { return fixedNow }, wait: noWait}
 }
 
 func TestDetail404IsBoundedLikeWorkday(t *testing.T) {
@@ -74,7 +74,7 @@ func TestDetail404IsBoundedLikeWorkday(t *testing.T) {
 
 // The search answering 404 is still a board that is not there.
 func TestSearch404IsBoardNotFound(t *testing.T) {
-	s := &source{d: srctest.NewFunc(func(srctest.Request) (srctest.Reply, bool) { return notFound(), true }), now: time.Now}
+	s := &source{d: srctest.NewFunc(func(srctest.Request) (srctest.Reply, bool) { return notFound(), true }), now: time.Now, wait: noWait}
 	if _, err := s.List(context.Background(), board("t")); !errors.Is(err, srcutil.ErrBoardNotFound) {
 		t.Errorf("err %v, want ErrBoardNotFound", err)
 	}

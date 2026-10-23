@@ -438,6 +438,11 @@ public struct DraftRunner: Sendable {
         // The decision key is optional for a launch (the model is just off without it), but
         // never silently so: the outcome says which of absent, refused or unanswered it was.
         if withDecisionKey {
+            // The app is the one reader of this key for a vani it starts: whatever it read
+            // (or was refused, or was not answered in time) is the outcome, and vani must not
+            // ask the Keychain again behind it (a second prompt, from another binary, after a
+            // refusal; cmd/vani/keychain.go honours the variable).
+            env["VANI_NO_KEYCHAIN"] = "1"
             do {
                 if let k = try Self.bounded(decisionKey, seconds: keychainTimeout),
                    !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

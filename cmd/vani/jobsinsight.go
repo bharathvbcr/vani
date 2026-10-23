@@ -413,7 +413,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 	j.RelevanceKnown = res.RelevanceKnown
 	j.Reasons = jobview.ParseReasons(j.Explanation)
 	in.semanticInto(j, r)
-	j.Pay = jobinsight.ParsePay(r.Posting.Description)
+	j.Pay = jobinsight.PostingPay(r.Posting)
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	row := jobview.RowOf(*j)
 	j.Row = &row

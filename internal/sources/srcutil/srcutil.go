@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -131,17 +133,8 @@ const (
 // The variables below are the injection points for tests: they never change
 // in production, and tests replace them so nothing waits in real time.
 var (
-	sleep = func(ctx context.Context, d time.Duration) error {
-		t := time.NewTimer(d)
-		defer t.Stop()
-		select {
-		case <-t.C:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	now = time.Now
+	sleep = Sleep // the one timer wait (pace.go)
+	now   = time.Now
 	// jitter spreads a backoff over [d/2, d] ("equal jitter"), so a daemon's
 	// retries do not fall in step with anyone else's and a wait is never zero.
 	jitter = func(d time.Duration) time.Duration {
@@ -161,6 +154,27 @@ func backoff(n int) time.Duration {
 		d = backoffBase << n
 	}
 	return jitter(d)
+}
+
+// MaxTitle bounds a posting's title in bytes.
+const MaxTitle = 300
+
+// Title is a board's title as one display line: HTML entities decoded, every
+// run of whitespace (a no-break space too) one space, trimmed, and at most
+// MaxTitle bytes, cut at a rune boundary. AMD's API served "Senior Graphics
+// Machine Learning  Engineer" (2026-10-20). Fallback keys and near-duplicate
+// detection fold whitespace and case already, so cleaning a title changes
+// neither.
+func Title(raw string) string {
+	t := strings.Join(strings.Fields(html.UnescapeString(raw)), " ")
+	if len(t) <= MaxTitle {
+		return t
+	}
+	cut := MaxTitle
+	for cut > 0 && !utf8.RuneStart(t[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(t[:cut])
 }
 
 // ErrRateLimited marks a request still answered 429 after the retries the

@@ -42,7 +42,8 @@ final class ScheduleAgentTests: XCTestCase {
         XCTAssertEqual(l.environment["OPENROUTER_API_KEY"], sentinel)
         XCTAssertEqual(l.decisionKey, .present)
         // The same minimal environment a manual run gets: nothing of this process's.
-        XCTAssertEqual(Set(l.environment.keys), ["PATH", "HOME", "USER", "TMPDIR", "VANI_CONFIG", "VANI_STATE_DIR", "OPENROUTER_API_KEY"])
+        XCTAssertEqual(Set(l.environment.keys), ["PATH", "HOME", "USER", "TMPDIR", "VANI_CONFIG", "VANI_STATE_DIR", "OPENROUTER_API_KEY", "VANI_NO_KEYCHAIN"])
+        XCTAssertEqual(l.environment["VANI_NO_KEYCHAIN"], "1", "the app read the key; vani must not read the Keychain again")
         XCTAssertEqual(log.path, "/Users/o/cfg/state/logs/vani.err.log", "the log `vani launchd plist` also uses")
         // The same environment ManualRunLauncher builds, key included.
         let manual = DraftSettings(vaniConfig: "/Users/o/cfg/config.json", vaniStateDir: "/Users/o/cfg/state")
@@ -63,6 +64,7 @@ final class ScheduleAgentTests: XCTestCase {
         for lookup in [{ nil }, { "" }, { "  \n" }] as [KeyLookup] {
             let (l, _, _) = try launch(attempt(try settingsDir(), key: lookup))
             XCTAssertNil(l.environment["OPENROUTER_API_KEY"])
+            XCTAssertEqual(l.environment["VANI_NO_KEYCHAIN"], "1", "a missing key is not looked for again by vani")
             XCTAssertEqual(l.decisionKey, .notFound, "a missing key is a visible outcome, not a quiet no-op")
             XCTAssertTrue(ScheduleAgent.describe(l.decisionKey).contains("model disabled"))
         }
@@ -71,6 +73,7 @@ final class ScheduleAgentTests: XCTestCase {
     func testADeniedKeychainReadStartsTheDaemonWithoutTheKeyAndSaysWhy() throws {
         let (l, _, _) = try launch(attempt(try settingsDir()) { throw BankError("Keychain refused access to openrouter-api-key (status -25293)") })
         XCTAssertNil(l.environment["OPENROUTER_API_KEY"])
+        XCTAssertEqual(l.environment["VANI_NO_KEYCHAIN"], "1", "a refused or unanswered read is not retried by vani behind the app")
         guard case let .failed(why) = l.decisionKey else { return XCTFail("outcome \(l.decisionKey)") }
         XCTAssertTrue(why.contains("-25293"))
         XCTAssertTrue(ScheduleAgent.describe(l.decisionKey).contains("model disabled"))
@@ -84,6 +87,7 @@ final class ScheduleAgentTests: XCTestCase {
         })
         XCTAssertLessThan(Date().timeIntervalSince(started), 3, "the read is abandoned at its bound, not waited out")
         XCTAssertNil(l.environment["OPENROUTER_API_KEY"])
+        XCTAssertEqual(l.environment["VANI_NO_KEYCHAIN"], "1", "a refused or unanswered read is not retried by vani behind the app")
         guard case let .failed(why) = l.decisionKey else { return XCTFail("outcome \(l.decisionKey)") }
         XCTAssertTrue(why.contains("not answered"))
     }

@@ -196,6 +196,7 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 		Endpoint:     notesEndpoint,
 		Model:        w.cfg.Decide.OpenRouterModel,
 		KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
+		Getenv:       w.openRouterGetenv,
 		Descriptions: c.Descriptions(),
 		Instructions: jdreasons.Instructions(),
 		Spend:        spend,

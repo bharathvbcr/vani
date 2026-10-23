@@ -26,6 +26,12 @@ func TestMain(m *testing.M) {
 		fakeLlama()
 		return
 	}
+	// No test reads the real Keychain: keychain_test.go clears this per test
+	// and replaces keychainRead.
+	_ = os.Setenv(noKeychainEnv, "1")
+	keychainRead = func(context.Context, string) (string, error) {
+		panic("a test reached the real Keychain read; set keychainRead")
+	}
 	os.Exit(m.Run())
 }
 

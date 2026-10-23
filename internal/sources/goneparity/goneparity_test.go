@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
@@ -142,7 +143,7 @@ func eightfoldFake() fake {
 			raw, _ := json.Marshal(map[string]any{"status": 200, "error": map[string]any{}, "data": data})
 			return srctest.Reply{Status: 200, Body: raw}, true
 		})
-		s := eightfold.NewWith(d, eightfold.Options{Report: func(_ sources.Board, st eightfold.Stats) { rep.add(st.Listed, st.Gone) }})
+		s := eightfold.NewWith(d, eightfold.Options{Report: func(_ sources.Board, st eightfold.Stats) { rep.add(st.Listed, st.Gone) }, Wait: noWait})
 		return s, sources.Board{ATS: posting.Eightfold, Token: "microsoft.com", Company: "Microsoft", Host: host, Searches: []string{"t"}}, rep
 	}}
 }
@@ -302,3 +303,6 @@ func TestReportOnDetailFailureDivergence(t *testing.T) {
 		t.Logf("%s: Report calls after a 500 detail failure: %v", f.name, r.calls)
 	}
 }
+
+// noWait stands in for the board's request spacing, so these tests do not wait in real time.
+func noWait(ctx context.Context, _ time.Duration) error { return ctx.Err() }

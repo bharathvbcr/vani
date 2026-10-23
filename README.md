@@ -9,6 +9,12 @@ watch, drops dead and duplicate postings without spending anything, triages the 
 decision model, ranks them against your career knowledge base with DevPrism's deterministic
 resume tools, and writes a Markdown digest.
 
+Models, one role each: the **decision model** is Liquid (`liquid/d1-ultra` over OpenRouter;
+optionally Liquid d1-3B on this Mac through llama.cpp as a shadow); **embeddings** run in-process
+on Metal through Tessl (EmbeddingGemma, a `-tags tessl` build); **Claude** is reached through
+Manvi, which Vani imports as its LLM orchestrator. Jarvis is a sibling Manvi client with no code
+link to Vani. Config, state and keys per entry point: [`docs/RUNTIME.md`](docs/RUNTIME.md).
+
 Plan: [`docs/PLAN.md`](docs/PLAN.md). Follow-ups: [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
 
 ## Ingestion & Pipeline Architecture
@@ -121,7 +127,10 @@ stateDiagram-v2
   Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`),
   Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites
   such as AMD's (`jb`, token the client code `amd`, host `careers.amd.com`; search optional, pages
-  of 100 spaced 5 s apart as its robots.txt asks). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
+  of 100 spaced 5 s apart as its robots.txt asks). Eightfold requests are spaced 2 s apart; both
+  spacings run through one `srcutil.Pacer` with a 15-minute budget per board. A search site
+  fails a board that reports more postings than its cap, rather than list part of it: Eightfold
+  and Apple 200, Amazon 500, Google 20 per search term, Workday and the rest 5000. All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
   block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
   `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
   authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
@@ -435,13 +444,18 @@ flowchart TD
     mode, sponsorship, seniority, age and closed roles, plus `--company` / `--exclude-company`
     (exact names), `--exclude` (title words) and `--min-relevance`. `jobs stats` returns the
     distributions the app's Insights charts draw.
-  - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): each job's description is
-    read for stated pay by fixed rules (currency, range, period, a pay word, plausible yearly
-    bounds; "$100/month budget" or "$50M raised" is not pay), at most one range per currency, as
-    `pay` with yearly figures. `--min-salary 150k` compares the top of the range in `--currency`
+  - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): `jobinsight.PostingPay`,
+    the one reader the digest and `vani jobs` share, reads each job's description for stated pay
+    by fixed rules (currency, range, period, a pay word, plausible yearly bounds; "$100/month
+    budget" or "$50M raised" is not pay), at most one range per currency, as `pay` with yearly
+    figures. It reads USD, CAD, AUD, NZD, SGD, GBP, EUR, CHF, INR, JPY, SEK, NOK, DKK, PLN, TWD,
+    MYR, CNY, KRW, RON, RSD and SAR (`jobinsight.PayCurrencies`; the app's currency picker is
+    held to the same list by a test). `--min-salary 150k` compares the top of the range in `--currency`
     (default USD, no exchange rates): a job stating no pay stays unless `--salary-listed`, and a
     job stating pay only in another currency is left out. `--sort salary` and the stats' `salary`
-    buckets use the same currency. A bare "$" reads as USD. The Lever adapter adds the board's
+    buckets use the same currency. A bare "$" reads as USD unless every place the posting names
+    (and its remote scope) is in one other dollar country (Canada, Australia, New Zealand,
+    Singapore); a code beside the amount ("CAD $114,400") always wins. The Lever adapter adds the board's
     closing text (`additionalPlain`, where Lever boards state pay), `salaryDescriptionPlain` and
     `salaryRange`; Ashby is fetched with `includeCompensation=true` and its salary component leads
     the description unless the company hides pay on its postings.
@@ -581,7 +595,8 @@ set, else the defaults below), and the logs go to that state folder's `logs/`. R
 variables you want the daemon to use, e.g. `VANI_CONFIG=/abs/config.json VANI_STATE_DIR=/abs/state
 build/vani launchd plist --binary /abs/vani`; a relative value is refused (exit 2). Moving the config
 or state means regenerating the plist and bootstrapping it again. Nothing else from the environment
-is written into the plist, API keys included.
+is written into the plist, API keys included: the daemon reads the decision model's key from the
+login Keychain (`openrouter-api-key`), and has no LLM key (see [`docs/RUNTIME.md`](docs/RUNTIME.md)).
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
 --search "query"`; a site on Workday's shared host takes `--host wd1.myworkdaysite.com` with the
@@ -629,14 +644,22 @@ it in place of the company's monogram, and the monogram when there is none.
 Config and state default to `~/Library/Application Support/Vani/` on macOS, on Linux to
 `$XDG_CONFIG_HOME/vani/config.json` and `$XDG_STATE_HOME/vani` (`~/.config`, `~/.local/state`
 when unset), and on Windows to `%AppData%\Vani`; override either with `VANI_CONFIG` and
-`VANI_STATE_DIR`.
+`VANI_STATE_DIR`. On macOS, when either comes from the default, `vani` also reads the Mac app's
+settings and refuses to run if they name another config or state folder, so a command run
+without the variables cannot read or write a pair the app does not use. `vani status` says where
+each path came from. Details and the one-time move to the default location: [`docs/RUNTIME.md`](docs/RUNTIME.md).
 
 Vani runs on macOS. The Go engine also compiles under `GOOS=windows` and `GOOS=linux` (both are
 vetted), but **Windows is untested and not supported**, and Linux is untested beyond that. The
-Mac app, its native messaging host and its helpers are macOS only and have no Windows path. Keys come from the environment: `OPENROUTER_API_KEY` for the OpenRouter model,
-`GEMINI_API_KEY` / `GOOGLE_API_KEY` or `ANTHROPIC_API_KEY` for the LLM. An Anthropic key not
-scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every
-request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
+Mac app, its native messaging host and its helpers are macOS only and have no Windows path.
+Which config, state directory and keys each way of running `vani` uses, and where the Keychain
+comes in, is in [`docs/RUNTIME.md`](docs/RUNTIME.md). In short: `OPENROUTER_API_KEY` for the
+Liquid decision model, read from the environment or else from the login Keychain item
+`openrouter-api-key` (`VANI_NO_KEYCHAIN=1` turns the Keychain off); `ANTHROPIC_API_KEY` (or
+`GEMINI_API_KEY` / `GOOGLE_API_KEY`) for the LLM, from the environment only, which the Mac app
+fills through `anthropic-account`. An Anthropic key not scoped to a workspace also needs
+`ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every request with a 400;
+`ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
 
 The `funnel` config block (all keys optional) trims paid calls without hiding a posting:
 `min_description_runes` (default 40) skips the triage call for a thinner description and keeps the

@@ -32,7 +32,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -65,6 +64,19 @@ const (
 
 	// v2Path is the robots.txt path the v2 requests fall under.
 	v2Path = "/api/apply/v2/jobs"
+
+	// paceEvery spaces a board's requests. Neither Microsoft's nor
+	// Qualcomm's robots.txt sets a Crawl-delay (2026-10-20); Qualcomm's
+	// search answered 429 with no Retry-After after a burst of about ten
+	// unspaced requests, while its details and every Microsoft request
+	// answered. The rate it tolerates was not measured: 2 s is a guess that
+	// keeps a full board (21 search pages and 200 details, 221 requests) to
+	// 7.4 min of waiting. It sits above egress's one-second per-host floor, so
+	// the two never add: a paced wait already spans that interval.
+	paceEvery = 2 * time.Second
+	// paceBudget bounds a board's waiting, as page.BoardTimeout bounds a
+	// careers page: 450 requests at paceEvery, twice a full board.
+	paceBudget = 15 * time.Minute
 )
 
 // ErrShape is a response whose layout is not the one this source knows.
@@ -98,20 +110,30 @@ type Stats struct {
 type Options struct {
 	// Report, when set, receives each listed board's counts.
 	Report func(sources.Board, Stats)
+	// Wait spaces a board's requests (srcutil.Pacer.Sleep); nil is
+	// srcutil.Sleep. A field only so tests need not wait in real time.
+	Wait func(ctx context.Context, d time.Duration) error
 }
 
 type source struct {
 	d   egress.Doer
 	now func() time.Time
-	opt *Options
+	// wait spaces requests (srcutil.Pacer.Sleep); a field only so tests need
+	// not wait in real time.
+	wait func(ctx context.Context, d time.Duration) error
+	opt  *Options
 }
 
 // New returns the Eightfold source, sending requests through d.
-func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now, wait: srcutil.Sleep} }
 
 // NewWith is New with the board report of opt.
 func NewWith(d egress.Doer, opt Options) sources.Source {
-	return &source{d: d, now: time.Now, opt: &opt}
+	wait := opt.Wait
+	if wait == nil {
+		wait = srcutil.Sleep
+	}
+	return &source{d: d, now: time.Now, wait: wait, opt: &opt}
 }
 
 func (*source) ATS() posting.ATS { return posting.Eightfold }
@@ -144,10 +166,18 @@ type listing struct{ id, work string }
 type api struct {
 	base string
 	v2   bool
+	// pace spaces every request of the board, whichever API it is read
+	// through: one pacer per List call, shared by a pcsx board that falls back
+	// to v2.
+	pace *srcutil.Pacer
 }
 
-func pcsxAPI(host string) api { return api{base: "https://" + host + "/api/pcsx/"} }
-func v2API(host string) api   { return api{base: "https://" + host + "/api/apply/v2/", v2: true} }
+func pcsxAPI(host string, pace *srcutil.Pacer) api {
+	return api{base: "https://" + host + "/api/pcsx/", pace: pace}
+}
+func v2API(host string, pace *srcutil.Pacer) api {
+	return api{base: "https://" + host + "/api/apply/v2/", v2: true, pace: pace}
+}
 
 // v2Details is a v2 position detail: no envelope, snake_case fields.
 type v2Details struct {
@@ -217,7 +247,8 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err := sources.CheckFilters(posting.Eightfold, b.Filters); err != nil {
 		return nil, fmt.Errorf("eightfold %q: %w", b.Token, err)
 	}
-	a := pcsxAPI(host)
+	pace := &srcutil.Pacer{Every: paceEvery, Budget: paceBudget, Sleep: s.wait}
+	a := pcsxAPI(host, pace)
 	var ids []listing
 	have := map[string]bool{}
 	for i, term := range terms {
@@ -226,7 +257,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if errors.As(err, &denied) {
 			// The site does not serve pcsx. Read the whole board through v2 from
 			// this term on; a v2 that fails too reports both.
-			a = v2API(host)
+			a = v2API(host, pace)
 			got, err = s.searchV2(ctx, a, host, domain, term, b.Filters, denied)
 		}
 		if err != nil {
@@ -275,7 +306,10 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 }
 
 // get fetches one PCSX endpoint and returns its data, checking the envelope.
-func (s *source) get(ctx context.Context, u string, v any) error {
+func (s *source) get(ctx context.Context, pace *srcutil.Pacer, u string, v any) error {
+	if err := pace.Wait(ctx); err != nil {
+		return err
+	}
 	var env envelope
 	if err := srcutil.GetJSON(ctx, s.d, u, &env); err != nil {
 		return err
@@ -296,7 +330,10 @@ func (s *source) get(ctx context.Context, u string, v any) error {
 // no envelope, and decodes it into v. A body that is not the JSON this source
 // reads is ErrShape; a 404 is srcutil.ErrBoardNotFound, a body over limit
 // srcutil.ErrBodyTooLarge, as for pcsx.
-func (s *source) getV2(ctx context.Context, u string, limit int64, v any) error {
+func (s *source) getV2(ctx context.Context, pace *srcutil.Pacer, u string, limit int64, v any) error {
+	if err := pace.Wait(ctx); err != nil {
+		return err
+	}
 	var raw json.RawMessage
 	if err := srcutil.GetJSONLimit(ctx, s.d, u, limit, &raw); err != nil {
 		var syn *json.SyntaxError
@@ -334,9 +371,9 @@ func searchURL(a api, domain, term string, filters map[string][]string, start in
 // searchPage fetches one page of a search through a.
 func (s *source) searchPage(ctx context.Context, a api, u string, sd *searchData) error {
 	if a.v2 {
-		return s.getV2(ctx, u, v2SearchMaxBody, sd)
+		return s.getV2(ctx, a.pace, u, v2SearchMaxBody, sd)
 	}
-	return s.get(ctx, u, sd)
+	return s.get(ctx, a.pace, u, sd)
 }
 
 // searchV2 is the search of a board whose pcsx search answered 403 (denied):
@@ -424,14 +461,14 @@ func (s *source) fetchDetail(ctx context.Context, a api, domain, id string) (det
 	var err error
 	if a.v2 {
 		var v v2Details
-		err = s.getV2(ctx, a.base+"jobs/"+id+"?"+url.Values{"domain": {domain}}.Encode(), v2DetailMaxBody, &v)
+		err = s.getV2(ctx, a.pace, a.base+"jobs/"+id+"?"+url.Values{"domain": {domain}}.Encode(), v2DetailMaxBody, &v)
 		d = v.details()
 	} else {
 		q := url.Values{}
 		q.Set("position_id", id)
 		q.Set("domain", domain)
 		q.Set("hl", "en")
-		err = s.get(ctx, a.base+"position_details?"+q.Encode(), &d)
+		err = s.get(ctx, a.pace, a.base+"position_details?"+q.Encode(), &d)
 	}
 	if errors.Is(err, srcutil.ErrBoardNotFound) {
 		return details{}, errDetailGone
@@ -455,7 +492,7 @@ func (s *source) detail(ctx context.Context, a api, host, domain string, l listi
 	if err != nil {
 		return posting.Posting{}, err
 	}
-	title := strings.TrimSpace(html.UnescapeString(d.Name))
+	title := srcutil.Title(d.Name)
 	if title == "" {
 		return posting.Posting{}, fmt.Errorf("%w: empty name", ErrShape)
 	}
@@ -475,7 +512,7 @@ func (s *source) detail(ctx context.Context, a api, host, domain string, l listi
 		Title:       title,
 		Location:    joinUnique(d.Locations),
 		Department:  strings.TrimSpace(d.Department),
-		Remote:      isRemote(d.WorkLocationOption),
+		Remote:      remote(d),
 		URL:         u,
 		Description: description(d),
 		SeenAt:      seen,
@@ -484,6 +521,24 @@ func (s *source) detail(ctx context.Context, a api, host, domain string, l listi
 		p.PostedAt = time.Unix(*d.PostedTs, 0).UTC()
 	}
 	return p, nil
+}
+
+// remote reports whether the position is remote: its work location option says
+// so (isRemote), or a work-site value ends in a "remote" part. Microsoft marks
+// remote roles only in the latter: live on 2026-10-20 position 1970393557019355
+// had workLocationOption "onsite" and work site "0 days / week in-office –
+// remote", one of the six work-site values its search offers.
+func remote(d details) bool {
+	if isRemote(d.WorkLocationOption) {
+		return true
+	}
+	for _, v := range d.WorkSite {
+		parts := strings.FieldsFunc(v, func(r rune) bool { return r == '–' || r == '—' || r == '-' })
+		if len(parts) > 0 && strings.EqualFold(strings.TrimSpace(parts[len(parts)-1]), "remote") {
+			return true
+		}
+	}
+	return false
 }
 
 // isRemote reads a work location option: pcsx says "remote", v2 also
@@ -504,20 +559,16 @@ func joinUnique(ss []string) string {
 	return strings.Join(out, "; ")
 }
 
-// description is the job description as text, led by the tenant's role
-// fields where it has them (Microsoft: role type, employment type, work site).
+// description is the job description as text, led by a srcutil.RoleLine of
+// the tenant's role fields where it has them (Microsoft: role type,
+// employment type, work site).
 func description(d details) string {
 	var flags []string
-	for _, vs := range [][]string{d.RoleType, d.EmploymentType, d.WorkSite} {
-		for _, v := range vs {
-			if v = strings.TrimSpace(v); v != "" && !slices.Contains(flags, v) {
-				flags = append(flags, v)
-			}
-		}
+	flags = append(flags, d.RoleType...)
+	for _, v := range d.EmploymentType {
+		flags = append(flags, srcutil.EmploymentType(v))
 	}
-	lead := ""
-	if len(flags) > 0 {
-		lead = "<p>Role: " + html.EscapeString(strings.Join(flags, ", ")) + "</p>"
-	}
-	return htmltext.Text(lead+d.JobDescription, srcutil.MaxDescription)
+	flags = append(flags, d.WorkSite...)
+	lead, room := srcutil.Lead(srcutil.RoleLine(flags...))
+	return lead + htmltext.Text(d.JobDescription, room)
 }

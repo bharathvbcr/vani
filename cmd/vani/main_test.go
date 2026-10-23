@@ -218,6 +218,9 @@ func TestLaunchdPlistPrintsAndInstallsNothing(t *testing.T) {
 func TestLaunchdPlistPinsDefaultPaths(t *testing.T) {
 	t.Setenv("VANI_CONFIG", "")
 	t.Setenv("VANI_STATE_DIR", "")
+	// A temp home: the real one may hold the Mac app's settings naming another
+	// pair, which the default paths are checked against.
+	t.Setenv("HOME", t.TempDir())
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)

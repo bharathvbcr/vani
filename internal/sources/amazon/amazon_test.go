@@ -224,3 +224,32 @@ func TestRoleFlagsAndRemote(t *testing.T) {
 		t.Errorf("%+v", p)
 	}
 }
+
+// amazon-cleared-jobs among the search labels (live, 2026-10-20) leads as a
+// clearance flag; other labels do not. The role line is Vani's, so
+// SourceText leaves the sections alone.
+func TestClearanceFlag(t *testing.T) {
+	for _, c := range []struct {
+		labels []string
+		want   string
+	}{
+		{[]string{"aws.team-annapurna-labs", "amazon-cleared-jobs"}, "Role: full-time, security clearance\n\nDescription"},
+		{[]string{" Amazon-Cleared-Jobs "}, "Role: full-time, security clearance\n\nDescription"},
+		{[]string{"amazon.artificial-intelligence"}, "Role: full-time\n\nDescription"},
+		{[]string{"amazon-cleared-jobs-not"}, "Role: full-time\n\nDescription"},
+		{nil, "Role: full-time\n\nDescription"},
+	} {
+		j := job{IDIcims: "1", Title: "Software  Engineer &amp; Lead", JobPath: "/en/jobs/1/t", JobScheduleType: "full-time",
+			OptionalSearchLabels: c.labels, Description: "<p>Build.</p>"}
+		p, err := j.posting(board("x"), fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(p.Description, c.want) || !strings.HasPrefix(srcutil.SourceText(p.Description), "Description") {
+			t.Errorf("%v: %q", c.labels, p.Description)
+		}
+		if p.Title != "Software Engineer & Lead" {
+			t.Errorf("title %q", p.Title)
+		}
+	}
+}

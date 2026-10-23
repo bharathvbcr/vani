@@ -154,7 +154,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		Key:         key,
 		ATS:         posting.Ashby,
 		Company:     b.Company,
-		Title:       strings.TrimSpace(j.Title),
+		Title:       srcutil.Title(j.Title),
 		Location:    strings.TrimSpace(j.Location),
 		Remote:      j.IsRemote,
 		Department:  strings.TrimSpace(j.Department),

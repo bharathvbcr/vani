@@ -1,0 +1,83 @@
+{
+  "positionId": "200688031",
+  "jobNumber": "200688031-0836",
+  "postingTitle": "Senior ML Researcher: Multimodal LLM Post-Training",
+  "transformedPostingTitle": "senior-ml-researcher-multimodal-llm-post-training",
+  "jobSummary": "We are looking for a Senior ML Researcher who is passionate about foundation model post-training, including Supervised Fine-Tuning (SFT) and Reinforcement Learning (RL), and has experience with core capabilities such as instruction following, tool use, deep thinking, and reasoning. In this role, you will research, design, and deliver models where machine learning research meets real-world product impact.\nYou will work closely with research scientists, engineers, and product teams to find new ways that generative AI can help our creative users. Your mission is to improve the workflows of millions of creators by combining generative AI with Apple's human-centered design principles.",
+  "description": "What makes our work unique is we have many research opportunities in real-world use cases in multimodal space. Our goal is to develop targeted, task-specific capabilities within our models across a broad range of areas, including video understanding, reasoning, instruction following, and agentic tasks.\nThe role involves contributing to every stage of the post-training process:\n\nFormulate hypotheses for a use case\nDefine data collection and annotation\nBuild evaluations of model capabilities\nApply SFT, advanced reward modeling, RL techniques, and distillation to develop and improve the post-training recipe\nExecute experiments, validate results, and communicate findings to the broader team\nIf you're passionate about doing research that ships in Apple's legendary products, this is the team for you.",
+  "responsibilities": null,
+  "minimumQualifications": "MS in Computer Science, Machine Learning, or a related field, or equivalent practical experience\nMinimum 4+ years of research experience in Multi-Modal LLM training and evaluation\nProven track record in multimodal SFT plus at least one of distillation, preference optimization, or online RL, backed by shipped models or rigorous experiments\nStrong programming skills in Python and at least one deep learning, framework, such as JAX or PyTorch.\nAbility to build intuition from a problem statement and translate it into dataset requirements, neural network design, and loss functions.",
+  "preferredQualifications": "PhD in Computer Science, Machine Learning, or a related field, or equivalent practical experience\nExperience in GRPO, DPO, Vision-OPD, and visual-token compression\nPublications in top-tier ML conferences (e.g., NeurIPS, ICML, ICLR, CVPR, ICCV, ECCV)\nBonus: Experience in quantization, on-device models and SLM (Small Language Model)",
+  "highJobTitle": "Machine Learning ICT5",
+  "lowJobTitle": "Machine Learning ICT4",
+  "teamNames": [
+    "Software and Services"
+  ],
+  "postDateInGMT": "2026-10-12T20:46:04.039+00:00",
+  "homeOffice": false,
+  "employmentType": "Standard",
+  "locations": [
+    {
+      "id": "postLocation-CUP",
+      "name": "Cupertino",
+      "city": "Cupertino",
+      "stateProvince": "California",
+      "metro": "San Francisco Bay Area",
+      "countryName": "United States",
+      "countryID": "iso-country-USA"
+    },
+    {
+      "id": "postLocation-SDO",
+      "name": "San Diego",
+      "city": "San Diego",
+      "stateProvince": "California",
+      "metro": "San Diego Metro Area",
+      "countryName": "United States",
+      "countryID": "iso-country-USA"
+    },
+    {
+      "id": "postLocation-SEA",
+      "name": "Seattle",
+      "city": "Seattle",
+      "stateProvince": "Washington",
+      "metro": "Seattle Metro Area",
+      "countryName": "United States",
+      "countryID": "iso-country-USA"
+    }
+  ],
+  "postingFooters": [
+    {
+      "postLocationId": "postLocation-SDO",
+      "localizations": {
+        "en_US": [
+          {
+            "name": "Pay & Benefits",
+            "content": "At Apple, base pay is one part of our total compensation package and is determined within a range. This provides the opportunity to progress as you grow and develop within a role. The base pay range for this role is between $175,000 and $308,500, and your base pay will depend on your skills, qualifications, experience, and location.<br><br>Apple employees also have the opportunity to become an Apple shareholder through participation in Apple’s discretionary employee stock programs. Apple employees are eligible for discretionary restricted stock unit awards, and can purchase Apple stock at a discount if voluntarily participating in Apple’s Employee Stock Purchase Plan. You’ll also receive benefits including: Comprehensive medical and dental coverage, retirement benefits, a range of discounted products and free services, and for formal education related to advancing your career at Apple, reimbursement for certain educational expenses — including tuition. Additionally, this role might be eligible for discretionary bonuses or commission payments as well as relocation. <a href='https://www.apple.com/careers/us/benefits.html' target='_blank' aria-label='Learn more about Apple Benefits (Opens in new window)'>Learn more about Apple Benefits<span class='icon icon-after icon-external' aria-hidden='true'></span></a><br><br>Note: Apple benefit, compensation and employee stock programs are subject to eligibility requirements and other terms of the applicable plan or program.<br>"
+          }
+        ]
+      }
+    },
+    {
+      "postLocationId": "postLocation-CUP",
+      "localizations": {
+        "en_US": [
+          {
+            "name": "Pay & Benefits",
+            "content": "At Apple, base pay is one part of our total compensation package and is determined within a range. This provides the opportunity to progress as you grow and develop within a role. The base pay range for this role is between $184,700 and $324,800, and your base pay will depend on your skills, qualifications, experience, and location.<br><br>Apple employees also have the opportunity to become an Apple shareholder through participation in Apple’s discretionary employee stock programs. Apple employees are eligible for discretionary restricted stock unit awards, and can purchase Apple stock at a discount if voluntarily participating in Apple’s Employee Stock Purchase Plan. You’ll also receive benefits including: Comprehensive medical and dental coverage, retirement benefits, a range of discounted products and free services, and for formal education related to advancing your career at Apple, reimbursement for certain educational expenses — including tuition. Additionally, this role might be eligible for discretionary bonuses or commission payments as well as relocation. <a href='https://www.apple.com/careers/us/benefits.html' target='_blank' aria-label='Learn more about Apple Benefits (Opens in new window)'>Learn more about Apple Benefits<span class='icon icon-after icon-external' aria-hidden='true'></span></a><br><br>Note: Apple benefit, compensation and employee stock programs are subject to eligibility requirements and other terms of the applicable plan or program.<br>"
+          }
+        ]
+      }
+    },
+    {
+      "postLocationId": "postLocation-SEA",
+      "localizations": {
+        "en_US": [
+          {
+            "name": "Pay & Benefits",
+            "content": "At Apple, base pay is one part of our total compensation package and is determined within a range. This provides the opportunity to progress as you grow and develop within a role. The base pay range for this role is between $175,000 and $308,500, and your base pay will depend on your skills, qualifications, experience, and location.<br><br>Apple employees also have the opportunity to become an Apple shareholder through participation in Apple’s discretionary employee stock programs. Apple employees are eligible for discretionary restricted stock unit awards, and can purchase Apple stock at a discount if voluntarily participating in Apple’s Employee Stock Purchase Plan. You’ll also receive benefits including: Comprehensive medical and dental coverage, retirement benefits, a range of discounted products and free services, and for formal education related to advancing your career at Apple, reimbursement for certain educational expenses — including tuition. Additionally, this role might be eligible for discretionary bonuses or commission payments as well as relocation. <a href='https://www.apple.com/careers/us/benefits.html' target='_blank' aria-label='Learn more about Apple Benefits (Opens in new window)'>Learn more about Apple Benefits<span class='icon icon-after icon-external' aria-hidden='true'></span></a><br><br>Note: Apple benefit, compensation and employee stock programs are subject to eligibility requirements and other terms of the applicable plan or program.<br>"
+          }
+        ]
+      }
+    }
+  ]
+}

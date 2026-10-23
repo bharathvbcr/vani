@@ -112,6 +112,9 @@ final class ScheduleAgentRealVaniTests: XCTestCase {
         XCTAssertEqual(st.schedule.kept, true)
         XCTAssertEqual(st.daemon?.model?.enabled, false)
         XCTAssertTrue(st.daemon?.model?.reason?.contains("OPENROUTER_API_KEY is not set") == true, "\(String(describing: st.daemon?.model))")
+        // The app's launch told vani not to read the Keychain itself: this test never touches the
+        // owner's key, and a key the app could not read is not asked for again behind it.
+        XCTAssertTrue(st.daemon?.model?.reason?.contains("VANI_NO_KEYCHAIN is set") == true, "\(String(describing: st.daemon?.model))")
         let issue = try XCTUnwrap(st.issues().first { $0.title == "The daemon's decision model is off" })
         XCTAssertEqual(issue.severity, .warning)
         let toggle = ScheduleToggle.make(registration: .enabled, error: nil, daemon: st.daemon, leftAlone: false)

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -159,6 +160,12 @@ type detailResponse struct {
 		PostedOn       string `json:"postedOn"`
 		ExternalURL    string `json:"externalUrl"`
 		RemoteType     string `json:"remoteType"`
+		// AdditionalLocations are the posting's other places, after
+		// Location ("US, CA, Remote"); see detailLocation.
+		AdditionalLocations []string `json:"additionalLocations"`
+		// TimeType is "Full time" or "Part time" (NVIDIA and Intel,
+		// 2026-10-20: 2 of 568 and 12 of 139 part time).
+		TimeType string `json:"timeType"`
 	} `json:"jobPostingInfo"`
 }
 
@@ -428,9 +435,9 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	if err != nil {
 		return posting.Posting{}, err
 	}
-	title := strings.TrimSpace(info.Title)
+	title := srcutil.Title(info.Title)
 	if title == "" {
-		title = strings.TrimSpace(row.Title)
+		title = srcutil.Title(row.Title)
 	}
 	if title == "" {
 		return posting.Posting{}, errors.New("empty title")
@@ -442,7 +449,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	if err := srcutil.CheckURL("externalUrl", pubURL); err != nil {
 		return posting.Posting{}, err
 	}
-	location := strings.TrimSpace(info.Location)
+	location := detailLocation(info.Location, info.AdditionalLocations)
 	if location == "" {
 		location = strings.TrimSpace(row.LocationsText)
 	}
@@ -460,9 +467,38 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 		Remote:      strings.EqualFold(strings.TrimSpace(info.RemoteType), "remote"),
 		URL:         pubURL,
 		PostedAt:    postedAt(info.StartDate, phrase, seen),
-		Description: htmltext.Text(info.JobDescription, srcutil.MaxDescription),
+		Description: description(info.JobDescription, info.TimeType),
 		SeenAt:      seen,
 	}, nil
+}
+
+// description is the job description as text, led by a srcutil.RoleLine of
+// the detail's time type.
+func description(jobDescription, timeType string) string {
+	lead, room := srcutil.Lead(srcutil.RoleLine(srcutil.EmploymentType(timeType)))
+	return lead + htmltext.Text(jobDescription, room)
+}
+
+// maxLocations bounds the places detailLocation joins.
+const maxLocations = 20
+
+// detailLocation is the primary location then the additional ones, trimmed,
+// without repeats, joined by "; ". A multi-location posting's places are only
+// in the detail: live on 2026-10-20, 9 of 20 NVIDIA and 7 of 20 Intel rows
+// listed "N Locations", and NVIDIA JR2021784's only remote place was an
+// additional one ("US, CA, Remote"), which location.Parse reads as remote.
+// Neither tenant sent remoteType.
+func detailLocation(primary string, more []string) string {
+	var out []string
+	for _, l := range append([]string{primary}, more...) {
+		if len(out) == maxLocations {
+			break
+		}
+		if l = strings.TrimSpace(l); l != "" && !slices.ContainsFunc(out, func(o string) bool { return strings.EqualFold(o, l) }) {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 // postedAt prefers the detail's startDate (an exact day). Otherwise it reads

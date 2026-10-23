@@ -97,6 +97,7 @@ var (
 				Endpoint:     kbmatchEndpoint,
 				Model:        w.cfg.Decide.OpenRouterModel,
 				KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
+				Getenv:       w.openRouterGetenv,
 				Descriptions: kbmatch.Descriptions(),
 				Instructions: kbmatch.Instructions(),
 				Spend:        spend,

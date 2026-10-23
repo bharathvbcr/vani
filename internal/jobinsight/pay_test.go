@@ -101,6 +101,28 @@ func TestParsePay(t *testing.T) {
 		{"empty", "", nil},
 		{"no money", "We build compilers. Salary is competitive.", nil},
 		{"invalid utf-8", "Salary \xff\xfe $150,000 - $180,000 \xff", usd(150000, 180000)},
+		// Verbatim from Google's results page as the source adapter renders it
+		// (2026-10-20): "education" ends the sentence before, not this line.
+		{"google, after a finished sentence", "The US base salary range for this full-time position is $188,000-$274,000 + bonus + equity + benefits. Our salary ranges are determined by role, level, and location. Within the range, individual pay is determined by work location and additional factors, including job-related skills, experience, and relevant education or training.\nUS: $188000 - $274000 (USD) + 20% bonus target + equity + benefits\nLearn more about benefits at Google", usd(188000, 274000)},
+		{"google line alone", "relevant education or training.\nUS: $126000 - $180000 (USD) + 15% bonus target + equity + benefits", usd(126000, 180000)},
+		{"heading line without a stop still counts", "Base salary\n$150,000", usd(150000, 150000)},
+		{"not-pay heading without a stop still counts", "Signing bonus\n$20,000 - $30,000", nil},
+		{"not-pay word on the same line", "We pay well.\nRelocation package: $20,000 - $30,000", nil},
+		{"pay word in a finished sentence still names it", "The base salary is listed below.\n$150,000", usd(150000, 150000)},
+		{"not-pay tail beats an earlier pay word", "The salary is great.\nSigning bonus $20,000 - $30,000", nil},
+		{"nearest earlier word decides only when it is a pay word", "Base salary.\nNo equity.\n$150,000", nil},
+		{"stop then spaces before the break", "Skills and education. \t\r\n$120,000 - $150,000", usd(120000, 150000)},
+		{"break with no stop before it", "education\n$120,000 - $150,000", nil},
+		{"only breaks", "\n\n\n$120,000 - $150,000", usd(120000, 150000)},
+		// Verbatim from Microsoft's Montreal posting 1970393557023166 (Eightfold, 2026-10-20).
+		{"code before a symbol", "Software Engineering IC3 - The typical base pay range for this role across Canada is CAD $114,400 - CAD $203,900 per year.", []payWant{{"CAD", Year, 114400, 203900}}},
+		{"code glued to a symbol", "Salary: CAD$100,000 - CAD$120,000", []payWant{{"CAD", Year, 100000, 120000}}},
+		{"code, no-break space, symbol", "Salary: AUD $150,000 - AUD $180,000", []payWant{{"AUD", Year, 150000, 180000}}},
+		{"code before a symbol, lowercase", "salary: sgd $90,000 - sgd $120,000", []payWant{{"SGD", Year, 90000, 120000}}},
+		{"code before a matching symbol", "Salary: GBP £60,000 - GBP £80,000", []payWant{{"GBP", Year, 60000, 80000}}},
+		{"code before another currency's symbol", "Salary: USD £60,000 - USD £80,000", nil},
+		{"code before a symbol on one end only", "Salary: CAD $100,000 - $120,000", []payWant{{"CAD", Year, 100000, 120000}}},
+		{"code inside a word is not a code", "AutoCAD $150,000 - $180,000 salary", usd(150000, 180000)},
 	}
 	for _, c := range cases {
 		checkPays(t, c.name, ParsePay(c.text), c.want)

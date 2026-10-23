@@ -222,6 +222,94 @@ func one(id, title string) string {
 	return fmt.Sprintf(`[%q,%q,null,[null,"<p>Do things.</p>"],[null,"<ul><li>BS</li></ul>"],null,null,"Google","en-US",[["Mountain View, CA, USA"]],[null,"About."]]`, id, title)
 }
 
+// withNote is row (from one) extended to field 18, the location note, set to
+// the raw JSON note.
+func withNote(row, note string) string {
+	return strings.TrimSuffix(row, "]") + strings.Repeat(",null", fLocationNote-minFieldCount) + "," + note + "]"
+}
+
+// testdata/remote.json is the live has_remote=true page for "software
+// engineer" in the United States (2026-10-20), its long HTML fields cut to
+// 600 bytes: three remote roles whose locations name only states.
+func TestRemoteFromLocationNote(t *testing.T) {
+	raw, err := os.ReadFile("testdata/remote.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := searchURL("software engineer", nil)
+	s, _ := newSource(map[string]string{u: wrap(strings.TrimSpace(string(raw)))})
+	got, err := s.List(context.Background(), board("software engineer"))
+	if err != nil || len(got) != 3 {
+		t.Fatalf("%d postings, %v", len(got), err)
+	}
+	for _, p := range got {
+		if !p.Remote {
+			t.Errorf("%s (%s) not remote", p.Key, p.Location)
+		}
+	}
+	if got[1].Location != "Colorado, USA" {
+		t.Errorf("location %q", got[1].Location)
+	}
+	// The office-role fixture has notes listing offices, not remote places.
+	u = searchURL("LLM inference", nil)
+	s, _ = newSource(map[string]string{u: wrap(fixture(t))})
+	got, err = s.List(context.Background(), board("LLM inference"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range got {
+		if p.Remote {
+			t.Errorf("%s: office role read as remote", p.Key)
+		}
+	}
+}
+
+func TestLocationNoteShapes(t *testing.T) {
+	u := searchURL("x", nil)
+	office := `[null,"Note: By applying to this position you will have an opportunity to share your preferred working location from the following:<br><br><b>Sunnyvale, CA, USA; Atlanta, GA, USA.</b>"]`
+	for name, tc := range map[string]struct {
+		note   string
+		remote bool
+	}{
+		"null":                  {`null`, false},
+		"empty":                 {`[null,""]`, false},
+		"null html":             {`[null,null]`, false},
+		"office choice":         {office, false},
+		"one remote place":      {`[null,"<b>Remote location: Colorado, USA.</b>"]`, true},
+		"remote places":         {`[null,"Note: ...<br><br><b>Remote locations: California, USA; Nevada, USA.</b>"]`, true},
+		"tags split the phrase": {`[null,"<b>Remote</b> <i>locations</i>: Texas, USA"]`, true},
+		"lowercase":             {`[null,"remote location: Ohio, USA"]`, true},
+		"remote without colon":  {`[null,"Remote work is not offered."]`, false},
+		"phrase past the cap":   {`[null,"` + strings.Repeat("x ", maxNote) + `Remote location: Ohio, USA"]`, false},
+	} {
+		s, _ := newSource(map[string]string{u: wrap(`[[` + withNote(one("1", "A"), tc.note) + `], null, 1, 20]`)})
+		got, err := s.List(context.Background(), board("x"))
+		if err != nil || len(got) != 1 {
+			t.Errorf("%s: %d postings, %v", name, len(got), err)
+			continue
+		}
+		if got[0].Remote != tc.remote {
+			t.Errorf("%s: remote %v", name, got[0].Remote)
+		}
+	}
+	for name, note := range map[string]string{
+		"string":     `"Remote location: Ohio"`,
+		"number":     `7`,
+		"short pair": `[null]`,
+		"html int":   `[null,7]`,
+	} {
+		s, _ := newSource(map[string]string{u: wrap(`[[` + withNote(one("1", "A"), note) + `], null, 1, 20]`)})
+		if _, err := s.List(context.Background(), board("x")); !errors.Is(err, ErrShape) {
+			t.Errorf("%s: err %v, want ErrShape", name, err)
+		}
+	}
+	// A row that stops before field 18 is not remote and not an error.
+	s, _ := newSource(map[string]string{u: wrap(`[[` + one("1", "A") + `], null, 1, 20]`)})
+	if got, err := s.List(context.Background(), board("x")); err != nil || len(got) != 1 || got[0].Remote {
+		t.Errorf("short row: %+v, %v", got, err)
+	}
+}
+
 func TestStatusAndContext(t *testing.T) {
 	u := searchURL("x", nil)
 	d := srctest.New(map[string]srctest.Reply{u: {Status: 500}})

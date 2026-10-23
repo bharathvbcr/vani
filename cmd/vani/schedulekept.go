@@ -89,12 +89,13 @@ func scheduleKeeping(cfg config.Config, s scheduleFacet, d daemonFacet, last las
 // Pipeline tab's "Run on schedule" registers a login item that runs `vani
 // daemon` with the decision-model key read from the login Keychain into the
 // child's environment only. Without the app, `vani launchd plist` prints an
-// agent that starts the daemon, and the one thing it does not do for you: its
-// environment holds only VANI_CONFIG and VANI_STATE_DIR, and the key is read from
-// the environment (decide.openrouter_key_env, by decide's jev client), never from
-// the Keychain. Without it the daemon's runs log "openrouter (...) disabled" and
-// read no posting with the model, so a posting stays live (the daemon says so
-// in daemon.json, and status reports it: daemonLines).
+// agent that starts the daemon. Its environment holds only VANI_CONFIG and
+// VANI_STATE_DIR, so the key is not in the environment (decide.openrouter_key_env);
+// the daemon then reads the login Keychain item itself, once, at its start
+// (keychain.go), unless VANI_NO_KEYCHAIN is set or the environment names the
+// key. Without a key the daemon's runs log "openrouter (...) disabled" and read
+// no posting with the model, so a posting stays live (the daemon says so in
+// daemon.json, and status reports it: daemonLines).
 func keepHint(cfg config.Config) string {
 	// The app's toggle is the way: it holds the key for the daemon. The plain
 	// launchd agent is named only as the route without the app, and never with
@@ -107,7 +108,9 @@ func keepHint(cfg config.Config) string {
 	b.WriteString(". Until then, Run in the app with a higher advance cap, or `vani run-once --advance N`. " +
 		"Without the app, `vani launchd plist` prints an agent for the daemon (vani installs nothing)")
 	if cfg.OpenRouterConfigured() {
-		fmt.Fprintf(&b, "; it carries no model key, so its runs triage nothing unless %s is in its environment", cfg.Decide.OpenRouterKeyEnv)
+		fmt.Fprintf(&b, "; that agent carries no model key (%s is not in its environment), so the daemon reads the login Keychain item "+
+			"openrouter-api-key itself when it starts (macOS may ask once to let vani read it; VANI_NO_KEYCHAIN=1 turns that off), "+
+			"and without a key it triages nothing (`vani status` says so)", cfg.Decide.OpenRouterKeyEnv)
 	}
 	return b.String()
 }

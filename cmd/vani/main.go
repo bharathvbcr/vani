@@ -217,8 +217,11 @@ func main() {
 type env struct {
 	configPath string
 	stateDir   string
-	stdout     io.Writer
-	stderr     io.Writer
+	// paths is how configPath and stateDir were resolved (status shows it);
+	// zero when the env was built some other way.
+	paths  config.Resolved
+	stdout io.Writer
+	stderr io.Writer
 
 	// runLog is the log file a manual run's output goes to, as its starter said
 	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it
@@ -238,12 +241,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usageText)
 		return exitUsage
 	}
-	cfgPath, stateDir, err := config.DefaultPaths()
+	paths, err := config.ResolveDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "vani: %v\n", err)
 		return exitRuntime
 	}
-	return runEnv(&env{configPath: cfgPath, stateDir: stateDir, stdout: stdout, stderr: stderr}, args)
+	if paths.Warning != "" {
+		fmt.Fprintf(stderr, "vani: warning: %s\n", paths.Warning)
+	}
+	return runEnv(&env{configPath: paths.ConfigPath, stateDir: paths.StateDir, paths: paths, stdout: stdout, stderr: stderr}, args)
 }
 
 // runEnv dispatches args against an already-resolved env. run builds the env
@@ -466,9 +472,15 @@ func (e *env) cmdDaemon(args []string) error {
 	// The ledger is held from here on, so this process is the daemon: run
 	// requests (runrequest.go) find it through daemon.json.
 	pid := os.Getpid()
-	// It says whether the decision model's key reached its environment: a
-	// daemon started without one runs with the model disabled, loudly.
-	model := daemonModelOf(cfg, os.Getenv)
+	// It says whether it has the decision model's key, from its environment or
+	// from the login Keychain (the one read, bounded, kept for the process): a
+	// daemon without one runs with the model disabled, loudly.
+	var model *daemonModel
+	if app.ModelKey != nil {
+		model = daemonModelFor(cfg, app.ModelKey)
+	} else {
+		model = daemonModelOf(cfg, os.Getenv)
+	}
 	if model != nil && !model.Enabled {
 		fmt.Fprintf(e.stderr, "vani: daemon: %s\n", model.Reason)
 	}

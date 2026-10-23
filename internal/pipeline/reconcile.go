@@ -46,7 +46,11 @@ type Summary struct {
 	// Redated postings were stored without a posted date and are listed with
 	// one (an adapter that learned to read it): the stored posting takes the
 	// date and keeps its status and annotations. A stored date is never moved.
-	Redated    int
+	Redated int
+	// Refreshed postings carry the same content with other display fields
+	// (refreshFields): the stored posting takes them and keeps its status and
+	// annotations.
+	Refreshed  int
 	Unchanged  int
 	Reappeared int // seen again after a miss (or after being marked dead)
 	Missed     int // absent, below the death threshold
@@ -126,6 +130,8 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 		hash := p.DescriptionHash()
 		rec, known := l.Get(p.Key)
 		rendered := known && rec.Posting.DescriptionHash() != hash
+		// relist is what a same-content listing stores over a known record.
+		relist := relisted(rec.Posting, p, full)
 
 		switch {
 		case !known:
@@ -191,14 +197,14 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			if from := posting.Status(rec.Annotations[DiedFromKey]); from.Valid() && !closed(from) {
 				st = from
 			}
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &relist,
 				Annotations: map[string]string{DescHashKey: hash, DiedFromKey: ""}, Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Reappeared++
 		case rec.MissedRuns > 0:
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Reason: "reappeared"}
 			if rendered {
 				e.Annotations = map[string]string{DescHashKey: hash}
@@ -212,7 +218,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			// (so the digest shows it) and keeps its status and annotations.
 			// A dropped posting is shown nowhere and gets no event: its last
 			// event dates the drop the digest footer counts.
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Annotations: map[string]string{DescHashKey: hash}, Reason: "re-rendered"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
@@ -223,12 +229,25 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			// stored posting takes it so the advance order can rank it by
 			// freshness. Status and annotations stay. A stored date is never
 			// moved, as relative phrases drift a day between runs.
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Reason: "re-dated"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Redated++
+		case rec.Status != posting.Dropped && refreshFields(rec.Posting, relist):
+			// Same content with other display fields (an adapter that learned
+			// a posting's other places or its remote flag): the stored posting
+			// takes them and keeps its status and annotations, as a re-render
+			// does. The title stays, being what triage and the title rules
+			// read; a title-only change waits for the text to change.
+			relist.Title = rec.Posting.Title
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
+				Reason: "refreshed"}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Refreshed++
 		default:
 			s.Unchanged++
 		}
@@ -314,6 +333,46 @@ func appendBatched(ctx context.Context, l ledger.Ledger, evs []ledger.Event) (in
 		evs = evs[n:]
 	}
 	return done, nil
+}
+
+// relisted is the posting a listing with the stored content stores: the
+// listed one, except that a field the listing left blank keeps its stored
+// value (an adapter or a scraped page that could not read a location says
+// nothing about it), a stored posted date never moves (relative phrases drift
+// a day between runs), and only a full listing, the board's own word, may
+// clear Remote: a partial one (a scraped page) can set it, not clear it.
+func relisted(stored, listed posting.Posting, full bool) posting.Posting {
+	out := listed
+	for _, f := range []struct {
+		dst *string
+		old string
+	}{
+		{&out.Title, stored.Title}, {&out.Company, stored.Company}, {&out.Location, stored.Location},
+		{&out.Department, stored.Department}, {&out.URL, stored.URL}, {&out.ApplyURL, stored.ApplyURL},
+	} {
+		if strings.TrimSpace(*f.dst) == "" {
+			*f.dst = f.old
+		}
+	}
+	if !stored.PostedAt.IsZero() {
+		out.PostedAt = stored.PostedAt
+	}
+	if !full {
+		out.Remote = out.Remote || stored.Remote
+	}
+	return out
+}
+
+// refreshFields reports whether relist, a same-content relisting, changes a
+// display field of stored: where the posting is (Location, Remote), how it is
+// filed and reached (Department, URL, ApplyURL) and whose it is (Company, a
+// board's configured name). Not compared: Title (triage and the title drop
+// rules read it), PostedAt (never moved), UpdatedAt and SeenAt (they move on
+// every re-save and run, and would write an event each time).
+func refreshFields(stored, relist posting.Posting) bool {
+	return stored.Location != relist.Location || stored.Remote != relist.Remote ||
+		stored.Department != relist.Department || stored.URL != relist.URL ||
+		stored.ApplyURL != relist.ApplyURL || stored.Company != relist.Company
 }
 
 // sourceHash identifies the board's own text in a stored or listed

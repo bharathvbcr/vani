@@ -45,6 +45,11 @@ type App struct {
 	// so a manual run's overrides never reach the next scheduled one. Nil means
 	// the app cannot be tuned, and a run that asks for it fails.
 	Tune func(advance int, listOnly bool)
+	// ModelKey looks the decision model's key up the way every OpenRouter
+	// client of this app does (environment, then the login Keychain unless
+	// VANI_NO_KEYCHAIN is set), so the daemon can say whether it has one. Nil
+	// means the environment alone.
+	ModelKey keyLookup
 	// Notifier announces a finished digest. Nil means no notification.
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
@@ -523,6 +528,26 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	for _, l := range daemonLines(dfacet) {
 		fmt.Fprintln(e.stdout, l)
 	}
-	fmt.Fprintf(e.stdout, "state dir: %s\n", e.stateDir)
+	e.printPaths()
 	return nil
+}
+
+// printPaths writes the config and state dir this process uses, and, when it
+// resolved them itself, where each came from and how they compare with the
+// Mac app's settings.
+func (e *env) printPaths() {
+	from := func(src, envVar string) string {
+		switch src {
+		case config.FromEnv:
+			return " (" + envVar + ")"
+		case config.FromDefault:
+			return " (default)"
+		}
+		return ""
+	}
+	fmt.Fprintf(e.stdout, "config: %s%s\nstate dir: %s%s\n", e.configPath, from(e.paths.ConfigFrom, "VANI_CONFIG"),
+		e.stateDir, from(e.paths.StateFrom, "VANI_STATE_DIR"))
+	if e.paths.AppSettings != "" {
+		fmt.Fprintf(e.stdout, "app settings: %s\n", e.paths.AppSettings)
+	}
 }

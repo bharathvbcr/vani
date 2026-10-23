@@ -2,7 +2,9 @@
 
 Vani is a personal, listings-first career engine: a Go daemon that finds job postings on company
 ATS boards, filters them without spending tokens, ranks them with DevPrism's deterministic resume
-tools, and writes a daily digest. Manvi (imported as a library) is the LLM orchestrator. The plan
+tools, and writes a daily digest. Manvi (imported as a library) is the LLM orchestrator for
+Claude; the decision model is Liquid (`liquid/d1-ultra` over OpenRouter); embeddings run through
+Tessl (`-tags tessl`). `docs/RUNTIME.md` maps each entry point to its config, state and keys. The plan
 is `/Users/bharath/Code/vani-plan.md`; follow-ups are in `docs/FOLLOWUPS.md`.
 
 ## Build
@@ -42,3 +44,9 @@ go -C /Users/bharath/Code/apps/Vani test ./...
 - Navigation: DevMap first (`devmap_status`, `devmap_search` with absolute `repo_path`), and
   `gitpulse_insights` before editing. If either cannot answer, say so.
 - Shell gate in this workspace: no `cd`, `$()`, heredocs; use `go -C` and absolute paths.
+- Running `vani` for the owner: the live config and state are the default pair,
+  `~/Library/Application Support/Vani/config.json` and `.../Vani/state` (moved from `.state/` on
+  2026-10-20; docs/RUNTIME.md), so a bare `vani` uses them; check the `state dir:` and
+  `app settings:` lines of `vani status` before trusting a count. Set `VANI_NO_KEYCHAIN=1` in an
+  agent shell: without it a `vani` that builds a decision backend reads the owner's OpenRouter key
+  from the Keychain and spends from it.

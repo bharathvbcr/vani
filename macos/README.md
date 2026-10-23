@@ -227,7 +227,9 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
    - It runs the bundled `vani draft`, using the model and daily cap in Vani's config
      (`llm.model`, `decide.daily_usd.llm`). That cap is shared with the daily listings run.
    - Set the config and state paths in Settings ▸ Claude drafting. Empty means Vani's default
-     folder.
+     folder. A `vani` started without `VANI_CONFIG`/`VANI_STATE_DIR` refuses to run while these
+     name another folder, so the CLI and the app cannot drift onto different ledgers
+     ([`docs/RUNTIME.md`](../docs/RUNTIME.md)).
    - Settings ▸ What you care about edits `motivation_notes` in that config through
      `vani config motivation`, so Vani checks it and rewrites the config file whole (as
      `vani track use` does: keys in Vani's order, deprecated names replaced). "Why <company>?" drafts use the note;
@@ -263,7 +265,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      key. Unlike the on-demand agent it does not exit when idle.
    - **The key.** The helper reads the login Keychain item `openrouter-api-key` for each start through the
      same bounded read as a manual run (30 s; an unanswered "allow access" prompt is abandoned) and passes
-     it only in the child's environment. It is in no plist (`launchctl print` shows none), no file and no
+     it only in the child's environment, with `VANI_NO_KEYCHAIN=1` beside it: the app is the one reader of the
+     item for a `vani` it starts, so a read that was refused or not answered is not asked again by `vani`'s own
+     Keychain read (`cmd/vani/keychain.go`), which would prompt a second time from another binary. The same
+     variable goes to Run now's `vani`. The key is in no plist (`launchctl print` shows none), no file and no
      log line; the helper's own log lines are fixed phrases and exit statuses. With the Anthropic provider
      the daemon starts through `anthropic-account exec`, as drafts do.
    - **No key is visible, never silent.** A missing, refused or unanswered read still starts the daemon
@@ -293,7 +298,8 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      (decide's jev client).
    - Tests (`ScheduleAgentTests`, `ScheduleToggleTests`, `ScheduleAgentRealVaniTests`) never register
      anything or read the real Keychain: the key lookup is injected, the supervisor runs scripts, and the real
-     test runs `build/vani daemon` in a temp state folder.
+     test runs `build/vani daemon` in a temp state folder with `VANI_NO_KEYCHAIN=1` in its environment (the app's launch sets it), so
+     `vani`'s own Keychain read is off there too, and the test asserts the daemon says so.
 7. **Run notifications.**
    - While the app runs, with or without its window open, it announces each finished daily run once
      as a Vani Apply notification. Clicking one opens the app on the Jobs tab, and reopens the
@@ -378,7 +384,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 - **What it never sees:** your name, contact details, location or work authorization. Vani never
   reads the bank header, and entry locations are dropped. A test checks the prompt for a synthetic
   name and email.
-- **The key.** Vani takes provider keys from the environment only (Manvi's policy). When the Vani
+- **The key.** Vani takes LLM provider keys from the environment only (Manvi's policy). The one
+  exception is the Liquid decision model's OpenRouter key, which `vani` reads from the Keychain item
+  `openrouter-api-key` when `OPENROUTER_API_KEY` is unset ([`docs/RUNTIME.md`](../docs/RUNTIME.md)).
+  When the Vani
   config's `llm.provider` is `anthropic`, the app and the Chrome host start
   `anthropic-account exec [--account NAME] -- <bundled vani> draft` instead of `vani` itself.
   `anthropic-account` (Manvi's `cmd/anthropic-account`, installed in `~/.local/bin` or

@@ -5,6 +5,12 @@ Manvi, Jarvis, DevPrism, Lappi-decision, n8n-email-engine and career, plus prima
 the open-source projects named below. Evidence labels: **[V]** verified in code/docs/CLI,
 **[I]** inferred, **[U]** unverified — a Phase 0 spike.*
 
+*Note 2026-10-20: this is the plan as drafted, kept as history. Where it says "Jev" as the cloud
+decision model, read the decision model: the owner chose Liquid (`liquid/d1-ultra` over
+OpenRouter) on 2026-10-19, and `decide/jev` is only the name of the OpenRouter client package.
+Embeddings run through Tessl; Claude through Manvi. Current behaviour: [`RUNTIME.md`](RUNTIME.md),
+the README and [`FOLLOWUPS.md`](FOLLOWUPS.md).*
+
 ## 0. What this is
 
 A personal Go daemon that, every day, finds open roles at companies you care about, drops the
@@ -276,9 +282,9 @@ Kept out of v1. When you want it, the design that avoids the audit's problems:
 | D2 | Name and location of the new repo | **Name decided: Vani.** Location: `~/Code/apps/Vani` (it is something you run, per your folder taxonomy) |
 | D3 | May public job-posting text (not personal data) become Lappi *training* data, or stay eval-only? | Eval-only for now; revisit after the first v6 family measures |
 | D4 | Ledger index: JSONL only, or JSONL + SQLite (`modernc.org/sqlite`, pure Go — a new dependency) | JSONL only in Phase 1; add SQLite if queries get slow |
-| D5 | Orchestrator default provider | Gemini (`gemini-3.8-flash`, already Jarvis's) for daily planning/notes; Claude for tailoring drafts — both behind the budget ledger |
-| D6 | Daily spend caps | e.g. $1/day LLM, $0.25/day Jev to start |
-| D7 | Is "cloud decision model" Jev (`typesafe/jev-1.13` via OpenRouter)? | assumed yes |
+| D5 | Orchestrator default provider | Gemini (`gemini-3.8-flash`, already Jarvis's) for daily planning/notes; Claude for tailoring drafts — both behind the budget ledger. *Decided: Claude through Manvi (live config `claude-opus-5-5`).* |
+| D6 | Daily spend caps | e.g. $1/day LLM, $0.25/day Jev to start. *Live 2026-10-20: $10/day LLM, $20/day decision model.* |
+| D7 | Is "cloud decision model" Jev (`typesafe/jev-1.13` via OpenRouter)? | assumed yes. *Decided 2026-10-19: no — Liquid `liquid/d1-ultra` via OpenRouter.* |
 
 ## 11. Phases
 

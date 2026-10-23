@@ -110,7 +110,8 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 		// Every outcome reconcile can reach was reached, so parity was checked
 		// on each path and not only on the easy ones.
 		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Redated == 0 || total.Reappeared == 0 ||
-			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 || total.Revived == 0 {
+			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 || total.Revived == 0 ||
+			total.Refreshed == 0 {
 			t.Errorf("the seeds did not cover every outcome: %+v", total)
 		}
 	}()
@@ -141,6 +142,9 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						}
 						p := pp.p
 						p.SeenAt = now
+						// The board refiles every posting once, mid-way: a display
+						// field moves under unchanged text (refreshed).
+						p.Department = fmt.Sprintf("team %d", run/3)
 						switch rng.IntN(4) {
 						case 0:
 							p.Description = "A new role description, version two."
@@ -170,6 +174,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.Changed += got.Changed
 					total.Rerendered += got.Rerendered
 					total.Redated += got.Redated
+					total.Refreshed += got.Refreshed
 					total.Reappeared += got.Reappeared
 					total.Missed += got.Missed
 					total.Dead += got.Dead

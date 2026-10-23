@@ -6,7 +6,8 @@
 // The board token is the site's Jibe client code ("amd") and Host its careers
 // site. Every row carries its description, so a listing costs one request per
 // hundred postings and no details requests. Search is optional, as on Workday:
-// without one the board lists the whole site (AMD: 1279 postings in 13 pages).
+// without one the board lists the whole site (AMD: 1286 postings in 13 pages
+// of about 3.5 MB each on 2026-10-20).
 // AMD's robots.txt allows everything with a crawl-delay of 5 seconds, which
 // the source keeps between its own requests.
 //
@@ -18,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -41,6 +41,10 @@ const (
 	maxPages = srcutil.MaxPostings/pageSize + 2
 	// crawlDelay is the spacing robots.txt asks for between requests.
 	crawlDelay = 5 * time.Second
+	// paceBudget bounds a board's waiting, as page.BoardTimeout bounds a
+	// careers page: 180 requests at the crawl delay. AMD's whole site takes
+	// 14 (2026-10-20).
+	paceBudget = 15 * time.Minute
 	// dateLayout is posted_date's form ("2026-10-20T01:55:00+0000"), which is
 	// not RFC 3339: the offset has no colon.
 	dateLayout = "2006-01-02T15:04:05-0700"
@@ -52,31 +56,24 @@ var ErrShape = errors.New("jibe: unexpected response")
 var (
 	hostRE   = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 	clientRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
-	idRE     = regexp.MustCompile(`^[0-9]{1,20}$`)
+	// idRE is a req_id that is safe as one URL path segment and key part.
+	// AMD's are digits; PepsiCo's site also lists Paradox-hosted roles as
+	// "P1-6635769-1" (190 of 431 rows of one search on 2026-10-20).
+	idRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 )
 
 type source struct {
 	d   egress.Doer
 	now func() time.Time
-	// wait spaces requests; a field only so tests need not wait in real time.
+	// wait spaces requests (srcutil.Pacer.Sleep); a field only so tests need
+	// not wait in real time.
 	wait func(ctx context.Context, d time.Duration) error
 }
 
 // New returns the Jibe source, sending requests through d.
-func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now, wait: sleep} }
+func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now, wait: srcutil.Sleep} }
 
 func (*source) ATS() posting.ATS { return posting.Jibe }
-
-func sleep(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
 
 type listing struct {
 	TotalCount *int  `json:"totalCount"`
@@ -100,7 +97,15 @@ type job struct {
 	PostedDate       string   `json:"posted_date"`
 	UpdateDate       string   `json:"update_date"`
 	ApplyURL         string   `json:"apply_url"`
-	MetaData         struct {
+	LocationName     string   `json:"location_name"`
+	// EmploymentType is FULL_TIME, PART_TIME, TEMPORARY or CONTRACTOR, or
+	// absent (AMD and PepsiCo, 2026-10-20).
+	EmploymentType string `json:"employment_type"`
+	// Tags2 and Tags3 are AMD's pay range bottom and top, one value each
+	// ("USD $178,500.00/Yr."); see payLine.
+	Tags2    []string `json:"tags2"`
+	Tags3    []string `json:"tags3"`
+	MetaData struct {
 		CanonicalURL string `json:"canonical_url"`
 	} `json:"meta_data"`
 }
@@ -125,7 +130,8 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("jibe %q: %w", b.Token, err)
 	}
 	queries := plan(b)
-	l := &lister{s: s, host: host, client: client, b: b, seen: s.now(), have: map[string]bool{}}
+	l := &lister{s: s, host: host, client: client, b: b, seen: s.now(), have: map[string]bool{},
+		pace: srcutil.Pacer{Every: crawlDelay, Budget: paceBudget, Sleep: s.wait}}
 	for _, q := range queries {
 		if err := l.run(ctx, q); err != nil {
 			return nil, fmt.Errorf("jibe %q: %s: %w", b.Token, q, err)
@@ -182,16 +188,13 @@ type lister struct {
 	seen   time.Time
 	have   map[string]bool
 	out    []posting.Posting
-	sent   int // requests so far, to space all but the first
+	pace   srcutil.Pacer // spaces every request of the board
 }
 
 func (l *lister) get(ctx context.Context, q query, page int) (listing, error) {
-	if l.sent > 0 {
-		if err := l.s.wait(ctx, crawlDelay); err != nil {
-			return listing{}, err
-		}
+	if err := l.pace.Wait(ctx); err != nil {
+		return listing{}, err
 	}
-	l.sent++
 	v := url.Values{}
 	v.Set("page", strconv.Itoa(page))
 	v.Set("limit", strconv.Itoa(pageSize))
@@ -244,19 +247,22 @@ func (l *lister) run(ctx context.Context, q query) error {
 			if !idRE.MatchString(id) {
 				return fmt.Errorf("%w: req_id %q", ErrShape, r.Data.ReqID)
 			}
-			if read[id] {
+			// The key lowercases the id, so ids differing only in case are one
+			// posting.
+			lid := strings.ToLower(id)
+			if read[lid] {
 				continue
 			}
-			read[id] = true
+			read[lid] = true
 			added++
-			if l.have[id] {
+			if l.have[lid] {
 				continue // already listed by an earlier query
 			}
 			p, err := l.posting(*r.Data, id)
 			if err != nil {
 				return fmt.Errorf("req %s: %w", id, err)
 			}
-			l.have[id] = true
+			l.have[lid] = true
 			l.out = append(l.out, p)
 			if err := srcutil.CheckCount(len(l.out)); err != nil {
 				return fmt.Errorf("%w: the board's queries together list more; narrow them", err)
@@ -285,7 +291,7 @@ func (l *lister) posting(j job, id string) (posting.Posting, error) {
 			return posting.Posting{}, fmt.Errorf("%w: canonical_url %q is not %s", ErrShape, c, u)
 		}
 	}
-	title := strings.TrimSpace(html.UnescapeString(j.Title))
+	title := srcutil.Title(j.Title)
 	if title == "" {
 		return posting.Posting{}, fmt.Errorf("%w: empty title", ErrShape)
 	}
@@ -314,15 +320,13 @@ func (l *lister) posting(j job, id string) (posting.Posting, error) {
 		dept = joinUnique(j.Category)
 	}
 	return posting.Posting{
-		Key:        key,
-		ATS:        posting.Jibe,
-		Company:    company,
-		Title:      title,
-		Location:   strings.TrimSpace(j.FullLocation),
-		Department: dept,
-		// No verified remote field: AMD marks some home-office roles only in
-		// location_name ("RO,Home Office"), which is not parsed as a rule.
-		Remote:      false,
+		Key:         key,
+		ATS:         posting.Jibe,
+		Company:     company,
+		Title:       title,
+		Location:    strings.TrimSpace(j.FullLocation),
+		Department:  dept,
+		Remote:      homeOffice(j.LocationName),
 		URL:         u,
 		ApplyURL:    apply,
 		PostedAt:    posted,
@@ -330,6 +334,56 @@ func (l *lister) posting(j job, id string) (posting.Posting, error) {
 		Description: description(j),
 		SeenAt:      l.seen,
 	}, nil
+}
+
+// homeOffice reports whether location_name places the role in a home office,
+// AMD's only mark of a remote role: the payload has no remote field, and
+// full_location names just the state or country ("US,TX,Home Office" is
+// "Texas, United States"). Live on 2026-10-20, 33 of 1286 AMD rows had a
+// comma-separated part "Home Office" or "Home Office_Area1"/"_Area2", and one
+// of 431 PepsiCo rows wrote it in a dash-separated name ("Neu-Isenburg Home
+// Office-DEU"); no title or full_location said remote. A part counts when it
+// is "home office", starts "home office_" or ends " home office", so "Home
+// Officers" and "Home Office Depot" do not.
+func homeOffice(name string) bool {
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool { return r == ',' || r == '-' }) {
+		p := strings.ToLower(strings.Join(strings.Fields(part), " "))
+		if p == "home office" || strings.HasPrefix(p, "home office_") || strings.HasSuffix(p, " home office") {
+			return true
+		}
+	}
+	return false
+}
+
+// payRE is one AMD pay tag: an ISO currency, its symbol, an amount with
+// thousands commas and a period ("INR ₹3,338,160.00/Yr."). Live on
+// 2026-10-20 all 2566 tags of 1286 rows had this form and the period Yr.
+var payRE = regexp.MustCompile(`^([A-Z]{3}) \D{0,4}?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/(Yr|Mo|Wk|Hr|Day)\.?$`)
+
+// payPeriods maps payRE's period to a word srcutil.PayLine reads.
+var payPeriods = map[string]string{"Yr": "year", "Mo": "month", "Wk": "week", "Hr": "hour", "Day": "day"}
+
+// payLine renders the tags2..tags3 pay range, or "" when the pair is not one
+// range: not exactly one tag each, a tag of another form, two currencies or
+// periods, or zero pay (AMD's internships list "USD $0.00/Yr."). A tag this
+// cannot read leaves the posting without a pay line rather than failing it:
+// pay is shown and filtered on, never needed to list.
+func payLine(lo, hi []string) string {
+	if len(lo) != 1 || len(hi) != 1 {
+		return ""
+	}
+	a, b := payRE.FindStringSubmatch(strings.TrimSpace(lo[0])), payRE.FindStringSubmatch(strings.TrimSpace(hi[0]))
+	if a == nil || b == nil || a[1] != b[1] || a[3] != b[3] {
+		return ""
+	}
+	amount := func(s string) *float64 {
+		v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
+		if err != nil {
+			return nil
+		}
+		return &v
+	}
+	return srcutil.PayLine(a[1], amount(a[2]), amount(b[2]), payPeriods[a[3]])
 }
 
 func parseTime(field, s string) (time.Time, error) {
@@ -359,7 +413,9 @@ func joinUnique(ss []string) string {
 // description is the job description as text, followed by the
 // responsibilities and qualifications fields where the description does not
 // already hold them: AMD's description embeds its responsibilities on some
-// postings and not others, and never its qualifications (2026-10-19).
+// postings and not others, and never its qualifications (2026-10-19). The pay
+// line and the employment type lead (srcutil.Lead), so the description cap
+// never cuts them.
 func description(j job) string {
 	body := j.Description
 	text := htmltext.Text(body, srcutil.MaxDescription)
@@ -371,5 +427,9 @@ func description(j job) string {
 		body += "<br>" + extra
 		text = htmltext.Text(body, srcutil.MaxDescription)
 	}
-	return text
+	lead, room := srcutil.Lead(payLine(j.Tags2, j.Tags3), srcutil.RoleLine(srcutil.EmploymentType(j.EmploymentType)))
+	if lead == "" {
+		return text
+	}
+	return lead + htmltext.Text(body, room)
 }

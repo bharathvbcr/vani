@@ -62,6 +62,33 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 		hash := p.DescriptionHash()
 		rec, known := l.Get(p.Key)
 		rendered := known && rec.Posting.DescriptionHash() != hash
+		// What a same-content listing stores: blanks keep the stored value, a
+		// stored date stays, and this full listing sets Remote as listed.
+		relist := p
+		if relist.Title == "" {
+			relist.Title = rec.Posting.Title
+		}
+		if relist.Company == "" {
+			relist.Company = rec.Posting.Company
+		}
+		if relist.Location == "" {
+			relist.Location = rec.Posting.Location
+		}
+		if relist.Department == "" {
+			relist.Department = rec.Posting.Department
+		}
+		if relist.URL == "" {
+			relist.URL = rec.Posting.URL
+		}
+		if relist.ApplyURL == "" {
+			relist.ApplyURL = rec.Posting.ApplyURL
+		}
+		if !rec.Posting.PostedAt.IsZero() {
+			relist.PostedAt = rec.Posting.PostedAt
+		}
+		moved := relist.Location != rec.Posting.Location || relist.Remote != rec.Posting.Remote ||
+			relist.Department != rec.Posting.Department || relist.URL != rec.Posting.URL ||
+			relist.ApplyURL != rec.Posting.ApplyURL || relist.Company != rec.Posting.Company
 
 		switch {
 		case !known:
@@ -151,14 +178,14 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 			if from := posting.Status(rec.Annotations[DiedFromKey]); from.Valid() && !closed(from) {
 				st = from
 			}
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &relist,
 				Annotations: map[string]string{DescHashKey: hash, DiedFromKey: ""}, Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Reappeared++
 		case rec.MissedRuns > 0:
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Reason: "reappeared"}
 			if rendered {
 				e.Annotations = map[string]string{DescHashKey: hash}
@@ -172,19 +199,27 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 			// (so the digest shows it) and keeps its status and annotations.
 			// A dropped posting is shown nowhere and gets no event: its last
 			// event dates the drop the digest footer counts.
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Annotations: map[string]string{DescHashKey: hash}, Reason: "re-rendered"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Rerendered++
 		case rec.Status != posting.Dropped && rec.Posting.PostedAt.IsZero() && !p.PostedAt.IsZero():
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &p,
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Reason: "re-dated"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Redated++
+		case rec.Status != posting.Dropped && moved:
+			relist.Title = rec.Posting.Title
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
+				Reason: "refreshed"}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Refreshed++
 		default:
 			s.Unchanged++
 		}

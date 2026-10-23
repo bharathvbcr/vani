@@ -268,6 +268,8 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	errs := newBackendErrors()
 	w.mu.Lock()
 	w.backendErrs, w.boards, w.advance, w.semPre = errs, nil, nil, nil
+	// A new run retries a Keychain read that failed in the last one (keychain.go).
+	w.keychainRun++
 	w.mu.Unlock()
 	stop := func() {}
 	if l := w.cfg.Decide.Local; advance && l != nil && l.Server != nil {

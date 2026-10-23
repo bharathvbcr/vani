@@ -612,16 +612,6 @@ func xdgDir(getenv func(string) string, key, home string, def ...string) string 
 	return filepath.Join(append([]string{home}, def...)...)
 }
 
-// DefaultPaths resolves Paths against the real environment.
-func DefaultPaths() (configPath, stateDir string, err error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", "", fmt.Errorf("config: home directory: %w", err)
-	}
-	c, s := Paths(os.Getenv, home)
-	return c, s, nil
-}
-
 // Default returns an example configuration with an empty watchlist.
 func Default() Config {
 	return Config{

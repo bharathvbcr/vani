@@ -86,6 +86,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		PollInbox: w.pollInbox,
 		Rescore:   w.rescore,
 		Tune:      w.tune,
+		ModelKey:  w.openRouterKey,
 		// The Vani Apply app posts run notices itself while it runs. When it
 		// does not, the daemon launches it to announce the run, and posts
 		// through osascript only if the app cannot take over.
@@ -143,6 +144,10 @@ type wired struct {
 	// semPre is the last run's knowledge-base warm before the advance phase
 	// (semanticwire.go warmBeforeAdvance); nil when it did not run.
 	semPre *semanticReport
+	// keychainRun counts runs (startRun), so a failed Keychain read is retried
+	// once per run; keychain caches the OpenRouter key (keychain.go).
+	keychainRun int
+	keychain    keychainCache
 }
 
 // runReport is what the last runOnce left for the run record.
@@ -229,6 +234,10 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 	return w.runnerFor(ctx, d, true)
 }
 
+// errNoBackend is runnerFor's error when a pass that advances has no decision
+// backend (no OpenRouter model or key, no llm).
+var errNoBackend = errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
+
 // runnerFor is runner, where advance says whether the pass will ask a decision
 // backend anything. A pass that will not (a --list-only run, which skips the
 // advance phase) is built without one when none is available: the runner's
@@ -253,6 +262,7 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 			Name:         w.cfg.Decide.OpenRouterName(),
 			Model:        w.cfg.Decide.OpenRouterModel,
 			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
+			Getenv:       w.openRouterGetenv,
 			Descriptions: jobcategory.UnifiedDescriptions(),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,
@@ -372,7 +382,7 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 		}
 	}
 	if len(backends) == 0 && advance {
-		return nil, errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
+		return nil, errNoBackend
 	}
 	router := decide.NewRouter(backends...)
 	var base decide.Decider = router

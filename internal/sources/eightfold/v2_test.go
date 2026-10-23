@@ -129,7 +129,7 @@ func (f *v2Site) handle(r srctest.Request) (srctest.Reply, bool) {
 }
 
 func (f *v2Site) source() *source {
-	return &source{d: srctest.NewFunc(f.handle), now: func() time.Time { return fixedNow }}
+	return &source{d: srctest.NewFunc(f.handle), now: func() time.Time { return fixedNow }, wait: noWait}
 }
 
 // fixtureV2 is the real two-position Netflix site.
@@ -548,7 +548,7 @@ func TestV2PagingIsBounded(t *testing.T) {
 		}
 		t.Errorf("unexpected request %s", u.Path)
 		return srctest.Reply{}, false
-	}), now: time.Now}
+	}), now: time.Now, wait: noWait}
 	_, err = slow.List(context.Background(), nfBoard("x"))
 	if !errors.Is(err, ErrShape) || !strings.Contains(err.Error(), "did not end within") {
 		t.Errorf("slow listing: err %v, want ErrShape: did not end within", err)
