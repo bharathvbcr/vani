@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/pipeline"
@@ -38,8 +39,19 @@ type reconcileFunc func(ctx context.Context, b sources.Board, listed []posting.P
 // posting disappeared". Both are warnings, not a failed run. It returns an
 // error only for cancellation or a reconcile (ledger) failure, and the report
 // says what happened to every board tried before that, however it ended.
+//
+// The listing is bounded as a whole, not only board by board: every board's
+// waiting to retry is charged to one run budget (srcutil.RunRetryBudget), and a
+// host that kept answering 429 is remembered, within the run and, through
+// cooldownFile, from one run to the next (srcutil.HostThrottle). The next run
+// sends such a host one probe request and stops at once if it is still
+// throttled. An empty cooldownFile keeps the memory to this run. None of this
+// reaches the ledger: a board that is not asked is a board that failed.
 func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting.ATS]sources.Source, pageErr error,
-	reconcile reconcileFunc, warnf func(string, ...any)) (boardsReport, error) {
+	reconcile reconcileFunc, warnf func(string, ...any), cooldownFile string) (boardsReport, error) {
+	throttle, saveThrottle := openHostThrottle(cooldownFile, warnf)
+	defer saveThrottle() // also when the run is cancelled part-way: the 429s were seen
+	ctx = srcutil.WithHostThrottle(srcutil.WithRunRetryBudget(ctx, srcutil.RunRetryBudget), throttle)
 	tried := make([]boardReport, 0, len(watchlist))
 	report := func() boardsReport { return boardsReportOf(len(watchlist), tried) }
 	for _, b := range watchlist {
@@ -90,6 +102,39 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		warnf("board %s/%s: %+v", b.ATS, b.Token, sum)
 	}
 	return report(), nil
+}
+
+// boardsClock is the time the host cooldowns are read and stamped by; a
+// variable only so tests can set it.
+var boardsClock = time.Now
+
+// openHostThrottle loads the cooldowns the last run left in path (none when path
+// is empty) and returns the run's throttle and the function that writes the
+// cooldowns back. A file that cannot be used is a warning, not a failed run, and
+// the write replaces it. Nothing is written when nothing changed.
+func openHostThrottle(path string, warnf func(string, ...any)) (*srcutil.HostThrottle, func()) {
+	var prior map[string]srcutil.HostCooldown
+	var loadWarn string
+	if path != "" {
+		prior, loadWarn = srcutil.LoadCooldowns(path, boardsClock())
+		if loadWarn != "" {
+			warnf("%s", loadWarn)
+		}
+	}
+	throttle := srcutil.NewHostThrottle(prior, boardsClock)
+	return throttle, func() {
+		if path == "" {
+			return
+		}
+		after := throttle.Cooldowns()
+		same := maps.EqualFunc(prior, after, func(a, b srcutil.HostCooldown) bool { return a.Runs == b.Runs && a.Last.Equal(b.Last) })
+		if same && loadWarn == "" {
+			return
+		}
+		if err := srcutil.SaveCooldowns(path, after, boardsClock()); err != nil {
+			warnf("host cooldowns not saved: %v", err)
+		}
+	}
 }
 
 func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
