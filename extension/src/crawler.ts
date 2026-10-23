@@ -13,6 +13,7 @@
 //
 // Page content is untrusted: it only ever becomes data in an ingest batch, bounded by ingest.ts.
 
+import { isWorkdaySharedHost, workdaySharedPath } from "./applied";
 import { isRecord } from "./guards";
 import { type IngestOutcome, type IngestPage, type IngestSource, MAX_INGEST_JOBS, MAX_SNIPPET, buildIngestBatch, describeIngest, isIngestReply, leftOutText } from "./ingest";
 import { type UserTargetProfile, rankListing } from "./relevance";
@@ -252,11 +253,19 @@ export function parseWorkdayBoard(href: string): WorkdayBoard | null {
   } catch {
     return null;
   }
-  const host = WD_HOST.exec(u.hostname);
-  if (u.protocol !== "https:" || !host || u.port !== "") return null;
+  const shared = isWorkdaySharedHost(u.hostname);
+  const host = shared ? null : WD_HOST.exec(u.hostname);
+  if (u.protocol !== "https:" || (!shared && !host) || u.port !== "") return null;
   const segs = u.pathname.split("/").filter(Boolean);
   if (segs[0] && WD_LOCALE.test(segs[0])) segs.shift();
-  const site = segs[0] ?? "";
+  // The shared host names no tenant, so the path does: recruiting/{tenant}/{site} (Go: deriveBoard).
+  let tenant = host ? host[1]!.toLowerCase() : "";
+  let site = segs[0] ?? "";
+  if (shared) {
+    const s = workdaySharedPath(segs);
+    if (s === null || !WD_SITE.test(s.tenant)) return null;
+    ({ tenant, site } = s);
+  }
   if (!WD_SITE.test(site) || site === "job" || site === "wday") return null;
   const facets: Record<string, string[]> = {};
   let names = 0;
@@ -269,7 +278,7 @@ export function parseWorkdayBoard(href: string): WorkdayBoard | null {
   }
   return {
     origin: u.origin,
-    tenant: host[1]!.toLowerCase(),
+    tenant,
     site,
     searchText: (u.searchParams.get("q") ?? "").slice(0, 200),
     facets,
@@ -557,6 +566,15 @@ async function walkQuery(ctx: Ctx, b: WorkdayBoard, facets: Record<string, strin
 
 interface Detail { description: string; location: string; posted?: string; url?: string; title?: string }
 
+/**
+ * The leading path of a posting's public page: the site on a tenant host, recruiting/{tenant}/{site}
+ * on the shared host, which has no tenant label to say whose site it is (Go: workday.pagePrefix).
+ */
+function pagePrefix(b: WorkdayBoard): { segs: string[]; sharedHost: boolean } {
+  const sharedHost = isWorkdaySharedHost(b.origin.replace(/^https:\/\//, ""));
+  return { segs: sharedHost ? ["recruiting", b.tenant, b.site] : [b.site], sharedHost };
+}
+
 /** The posting's own public link when it is this board's job page; anything else is ignored. */
 function boardJobUrl(raw: unknown, b: WorkdayBoard): string | undefined {
   if (typeof raw !== "string" || raw.length > 2048) return undefined;
@@ -565,7 +583,10 @@ function boardJobUrl(raw: unknown, b: WorkdayBoard): string | undefined {
     if (u.origin !== b.origin || u.username || u.password) return undefined;
     const segs = u.pathname.split("/");
     const at = segs[1] && WD_LOCALE.test(segs[1]) ? 2 : 1;
-    if (segs[at] !== b.site || !safeJobPath(`/${segs.slice(at + 1).join("/")}`)) return undefined;
+    // Go compares the shared host's prefix without case (workday.storedPath); a tenant host's site is exact.
+    const prefix = pagePrefix(b);
+    const same = (a: string | undefined, want: string): boolean => (prefix.sharedHost ? a?.toLowerCase() === want.toLowerCase() : a === want);
+    if (!prefix.segs.every((want, i) => same(segs[at + i], want)) || !safeJobPath(`/${segs.slice(at + prefix.segs.length).join("/")}`)) return undefined;
     u.hash = "";
     return u.href;
   } catch {
@@ -659,7 +680,7 @@ export async function crawlWorkday(b: WorkdayBoard, options: CrawlOptions = {}, 
           title: d.title ?? r.title,
           company,
           location: d.location || r.location,
-          url: d.url ?? `${b.origin}/${b.site}${r.path}`,
+          url: d.url ?? `${b.origin}/${pagePrefix(b).segs.join("/")}${r.path}`,
           snippet: ex.text,
         };
         if (d.posted) job.posted = d.posted;
