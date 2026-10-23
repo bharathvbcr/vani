@@ -155,7 +155,9 @@ batches of at most 200; `src/crawlrun.ts`, `src/crawler.ts`). Progress shows und
 and what Vani answered.
 
 - **Workday boards** are read through the board's own listing API, same-origin from the page, so
-  no host permission is added. That API serves at most 2000 rows of one query and then serves page
+  no host permission is added. Both hosts are read: `{tenant}.wd{N}.myworkdayjobs.com/{site}` and
+  the shared `wd{N}.myworkdaysite.com/recruiting/{tenant}/{site}`, whose tenant is the path's
+  (the same board `vani jobs ingest` derives from the page). That API serves at most 2000 rows of one query and then serves page
   1 again, so a bigger board is split by one of its own facets. Vani analyses the description it
   is sent and fetches none, so the crawl reads the descriptions of the 200 most relevant jobs
   (ranked against your bank's target profile). Each description is trimmed to the 4000-byte ingest

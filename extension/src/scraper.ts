@@ -10,11 +10,13 @@ import {
   extractSalaryRange,
   extractWorkplaceType,
 } from "./relevance";
-import { postingKey } from "./applied";
+import { isWorkdaySharedHost, postingKey } from "./applied";
 import { excerpt } from "./crawler";
 import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent } from "./jobinfo";
 
 const WORKDAY_JOBS_HOST = /(^|\.)myworkdayjobs\.com$/;
+/** A Workday host: tenant-labelled, or the shared wd{N}.myworkdaysite.com. */
+const isWorkdayHost = (host: string): boolean => WORKDAY_JOBS_HOST.test(host) || isWorkdaySharedHost(host);
 
 function hostOf(url: string): string {
   try {
@@ -733,6 +735,7 @@ export function scrapePageJobs(
     host.includes("lever.co") ||
     host.includes("ashbyhq.com") ||
     host.includes("myworkdayjobs.com") ||
+    isWorkdaySharedHost(host) ||
     host.includes("workday.com") ||
     currentDoc.querySelector(".opening, .posting, [class*='ashby-job-posting'], [data-automation-id*='job'], tr.job-post, [class*='job-post']") !== null
   ) {
@@ -749,7 +752,7 @@ export function scrapePageJobs(
   const seen = new Set<string>();
   for (const j of jobs) {
     // A Workday posting has several routes (/job/, /details/, locale-prefixed); applied.ts folds them to one key.
-    const folded = WORKDAY_JOBS_HOST.test(hostOf(j.url)) ? postingKey(j.url) : null;
+    const folded = isWorkdayHost(hostOf(j.url)) ? postingKey(j.url) : null;
     const key = (folded ?? (j.url ? j.url.replace(/\/$/, "") : `${j.title}|${j.company}`)).toLowerCase();
     if (!seen.has(key)) {
       seen.add(key);

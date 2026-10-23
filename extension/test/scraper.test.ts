@@ -779,3 +779,63 @@ describe("adversarial: scraped link shapes", () => {
     expect(JSON.stringify(r)).not.toContain("a".repeat(4096));
   });
 });
+
+// Workday's shared host wd{N}.myworkdaysite.com (Snap's board): the site is /recruiting/{tenant}/{site},
+// and one posting is reachable by /job/ and /details/ routes with or without a locale, as on myworkdayjobs.com.
+describe("Workday on the shared host", () => {
+  const HOST = "wd1.myworkdaysite.com";
+  const SITE = "/recruiting/snapchat/snap";
+  const SEARCH = `https://${HOST}${SITE}?q=data`;
+  const card = (title: string, href: string) =>
+    el("li", {}, "", [
+      el("a", { "data-automation-id": "jobTitle", href }, title),
+      el("dd", { "data-automation-id": "locations" }, "Los Angeles, California"),
+    ]);
+  const listing = (cards: MEl[]) => [el("section", { "data-automation-id": "jobResults" }, "", [el("ul", {}, "", cards)])];
+  const scrape = (cards: MEl[], host = HOST, page = SEARCH) => scrapePageJobs(makeDoc(listing(cards)), host, undefined, page).jobs;
+
+  test("lists the posting cards of the site, with their own links", () => {
+    const jobs = scrape([
+      card("Data Scientist, Level 4", `${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1`),
+      card("Machine Learning Engineer", `/en-US${SITE}/job/Paris-France/Machine-Learning-Engineer_R2-1`),
+    ]);
+    expect(jobs.map(j => j.url).sort()).toEqual([
+      `https://${HOST}${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1`,
+      `https://${HOST}/en-US${SITE}/job/Paris-France/Machine-Learning-Engineer_R2-1`,
+    ].sort());
+  });
+
+  test("one posting reached by two routes is one listing; two postings stay two", () => {
+    const one = scrape([
+      card("Data Scientist, Level 4", `${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1`),
+      card("Data Scientist, Level 4", `/en-US${SITE}/details/Data-Scientist--Level-4_Q426DSA4-1?q=data`),
+      card("Data Scientist, Level 4", `/en-US${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1/apply`),
+    ]);
+    expect(one.length).toBe(1);
+    const two = scrape([
+      card("Data Scientist, Level 4", `${SITE}/details/Data-Scientist--Level-4_Q426DSA4-1`),
+      card("Data Scientist, Level 4", `${SITE}/details/Data-Scientist--Level-4_Q426DSA4-2`),
+    ]);
+    expect(two.length).toBe(2);
+  });
+
+  test("the same slug under another tenant or site is another posting", () => {
+    const jobs = scrape([
+      card("Data Scientist", "/recruiting/snapchat/snap/details/Data-Scientist_R1"),
+      card("Data Scientist", "/recruiting/snapchat/other/details/Data-Scientist_R1"),
+      card("Data Scientist", "/recruiting/acme/snap/details/Data-Scientist_R1"),
+    ]);
+    expect(jobs.length).toBe(3);
+  });
+
+  test("the host is told whatever its case", () => {
+    const jobs = scrape([card("Data Scientist", `/en-US${SITE}/details/Data-Scientist_R1`), card("Data Scientist", `${SITE}/job/LA/Data-Scientist_R1`)], "WD1.MyWorkdaySite.com");
+    expect(jobs.length).toBe(1);
+  });
+
+  test("a lookalike host is not folded", () => {
+    const evil = "wd1.myworkdaysite.com.evil.com";
+    const twice = scrape([card("Data Scientist", `${SITE}/details/Data-Scientist_R1`), card("Data Scientist", `/en-US${SITE}/job/LA/Data-Scientist_R1`)], evil, `https://${evil}${SITE}`);
+    expect(twice.length).toBe(2);
+  });
+});
