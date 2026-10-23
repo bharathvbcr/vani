@@ -298,7 +298,8 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      (decide's jev client).
    - Tests (`ScheduleAgentTests`, `ScheduleToggleTests`, `ScheduleAgentRealVaniTests`) never register
      anything or read the real Keychain: the key lookup is injected, the supervisor runs scripts, and the real
-     test runs `build/vani daemon` in a temp state folder.
+     test runs `build/vani daemon` in a temp state folder with `VANI_NO_KEYCHAIN=1` in its environment (the app's launch sets it), so
+     `vani`'s own Keychain read is off there too, and the test asserts the daemon says so.
 7. **Run notifications.**
    - While the app runs, with or without its window open, it announces each finished daily run once
      as a Vani Apply notification. Clicking one opens the app on the Jobs tab, and reopens the
