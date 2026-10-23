@@ -1634,8 +1634,9 @@ Left open:
   (`crawler.ts` `WD_HOST`, `scraper.ts`, `portal.ts`). Only `applied.ts` `postingKey` folds them.
 - **`jobs find --url` on a live posting returns no `row`.** `extension/src/jobrow.ts`
   `parseFindRow` treats that as "no row". This was read in the code, not run in a browser.
-- **Swift decoding.** `Job.untriaged` and `Job.prefilterDrop` are plain optionals, not
-  `Lenient<>`, so a wrong-typed value fails the whole list decode.
+- **Swift decoding.** Fixed (2026-10-22). `Job.untriaged` and `Job.prefilterDrop` are `Lenient<>`
+  behind the same optional properties (`untriagedWire`, `prefilterDropWire`): a wrong-typed value
+  reads as nil (a triaged row) and the list survives.
 - **Speed.** The custom `Job` JSON encoder on the list path is not benchmarked.
 - **v2 and pcsx ids are inferred, not verified, to be the same.** No host serves both APIs. Keys
   stay `ef:netflix.com:{id}`.
@@ -1643,8 +1644,10 @@ Left open:
   group state machine.
 - **Netflix costs one extra request per run.** The 403 pcsx probe runs every time; the result is
   not cached.
-- **List-only still starts the local llama.cpp server.** `startRun` does so when
-  `decide.local.server` is set.
+- **List-only still starts the local llama.cpp server.** Fixed (2026-10-22). `startRun` starts it
+  only when the pass advances (`advance` true); `runnerFor` then neither warns that the local model
+  is disabled nor that the shadow is unavailable on a pass that asks nothing. Inbox polls still
+  advance, so they start it as before. Test: `cmd/vani/listonlylocal_test.go`.
 - **Non-ASCII board names are refused.** For example, a `board_name` of `Zürich`.
 - **The schedule is not kept.** `vani launchd plist` puts no decision-model key in the agent's
   environment, so a daemon from it triages nothing until the owner adds `OPENROUTER_API_KEY` to
@@ -1661,5 +1664,5 @@ Left open:
   boards on one host each spend their own budget. Every srcutil source now retries up to 5 times, not 3.
   The 2-minute budget is per board with no run-level cap, so a run where many hosts throttle can
   stretch by up to that much per board. A host that blocks for days is still asked on every run.
-- **An interrupted run never reaches the run history.** A run whose process died leaves a `running` record in `last.json`, and the next run replaces it before it is ever written to `runs/history/`. Archiving a dead-pid `running` record at the next start would keep it.
-- **Nothing ties a log to its run.** `vani runs failures` names the logs that exist, with size and last write time; the run record does not say which log holds its output, and a rotated `manual-<time>.log` is named by its last write, not by run id. Recording the log path in the run record would let the report say which.
+- **An interrupted run never reaches the run history.** Fixed (2026-10-22). `dailyJob` calls `archiveInterruptedRun` (`cmd/vani/runhistory.go`) after the run holds the ledger and before it replaces `last.json`: a `running` record is written to `runs/history/<id>.json` with outcome `interrupted` (a new accepted outcome; no end time, since none is known), once and never over an existing entry. The ledger lock is the proof that no other run is live, so the record's pid is not asked (a reused pid, or this process's own pid after a failed final write, must not hide the run); the one check kept is that `daemon.json` does not name a live other process holding that pid. An unreadable `last.json` is reported on stderr and replaced; nothing is archived from it. An older vani reading the history shows an `interrupted` file as a problem row (it does not know the outcome). A run that died is archived at the next run's start, not before: until then it is `last.json` and `status` reports it as interrupted, as it did.
+- **Nothing ties a log to its run.** Fixed (2026-10-22). The app starts `run-once` with `VANI_RUN_LOG=<state>/runs/manual.log` (an environment variable, so an older vani ignores it); `useRunLog` validates it (`checkRunLog`: absolute, no `..`, no control characters, a regular file or a new one inside the resolved `<state>/runs`) and `last.json` records it as `log`, next to a new `id` field (the run id). A refused path is said on stderr and not recorded; the run is unaffected. When the app rotates `manual.log` it finds the newest run in `last.json` and the history (`RunLogOwner`) that recorded this file and, if the log was last written during that run (60 s slack), names the rotated file `history/manual-<run id>.log` (else the old `manual-<time>.log`, never over an existing file). The newest claimant, not `last.json`'s run: a scheduled run the daemon made in between records no log. `runs failures` reports `history/manual-<id>.log`, else the recorded file unless a later run recorded the same path ("Log: not kept"); a run with no recorded log still lists the logs that exist. Left: daemon runs record no log (`vani.err.log` holds every run it made, so the report still lists it); a refused run (ledger locked) writes no record, so a following rotation can name its refusal text after the previous run only if that run's name is free and its mtime fits, which is rare and not guarded further.

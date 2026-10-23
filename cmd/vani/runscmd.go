@@ -184,7 +184,7 @@ func rowOf(id, source string, r runRecord, at time.Time) runRow {
 // contract test holds the two together.
 func runHasFailures(r runRecord, at time.Time) bool {
 	st := runState(r, at)
-	if st == outcomeFailed || st == "interrupted" || r.Error != "" {
+	if st == outcomeFailed || st == outcomeInterrupted || r.Error != "" {
 		return true
 	}
 	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0) {
@@ -391,8 +391,10 @@ func redactSecrets(s string) string {
 // reportLogs are the logs a run may have written, as they exist now. runs/
 // manual.log is the app's last manual run (each app-started run replaces it,
 // and the app keeps the replaced ones in runs/history/); logs/vani.*.log are
-// the daemon's under launchd, which holds every run it made. Nothing here says
-// which log is this run's: it names what exists and when it was last written.
+// the daemon's under launchd, which holds every run it made. This is for a run
+// that did not record its log (runRecord.Log: a daemon's, a shell's, an older
+// app's): nothing says which log is its own, so it names what exists and when
+// it was last written. A run that did record one is reported by runLogReport.
 func (e *env) reportLogs() []string {
 	var out []string
 	for _, p := range []string{
@@ -464,8 +466,12 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		}
 	}
 	b.add(b.clean("Run record: " + ref.Path))
-	for _, l := range e.reportLogs() {
+	if l, ok := e.runLogReport(ref); ok {
 		b.add(b.clean(l))
+	} else {
+		for _, l := range e.reportLogs() {
+			b.add(b.clean(l))
+		}
 	}
 
 	// Failures: cut from the end when they do not fit.

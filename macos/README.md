@@ -24,7 +24,9 @@ Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R)
 whether to triage, score and explain (and a cap in place of `advance_per_run`), and whether to write a
 digest. The last choices are remembered. The run gets the keys drafting gets, writes its output to
 `<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes. Before each run
-the app moves the previous `manual.log` to `<state>/runs/history/manual-<time>.log` (newest 20, 8 MiB;
+the app moves the previous `manual.log` to `<state>/runs/history/manual-<run id>.log` when `last.json` records that run
+as the one that wrote it (`RunLogOwner`; else `manual-<time>.log`), and starts `vani run-once` with `VANI_RUN_LOG` set to
+`manual.log` so the run record names its log and `vani runs failures` reports that run's own log (newest 20, 8 MiB;
 `ManualRunLog`), because the app is what truncates it; vani keeps every finished run's record in the same
 folder (`vani runs list`).
 The Last run panel has **Copy failures** when the run has something to report (a failed or interrupted run,
