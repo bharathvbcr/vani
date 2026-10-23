@@ -10,6 +10,20 @@ struct InsightsPanel: View {
     @Environment(JobsModel.self) private var jobs
 
     var body: some View {
+        if jobs.view.isRanked {
+            charts
+        } else {
+            // Vani refuses stats of postings no run has triaged (no fit or score to chart).
+            Label("These charts show fit, relevance and priority, which postings awaiting triage do not have yet. Open another view to chart ranked roles.",
+                  systemImage: "hourglass")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+        }
+    }
+
+    private var charts: some View {
         VStack(alignment: .leading, spacing: 8) {
             summary
             if let stats = jobs.stats {

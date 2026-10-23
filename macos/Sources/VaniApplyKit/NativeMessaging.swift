@@ -13,6 +13,47 @@ public enum NativeMessaging {
     public static let chunkThreshold = 750_000
     public static let chunkSize = 500_000
 
+    /// Room kept for the reply envelope (rev, indexes, totals) around a chunk's JSON string.
+    static let chunkEnvelopeHeadroom = 4096
+
+    /// Bytes a UTF-8 byte costs once its chunk is written as a JSON string: quote, backslash and
+    /// slash become two, control characters at most six; everything else is itself.
+    private static func escapedCost(_ b: UInt8) -> Int {
+        switch b {
+        case 0x22, 0x5C, 0x2F: return 2
+        case 0..<0x20: return 6
+        default: return 1
+        }
+    }
+
+    /// The one owner of chunk boundaries: `get` reports `chunkRanges(of:).count` and `getChunk(i)`
+    /// slices `chunkRanges(of:)[i]`, so the two cannot disagree. A chunk never splits a UTF-8
+    /// scalar (each decodes to exactly its bytes), holds at most `chunkSize` raw bytes, and its
+    /// JSON-string form fits `maxReplyBytes` with `chunkEnvelopeHeadroom` to spare, even when every
+    /// byte is one that escapes. Always at least one range; the ranges tile `0..<data.count`.
+    public static func chunkRanges(of data: Data) -> [Range<Int>] {
+        let budget = maxReplyBytes - chunkEnvelopeHeadroom
+        var ranges: [Range<Int>] = []
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            var start = 0, cost = 0, i = 0
+            while i < raw.count {
+                // One scalar: a lead byte plus its continuation bytes (0b10xxxxxx).
+                var end = i + 1
+                while end < raw.count, raw[end] & 0xC0 == 0x80 { end += 1 }
+                let scalarCost = end - i == 1 ? escapedCost(raw[i]) : end - i
+                if i > start, i - start + (end - i) > chunkSize || cost + scalarCost > budget {
+                    ranges.append(start..<i)
+                    start = i
+                    cost = 0
+                }
+                cost += scalarCost
+                i = end
+            }
+            ranges.append(start..<raw.count)
+        }
+        return ranges
+    }
+
     public enum ReadError: Error, Equatable {
         case truncated
         case tooLarge(Int)

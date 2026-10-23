@@ -90,6 +90,23 @@ describe("postingKey", () => {
     }
   });
 
+  test("on Workday's shared host the site is recruiting/{tenant}/{site}, the twin of joburl.WorkdayPosting", () => {
+    const S = "https://wd1.myworkdaysite.com";
+    const one = `${S}/recruiting/snapchat/snap/job/ML_R1-1`;
+    for (const s of [
+      `${S}/recruiting/snapchat/snap/job/Paris-France/ML_R1-1`,
+      `${S}/en-US/recruiting/snapchat/snap/job/Paris-France/ML_R1-1`,
+      `${S}/fr-FR/recruiting/snapchat/snap/details/ML_R1-1`,
+      `${S}/recruiting/snapchat/snap/job/Paris-France/ML_R1-1/apply/applyManually?x=1`,
+    ]) expect(postingKey(s)).toBe(one);
+    expect(postingKey(`${S}/recruiting/othertenant/snap/job/Paris-France/ML_R1-1`)).not.toBe(one);
+    expect(postingKey(`${S}/recruiting/snapchat/other/job/Paris-France/ML_R1-1`)).not.toBe(one);
+    for (const s of [`${S}/recruiting/snapchat/snap`, `${S}/recruiting/snapchat/snap/login`, `${S}/snap/job/NY/ML_R1-1`,
+      `${S}/careers/snapchat/snap/job/NY/ML_R1-1`, `${S}/recruiting/snapchat/snap/job/apply`, `https://snapchat.wd1.myworkdaysite.com/recruiting/a/b/job/NY/R1`]) {
+      expect(postingKey(s)).toBe(pageKey(s));
+    }
+  });
+
   test("a site that merely looks like a locale or a segment name is not stripped", () => {
     expect(postingKey(`${H}/ext/job/NY/${SLUG}`)).toBe(`${H}/ext/job/${SLUG}`);
     expect(postingKey(`${H}/details/job/NY/${SLUG}`)).toBe(`${H}/details/job/${SLUG}`);

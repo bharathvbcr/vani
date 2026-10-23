@@ -2,8 +2,6 @@ package lca
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/indexutil"
 )
 
 // SchemaVersion is the on-disk index schema.
@@ -121,12 +120,7 @@ func (x *Index) rebuild() {
 }
 
 func sortedSources(m map[string]Partial) []Partial {
-	out := make([]Partial, 0, len(m))
-	for _, p := range m {
-		out = append(out, p)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Source.SHA256 < out[j].Source.SHA256 })
-	return out
+	return indexutil.SortedBySHA(m, func(p Partial) string { return p.Source.SHA256 })
 }
 
 func validateEmployers(emps map[string]map[int]Counts) error {
@@ -184,12 +178,7 @@ func encodeSources(sources []fileSource) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return b, sumOf(b), nil
-}
-
-func sumOf(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return b, indexutil.SumHex(b), nil
 }
 
 // Save writes the index as compact JSON (schema version 1) to path with mode
@@ -221,6 +210,15 @@ func (x *Index) Save(path string) error {
 // Load reads an index written by Save. A corrupted, truncated, unknown-version
 // or internally inconsistent file is refused; nothing partial is returned.
 func Load(path string) (*Index, error) {
+	data, err := readIndexFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return decodeIndex(data)
+}
+
+// readIndexFile reads the index file, bounded by maxIndexFileBytes.
+func readIndexFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("lca: open index: %w", err)
@@ -233,6 +231,11 @@ func Load(path string) (*Index, error) {
 	if len(data) > maxIndexFileBytes {
 		return nil, fmt.Errorf("lca: index file exceeds %d bytes", maxIndexFileBytes)
 	}
+	return data, nil
+}
+
+// decodeIndex decodes and verifies the bytes of an index file.
+func decodeIndex(data []byte) (*Index, error) {
 	var doc fileDoc
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -248,7 +251,7 @@ func Load(path string) (*Index, error) {
 	// The bytes Save hashed are the bytes on disk, so they are hashed as
 	// read. A sources block re-spaced or re-ordered by hand no longer
 	// matches, where re-encoding it used to.
-	if sumOf(doc.Sources) != doc.Checksum {
+	if indexutil.SumHex(doc.Sources) != doc.Checksum {
 		return nil, errors.New("lca: corrupt index: checksum mismatch")
 	}
 	var sources []fileSource

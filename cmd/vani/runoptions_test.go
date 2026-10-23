@@ -36,7 +36,7 @@ func wireTuned(t *testing.T, l *memLedger) *tunedRun {
 			Ledger: l, Notifier: &fakeNotifier{},
 			RunOnce: func(context.Context) error { got.runs++; return nil },
 			Tune:    func(advance int, listOnly bool) { got.tunes = append(got.tunes, [2]any{advance, listOnly}) },
-			Reload:  func(wl []sources.Board, _ []string) { got.reloads = append(got.reloads, wl) },
+			Reload:  func(c config.Config) { got.reloads = append(got.reloads, c.Watchlist) },
 		}, nil
 	}
 	return got
@@ -273,16 +273,16 @@ func TestReloadBoardsAppliesTheSelectionAfterTheReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got [][]sources.Board
-	app := &App{Reload: func(wl []sources.Board, _ []string) { got = append(got, wl) }}
+	app := &App{Reload: func(c config.Config) { got = append(got, c.Watchlist) }}
 	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
 
-	if err := e.reloadBoards(app, start, []string{"ab:initech"}); err != nil || len(got) != 1 || len(got[0]) != 1 || got[0][0].Token != "initech" {
+	if err := e.reloadErr(app, start, []string{"ab:initech"}); err != nil || len(got) != 1 || len(got[0]) != 1 || got[0][0].Token != "initech" {
 		t.Fatalf("selection: err %v, reloads %+v", err, got)
 	}
 
 	mustCode(t, 0, "watchlist", "remove", "--ats", "ab", "--token", "initech")
 	got = nil
-	if err := e.reloadBoards(app, start, []string{"ab:initech"}); !errors.Is(err, errBoardSelection) || len(got) != 0 {
+	if err := e.reloadErr(app, start, []string{"ab:initech"}); !errors.Is(err, errBoardSelection) || len(got) != 0 {
 		t.Errorf("a board gone from the config: err %v, reloads %+v", err, got)
 	}
 
@@ -290,7 +290,7 @@ func TestReloadBoardsAppliesTheSelectionAfterTheReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = nil
-	err = e.reloadBoards(app, start, []string{"gh:globex"})
+	err = e.reloadErr(app, start, []string{"gh:globex"})
 	if !errors.Is(err, errConfigStale) || len(got) != 1 || len(got[0]) != 1 || got[0][0].Token != "globex" {
 		t.Errorf("stale config: err %v, reloads %+v", err, got)
 	}
@@ -323,19 +323,19 @@ func TestSelectBoards(t *testing.T) {
 // to advance_per_run.
 func TestWiredAdvancePlan(t *testing.T) {
 	w := &wired{cfg: config.Config{AdvancePerRun: 40}}
-	if l, s := w.advancePlan(); l != 40 || s {
+	if l, s := runPlan(w); l != 40 || s {
 		t.Errorf("untuned: %d %v", l, s)
 	}
 	w.tune(5, false)
-	if l, s := w.advancePlan(); l != 5 || s {
+	if l, s := runPlan(w); l != 5 || s {
 		t.Errorf("--advance 5: %d %v", l, s)
 	}
 	w.tune(0, true)
-	if l, s := w.advancePlan(); l != 40 || !s {
+	if l, s := runPlan(w); l != 40 || !s {
 		t.Errorf("--list-only: %d %v", l, s)
 	}
 	w.tune(0, false)
-	if l, s := w.advancePlan(); l != 40 || s {
+	if l, s := runPlan(w); l != 40 || s {
 		t.Errorf("reset: %d %v", l, s)
 	}
 }

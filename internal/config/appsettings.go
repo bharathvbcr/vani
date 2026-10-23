@@ -84,7 +84,7 @@ func Resolve(getenv func(string) string, home, goos string) (Resolved, error) {
 		return from == FromDefault && named != "" && filepath.Clean(named) != filepath.Clean(resolved)
 	}
 	if differs(r.ConfigFrom, c, app.Config) || differs(r.StateFrom, s, app.StateDir) {
-		wantC, wantS := orDefault(app.Config, c), orDefault(app.StateDir, s)
+		wantC, wantS := orPath(app.Config, c), orPath(app.StateDir, s)
 		r.AppSettings = fmt.Sprintf("names %s and %s", wantC, wantS)
 		return r, fmt.Errorf("%w (%s): it runs vani on config %s and state dir %s, but this process resolved config %s and state dir %s. "+
 			"Export VANI_CONFIG=%s VANI_STATE_DIR=%s, or clear the Vani config and state settings in the app",
@@ -103,7 +103,7 @@ func ResolveDefault() (Resolved, error) {
 	return Resolve(os.Getenv, home, runtime.GOOS)
 }
 
-func orDefault(named, resolved string) string {
+func orPath(named, resolved string) string {
 	if named == "" {
 		return resolved
 	}

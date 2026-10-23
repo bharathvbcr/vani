@@ -2,6 +2,7 @@
 // Greenhouse/Lever/Ashby boards, company careers pages, and generic job listings).
 // Extracts listings and immediately computes real-time relevance scores for each.
 
+import { clean } from "./guards";
 import {
   type RelevanceResult,
   type UserTargetProfile,
@@ -9,11 +10,13 @@ import {
   extractSalaryRange,
   extractWorkplaceType,
 } from "./relevance";
-import { postingKey } from "./applied";
+import { isWorkdaySharedHost, postingKey } from "./applied";
 import { excerpt } from "./crawler";
 import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent } from "./jobinfo";
 
 const WORKDAY_JOBS_HOST = /(^|\.)myworkdayjobs\.com$/;
+/** A Workday host: tenant-labelled, or the shared wd{N}.myworkdaysite.com. */
+const isWorkdayHost = (host: string): boolean => WORKDAY_JOBS_HOST.test(host) || isWorkdaySharedHost(host);
 
 function hostOf(url: string): string {
   try {
@@ -54,17 +57,20 @@ export interface ScrapeResult {
   jobs: ScrapedJob[];
 }
 
-function clean(s: string | null | undefined): string {
-  return (s ?? "").replace(/\s+/g, " ").trim();
-}
-
+/**
+ * A scraped link as an absolute http(s) URL, or "" for anything else: a javascript:, data:, file: or
+ * other-scheme link (page content is untrusted, and the popup turns this into an anchor and window.open),
+ * or one that does not parse. The URL parser already drops leading whitespace and folds the scheme's case,
+ * so the check is on the parsed protocol, never on the raw text.
+ */
 function resolveUrl(href: string | null | undefined, base?: string): string {
   if (!href) return "";
   const baseHref = base ?? (globalThis.location ? globalThis.location.href : "https://example.com");
   try {
-    return new URL(href, baseHref).href;
+    const u = new URL(href, baseHref);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
   } catch {
-    return href;
+    return "";
   }
 }
 
@@ -729,6 +735,7 @@ export function scrapePageJobs(
     host.includes("lever.co") ||
     host.includes("ashbyhq.com") ||
     host.includes("myworkdayjobs.com") ||
+    isWorkdaySharedHost(host) ||
     host.includes("workday.com") ||
     currentDoc.querySelector(".opening, .posting, [class*='ashby-job-posting'], [data-automation-id*='job'], tr.job-post, [class*='job-post']") !== null
   ) {
@@ -745,7 +752,7 @@ export function scrapePageJobs(
   const seen = new Set<string>();
   for (const j of jobs) {
     // A Workday posting has several routes (/job/, /details/, locale-prefixed); applied.ts folds them to one key.
-    const folded = WORKDAY_JOBS_HOST.test(hostOf(j.url)) ? postingKey(j.url) : null;
+    const folded = isWorkdayHost(hostOf(j.url)) ? postingKey(j.url) : null;
     const key = (folded ?? (j.url ? j.url.replace(/\/$/, "") : `${j.title}|${j.company}`)).toLowerCase();
     if (!seen.has(key)) {
       seen.add(key);

@@ -78,17 +78,33 @@ Every `vani` that builds the OpenRouter client (`run-once`, `daemon`, `suggest`,
 
 - service `openrouter-api-key`, account = the macOS user (the app's
   `Keychain.openRouterService` in `Drafting.swift`; a test holds the two names together);
-- `VANI_NO_KEYCHAIN=1` (any value) skips the Keychain; set it in agent shells;
+- the environment wins: a non-empty variable is used and the Keychain is never read;
+- `VANI_NO_KEYCHAIN=1` (any value) skips the Keychain; set it in agent shells. The Mac app sets
+  it in every `vani` it starts with the decision key (Run now, the schedule agent's daemon,
+  suggest): the app is the one reader for those, and a key it could not read (missing, refused,
+  not answered) is not asked for again by `vani`, which would be a second prompt from another
+  binary after a refusal;
 - one read is bounded by 60 s (time to answer the Keychain's access prompt); a success is kept
-  for the life of the process (a daemon asks once), a failure is retried at most once per run;
+  for the life of the process (a daemon asks once, at its start, so `daemon.model` can say
+  whether it has a key), a failure is retried at most once per run;
 - a failure (no item, timed out, refused) prints one warning naming the item and why, never
-  the value, and the run then ends as a run with no backend: it lists the boards and fails
-  with advance stop `no_backend` (below). Off macOS there is no Keychain and no warning.
+  the value, and no OpenRouter client is built: without another backend a run that advances is
+  refused as a run with no decision backend (below). Off macOS there is no Keychain and no
+  warning.
+
+`vani status` and `status --json` (`daemon.model`) say what a running daemon actually has:
+`enabled` with `source: "keychain"` when it read the key itself, nothing for the environment,
+or `enabled: false` with the reason, including why the Keychain gave none (`keychain`).
 
 Security impact: before, only the Mac app read this key and handed it to a `vani` it started.
-Now any `vani` in the user's login session can read it once the user allows the `vani` binary at
-the Keychain prompt; an unsigned rebuild is a new binary and prompts again. Spend stays capped by
-`decide.daily_usd.openrouter`.
+Now any `vani` in the user's login session that has neither the variable nor `VANI_NO_KEYCHAIN`
+can read it, once the user allows the `vani` binary at the Keychain prompt; an unsigned rebuild
+is a new binary and prompts again. The read is bounded (60 s), `VANI_NO_KEYCHAIN` disables it
+and the environment overrides it. The value is never logged or put in an error, and it is only
+ever sent to `openrouter.ai` (decide's jev client calls the lookup only for that endpoint).
+Spend stays capped by `decide.daily_usd.openrouter`. Nothing else is widened: only the
+`openrouter-api-key` service is readable (the Anthropic key is not, and `vani` has no
+Keychain write).
 
 ### Claude (Anthropic)
 
@@ -102,28 +118,34 @@ directly would bypass that choice, so `vani` does not.
 
 | Entry point | Started by | Decision model key | Claude key |
 |---|---|---|---|
-| Pipeline tab, Run now (`vani run-once`) | the app | from the app (Keychain), else `vani`'s own Keychain read | through `anthropic-account` |
+| Pipeline tab, Run now (`vani run-once`) | the app | from the app (Keychain), in the environment; `VANI_NO_KEYCHAIN=1` so `vani` never reads it again | through `anthropic-account` |
+| Pipeline tab, Run on schedule (`vani daemon`, a login item) | the app's schedule agent | the same, read once per start; `daemon.model` reports it | none |
 | Extension "suggest" (`vani suggest`) | the app's agent | the same | the same |
 | Extension "draft" (`vani draft`) | the app's agent or Chrome host | not used | the same |
 | `vani run-request` | a terminal or the app | whatever the running daemon has | the same |
-| `vani daemon` (scheduled runs) | launchd, from `vani launchd plist` | `vani`'s own Keychain read (the plist pins only `VANI_CONFIG` and `VANI_STATE_DIR`) | none |
+| `vani daemon` (scheduled runs) | launchd, from `vani launchd plist` | `vani`'s own Keychain read at start (the plist pins only `VANI_CONFIG` and `VANI_STATE_DIR`) | none |
 | `vani` in a terminal | you | environment, else Keychain | environment only |
 | `vani` in an agent shell | an agent | none with `VANI_NO_KEYCHAIN=1` | environment only |
 
 Keychain items present for this user on 2026-10-20: `openrouter-api-key` and
 `anthropic-api-key`. There is no Gemini item.
 
-No `vani daemon` is installed (`launchctl list` shows only the app and its agent; `vani status`
-says no daemon has announced itself), so the config's 08:30 schedule does not fire; runs happen
-when Run now is pressed.
+On 2026-10-20 no `vani daemon` was installed (`launchctl list` showed only the app and its
+agent), so the config's 08:30 schedule did not fire. Since 2026-10-23 the app can keep it:
+Pipeline ▸ Run on schedule (`macos/README.md`, the schedule agent); `vani status` says
+"schedule not kept" until a daemon announces itself. Whether the owner has turned it on is not
+checked here.
 
 ## Running without a decision backend
 
-A run with no decision backend (no key anywhere) lists its boards, applies the drop rules and
-the near-duplicate stage, records the postings live, then fails with advance stop `no_backend`;
-the app's notice says the postings are in Jobs. `--list-only` asks for no triage and succeeds.
+A run that advances and has no decision backend (no key anywhere, no llm) is refused at its
+start, before it folds the spool or lists any board, with `no decision backend is available`
+(`TestFullRunWithoutBackendStillRefusedAfterListOnly`). `vani run-once --list-only` asks for no
+triage and needs none: it lists, reconciles and applies the drop rules (`TestRunOnceCLIListOnlyWithoutBackend`).
 Untriaged postings are counted in the Jobs tab's "awaiting triage" banner, not listed as rows.
-The inbox poll (advance only) still refuses without a backend.
+The inbox poll (advance only) still refuses without a backend. (A 2026-10-20 change that made a
+full run list its boards first and then fail with advance stop `no_backend` was not kept when
+the later list-only behaviour and its tests landed: see FOLLOWUPS.)
 
 ## Model ids
 
@@ -137,6 +159,10 @@ module's `jev.DefaultModel`, used only when a caller passes no model; Vani alway
 
 - Signing `vani` so the Keychain grant survives rebuilds: not done, and whether a stable
   signature keeps the grant is unverified (it needs two consecutive signed builds to check).
-- Claude for scheduled runs: a daemon has no Anthropic key. Wrapping the plist's program in
-  `anthropic-account exec … -- vani daemon` (as the app does for its runs) is not built.
-- No daemon is installed; scheduled runs need `vani launchd plist` and a bootstrap.
+- Claude for scheduled runs: a plist-started daemon has no Anthropic key. Wrapping the plist's
+  program in `anthropic-account exec … -- vani daemon` (as the app does for its runs) is not
+  built. The app's schedule agent starts the daemon through `anthropic-account` when
+  `llm.provider` is `anthropic`.
+- Scheduled runs need the app's Run on schedule switch, or `vani launchd plist` and a bootstrap.
+- The Keychain path of a plist-started daemon (`vani`'s own read, with the access prompt) has
+  not been run live: the tests replace the read.

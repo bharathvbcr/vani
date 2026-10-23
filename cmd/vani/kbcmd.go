@@ -39,7 +39,9 @@ func (e *env) cmdKB(args []string) error {
 // kbSync copies rkb's bank one way into DevPrism. A dry run reads no live
 // DevPrism state and calls no tool: it plans as if DevPrism were empty, so
 // every block shows as an add. A real sync reads DevPrism's blocks first,
-// never deletes, and never confirms an overwrite DevPrism asks about.
+// never deletes, and confirms an overwrite DevPrism asks about only with
+// --confirm, which prints what each one drops before confirming it; without
+// the flag such a block is reported as needing confirmation and left alone.
 func (e *env) kbSync(args []string) error {
 	fs := e.newFlags("kb sync")
 	dry := fs.Bool("dry-run", false, "plan only: read no live DevPrism state and send nothing")
@@ -117,7 +119,12 @@ func (e *env) kbSync(args []string) error {
 		confirmer = e.showLoss
 	}
 	out, err := kbsync.Apply(ctx, c, plan, state, confirmer)
-	fmt.Fprintln(e.stdout, "kb sync: "+out.Summary())
+	if err != nil {
+		// The run stopped early: the counts are only what was done before it.
+		fmt.Fprintln(e.stdout, "kb sync: stopped early; partial result so far: "+out.Summary())
+	} else {
+		fmt.Fprintln(e.stdout, "kb sync: "+out.Summary())
+	}
 	for _, o := range out.Outcomes {
 		switch o.Status {
 		case kbsync.StatusNeedsConfirmation, kbsync.StatusBlocked, kbsync.StatusConfirmRejected, kbsync.StatusStale, kbsync.StatusVariant:

@@ -188,6 +188,46 @@ func TestRescoreCancelled(t *testing.T) {
 	}
 }
 
+// noMustHaveScorer answers NoMustHaves for descriptions marked "nomh" and a
+// 55% gap for the rest.
+type noMustHaveScorer struct{}
+
+func (noMustHaveScorer) Gap(_ context.Context, jd, _ string) (resume.Gap, error) {
+	if jd == "nomh" {
+		return resume.Gap{NoMustHaves: true}, nil
+	}
+	return resume.Gap{CoveragePct: 55}, nil
+}
+
+func (noMustHaveScorer) Score(context.Context, string, string) (resume.Score, error) {
+	return resume.Score{BlockIDs: []string{"b"}}, nil
+}
+
+// A posting DevPrism scored but found no must-haves in leaves Unscored: it
+// carries the coverage-unknown marker instead of a rank. It is rescored, not
+// "still unscored" (A2-9).
+func TestRescoreCountsCoverageUnknownAsRescored(t *testing.T) {
+	seeds := []rescoreSeed{
+		{"1", posting.Explained, "jd", ""},
+		{"2", posting.Explained, "nomh", ""},
+		{"3", posting.Scored, "nomh", ""},
+		{"4", posting.Explained, "jd", ""},
+	}
+	l := rescoreLedger(t, seeds)
+	rep, err := rescoreWith(context.Background(), l, 10, 2, rescoreRunner(l, noMustHaveScorer{}).Rescore, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Plan.Eligible != 4 || rep.Rescored != 4 {
+		t.Fatalf("eligible %d, rescored %d, want 4 and 4 (the cmd prints eligible-rescored as \"still unscored\")", rep.Plan.Eligible, rep.Rescored)
+	}
+	for _, r := range l.All() {
+		if rescorable(r) {
+			t.Errorf("%s is still rescorable after the pass", r.Key)
+		}
+	}
+}
+
 // The wired rescore refuses while devprism.binary is empty, and builds the
 // run's scoring stage when it is set.
 func TestWiredRescoreNeedsDevPrism(t *testing.T) {

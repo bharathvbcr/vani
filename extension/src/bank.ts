@@ -21,6 +21,16 @@ export const REVIEW_CHARS = 280;
  */
 export const MAX_BANK_BYTES = 50_000_000;
 
+/**
+ * Whether `s` is at most `max` UTF-8 bytes. A string's length is in UTF-16 units, and a unit is 1 to 3 bytes (a
+ * surrogate pair is 2 units for 4 bytes), so units <= bytes <= 3 * units: the two ends are decided without encoding.
+ */
+export function utf8Within(s: string, max: number): boolean {
+  if (s.length > max) return false;
+  if (s.length * 3 <= max) return true;
+  return new TextEncoder().encode(s).length <= max;
+}
+
 /** UTF-8 size of the bank as it travels (compact JSON). */
 export function bankBytes(bank: Bank): number {
   return new TextEncoder().encode(JSON.stringify(bank)).length;
@@ -325,7 +335,7 @@ function isStrArray(x: unknown, cap: number): x is string[] {
  * because a hand-edited export must not smuggle in what capture refuses.
  */
 export function parseBank(json: string): { bank: Bank; droppedSecret: number } {
-  if (json.length > MAX_BANK_BYTES) throw new Error(`bank file is larger than ${MAX_BANK_BYTES} bytes`);
+  if (!utf8Within(json, MAX_BANK_BYTES)) throw new Error(`bank file is larger than ${MAX_BANK_BYTES} bytes`);
   const raw: unknown = JSON.parse(json);
   if (!raw || typeof raw !== "object") throw new Error("bank is not an object");
   const r = raw as Record<string, unknown>;

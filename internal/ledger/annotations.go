@@ -9,6 +9,11 @@ const (
 	AnnRank = "rank"
 	// AnnCoverage is DevPrism resume_gap_analysis coveragePercentage.
 	AnnCoverage = "gap.coverage_pct"
+	// EmployerRankBoost is added to the rank (must-have coverage, 0-100) of a
+	// posting at a preferred employer: enough to lift it over a near-equal
+	// match, not over a much better one. A rank at least this far above
+	// AnnCoverage is how readers see the boost was applied.
+	EmployerRankBoost = 10.0
 	// AnnMissing lists must-have requirements DevPrism found missing or weak
 	// ("a; b; c (weak)"). JD-derived, so untrusted text.
 	AnnMissing = "gap.missing"
@@ -24,7 +29,8 @@ const (
 	// Suffixes appended to "triage.<slot>". Calibration and shadow keys exist
 	// for evaluation only; no engine rule reads them.
 	//
-	// AnnTriageSuffixP is the decision model's calibrated probability of the chosen label (4 decimals).
+	// AnnTriageSuffixP is the OpenRouter decision model's probability of the
+	// chosen label (4 decimals).
 	AnnTriageSuffixP = ".p"
 	// AnnTriageSuffixLappiScore is Lappi's top-two probability margin.
 	AnnTriageSuffixLappiScore = ".lappi_score"
@@ -43,6 +49,10 @@ const (
 	// and the backend whose reading it is.
 	AnnTriageSuffixReading = ".reading"
 	AnnTriageSuffixBackend = ".backend"
+	// AnnTriageInheritedFrom is the key of the posting whose triage reading this
+	// posting copied instead of asking a backend. A copy is not a second
+	// observation: the evaluation leaves it out of every count.
+	AnnTriageInheritedFrom = AnnTriagePrefix + "inherited_from"
 	// AnnTriageUnsure is the unsure reason ("triage.unsure").
 	AnnTriageUnsure = "triage.unsure"
 	// AnnTriageKept holds the score a posting had when its description changed
@@ -66,3 +76,20 @@ const (
 	// AnnCategory is the job category folder / career track classification.
 	AnnCategory = "category"
 )
+
+const (
+	// AnnCoverageUnknown marks a scored posting whose coverage is unknown and
+	// says why. It stops the score stage and Rescore from asking again.
+	AnnCoverageUnknown = "gap.coverage_unknown"
+	// CoverageNoMustHaves is AnnCoverageUnknown's value when DevPrism found no
+	// must-have requirement in the JD.
+	CoverageNoMustHaves = "no_must_haves"
+)
+
+// CoverageUnknown reports whether r carries the coverage-unknown marker: it
+// was scored, but DevPrism found no must-have in the JD, so its coverage is 0
+// of 0 and is recorded as unknown, not as a measured zero. The one owner of
+// this predicate; pipeline, digest and the rescore command all call it.
+func CoverageUnknown(r Record) bool {
+	return r.Annotations[AnnCoverageUnknown] != ""
+}

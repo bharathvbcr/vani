@@ -72,9 +72,9 @@ public enum NativeProtocol {
             let snap = try store.read()
             let rawData = try snap.bank.encoded()
             if rawData.count > NativeMessaging.chunkThreshold {
-                let chunkCount = (rawData.count + NativeMessaging.chunkSize - 1) / NativeMessaging.chunkSize
-                let chunkEnd = min(NativeMessaging.chunkSize, rawData.count)
-                let chunkStr = String(decoding: rawData[..<chunkEnd], as: UTF8.self)
+                let ranges = NativeMessaging.chunkRanges(of: rawData)
+                let chunkCount = ranges.count
+                let chunkStr = String(decoding: rawData[ranges[0]], as: UTF8.self)
                 return [
                     "rev": snap.rev,
                     "chunked": true,
@@ -87,8 +87,8 @@ public enum NativeProtocol {
             // Reuse the bytes already encoded for the size check.
             return ["rev": snap.rev, "bank": try JSONSerialization.jsonObject(with: rawData)]
         case "getChunk":
-            guard let rev = (req["rev"] as? NSNumber)?.intValue,
-                  let index = (req["chunkIndex"] as? NSNumber)?.intValue, index >= 0 else {
+            guard let rev = BankValidator.strictInt(req["rev"]),
+                  let index = BankValidator.strictInt(req["chunkIndex"]), index >= 0 else {
                 throw BankError("getChunk needs rev and chunkIndex")
             }
             let snap = try store.read()
@@ -96,22 +96,19 @@ public enum NativeProtocol {
                 return ["conflict": true, "rev": snap.rev]
             }
             let rawData = try snap.bank.encoded()
-            let chunkCount = (rawData.count + NativeMessaging.chunkSize - 1) / NativeMessaging.chunkSize
-            guard index < chunkCount else {
+            let ranges = NativeMessaging.chunkRanges(of: rawData)
+            guard index < ranges.count else {
                 throw BankError("chunkIndex out of range")
             }
-            let start = index * NativeMessaging.chunkSize
-            let end = min(start + NativeMessaging.chunkSize, rawData.count)
-            let chunkStr = String(decoding: rawData[start..<end], as: UTF8.self)
+            let chunkStr = String(decoding: rawData[ranges[index]], as: UTF8.self)
             return [
                 "rev": snap.rev,
                 "chunkIndex": index,
-                "chunkCount": chunkCount,
+                "chunkCount": ranges.count,
                 "chunk": chunkStr
             ]
         case "put":
-            guard let baseRev = req["baseRev"], BankValidator.isNumber(baseRev),
-                  let base = (baseRev as? NSNumber)?.intValue, base >= 0 else {
+            guard let base = BankValidator.strictInt(req["baseRev"]), base >= 0 else {
                 throw BankError("put needs a non-negative baseRev")
             }
             guard let bank = req["bank"] else { throw BankError("put needs a bank") }
@@ -126,47 +123,24 @@ public enum NativeProtocol {
                 return ["conflict": true, "rev": snap.rev, "bank": try snap.bank.jsonObject()]
             }
         case "patch":
-            var upsertAnswers: [Answer] = []
-            if let upsertArr = req["upsert"] as? [[String: Any]] {
-                for raw in upsertArr {
-                    guard let key = raw["key"] as? String,
-                          let kindStr = raw["kind"] as? String, let kind = FieldKind(rawValue: kindStr),
-                          let val = raw["value"] as? [String] else { continue }
-                    let labels = raw["labels"] as? [String] ?? []
-                    let signatures = raw["signatures"] as? [String] ?? []
-                    let uses = (raw["uses"] as? NSNumber)?.intValue ?? 0
-                    let fills = (raw["fills"] as? NSNumber)?.intValue ?? 0
-                    let updatedAt = raw["updatedAt"] as? String ?? isoNow()
-                    let review = (raw["review"] as? Bool) ?? false
-                    let sens = Classifier.classify(kind: kind, label: ([key] + labels).joined(separator: " "), name: "", autocomplete: "")
-                    upsertAnswers.append(Answer(key: key, labels: labels, kind: kind, value: val, sensitivity: sens, signatures: signatures, uses: uses, fills: fills, updatedAt: updatedAt, review: review))
-                }
+            // Validate every row and the delete list before anything is applied: one bad row
+            // refuses the whole patch (nothing applied, rev unchanged), never a silent skip.
+            let upsertAnswers: [Answer]
+            let deleteKeys: [String]
+            let baseRev: Int?
+            do {
+                upsertAnswers = try patchRows(req["upsert"])
+                deleteKeys = try patchDeleteKeys(req["delete"])
+                baseRev = try patchBaseRev(req["baseRev"])
+            } catch {
+                return ["error": String(describing: error), "code": "bad_request"]
             }
-            let deleteKeys = req["delete"] as? [String] ?? []
-            let baseRev = (req["baseRev"] as? NSNumber)?.intValue
             do {
                 let res = try store.patch(upsert: upsertAnswers, deleteKeys: deleteKeys, baseRev: baseRev)
                 return ["ok": true, "rev": res.rev, "droppedSecret": res.droppedSecret]
             } catch SQLiteBankStore.StoreError.conflict(let currentRev) {
                 return ["conflict": true, "rev": currentRev]
             }
-        case "queryCandidates":
-            let sigs = req["signatures"] as? [String] ?? []
-            let keys = req["keys"] as? [String] ?? []
-            let labels = req["labels"] as? [String] ?? []
-            let candidates = try store.queryCandidates(signatures: sigs, keys: keys, labels: labels)
-            return ["ok": true, "candidates": try candidates.map { try $0.jsonObject() }]
-        case "listAnswers":
-            let offset = (req["offset"] as? NSNumber)?.intValue ?? 0
-            let limit = (req["limit"] as? NSNumber)?.intValue ?? 50
-            let search = req["search"] as? String
-            let res = try store.listAnswers(offset: offset, limit: limit, search: search)
-            return [
-                "ok": true,
-                "total": res.total,
-                "rev": res.rev,
-                "answers": try res.answers.map { try $0.jsonObject() }
-            ]
         case "log":
             try store.log(try activityEntry(req["entry"], source: source))
             return ["ok": true]
@@ -245,6 +219,57 @@ public enum NativeProtocol {
         }
     }
 
+    /// An absent field is fine; a present one of the wrong type is not.
+    private static func optional<T>(_ raw: [String: Any], _ name: String, _ type: T.Type, row: Int) throws -> T? {
+        guard let v = raw[name] else { return nil }
+        guard let typed = v as? T else { throw BankError("upsert row \(row): \(name) has the wrong type") }
+        return typed
+    }
+
+    private static func patchRows(_ raw: Any?) throws -> [Answer] {
+        guard let raw else { return [] }
+        guard let rows = raw as? [Any] else { throw BankError("patch upsert must be an array") }
+        var out: [Answer] = []
+        for (i, element) in rows.enumerated() {
+            guard let row = element as? [String: Any] else { throw BankError("upsert row \(i) is not an object") }
+            guard let key = row["key"] as? String else { throw BankError("upsert row \(i) needs a string key") }
+            guard let kindName = row["kind"] as? String, let kind = FieldKind(rawValue: kindName) else {
+                throw BankError("upsert row \(i) has an unknown kind")
+            }
+            guard let value = row["value"] as? [String] else { throw BankError("upsert row \(i) needs a value array of strings") }
+            let labels = try optional(row, "labels", [String].self, row: i) ?? []
+            let signatures = try optional(row, "signatures", [String].self, row: i) ?? []
+            var uses = 0, fills = 0
+            for (name, slot) in [("uses", 0), ("fills", 1)] {
+                guard let v = row[name] else { continue }
+                guard let n = BankValidator.strictInt(v) else {
+                    throw BankError("upsert row \(i): \(name) is not an integer")
+                }
+                if slot == 0 { uses = n } else { fills = n }
+            }
+            let updatedAt = try optional(row, "updatedAt", String.self, row: i) ?? isoNow()
+            let review = try optional(row, "review", Bool.self, row: i) ?? false
+            let sens = Classifier.classify(kind: kind, label: ([key] + labels).joined(separator: " "), name: "", autocomplete: "")
+            out.append(Answer(key: key, labels: labels, kind: kind, value: value, sensitivity: sens, signatures: signatures,
+                              uses: uses, fills: fills, updatedAt: updatedAt, review: review))
+        }
+        return out
+    }
+
+    private static func patchDeleteKeys(_ raw: Any?) throws -> [String] {
+        guard let raw else { return [] }
+        guard let keys = raw as? [String] else { throw BankError("patch delete must be an array of strings") }
+        return keys
+    }
+
+    private static func patchBaseRev(_ raw: Any?) throws -> Int? {
+        guard let raw else { return nil }
+        guard let n = BankValidator.strictInt(raw), n >= 0 else {
+            throw BankError("patch baseRev must be a non-negative integer")
+        }
+        return n
+    }
+
     /// base64 of ResumeStore.maxBytes plus padding slack: a longer string is refused before it is decoded.
     private static let maxResumeBase64 = (ResumeStore.maxBytes + 2) / 3 * 4 + 8
 
@@ -313,11 +338,10 @@ public enum NativeProtocol {
             var out: [String: Int] = [:]
             for (k, v) in dict {
                 guard !k.isEmpty, k.count <= 32, k.unicodeScalars.allSatisfy({ countNameChars.contains($0) }),
-                      BankValidator.isNumber(v), let d = (v as? NSNumber)?.doubleValue,
-                      d >= 0, d <= 1_000_000, d.rounded(.towardZero) == d else {
+                      let n = BankValidator.strictInt(v), n >= 0, n <= 1_000_000 else {
                     throw BankError("log entry counts malformed")
                 }
-                out[k] = Int(d)
+                out[k] = n
             }
             counts = out
         }

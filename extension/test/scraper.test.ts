@@ -683,3 +683,159 @@ describe("the role excerpt Vani is sent is longer than the listing snippet", () 
     expect(exportJobsAsJSON(r.jobs)).not.toContain("description");
   });
 });
+
+describe("scraped links are http(s) or empty", () => {
+  const posting = (url: unknown) => makeDoc([
+    el("script", { type: "application/ld+json" }, JSON.stringify({ "@type": "JobPosting", title: "Backend Engineer", description: "Go services", hiringOrganization: { name: "Acme" }, url })),
+  ]);
+  const urlOf = (url: unknown) => scrapePageJobs(posting(url), "acme.com").jobs[0]!.url;
+
+  test("javascript:, data:, file: and other schemes yield an empty url, whatever the case or leading whitespace", () => {
+    for (const bad of [
+      "javascript:alert(1)", "  JaVaScRiPt:alert(1)", "\tjavascript:alert(1)", "\njavascript:void(0)", "JAVASCRIPT:alert(1)",
+      "data:text/html,<b>x</b>", " DATA:text/html;base64,AAAA", "file:///etc/hosts", "  FiLe:///etc/hosts",
+      "ftp://acme.com/jobs/1", "chrome-extension://abc/page.html", "blob:https://acme.com/1", "mailto:jobs@acme.com", "vbscript:x",
+    ]) {
+      expect(urlOf(bad)).toBe("");
+    }
+  });
+
+  test("http(s) links, absolute or relative to the page, are kept", () => {
+    expect(urlOf("https://acme.com/jobs/101")).toBe("https://acme.com/jobs/101");
+    expect(urlOf("  HTTP://acme.com/jobs/102")).toBe("http://acme.com/jobs/102");
+    expect(urlOf("/jobs/103")).toMatch(/^https?:\/\/[^/]+\/jobs\/103$/);
+  });
+
+  test("a posting with a hostile link is still listed, with no link", () => {
+    const r = scrapePageJobs(posting("javascript:alert(1)"), "acme.com");
+    expect(r.totalFound).toBe(1);
+    expect(r.jobs[0]!.title).toBe("Backend Engineer");
+    expect(exportJobsAsJSON(r.jobs)).not.toContain("javascript");
+  });
+});
+
+describe("adversarial: scraped link shapes", () => {
+  const posting = (url: unknown) => makeDoc([
+    el("script", { type: "application/ld+json" }, JSON.stringify({ "@type": "JobPosting", title: "Backend Engineer", description: "Go services", hiringOrganization: { name: "Acme" }, url })),
+  ]);
+  const jobs = (url: unknown) => scrapePageJobs(posting(url), "acme.com").jobs;
+  const urlOf = (url: unknown) => jobs(url)[0]!.url;
+  const isHttp = (u: string) => u === "" || /^https?:\/\//.test(u);
+
+  test("scheme tricks: no host, protocol-relative, case, tab/newline smuggling, blob, about, chrome-extension, vbscript", () => {
+    for (const bad of ["javascript:alert(1)", "java\nscript:alert(1)", "java\tscript:alert(1)", "java\r\nscript:alert(1)", "\u0000javascript:alert(1)",
+      "vbscript:msgbox(1)", "blob:https://acme.com/1", "about:blank", "about:srcdoc", "chrome-extension://abc/popup.html", "moz-extension://abc/x", "safari-web-extension://abc/x", "chrome://settings", "view-source:https://acme.com", "ws://acme.com/x", "wss://acme.com/x", "tel:+15555550100"]) {
+      expect([bad, urlOf(bad)]).toEqual([bad, ""]);
+    }
+    // These parse as http(s) in the URL parser (the scheme is folded, whitespace dropped, a missing host after a special scheme is read from what follows).
+    for (const odd of ["https:", "jav&#x61;script:alert(1)", "javascript\u200b:alert(1)", "HTTPS://acme.com/jobs/1", "\thttps://acme.com/jobs/1", " https://acme.com/jobs/1", "https:acme.com/jobs/1", "http:/acme.com/jobs/1", "https:///acme.com/jobs/1", "//acme.com/jobs/1"]) {
+      const u = urlOf(odd);
+      expect([odd, isHttp(u)]).toEqual([odd, true]);
+    }
+    // No usable host at all: refused.
+    for (const nohost of ["http:", "https://", "http://:80", "http://?x", "https://#frag", "http://[::1"]) {
+      expect([nohost, urlOf(nohost)]).toEqual([nohost, ""]);
+    }
+  });
+
+  test("a protocol-relative '//evil' link resolves against the page's scheme: it is http(s), on whatever host it names (the page's own listing)", () => {
+    const u = urlOf("//evil.example/jobs/1");
+    expect(u).toMatch(/^https?:\/\/evil\.example\/jobs\/1$/);
+  });
+
+  test("a relative link resolved against a hostile base (javascript:, data:, about:blank) is empty, never that base", () => {
+    const saved = (globalThis as { location?: unknown }).location;
+    try {
+      for (const href of ["javascript:alert(1)", "data:text/html,x", "about:blank", "blob:https://acme.com/1", "chrome-extension://abc/popup.html"]) {
+        (globalThis as { location?: unknown }).location = { href, hostname: "acme.com" };
+        for (const rel of ["/jobs/1", "jobs/1", "?id=1", "#x", ""]) {
+          const u = urlOf(rel === "" ? undefined : rel);
+          expect([href, rel, isHttp(u)]).toEqual([href, rel, true]);
+        }
+      }
+    } finally {
+      (globalThis as { location?: unknown }).location = saved;
+    }
+  });
+
+  test("a JSON-LD url that is an array, object, number, boolean or null never yields a non-http(s) link", () => {
+    for (const v of [["https://acme.com/a", "javascript:alert(1)"], ["javascript:alert(1)"], { "@id": "javascript:alert(1)" }, { url: "javascript:alert(1)" }, 42, true, null, [], {}, [[]], "[object Object]"]) {
+      const j = jobs(v);
+      expect(j.length).toBe(1);
+      expect([JSON.stringify(v), isHttp(j[0]!.url)]).toEqual([JSON.stringify(v), true]);
+      expect(j[0]!.url).not.toMatch(/javascript/i);
+    }
+  });
+
+  test("an extremely long url (1 MB) neither throws nor produces a non-http(s) link, and its size is bounded for the ingest message", () => {
+    for (const long of [`https://acme.com/${"a".repeat(1_000_000)}`, `javascript:${"a".repeat(1_000_000)}`, `/${"a".repeat(1_000_000)}`]) {
+      const j = jobs(long);
+      expect(j.length).toBe(1);
+      expect(isHttp(j[0]!.url)).toBe(true);
+    }
+    // the ingest bound (2048 bytes) refuses what is too long rather than truncating it into another link
+    const long = jobs(`https://acme.com/${"a".repeat(1_000_000)}`)[0]!;
+    const r = prepareIngest({ pageUrl: "https://acme.com/careers", pageTitle: "Jobs", jobs: [long] }, false);
+    expect(JSON.stringify(r)).not.toContain("a".repeat(4096));
+  });
+});
+
+// Workday's shared host wd{N}.myworkdaysite.com (Snap's board): the site is /recruiting/{tenant}/{site},
+// and one posting is reachable by /job/ and /details/ routes with or without a locale, as on myworkdayjobs.com.
+describe("Workday on the shared host", () => {
+  const HOST = "wd1.myworkdaysite.com";
+  const SITE = "/recruiting/snapchat/snap";
+  const SEARCH = `https://${HOST}${SITE}?q=data`;
+  const card = (title: string, href: string) =>
+    el("li", {}, "", [
+      el("a", { "data-automation-id": "jobTitle", href }, title),
+      el("dd", { "data-automation-id": "locations" }, "Los Angeles, California"),
+    ]);
+  const listing = (cards: MEl[]) => [el("section", { "data-automation-id": "jobResults" }, "", [el("ul", {}, "", cards)])];
+  const scrape = (cards: MEl[], host = HOST, page = SEARCH) => scrapePageJobs(makeDoc(listing(cards)), host, undefined, page).jobs;
+
+  test("lists the posting cards of the site, with their own links", () => {
+    const jobs = scrape([
+      card("Data Scientist, Level 4", `${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1`),
+      card("Machine Learning Engineer", `/en-US${SITE}/job/Paris-France/Machine-Learning-Engineer_R2-1`),
+    ]);
+    expect(jobs.map(j => j.url).sort()).toEqual([
+      `https://${HOST}${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1`,
+      `https://${HOST}/en-US${SITE}/job/Paris-France/Machine-Learning-Engineer_R2-1`,
+    ].sort());
+  });
+
+  test("one posting reached by two routes is one listing; two postings stay two", () => {
+    const one = scrape([
+      card("Data Scientist, Level 4", `${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1`),
+      card("Data Scientist, Level 4", `/en-US${SITE}/details/Data-Scientist--Level-4_Q426DSA4-1?q=data`),
+      card("Data Scientist, Level 4", `/en-US${SITE}/job/Los-Angeles-California/Data-Scientist--Level-4_Q426DSA4-1/apply`),
+    ]);
+    expect(one.length).toBe(1);
+    const two = scrape([
+      card("Data Scientist, Level 4", `${SITE}/details/Data-Scientist--Level-4_Q426DSA4-1`),
+      card("Data Scientist, Level 4", `${SITE}/details/Data-Scientist--Level-4_Q426DSA4-2`),
+    ]);
+    expect(two.length).toBe(2);
+  });
+
+  test("the same slug under another tenant or site is another posting", () => {
+    const jobs = scrape([
+      card("Data Scientist", "/recruiting/snapchat/snap/details/Data-Scientist_R1"),
+      card("Data Scientist", "/recruiting/snapchat/other/details/Data-Scientist_R1"),
+      card("Data Scientist", "/recruiting/acme/snap/details/Data-Scientist_R1"),
+    ]);
+    expect(jobs.length).toBe(3);
+  });
+
+  test("the host is told whatever its case", () => {
+    const jobs = scrape([card("Data Scientist", `/en-US${SITE}/details/Data-Scientist_R1`), card("Data Scientist", `${SITE}/job/LA/Data-Scientist_R1`)], "WD1.MyWorkdaySite.com");
+    expect(jobs.length).toBe(1);
+  });
+
+  test("a lookalike host is not folded", () => {
+    const evil = "wd1.myworkdaysite.com.evil.com";
+    const twice = scrape([card("Data Scientist", `${SITE}/details/Data-Scientist_R1`), card("Data Scientist", `/en-US${SITE}/job/LA/Data-Scientist_R1`)], evil, `https://${evil}${SITE}`);
+    expect(twice.length).toBe(2);
+  });
+});

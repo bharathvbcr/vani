@@ -55,13 +55,40 @@ var (
 	hydrationTag = []byte("window.__staticRouterHydrationData = JSON.parse(")
 )
 
+// errDetailGone is a posting page answering 404 under a search that
+// answered: the posting closed after it was listed.
+var errDetailGone = errors.New("detail is gone (HTTP 404)")
+
+// maxGone is how many of n listed postings may come back gone before the
+// board fails: a tenth, at least one (workday's bound).
+func maxGone(n int) int { return max(1, n/10) }
+
+// Stats counts what one List did: the postings listed and the ones whose
+// details page answered 404 (closed since listing).
+type Stats struct {
+	Listed int `json:"listed"`
+	Gone   int `json:"gone,omitempty"`
+}
+
+// Options configures NewWith.
+type Options struct {
+	// Report, when set, receives each listed board's counts.
+	Report func(sources.Board, Stats)
+}
+
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	opt *Options
 }
 
 // New returns the Apple jobs source, sending requests through d.
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+
+// NewWith is New with the board report of opt.
+func NewWith(d egress.Doer, opt Options) sources.Source {
+	return &source{d: d, now: time.Now, opt: &opt}
+}
 
 func (*source) ATS() posting.ATS { return posting.Apple }
 
@@ -78,7 +105,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if len(terms) == 0 {
 		return nil, fmt.Errorf("apple %q: the board needs at least one search", b.Token)
 	}
-	if err := checkFilters(b.Filters); err != nil {
+	if err := sources.CheckFilters(posting.Apple, b.Filters); err != nil {
 		return nil, fmt.Errorf("apple %q: %w", b.Token, err)
 	}
 	var rows []row
@@ -101,11 +128,26 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(rows))
+	st := Stats{Listed: len(rows)}
+	if s.opt != nil && s.opt.Report != nil {
+		defer func() { s.opt.Report(b, st) }()
+	}
+	allowed := maxGone(len(rows))
 	for _, r := range rows {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		p, err := s.detail(ctx, b, r, seen)
+		if errors.Is(err, errDetailGone) {
+			// The posting closed between the search and its page; leaving it out
+			// is the truth. Many at once is the details endpoint failing. The
+			// error is deliberately not ErrBoardNotFound: the search answered.
+			if st.Gone++; st.Gone > allowed || st.Gone == len(rows) {
+				return nil, fmt.Errorf("apple %q: %d of %d posting details are gone (HTTP 404); the details endpoint is not answering",
+					b.Token, st.Gone, len(rows))
+			}
+			continue
+		}
 		if err != nil {
 			// A partial listing would age healthy postings as absent.
 			return nil, fmt.Errorf("apple %q: posting %s: %w", b.Token, r.jobNumber, err)
@@ -113,19 +155,6 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		out = append(out, p)
 	}
 	return out, nil
-}
-
-func checkFilters(f map[string][]string) error {
-	allowed := sources.FilterKeys[posting.Apple]
-	for k, vs := range f {
-		if !slices.Contains(allowed, k) {
-			return fmt.Errorf("filter %q is not one of %s", k, strings.Join(allowed, ", "))
-		}
-		if len(vs) == 0 {
-			return fmt.Errorf("filter %q has no value", k)
-		}
-	}
-	return nil
 }
 
 func pageURL(term string, filters map[string][]string, page int) string {
@@ -251,6 +280,9 @@ func (s *source) detail(ctx context.Context, b sources.Board, r row, seen time.T
 	u := site + "/en-us/details/" + r.jobNumber + "/" + r.slug
 	body, err := srcutil.GetBody(ctx, s.d, u)
 	if err != nil {
+		if errors.Is(err, srcutil.ErrBoardNotFound) {
+			return posting.Posting{}, errDetailGone
+		}
 		return posting.Posting{}, err
 	}
 	jd, err := decodeJobsData(body)

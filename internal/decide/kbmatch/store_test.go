@@ -1,6 +1,7 @@
 package kbmatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -54,6 +55,35 @@ func TestStoreRoundTripAndCurrency(t *testing.T) {
 	}
 }
 
+// Answers recorded before kbmatch.backend "jev" became "openrouter" (2026-10-20)
+// still read, keep their recorded backend, and sit beside new ones.
+func TestStoreReadsAnswersFromTheJevBackend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	at := `"model":"liquid/d1-ultra","kb":"` + h64a + `","text":"` + h64b + `","at":"2026-10-19T01:00:00Z","p":0.8`
+	raw := `{"version":1,"entries":{` +
+		`"gh:a:1":{"value":"core",` + at + `,"backend":"jev","mode":"focused"},` +
+		`"gh:a:2":{"value":"partial",` + at + `,"backend":"openrouter","mode":"full"}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("a store with jev answers was refused: %v", err)
+	}
+	for key, want := range map[string]Entry{"gh:a:1": {Value: "core", Backend: "jev"}, "gh:a:2": {Value: "partial", Backend: "openrouter"}} {
+		e, ok := s.Lookup(key, h64a, h64b)
+		if !ok || e.Value != want.Value || e.Backend != want.Backend || e.P != 0.8 {
+			t.Errorf("%s: %+v %v, want %s from %s", key, e, ok, want.Value, want.Backend)
+		}
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := OpenStore(path); err != nil || r.Len() != 2 {
+		t.Fatalf("resaved store: %v", err)
+	}
+}
+
 func TestStoreRefusesWhatItCannotTrust(t *testing.T) {
 	dir := t.TempDir()
 	good := `"value":"core","model":"m","kb":"` + h64a + `","text":"` + h64b + `","at":"2026-10-20T01:00:00Z"`
@@ -103,6 +133,46 @@ func TestStorePutValidatesAndBounds(t *testing.T) {
 	}
 	if _, ok := s.Lookup(fmt.Sprintf("gh:a:%d", MaxEntries+4), h64a, h64b); !ok {
 		t.Errorf("the newest answer should be kept")
+	}
+}
+
+func TestOpenLockedWaitsThenBusyAndRemovesCorruptOnlyUnderTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", FileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := Lock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, _, _, err := OpenLocked(context.Background(), path, 100*time.Millisecond); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a held store should be ErrBusy, got %v", err)
+	}
+	if time.Since(start) < 90*time.Millisecond {
+		t.Errorf("OpenLocked did not wait for the lock")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the corrupt store was removed without the lock: %v", err)
+	}
+	// A holder that lets go within the wait lets the opener in.
+	go func() { time.Sleep(60 * time.Millisecond); held() }()
+	st, unlock, recovered, err := OpenLocked(context.Background(), path, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if !errors.Is(recovered, ErrCorrupt) || st.Len() != 0 {
+		t.Errorf("recovered %v, len %d", recovered, st.Len())
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the corrupt store should be gone under the lock: %v", err)
+	}
+	if _, err := Lock(path); !errors.Is(err, ErrBusy) {
+		t.Errorf("the lock should still be held, got %v", err)
 	}
 }
 

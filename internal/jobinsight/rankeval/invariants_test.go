@@ -11,7 +11,7 @@ import (
 
 const eps = 1e-9
 
-// good is a typical, fully observed posting: a partial fit read by Jev, middling
+// good is a typical, fully observed posting: a partial fit read by Liquid D, middling
 // coverage, some keyword and semantic evidence, 10 days old.
 func good() jobinsight.Inputs {
 	return jobinsight.Inputs{
@@ -173,9 +173,9 @@ func invariantViolations(w jobinsight.Weights) []string {
 		in := good()
 		in.Company = m
 		r := jobinsight.ScoreWith(in, w)
-		lo, hi := 1-w.CompanyDown-eps, 1+w.CompanySpan+eps
+		lo, hi := 1-eps, 1+w.CompanySpan+eps
 		if !(r.Company >= lo && r.Company <= hi) || math.IsNaN(r.Company) {
-			bad("company factor %.4f with marks %+v outside [1-%.2f, 1+%.2f]", r.Company, m, w.CompanyDown, w.CompanySpan)
+			bad("company factor %.4f with marks %+v outside [1, 1+%.2f]", r.Company, m, w.CompanySpan)
 		}
 		if !finite01(r.Score, 100) {
 			bad("score %v with marks %+v is not in [0,100]", r.Score, m)

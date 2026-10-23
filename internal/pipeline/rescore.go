@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -33,7 +34,49 @@ var rescorable = map[posting.Status]bool{posting.Scored: true, posting.Explained
 // ledger's folded record keeps no event reasons, so the missing rank is the
 // test.
 func Unscored(r ledger.Record) bool {
-	return rescorable[r.Status] && r.Annotations[ledger.AnnRank] == ""
+	return rescorable[r.Status] && r.Annotations[ledger.AnnRank] == "" && !ledger.CoverageUnknown(r)
+}
+
+// ZeroOfZero reports whether r carries the stale 0-of-0 signature: a stored
+// coverage of exactly 0 with no must-have listed as missing or weak. DevPrism
+// reported 0% for a JD it extracted no must-have from, and older runs stored
+// that as a measured zero. A genuine zero has every must-have missing or weak,
+// and gap.missing lists those, so it is never matched. Already-marked records
+// are not matched, which makes the repair idempotent.
+//
+// Unlike Unscored it does not need a rescorable status: Digested postings are
+// the ranked, shown ones and carry the stale reading too. The repair keeps the
+// status, so no consumer sees a transition. Dead and Dropped are excluded
+// because the daily footer counts them by last-event day (countsFor), and a
+// repair event would add them to today's count; neither is ranked or shown.
+func ZeroOfZero(r ledger.Record) bool {
+	if r.Status == posting.Dead || r.Status == posting.Dropped || ledger.CoverageUnknown(r) {
+		return false
+	}
+	cov, err := strconv.ParseFloat(strings.TrimSpace(r.Annotations[ledger.AnnCoverage]), 64)
+	return err == nil && cov == 0 && strings.TrimSpace(r.Annotations[ledger.AnnMissing]) == ""
+}
+
+// RepairUnknownCoverage rewrites a ZeroOfZero record's coverage as unknown from
+// its stored readings, with no DevPrism call: it clears rank and coverage and
+// sets the gap.coverage_unknown marker, keeping status and every other
+// annotation. It reports whether it wrote; a record that is not ZeroOfZero is
+// left alone, so a repeated run does nothing.
+func (r *Runner) RepairUnknownCoverage(ctx context.Context, key posting.Key) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	rec, ok := r.Ledger.Get(key)
+	if !ok {
+		return false, fmt.Errorf("pipeline: unknown key %q", key)
+	}
+	if !ZeroOfZero(rec) {
+		return false, nil
+	}
+	err := r.emit(ctx, key, rec.Status, "coverage_unknown_repaired", map[string]string{
+		ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves,
+	})
+	return err == nil, err
 }
 
 // Described reports whether r has a description to score.

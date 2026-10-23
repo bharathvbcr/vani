@@ -8,18 +8,25 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// prefilterReport is what the title prefilter would do to a ledger: which
-// live postings it would drop before triage, and how the decision model read
-// the postings it would drop that a model has already read.
+// prefilterReport is what the prefilter (exclusions and title readings) would
+// do to a ledger: which live postings it would drop before triage, which kept
+// ones the next run's exclusion pass would drop or reopen, and how the
+// decision model read the postings it would drop that a model has already
+// read.
 type prefilterReport struct {
 	Live, Dropped int
 	ByReason      map[string]int
 	Rows          []prefilterRow // the live postings it would drop, in ledger order
+	// Kept are the triaged, scored, explained or digested postings the
+	// exclusions would drop at the next run (marked ones never are); Reopen
+	// are the excluded postings they no longer match, which return to live.
+	Kept, Reopen []prefilterRow
 	// Read counts the postings it would drop whose role_fit a decision
 	// backend (not the title) answered; RoleFit is how, and Fits lists the
 	// ones read strong_fit or partial_fit: the prefilter's false drops.
@@ -34,15 +41,25 @@ type prefilterRow struct {
 	RoleFit, Stage string
 }
 
-// prefilterOf applies p's title reading to every record. It reads only.
-func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy) prefilterReport {
+// prefilterOf applies p's exclusions and title reading to every record;
+// protect says which postings are marked. It reads only.
+func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy, protect func(posting.Key) bool) prefilterReport {
 	rep := prefilterReport{ByReason: map[string]int{}, RoleFit: map[string]int{}}
+	ch := pipeline.ExclusionChanges(recs, p, protect)
+	for i, r := range ch.Drop {
+		if r.Status != posting.Live { // a live one is counted below, with the title drops
+			rep.Kept = append(rep.Kept, prefilterRow{Key: r.Key, Title: r.Posting.Title, Reason: ch.Reasons[i], Stage: string(r.Status)})
+		}
+	}
+	for _, r := range ch.Reopen {
+		rep.Reopen = append(rep.Reopen, prefilterRow{Key: r.Key, Title: r.Posting.Title, Reason: r.Annotations[pipeline.AnnExcluded], Stage: string(r.Status)})
+	}
 	const rf = ledger.AnnTriagePrefix + "role_fit"
 	for _, r := range recs {
 		if r.Status == posting.Live {
 			rep.Live++
 		}
-		_, reason, drop := p.EvaluateTitle(r.Posting.Title)
+		_, reason, drop := p.EvaluatePosting(r.Posting)
 		if !drop {
 			continue
 		}
@@ -66,11 +83,12 @@ func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy) prefilterReport {
 	return rep
 }
 
-// cmdPrefilter reports what the title prefilter (title_signals.read and the
-// drop rules) would drop. It never writes the ledger and calls no backend.
+// cmdPrefilter reports what the prefilter (exclude, and title_signals.read
+// with the drop rules) would drop. It never writes the ledger and calls no
+// backend.
 func (e *env) cmdPrefilter(args []string) error {
 	fs := e.newFlags("prefilter")
-	list := fs.Bool("list", false, "also list each live posting it would drop")
+	list := fs.Bool("list", false, "also list each posting it would drop or return to live")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -78,8 +96,9 @@ func (e *env) cmdPrefilter(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(cfg.TitleSignals.Read) == 0 {
-		fmt.Fprintln(e.stdout, "title prefilter is off: the config has no title_signals.read entries; nothing was evaluated")
+	p := dropPolicy(cfg, cfg.Decide.OpenRouterName())
+	if !p.Prefilters() {
+		fmt.Fprintln(e.stdout, "prefilter is off: the config has no exclude entries and no title_signals.read entries; nothing was evaluated")
 		return nil
 	}
 	snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
@@ -89,13 +108,16 @@ func (e *env) cmdPrefilter(args []string) error {
 	if snap.Torn {
 		fmt.Fprintln(e.stderr, "vani: prefilter: the ledger ends in a torn line; it was left out")
 	}
-	writePrefilter(e.stdout, prefilterOf(snap.Records, dropPolicy(cfg, cfg.Decide.OpenRouterName())), len(snap.Records), *list)
+	protect := protectMarked(e.stateDir, func(f string, a ...any) { fmt.Fprintf(e.stderr, "vani: prefilter: "+f+"\n", a...) })
+	writePrefilter(e.stdout, prefilterOf(snap.Records, p, protect), len(snap.Records), *list)
 	return nil
 }
 
 func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
-	fmt.Fprintf(w, "title prefilter (dry run, nothing written): %d of %d live posting(s) would be dropped before triage (%d in the ledger)\n",
+	fmt.Fprintf(w, "prefilter (dry run, nothing written): %d of %d live posting(s) would be dropped before triage (%d in the ledger)\n",
 		rep.Dropped, rep.Live, total)
+	fmt.Fprintf(w, "exclusions at the next run: %d kept posting(s) would be dropped (marked ones are kept), %d excluded posting(s) would return to live\n",
+		len(rep.Kept), len(rep.Reopen))
 	reasons := make([]string, 0, len(rep.ByReason))
 	for r := range rep.ByReason {
 		reasons = append(reasons, r)
@@ -117,14 +139,20 @@ func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
 	fmt.Fprintf(w, "precision: a decision model read role_fit on %d posting(s) it would drop (any status): %s\n", rep.Read, strings.Join(vals, ", "))
 	fmt.Fprintf(w, "  read strong_fit or partial_fit (false drops): %d\n", len(rep.Fits))
 	for _, f := range rep.Fits {
-		fmt.Fprintf(w, "    %s  %s [%s, %s] %s\n", f.Key, cleanText(f.Title, 120, false), f.RoleFit, f.Stage, f.Reason)
+		fmt.Fprintf(w, "    %s  %s [%s, %s] %s\n", f.Key, jobview.CleanText(f.Title, 120, false), f.RoleFit, f.Stage, f.Reason)
 	}
 	if rep.Read == 0 {
 		fmt.Fprintln(w, "  no model reading to compare against: precision is unmeasured, not perfect")
 	}
 	if list {
 		for _, r := range rep.Rows {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Key, cleanText(r.Title, 120, false), r.Reason)
+			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason)
+		}
+		for _, r := range rep.Kept {
+			fmt.Fprintf(w, "%s\t%s\t%s (now %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason, r.Stage)
+		}
+		for _, r := range rep.Reopen {
+			fmt.Fprintf(w, "%s\t%s\treturns to live (was %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason)
 		}
 	}
 }

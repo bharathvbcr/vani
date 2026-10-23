@@ -5,17 +5,19 @@ import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./message
 import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
-import { BASICS, BASICS_HOST, basicsFields, basicsValues } from "./basics";
+import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
 import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
 import { type IngestSource, describeIngest, prepareIngest } from "./ingest";
 import { type RelevanceResult, targetProfileFromBank } from "./relevance";
+import { scoreWord } from "./jobrow";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
 import type { JobInfo } from "./draft";
 import { formatJobDetails } from "./jobinfo";
 import { resumeRow } from "./resumerow";
+import { isHttpUrl, openButton, titleElement } from "./joblink";
 import { type HomeView, bankSummary, basicsCompleteness, compactCount, friendlyError, homeHeadline, homeState, meterModel, nextStep, ratedFrame, viewSections } from "./home";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -473,30 +475,45 @@ function renderBasics(): void {
   if (selfIdBox) selfIdBox.hidden = !current?.settings.captureSelfId;
 }
 
+let savingBasics = false;
+
 async function saveBasics(): Promise<void> {
+  if (savingBasics) return; // Enter and the button both save: one capture at a time
   const out = $("#basic-status");
+  const button = $<HTMLButtonElement>("#basic-save");
+  const values: Record<string, string> = {};
+  for (const b of BASICS) {
+    const el = basicInput(b.id);
+    if (el) values[b.id] = el.value;
+  }
+  const fields = basicsFields(values, basicsValues(current));
+  if (fields.length === 0) {
+    if (out) out.textContent = "Nothing new to save.";
+    toast("No changes in basics.");
+    return;
+  }
+  savingBasics = true;
+  if (button) button.disabled = true;
+  if (out) out.textContent = "Saving basics...";
+  let reply: unknown;
   try {
-    const values: Record<string, string> = {};
-    for (const b of BASICS) {
-      const el = basicInput(b.id);
-      if (el) values[b.id] = el.value;
-    }
-    const fields = basicsFields(values, basicsValues(current));
-    if (fields.length === 0) {
-      if (out) out.textContent = "Nothing new to save.";
-      toast("No changes in basics.");
-      return;
-    }
-    if (out) out.textContent = "Saving basics...";
-    const r = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
-    if (!r || !("added" in r)) throw new Error((r && "error" in r && r.error) || "no reply from the extension");
-    basicsTyped = false;
-    if (out) out.textContent = `Saved ${r.added + r.updated}` + (r.skippedSecret ? `; ${r.skippedSecret} refused as sensitive` : "") + ".";
-    toast(`Saved ${r.added + r.updated} basics.`);
+    reply = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
+  } catch (e) {
+    reply = { error: friendlyError(e, "the extension did not answer").detail || "the extension did not answer" };
+  } finally {
+    savingBasics = false;
+    if (button) button.disabled = false;
+  }
+  const o = basicsSaveOutcome(reply);
+  if (out) out.textContent = o.status;
+  toast(o.toast);
+  if (!o.saved) return; // what was typed stays in the boxes for another try
+  basicsTyped = false;
+  // The save landed; a failure to redraw from the bank is reported as that, not as a failed save.
+  try {
     await refresh();
   } catch (e) {
-    if (out) out.textContent = `Could not save: ${e instanceof Error ? e.message : String(e)}`;
-    toast("Failed to save basics.");
+    if (out) out.textContent = `${o.status} The list could not be redrawn: ${friendlyError(e).line}`;
   }
 }
 
@@ -879,7 +896,7 @@ function renderRelevance(rel?: RelevanceResult): void {
   }
   card.style.display = "block";
   const scoreBadge = $("#rel-score-badge");
-  scoreBadge.textContent = `${rel.score}% Match`;
+  scoreBadge.textContent = `${rel.score}% ${scoreWord(rel).toLowerCase()}`;
   scoreBadge.className = `badge ${rel.score >= 80 ? "badge-ok" : rel.score >= 60 ? "badge-rev" : "badge-muted"}`;
 
   const scoreBar = $("#rel-score-bar-fill");
@@ -957,7 +974,7 @@ function renderMissedChecklist(audit?: FormAuditReport): void {
     descWrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;overflow:hidden;";
 
     const icon = document.createElement("span");
-    icon.textContent = m.type === "required" ? "⚠️" : "❌";
+    icon.textContent = m.reason === "invalid" ? "❌" : "⚠️";
     icon.style.cssText = "font-size:12px;flex-shrink:0;";
 
     const desc = document.createElement("span");
@@ -1029,10 +1046,7 @@ function renderScraper(): void {
     topRow.className = "row-between";
     topRow.style.margin = "0 0 4px";
 
-    const titleEl = document.createElement("a");
-    titleEl.href = j.url;
-    titleEl.target = "_blank";
-    titleEl.textContent = j.title;
+    const titleEl = titleElement(document, j.title, j.url);
     titleEl.style.cssText = "font-weight:600;font-size:13px;color:var(--text);text-decoration:none;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     titleEl.title = j.title;
 
@@ -1117,14 +1131,9 @@ function renderScraper(): void {
       }
     };
 
-    const openBtn = document.createElement("button");
-    openBtn.className = "sm primary";
-    openBtn.textContent = "Open role";
-    openBtn.onclick = () => {
-      window.open(j.url, "_blank");
-    };
+    const openBtn = openButton(document, j.url, (u, t) => window.open(u, t));
 
-    actRow.append(copyDetailsBtn, copyBtn, trackBtn, openBtn);
+    actRow.append(copyDetailsBtn, ...(isHttpUrl(j.url) ? [copyBtn] : []), trackBtn, ...(openBtn ? [openBtn] : []));
     card.append(topRow, subRow, skillsRow, actRow);
     list.append(card);
   }

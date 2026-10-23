@@ -18,6 +18,13 @@ const (
 	MissedRunWindow = 6 * time.Hour
 	// onTimeSlack is the lateness below which a run is reported as on time.
 	onTimeSlack = time.Minute
+	// wakeSlice caps how long waitUntil sleeps on one timer. On darwin Go
+	// timers use a monotonic clock that does not advance while the machine
+	// sleeps, but the schedule is wall time: one long timer would fire hours
+	// after the slot on wake. Re-reading the wall clock every slice bounds that
+	// lateness to one slice. It stays well under onTimeSlack, so a wake is
+	// never reported as a missed run, and 30 s keeps the idle wakeups trivial.
+	wakeSlice = 30 * time.Second
 )
 
 // Logf receives the scheduler's decisions. Tests replace it.
@@ -60,6 +67,21 @@ func NextRun(after time.Time, hour, minute int, loc *time.Location) time.Time {
 	// Unreachable for real zones: three consecutive days always contain a
 	// slot after `after`.
 	return wallTime(y, m, d+3, hour, minute, loc)
+}
+
+// PrevRun returns the latest scheduled instant at or before `at`, on the same
+// schedule NextRun reads: hour:minute on the wall clock of loc. It starts two
+// days back, which always holds a slot, and steps forward to the last one not
+// after `at`.
+func PrevRun(at time.Time, hour, minute int, loc *time.Location) time.Time {
+	prev := NextRun(at.Add(-48*time.Hour), hour, minute, loc)
+	for {
+		next := NextRun(prev, hour, minute, loc)
+		if next.After(at) {
+			return prev
+		}
+		prev = next
+	}
 }
 
 // wallTime is the instant at which loc's wall clock first reads hour:minute on
@@ -133,17 +155,29 @@ func Run(ctx context.Context, sched config.Schedule, job Job, clock Clock) error
 	}
 }
 
-// waitUntil blocks until clock.Now() reaches t. It returns false if ctx ends first.
+// waitUntil blocks until clock.Now() reaches t. It returns false if ctx ends
+// first. It sleeps at most wakeSlice per clock.After and re-reads the wall
+// clock each time, so a sleep that stalls the timer clock (or a wall-clock
+// step in either direction) delays the return by at most one slice. Every
+// iteration calls After with a positive duration, so it cannot busy-spin.
 func waitUntil(ctx context.Context, clock Clock, t time.Time) bool {
 	for {
 		d := t.Sub(clock.Now())
 		if d <= 0 {
 			return ctx.Err() == nil
 		}
+		d = min(d, wakeSlice)
+		timer := clock.After(d)
+		// Re-check after arming: time that passed between the read above and
+		// After (a clock jump, a stalled goroutine) would otherwise be added to
+		// the wait, since After measures from its own call.
+		if !clock.Now().Before(t) {
+			return ctx.Err() == nil
+		}
 		select {
 		case <-ctx.Done():
 			return false
-		case <-clock.After(d):
+		case <-timer:
 		}
 	}
 }

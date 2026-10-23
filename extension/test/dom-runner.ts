@@ -125,7 +125,7 @@ async function ariaWidgets(): Promise<void> {
   const out = await fillAll(dst, bank, "x.example");
   const shown = (sel: string) => q(document, sel).parentElement!.querySelector(".select__single-value")!.textContent;
   check("combobox filled by choosing the mapped option", shown("#rs2") === "United States", String(shown("#rs2")));
-  check("combobox popup closed again", q<HTMLElement>(document, "#rs2-list").hidden);
+  check("combobox popup closed again", q<HTMLElement>(document, "#rs2-list").hidden === true);
   const radios = Array.from(dstRoot.querySelectorAll("[role=radio]"));
   check("aria radio: 'No' chosen from the other wording's intent, confident", radios[1]!.getAttribute("aria-checked") === "true" && radios[0]!.getAttribute("aria-checked") === "false" && out.find(o => o.label.startsWith("Are you willing"))?.review === false);
   check("aria switch turned on", q(dstRoot, "[role=switch]").getAttribute("aria-checked") === "true");
@@ -133,7 +133,7 @@ async function ariaWidgets(): Promise<void> {
   const chips = () => Array.from(dstRoot.querySelectorAll(".select__multi-value__label")).map(n => n.textContent).join();
   const sk = out.find(o => o.label === "Skills");
   check("multi-select combobox: each saved value chosen through its option, widget shows both", sk?.filled === true && sk.review === false && chips() === "Go,Rust", `${JSON.stringify(sk)} chips ${chips()}`);
-  check("multi-select combobox: menu closed again", q<HTMLElement>(document, "#rs4-list").hidden);
+  check("multi-select combobox: menu closed again", q<HTMLElement>(document, "#rs4-list").hidden === true);
   check("unknown question left alone", out.find(o => o.label === "Hear about us")?.reason === "no_match" && shown("#rs3") === "LinkedIn");
   const again = await fillAll(scanForm(dstRoot).refs, bank, "x.example");
   check("widgets already answered are left alone", again.filter(o => o.reason === "has_value").length === 5 && shown("#rs2") === "United States" && chips() === "Go,Rust", JSON.stringify(again.map(o => o.reason)));

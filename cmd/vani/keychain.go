@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/vault"
 )
 
-// noKeychainEnv, set to any value, stops vani reading the OpenRouter key from
+// noKeychainEnv, set to any non-empty value, stops vani reading the OpenRouter key from
 // the Keychain. Agent shells and tests set it, so a vani they start can neither
 // spend from the owner's key nor raise a Keychain prompt.
 const noKeychainEnv = "VANI_NO_KEYCHAIN"
@@ -38,8 +39,15 @@ type keychainCache struct {
 	mu      sync.Mutex
 	key     string
 	failed  bool
-	failRun int // keychainRun of the last failed read, when failed
+	failRun int    // keychainRun of the last failed read, when failed
+	why     string // what the last failed read said, for status; never the value
 }
+
+// Where a key came from (openRouterKey).
+const (
+	keyFromEnvironment = "environment"
+	keyFromKeychain    = "keychain"
+)
 
 // openRouterGetenv is jev.Config.Getenv for every OpenRouter client vani
 // builds (the run, suggest, notes, kbmatch). The environment wins. For the
@@ -57,34 +65,51 @@ type keychainCache struct {
 // not read (the app reaches it through anthropic-account, which picks the
 // workspace). The value is never logged or put in an error.
 func (w *wired) openRouterGetenv(name string) string {
-	if v := strings.TrimSpace(os.Getenv(name)); v != "" || name != w.cfg.Decide.OpenRouterKeyEnv {
-		return v
+	key, _, _ := w.openRouterKey(name)
+	return key
+}
+
+// openRouterKey is openRouterGetenv with where the key came from
+// (keyFromEnvironment or keyFromKeychain) and, when there is none, a phrase
+// saying why the Keychain gave none ("" when the environment named a key or
+// name is not the OpenRouter key variable). The phrase never carries a value.
+// The daemon announces it (daemon.model), so a status that says the model is
+// off says the truth about the Keychain too.
+func (w *wired) openRouterKey(name string) (key, from, why string) {
+	w.mu.Lock()
+	keyEnv, run := w.cfg.Decide.OpenRouterKeyEnv, w.keychainRun
+	w.mu.Unlock()
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v, keyFromEnvironment, ""
+	}
+	if name != keyEnv {
+		return "", "", ""
 	}
 	if os.Getenv(noKeychainEnv) != "" {
-		return ""
+		return "", "", "the Keychain was not read because " + noKeychainEnv + " is set"
 	}
-	w.mu.Lock()
-	run := w.keychainRun
-	w.mu.Unlock()
 	c := &w.keychain
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.key != "" {
-		return c.key
+		return c.key, keyFromKeychain, ""
 	}
 	if c.failed && c.failRun == run {
-		return ""
+		return "", "", c.why
 	}
-	key, err := keychainRead(context.Background(), vault.OpenRouterService)
-	if err != nil || key == "" {
+	k, err := keychainRead(context.Background(), vault.OpenRouterService)
+	if err != nil || k == "" {
 		c.failed, c.failRun = true, run
-		if !errors.Is(err, vault.ErrNoKeychain) {
+		if errors.Is(err, vault.ErrNoKeychain) {
+			c.why = "there is no Keychain on this platform"
+		} else {
+			c.why = fmt.Sprintf("the login Keychain item %q could not be read: %s", vault.OpenRouterService, keychainFailure(err))
 			w.warnf("openrouter key: %s is unset and the Keychain item %q could not be read: %s", name, vault.OpenRouterService, keychainFailure(err))
 		}
-		return ""
+		return "", "", c.why
 	}
-	c.key = key
-	return key
+	c.key = k
+	return k, keyFromKeychain, ""
 }
 
 // keychainFailure names why a Keychain read failed, without its text.

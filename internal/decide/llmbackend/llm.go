@@ -155,6 +155,13 @@ func userMessage(q decide.Question) string {
 	return sb.String()
 }
 
+// Messages are the system prompt and the user message a Decide of q sends, so a
+// caller can measure or fingerprint exactly what goes to the provider without
+// a second copy of the framing.
+func Messages(q decide.Question) (system, user string) {
+	return systemPrompt, userMessage(q)
+}
+
 func allSlots(name string, q decide.Question, rd decide.SlotReading) decide.Answer {
 	a := decide.Answer{Backend: name, Slots: make(map[string]decide.SlotReading, len(q.Slots))}
 	for _, s := range q.Slots {

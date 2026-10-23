@@ -1,26 +1,25 @@
 // Background service worker: the single writer to the answer bank, and the
 // keyboard shortcut. It makes no network requests.
+import { createLock } from "./guards";
 import type { Answer, Bank } from "./types";
 import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
 import {
-  type CandidateQuery,
-  listAnswers,
   logActivity,
   loadBank,
   loadSnapshot,
   migrationNote,
   nativeTransport,
   patchAnswers,
-  queryCandidates,
   replaceBank,
   storageMode,
   updateBank,
 } from "./store";
-import { type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkToBackground } from "./messages";
-import { type FanOut, type FrameStore, createFrameRegistry, toFrames } from "./frames";
+import { type FillReply, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
+import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
-import { resumeKey, runResume } from "./resume";
+import { parseFindRow } from "./jobrow";
+import { checkResumeFile, resumeKey, runResume } from "./resume";
 
 const draft = createDrafter();
 
@@ -31,12 +30,7 @@ function str(x: unknown): string {
 // Serialize every read-modify-write: two tabs capturing at once must not lose
 // one another's answers. (The store also retries on a conflicting write from
 // another process, e.g. the Safari extension.)
-let chain: Promise<unknown> = Promise.resolve();
-function locked<T>(fn: () => Promise<T>): Promise<T> {
-  const next = chain.then(fn, fn);
-  chain = next.catch(() => undefined);
-  return next;
-}
+const locked = createLock();
 
 async function update(fn: (b: Bank) => Bank): Promise<Bank> {
   return locked(() => updateBank(fn));
@@ -97,6 +91,18 @@ export function toTabFrames<T>(msg: ToContent, timeoutMs?: number): Promise<FanO
   return toFrames<T>(msg, { registered: tabId => frameRegistry.list(tabId), timeoutMs });
 }
 
+/** The origin a content script's message comes from: the browser's own `sender.origin`, else the sender URL's; null when neither is an origin. */
+function senderOrigin(sender: chrome.runtime.MessageSender): string | null {
+  const ok = (o: string): boolean => o !== "" && o !== "null";
+  if (typeof sender.origin === "string") return ok(sender.origin) ? sender.origin : null;
+  try {
+    const o = new URL(sender.url ?? "").origin;
+    return ok(o) ? o : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The tab a message acts for. A content script is always its own tab, whatever it claims; the popup is no tab and names one. */
 function actingTab(sender: chrome.runtime.MessageSender, named: unknown): number | undefined {
   if (sender.tab) return sender.tab.id;
@@ -124,6 +130,8 @@ async function askTopToShow(tabId: number): Promise<boolean> {
 
 // Navigation clears a tab's badge; put it back while the question waits, and forget a closed tab's.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
+  // A top-level navigation ends every document the tab's frames were registered for; the new page registers its own.
+  if (info.status === "loading") void frameRegistry.forget(tabId);
   if (info.status === "complete") void applied.pending(tabId).then(o => { if (o) return badge(tabId, true); }, () => undefined);
 });
 chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); void frameRegistry.forget(tabId); });
@@ -156,6 +164,17 @@ async function bumpFills(keys: string[]): Promise<void> {
   throw new Error("answer bank changed concurrently");
 }
 
+/**
+ * The Mac app screens every row again and drops the ones it classifies as secret. Those were counted
+ * as saved here; move them to skippedSecret (from added first, then updated) so the reply never
+ * claims a row the bank does not hold.
+ */
+function refusedByApp(counts: Omit<CaptureResult, "bank">, dropped: number): Omit<CaptureResult, "bank"> {
+  const n = Math.max(0, Math.min(dropped, counts.added + counts.updated));
+  const fromAdded = Math.min(n, counts.added);
+  return { ...counts, added: counts.added - fromAdded, updated: counts.updated - (n - fromAdded), skippedSecret: counts.skippedSecret + n };
+}
+
 async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.type) {
     case "getBank": {
@@ -165,17 +184,24 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "capture": {
       if (!Array.isArray(msg.fields) || msg.fields.length > 500 || typeof msg.host !== "string") return { error: "bad capture" };
       let result: Omit<CaptureResult, "bank"> | undefined;
-      if (await storageMode() === "mac-app") {
-        const b = await loadBank({ fresh: true }); // the delta is computed against this: never a window-old copy
-        const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date());
-        result = delta.counts;
-        await patchAnswers(delta.upsert, delta.deleteKeys);
-      } else {
-        await update(b => {
-          const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
-          result = counts;
-          return bank;
-        });
+      const mode = await storageMode();
+      try {
+        if (mode === "mac-app") {
+          const b = await loadBank({ fresh: true }); // the delta is computed against this: never a window-old copy
+          const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date());
+          const { droppedSecret } = await patchAnswers(delta.upsert, delta.deleteKeys);
+          result = refusedByApp(delta.counts, droppedSecret);
+        } else {
+          await update(b => {
+            const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
+            result = counts;
+            return bank;
+          });
+        }
+      } catch (e) {
+        // Say which store refused: "Mac app" and "this browser" fail for different reasons and are fixed in different places.
+        const where = mode === "mac-app" ? "the Mac app did not save it" : "this browser did not save it (the Mac app is not reachable)";
+        throw new Error(`${where}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
       }
       if (result) void logActivity({ event: "capture", host: msg.host, counts: { ...result } });
       return result;
@@ -207,24 +233,6 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       await patchAnswers([], [msg.key]);
       void logActivity({ event: "delete" });
       return { ok: true };
-    case "queryCandidates": {
-      const query = typeof msg.query === "object" && msg.query !== null ? msg.query : {};
-      const candidates = await queryCandidates(query as CandidateQuery);
-      return { candidates };
-    }
-    case "listAnswers": {
-      const offset = typeof msg.offset === "number" ? msg.offset : 0;
-      const limit = typeof msg.limit === "number" ? msg.limit : 50;
-      const search = typeof msg.search === "string" ? msg.search : undefined;
-      const res = await listAnswers(offset, limit, search);
-      return res;
-    }
-    case "patchAnswers": {
-      const upsert = Array.isArray(msg.upsert) ? (msg.upsert as Answer[]) : [];
-      const del = Array.isArray(msg.delete) ? (msg.delete as string[]) : [];
-      const res = await patchAnswers(upsert, del);
-      return res;
-    }
     case "editAnswer":
       await update(b => {
         const a = b.answers[msg.key];
@@ -268,6 +276,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     }
     case "appliedPending":
       return { offer: await applied.pending(actingTab(sender, msg.tabId)) };
+    case "jobRow":
+      return parseFindRow(await native({ op: "jobFind", url: msg.url }));
     case "appliedMark": {
       const tabId = actingTab(sender, msg.tabId);
       const r = await applied.mark(tabId);
@@ -290,7 +300,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "frameReady": {
       // Only a content script is in a frame; the popup has no tab and no frameId.
       if (sender.tab?.id === undefined || sender.frameId === undefined) return { error: "not from a frame", code: "bad_request" };
-      await frameRegistry.add(sender.tab.id, sender.frameId);
+      await frameRegistry.add(sender.tab.id, sender.frameId, senderOrigin(sender) ?? undefined);
       return { ok: true };
     }
     case "frames": {
@@ -312,8 +322,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "resumeInfo":
     case "resumePut":
     case "resumeDelete": {
-      // The bytes go only to the content script that asked, for its own tab; the popup gets the name, never the file.
-      if (msg.type === "resumeGet" && !sender.tab) return { error: "only a page being filled gets the resume", code: "bad_request" };
+      // The bytes go only to the content script that asked, for its own tab (resumeGet is content-only in
+      // the sender policy); the popup gets the name, never the file.
       // A content script acts for its own frame: the key is that frame's URL, never the one its message claims.
       // The popup is in no tab and names the active tab's page.
       const r = await runResume({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url }, native);
@@ -325,16 +335,24 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return r;
     }
     case "attachResume": {
-      const tabId = actingTab(sender, msg.tabId);
+      // Only a content script sends this (sender policy), and it acts for its own tab: never the active one,
+      // which may be a different page by the time this runs.
+      const tabId = sender.tab?.id;
       if (tabId === undefined) return { error: "no tab" };
-      const r = await toFrames<{ outcomes?: unknown[] }>({
+      // The same checks the page runs, before any frame is asked.
+      const file = checkResumeFile(msg.name, msg.pdf);
+      if ("error" in file) return file;
+      // The file's name is the owner's: it goes only to frames of the page that offered it, never to whatever
+      // else the tab now shows (it may have navigated) or to a frame of another origin.
+      const origin = senderOrigin(sender);
+      if (origin === null) return { error: "no origin" };
+      const r = await toFrames<FillReply>({
         type: "attachResume",
-        name: msg.name,
+        name: file.name,
         pdf: msg.pdf,
-        pickedAt: msg.pickedAt,
-      }, { registered: tid => frameRegistry.list(tid), tabId });
-      const outcomes = r.answered.flatMap(a => (Array.isArray(a.reply.outcomes) ? a.reply.outcomes : []));
-      return { outcomes };
+        pickedAt: msg.pickedAt.slice(0, 40),
+      }, { registered: (tid, o) => frameRegistry.list(tid, o), tabId, origin });
+      return { outcomes: mergeFill(r) };
     }
     default:
       // Unreachable for a message that passed checkToBackground; kept so a missed case answers, never `undefined`.
@@ -346,6 +364,12 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   const c = checkToBackground(raw);
   if ("error" in c) {
     sendResponse({ error: c.error });
+    return false;
+  }
+  // Who may send this type (messages.ts SENDER_POLICY): a refused sender gets an error and nothing runs.
+  const refused = checkSender(c.msg.type, sender);
+  if (refused) {
+    sendResponse(refused);
     return false;
   }
   handle(c.msg, sender).then(

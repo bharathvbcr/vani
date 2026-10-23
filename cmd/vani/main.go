@@ -29,9 +29,14 @@ const (
 const usageText = `usage: vani <command> [flags]
 
 commands:
-  init                       write a default config (refuses to overwrite)
+  version                    print the product version ("dev" unless built by scripts/release.sh)
+  init                    write a default config (refuses to overwrite)
   config check               validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
+  config exclude [--set]     print the exclusions (titles, title_unless, companies, locations,
+                             descriptions) as JSON; --set replaces them with the JSON object on
+                             stdin. The next run drops what they match and reopens what they
+                             no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
   watchlist add    --ats gh|lv|ab|wd|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
@@ -59,8 +64,31 @@ commands:
   status [--json]            show ledger counts by status; --json adds the last run's outcome,
                              today's spend against each cap and the decision-model setup
                              (reads the ledger without its lock)
+  runs list [--json]         the finished runs, newest first: every run's record is kept in
+                             <state dir>/runs/history/ (the newest 30, 4 MiB); * marks the latest
+  runs show [--json] [ID]    one run's record and failures (ID from runs list; default the latest)
+  runs failures [--json] [ID]
+                             the plain-text failure report for a run: its failed boards, backend
+                             errors, error and the log files; the Mac app's "Copy failures"
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
+  export heldout [--out PATH] owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
+  audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N]
+                             weekly stratified would-I-apply sample (deciles + drop classes);
+                             --json prints keys, strata and p_select only (no posting text),
+                             --blind hides the model's readings while you answer
+                             (audit-sample is the old name)
+  audit answer --key K --verdict yes|maybe|no|skip [--source S --p-select P]
+                             record one would-I-apply answer; the stratum and p_select come from
+                             the flags (an Explore row's, or an audit --json pick's) or the draw
+  relevance [-k LIST]        precision@k, drop misses and backend reliability from would_apply labels
+  rankfit [--part all|platt|weights] [--dry-run] [--labels DIR] [--out FILE] [--seed N]
+          [--lambda X] [--holdout PCT] [--max-pairs N]
+                             fit Score's per-backend calibration (eval slot labels, 100 judged
+                             postings per backend) and shares (150 usable would_apply answers
+                             from vani audit, plus marks and impressions) to a rank weights file;
+                             refuses below the thresholds and writes nothing. Use it by setting
+                             rank_weights_file
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup COMPANY         show the sponsorship-history badge for a company
   employer import FILE.csv   import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)
@@ -82,18 +110,31 @@ commands:
                              the target summary and a bounded digest of the bank to the provider;
                              the answers only order and explain)
   kbmatch status             how many answers are kept and current
-  jobs list [--json] [--view new|saved|applied|hidden|all] [--q TEXT] [--limit N]
+  teacher [--dry-run] [--budget-usd N] [--model M] [--of BACKEND] [--concurrency N] [--max N]
+                             have the llm tier re-read the postings the decision model triaged,
+                             with the same question, and keep its readings (teacher_readings.jsonl)
+                             for Lappi's agreement filter; --dry-run prices it and asks nothing;
+                             a real run needs --budget-usd and stops at the lesser of it and the
+                             daily llm cap's headroom
+  impressions log --surface jobs|audit --slate ID [--section S] [--json]
+                             record the rows a screen shows ({"rows":[{"key","position"}]} on
+                             stdin), once per slate; keys and positions only, never a title
+  labels [--json]            the label vocabularies (fit, status, category, triage options) as
+                             value and display string in display order; reads no state
+  jobs list [--json] [--view new|saved|applied|hidden|all|pending] [--q TEXT] [--limit N]
             [--sort default|priority|relevance|fresh|company] [--fit LIST]
             [--work-mode LIST] [--sponsorship LIST] [--max-age DAYS] [--open] [--half-life DAYS]
             [--state LIST] [--area LIST] [--remote | --or-remote]
                              browse retrieved roles (reads the ledger without its lock), with
                              freshness, display-only relevance/priority scores, keywords, and the
                              places and remote listing the board's location names (--or-remote:
-                             in those states/areas, or listed as remote)
+                             in those states/areas, or listed as remote). --view pending lists
+                             the postings no run has triaged yet, unranked (no fit, relevance or
+                             priority), freshest first; only list and folders take it
   jobs stats [--json] [same selection flags as list]
                              distributions over the selection: fit, age, scores, companies, keywords,
                              US states, areas and remote listings
-  jobs folders [--json] [--view new|saved|applied|hidden|all]
+  jobs folders [--json] [--view new|saved|applied|hidden|all|pending]
                              category folder counts for the selection (career tracks from drafts/deciders)
   jobs show [--json] KEY     one role with its description
   jobs find [--json] --url URL
@@ -120,9 +161,11 @@ commands:
                              through while devprism.binary was empty); status and explanation
                              are kept. DevPrism only, no model; at most N (default
                              advance_per_run). --dry-run counts without the ledger lock
-  prefilter [--list]        dry run of the title prefilter (title_signals.read with the drop
-                             rules): how many live postings it would drop before triage, and how
-                             the decision model read the ones it already read (never writes)
+  prefilter [--list]        dry run of the prefilter (exclude, and title_signals.read with the
+                             drop rules): how many live postings it would drop before triage,
+                             which kept ones the next run's exclusions drop or return to live,
+                             and how the decision model read the ones it already read (never
+                             writes)
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
               [--parallel N] [--json]
                              replay postings the primary already read through local decision
@@ -179,6 +222,16 @@ type env struct {
 	paths  config.Resolved
 	stdout io.Writer
 	stderr io.Writer
+
+	// runLog is the log file a manual run's output goes to, as its starter said
+	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it
+	// said was refused. dailyJob records it in the run record.
+	runLog string
+
+	// applied is the config the last run's reload left (reloadConfig); nil
+	// before the first. A run whose config file cannot be read falls back to it.
+	appliedMu sync.Mutex
+	applied   *config.Config
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
@@ -196,13 +249,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if paths.Warning != "" {
 		fmt.Fprintf(stderr, "vani: warning: %s\n", paths.Warning)
 	}
-	e := &env{configPath: paths.ConfigPath, stateDir: paths.StateDir, paths: paths, stdout: stdout, stderr: stderr}
+	return runEnv(&env{configPath: paths.ConfigPath, stateDir: paths.StateDir, paths: paths, stdout: stdout, stderr: stderr}, args)
+}
+
+// runEnv dispatches args against an already-resolved env. run builds the env
+// from the process environment; tests that must run in parallel build their
+// own, since t.Setenv cannot be used under t.Parallel.
+func runEnv(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	if len(args) == 0 {
+		fmt.Fprint(stderr, usageText)
+		return exitUsage
+	}
 
 	var cmdErr error
 	switch args[0] {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usageText)
 		return exitOK
+	case "version", "--version":
+		cmdErr = e.cmdVersion(args[1:])
 	case "init":
 		cmdErr = e.cmdInit(args[1:])
 	case "config":
@@ -221,6 +287,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdDigest(args[1:])
 	case "status":
 		cmdErr = e.cmdStatus(args[1:])
+	case "runs":
+		cmdErr = e.cmdRuns(args[1:])
 	case "launchd":
 		cmdErr = e.cmdLaunchd(args[1:])
 	case "lca":
@@ -231,8 +299,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdTrack(args[1:])
 	case "label":
 		cmdErr = e.cmdLabel(args[1:])
+	case "export":
+		cmdErr = e.cmdExport(args[1:])
 	case "eval":
 		cmdErr = e.cmdEval(args[1:])
+	case "rankfit":
+		cmdErr = e.cmdRankfit(args[1:])
 	case "kb":
 		cmdErr = e.cmdKB(args[1:])
 	case "draft":
@@ -243,10 +315,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdResume(args[1:])
 	case "reasons":
 		cmdErr = e.cmdReasons(args[1:])
+	case "teacher":
+		cmdErr = e.cmdTeacher(args[1:])
 	case "kbmatch":
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":
 		cmdErr = e.cmdJobs(args[1:])
+	case "impressions":
+		cmdErr = e.cmdImpressions(args[1:])
+	case "labels":
+		cmdErr = e.cmdLabels(args[1:])
 	case "retriage":
 		cmdErr = e.cmdRetriage(args[1:])
 	case "rescore":
@@ -261,6 +339,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmdErr = e.cmdSemantic(args[1:])
 	case "answers":
 		cmdErr = e.cmdAnswers(args[1:])
+	case "audit", "audit-sample": // audit-sample: the old name
+		cmdErr = e.cmdAudit(args[1:])
+	case "relevance":
+		cmdErr = e.cmdRelevance(args[1:])
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}
@@ -318,22 +400,32 @@ func (e *env) loadConfig() (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
+	e.warnDeprecated(old)
+	return cfg, nil
+}
+
+// updateConfig is config.UpdateWithDeprecations with the same warnings
+// loadConfig prints: an update rewrites the file with the new key names, so
+// the user is told which old ones it used.
+func (e *env) updateConfig(fn func(*config.Config) error) error {
+	old, err := config.UpdateWithDeprecations(e.configPath, fn)
+	e.warnDeprecated(old)
+	return err
+}
+
+func (e *env) warnDeprecated(old []string) {
 	for _, d := range old {
 		fmt.Fprintf(e.stderr, "vani: config %s: %s\n", e.configPath, d)
 	}
-	return cfg, nil
 }
 
 func (e *env) cmdInit(args []string) error {
 	if err := parse(e.newFlags("init"), args); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(e.configPath); err == nil {
+	if err := config.Create(e.configPath, config.Default()); errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("%s already exists; refusing to overwrite", e.configPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := config.Save(e.configPath, config.Default()); err != nil {
+	} else if err != nil {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "wrote %s\nstate dir: %s\n", e.configPath, e.stateDir)
@@ -344,8 +436,11 @@ func (e *env) cmdConfig(args []string) error {
 	if len(args) > 0 && args[0] == "motivation" {
 		return e.cmdConfigMotivation(args[1:])
 	}
+	if len(args) > 0 && args[0] == "exclude" {
+		return e.cmdConfigExclude(args[1:])
+	}
 	if len(args) == 0 || args[0] != "check" {
-		return usagef("config: expected subcommand \"check\" or \"motivation\"")
+		return usagef("config: expected subcommand \"check\", \"motivation\" or \"exclude\"")
 	}
 	if err := parse(e.newFlags("config check"), args[1:]); err != nil {
 		return err
@@ -377,7 +472,19 @@ func (e *env) cmdDaemon(args []string) error {
 	// The ledger is held from here on, so this process is the daemon: run
 	// requests (runrequest.go) find it through daemon.json.
 	pid := os.Getpid()
-	if err := writeDaemonRecord(e.stateDir, pid, now()); err != nil {
+	// It says whether it has the decision model's key, from its environment or
+	// from the login Keychain (the one read, bounded, kept for the process): a
+	// daemon without one runs with the model disabled, loudly.
+	var model *daemonModel
+	if app.ModelKey != nil {
+		model = daemonModelFor(cfg, app.ModelKey)
+	} else {
+		model = daemonModelOf(cfg, os.Getenv)
+	}
+	if model != nil && !model.Enabled {
+		fmt.Fprintf(e.stderr, "vani: daemon: %s\n", model.Reason)
+	}
+	if err := writeDaemonAnnouncement(e.stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: now(), Model: model}); err != nil {
 		return fmt.Errorf("announcing the daemon: %w", err)
 	}
 	defer func() {
@@ -391,7 +498,19 @@ func (e *env) cmdDaemon(args []string) error {
 	// A manual run that leaves the ledger unusable ends the daemon as a
 	// scheduled one does: cancelling ctx ends daemon.Run, and fatal is returned.
 	ctx, cancel := context.WithCancel(sigCtx)
-	var fatal error
+	var (
+		fatal   error
+		fatalMu sync.Mutex
+	)
+	// setFatal records the first error that must end the daemon and stops it.
+	setFatal := func(err error) {
+		fatalMu.Lock()
+		if fatal == nil {
+			fatal = err
+		}
+		fatalMu.Unlock()
+		cancel()
+	}
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
 	// The daily run, the inbox poll and a requested manual run all write the
 	// ledger: one at a time.
@@ -413,7 +532,9 @@ func (e *env) cmdDaemon(args []string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.pollInboxLoop(ctx, app.PollInbox, &ledgerMu)
+			if err := e.pollInboxLoop(ctx, e.inboxPoll(app, cfg), &ledgerMu, app.Ledger); err != nil {
+				setFatal(err)
+			}
 		}()
 	}
 	manual := func(ctx context.Context, opts runOptions) error {
@@ -424,13 +545,14 @@ func (e *env) cmdDaemon(args []string) error {
 		defer wg.Done()
 		if err := e.pollRequestLoop(ctx, manual, &ledgerMu); err != nil {
 			fmt.Fprintf(e.stderr, "vani: requested manual run failed, exiting: %v\n", err)
-			fatal = err
-			cancel()
+			setFatal(err)
 		}
 	}()
 	err = daemon.Run(ctx, cfg.Schedule, job, daemonClock)
 	cancel()
 	wg.Wait()
+	fatalMu.Lock()
+	defer fatalMu.Unlock()
 	if err == nil {
 		err = fatal
 	}
@@ -443,19 +565,38 @@ var inboxPollInterval = 2 * time.Minute
 
 // pollInboxLoop calls poll every inboxPollInterval, holding mu so it never
 // overlaps the daily run, until ctx ends. A failed or panicking poll is
-// reported and the loop goes on: the spooled files stay for the next one.
-func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex) {
+// reported and the loop goes on: the spooled files stay for the next one. A
+// poll that leaves the ledger unusable ends the loop with daemon.ErrFatal, as a
+// run does (ledgerBroken): the daemon exits within one poll interval instead of
+// holding a poisoned ledger until the next daily slot.
+func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex, led ledger.Ledger) error {
 	t := time.NewTicker(inboxPollInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-t.C:
 		}
 		if err := e.pollInboxOnce(ctx, poll, mu); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
 		}
+		if err := ledgerBroken(led); err != nil {
+			return err
+		}
+	}
+}
+
+// inboxPoll is app.PollInbox as the daemon calls it: the config is re-read
+// first, as a run does (reloadConfig), so a poll advances new postings under
+// the exclusions saved since the last one. An unreadable config is said and the
+// poll goes on with the previous one.
+func (e *env) inboxPoll(app *App, cfg config.Config) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if _, err := e.reloadConfig(app, cfg, nil); err != nil {
+			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
+		}
+		return app.PollInbox(ctx)
 	}
 }
 
@@ -464,7 +605,7 @@ func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) erro
 	defer mu.Unlock()
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v", p)
+			err = fmt.Errorf("panic: %s", panicText(p))
 		}
 	}()
 	return poll(ctx)
@@ -487,6 +628,7 @@ func (e *env) cmdRunOnce(args []string) error {
 	if err := checkRunOptions(opts, cfg.Watchlist); err != nil {
 		return err
 	}
+	e.useRunLog()
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
 	if errors.Is(err, ledger.ErrLocked) {
 		hint := "the daemon, or a run-once, rescore or retriage still going; try again when it is done"

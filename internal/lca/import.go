@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/indexutil"
 )
 
 // Skip reasons recorded in SourceMeta.Skipped.
@@ -67,11 +69,6 @@ var (
 	dateAliases = []string{"DECISION_DATE", "RECEIVED_DATE", "CASE_SUBMITTED", "LCA_CASE_SUBMIT"}
 )
 
-func canonHeader(s string) string {
-	s = strings.ToUpper(strings.TrimSpace(s))
-	return strings.Join(strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '-' }), "_")
-}
-
 type columns struct {
 	employer, status, visa int
 	dates                  []int
@@ -80,7 +77,7 @@ type columns struct {
 func resolveColumns(header []string) (columns, error) {
 	idx := make(map[string]int, len(header))
 	for i, h := range header {
-		k := canonHeader(h)
+		k := indexutil.CanonHeader(h)
 		if _, dup := idx[k]; !dup {
 			idx[k] = i
 		}

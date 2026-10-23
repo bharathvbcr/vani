@@ -94,8 +94,10 @@ final class PayTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: state) }
         let ledger = state.appendingPathComponent("ledger")
         try FileManager.default.createDirectory(at: ledger, withIntermediateDirectories: true)
+        // Titles differ by key: vani folds exact company+title duplicates into one row
+        // in the ranked "new" view (jobs list, b4518a6), so a shared title would hide rows.
         func line(_ key: String, _ desc: String) -> String {
-            #"{"v":1,"at":"2026-10-18T12:00:00Z","key":"\#(key)","status":"digested","posting":{"key":"\#(key)","ats":"gh","company":"Acme","title":"Engineer","url":"https://boards.example.com/1","description":"\#(desc)","seen_at":"2026-10-18T12:00:00Z"},"annotations":{"triage.seniority":"senior"}}"#
+            #"{"v":1,"at":"2026-10-18T12:00:00Z","key":"\#(key)","status":"digested","posting":{"key":"\#(key)","ats":"gh","company":"Acme","title":"Engineer \#(key)","url":"https://boards.example.com/1","description":"\#(desc)","seen_at":"2026-10-18T12:00:00Z"},"annotations":{"triage.seniority":"senior"}}"#
         }
         let lines = [line("gh:acme:hi", "Salary: $180,000 - $220,000"), line("gh:acme:lo", "Salary: $90,000 - $110,000"),
                      line("gh:acme:none", "Competitive pay.")]

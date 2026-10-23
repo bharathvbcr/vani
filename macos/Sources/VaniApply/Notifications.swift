@@ -10,7 +10,9 @@ import VaniApplyKit
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let model: AppModel
     let jobs: JobsModel
+    let audit: AuditModel
     let pipeline: PipelineModel
+    let exclusions: ExclusionsEditor
     private var pollTask: Task<Void, Never>?
 
     override init() {
@@ -22,12 +24,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         let model = AppModel(autoRegisterAgent: launch.mode == .register)
         self.model = model
-        jobs = JobsModel { model.jobsClient }
+        let jobs = JobsModel { model.jobsClient }
+        self.jobs = jobs
+        // A saved exclusion re-lists Jobs, which hides the roles it matches.
+        exclusions = ExclusionsEditor(client: { model.draftSettings.exclusionsClient(vaniBinary: model.vaniBinary) },
+                                      onSaved: { jobs.reload() })
+        audit = AuditModel { model.auditClient }
         // Without a bundle (a bare `swift run`) there is no notification center,
         // so the app announces nothing and leaves the notifier lock, and with it
-        // the run notices, to the daemon.
+        // the run notices, to the daemon. A launch by the daemon to announce a
+        // run (AnnounceLaunch) also announces the run that just finished.
         let announcer = Bundle.main.bundleIdentifier == nil ? nil
-            : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock())
+            : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock(),
+                           handoffGrace: AnnounceLaunch.handoffGrace(arguments: CommandLine.arguments))
         pipeline = PipelineModel(client: { model.pipelineClient }, launcher: { model.manualRunLauncher }, announcer: announcer)
         super.init()
     }
@@ -40,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         if Bundle.main.bundleIdentifier != nil { Self.requestPermissionOnce() }
         pollTask = Task { [pipeline] in await pipeline.poll() }
+        // The label table is read once at launch, before any pane shows a menu or a chart.
+        Task { [jobs] in await jobs.loadLabels() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

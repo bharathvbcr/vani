@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -50,7 +51,7 @@ func TestJobsPlacesAndRemoteListed(t *testing.T) {
 	seedLocations(t, state)
 	l := listJSON(t, "--view", "all")
 	ep := findJob(t, l, "gh:a:ep")
-	if len(ep.Places) != 1 || ep.Places[0] != (placeJSON{Area: "El Paso", State: "TX"}) || ep.RemoteListed {
+	if len(ep.Places) != 1 || ep.Places[0] != (jobview.Place{Area: "El Paso", State: "TX"}) || ep.RemoteListed {
 		t.Errorf("El Paso: %+v remote %v", ep.Places, ep.RemoteListed)
 	}
 	if r := findJob(t, l, "gh:b:rus"); !r.RemoteListed || r.RemoteScope != "US" || len(r.Places) != 0 {
@@ -65,7 +66,7 @@ func TestJobsPlacesAndRemoteListed(t *testing.T) {
 	}
 	// jobs show carries the same fields.
 	o, _ := mustCode(t, 0, "jobs", "show", "--json", "gh:a:lc")
-	var j jobJSON
+	var j jobview.Job
 	if err := json.Unmarshal([]byte(o), &j); err != nil || len(j.Places) != 2 || j.Places[0].State != "NM" {
 		t.Errorf("show %q: %v", o, err)
 	}
@@ -125,7 +126,7 @@ func TestJobsLocationStats(t *testing.T) {
 	fixedNow(t)
 	seedLocations(t, state)
 	o, _ := mustCode(t, 0, "jobs", "stats", "--json", "--view", "all")
-	var s jobsStatsJSON
+	var s jobview.Stats
 	if err := json.Unmarshal([]byte(o), &s); err != nil {
 		t.Fatalf("stats %q: %v", o, err)
 	}
@@ -137,7 +138,7 @@ func TestJobsLocationStats(t *testing.T) {
 	if s.RemoteListed != 2 || s.RemoteScope["US"] != 1 || s.RemoteScope["unstated"] != 1 {
 		t.Errorf("remote %d %+v", s.RemoteListed, s.RemoteScope)
 	}
-	if len(s.Area) == 0 || s.Area[0] != (areaStatJSON{Area: "El Paso", State: "TX", N: 2}) {
+	if len(s.Area) == 0 || s.Area[0] != (jobview.AreaStat{Area: "El Paso", State: "TX", N: 2}) {
 		t.Errorf("area %+v", s.Area)
 	}
 	o, _ = mustCode(t, 0, "jobs", "stats", "--json", "--remote")
@@ -191,11 +192,11 @@ func TestJobsTextListShowsWhere(t *testing.T) {
 			t.Errorf("text list missing %q:\n%s", want, o)
 		}
 	}
-	if got := whereText(jobJSON{}); got != "" {
+	if got := whereText(jobview.Job{}); got != "" {
 		t.Errorf("empty location: %q", got)
 	}
 	// A record with no places (read before parsing ran) that only says remote.
-	if got := whereText(jobJSON{Location: "Remote - US", Remote: true}); got != " · Remote" {
+	if got := whereText(jobview.Job{Location: "Remote - US", Remote: true}); got != " · Remote" {
 		t.Errorf("no places, remote text: %q", got)
 	}
 }

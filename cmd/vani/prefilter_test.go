@@ -50,7 +50,7 @@ func TestPrefilterDryRun(t *testing.T) {
 	cfgPath, stateDir := setup(t)
 	mustCode(t, 0, "init")
 	out, _ := mustCode(t, 0, "prefilter")
-	if !strings.Contains(out, "title prefilter is off") {
+	if !strings.Contains(out, "prefilter is off") {
 		t.Fatalf("no read entries: %q", out)
 	}
 

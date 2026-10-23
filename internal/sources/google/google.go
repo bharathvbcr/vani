@@ -75,7 +75,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if len(terms) > sources.MaxSearches {
 		return nil, fmt.Errorf("google %q: %d searches, more than %d", b.Token, len(terms), sources.MaxSearches)
 	}
-	if err := checkFilters(b.Filters); err != nil {
+	if err := sources.CheckFilters(posting.Google, b.Filters); err != nil {
 		return nil, fmt.Errorf("google %q: %w", b.Token, err)
 	}
 	seen := s.now()
@@ -109,19 +109,6 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 	}
 	return out, nil
-}
-
-func checkFilters(f map[string][]string) error {
-	allowed := sources.FilterKeys[posting.Google]
-	for k, vs := range f {
-		if !slices.Contains(allowed, k) {
-			return fmt.Errorf("filter %q is not one of %s", k, strings.Join(allowed, ", "))
-		}
-		if len(vs) == 0 {
-			return fmt.Errorf("filter %q has no value", k)
-		}
-	}
-	return nil
 }
 
 // searchURL is page 1 of a term's results with the filters applied, in a

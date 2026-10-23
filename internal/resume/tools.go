@@ -18,7 +18,8 @@ type modelArgs struct {
 // Gap calls resume_gap_analysis. Mapping (output shape: mcp/tools_resume.rs
 // :637-647, items in career_match/gap.rs:51-69):
 //
-//	coveragePercentage -> Gap.CoveragePct
+//	coveragePercentage -> Gap.CoveragePct (null, DevPrism's answer for a JD with no
+//	                      must-have skills, is read only then: Gap.NoMustHaves, CoveragePct 0)
 //	mustHave.items[]   -> Gap.MustHaves {skill -> Requirement, status -> Status}
 //
 // Status is "covered", "weak" or "missing" (gap.rs:21-27).
@@ -28,7 +29,9 @@ func (c *Client) Gap(ctx context.Context, jd, personaID string) (Gap, error) {
 		return Gap{}, err
 	}
 	var out struct {
-		CoveragePercentage *float64 `json:"coveragePercentage"`
+		// Raw, so an absent key (nil) is told from an explicit null.
+		CoveragePercentage json.RawMessage `json:"coveragePercentage"`
+		ExtractionEmpty    bool            `json:"extractionEmpty"`
 		MustHave           *struct {
 			Items []struct {
 				Skill  string `json:"skill"`
@@ -39,7 +42,20 @@ func (c *Client) Gap(ctx context.Context, jd, personaID string) (Gap, error) {
 	if err := json.Unmarshal(raw, &out); err != nil || out.CoveragePercentage == nil || out.MustHave == nil {
 		return Gap{}, fmt.Errorf("%w: resume_gap_analysis", ErrMalformed)
 	}
-	g := Gap{CoveragePct: *out.CoveragePercentage, MustHaves: make([]Coverage, 0, len(out.MustHave.Items))}
+	// DevPrism reports a null coverage for a JD with no must-have skills (it
+	// used to report 0). Null is valid only then; beside must-haves it is not
+	// a measurement and not "no must-haves".
+	var pct *float64
+	if err := json.Unmarshal(out.CoveragePercentage, &pct); err != nil {
+		return Gap{}, fmt.Errorf("%w: resume_gap_analysis coveragePercentage", ErrMalformed)
+	}
+	if pct == nil && !out.ExtractionEmpty && len(out.MustHave.Items) > 0 {
+		return Gap{}, fmt.Errorf("%w: resume_gap_analysis coveragePercentage is null with must-haves", ErrMalformed)
+	}
+	g := Gap{MustHaves: make([]Coverage, 0, len(out.MustHave.Items))}
+	if pct != nil {
+		g.CoveragePct = *pct
+	}
 	for _, it := range out.MustHave.Items {
 		switch it.Status {
 		case "covered", "weak", "missing":
@@ -48,6 +64,7 @@ func (c *Client) Gap(ctx context.Context, jd, personaID string) (Gap, error) {
 		}
 		g.MustHaves = append(g.MustHaves, Coverage{Requirement: it.Skill, Status: it.Status})
 	}
+	g.NoMustHaves = out.ExtractionEmpty || len(g.MustHaves) == 0
 	return g, nil
 }
 

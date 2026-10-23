@@ -3,6 +3,8 @@
 // and job boards (LinkedIn, Indeed, etc.), providing portal-tailored guidance,
 // step detection, and form interaction tips.
 
+import { isWorkdaySharedHost, workdaySharedPath } from "./applied";
+
 export type PortalId =
   | "greenhouse"
   | "lever"
@@ -40,10 +42,18 @@ export interface QueryableDoc {
  * Whether a Workday page lists postings. A careers site's name is the tenant's own ("UTstaff",
  * "External_Careers"), so a listing is told by what it is not: on myworkdayjobs.com every path
  * that is not one posting (/job/ or /details/, apply steps included) or a login is a listing.
- * Rendered jobTitle anchors mark one anywhere, and other Workday hosts keep the path hints.
+ * Rendered jobTitle anchors mark one anywhere, and other Workday hosts keep the path hints. On the
+ * shared host wd{N}.myworkdaysite.com the site's own page, [locale/]recruiting/{tenant}/{site}, is
+ * the listing; anything below it (a posting, its apply steps, a login) is not, and a path that names
+ * no tenant or site is no board. `path` is lowercased.
  */
 function isWorkdayBoard(host: string, path: string, qa: (sel: string) => unknown[]): boolean {
   if (qa("a[data-automation-id='jobTitle']").length > 0) return true;
+  if (isWorkdaySharedHost(host)) {
+    const segs = path.split("/").filter(Boolean);
+    if (segs[0] && /^[a-z]{2}(-[a-z]{2,4})?$/.test(segs[0])) segs.shift();
+    return workdaySharedPath(segs)?.rest.length === 0;
+  }
   if (!host.includes("myworkdayjobs.com")) return path.includes("/search") || path.includes("/jobs");
   return !/\/(job|details|login)(\/|$)/.test(path);
 }
@@ -62,7 +72,7 @@ export function detectPortal(
   const qa = (sel: string): unknown[] => (currentDoc?.querySelectorAll ? Array.from(currentDoc.querySelectorAll(sel)) : []);
 
   // 1. Workday
-  if (host.includes("myworkdayjobs.com") || host.includes("workday.com")) {
+  if (host.includes("myworkdayjobs.com") || host.includes("workday.com") || isWorkdaySharedHost(host)) {
     let stepInfo: PortalInfo["stepInfo"] | undefined;
     // Workday multi-step indicator
     const stepEls = qa("[data-automation-id*='progressStep'], [data-automation-id*='stepItem']") as Array<{

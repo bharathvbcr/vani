@@ -29,7 +29,7 @@ private func iso(_ d: Date) -> String {
 
 /// What `vani status --json` printed for a healthy install, with Go's times.
 private func statusReply(lastRun: String? = nil, backends: String? = nil, ledgerOK: Bool = true,
-                         version: Int = 1, generated: Date = now) -> String {
+                         version: Int = 1, generated: Date = now, scheduleExtra: String = "") -> String {
     let finished = iso(now.addingTimeInterval(-3 * 3600))
     let started = iso(now.addingTimeInterval(-3 * 3600 - 312))
     return """
@@ -37,7 +37,7 @@ private func statusReply(lastRun: String? = nil, backends: String? = nil, ledger
     "config":{"ok":true,"boards":42},\
     "ledger":{"ok":\(ledgerOK),\(ledgerOK ? "" : #""reason":"ledger: corrupt events file","#)"exists":true,"path":"/s/ledger","total":812,"by_status":{"digested":300,"dead":200,"dropped":250,"unsure":12,"live":50}},\
     "last_run":\(lastRun ?? #"{"ok":true,"state":"ok","started_at":"\#(started)","finished_at":"\#(finished)","duration_sec":312.4,"postings_before":780,"postings_after":812,"counts_before":{"live":10,"digested":300,"dropped":240,"dead":200,"unsure":30},"counts_after":{"live":50,"digested":300,"dropped":250,"dead":200,"unsure":12}}"#),\
-    "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-15T15:30:00Z"},\
+    "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-15T15:30:00Z"\(scheduleExtra)},\
     "backends":\(backends ?? #"{"ok":true,"day":"2026-10-14","items":[{"ok":true,"name":"d1-ultra","kind":"openrouter","cap_usd":0.25,"spent_usd":0.1,"remaining_usd":0.15},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0.7,"remaining_usd":0.3}]}"#),\
     "decide":{"ok":true,"shadow":"local","local_configured":true,"local_mode":"server","local_model":"d1-3b","lappi_configured":false}}
     """
@@ -48,6 +48,15 @@ private func decode(_ s: String) throws -> PipelineStatus {
 }
 
 final class PipelineTests: XCTestCase {
+    func testANoticeVersionThisAppDoesNotReadIsAWarning() throws {
+        let finished = iso(now.addingTimeInterval(-3 * 3600)), started = iso(now.addingTimeInterval(-3 * 3600 - 312))
+        let run = #"{"ok":true,"state":"ok","started_at":"\#(started)","finished_at":"\#(finished)","notice":{"v":2,"announce":false}}"#
+        let issue = try XCTUnwrap(decode(statusReply(lastRun: run)).issues(at: now).first)
+        XCTAssertEqual(issue.title, "Run notices are off")
+        XCTAssertEqual(issue.severity, .warning)
+        XCTAssertEqual(issue.detail, "vani's run notice is version 2; this app reads version 1. Rebuild the app.")
+    }
+
     func testDecodesAHealthyStatusWithGoTimes() throws {
         let s = try decode(statusReply())
         XCTAssertEqual(s.version, 1)
@@ -67,6 +76,62 @@ final class PipelineTests: XCTestCase {
         XCTAssertTrue(s.decide.localConfigured)
         XCTAssertEqual(s.issues(at: now), [])
         XCTAssertEqual(s.health(at: now), .healthy)
+    }
+
+    // MARK: - The schedule is only kept by a running daemon
+
+    private func unkept(overdue: Bool = true, awaiting: Int? = 8525, lastRunHoursAgo: Double? = 30) -> String {
+        var f = [#""why":"no daemon has announced itself""#, #""overdue":\#(overdue)"#, #""hint":"a daemon keeps the schedule""#]
+        if let h = lastRunHoursAgo { f.append(#""last_run_at":"\#(iso(now.addingTimeInterval(-h * 3600)))""#) }
+        if let n = awaiting { f.append(#""awaiting_triage":\#(n),"advance_per_run":750,"runs_needed":\#((n + 749) / 750)"#) }
+        return #","kept":false,"unkept":{\#(f.joined(separator: ","))}"#
+    }
+
+    func testAScheduleNothingKeepsIsAWarningWithWhatItCost() throws {
+        let s = try decode(statusReply(scheduleExtra: unkept()))
+        let issue = try XCTUnwrap(s.issues(at: now).first)
+        XCTAssertEqual(issue.title, "The daily schedule is not being kept")
+        XCTAssertEqual(issue.severity, .warning)
+        let detail = try XCTUnwrap(issue.detail)
+        for want in ["No daemon is running, so nothing fires the 08:30 run.", "Last run 30 h ago and the scheduled run is overdue.",
+                     "8525 postings await triage (about 12 runs at advance_per_run 750).", "Use Run Now with a higher advance cap."] {
+            XCTAssertTrue(detail.contains(want), "\(want) missing from: \(detail)")
+        }
+        XCTAssertEqual(s.health(at: now), .warning)
+    }
+
+    func testAKeptScheduleAndOldAndUnknownReportsAreQuiet() throws {
+        // A running daemon, a vani that predates the field, and one that could not
+        // tell (kept absent) all raise nothing about the schedule.
+        for extra in [#","kept":true"#, ""] {
+            XCTAssertEqual(try decode(statusReply(scheduleExtra: extra)).issues(at: now), [], extra)
+        }
+    }
+
+    func testAnUnkeptScheduleWithNothingOverdueOrWaitingIsQuiet() throws {
+        let s = try decode(statusReply(scheduleExtra: unkept(overdue: false, awaiting: 0)))
+        XCTAssertEqual(s.issues(at: now), [])
+        // Not knowing the backlog or the overdue state is not "nothing waits".
+        let unknown = try decode(statusReply(scheduleExtra: #","kept":false,"unkept":{"hint":"h"}"#))
+        XCTAssertEqual(unknown.issues(at: now), [])
+    }
+
+    func testEitherOverdueOrABacklogIsEnoughToWarn() throws {
+        let overdueOnly = try decode(statusReply(scheduleExtra: unkept(overdue: true, awaiting: 0)))
+        XCTAssertEqual(overdueOnly.issues(at: now).map(\.title), ["The daily schedule is not being kept"])
+        XCTAssertFalse(try XCTUnwrap(overdueOnly.issues(at: now).first?.detail).contains("await triage"))
+        let backlogOnly = try decode(statusReply(scheduleExtra: unkept(overdue: false, awaiting: 1, lastRunHoursAgo: 1)))
+        let detail = try XCTUnwrap(backlogOnly.issues(at: now).first?.detail)
+        XCTAssertTrue(detail.contains("1 posting awaits triage"), detail)
+        XCTAssertTrue(detail.contains("about 1 run at advance_per_run 750"), detail)
+        XCTAssertFalse(detail.contains("overdue"), detail)
+    }
+
+    func testNoRunRecordedReadsAsOverdueWithNoLastRunTime() throws {
+        let s = try decode(statusReply(scheduleExtra: unkept(lastRunHoursAgo: nil)))
+        let detail = try XCTUnwrap(s.issues(at: now).first?.detail)
+        XCTAssertTrue(detail.contains("No run is recorded, so the scheduled run is overdue."), detail)
+        XCTAssertFalse(detail.contains("Last run"), detail)
     }
 
     /// Captured from `vani status --json` on a fresh state folder with a failed
@@ -257,6 +322,33 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(s.health(at: now), .healthy)
     }
 
+    /// The Microsoft case: a host kept answering 429, so the board is `failed` in the
+    /// totals (older readers count it) and `rate_limited` on its own entry.
+    private static let runWithRateLimitedBoard = #"{"ok":true,"state":"ok","boards":{"configured":3,"read":1,"failed":2,"rate_limited":1,"skipped":0,"listed":4,"items":[{"ats":"ef","token":"microsoft.com","company":"Microsoft","outcome":"rate_limited","error":"eightfold \"microsoft.com\": search \"LLM inference\": sources: rate limited by apply.careers.microsoft.com (HTTP 429), retry next run (GET /api/pcsx/search: gave up after 5 attempts)"},{"ats":"wd","token":"intel/External","company":"Intel","outcome":"failed","error":"http 500"},{"ats":"gh","token":"a","outcome":"read","listed":4}]}}"#
+
+    func testARateLimitedBoardIsToldApartFromABrokenOne() throws {
+        let s = try decode(statusReply(lastRun: Self.runWithRateLimitedBoard))
+        let b = try XCTUnwrap(s.lastRun.boards)
+        XCTAssertEqual(b.items.map(\.outcome), [.rateLimited, .failed, .read])
+        XCTAssertEqual(b.rateLimited, 1)
+        XCTAssertEqual(b.unreadCount, 2, "a rate-limited board is still a board that was not read")
+        XCTAssertEqual(b.outcome, "2 failed (1 rate limited, tried again next run); their postings were left as they were")
+        XCTAssertEqual(b.problems().map(\.outcome), ["rate limited", "failed"])
+        XCTAssertTrue(try XCTUnwrap(b.problems().first).error.contains("rate limited by apply.careers.microsoft.com (HTTP 429), retry next run"))
+        XCTAssertNil(b.moreNote())
+        XCTAssertEqual(s.health(at: now), .warning)
+    }
+
+    func testAVaniWithoutTheRateLimitedKeyDecodesAsBefore() throws {
+        // runWithBoards has no rate_limited total: 0, and the wording is the old one.
+        let b = try XCTUnwrap(try decode(statusReply(lastRun: Self.runWithBoards)).lastRun.boards)
+        XCTAssertEqual(b.rateLimited, 0)
+        XCTAssertEqual(b.outcome, "1 failed, 1 skipped; their postings were left as they were")
+        // A total that claims more rate-limited boards than failed ones is clamped, not echoed.
+        let odd = PipelineStatus.LastRun.Boards(configured: 1, read: 0, failed: 1, rateLimited: 7, listed: 0)
+        XCTAssertEqual(odd.outcome, "1 failed (1 rate limited, tried again next run); their postings were left as they were")
+    }
+
     func testBoardsCutByVaniAndNotReached() throws {
         // A cancelled run: one read, one failed mid-listing, one never tried;
         // and a report whose items vani cut (only the totals are whole).
@@ -307,8 +399,6 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try stop("none_read").stopped, .noneRead)
         XCTAssertEqual(try stop("none_read").stopNote, "Stopped: no decision backend read any posting.")
         XCTAssertEqual(try stop("cancelled").stopNote, "Stopped: the run was cancelled.")
-        XCTAssertEqual(try stop("no_backend").stopped, .noBackend)
-        XCTAssertEqual(try stop("no_backend").stopNote, "Not run: no decision backend is set up; the boards were listed only.")
         XCTAssertEqual(try stop("fail_streak").stopped, .failStreak)
         XCTAssertEqual(try stop("fail_streak").stopNote, "Stopped early: several postings in a row failed a stage (scoring or explaining).")
         XCTAssertEqual(try stop("none_advanced").stopped, .noneAdvanced)
@@ -460,6 +550,42 @@ final class PipelineTests: XCTestCase {
         let big = try fakeStatusVani(self, reply: String(repeating: "x", count: PipelineClient.maxOutputBytes + 10))
         XCTAssertThrowsError(try PipelineClient(vaniBinary: big).status()) {
             XCTAssertTrue(String(describing: $0).contains("larger than"), "\($0)")
+        }
+    }
+
+    // MARK: the daemon's decision model
+
+    private func withDaemon(_ daemon: String) throws -> PipelineStatus {
+        try decode(String(statusReply().dropLast()) + #","daemon":\#(daemon)}"#)
+    }
+
+    /// A daemon started without the decision key keeps the schedule and triages nothing: the
+    /// Pipeline tab says so, with vani's reason.
+    func testADaemonWithTheModelDisabledIsAWarning() throws {
+        let s = try withDaemon(#"{"ok":true,"running":true,"pid":77,"model":{"enabled":false,"key_env":"OPENROUTER_API_KEY","reason":"OPENROUTER_API_KEY is not set in the daemon's environment"}}"#)
+        XCTAssertEqual(s.daemon?.model, PipelineStatus.Daemon.Model(enabled: false, keyEnv: "OPENROUTER_API_KEY",
+                                                                  reason: "OPENROUTER_API_KEY is not set in the daemon's environment"))
+        let issue = try XCTUnwrap(s.issues(at: now).first { $0.title == "The daemon's decision model is off" })
+        XCTAssertEqual(issue.severity, .warning)
+        XCTAssertEqual(issue.detail, "OPENROUTER_API_KEY is not set in the daemon's environment")
+    }
+
+    func testAnEnabledOrUnreportedOrStaleModelIsNoWarning() throws {
+        let off = #"{"enabled":false,"reason":"x"}"#
+        for daemon in [#"{"ok":true,"running":true,"model":{"enabled":true,"key_env":"OPENROUTER_API_KEY"}}"#,
+                       #"{"ok":true,"running":true}"#,
+                       #"{"ok":true,"running":false,"model":\#(off)}"#] {
+            XCTAssertEqual(try withDaemon(daemon).issues(at: now), [], daemon)
+        }
+    }
+
+    /// A model section in a shape this app does not know is no claim either way: the daemon
+    /// still reads as running, with no model state.
+    func testAMalformedModelSectionDoesNotHideTheDaemon() throws {
+        for model in [#""yes""#, #"{"enabled":"maybe"}"#, "null", "[]"] {
+            let s = try withDaemon(#"{"ok":true,"running":true,"pid":9,"model":\#(model)}"#)
+            XCTAssertEqual(s.daemon?.running, true, model)
+            XCTAssertNil(s.daemon?.model, model)
         }
     }
 }

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -34,13 +35,12 @@ import (
 // daily cap; `--dry-run` says what it would send and cost.
 //
 // Three models can take part, each doing what it is good at:
-//   - the embedding model (EmbeddingGemma 2 through Tessl, on this machine)
-//     picks, for each posting, the knowledge-base lines closest to it, so the
-//     question carries the evidence that bears on that posting and is shorter;
-//   - the decision model (Liquid d1-ultra over OpenRouter, kbmatch.backend
-//     "liquid"; "jev" is its deprecated name) or the llm (Claude through
-//     Manvi, kbmatch.backend "llm", on kbmatch.model, else llm.triage_model,
-//     else llm.model) reads the duties and answers.
+//   - the embedding model (EmbeddingGemma, on this machine) picks, for each
+//     posting, the knowledge-base lines closest to it, so the question carries
+//     the evidence that bears on that posting and is shorter;
+//   - the decision model (Liquid D over OpenRouter, kbmatch.backend
+//     "openrouter") or the llm (kbmatch.backend "llm", on kbmatch.model, else
+//     llm.triage_model, else llm.model) reads the duties and answers.
 
 const (
 	defaultKBMatchTop  = 40
@@ -57,15 +57,20 @@ const (
 var (
 	// kbmatchProvider builds the metered llm provider.
 	kbmatchProvider = func(ctx context.Context, w *wired) (llm.Provider, error) { return w.provider(ctx) }
-	// kbmatchEndpoint points the decision-model client (decide/jev, the OpenRouter
-	// client) at a test server; empty is OpenRouter.
+	// kbmatchEndpoint points the decision model's client at a test server; empty is OpenRouter.
 	kbmatchEndpoint string
-	// kbmatchDoer is the egress client the decision-model backend uses.
+	// kbmatchLockWait is how long a run waits for another run's lock before it
+	// says the store is busy.
+	kbmatchLockWait = 10 * time.Second
+	// kbmatchAfterOpen runs once the store is open (a seam for tests; a real run
+	// does nothing here).
+	kbmatchAfterOpen = func() {}
+	// kbmatchDoer is the egress client the decision model's backend uses.
 	kbmatchDoer = func(cfg config.Config) (egress.Doer, error) {
 		return egress.New(egress.Config{AllowedHosts: cfg.AllowedHosts})
 	}
 	// kbmatchDecider builds the decision chain for backend (config.KBMatchLLM or
-	// config.KBMatchLiquid).
+	// config.KBMatchOpenRouter).
 	kbmatchDecider = func(ctx context.Context, w *wired, backend string) (decide.Decider, error) {
 		switch backend {
 		case config.KBMatchLLM:
@@ -78,7 +83,7 @@ var (
 				return nil, fmt.Errorf("llm backend: %w", err)
 			}
 			return decide.NewRouter(logErrors(lb, w.warnf, nil)), nil
-		case config.KBMatchLiquid:
+		case config.KBMatchOpenRouter:
 			spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 			if err != nil {
 				return nil, fmt.Errorf("openrouter budget: %w", err)
@@ -195,7 +200,7 @@ type kbmatchCandidate struct {
 // digest are left out; the counts say how many were left out why.
 func kbmatchCandidates(snap ledger.Snapshot, m map[posting.Key]marks.Entry, in *insight, st *kbmatch.Store, d kbmatch.Digest, summary string, top int) (out []kbmatchCandidate, mismatch, thin, current int) {
 	for _, r := range snap.Records {
-		if !inView("all", r, m[r.Key].Mark) {
+		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
 		if strings.HasPrefix(jobinsight.SlotOf(r.Annotations, "role_fit").Value, "mismatch_") {
@@ -211,7 +216,7 @@ func kbmatchCandidates(snap ledger.Snapshot, m map[posting.Key]marks.Entry, in *
 			current++
 			continue
 		}
-		out = append(out, kbmatchCandidate{rec: r, priority: jobinsight.Score(jobinsight.InputsFor(r, in.rc)).Score, text: text})
+		out = append(out, kbmatchCandidate{rec: r, priority: in.rc.ScoreOf(r).Score, text: text})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].priority != out[j].priority {
@@ -243,7 +248,7 @@ func (e *env) kbmatchRun(args []string) error {
 	fs := e.newFlags("kbmatch run")
 	top := fs.Int("top", defaultKBMatchTop, fmt.Sprintf("ask about at most this many postings, best first by priority (1-%d)", maxKBMatchTop))
 	dry := fs.Bool("dry-run", false, "say what would be sent and the most it could cost, and ask nothing")
-	backendFlag := fs.String("backend", "", "llm or liquid (default kbmatch.backend, else llm; jev is liquid's deprecated name)")
+	backendFlag := fs.String("backend", "", "llm, or openrouter for the decision model (default kbmatch.backend, else llm)")
 	modelFlag := fs.String("model", "", "the llm model that answers (default kbmatch.model, else llm.triage_model, else llm.model)")
 	noRetrieve := fs.Bool("no-retrieve", false, "do not have the embedding model pick the closest knowledge-base lines; send the full digest")
 	if err := parse(fs, args); err != nil {
@@ -256,15 +261,13 @@ func (e *env) kbmatchRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *backendFlag == config.LegacyKBMatchBackend {
-		fmt.Fprintf(e.stderr, "vani: --backend %q is now %q\n", config.LegacyKBMatchBackend, config.KBMatchLiquid)
-		*backendFlag = config.KBMatchLiquid
-	}
 	if *backendFlag != "" {
-		if *backendFlag != config.KBMatchLLM && *backendFlag != config.KBMatchLiquid {
-			return usagef("kbmatch run: --backend must be %q or %q", config.KBMatchLLM, config.KBMatchLiquid)
+		// EffectiveBackend reads the old name "jev" as openrouter.
+		b := config.KBMatch{Backend: *backendFlag}.EffectiveBackend()
+		if b != config.KBMatchLLM && b != config.KBMatchOpenRouter {
+			return usagef("kbmatch run: --backend must be %q or %q", config.KBMatchLLM, config.KBMatchOpenRouter)
 		}
-		cfg.KBMatch.Backend = *backendFlag
+		cfg.KBMatch.Backend = b
 	}
 	if *modelFlag != "" {
 		cfg.KBMatch.Model = *modelFlag
@@ -276,10 +279,10 @@ func (e *env) kbmatchRun(args []string) error {
 	switch backend {
 	case config.KBMatchLLM:
 		if cfg.LLM.Provider == "" || cfg.LLM.Model == "" {
-			return errors.New("kbmatch: no llm provider is configured (or use --backend liquid)")
+			return errors.New("kbmatch: no llm provider is configured (or use --backend openrouter)")
 		}
 		model = cfg.KBMatchModel()
-	case config.KBMatchLiquid:
+	case config.KBMatchOpenRouter:
 		model = cfg.Decide.OpenRouterModel
 	}
 
@@ -287,21 +290,45 @@ func (e *env) kbmatchRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := kbmatch.OpenStore(e.kbmatchPath())
-	if errors.Is(err, kbmatch.ErrCorrupt) {
-		// Nothing in it is irreplaceable: the model can be asked again. A dry run
-		// only reads, so it starts from an empty store in memory.
-		fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", err)
-		if !*dry {
-			if rerr := os.Remove(e.kbmatchPath()); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-				return rerr
-			}
+	// A run that will ask takes the run lock before it reads the store, so what it
+	// reads is what no other run can change before it saves, and the corrupt-store
+	// removal only ever happens under the lock. A dry run takes no lock, removes
+	// nothing and starts from an empty store in memory.
+	ctx, cancel := signalContext()
+	defer cancel()
+	var store *kbmatch.Store
+	var recovered error
+	if *dry {
+		store, err = kbmatch.OpenStore(e.kbmatchPath())
+		if errors.Is(err, kbmatch.ErrCorrupt) {
+			recovered = err
+			store, err = kbmatch.NewStore(e.kbmatchPath()), nil
 		}
-		store, err = kbmatch.NewStore(e.kbmatchPath()), nil
+	} else {
+		var unlock func()
+		store, unlock, recovered, err = kbmatch.OpenLocked(ctx, e.kbmatchPath(), kbmatchLockWait)
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return fmt.Errorf("kbmatch: interrupted while waiting for another run to release the store; nothing was asked: %w", err)
+		}
+		if errors.Is(err, kbmatch.ErrBusy) {
+			return fmt.Errorf("kbmatch: another run is using the store (waited %s); try again when it finishes: %w", kbmatchLockWait, err)
+		}
+		if err == nil {
+			defer unlock()
+		}
 	}
 	if err != nil {
 		return err
 	}
+	if recovered != nil {
+		// Nothing in it is irreplaceable: the model can be asked again.
+		if *dry {
+			fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); a real run would start it again\n", recovered)
+		} else {
+			fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", recovered)
+		}
+	}
+	kbmatchAfterOpen()
 	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, m)
 	if err != nil {
 		return err
@@ -317,7 +344,7 @@ func (e *env) kbmatchRun(args []string) error {
 	retrieve := !*noRetrieve && cfg.SemanticOn()
 	fmt.Fprintf(e.stdout, "kbmatch: %d postings to ask about (left out: %d mismatch readings, %d too thin, %d already answered)\n", len(cands), mismatch, thin, current)
 	where := cfg.LLM.Provider + " model " + model
-	if backend == config.KBMatchLiquid {
+	if backend == config.KBMatchOpenRouter {
 		where = "openrouter.ai decision model " + model
 	}
 	view := fmt.Sprintf("a %d-byte digest of your knowledge base", len(digest.Text))
@@ -326,7 +353,7 @@ func (e *env) kbmatchRun(args []string) error {
 	}
 	fmt.Fprintf(e.stdout, "kbmatch: each question carries the posting, your target summary and %s (titles, stack terms and bullets, with employers, dates, places and contact details already removed), sent to %s\n", view, where)
 	switch backend {
-	case config.KBMatchLiquid:
+	case config.KBMatchOpenRouter:
 		fmt.Fprintf(e.stdout, "kbmatch: about %d input tokens at most (focused questions are shorter); charged to the openrouter cap ($%.2f a day)\n", inTok, cfg.Decide.DailyUSD.OpenRouter)
 	default:
 		pin, pout, source, perr := kbmatchPrices(cfg, model)
@@ -340,13 +367,6 @@ func (e *env) kbmatchRun(args []string) error {
 		return nil
 	}
 
-	unlock, err := kbmatch.Lock(e.kbmatchPath())
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	ctx, cancel := signalContext()
-	defer cancel()
 	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
 	d, err := kbmatchDecider(ctx, w, backend)
 	if err != nil {
@@ -450,7 +470,7 @@ func (e *env) kbmatchStatus(args []string) error {
 	var current int
 	byValue := map[string]int{}
 	for _, r := range snap.Records {
-		if !inView("all", r, m[r.Key].Mark) {
+		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
 		if en, ok := st.Lookup(string(r.Key), digest.SHA256, kbmatch.TextSHA256(r.Posting, summary, digest)); ok {

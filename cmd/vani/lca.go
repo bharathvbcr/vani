@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,9 +15,34 @@ import (
 // lcaIndexPath is where the merged LCA index lives.
 func lcaIndexPath(stateDir string) string { return filepath.Join(stateDir, "lca", "index.json") }
 
-// loadLCA opens the index, or returns nil when none has been imported yet.
-// Any other failure (a corrupt index) is an error, never a silent "no data".
-func loadLCA(stateDir string) (*lca.Index, error) {
+// lcaNotes is where loadLCA says that it had to refuse or could not write the
+// lookup view. A routine rebuild (no view yet, or the index was re-imported)
+// is silent.
+var lcaNotes io.Writer = os.Stderr
+
+// loadLCA opens the lookup view of the index (index.view beside index.json,
+// bound to the index file's checksum), or returns nil when no index has been
+// imported yet. A missing, stale or corrupt view is rebuilt from the full
+// index, so the answers are the index's either way. Any other failure (a
+// corrupt index) is an error, never a silent "no data".
+func loadLCA(stateDir string) (lca.Looker, error) {
+	path := lcaIndexPath(stateDir)
+	v, info, err := lca.LoadView(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lca index: %w", err)
+	}
+	if !info.Routine() {
+		fmt.Fprintf(lcaNotes, "vani: lca view %s was rebuilt from the index (reason: %v; write error: %v)\n", lca.ViewPath(path), info.Reason, info.WriteErr)
+	}
+	return v, nil
+}
+
+// loadLCAIndex opens the full index for a merge, or returns nil when none has
+// been imported yet.
+func loadLCAIndex(stateDir string) (*lca.Index, error) {
 	x, err := lca.Load(lcaIndexPath(stateDir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -58,7 +84,7 @@ func (e *env) lcaImport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("lca import %s: %w", path, err)
 	}
-	x, err := loadLCA(e.stateDir)
+	x, err := loadLCAIndex(e.stateDir)
 	if err != nil {
 		return err
 	}
@@ -95,6 +121,6 @@ func (e *env) lcaLookup(args []string) error {
 }
 
 // lcaBadger adapts the LCA index to pipeline.Badger.
-type lcaBadger struct{ x *lca.Index }
+type lcaBadger struct{ x lca.Looker }
 
 func (b lcaBadger) Badge(company string) string { return b.x.Lookup(company).String() }

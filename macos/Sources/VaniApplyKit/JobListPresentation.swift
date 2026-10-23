@@ -110,6 +110,8 @@ public struct JobScore: Equatable, Sendable {
     /// The score the list's sort ranks by: relevance for the Relevance sort,
     /// priority for every other, each falling back to the other when absent.
     public static func forRow(_ job: Job, sort: JobSort) -> JobScore? {
+        // An untriaged posting has no score; one a reply carried anyway is not drawn.
+        guard !job.isUntriaged else { return nil }
         let order: [Basis] = sort == .relevance ? [.relevance, .priority] : [.priority, .relevance]
         for basis in order {
             if let v = display(basis == .priority ? job.priority : job.relevance) {
@@ -143,7 +145,10 @@ public enum JobListPresentation {
     }
 
     /// The sort in words, and which score the badge shows.
-    public static func sortCaption(_ sort: JobSort) -> String {
+    public static func sortCaption(_ sort: JobSort, view: JobView = .new) -> String {
+        guard view.isRanked else {
+            return "Sorted by \(sort.title). Not triaged yet: no fit, relevance or priority until a run reads these."
+        }
         let badge = sort == .relevance ? "relevance" : "priority"
         return "Sorted by \(sort.title). Badge: \(badge)."
     }

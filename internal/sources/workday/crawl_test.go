@@ -40,6 +40,13 @@ type fakeBoard struct {
 	total func(real int, applied map[string][]string) (string, bool)
 	// wrapAt is the offset from which page 1 is served again (default window).
 	wrapAt int
+	// totalAt, when set, replaces the answer's total by the offset asked for
+	// and takes precedence over total.
+	totalAt func(offset, real int) (string, bool)
+	// wrapPastEnd serves page 1 again at any offset at or past the query's last
+	// row, as the live service does (salesforce/External_Career_Site,
+	// 2026-10-22); otherwise such an offset serves an empty page.
+	wrapPastEnd bool
 	// page, when set, may rewrite a page's rows.
 	page func(offset int, rows []fakeJob) []fakeJob
 	// extraFacets is appended raw to the facets array.
@@ -49,6 +56,7 @@ type fakeBoard struct {
 	posts   int
 	gets    int
 	applied []map[string][]string
+	offsets []int // the offset of each listing request, in order
 }
 
 func (fb *fakeBoard) matches(j fakeJob, applied map[string][]string, skip, term string) bool {
@@ -116,6 +124,7 @@ func (fb *fakeBoard) handle(r srctest.Request) (srctest.Reply, bool) {
 		fb.mu.Lock()
 		fb.posts++
 		fb.applied = append(fb.applied, req.AppliedFacets)
+		fb.offsets = append(fb.offsets, req.Offset)
 		fb.mu.Unlock()
 		var hits []fakeJob
 		for _, j := range fb.jobs {
@@ -128,7 +137,7 @@ func (fb *fakeBoard) handle(r srctest.Request) (srctest.Reply, bool) {
 			wrap = window
 		}
 		offset := req.Offset
-		if offset >= wrap {
+		if offset >= wrap || fb.wrapPastEnd && offset >= len(hits) && len(hits) > 0 {
 			offset = 0 // Workday serves page 1 again, HTTP 200
 		}
 		var rows []fakeJob
@@ -143,7 +152,14 @@ func (fb *fakeBoard) handle(r srctest.Request) (srctest.Reply, bool) {
 			out = append(out, fmt.Sprintf(`{"title":%q,"externalPath":%q,"locationsText":"L","postedOn":"Posted Today"}`, j.title, j.path))
 		}
 		total := fmt.Sprint(min(len(hits), window))
-		if fb.total != nil {
+		if fb.totalAt != nil {
+			raw, present := fb.totalAt(req.Offset, len(hits))
+			if !present {
+				total = ""
+			} else {
+				total = raw
+			}
+		} else if fb.total != nil {
 			raw, present := fb.total(len(hits), req.AppliedFacets)
 			if !present {
 				total = ""
@@ -269,8 +285,8 @@ func TestNVIDIABoardListsEveryJob(t *testing.T) {
 	if split == 0 || w.queries != 16 {
 		t.Errorf("queries %d (split requests %d), want the board plus its 15 jobFamilyGroup buckets", w.queries, split)
 	}
-	// 1 + 76 (the 1500 bucket: 75 full pages and the empty one that ends it)
-	// + 14 buckets of 89 or 90 rows at 5 pages each.
+	// 1 + 76 (the 1500 bucket: 75 full pages and the one past its total that
+	// ends it) + 14 buckets of 89 or 90 rows at 5 pages each.
 	if w.requests != 1+76+14*5 {
 		t.Errorf("%d listing requests", w.requests)
 	}
@@ -331,8 +347,8 @@ func TestNVIDIABoardFillsOverRunsWithinTheDetailCap(t *testing.T) {
 				}
 				return out
 			},
-			DropTitle: func(title string) bool { return strings.HasPrefix(title, "Senior") },
-			Report:    func(_ sources.Board, x Stats) { st = x },
+			DropListed: func(p posting.Posting) bool { return strings.HasPrefix(p.Title, "Senior") },
+			Report:     func(_ sources.Board, x Stats) { st = x },
 		})
 		s.now = func() time.Time { return fixedNow.AddDate(0, 0, run) }
 		got, err := s.List(context.Background(), board)
@@ -342,7 +358,7 @@ func TestNVIDIABoardFillsOverRunsWithinTheDetailCap(t *testing.T) {
 		if n := fb.gets - gets; n > MaxDetails {
 			t.Fatalf("run %d: %d detail requests, cap %d", run, n, MaxDetails)
 		}
-		if st.Listed != 2753 || st.TitleDropped != 2753-keep || st.Reused+st.Refreshed+st.Fetched+st.Deferred+st.TitleDropped+st.Gone != 2753 {
+		if st.Listed != 2753 || st.Prefiltered != 2753-keep || st.Reused+st.Refreshed+st.Fetched+st.Deferred+st.Prefiltered+st.Gone != 2753 {
 			t.Fatalf("run %d: stats %+v do not account for every row", run, st)
 		}
 		returned := map[posting.Key]bool{}

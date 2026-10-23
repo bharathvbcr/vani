@@ -83,7 +83,9 @@ func TestStatusJSONFreshInstallSaysWhatIsMissing(t *testing.T) {
 	if !s.Schedule.OK || s.Schedule.NextRun.IsZero() || !s.Schedule.NextRun.After(s.GeneratedAt) {
 		t.Errorf("schedule: %+v", s.Schedule)
 	}
-	if !s.Backends.OK || len(s.Backends.Items) != 2 || s.Backends.Day != today() {
+	// A fresh config names the decision model and its notes budget, and no llm.
+	if !s.Backends.OK || len(s.Backends.Items) != 2 || s.Backends.Items[0].Kind != "openrouter" ||
+		s.Backends.Items[1].Kind != "openrouter_notes" || s.Backends.Day != today() {
 		t.Fatalf("backends: %+v", s.Backends)
 	}
 	for _, b := range s.Backends.Items {
@@ -142,9 +144,9 @@ func TestStatusJSONUnreadableLedgerIsUnknownNotEmpty(t *testing.T) {
 }
 
 func TestStatusJSONSpendComesFromTheBackendsOwnFiles(t *testing.T) {
-	_, stateDir := setup(t)
-	mustCode(t, 0, "init")
-	cfg := config.Default()
+	cfgPath, stateDir := setup(t)
+	initWithLLM(t, cfgPath)
+	cfg := defaultWithLLM()
 
 	// Written by decide's own DailyCap, so a format change fails here.
 	capf, err := decide.NewDailyCap(filepath.Join(stateDir, "budget", openRouterBudgetFile), cfg.Decide.DailyUSD.OpenRouter)
@@ -204,8 +206,8 @@ func TestStatusJSONUnreadableSpendIsUnknownNotZero(t *testing.T) {
 		"oversized":     {"budget/" + openRouterBudgetFile, huge},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, stateDir := setup(t)
-			mustCode(t, 0, "init")
+			cfgPath, stateDir := setup(t)
+			initWithLLM(t, cfgPath)
 			writeStateFile(t, stateDir, tc.file, tc.content)
 			s := statusOf(t)
 			or := openRouterItem(t, s)
@@ -230,8 +232,8 @@ const llmLedgerFixture = `{"schema_version":2,"spent_nano_usd":400000000,"settle
 // A budget ledger whose lock is held (a wedged writer) must not hang status: the
 // read gives up at statusTimeout and says so, and the other facets still answer.
 func TestStatusJSONHeldBudgetLockIsBoundedAndUnknown(t *testing.T) {
-	_, stateDir := setup(t)
-	mustCode(t, 0, "init")
+	cfgPath, stateDir := setup(t)
+	initWithLLM(t, cfgPath)
 	rel := "budget/llm-" + today() + ".json"
 	writeStateFile(t, stateDir, rel, llmLedgerFixture)
 	lock, err := os.OpenFile(filepath.Join(stateDir, rel+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -306,8 +308,8 @@ func TestStatusJSONUnreadableLLMBudgetIsUnknown(t *testing.T) {
 		"unknown field": `{"schema_version":2,"next_id":1,"in_flight":[],"x":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, stateDir := setup(t)
-			mustCode(t, 0, "init")
+			cfgPath, stateDir := setup(t)
+			initWithLLM(t, cfgPath)
 			writeStateFile(t, stateDir, "budget/llm-"+today()+".json", content)
 			s := statusOf(t)
 			l := llmItem(t, s)

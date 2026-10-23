@@ -1,0 +1,19 @@
+{
+  "total": 2,
+  "jobPostings": [
+    {
+      "title": "Machine Learning Engineer",
+      "externalPath": "/job/Paris-France/Machine-Learning-Engineer_R0047006-1",
+      "locationsText": "Paris, France",
+      "postedOn": "Posted 21 Days Ago",
+      "bulletFields": ["R0047006"]
+    },
+    {
+      "title": "Machine Learning Engineer, Level 5",
+      "externalPath": "/job/Palo-Alto-California/Machine-Learning-Engineer--Level-5_Q426SWEML5-1",
+      "locationsText": "5 Locations",
+      "postedOn": "Posted 21 Days Ago",
+      "bulletFields": ["Q426SWEML5"]
+    }
+  ]
+}

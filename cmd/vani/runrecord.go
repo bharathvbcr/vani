@@ -13,13 +13,15 @@ import (
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
 // The run record is the one place the last daily run is written down, so
 // `vani status --json` (and the Mac app's Pipeline tab) can say whether it ran,
 // failed or is still going. dailyJob writes it, so the daemon and run-once
 // record identically. It lives at <state dir>/runs/last.json and holds only the
-// latest run: the ledger and the digests are the history.
+// latest run; every finished run is also kept in runs/history/ (runhistory.go),
+// and the ledger and the digests are the record of what the runs did.
 //
 // A record with no finished_at is either a run in progress or one whose process
 // died; the pid and the age tell them apart (runState).
@@ -44,6 +46,11 @@ const (
 	outcomeOK        = "ok"
 	outcomeFailed    = "failed"
 	outcomeCancelled = "cancelled"
+	// outcomeInterrupted is a run whose process died: runState reports it for a
+	// `running` record whose process is gone, and archiveInterruptedRun writes it
+	// as the outcome of such a record it keeps in the run history. last.json never
+	// holds it: the next run replaces that record the moment it starts.
+	outcomeInterrupted = "interrupted"
 )
 
 // Run stages: where a failed run stopped.
@@ -80,7 +87,13 @@ func runCause(err error) string {
 }
 
 type runRecord struct {
-	V          int       `json:"v"`
+	V int `json:"v"`
+	// ID is the run's id (runID), written with every record so a reader that
+	// names a file after the run (the Mac app's rotated manual logs) takes the
+	// name from here instead of rebuilding it. runID(r) stays the authority:
+	// readers of this package ignore the field, and a record without it (an
+	// older vani's) is as valid.
+	ID         string    `json:"id,omitempty"`
 	PID        int       `json:"pid"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitzero"`
@@ -90,8 +103,13 @@ type runRecord struct {
 	Trigger string `json:"trigger,omitempty"`
 	// Options are a manual run's overrides; nil when it had none.
 	Options *runOptions `json:"options,omitempty"`
-	Stage   string      `json:"stage,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	// Log is the file the run's output was sent to, when the process that
+	// started it said so (VANI_RUN_LOG, validated by checkRunLog: always a path
+	// under <state dir>/runs). "" for a run that did not say (the daemon's, a
+	// shell's, an older app's); readers then list the logs that exist.
+	Log   string `json:"log,omitempty"`
+	Stage string `json:"stage,omitempty"`
+	Error string `json:"error,omitempty"`
 	// Cause names a failed run's known cause (runCause), so a reader can word
 	// the failure without reading Error; "" when the failure has none of them.
 	Cause string `json:"cause,omitempty"`
@@ -99,6 +117,14 @@ type runRecord struct {
 	// 0 when nothing was new. Nil when no digest was written: the run stopped
 	// before it, it was held back, or writing it failed.
 	DigestRoles *int `json:"digest_roles,omitempty"`
+	// DigestWarning is why the digest ranked on less than the config asked for
+	// (a missing rank_weights_file, an unreadable knowledge base); "" when it
+	// ranked as configured.
+	DigestWarning string `json:"digest_warning,omitempty"`
+	// ImpressionsError says the digest was written but what it showed was not
+	// recorded (internal/feedback), so the ranking's measurement has a gap for
+	// this run; "" when they were recorded or no digest was written.
+	ImpressionsError string `json:"impressions_error,omitempty"`
 	// CountsBefore and CountsAfter are the ledger's postings by status at the
 	// start and the end of the run, so the change is the run's own work.
 	CountsBefore map[string]int `json:"counts_before,omitempty"`
@@ -117,7 +143,7 @@ type runDetail struct {
 	Boards *boardsReport `json:"boards,omitempty"`
 	// Advance is the triage/score/explain phase; nil when the run ended
 	// before it (no board could be read, the stages could not be built).
-	Advance *advanceReport `json:"advance,omitempty"`
+	Advance *pipeline.AdvanceReport `json:"advance,omitempty"`
 	// BackendErrors are the decision backends' failed calls, by cause. A
 	// backend error becomes an "unavailable" reading that keeps no text, so
 	// this is the only place a refused key or an outage is written down.
@@ -131,39 +157,15 @@ type runDetail struct {
 	BackendStats map[string]backendStat `json:"backend_stats,omitempty"`
 }
 
-// Why an advance phase ended before it had worked through every eligible
-// posting (advanceReport.Stopped).
-const (
-	stopCap          = "cap"           // advance_per_run reached
-	stopUnreadStreak = "unread_streak" // maxConsecutiveUnread unread in a row
-	stopNoneRead     = "none_read"     // no backend read any posting
-	stopFailStreak   = "fail_streak"   // maxConsecutiveFailed stage failures in a row
-	stopNoneAdvanced = "none_advanced" // every attempted posting failed or went unread
-	stopCancelled    = "cancelled"
-	stopNoBackend    = "no_backend" // no decision backend could be built; boards were listed only
-)
-
-// advanceReport is what one run's advance phase did. Deferred postings were
-// not attempted this run and wait, still listed, for the next one.
-type advanceReport struct {
-	// Eligible postings were waiting for a stage when the phase started.
-	Eligible int `json:"eligible"`
-	// Limit is the per-run cap (config advance_per_run).
-	Limit     int `json:"limit"`
-	Attempted int `json:"attempted"`
-	// Unread postings no decision backend could read; they stay live.
-	Unread int `json:"unread"`
-	// Failed postings hit another stage error; they wait for the next run.
-	Failed   int    `json:"failed"`
-	Deferred int    `json:"deferred"`
-	Stopped  string `json:"stopped,omitempty"`
-}
-
 // Board outcomes in the run's board report (boardReport.Outcome).
 const (
 	boardRead    = "read"
 	boardFailed  = "failed"  // listing or reconciling failed; its postings are untouched
 	boardSkipped = "skipped" // no adapter, or the careers-page source is disabled this run
+	// boardRateLimited is a board whose host kept answering HTTP 429 through the
+	// retries: not broken, left untouched, tried again next run. Older readers
+	// show an outcome they do not know as written.
+	boardRateLimited = "rate_limited"
 )
 
 // boardsReport is what one run's listing phase did. The totals count every
@@ -172,8 +174,13 @@ type boardsReport struct {
 	// Configured is the watchlist's size.
 	Configured int `json:"configured"`
 	Read       int `json:"read"`
-	Failed     int `json:"failed"`
-	Skipped    int `json:"skipped"`
+	// Failed counts every board whose listing failed, the rate-limited ones
+	// included, so a reader that does not know RateLimited still counts them.
+	Failed int `json:"failed"`
+	// RateLimited is the part of Failed that ended in HTTP 429 (outcome
+	// rate_limited). Additive: readers that do not know the key ignore it.
+	RateLimited int `json:"rate_limited,omitempty"`
+	Skipped     int `json:"skipped"`
 	// NotReached boards were never tried: the run ended (cancelled, a ledger
 	// failure) before them.
 	NotReached int `json:"not_reached,omitempty"`
@@ -228,18 +235,31 @@ func runRecordPath(stateDir string) string {
 // writeRunRecord replaces the record atomically: a reader sees the old record
 // or the new one, never half of either.
 func writeRunRecord(stateDir string, r runRecord) error {
-	r.V = runRecordVersion
-	raw, err := json.MarshalIndent(r, "", "  ")
+	raw, err := marshalRunRecord(r)
 	if err != nil {
 		return err
 	}
 	return atomicfile.Write(runRecordPath(stateDir), raw)
 }
 
+// marshalRunRecord is the record's one encoding: last.json and the history's
+// copy of it (runhistory.go) are the same bytes.
+func marshalRunRecord(r runRecord) ([]byte, error) {
+	r.V = runRecordVersion
+	r.ID = runID(r)
+	return json.MarshalIndent(r, "", "  ")
+}
+
 // readRunRecord returns the last record. A missing file is (nil, nil): no run
 // has been recorded. Anything unreadable is an error, never "no run".
 func readRunRecord(stateDir string) (*runRecord, error) {
-	f, err := os.Open(runRecordPath(stateDir))
+	return readRunRecordFile(runRecordPath(stateDir))
+}
+
+// readRunRecordFile is readRunRecord for any record file: last.json or a
+// history entry.
+func readRunRecordFile(path string) (*runRecord, error) {
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -266,7 +286,7 @@ func readRunRecord(stateDir string) (*runRecord, error) {
 		return nil, fmt.Errorf("run record version %d, want %d", r.V, runRecordVersion)
 	}
 	switch r.Outcome {
-	case outcomeRunning, outcomeOK, outcomeFailed, outcomeCancelled:
+	case outcomeRunning, outcomeOK, outcomeFailed, outcomeCancelled, outcomeInterrupted:
 	default:
 		return nil, fmt.Errorf("run record has outcome %q", r.Outcome)
 	}
@@ -290,7 +310,7 @@ func runState(r runRecord, at time.Time) string {
 	if pidAlive(r.PID) && at.Sub(r.StartedAt) < maxRunAge {
 		return outcomeRunning
 	}
-	return "interrupted"
+	return outcomeInterrupted
 }
 
 // statusCounts folds records into postings by status, the one counting both

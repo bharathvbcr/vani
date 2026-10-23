@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SafariServices
@@ -13,7 +14,9 @@ final class AppModel {
     static let safariExtensionID = "dev.vbcr.vani.apply.extension"
 
     private(set) var store: BankStore?
-    private(set) var snapshot = Snapshot(rev: 0, bank: .empty)
+    private(set) var snapshot = Snapshot(rev: 0, bank: .empty) {
+        didSet { bankBytesCache = nil }
+    }
     private(set) var activity: [ActivityEntry] = []
     /// A problem reading the store (corrupt file, container unavailable). Edits are blocked while set.
     private(set) var storeError: String?
@@ -33,8 +36,21 @@ final class AppModel {
     }
 
     private var timer: Timer?
+    private var activationObserver: NSObjectProtocol?
 
-    init(store: BankStore? = nil, autoRegisterAgent: Bool = true, autoStartTimer: Bool = true) {
+    /// The three things a tick or a body evaluation would otherwise do again and again, as
+    /// seams a test can count.
+    private let readBank: @Sendable (BankStore) throws -> Snapshot
+    private let loadDraftSettings: @Sendable (URL) throws -> DraftSettings
+    private let measureBank: @Sendable (Bank) -> Int
+
+    init(store: BankStore? = nil, autoRegisterAgent: Bool = true, autoStartTimer: Bool = true,
+         readBank: @escaping @Sendable (BankStore) throws -> Snapshot = { try $0.read() },
+         loadDraftSettings: @escaping @Sendable (URL) throws -> DraftSettings = { try DraftSettings.load(from: $0) },
+         measureBank: @escaping @Sendable (Bank) -> Int = { (try? $0.encoded().count) ?? 0 }) {
+        self.readBank = readBank
+        self.loadDraftSettings = loadDraftSettings
+        self.measureBank = measureBank
         extensionID = UserDefaults.standard.string(forKey: "chromeExtensionID") ?? ChromeConnector.defaultExtensionID
         if let store {
             self.store = store
@@ -48,17 +64,33 @@ final class AppModel {
         if autoRegisterAgent {
             registerAgent()
         }
-        // Re-read when a browser writes. A read is one small file under a shared lock.
+        // Re-read when a browser writes: a stat of bank.json every tick, the read itself (off the
+        // main actor) only when that stamp moved.
         if autoStartTimer {
             timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.reloadIfChanged() }
+                Task { @MainActor in await self?.reloadIfChanged() }
+            }
+            // The draft settings file is edited by hand too: read it again when the app comes forward.
+            activationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                // The owner may have approved (or switched off) the schedule agent in System Settings.
+                MainActor.assumeIsolated { self?.refreshDraftSettings(); self?.refreshSchedule() }
             }
         }
     }
 
     var answers: [Answer] { snapshot.bank.answers.values.sorted { $0.key < $1.key } }
     var settings: Settings { snapshot.bank.settings }
-    var bankBytes: Int { (try? snapshot.bank.encoded().count) ?? 0 }
+
+    /// The size of the stored bank, encoded once per snapshot rather than once per body evaluation.
+    @ObservationIgnored private var bankBytesCache: Int?
+    var bankBytes: Int {
+        if let bankBytesCache { return bankBytesCache }
+        let size = measureBank(snapshot.bank)
+        bankBytesCache = size
+        return size
+    }
 
     var hostBinary: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/vani-apply-host") }
     var vaniBinary: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/vani") }
@@ -66,6 +98,9 @@ final class AppModel {
     /// `vani jobs` for the Jobs tab, with the same Vani config and state folder as drafting.
     /// It reads no key: listing and marking spend nothing.
     var jobsClient: JobsClient { draftSettings.jobsClient(vaniBinary: vaniBinary) }
+
+    /// `vani audit` for the Audit tab: the weekly blind draw and its answers. It reads no key.
+    var auditClient: AuditClient { AuditClient(jobs: jobsClient) }
 
     /// `vani status --json` for the Pipeline tab: local files only, no key.
     var pipelineClient: PipelineClient {
@@ -78,7 +113,7 @@ final class AppModel {
     /// `vani run-once` for the Pipeline tab's Run Now: the pipeline calls
     /// decision models, so it gets the keys drafting gets.
     var manualRunLauncher: ManualRunLauncher {
-        ManualRunLauncher(runner: draftSettings.runner(vaniBinary: vaniBinary))
+        ManualRunLauncher(runner: draftRunner)
     }
 
     // MARK: - Agent
@@ -106,25 +141,34 @@ final class AppModel {
         agentError = nil
         let own = Bundle.main.bundleURL
         Task {
-            let failure: String? = await Task.detached(priority: .utility) {
-                // Its own handle: SMAppService is not Sendable across actors.
+            // The two blocking halves (an XPC round trip each) run off the main actor and off the
+            // cooperative pool; the unregister between them is a real async call.
+            // Each has its own SMAppService handle: it is not Sendable across actors.
+            let stale = await BlockingWork.value { () -> Bool in
                 let service = SMAppService.agent(plistName: AgentConstants.plistName)
-                do {
-                    if service.status == .enabled,
-                       AgentIdentity.reregister(repair: repair, agentBundle: XPCAgentClient().identity(), ownBundle: own) != nil {
-                        try await service.unregister()
+                return service.status == .enabled
+                    && AgentIdentity.reregister(repair: repair, agentBundle: XPCAgentClient().identity(), ownBundle: own) != nil
+            }
+            var failure: String?
+            if stale {
+                do { try await agentService.unregister() } catch { failure = error.localizedDescription }
+            }
+            if failure == nil {
+                failure = await BlockingWork.value { () -> String? in
+                    let service = SMAppService.agent(plistName: AgentConstants.plistName)
+                    do {
+                        if service.status != .enabled { try service.register() }
+                        // Ask again: a copy that still answers from elsewhere is reported, not taken for this app's.
+                        if service.status == .enabled, let theirs = XPCAgentClient().identity(),
+                           case let .foreign(path)? = AgentIdentity.reregister(repair: false, agentBundle: theirs, ownBundle: own) {
+                            return "it runs from another copy of Vani Apply (\(path)). Quit that copy, then choose Register again."
+                        }
+                        return nil
+                    } catch {
+                        return error.localizedDescription
                     }
-                    if service.status != .enabled { try service.register() }
-                    // Ask again: a copy that still answers from elsewhere is reported, not taken for this app's.
-                    if service.status == .enabled, let theirs = XPCAgentClient().identity(),
-                       case let .foreign(path)? = AgentIdentity.reregister(repair: false, agentBundle: theirs, ownBundle: own) {
-                        return "it runs from another copy of Vani Apply (\(path)). Quit that copy, then choose Register again."
-                    }
-                    return nil
-                } catch {
-                    return error.localizedDescription
                 }
-            }.value
+            }
             agentError = failure
             agentStatus = agentService.status
         }
@@ -149,11 +193,95 @@ final class AppModel {
         }
     }
 
+    // MARK: - Schedule agent
+
+    /// What macOS says about the schedule agent: the opt-in login item that keeps `vani daemon`
+    /// running (ScheduleAgent.swift). It is never registered by launch, only by the Pipeline
+    /// tab's "Run on schedule" switch. Read when the tab appears and after each change, since
+    /// the owner can also switch it in System Settings.
+    private(set) var scheduleStatus: ScheduleToggle.Registration = .notRegistered
+    private(set) var scheduleError: String?
+    private(set) var scheduleBusy = false
+
+    static func registration(_ status: SMAppService.Status) -> ScheduleToggle.Registration {
+        switch status {
+        case .enabled: .enabled
+        case .requiresApproval: .requiresApproval
+        case .notFound: .notFound
+        case .notRegistered: .notRegistered
+        @unknown default: .notRegistered
+        }
+    }
+
+    /// Reads the registration. Reading registers nothing, but a rig that leaves the agents
+    /// alone (and the tests) does not ask at all.
+    func refreshSchedule() {
+        guard !agentLeftAlone else { return }
+        Task {
+            let status = await BlockingWork.value { SMAppService.agent(plistName: ScheduleAgentConstants.plistName).status }
+            scheduleStatus = Self.registration(status)
+        }
+    }
+
+    /// Registers (macOS may then wait for approval in Login Items) or unregisters the schedule
+    /// agent. Unregistering stops the helper, which ends the daemon first. `repair` registers
+    /// again from scratch: a replaced app bundle leaves launchd's copy of the job stale.
+    func setScheduleEnabled(_ on: Bool, repair: Bool = false) {
+        guard !agentLeftAlone, !scheduleBusy else { return }
+        scheduleBusy = true
+        scheduleError = nil
+        Task {
+            var failure: String?
+            do {
+                let service = SMAppService.agent(plistName: ScheduleAgentConstants.plistName)
+                if !on || repair, service.status != .notRegistered { try await service.unregister() }
+                if on { try await BlockingWork.run { try SMAppService.agent(plistName: ScheduleAgentConstants.plistName).register() }.get() }
+            } catch {
+                failure = error.localizedDescription
+            }
+            let status = await BlockingWork.value { SMAppService.agent(plistName: ScheduleAgentConstants.plistName).status }
+            // A registration that now waits for approval is the expected result, not a failure.
+            scheduleError = status == .requiresApproval ? nil : failure
+            scheduleStatus = Self.registration(status)
+            scheduleBusy = false
+        }
+    }
+
+    func openScheduleLoginItems() { SMAppService.openSystemSettingsLoginItems() }
+
     // MARK: - Drafting
 
-    var draftSettings: DraftSettings {
-        guard let dir = store?.directory else { return DraftSettings() }
-        return DraftSettings.load(from: dir)
+    /// Why the saved draft settings cannot be used, or nil when they load (a missing file is fine).
+    /// As of the last `refreshDraftSettings()`.
+    private(set) var draftSettingsProblem: String?
+
+    /// The settings for display and for the local read-only clients. A corrupt file shows as
+    /// defaults here, and `draftSettingsProblem` is what says so (Settings and reload() raise it).
+    /// Anything that launches vani with a model or an account (drafts, Run Now) goes through
+    /// `draftRunner`, which refuses instead. Read from disk by `refreshDraftSettings()` (at load,
+    /// on a save, when the app comes forward, when Settings appears), not on every access: the
+    /// views ask for it on every body evaluation.
+    private(set) var draftSettings = DraftSettings()
+
+    func refreshDraftSettings() {
+        guard let dir = store?.directory else {
+            draftSettings = DraftSettings()
+            draftSettingsProblem = nil
+            return
+        }
+        do {
+            draftSettings = try loadDraftSettings(dir)
+            draftSettingsProblem = nil
+        } catch {
+            draftSettings = DraftSettings()
+            draftSettingsProblem = String(describing: error)
+        }
+    }
+
+    /// The runner for the saved settings; it refuses every launch when the file is unreadable.
+    var draftRunner: DraftRunner {
+        guard let dir = store?.directory else { return DraftSettings().runner(vaniBinary: vaniBinary) }
+        return DraftSettings.runner(loadingFrom: dir, vaniBinary: vaniBinary)
     }
 
     func saveDraftSettings(_ s: DraftSettings) {
@@ -162,27 +290,28 @@ final class AppModel {
             return
         }
         do { try s.save(to: dir) } catch { actionError = String(describing: error) }
+        refreshDraftSettings()
     }
 
     /// The accounts the account picker offers, from `anthropic-account list
     /// --json` off the main thread, or why there are none (the launcher not
     /// installed, no ~/.anthropic-accounts yet). Reads no secret.
     func anthropicAccounts() async -> (names: [String], problem: String?) {
-        await Task.detached(priority: .userInitiated) { () -> (names: [String], problem: String?) in
+        await BlockingWork.value { () -> (names: [String], problem: String?) in
             guard let launcher = AnthropicAccount.locate() else {
                 return ([], "anthropic-account is not installed in ~/.local/bin or /opt/homebrew/bin.")
             }
             do { return (try AnthropicAccount.list(launcher: launcher), nil) } catch {
                 return ([], String(describing: error))
             }
-        }.value
+        }
     }
 
     /// Run one draft off the main thread. On the anthropic path the runner starts
     /// vani through anthropic-account, which reads the chosen account's key.
     func draft(_ request: DraftRequest) async -> DraftReply {
-        let runner = draftSettings.runner(vaniBinary: vaniBinary)
-        let reply = await Task.detached(priority: .userInitiated) { runner.run(request) }.value
+        let runner = draftRunner
+        let reply = await BlockingWork.value { runner.run(request) }
         try? store?.log(ActivityEntry(source: .app, event: .draft, counts: [reply.error == nil ? "drafted" : "failed": 1]))
         if let store { refreshActivity(store) }
         return reply
@@ -200,31 +329,61 @@ final class AppModel {
 
     // MARK: - Reading
 
+    /// The bank.json stamp the current snapshot was read under, taken before that read so a write
+    /// landing during it shows up as a changed stamp on the next tick.
+    private var bankStampSeen: BankStore.BankStamp?
+    /// Bumped by every read or write made on the main actor, so a background read that started
+    /// before one cannot overwrite what it produced.
+    private var bankGeneration = 0
+    private var tickReading = false
+
+    /// A read the user asked for (launch, Retry, after moving a corrupt bank aside). It waits
+    /// for the lock on the main actor, which is acceptable for a deliberate action; the timer
+    /// goes through `reloadIfChanged()`.
     func reload() {
         guard let store else { return }
+        bankGeneration += 1
+        refreshDraftSettings()
+        let stamp = store.bankStamp()
         do {
-            snapshot = try store.read()
+            snapshot = try readBank(store)
+            bankStampSeen = stamp
             activityStamp = nil
             activity = []
             refreshActivity(store)
             storeError = nil
+            if let problem = draftSettingsProblem { actionError = problem }
         } catch {
             storeError = String(describing: error)
         }
     }
 
-    private func reloadIfChanged() {
-        guard let store else { return }
-        do {
-            let next = try store.read()
-            if next.rev != snapshot.rev || storeError != nil {
-                snapshot = next
-                storeError = nil
+    /// One timer tick. A stat of bank.json says whether anything changed; only then is the bank
+    /// read, off the main actor (the read waits up to the lock timeout and parses and validates
+    /// the whole file), and the result applied here. While the store is in error the read is
+    /// retried every tick, since a lock timeout clears without the file changing.
+    func reloadIfChanged() async {
+        guard let store, !tickReading else { return }
+        let stamp = store.bankStamp()
+        if stamp != bankStampSeen || storeError != nil {
+            tickReading = true
+            defer { tickReading = false }
+            let generation = bankGeneration
+            let read = readBank
+            let result = await BlockingWork.run { try read(store) }
+            guard generation == bankGeneration else { return } // a read or an edit here superseded this one
+            switch result {
+            case let .success(next):
+                bankStampSeen = stamp
+                if next.rev != snapshot.rev || storeError != nil {
+                    snapshot = next
+                    storeError = nil
+                }
+            case let .failure(error):
+                storeError = String(describing: error)
             }
-            refreshActivity(store)
-        } catch {
-            storeError = String(describing: error)
         }
+        refreshActivity(store)
     }
 
     /// The activity log as last read, by its files' stamp. Every tick used to
@@ -251,6 +410,7 @@ final class AppModel {
             return false
         }
         do {
+            bankGeneration += 1
             snapshot = try store.update(body)
             try? store.log(ActivityEntry(source: .app, event: event, counts: counts))
             refreshActivity(store)
@@ -306,12 +466,7 @@ final class AppModel {
     func findSimilarWordings() async -> SimilarResult {
         let bank = snapshot.bank
         let client = similarLabels
-        return await Task.detached(priority: .userInitiated) { client.find(in: bank) }.value
-    }
-
-    func findDuplicates() async -> (clusters: [Dedup.Cluster], semantic: SimilarResult) {
-        let semantic = await findSimilarWordings()
-        return (duplicateClusters(similar: semantic), semantic)
+        return await BlockingWork.value { client.find(in: bank) }
     }
 
     /// Merge the plans in one validated write (one revision). Counts only reach the log.

@@ -1,6 +1,6 @@
 package kbmatch
 
-// Descriptions is the option descriptions the decision model (Liquid) judges by, in
+// Descriptions is the option descriptions the decision model judges by, in
 // the slot -> option -> description shape jev.Config takes. They say the same as
 // Prompt, one option at a time.
 func Descriptions() map[string]map[string]string {

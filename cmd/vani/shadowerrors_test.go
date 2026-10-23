@@ -37,8 +37,7 @@ func shadowRunner(t *testing.T, h http.HandlerFunc, timeoutMS int) (*pipeline.Ru
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Endpoint: srv.URL + "/v1/systemone", Model: "test-d1", TimeoutMS: timeoutMS}
 	cfg.Decide.Shadow = "local"
@@ -79,6 +78,21 @@ func TestWarnShadowErrors(t *testing.T) {
 	route(t, rt)
 	w.warnShadowErrors(r)
 	if got := out.String(); !strings.HasPrefix(got, `vani: shadow "local-test-d1-combined": 1`) || !strings.HasSuffix(got, "\n") || strings.Count(got, "\n") != 1 {
+		t.Fatalf("warning = %q", got)
+	}
+}
+
+// The end-of-advance shadow notes (the run's and the inbox poll's) include the
+// failed-call line.
+func TestWarnShadowNotesReportsFailedCalls(t *testing.T) {
+	var out bytes.Buffer
+	w := &wired{warn: &out}
+	r, rt := shadowRunner(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}, 0)
+	route(t, rt)
+	w.warnShadowNotes(r)
+	if got := out.String(); !strings.HasPrefix(got, `vani: shadow "local-test-d1-combined": 1`) {
 		t.Fatalf("warning = %q", got)
 	}
 }

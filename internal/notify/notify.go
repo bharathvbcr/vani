@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"testing"
 	"time"
 	"unicode"
 )
@@ -48,9 +49,17 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
+// ErrTestBinary is what the real runner returns inside a Go test binary. A
+// test that wires the real App has no app lock in its temp state dir, so
+// without this every `go test` posted Script Editor notices to the owner.
+var ErrTestBinary = errors.New("notify: osascript is not run from a test binary")
+
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if testing.Testing() {
+		return nil, ErrTestBinary
+	}
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 

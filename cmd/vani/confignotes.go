@@ -54,11 +54,11 @@ func (e *env) cmdConfigMotivation(args []string) error {
 }
 
 func (e *env) motivationNotes(set bool) (string, error) {
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return "", err
-	}
 	if !set {
+		cfg, err := e.loadConfig()
+		if err != nil {
+			return "", err
+		}
 		return cfg.MotivationNotes, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(notesInput, maxNotesInput+1))
@@ -68,9 +68,12 @@ func (e *env) motivationNotes(set bool) (string, error) {
 	if len(raw) > maxNotesInput {
 		return "", fmt.Errorf("config motivation: input larger than %d bytes", maxNotesInput)
 	}
-	cfg.MotivationNotes = strings.TrimSpace(string(raw))
-	if err := config.Save(e.configPath, cfg); err != nil {
+	notes := strings.TrimSpace(string(raw))
+	if err := e.updateConfig(func(c *config.Config) error {
+		c.MotivationNotes = notes
+		return nil
+	}); err != nil {
 		return "", err
 	}
-	return cfg.MotivationNotes, nil
+	return notes, nil
 }

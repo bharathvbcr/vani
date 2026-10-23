@@ -8,7 +8,9 @@ A Mac app that holds the Vani Apply answer bank for both Chrome and Safari, and 
 it: view, add, edit and delete answers, turn self-identification on or off, turn the extension off per
 site, import and export, and see what each browser saved and filled.
 
-Its **Jobs** tab browses the roles Vani retrieved (New, Saved, Applied, Hidden, All), with the picked
+Its **Jobs** tab browses the roles Vani retrieved (New, Saved, Applied, Hidden, All, and **Awaiting
+triage (N)**: postings read from the boards that no run has triaged yet, shown with no fit or score,
+newest first, and charted nowhere; `vani jobs list --view pending`), with the picked
 "Fits / Gap / Check" note, triage readings and the job description, and lets you Save (⌘S), mark
 Applied (⇧⌘A), Hide (⌘⌫) and keep a private note per role. It is a client of `vani jobs … --json`
 (cmd/vani/jobscmd.go) run from `Contents/Helpers/vani` with the Vani config and state folder set in
@@ -21,7 +23,19 @@ Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R)
 `vani run-once` with options for that run only: every board or the ones you pick from the watchlist,
 whether to triage, score and explain (and a cap in place of `advance_per_run`), and whether to write a
 digest. The last choices are remembered. The run gets the keys drafting gets, writes its output to
-`<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes.
+`<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes. Before each run
+the app moves the previous `manual.log` to `<state>/runs/history/manual-<run id>.log` when `last.json` records that run
+as the one that wrote it (`RunLogOwner`; else `manual-<time>.log`), and starts `vani run-once` with `VANI_RUN_LOG` set to
+`manual.log` so the run record names its log and `vani runs failures` reports that run's own log (newest 20, 8 MiB;
+`ManualRunLog`), because the app is what truncates it; vani keeps every finished run's record in the same
+folder (`vani runs list`).
+The Last run panel has **Copy failures** when the run has something to report (a failed or interrupted run,
+a run error, a board that failed to list, a backend error; `LastRun.hasFailures`): it runs
+`vani runs failures --json` (15 s limit) and copies the report text vani wrote, so the CLI and the app share
+one wording. If vani is too old to have the command, times out or sends nothing, nothing is copied and the
+reason shows under the button. Right-click a board row for **Copy error** (`ats:token (Company): error`,
+the same line the report has for that board). The **Logs** menu opens or reveals `manual.log`, the run
+record (`last.json`) and the history folder, each only when it exists when the panel is drawn.
 **Stop** sends the run this app started SIGTERM, which vani records as cancelled; a run the daemon
 or a shell started is shown but never signalled. A run vani refuses before it starts (another run
 holds the ledger) shows vani's reason from the log. The run is a separate process, so quitting the
@@ -36,6 +50,28 @@ banner. Both facets decode leniently and are absent from an older `vani`, which 
 The app keeps its request's time only in memory: after a relaunch a pending request still blocks
 Run Now ("A run request is already waiting") and its run shows from the record once the daemon
 makes it, but a request the daemon then drops is not reported.
+The Pipeline tab also says when the schedule is not kept: `schedule.kept` is false while no daemon runs, since
+nothing else fires `schedule.daily_at`. The schedule row then reads "Not kept" instead of a next run, and a warning
+gives the last run's age, whether a run is overdue and how many postings await triage (about how many runs at
+`advance_per_run`), with Run Now's higher advance cap as the way to catch up. `schedule.kept` and `schedule.unkept`
+are additive (status version stays 1) and absent from an older `vani`; `kept` is absent, never false, when vani could
+not tell whether a daemon runs. The warning's way out is the tab's **Run on schedule** switch (the schedule
+agent, below); once a daemon announces itself in `runs/daemon.json` the warning goes away. A daemon started
+without the decision model's key still keeps the schedule, and `daemon.model` (`enabled`, `reason`, additive and
+absent from an older daemon) says the model is off: the tab warns "The daemon's decision model is off".
+Its **Audit** tab is the weekly "would you apply?" sample: it fetches `vani audit --json --blind`
+(keys, strata and inclusion probabilities, no posting text), shows one card at a time (title, company and
+place from the jobs row contract, `JobRow`, via `vani jobs show`; the description as plain text) and
+answers with one key each, Y / M / N / S, through `vani audit answer`, which writes the would_apply label
+with the pick's stratum and p_select. Vani's own readings and the strata are never shown. A failed write
+leaves the card where it is. Each card that comes on screen is reported to `vani impressions log
+--surface audit` (key and position only, one slate per draw), so the audit counts as shown.
+The Jobs tab's words (fit, status, category, triage options) come from `vani labels --json`, read
+once and again at the next refresh if it failed; Go owns the vocabulary, and the built-in table is
+only a fallback that the tab says it is showing. After each list refresh the Jobs tab reports its
+top 20 rows (keys and positions, never a title) to `vani impressions log --surface jobs`, one slate
+per view per local day, so a job counts as seen-and-passed only when it was shown. A failed report
+is kept in the model, not shown, and never blocks the list.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.
@@ -214,6 +250,55 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      10 minutes.
    - It accepts XPC connections only from code signed by team `HAUHVD8M37`, so another process
      running as you cannot spend your model budget through it.
+6a. **The schedule agent (Pipeline ▸ Run on schedule).** Opt-in; nothing registers it until you turn the
+   switch on. Before it, `vani status` said "schedule not kept" because nothing ran `vani daemon`.
+   - A second login item, `Contents/Helpers/vani-schedule-agent`, registered with
+     `SMAppService.agent(plistName: "dev.vbcr.vani.schedule.agent.plist")` (the plist is in
+     `Contents/Library/LaunchAgents`, copied there and signed by `scripts/bundle.sh`). Approve it in
+     System Settings ▸ General ▸ Login Items & Extensions; the switch shows "Waiting for your approval"
+     until you do, then "Keeping the schedule (pid N)" once the daemon announces itself. Turning it off
+     unregisters it: the helper gets SIGTERM, ends the daemon (which removes `runs/daemon.json`) and exits.
+   - It runs the bundled `vani daemon` as its child, so the Go daemon stays the one scheduler (`daily_at`,
+     the inbox poll, manual runs through `vani run-request`). The child's environment is what Run Now
+     builds (`DraftRunner.prepare`): a minimal PATH/HOME/USER/TMPDIR, `VANI_CONFIG` and `VANI_STATE_DIR`
+     **pinned to the pair Settings resolves** (Vani's own defaults when none is saved), and the decision
+     key. Unlike the on-demand agent it does not exit when idle.
+   - **The key.** The helper reads the login Keychain item `openrouter-api-key` for each start through the
+     same bounded read as a manual run (30 s; an unanswered "allow access" prompt is abandoned) and passes
+     it only in the child's environment, with `VANI_NO_KEYCHAIN=1` beside it: the app is the one reader of the
+     item for a `vani` it starts, so a read that was refused or not answered is not asked again by `vani`'s own
+     Keychain read (`cmd/vani/keychain.go`), which would prompt a second time from another binary. The same
+     variable goes to Run now's `vani`. The key is in no plist (`launchctl print` shows none), no file and no
+     log line; the helper's own log lines are fixed phrases and exit statuses. With the Anthropic provider
+     the daemon starts through `anthropic-account exec`, as drafts do.
+   - **No key is visible, never silent.** A missing, refused or unanswered read still starts the daemon
+     (boards, scoring and the digest need no model); the daemon sees `OPENROUTER_API_KEY` unset, says
+     `vani: daemon: OPENROUTER_API_KEY is not set in the daemon's environment…` in its log, records it in
+     `daemon.json`, and `vani status` (text and `--json` `daemon.model`) and the Pipeline tab report "decision
+     model off". A key that was missing and is added later restarts the daemon by itself (the helper checks
+     the item's existence every minute, attributes only, which never prompts). After a refused or unanswered
+     read it does not retry behind your back (that would prompt again): turn the switch off and on.
+   - **Supervision.** If the daemon ends (a crash, a poisoned ledger, or a second daemon the ledger lock
+     refuses) the helper starts it again after 10 s, doubling to 5 min while it keeps ending, and starting
+     over after one has run 5 min. It never gives up and never spins. A change to the Vani config or state
+     folder in Settings restarts the daemon on the new pair. launchd restarts the helper itself after a crash
+     (`KeepAlive` on failed exit, throttled).
+   - **The log** is `<state>/logs/vani.err.log`, the file `vani launchd plist` also uses: the daemon's output
+     appended across restarts, plus the helper's timestamped lines ("starting vani daemon (…)", "daemon ended
+     (status N) after T s; starting it again in D s"). It moves to `vani.err.log.1` past 4 MiB.
+   - **After reinstalling the app** the running daemon is still the old `vani`: turn the switch off and on
+     (or "Register Again", offered when it is on but no daemon has announced itself).
+   - **Security impact.** Same user, same signing identity (team `HAUHVD8M37`, App Group entitlement only),
+     same Keychain item through the same code path. The key now sits in a long-lived process's environment
+     (readable by the same user with `ps eww`, as a manual run's already is, for longer). Nothing widens: the
+     helper has no Mach service, socket or listener (a test pins that), the plist holds no environment, and
+     no new file holds the key. Two same-user paths now exist all day instead of during a run you started:
+     `runs/request.json` (a manual run, bounded to the watchlist and the daily cap) and a config edit, both
+     needing write access to your Vani state folder; the key is only ever sent to `openrouter.ai`
+     (decide's jev client).
+   - Tests (`ScheduleAgentTests`, `ScheduleToggleTests`, `ScheduleAgentRealVaniTests`) never register
+     anything or read the real Keychain: the key lookup is injected, the supervisor runs scripts, and the real
+     test runs `build/vani daemon` in a temp state folder.
 7. **Run notifications.**
    - While the app runs, with or without its window open, it announces each finished daily run once
      as a Vani Apply notification. Clicking one opens the app on the Jobs tab, and reopens the
@@ -264,9 +349,17 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
    - **The daemon is the fallback.** While the app runs, it holds an exclusive `flock` on
      `<state_dir>/app/notifier.lock`, where `state_dir` is the folder `vani status` reports. The
      daemon's notifier (`notify.UnlessHeld`, wired in `cmd/vani/wire.go`) tests that lock before
-     each notice. While the lock is held it posts nothing, and otherwise it posts through osascript
-     as before. Those fallback notices are attributed to Script Editor, and clicking one opens Script
-     Editor. The lock belongs to the app's open file, so it goes when the app quits or crashes: a
+     each notice. While the lock is held it posts nothing. Otherwise it hands the notice to the app
+     (`notify.ViaApp`): it runs `/usr/bin/open -g -j -b dev.vbcr.vani.apply --args -VaniApplyAnnounce
+     YES`, which starts the app hidden in the background, and waits up to 20 seconds for the lock to
+     appear in its own state folder. A launch with that switch (`AnnounceLaunch`) also announces a
+     run that finished up to 10 minutes before the app took the lock, so the run that prompted the
+     launch is posted by the app, as Vani Apply. The app then keeps running and holds the lock. Only
+     if the handoff fails (the app is not installed, `open` fails, or the lock never appears because
+     the app's Settings point at another state folder) does the daemon post through osascript, which
+     macOS attributes to Script Editor; the reason is written to the daemon's log (`vani: notice
+     posted through osascript: …`). A Go test binary runs neither `open` nor osascript
+     (`notify.ErrTestBinary`). The lock belongs to the app's open file, so it goes when the app quits or crashes: a
      stale lock file cannot silence the daemon. A lock the daemon cannot check (an unreadable
      file, a lock error) counts as not held, so the daemon posts. A duplicate is better than
      silence. The app's Settings (config and state paths) must point at the state folder that the
@@ -353,12 +446,15 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - The appex is sandboxed and every piece carries the App Group entitlement.
   - The appex's `LC_MAIN` entry is the `_NSExtensionMain` stub, and its principal class is
     `SafariWebExtensionHandler`.
-  - Run notifications (`RunNoticeTests`, 2026-10-19). The tests cover how each run state, stage,
-    stop reason and cause code maps to a notice, in `failureNotice`'s order. They cover
-    `digest_roles` over the counts' difference, the fallback when a vani records neither, and
-    that error text stays out, even text that names a cause. They also cover missing,
-    corrupt and unreadable records, and that a run is announced once, including across a
-    relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
+  - Run notifications. vani owns the notice (`decideNotice`, `cmd/vani/runnotice.go`): whether to
+    announce, the words, the key and the version, printed as `last_run.notice` by
+    `status --json`. Its cases (every run state, stage, stop reason and cause code, `digest_roles`
+    over the counts' difference, error text kept out, missing and corrupt records, the age limit)
+    are in `cmd/vani/runnoticewire_test.go`, which also writes the golden files under
+    `Tests/VaniApplyKitTests/Fixtures/runnotice` (`go test ./cmd/vani -run TestRunNoticeGolden
+    -update`). `RunNoticeTests` replay them: the app posts exactly vani's title and body, refuses
+    a notice version it does not read (and a missing or malformed one) loudly, and announces
+    each run once, including across a relaunch. They also cover the notifier lock (exclusion, release, moving with the state folder,
     refusing a symlink) and the cutoff at lock time. `internal/notify`'s `held_test.go` covers
     the daemon's side: it skips while the lock is held, posts when there is no lock, a stale file
     or an unopenable path, and never creates the file.
@@ -383,7 +479,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
     reopen goes through `MainWindowReveal` (`MainWindowRevealTests`). Without the fix, closing
     the window quit the app, so there was no running app to click through to.
   - The text of a posted notice as shown on screen. The log hides it; it comes from
-    `RunNotice.decide`, which `RunNoticeTests` cover.
+    vani's `decideNotice`, which `cmd/vani/runnoticewire_test.go` covers.
   - Safari loading the appex (`pluginkit` lists it only once macOS has registered the app).
   - Signed binaries opening the group container without a prompt.
   - A live round trip from either browser.

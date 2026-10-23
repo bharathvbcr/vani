@@ -156,6 +156,24 @@ public enum Keychain {
     /// The decision model's key (OpenRouter), passed to `vani suggest` as OPENROUTER_API_KEY.
     public static let openRouterService = "openrouter-api-key"
 
+    /// Whether an item for (service, current user) exists, without reading its value: an
+    /// attributes-only query is never an access prompt. Nil when the Keychain cannot say.
+    public static func itemExists(service: String, account: String = NSUserName()) -> Bool? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var out: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &out) {
+        case errSecSuccess: return true
+        case errSecItemNotFound: return false
+        default: return nil
+        }
+    }
+
     /// The generic password for (service, current user), or nil when there is none.
     public static func genericPassword(service: String, account: String = NSUserName()) throws -> String? {
         let query: [String: Any] = [
@@ -196,6 +214,10 @@ public struct DraftRunner: Sendable {
     let timeout: TimeInterval
     public static let keychainTimeout: TimeInterval = 60
     let keychainTimeout: TimeInterval
+    /// When set, every launch (`prepare`, so draft, suggest, resume and run-once) is refused with
+    /// this reply instead of starting vani: the settings that say which config and account to
+    /// use could not be read, and defaults would run against the wrong ones.
+    public let refusal: DraftReply?
 
     /// How vani gets an Anthropic key.
     public enum KeySource: Sendable, Equatable {
@@ -213,7 +235,9 @@ public struct DraftRunner: Sendable {
                 timeout: TimeInterval = DraftRunner.timeout,
                 keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
                 key: @escaping KeyLookup = { nil },
-                decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) {
+                decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) },
+                refusal: DraftReply? = nil) {
+        self.refusal = refusal
         self.vaniBinary = vaniBinary
         self.configPath = configPath
         self.stateDir = stateDir
@@ -241,6 +265,7 @@ public struct DraftRunner: Sendable {
 
     /// Run one draft. Never throws: every failure is a reply with a code.
     public func run(_ request: DraftRequest) -> DraftReply {
+        if let refusal { return refusal }
         guard FileManager.default.isExecutableFile(atPath: vaniBinary.path) else {
             return .failure("config", "the vani binary is missing at \(vaniBinary.path)")
         }
@@ -321,6 +346,24 @@ public struct DraftRunner: Sendable {
         public var program: URL
         public var arguments: [String]
         public var environment: [String: String]
+        /// What became of the decision model's key, so a launch that goes ahead
+        /// without it can say so rather than start a model-less job unannounced.
+        public var decisionKey: KeyOutcome = .notRequested
+    }
+
+    /// The decision model's key (OPENROUTER_API_KEY) as a launch found it.
+    public enum KeyOutcome: Sendable, Equatable {
+        /// The job does not take the key (`withDecisionKey` was false).
+        case notRequested
+        /// The Keychain gave a key, now in the child's environment only.
+        case present
+        /// The Keychain holds no such item (or an empty one).
+        case notFound
+        /// The read was refused or outlived its bound; the reason names the
+        /// service and status, never a value.
+        case failed(String)
+
+        public var isPresent: Bool { self == .present }
     }
 
     /// The launch for `vani <arguments>` with the minimal environment and, for a
@@ -328,6 +371,7 @@ public struct DraftRunner: Sendable {
     /// it. It may wait on a Keychain prompt, up to `keychainTimeout`, so call it
     /// off the main thread.
     public func prepare(_ arguments: [String], withDecisionKey: Bool = false, usesModel: Bool = true) -> Prepared {
+        if let refusal { return .refused(refusal) }
         let program: URL, argv: [String]
         switch command(arguments, usesModel: usesModel) {
         case let .refused(f): return .refused(f)
@@ -335,8 +379,9 @@ public struct DraftRunner: Sendable {
         }
         var env = VaniProcess.environment(configPath: configPath, stateDir: stateDir)
         // A job that calls no model gets no model key, workspace or decision key.
-        if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey) { return .refused(failure) }
-        return .launch(Launch(program: program, arguments: argv, environment: env))
+        var outcome = KeyOutcome.notRequested
+        if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey, outcome: &outcome) { return .refused(failure) }
+        return .launch(Launch(program: program, arguments: argv, environment: env, decisionKey: outcome))
     }
 
     public enum Prepared: Sendable {
@@ -379,7 +424,7 @@ public struct DraftRunner: Sendable {
     }
 
     /// The model keys a job that spends budget is given; a reply when the Keychain read failed.
-    private func addKeys(to env: inout [String: String], withDecisionKey: Bool) -> DraftReply? {
+    private func addKeys(to env: inout [String: String], withDecisionKey: Bool, outcome: inout KeyOutcome) -> DraftReply? {
         if keys == .noKey {
             do {
                 if let k = try Self.bounded(key, seconds: keychainTimeout), !k.isEmpty {
@@ -390,8 +435,25 @@ public struct DraftRunner: Sendable {
             }
         }
         if let workspace, !workspace.isEmpty { env["ANTHROPIC_WORKSPACE_ID"] = workspace }
-        if withDecisionKey, let k = (try? Self.bounded(decisionKey, seconds: keychainTimeout)) ?? nil, !k.isEmpty {
-            env["OPENROUTER_API_KEY"] = k
+        // The decision key is optional for a launch (the model is just off without it), but
+        // never silently so: the outcome says which of absent, refused or unanswered it was.
+        if withDecisionKey {
+            // The app is the one reader of this key for a vani it starts: whatever it read
+            // (or was refused, or was not answered in time) is the outcome, and vani must not
+            // ask the Keychain again behind it (a second prompt, from another binary, after a
+            // refusal; cmd/vani/keychain.go honours the variable).
+            env["VANI_NO_KEYCHAIN"] = "1"
+            do {
+                if let k = try Self.bounded(decisionKey, seconds: keychainTimeout),
+                   !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    env["OPENROUTER_API_KEY"] = k
+                    outcome = .present
+                } else {
+                    outcome = .notFound
+                }
+            } catch {
+                outcome = .failed(String(describing: error))
+            }
         }
         return nil
     }

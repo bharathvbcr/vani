@@ -72,6 +72,35 @@ func TestNextRunDST(t *testing.T) {
 	}
 }
 
+func TestPrevRun(t *testing.T) {
+	loc := la(t)
+	at := func(y int, m time.Month, d, h, mi int) time.Time { return time.Date(y, m, d, h, mi, 0, 0, loc) }
+	cases := []struct {
+		name       string
+		now, want  time.Time
+		hour, mins int
+	}{
+		{"before today's slot", at(2026, 10, 18, 7, 0), at(2026, 10, 17, 8, 30), 8, 30},
+		{"after today's slot", at(2026, 10, 18, 9, 0), at(2026, 10, 18, 8, 30), 8, 30},
+		{"exactly on the slot counts as passed", at(2026, 10, 18, 8, 30), at(2026, 10, 18, 8, 30), 8, 30},
+		{"a minute before the slot", at(2026, 10, 18, 8, 29), at(2026, 10, 17, 8, 30), 8, 30},
+		{"spring-forward day, slot in the gap", at(2026, 3, 8, 12, 0), at(2026, 3, 8, 3, 0), 2, 30},
+		{"day after the gap", at(2026, 3, 9, 1, 0), at(2026, 3, 8, 3, 0), 2, 30},
+		{"fall-back day, second 01:30 is not a slot", at(2026, 11, 1, 1, 30).Add(time.Hour), at(2026, 11, 1, 1, 30), 1, 30},
+		{"a month idle", at(2026, 12, 20, 6, 0), at(2026, 12, 19, 8, 30), 8, 30},
+	}
+	for _, c := range cases {
+		if got := PrevRun(c.now, c.hour, c.mins, loc); !got.Equal(c.want) {
+			t.Errorf("%s: PrevRun(%v) = %v, want %v", c.name, c.now, got, c.want)
+		}
+		// The slot found and the next one bracket the instant.
+		got := PrevRun(c.now, c.hour, c.mins, loc)
+		if got.After(c.now) || !NextRun(got, c.hour, c.mins, loc).After(c.now) {
+			t.Errorf("%s: %v does not bracket %v", c.name, got, c.now)
+		}
+	}
+}
+
 type waiter struct {
 	at time.Time
 	ch chan time.Time
@@ -433,5 +462,212 @@ func TestPlistXMLEscaping(t *testing.T) {
 	}
 	if err := xmlWellFormed(out); err != nil {
 		t.Errorf("not well-formed XML: %v", err)
+	}
+}
+
+// monoClock models darwin: After timers run on a monotonic clock that does not
+// advance while the machine sleeps, while Now is wall time. Tick advances both
+// (awake time); Jump advances only the wall clock (sleep, or a clock step).
+type monoClock struct {
+	mu      sync.Mutex
+	wall    time.Time
+	mono    time.Duration
+	waiters []monoWaiter
+	durs    []time.Duration
+	reg     chan struct{}
+}
+
+type monoWaiter struct {
+	at time.Duration
+	ch chan time.Time
+}
+
+func newMonoClock(wall time.Time) *monoClock {
+	return &monoClock{wall: wall, reg: make(chan struct{}, 100000)}
+}
+
+func (c *monoClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.wall
+}
+
+func (c *monoClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	ch := make(chan time.Time, 1)
+	c.waiters = append(c.waiters, monoWaiter{c.mono + d, ch})
+	c.durs = append(c.durs, d)
+	c.mu.Unlock()
+	c.reg <- struct{}{}
+	return ch
+}
+
+func (c *monoClock) Tick(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mono += d
+	c.wall = c.wall.Add(d)
+	kept := c.waiters[:0]
+	for _, w := range c.waiters {
+		if w.at <= c.mono {
+			w.ch <- c.wall
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	c.waiters = kept
+}
+
+func (c *monoClock) Jump(d time.Duration) {
+	c.mu.Lock()
+	c.wall = c.wall.Add(d)
+	c.mu.Unlock()
+}
+
+func (c *monoClock) afterDurations() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Duration(nil), c.durs...)
+}
+
+func (c *monoClock) waitReg(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.reg:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler never waited on the clock")
+	}
+}
+
+func startMono(t *testing.T, now time.Time) (*monoClock, *harness) {
+	t.Helper()
+	mc := newMonoClock(now)
+	h := &harness{t: t, done: make(chan error, 1), ran: make(chan struct{}, 100)}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	t.Cleanup(cancel)
+	go func() {
+		h.done <- Run(ctx, sched, func(context.Context) error {
+			h.runs.Add(1)
+			h.ran <- struct{}{}
+			return nil
+		}, mc)
+	}()
+	mc.waitReg(t)
+	return mc, h
+}
+
+// The machine sleeps overnight: wall time reaches the slot while the monotonic
+// timer for the original interval has barely moved. The run must start within
+// one slice of the wall deadline and not be reported late.
+func TestWakeFromSleepRunsOnTime(t *testing.T) {
+	loc := la(t)
+	logs := captureLogs(t)
+	mc, h := startMono(t, time.Date(2026, 10, 20, 22, 0, 0, 0, loc))
+	mc.Jump(10*time.Hour + 29*time.Minute + 50*time.Second) // wall 08:29:50, mono unchanged
+	mc.Tick(wakeSlice)
+	h.waitRan()
+	if logs.has("missed run") || logs.has("skipping run") {
+		t.Errorf("run reported late: %v", logs.lines)
+	}
+	h.stop()
+}
+
+func TestWaitSlicesAreBoundedAndNeverSpin(t *testing.T) {
+	loc := la(t)
+	start := time.Date(2026, 10, 20, 7, 0, 0, 0, loc)
+	mc := newMonoClock(start)
+	done := make(chan bool, 1)
+	go func() { done <- waitUntil(context.Background(), mc, start.Add(time.Hour)) }()
+	for finished := false; !finished; {
+		select {
+		case <-mc.reg:
+			mc.Tick(wakeSlice)
+		case ok := <-done:
+			if !ok {
+				t.Fatal("waitUntil returned false without cancel")
+			}
+			finished = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("waitUntil stuck")
+		}
+	}
+	durs := mc.afterDurations()
+	if want := int(time.Hour / wakeSlice); len(durs) > want+1 {
+		t.Errorf("After called %d times for 1h, want <= %d", len(durs), want+1)
+	}
+	for _, d := range durs {
+		if d <= 0 || d > wakeSlice {
+			t.Errorf("After(%v) outside (0, %v]", d, wakeSlice)
+		}
+	}
+}
+
+func TestWaitUntilWaitsOnlyRemainingWhenShorterThanSlice(t *testing.T) {
+	now := time.Date(2026, 10, 20, 7, 0, 0, 0, time.UTC)
+	mc := newMonoClock(now)
+	done := make(chan bool, 1)
+	go func() { done <- waitUntil(context.Background(), mc, now.Add(5*time.Second)) }()
+	mc.waitReg(t)
+	mc.Tick(5 * time.Second)
+	if !<-done {
+		t.Fatal("waitUntil returned false")
+	}
+	if durs := mc.afterDurations(); len(durs) != 1 || durs[0] != 5*time.Second {
+		t.Errorf("durations = %v, want [5s]", durs)
+	}
+}
+
+func TestWaitUntilDeadlinePassedDoesNotWait(t *testing.T) {
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	mc := newMonoClock(now)
+	if !waitUntil(context.Background(), mc, now.Add(-time.Hour)) {
+		t.Error("past deadline returned false")
+	}
+	if !waitUntil(context.Background(), mc, now) {
+		t.Error("deadline == now returned false")
+	}
+	if n := len(mc.afterDurations()); n != 0 {
+		t.Errorf("After called %d times for a past deadline", n)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitUntil(ctx, mc, now.Add(-time.Hour)) {
+		t.Error("cancelled ctx reported success")
+	}
+}
+
+// A backwards wall step must not fire the run early, spin, or lose the wait.
+func TestWallClockJumpsBackwardsKeepsWaiting(t *testing.T) {
+	loc := la(t)
+	mc, h := startMono(t, time.Date(2026, 10, 20, 7, 0, 0, 0, loc))
+	mc.Jump(-3 * time.Hour) // wall 04:00
+	mc.Tick(wakeSlice)
+	mc.waitReg(t) // the loop re-armed instead of firing or spinning
+	if h.runs.Load() != 0 {
+		t.Fatal("fired after backwards jump")
+	}
+	for _, d := range mc.afterDurations() {
+		if d <= 0 || d > wakeSlice {
+			t.Errorf("After(%v) outside (0, %v]", d, wakeSlice)
+		}
+	}
+	if n := len(mc.afterDurations()); n != 2 {
+		t.Errorf("After calls = %d, want 2", n)
+	}
+	// Wall catches up to the slot: the run fires.
+	mc.Jump(4*time.Hour + 30*time.Minute)
+	mc.Tick(wakeSlice)
+	h.waitRan()
+	h.stop()
+}
+
+func TestCancelMidSlice(t *testing.T) {
+	loc := la(t)
+	mc, h := startMono(t, time.Date(2026, 10, 20, 7, 0, 0, 0, loc))
+	mc.Tick(wakeSlice / 2) // part-way through a slice
+	h.stop()
+	if h.runs.Load() != 0 {
+		t.Error("job ran after cancel")
 	}
 }

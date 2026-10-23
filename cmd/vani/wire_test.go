@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,12 +23,6 @@ import (
 	"github.com/bharathvbcr/decide"
 )
 
-// testGeminiLLM is the llm the wiring tests run on, with a fake GEMINI_API_KEY:
-// they test the wiring, not the default llm (Claude through Manvi since
-// 2026-10-20, TestDefaultLLMIsClaudeAtManviRates), and Gemini builds from a
-// key alone, with built-in prices and no workspace.
-var testGeminiLLM = config.LLM{Provider: "gemini", Model: "gemini-3.8-flash"}
-
 func clearKeys(t *testing.T) {
 	for _, k := range []string{"OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"} {
 		t.Setenv(k, "")
@@ -42,8 +35,7 @@ func clearKeys(t *testing.T) {
 func TestMeteredProviderConstruction(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	w := &wired{cfg: cfg, stateDir: t.TempDir(), warn: &bytes.Buffer{}}
 
@@ -70,98 +62,28 @@ func TestMeteredProviderConstruction(t *testing.T) {
 	}
 }
 
-// stubBoard lists fixed postings, counting its calls.
-type stubBoard struct {
-	ats   posting.ATS
-	posts []posting.Posting
-	calls int
-}
-
-func (f *stubBoard) ATS() posting.ATS { return f.ats }
-
-func (f *stubBoard) List(context.Context, sources.Board) ([]posting.Posting, error) {
-	f.calls++
-	return f.posts, nil
-}
-
-// withoutBackend wires an app with no decision backend over one fake Lever
-// board listing two postings.
-func withoutBackend(t *testing.T) (*App, *stubBoard, *bytes.Buffer) {
-	t.Helper()
+// A run with no usable decision backend fails before reading any board, so it
+// neither spends requests nor records postings it cannot process.
+func TestRunOnceFailsFastWithoutBackend(t *testing.T) {
 	clearKeys(t)
-	var posts []posting.Posting
-	for _, id := range []string{"p1", "p2"} {
-		k, err := posting.LeverKey("acme", id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		posts = append(posts, posting.Posting{Key: k, ATS: posting.Lever, Company: "Acme", Title: "Engineer " + id,
-			URL: "https://jobs.lever.co/acme/" + id, Description: "Build things.", SeenAt: time.Now()})
-	}
-	src := &stubBoard{ats: posting.Lever, posts: posts}
-	testHookSources = func(m map[posting.ATS]sources.Source) { m[posting.Lever] = src }
-	t.Cleanup(func() { testHookSources = nil })
 	cfg := config.Default()
-	cfg.Watchlist = []sources.Board{{ATS: posting.Lever, Token: "acme", Company: "Acme"}}
-	cfg.AllowedHosts = append(cfg.AllowedHosts, "api.lever.co")
+	cfg.Watchlist = []sources.Board{{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}}
+	cfg.AllowedHosts = append(cfg.AllowedHosts, "boards-api.greenhouse.io")
 	var warn bytes.Buffer
 	app, err := wireApp(cfg, t.TempDir(), &warn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(app.close)
-	return app, src, &warn
-}
-
-// A run with no usable decision backend still lists its boards and records
-// the postings live, so the Jobs list is current without a model; it then
-// fails before the advance phase, naming the missing backend, and never
-// records as finished. (Before 2026-10-20 it failed before reading any board,
-// which left the Jobs list empty until a key was configured.)
-func TestRunOnceWithoutBackendListsThenFails(t *testing.T) {
-	app, src, warn := withoutBackend(t)
-	err := app.RunOnce(context.Background())
-	if !errors.Is(err, errNoBackend) || !strings.Contains(err.Error(), "triaged nothing") {
+	defer app.close()
+	err = app.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no decision backend") {
 		t.Fatalf("err = %v", err)
 	}
-	if src.calls != 1 {
-		t.Fatalf("board listed %d times", src.calls)
+	if n := len(app.Ledger.All()); n != 0 {
+		t.Fatalf("%d postings recorded before failing", n)
 	}
-	recs := app.Ledger.All()
-	if len(recs) != 2 {
-		t.Fatalf("%d postings recorded, want 2", len(recs))
-	}
-	for _, r := range recs {
-		if r.Status != posting.Live {
-			t.Errorf("%s is %s, want live", r.Posting.Key, r.Status)
-		}
-	}
-	if d := app.RunReport(); d.Advance == nil || d.Advance.Stopped != stopNoBackend {
-		t.Fatalf("run report advance = %+v", d.Advance)
-	}
-	if !strings.Contains(warn.String(), "no posting is triaged this run") {
-		t.Errorf("no warning: %s", warn.String())
-	}
-	// A second run reads the board again and still fails: nothing is cached
-	// as a pass.
-	if err := app.RunOnce(context.Background()); !errors.Is(err, errNoBackend) || src.calls != 2 {
-		t.Fatalf("second run: err %v, calls %d", err, src.calls)
-	}
-}
-
-// A list-only run asks for no advance phase, so a missing backend does not
-// fail it.
-func TestListOnlyRunNeedsNoBackend(t *testing.T) {
-	app, src, _ := withoutBackend(t)
-	app.Tune(0, true)
-	if err := app.RunOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if src.calls != 1 || len(app.Ledger.All()) != 2 {
-		t.Fatalf("calls %d, postings %d", src.calls, len(app.Ledger.All()))
-	}
-	if d := app.RunReport(); d.Advance != nil {
-		t.Fatalf("list-only run reports an advance phase: %+v", d.Advance)
+	if strings.Contains(warn.String(), "board gh/acme") {
+		t.Fatalf("a board was read: %s", warn.String())
 	}
 }
 
@@ -266,8 +188,7 @@ func TestRunOnceSkipsPageBoardWithoutLightpanda(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	t.Setenv("PATH", t.TempDir())
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Watchlist = []sources.Board{{ATS: posting.Page, Token: "initech-careers", Company: "Initech",
 		URL: "https://careers.initech.example/jobs", LinkPattern: `^https://careers\.initech\.example/jobs/\d+$`}}
@@ -303,8 +224,7 @@ func TestRunOnceSkipsPageBoardWithoutLightpanda(t *testing.T) {
 func TestLappiShadowThenPrimary(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Lappi = &config.Lappi{Socket: "/tmp/vani-test-no-agent.sock"}
 	cfg.Decide.Shadow = "lappi"
@@ -354,8 +274,7 @@ func TestLocalModelIsAShadowOverLoopback(t *testing.T) {
 		_, _ = io.WriteString(w, `{"answers":{"work_mode":{"choice":"remote","confidence":0.9}}}`)
 	}))
 	defer srv.Close()
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Endpoint: srv.URL + "/v1/systemone", Model: "test-d1", Questions: "per_slot"}
 	cfg.Decide.Shadow = "local"
@@ -405,8 +324,7 @@ func TestLocalServerModeUsesTheStartedEndpoint(t *testing.T) {
 		_, _ = io.WriteString(w, `{"answers":{"work_mode":{"choice":"remote","confidence":0.9}}}`)
 	}))
 	defer srv.Close()
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d1",
 		Server: &config.LocalServer{Binary: "/opt/llama/llama-server", ModelPath: "/opt/models/d1.gguf"}}
@@ -449,8 +367,7 @@ func TestRunOnceGoesOnWhenTheLocalServerFails(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	t.Setenv("PATH", t.TempDir())
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d1", Server: &config.LocalServer{
 		Binary: filepath.Join(t.TempDir(), "no-such-llama-server"), ModelPath: "/opt/models/d1.gguf", StartTimeoutMS: 2000}}

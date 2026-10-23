@@ -43,7 +43,7 @@ func (w *wired) escalateBackend(p llm.Provider) (decide.Backend, error) {
 
 // escalating is the Decider the triager asks: router itself unless
 // decide.escalate is on, so a disabled run is exactly the plain router.
-func (w *wired) escalating(router *decide.Router, esc decide.Backend) decide.Decider {
+func (w *wired) escalating(router decide.Decider, esc decide.Backend) decide.Decider {
 	if !w.cfg.Decide.EscalateEnabled() {
 		return router
 	}
@@ -63,10 +63,10 @@ func (w *wired) escalating(router *decide.Router, esc decide.Backend) decide.Dec
 // escalation side is recorded in the shadow reading and the backend meter, never
 // in the answer.
 //
-// Which slots: those the primary chain Answered with a decision-model calibration whose
-// probability is below belowP. An outage reading (Unavailable, Failed, NotAsked)
-// is not a low-confidence answer, and the posting is read again on a later run;
-// a slot the LLM answered itself carries no such calibration; Lappi readings
+// Which slots: those the primary chain Answered with a decision-model
+// calibration whose probability is below belowP. An outage reading (Unavailable,
+// Failed, NotAsked) is not a low-confidence answer, and the posting is read again
+// on a later run; a slot the LLM answered itself carries no such calibration; Lappi readings
 // carry a Lappi one. Neither is a candidate.
 //
 // MEASURE MODE FOR DROPS AND FOR RANKING: DropPolicy ignores Shadow, so

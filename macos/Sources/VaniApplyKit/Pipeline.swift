@@ -42,15 +42,38 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var running: Bool
         public var pid: Int?
         public var since: Date?
+        /// Whether the decision model can answer in the running daemon; nil when the daemon
+        /// did not say (it predates the field, or the config names no OpenRouter model).
+        public var model: Model?
 
-        enum CodingKeys: String, CodingKey { case ok, reason, running, pid, since }
+        /// `daemon.model`: the key's variable was set (`enabled`) when the daemon started, or why
+        /// not (`reason`, vani's words). Never a key.
+        public struct Model: Decodable, Equatable, Sendable {
+            public var enabled: Bool
+            public var keyEnv: String?
+            public var reason: String?
 
-        public init(ok: Bool = true, reason: String? = nil, running: Bool, pid: Int? = nil, since: Date? = nil) {
+            enum CodingKeys: String, CodingKey {
+                case enabled, reason
+                case keyEnv = "key_env"
+            }
+
+            public init(enabled: Bool, keyEnv: String? = nil, reason: String? = nil) {
+                self.enabled = enabled
+                self.keyEnv = keyEnv
+                self.reason = reason
+            }
+        }
+
+        enum CodingKeys: String, CodingKey { case ok, reason, running, pid, since, model }
+
+        public init(ok: Bool = true, reason: String? = nil, running: Bool, pid: Int? = nil, since: Date? = nil, model: Model? = nil) {
             self.ok = ok
             self.reason = reason
             self.running = running
             self.pid = pid
             self.since = since
+            self.model = model
         }
 
         public init(from decoder: Decoder) throws {
@@ -62,7 +85,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                       reason: try? c.decodeIfPresent(String.self, forKey: .reason),
                       running: (try? c.decode(Bool.self, forKey: .running)) ?? false,
                       pid: try? c.decodeIfPresent(Int.self, forKey: .pid),
-                      since: try? c.decodeIfPresent(Date.self, forKey: .since))
+                      since: try? c.decodeIfPresent(Date.self, forKey: .since),
+                      // A model section this app cannot read is no claim either way.
+                      model: (try? c.decodeIfPresent(Model.self, forKey: .model)).flatMap { $0 })
         }
     }
 
@@ -195,9 +220,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         /// The decision backends' failed calls by cause; nil when none failed,
         /// or from a vani that does not report them.
         public var backendErrors: BackendErrors?
+        /// What vani says to announce for this run (cmd/vani/runnotice.go
+        /// decideNotice); nil from a vani that sends none.
+        public var notice: NoticeWire?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, state, stage, error, cause, boards, advance, trigger, options
+            case ok, reason, state, stage, error, cause, boards, advance, trigger, options, notice
             case digestRoles = "digest_roles"
             case startedAt = "started_at"
             case finishedAt = "finished_at"
@@ -230,6 +258,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             boards = try c.decodeIfPresent(Boards.self, forKey: .boards)
             advance = try c.decodeIfPresent(Advance.self, forKey: .advance)
             backendErrors = try c.decodeIfPresent(BackendErrors.self, forKey: .backendErrors)
+            // Present but not readable is a notice this app cannot trust, not an absent one.
+            notice = c.contains(.notice) ? ((try? c.decode(NoticeWire.self, forKey: .notice)) ?? .unsupported("malformed")) : nil
         }
 
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
@@ -238,7 +268,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     postingsBefore: Int? = nil, postingsAfter: Int? = nil,
                     countsBefore: [String: Int]? = nil, countsAfter: [String: Int]? = nil,
                     boards: Boards? = nil, advance: Advance? = nil, backendErrors: BackendErrors? = nil,
-                    trigger: Trigger? = nil, options: ManualRunOptions? = nil) {
+                    trigger: Trigger? = nil, options: ManualRunOptions? = nil, notice: NoticeWire? = nil) {
+            self.notice = notice
             self.trigger = trigger
             self.options = options
             self.cause = cause
@@ -282,6 +313,20 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             }
         }
 
+        /// Whether the run has anything to report: a failed or interrupted run, a run
+        /// error, a board that failed to list, or a backend error. It decides whether
+        /// Copy failures is offered, and is the rule vani's `runs failures` reports as
+        /// has_failures (cmd/vani/runscmd.go runHasFailures); a contract test holds the
+        /// two together. A last run vani could not read has none to report.
+        public var hasFailures: Bool {
+            guard ok else { return false }
+            if state == .failed || state == .interrupted { return true }
+            if let e = error, !e.isEmpty { return true }
+            if let b = boards, b.failed > 0 || b.items.contains(where: { $0.outcome == .failed || $0.outcome == .rateLimited }) { return true }
+            if let be = backendErrors, !be.causes.isEmpty || be.unrecorded > 0 { return true }
+            return false
+        }
+
         /// Postings the run added to the ledger (a ledger-derived difference, not
         /// an engine count). Nil when either end was not recorded.
         public var postingsAdded: Int? {
@@ -308,6 +353,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     case read
                     /// Listing or reconciling failed; the board's postings were left as they were.
                     case failed
+                    /// The host kept answering HTTP 429 through vani's retries: not broken,
+                    /// the board's postings were left as they were and it is tried next run.
+                    case rateLimited
                     /// No adapter, or the careers-page source was disabled this run.
                     case skipped
                     /// An outcome a newer vani adds: shown as written, never as read.
@@ -317,6 +365,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                         switch raw {
                         case "read": self = .read
                         case "failed": self = .failed
+                        case "rate_limited": self = .rateLimited
                         case "skipped": self = .skipped
                         default: self = .unknown(raw)
                         }
@@ -353,15 +402,29 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     self.listed = listed
                     self.error = error
                 }
+
+                /// The board and its error as one line, "ats:token (Company): error": what
+                /// a row's Copy error puts on the pasteboard. It is the line vani's failure
+                /// report (`vani runs failures`, cmd/vani/runscmd.go boardLine) prints for
+                /// the board, and a contract test holds the two equal; the report itself is
+                /// vani's, never worded here. The error is untrusted text, kept to one line
+                /// of `FailureReport.maxLine` characters.
+                public var copyLine: String {
+                    let name = company.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+                    let why = PipelineStatus.bounded(error ?? "", max: FailureReport.maxLine)
+                    return PipelineStatus.bounded("\(ats):\(token)\(name): \(why.isEmpty ? "none" : why)", max: FailureReport.maxLine)
+                }
             }
 
             /// A board that was not read, ready to show: one bounded line each.
             public struct Line: Equatable, Sendable {
                 /// "Intel (wd intel/External)"
                 public var board: String
-                /// "failed", "skipped", or a newer vani's outcome as written.
+                /// "failed", "rate limited", "skipped", or a newer vani's outcome as written.
                 public var outcome: String
                 public var error: String
+                /// What Copy error copies: the board's `Item.copyLine`, its whole error.
+                public var copyText: String
             }
 
             /// Longest error shown, in characters.
@@ -369,7 +432,11 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
             public var configured: Int
             public var read: Int
+            /// Every board whose listing failed, the rate-limited ones included.
             public var failed: Int
+            /// The part of `failed` the host rate limited (HTTP 429); 0 from a vani that
+            /// does not report it.
+            public var rateLimited: Int
             public var skipped: Int
             /// Boards never tried: the run ended before them.
             public var notReached: Int
@@ -382,6 +449,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             enum CodingKeys: String, CodingKey {
                 case configured, read, failed, skipped, listed, items, unrecorded
                 case notReached = "not_reached"
+                case rateLimited = "rate_limited"
             }
 
             public init(from decoder: Decoder) throws {
@@ -389,6 +457,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 configured = try c.decode(Int.self, forKey: .configured)
                 read = try c.decode(Int.self, forKey: .read)
                 failed = try c.decode(Int.self, forKey: .failed)
+                rateLimited = try c.decodeIfPresent(Int.self, forKey: .rateLimited) ?? 0
                 skipped = try c.decode(Int.self, forKey: .skipped)
                 listed = try c.decode(Int.self, forKey: .listed)
                 notReached = try c.decodeIfPresent(Int.self, forKey: .notReached) ?? 0
@@ -396,11 +465,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
             }
 
-            public init(configured: Int, read: Int, failed: Int = 0, skipped: Int = 0, notReached: Int = 0,
+            public init(configured: Int, read: Int, failed: Int = 0, rateLimited: Int = 0, skipped: Int = 0, notReached: Int = 0,
                         listed: Int, items: [Item] = [], unrecorded: Int = 0) {
                 self.configured = configured
                 self.read = read
                 self.failed = failed
+                self.rateLimited = rateLimited
                 self.skipped = skipped
                 self.notReached = notReached
                 self.listed = listed
@@ -419,7 +489,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             /// How the boards that were not read went, or nil when every board was read.
             public var outcome: String? {
                 var parts: [String] = []
-                if failed > 0 { parts.append("\(failed) failed") }
+                if failed > 0 {
+                    // A rate-limited board is counted in `failed`; name the part that is
+                    // the host throttling vani rather than the board being broken.
+                    let limited = min(max(rateLimited, 0), failed)
+                    parts.append(limited > 0 ? "\(failed) failed (\(limited) rate limited, tried again next run)" : "\(failed) failed")
+                }
                 if skipped > 0 { parts.append("\(skipped) skipped") }
                 if notReached > 0 { parts.append("\(notReached) not reached") }
                 guard !parts.isEmpty else { return nil }
@@ -434,12 +509,14 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     let outcome: String = switch item.outcome {
                     case .read: "read"
                     case .failed: "failed"
+                    case .rateLimited: "rate limited"
                     case .skipped: "skipped"
                     case .unknown(let raw): PipelineStatus.bounded(raw, max: 30)
                     }
                     return Line(board: PipelineStatus.bounded(name.map { "\($0) (\(where_))" } ?? where_, max: 80),
                                 outcome: outcome,
-                                error: PipelineStatus.bounded(item.error ?? "", max: Self.maxError))
+                                error: PipelineStatus.bounded(item.error ?? "", max: Self.maxError),
+                                copyText: item.copyLine)
                 }
             }
 
@@ -467,9 +544,6 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 /// No attempted posting advanced: each failed or went unread.
                 case noneAdvanced
                 case cancelled
-                /// No decision backend could be built: the boards were listed and
-                /// filtered, and nothing was triaged.
-                case noBackend
                 /// A reason a newer vani adds: shown as written, never as finished.
                 case unknown(String)
 
@@ -481,7 +555,6 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     case "fail_streak": self = .failStreak
                     case "none_advanced": self = .noneAdvanced
                     case "cancelled": self = .cancelled
-                    case "no_backend": self = .noBackend
                     default: self = .unknown(raw)
                     }
                 }
@@ -554,7 +627,6 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 case .failStreak?: "Stopped early: several postings in a row failed a stage (scoring or explaining)."
                 case .noneAdvanced?: "Stopped: no posting advanced; each failed a stage or went unread."
                 case .cancelled?: "Stopped: the run was cancelled."
-                case .noBackend?: "Not run: no decision backend is set up; the boards were listed only."
                 case .unknown(let raw)?: "Stopped: \(PipelineStatus.bounded(raw, max: 60))."
                 }
             }
@@ -643,11 +715,93 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var dailyAt: String?
         public var timezone: String?
         public var nextRun: Date?
+        /// Whether a daemon is running to fire the schedule. Nil from a vani
+        /// that does not report it, and when vani could not tell: never read
+        /// nil as kept or as not kept.
+        public var kept: Bool?
+        /// What the schedule not being kept has cost; present only when `kept`
+        /// is false.
+        public var unkept: Unkept?
 
         enum CodingKeys: String, CodingKey {
-            case ok, reason, timezone
+            case ok, reason, timezone, kept, unkept
             case dailyAt = "daily_at"
             case nextRun = "next_run"
+        }
+
+        /// The schedule is configured but nothing fires it.
+        public var isUnkept: Bool { ok && kept == false }
+
+        /// `vani status --json`'s `schedule.unkept`. Decoded leniently: a field
+        /// that does not decode is absent, never a failed status read.
+        public struct Unkept: Decodable, Equatable, Sendable {
+            /// Why no daemon is keeping the schedule.
+            public var why: String?
+            public var lastRunAt: Date?
+            /// The most recent scheduled slot, the one a daemon would have run.
+            public var dueAt: Date?
+            /// No run has started since `dueAt`; nil when the last run could not be read.
+            public var overdue: Bool?
+            /// Live postings no run has triaged yet; nil when they could not be counted.
+            public var awaitingTriage: Int?
+            public var advancePerRun: Int?
+            public var runsNeeded: Int?
+            /// How to get the schedule kept, and what that needs (vani's words).
+            public var hint: String?
+
+            enum CodingKeys: String, CodingKey {
+                case why, overdue, hint
+                case lastRunAt = "last_run_at"
+                case dueAt = "due_at"
+                case awaitingTriage = "awaiting_triage"
+                case advancePerRun = "advance_per_run"
+                case runsNeeded = "runs_needed"
+            }
+
+            public init(why: String? = nil, lastRunAt: Date? = nil, dueAt: Date? = nil, overdue: Bool? = nil, awaitingTriage: Int? = nil,
+                        advancePerRun: Int? = nil, runsNeeded: Int? = nil, hint: String? = nil) {
+                self.why = why
+                self.lastRunAt = lastRunAt
+                self.dueAt = dueAt
+                self.overdue = overdue
+                self.awaitingTriage = awaitingTriage
+                self.advancePerRun = advancePerRun
+                self.runsNeeded = runsNeeded
+                self.hint = hint
+            }
+
+            public init(from decoder: Decoder) throws {
+                guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+                    self.init()
+                    return
+                }
+                self.init(why: try? c.decodeIfPresent(String.self, forKey: .why),
+                          lastRunAt: try? c.decodeIfPresent(Date.self, forKey: .lastRunAt),
+                          dueAt: try? c.decodeIfPresent(Date.self, forKey: .dueAt),
+                          overdue: try? c.decodeIfPresent(Bool.self, forKey: .overdue),
+                          awaitingTriage: try? c.decodeIfPresent(Int.self, forKey: .awaitingTriage),
+                          advancePerRun: try? c.decodeIfPresent(Int.self, forKey: .advancePerRun),
+                          runsNeeded: try? c.decodeIfPresent(Int.self, forKey: .runsNeeded),
+                          hint: try? c.decodeIfPresent(String.self, forKey: .hint))
+            }
+
+            /// "schedule not kept" in one sentence for the Pipeline warning: no
+            /// daemon, how long since the last run, and the backlog in runs.
+            public func summary(dailyAt: String?, now: Date) -> String {
+                var parts = ["No daemon is running, so nothing fires\(dailyAt.map { " the \($0)" } ?? " the daily") run."]
+                if let last = lastRunAt {
+                    parts.append("Last run \(PipelineStatus.age(now.timeIntervalSince(last))) ago\(overdue == true ? " and the scheduled run is overdue" : "").")
+                } else if overdue == true {
+                    parts.append("No run is recorded, so the scheduled run is overdue.")
+                }
+                if let n = awaitingTriage, n > 0 {
+                    var s = "\(n) posting\(n == 1 ? " awaits" : "s await") triage"
+                    if let runs = runsNeeded, let cap = advancePerRun { s += " (about \(runs) run\(runs == 1 ? "" : "s") at advance_per_run \(cap))" }
+                    parts.append(s + ".")
+                }
+                parts.append("Use Run Now with a higher advance cap.")
+                return parts.joined(separator: " ")
+            }
         }
     }
 
@@ -758,6 +912,9 @@ extension PipelineStatus {
             break
         }
 
+        // A notice this app cannot read is never a quiet day: say so.
+        if case let .unsupported(why)? = lastRun.notice { add(.warning, "Run notices are off", why) }
+
         // A board that failed or was skipped is a warning even on a run that
         // succeeded: its postings silently stop updating otherwise.
         if lastRun.state != .running, let b = lastRun.boards, b.unreadCount > 0 {
@@ -767,6 +924,20 @@ extension PipelineStatus {
         }
 
         if !schedule.ok { add(.warning, "The schedule could not be read", schedule.reason) }
+        // A schedule nothing fires reads as fine everywhere else: say it. Quiet
+        // only when nothing is overdue and nothing waits; the schedule row still
+        // says it is not kept.
+        if schedule.isUnkept {
+            // `kept: false` without its details is a vani we cannot qualify: warn.
+            let u = schedule.unkept ?? PipelineStatus.Schedule.Unkept(overdue: true)
+            if u.overdue == true || (u.awaitingTriage ?? 0) > 0 {
+                add(.warning, "The daily schedule is not being kept", u.summary(dailyAt: schedule.dailyAt, now: now))
+            }
+        }
+        // A daemon started without the decision key keeps the schedule and triages nothing.
+        if let d = daemon, d.running, let m = d.model, !m.enabled {
+            add(.warning, "The daemon's decision model is off", m.reason)
+        }
         if !backends.ok { add(.warning, "Spend and caps are unknown", backends.reason) }
         for b in backends.items {
             if !b.ok {
@@ -863,6 +1034,66 @@ public struct PipelineClient: Sendable {
         try VaniProcess.call(vaniBinary, options.arguments(command: "run-request") + ["--json"], configPath: configPath, stateDir: stateDir,
                              timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: JobsClient.decoder,
                              tooOld: "this vani cannot hand a run to the daemon; rebuild the app")
+    }
+}
+
+extension PipelineClient {
+    /// The latest run's failure report (`vani runs failures --json`), the one text
+    /// Copy failures puts on the pasteboard. vani words it (the failed boards, the
+    /// backend errors, the run's error, the log files) and bounds it; this app only
+    /// carries it. An older vani has no such command (exit 2) and says so; a reply
+    /// with no text is an error, never an empty copy.
+    public func failureReport() throws -> FailureReport {
+        let report: FailureReport = try VaniProcess.call(vaniBinary, ["runs", "failures", "--json"], configPath: configPath, stateDir: stateDir,
+                                                         timeout: timeout, maxOutputBytes: FailureReport.maxReplyBytes, decoder: JobsClient.decoder,
+                                                         tooOld: "this vani cannot report failures; rebuild the app")
+        guard !report.text.isEmpty else { throw BankError("vani sent an empty failure report") }
+        return report
+    }
+}
+
+/// `vani runs failures --json`'s reply (cmd/vani/runscmd.go runFailuresJSON).
+public struct FailureReport: Decodable, Equatable, Sendable {
+    /// The contract version this app reads.
+    public static let supportedVersion = 1
+    /// vani cuts a report line at this many characters (maxReportLine).
+    public static let maxLine = 600
+    /// vani bounds the report at 24 KiB (maxReportBytes); the reply is that and its JSON framing.
+    static let maxReplyBytes = 128 << 10
+
+    public var id: String
+    /// vani's own verdict (runHasFailures); the app's `LastRun.hasFailures` is the same rule.
+    public var hasFailures: Bool
+    /// The report, plain text. When there are no failures it says so.
+    public var text: String
+    /// Lines the report's bounds took out of `text`, and lines they shortened; both
+    /// are also said in its last line. Zero from a vani that bounds nothing.
+    public var cutLines: Int
+    public var shortenedLines: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, text
+        case hasFailures = "has_failures"
+        case cutLines = "cut_lines"
+        case shortenedLines = "shortened_lines"
+    }
+
+    public init(id: String, hasFailures: Bool, text: String, cutLines: Int = 0, shortenedLines: Int = 0) {
+        self.id = id
+        self.hasFailures = hasFailures
+        self.text = text
+        self.cutLines = cutLines
+        self.shortenedLines = shortenedLines
+    }
+
+    /// Lenient: the bound counts are absent when zero (Go omits them).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        hasFailures = try c.decode(Bool.self, forKey: .hasFailures)
+        text = try c.decode(String.self, forKey: .text)
+        cutLines = try c.decodeIfPresent(Int.self, forKey: .cutLines) ?? 0
+        shortenedLines = try c.decodeIfPresent(Int.self, forKey: .shortenedLines) ?? 0
     }
 }
 

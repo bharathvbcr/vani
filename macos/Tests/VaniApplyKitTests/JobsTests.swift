@@ -33,7 +33,9 @@ final class JobsTests: XCTestCase {
     /// views keep the standard order, which lists them by when they were marked.
     func testDefaultSortPerView() {
         XCTAssertEqual(JobSort.defaultSort(for: .new), .priority)
-        for view in JobView.allCases where view != .new {
+        // Awaiting triage has no scores: newest first.
+        XCTAssertEqual(JobSort.defaultSort(for: .pending), .fresh)
+        for view in JobView.allCases where view != .new && view != .pending {
             XCTAssertEqual(JobSort.defaultSort(for: view), .standard, "\(view)")
         }
     }
@@ -465,8 +467,10 @@ final class JobsTests: XCTestCase {
         let state = try tempDir(self)
         let ledger = state.appendingPathComponent("ledger")
         try FileManager.default.createDirectory(at: ledger, withIntermediateDirectories: true)
+        // Titles differ by key: vani folds exact company+title duplicates into one row
+        // in the ranked "new" view (jobs list, b4518a6), so a shared title would hide two.
         func line(_ key: String, _ location: String, remote: Bool = false) -> String {
-            #"{"v":1,"at":"2026-10-18T12:00:00.5Z","key":"\#(key)","status":"digested","posting":{"key":"\#(key)","ats":"gh","company":"Acme","title":"Engineer","url":"https://boards.example.com/1","location":"\#(location)","remote":\#(remote),"seen_at":"2026-10-18T12:00:00.5Z"}}"#
+            #"{"v":1,"at":"2026-10-18T12:00:00.5Z","key":"\#(key)","status":"digested","posting":{"key":"\#(key)","ats":"gh","company":"Acme","title":"Engineer \#(key)","url":"https://boards.example.com/1","location":"\#(location)","remote":\#(remote),"seen_at":"2026-10-18T12:00:00.5Z"}}"#
         }
         let lines = [line("gh:acme:1", "Las Cruces, New Mexico; El Paso, TX"), line("gh:acme:2", "Remote - US"),
                      line("gh:acme:3", "London, United Kingdom")]

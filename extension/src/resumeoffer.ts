@@ -34,7 +34,7 @@ export interface OfferDeps {
   /** Bind the PDF to this job page in the Mac app. */
   save(name: string, pdf: string): Promise<{ error?: string }>;
   /** Attach it to the page's resume box now. */
-  attach(r: ResumeFetch): Promise<FillOutcome[]>;
+  attach(r: Extract<ResumeFetch, { ok: true }>): Promise<FillOutcome[]>;
 }
 
 export const OFFER_TEXT =

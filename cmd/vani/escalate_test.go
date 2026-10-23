@@ -95,12 +95,12 @@ func triageQuestion(key string) decide.Question {
 	return jdtriage.Question(posting.Posting{Key: posting.Key(key), Title: "Engineer", Description: "Build inference systems. Fully remote."})
 }
 
-// jevReading is a Jev-calibrated answer: the slot's first option at p.
+// jevReading is a Liquid D-calibrated answer: the slot's first option at p.
 func jevReading(s decide.Slot, p float64) decide.SlotReading {
 	return decide.SlotReading{Reading: decide.Answered, Value: s.Options[0], Jev: &decide.JevCalib{Probability: p}, Detail: "backend=d1-ultra"}
 }
 
-// primaryFor answers every slot of q with Jev at 0.95, except the named ones.
+// primaryFor answers every slot of q with Liquid D at 0.95, except the named ones.
 func primaryFor(q decide.Question, ps map[string]float64) decide.Answer {
 	a := decide.Answer{Backend: "d1-ultra", CostUSD: 0.002, Slots: map[string]decide.SlotReading{}}
 	for _, s := range q.Slots {
@@ -169,7 +169,7 @@ func TestNoLowSlotMeansZeroEscalationCalls(t *testing.T) {
 	}
 }
 
-// Only a calibrated Jev answer under below_p is low confidence. A slot the LLM
+// Only a calibrated Liquid D answer under below_p is low confidence. A slot the LLM
 // answered (no calibration), a Lappi answer, an outage reading, an abstention
 // and an unusable probability are not escalated, even when other slots are.
 func TestOnlyLowJevAnswersAreEscalated(t *testing.T) {

@@ -24,7 +24,8 @@ do { storeDir = try AppGroup.storeDirectory() } catch { fail("\(error)") }
 
 let jobs = AgentJobs { kind, request in
     // Settings are re-read per job, so a change in the app applies to the next one.
-    DraftSettings.load(from: storeDir).runner(vaniBinary: vaniBinary).runJob(kind, input: request)
+    // An unreadable settings file makes the runner refuse the job with code "settings".
+    DraftSettings.runner(loadingFrom: storeDir, vaniBinary: vaniBinary).runJob(kind, input: request)
 }
 
 // Sendable by its lock: `last` is read and written only under `lastUse`, and
@@ -70,7 +71,7 @@ final class Service: NSObject, AgentXPC, NSXPCListenerDelegate, @unchecked Senda
     // nothing, so these run at once beside a draft. Settings are re-read per call, and the
     // timeout stays under the client's XPC call timeout so a hung vani is an error, not silence.
     private var jobsOps: AgentJobsOps {
-        AgentJobsOps(jobs: DraftSettings.load(from: storeDir).jobsClient(vaniBinary: vaniBinary, timeout: XPCAgentClient.callTimeout - 1))
+        AgentJobsOps(jobs: DraftSettings.jobsBackend(loadingFrom: storeDir, vaniBinary: vaniBinary, timeout: XPCAgentClient.callTimeout - 1))
     }
 
     func find(url: String, reply: @escaping (Data?, String?) -> Void) {
@@ -88,7 +89,7 @@ final class Service: NSObject, AgentXPC, NSXPCListenerDelegate, @unchecked Senda
     // (JobsClient.ingestTimeout), which the client's longer ingest call timeout covers.
     func ingest(payload: Data, reply: @escaping (Data?, String?) -> Void) {
         touch()
-        let r = AgentJobsOps(jobs: DraftSettings.load(from: storeDir).jobsClient(vaniBinary: vaniBinary, timeout: JobsClient.ingestTimeout)).ingest(payload: payload)
+        let r = AgentJobsOps(jobs: DraftSettings.jobsBackend(loadingFrom: storeDir, vaniBinary: vaniBinary, timeout: JobsClient.ingestTimeout)).ingest(payload: payload)
         reply(r.reply, r.error)
     }
 

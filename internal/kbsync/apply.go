@@ -143,12 +143,13 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 		}
 		accepted := func(st string) error {
 			state.record(it.ID, it.Hash, time.Now())
-			if state.unsaved >= flushEvery {
-				if err := state.flush(); err != nil {
-					return err
-				}
-			}
+			// Counted before the flush: DevPrism accepted the block and state
+			// holds it, so a failed save must not leave Result short of what
+			// the deferred flush may still persist.
 			add(Outcome{ID: it.ID, Status: st})
+			if state.unsaved >= flushEvery {
+				return state.flush()
+			}
 			return nil
 		}
 		switch {

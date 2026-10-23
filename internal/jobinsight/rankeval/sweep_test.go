@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func TestVariantSweep(t *testing.T) {
 	total := len(kept)
 	onGrid := false
 	for _, v := range kept {
-		onGrid = onGrid || v.w == base
+		onGrid = onGrid || reflect.DeepEqual(v.w, base)
 	}
 	if !onGrid {
 		total++ // DefaultWeights is not one of the swept variants

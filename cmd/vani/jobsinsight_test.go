@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -81,7 +82,7 @@ var insightSeeds = []insightSeed{
 	{key: "gh:b:old", company: "Beta", title: "Old role", status: posting.Dead, seenAgo: 90 * 24 * time.Hour},
 }
 
-func findJob(t *testing.T, l jobsListJSON, key string) jobJSON {
+func findJob(t *testing.T, l jobview.List, key string) jobview.Job {
 	t.Helper()
 	for _, j := range l.Jobs {
 		if string(j.Key) == key {
@@ -89,7 +90,7 @@ func findJob(t *testing.T, l jobsListJSON, key string) jobJSON {
 		}
 	}
 	t.Fatalf("no %s in %q", key, keys(l))
-	return jobJSON{}
+	return jobview.Job{}
 }
 
 func TestJobsInsightFields(t *testing.T) {
@@ -198,12 +199,13 @@ func TestJobsStats(t *testing.T) {
 	writeTarget(t, cfgPath, "Inference in Go and Rust.") // a sentence-initial "Go" would not count
 	seedInsight(t, state, insightSeeds...)
 	o, _ := mustCode(t, 0, "jobs", "stats", "--json", "--view", "all")
-	var s jobsStatsJSON
+	var s jobview.Stats
 	if err := json.Unmarshal([]byte(o), &s); err != nil {
 		t.Fatalf("stats %q: %v", o, err)
 	}
+	// The mismatch_domain row is penalised by the gate alone, so its match rests on nothing.
 	if s.Total != 3 || s.Fit["strong_fit"] != 1 || s.Fit["mismatch_domain"] != 1 || s.Fit["none"] != 1 ||
-		s.WorkMode["remote"] != 1 || s.Basis["fit"] != 2 || s.Basis["none"] != 1 || s.Records != 5 {
+		s.WorkMode["remote"] != 1 || s.Basis["fit"] != 1 || s.Basis["none"] != 2 || s.Records != 5 {
 		t.Fatalf("stats %+v", s)
 	}
 	ages, posted := 0, 0
@@ -224,7 +226,7 @@ func TestJobsStats(t *testing.T) {
 	if len(s.Companies) != 3 || s.Companies[0].Company != "Acme" || s.Companies[0].Strong != 1 {
 		t.Errorf("companies %+v", s.Companies)
 	}
-	var goTerm *keywordStatJSON
+	var goTerm *jobview.KeywordStat
 	for i, k := range s.Keywords {
 		if k.Term == "Go" {
 			goTerm = &s.Keywords[i]
@@ -287,45 +289,8 @@ func TestJobsKeywordsSkipCompanyBlurb(t *testing.T) {
 		t.Errorf("keywords %+v", j.Keywords)
 	}
 	o, _ := mustCode(t, 0, "jobs", "show", "--json", "gh:blurb:0")
-	var shown jobJSON
+	var shown jobview.Job
 	if err := json.Unmarshal([]byte(o), &shown); err != nil || len(shown.Keywords) != 1 {
 		t.Errorf("show keywords %q", o)
 	}
-}
-
-func TestParseReasons(t *testing.T) {
-	pct := func(p int) *int { return &p }
-	cases := []struct {
-		in   string
-		want []reasonJSON
-	}{
-		{"", nil},
-		{"Fits: A (91%).", []reasonJSON{{"fits", "A", pct(91)}}},
-		{"Fits: A (91%). Gap: B. Check: C (5%).", []reasonJSON{{"fits", "A", pct(91)}, {"gap", "B", nil}, {"check", "C", pct(5)}}},
-		{"Gap: Go. Rust. (40%).", []reasonJSON{{"gap", "Go. Rust.", pct(40)}}},
-		{"Fits: odd (250%).", []reasonJSON{{"fits", "odd (250%)", nil}}},
-		{"No listed reason applies.", []reasonJSON{{"other", "No listed reason applies.", nil}}},
-		{"Fits: A. trailing words", []reasonJSON{{"fits", "A. trailing words", nil}}},
-		{"Gap: B. Fits: A.", []reasonJSON{{"gap", "B", nil}, {"fits", "A", nil}}},
-		{"Fits: ", []reasonJSON{{"other", "Fits:", nil}}},
-		{"Fits: (91%).", []reasonJSON{{"other", "Fits: (91%).", nil}}},
-	}
-	for _, c := range cases {
-		got := parseReasons(c.in)
-		if fmt.Sprint(reasonStrings(got)) != fmt.Sprint(reasonStrings(c.want)) {
-			t.Errorf("parseReasons(%q) = %v, want %v", c.in, reasonStrings(got), reasonStrings(c.want))
-		}
-	}
-}
-
-func reasonStrings(rs []reasonJSON) []string {
-	var out []string
-	for _, r := range rs {
-		p := "-"
-		if r.Pct != nil {
-			p = fmt.Sprint(*r.Pct)
-		}
-		out = append(out, r.Kind+"|"+r.Text+"|"+p)
-	}
-	return out
 }

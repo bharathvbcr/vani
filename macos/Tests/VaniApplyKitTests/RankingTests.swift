@@ -269,7 +269,7 @@ final class RankingTests: XCTestCase {
     func testDraftSettingsCarryTheHalfLifeToTheJobsClient() throws {
         let dir = try tempDir(self)
         try DraftSettings(jobsHalfLifeDays: 21).save(to: dir)
-        let loaded = DraftSettings.load(from: dir)
+        let loaded = try DraftSettings.load(from: dir)
         XCTAssertEqual(loaded.jobsHalfLifeDays, 21)
         XCTAssertEqual(loaded.jobsClient(vaniBinary: URL(fileURLWithPath: "/x/vani")).halfLifeDays, 21)
         XCTAssertNil(DraftSettings().jobsClient(vaniBinary: URL(fileURLWithPath: "/x/vani")).halfLifeDays)

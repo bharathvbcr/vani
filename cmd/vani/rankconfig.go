@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/rankfit"
 )
 
 // rankRules is what the ranking reads from the config, for `vani jobs` and
@@ -22,4 +23,24 @@ func rankRules(cfg config.Config) (rules []jobinsight.DropRule, titleRank func(s
 		titleRank = s.Rank
 	}
 	return rules, titleRank
+}
+
+// rankWeightsHand is what rankWeights reports when Score uses the hand weights.
+const rankWeightsHand = "hand"
+
+// rankWeights reads the config's rank_weights_file for every ranking caller,
+// so `vani jobs`, the digest and kbmatch's candidate order rank by the same
+// weights. w is nil for the hand weights. used says which weights are in use
+// ("hand", or "fitted <date>"), so it is never silent; warn is non-empty when
+// a file was configured but could not be used, and the hand weights stand in.
+func rankWeights(cfg config.Config) (w *jobinsight.Weights, used, warn string) {
+	if cfg.RankWeightsFile == "" {
+		return nil, rankWeightsHand, ""
+	}
+	f, err := rankfit.Load(cfg.RankWeightsFile)
+	if err != nil {
+		return nil, rankWeightsHand, "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300)
+	}
+	fitted := f.Apply(jobinsight.DefaultWeights())
+	return &fitted, "fitted " + f.FittedAt.UTC().Format("2006-01-02"), ""
 }

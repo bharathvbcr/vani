@@ -15,21 +15,18 @@ import (
 // deciders written before then still load: each old key is read as its new
 // name, a file that sets both with different values is refused, and
 // Deprecations lists the old names a file uses so callers can say so. Save
-// writes only the new names.
+// writes only the new names. kbmatch.backend "jev" followed on 2026-10-20 the
+// same way.
 const (
 	legacyModelKey    = "jev_model"
 	legacyKeyEnvKey   = "jev_key_env"
 	legacyDailyKey    = "jev"
 	legacyMinProbKey  = "min_jev_prob"
 	legacyShadowValue = "jev"
-	// legacyKBMatchBackend is kbmatch.backend's name for KBMatchLiquid until
-	// 2026-10-20.
+	// legacyKBMatchBackend is kbmatch.backend's name for KBMatchOpenRouter
+	// until 2026-10-20.
 	legacyKBMatchBackend = "jev"
 )
-
-// LegacyKBMatchBackend is the old kbmatch backend name, which `vani kbmatch
-// run --backend` still accepts with a warning.
-const LegacyKBMatchBackend = legacyKBMatchBackend
 
 // ShadowOpenRouter is the decide.shadow value that makes the OpenRouter
 // decision model the shadow.
@@ -161,7 +158,7 @@ func (k *KBMatch) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if w.Backend == legacyKBMatchBackend {
-		w.Backend = KBMatchLiquid
+		w.Backend = KBMatchOpenRouter
 	}
 	*k = KBMatch(w)
 	return nil
@@ -253,7 +250,7 @@ func Deprecations(data []byte) []string {
 		out = append(out, fmt.Sprintf("drop_rules min_jev_prob is now min_openrouter_prob (%d rule(s))", n))
 	}
 	if k := p.KBMatch; k != nil && k.Backend != nil && *k.Backend == legacyKBMatchBackend {
-		out = append(out, fmt.Sprintf("kbmatch.backend %q is now %q", legacyKBMatchBackend, KBMatchLiquid))
+		out = append(out, fmt.Sprintf("kbmatch.backend %q is now %q", legacyKBMatchBackend, KBMatchOpenRouter))
 	}
 	return out
 }

@@ -24,6 +24,7 @@ import (
 	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
@@ -53,6 +54,16 @@ type Counts struct {
 	// so the footer says they exist: otherwise "No new roles today" above
 	// "New today: 3027" reads as nothing to look at.
 	AwaitingTriage int
+	// CouldNotCheck is what the run kept without checking, by cause (a check
+	// that could not run is not a check that passed). Causes with no postings
+	// are not printed; none at all prints nothing.
+	CouldNotCheck []Unchecked
+}
+
+// Unchecked is one cause a posting was kept unchecked and how many were.
+type Unchecked struct {
+	Cause string
+	N     int
 }
 
 // Select returns the records that belong in a digest, in digest order:
@@ -82,50 +93,256 @@ type Options struct {
 	// KBMatch is jobinsight.RankContext.KBMatch: the language model's read of a
 	// role's work, where it was asked.
 	KBMatch func(r ledger.Record) (jobinsight.Slot, bool)
+
+	// HalfLifeDays is jobinsight.RankContext.HalfLifeDays: the age that halves
+	// the freshness bonus, as `vani jobs --half-life`. Outside (0, MaxHalfLifeDays]
+	// means the default.
+	HalfLifeDays float64
+	// Weights is jobinsight.RankContext.Weights: the fitted rank weights, nil
+	// for the hand weights.
+	Weights *jobinsight.Weights
+
+	// TopOpen lists this many of the best roles already digested and still
+	// open, by Relevance (fit alone, age left out), under "Top open": the
+	// "what is the best open role" answer beside the new roles' "what is new".
+	// Zero lists none. At most MaxTopOpen.
+	TopOpen int
+	// ExploreBelowFold and ExploreDropped list this many roles picked at
+	// random (seeded by the date) from digested roles the owner has not marked
+	// and from dropped roles, under "Explore", so their judgement reaches the
+	// postings the ranking and the drop rules would never show. Zero lists
+	// none. Each at most MaxExplore.
+	ExploreBelowFold, ExploreDropped int
+}
+
+// Bounds on Options' extra sections.
+const (
+	MaxTopOpen = 50
+	MaxExplore = 10
+)
+
+// Shown is one role a rendered digest lists, in reading order: the record
+// impressions are made of. Position counts from 1 over the whole digest.
+type Shown struct {
+	Key      posting.Key
+	Section  string
+	Position int
+	Status   posting.Status
+	// DropClass is DropClass of a dropped role listed for exploration.
+	DropClass string
+	Result    jobinsight.Result
+	// Source and PSelect belong to an Explore row: the stratum it was drawn
+	// from and its inclusion probability (eval.UniformSample), what a
+	// would_apply label records.
+	Source  string
+	PSelect float64
+}
+
+// Section names Shown carries; they match the feedback package's.
+const (
+	SectionRanked   = "ranked"
+	SectionUnranked = "not_ranked"
+	// SectionCoverageUnknown holds roles DevPrism scored but found no
+	// must-haves in: rank-less, yet not "never scored".
+	SectionCoverageUnknown = "coverage_unknown"
+	SectionUnsure          = "unsure"
+	SectionSaved           = "saved"
+	SectionTopOpen         = "top_open"
+	SectionExplore         = "explore"
+)
+
+// scorer scores records with one RankContext, built once from the whole ledger
+// and the marks, and remembers each result.
+type scorer struct {
+	c    jobinsight.RankContext
+	memo map[posting.Key]jobinsight.Result
+}
+
+func newScorer(all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) *scorer {
+	c := jobinsight.NewRankContext(all, m, now)
+	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
+	c.HalfLifeDays, c.Weights = o.HalfLifeDays, o.Weights
+	return &scorer{c: c, memo: map[posting.Key]jobinsight.Result{}}
+}
+
+func (s *scorer) score(r ledger.Record) jobinsight.Result {
+	if res, ok := s.memo[r.Key]; ok {
+		return res
+	}
+	res := s.c.ScoreOf(r)
+	s.memo[r.Key] = res
+	return res
 }
 
 func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
+	return selectWith(recs, m, newScorer(recs, m, now, o))
+}
+
+func selectWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
 		if (r.Status == posting.Explained || r.Status == posting.Unsure) && m[r.Key] != marks.Hidden {
 			out = append(out, r)
 		}
 	}
-	sortDigest(out, recs, m, now, o)
+	sortDigest(out, sc)
 	return out
 }
 
-// Saved returns the roles the user saved in Jobs whose posting is still
-// listed (not dead, not a duplicate), whatever their pipeline status, in
-// digest order.
-func Saved(recs []ledger.Record, m map[posting.Key]marks.Mark) []ledger.Record {
-	return savedAt(recs, m, time.Now(), Options{})
+// topOpen is up to n roles already digested, still listed and not marked
+// (saved roles have their own section; hidden and applied ones are done), by
+// Relevance, then Score, then key (jobinsight.CompareRelevance), diversified
+// (jobinsight.Diversify). similar counts, per listed role, the roles collapsed
+// into it.
+func topOpen(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer, n int) (top []ledger.Record, similar map[posting.Key]int) {
+	if n <= 0 {
+		return nil, nil
+	}
+	var out []ledger.Record
+	for _, r := range recs {
+		if r.Status == posting.Digested && m[r.Key] == marks.None {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return jobinsight.CompareRelevance(sc.score(out[i]), sc.score(out[j]), string(out[i].Key), string(out[j].Key)) < 0
+	})
+	rows := diverse(out)
+	top = make([]ledger.Record, 0, min(n, len(rows)))
+	similar = map[posting.Key]int{}
+	for _, row := range rows[:min(n, len(rows))] {
+		top = append(top, out[row.Index])
+		similar[out[row.Index].Key] = len(row.Similar)
+	}
+	return top, similar
 }
 
-func savedAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) []ledger.Record {
+// diverse is jobinsight.Diversify over an ordered list of roles: duplicates
+// collapse and one company leads at most a few rows. Both lists the digest
+// shapes this way (new ranked roles, Top open) go through it.
+func diverse(recs []ledger.Record) []jobinsight.DiverseRow {
+	return jobinsight.Diversify(len(recs),
+		func(i int) string { return recs[i].Posting.Company },
+		func(i int) string { return recs[i].Posting.Title },
+		jobinsight.DiversityPerCompany, jobinsight.DiversityWindow)
+}
+
+// writeSimilar says how many roles a row stands for besides itself.
+func writeSimilar(b *strings.Builder, n int) {
+	if n > 0 {
+		fmt.Fprintf(b, "- Similar: %d more listing(s) of this title at this company\n", n)
+	}
+}
+
+// explore picks up to belowFold digested roles and up to dropped dropped roles,
+// all unmarked (a marked role is already judged, and a saved one is listed
+// under Saved) and none in skip, each pool ordered by a hash of the date and
+// the key: random to the ranking, the same for a given day.
+func explore(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, skip map[posting.Key]bool, belowFold, dropped int) []explored {
+	var fold, drop []ledger.Record
+	for _, r := range recs {
+		switch {
+		case r.Status == posting.Digested && m[r.Key] == marks.None && !skip[r.Key]:
+			fold = append(fold, r)
+		case r.Status == posting.Dropped && m[r.Key] == marks.None:
+			drop = append(drop, r)
+		}
+	}
+	day := date.Format("2006-01-02")
+	pick := func(pool []ledger.Record, n int, source string) []explored {
+		keys := make([]posting.Key, len(pool))
+		byKey := make(map[posting.Key]ledger.Record, len(pool))
+		for i, r := range pool {
+			keys[i] = r.Key
+			byKey[r.Key] = r
+		}
+		got, p := eval.UniformSample(day, keys, n)
+		out := make([]explored, 0, len(got))
+		for _, k := range got {
+			out = append(out, explored{rec: byKey[k], source: source, p: p})
+		}
+		return out
+	}
+	return append(pick(fold, belowFold, ExploreSourceBelowFold), pick(drop, dropped, ExploreSourceDropped)...)
+}
+
+// Strata an Explore row is drawn from (a would_apply label's source).
+const (
+	ExploreSourceBelowFold = "explore:below_fold"
+	ExploreSourceDropped   = "explore:dropped"
+)
+
+// explored is one Explore pick with its stratum and inclusion probability.
+type explored struct {
+	rec    ledger.Record
+	source string
+	p      float64
+}
+
+// DropClass names why a dropped record was dropped, from its triage
+// annotations (the folded record keeps no event reason): the backend that read
+// it ("title" for a title reading) and the slot of the first drop rule its
+// readings match, as "title:role_fit". It never names the rule's value: rule
+// values can reveal the owner's work authorization (rankconfig.go), and the
+// class reaches the digest and the feedback log. "" for a record that is not
+// dropped.
+func DropClass(r ledger.Record, rules []jobinsight.DropRule) string {
+	if r.Status != posting.Dropped {
+		return ""
+	}
+	backend := token(r.Annotations[ledger.AnnTriagePrefix+"backend"])
+	if backend == "" {
+		backend = "unknown"
+	}
+	for _, rule := range rules {
+		v := strings.TrimSpace(r.Annotations[ledger.AnnTriagePrefix+rule.Slot])
+		for _, want := range rule.Values {
+			if v != "" && v == want {
+				if b := token(r.Annotations[ledger.AnnTriagePrefix+rule.Slot+".backend"]); b != "" {
+					backend = b
+				}
+				return backend + ":" + token(rule.Slot)
+			}
+		}
+	}
+	return backend + ":other"
+}
+
+// token keeps the characters of s that are safe in a class name, at most 40.
+func token(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if b.Len() >= 40 {
+			break
+		}
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.' || r == '/' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// savedWith returns the roles the user saved in Jobs whose posting is still
+// listed (not dead, not a duplicate), whatever their pipeline status, in
+// digest order.
+func savedWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
 		if m[r.Key] == marks.Saved && r.Status != posting.Dead && r.Status != posting.Duplicate {
 			out = append(out, r)
 		}
 	}
-	sortDigest(out, recs, m, now, o)
+	sortDigest(out, sc)
 	return out
 }
 
-// sortDigest orders out by jobinsight.Score, built from all (the whole ledger,
-// so the first-crawl and company-marks parts see every posting) and the marks.
+// sortDigest orders out by jobinsight.Score, built from the whole ledger (so
+// the first-crawl and company-marks parts see every posting) and the marks.
 // The digest has no keyword vocabulary, so that part takes its prior for every
-// role alike; the embedding part, rules and title signals come from o, as
+// role alike; the embedding part, rules and title signals come from Options, as
 // `vani jobs` applies them. A role DevPrism did not score stays behind the scored
-// ones: Render lists them under "Not ranked".
-func sortDigest(out, all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) {
-	c := jobinsight.NewRankContext(all, m, now)
-	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
-	score := make(map[posting.Key]float64, len(out))
-	for _, r := range out {
-		score[r.Key] = jobinsight.Score(jobinsight.InputsFor(r, c)).Score
-	}
+// ones: Render lists them under "Not ranked" or "Coverage unknown", each still in this priority order.
+func sortDigest(out []ledger.Record, sc *scorer) {
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if IsUnsure(a) != IsUnsure(b) {
@@ -136,10 +353,7 @@ func sortDigest(out, all []ledger.Record, m map[posting.Key]marks.Mark, now time
 		if oka != okb {
 			return oka
 		}
-		if sa, sb := score[a.Key], score[b.Key]; sa != sb {
-			return sa > sb
-		}
-		return a.Key < b.Key
+		return jobinsight.ComparePriority(sc.score(a), sc.score(b), string(a.Key), string(b.Key)) < 0
 	})
 }
 
@@ -156,6 +370,12 @@ func Rank(r ledger.Record) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// CoverageUnknown reports whether DevPrism scored the posting but found no
+// must-haves in it (the marker a NoMustHaves answer writes in place of a rank).
+func CoverageUnknown(r ledger.Record) bool {
+	return ledger.CoverageUnknown(r)
 }
 
 // Coverage is the must-have coverage shown to the reader. The rank may carry
@@ -180,12 +400,27 @@ func Render(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, 
 
 // RenderWith is Render with o's ranking inputs.
 func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, c Counts, o Options) (string, []posting.Key) {
-	sel := selectAt(recs, m, date, o)
+	md, keys, _ := RenderShown(recs, m, date, c, o)
+	return md, keys
+}
+
+// RenderShown is RenderWith that also returns every role the digest lists, in
+// reading order, with its score: what impressions are made of. keys are only
+// the new roles (the caller marks them Digested); Top open, Explore and Saved
+// roles are listed without changing their status.
+func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Time, c Counts, o Options) (string, []posting.Key, []Shown) {
+	sc := newScorer(recs, m, date, o)
+	sel := selectWith(recs, m, sc)
+	var shown []Shown
+	show := func(r ledger.Record, section string) {
+		shown = append(shown, Shown{Key: r.Key, Section: section, Position: len(shown) + 1, Status: r.Status,
+			DropClass: DropClass(r, o.Rules), Result: sc.score(r)})
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Vani digest %s\n\n", date.Format("2006-01-02"))
 
 	// Select puts scored roles before unscored ones, so splitting keeps order.
-	var ranked, unranked, unsure []ledger.Record
+	var ranked, unranked, covUnknown, unsure []ledger.Record
 	for _, r := range sel {
 		_, ok := Rank(r)
 		switch {
@@ -193,6 +428,8 @@ func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Ti
 			unsure = append(unsure, r)
 		case ok:
 			ranked = append(ranked, r)
+		case CoverageUnknown(r):
+			covUnknown = append(covUnknown, r)
 		default:
 			unranked = append(unranked, r)
 		}
@@ -204,9 +441,17 @@ func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Ti
 	}
 	if len(ranked) > 0 {
 		fmt.Fprintf(&b, "## Ranked roles (%d)\n\n", len(ranked))
-		for _, r := range ranked {
-			writeRole(&b, r)
+		// Shaped for reading (jobinsight.Diversify): a duplicate listing folds into
+		// its first row, yet every role is still returned as new so it is marked
+		// Digested and does not come back tomorrow.
+		for _, row := range diverse(ranked) {
+			r := ranked[row.Index]
+			writeRoleSimilar(&b, r, len(row.Similar))
 			keys = append(keys, r.Key)
+			show(r, SectionRanked)
+			for _, i := range row.Similar {
+				keys = append(keys, ranked[i].Key)
+			}
 		}
 	}
 	// A posting explained without a rank was never scored (scoring off, or
@@ -214,10 +459,22 @@ func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Ti
 	// skipped stage pass for a ranking.
 	if len(unranked) > 0 {
 		fmt.Fprintf(&b, "## Not ranked (%d)\n\n", len(unranked))
-		b.WriteString("DevPrism did not score these, so they are in no particular order.\n\n")
+		b.WriteString("DevPrism did not score these, so they have no must-have coverage; they are listed by priority alone.\n\n")
 		for _, r := range unranked {
 			writeRole(&b, r)
 			keys = append(keys, r.Key)
+			show(r, SectionUnranked)
+		}
+	}
+	// Scored, but the posting names no must-have to measure: coverage is
+	// unknown, which is not the same as never scored.
+	if len(covUnknown) > 0 {
+		fmt.Fprintf(&b, "## Coverage unknown (%d)\n\n", len(covUnknown))
+		b.WriteString("DevPrism scored these but found no must-haves in the posting, so there is no coverage to rank by; they are listed by priority alone.\n\n")
+		for _, r := range covUnknown {
+			writeRole(&b, r)
+			keys = append(keys, r.Key)
+			show(r, SectionCoverageUnknown)
 		}
 	}
 	if len(unsure) > 0 {
@@ -226,9 +483,39 @@ func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Ti
 		for _, r := range unsure {
 			writeRole(&b, r)
 			keys = append(keys, r.Key)
+			show(r, SectionUnsure)
 		}
 	}
-	if saved := savedAt(recs, m, date, o); len(saved) > 0 {
+	top, similar := topOpen(recs, m, sc, min(o.TopOpen, MaxTopOpen))
+	if len(top) > 0 {
+		fmt.Fprintf(&b, "## Top open (%d)\n\n", len(top))
+		b.WriteString("The best roles listed before and still open, by fit alone: age is left out, so a strong role does not sink because it is a few weeks old.\n\n")
+		for _, r := range top {
+			writeBrief(&b, r, sc.score(r), "")
+			if n := similar[r.Key]; n > 0 {
+				fmt.Fprintf(&b, "  - Similar: %d more listing(s) of this title at this company\n", n)
+			}
+			show(r, SectionTopOpen)
+		}
+		b.WriteString("\n")
+	}
+	skip := make(map[posting.Key]bool, len(top))
+	for _, r := range top {
+		skip[r.Key] = true
+	}
+	if ex := explore(recs, m, date, skip, min(o.ExploreBelowFold, MaxExplore), min(o.ExploreDropped, MaxExplore)); len(ex) > 0 {
+		fmt.Fprintf(&b, "## Explore (%d)\n\n", len(ex))
+		b.WriteString("Picked at random from roles ranked lower and roles that were dropped, so Vani can learn what it misses. Judge one with `vani audit answer --key KEY --verdict yes|maybe|no --source STRATUM --p-select P`, using the stratum and p_select on its row.\n\n")
+		for _, x := range ex {
+			r := x.rec
+			writeBrief(&b, r, sc.score(r), DropClass(r, o.Rules))
+			fmt.Fprintf(&b, "  - Drawn: stratum `%s` · p_select %s\n", x.source, strconv.FormatFloat(x.p, 'g', 6, 64))
+			shown = append(shown, Shown{Key: r.Key, Section: SectionExplore, Position: len(shown) + 1, Status: r.Status,
+				DropClass: DropClass(r, o.Rules), Result: sc.score(r), Source: x.source, PSelect: x.p})
+		}
+		b.WriteString("\n")
+	}
+	if saved := savedWith(recs, m, sc); len(saved) > 0 {
 		fmt.Fprintf(&b, "## Saved (%d)\n\n", len(saved))
 		b.WriteString("Roles you saved in Jobs and have not applied to or hidden yet.\n\n")
 		for i, r := range saved {
@@ -237,16 +524,57 @@ func RenderWith(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.Ti
 				break
 			}
 			fmt.Fprintf(&b, "- %s at %s: %s\n", Escape(r.Posting.Title, maxFieldRunes), Escape(r.Posting.Company, maxFieldRunes), linkLine(r.Posting.URL))
+			show(r, SectionSaved)
 		}
 		b.WriteString("\n")
 	}
 
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "New today: %d | Dropped today: %d | Dead today: %d\n", c.New, c.Dropped, c.Dead)
+	var unchecked []string
+	for _, u := range c.CouldNotCheck {
+		if u.N > 0 {
+			unchecked = append(unchecked, fmt.Sprintf("%d %s", u.N, Escape(u.Cause, 80)))
+		}
+	}
+	if len(unchecked) > 0 {
+		fmt.Fprintf(&b, "\nKept without a check, could not check: %s\n", strings.Join(unchecked, ", "))
+	}
 	if c.AwaitingTriage > 0 {
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
 	}
-	return b.String(), keys
+	return b.String(), keys, shown
+}
+
+// writeBrief lists a role that is not new today: title, company, where, link,
+// its relevance, its key (for `vani audit`) and, for a dropped role, why.
+func writeBrief(b *strings.Builder, r ledger.Record, res jobinsight.Result, dropClass string) {
+	p := r.Posting
+	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
+	fmt.Fprintf(b, "  - Relevance %s · priority %s · key `%s`\n", strconv.FormatFloat(res.Relevance, 'f', 0, 64),
+		strconv.FormatFloat(res.Score, 'f', 1, 64), codeSpan(string(r.Key)))
+	if dropClass != "" {
+		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
+	}
+}
+
+// codeSpan makes s safe inside a Markdown code span, where nothing but a
+// backtick is special: it drops backticks, whitespace and control characters
+// and keeps at most maxFieldRunes, so the key reads back exactly as stored.
+func codeSpan(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if r == '`' || unicode.IsSpace(r) || unicode.IsControl(r) {
+			continue
+		}
+		if n == maxFieldRunes {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // Where is a posting's location for the digest, escaped: the places and
@@ -262,7 +590,10 @@ func Where(p posting.Posting) string {
 	return "location not listed"
 }
 
-func writeRole(b *strings.Builder, r ledger.Record) {
+func writeRole(b *strings.Builder, r ledger.Record) { writeRoleSimilar(b, r, 0) }
+
+// writeRoleSimilar is writeRole for a row that stands for similar more roles.
+func writeRoleSimilar(b *strings.Builder, r ledger.Record, similar int) {
 	p := r.Posting
 	fmt.Fprintf(b, "### %s at %s\n\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes))
 
@@ -274,6 +605,8 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 
 	if cov, ok := Coverage(r); ok {
 		fmt.Fprintf(b, "- Must-have coverage: %s%%\n", strconv.FormatFloat(cov, 'f', 0, 64))
+	} else if CoverageUnknown(r) {
+		b.WriteString("- Must-have coverage: unknown (DevPrism found no must-haves)\n")
 	} else {
 		b.WriteString("- Must-have coverage: not scored\n")
 	}
@@ -297,6 +630,7 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 	if IsUnsure(r) {
 		fmt.Fprintf(b, "- Why unsure: %s\n", WhyUnsure(r.Annotations))
 	}
+	writeSimilar(b, similar)
 	if ex := strings.TrimSpace(r.Annotations[ledger.AnnExplanation]); ex != "" {
 		fmt.Fprintf(b, "\n%s\n", Escape(ex, maxExplainLen))
 	}
@@ -401,19 +735,36 @@ func Write(stateDir string, date time.Time, recs []ledger.Record, m map[posting.
 
 // WriteWith is Write with o's ranking inputs.
 func WriteWith(stateDir string, date time.Time, recs []ledger.Record, m map[posting.Key]marks.Mark, c Counts, o Options) (string, []posting.Key, error) {
+	path, keys, _, err := WriteShown(stateDir, date, recs, m, c, o)
+	return path, keys, err
+}
+
+// WriteShown is WriteWith that also returns the roles the written file lists
+// (RenderShown). When no file is written (nothing new, and today's digest
+// exists) shown is nil: nothing new was put in front of the owner.
+func WriteShown(stateDir string, date time.Time, recs []ledger.Record, m map[posting.Key]marks.Mark, c Counts, o Options) (string, []posting.Key, []Shown, error) {
 	if stateDir == "" {
-		return "", nil, errors.New("digest: empty state dir")
+		return "", nil, nil, errors.New("digest: empty state dir")
 	}
-	md, keys := RenderWith(recs, m, date, c, o)
+	md, keys, shown := RenderShown(recs, m, date, c, o)
 	dir := filepath.Join(stateDir, "digests")
+	stem := date.Format("2006-01-02")
+	if path := filepath.Join(dir, stem+".md"); len(keys) == 0 {
+		if _, err := os.Lstat(path); err == nil {
+			// Nothing new, and today's digest already exists: leave it alone.
+			return path, nil, nil, nil
+		}
+	}
+	path, keys, err := writeFile(dir, stem, md, keys)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return path, keys, shown, nil
+}
+
+func writeFile(dir, stem, md string, keys []posting.Key) (string, []posting.Key, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("digest: %w", err)
-	}
-	stem := date.Format("2006-01-02")
-	path := filepath.Join(dir, stem+".md")
-	if _, err := os.Lstat(path); err == nil && len(keys) == 0 {
-		// Nothing new, and today's digest already exists: leave it alone.
-		return path, nil, nil
 	}
 	tmp, err := os.CreateTemp(dir, ".digest-*.tmp")
 	if err != nil {
@@ -443,7 +794,7 @@ func WriteWith(stateDir string, date time.Time, recs []ledger.Record, m map[post
 	// YYYY-MM-DD-2.md instead of erasing the first file.
 	defer os.Remove(name)
 	for n := 1; n <= maxSameDay; n++ {
-		target := path
+		target := filepath.Join(dir, stem+".md")
 		if n > 1 {
 			target = filepath.Join(dir, fmt.Sprintf("%s-%d.md", stem, n))
 		}

@@ -219,14 +219,36 @@ func TestIngestNoValidJobExitsTwoButReportsWhy(t *testing.T) {
 	}
 }
 
-func TestIngestSaveSearchNeedsAReadableConfig(t *testing.T) {
+// A search that cannot be saved (here: no readable config) is reported in the
+// reply; the jobs were validated and queueing needs no config, so they still
+// reach the ledger (or the inbox when it is held).
+func TestIngestSaveSearchFailureStillSpools(t *testing.T) {
 	_, stateDir := setup(t) // no init: no config file
-	_, stdout, _ := ingestCLI(t, 1, ingestPayload(t, "https://careers.acme.com/search", true, ingestJobs("careers.acme.com", 2)))
-	if !strings.Contains(stdout, `"error"`) {
-		t.Errorf("stdout %q", stdout)
+	out, _, _ := ingestCLI(t, 0, ingestPayload(t, "https://careers.acme.com/search", true, ingestJobs("careers.acme.com", 2)))
+	if out.Search.Status != "error" || out.Search.Reason == "" {
+		t.Errorf("search %+v, want status error with a reason", out.Search)
 	}
-	if spooled(t, stateDir) != 0 {
-		t.Error("jobs were spooled although the search could not be saved")
+	if n := len(ledgerRecords(t, stateDir)) + spooled(t, stateDir); out.Queued != 2 || n == 0 {
+		t.Errorf("jobs were dropped: queued %d, ledger+inbox %d", out.Queued, n)
+	}
+}
+
+func TestScrubPageURLDropsCredentials(t *testing.T) {
+	const base = "https://x.example/s?"
+	for _, drop := range []string{"access_token", "accessToken", "auth", "Authorization", "jsessionid", "JSESSIONID", "email", "user_email",
+		"key", "api_key", "apiKey", "apikey", "access_key", "secret_key", "private_key", "secret", "client-secret", "session", "sessionid", "sid", "id_token", "token",
+		"PHPSESSID", "password", "passwd", "pwd", "jwt", "bearer", "signature", "sig", "x-amz-signature", "csrf", "xsrfToken", "otp", "credential", "credentials"} {
+		got := scrubPageURL(base + "q=go&" + drop + "=v&location=Remote")
+		if got != base+"location=Remote&q=go" {
+			t.Errorf("scrubPageURL kept %q: %s", drop, got)
+		}
+	}
+	for _, keep := range []string{"q", "location", "department", "keyword", "keywords", "search", "team", "author", "remote", "page",
+		"state", "code", "jobkey", "jobKey", "sortKey", "categoryKey", "department_key", "monkey", "turkey", "hockey"} {
+		in := base + keep + "=v"
+		if got := scrubPageURL(in); got != in {
+			t.Errorf("scrubPageURL(%q) = %q, want the parameter kept", in, got)
+		}
 	}
 }
 
@@ -558,7 +580,7 @@ func TestWorkdayCheckTimeoutLeavesRoomBeforeTheHostKillsTheCLI(t *testing.T) {
 	}
 }
 
-const nvidiaListing ="https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite"
+const nvidiaListing = "https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite"
 
 // A Workday search the adapter cannot list (over MaxPostings, or NVIDIA's
 // capped 2000) is not saved, or the daemon would fail it every day. Its jobs

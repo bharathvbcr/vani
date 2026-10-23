@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
@@ -122,8 +121,7 @@ func TestRunnerLoadsEmployerViewAndWarnsOnRebuild(t *testing.T) {
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	_, stateDir := setup(t)
 	mustCode(t, 0, "employer", "import", writeCSV(t, "hd.csv", testIPEDS))
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.EmployerPreferences = []string{"cap_exempt_likely"}
 	if err := cfg.Validate(); err != nil {

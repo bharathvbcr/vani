@@ -11,6 +11,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
@@ -88,6 +89,9 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 	}
 	titles := semantic.NewTitleIndex()
 	for _, r := range w.led.All() {
+		// A closed record has no resident text (BodyEvicted) and Add skips a blank
+		// one. The index is only asked about texts of postings the near-duplicate
+		// pass still considers, which leaves out Dead, Dropped and Duplicate ones.
 		titles.Add(r.Posting.Title, srcutil.SourceText(r.Posting.Description)) // the text the stage hands sim
 	}
 	return semantic.NewTitledSimilarity(emb, cache, titles), func() {
@@ -142,7 +146,10 @@ func notRun(rep semanticReport, why string, err error) semanticReport {
 func warmDocs(recs []ledger.Record, mk map[posting.Key]marks.Mark) []semantic.Doc {
 	var todo []ledger.Record
 	for _, r := range recs {
-		if inView("all", r, mk[r.Key]) {
+		// A closed job someone marked has no resident text (ledger.Record.BodyEvicted):
+		// embedding its title alone would score a different text than the Jobs views
+		// look up, so it is left out rather than warmed wrongly.
+		if jobview.InView("all", r, mk[r.Key]) && !r.BodyEvicted {
 			todo = append(todo, r)
 		}
 	}
@@ -178,6 +185,50 @@ func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs 
 	return warmSemanticDocs(ctx, cfg, stateDir, warmDocs(recs, mk), max)
 }
 
+// withMarkedText returns recs with the description of every record warmDocs
+// would embed but All() left empty: a closed job (Dead, Dropped, Duplicate) the
+// owner marked has its text evicted from memory (ledger.Record.BodyEvicted),
+// and without it the job would lose its semantic score. Only those records are
+// read back from l, never every closed job.
+func withMarkedText(l ledger.Ledger, recs []ledger.Record, mk map[posting.Key]marks.Mark) []ledger.Record {
+	for i, r := range recs {
+		if r.BodyEvicted && jobview.InView("all", r, mk[r.Key]) {
+			recs[i] = ledger.Full(l, r)
+		}
+	}
+	return recs
+}
+
+// unreadableMarked counts the records warmDocs would embed but whose stored
+// text is still evicted after withMarkedText (the ledger could not read it
+// back): they are left out of the warm, and the run says how many.
+func unreadableMarked(recs []ledger.Record, mk map[posting.Key]marks.Mark) int {
+	n := 0
+	for _, r := range recs {
+		if r.BodyEvicted && jobview.InView("all", r, mk[r.Key]) {
+			n++
+		}
+	}
+	return n
+}
+
+// noteUnreadable adds the count of marked postings left out of the warm to the
+// report's note. A count only, never any text.
+func (r *semanticReport) noteUnreadable(n int) {
+	if n == 0 {
+		return
+	}
+	msg := fmt.Sprintf("%d marked posting(s) not warmed: stored description unreadable", n)
+	if r.Note != "" {
+		msg = r.Note + "; " + msg
+	}
+	r.Note = msg
+}
+
+// warmSemanticRun is warmSemantic as the daily run calls it; a variable only so
+// a test can see the records the run hands the warm.
+var warmSemanticRun = warmSemantic
+
 // The daily run spends semantic.warm_per_run (L) in two warms, so the posting
 // the decision model reads first is already scored and the digest's kept
 // postings are too. Before the advance phase it may embed up to
@@ -203,7 +254,7 @@ func preAdvanceDocs(recs []ledger.Record, drop func(ledger.Record) bool) []seman
 	return docs
 }
 
-// warmBeforeAdvance scores the live postings advanceAll may triage so that
+// warmBeforeAdvance scores the live postings pipeline.Advance may triage so that
 // advanceOrder can put the best matches first. It only orders (Rule 7) and
 // never fails the run: whatever stopped it is in the report kept for the run
 // record, and the advance phase goes on regardless.
@@ -230,7 +281,13 @@ func (w *wired) advanceOrder() orderOption {
 	if warning != "" {
 		w.warnf("advance order: %s", warning)
 	}
-	return withSemantic(semanticRank(m))
+	neutral := jobinsight.AgeNeutralSet(w.cfg.AgeNeutralCompanies)
+	rules, titleRank := rankRules(w.cfg)
+	return func(s *orderSettings) {
+		withSemantic(semanticRank(m))(s)
+		withAgeNeutral(neutral)(s)
+		withRank(rules, titleRank)(s)
+	}
 }
 
 // warmSemanticDocs scores up to max of docs; warmSemantic's body.
@@ -332,28 +389,26 @@ func semanticRank(m *semantic.Matcher) func(ledger.Record) (float64, bool) {
 	}
 }
 
-// semanticJSON is a job's knowledge-base match as `vani jobs` reports it.
-type semanticJSON struct {
-	Score    float64             `json:"score"`
-	Evidence []semantic.Evidence `json:"evidence,omitempty"`
-	// Thin: the posting had too little text; the ranker treated it as unknown.
-	Thin bool `json:"thin,omitempty"`
-}
-
 // digestOptions are the digest's ranking inputs for cfg; the warning is for the
 // caller to print.
 func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) {
 	m, warning := semanticLookup(cfg, stateDir)
 	rules, titleRank := rankRules(cfg)
 	kb, kbWarning := kbmatchLookup(cfg, stateDir)
-	if kbWarning != "" {
+	weights, _, weightsWarning := rankWeights(cfg)
+	for _, w := range []string{kbWarning, weightsWarning} {
+		if w == "" {
+			continue
+		}
 		if warning != "" {
 			warning += "; "
 		}
-		warning += kbWarning
+		warning += w
 	}
 	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank, KBMatch: kb,
-		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)}, warning
+		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies), HalfLifeDays: jobinsight.DefaultScoreHalfLifeDays,
+		Weights: weights, TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(),
+		ExploreDropped: cfg.DigestExploreDropped()}, warning
 }
 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)
@@ -372,11 +427,11 @@ func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
 }
 
 // semanticInto fills j's semantic match when one is cached for r.
-func (in *insight) semanticInto(j *jobJSON, r ledger.Record) {
+func (in *insight) semanticInto(j *jobview.Job, r ledger.Record) {
 	if in.sem == nil {
 		return
 	}
 	if mt, ok := semanticScore(in.sem, r); ok {
-		j.Semantic = &semanticJSON{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
+		j.Semantic = &jobview.Semantic{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
 	}
 }

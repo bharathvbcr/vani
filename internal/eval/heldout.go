@@ -31,6 +31,22 @@ var Splits = map[string]Split{
 	"d1-vani-jdtriage-2026-10-18": {Name: "d1-vani-jdtriage-2026-10-18", Salt: "d1-vani-jdtriage-2026-10-18", Size: 30},
 }
 
+// HeldOutAllowedSkips is how many of a split's held-out postings may go
+// unasked or unpaired in a row (a "skip" label on the slot, or no shadow
+// reading recorded for it) before the held-out table says "insufficient". The
+// all-labels floor, MinPromotionLabels, equals the registered Size, so with no
+// allowance one skip would make the held-out verdict insufficient for good: the
+// split cannot grow (it is pre-registered) and a skipped slot cannot be
+// relabelled into an answer. A tenth of the split (3 of 30) leaves the
+// statistical guard where it was: the discordant floor and the lower bound
+// below are not scaled.
+const HeldOutAllowedSkips = 3
+
+// PromotionFloor is the fewest postings the held-out table needs asked, and
+// paired, before it gives a verdict: the split's size less HeldOutAllowedSkips
+// (at least 1).
+func (sp Split) PromotionFloor() int { return max(sp.Size-HeldOutAllowedSkips, 1) }
+
 // SplitNames lists the registered split names, sorted.
 func SplitNames() []string {
 	out := make([]string, 0, len(Splits))
@@ -118,6 +134,7 @@ func BuildHeldOut(recs []ledger.Record, s *Store, names Names, sp Split) (Report
 	if bad > 0 {
 		return Report{}, HeldOut{}, fmt.Errorf("eval: %d label lines are unreadable; a held-out split over a partial label file could hold out the wrong postings (plain `vani eval` reports them)", bad)
 	}
+	labels = triageLabels(labels)
 	all := buildReport(recs, labels, bad, nil, names)
 	keys := make([]posting.Key, 0, len(labels))
 	for k := range labels {
@@ -141,6 +158,46 @@ func LookupSplit(name string) (Split, error) {
 	return sp, nil
 }
 
+// Verdict is p's verdict with the held-out floor: Promotion.Verdict with
+// Split.PromotionFloor in place of MinPromotionLabels.
+func (h HeldOut) Verdict(p Promotion) string { return p.verdict(h.Split.PromotionFloor()) }
+
+// Insufficiency says why the held-out row p cannot yet give a verdict and what
+// would change that, or "" when its asked, paired and discordant counts clear
+// their floors. The registered split size is not a parameter here: the advice
+// is about the labels, or about what size a split would have needed.
+func (h HeldOut) Insufficiency(p Promotion) string {
+	floor := h.Split.PromotionFloor()
+	switch {
+	case p.Asked < floor:
+		return fmt.Sprintf("%d asked, needs %d (the split holds out %d and allows %d skips); label or record readings for %d more held-out postings, %s",
+			p.Asked, floor, h.Split.Size, HeldOutAllowedSkips, floor-p.Asked, smallerSplitAdvice(p.Asked, "asked"))
+	case p.ShadowAnswered > 0 && p.PrimaryAnswered > 0 && p.ShadowAnswered >= p.PrimaryAnswered && p.Paired < floor:
+		return fmt.Sprintf("%d paired, needs %d; %d more held-out postings both answered, %s",
+			p.Paired, floor, floor-p.Paired, smallerSplitAdvice(p.Paired, "paired"))
+	case p.PrimaryAnswered > 0 && p.ShadowAnswered >= p.PrimaryAnswered && p.Paired >= floor && p.Discordant() < MinDiscordant:
+		why := fmt.Sprintf("%d discordant, needs %d; no split size lowers that threshold", p.Discordant(), MinDiscordant)
+		if d := p.Discordant(); d > 0 && len(h.HeldOut) > 0 {
+			// At the rate seen here (d per held-out posting) this many held-out
+			// postings would be expected to hold MinDiscordant of them.
+			why += fmt.Sprintf("; at this rate (%d in %d held-out postings) a split of about %d would hold %d", d, len(h.HeldOut), (MinDiscordant*len(h.HeldOut)+d-1)/d, MinDiscordant)
+		}
+		return why
+	}
+	return ""
+}
+
+// smallerSplitAdvice names the largest split the count would clear. A split of
+// size s needs max(s-HeldOutAllowedSkips, 1) answered, so a count of n >= 1
+// clears sizes up to n+HeldOutAllowedSkips, and a count of 0 clears none: no
+// split size is cleared by nothing.
+func smallerSplitAdvice(n int, what string) string {
+	if n < 1 {
+		return fmt.Sprintf("and no split size would be cleared by the %d %s", n, what)
+	}
+	return fmt.Sprintf("or a split of size %d or less would be cleared by the %d %s", n+HeldOutAllowedSkips, n, what)
+}
+
 // Markdown renders the held-out section: the split's facts, then the
 // Promotion rows over the held-out postings, with the same columns and
 // verdicts as the all-labels table.
@@ -154,7 +211,14 @@ func (h HeldOut) Markdown() string {
 	if len(h.Promotions) == 0 {
 		b.WriteString("No held-out posting has a shadow reading on a labelled slot: n/a\n")
 	} else {
-		writePromotions(&b, h.Promotions)
+		writePromotions(&b, h.Promotions, h.Split.PromotionFloor())
+		fmt.Fprintf(&b, "\nThe held-out table's floors scale to the split: at least %d of the %d held-out postings asked, and %d paired (%d skips allowed), with the same %d discordant postings and the same lower bound as the all-labels table.\n",
+			h.Split.PromotionFloor(), h.Split.Size, h.Split.PromotionFloor(), HeldOutAllowedSkips, MinDiscordant)
+		for _, p := range h.Promotions {
+			if why := h.Insufficiency(p); why != "" {
+				fmt.Fprintf(&b, "- %s / %q vs %q: %s\n", p.Slot, p.Shadow, p.Primary, why)
+			}
+		}
 	}
 	// Keys come from the label file, which a hand edit can fill with anything,
 	// so each is quoted: a newline in one cannot forge a line of this report.

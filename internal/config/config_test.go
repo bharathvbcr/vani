@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -17,6 +18,8 @@ import (
 
 func valid() Config {
 	c := Default()
+	// Default names no llm; these rules are checked with one configured.
+	c.LLM = LLM{Provider: "gemini", Model: "gemini-3.8-flash"}
 	c.Watchlist = []sources.Board{
 		{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"},
 		{ATS: posting.Lever, Token: "globex", Company: "Globex", Region: "eu"},
@@ -112,11 +115,11 @@ func TestValidateRules(t *testing.T) {
 				c.AgeNeutralCompanies[i] = "Company"
 			}
 		}, "age_neutral_companies has 65 entries, max 64"},
-		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "liquid"`},
-		{"kbmatch liquid without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchLiquid }, "needs decide.openrouter_model"},
-		{"kbmatch model on jev", func(c *Config) {
+		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "openrouter"`},
+		{"kbmatch openrouter without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchOpenRouter }, "needs decide.openrouter_model"},
+		{"kbmatch model on openrouter", func(c *Config) {
 			c.Decide.OpenRouterModel = "m/x"
-			c.KBMatch = KBMatch{Backend: KBMatchLiquid, Model: "claude-haiku-5-5"}
+			c.KBMatch = KBMatch{Backend: KBMatchOpenRouter, Model: "claude-haiku-5-5"}
 		}, `applies to the "llm" backend only`},
 		{"kbmatch model without provider", func(c *Config) { c.LLM = LLM{}; c.KBMatch.Model = "claude-haiku-5-5" }, "kbmatch.model needs llm.provider"},
 		{"kbmatch model with space", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.KBMatch.Model = "a b" }, "kbmatch.model"},
@@ -145,7 +148,7 @@ func TestValidateRules(t *testing.T) {
 
 func TestUSDBoundsInclusive(t *testing.T) {
 	c := valid()
-	c.Decide.OpenRouterModel = "" // a zero cap is only valid with Jev switched off
+	c.Decide.OpenRouterModel = "" // a zero cap is only valid with the OpenRouter model switched off
 	c.Decide.DailyUSD = DailyUSD{OpenRouter: 0, LLM: 20}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("0 and 20 must be valid: %v", err)
@@ -254,12 +257,12 @@ func TestLeverUSHost(t *testing.T) {
 	}
 }
 
-func TestNoJevNoOpenRouterRequirement(t *testing.T) {
+func TestNoOpenRouterModelNoOpenRouterRequirement(t *testing.T) {
 	c := valid()
 	c.Decide.OpenRouterModel = ""
 	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com"}
 	if err := c.Validate(); err != nil {
-		t.Fatalf("openrouter must not be required without jev: %v", err)
+		t.Fatalf("openrouter must not be required without an openrouter model: %v", err)
 	}
 }
 
@@ -366,9 +369,9 @@ func TestKBMatchSettingsRoundTripAndModel(t *testing.T) {
 		t.Errorf("round trip: model %q, triage %q, backend %q", got.KBMatchModel(), got.LLM.TriageModel, got.KBMatch.EffectiveBackend())
 	}
 	c.Decide.OpenRouterModel = "liquid/d1-ultra"
-	c.KBMatch = KBMatch{Backend: KBMatchLiquid}
+	c.KBMatch = KBMatch{Backend: KBMatchOpenRouter}
 	if err := Save(p, c); err != nil {
-		t.Fatalf("a liquid kbmatch with openrouter configured should save: %v", err)
+		t.Fatalf("an openrouter kbmatch with openrouter configured should save: %v", err)
 	}
 }
 
@@ -441,8 +444,14 @@ func TestSaveAtomicAndMode(t *testing.T) {
 		t.Fatalf("existing config damaged: %v", err)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(p))
-	if len(entries) != 1 {
-		t.Errorf("stray files after save: %v", entries)
+	var stray []os.DirEntry
+	for _, en := range entries {
+		if en.Name() != filepath.Base(p) && en.Name() != filepath.Base(p)+".lock" { // the lock file stays by design
+			stray = append(stray, en)
+		}
+	}
+	if len(stray) != 0 {
+		t.Errorf("stray files after save: %v", stray)
 	}
 }
 
@@ -771,6 +780,56 @@ func TestAdvanceLimit(t *testing.T) {
 		if got := c.AdvanceLimit(); got != tc.want {
 			t.Fatalf("advance_per_run %d: limit %d, want %d", tc.set, got, tc.want)
 		}
+	}
+}
+
+// digest.*: absent reads as the default, an explicit 0 switches the section
+// off, the bounds are valid and anything outside them is refused.
+func TestDigestSectionKnobs(t *testing.T) {
+	c := valid()
+	if c.DigestTopOpen() != 20 || c.DigestExploreBelowFold() != 2 || c.DigestExploreDropped() != 1 {
+		t.Fatalf("defaults %d/%d/%d, want 20/2/1", c.DigestTopOpen(), c.DigestExploreBelowFold(), c.DigestExploreDropped())
+	}
+	zero, top, explore := 0, MaxDigestTopOpen, MaxDigestExplore
+	c.Digest = Digest{TopOpen: &zero, ExploreBelowFold: &explore, ExploreDropped: &zero}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("bounds must be valid: %v", err)
+	}
+	if c.DigestTopOpen() != 0 || c.DigestExploreBelowFold() != MaxDigestExplore || c.DigestExploreDropped() != 0 {
+		t.Fatalf("explicit values lost: %d/%d/%d", c.DigestTopOpen(), c.DigestExploreBelowFold(), c.DigestExploreDropped())
+	}
+	c.Digest = Digest{TopOpen: &top}
+	if err := c.Validate(); err != nil || c.DigestTopOpen() != MaxDigestTopOpen {
+		t.Fatalf("max top_open: %v", err)
+	}
+	over, neg := MaxDigestTopOpen+1, -1
+	overE := MaxDigestExplore + 1
+	for name, tc := range map[string]struct {
+		d    Digest
+		want string
+	}{
+		"top_open over":       {Digest{TopOpen: &over}, "digest.top_open 51 must be within 0..50"},
+		"top_open negative":   {Digest{TopOpen: &neg}, "digest.top_open -1"},
+		"below fold over":     {Digest{ExploreBelowFold: &overE}, "digest.explore_below_fold 11 must be within 0..10"},
+		"below fold negative": {Digest{ExploreBelowFold: &neg}, "digest.explore_below_fold -1"},
+		"dropped over":        {Digest{ExploreDropped: &overE}, "digest.explore_dropped 11"},
+		"dropped negative":    {Digest{ExploreDropped: &neg}, "digest.explore_dropped -1"},
+	} {
+		c := valid()
+		c.Digest = tc.d
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestDigestKnobsLoadFromJSON(t *testing.T) {
+	var c Config
+	if err := json.Unmarshal([]byte(`{"digest":{"top_open":0,"explore_dropped":3}}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.DigestTopOpen() != 0 || c.DigestExploreDropped() != 3 || c.DigestExploreBelowFold() != 2 {
+		t.Fatalf("%d/%d/%d", c.DigestTopOpen(), c.DigestExploreBelowFold(), c.DigestExploreDropped())
 	}
 }
 

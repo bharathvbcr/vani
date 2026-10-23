@@ -22,6 +22,39 @@ final class JobsModelTests: XCTestCase {
         }
     }
 
+    /// The label table is read once from `vani labels --json` and then drives
+    /// every menu and chart; the built-in table is not shown as vani's.
+    func testLabelsAreReadFromVaniOnce() async throws {
+        Labels.useFallback()
+        defer { Labels.useFallback() }
+        let f = try JobsFixture(self)
+        let m = model(f)
+        XCTAssertNotNil(m.labelsNote, "before the read, the fallback is declared")
+        await m.refresh()
+        await m.refresh()
+        XCTAssertNil(m.labelsNote)
+        XCTAssertEqual(Labels.source, .vani)
+        XCTAssertEqual(Job.label(for: "strong_fit"), "Best fit", "the menus read vani's words, not the built-in ones")
+        XCTAssertEqual(f.calls().filter { $0 == "labels --json" }.count, 1, "\(f.calls())")
+        XCTAssertEqual(m.jobs.map(\.key), JobsFixture.standardOrder)
+    }
+
+    func testUnreadableLabelsShowFallbackVisiblyAndRetry() async throws {
+        Labels.useFallback()
+        defer { Labels.useFallback() }
+        let f = try JobsFixture(self, labels: false)
+        let m = model(f)
+        await m.refresh()
+        let note = try XCTUnwrap(m.labelsNote, "a fallback must not look like vani's table")
+        XCTAssertTrue(note.contains("built-in"), note)
+        XCTAssertEqual(Labels.source, .fallback)
+        XCTAssertEqual(Job.label(for: "strong_fit"), "Strong fit")
+        XCTAssertNil(m.error, "the list still loads without labels")
+        XCTAssertEqual(m.jobs.map(\.key), JobsFixture.standardOrder)
+        await m.refresh()
+        XCTAssertEqual(f.calls().filter { $0 == "labels --json" }.count, 2, "an unread table is retried at the next refresh")
+    }
+
     func testRefreshListsInStandardOrder() async throws {
         let m = model(try JobsFixture(self))
         await m.refresh()
@@ -29,6 +62,29 @@ final class JobsModelTests: XCTestCase {
         XCTAssertFalse(m.loading)
         XCTAssertEqual(m.jobs.map(\.key), JobsFixture.standardOrder)
         XCTAssertNil(m.stats, "stats load only while Insights is open")
+    }
+
+    /// Each refresh tells vani which rows it put on screen: keys and 1-based
+    /// positions in list order, under one slate for the view and day, and no
+    /// title or company.
+    func testRefreshReportsTheVisibleRowsAsImpressions() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        await m.refresh()
+        XCTAssertNil(m.impressionsError)
+        let calls = f.calls().filter { $0.hasPrefix("impressions log") }
+        XCTAssertEqual(calls.count, 1, "\(f.calls())")
+        XCTAssertTrue(calls[0].contains("--surface jobs") && calls[0].contains("--slate new-"), calls[0])
+        let sent = try String(contentsOf: f.dir.appendingPathComponent("impressions.in"), encoding: .utf8)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(sent.utf8)) as? [String: Any])
+        let rows = try XCTUnwrap(body["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["key"] as? String }, JobsFixture.standardOrder)
+        XCTAssertEqual(rows.compactMap { $0["position"] as? Int }, Array(1...JobsFixture.standardOrder.count))
+        for role in JobsFixture.roles {
+            XCTAssertFalse(sent.contains(role.title) || sent.contains(role.company), "posting text reached the impressions request")
+        }
+        await m.refresh()
+        XCTAssertEqual(f.calls().filter { $0.hasPrefix("impressions log") }.count, 2, "a refresh reports again; vani keeps each key once per slate")
     }
 
     func testSortAndFilterChangesRelist() async throws {
@@ -144,5 +200,47 @@ final class JobsModelTests: XCTestCase {
         m.view = .new
         XCTAssertEqual(m.sort, .fresh)
         try await eventually("the fresh order") { m.jobs.map(\.key) == JobsFixture.freshOrder }
+    }
+
+    /// Awaiting triage opens newest first, and a priority order picked in another
+    /// view (which it cannot offer) gives way to it.
+    func testAwaitingTriageOpensNewestFirstAndDropsAnOrderItCannotOffer() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        m.sort = .relevance
+        m.view = .pending
+        XCTAssertEqual(m.sort, .fresh, "relevance needs scores these postings do not have")
+        try await eventually("the pending list") { f.calls().contains { $0.hasPrefix("jobs list") && $0.contains("--view pending") && $0.contains("--sort fresh") } }
+        m.sort = .company
+        m.view = .applied
+        XCTAssertEqual(m.sort, .company, "an order the owner picked that both views offer is kept")
+        m.view = .pending
+        XCTAssertEqual(m.sort, .company)
+        m.view = .new
+        XCTAssertEqual(m.sort, .company)
+    }
+
+    /// Stats and gaps of unranked postings are refused by vani, and no impression
+    /// is logged for rows that were never ranked: the app asks for neither.
+    func testAwaitingTriageAsksNoStatsGapsOrImpressions() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        m.showInsights = true // starts a reload; the one that ends last is the one that reports
+        await m.refresh()
+        try await eventually("a ranked view's stats and impressions") {
+            f.calls().contains { $0.hasPrefix("jobs stats") && $0.contains("--view new") }
+                && f.calls().contains { $0.hasPrefix("impressions log") && $0.contains("--slate new-") }
+        }
+
+        m.view = .pending
+        try await eventually("the pending list") { f.calls().contains { $0.hasPrefix("jobs list") && $0.contains("--view pending") } }
+        await m.refresh()
+        try await eventually("settled") { !m.loading }
+        let calls = f.calls()
+        XCTAssertFalse(calls.contains { $0.contains("--view pending") && ($0.hasPrefix("jobs stats") || $0.hasPrefix("jobs gaps")) }, "\(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("impressions log") && $0.contains("pending") }, "\(calls)")
+        XCTAssertNil(m.statsError)
+        XCTAssertNil(m.gapsError)
+        XCTAssertNil(m.impressionsError)
     }
 }

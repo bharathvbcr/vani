@@ -51,6 +51,15 @@ public struct ActivityEntry: Codable, Equatable, Sendable {
 // A corrupt file is reported, never replaced: the next write would otherwise
 // erase every answer.
 
+enum PathProbe {
+    /// True only when lstat reports ENOENT: nothing at all, not even a symlink. A dangling symlink is
+    /// present (lstat succeeds), and so is any path lstat cannot answer for (permissions, ELOOP).
+    static func isAbsent(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) != 0 && errno == ENOENT
+    }
+}
+
 public final class BankStore: @unchecked Sendable {
     public let directory: URL
     var bankURL: URL { directory.appendingPathComponent("bank.json") }
@@ -89,6 +98,28 @@ public final class BankStore: @unchecked Sendable {
             stamp.modified.append(a?[.modificationDate] as? Date)
         }
         return stamp
+    }
+
+    /// What identifies bank.json's contents without reading it: size, modification time and inode.
+    /// A write replaces the file by rename, so even a same-size write in the same clock tick has a
+    /// new inode. A missing file stamps as all nil.
+    public struct BankStamp: Equatable, Sendable {
+        var size: Int64?
+        var modifiedNanoseconds: Int64?
+        var inode: UInt64?
+
+        init(size: Int64? = nil, modifiedNanoseconds: Int64? = nil, inode: UInt64? = nil) {
+            self.size = size
+            self.modifiedNanoseconds = modifiedNanoseconds
+            self.inode = inode
+        }
+    }
+
+    public func bankStamp() -> BankStamp {
+        var st = stat()
+        guard stat(bankURL.path, &st) == 0 else { return BankStamp() }
+        let modified = Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec)
+        return BankStamp(size: Int64(st.st_size), modifiedNanoseconds: modified, inode: UInt64(st.st_ino))
     }
 
     /// The store in the App Group container shared by the app and both browser extensions.
@@ -169,70 +200,6 @@ public final class BankStore: @unchecked Sendable {
         }
     }
 
-    /// Fast indexed lookup for form matching candidates based on signatures, keys, and labels.
-    public func queryCandidates(signatures: [String] = [], keys: [String] = [], labels: [String] = []) throws -> [Answer] {
-        try readMirrorOrJSON({ try $0.queryCandidates(signatures: signatures, keys: keys, labels: labels) }) { snap in
-            snap.bank.answers.values.filter { a in
-                keys.contains(a.key) || a.signatures.contains(where: signatures.contains) || a.labels.contains(where: labels.contains)
-            }
-        }
-    }
-
-    /// Paginated list and search for UI tables. Search matches key, value and labels, ASCII
-    /// case-insensitively, with % _ and \ matching themselves, the same on both paths.
-    public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> SQLiteBankStore.ListResult {
-        try readMirrorOrJSON({ try $0.listAnswers(offset: offset, limit: limit, search: search) }) { snap in
-            var all = Array(snap.bank.answers.values)
-            if let s = search, !s.trimmingCharacters(in: .whitespaces).isEmpty {
-                let needle = Self.asciiLowercased(s)
-                all = all.filter { a in
-                    ([a.key] + a.value + a.labels).contains { Self.asciiLowercased($0).contains(needle) }
-                }
-            }
-            all.sort { $0.updatedAt > $1.updatedAt }
-            let slice = all.dropFirst(max(offset, 0)).prefix(max(limit, 0))
-            return SQLiteBankStore.ListResult(total: all.count, rev: snap.rev, answers: Array(slice))
-        }
-    }
-
-    /// SQLite's LIKE folds ASCII case only; the JSON path folds the same way so the two agree.
-    private static func asciiLowercased(_ s: String) -> String {
-        String(String.UnicodeScalarView(s.unicodeScalars.map { ("A"..."Z").contains($0) ? Unicode.Scalar($0.value + 32)! : $0 }))
-    }
-
-    /// Answer from the SQLite mirror only while it is at bank.json's revision, checked under the
-    /// shared lock (writers hold the exclusive one, so the mirror cannot move mid-read). When it is
-    /// behind, ahead or unreadable, answer from bank.json, the source of truth, and afterwards try
-    /// to repair the mirror. The repair waits only briefly for the exclusive lock, so a read is
-    /// never held up by a writer.
-    private func readMirrorOrJSON<T>(_ fromMirror: (SQLiteBankStore) throws -> T, _ fromJSON: (Snapshot) -> T) throws -> T {
-        var mirrorStale = false
-        let result: T = try withLock(exclusive: false) {
-            let snap = try readUnlocked()
-            if let sqlite {
-                if (try? sqlite.currentRevision()) == snap.rev, let fromSQLite = try? fromMirror(sqlite) { return fromSQLite }
-                mirrorStale = true
-            }
-            return fromJSON(snap)
-        }
-        if mirrorStale { repairMirror() }
-        return result
-    }
-
-    /// Best-effort: resync the mirror to bank.json if it is still out of step once the exclusive lock
-    /// is held. A failure is noted on stderr (no bank content) and never reaches the reader.
-    private func repairMirror() {
-        guard let sqlite else { return }
-        do {
-            try withFileLock(lockURL, exclusive: true, wait: min(lockWait, 0.25), what: "the answer bank") {
-                let snap = try readUnlocked()
-                if (try? sqlite.currentRevision()) != snap.rev { try sqlite.resync(snap) }
-            }
-        } catch {
-            FileHandle.standardError.write(Data("vani: bank.sqlite mirror not repaired (\(error)); bank.json is unaffected\n".utf8))
-        }
-    }
-
     /// Move an unreadable bank aside (bank.corrupt-<time>.json) so the app can start fresh. Never deletes it.
     public func quarantineCorruptBank() throws -> URL? {
         try withLock(exclusive: true) {
@@ -309,13 +276,18 @@ public final class BankStore: @unchecked Sendable {
 
     private func readUnlocked() throws -> Snapshot {
         let data: Data
-        do { data = try Data(contentsOf: bankURL) } catch CocoaError.fileReadNoSuchFile {
-            return Snapshot(rev: 0, bank: .empty)
-        } catch let e as NSError where e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT) {
+        do { data = try Data(contentsOf: bankURL) } catch let e as NSError
+            where (e.domain == NSCocoaErrorDomain && e.code == CocoaError.fileReadNoSuchFile.rawValue)
+                || (e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT)) {
+            // Only a path that is truly absent is a bank never written. A dangling symlink answers
+            // "no such file" too, but something is there: it is unreadable, and writing would replace it.
+            guard PathProbe.isAbsent(bankURL) else {
+                throw BankError("the stored answer bank is unreadable (a link to a missing file); it was left untouched")
+            }
             return Snapshot(rev: 0, bank: .empty)
         }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let revNum = obj["rev"], BankValidator.isNumber(revNum), let rev = (revNum as? NSNumber)?.intValue, rev >= 0,
+              let rev = BankValidator.strictInt(obj["rev"]), rev >= 0,
               let rawBank = obj["bank"] else {
             throw BankError("the stored answer bank is unreadable; it was left untouched")
         }

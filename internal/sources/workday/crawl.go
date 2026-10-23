@@ -353,6 +353,19 @@ func shortfall(count int) int { return max(1, count/100) }
 // reconciler age healthy postings as absent.
 var errIncomplete = errors.New("listing is incomplete")
 
+// pagedTotal is the first page's total as a stop for paging a query under the
+// window: how many jobs the board counts for it. ok is false when the total
+// cannot be believed: missing, 0 beside rows (a page cannot list jobs a board
+// counts none of), or under the rows the same answer holds. The paging then
+// goes by its rows. A total of 0 beside no rows is not asked about: an empty
+// first page ends the query by itself.
+func pagedTotal(first listPage) (stop int, ok bool) {
+	if first.total == nil || *first.total < len(first.rows) || *first.total <= 0 || *first.total >= window {
+		return 0, false
+	}
+	return *first.total, true
+}
+
 // walk lists every row of the query applied (with w.term) and returns the
 // externalPaths it found, its buckets' included. Over the window the query is
 // split by a facet.
@@ -412,8 +425,24 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 		return here, nil
 	}
 
-	// Paged until a short or empty page. Page 1 served again, or a page with
-	// nothing new, is Workday's wrap (or a stuck cursor), never more rows.
+	// Paged until a short or empty page, or the first page's total is reached.
+	// Page 1 served again before that, or a page with nothing new, is Workday's
+	// wrap (or a stuck cursor), never more rows.
+	//
+	// The total is read from the first page only: Workday reports 0 on every
+	// later page (checked live, salesforce/External_Career_Site, 2026-10-22),
+	// and a later page's total, when it differs, is not followed: a stop that
+	// waited on a moving count could not be told from a wrap, and a posting
+	// closing mid-walk only moves rows up a page. Workday answers an offset at
+	// or past the total with page 1 again, so a total that is an exact multiple
+	// of the page size ends on a full page and the next page is that wrap: once
+	// every counted job has been read, the wrap ends the listing. The page past
+	// the total is still asked for, never assumed, so a first total that
+	// understates the board cannot end the listing early: rows past it are read
+	// as rows (and absent postings are never aged on a guess). A total that
+	// cannot be believed (see pagedTotal) sets no stop and the walk reads the
+	// rows alone, as before.
+	stop, known := pagedTotal(first)
 	ended := len(first.rows) < pageSize
 	firstPath := ""
 	if len(first.rows) > 0 {
@@ -429,6 +458,13 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 			break
 		}
 		if firstPath != "" && p.rows[0].ExternalPath == firstPath {
+			if known && offset >= stop && len(here) >= stop {
+				ended = true // the wrap past the total: every counted job was read
+				break
+			}
+			if known {
+				return nil, fmt.Errorf("%w: the board served its first page again at offset %d, after %d jobs, short of the %d it counts", errIncomplete, offset, len(here), stop)
+			}
 			return nil, fmt.Errorf("%w: the board served its first page again at offset %d, after %d jobs", errIncomplete, offset, len(here))
 		}
 		n, err := w.add(p.rows, here)

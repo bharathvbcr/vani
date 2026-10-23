@@ -58,7 +58,7 @@ func triageReply(pick map[string]string) string {
 
 func liveEvent(key posting.Key) ledger.Event {
 	return ledger.Event{V: ledger.SchemaVersion, At: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), Key: key, Status: posting.Live, Reason: "listed",
-		Posting: &posting.Posting{Key: key, Company: "Acme", Title: "Engineer", Description: "Build inference systems. Fully remote."}}
+		Posting: &posting.Posting{Key: key, Company: "Acme", Title: "Engineer", Description: "Build and operate large-scale inference systems for production models. Fully remote within the US."}}
 }
 
 // `vani status --json` carries what each decision backend did in the last real
@@ -203,7 +203,7 @@ func jevAt(ps map[string]float64) string {
 		}
 		answers[s.Name] = map[string]any{"choice": s.Options[0].Value, "confidence": p}
 	}
-	// The decision model answers every slot it is asked, and the question also carries the
+	// Liquid D answers every slot it is asked, and the question also carries the
 	// job-category slot the Triager appends (ExtraSlots).
 	catP := 0.9
 	if v, ok := ps[jobcategory.Slot]; ok {
@@ -214,7 +214,7 @@ func jevAt(ps map[string]float64) string {
 	return string(b)
 }
 
-// escalationRig is the real wiring with an OpenRouter primary (a fake decision model on
+// escalationRig is the real wiring with an OpenRouter primary (a fake Liquid D on
 // loopback) and the Claude tier (a fake Anthropic on loopback), escalating
 // below 0.5.
 type escalationRig struct {

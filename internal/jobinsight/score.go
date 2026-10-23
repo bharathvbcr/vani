@@ -22,13 +22,56 @@ type Slot struct {
 	Value string
 	// Answered is true when the reading was decide.Answered.
 	Answered bool
-	// P is the decision model's calibrated probability of Value (decide.JevCalib), when HasP.
+	// P is the decision model's calibrated probability of Value, when HasP.
 	P    float64
 	HasP bool
 	// Disagree is true when the shadow backend answered a different value.
 	Disagree bool
 	// ShadowBackend names the shadow that was asked ("" when none was).
 	ShadowBackend string
+	// Backend names the backend whose reading Value is, as the ledger recorded
+	// it; Weights.Calibration is keyed by it.
+	Backend string
+}
+
+// Calibration is one backend's Platt scaling, fitted by internal/rankfit on
+// judged labels: an answered reading's confidence is sigmoid(A*logit(p)+B),
+// or sigmoid(B) for a backend fitted without p (UsesP false), which then
+// stands in for AnsweredConf.
+type Calibration struct {
+	A     float64 `json:"a"`
+	B     float64 `json:"b"`
+	UsesP bool    `json:"uses_p"`
+}
+
+// MaxCalibrationCoef bounds |A| and |B|: beyond it a calibration is a fit
+// that ran away, not a measurement, and is not used.
+const MaxCalibrationCoef = 50.0
+
+// calibrationPClamp keeps logit(p) finite for a reading of p 0 or 1.
+const calibrationPClamp = 1e-6
+
+// Valid reports whether c can be used: both coefficients finite and bounded.
+func (c Calibration) Valid() bool {
+	return finite(c.A) && finite(c.B) && math.Abs(c.A) <= MaxCalibrationCoef && math.Abs(c.B) <= MaxCalibrationCoef
+}
+
+// Conf is the calibrated confidence of an answered reading with probability p
+// (when hasP). ok is false when c cannot read it: c is invalid, or c was
+// fitted on p and the reading has none.
+func (c Calibration) Conf(p float64, hasP bool) (conf float64, ok bool) {
+	if !c.Valid() {
+		return 0, false
+	}
+	x := 0.0
+	if c.UsesP {
+		if !hasP || !finite(p) {
+			return 0, false
+		}
+		q := clamp(p, calibrationPClamp, 1-calibrationPClamp)
+		x = math.Log(q / (1 - q))
+	}
+	return 1 / (1 + math.Exp(-(c.A*x + c.B))), true
 }
 
 // ShadowEscalate is the escalation backend's name in the ledger. It is asked
@@ -129,10 +172,14 @@ type Factor struct {
 	Name string `json:"name"`
 	// Value is the component in [0,1] (a prior when Known is false).
 	Value float64 `json:"value"`
-	// Weight is its share of match for additive components, 0 for
+	// Weight is its nominal share of match for additive components, 0 for
 	// multipliers.
 	Weight float64 `json:"weight"`
 	Known  bool    `json:"known"`
+	// Conf is how far a known additive component's reading is trusted, in
+	// [0,1]: the blend uses Weight x Conf. 0 on a known mismatch fit, which the
+	// gate penalises instead; omitted when unknown or a multiplier.
+	Conf float64 `json:"conf,omitempty"`
 	// Note says, for the few factors that need it, why the value is what it is
 	// (a NoteAgeNeutral for a freshness held flat); empty otherwise.
 	Note string `json:"note,omitempty"`
@@ -178,8 +225,12 @@ type Weights struct {
 	KBMatch float64
 	// UnknownPrior is the value an unknown additive component takes.
 	UnknownPrior float64
-	// AnsweredConf is the confidence of an answered reading with no calibrated p.
+	// AnsweredConf is the confidence of an answered reading with no decision-model p.
 	AnsweredConf float64
+	// Calibration, keyed by Slot.Backend, replaces AnsweredConf and the raw p
+	// for the backends it names (a rank weights file's Platt fits). A backend
+	// it does not name, or cannot read, keeps the rule above.
+	Calibration map[string]Calibration
 	// DisagreeConf multiplies a reading's confidence when the shadow
 	// backend disagreed, unless that shadow was ShadowEscalate.
 	DisagreeConf float64
@@ -210,16 +261,10 @@ type Weights struct {
 	NeutralFresh float64
 	// CompanyMinMarks is the marks a company needs before its factor moves,
 	// CompanySmoothing the pseudo-count. CompanySpan is how far liked marks
-	// lift the factor above 1, CompanyDown how far hidden marks sink it below:
-	// hiding is the stronger signal, so it may move the factor further.
-	CompanyMinMarks                            int
-	CompanySmoothing, CompanySpan, CompanyDown float64
-	// OrdinalFit reads role_fit as ordered: the probability the model did not
-	// put on its chosen option is spread over the other options by how often
-	// readings that far apart are confused (fitConfusion), not put on a flat
-	// prior, so a strong_fit at a typical calibrated p of 0.44 still reads as
-	// a fit leaning toward partial_fit.
-	OrdinalFit bool
+	// lift the factor above 1. Marks only lift: a hide says nothing about the
+	// company's other postings.
+	CompanyMinMarks               int
+	CompanySmoothing, CompanySpan float64
 	// FitValues are the role_fit options' values in fitOrder (strong_fit
 	// first); the zero value means fitBase's.
 	FitValues [5]float64
@@ -238,41 +283,18 @@ type Weights struct {
 // value in this order.
 var fitOrder = [...]string{"strong_fit", "partial_fit", "adjacent", "mismatch_seniority", "mismatch_domain"}
 
-// fitConfusion weighs another option by its distance from the chosen one in
-// fitOrder, by how often two backends' role_fit readings of one posting
-// were that far apart when they disagreed: in the owner's ledger on
-// 2026-10-19, 644 disagreeing pairs fell 54% at distance 1, 33% at 2, 12% at
-// 3 and 1% at 4 (uniform errors would give 40/30/20/10).
-var fitConfusion = [...]float64{1: 0.54, 2: 0.33, 3: 0.12, 4: 0.01}
-
-// fitValue is option v's value under w and, for an ordinal reading, the
-// confusion-weighted value of the other options: where the probability the
-// model did not put on v most likely sits. ok is false for an unknown option.
-func (w Weights) fitValue(v string) (val, rest float64, ok bool) {
-	idx := -1
+// fitValue is option v's value under w; ok is false for an unknown option.
+func (w Weights) fitValue(v string) (val float64, ok bool) {
 	for i, o := range fitOrder {
-		if o == v {
-			idx = i
+		if o != v {
+			continue
 		}
-	}
-	if idx < 0 {
-		return 0, 0, false
-	}
-	var vals [len(fitOrder)]float64
-	for i, o := range fitOrder {
-		vals[i] = fitBase[o]
 		if w.FitValues != ([5]float64{}) && finite(w.FitValues[i]) {
-			vals[i] = clamp01(w.FitValues[i])
+			return clamp01(w.FitValues[i]), true
 		}
+		return fitBase[o], true
 	}
-	var s, n float64
-	for j := range fitOrder {
-		if d := max(idx-j, j-idx); d > 0 {
-			s += fitConfusion[d] * vals[j]
-			n += fitConfusion[d]
-		}
-	}
-	return vals[idx], s / n, true
+	return 0, false
 }
 
 // KBMatchOrder is the kb_match options from closest to the owner's work to
@@ -297,8 +319,8 @@ const (
 	// postings average and below the 1.0 of one dated today.
 	DefaultNeutralFresh = 0.78
 	// CompanyMin and CompanyMax bound the company factor under
-	// DefaultWeights (CompanyDown 0.40, CompanySpan 0.10).
-	CompanyMin = 0.6
+	// DefaultWeights (CompanySpan 0.10): marks only lift it.
+	CompanyMin = 1.0
 	CompanyMax = 1.1
 )
 
@@ -325,8 +347,10 @@ func DefaultWeights() Weights {
 		UnknownPrior: 0.40, AnsweredConf: 0.70, DisagreeConf: 0.50,
 		PenaltyStrength: 0.80, Mismatch: 0.60, ExcludedTitle: 0.25, UnsureGate: 0.85,
 		FreshFloor: 0.25, HalfLifeDays: DefaultScoreHalfLifeDays, NeutralFresh: DefaultNeutralFresh,
-		CompanyMinMarks: 0, CompanySmoothing: 8, CompanySpan: 0.10, CompanyDown: 0.40,
-		OrdinalFit: true, KnownMatch: true, MatchShrink: 0.10,
+		CompanyMinMarks: 0, CompanySmoothing: 8, CompanySpan: 0.10,
+		// Thin evidence shrinks toward the prior hard: a posting known only by its
+		// semantic score reads well below one with every part known at that value.
+		KnownMatch: true, MatchShrink: 0.30,
 	}
 }
 
@@ -340,8 +364,9 @@ func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 // conf is how far a slot's reading is trusted, in [0,1].
 func (w Weights) conf(s Slot) float64 {
-	c := 0.0
+	c, calibrated := w.calibrated(s)
 	switch {
+	case calibrated:
 	case s.HasP && finite(s.P):
 		c = clamp01(s.P)
 	case s.Answered:
@@ -351,6 +376,16 @@ func (w Weights) conf(s Slot) float64 {
 		c *= clamp01(w.DisagreeConf)
 	}
 	return c
+}
+
+// calibrated is s's confidence under its backend's Calibration; ok is false
+// when there is none for it or it cannot read s.
+func (w Weights) calibrated(s Slot) (float64, bool) {
+	cal, ok := w.Calibration[s.Backend]
+	if !ok || !s.Answered || s.Backend == "" {
+		return 0, false
+	}
+	return cal.Conf(s.P, s.HasP)
 }
 
 // ScoreWith ranks in by w. It is pure: the same inputs give the same Result,
@@ -363,31 +398,38 @@ func ScoreWith(in Inputs, w Weights) Result {
 		weight float64
 		value  float64
 		known  bool
+		// conf is how far the part's reading is trusted. It scales the part's
+		// WEIGHT in the blend, never its value: a doubtful strong_fit says little,
+		// it does not say "somewhere between strong and partial".
+		conf float64
 	}
 	var parts [7]part
 
 	fitConf := w.conf(in.RoleFit)
-	base, ordinalRest, ok := w.fitValue(in.RoleFit.Value)
+	base, ok := w.fitValue(in.RoleFit.Value)
 	if !ok {
 		fitConf = 0
 	}
-	rest := prior
-	if w.OrdinalFit && ok {
-		rest = ordinalRest
+	parts[0] = part{"fit", w.Fit, base, fitConf > 0, fitConf}
+	// A confident mismatch is penalised once, by the gate below. Its low fit
+	// value would penalise the same reading a second time, so the part leaves the
+	// blend (the gate, not the match, is what no coverage can rescue).
+	mismatch := fitConf > 0 && (in.RoleFit.Value == "mismatch_domain" || in.RoleFit.Value == "mismatch_seniority")
+	if mismatch {
+		parts[0].conf = 0
 	}
-	parts[0] = part{"fit", w.Fit, fitConf*base + (1-fitConf)*rest, fitConf > 0}
 
-	parts[1] = part{"coverage", w.Coverage, prior, false}
+	parts[1] = part{"coverage", w.Coverage, prior, false, 1}
 	if in.HasCoverage && finite(in.Coverage) {
 		parts[1].value, parts[1].known = clamp01(in.Coverage/100), true
 	}
 
-	parts[2] = part{"semantic", w.Semantic, prior, false}
+	parts[2] = part{"semantic", w.Semantic, prior, false, 1}
 	if in.HasSemantic && finite(in.Semantic) {
 		parts[2].value, parts[2].known = clamp01(in.Semantic), true
 	}
 
-	parts[3] = part{"keyword", w.Keyword, prior, false}
+	parts[3] = part{"keyword", w.Keyword, prior, false, 1}
 	if in.Target {
 		t, b := float64(max(in.TitleHits, 0)), float64(max(in.BodyHits, 0))
 		parts[3].value = clamp01(0.6*(1-math.Exp(-t/1.5)) + 0.4*(1-math.Exp(-b/3)))
@@ -395,7 +437,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 	}
 
 	excluded := in.TitleSignals && in.TitleRank < 0
-	parts[4] = part{"title", w.Title, prior, false}
+	parts[4] = part{"title", w.Title, prior, false, 1}
 	if in.TitleSignals {
 		parts[4].known = true
 		if excluded {
@@ -405,7 +447,7 @@ func ScoreWith(in Inputs, w Weights) Result {
 		}
 	}
 
-	parts[5] = part{"employer", w.Employer, 0, true}
+	parts[5] = part{"employer", w.Employer, 0, true, 1}
 	if in.PreferredEmployer {
 		parts[5].value = 1
 	}
@@ -413,11 +455,11 @@ func ScoreWith(in Inputs, w Weights) Result {
 	// The model's read of the work, when this posting was asked and answered with
 	// a listed option. Unknown, it takes no share at all rather than the prior, so
 	// the postings nobody asked about score as they would without the part.
-	parts[6] = part{"kb_match", w.KBMatch, prior, false}
+	parts[6] = part{"kb_match", w.KBMatch, prior, false, 1}
 	if c := w.conf(in.KBMatch); c > 0 {
 		for i, o := range KBMatchOrder {
 			if o == in.KBMatch.Value {
-				parts[6].value, parts[6].known = c*kbMatchValues[i]+(1-c)*prior, true
+				parts[6].value, parts[6].known, parts[6].conf = kbMatchValues[i], true, c
 			}
 		}
 	}
@@ -441,14 +483,20 @@ func ScoreWith(in Inputs, w Weights) Result {
 		}
 		sum += parts[i].weight
 	}
-	match, share := prior, [len(parts)]float64{}
+	// A part's share is w_i*c_i over the nominal total, so what doubt takes off a
+	// part is not handed to the others: thin or doubtful evidence leaves the match
+	// nearer the prior (MatchShrink below), which is the point.
+	match, share, nominal := prior, [len(parts)]float64{}, [len(parts)]float64{}
 	if sum > 0 {
 		match = 0
+		var used float64
 		for i, p := range parts {
-			share[i] = p.weight / sum
+			nominal[i] = p.weight / sum
+			share[i] = p.weight * p.conf / sum
+			used += share[i]
 			match += share[i] * p.value
 		}
-		match = clamp01(match)
+		match = clamp01(match + (1-used)*prior) // an unconfident share is unknown: the prior
 	}
 
 	// The displayed relevance: only the parts that are known, reweighted. A
@@ -485,9 +533,12 @@ func ScoreWith(in Inputs, w Weights) Result {
 
 	gate := 1.0
 	for _, p := range in.Penalties {
+		if mismatch && p.Slot.Value == in.RoleFit.Value {
+			continue // the same reading, penalised once by the mismatch gate below
+		}
 		gate *= 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
 	}
-	if fitConf > 0 && (in.RoleFit.Value == "mismatch_domain" || in.RoleFit.Value == "mismatch_seniority") {
+	if mismatch {
 		gate *= 1 - clamp01(w.Mismatch)*fitConf
 	}
 	if excluded {
@@ -533,22 +584,16 @@ func ScoreWith(in Inputs, w Weights) Result {
 	}
 	fresh = clamp01(fresh)
 
+	// Saves and applies lift the company's other postings. Hides do not sink
+	// them: a hidden posting says that posting was wrong, not the company.
 	company := 1.0
-	liked, hidden := float64(max(in.Company.Liked, 0)), float64(max(in.Company.Hidden, 0))
-	up, down := 0.0, 0.0
-	if finite(w.CompanySpan) {
-		up = clamp(w.CompanySpan, 0, 1)
-	}
-	if finite(w.CompanyDown) {
-		down = clamp(w.CompanyDown, 0, 1)
-	}
-	if n := liked + hidden; n >= float64(w.CompanyMinMarks) && n > 0 && n+w.CompanySmoothing > 0 {
-		lean := (liked - hidden) / (n + w.CompanySmoothing)
-		if lean >= 0 {
-			company = clamp(1+up*lean, 1, 1+up)
-		} else {
-			company = clamp(1+down*lean, 1-down, 1)
+	liked := float64(max(in.Company.Liked, 0))
+	if liked > 0 && liked >= float64(w.CompanyMinMarks) && liked+w.CompanySmoothing > 0 {
+		up := 0.0
+		if finite(w.CompanySpan) {
+			up = clamp(w.CompanySpan, 0, 1)
 		}
+		company = clamp(1+up*liked/(liked+w.CompanySmoothing), 1, 1+up)
 	}
 
 	r := Result{
@@ -563,7 +608,11 @@ func ScoreWith(in Inputs, w Weights) Result {
 		if i == 6 && !p.known {
 			continue // not asked: the list reads as it did before the part existed
 		}
-		r.Factors = append(r.Factors, Factor{Name: p.name, Value: p.value, Weight: share[i], Known: p.known})
+		f := Factor{Name: p.name, Value: p.value, Weight: nominal[i], Known: p.known}
+		if p.known {
+			f.Conf = p.conf
+		}
+		r.Factors = append(r.Factors, f)
 	}
 	r.Factors = append(r.Factors,
 		Factor{Name: "gate", Value: gate, Known: true},

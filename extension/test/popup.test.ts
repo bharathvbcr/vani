@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isHttpUrl, openButton, titleElement } from "../src/joblink";
 
 describe("popup.html home page UI and UX structure", () => {
   const popupHtmlPath = join(import.meta.dir, "../static/popup.html");
@@ -125,5 +126,34 @@ describe("popup.html home page UI and UX structure", () => {
 
     // Fill options is present in the form view
     expect(fillOptionsPos).toBeGreaterThan(meterCardPos);
+  });
+});
+
+describe("a scraped job's link in the popup", () => {
+  /** Just enough of a document to build the elements: plain objects that record what was set. */
+  const doc = { createElement: (tag: string) => ({ tagName: tag.toUpperCase(), textContent: "", className: "", href: undefined, target: undefined, onclick: null }) } as unknown as Pick<Document, "createElement">;
+
+  test("an http(s) link gets an anchor and an Open button that opens it", () => {
+    const a = titleElement(doc, "Backend Engineer", "https://acme.com/jobs/1");
+    expect(a.tagName).toBe("A");
+    expect((a as HTMLAnchorElement).href).toBe("https://acme.com/jobs/1");
+    const opened: unknown[][] = [];
+    const b = openButton(doc, "https://acme.com/jobs/1", (...args) => opened.push(args))!;
+    expect(b.textContent).toBe("Open role");
+    b.onclick!(new Event("click") as MouseEvent);
+    expect(opened).toEqual([["https://acme.com/jobs/1", "_blank"]]);
+  });
+
+  test("an empty or non-http(s) url gets no anchor and no Open button", () => {
+    for (const url of ["", "javascript:alert(1)", "  JaVaScRiPt:alert(1)", "data:text/html,x", "file:///etc/hosts", "/relative", "not a url", "   "]) {
+      const t = titleElement(doc, "Backend Engineer", url);
+      expect(t.tagName).toBe("SPAN");
+      expect((t as unknown as { href?: string }).href).toBeUndefined();
+      expect(t.textContent).toBe("Backend Engineer");
+      expect(openButton(doc, url, () => { throw new Error("must not open"); })).toBeNull();
+      expect(isHttpUrl(url)).toBe(false);
+    }
+    expect(isHttpUrl(undefined)).toBe(false);
+    expect(isHttpUrl(7)).toBe(false);
   });
 });

@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// kbmatch.backend "jev" (its name until 2026-10-20) loads as "liquid", is
-// reported as deprecated, and is saved as "liquid".
-func TestKBMatchBackendJevIsLiquid(t *testing.T) {
+// kbmatch.backend "jev" (its name until 2026-10-20) loads as "openrouter", is
+// reported as deprecated, and is saved as "openrouter".
+func TestKBMatchBackendJevIsOpenRouter(t *testing.T) {
 	var k KBMatch
-	if err := json.Unmarshal([]byte(`{"backend": "jev"}`), &k); err != nil || k.Backend != KBMatchLiquid {
+	if err := json.Unmarshal([]byte(`{"backend": "jev"}`), &k); err != nil || k.Backend != KBMatchOpenRouter {
 		t.Fatalf("jev: %+v %v", k, err)
 	}
-	for _, b := range []string{"liquid", "llm", ""} {
+	for _, b := range []string{"openrouter", "llm", ""} {
 		raw := `{"backend": "` + b + `"}`
 		if err := json.Unmarshal([]byte(raw), &k); err != nil || k.Backend != b {
 			t.Fatalf("%q: %+v %v", b, k, err)
@@ -30,23 +30,23 @@ func TestKBMatchBackendJevIsLiquid(t *testing.T) {
 
 	doc := strings.Replace(legacyConfig, `"version": 1,`, `"version": 1, "kbmatch": {"backend": "jev"},`, 1)
 	got := Deprecations([]byte(doc))
-	if want := `kbmatch.backend "jev" is now "liquid"`; len(got) == 0 || got[len(got)-1] != want {
+	if want := `kbmatch.backend "jev" is now "openrouter"`; len(got) == 0 || got[len(got)-1] != want {
 		t.Fatalf("deprecations %q, want last %q", got, want)
 	}
-	if got := Deprecations([]byte(`{"kbmatch": {"backend": "liquid"}}`)); len(got) != 0 {
-		t.Fatalf("liquid reported as deprecated: %q", got)
+	if got := Deprecations([]byte(`{"kbmatch": {"backend": "openrouter"}}`)); len(got) != 0 {
+		t.Fatalf("openrouter reported as deprecated: %q", got)
 	}
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	writeFile(t, path, doc)
 	c, _, err := LoadWithDeprecations(path)
-	if err != nil || c.KBMatch.Backend != KBMatchLiquid || c.KBMatch.EffectiveBackend() != KBMatchLiquid {
+	if err != nil || c.KBMatch.Backend != KBMatchOpenRouter || c.KBMatch.EffectiveBackend() != KBMatchOpenRouter {
 		t.Fatalf("load: %+v %v", c.KBMatch, err)
 	}
 	if err := Save(path, c); err != nil {
 		t.Fatal(err)
 	}
-	if data := readFile(t, path); !strings.Contains(data, `"backend": "liquid"`) || strings.Contains(data, `"backend": "jev"`) {
+	if data := readFile(t, path); !strings.Contains(data, `"backend": "openrouter"`) || strings.Contains(data, `"backend": "jev"`) {
 		t.Errorf("saved kbmatch:\n%s", data)
 	}
 	again, old, err := LoadWithDeprecations(path)

@@ -8,7 +8,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
-	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -62,6 +61,19 @@ type RankContext struct {
 	// AgeNeutral holds the employers (keys from AgeNeutralSet) that close
 	// postings by an application cap, so an undated posting of theirs is not aged.
 	AgeNeutral map[string]bool
+
+	// Weights are the fitted weights (a rank weights file, internal/rankfit)
+	// ScoreOf ranks by; nil means DefaultWeights.
+	Weights *Weights
+}
+
+// ScoreOf scores r under c: InputsFor, then c.Weights or DefaultWeights.
+func (c RankContext) ScoreOf(r ledger.Record) Result {
+	w := DefaultWeights()
+	if c.Weights != nil {
+		w = *c.Weights
+	}
+	return ScoreWith(InputsFor(r, c), w)
 }
 
 // AgeNeutralSet turns the config's age_neutral_companies into the set
@@ -139,6 +151,7 @@ func SlotOf(ann map[string]string, slot string) Slot {
 		Disagree: strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixDisagree]) == "true",
 
 		ShadowBackend: strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixShadowBackend]),
+		Backend:       strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixBackend]),
 	}
 	if s.Answered {
 		if p, ok := parseFloat(ann[pre+ledger.AnnTriageSuffixP]); ok && p >= 0 && p <= 1 {
@@ -154,7 +167,7 @@ const employerBoostSlack = 1e-6
 // InputsFor builds Score's Inputs for r.
 //
 // PreferredEmployer is derived from the ledger: the pipeline adds
-// pipeline.EmployerRankBoost to the rank of a preferred employer and records
+// ledger.EmployerRankBoost to the rank of a preferred employer and records
 // the unboosted must-have coverage separately, so a rank at least that far
 // above the coverage means the boost was applied. Nothing about which
 // employers the owner prefers is stored (see pipeline.Runner.preferredEmployer).
@@ -173,7 +186,7 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 	rank, hasRank := parseFloat(ann[ledger.AnnRank])
 	if cov, ok := parseFloat(ann[ledger.AnnCoverage]); ok {
 		in.Coverage, in.HasCoverage = cov, true
-		in.PreferredEmployer = hasRank && rank-cov >= pipeline.EmployerRankBoost-employerBoostSlack
+		in.PreferredEmployer = hasRank && rank-cov >= ledger.EmployerRankBoost-employerBoostSlack
 	} else if hasRank {
 		in.Coverage, in.HasCoverage = rank, true
 	}

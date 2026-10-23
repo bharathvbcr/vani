@@ -45,8 +45,8 @@ flowchart TD
 
         subgraph Triage["3. Decision & Triage"]
             TR["career.jd_triage\n(role_fit, sponsorship, work_mode, seniority)"]
-            JEV["Liquid decision model\n(d1-ultra over OpenRouter)"]
-            LLM["LLM via Manvi (Claude)"]
+            ORT["OpenRouter model (d1-ultra)"]
+            LLM["LLM via Manvi (Gemini / Claude)"]
             LAP["Lappi (Local socket, free)"]
             SHADOW["Shadow & Eval (vani label / eval)"]
             DROP_RULE{"Drop Rule Triggered?"}
@@ -75,9 +75,9 @@ flowchart TD
     DEDUP -->|Active| LIVE
 
     LIVE --> TR
-    TR --> JEV & LLM & LAP
+    TR --> ORT & LLM & LAP
     TR -.-> SHADOW
-    JEV & LLM & LAP --> DROP_RULE
+    ORT & LLM & LAP --> DROP_RULE
     DROP_RULE -->|Calibrated drop| DROP
     DROP_RULE -->|Uncertain fit| UNSURE
     DROP_RULE -->|Clear fit| TRIAGED
@@ -142,13 +142,40 @@ stateDiagram-v2
   Answers only annotate; a posting is dropped only by a configured `drop_rules` entry, on a
   calibrated answer (`min_openrouter_prob` for the OpenRouter model, `min_lappi_score` for
   Lappi). Anything uncertain is kept and marked unsure.
+- **Exclusions (`exclude`):** the owner's hard filter, an engine rule on a posting's own fields
+  (never a model's reading), so it drops without a threshold and spends nothing. Example:
+  `"exclude": {"titles": ["intern", "interns", "internship", "co-op", "coop"], "title_unless":
+  ["internal"], "companies": ["Acme Corp"], "locations": ["India", "London", "remote"],
+  "descriptions": ["security clearance"]}`.
+  - `titles`: whole words, any case (`intern` does not match `Internal` or `Internship`, so list
+    each form). `title_unless` keeps a title that also contains one of its phrases.
+  - `companies`: exact names, ignoring case and spacing.
+  - `locations`: a posting is dropped only when every option it lists is excluded, so a role in
+    Bangalore or San Francisco is kept. Options are its places, plus remote work when the board
+    says where (`Remote (US)`) or names no place. An entry matches an area or region as whole words
+    (`London` also matches `New London, CT`), a US state by code or name (`TX`, `Texas`;
+    `Washington` is the state, not DC), `United States`/`USA`/`US` any US place, and `remote`
+    remote-only roles. A remote scope of several places (`US, Canada`) needs each excluded. A
+    posting with no readable location is kept.
+  - `descriptions`: at most 32 phrases, matched against the whole description; the ledger records
+    only that one matched, never which.
+  - At most 128 entries per list and 100 bytes per entry; empty or duplicate entries are refused.
+  - Where it applies: a Live posting is dropped at triage before any backend (and Workday rows by
+    title before their detail request); every run first drops kept postings (triaged through
+    digested) it now matches, never one you marked, and returns to live the postings it dropped
+    that it no longer matches. `vani jobs` and the Jobs tab hide matching unmarked roles at once.
+    The reason is the `exclude.matched` annotation. `vani prefilter --list` shows what the next
+    run will do; `vani config exclude [--set]` (and Settings › Exclude postings) read and replace
+    it as JSON. Tracks leave it alone.
 - **Renamed keys (2026-10-19):** `jev_model`, `jev_key_env`, `daily_usd.jev`, `min_jev_prob` and
   `decide.shadow` `jev` are now `openrouter_model`, `openrouter_key_env`, `daily_usd.openrouter`,
   `min_openrouter_prob` and `openrouter`. Old configs and track files still load, every command
   says which keys to rename, a file setting an old and a new key to different values is refused,
-  and saving writes the new names. Ledger rows written before the rename name the model `jev`;
+  and saving writes the new names. Ledger rows written before the rename name the model `jev` (no persisted ledger key was renamed);
   `vani eval` and `vani label` read those as the configured model's name and say how many they
-  mapped. The daily cap file stays `<state dir>/budget/jev.json`, so the rename kept the day's spend.
+  mapped. The daily cap file stays `<state dir>/budget/jev.json` (spend key `jev`) on purpose: the
+  cap takes no lock across processes, so a renamed file would let a still-running daemon start the
+  day at zero. `kbmatch.backend` `"jev"` followed on 2026-10-20 and is now `"openrouter"`.
 - **Ranking:** DevPrism `resume_gap_analysis` must-have coverage (DevPrism started lazily over
   `--mcp`). Skipped while `devprism.binary` is empty; `vani rescore` scores those postings once
   it is set (see Use).
@@ -167,8 +194,8 @@ stateDiagram-v2
   states none), its link, must-have coverage, triage answers and the note. Every posting field is
   escaped so it cannot add links, headings or lines.
 - **Decision clients** live in the shared module `~/Code/devtools/decide` (types, router, budget
-  caps, and the OpenRouter and Lappi clients; the OpenRouter client's package is `decide/jev`, a
-  name kept from before the decision model became Liquid). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
+  caps, the Lappi client and `decide/jev`, the OpenRouter Decisions API client Liquid D is asked
+  through). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
   task, exact question text, context layout and options, plus one single-slot Lappi family per
   slot with its own exact question (Lappi trains one slot per example). The OpenRouter model and the LLM get all
   slots in one request; Lappi gets one request per slot, and an absent or hung agent costs one
@@ -234,9 +261,37 @@ flowchart TD
 - **Lappi** (`decide.lappi`, socket default `~/Library/Caches/qd/qd.sock`): local and free. With no
   agent running every ask reads `unavailable/socket_not_found` and the chain carries on; the first
   `task_not_trained` refusal stops Vani asking for the rest of the process.
-- **Local decision model** (`decide.local`, shadow only; config refuses it anywhere else): a
+  - `decide.lappi.primary_slots: ["<slot>", ...]` promotes Lappi one slot at a time (slot names are
+    the triage slots in `fixture.json`; an unknown or repeated name is refused, naming it). Each
+    named slot goes to Lappi first and the OpenRouter model (d1-ultra) no longer answers it; the
+    other slots keep their arrangement, and with `decide.shadow: lappi` Lappi keeps shadowing them
+    (it has nothing left to shadow once every slot is promoted, which is refused: use `primary`).
+    It is exclusive with `primary: true`, which still means all four slots and keeps d1-ultra as
+    its fallback. If Lappi is down for a promoted slot, d1-ultra does not take it back: the next
+    chain backend (the LLM, when configured) answers it, otherwise it reads `unavailable` and the
+    posting is kept as unsure. A config with `primary_slots` gets its own reading cache id (naming
+    the promoted set), so readings made under other routing are re-asked; configs without it keep
+    theirs. A Vani binary that predates the key refuses to load the config (unknown field).
+- **Cloud shadow (recommended setup):** the OpenRouter model decides and a Claude Haiku reads every
+  drop candidate as the second opinion, with no local model or server to run. In the config:
+
+  ```json
+  "llm": {"provider": "anthropic", "model": "<your Opus id>", "triage_model": "<a Haiku id>",
+          "input_nano_usd_per_token": 4000, "output_nano_usd_per_token": 20000},
+  "decide": {"openrouter_model": "liquid/d1-ultra", "daily_usd": {"openrouter": 1, "llm": 1},
+             "shadow": "llm", "shadow_mode": "drop_candidates"},
+  "drop_rules": [{"slot": "role_fit", "values": ["mismatch_domain"], "min_openrouter_prob": 0.9}]
+  ```
+
+  The shadow runs on `llm.triage_model` (config refuses `shadow: "llm"` with `drop_candidates`
+  unless it is set and differs from `llm.model`, so the expensive tier is never asked), is metered
+  under the `daily_usd.llm` cap together with every other Claude call (past it a reading is
+  `unavailable`, never agreement), is recorded under the backend name `llm`, and shows in
+  `vani relevance` as `llm (<triage model>)`. Prices are your conservative per-token figures; set
+  the other values to your own. The local model below is optional.
+- **Local decision model** (optional; `decide.local`, shadow only; config refuses it anywhere else): a
   llama.cpp server's `/v1/systemone` (for example LiquidAI d1-3B, llama.cpp ≥ 0.7.0), asked
-  through the OpenRouter client (`decide/jev`) under the name `local-<model>-<combined|per_slot>` (the GGUF file name
+  through the same `decide/jev` client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
   without `.gguf` when Vani starts the server; at most 32 bytes in all, which `vani config
   check` enforces; rows recorded earlier are filed as plain `local`) with no key, over `egress.Loopback`, which dials
   only loopback addresses. Either `endpoint` (a server you keep running) or `server` (`binary`,
@@ -261,20 +316,41 @@ flowchart TD
   sidebar. A run the daemon skips for starting too late is logged but not recorded. The record's
   `trigger` says who started the run (`schedule`, the daemon; `manual`, `run-once`) and `options`
   what a manual run changed.
+- **Run history and failure reports (`vani runs`):** `last.json` is only the latest run. When a run
+  ends (any outcome but `running`) its record is also written, byte for byte, to
+  `<state dir>/runs/history/<id>.json`, where the id is the start in UTC to the millisecond and the
+  pid (`20261022T090000.123Z-4242`), and the directory is pruned to the newest 30 records and 4 MiB
+  (the newest is always kept). A run that never ended (its process died) is `last.json` only, until
+  the next run starts: it first keeps that record in the history with outcome `interrupted` (the lock the new run holds proves nothing else is running; an unreadable `last.json` is said on stderr and replaced). A history write that fails is a warning on stderr, never a failed run.
+  `vani runs list [--json]` lists them newest first (`*` marks the one `status` reports; a file that
+  cannot be read is listed as unreadable with its reason, never dropped), `vani runs show [--json]
+  [ID]` prints one run (default the latest; `--json` is the whole record), and `vani runs failures
+  [--json] [ID]` prints the plain-text failure report: run, trigger, times, outcome, the run's
+  stage/error/cause, each failed board as `ats:token (Company): error`, the backend error causes,
+  and the paths of the run record and of its log. A run started with `VANI_RUN_LOG=<file>` (the Mac
+  app sets it to `runs/manual.log`) records that file as `log`, after checking it is a file inside
+  `<state dir>/runs`, and the report names that run's own log (`runs/history/manual-<run id>.log`
+  once the app has rotated it, or says it was not kept); a run that recorded none lists the logs that
+  exist (`runs/manual.log`, `logs/vani.err.log`, `logs/vani.out.log`, with size and last write).
+  The report is bounded (a line is cut at 600 characters, the whole at
+  24 KiB, and its last line says how many lines were shortened or cut) and a key, bearer token or
+  auth header pasted into an error is replaced by `[redacted]`. It is the one formatter: the Mac
+  app's Pipeline tab > Copy failures runs `vani runs failures --json` and copies its `text`.
+  Records and reports hold board names, HTTP and backend errors and file paths only.
 - **Manual runs (`vani run-once`, the Mac app's Pipeline tab › Run Now):** the flags change one run
   and never the config: `--advance N` caps the advance phase at N in place of `advance_per_run`,
   `--board ats:token` (repeatable) lists only those watchlist boards (the others' postings are
   untouched; a board no longer on the watchlist stops the run before it lists anything),
   `--list-only` lists and reconciles without triage, scoring or explaining (no decision model is
-  called or needed), and `--no-digest`
+  called, and none needs to be configured; a run that advances still needs one), and `--no-digest`
   leaves the run's roles for the next digest. A digest from a manual run marks its roles digested,
   so the next daily digest does not list them again. `run-once` is refused at once while the daemon
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
-  writes its output to `<state dir>/runs/manual.log`, follows it through `vani status --json`, and
+  writes its output to `<state dir>/runs/manual.log` (before each run it moves the previous log to
+  `runs/history/manual-<run id>.log`, or `manual-<UTC time of its last write>.log` when the run record
+  does not claim it; it keeps the newest 20 within 8 MiB, and a
+  single log over 8 MiB is removed, not kept), follows it through `vani status --json`, and
   can stop a run it started (SIGTERM; recorded `cancelled`), never one the daemon started.
-  A run with no decision backend (no key) still lists its boards and applies the drop rules and
-  near-duplicates, so the Jobs tab's "awaiting triage" count is current, then fails before
-  triage with advance stop `no_backend`; it never records as finished.
 - **Run requests (`vani run-request`, Run Now while the daemon runs):** the daemon holds the ledger
   for its whole life, so a manual run is asked of it instead. `vani run-request [--json]` takes
   run-once's flags, checks them, and writes them with the time to `<state dir>/runs/request.json`.
@@ -312,6 +388,17 @@ flowchart TD
     matched on the posting's company, ignoring case): an undated posting of theirs is held at a
     flat freshness of 0.78 (a posting about a week old) instead of ageing from when Vani first
     saw it. A date the board gives still counts, and the Mac app says the age was held flat.
+  - `vani rankfit` learns the ranking's constants from judged labels (docs/RANKING_PLAN.md,
+    Phases 4–5): per-backend Platt calibration of triage confidence from `vani label`'s slot
+    labels (100 judged postings per backend), and Score's shares from `vani audit`'s judgments
+    (150 usable: yes above maybe above no), with saved/hidden marks and shown-but-unmarked
+    postings for volume. An unmarked posting is a negative only when an impression shows it was
+    shown. Below a threshold it says "could not run", exits 1
+    and writes nothing; `--dry-run` prints the counts. A weight fit that does not beat the hand
+    weights on held-out judged pairs is not written either. Point `rank_weights_file` (an
+    absolute path) at the file it writes to rank by it; `vani jobs` reports `"weights": "hand"`
+    or `"fitted <date>"`, and a configured file that is missing or invalid means the hand
+    weights with a warning, never silently.
   - The knowledge-base match (`internal/semantic`) leaves out lines that ask the same of every
     candidate (a degree, years of experience, communication skills, work authorization), scores
     a posting that offers few distinct lines lower than one that offers a full set, and no
@@ -319,7 +406,7 @@ flowchart TD
     order. Scores cached by an older build are ignored, so the ranker treats every posting as
     unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
     postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
-  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|liquid] [--model ID] [--no-retrieve]`
+  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|openrouter] [--model ID] [--no-retrieve]`
     asks a model, for the top N postings by priority (default 40) that triage did not read as a
     mismatch, whether the work each describes is the work in your knowledge base: `core`,
     `partial`, `adjacent` or `unrelated`. It is a second read of the job's duties, not of the
@@ -333,8 +420,8 @@ flowchart TD
     is shorter; without it (`--no-retrieve`, or the model cannot load) the question carries the
     full digest instead. The **answering model** is the llm (`kbmatch.backend` `"llm"`, the
     default) on `kbmatch.model`, else `llm.triage_model`, else `llm.model`, or the **decision
-    model** (`"liquid"`: `decide.openrouter_model` over OpenRouter, from the OpenRouter cap;
-    the old value `"jev"` still loads, with a deprecation warning).
+    model** (`"openrouter"`, formerly `"jev"`: Liquid D, `decide.openrouter_model`, over
+    OpenRouter, from the OpenRouter cap).
     `kbmatch.model` is its own setting so a cheap model can read postings here without changing
     how triage and escalation run. Example: `"kbmatch": {"model": "claude-haiku-5-5"}`.
     **What is sent**, per posting: the posting, your `target_summary` and a view of the
@@ -478,6 +565,12 @@ build/vani employer import /absolute/path/HD2024.csv
 build/vani track use ml-research
 build/vani label -n 20
 build/vani eval
+build/vani audit --list                    # this week's draw: stratum, p_select, key (writes nothing)
+build/vani audit                           # judge the draw on the terminal: would you apply? 1-3, s, q
+build/vani audit answer --key KEY --verdict yes --source STRATUM --p-select P
+build/vani relevance                       # would_apply rates, precision at K, shadow agreement on drop candidates
+build/vani labels --json                   # the label vocabularies the screens show
+build/vani impressions log --surface jobs --slate new-20261020 < rows.json   # {"rows":[{"key","position"}]}
 build/vani jobs list --sort priority --fit strong_fit,partial_fit --max-age 14
 build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager --sort salary
 build/vani jobs stats --view all
@@ -506,7 +599,12 @@ is written into the plist, API keys included: the daemon reads the decision mode
 login Keychain (`openrouter-api-key`), and has no LLM key (see [`docs/RUNTIME.md`](docs/RUNTIME.md)).
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
---search "query"`. Search sites take repeated `--search` (up to 10 terms; the board lists their union)
+--search "query"`; a site on Workday's shared host takes `--host wd1.myworkdaysite.com` with the
+tenant in the token only (`--token snapchat/snap`). An Ashby board whose name has a space
+(`Hippocratic AI`) takes a slug token and the literal name: `--ats ab --token hippocratic-ai
+--board-name "Hippocratic AI"`; the token is what keys and `--board ab:hippocratic-ai` use. A config
+holding `board_name` needs a `vani` built with the field (the config loader refuses unknown
+fields). Search sites take repeated `--search` (up to 10 terms; the board lists their union)
 and, where verified, `--filter name=value`: `az --token amazon` (`normalized_country_code[]`,
 `category[]`), `gg --token google` (`target_level`, `location`), `ap --token apple` (`location`),
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
@@ -531,7 +629,7 @@ Company icons: a board's optional `domain` is the host of the company's own webs
 (`watchlist add … --domain www.acme.com`, or `watchlist domain --ats gh --token acme --domain
 www.acme.com` for a board you have; `--allow-host` adds it to `allowed_hosts`, which must list it).
 Each run asks that host for `/apple-touch-icon.png`, then `/favicon.ico`, then `/favicon.png`, and
-keeps the first reply that is a PNG, ICO or JPEG of at most 256 KiB in `<state dir>/logos/`. It never
+keeps the first reply that is a PNG, ICO or JPEG of at most 1 MiB in `<state dir>/logos/`. It never
 reads the site's pages or follows their links, and a redirect to another host is refused, so give the
 host that serves the icon (often the `www.` one). A site that names its icon only in its HTML (Databricks,
 Modal, Qualcomm, Together AI) needs the URL set by hand: `watchlist icon --ats gh --token acme --url
@@ -563,6 +661,19 @@ fills through `anthropic-account`. An Anthropic key not scoped to a workspace al
 `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every request with a 400;
 `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
 
+The `funnel` config block (all keys optional) trims paid calls without hiding a posting:
+`min_description_runes` (default 40) skips the triage call for a thinner description and keeps the
+posting as unsure; `notes_min_relevance` (default 32, about the 78th percentile of the live
+ledger: the age-free relevance the Jobs views show, not DevPrism coverage) is the floor for a "why this
+role" note, with a relevance that rests on nothing known deferred, not explained;
+`notes_daily_usd` (default 0.15, from the measured ~$0.00011 per call) is the notes' own OpenRouter cap, separate from
+`decide.daily_usd.openrouter` so notes cannot starve triage; `score_after_triage` puts DevPrism back
+after triage (by default it runs first, and coverage never gates anything). A posting that matches an
+already-read one on description hash, title, location and model id copies its reading
+(`triage.inherited_from`) and the drop rule runs again on the copy. The run record's `advance` block
+reports `deferred` (not reached because of the cap), `fail_open` (kept because a check could not run,
+by cause) and `notes`.
+
 Each run triages, scores and explains at most `advance_per_run` postings (default 300, at most
 5000), which bounds its spend and duration. They go highest title rank first, then the freshest:
 the posted date when the board gives one, else when Vani first saw a posting that appeared after
@@ -571,9 +682,25 @@ postings advance at a time (default 4, at most 16; 1 is strictly one by one). Wi
 configured, `decide.shadow_every` asks it about one posting in that many (default 12, picked by a
 hash of the posting key; 1 asks it about every posting), and a local shadow takes at most its
 server's `parallel` calls plus one waiting; the run's warnings say how many postings it read and
-how many sampled ones it skipped while busy. The rest stay `live` for the next run. Only triaged
+how many sampled ones it skipped while busy. `decide.shadow_mode: "drop_candidates"` (default
+`"sample"`, the behaviour above) instead asks the shadow about every slot the drop rules would
+drop on (the primary answered a rule's value at or above its `min_openrouter_prob`), before the
+drop is applied: the reading is recorded as the usual shadow annotations (`.shadow`,
+`.shadow_backend`, `.disagree`) and the drop still follows the primary's rule alone. A candidate
+waits for a free shadow slot rather than being skipped; a shadow that errors or times out is
+recorded `unavailable`, never as agreement. It needs `decide.shadow` and no `shadow_every`, and
+it lets `decide.escalate` run beside it (they read disjoint slots, so `escalate.below_p` must not
+exceed a rule's `min_openrouter_prob`). `vani relevance` ends with the agreement of each shadow
+with the primary on drop candidates, per slot: asked, unavailable, answered, agree/answered with a
+95% Wilson interval, and how many disagreements carry an owner `would_apply` label (and how many
+of those say yes or maybe); with nothing asked it says "no data". The rest stay `live` for the next run. Only triaged
 postings are listed in Jobs, so `jobs list`/`jobs stats` (`pending` in `--json`), the digest
-footer and the Jobs tab footer say how many are still awaiting triage. `status --json` shows
+footer and the Jobs tab footer say how many are still awaiting triage, and `jobs list --view pending`
+(the app's Awaiting triage tab) lists them: unranked (no fit, relevance or priority in the reply, and
+no `row`), newest first where the age is known, never mixed into new/saved/applied/hidden/all, with a
+`prefilter_drop` flag ("excluded" or "title", never the rule) on those the next run's prefilter would
+drop. Only `jobs list` and `jobs folders` take `--view pending`; `jobs stats` and `jobs gaps` refuse
+it. `status --json` shows
 the last run's `advance` report (eligible, attempted, unread, deferred, why it stopped) and
 `backend_errors`: every decision-backend call that failed, counted by cause, with one example.
 
@@ -594,6 +721,40 @@ Digested postings are counted and left alone. If DevPrism fails, or the call tim
 cancelled, nothing is written for that posting. 20 failures in a row, or a pass where every
 posting it tried failed, fail the command. A second pass finds only what the first left, and
 does nothing once none are left.
+
+## Measuring the ranking
+
+Three things measure the ranking against the owner's judgement; none changes a ranking or a drop
+(the plan and each finding's status are in [docs/RANKING_PLAN.md](docs/RANKING_PLAN.md)).
+
+- **Impressions** (`<state dir>/feedback/impressions.jsonl`, `internal/feedback`): which postings a
+  screen showed, where, and in which slate. A posting is seen-and-passed only when an impression
+  says it was shown; unmarked is not negative. A row holds the key, surface (`digest`, `jobs`,
+  `audit`), section, 1-based position and a `slate_id`; digest rows add the priority, relevance and
+  known Score parts, and an Explore row its stratum and `p_select`. Never a title, company, text or
+  note. A key is logged once per slate, and the log rotates at 16 MiB (two files at most). The
+  digest records what it wrote (a failure is printed and kept in the run record as
+  `impressions_error`), the terminal audit the cards it showed, and the Mac app reports the top 20
+  Jobs rows after each refresh and each Audit card through `vani impressions log --surface
+  jobs|audit --slate ID [--section S] [--json]`, with `{"rows":[{"key","position"}]}` on stdin.
+- **Digest sections.** `digest.top_open` (default 20, at most 50) lists the best roles listed before
+  and still open, by the age-free relevance. `digest.explore_below_fold` (default 2) and
+  `digest.explore_dropped` (default 1), at most 10 each, list unmarked roles picked at random from
+  those ranked lower and from those dropped, so Vani learns what it misses; each row carries the
+  stratum and `p_select` that `vani audit answer` takes. `0` turns a section off; none changes a
+  posting's status.
+- **The weekly audit.** `vani audit` draws 15 postings (5 scored by priority decile, 10 dropped by
+  drop class; unmarked roles only; stable within an ISO week; `--scored` and `--dropped` set the
+  quotas) and asks one question: would you apply (1 yes, 2 maybe, 3 no, `s` can't tell, `q`
+  quit). Each answer is a `would_apply` label carrying the stratum and the inclusion probability.
+  `--json` prints the draw as keys, strata and `p_select` with no posting text, `--blind` hides the
+  model's readings, and `--list` and `--json` write nothing. `vani audit answer` records one
+  verdict; the Mac app's Audit tab is the same draw, one card at a time. `vani relevance` reports
+  the labels: would_apply rates with 95% Wilson intervals, precision at K, drop misses, backend
+  reliability, and the shadow's agreement on drop candidates. `vani labels --json` is the label
+  vocabulary the screens read once at launch.
+
+A calibration needs about 100 judged labels and the weight fit 150; both refuse to run below that.
 
 ## Knowledge-base matching (semantic)
 
@@ -694,3 +855,10 @@ relative replaces in `go.mod` point outside the tree. The default build leaves t
 go -C /Users/bharath/Code/apps/Vani vet ./...
 go -C /Users/bharath/Code/apps/Vani test -race ./...
 ```
+
+## Releasing
+
+A release is private: a GitHub release in the private repo, signed with the Apple Development
+identity, not notarized, and rolled back by reinstalling the previous release's zip. Cut one with
+`scripts/release.sh vX.Y.Z [--dry-run]`; the policy, commands, install and rollback steps are in
+[docs/RELEASE.md](docs/RELEASE.md).

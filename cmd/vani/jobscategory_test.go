@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -34,11 +35,11 @@ func TestJobsCategoryFilter(t *testing.T) {
 	p3 := posting.Posting{Key: "gh:a:3", Company: "Classic Corp", Title: "Software Engineer"} // no category
 
 	appendRecord(ctx, t, l, p1, posting.Triaged, map[string]string{
-		ledger.AnnCategory:               jobcategory.AIEngineer,
+		ledger.AnnCategory:                  jobcategory.AIEngineer,
 		ledger.AnnTriagePrefix + "category": jobcategory.AIEngineer,
 	}, now)
 	appendRecord(ctx, t, l, p2, posting.Triaged, map[string]string{
-		ledger.AnnCategory:               jobcategory.AgentSystems,
+		ledger.AnnCategory:                  jobcategory.AgentSystems,
 		ledger.AnnTriagePrefix + "category": jobcategory.AgentSystems,
 	}, now)
 	appendRecord(ctx, t, l, p3, posting.Triaged, map[string]string{}, now)
@@ -51,7 +52,7 @@ func TestJobsCategoryFilter(t *testing.T) {
 	if err := e.cmdJobs([]string{"list", "--json", "--category", jobcategory.AIEngineer}); err != nil {
 		t.Fatalf("jobs list error: %v", err)
 	}
-	var res jobsListJSON
+	var res jobview.List
 	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 		t.Fatalf("json unmarshal: %v\n%s", err, stdout.String())
 	}
@@ -65,7 +66,7 @@ func TestJobsCategoryFilter(t *testing.T) {
 		t.Fatalf("jobs list error: %v", err)
 	}
 	stdoutStr := stdout.String()
-	var resMulti jobsListJSON
+	var resMulti jobview.List
 	if err := json.Unmarshal([]byte(stdoutStr), &resMulti); err != nil {
 		t.Fatalf("json unmarshal: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestJobsCategoryFilter(t *testing.T) {
 	if err := e.cmdJobs([]string{"list", "--json", "--category", "none"}); err != nil {
 		t.Fatalf("jobs list error: %v", err)
 	}
-	var resNone jobsListJSON
+	var resNone jobview.List
 	if err := json.Unmarshal(stdout.Bytes(), &resNone); err != nil {
 		t.Fatalf("json unmarshal: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestJobsCategoryFilter(t *testing.T) {
 	if err := e.cmdJobs([]string{"list", "--json", "--folder", jobcategory.AgentSystems}); err != nil {
 		t.Fatalf("jobs list --folder error: %v", err)
 	}
-	var resFolder jobsListJSON
+	var resFolder jobview.List
 	if err := json.Unmarshal(stdout.Bytes(), &resFolder); err != nil {
 		t.Fatalf("json unmarshal: %v", err)
 	}

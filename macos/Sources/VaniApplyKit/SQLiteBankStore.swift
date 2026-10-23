@@ -142,7 +142,14 @@ public final class SQLiteBankStore: @unchecked Sendable {
               let validated = try? BankValidator.validate(obj["bank"] ?? obj) else {
             return
         }
-        let rev = (obj["rev"] as? NSNumber)?.intValue ?? 1
+        // An absent rev is a bare bank (1); a present one that is not an integer is not migrated.
+        let rev: Int
+        if let raw = obj["rev"] {
+            guard let n = BankValidator.strictInt(raw), n >= 0 else { return }
+            rev = n
+        } else {
+            rev = 1
+        }
         try execute("BEGIN IMMEDIATE TRANSACTION;", db: db)
         do {
             try execute("UPDATE meta SET value = '\(rev)' WHERE key = 'rev';", db: db)
@@ -295,19 +302,14 @@ public final class SQLiteBankStore: @unchecked Sendable {
         try execute("DELETE FROM signatures WHERE answer_key = '\(key.replacingOccurrences(of: "'", with: "''"))';", db: db)
     }
 
-    /// `whereClause` is SQL text built by this file with `?` placeholders only; user text goes in `binds`.
-    private func loadAnswersMap(whereClause: String = "", binds: [String] = [], db: OpaquePointer) throws -> [String: Answer] {
+    private func loadAnswersMap(db: OpaquePointer) throws -> [String: Answer] {
         var answers: [String: Answer] = [:]
-        let sql = "SELECT key, kind, value_json, sensitivity, uses, fills, updated_at, review FROM answers \(whereClause);"
+        let sql = "SELECT key, kind, value_json, sensitivity, uses, fills, updated_at, review FROM answers;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw StoreError.prepareFailed("loadAnswers prepare failed")
         }
         defer { sqlite3_finalize(stmt) }
-        for (i, text) in binds.enumerated() {
-            sqlite3_bind_text(stmt, Int32(i + 1), text, -1, SQLITE_TRANSIENT)
-        }
-
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let k = sqlite3_column_text(stmt, 0),
                   let kindStr = sqlite3_column_text(stmt, 1),
@@ -497,122 +499,5 @@ public final class SQLiteBankStore: @unchecked Sendable {
             try? execute("ROLLBACK;", db: db)
             throw error
         }
-    }
-
-    // MARK: - Granular Candidate Query API (Indexed Lookup for Autofill)
-
-    public func queryCandidates(signatures: [String] = [], keys: [String] = [], labels: [String] = []) throws -> [Answer] {
-        let db = try openConnection()
-        defer { sqlite3_close(db) }
-
-        var matchedKeys = Set<String>()
-
-        // 1. Direct key lookups
-        for key in keys {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, "SELECT key FROM answers WHERE key = ?;", -1, &stmt, nil) == SQLITE_OK {
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT)
-                if sqlite3_step(stmt) == SQLITE_ROW, let k = sqlite3_column_text(stmt, 0) {
-                    matchedKeys.insert(String(cString: k))
-                }
-            }
-        }
-
-        // 2. Signatures lookup
-        for sig in signatures {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, "SELECT answer_key FROM signatures WHERE signature = ?;", -1, &stmt, nil) == SQLITE_OK {
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, sig, -1, SQLITE_TRANSIENT)
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    if let k = sqlite3_column_text(stmt, 0) {
-                        matchedKeys.insert(String(cString: k))
-                    }
-                }
-            }
-        }
-
-        // 3. Labels lookup
-        for label in labels {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, "SELECT answer_key FROM labels WHERE label = ?;", -1, &stmt, nil) == SQLITE_OK {
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, label, -1, SQLITE_TRANSIENT)
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    if let k = sqlite3_column_text(stmt, 0) {
-                        matchedKeys.insert(String(cString: k))
-                    }
-                }
-            }
-        }
-
-        guard !matchedKeys.isEmpty else { return [] }
-
-        // Fetch full candidate answers
-        let escaped = matchedKeys.map { "'\($0.replacingOccurrences(of: "'", with: "''"))'" }.joined(separator: ",")
-        let map = try loadAnswersMap(whereClause: "WHERE key IN (\(escaped))", db: db)
-        return Array(map.values)
-    }
-
-    // MARK: - Granular List & Search API (Paginated UI)
-
-    public struct ListResult: Equatable, Sendable {
-        public let total: Int
-        public let rev: Int
-        public let answers: [Answer]
-    }
-
-    private static func likeEscaped(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
-    }
-
-    /// The text as the value_json writer (JSONSerialization over the value array) encodes it inside a
-    /// string: the term is encoded as a one-element array and the `["` / `"]` frame is dropped. If the
-    /// encoder refuses the term, the raw term is returned, which can only under-match.
-    private static func jsonStringBody(_ s: String) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: [s]) else { return s }
-        let framed = String(decoding: data, as: UTF8.self)
-        guard framed.hasPrefix("[\""), framed.hasSuffix("\"]") else { return s }
-        return String(framed.dropFirst(2).dropLast(2))
-    }
-
-    public func listAnswers(offset: Int = 0, limit: Int = 50, search: String? = nil) throws -> ListResult {
-        let db = try openConnection()
-        defer { sqlite3_close(db) }
-
-        let rev = try getRevision(db: db)
-        var whereClause = ""
-        var binds: [String] = []
-        if let s = search, !s.trimmingCharacters(in: .whitespaces).isEmpty {
-            // The text is bound, never spliced into SQL; % _ and \ in it match themselves.
-            let pattern = "%\(Self.likeEscaped(s))%"
-            // value_json holds the JSON-encoded array, so the term is matched as that encoder writes it.
-            let valuePattern = "%\(Self.likeEscaped(Self.jsonStringBody(s)))%"
-            whereClause = """
-                WHERE key LIKE ? ESCAPE '\\' OR value_json LIKE ? ESCAPE '\\' \
-                OR key IN (SELECT answer_key FROM labels WHERE label LIKE ? ESCAPE '\\')
-                """
-            binds = [pattern, valuePattern, pattern]
-        }
-
-        var total = 0
-        var cntStmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM answers \(whereClause);", -1, &cntStmt, nil) == SQLITE_OK {
-            defer { sqlite3_finalize(cntStmt) }
-            for (i, text) in binds.enumerated() {
-                sqlite3_bind_text(cntStmt, Int32(i + 1), text, -1, SQLITE_TRANSIENT)
-            }
-            if sqlite3_step(cntStmt) == SQLITE_ROW {
-                total = Int(sqlite3_column_int(cntStmt, 0))
-            }
-        }
-
-        let pageClause = "\(whereClause) ORDER BY updated_at DESC LIMIT \(limit) OFFSET \(offset)"
-        let map = try loadAnswersMap(whereClause: pageClause, binds: binds, db: db)
-        let sorted = map.values.sorted { $0.updatedAt > $1.updatedAt }
-        return ListResult(total: total, rev: rev, answers: sorted)
     }
 }

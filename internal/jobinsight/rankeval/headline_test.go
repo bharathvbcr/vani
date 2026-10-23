@@ -19,7 +19,7 @@ func headline(p *prepared, score ranker, logf func(string, ...any)) []string {
 	all := append([]ranker{score}, legacyRankers...)
 	for ui, u := range utilities {
 		for si, sc := range scenarios {
-			logf("== %s recency | %s | %d seeds", u.name, sc.name, len(p.worlds))
+			logf("== %s recency | %s | %d seeds | REGRESSION-ONLY (synthetic worlds)", u.name, sc.name, len(p.worlds))
 			res := map[string]result{}
 			for _, r := range all {
 				x := p.evaluate(r, si, ui)
@@ -54,6 +54,9 @@ func headline(p *prepared, score ranker, logf func(string, ...any)) []string {
 }
 
 // TestScoreBeatsLegacy is the headline comparison for the shipped ranker.
+// REGRESSION-ONLY: it ranks synthetic worlds (see world_test.go), so it guards
+// against Score regressing against the legacy rankers, and says nothing about
+// relevance to the owner.
 func TestScoreBeatsLegacy(t *testing.T) {
 	p := prepare(evalSeeds)
 	for _, f := range headline(p, scoreRanker("Score", jobinsight.DefaultWeights()), t.Logf) {

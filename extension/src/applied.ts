@@ -17,6 +17,7 @@
 //                    the user sees the question), mark only the job that was offered,
 //                    only when asked
 //   createAppliedFlow the content script's side: ask, show, accept or dismiss
+import { createLock } from "./guards";
 import type { ToBackground } from "./messages";
 
 /** internal/joburl.MaxBytes: a longer page URL is not sent, never cut. */
@@ -71,6 +72,23 @@ export function pageKey(raw: unknown): string | null {
 }
 
 const WORKDAY_HOST = /\.myworkdayjobs\.com$/;
+/** Workday's shared host (Go: sources.WorkdaySiteHost): no tenant label, its pages are /recruiting/{tenant}/{site}/job/.... */
+const WORKDAY_SHARED_HOST = /^wd[0-9]{1,3}\.myworkdaysite\.com$/;
+
+/** Whether a host name is Workday's shared host, whatever its case (Go: sources.WorkdaySiteHost). A port, path or extra label is not one. */
+export function isWorkdaySharedHost(host: string): boolean {
+  return WORKDAY_SHARED_HOST.test(host.toLowerCase());
+}
+
+/**
+ * The site a shared-host page belongs to: `segs` are its path segments with any locale already
+ * dropped (each caller has its own locale shape), and a page of the site is
+ * recruiting/{tenant}/{site}[/rest...]. Null when the path names no tenant or site.
+ */
+export function workdaySharedPath(segs: readonly string[]): { tenant: string; site: string; rest: string[] } | null {
+  if (segs[0] !== "recruiting" || segs.length < 3) return null;
+  return { tenant: segs[1]!, site: segs[2]!, rest: segs.slice(3) };
+}
 /** Workday's language-region path prefix (en-US, fr-CA). A site called "ext" or "careers" never has this shape. */
 const WORKDAY_LOCALE = /^[a-z]{2}-[A-Z]{2}$/;
 
@@ -87,10 +105,21 @@ export function postingKey(raw: unknown): string | null {
   const page = pageKey(raw);
   if (page === null) return null;
   const u = new URL(page);
-  if (!WORKDAY_HOST.test(u.hostname)) return page;
-  const segs = u.pathname.split("/").filter(Boolean);
+  const shared = isWorkdaySharedHost(u.hostname);
+  if (!shared && !WORKDAY_HOST.test(u.hostname)) return page;
+  let segs = u.pathname.split("/").filter(Boolean);
   if (segs.length > 0 && WORKDAY_LOCALE.test(segs[0]!)) segs.shift();
-  const [site, kind, ...rest] = segs;
+  // On the shared host the site is recruiting/{tenant}/{site}; elsewhere it is the first segment.
+  let site: string | undefined;
+  if (shared) {
+    const s = workdaySharedPath(segs);
+    if (s === null) return page;
+    site = segs.slice(0, 3).join("/");
+    segs = s.rest;
+  } else {
+    site = segs.shift();
+  }
+  const [kind, ...rest] = segs;
   if (site === undefined || (kind !== "job" && kind !== "details")) return page;
   const apply = rest.findIndex(s => s.toLowerCase() === "apply");
   const posting = apply < 0 ? rest : rest.slice(0, apply);
@@ -187,14 +216,8 @@ export function createBroker(d: BrokerDeps): Broker {
   let memory: Record<string, StoredOffer> = {};
   const store: OfferStore = d.store ?? { load: async () => memory, save: async v => { memory = v; } };
   let cache: Record<string, StoredOffer> = {};
-  let chain: Promise<unknown> = Promise.resolve();
-
   /** Reads and writes of the table run one at a time; a native call never holds the lock. */
-  function locked<T>(fn: () => Promise<T>): Promise<T> {
-    const next = chain.then(fn, fn);
-    chain = next.catch(() => undefined);
-    return next;
-  }
+  const locked = createLock();
 
   async function read(): Promise<Record<string, StoredOffer>> {
     let m: Record<string, StoredOffer>;

@@ -92,17 +92,18 @@ type Options struct {
 	// posting has the row's path (read from its URL) is returned as stored,
 	// with no detail request. Required.
 	Stored func(b sources.Board) []posting.Posting
-	// DropTitle reports whether the engine's title rule drops a posting with
-	// this title. A listed row with no stored posting that DropTitle drops is
-	// neither fetched nor returned (it would be dropped before triage anyway).
-	// Nil drops nothing.
-	DropTitle func(title string) bool
+	// DropListed reports whether the engine drops a posting before triage
+	// from what a listed row says: its title, the board's company and the
+	// row's location text (no description, no remote flag). A listed row with
+	// no stored posting that DropListed drops is neither fetched nor returned
+	// (it would be dropped before triage anyway). Nil drops nothing.
+	DropListed func(p posting.Posting) bool
 	// Report, when set, receives each listed board's counts.
 	Report func(sources.Board, Stats)
 }
 
 // Stats counts what one List did. Every listed row is counted once, in
-// Reused, Fetched, Refreshed, TitleDropped, Deferred or Gone.
+// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
 type Stats struct {
 	Listed   int `json:"listed"`
 	Queries  int `json:"queries"`  // listing queries; a split board has one per bucket
@@ -113,8 +114,8 @@ type Stats struct {
 	// stored and were re-read in their turn.
 	Fetched   int `json:"fetched"`
 	Refreshed int `json:"refreshed,omitempty"`
-	// TitleDropped rows were new and dropped by title without a request.
-	TitleDropped int `json:"title_dropped,omitempty"`
+	// Prefiltered rows were new and dropped by DropListed without a request.
+	Prefiltered int `json:"prefiltered,omitempty"`
 	// Deferred rows were new but past MaxDetails: they are fetched on a later
 	// run. Not being stored, their absence ages nothing.
 	Deferred int `json:"deferred,omitempty"`
@@ -214,6 +215,29 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	return out, nil
 }
 
+// boardCompany is the company a board's postings carry: the board's, else
+// the tenant.
+func boardCompany(b sources.Board, tenant string) string {
+	if c := strings.TrimSpace(b.Company); c != "" {
+		return c
+	}
+	return tenant
+}
+
+// locationCount is a row's location text when it only counts the posting's
+// places ("3 Locations"): no place to judge until the details are read.
+var locationCount = regexp.MustCompile(`(?i)^[0-9]+\s+locations?$`)
+
+// listedPosting is what a listed row says of its posting before its details
+// are read: the fields DropListed may judge.
+func listedPosting(b sources.Board, tenant string, row listedJob) posting.Posting {
+	loc := strings.TrimSpace(row.LocationsText)
+	if locationCount.MatchString(loc) {
+		loc = ""
+	}
+	return posting.Posting{ATS: posting.Workday, Company: boardCompany(b, tenant), Title: strings.TrimSpace(row.Title), Location: loc}
+}
+
 // fetch is one row that gets a detail request, and whether it was stored.
 type fetch struct {
 	row    listedJob
@@ -238,7 +262,7 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 				continue // another board's posting is never this board's row
 			}
 			storedKeys[p.Key] = true
-			if path, ok := storedPath(p.URL, host, site); ok {
+			if path, ok := storedPath(p.URL, host, pagePrefix(host, tenant, site)); ok {
 				stored[path] = p
 			} else {
 				unmatched++
@@ -257,8 +281,8 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			p.SeenAt = seen
 			slot[i] = &p
 			st.Reused++
-		case s.opt != nil && s.opt.DropTitle != nil && s.opt.DropTitle(strings.TrimSpace(row.Title)):
-			st.TitleDropped++
+		case s.opt != nil && s.opt.DropListed != nil && s.opt.DropListed(listedPosting(b, tenant, row)):
+			st.Prefiltered++
 		default:
 			fresh = append(fresh, i)
 		}
@@ -354,22 +378,41 @@ func refreshTurn(path string, day int) bool {
 	return int(h.Sum32()%refreshDays) == day%refreshDays
 }
 
+// pagePrefix is the leading path of a posting's public page on host: "{site}"
+// on a tenant host "{tenant}.wd{N}.myworkdayjobs.com", and
+// "recruiting/{tenant}/{site}" on the shared host "wd{N}.myworkdaysite.com",
+// which has no tenant label to say whose site it is. Its segments are
+// unescaped; parseToken has limited them to letters, digits, '-' and '_'.
+func pagePrefix(host, tenant, site string) string {
+	if sources.WorkdaySiteHost(host) {
+		return "recruiting/" + tenant + "/" + site
+	}
+	return site
+}
+
 // storedPath is the listing externalPath a stored posting's URL carries: the
-// path after the site segment (and an optional locale before it) on host.
-// ok is false for a URL of another host or site, which is then never reused.
-func storedPath(raw, host, site string) (string, bool) {
+// path after the page prefix (pagePrefix; a bare site name works too) and an
+// optional locale before it, on host. ok is false for a URL of another host or
+// site, which is then never reused.
+func storedPath(raw, host, prefix string) (string, bool) {
 	u, err := url.Parse(raw)
 	if err != nil || !strings.EqualFold(u.Hostname(), host) {
 		return "", false
 	}
+	want := strings.Split(prefix, "/")
 	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(segs) > 1 && !strings.EqualFold(segs[0], site) && locale.MatchString(segs[0]) {
+	if len(segs) > 1 && !strings.EqualFold(segs[0], want[0]) && locale.MatchString(segs[0]) {
 		segs = segs[1:]
 	}
-	if len(segs) < 2 || !strings.EqualFold(segs[0], site) {
+	if len(segs) < len(want)+1 {
 		return "", false
 	}
-	return "/" + strings.Join(segs[1:], "/"), true
+	for i, w := range want {
+		if !strings.EqualFold(segs[i], w) {
+			return "", false
+		}
+	}
+	return "/" + strings.Join(segs[len(want):], "/"), true
 }
 
 var locale = regexp.MustCompile(`^[a-z]{2}(-[A-Za-z]{2,4})?$`)
@@ -401,7 +444,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	}
 	pubURL := info.ExternalURL
 	if pubURL == "" {
-		pubURL = "https://" + host + "/" + url.PathEscape(site) + path
+		pubURL = "https://" + host + "/" + pagePrefix(host, url.PathEscape(tenant), url.PathEscape(site)) + path
 	}
 	if err := srcutil.CheckURL("externalUrl", pubURL); err != nil {
 		return posting.Posting{}, err
@@ -410,10 +453,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	if location == "" {
 		location = strings.TrimSpace(row.LocationsText)
 	}
-	company := strings.TrimSpace(b.Company)
-	if company == "" {
-		company = tenant
-	}
+	company := boardCompany(b, tenant)
 	phrase := row.PostedOn
 	if phrase == "" {
 		phrase = info.PostedOn
@@ -516,8 +556,11 @@ func validName(s string) bool {
 	return true
 }
 
-// checkHost requires a bare hostname whose first label is the tenant, so a
-// board cannot send its requests to a host its token does not name.
+// checkHost requires a bare hostname that is either Workday's shared host
+// "wd{N}.myworkdaysite.com" (no tenant label; the token's tenant, already
+// checked by parseToken, picks the site) or one whose first label is the
+// tenant, so a board cannot send its requests to a host its token does not
+// name.
 func checkHost(host, tenant string) (string, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
@@ -527,6 +570,9 @@ func checkHost(host, tenant string) (string, error) {
 		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.') {
 			return "", fmt.Errorf("board host %q is not a bare hostname", host)
 		}
+	}
+	if sources.WorkdaySiteHost(host) {
+		return host, nil
 	}
 	first, _, _ := strings.Cut(host, ".")
 	if first != strings.ToLower(tenant) {

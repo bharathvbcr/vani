@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"math"
-	"regexp"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -63,6 +63,28 @@ type errorLogged struct {
 	seen map[string]bool
 
 	br breaker
+
+	// fallback marks a tier whose unread questions go on to the next backend in
+	// the chain (the Lappi tier of decide.lappi.primary[_slots]). Each question
+	// it could not read, by outage or by an open breaker, is counted as
+	// backendStat.FellThrough so the run record and notice show what the
+	// outage handed to the paid tiers.
+	fallback bool
+}
+
+// allUnavailable reports whether every slot q asked read Unavailable in a: the
+// backend was reached (or turned away) and read none of them. A NotAsked slot
+// is not Unavailable, and an answer with any other reading is a working backend.
+func allUnavailable(a decide.Answer, q decide.Question) bool {
+	if len(q.Slots) == 0 {
+		return false
+	}
+	for _, s := range q.Slots {
+		if a.Slots[s.Name].Reading != decide.Unavailable {
+			return false
+		}
+	}
+	return true
 }
 
 // breaker is the consecutive-error circuit breaker of one wrapper. Safe for
@@ -141,15 +163,6 @@ func (b *breaker) settle(probe bool, o outcome) (opened, closed, say bool) {
 	return opened, closed, say
 }
 
-// requestID matches a provider request id (Anthropic "req_…", OpenRouter
-// "gen-…"), which differs on every call.
-var requestID = regexp.MustCompile(`\b(req|gen)[_-][A-Za-z0-9_-]+`)
-
-// errorKey is the identity of a backend error for de-duplication: the same
-// refusal with a new request id is the same error. The first message is still
-// printed whole, request id included.
-func errorKey(msg string) string { return requestID.ReplaceAllString(msg, "$1_*") }
-
 func logErrors(b decide.Backend, warnf func(format string, a ...any), sink *backendErrors) *errorLogged {
 	return &errorLogged{
 		Backend: b, warnf: warnf, sink: sink, seen: map[string]bool{},
@@ -157,11 +170,22 @@ func logErrors(b decide.Backend, warnf func(format string, a ...any), sink *back
 	}
 }
 
+// logFallback is logErrors for a tier whose unread questions fall to the next
+// backend (errorLogged.fallback).
+func logFallback(b decide.Backend, warnf func(format string, a ...any), sink *backendErrors) *errorLogged {
+	e := logErrors(b, warnf, sink)
+	e.fallback = true
+	return e
+}
+
 func (e *errorLogged) Decide(ctx context.Context, q decide.Question) (decide.Answer, error) {
 	name := e.Backend.Name()
 	allowed, probe := e.br.admit()
 	if !allowed {
 		e.sink.reject(name)
+		if e.fallback {
+			e.sink.fellThrough(name)
+		}
 		return breakerAnswer(name, q), errBreakerOpen
 	}
 	start := time.Now()
@@ -181,6 +205,12 @@ func (e *errorLogged) Decide(ctx context.Context, q decide.Question) (decide.Ans
 	o := callOK
 	switch {
 	case err == nil:
+		// A backend that is down (Lappi with no agent) answers Unavailable on
+		// every slot with no error: for the breaker that is a failed call, so a
+		// dead backend is not dialled per posting.
+		if allUnavailable(a, q) {
+			o = callErrored
+		}
 	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
 		// The caller's own context is the reliable signal: a provider client may
 		// surface a cancelled request as its own "connection closed" error that
@@ -191,9 +221,12 @@ func (e *errorLogged) Decide(ctx context.Context, q decide.Question) (decide.Ans
 		o = callErrored
 	}
 	e.sink.record(name, a, err != nil, o == callCanceled, time.Since(start))
+	if e.fallback && o == callErrored {
+		e.sink.fellThrough(name)
+	}
 	if err != nil {
 		msg := truncateRunes(err.Error(), maxBackendErrorRunes)
-		key := errorKey(msg)
+		key := pipeline.ErrorKey(msg)
 		e.sink.add(name, key, msg)
 		e.mu.Lock()
 		first := !e.seen[key] && len(e.seen) < maxLoggedBackendErrors
@@ -273,6 +306,11 @@ type backendStat struct {
 	// backend; BreakerOpens is how many times it opened.
 	Rejected     int `json:"breaker_rejected,omitempty"`
 	BreakerOpens int `json:"breaker_opens,omitempty"`
+	// FellThrough counts questions a fallback tier (Lappi under primary or
+	// primary_slots) could not read, by outage or open breaker: each went on to
+	// the next backend in the chain, the paid one, whose daily cap is the hard
+	// bound on what that costs.
+	FellThrough int `json:"fell_through,omitempty"`
 	// Readings counts slot readings by kind (decide.Reading), from calls that
 	// returned an answer.
 	Readings map[string]int `json:"readings,omitempty"`
@@ -377,6 +415,16 @@ func (b *backendErrors) reject(backend string) {
 	}
 	b.mu.Lock()
 	b.stat(backend).Rejected++
+	b.mu.Unlock()
+}
+
+// fellThrough counts one question a fallback tier could not read.
+func (b *backendErrors) fellThrough(backend string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.stat(backend).FellThrough++
 	b.mu.Unlock()
 }
 

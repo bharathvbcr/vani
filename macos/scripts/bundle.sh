@@ -35,6 +35,10 @@ cp "$BIN/vani-apply-host" "$APP/Contents/Helpers/vani-apply-host"
 cp "$BIN/vani-apply-agent" "$APP/Contents/Helpers/vani-apply-agent"
 mkdir -p "$APP/Contents/Library/LaunchAgents"
 cp "$MACOS/Support/LaunchAgents/dev.vbcr.vani.apply.agent.plist" "$APP/Contents/Library/LaunchAgents/"
+# The opt-in login item that keeps `vani daemon` running (Pipeline > Run on schedule). It is
+# only registered when the owner turns that on; shipping its plist installs nothing.
+cp "$BIN/vani-schedule-agent" "$APP/Contents/Helpers/vani-schedule-agent"
+cp "$MACOS/Support/LaunchAgents/dev.vbcr.vani.schedule.agent.plist" "$APP/Contents/Library/LaunchAgents/"
 # Vani's Go CLI, for `vani draft` (Claude answer drafts) from the app and the Chrome host.
 # VANI_CLI_BINARY reuses an already-built vani (an absolute path) when only the
 # Mac or extension side changed and the Go tree is mid-edit elsewhere.
@@ -55,7 +59,8 @@ else
   else
     echo "bundle.sh: building vani without -tags tessl (no Apple silicon or no $TESSL_ARCHIVE): semantic matching will report \"not run\"" >&2
   fi
-  go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
+  # VANI_VERSION (scripts/release.sh) stamps `vani version`; unset, it says "dev".
+  go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} ${VANI_VERSION:+-ldflags "-X main.version=$VANI_VERSION"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
 fi
 cp "$MACOS/Support/Extension-Info.plist" "$APPEX/Contents/Info.plist"
 cp "$BIN/VaniApplyExtension" "$APPEX/Contents/MacOS/VaniApplyExtension"
@@ -67,6 +72,7 @@ sign() { codesign --force --options runtime --timestamp=none --sign "$IDENTITY" 
 sign --entitlements "$MACOS/Support/Extension.entitlements" "$APPEX"
 sign --entitlements "$MACOS/Support/Group.entitlements" --identifier dev.vbcr.vani.apply.host "$APP/Contents/Helpers/vani-apply-host"
 sign --entitlements "$MACOS/Support/Group.entitlements" --identifier dev.vbcr.vani.apply.agent "$APP/Contents/Helpers/vani-apply-agent"
+sign --entitlements "$MACOS/Support/Group.entitlements" --identifier dev.vbcr.vani.schedule.agent "$APP/Contents/Helpers/vani-schedule-agent"
 sign --identifier dev.vbcr.vani.cli "$APP/Contents/Helpers/vani"
 sign --entitlements "$MACOS/Support/Group.entitlements" "$APP"
 codesign --verify --deep --strict "$APP"

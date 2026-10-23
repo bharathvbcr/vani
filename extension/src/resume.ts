@@ -8,6 +8,7 @@
 // The PDF goes from the Mac app to the tab being filled and nowhere else. Its
 // file name (which carries the owner's name) is shown on the page and in the
 // popup, and never logged.
+import { isRecord } from "./guards";
 import type { Bank, FieldInfo } from "./types";
 import type { JobInfo } from "./draft";
 import { pageKey, postingKey } from "./applied";
@@ -92,6 +93,9 @@ export function checkResumeName(raw: unknown): string | null {
   const s = raw.trim();
   if (s.length > MAX_NAME_CHARS || !/\.pdf$/i.test(s) || s.length <= 4) return null;
   if (/[\u0000-\u001f\u007f-\u009f/\\]/.test(s)) return null;
+  // Shown in the page and the popup: no format characters (bidi overrides/isolates/marks, zero-width, BOM), no line or
+  // paragraph separators and no unpaired surrogate, any of which can disguise or break the text around it.
+  if (/[\p{Cf}\u2028\u2029]/u.test(s) || /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s)) return null;
   return s;
 }
 
@@ -111,7 +115,6 @@ export function fromBase64(s: unknown): Uint8Array | null {
   return out;
 }
 
-const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const clip = (s: string) => (s.length > MAX_DETAIL ? `${s.slice(0, MAX_DETAIL - 1)}…` : s);
 const unavailable = (detail: string): ResumeFetch => ({ ok: false, reason: "resume_unavailable", detail: clip(detail) });
 
@@ -121,7 +124,7 @@ const unavailable = (detail: string): ResumeFetch => ({ ok: false, reason: "resu
  * PDF is a reason; nothing is ever passed on unchecked.
  */
 export function parseResumeGet(r: unknown): ResumeFetch {
-  if (!isObj(r)) return unavailable("the Vani Apply Mac app sent no reply about the resume");
+  if (!isRecord(r)) return unavailable("the Vani Apply Mac app sent no reply about the resume");
   if (typeof r.error === "string") {
     const why = r.code === "unreachable" ? "the Vani Apply Mac app isn't reachable" : `the Vani Apply Mac app could not read the resume: ${r.error}`;
     return unavailable(why);
@@ -153,17 +156,29 @@ export function resumeOp(m: ResumeMessage): Record<string, unknown> | { error: s
   const key = resumeKey(m.url);
   if (!key) return { error: "this page has no job address a resume can be chosen for", code: "bad_request" };
   if (m.type !== "resumePut") return { op: m.type, key };
-  const name = checkResumeName(m.name);
+  const file = checkResumeFile(m.name, m.pdf);
+  if ("error" in file) return file;
+  return { op: "resumePut", key, name: file.name, pdf: m.pdf };
+}
+
+/**
+ * A resume as it crosses a message (a resumePut, or an attachResume to a page): a bounded .pdf name and
+ * base64 that decodes to a PDF of at most MAX_RESUME_BYTES (exactly that many is fine). The one check
+ * every path runs before the bytes are stored or placed in a page.
+ */
+export function checkResumeFile(rawName: unknown, pdf: unknown): { name: string; bytes: Uint8Array } | { error: string; code: "bad_request" | "too_large" } {
+  const name = checkResumeName(rawName);
   if (!name) return { error: `choose a .pdf file with a name of at most ${MAX_NAME_CHARS} characters`, code: "bad_request" };
-  if (m.pdf.length > MAX_BASE64) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
-  const bytes = fromBase64(m.pdf);
+  if (typeof pdf !== "string") return { error: "the file could not be read", code: "bad_request" };
+  if (pdf.length > MAX_BASE64) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
+  const bytes = fromBase64(pdf);
   if (!bytes || bytes.length === 0) return { error: "the file could not be read", code: "bad_request" };
   if (bytes.length > MAX_RESUME_BYTES) return { error: `the resume is over ${MAX_RESUME_BYTES / 1024} KB`, code: "too_large" };
   if (!isPdf(bytes)) return { error: "that file is not a PDF", code: "bad_request" };
-  return { op: "resumePut", key, name, pdf: m.pdf };
+  return { name, bytes };
 }
 
-const isError = (r: unknown): boolean => isObj(r) && typeof r.error === "string";
+const isError = (r: unknown): boolean => isRecord(r) && typeof r.error === "string";
 
 /**
  * One resume message end to end: the native call under the posting's key and, for a page whose key
@@ -183,11 +198,11 @@ export async function runResume(m: ResumeMessage, native: (op: object) => Promis
   switch (m.type) {
     case "resumeGet":
     case "resumeInfo":
-      return isObj(r) && r.found === false ? native(old) : r;
+      return isRecord(r) && r.found === false ? native(old) : r;
     case "resumeDelete": {
       const o = await native(old);
       if (isError(o)) return o;
-      return isObj(r) && isObj(o) && o.removed === true ? { ...r, removed: true } : r;
+      return isRecord(r) && isRecord(o) && o.removed === true ? { ...r, removed: true } : r;
     }
     default:
       await native(old).catch(() => undefined); // the new binding stands even if the old one cannot be retired
@@ -237,7 +252,7 @@ const OWN_TEXT = new Set(["config", "devprism", "render", "pages", "too_large", 
 
 /** A built resume from `vani resume`'s reply (through runJob), checked like a stored one; or why not. */
 export function parseBuiltResume(r: unknown): ResumeFetch {
-  if (!isObj(r)) return unavailable("Vani sent no resume");
+  if (!isRecord(r)) return unavailable("Vani sent no resume");
   if (typeof r.error === "string") {
     const code = typeof r.code === "string" ? r.code : "";
     return unavailable(!OWN_TEXT.has(code) && JOB_HELP[code] ? JOB_HELP[code]! : r.error);
@@ -254,7 +269,7 @@ export function parseBuiltResume(r: unknown): ResumeFetch {
 
 /** The Mac app's resumeInfo reply, for the popup. */
 export function parseResumeInfo(r: unknown): ResumeInfo {
-  if (!isObj(r)) return { error: "the Vani Apply Mac app sent no reply" };
+  if (!isRecord(r)) return { error: "the Vani Apply Mac app sent no reply" };
   if (typeof r.error === "string") return { error: clip(r.error) };
   if (r.found === false) return { found: false };
   const name = checkResumeName(r.name);

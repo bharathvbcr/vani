@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type Answer, type Bank, emptyBank } from "../src/types";
 import { MAX_ANSWERS, MAX_BANK_BYTES, bankBytes, mergeBanks, parseBank } from "../src/bank";
-import { type LocalArea, type Transport, createStore } from "../src/store";
+import { ChunkIntegrityError, type LocalArea, type Transport, createStore } from "../src/store";
 import { classify } from "../src/classify";
 import { normalizeLabel } from "../src/normalize";
 import vectors from "./vectors/classify.json";
@@ -120,34 +120,6 @@ class FakeHost {
         this.rev++;
         this.bank = { ...this.bank, answers };
         return { op: "patch", rev: this.rev, droppedSecret: dropped };
-      }
-      case "queryCandidates": {
-        const sigs = new Set(Array.isArray(m.signatures) ? (m.signatures as string[]) : []);
-        const keys = new Set(Array.isArray(m.keys) ? (m.keys as string[]) : []);
-        const labels = new Set(Array.isArray(m.labels) ? (m.labels as string[]) : []);
-        const matches = Object.values(this.bank.answers).filter(a =>
-          keys.has(a.key) ||
-          a.signatures.some(s => sigs.has(s)) ||
-          a.labels.some(l => labels.has(l))
-        );
-        return { ok: true, candidates: matches };
-      }
-      case "listAnswers": {
-        const offset = typeof m.offset === "number" ? m.offset : 0;
-        const limit = typeof m.limit === "number" ? m.limit : 50;
-        const s = typeof m.search === "string" ? m.search.toLowerCase() : "";
-        let list = Object.values(this.bank.answers);
-        if (s) {
-          list = list.filter(a =>
-            a.key.toLowerCase().includes(s) ||
-            a.value.some(v => v.toLowerCase().includes(s)) ||
-            a.labels.some(l => l.toLowerCase().includes(s))
-          );
-        }
-        list.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-        const total = list.length;
-        const slice = list.slice(offset, offset + limit);
-        return { op: "answersList", answers: slice, total, rev: this.rev };
       }
       default: return { error: "unknown op" };
     }
@@ -304,6 +276,47 @@ describe("store: native mode", () => {
     expect(loaded.answers.testKey?.value).toEqual(["chunkedValue"]);
   });
 
+  describe("chunked get integrity", () => {
+    // A chunked host: `declared` is the totalBytes it reports; `damage` rewrites the joined text.
+    function chunkedHost(bank: Bank, declared: (actual: number) => unknown, damage: (s: string) => string = s => s) {
+      const text = damage(JSON.stringify(bank));
+      const mid = Math.floor(text.length / 2);
+      const parts = [text.slice(0, mid), text.slice(mid)];
+      const calls: string[] = [];
+      const transport: Transport = async msg => {
+        const m = msg as Record<string, unknown>;
+        calls.push(String(m.op));
+        if (m.op === "ping") return { ok: true, protocol: 1, rev: 3 };
+        if (m.op === "get") return { rev: 3, chunked: true, totalBytes: declared(new TextEncoder().encode(JSON.stringify(bank)).length), chunkIndex: 0, chunkCount: 2, chunk: parts[0] };
+        if (m.op === "getChunk") return { rev: 3, chunkIndex: 1, chunkCount: 2, chunk: parts[1] };
+        return { error: "unexpected" };
+      };
+      return { transport, calls };
+    }
+    const bank = () => bankOf(answer("kk", "café € \u{1F600}", "2026-01-01"));
+
+    test("a joined bank whose byte length differs from totalBytes is refused, and nothing is written back", async () => {
+      for (const [name, declared] of [["host says more", (n: number) => n + 1], ["host says fewer", (n: number) => n - 1], ["no total", () => undefined], ["total as a string", (n: number) => String(n)]] as const) {
+        const { transport, calls } = chunkedHost(bank(), declared);
+        const store = createStore({ transport, local: new FakeLocal() });
+        await expect(store.loadBank()).rejects.toBeInstanceOf(ChunkIntegrityError);
+        await expect(store.replaceBank(bank())).rejects.toBeInstanceOf(ChunkIntegrityError);
+        expect(calls.filter(c => c === "put" || c === "patch"), name).toEqual([]);
+      }
+    });
+
+    test("a chunk cut inside a character (U+FFFD in the join) no longer matches totalBytes and is refused", async () => {
+      const { transport } = chunkedHost(bank(), n => n, s => s.replace("€", "��"));
+      await expect(createStore({ transport, local: new FakeLocal() }).loadBank()).rejects.toBeInstanceOf(ChunkIntegrityError);
+    });
+
+    test("totalBytes counts UTF-8 bytes, not UTF-16 units: a multi-byte bank loads when it matches", async () => {
+      const { transport } = chunkedHost(bank(), n => n);
+      const loaded = await createStore({ transport, local: new FakeLocal() }).loadBank();
+      expect(loaded.answers.kk?.value).toEqual(["café € \u{1F600}"]);
+    });
+  });
+
   test("patchAnswers updates and deletes answers atomically", async () => {
     const { host, store } = setup();
     host.bank = bankOf(answer("toDelete", "del", "2026-01-01"), answer("toKeep", "keep", "2026-01-01"));
@@ -317,41 +330,6 @@ describe("store: native mode", () => {
     expect(host.bank.answers.toKeep).toBeDefined();
     expect(host.bank.answers.newAnswer?.value).toEqual(["val"]);
     expect(host.bank.answers.secretField).toBeUndefined();
-  });
-
-  test("queryCandidates filters candidate answers by signature, key, or label", async () => {
-    const { host, store } = setup();
-    host.bank = bankOf(
-      answer("firstName", "John", "2026-01-01", { signatures: ["gh|first_name"] }),
-      answer("lastName", "Doe", "2026-01-01", { labels: ["family name"] }),
-      answer("unrelated", "something", "2026-01-01")
-    );
-    const candidates = await store.queryCandidates({
-      signatures: ["gh|first_name"],
-      labels: ["family name"],
-      keys: ["otherKey"],
-    });
-    expect(candidates.length).toBe(2);
-    const keys = candidates.map(c => c.key).sort();
-    expect(keys).toEqual(["firstName", "lastName"]);
-  });
-
-  test("listAnswers returns paginated and searched answers", async () => {
-    const { host, store } = setup();
-    host.bank = bankOf(
-      answer("apple", "pie", "2026-01-01"),
-      answer("banana", "split", "2026-02-01"),
-      answer("cherry", "tart", "2026-03-01")
-    );
-    const page = await store.listAnswers(0, 2);
-    expect(page.total).toBe(3);
-    expect(page.answers.length).toBe(2);
-    expect(page.answers[0]?.key).toBe("cherry");
-    expect(page.answers[1]?.key).toBe("banana");
-
-    const searchRes = await store.listAnswers(0, 10, "pie");
-    expect(searchRes.total).toBe(1);
-    expect(searchRes.answers[0]?.key).toBe("apple");
   });
 });
 
@@ -454,42 +432,6 @@ describe("store: browser (local) mode", () => {
     expect(stored.newAnswer?.value).toEqual(["val"]);
     expect(stored.secretField).toBeUndefined();
   });
-
-  test("queryCandidates in browser mode filters local bank", async () => {
-    const { host, store, local } = setup();
-    host.down = true;
-    local.data.vaniBank = bankOf(
-      answer("firstName", "John", "2026-01-01", { signatures: ["gh|first_name"] }),
-      answer("lastName", "Doe", "2026-01-01", { labels: ["family name"] }),
-      answer("unrelated", "something", "2026-01-01")
-    );
-    const candidates = await store.queryCandidates({
-      signatures: ["gh|first_name"],
-      labels: ["family name"],
-    });
-    expect(candidates.length).toBe(2);
-    const keys = candidates.map(c => c.key).sort();
-    expect(keys).toEqual(["firstName", "lastName"]);
-  });
-
-  test("listAnswers in browser mode paginates and filters local bank", async () => {
-    const { host, store, local } = setup();
-    host.down = true;
-    local.data.vaniBank = bankOf(
-      answer("apple", "pie", "2026-01-01"),
-      answer("banana", "split", "2026-02-01"),
-      answer("cherry", "tart", "2026-03-01")
-    );
-    const page = await store.listAnswers(0, 2);
-    expect(page.total).toBe(3);
-    expect(page.answers.length).toBe(2);
-    expect(page.answers[0]?.key).toBe("cherry");
-    expect(page.answers[1]?.key).toBe("banana");
-
-    const searchRes = await store.listAnswers(0, 10, "pie");
-    expect(searchRes.total).toBe(1);
-    expect(searchRes.answers[0]?.key).toBe("apple");
-  });
 });
 
 describe("store: migration from chrome.storage.local", () => {
@@ -579,20 +521,6 @@ describe("shared classifier vectors", () => {
       const got = classify({ kind: v.kind as Answer["kind"], label: v.label, name: v.name, autocomplete: v.autocomplete });
       expect({ label: v.label, got }).toEqual({ label: v.label, got: v.want });
     }
-  });
-});
-
-describe("store: queryCandidates reply shape", () => {
-  test("reads the candidates key the macOS host replies with", async () => {
-    const wanted = answer("firstName", "John", "2026-01-01");
-    const transport: Transport = async msg => {
-      const m = msg as Record<string, unknown>;
-      if (m.op === "ping") return { ok: true, protocol: 1, rev: 1 };
-      if (m.op === "queryCandidates") return { ok: true, candidates: [wanted] };
-      return { error: "unexpected op" };
-    };
-    const store = createStore({ transport, local: new FakeLocal(), timeoutMs: 50, now: () => 1_000 });
-    expect(await store.queryCandidates({ keys: ["firstName"] })).toEqual([wanted]);
   });
 });
 

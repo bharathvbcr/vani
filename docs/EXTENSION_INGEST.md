@@ -9,9 +9,9 @@ When the extension scrapes a listing page, the user can send the jobs to Vani. V
 ## Why there is a spool
 
 - The daemon holds the ledger's exclusive lock (`ledger.Open`, `filelock.TryLock`) for its whole life, so no other process can write the ledger while it runs.
-- The daemon loads `config.json` only once, at start (`cmdDaemon`).
+- The daemon loads `config.json` at start (`cmdDaemon`) and re-reads the whole file before each run and each inbox poll (`env.reloadConfig`). Only the schedule is fixed for the process's life (a change is noted on stderr and applies after a restart). A file that cannot be read keeps the previous config and records `config_stale`.
 
-So `vani jobs ingest` does not write the ledger. It writes a batch file to an inbox, and the ledger owner drains the inbox. The daemon also re-reads the watchlist and `allowed_hosts` at each run.
+So `vani jobs ingest` does not write the ledger. It writes a batch file to an inbox, and the ledger owner drains the inbox. A poll that leaves the ledger unusable ends the daemon (exit 1, `daemon.ErrFatal`) within one poll interval.
 
 ## Flow
 
@@ -75,7 +75,7 @@ The exit code is 0 even when some jobs were rejected.
   "queued": 12,
   "duplicates": 1,
   "rejected": [{"index": 3, "reason": "url is not http(s)"}],
-  "search": {"status": "added|exists|not_requested|unsupported|invalid",
+  "search": {"status": "added|exists|not_requested|unsupported|invalid|error",
              "ats": "gh", "token": "acme", "company": "Acme", "url": "...", "reason": "..."},
   "analysis": "daemon|next_run"
 }
@@ -101,10 +101,13 @@ The listing URL becomes one board. It is checked with `config.ValidBoard`, dedup
 |---|---|
 | `boards.greenhouse.io/{t}`, `job-boards.greenhouse.io/{t}` | `gh/{t}` |
 | `jobs.lever.co/{s}` (`jobs.eu.lever.co` → region `eu`) | `lv/{s}` |
-| `jobs.ashbyhq.com/{n}` | `ab/{n}` |
+| `jobs.ashbyhq.com/{n}` | `ab/{n}`. A name with a space (`Hippocratic%20AI`) cannot be a token, which every posting key is built from, so the token is its lower-case slug (`hippocratic-ai`) and `board_name` holds the literal name the API is asked for. |
+| `wd{N}.myworkdaysite.com/[locale/]recruiting/{tenant}/{site}` | `wd/{tenant}/{site}` on that host (it names no tenant, so the path does), with the search taken from `q` as below. |
 | `{tenant}.wd{N}.myworkdayjobs.com/[locale/]{site}` | `wd/{tenant}/{site}`, with host set and the search taken from `q` when present. Only `q` is kept: the adapter applies no facets, so other URL parameters do not narrow the board. Before saving, Vani makes one limit-1 request to the board host (`workday.CheckSize`, through `egress`) for the search's total. A search over the board's cap (`workday.MaxPostings`, 5000, or the board's `max_postings`), which would fail every daily run, is not saved: status `invalid`, with a reason that says to narrow it with search terms. If the request fails, the search is not saved either: status `invalid`, with a reason that says it could not be checked and to try again. In both cases the jobs are still queued. |
 | A known aggregator: linkedin, indeed, glassdoor, ziprecruiter, wellfound, dice, monster, simplyhired, plus their subdomains | No board. Status is `unsupported`, with reason "{host} needs a signed-in browser; Vani cannot search it on its own". The jobs are still queued. |
 | Any other https page | A `pg` board, described below |
+
+If the config cannot be read or written (or another process holds its update lock for ten seconds), the status is `error` with a `reason`; the jobs are still queued and the exit code is 0. The saved URL drops query parameters that can carry a credential (any name with the word token, auth, key, secret, email, session or sid in it).
 
 For a `pg` board:
 
@@ -126,7 +129,8 @@ For a `pg` board:
 - **Board and keys:** every batch is folded under a `pg` board. Its token is the saved board's token when that board is `pg`, and otherwise the host slug. Each job is keyed `posting.PageKey(token, url)`. No new ATS value is introduced, and no `Board` field is added.
 - **Duplicates:** when an ATS board later lists the same role, `twinOf`/`markWeakTwins` marks the weakly keyed record as the duplicate.
 - **`Reconciler.ReconcilePartial`:** it shares the listing loop with `Reconcile` but skips the absence pass. A scrape is not a full listing and must never age out records.
-- **Bad batch files:** a batch file that cannot be parsed is moved to `inbox/bad/` and reported. Neither the daemon nor the drain retries it.
+- **Bad batch files:** a batch file that cannot be parsed is moved to `inbox/bad/` and reported. Neither the daemon nor the drain retries it. `bad/` keeps the newest 200 files; a drain deletes older ones.
+- **Spool full:** with 1,000 batches already waiting, `jobs ingest` fails (exit 1, `error` in the JSON reply: "inbox: spool is full ...") and writes nothing. Drain the inbox (daemon or `vani run`) and send the batch again.
 - **Drain bounds:** at most 50 files per drain.
 
 ## Native op `jobsIngest`

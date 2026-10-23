@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,209 @@ func seq(t *testing.T, replies ...srctest.Reply) *srctest.Doer {
 
 func retryAfterHdr(v string) http.Header { return http.Header{"Retry-After": {v}} }
 
+// noJitter makes the backoff its upper bound, so a test can name each wait.
+func noJitter(t *testing.T) {
+	t.Helper()
+	old := jitter
+	jitter = func(d time.Duration) time.Duration { return d }
+	t.Cleanup(func() { jitter = old })
+}
+
+// rateLimited asserts err is a *RateLimitedError for example.test that still
+// reads as the 429 status, and returns it.
+func rateLimited(t *testing.T, err error) *RateLimitedError {
+	t.Helper()
+	var rl *RateLimitedError
+	var se *egress.StatusError
+	if !errors.Is(err, ErrRateLimited) || !errors.As(err, &rl) || !errors.As(err, &se) || se.Code != 429 {
+		t.Fatalf("err = %v, want a rate-limited 429", err)
+	}
+	if rl.Host != "example.test" || !strings.Contains(err.Error(), "rate limited by example.test (HTTP 429), retry next run") {
+		t.Errorf("error %q does not name the host and the next step", err)
+	}
+	return rl
+}
+
+func tooMany(n int, h http.Header) []srctest.Reply {
+	rs := make([]srctest.Reply, n)
+	for i := range rs {
+		rs[i] = srctest.Reply{Status: 429, Header: h}
+	}
+	return rs
+}
+
+// A 429 with no Retry-After backs off exponentially, jittered inside
+// [d/2, d], and gives up as rate limited after maxAttempts.
+func TestRateLimitBackoffWithoutHeader(t *testing.T) {
+	var v struct{ A int }
+	waits := noWait(t)
+	d := seq(t, tooMany(maxAttempts, nil)...)
+	rl := rateLimited(t, GetJSON(context.Background(), d, u, &v))
+	if rl.Attempts != maxAttempts || !strings.Contains(rl.Why, "gave up after 5 attempts") || len(d.Requests()) != maxAttempts {
+		t.Errorf("attempts %d, why %q, %d requests", rl.Attempts, rl.Why, len(d.Requests()))
+	}
+	if len(*waits) != maxAttempts-1 {
+		t.Fatalf("waits %v", *waits)
+	}
+	// The real jitter: each wait inside [ceil/2, ceil], ceilings doubling.
+	ceil := backoffBase
+	for i, w := range *waits {
+		if w < ceil/2 || w > ceil {
+			t.Errorf("wait %d = %v, want within [%v, %v]", i, w, ceil/2, ceil)
+		}
+		ceil = min(ceil*2, maxBackoff)
+	}
+	// Jitter is applied, not constant: over many draws the first wait varies.
+	seen := map[time.Duration]bool{}
+	for range 50 {
+		seen[backoff(0)] = true
+	}
+	if len(seen) < 5 {
+		t.Errorf("backoff(0) took %d distinct values in 50 draws; no jitter", len(seen))
+	}
+	// And it never exceeds the cap, however many retries.
+	for n := 0; n < 100; n++ {
+		if w := backoff(n); w > maxBackoff || w <= 0 {
+			t.Fatalf("backoff(%d) = %v", n, w)
+		}
+	}
+}
+
+// Retry-After in seconds, then in HTTP-date form, is waited exactly (against
+// the fake clock the date is measured from) and then the request succeeds.
+func TestRateLimitHonoursRetryAfterForms(t *testing.T) {
+	var v struct{ A int }
+	ok := srctest.Reply{Status: 200, Body: []byte(`{"A":9}`)}
+	clock := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	old := now
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = old })
+
+	for name, tc := range map[string]struct {
+		hdr  string
+		want time.Duration
+	}{
+		"seconds":   {"7", 7 * time.Second},
+		"http date": {clock.Add(12 * time.Second).UTC().Format(http.TimeFormat), 12 * time.Second},
+		"zero":      {"0", 0},
+		"past date": {clock.Add(-time.Hour).UTC().Format(http.TimeFormat), 0},
+	} {
+		waits := noWait(t)
+		d := seq(t, srctest.Reply{Status: 429, Header: retryAfterHdr(tc.hdr)}, ok)
+		if err := GetJSON(context.Background(), d, u, &v); err != nil || v.A != 9 {
+			t.Fatalf("%s: v=%+v err=%v", name, v, err)
+		}
+		if len(*waits) != 1 || (*waits)[0] != tc.want {
+			t.Errorf("%s: waits %v, want [%v]", name, *waits, tc.want)
+		}
+	}
+}
+
+// A Retry-After over the cap, as seconds or as a date, is a rate-limited
+// error at once and is never slept.
+func TestRateLimitRetryAfterOverCapIsNotSlept(t *testing.T) {
+	var v struct{ A int }
+	clock := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	old := now
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = old })
+	for _, h := range []string{"3600", clock.Add(time.Hour).UTC().Format(http.TimeFormat), "31"} {
+		waits := noWait(t)
+		d := seq(t, srctest.Reply{Status: 429, Header: retryAfterHdr(h)})
+		rl := rateLimited(t, GetJSON(context.Background(), d, u, &v))
+		if len(*waits) != 0 || len(d.Requests()) != 1 || !strings.Contains(rl.Why, "over the 30s limit") {
+			t.Errorf("Retry-After %q: waits %v, requests %d, why %q", h, *waits, len(d.Requests()), rl.Why)
+		}
+	}
+	// Exactly the cap is waited.
+	waits := noWait(t)
+	d := seq(t, srctest.Reply{Status: 429, Header: retryAfterHdr("30")}, srctest.Reply{Status: 200, Body: []byte(`{}`)})
+	if err := GetJSON(context.Background(), d, u, &v); err != nil || len(*waits) != 1 || (*waits)[0] != maxRetryWait {
+		t.Errorf("Retry-After at the cap: err %v waits %v", err, *waits)
+	}
+}
+
+// All the waits of one request are bounded: four Retry-After 30 waits would be
+// two minutes, so the request gives up once the next wait would pass the limit.
+func TestRateLimitPerRequestWaitIsBounded(t *testing.T) {
+	var v struct{ A int }
+	waits := noWait(t)
+	d := seq(t, tooMany(maxAttempts, retryAfterHdr("30"))...)
+	rl := rateLimited(t, GetJSON(context.Background(), d, u, &v))
+	var total time.Duration
+	for _, w := range *waits {
+		total += w
+	}
+	if total > maxRequestWait || len(*waits) != 2 || !strings.Contains(rl.Why, "limit for one request") {
+		t.Errorf("waited %v (total %v), why %q; want at most %v in all", *waits, total, rl.Why, maxRequestWait)
+	}
+}
+
+// The board's budget is shared by its requests: once it cannot cover a wait the
+// request gives up without sleeping, whatever the per-request bound allows.
+func TestRateLimitBoardBudget(t *testing.T) {
+	var v struct{ A int }
+	waits := noWait(t)
+	ctx := WithRetryBudget(context.Background(), 10*time.Second)
+
+	// First request: 429 (Retry-After 6s) then 200, leaving 4s.
+	d := seq(t, srctest.Reply{Status: 429, Header: retryAfterHdr("6")}, srctest.Reply{Status: 200, Body: []byte(`{}`)})
+	if err := GetJSON(ctx, d, u, &v); err != nil || len(*waits) != 1 {
+		t.Fatalf("first: err %v waits %v", err, *waits)
+	}
+	// Second request: another 6s would overdraw the 4s left.
+	d = seq(t, srctest.Reply{Status: 429, Header: retryAfterHdr("6")})
+	rl := rateLimited(t, GetJSON(ctx, d, u, &v))
+	if len(*waits) != 1 || !strings.Contains(rl.Why, "retry budget is spent") {
+		t.Errorf("waits %v, why %q: the overdrawn wait was taken", *waits, rl.Why)
+	}
+	// A fresh budget is a fresh board.
+	d = seq(t, srctest.Reply{Status: 429, Header: retryAfterHdr("6")}, srctest.Reply{Status: 200, Body: []byte(`{}`)})
+	if err := GetJSON(WithRetryBudget(context.Background(), 10*time.Second), d, u, &v); err != nil {
+		t.Errorf("fresh budget: %v", err)
+	}
+	// A zero budget never sleeps at all.
+	waits = noWait(t)
+	d = seq(t, srctest.Reply{Status: 429})
+	rateLimited(t, GetJSON(WithRetryBudget(context.Background(), 0), d, u, &v))
+	if len(*waits) != 0 {
+		t.Errorf("zero budget waited %v", *waits)
+	}
+}
+
+// Cancelling during the backoff ends the wait with the context's error, which
+// is not reported as rate limiting.
+func TestRateLimitCancelledMidWait(t *testing.T) {
+	var v struct{ A int }
+	ctx, cancel := context.WithCancel(context.Background())
+	old := sleep
+	sleep = func(ctx context.Context, d time.Duration) error {
+		cancel() // the run is stopped while the request waits
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { sleep = old })
+	d := seq(t, srctest.Reply{Status: 429})
+	err := GetJSON(ctx, d, u, &v)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrRateLimited) || len(d.Requests()) != 1 {
+		t.Fatalf("err = %v (%d requests), want the context's cancellation only", err, len(d.Requests()))
+	}
+}
+
+// 429 then 200 succeeds without a rate-limited error, through GetBody and
+// GetJSONLimit as well: they share the one request loop.
+func TestRateLimitThenOKOnEveryEntryPoint(t *testing.T) {
+	ok := srctest.Reply{Status: 200, Body: []byte(`{"A":1}`)}
+	noWait(t)
+	var v struct{ A int }
+	if err := GetJSONLimit(context.Background(), seq(t, srctest.Reply{Status: 429}, ok), u, 1<<10, &v); err != nil || v.A != 1 {
+		t.Errorf("GetJSONLimit: %v", err)
+	}
+	if b, err := GetBody(context.Background(), seq(t, srctest.Reply{Status: 429}, srctest.Reply{Status: 429}, ok), u); err != nil || string(b) != `{"A":1}` {
+		t.Errorf("GetBody: %q %v", b, err)
+	}
+}
+
 func TestRetryOnRateLimit(t *testing.T) {
 	var v struct{ A int }
 	okReply := srctest.Reply{Status: 200, Body: []byte(`{"A":7}`)}
@@ -65,35 +269,22 @@ func TestRetryOnRateLimit(t *testing.T) {
 		t.Errorf("waits %v, want [3s] from Retry-After", *waits)
 	}
 
-	// 503 without Retry-After uses the backoff, 5 s, 15 s, then 30 s; four
-	// failures give up with the status, never more than maxAttempts requests.
+	// 503 without Retry-After uses the backoff; maxAttempts failures give up
+	// with the status, never more requests. A 503 is not "rate limited".
 	waits = noWait(t)
-	d = seq(t, srctest.Reply{Status: 503}, srctest.Reply{Status: 503}, srctest.Reply{Status: 503}, srctest.Reply{Status: 503})
+	noJitter(t)
+	replies := make([]srctest.Reply, maxAttempts)
+	for i := range replies {
+		replies[i] = srctest.Reply{Status: 503}
+	}
+	d = seq(t, replies...)
 	err := GetJSON(context.Background(), d, u, &v)
 	var se *egress.StatusError
-	if !errors.As(err, &se) || se.Code != 503 || !strings.Contains(err.Error(), "gave up after 4 attempts") {
-		t.Fatalf("four 503s: %v", err)
+	if !errors.As(err, &se) || se.Code != 503 || !strings.Contains(err.Error(), "gave up after 5 attempts") || errors.Is(err, ErrRateLimited) {
+		t.Fatalf("%d 503s: %v", maxAttempts, err)
 	}
-	want := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
-	if len(d.Requests()) != maxAttempts || len(*waits) != len(want) {
-		t.Fatalf("%d requests, waits %v", len(d.Requests()), *waits)
-	}
-	var total time.Duration
-	for i, w := range want {
-		if (*waits)[i] != w || w > maxRetryWait {
-			t.Errorf("wait %d is %s, want %s (at most %s)", i, (*waits)[i], w, maxRetryWait)
-		}
-		total += (*waits)[i]
-	}
-	if total != 50*time.Second {
-		t.Errorf("a request waits %s in all before failing, want 50s", total)
-	}
-
-	// A throttle that lifts on the last retry still saves the board.
-	waits = noWait(t)
-	d = seq(t, srctest.Reply{Status: 429}, srctest.Reply{Status: 429}, srctest.Reply{Status: 429}, okReply)
-	if err := GetJSON(context.Background(), d, u, &v); err != nil || len(*waits) != 3 {
-		t.Errorf("429 x3 then 200: %v, waits %v", err, *waits)
+	if want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}; len(d.Requests()) != maxAttempts || !slices.Equal(*waits, want) {
+		t.Errorf("%d requests, waits %v, want %v", len(d.Requests()), *waits, want)
 	}
 
 	// A Retry-After over the cap is honoured by giving up, at once.

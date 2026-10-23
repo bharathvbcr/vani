@@ -27,6 +27,10 @@ type Names struct {
 	// OpenRouter is the configured OpenRouter model's backend name; empty
 	// when none is configured, which leaves legacy rows under their old name.
 	OpenRouter string
+	// LLMModel is the model the "llm" backend runs triage on (llm.triage_model,
+	// else llm.model); empty when no LLM is configured. The ledger records only
+	// the backend name "llm", so reports that name a shadow add the model.
+	LLMModel string
 }
 
 // primary returns the name a slot's recorded primary backend is reported

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,8 +77,10 @@ type Runner struct {
 	Employer EmployerLookup
 	// PreferEmployers are the employer attributes the active track favours.
 	// A posting whose confident employer attributes include one has
-	// EmployerRankBoost added to its rank at scoring. Status never changes.
+	// ledger.EmployerRankBoost added to its rank at scoring. Status never changes.
 	PreferEmployers []string
+	// Funnel holds the spend and fail-open hooks (see triagestep.go).
+	Funnel
 }
 
 // Badger returns a short sponsorship-history badge for a company.
@@ -96,11 +99,6 @@ type EmployerInfo struct {
 type EmployerLookup interface {
 	Employer(company string) EmployerInfo
 }
-
-// EmployerRankBoost is added to the rank (must-have coverage, 0-100) of a
-// posting at a preferred employer: enough to lift it over a near-equal
-// match, not over a much better one.
-const EmployerRankBoost = 10.0
 
 // preferredEmployer reports whether company's confident employer attributes
 // include one the active track prefers. It looks the company up again rather
@@ -151,29 +149,24 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if r.Triager == nil {
 				return fmt.Errorf("%w: triager", ErrStageMissing)
 			}
-			// A title reading that a drop rule drops ends triage before any
-			// backend is asked; every other title reading is discarded and
-			// the backends read the posting as before.
-			ans, reason, dropped := r.Policy.EvaluateTitle(rec.Posting.Title)
-			st := posting.Dropped
-			if !dropped {
-				var err error
-				ans, err = r.Triager.Triage(ctx, rec.Posting)
-				if err != nil {
-					return fmt.Errorf("pipeline: triage %s: %w", key, err)
-				}
-				if noReading(ans) {
-					return fmt.Errorf("%w: %s", ErrTriageUnavailable, key)
-				}
-				st, reason = r.Policy.Evaluate(ans)
+			// read: exclusion or title drop, too-short description, inherited
+			// reading or the backends (triagestep.go).
+			rd, err := r.read(ctx, key, rec)
+			if err != nil {
+				return err
 			}
-			ann := triageAnnotations(ans)
+			st, reason, ann := rd.status, rd.reason, rd.ann
+			if st != posting.Dropped {
+				maps.Copy(ann, rd.pre)
+			}
 			// This triage replaces any earlier one whole: a key it did not set
 			// (a shadow reading from a run that sampled the shadow, a value the
 			// new answer abstained on) is forgotten, so the eval never pairs
 			// this run's primary with another run's shadow.
 			for k := range rec.Annotations {
-				if _, set := ann[k]; !set && strings.HasPrefix(k, ledger.AnnTriagePrefix) {
+				if _, set := ann[k]; !set && (strings.HasPrefix(k, ledger.AnnTriagePrefix) || k == ledger.AnnCategory) {
+					// The category is derived from the triage.category reading
+					// (triageAnnotations), so an answer with none forgets it too.
 					ann[k] = ""
 				}
 			}
@@ -191,6 +184,12 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if st == posting.Unsure {
 				ann["triage.unsure"] = reason
 			}
+			switch {
+			case rd.ans.Backend == ExcludeBackend:
+				ann[AnnExcluded] = reason
+			case rec.Annotations[AnnExcluded] != "":
+				ann[AnnExcluded] = ""
+			}
 			if err := r.emit(ctx, key, st, reason, ann); err != nil {
 				return err
 			}
@@ -204,11 +203,14 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 				}
 				continue
 			}
-			ann, err := r.scoreAnnotations(ctx, rec)
+			if r.Scorer == nil {
+				return fmt.Errorf("%w: scorer", ErrStageMissing)
+			}
+			ann, why, err := r.scoreStage(ctx, rec)
 			if err != nil {
 				return err
 			}
-			if err := r.emit(ctx, key, posting.Scored, "scored", ann); err != nil {
+			if err := r.emit(ctx, key, posting.Scored, why, ann); err != nil {
 				return err
 			}
 		case posting.Scored:
@@ -217,6 +219,9 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			}
 			if r.Explainer == nil {
 				return fmt.Errorf("%w: explainer", ErrStageMissing)
+			}
+			if handled, err := r.gateNotes(ctx, rec); handled || err != nil {
+				return err
 			}
 			text, err := r.Explainer.Explain(ctx, rec)
 			if err != nil {
@@ -228,7 +233,7 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 			if rs := []rune(text); len(rs) > maxExplanationRunes {
 				text = string(rs[:maxExplanationRunes])
 			}
-			if err := r.emit(ctx, key, posting.Explained, "explained", map[string]string{ledger.AnnExplanation: text}); err != nil {
+			if err := r.emit(ctx, key, posting.Explained, "explained", map[string]string{ledger.AnnExplanation: text, AnnNotesDeferred: ""}); err != nil {
 				return err
 			}
 			return nil
@@ -239,7 +244,7 @@ func (r *Runner) Advance(ctx context.Context, key posting.Key) error {
 }
 
 // scoreAnnotations asks DevPrism about rec's description and returns what a
-// score records: the rank (must-have coverage, plus EmployerRankBoost at a
+// score records: the rank (must-have coverage, plus ledger.EmployerRankBoost at a
 // preferred employer), the coverage, the matched block count and the uncovered
 // must-haves. It is the one owner of those annotations; Advance and Rescore
 // both write what it returns.
@@ -255,14 +260,27 @@ func (r *Runner) scoreAnnotations(ctx context.Context, rec ledger.Record) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: score %s: %w", rec.Key, err)
 	}
+	if gap.NoMustHaves {
+		// DevPrism found no must-have to measure, so its 0% is 0 of 0: an
+		// unknown, not a zero. Record no rank and no coverage (an empty value
+		// forgets a stale one) so the ranker applies its unknown-coverage prior,
+		// and count it: the posting is kept with a check that could not run.
+		r.FailOpen.Note(CauseCoverageUnknown)
+		return map[string]string{
+			ledger.AnnRank: "", ledger.AnnCoverage: "", ledger.AnnMissing: "",
+			ledger.AnnBlocks:          strconv.Itoa(len(sc.BlockIDs)),
+			ledger.AnnCoverageUnknown: ledger.CoverageNoMustHaves,
+		}, nil
+	}
 	rank := gap.CoveragePct
 	if r.preferredEmployer(rec.Posting.Company) {
-		rank += EmployerRankBoost
+		rank += ledger.EmployerRankBoost
 	}
 	ann := map[string]string{
-		ledger.AnnRank:     strconv.FormatFloat(rank, 'f', -1, 64),
-		ledger.AnnCoverage: strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64),
-		ledger.AnnBlocks:   strconv.Itoa(len(sc.BlockIDs)),
+		ledger.AnnRank:            strconv.FormatFloat(rank, 'f', -1, 64),
+		ledger.AnnCoverage:        strconv.FormatFloat(gap.CoveragePct, 'f', -1, 64),
+		ledger.AnnBlocks:          strconv.Itoa(len(sc.BlockIDs)),
+		ledger.AnnCoverageUnknown: "",
 	}
 	if m := missingRequirements(gap); m != "" {
 		ann[ledger.AnnMissing] = m
@@ -298,17 +316,38 @@ func missingRequirements(g resume.Gap) string {
 // MarkDigested records that keys were included in a digest. Already-digested
 // keys are left alone; an unknown key is an error.
 func (r *Runner) MarkDigested(ctx context.Context, keys []posting.Key) error {
+	return MarkDigested(ctx, r.Ledger, keys, r.now(), "digested")
+}
+
+// MarkDigested is the one path that records a digest's roles as Digested (the
+// daily run's publishDigest and Runner.MarkDigested). Every key is checked
+// before anything is written (an unknown key is an error and writes nothing),
+// already-digested keys and repeats are left alone, and the events go out in
+// batches of at most ledger.MaxBatchEvents events and appendBatched's byte
+// budget: one fsync per batch, not per role.
+// A failed batch returns its error at once and leaves the later batches
+// unwritten; each batch is all-or-nothing, so what was acknowledged is exactly
+// the earlier batches.
+func MarkDigested(ctx context.Context, l ledger.Ledger, keys []posting.Key, at time.Time, reason string) error {
+	evs := make([]ledger.Event, 0, len(keys))
+	seen := make(map[posting.Key]bool, len(keys))
 	for _, k := range keys {
-		rec, ok := r.Ledger.Get(k)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		rec, ok := l.Get(k)
 		if !ok {
 			return fmt.Errorf("pipeline: digest unknown key %q", k)
 		}
 		if rec.Status == posting.Digested {
 			continue
 		}
-		if err := r.emit(ctx, k, posting.Digested, "digested", nil); err != nil {
-			return err
-		}
+		evs = append(evs, ledger.Event{V: ledger.SchemaVersion, At: at, Key: k, Status: posting.Digested, Reason: reason})
+	}
+	done, err := appendBatched(ctx, l, evs)
+	if err != nil {
+		return fmt.Errorf("pipeline: digest marks: %d of %d written before: %w", done, len(evs), err)
 	}
 	return nil
 }
@@ -334,7 +373,9 @@ func triageAnnotations(a decide.Answer) map[string]string {
 		if sr.Lappi != nil {
 			ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixLappiScore] = strconv.FormatFloat(sr.Lappi.Score, 'f', 4, 64)
 		}
-		if sh, ok := a.Shadow[name]; ok {
+		// A NotAsked shadow reading (a slot-filtered shadow, or a slot the
+		// shadow never ran) is not a shadow reading: record nothing for it.
+		if sh, ok := a.Shadow[name]; ok && sh.Reading != decide.NotAsked {
 			ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadowReading] = string(sh.Reading)
 			if b := slotBackend(decide.Answer{}, sh); b != "" {
 				ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadowBackend] = b
@@ -388,10 +429,53 @@ type DropPolicy struct {
 	// ReadTitle reads triage slot values from a posting's title alone
 	// (config.TitleSignals.Reads); nil reads nothing.
 	ReadTitle func(title string) []TitleReading
+	// Exclude reports why the owner's exclusions (config.Exclude.Match) drop a
+	// posting; nil excludes nothing. It reads the posting's own fields, never
+	// a model's reading, so it drops with no threshold.
+	Exclude func(p posting.Posting) (why string, ok bool)
+	// ExcludeUnreadable reports that a location rule of Exclude could not read
+	// the posting's location, so Exclude kept it without having judged it
+	// (config.Exclude.LocationUnreadable); nil reports nothing. The exclusion
+	// stage counts such a posting as kept unchecked (CauseLocationUnreadable).
+	ExcludeUnreadable func(p posting.Posting) bool
 }
 
 // TitleBackend is the backend name a title reading is recorded under.
 const TitleBackend = "title"
+
+// ExcludeBackend is the triage backend recorded on a posting an exclusion
+// dropped before any backend was asked.
+const ExcludeBackend = "exclude"
+
+// AnnExcluded is the drop reason on a posting an exclusion dropped, at triage
+// or by ApplyExclusions; it is cleared when the posting is reopened.
+const AnnExcluded = "exclude.matched"
+
+// excluded reports the drop reason p's exclusions give post, if any.
+func (p DropPolicy) excluded(post posting.Posting) (string, bool) {
+	if p.Exclude == nil {
+		return "", false
+	}
+	why, ok := p.Exclude(post)
+	if !ok {
+		return "", false
+	}
+	return "excluded: " + why, true
+}
+
+// Prefilters reports whether the policy can drop a posting before any
+// backend is asked: it has exclusions or reads titles.
+func (p DropPolicy) Prefilters() bool { return p.Exclude != nil || p.ReadTitle != nil }
+
+// EvaluatePosting is what triage applies before asking any backend: an
+// exclusion drops first, then EvaluateTitle. dropped false means the backends
+// must read the posting, and the answer is to be discarded.
+func (p DropPolicy) EvaluatePosting(post posting.Posting) (a decide.Answer, reason string, dropped bool) {
+	if why, ok := p.excluded(post); ok {
+		return decide.Answer{Backend: ExcludeBackend}, why, true
+	}
+	return p.EvaluateTitle(post.Title)
+}
 
 // TitleReading is one slot value read from a title, and the phrase matched.
 type TitleReading struct {

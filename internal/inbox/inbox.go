@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,8 +62,21 @@ const (
 	// BadDir holds the files a drain could not parse. Nothing retries them.
 	BadDir = "bad"
 
+	// MaxPending is how many batch files the spool holds before Write refuses
+	// another: a daemon that is down or wedged must not let it grow without
+	// bound. The check races other writers, so the spool can pass it by as many
+	// files as there are concurrent writers; it is a bound, not a quota.
+	MaxPending = 1000
+	// MaxBadFiles is how many files bad/ keeps; a drain prunes the oldest past it.
+	MaxBadFiles = 200
+
 	lockName = ".drain.lock"
 )
+
+// ErrSpoolFull means the spool already holds MaxPending batch files and a new
+// one was refused. Nothing was written; drain the inbox (run the daemon or
+// `vani run`) and ingest again.
+var ErrSpoolFull = fmt.Errorf("inbox: spool is full (%d batches pending); run the daemon or `vani run` to drain it, then try again", MaxPending)
 
 // ErrMalformed marks a request that is not a well-formed payload at all, as
 // opposed to a job that breaks a rule (which is rejected alone).
@@ -308,7 +322,8 @@ func ParseBatch(data []byte) (Batch, error) {
 
 // Write validates b and spools it as dir/<ns>-<rand>.json, atomically, and
 // returns the path. The nanosecond prefix is zero-padded so file names sort in
-// arrival order. A batch that fails validation is never written.
+// arrival order. A batch that fails validation is never written, and with
+// MaxPending batches already waiting Write returns ErrSpoolFull.
 func Write(dir string, b Batch) (string, error) {
 	if b.V == 0 {
 		b.V = Version
@@ -325,6 +340,11 @@ func Write(dir string, b Batch) (string, error) {
 	}
 	if len(data) > MaxBatchBytes {
 		return "", fmt.Errorf("inbox: batch is %d bytes, over %d", len(data), MaxBatchBytes)
+	}
+	if n, err := Pending(dir); err != nil {
+		return "", err
+	} else if n >= MaxPending {
+		return "", ErrSpoolFull
 	}
 	var rnd [6]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
@@ -364,8 +384,7 @@ type DrainReport struct {
 // validate is moved to dir/bad/ and reported, and is never retried. A file
 // that vanishes mid-drain is skipped. Only one drain of a directory runs at a
 // time: another gets ErrBusy (so a batch is never folded by two drains at once).
-func Drain(ctx context.Context, dir string, limit int, fn func(Batch) error) (DrainReport, error) {
-	var rep DrainReport
+func Drain(ctx context.Context, dir string, limit int, fn func(Batch) error) (rep DrainReport, err error) {
 	if limit < 1 {
 		return rep, fmt.Errorf("inbox: drain limit %d must be above 0", limit)
 	}
@@ -384,6 +403,12 @@ func Drain(ctx context.Context, dir string, limit int, fn func(Batch) error) (Dr
 		return rep, fmt.Errorf("inbox: drain lock: %w", err)
 	}
 	defer func() { _ = filelock.Unlock(lock) }()
+	// Under the lock, on every way out: bad/ keeps only the newest MaxBadFiles.
+	defer func() {
+		if perr := pruneBad(dir); perr != nil {
+			err = errors.Join(err, perr)
+		}
+	}()
 
 	names, err := spooled(dir)
 	if err != nil {
@@ -476,6 +501,57 @@ func readBounded(path string) ([]byte, error) {
 		return nil, errTooBig
 	}
 	return data, nil
+}
+
+// pruneBad removes the oldest files in dir/bad/ until MaxBadFiles remain.
+// Oldest is by modification time (a rename keeps it, so that is when the batch
+// was spooled), ties broken by name, which starts with the spool time: the
+// order, and so what is kept, is deterministic. A missing bad/ is nothing to
+// prune. A file that vanishes meanwhile is fine; any other failure is returned
+// after the rest were still tried.
+func pruneBad(dir string) error {
+	bad := filepath.Join(dir, BadDir)
+	entries, err := os.ReadDir(bad)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inbox: list bad dir: %w", err)
+	}
+	type file struct {
+		name string
+		mod  time.Time
+	}
+	var files []file
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("inbox: stat %s: %w", e.Name(), err)
+		}
+		files = append(files, file{e.Name(), info.ModTime()})
+	}
+	if len(files) <= MaxBadFiles {
+		return nil
+	}
+	slices.SortFunc(files, func(a, b file) int { // oldest first
+		if c := a.mod.Compare(b.mod); c != 0 {
+			return c
+		}
+		return strings.Compare(a.name, b.name)
+	})
+	var errs []error
+	for _, f := range files[:len(files)-MaxBadFiles] {
+		if err := os.Remove(filepath.Join(bad, f.name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("inbox: prune bad file: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // moveBad moves dir/name to dir/bad/name so it is reported once and never read

@@ -1,4 +1,5 @@
-// Build the extension with Bun (no npm dependencies):
+// Build the extension with Bun (no runtime dependencies; the one devDependency, typescript, is only for
+// scripts/typecheck.sh and is never bundled or copied):
 //   bun run /Users/bharath/Code/apps/Vani/extension/build.ts
 // Writes dist-chrome/ (load unpacked in Chrome), dist-safari/ (input for the
 // Safari web extension converter / Xcode project) and dist-test/ (DOM test page).
@@ -18,6 +19,20 @@ async function bundle(entries: string[], outdir: string): Promise<void> {
     for (const log of r.logs) console.error(log);
     throw new Error(`build failed for ${entries.join(", ")}`);
   }
+  for (const out of r.outputs) {
+    if (out.path.endsWith(".js")) await Bun.write(out.path, asciiOnly(await out.text()));
+  }
+}
+
+/**
+ * Escape every non-ASCII UTF-16 unit as \uXXXX. Bun turns source escapes back into literal characters, and
+ * Safari reads an extension script that has no charset as windows-1252, so `/[̀-ͯ]/` became
+ * `/[Ì€-Í¯]/` there ("range out of order in character class") and every other literal was mojibake.
+ * The escape means the same thing in strings, templates and regexes (with or without the u flag); only a
+ * String.raw template would see it differ, and none of ours holds a non-ASCII character.
+ */
+function asciiOnly(js: string): string {
+  return js.replace(/[^\x00-\x7f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 async function readJson<T>(rel: string): Promise<T> {

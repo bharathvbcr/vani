@@ -16,6 +16,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/digest"
+	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/localserver"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -35,7 +36,7 @@ import (
 // ledger as a snapshot, writes nothing, needs no API key and talks only to
 // loopback: llama-server instances it starts itself (Metal only, as a run
 // does), or with --endpoint one /v1/systemone server already running there
-// (a model llama.cpp cannot load, such as RSI-Jev).
+// (a model llama.cpp cannot load, such as the Liquid D RSI build).
 
 const (
 	defaultBenchPostings = 400
@@ -124,7 +125,7 @@ func (e *env) cmdBench(args []string) error {
 	var models stringList
 	fs.Var(&models, "model", "an absolute GGUF path to measure (repeatable; default the configured local model)")
 	n := fs.Int("n", defaultBenchPostings, fmt.Sprintf("at most this many postings (1-%d)", maxBenchPostings))
-	questions := fs.String("questions", "combined", "combined (the request the decision model gets) or per_slot")
+	questions := fs.String("questions", "combined", "combined (the request the OpenRouter decision model gets) or per_slot")
 	batch := fs.Int("batch", 0, "llama.cpp batch and micro-batch size (0 = its default; vllm-d3 needs the longest prompt)")
 	parallel := fs.Int("parallel", 0, fmt.Sprintf("llama.cpp -np (0 = auto, up to %d)", localserver.MaxParallel))
 	ctxSize := fs.Int("ctx", 0, "context size (0 = the configured one, else 8192)")
@@ -272,6 +273,10 @@ func benchCases(snap ledger.Snapshot, n int) ([]benchCase, int, map[string]int) 
 	var all []benchCase
 	backends := map[posting.Key]string{}
 	for _, r := range snap.Records {
+		if eval.Inherited(r) {
+			// A copied reading is not the primary's reading of this posting.
+			continue
+		}
 		ann := r.Annotations
 		c := benchCase{rec: r, primary: map[string]string{}, primaryP: map[string]float64{}, shadow: map[string]string{}}
 		backend, ok := "", true

@@ -310,14 +310,52 @@ final class DraftingTests: XCTestCase {
 
     func testDraftSettingsRoundTripAndValidation() throws {
         let dir = try tempDir(self)
-        XCTAssertEqual(DraftSettings.load(from: dir), DraftSettings())
+        XCTAssertEqual(try DraftSettings.load(from: dir), DraftSettings())
         try DraftSettings(vaniConfig: "/a/config.json", vaniStateDir: "/a/state").save(to: dir)
-        XCTAssertEqual(DraftSettings.load(from: dir), DraftSettings(vaniConfig: "/a/config.json", vaniStateDir: "/a/state"))
+        XCTAssertEqual(try DraftSettings.load(from: dir), DraftSettings(vaniConfig: "/a/config.json", vaniStateDir: "/a/state"))
         let mode = try (FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent("draft-settings.json").path)[.posixPermissions] as! NSNumber).intValue
         XCTAssertEqual(mode, 0o600)
         XCTAssertThrowsError(try DraftSettings(vaniConfig: "relative/config.json").save(to: dir))
-        try Data("{nope".utf8).write(to: dir.appendingPathComponent("draft-settings.json"))
-        XCTAssertEqual(DraftSettings.load(from: dir), DraftSettings())
+    }
+
+    /// B2-9: a missing file is the defaults; a present but corrupt one is a named error, and every
+    /// launch path built from it refuses instead of running against the default config and account.
+    func testCorruptDraftSettingsAreANamedErrorAndEveryRunnerRefuses() throws {
+        let vani = URL(fileURLWithPath: "/x/vani")
+        let missing = try tempDir(self)
+        XCTAssertEqual(try DraftSettings.load(from: missing), DraftSettings())
+        XCTAssertNil(DraftSettings.runner(loadingFrom: missing, vaniBinary: vani, keys: .noKey).refusal)
+
+        for (name, body) in [("truncated", "{nope"), ("empty", ""), ("wrong type", #"{"vaniConfig":5}"#), ("array", "[]")] {
+            let dir = try tempDir(self)
+            try Data(body.utf8).write(to: dir.appendingPathComponent("draft-settings.json"))
+            XCTAssertThrowsError(try DraftSettings.load(from: dir), name) { error in
+                XCTAssertTrue(error is DraftSettings.LoadError, "\(name): \(error)")
+            }
+            let runner = DraftSettings.runner(loadingFrom: dir, vaniBinary: vani, keys: .noKey)
+            XCTAssertEqual(runner.refusal?.code, "settings", name)
+            guard case let .refused(reply) = runner.prepare(["draft"], usesModel: false) else { return XCTFail("\(name): launched") }
+            XCTAssertEqual(reply.code, "settings")
+            XCTAssertTrue(reply.error?.contains("draft-settings.json") == true)
+            let job = try JSONSerialization.jsonObject(with: runner.runJob(.draft, input: Data("{}".utf8))) as? [String: Any]
+            XCTAssertEqual(job?["code"] as? String, "settings", name)
+            let jobs = DraftSettings.jobsBackend(loadingFrom: dir, vaniBinary: vani)
+            XCTAssertThrowsError(try jobs.markApplied(key: "gh:acme:1"), name)
+            XCTAssertThrowsError(try jobs.find(url: "https://example.com/a"), name)
+            XCTAssertThrowsError(try jobs.ingest(payload: Data("{}".utf8)), name)
+        }
+
+        // An unreadable (not merely absent) path is also an error: a directory where the file belongs.
+        let dirAsFile = try tempDir(self)
+        try FileManager.default.createDirectory(at: dirAsFile.appendingPathComponent("draft-settings.json"), withIntermediateDirectories: true)
+        XCTAssertThrowsError(try DraftSettings.load(from: dirAsFile))
+
+        // The host's draft op answers code "settings" through the protocol, never runs vani.
+        let store = BankStore(directory: try tempDir(self))
+        try Data("{nope".utf8).write(to: store.directory.appendingPathComponent("draft-settings.json"))
+        let drafter = DraftSettings.runner(loadingFrom: store.directory, vaniBinary: vani, keys: .noKey)
+        let reply = NativeProtocol.handle(["op": "draft", "request": ["question": "q"]], store: store, source: .chrome, drafter: drafter)
+        XCTAssertEqual(reply["code"] as? String, "settings")
     }
 
     func testDraftSettingsAccount() throws {
@@ -326,15 +364,15 @@ final class DraftingTests: XCTestCase {
         // id is dropped, because the account's registry line carries it now.
         try Data(#"{"vaniConfig":"/a/config.json","vaniStateDir":"/a/state","anthropicWorkspace":"wrkspc_01Old"}"#.utf8)
             .write(to: dir.appendingPathComponent("draft-settings.json"))
-        XCTAssertEqual(DraftSettings.load(from: dir), DraftSettings(vaniConfig: "/a/config.json", vaniStateDir: "/a/state"))
+        XCTAssertEqual(try DraftSettings.load(from: dir), DraftSettings(vaniConfig: "/a/config.json", vaniStateDir: "/a/state"))
 
         try DraftSettings(anthropicAccount: "  org500\n").save(to: dir)
-        XCTAssertEqual(DraftSettings.load(from: dir).anthropicAccount, "org500", "saved trimmed")
+        XCTAssertEqual(try DraftSettings.load(from: dir).anthropicAccount, "org500", "saved trimmed")
         let saved = try String(contentsOf: dir.appendingPathComponent("draft-settings.json"), encoding: .utf8)
         XCTAssertFalse(saved.contains("anthropicWorkspace"))
         for bad in ["org 500", "../org", "org\0x", String(repeating: "w", count: 65)] {
             XCTAssertThrowsError(try DraftSettings(anthropicAccount: bad).save(to: dir), bad)
         }
-        XCTAssertEqual(DraftSettings.load(from: dir).anthropicAccount, "org500", "a refused save leaves the file alone")
+        XCTAssertEqual(try DraftSettings.load(from: dir).anthropicAccount, "org500", "a refused save leaves the file alone")
     }
 }

@@ -8,6 +8,7 @@
 import type { Bank, FieldInfo, FieldKind } from "./types";
 import { BASICS_HOST, MAX_VALUE_CHARS, answerKey } from "./bank";
 import { INTENTS, intentOf } from "./intents";
+import { isCaptureReply } from "./messages";
 
 export { BASICS_HOST };
 
@@ -95,4 +96,31 @@ export function basicsValues(bank: Bank | null): Record<string, string> {
     out[b.id] = latest?.value.join(", ") ?? "";
   }
   return out;
+}
+
+/** The status line and toast after a basics save. `saved`: the bank took the change, so the boxes may be refreshed from it. */
+export interface BasicsSaveOutcome { saved: boolean; status: string; toast: string }
+
+const TOAST_REASON_CHARS = 90;
+
+/**
+ * Read the background's reply to a basics capture. Its error (or the one sending threw) is carried
+ * into both lines, so a failed save says why, not only that it failed. A reply that is neither counts
+ * nor an error is a failure: a save that could not be confirmed must not read as one that landed.
+ */
+export function basicsSaveOutcome(reply: unknown): BasicsSaveOutcome {
+  if (isCaptureReply(reply)) {
+    const n = reply.added + reply.updated;
+    const left: string[] = [];
+    if (reply.skippedSecret) left.push(`${reply.skippedSecret} refused as sensitive`);
+    if (reply.skippedSelfId) left.push(`${reply.skippedSelfId} kept out while self-ID is off`);
+    if (reply.skippedEmpty) left.push(`${reply.skippedEmpty} not saved (too short, or the bank is full)`);
+    const tail = left.length ? `; ${left.join("; ")}` : "";
+    if (n === 0 && left.length > 0) return { saved: true, status: `Nothing saved${tail}.`, toast: "No basics were saved." };
+    return { saved: true, status: `Saved ${n}${tail}.`, toast: `Saved ${n} ${n === 1 ? "basic" : "basics"}.` };
+  }
+  const raw = reply && typeof reply === "object" && typeof (reply as { error?: unknown }).error === "string" ? (reply as { error: string }).error.trim() : "";
+  const why = raw || "no reply from the extension";
+  const short = why.length > TOAST_REASON_CHARS ? `${why.slice(0, TOAST_REASON_CHARS - 1)}…` : why;
+  return { saved: false, status: `Could not save: ${why}`, toast: `Basics not saved: ${short}` };
 }

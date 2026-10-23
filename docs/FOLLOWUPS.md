@@ -45,6 +45,38 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Remaining after the final landing (2026-10-20)
+
+The ranking and filtering audit and its status per finding are in
+[RANKING_PLAN.md](RANKING_PLAN.md). What is done there is not repeated here; this is what is left.
+
+- **The semantic floor before Liquid D** (Phase 3). Pick it from the live distribution once the
+  owner has seen it. Without a local model, a posting under the floor would wait for the paid
+  call, so the floor only defers.
+- **Calibration (≥100 judged labels) and the weight fit (≥150).** Nothing to build until the weekly
+  `vani audit` has produced them (about 150 a month at the planned cadence). Both must refuse below
+  their threshold with a "could not run" result, never a quiet fit.
+- **Owner config, not code:** a location `exclude` (RANKING_PLAN F3), `advance_per_run` 750 (the
+  default stays 300), the cloud shadow (README, "Cloud shadow"), and the Engineering Manager
+  question (TRACKS.md).
+- **DevPrism upstream:** report `coveragePercentage: null` for a JD with no must-have skills
+  (`jd.rs:559`, `gap.rs:246` under `/Users/bharath/Code/devtools/DevPrism`). Vani already reads
+  both the old `0` and the new `null` as "no must-haves" and nothing else as a measurement
+  (`internal/resume/tools.go`), so this is not blocking.
+- **Jobs-tab impressions carry no scores.** `vani impressions log` takes keys and positions, so a
+  fitter that wants a Jobs row's Score parts joins the key to the ledger at read time. Digest rows
+  carry their parts as shown. The Jobs and Audit models keep `impressionsError`, but no screen
+  shows it yet: a failed report is kept, not displayed.
+- **The Mac app's UI-automation tests are skipped without accessibility trust** (the test runner
+  must be trusted); `swift test` reports them as skipped, not passed. Run them once on a trusted
+  session before a release that touches the Jobs tab.
+- **The extension keeps a second scorer for postings Vani has not read** (`extension/src/relevance.ts`,
+  a heuristic with a generic profile). It shows Vani's own row when the posting is in the ledger and
+  a pill labelled "Estimate" otherwise (extension README); the two can differ. Retiring the estimate
+  means asking Vani to score a page it has not ingested, which is a contract change.
+- **`internal/decide/kbmatch/jev.go`** holds the option descriptions and could be renamed
+  `descriptions.go` the next time that package is touched.
+
 ## Needs the owner's go-ahead
 
 - **Converge egress with Manvi.** [`internal/egress`](../internal/egress) re-implements manvi/fetch's rules because
@@ -118,8 +150,207 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **`TestJobsInsightScalesTo5000Postings` has a tight bound under load.** It ran 5.7-6.5 s under
   `-race` on a quiet machine and passed its 10 s bound, but crossed it twice while a Swift build
   ran alongside. Not a code fault; raise the bound or skip it under `-race` if it recurs.
+  (Superseded 2026-10-21: ft-2673557b made the test count allocations, 4.00x for 4x postings,
+  instead of wall time, `cmd/vani/jobsscale_test.go`.)
 
-## Title prefilter (built 2026-10-19, not yet enabled in the live config)
+## Audit 2026-10-20: decisions and deviations the audit found unrecorded (recorded 2026-10-21)
+
+Each is a decision or a deviation from a card's criterion that lived only in a card log or a code
+comment, so the next audit would report it as a bug. Line numbers are on main at `2fcac90`, except where an entry below was re-checked on `0c27a13` (2026-10-21).
+"Fable delegated" is the owner's delegation to the Fable advisor on 2026-10-21.
+
+- **A4-3, page half: page boards fail on http links off the default port, by design (2026-10-20,
+  ft-e97abbbf criterion 3, amended).** `upgradeHTTP` (`internal/sources/page/page.go:446-457`)
+  rewrites an http link on port 80 or no port to https and leaves any other port alone; a posting
+  the operator's pattern selects but that is not https then fails the board in `fetchableURL`
+  (`page.go:414-418`, `:334`) instead of being fetched somewhere else or skipped (a skip would mark
+  it dead). Pinned by `internal/sources/page/page_test.go:305-309`. The https form of another port
+  is a guess.
+- **ft-bcf3eb75 criterion 4: kbsync saves every 16 blocks and once at the end (2026-10-20; amended
+  and DECIDED 2026-10-21, Fable delegated, decision 2).** At most `ceil(n/16)+1` writes per pass,
+  not one per block: `flushEvery = 16` (`internal/kbsync/state.go:96-99`), the batch flush at
+  `internal/kbsync/apply.go:150-151` and the final flush on every return (`apply.go:79`, which does
+  nothing when nothing is unsaved, so an exact multiple of 16 saves `n/16` times). A crash between
+  saves loses at most 15 records, whose blocks are sent again unchanged (state never runs ahead of
+  DevPrism). `internal/kbsync/batch_test.go:48` pins 3 saves for 40 blocks.
+- **ft-1045267a D17: the llama-server device is fixed to Metal, not configurable (Fable D17;
+  decided before the 2026-10-20 audit, date not recorded; first written here 2026-10-21).** `internal/localserver/localserver.go:71-81`
+  passes `--device MTL0 -ngl all` always. The owner's rule of 2026-10-18 is that the served path is
+  Metal and CPU is never a fallback; a configurable device was declined on that ground. Without
+  MTL0 llama.cpp exits at once ("invalid device") and the run goes on without the shadow, rather than
+  measuring a different numeric path.
+- **ft-1045267a D18: the native host does not check the extension id (Fable D18; decided before
+  the 2026-10-20 audit, date not recorded; first written here 2026-10-21).** `macos/Sources/vani-apply-host/main.swift:20-29` requires only a
+  `chrome-extension://` prefix. The boundary is Chrome's `allowed_origins` in the manifest that
+  `ChromeConnector` writes; the argument comes from whoever launched the process, so an exact-id
+  match in the host would add no protection (a same-user process can pass any id), and the id the
+  user chose is in the app's defaults, which the host cannot read.
+- **B2-6: the native host is a same-user deputy; a parent-process code-signature check and
+  `#if DEBUG` gating of `--store-dir`, `--vani`, `--anthropic-account` and `--no-keychain` are
+  DECLINED (audit 2026-10-20; decided 2026-10-21, Fable delegated).** The host runs as the user
+  (`main.swift:20-29`) and the flags (`main.swift:31-58`) grant nothing a same-user process does
+  not already have. Security impact: no change. Revisit if the host gains a capability the same
+  user cannot exercise directly, for example a Keychain ACL bound to the host's signature.
+- **A2-4 residual: a well-formed empty listing during an ATS outage ages the board; no floor
+  (audit 2026-10-20; DECLINED 2026-10-21, Fable delegated).** The reasons and the contract are in
+  "Known limits" under "Absence ages every open posting" (the Residual bullet).
+- **ft-3189102e criterion 2: `COUNTRY_SECOND_LEVELS` is 14 second levels, so `a.me.uk` and `b.me.uk`
+  collide (2026-10-20).** `extension/src/normalize.ts:124-141` (`ac co com edu go gob gov ltd mil ne
+  net or org plc`); `siteKey` keeps the last two labels for any other suffix, so `me.uk` is one key
+  for every `x.me.uk` (and `ltd.uk` is covered, `me.uk` is not). It is not a full public-suffix
+  list. Per-tenant ATS subdomains collapse by design: `acme.greenhouse.io` and `boards.greenhouse.io`
+  are the key `greenhouse.io` (the comment's own example), so a field signature is per ATS, not per
+  tenant. A public-suffix list would be a new dependency and needs the owner's go-ahead.
+- **A2-7: `rekey` refuses on Windows (decision 9; 2026-10-21, Opus build session).** A platform
+  limit, not a defect: `rekey.Run` returns `ErrUnsupported` on `GOOS=windows` before writing
+  anything (`internal/rekey/rekey.go:101-102`, `:118-121`), because the ledger stays open (locked)
+  while its events file is replaced and Windows cannot rename over an open file.
+
+### Built-session additions (2026-10-21, Opus build session; owner or Fable delegated where named)
+
+- **ft-3d83fba9 criterion 2 was BUILT, not declined; the size measured was synthetic.** The
+  decision-3 rule (build if `BenchmarkLoad` is at least 100 ms) fired: G15 measured 0.832 s
+  interleaved min (1.222 s block min, n = 5) on a synthetic 200k-employer x 3 FY index, because no
+  production LCA index exists in the live state (`internal/lca/load_bench_test.go:34`). Result:
+  `LoadView` 19 ms against 947 ms for a fresh-process `Load`, 57 allocs against 4.80M
+  (`internal/lca/view.go:288`, `view_bench_test.go:21`). There is therefore no decline to record.
+- **ft-3d83fba9 criterion 5: `srcutil.GetJSON` streaming DECLINED (decision 3; 2026-10-21, Fable
+  delegated).** Measured (G15 `BenchmarkGetJSON20MiB`, synthetic 20 MiB body, fake `Doer`,
+  `MaxBody` 64 MiB, interleaved min): 76.8 MB/op, 22.1k allocs/op, 26.3 ms.
+  The gain would be memory only; bodies are capped at 64 MiB (`internal/sources/srcutil/srcutil.go:31`);
+  boards run serially; `json.Unmarshal` already rejects trailing data (`srcutil.go:169`); the body is
+  read once with `io.ReadAll(io.LimitReader(...))` (`srcutil.go:243`). Reopen trigger: a board body
+  at or above 32 MiB (half the cap).
+- **ft-3d83fba9 criterion 4: `ledger.Record` contract delta (Fable, delegated; 2026-10-21).**
+  `Record.BodyEvicted` (`json:"-"`, `internal/ledger/types.go:26-47`) is true when a Dead, Dropped or
+  Duplicate record's `Description` was dropped from memory. `File.All()` returns those records with
+  an empty `Description` and reads nothing from disk (`internal/ledger/file.go:576-583`); a caller
+  that needs the text uses `ledger.Full` (`internal/ledger/evict.go:171-174`), `File.Get`
+  (`file.go:560`) or `File.Hydrate` (`evict.go:149`), which fail with `ErrBodyUnavailable`
+  (`evict.go:50`) rather than return another body. Heap after `Open` of a 20k-record, 80%-dead
+  synthetic ledger fell from 100.7 MB to 34.3 MB (34%); `Open` ns/op rose 9.1% (148 to 162 ms, min of
+  5, loaded), accepted by Fable (once per process, 66 MB saved). The one consumer that needed text,
+  `warmSemantic`, hydrates only owner-marked closed records (`cmd/vani/semanticwire.go:188-193`,
+  `cmd/vani/app.go:310`); the `vani semantic warm` CLI does not yet (ft-0aa92138). The single-row
+  `jobs` commands no longer read every body: see the next entry (`ReadSnapshotScoped`, on main).
+- **ft-2673557b `jobs find` / `jobs mark` under 250 ms: criterion 2 met in the cleaner measurement,
+  not re-verified on a quiet machine (2026-10-21; supersedes the first, partial entry).** Two merges.
+  First (75732b2): `newRowInsight` learns boilerplate only from the row's own company
+  (`cmd/vani/jobsinsight.go:284`); the regression was commit 3255839 putting the full-ledger learn
+  on every `find`. At load 28-33, `mark` 2193 to 244 ms and `find` 2094 to 255 ms; allocations 14.13M
+  to 524k and 14.28M to 670k. The rest was `ledger.ReadSnapshot` I/O. Second (0c27a13, commits
+  1f306aa, a810bd4, aefe615): `ledger.ReadSnapshotScoped` (`internal/ledger/lean.go:250`) cuts the
+  description out of each line before decoding for every record outside the row's company, then
+  hydrates the row's company by offset with a byte compare (a mismatch is `ErrBodyUnavailable`,
+  `lean.go:217-225`). `jobs show/mark/note/find` read through it (`rowScope`, `rowRecord`,
+  `cmd/vani/jobscmd.go:430,447`; `jobsStateFor` at `:458`; callers `jobscmd.go:300,380`,
+  `jobsfind.go:84`), and a record whose body was skipped is refused, never emitted. Fail-closed cut
+  (`stripDescription`, `lean.go:57`): only compact lines with exactly one posting and one
+  `description` key, no escaped or non-ASCII keys; the description's escapes are validated so
+  `ReadSnapshot` and `ReadSnapshotScoped` agree on a corrupt line; a canonical line never falls
+  back to the full decode. Rows are byte-identical to the full-read path
+  (`TestScopedReadRowsAreByteIdenticalToTheFullPath`). Fuzz: 10.7M + 4.0M execs, then 2.1M + 1.3M
+  after the fix, 0 crashers. **Numbers, synthetic 10k postings of about 6 KiB, interleaved min of 5,
+  Apple M5 Pro, measured on a loaded machine (load average about 17-20):** `mark` 136 to 90 ms,
+  `find` 130 to 94 ms; B/op 111 to 55 MB (`mark`), 119 to 62 MB (`find`); allocations unchanged.
+  After the fail-closed fix, at load 80-89: `mark` 205 ms, `find` 283 ms, which is not comparable
+  (the machine was saturated). So both are under 250 ms only in the cleaner run; wall-clock was never
+  taken on a quiet machine, and no rerun is recorded. State the criterion as met under load, not as
+  a quiet-machine figure.
+- **ft-b6b00b08 A2-3: marks line cap raised 8 to 16 KiB; a downgrade limit (Fable decision; 2026-10-21).**
+  `maxLineBytes = 16 << 10` (`internal/marks/marks.go:77`; the downgrade warning is at `:74-76`).
+  `marks.jsonl` written at or after this change may hold lines up to 16 KiB; an older binary with
+  the 8 KiB cap returns `ErrCorrupt` on such a line, so do not run an older `vani` against a store a
+  newer one has written escape-heavy notes into. Not a migration: no bytes are rewritten.
+- **ft-22d7da5f: atomic writes and symlinks (Opus design decision, accepted 2026-10-21; merged
+  2fcac90).** Directory components resolve, so a state directory that is itself a symlink works
+  (iCloud, an external disk). A program-named leaf is never written through a symlink:
+  `atomicfile.Write` replaces the link with a regular file, as before
+  (`internal/atomicfile/atomicfile.go:28-37`), `OpenAppend` refuses a linked leaf with
+  `ErrLinkedLeaf` and creates or removes nothing (`atomicfile.go:85-116`, error at `:18`), and a
+  directory, FIFO, socket or device leaf is `ErrNotRegular` (`internal/atomicfile/resolve.go:10-36`).
+  Only the operator-chosen config path follows its link, resolved once and used for both the lock and
+  the write. Security impact: no widening against the pre-change code; a planted link in a state
+  directory still cannot move a write outside it (the first version of this fix could, through the
+  eval text cache and the logo cache; tests assert outside files stay untouched). Consequence: an
+  append-only file (ledger, marks) that is itself a symlink now fails loud instead of starting an
+  empty history; replace it with the file, or link its directory.
+  The refusal is wired at both append owners: `ledger.Open` opens its events log with
+  `atomicfile.OpenAppend` (`internal/ledger/file.go:100`) and `marks` its store
+  (`internal/marks/marks.go:447`), so a linked leaf returns `ErrLinkedLeaf` wrapped, with no empty log
+  created and no history replaced. Pinned by `internal/ledger/symlink_test.go:30,40`,
+  `internal/marks/symlink_test.go:29` and `internal/atomicfile/symlink_test.go:47,69` (a dangling link
+  too).
+- **ft-60d1dc8e: TypeScript 7.0.2 is not "no transitive packages" (accepted by Fable; 2026-10-21).**
+  The exact pin (`extension/package.json:8`) is the native compiler: `typescript` plus 20 optional
+  `@typescript/typescript-<platform>` packages, 21 entries with sha512 hashes in `extension/bun.lock`
+  (`typescript` at line 52). Opus verified that all 21 share one maintainer set. The typecheck gate
+  requires `tsc --version` to equal `Version <pin>` and never reports ok without running tsc
+  (`extension/scripts/typecheck.sh:26-29`).
+- **ft-c567ded5: rankfit floors (Fable kept the constants, decision 4; 2026-10-21).**
+  `MinHeldOutPairs` 200 and `MinScoredStratumPairs` 50 (`internal/rankfit/gain.go:15,21`), which needs
+  at least 13 scored held-out items, about 200-250 labels, so the first fit at 150 is often refused
+  by design (fail closed); `HeldOutAllowedSkips` 3 of a 30-item split, so 27 (`internal/eval/heldout.go:43`);
+  `MinInclusionProbability` 1e-9 (`internal/eval/store.go:76`; below about 1e-154 the weights overflowed
+  to NaN). The reasoning is in `docs/RANKING_PLAN.md` ("Rank learning", the `Beats()` rules, lines
+  203-219); not repeated here.
+- **ft-a1bb3507: the fieldtriage guard is a first line, not a proof (Opus decision; 2026-10-21).**
+  Known misses: a digit or punctuation inserted inside a word ("c1tizen", "c.i.t.i.z.e.n") and a word
+  written wholly in a non-Latin lookalike script. Fail-safe false pins, kept on purpose (they become
+  a manual answer, never a draft): "military-grade", "Asian market", and any label containing
+  "criminal". The backstop is after the model: `suggest.Run` drafts only an `essay` reading of a label
+  `fieldtriage.Sensitive` does not flag (`internal/suggest/suggest.go:158`,
+  `internal/decide/fieldtriage/fieldtriage.go:135-146`), and a word mixing Latin with another
+  alphabet is pinned `self_identification` (`fieldtriage.go:153-157`, `fold.go:171`). Not a personal-data
+  leak: only the job site's label text leaves.
+- **ft-a1bb3507 follow-up: the fieldtriage guard speedup is on main, not pending (939ec8e, merge
+  68dba78; 2026-10-21).** `folds` returns the four readings (invisible character as nothing or as a
+  space, tag joining or separating) once each: identical readings are dropped, so a plain label is
+  scanned by every pattern once, not four times (`internal/decide/fieldtriage/fold.go:36-59`).
+  `Sensitive` folds once and shares the result with `guardForms`
+  (`fieldtriage.go:135-146`, `:150-152`). The commit message's figures: `Guard` on 64 KB 224 to 50
+  ms, under `-race` 6.1 to 1.6 s (3-5x). The linearity tests no longer use a wall-clock bound: they
+  assert that allocated bytes grow at most 12x for an 8x input (`assertLinear`,
+  `internal/decide/fieldtriage/guard_test.go:115-131`) and keep a 2 s cap on a label at the
+  production 1,000-rune size (`guard_test.go:142`). An earlier note that this fix was unmerged was
+  wrong. Not re-measured here: the speedup figures are the commit's own.
+- **ft-c567ded5 follow-up: the rankfit objective is faster, bit for bit (merge e8f7726, commit
+  4ac9260; 2026-10-21).** `softplusSigmoid` takes both the loss term and its gradient weight from one
+  `exp` (`internal/rankfit/platt.go:209`, used at `internal/rankfit/fit.go:382`), and the
+  per-pair weights are computed once into `m.pw` (`fit.go:322-323`, read at `:381`). Loss and gradient
+  are bit-identical to the separate functions (`internal/rankfit/objective_parity_test.go:82,115`;
+  `FitResult` hashes unchanged on 6 seeds, per the commit). The null-world test went 68.8 to 6.3 s,
+  and under `-race` 144 to 31.5 s (figures from the build session that landed it; not re-run for
+  this entry). Separately, the null-world tests run in parallel: commit 42c4f64, from another
+  session, which gave the package `worldWith` (`internal/rankfit/fit_test.go:29`) so a test that
+  wants another label model no longer assigns the shared `plantedShares`, and took
+  `go test -race ./internal/rankfit` from 799.9 s (past Go's 10 minute default) to 167.6 s, a figure
+  taken before the objective speedup. The GOMAXPROCS determinism check stays sequential, 8 repeats
+  rather than 50.
+- **ft-8cd27d93 B1-2: a `kbmatch` run that waits more than 10 s for another run exits busy
+  (2026-10-21; design note from the build, kept).** The whole run holds the store lock
+  (`kbmatchLockWait = 10 * time.Second`, `cmd/vani/kbmatchcmd.go:64`; `OpenLocked` at `:308`; `ErrBusy`
+  at `internal/decide/kbmatch/store.go:39`), so the loser asks nothing that day and says so. Fail-safe by design.
+- **ft-84d4fe25 A1-1: the DevPrism binary and tools hash are pinned for the process lifetime
+  (Fable, delegated; 2026-10-21).** The daemon reloads the whole config per run, except the schedule
+  and `devprism.binary` / `devprism.tools_hash`, which its scorer was started with: a change logs
+  "applies after the daemon restarts" and the running value is kept (`cmd/vani/app.go:216-218`, table
+  at `:232-246`). Restart the daemon to apply a DevPrism change.
+- **ft-bafd7500 (Mac app), two accepted limits (2026-10-21).** `BlockingWork`
+  (`macos/Sources/VaniApplyKit/BlockingWork.swift:13`) runs on a GCD concurrent queue whose width the
+  system caps at about 90-100 threads: a 1000-call burst peaked +19 threads, and a short call queued
+  behind 300 one-second calls waited about 3 s. `BankStamp` (size, nanosecond mtime, inode;
+  `macos/Sources/VaniApplyKit/BankStore.swift:103-106`) cannot see an in-place same-size edit that
+  restores the mtime (`cp -p`, `rsync --inplace -t`); `BankStore` writes replace the file by rename,
+  so only a hand edit does this.
+- **Process: no card filed through GitPulse can reach "done" from an agent session (2026-10-21;
+  a tooling gap, not a Vani defect).** GitPulse gates "done" on a Manvi verification record, but
+  Manvi's task store does not know GitPulse task ids (`devcouncil_verify_task`: "no task is checked
+  out", and "no verification record exists for this task: Manvi's work.verify.task has not judged
+  it"), so every card of the 2026-10-20 audit sits in `review`. The `review` column is not
+  unfinished work: read each card's log for what was built and measured, and do not re-report it.
+
+## Title prefilter (built 2026-10-19; live since the 2026-10-20 ranking audit, per RANKING_PLAN)
 
 - **Enabling it: install the binary first.** `Parse` refuses unknown fields, so a
   `title_signals.read` in `config.json` makes every older `vani` fail to load the config. That
@@ -142,7 +373,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   `title_signals` and run `vani track show <id>`, which checks it.
 - **Outage detection.** A title drop is no backend reading. It does not reset the unread
   breaker, and it does not stop a phase in which no backend read anything from failing
-  (`advanceAll`'s `titleDrop`).
+  (`pipeline.AdvancePlan.TitleDrop`).
 
 ## Run speed (applied 2026-10-19, measured on fakes only)
 
@@ -152,7 +383,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   in the decide module; up to 3 calls past the OpenRouter daily cap with 4 workers is acceptable
   (`DailyCap.Allow` and `Charge` are separate steps; `TestAdvanceConcurrentSpendCapHolds`).
 - **What changed:**
-  - `advance_concurrency` (default 4): `advanceAll` starts postings in rank order and counts
+  - `advance_concurrency` (default 4): `pipeline.Advance` starts postings in rank order and counts
     results on one goroutine. A stop starts nothing new and waits for the postings in flight.
     The unread streak can admit up to workers-1 extra attempts.
   - `decide.shadow_every` (default 12): hash sample by posting key (`cmd/vani/shadowsample.go`).
@@ -430,6 +661,25 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   caller. It brings personal data into the resume path and needs the owner's go-ahead.
   Until then it is kept: its allowlist is sealed (`Allowed()` returns a copy) and it refuses
   with `ErrNoKeychain` off macOS.
+- **Jev naming left after the Liquid D rename (2026-10-20, branch `liquid-d-rename`).** The decision
+  model is Liquid D (`liquid/d1-ultra` over OpenRouter). `config.Default()` (what `vani init`
+  writes) now names it and, by the owner's call, no llm: tests that need one set `testLLM`. And
+  `kbmatch.backend` `"jev"` is now `"openrouter"`: the old value still loads, `vani` warns about it,
+  `--backend jev` still works, and saving writes `"openrouter"`. Stored kbmatch answers keep the
+  backend they recorded, so old ones say `"jev"`. A `KBMatch` built in Go with `"jev"` and saved
+  as it is still writes `"jev"`. No live path does that, since loading and the flag both
+  normalise it. Three names stay on purpose:
+  - `<state dir>/budget/jev.json` and its spend key `jev`. `decide.DailyCap` re-reads the file on
+    every call, reads a missing file as nothing spent, and takes no cross-process lock. So no
+    rename is safe while a daemon or an older binary still holds the old path: it would start the
+    day at zero, a second full cap. `TestOpenRouterCapFileKeepsItsName` and the two spend tests in
+    `cmd/vani/openrouter_budget_test.go` pin the name. Renaming it first needs a flock in
+    `DailyCap`, then a migration that merges the two files' days.
+  - `decide/jev`, `jev.Config` and the `.Jev` reading fields. These are the OpenRouter Decisions
+    API client, and renaming them is a cross-repo contract change.
+  - `eval.LegacyOpenRouterName` and the `jev_*` config aliases, which exist for old data.
+  The file name `internal/decide/kbmatch/jev.go` could become `descriptions.go` the next time that
+  package is touched.
 - **`JobsClient.call` and `PipelineClient.status` are the same twelve lines** (run vani, bound,
   decode `{"error"}`). Extract one `VaniJSONCall` in `VaniApplyKit` when `Jobs.swift` is next
   touched.
@@ -692,7 +942,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   binary later did not revisit them, so in the live top 20 of `jobs list --sort priority` every
   posting took the 0.4 coverage prior.
   - What it does: `vani rescore` scores `scored`/`explained` records that have no `rank`, in place.
-    The record keeps its status and explanation. It goes through the run's `advanceAll`, so the cap,
+    The record keeps its status and explanation. It goes through the run's `pipeline.Advance` (`baseAdvancePlan(kindRescore, …)`), so the cap,
     concurrency, cancellation and 20-failure streak are the run's. It calls DevPrism only, never a
     model. `--dry-run` reads a snapshot without the lock. See README "Use".
   - Why a missing `rank` stands in for the reason: the folded record keeps no event reasons. Every
@@ -706,7 +956,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     - Whether the 51 digested postings should be scored too. They would keep `digested`.
     - Whether to re-pick the 1,581 kept explanations. They were picked without the coverage, and
       re-picking costs an OpenRouter call each.
-    - Whether the daily run should also do this. That would be one `advanceAll(… withTodo(rescorable))`
+    - Whether the daily run should also do this. That would be one `pipeline.Advance` call with `AdvancePlan.Select = rescorable`
       call in `runOnce` after the advance phase. It was left out: it would compete with the live
       backlog (1,186 `live` that day) for `advance_per_run`. The class only arises from an empty
       binary; a DevPrism that is down leaves postings `triaged` and the run retries them.
@@ -791,6 +1041,14 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - Jibe (`jb`, AMD) fails the board when a page adds nothing before `totalCount` is reached,
     as Eightfold does. Live on 2026-10-19 the unsearched AMD listing read 1278 of 1278 in 13
     pages, so an overstated total has not been seen.
+  - **Residual (audit A2-4, 2026-10-20; floor DECLINED 2026-10-21, decision delegated to Fable):** a
+    well-formed empty listing during an ATS outage still ages the board. It is treated as aged,
+    not suspect, and there is no floor ("never age a board to zero in one run"). Unreadable replies are
+    already refused by each adapter (above); `Dead` needs `MissesToDead` (2) consecutive misses
+    (`internal/pipeline/reconcile.go:31`, applied at `:258-264`); `died_from` restores the posting when
+    its content is listed again (`reconcile.go:191-195`); and a floor would hide a board that was
+    genuinely emptied. Revisit if an adapter is seen returning a well-formed empty list while the
+    service is down. Also recorded in "Audit 2026-10-19: criteria not built as written".
 
 - **Jibe remote and pay rules are read from one tenant (2026-10-20).** The AMD payload has no
   remote field and no populated `salary_*_value`. `internal/sources/jibe` now marks a posting
@@ -854,8 +1112,12 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     (14 of 768) now leads as "security clearance" in the role line.
   - Shared source plumbing: `srcutil.Pacer` spaces one board's requests within a total wait
     budget (Jibe 5 s / 15 min from AMD's Crawl-delay; Eightfold 2 s / 15 min). `GetJSON`
-    retries a 429/503 without `Retry-After` after 5 s, 15 s and 30 s, then fails the board.
-    Adapters' structured role facts lead as one `srcutil.RoleLine` in one employment-type
+    retried a 429/503 without `Retry-After` after 5 s, 15 s and 30 s, then failed the board.
+    (Superseded on 2026-10-23 when this work was merged onto main: main's jittered exponential
+    backoff with per-request, per-board and per-run retry budgets, its `rate_limited` board
+    outcome and the host throttle won, and that fixed schedule was dropped. The `Pacer` stays:
+    it spaces a board's own requests and sits above egress's one-second per-host floor, which
+    a paced wait already spans, so the two never add.) Adapters' structured role facts lead as one `srcutil.RoleLine` in one employment-type
     wording (Jibe `employment_type`, Workday `timeType`, Eightfold role/employment/work site,
     Amazon schedule and clearance), stripped by `SourceText` like pay lines, so a board
     changing only a role field re-renders a stored posting rather than re-triaging it (the
@@ -873,7 +1135,12 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     moving a stored posted date). The run record's per-board counts now carry `refreshed`,
     `kept`, `redated` and `revived`.
 
-- **A run without a decision backend lists its boards (2026-10-20).** Before, `run-once` and the
+- **~~A run without a decision backend lists its boards (2026-10-20).~~ Not kept (2026-10-23).**
+  Main's later design won on the merge: `--list-only` needs no backend and succeeds, and a run
+  that advances is refused before it folds the spool or lists any board
+  (`TestFullRunWithoutBackendStillRefusedAfterListOnly`, `TestRunOnceCLIListOnlyWithoutBackend`).
+  The advance stop `no_backend` and its notice were removed. Reverting that is the owner's call;
+  the snapshot commit holds the old code. What it said: before, `run-once` and the
   daemon failed before reading any board when no backend could be built (no API key), which
   left the Jobs list empty. Now they list the boards and run the engine's own stages (drop
   rules, near-duplicates), record the postings live, then fail with advance stop
@@ -890,7 +1157,16 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   default location the same day, so the app and a bare `vani` now share one pair. Still open:
   Claude keys for scheduled runs, signing `vani`
   so the Keychain grant survives rebuilds, and installing a daemon (the schedule never fires
-  without one). `docs/RUNTIME.md` maps every entry point to its config, state and keys.
+  without one; since 2026-10-23 the app's Run on schedule can keep it, below). `docs/RUNTIME.md`
+  maps every entry point to its config, state and keys.
+  - **Merged with main's schedule agent (2026-10-23).** `vani`'s own Keychain read and the app's
+    schedule agent read the same item, so they were made one policy: the environment wins; a
+    `vani` the app starts with the decision key gets `VANI_NO_KEYCHAIN=1` (the app is the one
+    reader for it, and a refused or unanswered read is not asked again by another binary); a
+    `vani daemon` started any other way (the plist) reads the item itself once, at its start,
+    bounded to 60 s, and announces the result in `daemon.json` (`source: "keychain"`, or the
+    reason there is no key in `reason` and `keychain`). The schedule hint and `vani status`
+    say this. Not run against the real Keychain: the tests replace the read.
 - **`cmd/vani/jobscmd.go:102` still names `jobinsight.ParsePay`** in a comment; it reads
   `PostingPay` now. Left because that file was mid-edit in another session.
 
@@ -920,6 +1196,15 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     Stored postings are reused, and new ones the title rule drops are not fetched. Tested on a fake
     NVIDIA-shaped board only; **not yet run live from the daemon.** The installed app's bundled
     `vani` predates it.
+  - **Fixed 2026-10-22, wrap at the total:** `salesforce/External_Career_Site` "machine learning"
+    counts 40 on its first page and 0 on every later one, and answers offset 40 with page 1 again.
+    The walk paged until a short page, so a total that is a multiple of 20 sent it to offset 40 and
+    refused a complete listing. It now treats the wrap as the end once every job the first page
+    counts has been read (when the total is a positive integer under the window and at least the
+    page's rows). It still asks for the page past the total, one extra request, so a first total
+    that understates the board cannot cut the listing short and age unread postings. A wrap
+    before the total still fails the board, and so does a wrap with no usable total. A later
+    page's total is ignored. A board that shrinks onto a full page mid-walk fails that run.
   - **Open, ingest bound:** a crawled job's description reaches Vani only as the 4000-byte
     `snippet` (`docs/EXTENSION_INGEST.md`). The crawl sends the part that describes the role, not
     the company boilerplate, but triage and scoring see that excerpt, not the whole posting.
@@ -1087,14 +1372,15 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     `vani jobs list --sort priority --limit 20 --json` (`.jobs[].triage.seniority`), run with
     `VANI_CONFIG` and `VANI_STATE_DIR` set to the live `.state` paths. A `title_signals.read`
     for "Senior"/"Sr." is the other lever.
-  - Postings that went through the pipeline while `devprism.binary` was empty were marked Scored
-    with "scoring disabled" and no rank or coverage, and nothing re-scores them now that DevPrism
-    is configured. Every posting in the live top 20 takes the coverage prior (0.4), so the largest
-    signal is missing from the live ranking until they are re-scored.
+  - ~~Postings scored while `devprism.binary` was empty lack coverage in the live top 20~~ —
+    resolved: on 2026-10-20 a fold of the live ledger found 2,287 of 2,301 digested postings with
+    coverage and rank (`vani rescore` exists for the rest).
   - The Mac app does not show `score_factors` or `semantic.evidence`, and never passes
     `--half-life` (Score's default is 10 days).
-  - Judgement call left as is: at half-life 10 an excellent 21-day-old posting (31.5) ranks below a
-    mediocre same-day adjacent one (37.6); `rankeval` `TestRTSharpRecencyBuriesExcellent` skips.
+  - Resolved by policy (2026-10-20, docs/RANKING_PLAN.md): at half-life 10 an excellent
+    21-day-old posting still ranks below a mediocre same-day one by priority ("what is new"), and
+    the digest's Top open section ranks by Relevance ("best open role"), where it leads.
+    `TestRTSharpRecencyBuriesExcellent` asserts that and no longer skips.
   - Closed on this branch: displayed `relevance` rests on the known parts (`relevance_known`);
     `vani jobs mark`/`note` rank with the marks as written; the digest ranks with the same drop-rule
     penalties, rank penalties and title signals as `vani jobs` (`cmd/vani/rankconfig.go`); the
@@ -1377,3 +1663,219 @@ Each was decided on evidence; the cards' other criteria were built and tested.
 - **Merged into main** (2026-10-19). The only conflict was the `cmdJobs` usage string, which both
   sides rewrote; it now reads `"jobs: expected list, stats, gaps, folders, show, find, ingest, mark
   or note"`.
+
+## Ranking measurement (branch ranking-measure, 2026-10-20)
+
+- Plan, findings and phase status: `docs/RANKING_PLAN.md`.
+- Built: `internal/feedback` (impressions and audit judgments beside the ledger), the digest's
+  Top open and Explore sections (`digest.top_open`, `digest.explore`), `vani audit` and the
+  age-neutral advance order. The recency red-team case is policy now, not a skip.
+- Open: the Mac app's New / Top open sections and an audit sheet wait on the uncommitted
+  JobsView/JobsModel work in the main checkout. Fail-open counters, the semantic floor, the notes
+  gate and the agreement drop rule are the Phase 3 session's. The Go Platt and weight fitter is the
+  Phase 4-5 session's; they read `<state>/feedback/judgments.jsonl` and must refuse below 100 and
+  150 usable judgments.
+- An app that calls `vani jobs` does not log impressions yet: only the digest does. Adding a
+  `vani audit shown` (or similar) for the app's visible rows comes with the app work.
+
+## Rank learning: `vani rankfit` (built 2026-10-20, branch `claude/admiring-einstein-72e43c`, on `ranking-measure`)
+
+docs/RANKING_PLAN.md Phases 4–5, machinery only: nothing has been fitted on live data (0 audit
+judgments, 29 saves, 0 hides on 2026-10-20). The branch is rebased onto `ranking-measure` and
+merges after it.
+
+- **Merge with the exclude-config work.** `internal/config/config.go` gains `rank_weights_file`
+  (one field after `age_neutral_companies`, and one entry in the absolute-path check). The main
+  checkout has another session's uncommitted exclude work in that file: merge by hand, not by
+  overwriting either side.
+- **Labels.** The weight fit reads `internal/feedback`: `feedback.Latest` judgments (yes above
+  maybe above no; skip labels nothing; the threshold is `feedback.WeightFitMin` on usable ones),
+  then marks (saved/applied yes, hidden no), then impressions (shown and left unmarked is a no;
+  never shown is no label). Only judgments are held out and scored. Platt reads `vani label`'s
+  slot labels (`internal/eval`, read only), threshold `feedback.CalibrationMin` distinct postings
+  per backend. An audit judgment of a dropped posting is not used as a slot label: "would not
+  apply" does not say the reading was right.
+- **Recorded scores, one approximation.** A judged or shown posting is fitted on the factors
+  feedback recorded then, which is what the owner saw (`rankfit.ItemFromScores`). Those hold
+  known parts only, so an unknown role fit takes the prior. ScoreWith gives an option that is set
+  but unanswered its ordinal value instead; the record cannot carry that
+  (`TestItemFromScoresMatchesItemFrom` pins the one case). A mark nothing showed is scored now.
+  Recorded factors were computed under the calibration of their day, not this run's.
+- **Shown-but-unmarked negatives are many.** The digest logs every role it lists, so passed
+  postings will outnumber saves. Only held-out audit judgments decide whether the file is
+  written, so a mark-driven fit that does not order judgments better is refused. If passed
+  postings swamp the saves, weight them down or keep only those shown above a saved one.
+- **Per-slot calibration (owner decision).** Calibration pools every triage slot of a backend.
+  `vani label` asks every slot, so calibrating per (backend, slot) would cost no extra labels and
+  would keep easy slots from lifting role_fit's confidence. The change: `Slot.Name` from
+  `SlotOf`, calibration keyed `backend/slot`, and `PlattSamples` grouped the same way.
+- **The company factor is left out of the fit.** It is learned from the same marks the fit
+  trains on, so including it would reward the fit for reading its own labels. Accuracy is
+  reported on `log match + log gate + log fresh`, for the fitted and the hand shares alike; the
+  live Score still multiplies the company factor.
+- **Gate and freshness are not fitted, only diagnosed.** `Weights` has no exponent for them;
+  the file carries the seven shares and the calibration. `rankfit` also fits free gate and
+  freshness exponents and prints them: far from 1, they say the gate or freshness constants
+  (`Mismatch`, `UnsureGate`, `FreshFloor`, `HalfLifeDays`), not the shares, are what is off.
+- **Calibration is keyed by the backend as recorded.** Legacy `jev` rows calibrate separately
+  from `d1-ultra` rows (no `eval.Names` mapping at score time), so each needs its own 100
+  judged postings. kb_match readings carry no backend and stay uncalibrated.
+- **`advance` order ignores the file.** `cmd/vani/advanceorder.go` builds its own context from
+  run options, not the config's rank weights; it still ranks by the hand weights. `vani audit`
+  scores with the file (its context is `vani jobs`'s).
+- **`--dry-run` exits 0 even when it says "would refuse".** It is a count, not a readiness probe;
+  read its "would run" lines, or run without it.
+- **A weight fit that does not beat the hand weights is not written** (exit 1). Phase 5's exit
+  also asks that the labelled set replace the synthetic rankeval worlds: not done.
+- **Not run on the live state.** `vani rankfit --dry-run` against `.state/state` was not run
+  from this branch.
+
+## Board expansion and the triage backlog (2026-10-22)
+
+The owner added 60 boards (79 in all). A list-only run put 8,525 untriaged postings in the ledger,
+and the owner read the empty Jobs tab as a sync failure. Five branches merged on main (`61b7397`,
+`6af2490`, `c65bc60`, `dde9125`, `9218e2a`):
+- the Eightfold v2 fallback (Netflix)
+- Workday `wdN.myworkdaysite.com` hosts (Snap)
+- Ashby `board_name` (Hippocratic AI)
+- a 1 MiB icon cap (OpenAI)
+- list-only runs that need no backend
+- `jobs list --view pending` and the Awaiting triage tab
+- the `schedule not kept` warning in `status` and the Pipeline tab
+
+Verified on merged main: `go test ./...` (60 packages ok), `swift test` (564, 0 failures), and
+`bun test extension/test/` (1192, typecheck ok). A list-only run of Snap, Hippocratic and Netflix
+against a scratch state dir (`tmp/e2e-newsources`) listed 28, 50 and 77 postings with no key.
+
+Left open:
+- **Contract change.** `sources.Board` gained `board_name` (Ashby only). Any vani built before
+  `6af2490` refuses a config that uses it, and it refuses `myworkdaysite.com` hosts too. Rebuild
+  every installed vani (the app's helper, any daemon) before adding those boards.
+- **Extension.** The extension does not recognise `myworkdaysite.com` pages as Workday
+  (`crawler.ts` `WD_HOST`, `scraper.ts`, `portal.ts`). Only `applied.ts` `postingKey` folds them.
+- **`jobs find --url` on a live posting returns no `row`.** `extension/src/jobrow.ts`
+  `parseFindRow` treats that as "no row". This was read in the code, not run in a browser.
+- **Swift decoding.** Fixed (2026-10-22). `Job.untriaged` and `Job.prefilterDrop` are `Lenient<>`
+  behind the same optional properties (`untriagedWire`, `prefilterDropWire`): a wrong-typed value
+  reads as nil (a triaged row) and the list survives.
+- **Speed.** The custom `Job` JSON encoder on the list path is not benchmarked.
+- **v2 and pcsx ids are inferred, not verified, to be the same.** No host serves both APIs. Keys
+  stay `ef:netflix.com:{id}`. Checked again on 2026-10-22 (Microsoft v2: 403 "Not authorized for
+  PCSX"; Qualcomm and Microsoft pcsx: 200; Netflix v2: 200) and still not verifiable directly. What
+  was verified is that each API's id is the id in its own site's public job URL: Netflix v2 row
+  `id` 790316208720 = `canonicalPositionUrl` `/careers/job/790316208720` = the page's `og:url`
+  and its embedded `pid`; Qualcomm pcsx row `id` 446720207388 = `positionUrl` = the job page's
+  canonical URL and JSON-LD `url`; Microsoft pcsx `positionUrl` is `/careers/job/{id}` the same
+  way. The job-URL id is one platform id per posting, so a Netflix v2 to pcsx switch would very
+  likely keep keys, but no host answers both APIs to compare, so that stays inferred. If Netflix
+  ever enables pcsx, compare one `id` per API before trusting existing keys.
+- **Robots parsing was duplicated (fixed).** `page.parseAllowed` repeated `parseCrawlDelay`'s robots.txt
+  group state machine. Both now read `parseRobotsGroups` (`internal/sources/page/robotsgroups.go`), one
+  RFC 9309 group reader. `TestRobotsParsersMatchLegacy` runs both over 3,000 generated and 27
+  hand-written files against the old functions, kept as a test oracle (`robots_oracle_test.go`).
+- **Netflix costs one extra request per run.** The 403 pcsx probe runs every time; the result is
+  not cached.
+- **List-only still starts the local llama.cpp server.** Fixed (2026-10-22). `startRun` starts it
+  only when the pass advances (`advance` true); `runnerFor` then neither warns that the local model
+  is disabled nor that the shadow is unavailable on a pass that asks nothing. Inbox polls still
+  advance, so they start it as before. Test: `cmd/vani/listonlylocal_test.go`.
+- **Non-ASCII board names (closed 2026-10-22).** `sources.BoardNameProblem` now takes Unicode
+  letters and digits (so `Zürich Labs`, `东京 科技`), still refusing controls, format characters
+  (zero-width joiner, bidirectional overrides), non-U+0020 spaces, punctuation (`. / ? # % :`,
+  fullwidth lookalikes included), invalid UTF-8, and names over 64 runes or 192 bytes. Combining
+  marks are refused, because the standard library has no NFC and refusing marks is how the accepted
+  set avoids one letter written two ways; the cost is that a script needing marks (Devanagari,
+  Thai) cannot be a board name until `golang.org/x/text/unicode/norm` is an approved dependency.
+  Lookalike letters are accepted on purpose: the name only ever reaches one fixed host's path.
+  Open: `jobs ingest` derives the token for a spaced name as the lower-cased, hyphenated name, so
+  a pasted `jobs.ashbyhq.com/Zürich%20Labs` page gets the token `zürich-labs`, a non-ASCII key
+  part (keys accept it; the Mac app's key check refuses only whitespace and controls). Give it an
+  ASCII slug with `watchlist add --token` if that matters. (A non-ASCII token was already possible
+  before this change for an unspaced name such as `/データ`: `sources.TokenProblem` refuses only
+  `:`, and the request path is percent-escaped.)
+- **~~The schedule is not kept.~~ Fixed (2026-10-23, branch `worktree-agent-ac2e315dd6ab5a56f`),
+  once the owner turns it on.** `vani launchd plist` still puts no key in an agent's environment,
+  so the app now keeps the schedule itself: Pipeline ▸ **Run on schedule** registers a login item
+  (`vani-schedule-agent`, `macos/README.md` item 6a) that runs `vani daemon` with the decision key
+  read from the Keychain into the child's environment only. To enable: install the new app, open
+  the Pipeline tab, turn the switch on, approve "Vani Apply" in System Settings ▸ General ▸ Login
+  Items & Extensions; the warning goes once a daemon announces itself. Left open:
+  - **Not run live.** Registration, the approval step, the first Keychain read from the new helper
+    (it is a different signed identifier, `dev.vbcr.vani.schedule.agent`, from the app that made the
+    item, so macOS may ask "Allow / Always Allow" once; unanswered for 30 s the daemon starts with the
+    model off and `status` says so, then turn the switch off and on) and a real daily run from it were not
+    exercised here: tests inject the key and never register anything. Only the supervisor against the
+    real `build/vani daemon` was run.
+  - **Two ways a model-less daemon stays model-less.** A key added after a refused or unanswered read is
+    not picked up until the switch is turned off and on (a retry would prompt again); and `daemon.model`
+    is read at the daemon's start, so a config edit that adds an OpenRouter model to a running daemon is
+    not reflected until it restarts.
+  - **An updated app does not replace the running daemon.** After reinstalling, turn the switch off and
+    on (or Register Again); the old `vani` keeps running until then.
+  - **`daemon.json` gained `model`.** An older installed `vani` reading it rejects the file as corrupt
+    (its reader is strict) and reports no daemon; the new reader tolerates unknown fields. Rebuild every
+    installed `vani` together.
+  - **The anthropic provider's Keychain prompt is the launcher's** (`anthropic-account exec`) and is not
+    bounded by the helper; a daemon that waits on it has not announced itself yet.
+- **Unsupported job sites.** Meta, Uber, Groq (Gem), Hugging Face (Workable), Modular (no board),
+  Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
+- **An unnamed Swift test failure under load.** It was seen twice on 2026-10-22/23. The first time,
+  the logo-cap agent's `swift test` ran beside a full Go run. The second time, the final-main
+  `swift test` (642 tests, "1 failure (0 unexpected)") ran beside `bun test`. Neither run kept the
+  failing line, and a rerun on an idle machine was clean. The next time it appears, keep the full
+  output (`swift test ... 2>&1 | tee tmp/swift-test.log`) and grep it for `error:`, so the test can
+  be named.
+- **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every
+  request. Reachable PNGs found 2026-10-22 on Wikimedia Commons, both fetched by `vani logos
+  refresh --force` against a scratch state (fetched 2, failed 0): HRT
+  `https://upload.wikimedia.org/wikipedia/commons/3/3b/HRT_Primary_Logo_-_Full_Color.png`
+  (721x420, 9,943 bytes, CC BY-SA 4.0, credited to hudsonrivertrading.com) and Marvell
+  `https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Marvell_Logo.svg/330px-Marvell_Logo.svg.png`
+  (330x95, 3,277 bytes, a render of the SVG). Both applied to the live config on 2026-10-22
+  (`watchlist domain` and `watchlist icon`; `logos refresh` fetched 2, failed 0). The Marvell mark is black on transparent, so it may vanish on a dark
+  background; Marvell's own Workday page offers only an SVG (`/MarvellCareers/assets/logo`).
+- **Microsoft Eightfold 429 is unexplained, and cleared by itself.** Re-probed 2026-10-23 00:16
+  UTC with 5 requests to Microsoft hosts: `apply.careers.microsoft.com` robots.txt 200 (allows
+  `/api/pcsx` and `/api/apply`), pcsx search 200 with 10 positions, so the 429 was a time-limited
+  throttle, not a block of this IP. There is no other official endpoint to fall back to:
+  `jobs.careers.microsoft.com` answers 301 to `apply.careers.microsoft.com/`, and
+  `gcsservices.careers.microsoft.com` (the retired jobs.careers search API) fails TLS verification
+  from here (its certificate does not name the host; not retried with verification off). v2 on the
+  Microsoft host is 403 "Not authorized for PCSX", so v2 is no fallback either. No code change.
+  The original note: on 2026-10-22 `apply.careers.microsoft.com` answered every
+  pcsx search with 429, no `Retry-After`, an HTML 22-byte body, minutes after the last run. Whether it is a
+  burst limit or a sustained edge block is not known; backoff (about 2-16 s, one board budget of 2 min) cannot
+  outwait the second. The board now ends `rate_limited` and is retried next run. Pacing stays egress's 1 s per
+  host; no `Crawl-delay` is in that robots.txt. Every srcutil source now retries up to 5 times, not 3.
+  The cause is still unknown; what was missing (no run cap, no memory of a throttled host) is fixed
+  (2026-10-22, branch `worktree-agent-a8080e8b372021eb2`):
+  - **Run cap (fixed).** `listBoards` wraps the run in `srcutil.WithRunRetryBudget` (10 min,
+    `RunRetryBudget`). Budgets nest: every wait is charged to the board's 2 min and the run's 10 min
+    together, or to neither. Once the run's is spent a request that would wait gives up at once
+    (`the run's retry budget is spent`): a 429 as `rate_limited`, a 503 as the plain status.
+  - **Host memory in a run (fixed).** `srcutil.HostThrottle`, on the context beside the budgets: a host whose
+    request ended 429 after its retries is in a probe state. The next request to it (the next board's)
+    is sent once, with no retries; a 429 again blocks the host for the rest of the run (no request sent,
+    error `host rate limited earlier this run; probed once`); a 200 reopens it. Requests that arrive while the
+    probe is out wait for it (ending with their context); a request already retrying stops retrying once
+    another finds the host throttled.
+  - **Host memory across runs (fixed).** The throttle is seeded from, and written back to,
+    `<state>/hosts/cooldown.json` (`srcutil.LoadCooldowns`/`SaveCooldowns`, written with `atomicfile`):
+    `{"version":1,"hosts":{host:{"runs":N,"last":RFC3339}}}`. The next run sends one probe, no retries; a
+    429 ends the host for the run and counts `N+1` (error `host in cooldown after N+1 rate-limited runs;
+    probed once`), any 200 deletes the entry. Backoff: after the second consecutive rate-limited run a
+    host is left alone, with no request, for 15 min, doubling per run to 6 h (`not probed until ...`);
+    the first rate-limited run earns no window, and 6 h means a daily run always probes. A host no
+    board reached keeps its entry; entries older than 30 days are dropped. Bounds: file read at most
+    64 KiB (more is ignored with a warning), 64 hosts (most recent kept), count capped at 99, host
+    names validated, a bad entry dropped and counted in a warning, a `last` in the future read as a window
+    just over (so it is probed), an unusable or unsavable file a warning and never a failed run. A
+    cooldown only changes how soon a board fails: the board is never reconciled, so no posting is aged,
+    marked missed or dead. No run-record field or outcome was added (the board's `error` carries the
+    message), so `Pipeline.swift` needs no change.
+  - **Not covered.** Only requests through `srcutil` are remembered: the careers-page source (lightpanda) and
+    `egress` pacing are not, and requests made outside the listing phase (pay look-ups, `jobs find`)
+    carry no throttle. After a host answers 200 it is open again, so a host that serves page 1 and
+    429s page 2 gets the usual retries on page 2 (bursty, not blocked).
+- **An interrupted run never reaches the run history.** Fixed (2026-10-22). `dailyJob` calls `archiveInterruptedRun` (`cmd/vani/runhistory.go`) after the run holds the ledger and before it replaces `last.json`: a `running` record is written to `runs/history/<id>.json` with outcome `interrupted` (a new accepted outcome; no end time, since none is known), once and never over an existing entry. The ledger lock is the proof that no other run is live, so the record's pid is not asked (a reused pid, or this process's own pid after a failed final write, must not hide the run); the one check kept is that `daemon.json` does not name a live other process holding that pid. An unreadable `last.json` is reported on stderr and replaced; nothing is archived from it. An older vani reading the history shows an `interrupted` file as a problem row (it does not know the outcome). A run that died is archived at the next run's start, not before: until then it is `last.json` and `status` reports it as interrupted, as it did.
+- **Nothing ties a log to its run.** Fixed (2026-10-22). The app starts `run-once` with `VANI_RUN_LOG=<state>/runs/manual.log` (an environment variable, so an older vani ignores it); `useRunLog` validates it (`checkRunLog`: absolute, no `..`, no control characters, a regular file or a new one inside the resolved `<state>/runs`) and `last.json` records it as `log`, next to a new `id` field (the run id). A refused path is said on stderr and not recorded; the run is unaffected. When the app rotates `manual.log` it finds the newest run in `last.json` and the history (`RunLogOwner`) that recorded this file and, if the log was last written during that run (60 s slack), names the rotated file `history/manual-<run id>.log` (else the old `manual-<time>.log`, never over an existing file). The newest claimant, not `last.json`'s run: a scheduled run the daemon made in between records no log. `runs failures` reports `history/manual-<id>.log`, else the recorded file unless a later run recorded the same path ("Log: not kept"); a run with no recorded log still lists the logs that exist. Left: daemon runs record no log (`vani.err.log` holds every run it made, so the report still lists it); a refused run (ledger locked) writes no record, so a following rotation can name its refusal text after the previous run only if that run's name is free and its mtime fits, which is rare and not guarded further.

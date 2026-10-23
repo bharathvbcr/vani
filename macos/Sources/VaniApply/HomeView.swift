@@ -40,9 +40,7 @@ struct HomeView: View {
                     VStack(spacing: 12) { pipelineCard(pipelineReading, now: now); activityCard }
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 1000, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .paneColumn()
         }
         .background(.background)
         .navigationTitle("Home")
@@ -152,11 +150,14 @@ struct HomeView: View {
     }
 }
 
-private func healthColor(_ h: PipelineHealth) -> Color {
-    switch h {
-    case .healthy: .green
-    case .warning: .orange
-    case .problem: .red
+extension PipelineHealth {
+    /// The tint Home and Pipeline show this health in.
+    var tint: Color {
+        switch self {
+        case .healthy: .green
+        case .warning: .orange
+        case .problem: .red
+        }
     }
 }
 
@@ -493,7 +494,7 @@ private struct PipelineCard: View {
                 let health = s.health(at: now)
                 let issues = s.issues(at: now)
                 HStack(spacing: 8) {
-                    Image(systemName: HomeOverview.healthSymbol(health)).foregroundStyle(healthColor(health)).font(.title2)
+                    Image(systemName: HomeOverview.healthSymbol(health)).foregroundStyle(health.tint).font(.title2)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(HomeOverview.healthTitle(health)).font(.title3.weight(.semibold))
                         Text(HomeOverview.runHeadline(s.lastRun, now: now)).font(.callout).foregroundStyle(.secondary)
@@ -509,7 +510,10 @@ private struct PipelineCard: View {
                 if issues.count > 3 {
                     Text("and \(issues.count - 3) more").font(.caption).foregroundStyle(.secondary)
                 }
-                if let next = s.schedule.nextRun {
+                if s.schedule.isUnkept {
+                    Label("Schedule not kept: no daemon is running", systemImage: "calendar.badge.exclamationmark")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if let next = s.schedule.nextRun {
                     Label("Next run \(next.formatted(date: .abbreviated, time: .shortened))", systemImage: "calendar")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if !s.schedule.ok {

@@ -1,7 +1,6 @@
 package rankeval
 
 import (
-	"fmt"
 	"math"
 	"testing"
 
@@ -9,24 +8,9 @@ import (
 )
 
 // Red-team cases: orderings a person would call wrong, and numeric abuse.
-//
-// A case documenting a failure checks its expectation and, when the ranker
-// violates it, skips with the exact inputs and scores ("known failure"). Once
-// the ranker is fixed the same test runs as a normal assertion, so a fix cannot
-// land without un-skipping it, and a skip can never hide a regression of a
-// case that passes.
+// Every case is a hard assertion: none is skipped as a known failure.
 
 func def(in jobinsight.Inputs) jobinsight.Result { return jobinsight.Score(in) }
-
-// knownFailure skips with detail while the ranker is known not to hold a
-// case. Once the case holds, replace the call with a hard assertion: a fixed
-// case left on knownFailure would skip silently if it regressed.
-func knownFailure(t *testing.T, ok bool, format string, a ...any) {
-	t.Helper()
-	if !ok {
-		t.Skip("known failure: " + fmt.Sprintf(format, a...))
-	}
-}
 
 // solid is a confident, well-covered partial fit; a negative age means unknown.
 func solid(age int) jobinsight.Inputs {
@@ -72,16 +56,17 @@ func TestRTConfidentMismatchRescuedBySignals(t *testing.T) {
 	}
 }
 
-// A company the owner hid ten postings of only loses 1-(1-0.1*10/15) = 6.7%,
-// which one day of age already outweighs, so its newest postings lead.
-func TestRTHiddenCompanyFloodStillLeads(t *testing.T) {
+// Policy (owner, 2026-10-20): the company factor only lifts, from saves and
+// applies. A hide says that posting was wrong, not the company, so a company
+// the owner hid ten postings of scores exactly like an unmarked one.
+func TestRTHiddenCompanyFloodDoesNotSink(t *testing.T) {
 	h := solid(0)
 	h.Company = jobinsight.CompanyMarks{Hidden: 10}
-	u := solid(2)
-	sh, su := def(h).Score, def(u).Score
-	t.Logf("company with 10 hidden marks, today: %.1f; unmarked identical posting, 2 days old: %.1f; company factor %.3f", sh, su, def(h).Company)
-	if !(sh < su) {
-		t.Fatalf("10 hidden marks (%.1f, factor %.3f) still outrank an identical unmarked posting 2 days older (%.1f)", sh, def(h).Company, su)
+	u := solid(0)
+	rh, ru := def(h), def(u)
+	t.Logf("company with 10 hidden marks: %.1f (factor %.3f); unmarked identical posting: %.1f", rh.Score, rh.Company, ru.Score)
+	if rh.Company != 1 || rh.Score != ru.Score {
+		t.Fatalf("10 hidden marks moved the score to %.1f (factor %.3f); an unmarked identical posting scores %.1f", rh.Score, rh.Company, ru.Score)
 	}
 }
 
@@ -144,7 +129,15 @@ func TestRTSharpRecencyBuriesExcellent(t *testing.T) {
 	m.Coverage, m.Semantic = 35, 0.35
 	se, sm := def(e).Score, def(m).Score
 	t.Logf("excellent strong_fit (p .95, cov 90, sem .9) 21 days old: %.1f; mediocre adjacent (p .7, cov 35, sem .35) today: %.1f", se, sm)
-	knownFailure(t, se > sm, "excellent 21-day-old posting %.1f below mediocre same-day adjacent %.1f", se, sm)
+	// Resolved by policy (owner, 2026-10-20, docs/RANKING_PLAN.md): priority
+	// answers "what is new" and stays recency-weighted, so the fresh posting may
+	// lead the new roles; "what is the best open role" is Relevance, age left
+	// out, which the digest's Top open section ranks by. The excellent posting
+	// must lead there, by a clear margin.
+	re, rm := def(e).Relevance, def(m).Relevance
+	if !(re > rm+20) {
+		t.Fatalf("excellent posting's relevance %.1f not clearly above the mediocre one's %.1f", re, rm)
+	}
 }
 
 // An unknown age must not beat a known-fresh posting of the same quality.

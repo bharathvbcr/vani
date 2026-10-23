@@ -2,6 +2,7 @@ package kbmatch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,10 +51,10 @@ type Entry struct {
 	At   time.Time `json:"at"`
 	// P is the backend's probability when it gave one.
 	P float64 `json:"p,omitempty"`
-	// Backend is the backend that answered ("llm", "liquid"; "jev" before
-	// 2026-10-20) and Mode what the question carried: "full" digest or
-	// "focused" (compact digest plus lines an embedding model picked). Both are
-	// audit; neither invalidates the answer.
+	// Backend is the backend that answered ("llm", "openrouter"; answers
+	// before 2026-10-20 say "jev" for openrouter) and Mode what the
+	// question carried: "full" digest or "focused" (compact digest plus lines an
+	// embedding model picked). Both are audit; neither invalidates the answer.
 	Backend string `json:"backend,omitempty"`
 	Mode    string `json:"mode,omitempty"`
 }
@@ -199,10 +200,22 @@ func (s *Store) Save() error {
 // Lock takes the store's run lock without waiting: two runs would spend twice
 // and the later save would drop the earlier one's answers.
 func Lock(path string) (unlock func(), err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	target, err := atomicfile.ResolveLeaf(path)
+	if err != nil {
 		return nil, fmt.Errorf("kbmatch: %w", err)
 	}
-	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	return lockAt(target)
+}
+
+// lockAt locks target, a path already resolved by atomicfile.ResolveLeaf. The
+// store is read, removed and saved at that same path, so the lock and the
+// writes can never name different files.
+func lockAt(target string) (unlock func(), err error) {
+	lockPath := target + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("kbmatch: %w", err)
 	}
@@ -214,4 +227,73 @@ func Lock(path string) (unlock func(), err error) {
 		return nil, fmt.Errorf("kbmatch: lock: %w", err)
 	}
 	return func() { _ = filelock.Unlock(f); _ = f.Close() }, nil
+}
+
+// lockRetry is how often LockWait tries again while another run holds the lock.
+const lockRetry = 20 * time.Millisecond
+
+// LockWait is Lock that waits up to wait (at least one try) for another run to
+// let go, then gives ErrBusy. A run holds the lock for as long as it asks, so
+// the wait is short: it rides out a run that is only finishing, not one that is
+// working through its list. The wait ends when ctx does, with ctx.Err() and
+// without the lock.
+func LockWait(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
+	target, err := atomicfile.ResolveLeaf(path)
+	if err != nil {
+		return nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	return lockWaitAt(ctx, target, wait)
+}
+
+func lockWaitAt(ctx context.Context, target string, wait time.Duration) (unlock func(), err error) {
+	deadline := time.Now().Add(wait)
+	timer := time.NewTimer(lockRetry)
+	defer timer.Stop()
+	for {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		unlock, err = lockAt(target)
+		if !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
+			return unlock, err
+		}
+		timer.Reset(lockRetry)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// OpenLocked takes the run lock, waiting up to wait, and only then opens the
+// store, so what the caller reads is what no other run can change before it
+// saves. A corrupt store is removed here, under the lock, and recovered carries
+// why; the caller starts from an empty store. Nothing is removed without the
+// lock. The caller calls unlock when the run is done.
+func OpenLocked(ctx context.Context, path string, wait time.Duration) (st *Store, unlock func(), recovered error, err error) {
+	// Resolve once: the lock, the read, the corrupt-file removal and every later
+	// Save of the returned store all use this one path.
+	path, err = atomicfile.ResolveLeaf(path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	unlock, err = lockWaitAt(ctx, path, wait)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	st, err = OpenStore(path)
+	if errors.Is(err, ErrCorrupt) {
+		recovered = err
+		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			unlock()
+			return nil, nil, nil, rerr
+		}
+		st, err = NewStore(path), nil
+	}
+	if err != nil {
+		unlock()
+		return nil, nil, nil, err
+	}
+	return st, unlock, recovered, nil
 }

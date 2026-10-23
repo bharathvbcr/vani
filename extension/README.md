@@ -131,6 +131,21 @@ each one:
   Failures say why: the budget is spent, the Mac app isn't reachable, no key is configured, or the
   draft timed out.
 
+### The relevance badge: Vani's row or an estimate
+
+The score pill on a job page is one of two different numbers, and its label says which.
+
+- **Relevance (Vani's row).** When the page's posting is in Vani's ledger, the extension asks the
+  Mac app for Vani's own jobs row (`jobRow`, `src/jobrow.ts`; one answer is kept for a minute per
+  URL). The pill then shows the row's age-free relevance and fit, with the priority in the label
+  (for example "Strong fit (priority 62)"). This is the number the Jobs tab and the digest rank by.
+- **Estimate.** A posting Vani has not read (not in the ledger, no Mac app, or a `vani` too old to
+  answer) is scored in the page from its text against your bank's target profile
+  (`src/relevance.ts`, a heuristic that falls back to a generic profile). It is labelled "Estimate"
+  and is not the ranking: it can differ from the row Vani gives the same posting once it has read
+  it. A row Vani has but cannot be read says why next to the estimate instead of passing the estimate
+  off as Vani's.
+
 ### Crawling a whole listing into Vani
 
 In the scrape drawer, **Crawl all pages → Vani** reads every page of the listing you are on, not
@@ -140,7 +155,9 @@ batches of at most 200; `src/crawlrun.ts`, `src/crawler.ts`). Progress shows und
 and what Vani answered.
 
 - **Workday boards** are read through the board's own listing API, same-origin from the page, so
-  no host permission is added. That API serves at most 2000 rows of one query and then serves page
+  no host permission is added. Both hosts are read: `{tenant}.wd{N}.myworkdayjobs.com/{site}` and
+  the shared `wd{N}.myworkdaysite.com/recruiting/{tenant}/{site}`, whose tenant is the path's
+  (the same board `vani jobs ingest` derives from the page). That API serves at most 2000 rows of one query and then serves page
   1 again, so a bigger board is split by one of its own facets. Vani analyses the description it
   is sent and fetches none, so the crawl reads the descriptions of the 200 most relevant jobs
   (ranked against your bank's target profile). Each description is trimmed to the 4000-byte ingest
@@ -311,8 +328,8 @@ flowchart LR
   and are matched by position (no request ids; the protocol is unchanged). Up to 4 calls are in
   flight and 64 pending in all; a call that times out (5 s) or a lost connection closes the port and
   rejects everything pending, since a late reply would be matched to the wrong call, and the next
-  call reconnects. Only read-only ops (`ping`, `get`, `getChunk`, `queryCandidates`, `listAnswers`,
-  `resumeGet`, `resumeInfo`) are retried once, and only after a disconnect. Ops that can take seconds
+  call reconnects. Only read-only ops (`ping`, `get`, `getChunk`, `resumeGet`, `resumeInfo`) are
+  retried once, and only after a disconnect. Ops that can take seconds
   (`draft`, `jobFind`, `jobMark`, `jobsIngest`) and any unknown op still use one process per message,
   as do all calls while the port is backing off after failed connections (1 s doubling to 30 s).
   Safari, and a Chrome without `connectNative`, keep the per-message path.
@@ -442,9 +459,26 @@ PATH`) and `openssl`.
 
 `test/dom.html` runs the DOM tests in a real browser. It captures a hand-filled Greenhouse-style
 form, then fills a reworded Lever-style form, and checks what must and must not be filled. The page
-title reads `PASS n/n`. Type-checking uses `tsc` with `tsconfig.json` (no TypeScript dependency is
-installed here; `src/chrome.d.ts` declares the Chrome API surface used). The type-check used here is
-`/Users/bharath/Code/apps/SalEdge/node_modules/typescript/bin/tsc -p tsconfig.json --noEmit`.
+title reads `PASS n/n`.
+
+### Type-check gate
+
+`bun test` does not type-check. The gate is one command, run from `extension/`:
+
+```bash
+sh scripts/typecheck.sh        # or: bun run typecheck
+```
+
+It runs `bun install --frozen-lockfile` (the compiler is `typescript`, an exact-pinned devDependency
+in `package.json`, locked in `bun.lock`; `node_modules/` is git-ignored and never shipped, since
+`build.ts` bundles `src/` and copies `static/` only), then the installed
+`./node_modules/.bin/tsc -p tsconfig.json --noEmit` against `src/` (`src/chrome.d.ts` declares the
+Chrome API surface used). Before it runs, `tsc --version` must name exactly the version pinned in
+`package.json`. A missing, empty or foreign compiler exits non-zero and says to run the install step; the
+script never prints `typecheck: ok` unless the pinned `tsc` ran and exited zero, and it has no
+environment overrides (its tests run a copy in a scratch directory with a stub `bun`). It never uses `bunx` or `npx`,
+which download a missing package. Bumping the compiler is a reviewed change to `package.json` and
+`bun.lock`.
 
 `bun test` also covers the store (fake native host and fake `chrome.storage`) and replays
 `test/vectors/classify.json`, the classifier vectors shared with the Mac app's Swift tests; do not

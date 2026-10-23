@@ -4,6 +4,7 @@
 /vani
 /.state/
 /extension/dist-chrome/
+/extension/node_modules/
 /extension/dist-safari/
 /extension/dist-test/
 /macos/.build/
@@ -13,3 +14,4 @@
 .DS_Store
 .gocache*
 tmp/
+/dist/

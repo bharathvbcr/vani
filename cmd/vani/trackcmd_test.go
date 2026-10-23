@@ -61,18 +61,18 @@ func TestTrackListShowUse(t *testing.T) {
 	if !strings.Contains(o, "ml-systems") || !strings.Contains(o, "ML systems") || strings.Contains(o, "*") {
 		t.Fatalf("list: %q", o)
 	}
-	o, e := mustCode(t, 0, "track", "show", "ml-systems")
-	if !strings.Contains(o, "check: ok") || !strings.Contains(e, "personal names were NOT checked") || !strings.Contains(e, "evidence check skipped") {
+	o, e := mustCode(t, 1, "track", "show", "ml-systems")
+	if !strings.Contains(o, "check: incomplete") || !strings.Contains(e, "personal names were NOT checked") || !strings.Contains(e, "evidence check skipped") {
 		t.Fatalf("show: %q / %q", o, e)
 	}
 
 	before, _ := os.ReadFile(cfgPath)
-	o, _ = mustCode(t, 0, "track", "use", "--dry-run", "ml-systems")
+	o, _ = mustCode(t, 0, "track", "use", "--allow-unchecked", "--dry-run", "ml-systems")
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) || !strings.Contains(o, "dry run") {
 		t.Fatalf("dry run changed the config or said nothing: %q", o)
 	}
 
-	_, e = mustCode(t, 0, "track", "use", "ml-systems")
+	_, e = mustCode(t, 0, "track", "use", "--allow-unchecked", "ml-systems")
 	if !strings.Contains(e, "no employer lists are imported") {
 		t.Errorf("missing no-index warning: %q", e)
 	}
@@ -164,11 +164,11 @@ func TestTrackSwitchRemovesPreviousTrackRulesAndShowsOldSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	o, _ := mustCode(t, 0, "track", "use", "remote")
+	o, _ := mustCode(t, 0, "track", "use", "--allow-unchecked", "remote")
 	if !strings.Contains(o, "written by hand") || !strings.Contains(o, "Hand-written summary of target roles.") {
 		t.Fatalf("hand-written summary not shown when replaced: %q", o)
 	}
-	o, _ = mustCode(t, 0, "track", "use", "ml-systems")
+	o, _ = mustCode(t, 0, "track", "use", "--allow-unchecked", "ml-systems")
 	if !strings.Contains(o, "set by track remote") || !strings.Contains(o, "Remote ML systems") {
 		t.Fatalf("previous track's summary not shown: %q", o)
 	}
@@ -183,11 +183,11 @@ func TestTrackSwitchRemovesPreviousTrackRulesAndShowsOldSummary(t *testing.T) {
 	}
 
 	// An unreadable previous track is reported, and its rules are kept.
-	mustCode(t, 0, "track", "use", "remote")
+	mustCode(t, 0, "track", "use", "--allow-unchecked", "remote")
 	if err := os.Remove(filepath.Join(dir, "remote.json")); err != nil {
 		t.Fatal(err)
 	}
-	_, e := mustCode(t, 0, "track", "use", "ml-systems")
+	_, e := mustCode(t, 0, "track", "use", "--allow-unchecked", "ml-systems")
 	if !strings.Contains(e, "previous track remote unreadable") {
 		t.Fatalf("stderr %q", e)
 	}
@@ -245,4 +245,57 @@ func TestTracksDirFromConfig(t *testing.T) {
 	data, _ = json.Marshal(raw)
 	_ = os.WriteFile(cfgPath, data, 0o600)
 	mustCode(t, 1, "track", "list")
+}
+
+// A check that did not run must not look like a pass (B1-3): with no words
+// file and no bank, show says incomplete and exits non-zero, and use refuses
+// and leaves the config alone unless --allow-unchecked.
+func TestTrackUncheckedIsNotOK(t *testing.T) {
+	cfgPath, dir := trackSetup(t)
+	before, _ := os.ReadFile(cfgPath)
+
+	o, e := mustCode(t, 1, "track", "show", "ml-systems")
+	if strings.Contains(o, "check: ok") || !strings.Contains(o, "check: incomplete (not run: ") ||
+		!strings.Contains(o, "personal-name") || !strings.Contains(o, "evidence") {
+		t.Fatalf("show stdout %q", o)
+	}
+	if !strings.Contains(e, "personal names were NOT checked") {
+		t.Fatalf("show stderr %q", e)
+	}
+
+	o, e = mustCode(t, 1, "track", "use", "ml-systems")
+	if !strings.Contains(e, "not applied") || !strings.Contains(e, "--allow-unchecked") || strings.Contains(o, "saved") {
+		t.Fatalf("use stdout %q stderr %q", o, e)
+	}
+	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
+		t.Fatal("a refused use changed the config")
+	}
+
+	// With the flag the config is written, and stderr still names what did not run.
+	o, e = mustCode(t, 0, "track", "use", "--allow-unchecked", "ml-systems")
+	if !strings.Contains(o, "saved") || !strings.Contains(e, "personal names were NOT checked") || !strings.Contains(e, "evidence check skipped") {
+		t.Fatalf("use --allow-unchecked stdout %q stderr %q", o, e)
+	}
+	if after, _ := os.ReadFile(cfgPath); string(after) == string(before) {
+		t.Fatal("--allow-unchecked did not save")
+	}
+
+	// With both checks able to run, show prints ok and use needs no flag.
+	if err := os.WriteFile(filepath.Join(dir, trackWordsFile()), []byte("zorblax corp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bank := filepath.Join(t.TempDir(), "bank.json")
+	if err := os.WriteFile(bank, []byte(`{"entries": {}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(cfgPath)
+	cfg.KB.Bank = bank
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	o, _ = mustCode(t, 0, "track", "show", "ml-systems")
+	if !strings.Contains(o, "check: ok") {
+		t.Fatalf("fully checked show: %q", o)
+	}
+	mustCode(t, 0, "track", "use", "ml-systems")
 }

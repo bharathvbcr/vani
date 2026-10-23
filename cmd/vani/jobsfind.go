@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/bharathvbcr/Vani/internal/joburl"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -39,6 +40,9 @@ type jobRef struct {
 	Closed    bool           `json:"closed,omitempty"`
 	Mark      marks.Mark     `json:"mark,omitempty"`
 	MatchedOn string         `json:"matched_on"` // url, apply_url or base
+	// Row is the versioned contract (internal/jobview): Vani's own relevance,
+	// priority and fit label for this posting, for the extension to show.
+	Row *jobview.Row `json:"row,omitempty"`
 }
 
 type jobFindJSON struct {
@@ -72,11 +76,39 @@ func (e *env) jobsFind(args []string) error {
 		if err != nil {
 			return usagef("jobs find: --url: %v", err)
 		}
-		snap, m, err := e.jobsState()
+		// The match reads only links, so it runs on the ledger with the
+		// descriptions left out (and no marks, which it only copies into the
+		// reply); the matched row's company is then read whole, and the row is
+		// rebuilt from that record, its marks and its exclusion-adjusted status.
+		var matched jobFindJSON
+		snap, m, err := e.jobsStateFor(rowScope(func(lean ledger.Snapshot) (posting.Key, bool) {
+			matched = matchPageURL(lean, nil, page)
+			if matched.Job == nil {
+				return "", false
+			}
+			return matched.Job.Key, true
+		}))
 		if err != nil {
 			return err
 		}
-		out = matchPageURL(snap, m, page)
+		out = matched
+		if out.Job != nil {
+			r, ok, err := rowRecord(snap, out.Job.Key)
+			if err != nil {
+				return err
+			}
+			if ok {
+				in, err := e.newRowInsight(snap, m, r)
+				if err != nil {
+					return err
+				}
+				j := jobview.ToJob(r, m[r.Key])
+				in.Enrich(&j, r, 0)
+				ref := newJobRef(j, out.Job.MatchedOn)
+				ref.Row = j.Row
+				out.Job = ref
+			}
+		}
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		return nil
 	}()
@@ -145,10 +177,15 @@ func matchPageURL(snap ledger.Snapshot, m map[posting.Key]marks.Entry, page stri
 		out.Ambiguous = true
 	default:
 		r := cands[0].r
-		j := toJob(r, m[r.Key])
-		out.Job = &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: cands[0].on}
+		j := jobview.ToJob(r, m[r.Key])
+		out.Job = newJobRef(j, cands[0].on)
 	}
 	return out
+}
+
+// newJobRef is the reply's view of j, matched on the named link.
+func newJobRef(j jobview.Job, on string) *jobRef {
+	return &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: on}
 }
 
 // exactLink says which of the posting's links is the page, or "". A link that

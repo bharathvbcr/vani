@@ -137,8 +137,8 @@ func DecideSlot() decide.Slot {
 	}
 }
 
-// Descriptions returns the slot -> option -> description map for decide/jev
-// backends (the Liquid decision model).
+// Descriptions returns the slot -> option -> description map for decision-model
+// backends (jev.Config.Descriptions).
 func Descriptions() map[string]string {
 	m := make(map[string]string, len(Options))
 	for _, o := range Options {
@@ -177,8 +177,7 @@ func UnifiedQuestion(p posting.Posting, summary string) decide.Question {
 }
 
 // UnifiedDescriptions returns the merged slot -> option -> description map
-// for decide/jev backends (the Liquid decision model) covering both triage
-// slots and category in one schema.
+// for decision-model backends covering both triage slots and category in one schema.
 func UnifiedDescriptions() map[string]map[string]string {
 	out := jdtriage.Descriptions()
 	out[Slot] = Descriptions()

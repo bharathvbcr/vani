@@ -60,6 +60,11 @@ type Config struct {
 	// space). Their undated postings are not aged by when Vani first saw them; a
 	// date the board gives still counts. An ordering preference only (Rule 7).
 	AgeNeutralCompanies []string `json:"age_neutral_companies,omitempty"`
+	// RankWeightsFile is a rank weights file `vani rankfit` wrote (fitted Score
+	// shares and per-backend calibration). Empty means the hand weights. A file
+	// that is missing or invalid also means the hand weights, with a warning on
+	// `vani jobs` and the digest; it is never used half-read.
+	RankWeightsFile string `json:"rank_weights_file,omitempty"`
 	// KBMatch configures `vani kbmatch`, the language-model read of whether a
 	// posting's work is the work in the knowledge base.
 	KBMatch       KBMatch `json:"kbmatch,omitzero"`
@@ -86,6 +91,14 @@ type Config struct {
 	// entries read triage slots from the title before any model is asked; a
 	// drop rule for the slot and value read drops the posting unasked.
 	TitleSignals TitleSignals `json:"title_signals,omitzero"`
+	// Exclude is the owner's hard filter on a posting's own title, company,
+	// location and description: what it matches is dropped without asking any
+	// backend, and kept postings it comes to match are dropped at the next
+	// run. Tracks leave it alone.
+	Exclude Exclude `json:"exclude,omitzero"`
+	// Funnel tunes the triage funnel's spend (funnel.go): the thin-description
+	// skip, the notes relevance floor and the notes' own daily cap.
+	Funnel Funnel `json:"funnel,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -111,6 +124,53 @@ type Config struct {
 	// EmbeddingGemma 2 on Tessl. It only orders and explains postings, never
 	// drops one. Off when snapshot or kb.bank is empty.
 	Semantic Semantic `json:"semantic,omitzero"`
+	// Digest sizes the digest's Top open and Explore sections.
+	Digest Digest `json:"digest,omitzero"`
+}
+
+// Digest sizes the digest's extra sections. A nil field reads as its default;
+// an explicit 0 switches the section off.
+type Digest struct {
+	// TopOpen is how many of the best already-digested, still open roles
+	// "Top open" lists, by relevance. Default DefaultDigestTopOpen; at most
+	// MaxDigestTopOpen.
+	TopOpen *int `json:"top_open,omitempty"`
+	// ExploreBelowFold and ExploreDropped are how many roles "Explore" draws
+	// at random from lower-ranked digested roles and from dropped roles, so
+	// the owner's judgement reaches what the ranking would never show. At
+	// most MaxDigestExplore each.
+	ExploreBelowFold *int `json:"explore_below_fold,omitempty"`
+	ExploreDropped   *int `json:"explore_dropped,omitempty"`
+}
+
+// Digest section defaults and bounds (the bounds match digest.MaxTopOpen and
+// digest.MaxExplore; a test in cmd/vani holds them equal).
+const (
+	DefaultDigestTopOpen          = 20
+	DefaultDigestExploreBelowFold = 2
+	DefaultDigestExploreDropped   = 1
+	MaxDigestTopOpen              = 50
+	MaxDigestExplore              = 10
+)
+
+func orDefault(p *int, d int) int {
+	if p == nil {
+		return d
+	}
+	return *p
+}
+
+// DigestTopOpen is Digest.TopOpen with absent read as the default.
+func (c Config) DigestTopOpen() int { return orDefault(c.Digest.TopOpen, DefaultDigestTopOpen) }
+
+// DigestExploreBelowFold is Digest.ExploreBelowFold with absent read as the default.
+func (c Config) DigestExploreBelowFold() int {
+	return orDefault(c.Digest.ExploreBelowFold, DefaultDigestExploreBelowFold)
+}
+
+// DigestExploreDropped is Digest.ExploreDropped with absent read as the default.
+func (c Config) DigestExploreDropped() int {
+	return orDefault(c.Digest.ExploreDropped, DefaultDigestExploreDropped)
 }
 
 // Semantic configures embedding-based matching against the knowledge base.
@@ -213,6 +273,12 @@ type Decide struct {
 	// Zero means DefaultShadowEvery; 1 asks it about every posting; at most
 	// MaxShadowEvery.
 	ShadowEvery int `json:"shadow_every,omitempty"`
+	// ShadowMode picks which postings the shadow reads: ShadowModeSample (the
+	// default, "") is the shadow_every hash sample; ShadowModeDropCandidates
+	// asks it about every slot the drop policy would drop on a calibrated
+	// reading, before the drop is applied. Either way the shadow only
+	// annotates: the drop follows the primary's rule.
+	ShadowMode string `json:"shadow_mode,omitempty"`
 	// Lappi configures the local Lappi agent. It runs as the shadow until
 	// `vani eval` reports it promotable; Primary then puts it first in the
 	// chain, ahead of the OpenRouter model and the LLM.
@@ -224,8 +290,9 @@ type Decide struct {
 	Local *Local `json:"local,omitempty"`
 	// Escalate re-asks the LLM (llm.triage_model) about the slots the primary
 	// chain read with low confidence. Its readings are recorded beside the
-	// primary's, never in place of them. It uses the shadow's recording, so the
-	// two are exclusive. Absent means off.
+	// primary's, never in place of them. It uses the shadow's recording, so it
+	// is exclusive with a sampled shadow; with shadow_mode drop_candidates the
+	// two read disjoint slots and coexist. Absent means off.
 	Escalate *Escalate `json:"escalate,omitempty"`
 }
 
@@ -277,6 +344,16 @@ const (
 	MaxShadowEvery     = 1000
 )
 
+// Decide.ShadowMode values.
+const (
+	ShadowModeSample         = "sample"
+	ShadowModeDropCandidates = "drop_candidates"
+)
+
+// ShadowOnDropCandidates reports whether the shadow is asked about drop
+// candidates instead of the hash sample.
+func (d Decide) ShadowOnDropCandidates() bool { return d.ShadowMode == ShadowModeDropCandidates }
+
 // ShadowSampleEvery is ShadowEvery with zero read as the default.
 func (d Decide) ShadowSampleEvery() int {
 	if d.ShadowEvery == 0 {
@@ -297,8 +374,7 @@ type Local struct {
 	Server    *LocalServer `json:"server,omitempty"`
 	Model     string       `json:"model"`
 	TimeoutMS int          `json:"timeout_ms,omitempty"` // zero means 20 s
-	// Questions is "combined" (default: the one question the OpenRouter
-	// decision model, Liquid d1-ultra, gets, so the eval
+	// Questions is "combined" (default: the one question the OpenRouter decision model gets, so the eval
 	// compares models on identical requests) or "per_slot" (each slot asked
 	// its own fixture family question, as Lappi is). Which suits a given
 	// model is what `vani eval` measures.
@@ -323,12 +399,42 @@ type LocalServer struct {
 // MaxLappiTimeoutMS is the caller contract's batch ceiling (10 s).
 const MaxLappiTimeoutMS = 10_000
 
+// Bounds on decide.lappi.primary_slots validation: the slot set has four
+// members, so a list over maxPrimarySlotsListed is refused outright, and
+// per-entry problems are reported only up to maxPrimarySlotProblems.
+const (
+	maxPrimarySlotsListed  = 16
+	maxPrimarySlotProblems = 5
+)
+
 // Lappi locates the agent. Socket empty means LAPPI_SOCKET or
 // ~/Library/Caches/qd/qd.sock; TimeoutMS zero means 5 s.
 type Lappi struct {
 	Socket    string `json:"socket,omitempty"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
-	Primary   bool   `json:"primary,omitempty"`
+	// Primary puts Lappi first for every triage slot.
+	Primary bool `json:"primary,omitempty"`
+	// PrimarySlots promotes Lappi slot by slot: each named slot goes to Lappi
+	// first and the OpenRouter decision model no longer answers it, while the
+	// other slots keep the arrangement they have (shadow, or the chain alone).
+	// Exclusive with Primary; every name must be a triage slot.
+	PrimarySlots []string `json:"primary_slots,omitempty"`
+}
+
+// PromotedSlots returns the slots routed to Lappi first under PrimarySlots, in
+// the triage fixture's order. Primary (all slots) is not reported here: it
+// keeps its own, older arrangement.
+func (l *Lappi) PromotedSlots() []string {
+	if l == nil || len(l.PrimarySlots) == 0 {
+		return nil
+	}
+	var out []string
+	for _, f := range jdtriage.Families {
+		if slices.Contains(l.PrimarySlots, f.Slot.Name) {
+			out = append(out, f.Slot.Name)
+		}
+	}
+	return out
 }
 
 // DailyUSD holds the per-engine daily spend caps in US dollars.
@@ -360,16 +466,16 @@ const MaxModelName = 128
 const (
 	// KBMatchLLM asks the Manvi llm provider (llm.provider).
 	KBMatchLLM = "llm"
-	// KBMatchLiquid asks the decision model (decide.openrouter_model, Liquid
-	// d1-ultra) over OpenRouter, from the OpenRouter daily cap. Configs written
-	// before 2026-10-20 name it "jev", which still loads (legacy.go).
-	KBMatchLiquid = "liquid"
+	// KBMatchOpenRouter asks the decision model (decide.openrouter_model,
+	// Liquid D) over OpenRouter, from the OpenRouter daily cap. It was "jev"
+	// until 2026-10-20, which still loads (legacy.go).
+	KBMatchOpenRouter = "openrouter"
 )
 
 // KBMatch configures `vani kbmatch`. The zero value asks the llm on
 // llm.triage_model, else llm.model.
 type KBMatch struct {
-	// Backend is KBMatchLLM (the default) or KBMatchLiquid.
+	// Backend is KBMatchLLM (the default) or KBMatchOpenRouter.
 	Backend string `json:"backend,omitempty"`
 	// Model is the llm model that answers when Backend is KBMatchLLM. Empty means
 	// llm.triage_model, else llm.model. It is separate from llm.triage_model so a
@@ -377,10 +483,14 @@ type KBMatch struct {
 	Model string `json:"model,omitempty"`
 }
 
-// EffectiveBackend is Backend with empty read as KBMatchLLM.
+// EffectiveBackend is Backend with empty read as KBMatchLLM and the old
+// "jev" read as KBMatchOpenRouter.
 func (k KBMatch) EffectiveBackend() string {
-	if k.Backend == "" {
+	switch k.Backend {
+	case "":
 		return KBMatchLLM
+	case legacyKBMatchBackend:
+		return KBMatchOpenRouter
 	}
 	return k.Backend
 }
@@ -510,18 +620,14 @@ func Default() Config {
 		AllowedHosts: []string{hostOpenRouter},
 		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
 		Decide: Decide{
-			// The owner's decision model: Liquid d1-ultra over OpenRouter's
-			// Decisions API, asked through the decide/jev client.
+			// Liquid D, the decision model Vani runs (FOLLOWUPS: d1-ultra).
 			OpenRouterModel:  "liquid/d1-ultra",
 			OpenRouterKeyEnv: "OPENROUTER_API_KEY",
 			DailyUSD:         DailyUSD{OpenRouter: 0.25, LLM: 1.0},
 		},
-		// Claude through Manvi, the owner's LLM. Its prices are Manvi's
-		// published rates for the model (llm/anthropic's price table; a test
-		// in cmd/vani holds them equal). The key comes from the environment
-		// or, in the Mac app, through anthropic-account, which also names the
-		// workspace.
-		LLM: LLM{Provider: "anthropic", Model: "claude-opus-5-5", InputNanoUSDPerToken: 4000, OutputNanoUSDPerToken: 20000},
+		// No llm: a fresh config names no paid language model (owner's call,
+		// 2026-10-20). Set llm.provider, llm.model and, for anthropic, both
+		// per-token prices to turn it on.
 		// Empty until Phase 0 confirms the installed DevPrism answers --mcp
 		// without migrating career.db; scoring is skipped while it is empty.
 		// The installed binary is /Applications/DevPrism.app/Contents/MacOS/claude-prism-desktop.
@@ -539,6 +645,15 @@ func Load(path string) (Config, error) {
 // LoadWithDeprecations is Load that also returns the deprecated key names the
 // file still uses (see Deprecations), for the caller to warn about.
 func LoadWithDeprecations(path string) (Config, []string, error) {
+	// Stat (following symlinks) before opening: opening a FIFO for reading
+	// blocks until a writer appears, and a device or directory is not a config.
+	st, err := os.Stat(path)
+	if err != nil {
+		return Config{}, nil, fmt.Errorf("config: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return Config{}, nil, fmt.Errorf("config: %s is not a regular file (%s)", path, st.Mode().Type())
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, nil, fmt.Errorf("config: %w", err)
@@ -576,9 +691,47 @@ func Parse(data []byte) (Config, error) {
 	return c, nil
 }
 
-// Save validates c and writes it atomically with mode 0600 (see
-// atomicfile.Write).
+// Save replaces the whole file with c: `vani init` and test fixtures, where
+// there is nothing to read first. It takes the same lock as Update. A change
+// to what the file holds already goes through Update, never Load then Save.
 func Save(path string, c Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	target, unlock, err := lockConfig(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return writeLocked(target, c)
+}
+
+// Create writes c as a new file and fails with an error wrapping os.ErrExist
+// when the path is already there, checked under the lock: two `vani init`
+// racing cannot both win.
+func Create(path string, c Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	// The file that would be created is the resolved target: a dangling link
+	// is not "already there", its target is.
+	target, unlock, err := lockConfig(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := os.Lstat(target); err == nil {
+		return fmt.Errorf("config: %s already exists: %w", target, os.ErrExist)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("config: %w", err)
+	}
+	return writeLocked(target, c)
+}
+
+// writeLocked validates c and writes it atomically with mode 0600 (see
+// atomicfile.Write). The caller holds the config's lock and passes the target
+// lockConfig resolved: the lock and the write name one file.
+func writeLocked(path string, c Config) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -653,6 +806,10 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 
 // workdayHost matches "{tenant}.wd{N}.myworkdayjobs.com".
 var workdayHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
+
+// workdayName matches a Workday "tenant/site" token whose parts are the safe
+// path names the adapter accepts (workday.parseToken).
+var workdayName = regexp.MustCompile(`^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`)
 
 // maxLinkPattern bounds a page board's regexp source.
 const maxLinkPattern = 256
@@ -775,8 +932,21 @@ func ValidBoard(b sources.Board) error {
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
 	}
+	if why := sources.TokenProblem(b.Token); why != "" {
+		return fmt.Errorf("board (%s) token %q %s", b.ATS, b.Token, why)
+	}
 	if strings.ContainsAny(b.Token, " \t\r\n?#") || strings.Contains(b.Token, "..") {
 		return fmt.Errorf("board (%s) token %q has unsafe characters", b.ATS, b.Token)
+	}
+	if b.BoardName != "" {
+		// The token stays the safe slug every key and ref is built from; the
+		// literal name ("Hippocratic AI") only ever reaches the request URL.
+		if b.ATS != posting.Ashby {
+			return fmt.Errorf("board %s/%s: board_name applies to ab only", b.ATS, b.Token)
+		}
+		if why := sources.BoardNameProblem(b.BoardName); why != "" {
+			return fmt.Errorf("board (%s) %s board_name %q %s", b.ATS, b.Token, b.BoardName, why)
+		}
 	}
 	if strings.HasSuffix(strings.ToLower(b.Token), ScrapeSuffix) {
 		return fmt.Errorf("board token %q ends in %q, which is reserved for jobs scraped in the browser", b.Token, ScrapeSuffix)
@@ -786,12 +956,20 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("workday token %q must be tenant/site", b.Token)
 		}
 		tenant, _, _ := strings.Cut(strings.ToLower(b.Token), "/")
-		m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
-		if m == nil {
-			return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com, got %q", b.Token, b.Host)
-		}
-		if m[1] != tenant {
-			return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
+		if sources.WorkdaySiteHost(b.Host) {
+			// The shared host names no tenant, so the token is all that keeps a
+			// board on it from reaching another tenant's paths.
+			if !workdayName.MatchString(b.Token) {
+				return fmt.Errorf("workday token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
+			}
+		} else {
+			m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
+			if m == nil {
+				return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com or wd{N}.myworkdaysite.com, got %q", b.Token, b.Host)
+			}
+			if m[1] != tenant {
+				return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
+			}
 		}
 	} else if strings.Contains(b.Token, "/") {
 		return fmt.Errorf("board (%s) token %q must not contain '/'", b.ATS, b.Token)
@@ -933,13 +1111,14 @@ func (c Config) Validate() error {
 		}
 	}
 
-	allowed := map[string]bool{}
-	for _, h := range c.AllowedHosts {
-		allowed[strings.ToLower(strings.TrimSpace(h))] = true
+	for i, h := range c.AllowedHosts {
+		if err := egress.ValidAllowedHost(h); err != nil {
+			add("allowed_hosts[%d]: %v", i, err)
+		}
 	}
 	var missing []string
 	for _, h := range c.RequiredHosts() {
-		if !allowed[h] {
+		if !egress.AllowsHost(c.AllowedHosts, h) {
 			missing = append(missing, h)
 		}
 	}
@@ -967,7 +1146,7 @@ func (c Config) Validate() error {
 	}
 	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
 		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir,
-		"semantic.snapshot": c.Semantic.Snapshot} {
+		"semantic.snapshot": c.Semantic.Snapshot, "rank_weights_file": c.RankWeightsFile} {
 		if p != "" && !filepath.IsAbs(p) {
 			add("%s %q must be an absolute path", name, p)
 		}
@@ -981,6 +1160,15 @@ func (c Config) Validate() error {
 	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
 		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
 	}
+	if n := c.DigestTopOpen(); n < 0 || n > MaxDigestTopOpen {
+		add("digest.top_open %d must be within 0..%d (absent means %d)", n, MaxDigestTopOpen, DefaultDigestTopOpen)
+	}
+	if n := c.DigestExploreBelowFold(); n < 0 || n > MaxDigestExplore {
+		add("digest.explore_below_fold %d must be within 0..%d (absent means %d)", n, MaxDigestExplore, DefaultDigestExploreBelowFold)
+	}
+	if n := c.DigestExploreDropped(); n < 0 || n > MaxDigestExplore {
+		add("digest.explore_dropped %d must be within 0..%d (absent means %d)", n, MaxDigestExplore, DefaultDigestExploreDropped)
+	}
 	if c.AdvancePerRun < 0 || c.AdvancePerRun > MaxAdvancePerRun {
 		add("advance_per_run %d must be within 0..%d (0 means %d)", c.AdvancePerRun, MaxAdvancePerRun, DefaultAdvancePerRun)
 	}
@@ -990,11 +1178,37 @@ func (c Config) Validate() error {
 	if c.AdvanceConcurrency < 0 || c.AdvanceConcurrency > MaxAdvanceConcurrency {
 		add("advance_concurrency %d must be within 0..%d (0 means %d)", c.AdvanceConcurrency, MaxAdvanceConcurrency, DefaultAdvanceConcurrency)
 	}
+	switch c.Decide.ShadowMode {
+	case "", ShadowModeSample:
+	case ShadowModeDropCandidates:
+		if c.Decide.Shadow == "" {
+			add("decide.shadow_mode %s needs decide.shadow", ShadowModeDropCandidates)
+		}
+		if c.Decide.ShadowEvery != 0 {
+			add("decide.shadow_every does not apply with decide.shadow_mode %s (every drop candidate is asked)", ShadowModeDropCandidates)
+		}
+		if c.Decide.EscalateEnabled() {
+			// One slot has one shadow reading: escalation covers p below_p, the
+			// shadow the drop candidates at or above a rule's p, and the two stay
+			// apart only while below_p does not reach a rule's p.
+			for _, r := range c.DropRules {
+				if r.MinOpenRouterProb > 0 && c.Decide.EscalateBelowP() > r.MinOpenRouterProb {
+					add("decide.escalate.below_p %v exceeds the min_openrouter_prob %v of the %q drop rule: escalation and the drop-candidate shadow would claim the same slots", c.Decide.EscalateBelowP(), r.MinOpenRouterProb, r.Slot)
+				}
+			}
+		}
+	default:
+		add("decide.shadow_mode %q is not %q or %q", c.Decide.ShadowMode, ShadowModeSample, ShadowModeDropCandidates)
+	}
 	switch c.Decide.Shadow {
 	case "":
 	case "llm":
 		if c.LLM.Provider == "" {
 			add("decide.shadow llm needs llm.provider")
+		} else if c.Decide.ShadowOnDropCandidates() && (c.LLM.TriageModel == "" || c.LLM.TriageModel == c.LLM.Model) {
+			// Every drop candidate is asked, so without a cheaper model of its own
+			// the shadow would spend the llm daily cap on llm.model's expensive tier.
+			add("decide.shadow llm with shadow_mode %s needs llm.triage_model set to a model other than llm.model (%q): it would read every drop candidate on the expensive tier", ShadowModeDropCandidates, c.LLM.Model)
 		}
 	case ShadowOpenRouter:
 		if !c.OpenRouterConfigured() {
@@ -1078,10 +1292,53 @@ func (c Config) Validate() error {
 		if l.TimeoutMS < 0 || l.TimeoutMS > MaxLappiTimeoutMS {
 			add("decide.lappi.timeout_ms %d must be within 0..%d", l.TimeoutMS, MaxLappiTimeoutMS)
 		}
+		slotsOK := true
+		if len(l.PrimarySlots) > 0 {
+			if l.Primary {
+				slotsOK = false
+				add("decide.lappi.primary (all slots) and decide.lappi.primary_slots are exclusive: set one")
+			}
+			known := map[string]bool{}
+			names := make([]string, 0, len(jdtriage.Families))
+			for _, f := range jdtriage.Families {
+				known[f.Slot.Name] = true
+				names = append(names, f.Slot.Name)
+			}
+			seen := map[string]bool{}
+			problems := 0
+			problem := func(format string, a ...any) {
+				slotsOK = false
+				if problems++; problems <= maxPrimarySlotProblems {
+					add(format, a...)
+				}
+			}
+			if len(l.PrimarySlots) > maxPrimarySlotsListed {
+				// The slot set is tiny; a list this long is a broken or hostile
+				// file, refused without reading its entries.
+				slotsOK = false
+				add("decide.lappi.primary_slots lists %d entries; at most %d are accepted (there are only %d slots)", len(l.PrimarySlots), maxPrimarySlotsListed, len(names))
+			} else {
+				for _, s := range l.PrimarySlots {
+					switch {
+					case !known[s]:
+						problem("decide.lappi.primary_slots: %.64q is not a triage slot (%s)", s, strings.Join(names, ", "))
+					case seen[s]:
+						problem("decide.lappi.primary_slots: %q is listed twice", s)
+					}
+					seen[s] = true
+				}
+				if problems > maxPrimarySlotProblems {
+					add("decide.lappi.primary_slots: and %d more problem(s)", problems-maxPrimarySlotProblems)
+				}
+			}
+		}
 		switch {
 		case l.Primary && c.Decide.Shadow == "lappi":
 			add("decide.lappi.primary and decide.shadow lappi are exclusive")
-		case !l.Primary && c.Decide.Shadow != "lappi":
+		case slotsOK && len(l.PrimarySlots) >= len(jdtriage.Families) && c.Decide.Shadow == "lappi":
+			// Every slot promoted leaves the shadow nothing to read.
+			add("decide.lappi.primary_slots names every slot, so decide.shadow lappi has nothing to read: use decide.lappi.primary or drop the shadow")
+		case !l.Primary && len(l.PrimarySlots) == 0 && c.Decide.Shadow != "lappi":
 			add("decide.lappi is configured but unused: set decide.shadow to lappi, or decide.lappi.primary after `vani eval` says promotable")
 		}
 	}
@@ -1115,8 +1372,8 @@ func (c Config) Validate() error {
 			add("llm.triage_model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
 		}
 	}
-	switch c.KBMatch.Backend {
-	case "", KBMatchLLM:
+	switch c.KBMatch.EffectiveBackend() {
+	case KBMatchLLM:
 		if m := c.KBMatch.Model; m != "" {
 			switch {
 			case c.LLM.Provider == "":
@@ -1125,15 +1382,15 @@ func (c Config) Validate() error {
 				add("kbmatch.model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
 			}
 		}
-	case KBMatchLiquid:
+	case KBMatchOpenRouter:
 		if !c.OpenRouterConfigured() {
-			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchLiquid)
+			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchOpenRouter)
 		}
 		if c.KBMatch.Model != "" {
 			add("kbmatch.model applies to the %q backend only", KBMatchLLM)
 		}
 	default:
-		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchLiquid)
+		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchOpenRouter)
 	}
 	if e := c.Decide.Escalate; e != nil {
 		if e.BelowP != nil && (math.IsNaN(*e.BelowP) || *e.BelowP <= 0 || *e.BelowP > 1) {
@@ -1152,7 +1409,7 @@ func (c Config) Validate() error {
 			if c.LLM.Provider != "" && (c.LLM.TriageModel == "" || c.LLM.TriageModel == c.LLM.Model) {
 				add("decide.escalate needs llm.triage_model set to a model other than llm.model (%q): it would escalate on the expensive tier", c.LLM.Model)
 			}
-			if c.Decide.Shadow != "" {
+			if c.Decide.Shadow != "" && !c.Decide.ShadowOnDropCandidates() {
 				add("decide.escalate and decide.shadow are exclusive (escalated readings are recorded as the shadow's)")
 			}
 		}
@@ -1241,6 +1498,8 @@ func (c Config) Validate() error {
 		seenPref[p] = true
 	}
 	c.TitleSignals.validate(add)
+	c.Exclude.validate(add)
+	c.Funnel.validate(add)
 
 	if len(errs) == 0 {
 		return nil

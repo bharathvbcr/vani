@@ -4,10 +4,106 @@ package sources
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
+
+// TokenProblem is why token cannot name a board, or "" when it can. It is the
+// one rule behind config.ValidBoard and srcutil.CheckBoard, so a token the
+// config accepts is one every adapter accepts. It holds what no adapter can
+// work around; the config is stricter on top (spaces, '?', '#', ".." and a '/'
+// outside Workday), because adapters escape those themselves.
+func TokenProblem(token string) string {
+	switch {
+	case strings.TrimSpace(token) == "":
+		return "is empty"
+	case strings.Contains(token, ":"):
+		// ':' separates key parts; Board.KeyPrefix would be ambiguous.
+		return "contains ':'"
+	}
+	return ""
+}
+
+// MaxBoardNameLen bounds Board.BoardName in runes; MaxBoardNameBytes bounds it
+// in bytes. 64 BMP runes (CJK, 3 bytes each) fit both; 64 supplementary-plane
+// runes do not, which is the byte bound doing its own work.
+const (
+	MaxBoardNameLen   = 64
+	MaxBoardNameBytes = 192
+)
+
+// BoardNameProblem is why name cannot be a Board.BoardName, or "" when it can:
+// 1..MaxBoardNameLen runes (and at most MaxBoardNameBytes bytes) of valid
+// UTF-8 that are Unicode letters, digits, '-' or '_', with single spaces
+// between them. It is the one rule behind config.ValidBoard and
+// srcutil.CheckBoard.
+//
+// What it keeps out, and why:
+//   - '.', '/', '?', '#', ':' and '%' are punctuation, so a name cannot change
+//     the request path (".." included); the name is only ever sent through
+//     url.PathEscape, which also escapes every byte of a multi-byte rune.
+//   - Combining marks, format characters (zero-width joiner and space, the
+//     bidirectional overrides, BOM, soft hyphen), other spaces, controls,
+//     private-use and unassigned code points are not letters or digits, so a
+//     name cannot hide or reorder text. A mark is refused even after a letter:
+//     the standard library cannot normalise to NFC, so the one way to keep the
+//     accepted set free of "é" written two ways is to accept only the
+//     precomposed letter (Zürich, not Zu + U+0308 + rich). The cost is that a
+//     script that needs marks (Devanagari vowel signs, Thai tone marks) cannot
+//     be a name until golang.org/x/text/unicode/norm is an approved dependency.
+//   - Lookalike letters (Cyrillic "а" for "a") are accepted: the name only ever
+//     reaches the path of one fixed host, so a lookalike can fail to match a
+//     board but cannot reach another host or path.
+//
+// Names are compared byte for byte by the ATS, so a name that is not NFC for
+// other reasons (a compatibility letter such as U+212B) is at worst a board
+// that is not found.
+func BoardNameProblem(name string) string {
+	if name == "" || len(name) > MaxBoardNameBytes || utf8.RuneCountInString(name) > MaxBoardNameLen {
+		return fmt.Sprintf("must be 1..%d characters and at most %d bytes", MaxBoardNameLen, MaxBoardNameBytes)
+	}
+	if !utf8.ValidString(name) {
+		return "must be valid UTF-8"
+	}
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") || strings.Contains(name, "  ") {
+		return "must not start or end with a space or hold two in a row"
+	}
+	for _, r := range name {
+		switch {
+		case r == '-', r == '_', r == ' ', unicode.IsLetter(r), unicode.IsDigit(r):
+		default:
+			return "may hold only letters, digits, '-', '_' and single spaces (write an accented letter as one character, not letter plus combining mark)"
+		}
+	}
+	return ""
+}
+
+// APIName is the name the ATS knows the board by: BoardName when set, else
+// Token. The key and KeyPrefix always use Token.
+func (b Board) APIName() string {
+	if b.BoardName != "" {
+		return b.BoardName
+	}
+	return b.Token
+}
+
+// workdaySiteHost is Workday's shared host, "wd{N}.myworkdaysite.com". Unlike
+// "{tenant}.wd{N}.myworkdayjobs.com" its name carries no tenant, so a board on
+// it names the tenant only in its token, and its public pages live under
+// /recruiting/{tenant}/{site}/ rather than /{site}/.
+var workdaySiteHost = regexp.MustCompile(`^wd[0-9]{1,3}\.myworkdaysite\.com$`)
+
+// WorkdaySiteHost reports whether host, as written (a bare host name, any
+// case), is a shared Workday host "wd{N}.myworkdaysite.com". A port, path,
+// userinfo or extra label is not one.
+func WorkdaySiteHost(host string) bool {
+	return workdaySiteHost.MatchString(strings.ToLower(strings.TrimSpace(host)))
+}
 
 // Board is one watchlist entry: a company's job board on one ATS, or its own
 // careers page.
@@ -18,6 +114,13 @@ type Board struct {
 	// domain, Jibe client code ("amd"), or a short slug you choose for a
 	// careers page.
 	Token string `json:"token"`
+	// BoardName is the board's literal name on the ATS where that cannot be
+	// the Token, Ashby only: Hippocratic AI's board is "Hippocratic AI", with
+	// a space, which no posting key, --board ref or Mac-app key check takes
+	// (JobLinks.checkedKey refuses whitespace), so its Token is a slug such as
+	// "hippocratic-ai" and this field names the board in the request. Empty
+	// means the Token is the name, as it is for every board that predates it.
+	BoardName string `json:"board_name,omitempty"`
 	// Company is the display name; adapters fall back to it when the ATS
 	// payload carries none.
 	Company string `json:"company"`
@@ -38,7 +141,9 @@ type Board struct {
 
 	// Host is the board's API host where the ATS does not fix one: the
 	// Workday tenant host "{tenant}.wd{N}.myworkdayjobs.com" (its tenant label
-	// must match Token's tenant), or an Eightfold or Jibe careers host such as
+	// must match Token's tenant), the shared Workday host
+	// "wd{N}.myworkdaysite.com" (WorkdaySiteHost; no tenant label, the tenant
+	// is Token's), or an Eightfold or Jibe careers host such as
 	// "apply.careers.microsoft.com" or "careers.amd.com".
 	Host string `json:"host,omitempty"`
 	// Search narrows a search-based listing (Workday's searchText, Jibe's

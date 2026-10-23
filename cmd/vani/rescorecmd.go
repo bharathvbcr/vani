@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"strings"
+	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -25,6 +25,34 @@ type rescorePlan struct {
 	// Digested are digested postings without a score. They are left alone
 	// (already shown to the owner) and only counted.
 	Digested int
+	// ZeroOfZero are scored postings whose stored coverage is DevPrism's 0 of 0
+	// (pipeline.ZeroOfZero); the repair marks them unknown without a DevPrism call.
+	ZeroOfZero int
+	// Unknown are live postings marked gap.coverage_unknown (DevPrism found no
+	// must-haves). Disjoint from Digested, which counts only postings with
+	// neither a rank nor that marker, and from Eligible and NoDescription.
+	Unknown int
+}
+
+// repairUnknownCoverage marks every ZeroOfZero record in l as unknown coverage
+// through repair and returns how many it wrote. It needs no DevPrism, so it runs
+// even when scoring is off. A failure stops it with the count so far; rerunning
+// is safe because a repaired record no longer matches.
+func repairUnknownCoverage(ctx context.Context, l ledger.Ledger, repair func(context.Context, posting.Key) (bool, error)) (int, error) {
+	n := 0
+	for _, r := range l.All() {
+		if !pipeline.ZeroOfZero(r) {
+			continue
+		}
+		wrote, err := repair(ctx, r.Key)
+		if err != nil {
+			return n, err
+		}
+		if wrote {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // planRescore counts what `vani rescore` would score in recs.
@@ -36,8 +64,14 @@ func planRescore(recs []ledger.Record) rescorePlan {
 			p.Eligible++
 		case pipeline.Unscored(r):
 			p.NoDescription++
-		case r.Status == posting.Digested && r.Annotations[ledger.AnnRank] == "":
+		case r.Status == posting.Digested && r.Annotations[ledger.AnnRank] == "" && !ledger.CoverageUnknown(r):
 			p.Digested++
+		}
+		if ledger.CoverageUnknown(r) && r.Status != posting.Dead && r.Status != posting.Dropped {
+			p.Unknown++
+		}
+		if pipeline.ZeroOfZero(r) {
+			p.ZeroOfZero++
 		}
 	}
 	return p
@@ -51,52 +85,64 @@ func rescorable(r ledger.Record) bool { return pipeline.Unscored(r) && pipeline.
 type rescoreReport struct {
 	Plan     rescorePlan
 	Rescored int
-	Advance  advanceReport
+	// Repaired is how many 0-of-0 coverages were marked unknown this run.
+	Repaired int
+	Advance  pipeline.AdvanceReport
 }
 
 // errScoringOff refuses a rescore with nothing to score with.
 var errScoringOff = errors.New("devprism.binary is empty: nothing to score with (set it, see docs/PHASE0-devprism.md)")
 
 // rescore scores up to limit unscored postings (rescorable) through the same
-// advanceAll the daily run uses, so its concurrency (advance_concurrency),
+// pipeline.Advance the daily run uses, so its concurrency (advance_concurrency),
 // cancellation and stop rules hold: maxConsecutiveFailed DevPrism failures in
 // a row, or a pass where none was scored, fail it. Freshest postings go first.
 func (w *wired) rescore(ctx context.Context, limit int) (rescoreReport, error) {
-	if w.cfg.DevPrism.Binary == "" {
-		return rescoreReport{}, errScoringOff
-	}
 	r := &pipeline.Runner{Ledger: w.led}
-	if err := w.scoring(r); err != nil {
-		return rescoreReport{}, err
+	repaired, err := repairUnknownCoverage(ctx, w.led, r.RepairUnknownCoverage)
+	if err != nil {
+		return rescoreReport{Repaired: repaired}, err
 	}
-	return rescoreWith(ctx, w.led, limit, w.cfg.AdvanceWorkers(), r.Rescore, w.warnf)
+	if w.cfg.DevPrism.Binary == "" {
+		return rescoreReport{Repaired: repaired}, errScoringOff
+	}
+	if err := w.scoring(r); err != nil {
+		return rescoreReport{Repaired: repaired}, err
+	}
+	rep, err := rescoreWith(ctx, w.led, limit, w.cfg.AdvanceWorkers(), r.Rescore, w.warnf)
+	rep.Repaired = repaired
+	return rep, err
 }
 
 // rescoreWith is rescore over any ledger and rescore function, for tests.
 func rescoreWith(ctx context.Context, l ledger.Ledger, limit, workers int, rescore func(context.Context, posting.Key) error, warnf func(string, ...any)) (rescoreReport, error) {
 	recs := l.All()
 	rep := rescoreReport{Plan: planRescore(recs)}
-	var keys []posting.Key
-	for _, r := range recs {
-		if rescorable(r) {
-			keys = append(keys, r.Key)
+	// Count only what this pass scored: a key that was rescorable before the
+	// wrapped call and carries a rank, or the coverage-unknown marker a
+	// NoMustHaves answer writes in place of one, after it. A posting a
+	// concurrent writer dropped mid-pass, or one rescore skipped, carries
+	// neither and is not counted.
+	var mu sync.Mutex
+	scored := 0
+	counted := func(ctx context.Context, k posting.Key) error {
+		before, _ := l.Get(k)
+		if err := rescore(ctx, k); err != nil {
+			return err
 		}
-	}
-	// advanceAll's cap line names advance_per_run and the next daily run, which
-	// is wrong here (--limit, and the run does not rescore); the command prints
-	// how many are still unscored instead.
-	quiet := func(format string, a ...any) {
-		if !strings.HasPrefix(format, "advance cap ") {
-			warnf(format, a...)
+		if r, ok := l.Get(k); ok && rescorable(before) && (r.Annotations[ledger.AnnRank] != "" || ledger.CoverageUnknown(r)) {
+			mu.Lock()
+			scored++
+			mu.Unlock()
 		}
+		return nil
 	}
-	adv, err := advanceAll(ctx, recs, nil, limit, workers, nil, rescore, quiet, withTodo(rescorable))
+	// The kindRescore plan leaves out the cap line, which names advance_per_run
+	// and the next daily run: wrong here (--limit, and the run does not
+	// rescore). The command prints how many are still unscored instead.
+	adv, err := pipeline.Advance(ctx, baseAdvancePlan(kindRescore, limit, workers, warnf), pipeline.AdvanceDeps{Records: recs, Advance: counted})
 	rep.Advance = adv
-	for _, k := range keys {
-		if r, ok := l.Get(k); ok && r.Annotations[ledger.AnnRank] != "" {
-			rep.Rescored++
-		}
-	}
+	rep.Rescored = scored
 	return rep, err
 }
 
@@ -132,6 +178,7 @@ func (e *env) cmdRescore(args []string) error {
 		}
 		p := planRescore(snap.Records)
 		fmt.Fprintf(e.stdout, "%d posting(s) would be rescored (at most %d this time)\n", p.Eligible, n)
+		fmt.Fprintf(e.stdout, "%d posting(s) with a 0-of-0 coverage would be marked unknown (no DevPrism call)\n", p.ZeroOfZero)
 		e.printRescoreLeftAlone(p)
 		if cfg.DevPrism.Binary == "" {
 			fmt.Fprintf(e.stdout, "devprism.binary is empty: a real rescore would refuse\n")
@@ -149,6 +196,9 @@ func (e *env) cmdRescore(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	rep, err := app.Rescore(ctx, n)
+	if rep.Repaired > 0 {
+		fmt.Fprintf(e.stdout, "%d posting(s) with a 0-of-0 coverage marked unknown (no DevPrism call)\n", rep.Repaired)
+	}
 	fmt.Fprintf(e.stdout, "%d posting(s) rescored, %d still unscored\n", rep.Rescored, rep.Plan.Eligible-rep.Rescored)
 	e.printRescoreLeftAlone(rep.Plan)
 	return err
@@ -160,5 +210,8 @@ func (e *env) printRescoreLeftAlone(p rescorePlan) {
 	}
 	if p.Digested > 0 {
 		fmt.Fprintf(e.stdout, "%d digested posting(s) have no score; left alone\n", p.Digested)
+	}
+	if p.Unknown > 0 {
+		fmt.Fprintf(e.stdout, "%d posting(s) have unknown coverage: DevPrism found no must-haves\n", p.Unknown)
 	}
 }

@@ -23,6 +23,11 @@ import (
 // age (half-life 14 days; unknown age 0.3). The proxy is partly circular (Score
 // reads role_fit too); it is a sanity check of how fit and recency trade off on
 // real readings, not a ground truth. No titles, companies or text are printed.
+//
+// REGRESSION-ONLY: this proxy shares its inputs with the ranker, so it detects
+// a change in how Score trades fit against recency, not whether the ranking
+// matches what the owner wants. Relevance is measured by `vani relevance`, from
+// the owner's would_apply labels (internal/eval).
 func TestRealLedgerComposition(t *testing.T) {
 	dir := os.Getenv("VANI_REAL_STATE")
 	if dir == "" {
@@ -58,6 +63,7 @@ func TestRealLedgerComposition(t *testing.T) {
 		gain[i] = (math.Exp2(grade) - 1) * rec
 		leg[i] = realLegacy(i, r, now)
 	}
+	t.Logf("REGRESSION-ONLY proxy (circular with Score; not a relevance measure: see `vani relevance`)")
 	t.Logf("real ledger: %d ranked postings (of %d), now %s", len(recs), len(snap.Records), now.Format(time.DateOnly))
 
 	order := func(less func(a, b int) bool) []int {
@@ -157,9 +163,8 @@ func realVariants() []realVariant {
 	with := func(f func(*jobinsight.Weights)) jobinsight.Weights { w := d; f(&w); return w }
 	return []realVariant{
 		{"Score(default)", d},
-		{"-ordinal", with(func(w *jobinsight.Weights) { w.OrdinalFit = false })},
 		{"-known", with(func(w *jobinsight.Weights) { w.KnownMatch = false })},
-		{"-ordinal-known", with(func(w *jobinsight.Weights) { w.OrdinalFit, w.KnownMatch = false, false })},
+		{"shrink 0.10", with(func(w *jobinsight.Weights) { w.MatchShrink = 0.10 })},
 		{"old fit values", with(func(w *jobinsight.Weights) { w.FitValues = [5]float64{0.85, 0.65, 0.45, 0.20, 0.10} })},
 		{"half-life 14", with(func(w *jobinsight.Weights) { w.HalfLifeDays = 14 })},
 	}

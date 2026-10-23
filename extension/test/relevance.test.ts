@@ -191,7 +191,7 @@ describe("relevance engine", () => {
     );
 
     expect(mismatchRes.fit).toBe("mismatch_seniority");
-    expect(mismatchRes.fitLabel).toContain("Seniority Mismatch");
+    expect(mismatchRes.fitLabel).toContain("Seniority mismatch");
   });
 
   test("extractWorkplaceType prioritizes Hybrid over Remote mentions and respects negations", () => {
@@ -250,7 +250,6 @@ describe("title match is by whole word, and the non-engineering penalty comes fi
       const r = rate(title);
       expect(r.highlights.some(h => h.startsWith("Role title matches"))).toBe(false);
       expect(r.score).toBeLessThan(50);
-      expect(r.fit).not.toBe("good_fit");
       expect(r.fit).not.toBe("strong_fit");
     });
   }

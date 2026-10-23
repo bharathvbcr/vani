@@ -208,6 +208,8 @@ describe("crawlWorkday", () => {
     expect(http.bodies.every(b => (b.offset as number) < WORKDAY_WINDOW)).toBe(true);
   });
 
+  // Quiet run is about 2.7s (4300 synthetic jobs, two facet splits). Bun's default
+  // 5s fails the test when a Go race suite and a Swift build share the machine.
   test("a bucket still over the window is split again by a second facet", async () => {
     const jobs = makeJobs(4300, 2).map((j, i) => ({ ...j, time: Math.floor(i / 2) % 2 }));
     const http = fakeWorkday({ jobs, families: 2 });
@@ -216,7 +218,7 @@ describe("crawlWorkday", () => {
     // Only "listed but not sent" (maxDetails 0) may be noted; no part of the listing was missed.
     expect(r.notes).toEqual(["4300 less relevant jobs were listed but not sent (descriptions fetched for the top 0)"]);
     expect(http.bodies.some(b => Object.keys(b.appliedFacets as object).length === 2)).toBe(true);
-  });
+  }, 30_000);
 
   test("a board that serves page 1 again early is caught, not read in a loop", async () => {
     const http = fakeWorkday({ jobs: makeJobs(300), wrapAt: 100 });

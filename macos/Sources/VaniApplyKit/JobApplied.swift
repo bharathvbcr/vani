@@ -22,9 +22,11 @@ public struct JobMatch: Codable, Equatable, Sendable {
         public var mark: JobMark?
         /// `url` or `apply_url`: which stored link the page matched.
         public var matchedOn: String
+        /// Vani's versioned row (JobRow); nil from a vani older than the contract.
+        public var row: JobRow?
 
         enum CodingKeys: String, CodingKey {
-            case key, company, title, status, closed, mark
+            case key, company, title, status, closed, mark, row
             case matchedOn = "matched_on"
         }
     }
@@ -48,6 +50,7 @@ public struct JobMatch: Codable, Equatable, Sendable {
             var j: [String: Any] = ["key": job.key, "company": job.company, "title": job.title, "status": job.status, "matchedOn": job.matchedOn]
             if job.closed == true { j["closed"] = true }
             if let mark = job.mark { j["mark"] = mark.rawValue }
+            if let row = job.row?.jsonObject { j["row"] = row }
             out["job"] = j
         }
         return out
@@ -61,6 +64,15 @@ public protocol JobsBackend: Sendable {
     /// `vani jobs ingest --json`: queue scraped jobs (JobIngest). `payload` is the checked
     /// request JSON; the reply is vani's JSON, unchanged.
     func ingest(payload: Data) throws -> Data
+}
+
+/// A backend that answers every call with one error: what stands in when the settings that say
+/// where `vani jobs` keeps its state could not be read.
+struct RefusingJobsBackend: JobsBackend {
+    let error: BankError
+    func find(url: String) throws -> JobMatch { throw error }
+    func markApplied(key: String) throws { throw error }
+    func ingest(payload: Data) throws -> Data { throw error }
 }
 
 extension JobsClient: JobsBackend {

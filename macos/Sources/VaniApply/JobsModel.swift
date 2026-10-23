@@ -15,7 +15,9 @@ final class JobsModel {
             // A sort still at the old view's default follows the view; one the owner
             // picked stays. Setting `sort` relists, so only one list is asked for.
             let next = JobSort.defaultSort(for: view)
-            if sort == JobSort.defaultSort(for: oldValue), sort != next {
+            // A picked order the new view cannot offer (priority in Awaiting triage)
+            // also gives way to the view's own.
+            if (sort == JobSort.defaultSort(for: oldValue) || !JobSort.options(for: view).contains(sort)), sort != next {
                 sort = next
             } else {
                 reload()
@@ -94,17 +96,43 @@ final class JobsModel {
         if selection != nil { loadDetail() }
     }
 
+    /// Why the label table is the built-in fallback (vani's could not be read), or
+    /// nil once vani's own is loaded. Shown beside the filters: fallback words are
+    /// never presented as vani's.
+    private(set) var labelsNote: String? = "Vani's label table has not been read yet; showing built-in labels."
+    private var labelsLoaded = false
+
+    /// Read `vani labels --json` once; on failure keep the fallback, say so in
+    /// `labelsNote` and try again at the next refresh.
+    func loadLabels() async {
+        guard !labelsLoaded else { return }
+        let c = client()
+        let result = await BlockingWork.run { try c.labels() }
+        switch result {
+        case let .success(table):
+            Labels.install(table)
+            labelsLoaded = true
+            labelsNote = nil
+        case let .failure(err):
+            Labels.useFallback()
+            labelsNote = "Showing built-in labels: vani labels could not be read (\(err))"
+        }
+    }
+
     func refresh() async {
+        await loadLabels()
         listGeneration += 1
         let gen = listGeneration
         loading = true
-        let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights
-        async let listed = Task.detached(priority: .userInitiated) { Result { try c.list(v, query: q, sort: s, filter: f) } }.value
+        // Stats and gaps chart fit, relevance and priority, which postings awaiting
+        // triage have none of: vani refuses them, so they are not asked.
+        let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights && view.isRanked
+        async let listed = BlockingWork.run { try c.list(v, query: q, sort: s, filter: f) }
         async let counted: Result<JobsStats, Error>? = wantStats
-            ? Task.detached(priority: .utility) { Result { try c.stats(v, query: q, filter: f) } }.value
+            ? BlockingWork.run { try c.stats(v, query: q, filter: f) }
             : nil
         async let gapped: Result<JobsGaps, Error>? = wantStats
-            ? Task.detached(priority: .utility) { Result { try c.gaps(v, query: q, filter: f) } }.value
+            ? BlockingWork.run { try c.gaps(v, query: q, filter: f) }
             : nil
         let (result, statsResult, gapsResult) = await (listed, counted, gapped)
         guard gen == listGeneration else { return } // a newer list superseded this one
@@ -113,6 +141,11 @@ final class JobsModel {
         case let .success(p):
             page = p
             error = nil
+            // Only ranked roles were put in front of the owner to pass over; an
+            // unranked posting awaiting triage is not "seen and passed".
+            if v.isRanked {
+                await reportImpressions(p.jobs.prefix(JobsClient.impressionRows).map(\.key), view: v)
+            }
         case let .failure(err):
             error = String(describing: err)
         }
@@ -137,6 +170,25 @@ final class JobsModel {
         }
     }
 
+    /// Why the rows on screen could not be reported to `vani impressions log`;
+    /// nil when they were. Reporting is measurement only: a failure never blocks
+    /// the list, and it is kept here rather than dropped.
+    private(set) var impressionsError: String?
+
+    /// Tells vani which rows the list put on screen (keys and positions only), so
+    /// an unmarked job counts as seen-and-passed. One slate per view per day:
+    /// refreshing again the same day logs only what is new.
+    private func reportImpressions(_ keys: [String], view: JobView) async {
+        let c = client(), slate = JobsClient.jobsSlate(view: view, day: Date())
+        let result = await BlockingWork.run {
+            try c.logImpressions(surface: .jobs, slate: slate, section: view.rawValue, keys: keys)
+        }
+        switch result {
+        case .success: impressionsError = nil
+        case let .failure(err): impressionsError = String(describing: err)
+        }
+    }
+
     func reloadSearches() {
         Task { await refreshSearches() }
     }
@@ -148,7 +200,7 @@ final class JobsModel {
         let gen = searchesGeneration
         searchesLoading = true
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.watchlist() } }.value
+        let result = await BlockingWork.run { try c.watchlist() }
         guard gen == searchesGeneration else { return }
         searchesLoading = false
         switch result {
@@ -172,7 +224,7 @@ final class JobsModel {
         if detail?.key != key { detail = nil }
         let c = client()
         Task {
-            let result = await Task.detached(priority: .userInitiated) { Result { try c.show(key) } }.value
+            let result = await BlockingWork.run { try c.show(key) }
             guard gen == detailGeneration else { return }
             switch result {
             case let .success(j): detail = j
@@ -187,7 +239,7 @@ final class JobsModel {
     func setMark(_ key: String, _ mark: JobMark?) async {
         let index = jobs.firstIndex { $0.key == key }
         let c = client()
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.mark(key, mark) } }.value
+        let result = await BlockingWork.run { try c.mark(key, mark) }
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }
@@ -201,6 +253,21 @@ final class JobsModel {
         }
     }
 
+    /// Adds the job's company to the exclusions Settings edits, and saves them;
+    /// the re-list then hides its unmarked roles, and the next run drops them.
+    /// Selection moves on as it does when a mark takes a job out of the view.
+    func excludeCompany(of job: Job, using exclusions: ExclusionsEditor) async {
+        let index = jobs.firstIndex { $0.key == job.key }
+        if let problem = await exclusions.add(job.company, to: \.companies) {
+            actionError = problem
+            return
+        }
+        await refresh()
+        if selection == job.key, !jobs.contains(where: { $0.key == job.key }) {
+            selection = index.flatMap { jobs.isEmpty ? nil : jobs[min($0, jobs.count - 1)].key }
+        }
+    }
+
     /// Toggle: marking a job with the mark it already has clears it.
     func toggle(_ job: Job, _ mark: JobMark) async {
         await setMark(job.key, job.mark == mark ? nil : mark)
@@ -210,7 +277,7 @@ final class JobsModel {
     func saveNote(_ key: String, _ text: String) async -> Bool {
         let c = client()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = await Task.detached(priority: .userInitiated) { Result { try c.note(key, trimmed) } }.value
+        let result = await BlockingWork.run { try c.note(key, trimmed) }
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }

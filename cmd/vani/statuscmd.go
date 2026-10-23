@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // `vani status --json` is the pipeline's health in one object: did the last
@@ -85,6 +86,9 @@ type daemonFacet struct {
 	Running bool      `json:"running"`
 	PID     int       `json:"pid,omitempty"`
 	Since   time.Time `json:"since,omitzero"`
+	// Model is whether the decision model can answer in the running daemon
+	// (daemonmodel.go): absent when the daemon did not say.
+	Model *daemonModel `json:"model,omitempty"`
 }
 
 // runRequestFacet is the manual run asked of the daemon (runrequest.go).
@@ -139,6 +143,9 @@ type lastRunFacet struct {
 	CountsAfter    map[string]int `json:"counts_after,omitempty"`
 	// Semantic is the run's knowledge-base warm (runRecord.Semantic).
 	Semantic *semanticReport `json:"semantic,omitempty"`
+	// Notice is what the Mac app announces for this run (decideNotice): the
+	// app posts it and decides nothing about it.
+	Notice *noticeFacet `json:"notice,omitempty"`
 	// Advance and BackendErrors: what the cap left waiting, and why decision
 	// backends failed (runDetail).
 	runDetail
@@ -149,6 +156,11 @@ type scheduleFacet struct {
 	DailyAt  string    `json:"daily_at,omitempty"`
 	Timezone string    `json:"timezone,omitempty"`
 	NextRun  time.Time `json:"next_run,omitzero"`
+	// Kept is whether a daemon is running to fire the schedule; nil when that
+	// could not be told. Unkept is what it has cost while Kept is false
+	// (schedulekept.go). Both are additive: an older reader ignores them.
+	Kept   *bool           `json:"kept,omitempty"`
+	Unkept *unkeptSchedule `json:"unkept,omitempty"`
 }
 
 type backendsFacet struct {
@@ -161,7 +173,7 @@ type backendsFacet struct {
 type backendJSON struct {
 	facet
 	Name string `json:"name"`
-	Kind string `json:"kind"` // llm or openrouter
+	Kind string `json:"kind"` // llm, openrouter or openrouter_notes
 	// CapUSD is the configured daily cap. SpentUSD and RemainingUSD are absent
 	// when the spend could not be read (ok false), never zero.
 	CapUSD       float64  `json:"cap_usd"`
@@ -214,10 +226,19 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 		// another tool writing this ledger.
 		out.LastRun.Reason = fmt.Sprintf("no run record, but the ledger holds %d postings from earlier runs that kept none", out.Ledger.Total)
 	}
+	notice := decideNotice(out.LastRun, at, time.Local)
+	out.LastRun.Notice = &notice
+	out.Daemon = e.daemonFacet()
 	out.Schedule = scheduleOf(cfg, cfgErr, at)
+	if cfgErr == nil {
+		var live *int
+		if out.Ledger.OK && out.Ledger.Exists {
+			live = new(out.Ledger.ByStatus[string(posting.Live)])
+		}
+		out.Schedule = scheduleKeeping(cfg, out.Schedule, out.Daemon, out.LastRun, live, at)
+	}
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
-	out.Daemon = e.daemonFacet()
 	out.RunRequest = e.runRequestFacet(at)
 	return out
 }
@@ -232,7 +253,7 @@ func (e *env) daemonFacet() daemonFacet {
 	case !pidAlive(d.PID):
 		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: d.StartedAt}
 	}
-	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: d.StartedAt}
+	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: d.StartedAt, Model: d.Model}
 }
 
 // runRequestFacet reads the pending and the claimed request; it removes
@@ -357,6 +378,10 @@ func (e *env) backendsOf(ctx context.Context, cfg config.Config, cfgErr error, a
 		b := backendJSON{Name: cfg.Decide.OpenRouterName(), Kind: "openrouter", CapUSD: cfg.Decide.DailyUSD.OpenRouter}
 		spent, err := readOpenRouterSpend(filepath.Join(e.stateDir, "budget", openRouterBudgetFile), day, openRouterSpendKey)
 		out.Items = append(out.Items, b.withSpend(spent, err))
+		// The notes' own cap, in its own file beside the triage one.
+		nb := backendJSON{Name: b.Name + " notes", Kind: "openrouter_notes", CapUSD: cfg.Funnel.NotesCapUSD()}
+		spent, err = readOpenRouterSpend(filepath.Join(e.stateDir, "budget", notesBudgetFile), day, openRouterSpendKey)
+		out.Items = append(out.Items, nb.withSpend(spent, err))
 	}
 	if cfg.LLM.Provider != "" {
 		b := backendJSON{Name: cfg.LLM.Provider, Kind: "llm", CapUSD: cfg.Decide.DailyUSD.LLM}

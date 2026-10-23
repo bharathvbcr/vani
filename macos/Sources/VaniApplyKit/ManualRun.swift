@@ -2,7 +2,7 @@ import Foundation
 
 // A run started from the Pipeline tab is `vani run-once` (cmd/vani/main.go)
 // with the overrides chosen in the app, started as a long job whose output goes
-// to <state dir>/runs/manual.log. Its progress and outcome are the run record,
+// to <state dir>/runs/manual.log (the previous run's log is kept in runs/history). Its progress and outcome are the run record,
 // read through `vani status --json` like every other run: the app parses no
 // output of the run itself.
 //
@@ -25,7 +25,8 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     /// The watchlist boards to list, as "ats:token"; empty lists every board.
     public var boards: [String]
     /// List and reconcile boards only: no triage, scoring or explaining. No
-    /// decision model is called, but one must still be configured.
+    /// decision model is called, and none needs to be configured (a run that
+    /// advances postings still needs one).
     public var listOnly: Bool
     /// Write no digest: the run's roles wait for the next one.
     public var noDigest: Bool
@@ -102,8 +103,14 @@ public struct ManualRunLauncher: Sendable {
         self.runner = runner
     }
 
+    /// The variable that tells `vani run-once` where its output goes (cmd/vani/runlog.go
+    /// runLogEnv); vani records the path, once it passes its own check that the
+    /// path is a file under <state>/runs, in the run record's `log`.
+    public static let logEnvironmentKey = "VANI_RUN_LOG"
+
     /// Where a manual run's output goes: <state dir>/runs/manual.log, beside
-    /// the run record. Each run replaces it.
+    /// the run record. Each run replaces it, after moving the previous one to
+    /// runs/history/manual-<run id>.log (`ManualRunLog.rotate`, newest 20 within 8 MiB).
     public static func logURL(stateDir: String) -> URL {
         URL(fileURLWithPath: stateDir).appendingPathComponent("runs/manual.log")
     }
@@ -120,8 +127,16 @@ public struct ManualRunLauncher: Sendable {
         case let .refused(reply):
             throw BankError(reply.error ?? "vani could not be started")
         case let .launch(l):
-            return try VaniProcess.launch(l.program, arguments: l.arguments, environment: l.environment,
-                                          log: Self.logURL(stateDir: stateDir), onExit: onExit)
+            // The launch truncates manual.log: keep the previous run's first (RunLogs.swift).
+            try ManualRunLog.rotate(stateDir: stateDir)
+            let log = Self.logURL(stateDir: stateDir)
+            // vani records this path in the run's record, so `vani runs failures`
+            // names this run's log. An environment variable, not a flag: a vani
+            // that predates it ignores it and still runs.
+            var environment = l.environment
+            environment[Self.logEnvironmentKey] = log.path
+            return try VaniProcess.launch(l.program, arguments: l.arguments, environment: environment,
+                                          log: log, onExit: onExit)
         }
     }
 }

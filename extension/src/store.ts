@@ -1,6 +1,7 @@
 // The answer bank's storage. When the Vani Apply Mac app is installed and
 // answers a native-messaging ping, it holds the bank (one file shared with
 // Safari); otherwise the bank stays in chrome.storage.local.
+import { createLock, isRecord } from "./guards";
 import { type Answer, type Bank, emptyBank } from "./types";
 import { MAX_BANK_BYTES, bankBytes, mergeBanks, parseBank } from "./bank";
 import { createBankMemo } from "./bankcache";
@@ -14,23 +15,11 @@ const MAX_ATTEMPTS = 3;
 
 export type StorageMode = "mac-app" | "browser";
 
-export interface CandidateQuery {
-  signatures?: string[];
-  keys?: string[];
-  labels?: string[];
-}
-
 export interface PatchOutcome {
   rev: number;
   droppedSecret: number;
   /** Set only when a `baseRev` was given and the Mac app's bank had moved on: nothing was written, `rev` is its current one. */
   conflict?: boolean;
-}
-
-export interface AnswerListResult {
-  answers: Answer[];
-  total: number;
-  rev: number;
 }
 
 export interface LogEntry {
@@ -53,6 +42,10 @@ export interface LocalArea {
 class TransportError extends Error {}
 /** The host answered `{"error": ...}`. Never a reason to fall back: the bank lives there. */
 class NativeError extends Error {}
+/** A chunked bank arrived with a different byte length than the host said it had. Nothing is parsed or written back. */
+export class ChunkIntegrityError extends NativeError {
+  override name = "ChunkIntegrityError";
+}
 
 /** One host process per message: Safari's promise API when present, else Chrome's callback API. */
 export const spawnTransport: Transport = msg =>
@@ -80,12 +73,32 @@ const chromeLocal: LocalArea = {
   remove: k => chrome.storage.local.remove(k),
 };
 
-function isObj(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
 function isRev(x: unknown): x is number {
   return typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
+}
+
+/**
+ * Mirrors Swift's NativeMessaging.chunkRanges: a chunk's JSON-string form must fit Chrome's 1 MiB
+ * reply minus 4096 bytes of envelope, and a raw byte costs at most 6 once escaped, so every chunk
+ * but the last holds at least this many bytes.
+ */
+const MIN_FULL_CHUNK_BYTES = Math.floor((1024 * 1024 - 4096) / 6);
+/** The most chunks a bank at the cap (Swift Limits.maxBankBytes = MAX_BANK_BYTES) can need. */
+export const MAX_CHUNK_COUNT = Math.ceil(MAX_BANK_BYTES / MIN_FULL_CHUNK_BYTES);
+
+/**
+ * The host's chunk count is untrusted input to a polling loop. Refuse before the first getChunk
+ * unless totalBytes is a positive safe integer within the bank cap and chunkCount is an integer in
+ * 1..min(totalBytes, MAX_CHUNK_COUNT) (each chunk carries at least one byte).
+ */
+function checkedChunkCount(count: unknown, totalBytes: unknown): number {
+  if (typeof totalBytes !== "number" || !Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BANK_BYTES) {
+    throw new ChunkIntegrityError(`chunked get reports an impossible totalBytes: ${String(totalBytes)}`);
+  }
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > Math.min(totalBytes, MAX_CHUNK_COUNT)) {
+    throw new ChunkIntegrityError(`chunked get reports an impossible chunkCount: ${String(count)}`);
+  }
+  return count;
 }
 
 interface Snapshot { rev: number; bank: Bank }
@@ -130,12 +143,7 @@ export function createStore(opts: StoreOptions = {}) {
   let pingPromise: Promise<boolean> | null = null;
   let migratePromise: Promise<void> | null = null;
 
-  let writeQueue = Promise.resolve<unknown>(undefined);
-  function serializeWrite<T>(op: () => Promise<T>): Promise<T> {
-    const next = writeQueue.then(op, op);
-    writeQueue = next.catch(() => undefined);
-    return next;
-  }
+  const serializeWrite = createLock();
 
   /** One bounded request. Throws TransportError (unreachable) or NativeError (host said no). */
   async function call(msg: object): Promise<Record<string, unknown>> {
@@ -153,7 +161,7 @@ export function createStore(opts: StoreOptions = {}) {
     } finally {
       clearTimeout(timer);
     }
-    if (!isObj(reply)) { nativeUntil = 0; memo.invalidate(); throw new TransportError("Mac app sent no reply"); }
+    if (!isRecord(reply)) { nativeUntil = 0; memo.invalidate(); throw new TransportError("Mac app sent no reply"); }
     if (typeof reply.error === "string") throw new NativeError(reply.error);
     return reply;
   }
@@ -163,7 +171,7 @@ export function createStore(opts: StoreOptions = {}) {
     if (r.chunked === true) {
       const rev = r.rev;
       if (!isRev(rev)) throw new NativeError("chunked get reply has no valid rev");
-      const chunkCount = typeof r.chunkCount === "number" ? r.chunkCount : 1;
+      const chunkCount = checkedChunkCount(r.chunkCount, r.totalBytes);
       const chunks: string[] = [typeof r.chunk === "string" ? r.chunk : ""];
       for (let i = 1; i < chunkCount; i++) {
         const next = await call({ op: "getChunk", rev, chunkIndex: i });
@@ -175,7 +183,15 @@ export function createStore(opts: StoreOptions = {}) {
         }
         chunks.push(next.chunk);
       }
-      return { rev, bank: parseBank(chunks.join("")).bank };
+      const joined = chunks.join("");
+      // totalBytes is the UTF-8 byte length of the whole encoded bank (Swift's Data.count). A mismatch
+      // means a chunk was lost, doubled or cut inside a character: refuse rather than parse, and
+      // never let a damaged bank reach a write-back.
+      const received = new TextEncoder().encode(joined).length;
+      if (typeof r.totalBytes !== "number" || r.totalBytes !== received) {
+        throw new ChunkIntegrityError(`chunked bank is ${received} bytes but the host sent ${String(r.totalBytes)}`);
+      }
+      return { rev, bank: parseBank(joined).bank };
     }
     return snapshot(r);
   }
@@ -415,62 +431,6 @@ export function createStore(opts: StoreOptions = {}) {
         return { rev: 0, droppedSecret };
       });
     },
-
-    /** Granular indexed candidate lookup for form matching without transferring the full bank. */
-    async queryCandidates(query: CandidateQuery): Promise<Answer[]> {
-      if (await useNative()) {
-        const r = await call({
-          op: "queryCandidates",
-          signatures: query.signatures ?? [],
-          keys: query.keys ?? [],
-          labels: query.labels ?? [],
-        });
-        if (Array.isArray(r.candidates)) {
-          return r.candidates as Answer[];
-        }
-        return [];
-      }
-      const current = await localLoad();
-      const sigSet = new Set(query.signatures ?? []);
-      const keySet = new Set(query.keys ?? []);
-      const labelSet = new Set(query.labels ?? []);
-      return Object.values(current.answers).filter(a => {
-        if (keySet.has(a.key)) return true;
-        if (a.signatures.some(s => sigSet.has(s))) return true;
-        if (a.labels.some(l => labelSet.has(l))) return true;
-        return false;
-      });
-    },
-
-    /** Paginated listing and search for UI tables without transferring the full bank. */
-    async listAnswers(offset = 0, limit = 50, search?: string): Promise<AnswerListResult> {
-      if (await useNative()) {
-        const r = await call({
-          op: "listAnswers",
-          offset,
-          limit,
-          search: search ?? "",
-        });
-        const answers = Array.isArray(r.answers) ? (r.answers as Answer[]) : [];
-        const total = typeof r.total === "number" ? r.total : answers.length;
-        const rev = isRev(r.rev) ? r.rev : 0;
-        return { answers, total, rev };
-      }
-      const current = await localLoad();
-      let all = Object.values(current.answers);
-      if (search && search.trim().length > 0) {
-        const s = search.toLowerCase();
-        all = all.filter(a =>
-          a.key.toLowerCase().includes(s) ||
-          a.value.some(v => v.toLowerCase().includes(s)) ||
-          a.labels.some(l => l.toLowerCase().includes(s))
-        );
-      }
-      all.sort((x, y) => (y.updatedAt ?? "").localeCompare(x.updatedAt ?? ""));
-      const total = all.length;
-      const slice = all.slice(offset, offset + limit);
-      return { answers: slice, total, rev: 0 };
-    },
   };
 }
 
@@ -483,5 +443,3 @@ export const storageMode = store.storageMode;
 export const migrationNote = store.migrationNote;
 export const logActivity = store.logActivity;
 export const patchAnswers = store.patchAnswers;
-export const queryCandidates = store.queryCandidates;
-export const listAnswers = store.listAnswers;

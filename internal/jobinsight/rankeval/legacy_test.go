@@ -107,7 +107,7 @@ func legacyFitOrder(fit string) int {
 	return len(roleFits)
 }
 
-// legacyDefaultLess is cmd/vani sortJobs "default": rank desc (any rank beats
+// legacyDefaultLess is internal/jobview Sort "default": rank desc (any rank beats
 // none), role_fit order, newest first seen, then key.
 func legacyDefaultLess(a, b legacyRec) bool {
 	if a.hasRank != b.hasRank {
@@ -139,7 +139,7 @@ func legacyDigestLess(a, b legacyRec) bool {
 	return a.id < b.id
 }
 
-// legacyPriorityLess is sortJobs "priority": priority desc, relevance desc.
+// legacyPriorityLess is jobview.Sort "priority": priority desc, relevance desc.
 func legacyPriorityLess(a, b legacyRec) bool {
 	ra, rb := a.relevance(), b.relevance()
 	pa, pb := legacyPriorityOf(ra, a.age), legacyPriorityOf(rb, b.age)

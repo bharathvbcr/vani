@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/egress"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/logo"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
@@ -229,7 +231,7 @@ func TestJobsListCarriesTheCachedLogo(t *testing.T) {
 		t.Fatalf("logos %v; want acme's icon and none for globex (not fetched)", byKey)
 	}
 	o, _ := mustCode(t, 0, "jobs", "show", "--json", "gh:acme:1")
-	var shown jobJSON
+	var shown jobview.Job
 	if err := json.Unmarshal([]byte(o), &shown); err != nil || shown.Logo != icon {
 		t.Fatalf("show logo %q, %v", shown.Logo, err)
 	}
@@ -264,4 +266,16 @@ func countOf(xs []string, x string) int {
 		}
 	}
 	return n
+}
+
+// The egress body cap sits one byte past the logo bound, so logo.Fetch (not
+// egress) decides: exactly MaxBytes is read whole, one more is refused.
+func TestLogoEgressConfigCapIsOneBytePastTheLogoBound(t *testing.T) {
+	cfg := logoEgressConfig([]string{"status.openai.com"})
+	if cfg.MaxBodyBytes != logo.MaxBytes+1 {
+		t.Fatalf("MaxBodyBytes = %d, want logo.MaxBytes+1 = %d", cfg.MaxBodyBytes, logo.MaxBytes+1)
+	}
+	if _, err := egress.New(cfg); err != nil {
+		t.Fatalf("egress refuses the logo config: %v", err)
+	}
 }

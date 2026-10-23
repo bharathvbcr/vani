@@ -63,7 +63,20 @@ const (
 	MaxKeyBytes = 512
 	// MaxFileBytes bounds the store; a write past it is refused, never trimmed.
 	MaxFileBytes = 8 << 20
-	maxLineBytes = 8 << 10
+	// maxLineBytes bounds one stored line. It has to hold the worst-case line
+	// a validated event encodes to: json.Marshal HTML-escapes < > & and writes
+	// U+2028/2029 as six-byte \uXXXX forms, so every byte of a note and of a
+	// key may cost maxEscape bytes on disk. The worst case is a full-size note
+	// and a full-size key, both all '<', plus maxEnvelope for the rest of the
+	// line: 12,000 + 3,072 + 128, under the 16 KiB cap (a test pins it).
+	//
+	// Compatibility: a marks.jsonl written by this version may hold lines up to
+	// 16 KiB. Older binaries had an 8 KiB cap and return ErrCorrupt on such a
+	// line, so do not run an older vani against a store a newer one has written
+	// escape-heavy notes into.
+	maxLineBytes = 16 << 10
+	maxEscape    = 6
+	maxEnvelope  = 128
 
 	dirName   = "marks"
 	fileName  = "marks.jsonl"
@@ -119,7 +132,9 @@ func CheckKey(k posting.Key) error {
 }
 
 // CheckNote validates a note: bounded, valid UTF-8, no control characters
-// other than newline and tab.
+// other than newline and tab. The bound is on raw bytes; the stored line is
+// larger when the note holds characters JSON escapes, and maxLineBytes is
+// sized so that any note this accepts fits a line.
 func CheckNote(s string) error {
 	switch {
 	case len(s) > MaxNoteBytes:
@@ -204,6 +219,9 @@ func cutBack(f *os.File, good int64, cause error) error {
 	return cause
 }
 
+// syncDir is atomicfile.SyncDir; a variable only so a test can count its calls.
+var syncDir = atomicfile.SyncDir
+
 // replayed is what replay read: the folded state, the end of the last intact
 // line, how many intact lines there were, and whether a torn last line was
 // skipped.
@@ -220,7 +238,7 @@ type replayed struct {
 // newer writer: cutting it as torn would erase a mark that was really made.
 func replay(src io.Reader) (replayed, error) {
 	out := replayed{m: map[posting.Key]Entry{}}
-	r := bufio.NewReaderSize(src, 16*1024)
+	r := bufio.NewReaderSize(src, 2*maxLineBytes)
 	for n := 1; ; n++ {
 		line, err := r.ReadSlice('\n')
 		switch {
@@ -426,11 +444,17 @@ func write(dir string, e event) (Entry, error) {
 	}
 	defer l.Close()
 	path := filepath.Join(dir, fileName)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	f, created, err := atomicfile.OpenAppend(path, 0)
 	if err != nil {
 		return Entry{}, fmt.Errorf("marks: open: %w", err)
 	}
 	defer func() { f.Close() }()
+	if created {
+		// The line's fsync below does not cover the entry that names the file.
+		if err := atomicfile.SyncNew(path, syncDir); err != nil {
+			return Entry{}, fmt.Errorf("marks: %w", err)
+		}
+	}
 	if st, err := f.Stat(); err != nil {
 		return Entry{}, fmt.Errorf("marks: stat: %w", err)
 	} else if st.Size() > MaxFileBytes {

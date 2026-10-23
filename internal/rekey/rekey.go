@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -97,13 +98,27 @@ type marker struct {
 	Changes []Change `json:"changes"`
 }
 
+// ErrUnsupported is Run's refusal on Windows.
+var ErrUnsupported = errors.New("rekey: not supported on Windows: the ledger stays open (locked) while its events file is replaced, and Windows cannot rename over an open file; run it on macOS or Linux")
+
+// goos is runtime.GOOS; a variable only so a test can take the Windows branch
+// on any host.
+var goos = runtime.GOOS
+
 // crash is a test seam: it is called at each step and a non-nil error stops
 // the run there, as a crash would.
 var crash = func(step string) error { return nil }
 
 // Run migrates the ledger in stateDir/ledger and the marks in stateDir/marks.
 // With dryRun it plans, checks for collisions and reports, writing nothing.
+//
+// On Windows Run refuses, before it reads or writes anything: it holds the
+// ledger open (the lock) while finish renames a new events file over it, and
+// Windows cannot rename over an open file. Run it on a Unix host.
 func Run(stateDir string, dryRun bool, now time.Time) (Report, error) {
+	if goos == "windows" {
+		return Report{DryRun: dryRun}, ErrUnsupported
+	}
 	dir := filepath.Join(stateDir, "ledger")
 	if _, err := os.Stat(filepath.Join(dir, eventsName)); err != nil {
 		return Report{DryRun: dryRun}, fmt.Errorf("rekey: no ledger in %s: %w", dir, err)

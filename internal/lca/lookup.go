@@ -26,57 +26,93 @@ type Badge struct {
 	FYs         []int       // the last (up to) 3 covered fiscal years, ascending
 }
 
-// Lookup matches company against the index. It tries an exact normalised
-// match, then a whole-token prefix that selects exactly one employer (and
-// needs at least two tokens). It never chooses among several candidates.
-func (x *Index) Lookup(company string) Badge {
-	x.mu.RLock()
-	defer x.mu.RUnlock()
+// Looker is what a pipeline needs of the LCA data: a badge per company. Both
+// *Index and *View satisfy it and give identical answers for the same data.
+type Looker interface {
+	Lookup(company string) Badge
+}
 
-	window := x.coverage
-	if len(window) > badgeWindow {
-		window = window[len(window)-badgeWindow:]
-	}
+// table is the sorted employer keys with their certified H-1B counts: what
+// lookup reads, whether the keys sit in an Index's maps or in a View's blob.
+// A ref names one key.
+type table interface {
+	exact(norm string) (ref int, ok bool)
+	prefix(p string) (ref int, ok bool) // the only key starting with p, if exactly one does
+	key(ref int) string
+	h1b(ref, fy int) int
+}
+
+// lookup is the one matching rule. It tries an exact normalised match, then a
+// whole-token prefix that selects exactly one employer (and needs at least two
+// tokens). It never chooses among several candidates. window is the covered
+// fiscal years a badge sums, ascending.
+func lookup(t table, window []int, company string) Badge {
 	b := Badge{Confidence: ConfNone, FYs: append([]int(nil), window...)}
-
 	norm := Normalize(company)
 	if norm == "" {
 		return b
 	}
-	key := ""
-	if _, ok := x.merged[norm]; ok {
-		key, b.Confidence = norm, ConfExact
+	ref, ok := t.exact(norm)
+	if ok {
+		b.Confidence = ConfExact
 	} else if len(strings.Fields(norm)) >= 2 {
-		if k, ok := x.uniquePrefix(norm); ok {
-			key, b.Confidence = k, ConfUniquePrefix
+		if ref, ok = t.prefix(norm + " "); ok {
+			b.Confidence = ConfUniquePrefix
 		}
 	}
-	if key == "" {
+	if !ok {
 		return b
 	}
-	b.MatchedName = key
+	b.MatchedName = t.key(ref)
 	b.Certified = map[int]int{}
 	for _, fy := range window {
-		n := x.merged[key][fy].H1B
+		n := t.h1b(ref, fy)
 		b.Certified[fy] = n
 		b.Total += n
 	}
 	return b
 }
 
-// uniquePrefix returns the single employer whose key starts with norm at a
-// token boundary, or false when there are none or several.
-func (x *Index) uniquePrefix(norm string) (string, bool) {
-	p := norm + " "
-	i := sort.SearchStrings(x.keys, p)
-	if i >= len(x.keys) || !strings.HasPrefix(x.keys[i], p) {
-		return "", false
+// lookupWindow is the last badgeWindow of the covered fiscal years.
+func lookupWindow(coverage []int) []int {
+	if len(coverage) > badgeWindow {
+		return coverage[len(coverage)-badgeWindow:]
 	}
-	if i+1 < len(x.keys) && strings.HasPrefix(x.keys[i+1], p) {
-		return "", false
-	}
-	return x.keys[i], true
+	return coverage
 }
+
+// Lookup matches company against the index; see lookup.
+func (x *Index) Lookup(company string) Badge {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	return lookup(indexTable{x}, lookupWindow(x.coverage), company)
+}
+
+// indexTable reads the merged maps; a ref is a position in x.keys.
+type indexTable struct{ x *Index }
+
+func (t indexTable) exact(norm string) (int, bool) {
+	if _, ok := t.x.merged[norm]; !ok {
+		return 0, false
+	}
+	return sort.SearchStrings(t.x.keys, norm), true
+}
+
+func (t indexTable) prefix(p string) (int, bool) {
+	keys := t.x.keys
+	i := sort.SearchStrings(keys, p)
+	if i >= len(keys) || !strings.HasPrefix(keys[i], p) {
+		return 0, false
+	}
+	if i+1 < len(keys) && strings.HasPrefix(keys[i+1], p) {
+		return 0, false
+	}
+	return i, true
+}
+
+func (t indexTable) key(ref int) string { return t.x.keys[ref] }
+
+func (t indexTable) h1b(ref, fy int) int { return t.x.merged[t.x.keys[ref]][fy].H1B }
 
 // String renders the badge for the digest.
 func (b Badge) String() string {

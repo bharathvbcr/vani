@@ -30,6 +30,41 @@ func setup(t *testing.T) (cfgPath, stateDir string) {
 	return cfgPath, stateDir
 }
 
+// isoEnv is a CLI environment that owns its paths and output buffers, so tests
+// using it can be parallel subtests: setup's t.Setenv is forbidden under
+// t.Parallel and would be process-global anyway. The caller pins the clock
+// once on the parent test (fixedNow) before starting parallel subtests.
+type isoEnv struct {
+	ev       *env
+	stateDir string
+	o, e     bytes.Buffer
+}
+
+func newIsoEnv(t *testing.T) *isoEnv {
+	t.Helper()
+	dir := t.TempDir()
+	x := &isoEnv{stateDir: filepath.Join(dir, "state")}
+	x.ev = &env{configPath: filepath.Join(dir, "config.json"), stateDir: x.stateDir, stdout: &x.o, stderr: &x.e}
+	return x
+}
+
+// do runs one command and returns its exit code and the output it alone wrote.
+func (x *isoEnv) do(args ...string) (code int, stdout, stderr string) {
+	x.o.Reset()
+	x.e.Reset()
+	code = runEnv(x.ev, args)
+	return code, x.o.String(), x.e.String()
+}
+
+func (x *isoEnv) mustCode(t *testing.T, want int, args ...string) (stdout, stderr string) {
+	t.Helper()
+	code, o, e := x.do(args...)
+	if code != want {
+		t.Fatalf("vani %v: exit %d, want %d\nstdout: %s\nstderr: %s", args, code, want, o, e)
+	}
+	return o, e
+}
+
 func do(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	var o, e bytes.Buffer

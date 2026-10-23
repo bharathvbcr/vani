@@ -12,7 +12,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
-	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // noticeApp wires an App whose run fails with runErr and reports adv, and
@@ -32,7 +31,7 @@ func noticeApp(t *testing.T, n *fakeNotifier, runErr error, adv *advanceReport, 
 			Notifier:  n,
 			RunOnce:   func(context.Context) error { return runErr },
 			RunReport: func() runDetail { return runDetail{Advance: adv} },
-			Reload:    func([]sources.Board, []string) {},
+			Reload:    func(config.Config) {},
 		}, nil
 	}
 }
@@ -79,7 +78,6 @@ func TestFatalRunSaysVaniStopped(t *testing.T) {
 // decision backend reads differently from postings failing a stage.
 func TestAdvanceStopNamesTheCause(t *testing.T) {
 	for stop, want := range map[string]string{
-		stopNoBackend:    "No decision backend is set up",
 		stopNoneRead:     "No decision backend",
 		stopUnreadStreak: "No decision backend",
 		stopFailStreak:   "kept failing a stage",
@@ -234,7 +232,7 @@ func TestDigestBody(t *testing.T) {
 		{1, &advanceReport{Unread: 1}, "1 role to review; 1 posting could not be read or scored and waits for the next run"},
 		{5, &advanceReport{Unread: 3, Failed: 4, Deferred: 9}, "5 roles to review; 7 postings could not be read or scored and wait for the next run"},
 	} {
-		if got := digestBody(c.roles, c.adv); got != c.want {
+		if got := digestBody(c.roles, c.adv, nil); got != c.want {
 			t.Errorf("digestBody(%d, %+v) = %q, want %q", c.roles, c.adv, got, c.want)
 		}
 	}

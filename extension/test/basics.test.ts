@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { type FieldInfo, emptyBank } from "../src/types";
 import { MAX_VALUE_CHARS, mergeCapture } from "../src/bank";
 import { matchField } from "../src/match";
-import { BASICS, BASICS_HOST, basicsFields, basicsValues } from "../src/basics";
+import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "../src/basics";
 import { intentOf } from "../src/intents";
 
 const now = new Date("2026-10-19T12:00:00Z");
@@ -165,5 +165,50 @@ describe("basics", () => {
     expect(v.linkedin).toBe("https://linkedin.example/sam");
     expect(v.email).toBe("");
     expect(basicsValues(null).first).toBe("");
+  });
+});
+
+describe("basicsSaveOutcome", () => {
+  const counts = { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 };
+
+  test("a save that landed says how many, and what was left out and why", () => {
+    expect(basicsSaveOutcome({ ...counts, added: 2, updated: 1 })).toEqual({ saved: true, status: "Saved 3.", toast: "Saved 3 basics." });
+    expect(basicsSaveOutcome({ ...counts, added: 1 }).toast).toBe("Saved 1 basic.");
+    const o = basicsSaveOutcome({ ...counts, added: 1, skippedSecret: 1, skippedSelfId: 2, skippedEmpty: 1 });
+    expect(o.saved).toBe(true);
+    expect(o.status).toContain("1 refused as sensitive");
+    expect(o.status).toContain("2 kept out while self-ID is off");
+    expect(o.status).toContain("1 not saved");
+  });
+
+  test("everything skipped is not dressed up as a save", () => {
+    const o = basicsSaveOutcome({ ...counts, skippedSecret: 2 });
+    expect(o.status).toBe("Nothing saved; 2 refused as sensitive.");
+    expect(o.toast).toBe("No basics were saved.");
+  });
+
+  test("a failure carries its reason into the status and the toast", () => {
+    const o = basicsSaveOutcome({ error: "this browser did not save it (the Mac app is not reachable): storage is read-only" });
+    expect(o.saved).toBe(false);
+    expect(o.status).toBe("Could not save: this browser did not save it (the Mac app is not reachable): storage is read-only");
+    expect(o.toast.startsWith("Basics not saved: this browser did not save it")).toBe(true);
+    expect(o.toast.length).toBeLessThanOrEqual("Basics not saved: ".length + 90);
+  });
+
+  test("no reply, an empty error, or a malformed reply is a failure, never a pass", () => {
+    for (const r of [undefined, null, {}, { error: "" }, { error: "   " }, { error: 3 }, { added: 1 }, { ...counts, added: -1 }, { ...counts, added: Number.NaN }, "ok", []]) {
+      const o = basicsSaveOutcome(r);
+      expect(o.saved).toBe(false);
+      expect(o.status).toStartWith("Could not save: ");
+    }
+    expect(basicsSaveOutcome(undefined).status).toBe("Could not save: no reply from the extension");
+  });
+
+  test("an oversized error is cut for the toast, kept whole in the status", () => {
+    const long = "x".repeat(5000);
+    const o = basicsSaveOutcome({ error: long });
+    expect(o.status).toBe(`Could not save: ${long}`);
+    expect(o.toast.endsWith("…")).toBe(true);
+    expect(o.toast.length).toBe("Basics not saved: ".length + 90);
   });
 });

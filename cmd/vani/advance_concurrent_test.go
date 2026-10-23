@@ -254,7 +254,7 @@ func (d clientDoer) Do(ctx context.Context, req *http.Request) (*http.Response, 
 	return d.c.Do(req.WithContext(ctx))
 }
 
-// jevAnswer is a decision-model response (decide/jev wire shape) answering every triage slot with its first
+// jevAnswer is a Liquid D response answering every triage slot with its first
 // option at cost usd.
 func jevAnswer(usd float64) string {
 	var b strings.Builder

@@ -6,7 +6,9 @@ import Foundation
 // plain text, never as Markdown, and only http(s) links are opened.
 
 public enum JobView: String, CaseIterable, Identifiable, Sendable {
-    case new, saved, applied, hidden, all
+    /// `pending` is the postings no run has triaged yet (jobview.ViewPending):
+    /// listed apart from the ranked views, and without fit, relevance or priority.
+    case new, saved, applied, hidden, all, pending
     public var id: String { rawValue }
     public var title: String {
         switch self {
@@ -15,8 +17,22 @@ public enum JobView: String, CaseIterable, Identifiable, Sendable {
         case .applied: "Applied"
         case .hidden: "Hidden"
         case .all: "All"
+        case .pending: "Awaiting triage"
         }
     }
+
+    /// The tab's words with its count, "Awaiting triage (8,525)"; the bare title
+    /// when vani sent no count (unknown is not zero).
+    public func label(count: Int?, locale: Locale = .current) -> String {
+        guard let count else { return title }
+        return "\(title) (\(count.formatted(.number.locale(locale))))"
+    }
+
+    /// The view's roles have a fit, relevance and priority to show, to chart and
+    /// to count as seen. Postings awaiting triage have none, so the app asks no
+    /// stats or gaps of them (vani refuses) and reports no impressions for them:
+    /// a role the owner never had ranked was not "seen and passed".
+    public var isRanked: Bool { self != .pending }
 }
 
 public enum JobMark: String, Codable, Sendable, CaseIterable {
@@ -50,6 +66,25 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     public var note: String?
     public var noteAt: Date?
     public var description: String?
+
+    /// No run has triaged this posting (vani's `untriaged`, set from its status):
+    /// it has no fit, relevance, priority, keywords or row, and none is shown.
+    /// Absent from an older vani, which never sends such rows in a ranked view.
+    /// Decoded leniently like the duplicate fields below: a value that is not a
+    /// bool reads as nil (a triaged row) and never fails the list.
+    public var untriaged: Bool? {
+        get { untriagedWire?.value }
+        set { untriagedWire = newValue.map { Lenient($0) } }
+    }
+    /// The kind of rule ("excluded" or "title") by which the next run's
+    /// prefilter would drop this untriaged posting before triage; never the rule.
+    /// Lenient: a value that is not a string reads as nil.
+    public var prefilterDrop: String? {
+        get { prefilterDropWire?.value }
+        set { prefilterDropWire = newValue.map { Lenient($0) } }
+    }
+    var untriagedWire: Lenient<Bool>?
+    var prefilterDropWire: Lenient<String>?
 
     // Display-only insight from `vani jobs` (cmd/vani/jobsinsight.go).
     /// The date the age is measured from: the board's posted date, or when
@@ -130,12 +165,19 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         return p
     }
 
+    /// The versioned row contract (JobRow, owned by Go): Vani's own relevance,
+    /// priority and display strings. Nil only for a vani that predates it; a
+    /// row of an unknown version fails the whole decode, never half-renders.
+    public var row: JobRow?
+
     public var id: String { key }
 
     enum CodingKeys: String, CodingKey {
         case key, company, title, location, remote, department, url, status, closed, rank, coverage,
              explanation, missing, unsure, lca, employer, triage, category, mark, note, description,
-             relevance, priority, keywords, semantic
+             relevance, priority, keywords, semantic, row
+        case untriagedWire = "untriaged"
+        case prefilterDropWire = "prefilter_drop"
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
         case dupSiblingOfWire = "dup_sibling_of"
@@ -214,7 +256,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     }
 
     /// The fixture's seniority options, most junior first.
-    public static let seniorityOptions = ["intern_or_new_grad", "mid", "senior", "staff_plus", "manager"]
+    public static var seniorityOptions: [String] { Labels.current.values(Labels.current.triage["seniority"] ?? []) }
     /// The currencies Vani reads pay in (jobinsight.PayCurrencies; the Go test
     /// TestSwiftPayCurrenciesMatch fails when this list drifts from it).
     public static let payCurrencies = ["USD", "CAD", "EUR", "GBP", "AUD", "CHF", "SGD", "NZD", "INR", "JPY", "SEK", "NOK", "DKK", "PLN",
@@ -305,67 +347,41 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         return u
     }
 
-    /// Triage's role-fit label in words, when triage gave one.
-    public var fitLabel: String? { Self.words[triage?["role_fit"] ?? ""] }
+    /// Triage's role-fit label in words, when triage gave one. The string is
+    /// Go's (`row.fitLabel`); only a row-less job (a vani older than the row
+    /// contract) reads the loaded vocabulary (`Labels`) itself.
+    public var fitLabel: String? {
+        if let row { return row.fitLabel }
+        guard let fit = triage?["role_fit"] else { return nil }
+        return Labels.current.fit.first { $0.value == fit }?.label
+    }
 
     /// Triage's other readings in words (seniority, work mode, sponsorship),
     /// leaving out "not stated".
     public var triageLabels: [String] {
-        ["seniority", "work_mode", "sponsorship"].compactMap { Self.words[triage?[$0] ?? ""] }
+        ["seniority", "work_mode", "sponsorship"].compactMap { slot in
+            guard let v = triage?[slot], v != "not_stated" else { return nil }
+            return Labels.current.label(for: v)
+        }
     }
 
-    /// Career track / category folder options.
-    public static let categoryOptions = [
-        "ai-engineer",
-        "agent-systems",
-        "ml-inference-systems",
-        "ml-research",
-        "biomedical-ai",
-        "biomedical-research",
-        "human-factors-medical-devices",
-        "other",
-    ]
-
-    static let categoryWords: [String: String] = [
-        "ai-engineer": "AI Engineer",
-        "agent-systems": "Agent Systems",
-        "ml-inference-systems": "ML Inference Systems",
-        "ml-research": "ML Research",
-        "biomedical-ai": "Biomedical AI",
-        "biomedical-research": "Biomedical Research",
-        "human-factors-medical-devices": "Human Factors",
-        "other": "Other",
-    ]
+    /// Career track / category folder options, in vani's order.
+    public static var categoryOptions: [String] { Labels.current.values(Labels.current.category) }
 
     /// Category folder / track name in words ("ai-engineer" → "AI Engineer").
     public var categoryLabel: String? {
         guard let category, !category.isEmpty else { return nil }
-        return Self.categoryWords[category] ?? category.replacingOccurrences(of: "-", with: " ").capitalized
+        return Labels.current.label(for: category) ?? category.replacingOccurrences(of: "-", with: " ").capitalized
     }
 
     /// A jdtriage option value in words ("strong_fit" → "Strong fit"); "none"
-    /// is no reading.
-    public static func label(for option: String) -> String {
-        if option == "none" { return "No reading" }
-        if let cat = categoryWords[option] { return cat }
-        return words[option] ?? option.replacingOccurrences(of: "_", with: " ")
-    }
+    /// is no reading. The words are vani's (`Labels`).
+    public static func label(for option: String) -> String { Labels.label(for: option) }
 
-    /// The fixture's role_fit options, best first (cmd/vani roleFitOrder).
-    public static let roleFitOrder = ["strong_fit", "partial_fit", "adjacent", "mismatch_seniority", "mismatch_domain"]
-    public static let workModeOptions = ["remote", "hybrid", "onsite", "not_stated"]
-    public static let sponsorshipOptions = ["sponsors_visa", "no_sponsorship", "citizenship_or_clearance_required", "not_stated"]
-
-    // The jdtriage fixture's option values (internal/decide/jdtriage/fixture.json).
-    static let words: [String: String] = [
-        "strong_fit": "Strong fit", "partial_fit": "Partial fit", "adjacent": "Adjacent",
-        "mismatch_seniority": "Seniority mismatch", "mismatch_domain": "Different field",
-        "intern_or_new_grad": "Intern / new grad", "mid": "Mid-level", "senior": "Senior",
-        "staff_plus": "Staff+", "manager": "Manager",
-        "remote": "Remote", "hybrid": "Hybrid", "onsite": "On-site",
-        "sponsors_visa": "Sponsors visas", "no_sponsorship": "No sponsorship",
-        "citizenship_or_clearance_required": "Citizenship or clearance",
-    ]
+    /// The fixture's role_fit options, best first, and the other slots' options.
+    public static var roleFitOrder: [String] { Labels.current.values(Labels.current.fit) }
+    public static var workModeOptions: [String] { Labels.current.values(Labels.current.triage["work_mode"] ?? []) }
+    public static var sponsorshipOptions: [String] { Labels.current.values(Labels.current.triage["sponsorship"] ?? []) }
 
     /// One picked reason. Vani splits the note (cmd/vani/jobsinsight.go
     /// parseReasons); a note it cannot split arrives whole as `.other`.
@@ -414,6 +430,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// "3d", "5w", "4mo": how old the posting is; "~" marks an age measured
     /// from when Vani first saw it, not a board date.
     public var ageLabel: String? {
+        if let row { return row.ageLabel }
         guard let d = ageDays, d >= 0 else { return nil }
         let prefix = freshSource == .seen ? "~" : ""
         switch d {
@@ -426,6 +443,24 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
 
     /// Keywords your target summary names, then gaps, then the rest (Vani's order).
     public var keywordList: [Keyword] { keywords ?? [] }
+
+    /// The posting waits for a run to triage it: show "Not triaged yet" where a
+    /// fit and a score would be, and no score at all.
+    public var isUntriaged: Bool { untriaged == true }
+
+    /// What the owner is told about an untriaged posting.
+    public static let untriagedNote = "Not triaged yet: no fit, relevance or priority until a run reads it."
+
+    /// A note for an untriaged posting the next run's prefilter would drop
+    /// before triage (so it is likely noise), or nil. The rule is never named.
+    public var prefilterNote: String? {
+        guard isUntriaged, let kind = prefilterDrop, !kind.isEmpty else { return nil }
+        switch kind {
+        case "excluded": return "The next run would drop this: it matches your exclusions."
+        case "title": return "The next run would drop this: its title matches a rule that drops roles."
+        default: return "The next run would drop this before triage."
+        }
+    }
 
     /// The ranking breakdown for the detail view, or nil when Vani sent none
     /// (an older vani, or a posting it did not score).
@@ -779,22 +814,30 @@ public struct PendingTriage: Codable, Equatable, Sendable {
 
     /// The footer note, or nil when nothing waits.
     public var footerNote: String? {
-        total > 0 ? "· \(total) awaiting triage" : nil
+        total > 0 ? "· \(total) awaiting triage (see the \(JobView.pending.title) view)" : nil
     }
 
-    /// The footer note's help: who waits, and why they are not listed.
+    /// The footer note's help: who waits, and where to see them.
     public var footerHelp: String {
         let top = companies.prefix(5).map { "\($0.company) \($0.n)" }.joined(separator: ", ")
-        return "\(total) postings were read from their boards but not triaged yet, so no view lists them"
+        return "\(total) postings were read from their boards but not triaged yet, so the ranked views do not list them"
             + (top.isEmpty ? "" : " (\(top))")
-            + ". Each run triages up to the config's advance_per_run of them."
+            + ". The \(JobView.pending.title) view lists them, unranked. Each run triages up to the config's advance_per_run of them."
+    }
+
+    /// What an empty ranked view adds when postings wait: where to see them. Nil
+    /// when nothing waits, and in the awaiting view itself.
+    public func emptyListNote(in view: JobView) -> String? {
+        guard view != .pending, total > 0 else { return nil }
+        return "\(total) \(total == 1 ? "posting is" : "postings are") awaiting triage; see \(total == 1 ? "it" : "them"), unranked, in the \(JobView.pending.title) view."
     }
 
     /// What an empty search result adds when the search names postings that
-    /// are still waiting, or nil when it names none.
-    public func emptySearchNote(query: String) -> String? {
-        guard matching > 0, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return "\(matching) \(matching == 1 ? "posting" : "postings") matching “\(query)” \(matching == 1 ? "is" : "are") awaiting triage; \(matching == 1 ? "it appears" : "they appear") here once a run triages \(matching == 1 ? "it" : "them")."
+    /// are still waiting, or nil when it names none. Seen from the awaiting
+    /// view itself (`in`), a waiting match would already be listed, so it says nothing.
+    public func emptySearchNote(query: String, in view: JobView = .new) -> String? {
+        guard view != .pending, matching > 0, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return "\(matching) \(matching == 1 ? "posting" : "postings") matching “\(query)” \(matching == 1 ? "is" : "are") awaiting triage; see \(matching == 1 ? "it" : "them"), unranked, in the \(JobView.pending.title) view."
     }
 }
 
@@ -823,7 +866,18 @@ public enum JobSort: String, CaseIterable, Identifiable, Sendable {
     /// row's badge shows; the marked views keep the standard order, which lists them by
     /// when they were marked.
     public static func defaultSort(for view: JobView) -> JobSort {
-        view == .new ? .priority : .standard
+        switch view {
+        case .new: .priority
+        // No scores to order by: newest first (vani falls back to it as well).
+        case .pending: .fresh
+        default: .standard
+        }
+    }
+
+    /// The orders a view can be listed in. Awaiting-triage postings have no
+    /// priority or relevance, so only the orders that need neither are offered.
+    public static func options(for view: JobView) -> [JobSort] {
+        view == .pending ? [.fresh, .company] : allCases
     }
     public var title: String {
         switch self {

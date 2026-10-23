@@ -124,8 +124,7 @@ func TestLocalServerGetsBatchAndParallel(t *testing.T) {
 	if err := os.WriteFile(model, []byte("GGUF"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d3", Server: &config.LocalServer{
 		Binary: bin, ModelPath: model, StartTimeoutMS: 20000, BatchSize: 8192, Parallel: 1}}
@@ -164,8 +163,7 @@ func TestLocalServerEndpointDoesNotOutliveItsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Default()
-	cfg.LLM = testGeminiLLM
+	cfg := defaultWithLLM()
 	cfg.Decide.OpenRouterModel = ""
 	cfg.Decide.Local = &config.Local{Model: "test-d1", Server: &config.LocalServer{
 		Binary: bin, ModelPath: model, StartTimeoutMS: 20000}}

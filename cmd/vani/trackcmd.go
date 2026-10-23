@@ -80,27 +80,31 @@ func (e *env) trackList(args []string) error {
 	return nil
 }
 
-// checked loads and checks one track, printing which checks could not run.
-func (e *env) checked(cfg config.Config, id string) (track.Decider, []string, error) {
+// checked loads and checks one track. It returns the problems found and the
+// checks that could not run, which it also prints on stderr: an empty problem
+// list is a pass only when notRun is empty too.
+func (e *env) checked(cfg config.Config, id string) (d track.Decider, probs, notRun []string, err error) {
 	dir := track.Dir(cfg, e.stateDir)
-	d, err := track.Load(dir, id)
+	d, err = track.Load(dir, id)
 	if err != nil {
-		return track.Decider{}, nil, err
+		return track.Decider{}, nil, nil, err
 	}
 	words, err := track.LoadWords(dir)
 	if err != nil {
-		return track.Decider{}, nil, err
+		return track.Decider{}, nil, nil, err
 	}
 	if !words.Personal {
-		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; personal names were NOT checked (no %s in %s)\n", track.WordsFile, dir)
+		notRun = append(notRun, "personal-name words")
+		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; personal names were NOT checked (no terms in %s under %s)\n", track.WordsFile, dir)
 	}
 	var bank track.Bank
 	if cfg.KB.Bank == "" {
+		notRun = append(notRun, "evidence")
 		fmt.Fprintln(e.stderr, "vani: evidence check skipped: kb.bank is not set")
 	} else if bank, err = track.LoadBank(cfg.KB.Bank); err != nil {
-		return track.Decider{}, nil, err
+		return track.Decider{}, nil, nil, err
 	}
-	return d, track.Check(d, words, bank), nil
+	return d, track.Check(d, words, bank), notRun, nil
 }
 
 func (e *env) trackShow(args []string) error {
@@ -112,7 +116,7 @@ func (e *env) trackShow(args []string) error {
 	if err != nil {
 		return err
 	}
-	d, probs, err := e.checked(cfg, id)
+	d, probs, notRun, err := e.checked(cfg, id)
 	if err != nil {
 		return err
 	}
@@ -131,19 +135,25 @@ func (e *env) trackShow(args []string) error {
 	for _, g := range d.Gaps {
 		fmt.Fprintf(w, "gap: %s\n", g)
 	}
-	return problemsErr(w, probs)
+	return problemsErr(w, probs, notRun)
 }
 
-func problemsErr(w io.Writer, probs []string) error {
-	if len(probs) == 0 {
-		fmt.Fprintln(w, "\ncheck: ok")
-		return nil
+// problemsErr prints the verdict. "ok" is printed only when every check ran
+// and found nothing; a check that did not run is "incomplete" and an error.
+func problemsErr(w io.Writer, probs, notRun []string) error {
+	if len(probs) > 0 {
+		fmt.Fprintln(w, "\ncheck failed:")
+		for _, p := range probs {
+			fmt.Fprintf(w, "  - %s\n", p)
+		}
+		return fmt.Errorf("track has %d problem(s)", len(probs))
 	}
-	fmt.Fprintln(w, "\ncheck failed:")
-	for _, p := range probs {
-		fmt.Fprintf(w, "  - %s\n", p)
+	if len(notRun) > 0 {
+		fmt.Fprintf(w, "\ncheck: incomplete (not run: %s)\n", strings.Join(notRun, ", "))
+		return fmt.Errorf("track check incomplete: not run: %s", strings.Join(notRun, ", "))
 	}
-	return fmt.Errorf("track has %d problem(s)", len(probs))
+	fmt.Fprintln(w, "\ncheck: ok")
+	return nil
 }
 
 func printRules(w io.Writer, rules []config.DropRule) {
@@ -158,6 +168,7 @@ func printRules(w io.Writer, rules []config.DropRule) {
 func (e *env) trackUse(args []string) error {
 	flags := e.newFlags("track use")
 	dryRun := flags.Bool("dry-run", false, "show the change without saving the config")
+	allowUnchecked := flags.Bool("allow-unchecked", false, "apply the track although a check could not run (its target_summary enters every triage prompt unchecked)")
 	id, err := trackArg(flags, "use", args)
 	if err != nil {
 		return err
@@ -166,13 +177,16 @@ func (e *env) trackUse(args []string) error {
 	if err != nil {
 		return err
 	}
-	d, probs, err := e.checked(cfg, id)
+	d, probs, notRun, err := e.checked(cfg, id)
 	if err != nil {
 		return err
 	}
 	if len(probs) > 0 {
-		_ = problemsErr(e.stdout, probs)
+		_ = problemsErr(e.stdout, probs, notRun)
 		return fmt.Errorf("track %s not applied: %d problem(s); the config is unchanged", id, len(probs))
+	}
+	if len(notRun) > 0 && !*allowUnchecked {
+		return fmt.Errorf("track %s not applied: check did not run: %s; the config is unchanged (make the check runnable, or pass --allow-unchecked)", id, strings.Join(notRun, ", "))
 	}
 	// The track applied before, so its rules on slots this track does not
 	// cover can be removed too. Unreadable means those rules are kept.
@@ -208,7 +222,17 @@ func (e *env) trackUse(args []string) error {
 		fmt.Fprintln(w, "dry run: config not saved")
 		return nil
 	}
-	if err := config.Save(e.configPath, out); err != nil {
+	// The preview above came from the config as read before; the write applies
+	// the track to the config as it is under the lock, so an edit made in
+	// between (a drop rule, the watchlist) is kept.
+	if err := e.updateConfig(func(c *config.Config) error {
+		o, _, err := track.Apply(*c, d, prev)
+		if err != nil {
+			return fmt.Errorf("track %s not applied: %w", id, err)
+		}
+		*c = o
+		return nil
+	}); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "saved %s\n", e.configPath)

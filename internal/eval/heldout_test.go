@@ -400,7 +400,7 @@ func TestHeldOutMarkdown(t *testing.T) {
 		`sha256("` + d1Split + `" || 0x00 || posting key)`,
 		"labelled postings ranked: 1, held out: 1, fit: 0",
 		"in-sample",
-		"| work_mode | local | d1-ultra | 1 | 100.0% (1/1) | 100.0% (1/1) | 100.0% (1/1) | 100.0% (1/1) | 0 | 1 | 0 | 0 | insufficient labels (1/30) |",
+		"| work_mode | local | d1-ultra | 1 | 100.0% (1/1) | 100.0% (1/1) | 100.0% (1/1) | 100.0% (1/1) | 0 | 1 | 0 | 0 | insufficient labels (1/27) |", // the held-out floor: the split's 30 less its 3 allowed skips
 		fmt.Sprintf("1. %q\n", key),
 	} {
 		if !strings.Contains(md, frag) {

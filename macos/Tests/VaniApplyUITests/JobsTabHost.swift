@@ -13,10 +13,12 @@ import VaniApplyKit
 /// The driver reaches the controls through the accessibility API, which needs
 /// a second process: an app does not answer AX requests about itself, and an
 /// in-process window never becomes key. On stdin it takes `state` (replies
-/// `STATE <json>` with the model's fields) and `click X Y` (accessibility
+/// `STATE <json>` with the model's fields), `click X Y` (accessibility
 /// coordinates: global, top-left origin), a mouse click this process sends
-/// itself. Nothing is posted to the window server, so the user's cursor and
-/// keyboard are never touched.
+/// itself, and `scroll PANE Y|end` and `offset PANE` (PANE is `list` or
+/// `detail`; replies `OFFSET <points from the top>`), which move and read the
+/// pane's AppKit scroll view as a trackpad would. Nothing is posted to the
+/// window server, so the user's cursor and keyboard are never touched.
 final class JobsTabHost: XCTestCase {
     static let fixtureKey = "VANI_UI_HOST"
 
@@ -96,6 +98,26 @@ private final class HostController {
                 return
             }
             click(atAccessibilityPoint: CGPoint(x: x, y: y))
+        case "scroll":
+            guard parts.count == 3, let sv = scrollView(parts[1]) else {
+                print("ERROR bad scroll: \(line.prefix(80))")
+                return
+            }
+            if parts[2] == "end" {
+                scroll(sv, to: .greatestFiniteMagnitude)
+            } else if let y = Double(parts[2]), y.isFinite {
+                scroll(sv, to: CGFloat(y))
+            } else {
+                print("ERROR bad scroll offset: \(line.prefix(80))")
+                return
+            }
+            print("OFFSET \(offset(sv))")
+        case "offset":
+            guard parts.count == 2, let sv = scrollView(parts[1]) else {
+                print("ERROR bad offset: \(line.prefix(80))")
+                return
+            }
+            print("OFFSET \(offset(sv))")
         default:
             print("ERROR unknown command: \(line.prefix(80))")
         }
@@ -114,6 +136,42 @@ private final class HostController {
         ]
         let data = (try? JSONSerialization.data(withJSONObject: s, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)
+    }
+
+    static let maxViews = 6000
+
+    /// `list`: the job list's table. `detail`: the tallest other vertical
+    /// scroll view, the detail pane once a role is open.
+    private func scrollView(_ pane: String) -> NSScrollView? {
+        var all: [NSScrollView] = [], stack: [NSView] = window.contentView.map { [$0] } ?? [], budget = Self.maxViews
+        while let v = stack.popLast(), budget > 0 {
+            budget -= 1
+            if let sv = v as? NSScrollView, sv.documentView != nil { all.append(sv) }
+            stack.append(contentsOf: v.subviews)
+        }
+        switch pane {
+        case "list": return all.first { $0.documentView is NSTableView }
+        case "detail":
+            return all.filter { !($0.documentView is NSTableView) && $0.hasVerticalScroller }
+                .max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }
+        default: return nil
+        }
+    }
+
+    /// Points scrolled from the top.
+    private func offset(_ sv: NSScrollView) -> CGFloat {
+        guard let doc = sv.documentView else { return 0 }
+        let clip = sv.contentView.bounds
+        return doc.isFlipped ? clip.minY : doc.frame.height - clip.maxY
+    }
+
+    private func scroll(_ sv: NSScrollView, to y: CGFloat) {
+        guard let doc = sv.documentView else { return }
+        let clip = sv.contentView.bounds
+        let maxY = max(0, doc.frame.height - clip.height)
+        let target = min(max(y, 0), maxY)
+        sv.contentView.scroll(to: NSPoint(x: clip.minX, y: doc.isFlipped ? target : maxY - target))
+        sv.reflectScrolledClipView(sv.contentView)
     }
 
     /// Accessibility frames are global with a top-left origin on the primary

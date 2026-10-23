@@ -13,7 +13,7 @@ import (
 	"github.com/bharathvbcr/decide/jev"
 )
 
-// config refuses OpenRouter backend names the Jev client would refuse, so a
+// config refuses OpenRouter backend names the decide/jev client would refuse, so a
 // config that checks clean never fails at jev.New over its name.
 func TestBackendNameLimitMatchesJev(t *testing.T) {
 	if config.MaxBackendName != jev.MaxNameBytes {
@@ -43,7 +43,7 @@ func TestRunNamesTheOpenRouterBackendAfterItsModel(t *testing.T) {
 		t.Fatalf("policy %+v", r.Policy)
 	}
 
-	cfg.LLM = testGeminiLLM
+	cfg.LLM = testLLM
 	cfg.Decide.DailyUSD.LLM = 1
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	cfg.Decide.Shadow = config.ShadowOpenRouter

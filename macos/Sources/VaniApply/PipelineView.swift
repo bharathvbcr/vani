@@ -24,6 +24,7 @@ struct PipelineView: View {
                 }
                 if let s = pipeline.status {
                     StatusHeader(status: s)
+                    ScheduleSection(daemon: s.daemon)
                     LastRunSection(status: s)
                     SpendSection(backends: s.backends)
                     LedgerSection(ledger: s.ledger)
@@ -32,9 +33,7 @@ struct PipelineView: View {
                     ProgressView("Reading status…").frame(maxWidth: .infinity, minHeight: 200)
                 }
             }
-            .padding(16)
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .paneColumn()
         }
         .navigationTitle("Pipeline")
         .toolbar {
@@ -151,7 +150,7 @@ private struct RunNowSheet: View {
                 }
                 Section("Triage, scoring and explaining") {
                     Toggle("Advance new postings this run", isOn: $advance)
-                        .help("Off lists and reconciles boards only: new postings stay live for the next run. No decision model is called, but one must still be configured.")
+                        .help("Off lists and reconciles boards only: new postings stay live for the next run. No decision model is called, and none needs to be configured.")
                     if advance {
                         Toggle("Cap the postings advanced this run (instead of advance_per_run)", isOn: $capOn)
                         if capOn {
@@ -248,7 +247,7 @@ private struct RunNowSheet: View {
 
     private func loadBoards() async {
         let client = model.jobsClient
-        let result = await Task.detached(priority: .userInitiated) { Result { try client.watchlist() } }.value
+        let result = await BlockingWork.run { try client.watchlist() }
         loadingBoards = false
         switch result {
         case let .success(list):
@@ -308,7 +307,7 @@ private struct StatusHeader: View {
         let health = status.health(at: Date())
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: symbol(health)).font(.title2).foregroundStyle(color(health))
+                Image(systemName: symbol(health)).font(.title2).foregroundStyle(health.tint)
                 Text(title(health)).font(.title2.weight(.semibold))
             }
             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -339,14 +338,6 @@ private struct StatusHeader: View {
         case .healthy: "checkmark.circle.fill"
         case .warning: "exclamationmark.triangle.fill"
         case .problem: "xmark.octagon.fill"
-        }
-    }
-
-    private func color(_ h: PipelineHealth) -> Color {
-        switch h {
-        case .healthy: .green
-        case .warning: .orange
-        case .problem: .red
         }
     }
 }
@@ -380,6 +371,51 @@ private struct Row: View {
     }
 }
 
+/// "Run on schedule": registers the schedule agent, the login item that keeps `vani daemon`
+/// running (ScheduleAgent.swift). Off by default; what it says comes from ScheduleToggle, from
+/// what macOS says about the registration and what the daemon announces in `vani status`.
+private struct ScheduleSection: View {
+    @Environment(AppModel.self) private var app
+    let daemon: PipelineStatus.Daemon?
+
+    var body: some View {
+        let state = ScheduleToggle.make(registration: app.scheduleStatus, error: app.scheduleError,
+                                        daemon: daemon, leftAlone: app.agentLeftAlone)
+        Panel(title: "Run on schedule") {
+            Toggle(isOn: Binding(get: { state.isOn }, set: { app.setScheduleEnabled($0) })) {
+                Text(state.headline).foregroundStyle(tone(state.tone))
+            }
+            .disabled(!state.isEnabled || app.scheduleBusy)
+            .accessibilityIdentifier("pipeline.runOnSchedule")
+            if let detail = state.detail, !detail.isEmpty {
+                Text(detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            if state.offersLoginItems || state.offersRepair {
+                HStack {
+                    if state.offersLoginItems {
+                        Button("Open Login Items…") { app.openScheduleLoginItems() }
+                    }
+                    if state.offersRepair {
+                        Button("Register Again") { app.setScheduleEnabled(true, repair: true) }
+                            .disabled(app.scheduleBusy)
+                    }
+                }
+            }
+            Text("Runs Vani's daemon in the background, so the daily run happens with this app closed. The decision key is read from your login Keychain and held only by that process; it is never written to a file.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .task { app.refreshSchedule() }
+    }
+
+    private func tone(_ t: ScheduleToggle.Tone) -> Color {
+        switch t {
+        case .normal: .primary
+        case .warning: .orange
+        case .problem: .red
+        }
+    }
+}
+
 private struct LastRunSection: View {
     let status: PipelineStatus
 
@@ -406,7 +442,7 @@ private struct LastRunSection: View {
                 }
                 let changes = run.statusChanges
                 if !changes.isEmpty {
-                    Row(label: "Status changes", value: changes.map { "\($0.status) \($0.delta > 0 ? "+" : "")\($0.delta)" }.joined(separator: ", "), secondary: true)
+                    Row(label: "Status changes", value: changes.map { "\(Labels.label(for: $0.status)) \($0.delta > 0 ? "+" : "")\($0.delta)" }.joined(separator: ", "), secondary: true)
                 }
                 if let e = run.error, !e.isEmpty {
                     Row(label: run.stage.map { "Failed at \($0)" } ?? "Error", value: e)
@@ -421,7 +457,18 @@ private struct LastRunSection: View {
                     BackendErrorRows(errors: errs)
                 }
             }
-            if let next = status.schedule.nextRun {
+            RunToolsRow(status: status)
+            if status.schedule.isUnkept {
+                // Nothing fires the schedule, so no "next run" is promised.
+                let at = status.schedule.dailyAt.map { "daily at \($0) \(status.schedule.timezone ?? "")" } ?? "daily"
+                Row(label: "Schedule", value: "Not kept: no daemon is running, so the run set \(at) does not happen on its own")
+                if let why = status.schedule.unkept?.why, !why.isEmpty {
+                    Row(label: "Daemon", value: why, secondary: true)
+                }
+                if let hint = status.schedule.unkept?.hint, !hint.isEmpty {
+                    Row(label: "To keep it", value: hint, secondary: true)
+                }
+            } else if let next = status.schedule.nextRun {
                 Row(label: "Next run", value: next.formatted(date: .abbreviated, time: .shortened)
                     + (status.schedule.dailyAt.map { " (daily at \($0) \(status.schedule.timezone ?? ""))" } ?? ""), secondary: true)
             } else if !status.schedule.ok {
@@ -457,6 +504,78 @@ private struct LastRunSection: View {
     }
 }
 
+/// Copy failures and the run's files. The failure text is vani's (`vani runs
+/// failures`): this row asks for it and copies it, and says so when it cannot.
+/// The button is there only when the last run has something to report; the
+/// Logs menu lists only the files that exist when the row is drawn.
+private struct RunToolsRow: View {
+    @Environment(PipelineModel.self) private var pipeline
+    let status: PipelineStatus
+
+    var body: some View {
+        let files = RunFiles.existing(stateDir: status.stateDir)
+        let hasFailures = status.lastRun.hasFailures
+        if hasFailures || !files.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if hasFailures { copyButton }
+                    if !files.isEmpty { logsMenu(files) }
+                    Spacer(minLength: 0)
+                }
+                if case let .failed(message) = pipeline.failureCopy {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(message).foregroundStyle(.red).textSelection(.enabled)
+                        Button("Dismiss") { pipeline.resetFailureCopy() }.buttonStyle(.link)
+                    }
+                    .font(.callout)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private var copyButton: some View {
+        Button {
+            Task {
+                await pipeline.copyFailures { text in
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+                if pipeline.failureCopy == .copied {
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    pipeline.resetFailureCopy()
+                }
+            }
+        } label: {
+            switch pipeline.failureCopy {
+            case .copying: Label("Copying…", systemImage: "doc.on.doc")
+            case .copied: Label("Copied", systemImage: "checkmark")
+            default: Label("Copy failures", systemImage: "doc.on.doc")
+            }
+        }
+        .disabled(pipeline.failureCopy == .copying)
+        .help("Copy the last run's failed boards, backend errors, error and log paths as plain text")
+    }
+
+    private func logsMenu(_ files: RunFiles) -> some View {
+        Menu("Logs") {
+            if let log = files.manualLog {
+                Button("Open Log") { NSWorkspace.shared.open(log) }
+                Button("Show Log in Finder") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
+            }
+            if let record = files.record {
+                Button("Open Run Record") { NSWorkspace.shared.open(record) }
+                Button("Show Run Record in Finder") { NSWorkspace.shared.activateFileViewerSelecting([record]) }
+            }
+            if let history = files.historyFolder {
+                Button("Show Run History in Finder") { NSWorkspace.shared.open(history) }
+            }
+        }
+        .fixedSize()
+        .help("Open or reveal the last manual run's log, the run record, and the kept history of earlier runs")
+    }
+}
+
 /// Which boards the run read, and why any was not: a board that fails to list
 /// leaves its postings as they were, so without this it looks like a quiet board.
 private struct BoardRows: View {
@@ -480,6 +599,14 @@ private struct BoardRows: View {
                     }
                 }
                 Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .contextMenu {
+                // The same line vani's failure report prints for this board.
+                Button("Copy error") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(line.copyText, forType: .string)
+                }
             }
         }
         if let more = boards.moreNote() {
@@ -546,7 +673,7 @@ private struct SpendSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(b.name).fontWeight(.medium)
-                        Text(b.kind == "llm" ? "LLM" : "OpenRouter").font(.caption).foregroundStyle(.secondary)
+                        Text(b.kind == "llm" ? "LLM" : b.kind == "openrouter_notes" ? "OpenRouter notes" : "OpenRouter").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Text(amount(b)).monospacedDigit().foregroundStyle(b.ok ? Color.primary : Color.secondary)
                     }
@@ -580,7 +707,7 @@ private struct LedgerSection: View {
             } else {
                 Row(label: "Postings", value: "\(ledger.total)")
                 ForEach(ledger.byStatus.sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }, id: \.key) { s, n in
-                    Row(label: s.capitalized, value: "\(n)", secondary: true)
+                    Row(label: Labels.label(for: s), value: "\(n)", secondary: true)
                 }
                 if ledger.torn == true {
                     Text("A run was writing as this was read; the counts are complete up to it.").font(.caption).foregroundStyle(.secondary)
