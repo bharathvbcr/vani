@@ -75,6 +75,9 @@ type daemonFacet struct {
 	Running bool      `json:"running"`
 	PID     int       `json:"pid,omitempty"`
 	Since   time.Time `json:"since,omitzero"`
+	// Model is whether the decision model can answer in the running daemon
+	// (daemonmodel.go): absent when the daemon did not say.
+	Model *daemonModel `json:"model,omitempty"`
 }
 
 // runRequestFacet is the manual run asked of the daemon (runrequest.go).
@@ -236,7 +239,7 @@ func (e *env) daemonFacet() daemonFacet {
 	case !pidAlive(d.PID):
 		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: d.StartedAt}
 	}
-	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: d.StartedAt}
+	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: d.StartedAt, Model: d.Model}
 }
 
 // runRequestFacet reads the pending and the claimed request; it removes

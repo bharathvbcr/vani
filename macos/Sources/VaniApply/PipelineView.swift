@@ -24,6 +24,7 @@ struct PipelineView: View {
                 }
                 if let s = pipeline.status {
                     StatusHeader(status: s)
+                    ScheduleSection(daemon: s.daemon)
                     LastRunSection(status: s)
                     SpendSection(backends: s.backends)
                     LedgerSection(ledger: s.ledger)
@@ -366,6 +367,51 @@ private struct Row: View {
             Text(label).foregroundStyle(.secondary).frame(width: 130, alignment: .leading)
             Text(value).foregroundStyle(secondary ? .secondary : .primary).textSelection(.enabled)
             Spacer(minLength: 0)
+        }
+    }
+}
+
+/// "Run on schedule": registers the schedule agent, the login item that keeps `vani daemon`
+/// running (ScheduleAgent.swift). Off by default; what it says comes from ScheduleToggle, from
+/// what macOS says about the registration and what the daemon announces in `vani status`.
+private struct ScheduleSection: View {
+    @Environment(AppModel.self) private var app
+    let daemon: PipelineStatus.Daemon?
+
+    var body: some View {
+        let state = ScheduleToggle.make(registration: app.scheduleStatus, error: app.scheduleError,
+                                        daemon: daemon, leftAlone: app.agentLeftAlone)
+        Panel(title: "Run on schedule") {
+            Toggle(isOn: Binding(get: { state.isOn }, set: { app.setScheduleEnabled($0) })) {
+                Text(state.headline).foregroundStyle(tone(state.tone))
+            }
+            .disabled(!state.isEnabled || app.scheduleBusy)
+            .accessibilityIdentifier("pipeline.runOnSchedule")
+            if let detail = state.detail, !detail.isEmpty {
+                Text(detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            if state.offersLoginItems || state.offersRepair {
+                HStack {
+                    if state.offersLoginItems {
+                        Button("Open Login Items…") { app.openScheduleLoginItems() }
+                    }
+                    if state.offersRepair {
+                        Button("Register Again") { app.setScheduleEnabled(true, repair: true) }
+                            .disabled(app.scheduleBusy)
+                    }
+                }
+            }
+            Text("Runs Vani's daemon in the background, so the daily run happens with this app closed. The decision key is read from your login Keychain and held only by that process; it is never written to a file.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .task { app.refreshSchedule() }
+    }
+
+    private func tone(_ t: ScheduleToggle.Tone) -> Color {
+        switch t {
+        case .normal: .primary
+        case .warning: .orange
+        case .problem: .red
         }
     }
 }

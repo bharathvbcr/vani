@@ -461,7 +461,13 @@ func (e *env) cmdDaemon(args []string) error {
 	// The ledger is held from here on, so this process is the daemon: run
 	// requests (runrequest.go) find it through daemon.json.
 	pid := os.Getpid()
-	if err := writeDaemonRecord(e.stateDir, pid, now()); err != nil {
+	// It says whether the decision model's key reached its environment: a
+	// daemon started without one runs with the model disabled, loudly.
+	model := daemonModelOf(cfg, os.Getenv)
+	if model != nil && !model.Enabled {
+		fmt.Fprintf(e.stderr, "vani: daemon: %s\n", model.Reason)
+	}
+	if err := writeDaemonAnnouncement(e.stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: now(), Model: model}); err != nil {
 		return fmt.Errorf("announcing the daemon: %w", err)
 	}
 	defer func() {

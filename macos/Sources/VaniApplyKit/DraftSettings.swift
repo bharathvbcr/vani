@@ -163,12 +163,16 @@ public struct DraftSettings: Codable, Equatable, Sendable {
     /// it launches through the installed anthropic-account when the config names
     /// the anthropic provider.
     public func runner(vaniBinary: URL,
-                       keys: DraftRunner.KeySource = .anthropicAccount(AnthropicAccount.locate())) -> DraftRunner {
+                       keys: DraftRunner.KeySource = .anthropicAccount(AnthropicAccount.locate()),
+                       keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
+                       decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) -> DraftRunner {
         DraftRunner(vaniBinary: vaniBinary,
                     configPath: vaniConfig.isEmpty ? nil : vaniConfig,
                     stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,
                     keys: keys,
-                    account: anthropicAccount.isEmpty ? nil : anthropicAccount)
+                    account: anthropicAccount.isEmpty ? nil : anthropicAccount,
+                    keychainTimeout: keychainTimeout,
+                    decisionKey: decisionKey)
     }
 
     /// The runner for the settings saved in `directory`. When the file is present but unreadable

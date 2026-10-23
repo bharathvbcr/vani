@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "VaniApply", targets: ["VaniApply"]),
         .executable(name: "vani-apply-host", targets: ["vani-apply-host"]),
         .executable(name: "vani-apply-agent", targets: ["vani-apply-agent"]),
+        .executable(name: "vani-schedule-agent", targets: ["vani-schedule-agent"]),
         .executable(name: "VaniApplyExtension", targets: ["VaniApplyExtension"]),
     ],
     targets: [
@@ -20,6 +21,8 @@ let package = Package(
         .executableTarget(name: "vani-apply-host", dependencies: ["VaniApplyKit"]),
         // The login-item agent both browsers reach over XPC for `vani` jobs.
         .executableTarget(name: "vani-apply-agent", dependencies: ["VaniApplyKit"]),
+        // The opt-in login item that keeps `vani daemon` running, so the daily schedule is kept.
+        .executableTarget(name: "vani-schedule-agent", dependencies: ["VaniApplyKit"]),
         // The Safari appex: its entry point is Foundation's NSExtensionMain,
         // which loads the principal class named in the bundle's Info.plist.
         .executableTarget(

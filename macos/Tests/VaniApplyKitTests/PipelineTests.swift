@@ -552,4 +552,40 @@ final class PipelineTests: XCTestCase {
             XCTAssertTrue(String(describing: $0).contains("larger than"), "\($0)")
         }
     }
+
+    // MARK: the daemon's decision model
+
+    private func withDaemon(_ daemon: String) throws -> PipelineStatus {
+        try decode(String(statusReply().dropLast()) + #","daemon":\#(daemon)}"#)
+    }
+
+    /// A daemon started without the decision key keeps the schedule and triages nothing: the
+    /// Pipeline tab says so, with vani's reason.
+    func testADaemonWithTheModelDisabledIsAWarning() throws {
+        let s = try withDaemon(#"{"ok":true,"running":true,"pid":77,"model":{"enabled":false,"key_env":"OPENROUTER_API_KEY","reason":"OPENROUTER_API_KEY is not set in the daemon's environment"}}"#)
+        XCTAssertEqual(s.daemon?.model, PipelineStatus.Daemon.Model(enabled: false, keyEnv: "OPENROUTER_API_KEY",
+                                                                  reason: "OPENROUTER_API_KEY is not set in the daemon's environment"))
+        let issue = try XCTUnwrap(s.issues(at: now).first { $0.title == "The daemon's decision model is off" })
+        XCTAssertEqual(issue.severity, .warning)
+        XCTAssertEqual(issue.detail, "OPENROUTER_API_KEY is not set in the daemon's environment")
+    }
+
+    func testAnEnabledOrUnreportedOrStaleModelIsNoWarning() throws {
+        let off = #"{"enabled":false,"reason":"x"}"#
+        for daemon in [#"{"ok":true,"running":true,"model":{"enabled":true,"key_env":"OPENROUTER_API_KEY"}}"#,
+                       #"{"ok":true,"running":true}"#,
+                       #"{"ok":true,"running":false,"model":\#(off)}"#] {
+            XCTAssertEqual(try withDaemon(daemon).issues(at: now), [], daemon)
+        }
+    }
+
+    /// A model section in a shape this app does not know is no claim either way: the daemon
+    /// still reads as running, with no model state.
+    func testAMalformedModelSectionDoesNotHideTheDaemon() throws {
+        for model in [#""yes""#, #"{"enabled":"maybe"}"#, "null", "[]"] {
+            let s = try withDaemon(#"{"ok":true,"running":true,"pid":9,"model":\#(model)}"#)
+            XCTAssertEqual(s.daemon?.running, true, model)
+            XCTAssertNil(s.daemon?.model, model)
+        }
+    }
 }

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Vani schedule agent, registered by the app with SMAppService.agent(plistName:)
+     when the owner turns on "Run on schedule". It runs `vani daemon` as its child, so the
+     daily run happens with no app open.
+     No MachServices and no sockets: it listens on nothing. No EnvironmentVariables: the
+     config and state folder are pinned, and the decision model's key is added, in the
+     child's environment by the helper itself, so nothing here (or in `launchctl print`)
+     holds a key. KeepAlive restarts the helper only after a failed exit (a crash); the
+     helper itself waits and starts a crashed daemon again with a doubling delay. ExitTimeOut
+     is longer than the helper's 45 s grace for a daemon to end its run on SIGTERM. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.vbcr.vani.schedule.agent</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/vani-schedule-agent</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
