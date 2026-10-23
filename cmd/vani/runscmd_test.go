@@ -97,6 +97,9 @@ func TestRunsListIncludesTheRunOnlyLastJSONHolds(t *testing.T) {
 	_, stateDir := setup(t)
 	putHistoryRaw(t, stateDir, histRec(1, outcomeOK))
 	running := histRec(2, outcomeRunning)
+	// A live run started a minute ago: runState reads a record with no end
+	// older than maxRunAge as interrupted, so a fixed date would expire.
+	running.StartedAt = time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
 	running.FinishedAt = time.Time{}
 	running.PID = os.Getpid()
 	writeLast(t, stateDir, running)
@@ -368,6 +371,7 @@ func TestRunsFailuresManyFailures(t *testing.T) {
 func TestRunsFailuresOfAnInterruptedRun(t *testing.T) {
 	_, stateDir := setup(t)
 	r := histRec(1, outcomeRunning)
+	r.StartedAt = time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute) // see TestRunsListIncludesTheRunOnlyLastJSONHolds
 	r.FinishedAt = time.Time{}
 	r.PID = os.Getpid()
 	writeLast(t, stateDir, r)
