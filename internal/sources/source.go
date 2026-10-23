@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -27,27 +29,55 @@ func TokenProblem(token string) string {
 	return ""
 }
 
-// MaxBoardNameLen bounds Board.BoardName.
-const MaxBoardNameLen = 64
+// MaxBoardNameLen bounds Board.BoardName in runes; MaxBoardNameBytes bounds it
+// in bytes. 64 BMP runes (CJK, 3 bytes each) fit both; 64 supplementary-plane
+// runes do not, which is the byte bound doing its own work.
+const (
+	MaxBoardNameLen   = 64
+	MaxBoardNameBytes = 192
+)
 
 // BoardNameProblem is why name cannot be a Board.BoardName, or "" when it can:
-// 1..MaxBoardNameLen ASCII letters, digits, '-' and '_', with single spaces
+// 1..MaxBoardNameLen runes (and at most MaxBoardNameBytes bytes) of valid
+// UTF-8 that are Unicode letters, digits, '-' or '_', with single spaces
 // between them. It is the one rule behind config.ValidBoard and
-// srcutil.CheckBoard. No '.', '/', '?', '#', ':' or '%' is allowed, so a name
-// cannot change the request path (".." included), and the name is only ever
-// sent through url.PathEscape.
+// srcutil.CheckBoard.
+//
+// What it keeps out, and why:
+//   - '.', '/', '?', '#', ':' and '%' are punctuation, so a name cannot change
+//     the request path (".." included); the name is only ever sent through
+//     url.PathEscape, which also escapes every byte of a multi-byte rune.
+//   - Combining marks, format characters (zero-width joiner and space, the
+//     bidirectional overrides, BOM, soft hyphen), other spaces, controls,
+//     private-use and unassigned code points are not letters or digits, so a
+//     name cannot hide or reorder text. A mark is refused even after a letter:
+//     the standard library cannot normalise to NFC, so the one way to keep the
+//     accepted set free of "é" written two ways is to accept only the
+//     precomposed letter (Zürich, not Zu + U+0308 + rich). The cost is that a
+//     script that needs marks (Devanagari vowel signs, Thai tone marks) cannot
+//     be a name until golang.org/x/text/unicode/norm is an approved dependency.
+//   - Lookalike letters (Cyrillic "а" for "a") are accepted: the name only ever
+//     reaches the path of one fixed host, so a lookalike can fail to match a
+//     board but cannot reach another host or path.
+//
+// Names are compared byte for byte by the ATS, so a name that is not NFC for
+// other reasons (a compatibility letter such as U+212B) is at worst a board
+// that is not found.
 func BoardNameProblem(name string) string {
-	if name == "" || len(name) > MaxBoardNameLen {
-		return fmt.Sprintf("must be 1..%d bytes", MaxBoardNameLen)
+	if name == "" || len(name) > MaxBoardNameBytes || utf8.RuneCountInString(name) > MaxBoardNameLen {
+		return fmt.Sprintf("must be 1..%d characters and at most %d bytes", MaxBoardNameLen, MaxBoardNameBytes)
+	}
+	if !utf8.ValidString(name) {
+		return "must be valid UTF-8"
 	}
 	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") || strings.Contains(name, "  ") {
 		return "must not start or end with a space or hold two in a row"
 	}
 	for _, r := range name {
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == ' ':
+		case r == '-', r == '_', r == ' ', unicode.IsLetter(r), unicode.IsDigit(r):
 		default:
-			return "may hold only letters, digits, '-', '_' and single spaces"
+			return "may hold only letters, digits, '-', '_' and single spaces (write an accented letter as one character, not letter plus combining mark)"
 		}
 	}
 	return ""

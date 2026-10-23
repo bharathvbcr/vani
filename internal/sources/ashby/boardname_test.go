@@ -70,7 +70,6 @@ func TestBadBoardNamesAreRefusedBeforeAnyRequest(t *testing.T) {
 		"fragment":       "a#b",
 		"colon":          "a:b",
 		"backslash":      `a\b`,
-		"non ascii":      "Zürich",
 		"oversized":      strings.Repeat("a", sources.MaxBoardNameLen+1),
 		"only spaces":    "   ",
 	} {
