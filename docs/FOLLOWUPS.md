@@ -1698,6 +1698,12 @@ Left open:
     bounded by the helper; a daemon that waits on it has not announced itself yet.
 - **Unsupported job sites.** Meta, Uber, Groq (Gem), Hugging Face (Workable), Modular (no board),
   Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
+- **An unnamed Swift test failure under load.** It was seen twice on 2026-10-22/23. The first time,
+  the logo-cap agent's `swift test` ran beside a full Go run. The second time, the final-main
+  `swift test` (642 tests, "1 failure (0 unexpected)") ran beside `bun test`. Neither run kept the
+  failing line, and a rerun on an idle machine was clean. The next time it appears, keep the full
+  output (`swift test ... 2>&1 | tee tmp/swift-test.log`) and grep it for `error:`, so the test can
+  be named.
 - **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every
   request. Reachable PNGs found 2026-10-22 on Wikimedia Commons, both fetched by `vani logos
   refresh --force` against a scratch state (fetched 2, failed 0): HRT
