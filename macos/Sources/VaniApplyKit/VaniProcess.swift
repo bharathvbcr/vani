@@ -37,6 +37,12 @@ public enum VaniProcess {
         NSHomeDirectory() + "/Library/Application Support/Vani/config.json"
     }
 
+    /// Vani's own default state folder (config.Paths in the Go CLI on macOS), used when
+    /// no VANI_STATE_DIR is set.
+    public static var defaultStateDir: String {
+        NSHomeDirectory() + "/Library/Application Support/Vani/state"
+    }
+
     /// The environment every `vani` child gets: a fixed PATH, the user's home,
     /// and Vani's config and state locations when set (empty means Vani's default).
     /// The Homebrew prefixes (Apple silicon, then Intel) come after the system
@@ -292,13 +298,15 @@ extension VaniProcess {
     /// quits. `onExit` gets the exit status when the job ends while this process
     /// still runs.
     public static func launch(_ program: URL, arguments: [String], environment: [String: String], log: URL,
+                              append: Bool = false,
                               onExit: @escaping @Sendable (Int32) -> Void) throws -> LaunchedJob {
         guard FileManager.default.isExecutableFile(atPath: program.path) else {
             throw BankError("the vani binary is missing at \(program.path)")
         }
         try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        let fd = open(log.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        // `append` keeps what an earlier child wrote (the schedule agent's daemon, relaunched).
+        let fd = open(log.path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC) | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw BankError("cannot open the run log \(log.path): \(String(cString: strerror(errno)))") }
         let out = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? out.close() } // the child has its own copy once it runs
@@ -352,6 +360,12 @@ public final class LaunchedJob: @unchecked Sendable {
     /// SIGTERM: vani cancels the run and records it as cancelled.
     public func stop() {
         if process.isRunning { process.terminate() }
+    }
+
+    /// SIGKILL, for a job that ignored `stop()`. Foundation reaps the child before it reports
+    /// it no longer running, so the pid is signalled only while it is still this process's.
+    public func forceStop() {
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
 }
 

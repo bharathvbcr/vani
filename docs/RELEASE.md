@@ -48,6 +48,13 @@ and says so in the release notes. In `--dry-run` the git-state refusals are repo
 2. Quit Vani Apply. Unzip the app zip and replace `/Applications/Vani Apply.app` with it.
 3. Unzip the CLI zip and place `vani` on your PATH, replacing the old one.
 4. Open the app (right-click, Open the first time).
+5. To keep the daily schedule (nothing else runs `vani daemon`): open the Pipeline tab, turn on **Run
+   on schedule**, and approve "Vani Apply" in System Settings ▸ General ▸ Login Items & Extensions. The
+   schedule agent runs the bundled `vani daemon` with the decision key read from your login Keychain
+   (never written to a file); `vani status` stops saying "schedule not kept" once the daemon announces
+   itself. The Keychain may ask once to let the new helper read `openrouter-api-key`: allow it. On every
+   later install, turn the switch off and on so the running daemon becomes the new `vani`
+   (`macos/README.md` item 6a).
 
 ## Roll back
 
@@ -56,7 +63,8 @@ Rolling back is reinstalling the previous release.
 1. Download the previous release's zips (`gh release download vPREVIOUS --repo bharathvbcr/vani`) and
    verify them against its `SHA256SUMS`.
 2. Quit Vani Apply, replace `/Applications/Vani Apply.app` with the previous app, replace the `vani`
-   binary likewise, reopen.
+   binary likewise, reopen. If Run on schedule was on, turn it off in the new app first (a release
+   from before the schedule agent has no switch to turn it off and would leave the helper registered).
 3. If the bad release should not be installed again, delete it and its tag:
    `gh release delete vX.Y.Z --repo bharathvbcr/vani --yes --cleanup-tag`.
 

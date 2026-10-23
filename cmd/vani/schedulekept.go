@@ -85,21 +85,27 @@ func scheduleKeeping(cfg config.Config, s scheduleFacet, d daemonFacet, last las
 	return s
 }
 
-// keepHint is what to do about an unkept schedule, and the one thing the
-// obvious fix does not do for you. `vani launchd plist` prints an agent that
-// starts the daemon; its environment holds only VANI_CONFIG and VANI_STATE_DIR.
-// The decision-model key is read from the environment (decide.openrouter_key_env,
-// by decide's jev client), never from the Keychain: the Mac app reads it from the
-// Keychain and hands it to the runs the app starts, and a launchd agent has no
-// such path. Without it the daemon's runs log "openrouter (...) disabled" and read
-// no posting with the model, so a posting stays live.
+// keepHint is what to do about an unkept schedule. The Mac app keeps it: its
+// Pipeline tab's "Run on schedule" registers a login item that runs `vani
+// daemon` with the decision-model key read from the login Keychain into the
+// child's environment only. Without the app, `vani launchd plist` prints an
+// agent that starts the daemon, and the one thing it does not do for you: its
+// environment holds only VANI_CONFIG and VANI_STATE_DIR, and the key is read from
+// the environment (decide.openrouter_key_env, by decide's jev client), never from
+// the Keychain. Without it the daemon's runs log "openrouter (...) disabled" and
+// read no posting with the model, so a posting stays live (the daemon says so
+// in daemon.json, and status reports it: daemonLines).
 func keepHint(cfg config.Config) string {
 	var b strings.Builder
-	b.WriteString("a daemon keeps the schedule: `vani launchd plist` prints an agent for it (vani installs nothing)")
+	b.WriteString("a daemon keeps the schedule: turn on Run on schedule in Vani Apply's Pipeline tab")
+	if cfg.OpenRouterConfigured() {
+		b.WriteString(" (it runs the daemon as a login item with the decision model's key read from the Keychain, never written to disk)")
+	}
+	b.WriteString(", or `vani launchd plist` prints an agent for it (vani installs nothing)")
 	if cfg.OpenRouterConfigured() {
 		fmt.Fprintf(&b, "; its environment holds only VANI_CONFIG and VANI_STATE_DIR, so the decision model's key (environment variable %s) is not there: "+
 			"the daemon's runs would log that the model is disabled and triage nothing until you add the key to the agent's EnvironmentVariables yourself "+
-			"(the app's Keychain read reaches only runs the app starts)", cfg.Decide.OpenRouterKeyEnv)
+			"(the app's Keychain read reaches only the daemon the app runs)", cfg.Decide.OpenRouterKeyEnv)
 	}
 	b.WriteString(". Until then, Run in the app with a higher advance cap, or `vani run-once --advance N`")
 	return b.String()

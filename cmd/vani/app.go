@@ -515,8 +515,12 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	// Whether anything fires that schedule: the same answer `status --json` gives.
 	at := now()
 	live := by[string(posting.Live)]
-	sched := scheduleKeeping(cfg, scheduleOf(cfg, nil, at), e.daemonFacet(), e.lastRunFacet(at), &live, at)
+	dfacet := e.daemonFacet()
+	sched := scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, e.lastRunFacet(at), &live, at)
 	for _, l := range unkeptLines(sched, at) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	for _, l := range daemonLines(dfacet) {
 		fmt.Fprintln(e.stdout, l)
 	}
 	fmt.Fprintf(e.stdout, "state dir: %s\n", e.stateDir)

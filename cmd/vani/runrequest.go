@@ -66,6 +66,9 @@ type daemonRecord struct {
 	V         int       `json:"v"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
+	// Model is the decision model's state in this daemon (daemonmodel.go);
+	// absent when the config names none or the daemon predates the field.
+	Model *daemonModel `json:"model,omitempty"`
 }
 
 var (
@@ -110,9 +113,14 @@ func readBoundedFile(path string, max int) ([]byte, error) {
 
 // decodeStrict decodes exactly one JSON object with no unknown keys: a request
 // a newer vani wrote must not run as a different, bigger run here.
-func decodeStrict(raw []byte, v any) error {
+func decodeStrict(raw []byte, v any) error { return decodeObject(raw, v, true) }
+
+// decodeObject decodes exactly one JSON object; strict also refuses unknown keys.
+func decodeObject(raw []byte, v any, strict bool) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
+	if strict {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
@@ -152,7 +160,12 @@ func readRunRequest(path string, at time.Time) (runRequest, error) {
 
 // writeDaemonRecord announces this process as the daemon.
 func writeDaemonRecord(stateDir string, pid int, at time.Time) error {
-	raw, err := json.MarshalIndent(daemonRecord{V: runRequestVersion, PID: pid, StartedAt: at}, "", "  ")
+	return writeDaemonAnnouncement(stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: at})
+}
+
+// writeDaemonAnnouncement writes rec as daemon.json.
+func writeDaemonAnnouncement(stateDir string, rec daemonRecord) error {
+	raw, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -180,7 +193,9 @@ func readDaemonRecord(stateDir string) (daemonRecord, error) {
 		return daemonRecord{}, err
 	}
 	var d daemonRecord
-	if err := decodeStrict(raw, &d); err != nil {
+	// Unlike a request, daemon.json runs nothing: a field a newer vani added
+	// must not make its daemon read as corrupt (and so as not running).
+	if err := decodeObject(raw, &d, false); err != nil {
 		return daemonRecord{}, fmt.Errorf("daemon record is corrupt: %w", err)
 	}
 	if d.V != runRequestVersion || d.PID <= 0 || d.StartedAt.IsZero() {

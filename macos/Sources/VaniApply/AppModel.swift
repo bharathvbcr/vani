@@ -74,7 +74,8 @@ final class AppModel {
             activationObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshDraftSettings() }
+                // The owner may have approved (or switched off) the schedule agent in System Settings.
+                MainActor.assumeIsolated { self?.refreshDraftSettings(); self?.refreshSchedule() }
             }
         }
     }
@@ -191,6 +192,62 @@ final class AppModel {
         @unknown default: return "Unknown state."
         }
     }
+
+    // MARK: - Schedule agent
+
+    /// What macOS says about the schedule agent: the opt-in login item that keeps `vani daemon`
+    /// running (ScheduleAgent.swift). It is never registered by launch, only by the Pipeline
+    /// tab's "Run on schedule" switch. Read when the tab appears and after each change, since
+    /// the owner can also switch it in System Settings.
+    private(set) var scheduleStatus: ScheduleToggle.Registration = .notRegistered
+    private(set) var scheduleError: String?
+    private(set) var scheduleBusy = false
+
+    static func registration(_ status: SMAppService.Status) -> ScheduleToggle.Registration {
+        switch status {
+        case .enabled: .enabled
+        case .requiresApproval: .requiresApproval
+        case .notFound: .notFound
+        case .notRegistered: .notRegistered
+        @unknown default: .notRegistered
+        }
+    }
+
+    /// Reads the registration. Reading registers nothing, but a rig that leaves the agents
+    /// alone (and the tests) does not ask at all.
+    func refreshSchedule() {
+        guard !agentLeftAlone else { return }
+        Task {
+            let status = await BlockingWork.value { SMAppService.agent(plistName: ScheduleAgentConstants.plistName).status }
+            scheduleStatus = Self.registration(status)
+        }
+    }
+
+    /// Registers (macOS may then wait for approval in Login Items) or unregisters the schedule
+    /// agent. Unregistering stops the helper, which ends the daemon first. `repair` registers
+    /// again from scratch: a replaced app bundle leaves launchd's copy of the job stale.
+    func setScheduleEnabled(_ on: Bool, repair: Bool = false) {
+        guard !agentLeftAlone, !scheduleBusy else { return }
+        scheduleBusy = true
+        scheduleError = nil
+        Task {
+            var failure: String?
+            do {
+                let service = SMAppService.agent(plistName: ScheduleAgentConstants.plistName)
+                if !on || repair, service.status != .notRegistered { try await service.unregister() }
+                if on { try await BlockingWork.run { try SMAppService.agent(plistName: ScheduleAgentConstants.plistName).register() }.get() }
+            } catch {
+                failure = error.localizedDescription
+            }
+            let status = await BlockingWork.value { SMAppService.agent(plistName: ScheduleAgentConstants.plistName).status }
+            // A registration that now waits for approval is the expected result, not a failure.
+            scheduleError = status == .requiresApproval ? nil : failure
+            scheduleStatus = Self.registration(status)
+            scheduleBusy = false
+        }
+    }
+
+    func openScheduleLoginItems() { SMAppService.openSystemSettingsLoginItems() }
 
     // MARK: - Drafting
 

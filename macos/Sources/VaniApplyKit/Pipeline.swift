@@ -42,15 +42,38 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var running: Bool
         public var pid: Int?
         public var since: Date?
+        /// Whether the decision model can answer in the running daemon; nil when the daemon
+        /// did not say (it predates the field, or the config names no OpenRouter model).
+        public var model: Model?
 
-        enum CodingKeys: String, CodingKey { case ok, reason, running, pid, since }
+        /// `daemon.model`: the key's variable was set (`enabled`) when the daemon started, or why
+        /// not (`reason`, vani's words). Never a key.
+        public struct Model: Decodable, Equatable, Sendable {
+            public var enabled: Bool
+            public var keyEnv: String?
+            public var reason: String?
 
-        public init(ok: Bool = true, reason: String? = nil, running: Bool, pid: Int? = nil, since: Date? = nil) {
+            enum CodingKeys: String, CodingKey {
+                case enabled, reason
+                case keyEnv = "key_env"
+            }
+
+            public init(enabled: Bool, keyEnv: String? = nil, reason: String? = nil) {
+                self.enabled = enabled
+                self.keyEnv = keyEnv
+                self.reason = reason
+            }
+        }
+
+        enum CodingKeys: String, CodingKey { case ok, reason, running, pid, since, model }
+
+        public init(ok: Bool = true, reason: String? = nil, running: Bool, pid: Int? = nil, since: Date? = nil, model: Model? = nil) {
             self.ok = ok
             self.reason = reason
             self.running = running
             self.pid = pid
             self.since = since
+            self.model = model
         }
 
         public init(from decoder: Decoder) throws {
@@ -62,7 +85,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                       reason: try? c.decodeIfPresent(String.self, forKey: .reason),
                       running: (try? c.decode(Bool.self, forKey: .running)) ?? false,
                       pid: try? c.decodeIfPresent(Int.self, forKey: .pid),
-                      since: try? c.decodeIfPresent(Date.self, forKey: .since))
+                      since: try? c.decodeIfPresent(Date.self, forKey: .since),
+                      // A model section this app cannot read is no claim either way.
+                      model: (try? c.decodeIfPresent(Model.self, forKey: .model)).flatMap { $0 })
         }
     }
 
@@ -908,6 +933,10 @@ extension PipelineStatus {
             if u.overdue == true || (u.awaitingTriage ?? 0) > 0 {
                 add(.warning, "The daily schedule is not being kept", u.summary(dailyAt: schedule.dailyAt, now: now))
             }
+        }
+        // A daemon started without the decision key keeps the schedule and triages nothing.
+        if let d = daemon, d.running, let m = d.model, !m.enabled {
+            add(.warning, "The daemon's decision model is off", m.reason)
         }
         if !backends.ok { add(.warning, "Spend and caps are unknown", backends.reason) }
         for b in backends.items {

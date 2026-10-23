@@ -1672,9 +1672,30 @@ Left open:
   ASCII slug with `watchlist add --token` if that matters. (A non-ASCII token was already possible
   before this change for an unspaced name such as `/データ`: `sources.TokenProblem` refuses only
   `:`, and the request path is percent-escaped.)
-- **The schedule is not kept.** `vani launchd plist` puts no decision-model key in the agent's
-  environment, so a daemon from it triages nothing until the owner adds `OPENROUTER_API_KEY` to
-  its `EnvironmentVariables`. Whether to install one is the owner's decision.
+- **~~The schedule is not kept.~~ Fixed (2026-10-23, branch `worktree-agent-ac2e315dd6ab5a56f`),
+  once the owner turns it on.** `vani launchd plist` still puts no key in an agent's environment,
+  so the app now keeps the schedule itself: Pipeline ▸ **Run on schedule** registers a login item
+  (`vani-schedule-agent`, `macos/README.md` item 6a) that runs `vani daemon` with the decision key
+  read from the Keychain into the child's environment only. To enable: install the new app, open
+  the Pipeline tab, turn the switch on, approve "Vani Apply" in System Settings ▸ General ▸ Login
+  Items & Extensions; the warning goes once a daemon announces itself. Left open:
+  - **Not run live.** Registration, the approval step, the first Keychain read from the new helper
+    (it is a different signed identifier, `dev.vbcr.vani.schedule.agent`, from the app that made the
+    item, so macOS may ask "Allow / Always Allow" once; unanswered for 30 s the daemon starts with the
+    model off and `status` says so, then turn the switch off and on) and a real daily run from it were not
+    exercised here: tests inject the key and never register anything. Only the supervisor against the
+    real `build/vani daemon` was run.
+  - **Two ways a model-less daemon stays model-less.** A key added after a refused or unanswered read is
+    not picked up until the switch is turned off and on (a retry would prompt again); and `daemon.model`
+    is read at the daemon's start, so a config edit that adds an OpenRouter model to a running daemon is
+    not reflected until it restarts.
+  - **An updated app does not replace the running daemon.** After reinstalling, turn the switch off and
+    on (or Register Again); the old `vani` keeps running until then.
+  - **`daemon.json` gained `model`.** An older installed `vani` reading it rejects the file as corrupt
+    (its reader is strict) and reports no daemon; the new reader tolerates unknown fields. Rebuild every
+    installed `vani` together.
+  - **The anthropic provider's Keychain prompt is the launcher's** (`anthropic-account exec`) and is not
+    bounded by the helper; a daemon that waits on it has not announced itself yet.
 - **Unsupported job sites.** Meta, Uber, Groq (Gem), Hugging Face (Workable), Modular (no board),
   Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
 - **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every

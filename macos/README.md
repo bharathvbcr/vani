@@ -55,7 +55,10 @@ nothing else fires `schedule.daily_at`. The schedule row then reads "Not kept" i
 gives the last run's age, whether a run is overdue and how many postings await triage (about how many runs at
 `advance_per_run`), with Run Now's higher advance cap as the way to catch up. `schedule.kept` and `schedule.unkept`
 are additive (status version stays 1) and absent from an older `vani`; `kept` is absent, never false, when vani could
-not tell whether a daemon runs.
+not tell whether a daemon runs. The warning's way out is the tab's **Run on schedule** switch (the schedule
+agent, below); once a daemon announces itself in `runs/daemon.json` the warning goes away. A daemon started
+without the decision model's key still keeps the schedule, and `daemon.model` (`enabled`, `reason`, additive and
+absent from an older daemon) says the model is off: the tab warns "The daemon's decision model is off".
 Its **Audit** tab is the weekly "would you apply?" sample: it fetches `vani audit --json --blind`
 (keys, strata and inclusion probabilities, no posting text), shows one card at a time (title, company and
 place from the jobs row contract, `JobRow`, via `vani jobs show`; the description as plain text) and
@@ -245,6 +248,52 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      10 minutes.
    - It accepts XPC connections only from code signed by team `HAUHVD8M37`, so another process
      running as you cannot spend your model budget through it.
+6a. **The schedule agent (Pipeline ▸ Run on schedule).** Opt-in; nothing registers it until you turn the
+   switch on. Before it, `vani status` said "schedule not kept" because nothing ran `vani daemon`.
+   - A second login item, `Contents/Helpers/vani-schedule-agent`, registered with
+     `SMAppService.agent(plistName: "dev.vbcr.vani.schedule.agent.plist")` (the plist is in
+     `Contents/Library/LaunchAgents`, copied there and signed by `scripts/bundle.sh`). Approve it in
+     System Settings ▸ General ▸ Login Items & Extensions; the switch shows "Waiting for your approval"
+     until you do, then "Keeping the schedule (pid N)" once the daemon announces itself. Turning it off
+     unregisters it: the helper gets SIGTERM, ends the daemon (which removes `runs/daemon.json`) and exits.
+   - It runs the bundled `vani daemon` as its child, so the Go daemon stays the one scheduler (`daily_at`,
+     the inbox poll, manual runs through `vani run-request`). The child's environment is what Run Now
+     builds (`DraftRunner.prepare`): a minimal PATH/HOME/USER/TMPDIR, `VANI_CONFIG` and `VANI_STATE_DIR`
+     **pinned to the pair Settings resolves** (Vani's own defaults when none is saved), and the decision
+     key. Unlike the on-demand agent it does not exit when idle.
+   - **The key.** The helper reads the login Keychain item `openrouter-api-key` for each start through the
+     same bounded read as a manual run (30 s; an unanswered "allow access" prompt is abandoned) and passes
+     it only in the child's environment. It is in no plist (`launchctl print` shows none), no file and no
+     log line; the helper's own log lines are fixed phrases and exit statuses. With the Anthropic provider
+     the daemon starts through `anthropic-account exec`, as drafts do.
+   - **No key is visible, never silent.** A missing, refused or unanswered read still starts the daemon
+     (boards, scoring and the digest need no model); the daemon sees `OPENROUTER_API_KEY` unset, says
+     `vani: daemon: OPENROUTER_API_KEY is not set in the daemon's environment…` in its log, records it in
+     `daemon.json`, and `vani status` (text and `--json` `daemon.model`) and the Pipeline tab report "decision
+     model off". A key that was missing and is added later restarts the daemon by itself (the helper checks
+     the item's existence every minute, attributes only, which never prompts). After a refused or unanswered
+     read it does not retry behind your back (that would prompt again): turn the switch off and on.
+   - **Supervision.** If the daemon ends (a crash, a poisoned ledger, or a second daemon the ledger lock
+     refuses) the helper starts it again after 10 s, doubling to 5 min while it keeps ending, and starting
+     over after one has run 5 min. It never gives up and never spins. A change to the Vani config or state
+     folder in Settings restarts the daemon on the new pair. launchd restarts the helper itself after a crash
+     (`KeepAlive` on failed exit, throttled).
+   - **The log** is `<state>/logs/vani.err.log`, the file `vani launchd plist` also uses: the daemon's output
+     appended across restarts, plus the helper's timestamped lines ("starting vani daemon (…)", "daemon ended
+     (status N) after T s; starting it again in D s"). It moves to `vani.err.log.1` past 4 MiB.
+   - **After reinstalling the app** the running daemon is still the old `vani`: turn the switch off and on
+     (or "Register Again", offered when it is on but no daemon has announced itself).
+   - **Security impact.** Same user, same signing identity (team `HAUHVD8M37`, App Group entitlement only),
+     same Keychain item through the same code path. The key now sits in a long-lived process's environment
+     (readable by the same user with `ps eww`, as a manual run's already is, for longer). Nothing widens: the
+     helper has no Mach service, socket or listener (a test pins that), the plist holds no environment, and
+     no new file holds the key. Two same-user paths now exist all day instead of during a run you started:
+     `runs/request.json` (a manual run, bounded to the watchlist and the daily cap) and a config edit, both
+     needing write access to your Vani state folder; the key is only ever sent to `openrouter.ai`
+     (decide's jev client).
+   - Tests (`ScheduleAgentTests`, `ScheduleToggleTests`, `ScheduleAgentRealVaniTests`) never register
+     anything or read the real Keychain: the key lookup is injected, the supervisor runs scripts, and the real
+     test runs `build/vani daemon` in a temp state folder.
 7. **Run notifications.**
    - While the app runs, with or without its window open, it announces each finished daily run once
      as a Vani Apply notification. Clicking one opens the app on the Jobs tab, and reopens the
