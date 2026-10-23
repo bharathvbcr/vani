@@ -96,18 +96,19 @@ func scheduleKeeping(cfg config.Config, s scheduleFacet, d daemonFacet, last las
 // read no posting with the model, so a posting stays live (the daemon says so
 // in daemon.json, and status reports it: daemonLines).
 func keepHint(cfg config.Config) string {
+	// The app's toggle is the way: it holds the key for the daemon. The plain
+	// launchd agent is named only as the route without the app, and never with
+	// advice to write the key into its plist.
 	var b strings.Builder
-	b.WriteString("a daemon keeps the schedule: turn on Run on schedule in Vani Apply's Pipeline tab")
+	b.WriteString("turn on Run on schedule in Vani Apply's Pipeline tab: it runs the daemon as a login item")
 	if cfg.OpenRouterConfigured() {
-		b.WriteString(" (it runs the daemon as a login item with the decision model's key read from the Keychain, never written to disk)")
+		b.WriteString(", with the decision model's key read from the Keychain and never written to disk")
 	}
-	b.WriteString(", or `vani launchd plist` prints an agent for it (vani installs nothing)")
+	b.WriteString(". Until then, Run in the app with a higher advance cap, or `vani run-once --advance N`. " +
+		"Without the app, `vani launchd plist` prints an agent for the daemon (vani installs nothing)")
 	if cfg.OpenRouterConfigured() {
-		fmt.Fprintf(&b, "; its environment holds only VANI_CONFIG and VANI_STATE_DIR, so the decision model's key (environment variable %s) is not there: "+
-			"the daemon's runs would log that the model is disabled and triage nothing until you add the key to the agent's EnvironmentVariables yourself "+
-			"(the app's Keychain read reaches only the daemon the app runs)", cfg.Decide.OpenRouterKeyEnv)
+		fmt.Fprintf(&b, "; it carries no model key, so its runs triage nothing unless %s is in its environment", cfg.Decide.OpenRouterKeyEnv)
 	}
-	b.WriteString(". Until then, Run in the app with a higher advance cap, or `vani run-once --advance N`")
 	return b.String()
 }
 

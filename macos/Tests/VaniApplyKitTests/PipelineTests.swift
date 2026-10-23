@@ -94,7 +94,8 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(issue.severity, .warning)
         let detail = try XCTUnwrap(issue.detail)
         for want in ["No daemon is running, so nothing fires the 08:30 run.", "Last run 30 h ago and the scheduled run is overdue.",
-                     "8525 postings await triage (about 12 runs at advance_per_run 750).", "Use Run Now with a higher advance cap."] {
+                     "8525 postings await triage (about 12 runs at advance_per_run 750).",
+                     "Turn on Run on schedule in the Pipeline tab, or use Run Now with a higher advance cap."] {
             XCTAssertTrue(detail.contains(want), "\(want) missing from: \(detail)")
         }
         XCTAssertEqual(s.health(at: now), .warning)

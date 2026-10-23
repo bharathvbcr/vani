@@ -96,10 +96,13 @@ func TestStatusNoDaemonSaysTheScheduleIsNotKept(t *testing.T) {
 	if !u.DueAt.Equal(wantDue) {
 		t.Errorf("due at %v, want %v", u.DueAt, wantDue)
 	}
-	for _, want := range []string{"vani launchd plist", "installs nothing", "VANI_CONFIG", "OPENROUTER_API_KEY", "EnvironmentVariables", "Keychain", "--advance"} {
+	for _, want := range []string{"Run on schedule", "vani launchd plist", "installs nothing", "OPENROUTER_API_KEY", "Keychain", "--advance"} {
 		if !strings.Contains(u.Hint, want) {
 			t.Errorf("hint lacks %q: %s", want, u.Hint)
 		}
+	}
+	if strings.Contains(u.Hint, "EnvironmentVariables") {
+		t.Errorf("hint tells the owner to write the key into a plist: %s", u.Hint)
 	}
 }
 
@@ -112,7 +115,7 @@ func TestStatusTextNoDaemonSaysTheScheduleIsNotKept(t *testing.T) {
 		"schedule not kept: nothing fires it (no daemon has announced itself)",
 		"last run: 2026-10-21 05:05 PDT (30 h ago); overdue: the 08:30 run was due 3 h ago",
 		"awaiting triage: 1600 postings, 3 runs at advance_per_run 750",
-		"fix: a daemon keeps the schedule",
+		"fix: turn on Run on schedule in Vani Apply's Pipeline tab",
 		"postings: 1601",
 	} {
 		if !strings.Contains(o, want) {

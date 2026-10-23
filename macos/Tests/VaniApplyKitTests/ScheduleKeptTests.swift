@@ -50,6 +50,21 @@ final class ScheduleKeptTests: XCTestCase {
         XCTAssertEqual(u.hint, "a daemon keeps the schedule")
     }
 
+    /// The app points at its own switch, never at vani's terminal route: a hand-installed
+    /// launchd agent with the key written into its plist is the wrong advice in the app.
+    func testTheAppHintNamesTheSwitchNotTheTerminalRoute() throws {
+        let terminal = "turn on Run on schedule ... Without the app, `vani launchd plist` prints an agent ... EnvironmentVariables"
+        let s = try status(schedule: #"{"ok":true,"daily_at":"08:30","timezone":"UTC","kept":false,"unkept":{"awaiting_triage":3,"hint":"\#(terminal)"}}"#)
+        let hint = PipelineStatus.Schedule.Unkept.appHint
+        XCTAssertTrue(hint.contains("Run on schedule"), hint)
+        for word in ["launchd", "plist", "EnvironmentVariables", "vani "] {
+            XCTAssertFalse(hint.contains(word), "the app hint names \(word): \(hint)")
+        }
+        let summary = try XCTUnwrap(s.schedule.unkept).summary(dailyAt: "08:30", now: Date())
+        XCTAssertTrue(summary.contains("Turn on Run on schedule"), summary)
+        XCTAssertFalse(summary.contains("launchd"), summary)
+    }
+
     /// Absent means unknown, not zero: a ledger vani could not count is not an empty one.
     func testAbsentDetailsStayNil() throws {
         let s = try status(schedule: #"{"ok":true,"daily_at":"08:30","timezone":"UTC","kept":false,"unkept":{"hint":"h"}}"#)

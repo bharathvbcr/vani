@@ -465,9 +465,7 @@ private struct LastRunSection: View {
                 if let why = status.schedule.unkept?.why, !why.isEmpty {
                     Row(label: "Daemon", value: why, secondary: true)
                 }
-                if let hint = status.schedule.unkept?.hint, !hint.isEmpty {
-                    Row(label: "To keep it", value: hint, secondary: true)
-                }
+                Row(label: "To keep it", value: PipelineStatus.Schedule.Unkept.appHint, secondary: true)
             } else if let next = status.schedule.nextRun {
                 Row(label: "Next run", value: next.formatted(date: .abbreviated, time: .shortened)
                     + (status.schedule.dailyAt.map { " (daily at \($0) \(status.schedule.timezone ?? ""))" } ?? ""), secondary: true)

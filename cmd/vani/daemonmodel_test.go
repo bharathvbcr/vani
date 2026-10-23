@@ -189,10 +189,18 @@ func TestStaleDaemonRecordReportsNoModel(t *testing.T) {
 // for the daemon; the plain launchd agent stays the fallback, with its caveat.
 func TestKeepHintNamesTheToggle(t *testing.T) {
 	h := keepHint(configWithModel("OPENROUTER_API_KEY"))
-	for _, want := range []string{"Run on schedule", "Pipeline tab", "never written to disk", "vani launchd plist", "EnvironmentVariables"} {
+	for _, want := range []string{"Run on schedule", "Pipeline tab", "never written to disk", "vani launchd plist"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("hint lacks %q: %s", want, h)
 		}
+	}
+	// The toggle leads; the launchd agent is only the route without the app,
+	// and the hint never says to put the key in its plist.
+	if strings.Index(h, "Run on schedule") > strings.Index(h, "vani launchd plist") {
+		t.Errorf("the launchd agent is offered before the toggle: %s", h)
+	}
+	if strings.Contains(h, "EnvironmentVariables") || strings.Contains(h, "yourself") {
+		t.Errorf("hint tells the owner to write the key into a plist: %s", h)
 	}
 	if h := keepHint(config.Config{}); !strings.Contains(h, "Run on schedule") || strings.Contains(h, "key") {
 		t.Errorf("no model configured: %s", h)

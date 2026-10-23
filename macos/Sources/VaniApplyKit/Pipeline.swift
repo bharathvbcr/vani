@@ -746,8 +746,14 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var awaitingTriage: Int?
             public var advancePerRun: Int?
             public var runsNeeded: Int?
-            /// How to get the schedule kept, and what that needs (vani's words).
+            /// How to get the schedule kept, and what that needs (vani's words, written for
+            /// the terminal: it names `vani launchd plist`). The app shows `appHint` instead.
             public var hint: String?
+
+            /// What the Pipeline tab says to get the schedule kept: the Run on schedule switch
+            /// on the same tab. vani's `hint` is not shown in the app, since its terminal
+            /// route (a hand-installed launchd agent) is the wrong advice where the switch is.
+            public static let appHint = "Turn on Run on schedule above. Until then, use Run Now with a higher advance cap."
 
             enum CodingKeys: String, CodingKey {
                 case why, overdue, hint
@@ -799,7 +805,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     if let runs = runsNeeded, let cap = advancePerRun { s += " (about \(runs) run\(runs == 1 ? "" : "s") at advance_per_run \(cap))" }
                     parts.append(s + ".")
                 }
-                parts.append("Use Run Now with a higher advance cap.")
+                parts.append("Turn on Run on schedule in the Pipeline tab, or use Run Now with a higher advance cap.")
                 return parts.joined(separator: " ")
             }
         }
