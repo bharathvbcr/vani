@@ -1647,8 +1647,10 @@ Left open:
   way. The job-URL id is one platform id per posting, so a Netflix v2 to pcsx switch would very
   likely keep keys, but no host answers both APIs to compare, so that stays inferred. If Netflix
   ever enables pcsx, compare one `id` per API before trusting existing keys.
-- **Robots parsing is duplicated.** `page.parseAllowed` repeats `parseCrawlDelay`'s robots.txt
-  group state machine.
+- **Robots parsing was duplicated (fixed).** `page.parseAllowed` repeated `parseCrawlDelay`'s robots.txt
+  group state machine. Both now read `parseRobotsGroups` (`internal/sources/page/robotsgroups.go`), one
+  RFC 9309 group reader. `TestRobotsParsersMatchLegacy` runs both over 3,000 generated and 27
+  hand-written files against the old functions, kept as a test oracle (`robots_oracle_test.go`).
 - **Netflix costs one extra request per run.** The 403 pcsx probe runs every time; the result is
   not cached.
 - **List-only still starts the local llama.cpp server.** `startRun` does so when
@@ -1691,9 +1693,36 @@ Left open:
   pcsx search with 429, no `Retry-After`, an HTML 22-byte body, minutes after the last run. Whether it is a
   burst limit or a sustained edge block is not known; backoff (about 2-16 s, one board budget of 2 min) cannot
   outwait the second. The board now ends `rate_limited` and is retried next run. Pacing stays egress's 1 s per
-  host; no `Crawl-delay` is in that robots.txt. A rate-limited host is not remembered across boards, so two
-  boards on one host each spend their own budget. Every srcutil source now retries up to 5 times, not 3.
-  The 2-minute budget is per board with no run-level cap, so a run where many hosts throttle can
-  stretch by up to that much per board. A host that blocks for days is still asked on every run.
+  host; no `Crawl-delay` is in that robots.txt. Every srcutil source now retries up to 5 times, not 3.
+  The cause is still unknown; what was missing (no run cap, no memory of a throttled host) is fixed
+  (2026-10-22, branch `worktree-agent-a8080e8b372021eb2`):
+  - **Run cap (fixed).** `listBoards` wraps the run in `srcutil.WithRunRetryBudget` (10 min,
+    `RunRetryBudget`). Budgets nest: every wait is charged to the board's 2 min and the run's 10 min
+    together, or to neither. Once the run's is spent a request that would wait gives up at once
+    (`the run's retry budget is spent`): a 429 as `rate_limited`, a 503 as the plain status.
+  - **Host memory in a run (fixed).** `srcutil.HostThrottle`, on the context beside the budgets: a host whose
+    request ended 429 after its retries is in a probe state. The next request to it (the next board's)
+    is sent once, with no retries; a 429 again blocks the host for the rest of the run (no request sent,
+    error `host rate limited earlier this run; probed once`); a 200 reopens it. Requests that arrive while the
+    probe is out wait for it (ending with their context); a request already retrying stops retrying once
+    another finds the host throttled.
+  - **Host memory across runs (fixed).** The throttle is seeded from, and written back to,
+    `<state>/hosts/cooldown.json` (`srcutil.LoadCooldowns`/`SaveCooldowns`, written with `atomicfile`):
+    `{"version":1,"hosts":{host:{"runs":N,"last":RFC3339}}}`. The next run sends one probe, no retries; a
+    429 ends the host for the run and counts `N+1` (error `host in cooldown after N+1 rate-limited runs;
+    probed once`), any 200 deletes the entry. Backoff: after the second consecutive rate-limited run a
+    host is left alone, with no request, for 15 min, doubling per run to 6 h (`not probed until ...`);
+    the first rate-limited run earns no window, and 6 h means a daily run always probes. A host no
+    board reached keeps its entry; entries older than 30 days are dropped. Bounds: file read at most
+    64 KiB (more is ignored with a warning), 64 hosts (most recent kept), count capped at 99, host
+    names validated, a bad entry dropped and counted in a warning, a `last` in the future read as a window
+    just over (so it is probed), an unusable or unsavable file a warning and never a failed run. A
+    cooldown only changes how soon a board fails: the board is never reconciled, so no posting is aged,
+    marked missed or dead. No run-record field or outcome was added (the board's `error` carries the
+    message), so `Pipeline.swift` needs no change.
+  - **Not covered.** Only requests through `srcutil` are remembered: the careers-page source (lightpanda) and
+    `egress` pacing are not, and requests made outside the listing phase (pay look-ups, `jobs find`)
+    carry no throttle. After a host answers 200 it is open again, so a host that serves page 1 and
+    429s page 2 gets the usual retries on page 2 (bursty, not blocked).
 - **An interrupted run never reaches the run history.** A run whose process died leaves a `running` record in `last.json`, and the next run replaces it before it is ever written to `runs/history/`. Archiving a dead-pid `running` record at the next start would keep it.
 - **Nothing ties a log to its run.** `vani runs failures` names the logs that exist, with size and last write time; the run record does not say which log holds its output, and a rotated `manual-<time>.log` is named by its last write, not by run id. Recording the log path in the run record would let the report say which.

@@ -91,7 +91,7 @@ func TestListBoardsRecordsReadFailedAndSkipped(t *testing.T) {
 	}
 	var warn warnLog
 	rep, err := listBoards(context.Background(), []sources.Board{gh, wd, lv, pg, empty}, srcs,
-		errors.New("lightpanda not found"), tempReconciler(t).Reconcile, warn.warnf)
+		errors.New("lightpanda not found"), tempReconciler(t).Reconcile, warn.warnf, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestListBoardsCancelledMidListing(t *testing.T) {
 		}},
 	}
 	var warn warnLog
-	rep, err := listBoards(ctx, []sources.Board{a, b, c}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf)
+	rep, err := listBoards(ctx, []sources.Board{a, b, c}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, "")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -189,7 +189,7 @@ func TestListBoardsReconcileFailure(t *testing.T) {
 		return pipeline.Summary{}, errors.New("ledger: disk full")
 	}
 	var warn warnLog
-	rep, err := listBoards(context.Background(), []sources.Board{a, b}, srcs, nil, broken, warn.warnf)
+	rep, err := listBoards(context.Background(), []sources.Board{a, b}, srcs, nil, broken, warn.warnf, "")
 	if err == nil || !strings.Contains(err.Error(), "reconcile gh/a: ledger: disk full") {
 		t.Fatalf("err = %v", err)
 	}
@@ -212,7 +212,7 @@ func TestListBoardsBoundsAnOversizedError(t *testing.T) {
 		}},
 	}
 	var warn warnLog
-	rep, err := listBoards(context.Background(), []sources.Board{b}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf)
+	rep, err := listBoards(context.Background(), []sources.Board{b}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestBoardsReportIsBoundedForManyBoards(t *testing.T) {
 
 // No board configured: an empty report, not a nil list.
 func TestBoardsReportEmpty(t *testing.T) {
-	rep, err := listBoards(context.Background(), nil, nil, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf)
+	rep, err := listBoards(context.Background(), nil, nil, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, "")
 	if err != nil || rep.Configured != 0 || rep.Items == nil || len(rep.Items) != 0 {
 		t.Fatalf("report %+v, %v", rep, err)
 	}

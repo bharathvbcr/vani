@@ -123,6 +123,9 @@ const (
 	// BoardRetryBudget is the most one board may spend waiting to retry,
 	// across every request it makes (see WithRetryBudget).
 	BoardRetryBudget = 2 * time.Minute
+	// RunRetryBudget is the most a whole run may spend waiting to retry, across
+	// every board (see WithRunRetryBudget).
+	RunRetryBudget = 10 * time.Minute
 )
 
 // The variables below are the injection points for tests: they never change
@@ -175,6 +178,9 @@ type RateLimitedError struct {
 	// Why is the bound that ended the retrying.
 	Why    string
 	Status *egress.StatusError
+	// noRequest is set when the host's memory refused the request, so none was
+	// sent: the 429 behind it was seen earlier (this run or a previous one).
+	noRequest bool
 }
 
 func (e *RateLimitedError) Error() string {
@@ -189,23 +195,42 @@ func (e *RateLimitedError) Is(target error) bool { return target == ErrRateLimit
 
 type budgetKey struct{}
 
-// retryBudget is the wait one board has left to spend on retries.
+// retryBudget is the wait one scope (a board, a run) has left to spend on
+// retries. A budget made inside another is its child: a wait is charged to the
+// budget and to every ancestor, and is refused when any of them cannot cover it.
 type retryBudget struct {
-	mu   sync.Mutex
-	left time.Duration
+	mu     sync.Mutex
+	left   time.Duration
+	name   string // "board" or "run": what a refusal says is spent
+	parent *retryBudget
+}
+
+func withBudget(ctx context.Context, total time.Duration, name string) context.Context {
+	parent, _ := ctx.Value(budgetKey{}).(*retryBudget)
+	return context.WithValue(ctx, budgetKey{}, &retryBudget{left: total, name: name, parent: parent})
 }
 
 // WithRetryBudget returns ctx carrying a budget of total for the time requests
 // spend waiting to retry. A wait the budget cannot cover is not taken: the
 // request gives up with the status. One board, one budget: a board that keeps
 // being rate limited cannot hold up a run by retrying request after request.
-// Without a budget only the per-request bounds apply.
+// It nests under any budget ctx already carries (WithRunRetryBudget), which
+// is charged for the same waits. Without a budget only the per-request bounds
+// apply.
 func WithRetryBudget(ctx context.Context, total time.Duration) context.Context {
-	return context.WithValue(ctx, budgetKey{}, &retryBudget{left: total})
+	return withBudget(ctx, total, "board")
 }
 
-// RetryBudgetLeft is what ctx's retry budget has left, and false when ctx
-// carries none.
+// WithRunRetryBudget is WithRetryBudget for a whole run: every board's waits
+// are charged to it as well as to the board's own budget, so a run in which
+// many boards are throttled still spends at most total waiting in all. Once it
+// is spent, a request that would have waited gives up at once.
+func WithRunRetryBudget(ctx context.Context, total time.Duration) context.Context {
+	return withBudget(ctx, total, "run")
+}
+
+// RetryBudgetLeft is what ctx's innermost retry budget has left, and false
+// when ctx carries none.
 func RetryBudgetLeft(ctx context.Context) (time.Duration, bool) {
 	b, ok := ctx.Value(budgetKey{}).(*retryBudget)
 	if !ok {
@@ -216,19 +241,41 @@ func RetryBudgetLeft(ctx context.Context) (time.Duration, bool) {
 	return b.left, true
 }
 
-// spend takes d from ctx's budget and reports whether it was there to take.
-func spend(ctx context.Context, d time.Duration) bool {
-	b, ok := ctx.Value(budgetKey{}).(*retryBudget)
-	if !ok {
-		return true
+// RunRetryBudgetLeft is what ctx's run budget (WithRunRetryBudget) has left,
+// and false when ctx carries none.
+func RunRetryBudgetLeft(ctx context.Context) (time.Duration, bool) {
+	for b, _ := ctx.Value(budgetKey{}).(*retryBudget); b != nil; b = b.parent {
+		if b.name == "run" {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			return b.left, true
+		}
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if d > b.left {
-		return false
+	return 0, false
+}
+
+// spend takes d from ctx's budget and each ancestor's, or from none of them.
+// ok is false when one could not cover it, and spent names that one.
+func spend(ctx context.Context, d time.Duration) (ok bool, spent string) {
+	var chain []*retryBudget
+	for b, _ := ctx.Value(budgetKey{}).(*retryBudget); b != nil; b = b.parent {
+		chain = append(chain, b)
 	}
-	b.left -= d
-	return true
+	// Locked innermost first, always: a budget has one parent, so two spenders
+	// lock in the same order and cannot deadlock.
+	for _, b := range chain {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+	}
+	for _, b := range chain {
+		if d > b.left {
+			return false, b.name
+		}
+	}
+	for _, b := range chain {
+		b.left -= d
+	}
+	return true, ""
 }
 
 // GetJSON issues a GET through d and decodes the JSON body into v. A 404 is
@@ -296,11 +343,42 @@ func GetBody(ctx context.Context, d egress.Doer, rawURL string) ([]byte, error) 
 	return fetch(ctx, d, http.MethodGet, rawURL, nil, nil, "text/html,application/xhtml+xml", maxBody)
 }
 
-// fetch is DoJSON's request loop; it returns the 200 body.
+// fetch is DoJSON's request: it asks ctx's HostThrottle (WithHostThrottle)
+// whether the host may be asked, runs the retry loop, and tells the throttle
+// what the host answered. It returns the 200 body.
 func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64) ([]byte, error) {
 	if d == nil {
 		return nil, errors.New("sources: no http doer configured")
 	}
+	th, _ := ctx.Value(throttleKey{}).(*HostThrottle)
+	var host string
+	if u, err := url.Parse(rawURL); err == nil {
+		host = strings.ToLower(u.Hostname())
+	}
+	if th == nil || host == "" {
+		return fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, "")
+	}
+	probeWhy, err := th.admit(ctx, host, method, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	out, err := fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, probeWhy)
+	var rl *RateLimitedError
+	switch {
+	case err == nil:
+		th.answered(host)
+	case errors.As(err, &rl) && !rl.noRequest:
+		th.limited(host, probeWhy != "")
+	default:
+		th.inconclusive(host, probeWhy != "")
+	}
+	return out, err
+}
+
+// fetchLoop is fetch's retry loop. probeWhy is non-empty for the one probe of a
+// throttled host: a single attempt, whose 429 ends it with probeWhy as the
+// reason.
+func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64, probeWhy string) ([]byte, error) {
 	verb := strings.ToLower(method)
 	var waited time.Duration // spent waiting to retry this request
 	for attempt := 0; ; attempt++ {
@@ -345,8 +423,19 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 			}
 			return fmt.Errorf("sources: %s %s: %w (%s)", verb, req.URL.Redacted(), se, why)
 		}
+		if probeWhy != "" {
+			if code == http.StatusTooManyRequests {
+				return nil, giveUp(probeWhy)
+			}
+			return nil, giveUp("probe of a throttled host: one attempt, no retries")
+		}
 		if attempt+1 >= maxAttempts {
 			return nil, giveUp(fmt.Sprintf("gave up after %d attempts", maxAttempts))
+		}
+		// Another request has since found the host throttled: waiting on it for
+		// this one would spend the budget the host's memory exists to save.
+		if why, limited := hostLimitedWhy(ctx, se.Host); limited {
+			return nil, giveUp(why)
 		}
 		wait := backoff(attempt)
 		if ra, ok := retryAfter(hdr, now()); ok {
@@ -358,8 +447,8 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 		if waited+wait > maxRequestWait {
 			return nil, giveUp(fmt.Sprintf("gave up after %d attempts: waiting %s more would pass the %s limit for one request", attempt+1, wait, maxRequestWait))
 		}
-		if !spend(ctx, wait) {
-			return nil, giveUp(fmt.Sprintf("gave up after %d attempts: the board's retry budget is spent", attempt+1))
+		if ok, spent := spend(ctx, wait); !ok {
+			return nil, giveUp(fmt.Sprintf("gave up after %d attempts: the %s's retry budget is spent", attempt+1, spent))
 		}
 		waited += wait
 		if err := sleep(ctx, wait); err != nil {

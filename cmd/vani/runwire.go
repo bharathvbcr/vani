@@ -205,7 +205,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// ledger here (the adapters read it), as Reconciler requires.
 	rec := pipeline.NewReconciler(w.led)
 	rec.Protect(protect)
-	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, rec.Reconcile, w.warnf)
+	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, rec.Reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
 	w.mu.Lock()
 	w.boards = &boards
 	w.mu.Unlock()

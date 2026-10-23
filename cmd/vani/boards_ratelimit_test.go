@@ -61,7 +61,7 @@ func TestListBoardsRateLimitedBoardIsDistinctAndLeftUnchanged(t *testing.T) {
 		}},
 	}
 	var warn warnLog
-	rep, err := listBoards(context.Background(), []sources.Board{ef, gh, wd}, srcs, nil, rc.Reconcile, warn.warnf)
+	rep, err := listBoards(context.Background(), []sources.Board{ef, gh, wd}, srcs, nil, rc.Reconcile, warn.warnf, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestListBoardsGivesEachBoardItsOwnRetryBudget(t *testing.T) {
 	a := sources.Board{ATS: posting.Greenhouse, Token: "a", Company: "A"}
 	b := sources.Board{ATS: posting.Greenhouse, Token: "b", Company: "B"}
 	var warn warnLog
-	if _, err := listBoards(context.Background(), []sources.Board{a, b}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf); err != nil {
+	if _, err := listBoards(context.Background(), []sources.Board{a, b}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 2 || seen[0] != srcutil.BoardRetryBudget || seen[1] != srcutil.BoardRetryBudget {
