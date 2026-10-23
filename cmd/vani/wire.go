@@ -167,6 +167,13 @@ type wired struct {
 	// semPre is the last run's knowledge-base warm before the advance phase
 	// (semanticwire.go warmBeforeAdvance); nil when it did not run.
 	semPre *semanticReport
+	// noBackend is why the current run has no decision backend (startListing);
+	// nil when it has one.
+	noBackend error
+	// keychainRun counts runs (startRun), so a failed Keychain read is retried
+	// once per run; keychain caches the OpenRouter key (keychain.go).
+	keychainRun int
+	keychain    keychainCache
 }
 
 // runReport is what the last runOnce left for the run record.
@@ -204,9 +211,14 @@ func (w *wired) warnf(format string, a ...any) {
 // board must never count as "every posting disappeared"). What happened to
 // each board reaches the run record (listBoards).
 func (w *wired) runOnce(ctx context.Context) error {
-	// Assemble the stages first: a run that cannot triage must not fetch
-	// boards for nothing.
+	// Assemble the stages first. Without a decision backend the run still
+	// lists the boards and runs the engine's own stages, which spend no
+	// tokens, so the Jobs list stays current; it then fails before the
+	// advance phase (missingBackend) unless it was list-only.
 	d, runner, stop, err := w.startRun(ctx)
+	if errors.Is(err, errNoBackend) {
+		d, runner, stop, err = w.startListing(err)
+	}
 	if err != nil {
 		return err
 	}
@@ -215,6 +227,9 @@ func (w *wired) runOnce(ctx context.Context) error {
 	// the boards are read; the advance phase below picks them up with the rest.
 	w.drainSpool(ctx)
 	srcs := apiSources(d)
+	if testHookSources != nil {
+		testHookSources(srcs)
+	}
 	gh, err := greenhouse.NewWithPay(d, greenhouse.Pay{
 		Known: func(k posting.Key) (posting.Posting, bool) {
 			r, ok := w.led.Get(k)
@@ -280,6 +295,9 @@ func (w *wired) runOnce(ctx context.Context) error {
 	}
 
 	limit, skip := w.advancePlan()
+	if err := w.missingBackend(skip); err != nil {
+		return err
+	}
 	if skip {
 		w.warnf("advance phase skipped (--list-only): new postings stay live for the next run")
 		return nil
@@ -324,7 +342,7 @@ func (w *wired) startRun(ctx context.Context) (*egress.Client, *pipeline.Runner,
 	w.localEndpoint = ""
 	errs := newBackendErrors()
 	w.mu.Lock()
-	w.backendErrs, w.boards, w.advance, w.semPre = errs, nil, nil, nil
+	w.backendErrs, w.boards, w.advance, w.semPre, w.noBackend, w.keychainRun = errs, nil, nil, nil, nil, w.keychainRun+1
 	w.mu.Unlock()
 	stop := func() {}
 	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
@@ -346,6 +364,43 @@ func (w *wired) startRun(ctx context.Context) (*egress.Client, *pipeline.Runner,
 		return nil, nil, nil, err
 	}
 	return d, runner, stop, nil
+}
+
+// testHookSources, when set, may replace the API sources a run lists with
+// (tests only). Greenhouse and Workday are set after it and cannot be faked.
+var testHookSources func(map[posting.ATS]sources.Source)
+
+// errNoBackend is runner's error when no decision backend can be built.
+var errNoBackend = errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
+
+// startListing readies a run that has no decision backend (cause): the egress
+// client and a runner holding only the drop policy, which listing and the
+// engine stages read. Its runner must never advance; missingBackend stops the
+// run first.
+func (w *wired) startListing(cause error) (*egress.Client, *pipeline.Runner, func(), error) {
+	d, err := egress.New(egress.Config{AllowedHosts: w.cfg.AllowedHosts, MaxBodyBytes: maxBoardBytes})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("egress: %w", err)
+	}
+	w.mu.Lock()
+	w.noBackend = cause
+	w.mu.Unlock()
+	w.warnf("%v: the boards are listed and filtered, but no posting is triaged this run", cause)
+	return d, &pipeline.Runner{Ledger: w.led, Policy: dropPolicy(w.cfg, w.openRouterName())}, func() {}, nil
+}
+
+// missingBackend fails a run that has no decision backend before its advance
+// phase, so a run that could not triage never records as finished; the
+// postings it listed stay live, shown in the Jobs list, for the next run. A
+// list-only run asked for no advance phase and passes.
+func (w *wired) missingBackend(listOnly bool) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.noBackend == nil || listOnly {
+		return nil
+	}
+	w.advance = &advanceReport{Stopped: stopNoBackend}
+	return fmt.Errorf("listed the boards but triaged nothing: %w; new postings stay live for the next run", w.noBackend)
 }
 
 // drainSpool folds the spooled extension batches into the ledger and reports
@@ -884,7 +939,7 @@ func lightpandaBinary(configured string) (string, error) {
 }
 
 // localBackend builds the shadow client for a decision model served on this
-// Mac. By default it gets exactly the request Jev gets (the combined question,
+// Mac. By default it gets exactly the request the OpenRouter decision model gets (the combined question,
 // all slots, the same option descriptions), so `vani eval` compares models,
 // not prompts; questions "per_slot" asks each slot its fixture family's own
 // question instead. llama.cpp's /v1/systemone takes the state as a plain string.
@@ -951,6 +1006,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 			Name:         w.cfg.Decide.OpenRouterName(),
 			Model:        w.cfg.Decide.OpenRouterModel,
 			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
+			Getenv:       w.openRouterGetenv,
 			Descriptions: jobcategory.UnifiedDescriptions(),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,
@@ -1005,8 +1061,8 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 
-	// A local decision model (llama.cpp /v1/systemone) speaks the Jev wire shape,
-	// so it is a second Jev client under its own name, reaching only this Mac.
+	// A local decision model (Liquid d1-3B on llama.cpp /v1/systemone) speaks the decide/jev wire shape,
+	// so it is a second decide/jev client under its own name, reaching only this Mac.
 	// It is only ever the shadow (config enforces it): measured, never deciding.
 	if l := w.cfg.Decide.Local; l != nil {
 		endpoint := l.Endpoint
@@ -1037,7 +1093,7 @@ func (w *wired) runner(ctx context.Context, d egress.Doer) (*pipeline.Runner, er
 		}
 	}
 	if len(backends) == 0 {
-		return nil, errors.New("no decision backend is available (configure decide.openrouter_model or llm)")
+		return nil, errNoBackend
 	}
 	router := decide.NewRouter(backends...)
 	router.Shadow = shadow

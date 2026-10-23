@@ -122,7 +122,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		Key:       key,
 		ATS:       posting.Greenhouse,
 		Company:   company,
-		Title:     strings.TrimSpace(j.Title),
+		Title:     srcutil.Title(j.Title),
 		Location:  strings.TrimSpace(j.Location.Name),
 		URL:       j.AbsoluteURL,
 		UpdatedAt: updated,

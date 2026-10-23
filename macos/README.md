@@ -191,7 +191,9 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
    - It runs the bundled `vani draft`, using the model and daily cap in Vani's config
      (`llm.model`, `decide.daily_usd.llm`). That cap is shared with the daily listings run.
    - Set the config and state paths in Settings ▸ Claude drafting. Empty means Vani's default
-     folder.
+     folder. A `vani` started without `VANI_CONFIG`/`VANI_STATE_DIR` refuses to run while these
+     name another folder, so the CLI and the app cannot drift onto different ledgers
+     ([`docs/RUNTIME.md`](../docs/RUNTIME.md)).
    - Settings ▸ What you care about edits `motivation_notes` in that config through
      `vani config motivation`, so Vani checks it and rewrites the config file whole (as
      `vani track use` does: keys in Vani's order, deprecated names replaced). "Why <company>?" drafts use the note;
@@ -288,7 +290,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 - **What it never sees:** your name, contact details, location or work authorization. Vani never
   reads the bank header, and entry locations are dropped. A test checks the prompt for a synthetic
   name and email.
-- **The key.** Vani takes provider keys from the environment only (Manvi's policy). When the Vani
+- **The key.** Vani takes LLM provider keys from the environment only (Manvi's policy). The one
+  exception is the Liquid decision model's OpenRouter key, which `vani` reads from the Keychain item
+  `openrouter-api-key` when `OPENROUTER_API_KEY` is unset ([`docs/RUNTIME.md`](../docs/RUNTIME.md)).
+  When the Vani
   config's `llm.provider` is `anthropic`, the app and the Chrome host start
   `anthropic-account exec [--account NAME] -- <bundled vani> draft` instead of `vani` itself.
   `anthropic-account` (Manvi's `cmd/anthropic-account`, installed in `~/.local/bin` or

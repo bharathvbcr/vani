@@ -50,9 +50,10 @@ type Entry struct {
 	At   time.Time `json:"at"`
 	// P is the backend's probability when it gave one.
 	P float64 `json:"p,omitempty"`
-	// Backend is the backend that answered ("llm", "jev") and Mode what the
-	// question carried: "full" digest or "focused" (compact digest plus lines an
-	// embedding model picked). Both are audit; neither invalidates the answer.
+	// Backend is the backend that answered ("llm", "liquid"; "jev" before
+	// 2026-10-20) and Mode what the question carried: "full" digest or
+	// "focused" (compact digest plus lines an embedding model picked). Both are
+	// audit; neither invalidates the answer.
 	Backend string `json:"backend,omitempty"`
 	Mode    string `json:"mode,omitempty"`
 }

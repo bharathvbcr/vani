@@ -81,6 +81,8 @@ final class RunNoticeTests: XCTestCase {
     func testFailureVocabulary() {
         let see = " Run vani status for details."
         let cases: [(Run, String)] = [
+            (lastRun(.failed, stage: "pipeline", advance: Advance(eligible: 0, limit: 0, attempted: 0, deferred: 0, stopped: .noBackend)),
+             "No decision backend is set up, so the boards were listed but nothing was triaged; the postings are in Jobs." + see),
             (lastRun(.failed, stage: "pipeline", advance: Advance(eligible: 9, limit: 9, attempted: 5, unread: 5, deferred: 4, stopped: .unreadStreak)),
              "No decision backend could read the postings; they stay live for the next run." + see),
             (lastRun(.failed, stage: "digest", advance: Advance(eligible: 9, limit: 9, attempted: 9, unread: 9, deferred: 0, stopped: .noneRead)),

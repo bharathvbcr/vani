@@ -97,8 +97,11 @@ func (f *site) handle(r srctest.Request) (srctest.Reply, bool) {
 
 func newSource(f *site) (*source, *srctest.Doer) {
 	d := srctest.NewFunc(f.handle)
-	return &source{d: d, now: func() time.Time { return fixedNow }}, d
+	return &source{d: d, now: func() time.Time { return fixedNow }, wait: noWait}, d
 }
+
+// noWait stands in for the pacer's sleep.
+func noWait(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 func fixtureSite(t *testing.T) *site {
 	search := readJSON(t, "search.json")
@@ -127,9 +130,40 @@ func TestFixture(t *testing.T) {
 		!p.PostedAt.Equal(time.Unix(1791734400, 0).UTC()) || !p.SeenAt.Equal(fixedNow) {
 		t.Errorf("posting: %+v", p)
 	}
-	if !strings.HasPrefix(p.Description, "Role: Individual Contributor, Full-Time, Fully on-site") || !strings.Contains(p.Description, "Overview") ||
-		strings.Contains(p.Description, "<b>") {
+	// The role line leads with the employment type in the shared wording, and
+	// SourceText leaves the board's own text.
+	if !strings.HasPrefix(p.Description, "Role: Individual Contributor, full-time, Fully on-site\n\nOverview") ||
+		strings.Contains(p.Description, "<b>") || !strings.HasPrefix(srcutil.SourceText(p.Description), "Overview") {
 		t.Errorf("description: %.300s", p.Description)
+	}
+}
+
+// Every request after the first waits paceEvery, and a board that would wait
+// past paceBudget fails before it does.
+func TestPacing(t *testing.T) {
+	f := fixtureSite(t)
+	var waits []time.Duration
+	s, d := newSource(f)
+	s.wait = func(ctx context.Context, w time.Duration) error { waits = append(waits, w); return ctx.Err() }
+	if _, err := s.List(context.Background(), board("LLM inference")); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.Requests()); n < 2 || len(waits) != n-1 {
+		t.Fatalf("%d requests, %d waits", n, len(waits))
+	}
+	for _, w := range waits {
+		if w != paceEvery {
+			t.Fatalf("wait %s, want %s", w, paceEvery)
+		}
+	}
+	if paceBudget < time.Duration(MaxPostings+maxPages)*paceEvery {
+		t.Errorf("a full board (%d requests at %s) does not fit the %s budget", MaxPostings+maxPages, paceEvery, paceBudget)
+	}
+	// Cancelled while waiting: the board ends with the context, not a pass.
+	ctx, cancel := context.WithCancel(context.Background())
+	s.wait = func(context.Context, time.Duration) error { cancel(); return context.Canceled }
+	if _, err := s.List(ctx, board("LLM inference")); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled wait: %v", err)
 	}
 }
 
@@ -197,7 +231,7 @@ func TestRefusals(t *testing.T) {
 	} {
 		s := &source{d: srctest.NewFunc(func(srctest.Request) (srctest.Reply, bool) {
 			return srctest.Reply{Status: 200, Body: []byte(body)}, true
-		}), now: time.Now}
+		}), now: time.Now, wait: noWait}
 		if _, err := s.List(context.Background(), board("x")); !errors.Is(err, ErrShape) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -235,5 +269,43 @@ func TestRemote(t *testing.T) {
 	got, err := s.List(context.Background(), board("LLM inference"))
 	if err != nil || !got[0].Remote || got[1].Remote {
 		t.Fatalf("remote flags: %v %v", got, err)
+	}
+	// Microsoft's remote roles say so only in the work site (live 2026-10-20,
+	// position 1970393557019355); the description still names it.
+	f.override = map[string]func(map[string]any){id: func(d map[string]any) {
+		d["workLocationOption"] = "onsite"
+		d["efcustomTextWorkSite"] = []any{"0 days / week in-office – remote"}
+	}}
+	s, _ = newSource(f)
+	got, err = s.List(context.Background(), board("LLM inference"))
+	if err != nil || !got[0].Remote || got[1].Remote || !strings.Contains(got[0].Description, "0 days / week in-office – remote") {
+		t.Fatalf("work-site remote: %v %v", got, err)
+	}
+}
+
+func TestRemoteRule(t *testing.T) {
+	for _, c := range []struct {
+		option string
+		site   []string
+		want   bool
+	}{
+		{"remote", nil, true},
+		{" REMOTE ", nil, true},
+		{"onsite", []string{"0 days / week in-office – remote"}, true},
+		{"", []string{"3 days / week in-office", "0 days / week in-office — Remote"}, true},
+		{"onsite", []string{"Remote"}, true},
+		{"onsite", []string{"0 days / week in-office - remote "}, true},
+		{"onsite", []string{"3 days / week in-office"}, false},
+		{"onsite", []string{"fully on-site"}, false},
+		{"hybrid", []string{"remote-friendly hub"}, false},
+		{"onsite", []string{"not remote"}, false},
+		{"onsite", []string{"remote eligible after 6 months – onsite"}, false},
+		{"onsite", []string{"", "–", "-"}, false},
+		{"", nil, false},
+		{"remotely", nil, false},
+	} {
+		if got := remote(details{WorkLocationOption: c.option, WorkSite: c.site}); got != c.want {
+			t.Errorf("%q %q: %v", c.option, c.site, got)
+		}
 	}
 }

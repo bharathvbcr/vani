@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -103,23 +105,38 @@ func ParseTime(field, s string) (time.Time, error) {
 // Retry-After longer than maxRetryWait is honoured by giving up, not by
 // waiting, so one board cannot stall a run.
 const (
-	maxAttempts  = 3
+	maxAttempts  = 4
 	maxRetryWait = 30 * time.Second
 )
 
-// retryBackoff is the wait before retry n when the response names none. A
-// variable, with sleep, only so tests need not wait in real time.
-var retryBackoff = [maxAttempts - 1]time.Duration{2 * time.Second, 5 * time.Second}
+// retryBackoff is the wait before retry n when the response names none: 50 s
+// in all, then the board fails. Qualcomm's search answered 429 with no
+// Retry-After on 2026-10-20, and a 2 s then 5 s backoff (7 s) gave a
+// throttle no time to lift; no backoff is over maxRetryWait. A variable, with
+// sleep, only so tests need not wait in real time.
+var retryBackoff = [maxAttempts - 1]time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
 
-var sleep = func(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+var sleep = Sleep
+
+// MaxTitle bounds a posting's title in bytes.
+const MaxTitle = 300
+
+// Title is a board's title as one display line: HTML entities decoded, every
+// run of whitespace (a no-break space too) one space, trimmed, and at most
+// MaxTitle bytes, cut at a rune boundary. AMD's API served "Senior Graphics
+// Machine Learning  Engineer" (2026-10-20). Fallback keys and near-duplicate
+// detection fold whitespace and case already, so cleaning a title changes
+// neither.
+func Title(raw string) string {
+	t := strings.Join(strings.Fields(html.UnescapeString(raw)), " ")
+	if len(t) <= MaxTitle {
+		return t
 	}
+	cut := MaxTitle
+	for cut > 0 && !utf8.RuneStart(t[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(t[:cut])
 }
 
 // GetJSON issues a GET through d and decodes the JSON body into v. A 404 is

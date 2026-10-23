@@ -79,6 +79,7 @@ func TestFatalRunSaysVaniStopped(t *testing.T) {
 // decision backend reads differently from postings failing a stage.
 func TestAdvanceStopNamesTheCause(t *testing.T) {
 	for stop, want := range map[string]string{
+		stopNoBackend:    "No decision backend is set up",
 		stopNoneRead:     "No decision backend",
 		stopUnreadStreak: "No decision backend",
 		stopFailStreak:   "kept failing a stage",

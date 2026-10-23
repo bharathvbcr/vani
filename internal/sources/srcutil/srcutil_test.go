@@ -65,17 +65,35 @@ func TestRetryOnRateLimit(t *testing.T) {
 		t.Errorf("waits %v, want [3s] from Retry-After", *waits)
 	}
 
-	// 503 without Retry-After uses the backoff; three failures give up with
-	// the status, never more than maxAttempts requests.
+	// 503 without Retry-After uses the backoff, 5 s, 15 s, then 30 s; four
+	// failures give up with the status, never more than maxAttempts requests.
 	waits = noWait(t)
-	d = seq(t, srctest.Reply{Status: 503}, srctest.Reply{Status: 503}, srctest.Reply{Status: 503})
+	d = seq(t, srctest.Reply{Status: 503}, srctest.Reply{Status: 503}, srctest.Reply{Status: 503}, srctest.Reply{Status: 503})
 	err := GetJSON(context.Background(), d, u, &v)
 	var se *egress.StatusError
-	if !errors.As(err, &se) || se.Code != 503 || !strings.Contains(err.Error(), "gave up after 3 attempts") {
-		t.Fatalf("three 503s: %v", err)
+	if !errors.As(err, &se) || se.Code != 503 || !strings.Contains(err.Error(), "gave up after 4 attempts") {
+		t.Fatalf("four 503s: %v", err)
 	}
-	if len(d.Requests()) != maxAttempts || len(*waits) != 2 || (*waits)[0] != retryBackoff[0] || (*waits)[1] != retryBackoff[1] {
-		t.Errorf("%d requests, waits %v", len(d.Requests()), *waits)
+	want := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+	if len(d.Requests()) != maxAttempts || len(*waits) != len(want) {
+		t.Fatalf("%d requests, waits %v", len(d.Requests()), *waits)
+	}
+	var total time.Duration
+	for i, w := range want {
+		if (*waits)[i] != w || w > maxRetryWait {
+			t.Errorf("wait %d is %s, want %s (at most %s)", i, (*waits)[i], w, maxRetryWait)
+		}
+		total += (*waits)[i]
+	}
+	if total != 50*time.Second {
+		t.Errorf("a request waits %s in all before failing, want 50s", total)
+	}
+
+	// A throttle that lifts on the last retry still saves the board.
+	waits = noWait(t)
+	d = seq(t, srctest.Reply{Status: 429}, srctest.Reply{Status: 429}, srctest.Reply{Status: 429}, okReply)
+	if err := GetJSON(context.Background(), d, u, &v); err != nil || len(*waits) != 3 {
+		t.Errorf("429 x3 then 200: %v, waits %v", err, *waits)
 	}
 
 	// A Retry-After over the cap is honoured by giving up, at once.

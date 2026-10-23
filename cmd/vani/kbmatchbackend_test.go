@@ -101,14 +101,19 @@ func TestKBMatchFlagsAreChecked(t *testing.T) {
 	if code, _, _ := do(t, "kbmatch", "run", "--dry-run", "--backend", "gpt"); code != exitUsage {
 		t.Errorf("--backend gpt: exit %d, want usage", code)
 	}
-	if code, _, e := do(t, "kbmatch", "run", "--dry-run", "--backend", "jev"); code != exitRuntime || !strings.Contains(e, "decide.openrouter_model") {
+	if code, _, e := do(t, "kbmatch", "run", "--dry-run", "--backend", "liquid"); code != exitRuntime || !strings.Contains(e, "decide.openrouter_model") {
+		t.Errorf("--backend liquid without openrouter: exit %d, %s", code, e)
+	}
+	// "jev", liquid's name until 2026-10-20, still works and says so.
+	if code, _, e := do(t, "kbmatch", "run", "--dry-run", "--backend", "jev"); code != exitRuntime ||
+		!strings.Contains(e, `--backend "jev" is now "liquid"`) || !strings.Contains(e, "decide.openrouter_model") {
 		t.Errorf("--backend jev without openrouter: exit %d, %s", code, e)
 	}
 	k.cfg.LLM = config.LLM{}
 	k.cfg.Decide.DailyUSD.LLM = 0
 	k.save(t)
-	if code, _, e := do(t, "kbmatch", "run", "--dry-run"); code != exitRuntime || !strings.Contains(e, "--backend jev") {
-		t.Errorf("no llm: exit %d, %s (should point at --backend jev)", code, e)
+	if code, _, e := do(t, "kbmatch", "run", "--dry-run"); code != exitRuntime || !strings.Contains(e, "--backend liquid") {
+		t.Errorf("no llm: exit %d, %s (should point at --backend liquid)", code, e)
 	}
 }
 
@@ -123,7 +128,7 @@ func TestKBMatchAsksTheDecisionModel(t *testing.T) {
 	k.cfg.Decide.DailyUSD.LLM = 0
 	k.cfg.Decide.OpenRouterModel = "liquid/d1-ultra"
 	k.cfg.Decide.DailyUSD.OpenRouter = 5
-	k.cfg.KBMatch.Backend = config.KBMatchJev
+	k.cfg.KBMatch.Backend = config.KBMatchLiquid
 	k.save(t)
 
 	var bodies [][]byte
@@ -188,7 +193,7 @@ func TestKBMatchAsksTheDecisionModel(t *testing.T) {
 		}
 		if e, ok := st.Lookup(key, digest.SHA256, kbmatch.TextSHA256(recs[key], summary, digest)); ok {
 			snapAnswers++
-			if e.Backend != "jev" || e.Model != "liquid/d1-ultra" || e.P != 0.9 || e.Mode != kbmatch.ModeFull {
+			if e.Backend != config.KBMatchLiquid || e.Model != "liquid/d1-ultra" || e.P != 0.9 || e.Mode != kbmatch.ModeFull {
 				t.Errorf("%s: entry %+v", key, e)
 			}
 		}

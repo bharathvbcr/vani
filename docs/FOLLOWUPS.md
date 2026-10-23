@@ -73,8 +73,8 @@ flowchart TD
 - **Lappi training (approved, deferred).** Lappi-decision's decision pool carries one choice slot
   per example, so the triage question is split for Lappi into four single-slot families
   (`career.jd_role_fit`, `career.jd_sponsorship`, `career.jd_work_mode`, `career.jd_seniority`;
-  fixture v2). Vani's Lappi backend routes each slot to its family; Jev and the LLM still get all
-  four slots in one request. The generators are being written in Lappi-decision; the training run
+  fixture v2). Vani's Lappi backend routes each slot to its family; the Liquid decision model
+  (over OpenRouter) and the LLM still get all four slots in one request. The generators are being written in Lappi-decision; the training run
   waits for the owner.
 - **Title drops count toward `advance_per_run`.** A title drop asks no backend, so leaving it out
   of the cap would let a run triage more postings for the same spend. The owner kept it counted
@@ -95,7 +95,8 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   lifting `MaxTokens` past the model's output ceiling. A request already over the ceiling is not
   lowered: Manvi refuses it before sending, which is louder than a silently smaller budget.
 - **Card 12: no untrusted-content frame to move the reasons facts across.** The
-  `career.jd_reasons` question goes only to Jev (`cmd/vani/reasonscmd.go`), whose state carries no
+  `career.jd_reasons` question goes only to the Liquid decision model through the OpenRouter
+  client `decide/jev` (`cmd/vani/reasonscmd.go`), whose state carries no
   BEGIN/END UNTRUSTED markers. The context is now capped at `jdtriage.MaxContextBytes` with the
   facts kept; only the coverage percentage is the pipeline's own fact, and the missing
   requirement names are posting text and are labelled so.
@@ -447,7 +448,9 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   `liquid/d1-ultra` (below), so no four-question request was ever sent to jev-1.13. It stays
   `decide/jev`'s `DefaultModel` and the model in `TestRequestShapeGolden`
   (`decide/jev/jev_test.go:86`). A config that leaves `decide.jev_model` empty, or sets jev-1.13,
-  runs untested against the four-slot question.
+  runs untested against the four-slot question. (2026-10-20: `vani init` now writes
+  `liquid/d1-ultra` as `decide.openrouter_model`, and Vani always passes its model, so the decide
+  module's default reaches no Vani call; whether to change that shared default is the owner's.)
 - **Lappi does not serve the triage families; nothing to calibrate yet.** Checked 2026-10-18,
   read-only. Lappi-decision has no `career.jd_triage` family. It registers the four single-slot
   families (`crates/qd-prep/src/synth_career.rs:57-66`), and its generator is written. All four are
@@ -581,7 +584,9 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     - The owner chose cloud models for now (2026-10-19). The RSI-Jev venv is
       `research/external/RSI-Jev-v6.0-src/.venv` (gitignored there).
   - The owner decided on 2026-10-18 to port d1 natively to tessl only if it beats Jev. Jev runs
-    only with `OPENROUTER_API_KEY` exported, and its `daily_usd` cap is 0.5. The promotion table has
+    only with `OPENROUTER_API_KEY` exported, and its `daily_usd` cap is 0.5. (Superseded: the
+    cloud model is Liquid d1-ultra, its key also comes from the Keychain, and the live cap is
+    $20; see RUNTIME.md.) The promotion table has
     one row per primary backend (d1 vs `jev`, d1 vs `llm`), each needing its own 30 labels. A day
     where the LLM answered after Jev's cap therefore never counts as Jev's baseline.
   - The primary is now `liquid/d1-ultra` (`decide.openrouter_model`, the owner's choice). Since
@@ -720,7 +725,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   - `decide/jev` records `confidence` (for example 0.913) as the slot probability, not the chosen
     option's entry in `probabilities` (0.931). That is by design: it prefers `confidence` and falls
     back to `probabilities[choice]` (`decide/jev/jev.go:454-456`), as the email engine does.
-  - Set as Vani's Jev model on 2026-10-19: `.state/config.json` `decide.jev_model` is now
+  - Set as Vani's decision model on 2026-10-19: `.state/config.json` `decide.jev_model` is now
     `liquid/d1-ultra` (was `typesafe/jev-1.13`). `vani config check` passes. Key env
     `OPENROUTER_API_KEY`; cap `decide.daily_usd.jev` 0.5, about 17,900 postings a day at this call's
     cost.
@@ -787,10 +792,107 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     as Eightfold does. Live on 2026-10-19 the unsearched AMD listing read 1278 of 1278 in 13
     pages, so an overstated total has not been seen.
 
-- **Jibe postings are never marked remote (2026-10-19).** The AMD payload has no remote field.
-  It marks some home-office roles only in `location_name` (`"RO,Home Office"`), which
-  `internal/sources/jibe` does not parse. A rule for it needs more than one tenant's data to
-  verify.
+- **Jibe remote and pay rules are read from one tenant (2026-10-20).** The AMD payload has no
+  remote field and no populated `salary_*_value`. `internal/sources/jibe` now marks a posting
+  remote when `location_name`'s last segment is `Home Office` or `Home Office_…` (33 of 1286
+  live rows), and leads its description with a pay line from `tags2`/`tags3` (1283 of 1286 rows,
+  all `"USD $178,500.00/Yr."`-shaped). Both are AMD's conventions; `tags2`/`tags3` are custom
+  tags another Jibe tenant may use for something else. The pay parse only accepts that exact
+  money shape in one currency, so a different use leaves no pay line rather than a wrong one.
+  Not read yet: `employment_type` (29 `TEMPORARY`, 6 `PART_TIME`) and `tags1` (Yes/No, meaning
+  unknown).
+  - A second tenant, PepsiCo (`www.pepsicojobs.com`, 431 rows of one search), confirms neither
+    rule misfires: its `tags2` is a date and `tags3` a job family (0 pay lines; its pay is in
+    the description, which `ParsePay` reads), and its `location_name` is dash-separated
+    (`Neu-Isenburg Home Office-DEU`), so its home-office roles are missed, never mis-flagged.
+    Its rows have no `client_code`, and 190 of 431 ids are Paradox ids (`P1-6635769-1`), which
+    the digits-only id check refused, failing the whole board; ids are now any
+    `[A-Za-z0-9_-]` segment up to 64 characters, de-duplicated case-insensitively as keys are.
+    Its `tags1` holds recruiter names: personal data, never to be read.
+
+- **Live audit of the search-site sources (2026-10-20).** Fixed on branch `sources-live-audit`:
+  - Workday: `jobPostingInfo.additionalLocations` was not read, so multi-location postings
+    (9 of 20 NVIDIA, 7 of 20 Intel listing rows) kept their primary place only, and NVIDIA
+    JR2021784's only remote place (`US, CA, Remote`) was lost; neither tenant sends
+    `remoteType`. `Location` now joins them (at most 20). `timeType` now leads as a role
+    line (below). Unread: the `workerSubType` listing facet (fixed-term intern/contract).
+  - Apple: a multi-location posting has one Pay & Benefits footer per location with different
+    ranges (200688031: $175,000–$308,500 San Diego/Seattle, $184,700–$324,800 Cupertino), and
+    the adapter read the first footer only. It now leads with a pay line holding the envelope
+    of the US footers' base-pay sentences (the body is unchanged). Metro locations with no
+    city (`San Francisco Bay Area`) keep their name. Unread: `jobsData.type`, `PIPE` on 12 of
+    15 live details including recent ones; "evergreen pipeline" is an inferred meaning, so it
+    is not put in front of the decision model.
+  - Eightfold: Microsoft marks remote roles only in `efcustomTextWorkSite`
+    (`0 days / week in-office – remote`) while `workLocationOption` says `onsite`; both are
+    now read. Qualcomm's `locationFlexibility` (`flexible_within_country`) is unread, meaning
+    unverified. Qualcomm's search answered 429 with no `Retry-After` on 4 of 6 requests after
+    an unspaced burst; Eightfold is now paced (below), at a spacing that is a guess because
+    the tolerated rate was never measured. Eightfold's and Apple's own `MaxPostings` are 200
+    (Amazon 500, Google 20 per term; `srcutil.MaxPostings` 5000 is only the shared default),
+    so broad searches (Microsoft "machine learning" 338, Qualcomm 365, Apple "LLM" 362) fail
+    those boards by design and need a narrower search or location filter.
+  - Google: a remote role names only states in its locations; field 18 opens with
+    `Remote location(s):` (3 of 3 `has_remote=true` results, 0 of 92 others) and now sets
+    `Remote`. `has_remote` is not a board filter key (a contract change); fields 20 (1–4,
+    likely level) and 11 are unread.
+  - `jobinsight.ParsePay`: (1) a not-pay word in a finished sentence before a range no longer
+    vetoes it. Every Google posting's "…relevant education or training.\nUS: $188000 -
+    $274000 (USD)" read as no pay (0 of 16; 95 of 95 after); a pay word there still names a
+    lone amount. (2) A code before a symbol (`CAD $114,400 - CAD $203,900`, Microsoft
+    Montreal) read as USD; the code now wins. (3) Every reader of a posting's pay (digest,
+    `vani jobs`) goes through `jobinsight.PostingPay`, which gives a bare `$` the currency of
+    the posting's places when they all name one dollar country (Canada, Australia, New
+    Zealand, Singapore); an explicit code still wins. A province alone ("Markham, ON") or a
+    mixed remote scope stays USD. (4) TWD, MYR, CNY, KRW, RON, RSD and SAR are read: AMD's
+    1242 pay lines went from 1068 read to 1241. The Armenian dram is left out (its code is
+    AMD's name). The Mac app's currency picker is pinned to `PayCurrencies` by
+    `TestSwiftPayCurrenciesMatch`.
+  - Amazon: no change. Pay is in `preferred_qualifications` text and `ParsePay` read 338 of
+    338; `is_intern`, `is_manager` and `university_job` were null in all 768 rows, so the
+    description's role flags never fire. `optional_search_labels`' `amazon-cleared-jobs`
+    (14 of 768) now leads as "security clearance" in the role line.
+  - Shared source plumbing: `srcutil.Pacer` spaces one board's requests within a total wait
+    budget (Jibe 5 s / 15 min from AMD's Crawl-delay; Eightfold 2 s / 15 min). `GetJSON`
+    retries a 429/503 without `Retry-After` after 5 s, 15 s and 30 s, then fails the board.
+    Adapters' structured role facts lead as one `srcutil.RoleLine` in one employment-type
+    wording (Jibe `employment_type`, Workday `timeType`, Eightfold role/employment/work site,
+    Amazon schedule and clearance), stripped by `SourceText` like pay lines, so a board
+    changing only a role field re-renders a stored posting rather than re-triaging it (the
+    one-time move of Eightfold's and Amazon's old lead lines cost nothing: the ledger was
+    empty). Every API adapter's title goes through `srcutil.Title` (entities, whitespace,
+    300-byte cap).
+  - Stored postings: reconcile now refreshes a stored posting whose listing changed only in
+    location, remote flag, department, URL, apply URL or company (event reason `refreshed`;
+    status and annotations kept). An empty listed field never blanks a stored one, and a
+    partial (extension) listing may set the remote flag but never clear it. A title-only
+    change is still `Unchanged`: triage, the title drop rules and fallback keys read titles,
+    so refreshing one under a standing triage would be wrong, and re-triaging title edits is
+    a spending decision left open. The same rules now govern the re-rendered, reappeared and
+    re-dated paths, which before stored the listing wholesale (blanking stored fields and
+    moving a stored posted date). The run record's per-board counts now carry `refreshed`,
+    `kept`, `redated` and `revived`.
+
+- **A run without a decision backend lists its boards (2026-10-20).** Before, `run-once` and the
+  daemon failed before reading any board when no backend could be built (no API key), which
+  left the Jobs list empty. Now they list the boards and run the engine's own stages (drop
+  rules, near-duplicates), record the postings live, then fail with advance stop
+  `no_backend`, so the run never records as finished; `--list-only` passes. The app's notice
+  says the postings are in Jobs. The inbox poll (advance only) still refuses without a
+  backend.
+- **The CLI's default config and state are not the app's (2026-10-20).** The app runs `vani`
+  on `.state/config.json` and `.state/state` (its `draft-settings.json`); a `vani` started
+  without `VANI_CONFIG`/`VANI_STATE_DIR` uses `~/Library/Application Support`, a near-default
+  pair nothing reads. Resolved the same day: `vani` now refuses to run when the app's settings
+  name another pair than the one it defaulted to, and `vani status` says where each path came
+  from; every `vani` reads the OpenRouter key from the Keychain item `openrouter-api-key` when
+  the variable is unset (`VANI_NO_KEYCHAIN=1` opts out). The owner moved `.state/` to the
+  default location the same day, so the app and a bare `vani` now share one pair. Still open:
+  Claude keys for scheduled runs, signing `vani`
+  so the Keychain grant survives rebuilds, and installing a daemon (the schedule never fires
+  without one). `docs/RUNTIME.md` maps every entry point to its config, state and keys.
+- **`cmd/vani/jobscmd.go:102` still names `jobinsight.ParsePay`** in a comment; it reads
+  `PostingPay` now. Left because that file was mid-edit in another session.
 
 - **Workday serves at most 2000 rows of one query, then page 1 again (seen live, NVIDIA,
   2026-10-19).** `nvidia/NVIDIAExternalCareerSite` answers `total: 2000` while its facets count
@@ -1068,7 +1170,8 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     - Built after the owner's go-ahead (2026-10-20): `internal/decide/kbmatch` and `vani kbmatch`.
       A Vani-local `career.kb_match` task (like `jdreasons`: no change to the shared `decide`
       module, the pinned `jdtriage/fixture.json` or Lappi), answered by the llm backend by
-      default, or by the decision model (Jev, `kbmatch.backend: "jev"`) when asked. Jev is not
+      default, or by the Liquid decision model (`kbmatch.backend: "liquid"`; the earlier value
+      `"jev"` still loads with a deprecation warning) when asked. The decision model is not
       the default because `role_fit` is already its read and this one should be independent.
       Answers live in `kbmatch.json` beside the ledger, not as ledger annotations, so a run needs
       no ledger lock, `internal/pipeline` is untouched and the daemon is unaffected. Score gains a
@@ -1085,7 +1188,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
         `llm.triage_model`, then `llm.model`. The dry run prices the chosen model at Anthropic's
         published rates (`anthropic.PriceOf`), as the daily cap meters it; the configured prices
         apply only to the configured model and to a model the table does not know.
-      - `kbmatch.backend: "jev"` (or `--backend jev`) asks the decision model over OpenRouter
+      - `kbmatch.backend: "liquid"` (or `--backend liquid`; `jev` is the deprecated name) asks the decision model over OpenRouter
         with option descriptions and the same question text, from the OpenRouter cap. Its
         probability is kept. Tested over a local server, not against OpenRouter.
       - The embedding model picks, per posting, the eight knowledge-base lines closest to it
@@ -1100,7 +1203,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
         bank, target and posting text), so the Jobs list needs no embedding model to find it; the
         entry records `mode` and `backend` for audit.
     - Not exercised: any provider call. The tests use a fake `decide.Decider` and a local
-      server for Jev. This environment holds neither `ANTHROPIC_API_KEY` nor
+      server standing in for the decision model. This environment holds neither `ANTHROPIC_API_KEY` nor
       `OPENROUTER_API_KEY`, so `vani kbmatch run` stopped at "no credential for anthropic" on the
       first real attempt, before any request; the prompt's wording (`kbmatch.Prompt`) and the
       reply parse against a real model are unverified. First real run: `vani kbmatch run
@@ -1135,7 +1238,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
   and Q4 of one year double-counts. Re-importing identical bytes replaces the earlier import
   (keyed by the file's sha256).
 - `decide.DailyCap` is safe within one process only; the daemon and a manual `run-once` at the
-  same moment could under-count a Jev charge.
+  same moment could under-count a decision-model (OpenRouter) charge.
 - DevPrism reports no aggregate score; the rank is must-have coverage until a better definition
   exists.
 - **Vani Apply Mac app, unverified on a live system** (`macos/README.md`):
@@ -1166,7 +1269,7 @@ Each was decided on evidence; the cards' other criteria were built and tested.
     launcher that injects it (the `manvi` shell function covers only `manvi`). Running them needs
     `ANTHROPIC_API_KEY` exported for that command, or a `vani` shell function like the `manvi` one.
     A launchd agent would need its own injection.
-  - **First-run cost.** With no Jev and no title prefilter, every live posting goes to Opus for
+  - **First-run cost.** With no decision model and no title prefilter, every live posting goes to Opus for
     triage, at roughly $0.01 to $0.03 each. On 9 boards the $10/day cap runs out on day one. Postings
     the cap refuses now stay `live` and are retried the next day (`ErrTriageUnavailable`). Before this
     change they became `unsure` and were never triaged. The title prefilter (`title_signals.read`,

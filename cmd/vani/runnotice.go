@@ -41,6 +41,8 @@ func failureNotice(rec runRecord) (title, body string, ok bool) {
 		return "Vani stopped", "The ledger could not be written safely, so Vani stopped. See vani's log.", true
 	case rec.Cause == causeDigestHeldBack:
 		return "Vani digest held back", "Your Jobs marks could not be read; see vani's log", true
+	case stopped == stopNoBackend:
+		return "Vani run failed", "No decision backend is set up, so the boards were listed but nothing was triaged; the postings are in Jobs." + seeStatus, true
 	case stopped == stopUnreadStreak || stopped == stopNoneRead:
 		return "Vani run failed", "No decision backend could read the postings; they stay live for the next run." + seeStatus, true
 	case stopped == stopFailStreak || stopped == stopNoneAdvanced:

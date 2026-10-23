@@ -254,7 +254,7 @@ func (d clientDoer) Do(ctx context.Context, req *http.Request) (*http.Response, 
 	return d.c.Do(req.WithContext(ctx))
 }
 
-// jevAnswer is a Jev response answering every triage slot with its first
+// jevAnswer is a decision-model response (decide/jev wire shape) answering every triage slot with its first
 // option at cost usd.
 func jevAnswer(usd float64) string {
 	var b strings.Builder
@@ -269,7 +269,7 @@ func jevAnswer(usd float64) string {
 	return b.String()
 }
 
-// jevRunner is a Runner whose only triage backend is a real Jev client
+// jevRunner is a Runner whose only triage backend is a real decide/jev client
 // against srv, behind a real Router; scoring and notes are switched off so
 // every request srv sees is one posting's triage.
 func jevRunner(t *testing.T, l ledger.Ledger, srv *httptest.Server, spend decide.Spend) *pipeline.Runner {

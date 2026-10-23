@@ -215,8 +215,10 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
 
     /// The fixture's seniority options, most junior first.
     public static let seniorityOptions = ["intern_or_new_grad", "mid", "senior", "staff_plus", "manager"]
-    /// The currencies Vani reads pay in (jobinsight.PayCurrencies).
-    public static let payCurrencies = ["USD", "CAD", "EUR", "GBP", "AUD", "CHF", "SGD", "NZD", "INR", "JPY", "SEK", "NOK", "DKK", "PLN"]
+    /// The currencies Vani reads pay in (jobinsight.PayCurrencies; the Go test
+    /// TestSwiftPayCurrenciesMatch fails when this list drifts from it).
+    public static let payCurrencies = ["USD", "CAD", "EUR", "GBP", "AUD", "CHF", "SGD", "NZD", "INR", "JPY", "SEK", "NOK", "DKK", "PLN",
+                                       "CNY", "TWD", "KRW", "MYR", "RON", "RSD", "SAR"]
 
     /// One place a posting names: an area and a US state code, or an area and
     /// what followed it (a country or province) as the board wrote it.

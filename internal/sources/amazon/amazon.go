@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"net/url"
 	"regexp"
 	"slices"
@@ -79,7 +78,15 @@ type job struct {
 	IsIntern                *bool    `json:"is_intern"`
 	IsManager               *bool    `json:"is_manager"`
 	JobScheduleType         string   `json:"job_schedule_type"`
+	// OptionalSearchLabels are amazon.jobs' own tags ("amazon.artificial-
+	// intelligence", "aws.team-annapurna-labs"); clearedLabel among them
+	// marks a role that needs a security clearance.
+	OptionalSearchLabels []string `json:"optional_search_labels"`
 }
+
+// clearedLabel is the search label of amazon.jobs' cleared roles (20 of 814
+// rows across five searches on 2026-10-20).
+const clearedLabel = "amazon-cleared-jobs"
 
 func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
 	if err := srcutil.CheckBoard(b, posting.Amazon); err != nil {
@@ -202,7 +209,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 	if err != nil {
 		return posting.Posting{}, err
 	}
-	title := strings.TrimSpace(html.UnescapeString(j.Title))
+	title := srcutil.Title(j.Title)
 	if title == "" {
 		return posting.Posting{}, fmt.Errorf("%w: empty title", ErrShape)
 	}
@@ -274,8 +281,10 @@ func remote(j job) bool {
 	return false
 }
 
-// description is the posting's sections as text, led by Amazon's own role
-// flags (intern, manager, schedule) because seniority decides fit.
+// description is the posting's sections as text, led by a srcutil.RoleLine of
+// Amazon's own role flags (intern, manager, schedule, clearance) because
+// seniority and clearance decide fit. is_intern and is_manager were null on
+// all 814 rows seen live on 2026-10-20; titles still say so.
 func description(j job) string {
 	var flags []string
 	if j.IsIntern != nil && *j.IsIntern {
@@ -284,13 +293,12 @@ func description(j job) string {
 	if j.IsManager != nil && *j.IsManager {
 		flags = append(flags, "people manager")
 	}
-	if s := strings.TrimSpace(j.JobScheduleType); s != "" {
-		flags = append(flags, s)
+	flags = append(flags, srcutil.EmploymentType(j.JobScheduleType))
+	if slices.ContainsFunc(j.OptionalSearchLabels, func(l string) bool { return strings.EqualFold(strings.TrimSpace(l), clearedLabel) }) {
+		flags = append(flags, "security clearance")
 	}
+	lead, room := srcutil.Lead(srcutil.RoleLine(flags...))
 	var parts []string
-	if len(flags) > 0 {
-		parts = append(parts, "<p>Role: "+html.EscapeString(strings.Join(flags, ", "))+"</p>")
-	}
 	for _, sec := range []struct{ head, body string }{
 		{"Description", j.Description},
 		{"Basic Qualifications", j.BasicQualifications},
@@ -300,5 +308,5 @@ func description(j job) string {
 			parts = append(parts, "<h3>"+sec.head+"</h3>"+sec.body)
 		}
 	}
-	return htmltext.Text(strings.Join(parts, ""), srcutil.MaxDescription)
+	return lead + htmltext.Text(strings.Join(parts, ""), room)
 }

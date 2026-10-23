@@ -85,6 +85,8 @@ extension RunNotice {
             break
         }
         switch run.advance?.stopped {
+        case .noBackend?:
+            return ("Vani run failed", "No decision backend is set up, so the boards were listed but nothing was triaged; the postings are in Jobs." + seeStatus)
         case .unreadStreak?, .noneRead?:
             return ("Vani run failed", "No decision backend could read the postings; they stay live for the next run." + seeStatus)
         case .failStreak?, .noneAdvanced?:

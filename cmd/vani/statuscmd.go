@@ -65,6 +65,17 @@ type statusJSON struct {
 	// daemon holding the ledger, and is a manual run waiting for it.
 	Daemon     daemonFacet     `json:"daemon"`
 	RunRequest runRequestFacet `json:"run_request"`
+	// Paths is additive: where the config and state dir came from and how
+	// they compare with the Mac app's settings. Absent when unknown.
+	Paths *pathsJSON `json:"paths,omitempty"`
+}
+
+// pathsJSON is config.Resolved for status --json.
+type pathsJSON struct {
+	Config      string `json:"config"`
+	ConfigFrom  string `json:"config_from"`
+	StateFrom   string `json:"state_dir_from"`
+	AppSettings string `json:"app_settings"`
 }
 
 // daemonFacet is daemon.json as checked against the process table. Running is
@@ -185,6 +196,9 @@ func (e *env) statusReport() error {
 func (e *env) buildStatus(ctx context.Context) statusJSON {
 	at := now()
 	out := statusJSON{Version: statusVersion, GeneratedAt: at.UTC(), StateDir: e.stateDir}
+	if p := e.paths; p.ConfigFrom != "" {
+		out.Paths = &pathsJSON{Config: e.configPath, ConfigFrom: p.ConfigFrom, StateFrom: p.StateFrom, AppSettings: p.AppSettings}
+	}
 	cfg, cfgErr := e.loadConfig()
 	if cfgErr != nil {
 		out.Config = configFacet{facet: unknown(cfgErr)}

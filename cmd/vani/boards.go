@@ -82,7 +82,8 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 }
 
 func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
-	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Unchanged: s.Unchanged,
+	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
+		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
 		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, Invalid: s.Invalid}
 }
 

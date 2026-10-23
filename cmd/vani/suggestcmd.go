@@ -131,6 +131,7 @@ func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 			Name:         w.cfg.Decide.OpenRouterName(),
 			Model:        w.cfg.Decide.OpenRouterModel,
 			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
+			Getenv:       w.openRouterGetenv,
 			Descriptions: fieldtriage.Descriptions(),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,

@@ -365,6 +365,27 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	for _, s := range statuses {
 		fmt.Fprintf(e.stdout, "  %-10s %d\n", s, by[s])
 	}
-	fmt.Fprintf(e.stdout, "schedule: %s %s\nstate dir: %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone, e.stateDir)
+	fmt.Fprintf(e.stdout, "schedule: %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
+	e.printPaths()
 	return nil
+}
+
+// printPaths writes the config and state dir this process uses, and, when it
+// resolved them itself, where each came from and how they compare with the
+// Mac app's settings.
+func (e *env) printPaths() {
+	from := func(src, envVar string) string {
+		switch src {
+		case config.FromEnv:
+			return " (" + envVar + ")"
+		case config.FromDefault:
+			return " (default)"
+		}
+		return ""
+	}
+	fmt.Fprintf(e.stdout, "config: %s%s\nstate dir: %s%s\n", e.configPath, from(e.paths.ConfigFrom, "VANI_CONFIG"),
+		e.stateDir, from(e.paths.StateFrom, "VANI_STATE_DIR"))
+	if e.paths.AppSettings != "" {
+		fmt.Fprintf(e.stdout, "app settings: %s\n", e.paths.AppSettings)
+	}
 }

@@ -174,8 +174,11 @@ func main() {
 type env struct {
 	configPath string
 	stateDir   string
-	stdout     io.Writer
-	stderr     io.Writer
+	// paths is how configPath and stateDir were resolved (status shows it);
+	// zero when the env was built some other way.
+	paths  config.Resolved
+	stdout io.Writer
+	stderr io.Writer
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
@@ -185,12 +188,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usageText)
 		return exitUsage
 	}
-	cfgPath, stateDir, err := config.DefaultPaths()
+	paths, err := config.ResolveDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "vani: %v\n", err)
 		return exitRuntime
 	}
-	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: stdout, stderr: stderr}
+	if paths.Warning != "" {
+		fmt.Fprintf(stderr, "vani: warning: %s\n", paths.Warning)
+	}
+	e := &env{configPath: paths.ConfigPath, stateDir: paths.StateDir, paths: paths, stdout: stdout, stderr: stderr}
 
 	var cmdErr error
 	switch args[0] {

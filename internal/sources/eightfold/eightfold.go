@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"net/url"
 	"regexp"
 	"slices"
@@ -39,6 +38,17 @@ const (
 	// 100 still returned 10 on 2026-10-19).
 	pageSize = 10
 	maxPages = MaxPostings/pageSize + 2
+	// paceEvery spaces a board's requests. Neither Microsoft's nor
+	// Qualcomm's robots.txt sets a Crawl-delay (2026-10-20); Qualcomm's
+	// search answered 429 with no Retry-After after a burst of about ten
+	// unspaced requests, while its details and every Microsoft request
+	// answered. The rate it tolerates was not measured: 2 s is a guess that
+	// keeps a full board (21 search pages and 200 details, 221 requests) to
+	// 7.4 min of waiting, and srcutil's backoff gives a 429 50 s to lift.
+	paceEvery = 2 * time.Second
+	// paceBudget bounds a board's waiting, as page.BoardTimeout bounds a
+	// careers page: 450 requests at paceEvery, twice a full board.
+	paceBudget = 15 * time.Minute
 )
 
 // ErrShape is a response whose layout is not the one this source knows.
@@ -53,10 +63,13 @@ var (
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	// wait spaces requests (srcutil.Pacer.Sleep); a field only so tests need
+	// not wait in real time.
+	wait func(ctx context.Context, d time.Duration) error
 }
 
 // New returns the Eightfold source, sending requests through d.
-func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now, wait: srcutil.Sleep} }
 
 func (*source) ATS() posting.ATS { return posting.Eightfold }
 
@@ -110,10 +123,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("eightfold %q: %w", b.Token, err)
 	}
 	base := "https://" + host + "/api/pcsx/"
+	pace := &srcutil.Pacer{Every: paceEvery, Budget: paceBudget, Sleep: s.wait}
 	var ids []string
 	have := map[string]bool{}
 	for _, term := range terms {
-		got, err := s.search(ctx, base, domain, term, b.Filters)
+		got, err := s.search(ctx, pace, base, domain, term, b.Filters)
 		if err != nil {
 			return nil, fmt.Errorf("eightfold %q: search %q: %w", b.Token, term, err)
 		}
@@ -134,7 +148,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, err := s.detail(ctx, base, host, domain, id, b, seen)
+		p, err := s.detail(ctx, pace, base, host, domain, id, b, seen)
 		if err != nil {
 			// A partial listing would age healthy postings as absent.
 			return nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, id, err)
@@ -158,7 +172,10 @@ func checkFilters(f map[string][]string) error {
 }
 
 // get fetches one PCSX endpoint and returns its data, checking the envelope.
-func (s *source) get(ctx context.Context, u string, v any) error {
+func (s *source) get(ctx context.Context, pace *srcutil.Pacer, u string, v any) error {
+	if err := pace.Wait(ctx); err != nil {
+		return err
+	}
 	var env envelope
 	if err := srcutil.GetJSON(ctx, s.d, u, &env); err != nil {
 		return err
@@ -190,7 +207,7 @@ func searchURL(base, domain, term string, filters map[string][]string, start int
 }
 
 // search pages one term to its count; a count over the cap fails first.
-func (s *source) search(ctx context.Context, base, domain, term string, filters map[string][]string) ([]string, error) {
+func (s *source) search(ctx context.Context, pace *srcutil.Pacer, base, domain, term string, filters map[string][]string) ([]string, error) {
 	var ids []string
 	have := map[string]bool{}
 	count := -1
@@ -199,7 +216,7 @@ func (s *source) search(ctx context.Context, base, domain, term string, filters 
 			return nil, err
 		}
 		var sd searchData
-		if err := s.get(ctx, searchURL(base, domain, term, filters, len(ids)), &sd); err != nil {
+		if err := s.get(ctx, pace, searchURL(base, domain, term, filters, len(ids)), &sd); err != nil {
 			return nil, err
 		}
 		if sd.Count == nil || *sd.Count < 0 {
@@ -234,13 +251,13 @@ func (s *source) search(ctx context.Context, base, domain, term string, filters 
 	return nil, fmt.Errorf("%w: listing did not end within %d pages", ErrShape, maxPages)
 }
 
-func (s *source) detail(ctx context.Context, base, host, domain, id string, b sources.Board, seen time.Time) (posting.Posting, error) {
+func (s *source) detail(ctx context.Context, pace *srcutil.Pacer, base, host, domain, id string, b sources.Board, seen time.Time) (posting.Posting, error) {
 	q := url.Values{}
 	q.Set("position_id", id)
 	q.Set("domain", domain)
 	q.Set("hl", "en")
 	var d details
-	if err := s.get(ctx, base+"position_details?"+q.Encode(), &d); err != nil {
+	if err := s.get(ctx, pace, base+"position_details?"+q.Encode(), &d); err != nil {
 		return posting.Posting{}, err
 	}
 	if d.ID.String() != id {
@@ -250,7 +267,7 @@ func (s *source) detail(ctx context.Context, base, host, domain, id string, b so
 	if err != nil {
 		return posting.Posting{}, err
 	}
-	title := strings.TrimSpace(html.UnescapeString(d.Name))
+	title := srcutil.Title(d.Name)
 	if title == "" {
 		return posting.Posting{}, fmt.Errorf("%w: empty name", ErrShape)
 	}
@@ -270,7 +287,7 @@ func (s *source) detail(ctx context.Context, base, host, domain, id string, b so
 		Title:       title,
 		Location:    joinUnique(d.Locations),
 		Department:  strings.TrimSpace(d.Department),
-		Remote:      strings.EqualFold(d.WorkLocationOption, "remote"),
+		Remote:      remote(d),
 		URL:         u,
 		Description: description(d),
 		SeenAt:      seen,
@@ -279,6 +296,24 @@ func (s *source) detail(ctx context.Context, base, host, domain, id string, b so
 		p.PostedAt = time.Unix(*d.PostedTs, 0).UTC()
 	}
 	return p, nil
+}
+
+// remote reports whether the position is remote: workLocationOption says so,
+// or a work-site value ends in a "remote" part. Microsoft marks remote roles
+// only in the latter: live on 2026-10-20 position 1970393557019355 had
+// workLocationOption "onsite" and work site "0 days / week in-office – remote",
+// one of the six work-site values its search offers.
+func remote(d details) bool {
+	if strings.EqualFold(strings.TrimSpace(d.WorkLocationOption), "remote") {
+		return true
+	}
+	for _, v := range d.WorkSite {
+		parts := strings.FieldsFunc(v, func(r rune) bool { return r == '–' || r == '—' || r == '-' })
+		if len(parts) > 0 && strings.EqualFold(strings.TrimSpace(parts[len(parts)-1]), "remote") {
+			return true
+		}
+	}
+	return false
 }
 
 func joinUnique(ss []string) string {
@@ -291,20 +326,16 @@ func joinUnique(ss []string) string {
 	return strings.Join(out, "; ")
 }
 
-// description is the job description as text, led by the tenant's role
-// fields where it has them (Microsoft: role type, employment type, work site).
+// description is the job description as text, led by a srcutil.RoleLine of
+// the tenant's role fields where it has them (Microsoft: role type,
+// employment type, work site).
 func description(d details) string {
 	var flags []string
-	for _, vs := range [][]string{d.RoleType, d.EmploymentType, d.WorkSite} {
-		for _, v := range vs {
-			if v = strings.TrimSpace(v); v != "" && !slices.Contains(flags, v) {
-				flags = append(flags, v)
-			}
-		}
+	flags = append(flags, d.RoleType...)
+	for _, v := range d.EmploymentType {
+		flags = append(flags, srcutil.EmploymentType(v))
 	}
-	lead := ""
-	if len(flags) > 0 {
-		lead = "<p>Role: " + html.EscapeString(strings.Join(flags, ", ")) + "</p>"
-	}
-	return htmltext.Text(lead+d.JobDescription, srcutil.MaxDescription)
+	flags = append(flags, d.WorkSite...)
+	lead, room := srcutil.Lead(srcutil.RoleLine(flags...))
+	return lead + htmltext.Text(d.JobDescription, room)
 }

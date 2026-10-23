@@ -1,0 +1,73 @@
+{
+  "totalCount": 3,
+  "count": 3,
+  "jobs": [
+    {
+      "data": {
+        "req_id": "476135",
+        "slug": "476135",
+        "title": "SR.Merchandiser",
+        "full_location": "Hassa, Saudi Arabia",
+        "location_name": "Alhassa-SAU",
+        "category": [
+          " Sales"
+        ],
+        "posted_date": "2026-09-24T11:51:00+0000",
+        "update_date": "2026-10-06T13:59:11+0000",
+        "apply_url": "https://globalflcareers-pepsico.icims.com/jobs/476135/login",
+        "tags2": [
+          "22.10.2026"
+        ],
+        "tags3": [
+          "Frontline"
+        ],
+        "meta_data": {
+          "canonical_url": "https://www.pepsicojobs.com/jobs/476135?lang=en-us"
+        },
+        "description": "<p>Overview We Are PepsiCo PepsiCo products are enjoyed by consumers more than one billion times a day in more than 200 countries and territories around the world. PepsiCo generated more</p>"
+      }
+    },
+    {
+      "data": {
+        "req_id": "P1-6635769-1",
+        "slug": "P1-6635769-1",
+        "title": "Merchandiser",
+        "full_location": "Olathe, KS",
+        "location_name": "KS-Olathe-1512-PEC-KS272",
+        "category": [
+          " Sales & Merchandising"
+        ],
+        "posted_date": "2026-09-02T00:00:00+0000",
+        "update_date": "2026-10-05T16:40:25+0000",
+        "apply_url": "https://olivia.paradox.ai/co/PepsiCo10/Job?job_id=P1-6635769-1&posting_type=1",
+        "tags2": null,
+        "tags3": null,
+        "meta_data": {
+          "canonical_url": "https://www.pepsicojobs.com/jobs/P1-6635769-1?lang=en-us"
+        },
+        "description": "<p>Quick Look Pay: $22.50 per hour Location: Olathe, KS Work Days: Working 5 days per week with 2 days off that vary. Start Time: 2:00 am and 6:00 am (Average</p>"
+      }
+    },
+    {
+      "data": {
+        "req_id": "P1-7129034-1",
+        "slug": "P1-7129034-1",
+        "title": "Merchandiser - Beverages",
+        "full_location": "Abilene, TX",
+        "location_name": "TX-Abilene-650-PBC-TX10017",
+        "category": [
+          " Sales & Merchandising"
+        ],
+        "posted_date": "2026-10-06T00:00:00+0000",
+        "update_date": "2026-10-08T04:40:19+0000",
+        "apply_url": "https://olivia.paradox.ai/co/PepsiCo10/Job?job_id=P1-7129034-1&posting_type=1",
+        "tags2": null,
+        "tags3": null,
+        "meta_data": {
+          "canonical_url": "https://www.pepsicojobs.com/jobs/P1-7129034-1?lang=en-us"
+        },
+        "description": "<p>Quick Look Pay: $19.95 per hour Location: Abilene, TX Work Days: Variable work schedule, 2 days off per week Start Time: 2am-5am End Time: 10am-12pm Role will be servicing Snyder</p>"
+      }
+    }
+  ]
+}

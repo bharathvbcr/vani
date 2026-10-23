@@ -123,6 +123,7 @@ func TestRunnerLoadsEmployerViewAndWarnsOnRebuild(t *testing.T) {
 	_, stateDir := setup(t)
 	mustCode(t, 0, "employer", "import", writeCSV(t, "hd.csv", testIPEDS))
 	cfg := config.Default()
+	cfg.LLM = testGeminiLLM
 	cfg.Decide.OpenRouterModel = ""
 	cfg.EmployerPreferences = []string{"cap_exempt_likely"}
 	if err := cfg.Validate(); err != nil {

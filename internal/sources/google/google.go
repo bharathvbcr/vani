@@ -143,6 +143,7 @@ type job struct {
 	locations        []string
 	about, duties, q string // HTML
 	published        time.Time
+	remote           bool // fLocationNote names remote locations
 }
 
 const dsMarker = "AF_initDataCallback({key: 'ds:1'"
@@ -211,7 +212,15 @@ const (
 	// that went live today; field 14 trails this one by about a second.
 	// Whether an edit moves this field is not known.
 	fPublished = 13
+	// fLocationNote is [null, html]: empty, the offices an applicant may
+	// pick from, or for a remote role "<b>Remote location(s): Colorado,
+	// USA.</b>" (2026-10-20: all 3 has_remote=true results in the US said
+	// so, none of 92 other results did; their fLocations name only states).
+	fLocationNote = 18
 )
+
+// remoteNote is the phrase fLocationNote opens a remote role's places with.
+var remoteNote = regexp.MustCompile(`(?i)\bremote locations?:`)
 
 // Bounds on a published time: anything outside is a misread field.
 var (
@@ -254,8 +263,19 @@ func decodeJob(raw json.RawMessage) (job, error) {
 			return job{}, fmt.Errorf("field %d: %v", fPublished, err)
 		}
 	}
+	if len(f) > fLocationNote {
+		note, err := htmlPair(f[fLocationNote])
+		if err != nil {
+			return job{}, fmt.Errorf("field %d: %v", fLocationNote, err)
+		}
+		j.remote = remoteNote.MatchString(htmltext.Text(note, maxNote))
+	}
 	return j, nil
 }
+
+// maxNote bounds the location note read for the remote phrase; live notes
+// run to a few hundred bytes.
+const maxNote = 4 << 10
 
 // unixPair reads [seconds, nanos] (or null, or [seconds]) as a UTC time; null
 // is no time. A time before 2000 or after 2100 is a misread field.
@@ -353,7 +373,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		Key:        key,
 		ATS:        posting.Google,
 		Company:    company,
-		Title:      strings.TrimSpace(j.title),
+		Title:      srcutil.Title(j.title),
 		Location:   strings.Join(j.locations, "; "),
 		Department: j.team,
 		// The bare id URL serves the posting (checked 2026-10-19); the slug
@@ -362,6 +382,7 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		Description: htmltext.Text(strings.Join(desc, "<p></p>"), srcutil.MaxDescription),
 		PostedAt:    j.published,
 		SeenAt:      seen,
+		Remote:      j.remote,
 	}
 	for _, l := range j.locations {
 		if strings.Contains(strings.ToLower(l), "remote") {

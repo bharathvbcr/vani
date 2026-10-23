@@ -77,7 +77,7 @@ func TestValidateRules(t *testing.T) {
 		{"url on ats board", func(c *Config) { c.Watchlist[0].URL = "https://x.example" }, "page boards only"},
 		{"bad shadow", func(c *Config) { c.Decide.Shadow = "lappi" }, "decide.shadow"},
 		{"shadow llm without llm", func(c *Config) { c.LLM.Provider = ""; c.LLM.Model = ""; c.Decide.Shadow = "llm" }, "needs llm.provider"},
-		{"zero openrouter budget with openrouter", func(c *Config) { c.Decide.OpenRouterModel = "typesafe/jev-1.13"; c.Decide.DailyUSD.OpenRouter = 0 }, "daily_usd.openrouter must be above 0"},
+		{"zero openrouter budget with openrouter", func(c *Config) { c.Decide.OpenRouterModel = "liquid/d1-ultra"; c.Decide.DailyUSD.OpenRouter = 0 }, "daily_usd.openrouter must be above 0"},
 		{"zero llm budget with llm", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.Decide.DailyUSD.LLM = 0 }, "daily_usd.llm must be above 0"},
 		{"anthropic without prices", func(c *Config) { c.LLM = LLM{Provider: "anthropic", Model: "m"} }, "needs input_nano_usd_per_token"},
 		{"absurd price", func(c *Config) { c.LLM.InputNanoUSDPerToken = 2_000_000 }, "per-token price above"},
@@ -112,11 +112,11 @@ func TestValidateRules(t *testing.T) {
 				c.AgeNeutralCompanies[i] = "Company"
 			}
 		}, "age_neutral_companies has 65 entries, max 64"},
-		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "jev"`},
-		{"kbmatch jev without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchJev }, "needs decide.openrouter_model"},
+		{"kbmatch unknown backend", func(c *Config) { c.KBMatch.Backend = "gpt" }, `kbmatch.backend "gpt" must be "llm" or "liquid"`},
+		{"kbmatch liquid without openrouter", func(c *Config) { c.Decide.OpenRouterModel = ""; c.KBMatch.Backend = KBMatchLiquid }, "needs decide.openrouter_model"},
 		{"kbmatch model on jev", func(c *Config) {
 			c.Decide.OpenRouterModel = "m/x"
-			c.KBMatch = KBMatch{Backend: KBMatchJev, Model: "claude-haiku-5-5"}
+			c.KBMatch = KBMatch{Backend: KBMatchLiquid, Model: "claude-haiku-5-5"}
 		}, `applies to the "llm" backend only`},
 		{"kbmatch model without provider", func(c *Config) { c.LLM = LLM{}; c.KBMatch.Model = "claude-haiku-5-5" }, "kbmatch.model needs llm.provider"},
 		{"kbmatch model with space", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.KBMatch.Model = "a b" }, "kbmatch.model"},
@@ -366,9 +366,9 @@ func TestKBMatchSettingsRoundTripAndModel(t *testing.T) {
 		t.Errorf("round trip: model %q, triage %q, backend %q", got.KBMatchModel(), got.LLM.TriageModel, got.KBMatch.EffectiveBackend())
 	}
 	c.Decide.OpenRouterModel = "liquid/d1-ultra"
-	c.KBMatch = KBMatch{Backend: KBMatchJev}
+	c.KBMatch = KBMatch{Backend: KBMatchLiquid}
 	if err := Save(p, c); err != nil {
-		t.Fatalf("a jev kbmatch with openrouter configured should save: %v", err)
+		t.Fatalf("a liquid kbmatch with openrouter configured should save: %v", err)
 	}
 }
 

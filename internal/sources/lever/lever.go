@@ -117,7 +117,7 @@ func (lp lpost) posting(b sources.Board, seen time.Time) (posting.Posting, error
 		Key:         key,
 		ATS:         posting.Lever,
 		Company:     b.Company,
-		Title:       strings.TrimSpace(lp.Text),
+		Title:       srcutil.Title(lp.Text),
 		Location:    strings.TrimSpace(lp.Categories.Location),
 		Remote:      lp.WorkplaceType == "remote",
 		Department:  strings.TrimSpace(lp.Categories.Team),

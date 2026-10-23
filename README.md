@@ -9,6 +9,12 @@ watch, drops dead and duplicate postings without spending anything, triages the 
 decision model, ranks them against your career knowledge base with DevPrism's deterministic
 resume tools, and writes a Markdown digest.
 
+Models, one role each: the **decision model** is Liquid (`liquid/d1-ultra` over OpenRouter;
+optionally Liquid d1-3B on this Mac through llama.cpp as a shadow); **embeddings** run in-process
+on Metal through Tessl (EmbeddingGemma, a `-tags tessl` build); **Claude** is reached through
+Manvi, which Vani imports as its LLM orchestrator. Jarvis is a sibling Manvi client with no code
+link to Vani. Config, state and keys per entry point: [`docs/RUNTIME.md`](docs/RUNTIME.md).
+
 Plan: [`docs/PLAN.md`](docs/PLAN.md). Follow-ups: [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
 
 ## Ingestion & Pipeline Architecture
@@ -39,8 +45,8 @@ flowchart TD
 
         subgraph Triage["3. Decision & Triage"]
             TR["career.jd_triage\n(role_fit, sponsorship, work_mode, seniority)"]
-            JEV["OpenRouter model (d1-ultra)"]
-            LLM["LLM via Manvi (Gemini / Claude)"]
+            JEV["Liquid decision model\n(d1-ultra over OpenRouter)"]
+            LLM["LLM via Manvi (Claude)"]
             LAP["Lappi (Local socket, free)"]
             SHADOW["Shadow & Eval (vani label / eval)"]
             DROP_RULE{"Drop Rule Triggered?"}
@@ -121,7 +127,10 @@ stateDiagram-v2
   Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`),
   Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites
   such as AMD's (`jb`, token the client code `amd`, host `careers.amd.com`; search optional, pages
-  of 100 spaced 5 s apart as its robots.txt asks). All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
+  of 100 spaced 5 s apart as its robots.txt asks). Eightfold requests are spaced 2 s apart; both
+  spacings run through one `srcutil.Pacer` with a 15-minute budget per board. A search site
+  fails a board that reports more postings than its cap, rather than list part of it: Eightfold
+  and Apple 200, Amazon 500, Google 20 per search term, Workday and the rest 5000. All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
   block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
   `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
   authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
@@ -158,7 +167,8 @@ stateDiagram-v2
   states none), its link, must-have coverage, triage answers and the note. Every posting field is
   escaped so it cannot add links, headings or lines.
 - **Decision clients** live in the shared module `~/Code/devtools/decide` (types, router, budget
-  caps, the Jev and Lappi clients). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
+  caps, and the OpenRouter and Lappi clients; the OpenRouter client's package is `decide/jev`, a
+  name kept from before the decision model became Liquid). The question itself is [`internal/decide/jdtriage/fixture.json`](internal/decide/jdtriage/fixture.json):
   task, exact question text, context layout and options, plus one single-slot Lappi family per
   slot with its own exact question (Lappi trains one slot per example). The OpenRouter model and the LLM get all
   slots in one request; Lappi gets one request per slot, and an absent or hung agent costs one
@@ -226,7 +236,7 @@ flowchart TD
   `task_not_trained` refusal stops Vani asking for the rest of the process.
 - **Local decision model** (`decide.local`, shadow only; config refuses it anywhere else): a
   llama.cpp server's `/v1/systemone` (for example LiquidAI d1-3B, llama.cpp ≥ 0.7.0), asked
-  through the Jev client under the name `local-<model>-<combined|per_slot>` (the GGUF file name
+  through the OpenRouter client (`decide/jev`) under the name `local-<model>-<combined|per_slot>` (the GGUF file name
   without `.gguf` when Vani starts the server; at most 32 bytes in all, which `vani config
   check` enforces; rows recorded earlier are filed as plain `local`) with no key, over `egress.Loopback`, which dials
   only loopback addresses. Either `endpoint` (a server you keep running) or `server` (`binary`,
@@ -256,12 +266,15 @@ flowchart TD
   `--board ats:token` (repeatable) lists only those watchlist boards (the others' postings are
   untouched; a board no longer on the watchlist stops the run before it lists anything),
   `--list-only` lists and reconciles without triage, scoring or explaining (no decision model is
-  called, but one must still be configured: the run builds its stages first), and `--no-digest`
+  called or needed), and `--no-digest`
   leaves the run's roles for the next digest. A digest from a manual run marks its roles digested,
   so the next daily digest does not list them again. `run-once` is refused at once while the daemon
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
   writes its output to `<state dir>/runs/manual.log`, follows it through `vani status --json`, and
   can stop a run it started (SIGTERM; recorded `cancelled`), never one the daemon started.
+  A run with no decision backend (no key) still lists its boards and applies the drop rules and
+  near-duplicates, so the Jobs tab's "awaiting triage" count is current, then fails before
+  triage with advance stop `no_backend`; it never records as finished.
 - **Run requests (`vani run-request`, Run Now while the daemon runs):** the daemon holds the ledger
   for its whole life, so a manual run is asked of it instead. `vani run-request [--json]` takes
   run-once's flags, checks them, and writes them with the time to `<state dir>/runs/request.json`.
@@ -306,7 +319,7 @@ flowchart TD
     order. Scores cached by an older build are ignored, so the ranker treats every posting as
     unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
     postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
-  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|jev] [--model ID] [--no-retrieve]`
+  - `vani kbmatch run [--top N] [--dry-run] [--backend llm|liquid] [--model ID] [--no-retrieve]`
     asks a model, for the top N postings by priority (default 40) that triage did not read as a
     mismatch, whether the work each describes is the work in your knowledge base: `core`,
     `partial`, `adjacent` or `unrelated`. It is a second read of the job's duties, not of the
@@ -320,7 +333,8 @@ flowchart TD
     is shorter; without it (`--no-retrieve`, or the model cannot load) the question carries the
     full digest instead. The **answering model** is the llm (`kbmatch.backend` `"llm"`, the
     default) on `kbmatch.model`, else `llm.triage_model`, else `llm.model`, or the **decision
-    model** (`"jev"`: `decide.openrouter_model` over OpenRouter, from the OpenRouter cap).
+    model** (`"liquid"`: `decide.openrouter_model` over OpenRouter, from the OpenRouter cap;
+    the old value `"jev"` still loads, with a deprecation warning).
     `kbmatch.model` is its own setting so a cheap model can read postings here without changing
     how triage and escalation run. Example: `"kbmatch": {"model": "claude-haiku-5-5"}`.
     **What is sent**, per posting: the posting, your `target_summary` and a view of the
@@ -343,13 +357,18 @@ flowchart TD
     mode, sponsorship, seniority, age and closed roles, plus `--company` / `--exclude-company`
     (exact names), `--exclude` (title words) and `--min-relevance`. `jobs stats` returns the
     distributions the app's Insights charts draw.
-  - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): each job's description is
-    read for stated pay by fixed rules (currency, range, period, a pay word, plausible yearly
-    bounds; "$100/month budget" or "$50M raised" is not pay), at most one range per currency, as
-    `pay` with yearly figures. `--min-salary 150k` compares the top of the range in `--currency`
+  - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): `jobinsight.PostingPay`,
+    the one reader the digest and `vani jobs` share, reads each job's description for stated pay
+    by fixed rules (currency, range, period, a pay word, plausible yearly bounds; "$100/month
+    budget" or "$50M raised" is not pay), at most one range per currency, as `pay` with yearly
+    figures. It reads USD, CAD, AUD, NZD, SGD, GBP, EUR, CHF, INR, JPY, SEK, NOK, DKK, PLN, TWD,
+    MYR, CNY, KRW, RON, RSD and SAR (`jobinsight.PayCurrencies`; the app's currency picker is
+    held to the same list by a test). `--min-salary 150k` compares the top of the range in `--currency`
     (default USD, no exchange rates): a job stating no pay stays unless `--salary-listed`, and a
     job stating pay only in another currency is left out. `--sort salary` and the stats' `salary`
-    buckets use the same currency. A bare "$" reads as USD. The Lever adapter adds the board's
+    buckets use the same currency. A bare "$" reads as USD unless every place the posting names
+    (and its remote scope) is in one other dollar country (Canada, Australia, New Zealand,
+    Singapore); a code beside the amount ("CAD $114,400") always wins. The Lever adapter adds the board's
     closing text (`additionalPlain`, where Lever boards state pay), `salaryDescriptionPlain` and
     `salaryRange`; Ashby is fetched with `includeCompensation=true` and its salary component leads
     the description unless the company hides pay on its postings.
@@ -483,7 +502,8 @@ set, else the defaults below), and the logs go to that state folder's `logs/`. R
 variables you want the daemon to use, e.g. `VANI_CONFIG=/abs/config.json VANI_STATE_DIR=/abs/state
 build/vani launchd plist --binary /abs/vani`; a relative value is refused (exit 2). Moving the config
 or state means regenerating the plist and bootstrapping it again. Nothing else from the environment
-is written into the plist, API keys included.
+is written into the plist, API keys included: the daemon reads the decision model's key from the
+login Keychain (`openrouter-api-key`), and has no LLM key (see [`docs/RUNTIME.md`](docs/RUNTIME.md)).
 
 Workday boards: `watchlist add --ats wd --token tenant/site --host tenant.wd5.myworkdayjobs.com
 --search "query"`. Search sites take repeated `--search` (up to 10 terms; the board lists their union)
@@ -526,14 +546,22 @@ it in place of the company's monogram, and the monogram when there is none.
 Config and state default to `~/Library/Application Support/Vani/` on macOS, on Linux to
 `$XDG_CONFIG_HOME/vani/config.json` and `$XDG_STATE_HOME/vani` (`~/.config`, `~/.local/state`
 when unset), and on Windows to `%AppData%\Vani`; override either with `VANI_CONFIG` and
-`VANI_STATE_DIR`.
+`VANI_STATE_DIR`. On macOS, when either comes from the default, `vani` also reads the Mac app's
+settings and refuses to run if they name another config or state folder, so a command run
+without the variables cannot read or write a pair the app does not use. `vani status` says where
+each path came from. Details and the one-time move to the default location: [`docs/RUNTIME.md`](docs/RUNTIME.md).
 
 Vani runs on macOS. The Go engine also compiles under `GOOS=windows` and `GOOS=linux` (both are
 vetted), but **Windows is untested and not supported**, and Linux is untested beyond that. The
-Mac app, its native messaging host and its helpers are macOS only and have no Windows path. Keys come from the environment: `OPENROUTER_API_KEY` for the OpenRouter model,
-`GEMINI_API_KEY` / `GOOGLE_API_KEY` or `ANTHROPIC_API_KEY` for the LLM. An Anthropic key not
-scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every
-request with a 400; `ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
+Mac app, its native messaging host and its helpers are macOS only and have no Windows path.
+Which config, state directory and keys each way of running `vani` uses, and where the Keychain
+comes in, is in [`docs/RUNTIME.md`](docs/RUNTIME.md). In short: `OPENROUTER_API_KEY` for the
+Liquid decision model, read from the environment or else from the login Keychain item
+`openrouter-api-key` (`VANI_NO_KEYCHAIN=1` turns the Keychain off); `ANTHROPIC_API_KEY` (or
+`GEMINI_API_KEY` / `GOOGLE_API_KEY`) for the LLM, from the environment only, which the Mac app
+fills through `anthropic-account`. An Anthropic key not scoped to a workspace also needs
+`ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`), or Anthropic refuses every request with a 400;
+`ANTHROPIC_BASE_URL` overrides the API host. Both are Manvi's variables.
 
 Each run triages, scores and explains at most `advance_per_run` postings (default 300, at most
 5000), which bounds its spend and duration. They go highest title rank first, then the freshest:

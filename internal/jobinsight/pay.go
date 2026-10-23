@@ -8,6 +8,9 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Vani/internal/location"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // Pay is a pay range a posting's text states, as `vani jobs` shows, filters
@@ -62,6 +65,18 @@ var currencies = map[string]currencyInfo{
 	"NOK": {80_000, 20_000_000, 200_000},
 	"DKK": {80_000, 20_000_000, 200_000},
 	"PLN": {20_000, 3_000_000, 50_000},
+	// About USD 10k–2M a year at 2026 rates, like the rest; each holds every
+	// nonzero AMD range in it (2026-10-20: TWD 430k–5.35M, MYR 37.8k–445k,
+	// CNY 156k–1.24M, KRW 80.6M–198M, RON 85k–320k, RSD 2.98M–7.87M, SAR
+	// 317k–543k). The Armenian dram is left out: its code is AMD, the
+	// company's name.
+	"TWD": {200_000, 64_000_000, 500_000},
+	"MYR": {20_000, 9_000_000, 50_000},
+	"CNY": {40_000, 15_000_000, 100_000},
+	"KRW": {10_000_000, 3_000_000_000, 10_000_000},
+	"RON": {20_000, 9_000_000, 25_000},
+	"RSD": {500_000, 216_000_000, 500_000},
+	"SAR": {20_000, 7_500_000, 50_000},
 }
 
 // PayCurrencies lists the currency codes ParsePay reads, sorted.
@@ -95,13 +110,14 @@ const (
 	maxRatio = 6  // a range whose top is more than this times its bottom is not one
 )
 
-const codes = `USD|CAD|AUD|NZD|SGD|GBP|EUR|CHF|INR|JPY|SEK|NOK|DKK|PLN`
+const codes = `USD|CAD|AUD|NZD|SGD|GBP|EUR|CHF|INR|JPY|SEK|NOK|DKK|PLN|TWD|MYR|CNY|KRW|RON|RSD|SAR`
 
-// moneyRE matches one amount: an optional currency before it, the number
-// (thousands separated by , . or a non-breaking space; at most two decimals),
-// an optional k, and an optional currency after it. It matches bare numbers
-// too; an amount counts only with a currency on it or on its range partner.
-var moneyRE = regexp.MustCompile(`(?i)(US\$|CA\$|C\$|AU\$|A\$|NZ\$|SG\$|S\$|\$|£|€|₹|¥|\b(?:` + codes + `)\b)?[ \x{00a0}\x{202f}]?` +
+// moneyRE matches one amount: an optional currency before it (a symbol, a
+// code, or a code then a symbol, "CAD $"), the number (thousands separated by
+// , . or a non-breaking space; at most two decimals), an optional k, and an
+// optional currency after it. It matches bare numbers too; an amount counts
+// only with a currency on it or on its range partner.
+var moneyRE = regexp.MustCompile(`(?i)((?:\b(?:` + codes + `)[ \x{00a0}\x{202f}]?)?(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|SG\$|S\$|\$|£|€|₹|¥)|\b(?:` + codes + `)\b)?[ \x{00a0}\x{202f}]?` +
 	`(\d{1,3}(?:(?:,|\.|\x{00a0}|\x{202f})\d{3})+|\d+)(?:[.,](\d{1,2}))?` +
 	`(?:[ \x{00a0}]?(k)\b)?` +
 	`(?:[ \x{00a0}\x{202f}]?(\b(?:` + codes + `)\b|€|£))?`)
@@ -187,7 +203,72 @@ type moneyTok struct {
 // after a word like budget, bonus or raised is not pay, and a year's pay must
 // fall in the currency's plausible bounds. No period and a year-sized amount
 // reads as per year.
-func ParsePay(text string) []Pay {
+func ParsePay(text string) []Pay { return parsePay(text, "") }
+
+// PostingPay is the pay p's description states, read as ParsePay reads it
+// except that a bare "$" is the dollar of the one country p's location names
+// (Canada, Australia, New Zealand, Singapore) instead of USD. A code on the
+// amount or its range partner still decides. Every caller with a posting
+// reads its pay here, so the digest, the Jobs list and its filters agree.
+func PostingPay(p posting.Posting) []Pay {
+	return parsePay(p.Description, dollarOf(location.Parse(p.Location, p.Remote)))
+}
+
+// dollars maps a country, as the last part of a place's region or a remote
+// scope names it, to its dollar. The US is listed so a location naming it
+// and another country gets no hint.
+var dollars = map[string]string{
+	"canada": "CAD", "australia": "AUD", "new zealand": "NZD", "singapore": "SGD",
+	"us": "USD", "usa": "USD", "u s": "USD", "u s a": "USD", "united states": "USD", "united states of america": "USD",
+}
+
+// dollarOf is the currency a bare "$" means at l: a non-US dollar when every
+// place and the remote scope name the same such country, else "" (USD).
+// A place's country is read only where the board wrote it ("Markham,
+// Ontario, Canada", "Singapore"); a province alone ("Markham, ON") or a bare
+// city names none, and a location with any such place gets no hint.
+func dollarOf(l location.Location) string {
+	cur := ""
+	same := func(name string) bool {
+		c := dollars[strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+			return !unicode.IsLetter(r)
+		}), " ")]
+		if c == "" || (cur != "" && c != cur) {
+			return false
+		}
+		cur = c
+		return true
+	}
+	for _, p := range l.Places {
+		switch {
+		case p.State != "":
+			return "" // a US state
+		case p.Region != "":
+			parts := strings.Split(p.Region, ",")
+			if !same(parts[len(parts)-1]) {
+				return ""
+			}
+		case !same(p.Area):
+			return ""
+		}
+	}
+	if l.Remote {
+		if l.RemoteScope == "" && len(l.Places) == 0 {
+			return ""
+		}
+		for _, s := range strings.Split(l.RemoteScope, ",") {
+			if strings.TrimSpace(s) != "" && !same(s) {
+				return ""
+			}
+		}
+	}
+	if cur == "USD" {
+		return ""
+	}
+	return cur
+}
+
+func parsePay(text, dollar string) []Pay {
 	if len(text) > maxPayScan {
 		text = text[:maxPayScan]
 	}
@@ -215,6 +296,15 @@ func ParsePay(text string) []Pay {
 		}
 		if len(toks) >= maxPayTokens {
 			break
+		}
+	}
+	if dollar != "" {
+		for i := range toks {
+			// Only a bare "$" (US$ and C$ are not symbol-only); combine still
+			// prefers a range partner's code.
+			if toks[i].symbolOnly && toks[i].cur == "USD" {
+				toks[i].cur = dollar
+			}
 		}
 	}
 	type acc struct {
@@ -273,7 +363,14 @@ func ParsePay(text string) []Pay {
 		}
 		// The nearest pay or not-pay word before decides, unless a pay word
 		// right after names it ("equity plus $150,000 - $180,000 base").
-		decided := nearestWord(text[max(0, a.start-before):a.start])
+		win := text[max(0, a.start-before):a.start]
+		decided := nearestWord(lineTail(win))
+		if decided == "" && nearestWord(win) == "pay" {
+			// A finished sentence before can still name the amounts after
+			// it as pay ("The base salary is below.\n$150,000"), but a
+			// not-pay word there no longer vetoes them.
+			decided = "pay"
+		}
 		if anyIn(nextWords, payAfter) {
 			decided = "pay"
 		}
@@ -472,6 +569,16 @@ func resolve(pre, suf string) (cur string, symbolOnly bool) {
 		if c, ok := symbols[s]; ok {
 			return c, ambiguous[s]
 		}
+		if len(s) > 3 {
+			// Not a symbol and longer than a code: moneyRE matched a code
+			// then a symbol ("cad $", "cad$"). The code names the currency
+			// unless the symbol names another one ("usd c$").
+			c, sym := strings.ToUpper(s[:3]), strings.TrimLeftFunc(s[3:], unicode.IsSpace)
+			if sc, ok := symbols[sym]; ok && !ambiguous[sym] && sc != c {
+				return "!", false
+			}
+			return c, false
+		}
 		return strings.ToUpper(s), false
 	}
 	a, aAmb := code(pre)
@@ -586,6 +693,23 @@ func nearestWord(s string) string {
 		}
 	}
 	return ""
+}
+
+// lineTail is s after the last sentence that ended its line (".", "!" or "?"
+// then a line break): a finished statement does not say whether the amounts
+// after it are not pay. Google's "…relevant education or training.\nUS:
+// $188000 - $274000 (USD)" was read as not pay by the word "education". A
+// heading line without a full stop ("Salary range:\n$100,000 - $150,000")
+// still counts, and ParsePay still lets a pay word before the stop decide
+// when the tail has none.
+func lineTail(s string) string {
+	for i := strings.LastIndexByte(s, '\n'); i >= 0; i = strings.LastIndexByte(s[:i], '\n') {
+		line := strings.TrimRight(s[:i], " \t\r ")
+		if line != "" && strings.ContainsRune(".!?", rune(line[len(line)-1])) {
+			return s[i+1:]
+		}
+	}
+	return s
 }
 
 func beforeWord(s string) Period {

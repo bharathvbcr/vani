@@ -228,13 +228,19 @@ type jobsData struct {
 	HomeOffice              bool     `json:"homeOffice"`
 	EmploymentType          string   `json:"employmentType"`
 	Locations               []struct {
+		ID            string `json:"id"`
 		Name          string `json:"name"`
 		City          string `json:"city"`
 		StateProvince string `json:"stateProvince"`
 		CountryName   string `json:"countryName"`
+		CountryID     string `json:"countryID"`
 	} `json:"locations"`
+	// PostingFooters has one footer per location, each with that location's
+	// pay (2026-10-20: 200688031 lists San Diego and Seattle at $175,000 to
+	// $308,500 and Cupertino at $184,700 to $324,800).
 	PostingFooters []struct {
-		Localizations map[string][]struct {
+		PostLocationID string `json:"postLocationId"`
+		Localizations  map[string][]struct {
 			Name    string `json:"name"`
 			Content string `json:"content"`
 		} `json:"localizations"`
@@ -295,7 +301,7 @@ func (jd jobsData) posting(b sources.Board, u string, seen time.Time) (posting.P
 	if err != nil {
 		return posting.Posting{}, err
 	}
-	title := strings.TrimSpace(html.UnescapeString(jd.PostingTitle))
+	title := srcutil.Title(jd.PostingTitle)
 	if title == "" {
 		return posting.Posting{}, fmt.Errorf("%w: empty postingTitle", ErrShape)
 	}
@@ -306,13 +312,13 @@ func (jd jobsData) posting(b sources.Board, u string, seen time.Time) (posting.P
 	var locs []string
 	for _, l := range jd.Locations {
 		parts := []string{}
-		for _, x := range []string{l.City, l.StateProvince, l.CountryName} {
+		// A metro location has a name and no city ("San Francisco Bay Area",
+		// California); the name stands in for the city.
+		area := firstNonEmpty(strings.TrimSpace(l.City), strings.TrimSpace(l.Name))
+		for _, x := range []string{area, l.StateProvince, l.CountryName} {
 			if x = strings.TrimSpace(x); x != "" && !slices.Contains(parts, x) {
 				parts = append(parts, x)
 			}
-		}
-		if len(parts) == 0 && strings.TrimSpace(l.Name) != "" {
-			parts = append(parts, strings.TrimSpace(l.Name))
 		}
 		if s := strings.Join(parts, ", "); s != "" && !slices.Contains(locs, s) {
 			locs = append(locs, s)
@@ -340,11 +346,15 @@ func (jd jobsData) posting(b sources.Board, u string, seen time.Time) (posting.P
 	return p, nil
 }
 
-// description is the posting's sections as text. Apple's level range
-// ("Machine Learning ICT4" to "ICT5") leads, because seniority decides fit;
-// the US pay footer, where present, closes it.
+// description is the posting's sections as text. The pay line across every
+// location leads (srcutil.SourceText removes it), then Apple's level range
+// ("Machine Learning ICT4" to "ICT5"), because seniority decides fit; the
+// first location's pay footer, where present, closes it.
 func description(jd jobsData) string {
 	var parts []string
+	if line := jd.payLine(); line != "" {
+		parts = append(parts, line)
+	}
 	if lv := levelLine(jd.LowJobTitle, jd.HighJobTitle); lv != "" {
 		parts = append(parts, lv)
 	}
@@ -365,13 +375,80 @@ func description(jd jobsData) string {
 				parts = append(parts, x.Name+"\n"+htmltext.Text(x.Content, srcutil.MaxDescription))
 			}
 		}
-		break // one footer: they repeat per location
+		// Only the first footer's text: the others differ only in the pay,
+		// which payLine carries, and adding them would change every stored
+		// multi-location posting's board text and so re-triage it.
+		break
 	}
 	text := html.UnescapeString(strings.Join(parts, "\n\n"))
 	if len(text) > srcutil.MaxDescription {
 		text = strings.ToValidUTF8(text[:srcutil.MaxDescription], "")
 	}
 	return text
+}
+
+// maxFooters bounds the footers payLine reads; a posting lists a handful of
+// locations (at most three in the sample of 2026-10-20).
+const maxFooters = 50
+
+// basePayRE is the range sentence in a US Pay & Benefits footer ("The base
+// pay range for this role is between $175,000 and $308,500, and ...").
+var basePayRE = regexp.MustCompile(`(?i)base pay range for this role is between \$([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?) and \$([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)( per hour| an hour)?`)
+
+// payLine is the envelope of the base pay ranges in the footers of US
+// locations, as one srcutil.PayLine, or "" when none reads. A footer counts
+// only when its postLocationId names one of the posting's US locations, since
+// "$" alone does not say whose dollars. The sentence states no period unless
+// it is hourly, and the line then states none either. Hourly and unstated
+// ranges are not merged: such a posting gets no line, and its first footer's
+// text still carries the pay.
+func (jd jobsData) payLine() string {
+	us := map[string]bool{}
+	for _, l := range jd.Locations {
+		if id := strings.TrimSpace(l.ID); id != "" && l.CountryID == "iso-country-USA" {
+			us[id] = true
+		}
+	}
+	var lo, hi *float64
+	period := ""
+	for i, f := range jd.PostingFooters {
+		if i == maxFooters {
+			break
+		}
+		if !us[f.PostLocationID] {
+			continue
+		}
+		for _, x := range f.Localizations["en_US"] {
+			if !strings.Contains(x.Name, "Pay") {
+				continue
+			}
+			m := basePayRE.FindStringSubmatch(htmltext.Text(x.Content, srcutil.MaxDescription))
+			if m == nil {
+				continue
+			}
+			a, errA := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+			b, errB := strconv.ParseFloat(strings.ReplaceAll(m[2], ",", ""), 64)
+			if errA != nil || errB != nil || a > b {
+				continue
+			}
+			p := ""
+			if m[3] != "" {
+				p = "hour"
+			}
+			switch {
+			case lo == nil:
+				lo, hi, period = &a, &b, p
+			case p != period:
+				return ""
+			default:
+				*lo, *hi = min(*lo, a), max(*hi, b)
+			}
+		}
+	}
+	if lo == nil {
+		return ""
+	}
+	return srcutil.PayLine("USD", lo, hi, period)
 }
 
 func levelLine(low, high string) string {

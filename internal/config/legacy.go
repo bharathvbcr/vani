@@ -22,7 +22,14 @@ const (
 	legacyDailyKey    = "jev"
 	legacyMinProbKey  = "min_jev_prob"
 	legacyShadowValue = "jev"
+	// legacyKBMatchBackend is kbmatch.backend's name for KBMatchLiquid until
+	// 2026-10-20.
+	legacyKBMatchBackend = "jev"
 )
+
+// LegacyKBMatchBackend is the old kbmatch backend name, which `vani kbmatch
+// run --backend` still accepts with a warning.
+const LegacyKBMatchBackend = legacyKBMatchBackend
 
 // ShadowOpenRouter is the decide.shadow value that makes the OpenRouter
 // decision model the shadow.
@@ -146,6 +153,20 @@ func (d *Decide) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// UnmarshalJSON reads KBMatch, accepting the old backend "jev".
+func (k *KBMatch) UnmarshalJSON(data []byte) error {
+	type plain KBMatch
+	var w plain
+	if err := strictDecode(data, &w); err != nil {
+		return err
+	}
+	if w.Backend == legacyKBMatchBackend {
+		w.Backend = KBMatchLiquid
+	}
+	*k = KBMatch(w)
+	return nil
+}
+
 // UnmarshalJSON reads DailyUSD, accepting the old "jev" cap.
 func (u *DailyUSD) UnmarshalJSON(data []byte) error {
 	var w struct {
@@ -200,6 +221,9 @@ func Deprecations(data []byte) []string {
 		DropRules []struct {
 			MinProb json.RawMessage `json:"min_jev_prob"`
 		} `json:"drop_rules"`
+		KBMatch *struct {
+			Backend *string `json:"backend"`
+		} `json:"kbmatch"`
 	}
 	if json.Unmarshal(data, &p) != nil {
 		return nil
@@ -227,6 +251,9 @@ func Deprecations(data []byte) []string {
 	}
 	if n > 0 {
 		out = append(out, fmt.Sprintf("drop_rules min_jev_prob is now min_openrouter_prob (%d rule(s))", n))
+	}
+	if k := p.KBMatch; k != nil && k.Backend != nil && *k.Backend == legacyKBMatchBackend {
+		out = append(out, fmt.Sprintf("kbmatch.backend %q is now %q", legacyKBMatchBackend, KBMatchLiquid))
 	}
 	return out
 }

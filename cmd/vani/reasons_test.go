@@ -148,7 +148,7 @@ func TestReasonsCheckReportsAbsentAndStale(t *testing.T) {
 	}
 }
 
-// runnerFor builds the runner for cfg with a loopback doer so Jev builds
+// runnerFor builds the runner for cfg with a loopback doer so the decision model's client builds
 // without network; nothing is sent.
 func runnerFor(t *testing.T, cfg config.Config, stateDir string) (*pipeline.Runner, string) {
 	t.Helper()
@@ -190,7 +190,7 @@ func writeCatalog(t *testing.T, stateDir, target string) {
 	}
 }
 
-// With a catalog and Jev, notes are picked by Jev alone: no Claude, no
+// With a catalog and the decision model, notes are picked by it alone: no Claude, no
 // shadow, one chain.
 func TestRunnerPicksNotesWithOpenRouter(t *testing.T) {
 	cfg := reasonsConfig(t)
@@ -288,13 +288,13 @@ func TestRunnerSkipsNotesWithAStaleCatalog(t *testing.T) {
 	}
 }
 
-// A catalog but no Jev this run (no key in this shell): notes pause, the
-// postings stay scored for a run that has Jev, rather than being marked
+// A catalog but no decision model this run (no key in this shell): notes pause, the
+// postings stay scored for a run that has one, rather than being marked
 // explained with no note for good.
 func TestRunnerPausesNotesWithoutJev(t *testing.T) {
 	cfg := reasonsConfig(t)
 	t.Setenv("OPENROUTER_API_KEY", "")
-	cfg.LLM.Provider = "gemini" // keep a triage backend so the runner builds
+	cfg.LLM = testGeminiLLM // keep a triage backend so the runner builds
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	stateDir := t.TempDir()
 	writeCatalog(t, stateDir, reasonsTarget)

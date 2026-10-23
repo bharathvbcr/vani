@@ -158,6 +158,7 @@ func TestRunOnceDrainsTheInboxBeforeTheBoards(t *testing.T) {
 	clearKeys(t)
 	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
 	cfg := config.Default()
+	cfg.LLM = testGeminiLLM
 	cfg.Decide.OpenRouterModel = ""
 	cfg.AdvancePerRun = -1
 	w, warn := openWired(t, cfg)

@@ -297,7 +297,8 @@ type Local struct {
 	Server    *LocalServer `json:"server,omitempty"`
 	Model     string       `json:"model"`
 	TimeoutMS int          `json:"timeout_ms,omitempty"` // zero means 20 s
-	// Questions is "combined" (default: the one question Jev gets, so the eval
+	// Questions is "combined" (default: the one question the OpenRouter
+	// decision model, Liquid d1-ultra, gets, so the eval
 	// compares models on identical requests) or "per_slot" (each slot asked
 	// its own fixture family question, as Lappi is). Which suits a given
 	// model is what `vani eval` measures.
@@ -359,15 +360,16 @@ const MaxModelName = 128
 const (
 	// KBMatchLLM asks the Manvi llm provider (llm.provider).
 	KBMatchLLM = "llm"
-	// KBMatchJev asks the decision model (decide.openrouter_model) over
-	// OpenRouter, from the OpenRouter daily cap.
-	KBMatchJev = "jev"
+	// KBMatchLiquid asks the decision model (decide.openrouter_model, Liquid
+	// d1-ultra) over OpenRouter, from the OpenRouter daily cap. Configs written
+	// before 2026-10-20 name it "jev", which still loads (legacy.go).
+	KBMatchLiquid = "liquid"
 )
 
 // KBMatch configures `vani kbmatch`. The zero value asks the llm on
 // llm.triage_model, else llm.model.
 type KBMatch struct {
-	// Backend is KBMatchLLM (the default) or KBMatchJev.
+	// Backend is KBMatchLLM (the default) or KBMatchLiquid.
 	Backend string `json:"backend,omitempty"`
 	// Model is the llm model that answers when Backend is KBMatchLLM. Empty means
 	// llm.triage_model, else llm.model. It is separate from llm.triage_model so a
@@ -500,16 +502,6 @@ func xdgDir(getenv func(string) string, key, home string, def ...string) string 
 	return filepath.Join(append([]string{home}, def...)...)
 }
 
-// DefaultPaths resolves Paths against the real environment.
-func DefaultPaths() (configPath, stateDir string, err error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", "", fmt.Errorf("config: home directory: %w", err)
-	}
-	c, s := Paths(os.Getenv, home)
-	return c, s, nil
-}
-
 // Default returns an example configuration with an empty watchlist.
 func Default() Config {
 	return Config{
@@ -518,11 +510,18 @@ func Default() Config {
 		AllowedHosts: []string{hostOpenRouter},
 		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
 		Decide: Decide{
-			OpenRouterModel:  "typesafe/jev-1.13",
+			// The owner's decision model: Liquid d1-ultra over OpenRouter's
+			// Decisions API, asked through the decide/jev client.
+			OpenRouterModel:  "liquid/d1-ultra",
 			OpenRouterKeyEnv: "OPENROUTER_API_KEY",
 			DailyUSD:         DailyUSD{OpenRouter: 0.25, LLM: 1.0},
 		},
-		LLM: LLM{Provider: "gemini", Model: "gemini-3.8-flash"},
+		// Claude through Manvi, the owner's LLM. Its prices are Manvi's
+		// published rates for the model (llm/anthropic's price table; a test
+		// in cmd/vani holds them equal). The key comes from the environment
+		// or, in the Mac app, through anthropic-account, which also names the
+		// workspace.
+		LLM: LLM{Provider: "anthropic", Model: "claude-opus-5-5", InputNanoUSDPerToken: 4000, OutputNanoUSDPerToken: 20000},
 		// Empty until Phase 0 confirms the installed DevPrism answers --mcp
 		// without migrating career.db; scoring is skipped while it is empty.
 		// The installed binary is /Applications/DevPrism.app/Contents/MacOS/claude-prism-desktop.
@@ -1126,15 +1125,15 @@ func (c Config) Validate() error {
 				add("kbmatch.model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
 			}
 		}
-	case KBMatchJev:
+	case KBMatchLiquid:
 		if !c.OpenRouterConfigured() {
-			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchJev)
+			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchLiquid)
 		}
 		if c.KBMatch.Model != "" {
 			add("kbmatch.model applies to the %q backend only", KBMatchLLM)
 		}
 	default:
-		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchJev)
+		add("kbmatch.backend %q must be %q or %q", c.KBMatch.Backend, KBMatchLLM, KBMatchLiquid)
 	}
 	if e := c.Decide.Escalate; e != nil {
 		if e.BelowP != nil && (math.IsNaN(*e.BelowP) || *e.BelowP <= 0 || *e.BelowP > 1) {

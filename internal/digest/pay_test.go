@@ -110,10 +110,25 @@ func TestPayHostileDescription(t *testing.T) {
 	}
 }
 
+// The digest reads pay through jobinsight.PostingPay, so a bare "$" on a
+// role in Canada is Canadian dollars there, as in the Jobs list.
+func TestPayUsesPostingLocation(t *testing.T) {
+	r := payRec("Pay range: $114,400.00 - $164,400.00")
+	r.Posting.Location = "Markham, Ontario, Canada"
+	md, _ := Render([]ledger.Record{r}, nil, day, Counts{})
+	if !strings.Contains(md, `- Pay: CAD 114\.4k–164\.4k/yr`+"\n") {
+		t.Errorf("digest:\n%s", md)
+	}
+	r.Posting.Location = "Austin, Texas"
+	if md, _ := Render([]ledger.Record{r}, nil, day, Counts{}); !strings.Contains(md, `- Pay: USD 114\.4k–164\.4k/yr`+"\n") {
+		t.Errorf("digest:\n%s", md)
+	}
+}
+
 func TestPayLineEscapesEverything(t *testing.T) {
 	// payLine's output is fixed-form, but it still goes through Escape: no
 	// Markdown metacharacter reaches the digest unescaped.
-	got := payLine("Salary: $100,000.50 - $120,000.75 per year.")
+	got := payLine(posting.Posting{Description: "Salary: $100,000.50 - $120,000.75 per year."})
 	if got == "" {
 		t.Fatal("no pay read")
 	}

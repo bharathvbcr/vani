@@ -267,7 +267,7 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 	fmt.Fprintf(b, "### %s at %s\n\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes))
 
 	fmt.Fprintf(b, "- Where: %s\n", Where(p))
-	if pay := payLine(p.Description); pay != "" {
+	if pay := payLine(p); pay != "" {
 		fmt.Fprintf(b, "- Pay: %s\n", pay)
 	}
 	fmt.Fprintf(b, "- Link: %s\n", linkLine(p.URL))
@@ -303,11 +303,12 @@ func writeRole(b *strings.Builder, r ledger.Record) {
 	b.WriteString("\n")
 }
 
-// payLine is the pay a description states, one short range per currency
-// ("USD 120k–160k/yr; EUR 100k–120k/yr"), or "" when it states none. It is
-// read from posting text, so it is escaped like any other posting field.
-func payLine(desc string) string {
-	pays := jobinsight.ParsePay(desc)
+// payLine is the pay a posting states (jobinsight.PostingPay), one short
+// range per currency ("USD 120k–160k/yr; EUR 100k–120k/yr"), or "" when it
+// states none. It is read from posting text, so it is escaped like any other
+// posting field.
+func payLine(p posting.Posting) string {
+	pays := jobinsight.PostingPay(p)
 	parts := make([]string, 0, len(pays))
 	for _, p := range pays {
 		parts = append(parts, p.Short())

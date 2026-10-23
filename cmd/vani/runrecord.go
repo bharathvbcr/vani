@@ -140,6 +140,7 @@ const (
 	stopFailStreak   = "fail_streak"   // maxConsecutiveFailed stage failures in a row
 	stopNoneAdvanced = "none_advanced" // every attempted posting failed or went unread
 	stopCancelled    = "cancelled"
+	stopNoBackend    = "no_backend" // no decision backend could be built; boards were listed only
 )
 
 // advanceReport is what one run's advance phase did. Deferred postings were
@@ -208,6 +209,10 @@ type reconcileCounts struct {
 	New        int `json:"new,omitempty"`
 	Changed    int `json:"changed,omitempty"`
 	Rerendered int `json:"rerendered,omitempty"`
+	Kept       int `json:"kept,omitempty"`
+	Redated    int `json:"redated,omitempty"`
+	Refreshed  int `json:"refreshed,omitempty"`
+	Revived    int `json:"revived,omitempty"`
 	Unchanged  int `json:"unchanged,omitempty"`
 	Reappeared int `json:"reappeared,omitempty"`
 	Missed     int `json:"missed,omitempty"`

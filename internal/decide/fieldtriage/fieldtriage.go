@@ -4,8 +4,8 @@
 // the applicant. The reading only annotates; the engine (Plan) decides what
 // happens to the field, and only an "essay" reading ever leads to a draft.
 //
-// Lappi is not trained on this task, so it is asked of Jev-shaped backends and
-// the LLM backend only.
+// Lappi is not trained on this task, so it is asked of decide/jev-shaped
+// backends (the Liquid decision model) and the LLM backend only.
 package fieldtriage
 
 import (
@@ -40,7 +40,7 @@ const (
 	contextFm = "Field type: %s\nQuestion label (untrusted text copied from a job site):\n%s"
 )
 
-// Option is one legal answer with the description a Jev-shaped model judges it by.
+// Option is one legal answer with the description a decision model (Liquid) judges it by.
 type Option struct {
 	Value       string
 	Description string
@@ -86,7 +86,7 @@ func (f *Field) Validate() error {
 }
 
 // Descriptions returns the table as the slot -> option -> description map a
-// Jev backend's Config takes.
+// decide/jev client's Config takes (the OpenRouter client the Liquid decision model is asked through).
 func Descriptions() map[string]map[string]string {
 	m := make(map[string]string, len(Options))
 	for _, o := range Options {
