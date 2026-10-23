@@ -1638,22 +1638,56 @@ Left open:
   `Lenient<>`, so a wrong-typed value fails the whole list decode.
 - **Speed.** The custom `Job` JSON encoder on the list path is not benchmarked.
 - **v2 and pcsx ids are inferred, not verified, to be the same.** No host serves both APIs. Keys
-  stay `ef:netflix.com:{id}`.
+  stay `ef:netflix.com:{id}`. Checked again on 2026-10-22 (Microsoft v2: 403 "Not authorized for
+  PCSX"; Qualcomm and Microsoft pcsx: 200; Netflix v2: 200) and still not verifiable directly. What
+  was verified is that each API's id is the id in its own site's public job URL: Netflix v2 row
+  `id` 790316208720 = `canonicalPositionUrl` `/careers/job/790316208720` = the page's `og:url`
+  and its embedded `pid`; Qualcomm pcsx row `id` 446720207388 = `positionUrl` = the job page's
+  canonical URL and JSON-LD `url`; Microsoft pcsx `positionUrl` is `/careers/job/{id}` the same
+  way. The job-URL id is one platform id per posting, so a Netflix v2 to pcsx switch would very
+  likely keep keys, but no host answers both APIs to compare, so that stays inferred. If Netflix
+  ever enables pcsx, compare one `id` per API before trusting existing keys.
 - **Robots parsing is duplicated.** `page.parseAllowed` repeats `parseCrawlDelay`'s robots.txt
   group state machine.
 - **Netflix costs one extra request per run.** The 403 pcsx probe runs every time; the result is
   not cached.
 - **List-only still starts the local llama.cpp server.** `startRun` does so when
   `decide.local.server` is set.
-- **Non-ASCII board names are refused.** For example, a `board_name` of `Zürich`.
+- **Non-ASCII board names (closed 2026-10-22).** `sources.BoardNameProblem` now takes Unicode
+  letters and digits (so `Zürich Labs`, `东京 科技`), still refusing controls, format characters
+  (zero-width joiner, bidirectional overrides), non-U+0020 spaces, punctuation (`. / ? # % :`,
+  fullwidth lookalikes included), invalid UTF-8, and names over 64 runes or 192 bytes. Combining
+  marks are refused, because the standard library has no NFC and refusing marks is how the accepted
+  set avoids one letter written two ways; the cost is that a script needing marks (Devanagari,
+  Thai) cannot be a board name until `golang.org/x/text/unicode/norm` is an approved dependency.
+  Lookalike letters are accepted on purpose: the name only ever reaches one fixed host's path.
+  Open: `jobs ingest` derives the token for a spaced name as the lower-cased, hyphenated name, so
+  a pasted `jobs.ashbyhq.com/Zürich%20Labs` page gets the token `zürich-labs`, a non-ASCII key
+  part (keys accept it; the Mac app's key check refuses only whitespace and controls). Give it an
+  ASCII slug with `watchlist add --token` if that matters.
 - **The schedule is not kept.** `vani launchd plist` puts no decision-model key in the agent's
   environment, so a daemon from it triages nothing until the owner adds `OPENROUTER_API_KEY` to
   its `EnvironmentVariables`. Whether to install one is the owner's decision.
 - **Unsupported job sites.** Meta, Uber, Groq (Gem), Hugging Face (Workable), Modular (no board),
   Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
 - **Monograms.** Hudson River Trading and Marvell have no logo: their sites answer 403 to every
-  request.
-- **Microsoft Eightfold 429 is unexplained.** On 2026-10-22 `apply.careers.microsoft.com` answered every
+  request. Reachable PNGs found 2026-10-22 on Wikimedia Commons, both fetched by `vani logos
+  refresh --force` against a scratch state (fetched 2, failed 0): HRT
+  `https://upload.wikimedia.org/wikipedia/commons/3/3b/HRT_Primary_Logo_-_Full_Color.png`
+  (721x420, 9,943 bytes, CC BY-SA 4.0, credited to hudsonrivertrading.com) and Marvell
+  `https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Marvell_Logo.svg/330px-Marvell_Logo.svg.png`
+  (330x95, 3,277 bytes, a render of the SVG). Neither is applied to the live config until the
+  owner does it. The Marvell mark is black on transparent, so it may vanish on a dark
+  background; Marvell's own Workday page offers only an SVG (`/MarvellCareers/assets/logo`).
+- **Microsoft Eightfold 429 is unexplained, and cleared by itself.** Re-probed 2026-10-23 00:16
+  UTC with 5 requests to Microsoft hosts: `apply.careers.microsoft.com` robots.txt 200 (allows
+  `/api/pcsx` and `/api/apply`), pcsx search 200 with 10 positions, so the 429 was a time-limited
+  throttle, not a block of this IP. There is no other official endpoint to fall back to:
+  `jobs.careers.microsoft.com` answers 301 to `apply.careers.microsoft.com/`, and
+  `gcsservices.careers.microsoft.com` (the retired jobs.careers search API) fails TLS verification
+  from here (its certificate does not name the host; not retried with verification off). v2 on the
+  Microsoft host is 403 "Not authorized for PCSX", so v2 is no fallback either. No code change.
+  The original note: on 2026-10-22 `apply.careers.microsoft.com` answered every
   pcsx search with 429, no `Retry-After`, an HTML 22-byte body, minutes after the last run. Whether it is a
   burst limit or a sustained edge block is not known; backoff (about 2-16 s, one board budget of 2 min) cannot
   outwait the second. The board now ends `rate_limited` and is retried next run. Pacing stays egress's 1 s per
