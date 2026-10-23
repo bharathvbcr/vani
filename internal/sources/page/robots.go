@@ -1,7 +1,6 @@
 package page
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -121,71 +120,24 @@ func readRobots(ctx context.Context, d egress.Doer, host string, timeout time.Du
 // faster than the site asked. An error quotes at most maxDelayText bytes of
 // the value, escaped.
 func parseCrawlDelay(body []byte, agent string) (float64, error) {
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
-	type bucket struct {
-		seen  bool // some group applies
-		delay float64
-		err   error // the first malformed Crawl-delay
-	}
-	var named, star bucket
-	inAgents := false                 // the previous directive was a user-agent line
-	curNamed, curStar := false, false // the current group names agent / names "*"
-	for line := range bytes.SplitSeq(body, []byte("\n")) {
-		if i := bytes.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		k, v, ok := strings.Cut(string(line), ":")
-		if !ok {
+	var delay float64
+	var first error // the first malformed Crawl-delay
+	for _, r := range parseRobotsGroups(body, agent).applicable() {
+		if r.key != "crawl-delay" {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(k))
-		val := strings.TrimSpace(v)
-		if key == "user-agent" {
-			if !inAgents {
-				curNamed, curStar = false, false
-			}
-			inAgents = true
-			switch {
-			case productToken(val) == agent:
-				curNamed, named.seen = true, true
-			case val == "*":
-				curStar, star.seen = true, true
-			}
-			continue
-		}
-		switch key {
-		case "allow", "disallow", "crawl-delay":
-			inAgents = false // a rule: the next user-agent line starts a new group
-		default:
-			continue // a record outside groups (Sitemap) or unknown: skipped, the group goes on
-		}
-		if key != "crawl-delay" || (!curNamed && !curStar) {
-			continue
-		}
-		secs, err := parseDelayValue(val)
-		add := func(b *bucket) {
-			switch {
-			case err == nil:
-				b.delay = max(b.delay, secs)
-			case b.err == nil:
-				b.err = err
-			}
-		}
-		if curNamed {
-			add(&named)
-		}
-		if curStar {
-			add(&star)
+		secs, err := parseDelayValue(r.val)
+		switch {
+		case err == nil:
+			delay = max(delay, secs)
+		case first == nil:
+			first = err
 		}
 	}
-	b := star
-	if named.seen {
-		b = named
+	if first != nil {
+		return 0, first
 	}
-	if b.err != nil {
-		return 0, b.err
-	}
-	return b.delay, nil
+	return delay, nil
 }
 
 // parseDelayValue reads one Crawl-delay value as decimal seconds.

@@ -1,7 +1,6 @@
 package page
 
 import (
-	"bytes"
 	"context"
 	"regexp"
 	"strings"
@@ -37,75 +36,17 @@ func robotsAllows(ctx context.Context, d egress.Doer, host, path string, timeout
 // An empty Disallow matches nothing. The content is untrusted: unknown lines
 // are skipped, and a pattern that does not compile matches nothing.
 func parseAllowed(body []byte, agent, path string) bool {
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
-	type rule struct {
-		allow bool
-		re    *regexp.Regexp
-		n     int // pattern length: the specificity
-	}
-	var named, star []rule
-	var sawNamed bool
-	inAgents := false
-	curNamed, curStar := false, false
-	for line := range bytes.SplitSeq(body, []byte("\n")) {
-		if i := bytes.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		k, v, ok := strings.Cut(string(line), ":")
-		if !ok {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(k))
-		val := strings.TrimSpace(v)
-		if key == "user-agent" {
-			if !inAgents {
-				curNamed, curStar = false, false
-			}
-			inAgents = true
-			switch {
-			case productToken(val) == agent:
-				curNamed, sawNamed = true, true
-			case val == "*":
-				curStar = true
-			}
-			continue
-		}
-		if key != "allow" && key != "disallow" {
-			if key == "crawl-delay" {
-				inAgents = false
-			}
-			continue
-		}
-		inAgents = false
-		if !curNamed && !curStar {
-			continue
-		}
-		if val == "" {
+	best, allowed := -1, true
+	for _, r := range parseRobotsGroups(body, agent).applicable() {
+		if r.key == "crawl-delay" || r.val == "" {
 			continue // "Disallow:" with no path allows everything; an empty Allow adds nothing
 		}
-		re, err := ruleRegexp(val)
-		if err != nil {
+		re, err := ruleRegexp(r.val)
+		if err != nil || !re.MatchString(path) {
 			continue
 		}
-		r := rule{allow: key == "allow", re: re, n: len(val)}
-		if curNamed {
-			named = append(named, r)
-		}
-		if curStar {
-			star = append(star, r)
-		}
-	}
-	rules := star
-	if sawNamed {
-		rules = named
-	}
-	best, allowed := -1, true
-	for _, r := range rules {
-		if !r.re.MatchString(path) {
-			continue
-		}
-		if r.n > best || (r.n == best && r.allow) {
-			best, allowed = r.n, r.allow
+		if n := len(r.val); n > best || (n == best && r.key == "allow") {
+			best, allowed = n, r.key == "allow"
 		}
 	}
 	return allowed
