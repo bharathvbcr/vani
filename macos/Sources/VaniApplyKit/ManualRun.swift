@@ -103,9 +103,14 @@ public struct ManualRunLauncher: Sendable {
         self.runner = runner
     }
 
+    /// The variable that tells `vani run-once` where its output goes (cmd/vani/runlog.go
+    /// runLogEnv); vani records the path, once it passes its own check that the
+    /// path is a file under <state>/runs, in the run record's `log`.
+    public static let logEnvironmentKey = "VANI_RUN_LOG"
+
     /// Where a manual run's output goes: <state dir>/runs/manual.log, beside
     /// the run record. Each run replaces it, after moving the previous one to
-    /// runs/history/manual-<time>.log (`ManualRunLog.rotate`, newest 20 within 8 MiB).
+    /// runs/history/manual-<run id>.log (`ManualRunLog.rotate`, newest 20 within 8 MiB).
     public static func logURL(stateDir: String) -> URL {
         URL(fileURLWithPath: stateDir).appendingPathComponent("runs/manual.log")
     }
@@ -124,8 +129,14 @@ public struct ManualRunLauncher: Sendable {
         case let .launch(l):
             // The launch truncates manual.log: keep the previous run's first (RunLogs.swift).
             try ManualRunLog.rotate(stateDir: stateDir)
-            return try VaniProcess.launch(l.program, arguments: l.arguments, environment: l.environment,
-                                          log: Self.logURL(stateDir: stateDir), onExit: onExit)
+            let log = Self.logURL(stateDir: stateDir)
+            // vani records this path in the run's record, so `vani runs failures`
+            // names this run's log. An environment variable, not a flag: a vani
+            // that predates it ignores it and still runs.
+            var environment = l.environment
+            environment[Self.logEnvironmentKey] = log.path
+            return try VaniProcess.launch(l.program, arguments: l.arguments, environment: environment,
+                                          log: log, onExit: onExit)
         }
     }
 }

@@ -20,8 +20,9 @@ import (
 // <state dir>/runs/history/<id>.json, then prunes the directory to the newest
 // maxRunHistory records and maxRunHistoryBytes. last.json stays the one record
 // `vani status --json` and the Mac app read; the history is only for looking
-// back (`vani runs`). A record that never ended (the process died) is never
-// written to the history: it is last.json until the next run replaces it.
+// back (`vani runs`). A record that never ended (the process died) is last.json
+// until the next run starts, which first keeps it in the history as
+// "interrupted" (archiveInterruptedRun) before replacing it.
 //
 // The directory also holds <ts>-manual.log files, the app's rotated
 // runs/manual.log (macos ManualRunLauncher). Those are the app's: this file
@@ -78,6 +79,52 @@ func writeRunHistory(stateDir string, r runRecord) error {
 	}
 	_, err = pruneRunHistory(stateDir, maxRunHistory, maxRunHistoryBytes)
 	return err
+}
+
+// archiveInterruptedRun keeps, in the history as "interrupted", the run that
+// last.json says is still going when it is not: it is called by a run that has
+// just taken the ledger (dailyJob), before that run replaces last.json, so the
+// record of a run whose process died is not lost with it.
+//
+// Holding the ledger is the proof that no other run is live: every run holds
+// it from before its record is first written until after its last write, so a
+// `running` record seen here belongs to a process that is gone, or to an
+// earlier run of this same process that never wrote its end. That is why the
+// record's pid is not asked whether it lives: a pid is reused (after a reboot
+// above all), and a live reader of it would hide the run for good. The one
+// check kept is the daemon's: if daemon.json names a live process other than
+// this one and it is the record's pid, the record is left alone, since a caller
+// that does not hold the ledger would otherwise archive a live run.
+//
+// It returns the record it archived, or nil when it archived nothing: no
+// record, a finished one (already in the history), a live daemon's, or one the
+// history holds already (an earlier archive that was not followed by the new
+// run's first write; the file is never replaced, so the first archive stands).
+// An unreadable last.json is an error and nothing is archived: its replacement
+// is the caller's to report.
+func archiveInterruptedRun(stateDir string) (*runRecord, error) {
+	r, err := readRunRecord(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("read the previous run's record: %w", err)
+	}
+	if r == nil || r.Outcome != outcomeRunning {
+		return nil, nil
+	}
+	if r.PID != os.Getpid() {
+		if d, derr := liveDaemon(stateDir); derr == nil && d.PID == r.PID {
+			return nil, nil
+		}
+	}
+	if _, err := os.Lstat(runHistoryPath(stateDir, runID(*r))); err == nil {
+		return nil, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check the run history: %w", err)
+	}
+	r.Outcome = outcomeInterrupted
+	if err := writeRunHistory(stateDir, *r); err != nil {
+		return nil, fmt.Errorf("keep the interrupted run in the history: %w", err)
+	}
+	return r, nil
 }
 
 // historyFile is one record file of the history, as the directory shows it.

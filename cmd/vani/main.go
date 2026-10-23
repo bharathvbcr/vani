@@ -220,6 +220,11 @@ type env struct {
 	stdout     io.Writer
 	stderr     io.Writer
 
+	// runLog is the log file a manual run's output goes to, as its starter said
+	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it
+	// said was refused. dailyJob records it in the run record.
+	runLog string
+
 	// applied is the config the last run's reload left (reloadConfig); nil
 	// before the first. A run whose config file cannot be read falls back to it.
 	appliedMu sync.Mutex
@@ -605,6 +610,7 @@ func (e *env) cmdRunOnce(args []string) error {
 	if err := checkRunOptions(opts, cfg.Watchlist); err != nil {
 		return err
 	}
+	e.useRunLog()
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
 	if errors.Is(err, ledger.ErrLocked) {
 		hint := "the daemon, or a run-once, rescore or retriage still going; try again when it is done"

@@ -70,10 +70,21 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// No run has triaged this posting (vani's `untriaged`, set from its status):
     /// it has no fit, relevance, priority, keywords or row, and none is shown.
     /// Absent from an older vani, which never sends such rows in a ranked view.
-    public var untriaged: Bool?
+    /// Decoded leniently like the duplicate fields below: a value that is not a
+    /// bool reads as nil (a triaged row) and never fails the list.
+    public var untriaged: Bool? {
+        get { untriagedWire?.value }
+        set { untriagedWire = newValue.map { Lenient($0) } }
+    }
     /// The kind of rule ("excluded" or "title") by which the next run's
     /// prefilter would drop this untriaged posting before triage; never the rule.
-    public var prefilterDrop: String?
+    /// Lenient: a value that is not a string reads as nil.
+    public var prefilterDrop: String? {
+        get { prefilterDropWire?.value }
+        set { prefilterDropWire = newValue.map { Lenient($0) } }
+    }
+    var untriagedWire: Lenient<Bool>?
+    var prefilterDropWire: Lenient<String>?
 
     // Display-only insight from `vani jobs` (cmd/vani/jobsinsight.go).
     /// The date the age is measured from: the board's posted date, or when
@@ -164,8 +175,9 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case key, company, title, location, remote, department, url, status, closed, rank, coverage,
              explanation, missing, unsure, lca, employer, triage, category, mark, note, description,
-             relevance, priority, keywords, semantic, row, untriaged
-        case prefilterDrop = "prefilter_drop"
+             relevance, priority, keywords, semantic, row
+        case untriagedWire = "untriaged"
+        case prefilterDropWire = "prefilter_drop"
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
         case dupSiblingOfWire = "dup_sibling_of"

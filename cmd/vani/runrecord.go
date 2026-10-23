@@ -46,6 +46,11 @@ const (
 	outcomeOK        = "ok"
 	outcomeFailed    = "failed"
 	outcomeCancelled = "cancelled"
+	// outcomeInterrupted is a run whose process died: runState reports it for a
+	// `running` record whose process is gone, and archiveInterruptedRun writes it
+	// as the outcome of such a record it keeps in the run history. last.json never
+	// holds it: the next run replaces that record the moment it starts.
+	outcomeInterrupted = "interrupted"
 )
 
 // Run stages: where a failed run stopped.
@@ -82,7 +87,13 @@ func runCause(err error) string {
 }
 
 type runRecord struct {
-	V          int       `json:"v"`
+	V int `json:"v"`
+	// ID is the run's id (runID), written with every record so a reader that
+	// names a file after the run (the Mac app's rotated manual logs) takes the
+	// name from here instead of rebuilding it. runID(r) stays the authority:
+	// readers of this package ignore the field, and a record without it (an
+	// older vani's) is as valid.
+	ID         string    `json:"id,omitempty"`
 	PID        int       `json:"pid"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitzero"`
@@ -92,8 +103,13 @@ type runRecord struct {
 	Trigger string `json:"trigger,omitempty"`
 	// Options are a manual run's overrides; nil when it had none.
 	Options *runOptions `json:"options,omitempty"`
-	Stage   string      `json:"stage,omitempty"`
-	Error   string      `json:"error,omitempty"`
+	// Log is the file the run's output was sent to, when the process that
+	// started it said so (VANI_RUN_LOG, validated by checkRunLog: always a path
+	// under <state dir>/runs). "" for a run that did not say (the daemon's, a
+	// shell's, an older app's); readers then list the logs that exist.
+	Log   string `json:"log,omitempty"`
+	Stage string `json:"stage,omitempty"`
+	Error string `json:"error,omitempty"`
 	// Cause names a failed run's known cause (runCause), so a reader can word
 	// the failure without reading Error; "" when the failure has none of them.
 	Cause string `json:"cause,omitempty"`
@@ -226,6 +242,7 @@ func writeRunRecord(stateDir string, r runRecord) error {
 // copy of it (runhistory.go) are the same bytes.
 func marshalRunRecord(r runRecord) ([]byte, error) {
 	r.V = runRecordVersion
+	r.ID = runID(r)
 	return json.MarshalIndent(r, "", "  ")
 }
 
@@ -265,7 +282,7 @@ func readRunRecordFile(path string) (*runRecord, error) {
 		return nil, fmt.Errorf("run record version %d, want %d", r.V, runRecordVersion)
 	}
 	switch r.Outcome {
-	case outcomeRunning, outcomeOK, outcomeFailed, outcomeCancelled:
+	case outcomeRunning, outcomeOK, outcomeFailed, outcomeCancelled, outcomeInterrupted:
 	default:
 		return nil, fmt.Errorf("run record has outcome %q", r.Outcome)
 	}
@@ -289,7 +306,7 @@ func runState(r runRecord, at time.Time) string {
 	if pidAlive(r.PID) && at.Sub(r.StartedAt) < maxRunAge {
 		return outcomeRunning
 	}
-	return "interrupted"
+	return outcomeInterrupted
 }
 
 // statusCounts folds records into postings by status, the one counting both

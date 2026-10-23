@@ -258,16 +258,19 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 		return nil, nil, nil, fmt.Errorf("egress: %w", err)
 	}
 	// A local decision model configured with a server is started for this run
-	// only. If it does not come up, the run goes on without the shadow. The
-	// endpoint lives exactly as long as its server: a daemon reuses w, and a
-	// failed start must never inherit the last run's stopped address.
+	// only, and only when the run will ask a backend something: a list-only
+	// run (advance false) never does, and loading a model for it costs seconds
+	// and gigabytes for nothing. If it does not come up, the run goes on without
+	// the shadow. The endpoint lives exactly as long as its server: a daemon
+	// reuses w, and a failed start must never inherit the last run's stopped
+	// address.
 	w.localEndpoint = ""
 	errs := newBackendErrors()
 	w.mu.Lock()
 	w.backendErrs, w.boards, w.advance, w.semPre = errs, nil, nil, nil
 	w.mu.Unlock()
 	stop := func() {}
-	if l := w.cfg.Decide.Local; l != nil && l.Server != nil {
+	if l := w.cfg.Decide.Local; advance && l != nil && l.Server != nil {
 		srv, err := localserver.Start(ctx, localserver.Config{
 			Binary: l.Server.Binary, Model: l.Server.ModelPath, ContextSize: l.Server.ContextSize,
 			StartTimeout: time.Duration(l.Server.StartTimeoutMS) * time.Millisecond,

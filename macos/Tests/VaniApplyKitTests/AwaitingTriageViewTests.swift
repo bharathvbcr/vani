@@ -41,6 +41,47 @@ final class AwaitingTriageViewTests: XCTestCase {
         XCTAssertEqual(page.jobs[1].prefilterDrop, "title")
     }
 
+    /// `untriaged` and `prefilter_drop` are display-only like the duplicate and logo
+    /// fields: a value of the wrong type reads as absent, and one odd row never
+    /// fails the whole list.
+    func testWrongTypedUntriagedFieldsDecodeAsNilAndKeepTheList() throws {
+        let page = try JobsClient.decoder.decode(JobsPage.self, from: Data(#"""
+        {"view":"pending","jobs":[
+          {"key":"gh:a:1","company":"A","title":"T","status":"live","untriaged":"yes","prefilter_drop":7},
+          {"key":"gh:a:2","company":"A","title":"T","status":"live","untriaged":1,"prefilter_drop":{"kind":"title"}},
+          {"key":"gh:a:3","company":"A","title":"T","status":"live","untriaged":[true],"prefilter_drop":["title"]},
+          {"key":"gh:a:4","company":"A","title":"T","status":"live","untriaged":null,"prefilter_drop":null},
+          {"key":"gh:a:5","company":"A","title":"T","status":"live","untriaged":true,"prefilter_drop":"title"},
+          {"key":"gh:a:6","company":"A","title":"T","status":"live"}],
+         "total":6,"shown":6,"counts":{}}
+        """#.utf8))
+        XCTAssertEqual(page.jobs.map(\.key), (1...6).map { "gh:a:\($0)" }, "a bad field never fails the list")
+        for j in page.jobs.prefix(3) {
+            XCTAssertNil(j.untriaged, "\(j.key): a non-bool is not a flag")
+            XCTAssertNil(j.prefilterDrop, "\(j.key): a non-string is not a rule kind")
+            XCTAssertFalse(j.isUntriaged)
+            XCTAssertNil(j.prefilterNote)
+        }
+        XCTAssertNil(page.jobs[3].untriaged); XCTAssertNil(page.jobs[3].prefilterDrop)
+        XCTAssertTrue(page.jobs[4].isUntriaged, "a well-typed row is still read")
+        XCTAssertEqual(page.jobs[4].prefilterDrop, "title")
+        XCTAssertNil(page.jobs[5].untriaged, "absent (an older vani) stays absent")
+    }
+
+    /// A row built in code keeps the public optional API, and round-trips through
+    /// the encoder the list path uses.
+    func testUntriagedFieldsRoundTrip() throws {
+        var j = Job(key: "gh:a:1", company: "A", title: "T", status: "live")
+        j.untriaged = true
+        j.prefilterDrop = "excluded"
+        let back = try JobsClient.decoder.decode(Job.self, from: JSONEncoder().encode(j))
+        XCTAssertEqual(back.untriaged, true)
+        XCTAssertEqual(back.prefilterDrop, "excluded")
+        j.untriaged = nil
+        j.prefilterDrop = nil
+        XCTAssertNil(j.untriaged); XCTAssertNil(j.prefilterDrop)
+    }
+
     /// Even a reply that carried a score for an untriaged row (an odd or newer vani)
     /// is not drawn as a ranking.
     func testAnUntriagedRowNeverDrawsAScore() {

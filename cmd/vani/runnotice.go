@@ -145,7 +145,7 @@ func decideNotice(f lastRunFacet, at time.Time, loc *time.Location) noticeFacet 
 		return skip("the run is still going")
 	case outcomeCancelled:
 		return skip("the run was cancelled")
-	case "interrupted":
+	case outcomeInterrupted:
 		return skip("the run did not finish (its process is gone)")
 	case outcomeOK, outcomeFailed:
 	default:

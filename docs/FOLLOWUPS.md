@@ -1634,8 +1634,9 @@ Left open:
   (`crawler.ts` `WD_HOST`, `scraper.ts`, `portal.ts`). Only `applied.ts` `postingKey` folds them.
 - **`jobs find --url` on a live posting returns no `row`.** `extension/src/jobrow.ts`
   `parseFindRow` treats that as "no row". This was read in the code, not run in a browser.
-- **Swift decoding.** `Job.untriaged` and `Job.prefilterDrop` are plain optionals, not
-  `Lenient<>`, so a wrong-typed value fails the whole list decode.
+- **Swift decoding.** Fixed (2026-10-22). `Job.untriaged` and `Job.prefilterDrop` are `Lenient<>`
+  behind the same optional properties (`untriagedWire`, `prefilterDropWire`): a wrong-typed value
+  reads as nil (a triaged row) and the list survives.
 - **Speed.** The custom `Job` JSON encoder on the list path is not benchmarked.
 - **v2 and pcsx ids are inferred, not verified, to be the same.** No host serves both APIs. Keys
   stay `ef:netflix.com:{id}`. Checked again on 2026-10-22 (Microsoft v2: 403 "Not authorized for
@@ -1653,8 +1654,10 @@ Left open:
   hand-written files against the old functions, kept as a test oracle (`robots_oracle_test.go`).
 - **Netflix costs one extra request per run.** The 403 pcsx probe runs every time; the result is
   not cached.
-- **List-only still starts the local llama.cpp server.** `startRun` does so when
-  `decide.local.server` is set.
+- **List-only still starts the local llama.cpp server.** Fixed (2026-10-22). `startRun` starts it
+  only when the pass advances (`advance` true); `runnerFor` then neither warns that the local model
+  is disabled nor that the shadow is unavailable on a pass that asks nothing. Inbox polls still
+  advance, so they start it as before. Test: `cmd/vani/listonlylocal_test.go`.
 - **Non-ASCII board names (closed 2026-10-22).** `sources.BoardNameProblem` now takes Unicode
   letters and digits (so `Zürich Labs`, `东京 科技`), still refusing controls, format characters
   (zero-width joiner, bidirectional overrides), non-U+0020 spaces, punctuation (`. / ? # % :`,
@@ -1666,7 +1669,9 @@ Left open:
   Open: `jobs ingest` derives the token for a spaced name as the lower-cased, hyphenated name, so
   a pasted `jobs.ashbyhq.com/Zürich%20Labs` page gets the token `zürich-labs`, a non-ASCII key
   part (keys accept it; the Mac app's key check refuses only whitespace and controls). Give it an
-  ASCII slug with `watchlist add --token` if that matters.
+  ASCII slug with `watchlist add --token` if that matters. (A non-ASCII token was already possible
+  before this change for an unspaced name such as `/データ`: `sources.TokenProblem` refuses only
+  `:`, and the request path is percent-escaped.)
 - **The schedule is not kept.** `vani launchd plist` puts no decision-model key in the agent's
   environment, so a daemon from it triages nothing until the owner adds `OPENROUTER_API_KEY` to
   its `EnvironmentVariables`. Whether to install one is the owner's decision.
@@ -1678,8 +1683,8 @@ Left open:
   `https://upload.wikimedia.org/wikipedia/commons/3/3b/HRT_Primary_Logo_-_Full_Color.png`
   (721x420, 9,943 bytes, CC BY-SA 4.0, credited to hudsonrivertrading.com) and Marvell
   `https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Marvell_Logo.svg/330px-Marvell_Logo.svg.png`
-  (330x95, 3,277 bytes, a render of the SVG). Neither is applied to the live config until the
-  owner does it. The Marvell mark is black on transparent, so it may vanish on a dark
+  (330x95, 3,277 bytes, a render of the SVG). Both applied to the live config on 2026-10-22
+  (`watchlist domain` and `watchlist icon`; `logos refresh` fetched 2, failed 0). The Marvell mark is black on transparent, so it may vanish on a dark
   background; Marvell's own Workday page offers only an SVG (`/MarvellCareers/assets/logo`).
 - **Microsoft Eightfold 429 is unexplained, and cleared by itself.** Re-probed 2026-10-23 00:16
   UTC with 5 requests to Microsoft hosts: `apply.careers.microsoft.com` robots.txt 200 (allows
@@ -1724,5 +1729,5 @@ Left open:
     `egress` pacing are not, and requests made outside the listing phase (pay look-ups, `jobs find`)
     carry no throttle. After a host answers 200 it is open again, so a host that serves page 1 and
     429s page 2 gets the usual retries on page 2 (bursty, not blocked).
-- **An interrupted run never reaches the run history.** A run whose process died leaves a `running` record in `last.json`, and the next run replaces it before it is ever written to `runs/history/`. Archiving a dead-pid `running` record at the next start would keep it.
-- **Nothing ties a log to its run.** `vani runs failures` names the logs that exist, with size and last write time; the run record does not say which log holds its output, and a rotated `manual-<time>.log` is named by its last write, not by run id. Recording the log path in the run record would let the report say which.
+- **An interrupted run never reaches the run history.** Fixed (2026-10-22). `dailyJob` calls `archiveInterruptedRun` (`cmd/vani/runhistory.go`) after the run holds the ledger and before it replaces `last.json`: a `running` record is written to `runs/history/<id>.json` with outcome `interrupted` (a new accepted outcome; no end time, since none is known), once and never over an existing entry. The ledger lock is the proof that no other run is live, so the record's pid is not asked (a reused pid, or this process's own pid after a failed final write, must not hide the run); the one check kept is that `daemon.json` does not name a live other process holding that pid. An unreadable `last.json` is reported on stderr and replaced; nothing is archived from it. An older vani reading the history shows an `interrupted` file as a problem row (it does not know the outcome). A run that died is archived at the next run's start, not before: until then it is `last.json` and `status` reports it as interrupted, as it did.
+- **Nothing ties a log to its run.** Fixed (2026-10-22). The app starts `run-once` with `VANI_RUN_LOG=<state>/runs/manual.log` (an environment variable, so an older vani ignores it); `useRunLog` validates it (`checkRunLog`: absolute, no `..`, no control characters, a regular file or a new one inside the resolved `<state>/runs`) and `last.json` records it as `log`, next to a new `id` field (the run id). A refused path is said on stderr and not recorded; the run is unaffected. When the app rotates `manual.log` it finds the newest run in `last.json` and the history (`RunLogOwner`) that recorded this file and, if the log was last written during that run (60 s slack), names the rotated file `history/manual-<run id>.log` (else the old `manual-<time>.log`, never over an existing file). The newest claimant, not `last.json`'s run: a scheduled run the daemon made in between records no log. `runs failures` reports `history/manual-<id>.log`, else the recorded file unless a later run recorded the same path ("Log: not kept"); a run with no recorded log still lists the logs that exist. Left: daemon runs record no log (`vani.err.log` holds every run it made, so the report still lists it); a refused run (ledger locked) writes no record, so a following rotation can name its refusal text after the previous run only if that run's name is free and its mtime fits, which is rare and not guarded further.

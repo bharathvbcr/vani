@@ -330,12 +330,16 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 	if l := w.cfg.Decide.Local; l != nil {
 		endpoint := l.Endpoint
 		if l.Server != nil {
-			endpoint = w.localEndpoint // set by runOnce when it started the server
+			endpoint = w.localEndpoint // set by startRun when it started the server
 		}
 		lb, err := localBackend(l, endpoint)
-		if err != nil {
+		switch {
+		case err != nil && l.Server != nil && !advance:
+			// A pass that asks nothing starts no server (startRun): no endpoint
+			// is expected, and saying the model is disabled would be noise.
+		case err != nil:
 			w.warnf("local decision model disabled: %v", err)
-		} else {
+		default:
 			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
 		}
 	}
@@ -353,7 +357,7 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 				break
 			}
 		}
-		if shadow == nil {
+		if shadow == nil && advance {
 			w.warnf("shadow %q unavailable; running without a shadow", name)
 		}
 	}

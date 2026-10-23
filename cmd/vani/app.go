@@ -75,7 +75,8 @@ var buildApp = wireApp
 // run replaces it.
 func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOptions) daemon.Job {
 	return func(ctx context.Context) error {
-		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning, Trigger: trigger, Options: opts.recorded()}
+		e.keepInterruptedRun()
+		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning, Trigger: trigger, Options: opts.recorded(), Log: e.runLog}
 		if app.Ledger != nil {
 			rec.CountsBefore = statusCounts(app.Ledger.All())
 		}
@@ -326,6 +327,20 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 	pub, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
 	rec.DigestRoles, rec.ImpressionsError = pub.roles, pub.impressionsError
 	return stageDigest, err
+}
+
+// keepInterruptedRun archives the previous run's record when that run never
+// ended (archiveInterruptedRun), before this run replaces it. A failure is a
+// warning, never a failed run: the record is bookkeeping, and an unreadable one
+// is replaced either way.
+func (e *env) keepInterruptedRun() {
+	r, err := archiveInterruptedRun(e.stateDir)
+	switch {
+	case err != nil:
+		fmt.Fprintf(e.stderr, "vani: the previous run's record was not kept: %s\n", oneLine(err.Error(), maxRunErrorRunes))
+	case r != nil:
+		fmt.Fprintf(e.stderr, "vani: the previous run (%s) never finished and its process is gone; kept in the run history as interrupted\n", runID(*r))
+	}
 }
 
 // saveRunRecord writes the record, and a finished one to the run history too;

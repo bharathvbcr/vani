@@ -152,6 +152,156 @@ final class RunLogsTests: XCTestCase {
         XCTAssertTrue(try rotated(s).isEmpty || !fm.fileExists(atPath: RunFiles.historyFolder(stateDir: s).path))
     }
 
+    // MARK: naming a rotated log by its run
+
+    private let runStart = Date(timeIntervalSince1970: 1_792_000_000) // 2026-10-14T17:46:40Z
+    private let runID = "20261014T174640.123Z-4242"
+
+    /// last.json as vani writes it (Go's RFC 3339 with nanoseconds), plus whatever `extra` overrides.
+    private func writeRecord(_ s: String, log: String?, id: String? = nil, finished: String? = "2026-10-14T17:49:40.987654321Z",
+                             extra: [String: Any] = [:]) throws {
+        var rec: [String: Any] = ["v": 1, "pid": 4242, "started_at": "2026-10-14T17:46:40.123456789Z", "outcome": "ok"]
+        rec["id"] = id ?? runID
+        if let log { rec["log"] = log }
+        if let finished { rec["finished_at"] = finished }
+        rec.merge(extra) { _, new in new }
+        let url = RunFiles.record(stateDir: s)
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: rec).write(to: url)
+    }
+
+    private func rotatedName(_ s: String, modified: Date? = nil) throws -> String {
+        _ = try writeLog(s, "output", modified: modified ?? runStart.addingTimeInterval(120))
+        guard case let .kept(url) = try ManualRunLog.rotate(stateDir: s) else { XCTFail("not kept"); return "" }
+        return url.lastPathComponent
+    }
+
+    func testTheLogOfTheRecordedRunIsKeptUnderItsRunID() throws {
+        let s = try state()
+        try writeRecord(s, log: ManualRunLauncher.logURL(stateDir: s).path)
+        XCTAssertEqual(try rotatedName(s), "manual-\(runID).log")
+        let kept = RunFiles.historyFolder(stateDir: s).appendingPathComponent("manual-\(runID).log")
+        XCTAssertEqual(try String(contentsOf: kept, encoding: .utf8), "output")
+    }
+
+    /// A run still going or one that never wrote its end has no finish to bound the log's last write.
+    func testARunWithNoRecordedEndStillOwnsItsLog() throws {
+        let s = try state()
+        try writeRecord(s, log: ManualRunLauncher.logURL(stateDir: s).path, finished: nil, extra: ["outcome": "running"])
+        XCTAssertEqual(try rotatedName(s), "manual-\(runID).log")
+    }
+
+    /// Everything that would tie the file to the wrong run keeps the time-stamped name.
+    func testALogNoRecordClaimsKeepsItsTimeStampedName() throws {
+        let stamped = "manual-20261014T174840Z.log" // the log's last write, 17:48:40Z
+        let cases: [(String, (String) throws -> Void)] = [
+            ("no record", { _ in }),
+            ("an older vani's record: no id, no log", { try self.writeRecord($0, log: nil, extra: ["id": NSNull()]) }),
+            ("a record with no log", { try self.writeRecord($0, log: nil) }),
+            ("another file's log", { try self.writeRecord($0, log: "/elsewhere/other.log") }),
+            ("a relative log path", { try self.writeRecord($0, log: "runs/manual.log") }),
+            ("an id that is not a run id", { try self.writeRecord($0, log: ManualRunLauncher.logURL(stateDir: $0).path, id: "../../etc/x") }),
+            ("an id of the wrong type", { try self.writeRecord($0, log: ManualRunLauncher.logURL(stateDir: $0).path, extra: ["id": 5]) }),
+            ("a log of the wrong type", { try self.writeRecord($0, log: nil, extra: ["log": ["manual.log"]]) }),
+            ("an unreadable start", { try self.writeRecord($0, log: ManualRunLauncher.logURL(stateDir: $0).path, extra: ["started_at": "yesterday"]) }),
+            ("a log last written long after the run ended", { try self.writeRecord($0, log: ManualRunLauncher.logURL(stateDir: $0).path, finished: "2026-10-14T17:49:40Z") }),
+            ("a log last written before the run began", { try self.writeRecord($0, log: ManualRunLauncher.logURL(stateDir: $0).path, extra: ["started_at": "2026-10-14T18:30:00Z"]) }),
+            ("a record that is not JSON", { s in
+                try self.fm.createDirectory(at: RunFiles.record(stateDir: s).deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("{nope".utf8).write(to: RunFiles.record(stateDir: s))
+            }),
+            ("a record that is an array", { s in
+                try self.fm.createDirectory(at: RunFiles.record(stateDir: s).deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("[]".utf8).write(to: RunFiles.record(stateDir: s))
+            }),
+            ("a record past vani's bound", { s in
+                try self.fm.createDirectory(at: RunFiles.record(stateDir: s).deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(String(repeating: " ", count: RunLogOwner.maxRecordBytes + 1).utf8).write(to: RunFiles.record(stateDir: s))
+            }),
+        ]
+        for (name, arrange) in cases {
+            let s = try state()
+            try arrange(s)
+            // Written 120 s after the run began, or 600 s for the case that ended at 17:49:40.
+            let late = name.contains("long after")
+            XCTAssertEqual(try rotatedName(s, modified: runStart.addingTimeInterval(late ? 600 : 120)),
+                           late ? "manual-20261014T175640Z.log" : stamped, name)
+        }
+    }
+
+    /// The daemon makes a scheduled run (no log recorded, and last.json now) after
+    /// the app's run and before the app rotates its log: the log is still the app
+    /// run's, found in the history. A newer claimant of the file wins over it.
+    func testALogIsTheNewestClaimantsNotJustLastJSONs() throws {
+        let s = try state()
+        let manual = ManualRunLauncher.logURL(stateDir: s).path
+        let folder = RunFiles.historyFolder(stateDir: s)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        func history(_ id: String, _ rec: [String: Any]) throws {
+            try JSONSerialization.data(withJSONObject: rec).write(to: folder.appendingPathComponent("\(id).json"))
+        }
+        let appRun = "20261014T174640.123Z-4242"
+        try history(appRun, ["v": 1, "id": appRun, "log": manual, "started_at": "2026-10-14T17:46:40.123456789Z",
+                             "finished_at": "2026-10-14T17:49:40Z", "outcome": "ok"])
+        // The daemon's run: newer, no log; it owns last.json.
+        try writeRecord(s, log: nil, id: "20261014T180000.000Z-99", finished: "2026-10-14T18:01:00Z",
+                        extra: ["started_at": "2026-10-14T18:00:00Z"])
+        XCTAssertEqual(try rotatedName(s), "manual-\(appRun).log")
+
+        // A newer app run that claims the file owns it instead; the log's last write
+        // (17:48:40) is before that run began, so it is not attributed to it.
+        let s2 = try state()
+        let folder2 = RunFiles.historyFolder(stateDir: s2)
+        try fm.createDirectory(at: folder2, withIntermediateDirectories: true)
+        let manual2 = ManualRunLauncher.logURL(stateDir: s2).path
+        let newer = "20261014T190000.000Z-5"
+        try JSONSerialization.data(withJSONObject: ["v": 1, "id": newer, "log": manual2, "started_at": "2026-10-14T19:00:00Z", "outcome": "ok"])
+            .write(to: folder2.appendingPathComponent("\(newer).json"))
+        try writeRecord(s2, log: nil, id: "20261014T180000.000Z-99", finished: "2026-10-14T18:01:00Z",
+                        extra: ["started_at": "2026-10-14T18:00:00Z"])
+        XCTAssertEqual(try rotatedName(s2), "manual-20261014T174840Z.log")
+    }
+
+    /// The name by run id is never taken over an existing file: the second log is kept under its stamp.
+    func testARunIDNameAlreadyTakenIsNeverOverwritten() throws {
+        let s = try state()
+        let folder = RunFiles.historyFolder(stateDir: s)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let taken = folder.appendingPathComponent("manual-\(runID).log")
+        try Data("the run's own log".utf8).write(to: taken)
+        try writeRecord(s, log: ManualRunLauncher.logURL(stateDir: s).path)
+        XCTAssertEqual(try rotatedName(s), "manual-20261014T174840Z.log")
+        XCTAssertEqual(try String(contentsOf: taken, encoding: .utf8), "the run's own log")
+    }
+
+    /// Run-id names and time-stamped names sort together by when the run happened,
+    /// so the newest-N rule keeps the newest whichever way a log was named.
+    func testPruningKeepsTheNewestAcrossBothNamings() throws {
+        let s = try state()
+        let folder = RunFiles.historyFolder(stateDir: s)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["manual-20261014T100000Z.log", "manual-20261014T110000.500Z-77.log", "manual-20261014T120000Z.log", "manual-20261014T130000.250Z-78.log"] {
+            try Data(name.utf8).write(to: folder.appendingPathComponent(name))
+        }
+        ManualRunLog.prune(folder: folder, fileManager: fm, maxKept: 2, maxBytes: 1 << 20)
+        XCTAssertEqual(try rotated(s), ["manual-20261014T120000Z.log", "manual-20261014T130000.250Z-78.log"])
+    }
+
+    /// The launcher tells vani where the run's output goes, and a vani that
+    /// ignores the variable still runs.
+    func testTheLauncherNamesTheLogToVani() throws {
+        let s = try state()
+        let vani = try tempDir(self).appendingPathComponent("vani")
+        try Data("#!/bin/sh\necho \"vani: log is $VANI_RUN_LOG\"\n".utf8).write(to: vani)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: vani.path)
+        let runner = DraftRunner(vaniBinary: vani, stateDir: s, keys: .noKey, decisionKey: { nil })
+        let exited = expectation(description: "run exited")
+        _ = try ManualRunLauncher(runner: runner).start(ManualRunOptions(), stateDir: s) { _ in exited.fulfill() }
+        wait(for: [exited], timeout: 10)
+        let out = try String(contentsOf: ManualRunLauncher.logURL(stateDir: s), encoding: .utf8)
+        XCTAssertTrue(out.contains("vani: log is \(ManualRunLauncher.logURL(stateDir: s).path)"), out)
+    }
+
     // MARK: which files are offered
 
     func testOnlyExistingRunFilesAreOffered() throws {

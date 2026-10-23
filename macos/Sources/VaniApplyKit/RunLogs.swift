@@ -67,8 +67,9 @@ public enum ManualRunLog {
         case tooLarge(Int)
     }
 
-    /// Moves runs/manual.log to runs/history/manual-<UTC time of its last write>.log,
-    /// then prunes the rotated logs to `maxKept` and `maxBytes`. Call it just before
+    /// Moves runs/manual.log to runs/history/manual-<run id>.log when last.json
+    /// says that run wrote it (`RunLogOwner`), else to
+    /// runs/history/manual-<UTC time of its last write>.log, then prunes the rotated logs to `maxKept` and `maxBytes`. Call it just before
     /// the next run opens the log. A rename that fails throws: the run would
     /// otherwise destroy the log it is meant to keep. Pruning that fails does not
     /// throw (a leftover old log is harmless, and the next rotation prunes again).
@@ -94,8 +95,16 @@ public enum ManualRunLog {
         }
         let folder = RunFiles.historyFolder(stateDir: stateDir)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let stamp = stampFormatter().string(from: (attrs[.modificationDate] as? Date) ?? Date())
+        let modified = attrs[.modificationDate] as? Date
+        let stamp = stampFormatter().string(from: modified ?? Date())
         var dest = folder.appendingPathComponent("\(prefix)\(stamp)\(suffix)")
+        // A log that belongs to the run last.json records is named by that run's id,
+        // which is the name `vani runs failures` looks for. A name already taken
+        // (or a log no record claims) keeps the stamp name below, never overwriting.
+        if let id = RunLogOwner.runID(ofLogModifiedAt: modified, stateDir: stateDir, fileManager: fm) {
+            let byID = folder.appendingPathComponent("\(prefix)\(id)\(suffix)")
+            if !fm.fileExists(atPath: byID.path) { dest = byID }
+        }
         // Two logs written in the same second: "~NN" sorts after the bare name, so newest stays last.
         var n = 2
         while fm.fileExists(atPath: dest.path) {
@@ -138,5 +147,83 @@ public enum ManualRunLog {
         f.timeZone = TimeZone(identifier: "UTC")
         f.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
         return f
+    }
+}
+
+/// Which run wrote runs/manual.log, read from the run records vani keeps
+/// (runs/last.json and runs/history): the newest one that claims the file. The
+/// log is rotated just before the next run starts; vani records the log's path
+/// (`log`, from the VANI_RUN_LOG this app sets) and the run's `id`. Everything
+/// read here is lenient and bounded: an older vani's record has neither field,
+/// and a record that does not add up names no owner (the log then keeps its
+/// time-stamped name).
+enum RunLogOwner {
+    /// vani's maxRunRecord: a larger record reads as unknown.
+    static let maxRecordBytes = 256 << 10
+    /// How far a log's last write may fall outside the run's own span. The
+    /// record's times are the run's start and end; vani prints a few lines
+    /// after it writes the end, and the clocks are one machine's.
+    static let slack: TimeInterval = 60
+
+    /// vani's runIDPattern (cmd/vani/runhistory.go). The id becomes part of a
+    /// file name, so it is checked here, not trusted from the file.
+    static func isRunID(_ s: String) -> Bool {
+        s.range(of: #"^[0-9]{8}T[0-9]{6}\.[0-9]{3}Z-[0-9]{1,10}$"#, options: .regularExpression) != nil
+    }
+
+    /// The id of the run whose record says it wrote runs/manual.log, when the log
+    /// was last written during that run; nil otherwise.
+    static func runID(ofLogModifiedAt modified: Date?, stateDir: String, fileManager fm: FileManager = .default) -> String? {
+        guard let modified, let (id, record) = newestClaimant(stateDir: stateDir, fileManager: fm),
+              let started = time(record["started_at"]),
+              modified >= started - slack else { return nil }
+        if let finished = time(record["finished_at"]), modified > finished + slack { return nil }
+        return id
+    }
+
+    /// The newest run (by run id, which sorts by start time) whose record claims
+    /// runs/manual.log, among last.json and the history. The newest, not
+    /// last.json's run: a scheduled run the daemon made since claims no log, and
+    /// the file is still the app run's before it.
+    static func newestClaimant(stateDir: String, fileManager fm: FileManager) -> (String, [String: Any])? {
+        let manual = ManualRunLauncher.logURL(stateDir: stateDir).path
+        func claim(_ record: [String: Any]?) -> (String, [String: Any])? {
+            guard let record, let id = record["id"] as? String, isRunID(id),
+                  let path = record["log"] as? String, sameFile(path, manual) else { return nil }
+            return (id, record)
+        }
+        var best = claim(readRecord(RunFiles.record(stateDir: stateDir)))
+        let folder = RunFiles.historyFolder(stateDir: stateDir)
+        let names = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
+            .filter { $0.hasSuffix(".json") && isRunID(String($0.dropLast(5))) }
+            .sorted(by: >).prefix(maxScanned)
+        for name in names {
+            // Names are sorted newest first, so the first claim is the newest in the history.
+            guard let c = claim(readRecord(folder.appendingPathComponent(name))) else { continue }
+            if best == nil || c.0 > best!.0 { best = c }
+            break
+        }
+        return best
+    }
+
+    /// vani's maxRunHistoryScan: at most this many history files are looked at.
+    static let maxScanned = 200
+
+    static func readRecord(_ url: URL) -> [String: Any]? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard let data = try? h.read(upToCount: maxRecordBytes + 1), data.count <= maxRecordBytes else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    private static func sameFile(_ a: String, _ b: String) -> Bool {
+        a.hasPrefix("/") && URL(fileURLWithPath: a).resolvingSymlinksInPath().path == URL(fileURLWithPath: b).resolvingSymlinksInPath().path
+    }
+
+    /// An RFC 3339 time as Go writes it, to the second: the fraction is dropped,
+    /// which the slack absorbs.
+    private static func time(_ value: Any?) -> Date? {
+        guard let s = value as? String else { return nil }
+        return ISO8601DateFormatter().date(from: s.replacingOccurrences(of: #"\.[0-9]+"#, with: "", options: .regularExpression))
     }
 }
