@@ -45,6 +45,35 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Career pipeline on rkb (2026-10-24): what is left
+
+Resumes, answer drafts, the semantic profile and DevPrism now take only `kbsync.Eligible` bullets
+(docs/RUNTIME.md, "The knowledge base" and "Building a resume"). Installed 2026-10-24; the
+`kb sync --replace` ran (backup `state/kbsync/backups/career-20261024-143402.db`, 43 blocks; DevPrism
+now holds 19).
+
+- **The approved pool is small: 17 entries, 37 bullets** (of 82 entries, 382 bullets), and 31 of
+  them are the base resume's. About 70 listed bullets fail only because they have no round-2 reader
+  pass on their current wording (rkb's two-round gate, lint.go:449-476). Running rkb's round-2
+  readers on the CV and tailored selections widens the tailoring choice and DevPrism's ranking
+  evidence. An owner decision, not code: keep two rounds everywhere, or relax drafts and ranking to
+  one reviewed pass while resumes keep two.
+- **Forced rescore.** `vani rescore` scores only postings with no rank, so the ~6,000 postings
+  ranked before the replace keep coverage from the old DevPrism blocks. A `--all` (bounded, DevPrism
+  only) would re-rank them.
+- **rkb fit under load.** At a load average of 119 (other sessions compiling) rkb's Chrome fit
+  outlived its 100 s and `vani resume` failed with `timeout`. A load-aware or longer fit bound needs
+  the 360 s total re-budgeted.
+- **The family rule has not run live.** Built after the last successful live run (v3, which showed
+  two framings of the tessl work); the run after it timed out under load.
+- **Pre-existing:** `TestDailyRunRereadsTheWatchlist` and `TestRunOnceOverridesReachTheAppAndTheRecord`
+  fail on clean `e9710ea` too, and a `cmd/vani` test run leaves `cmd/vani/runs/inbox.json` behind
+  (also on clean HEAD).
+- **rkb is not under version control** (`career/skills/resume-knowledge-base`); Vani mirrors its
+  review hash and selection defaults (eligible.go) and holds them to it with the real-bank oracle.
+- **Docs merge:** README.md, docs/RUNTIME.md and this file are also edited in `tmp/wt-jibe`
+  (`sources-live-audit`).
+
 ## Remaining after the final landing (2026-10-20)
 
 The ranking and filtering audit and its status per finding are in
@@ -653,14 +682,27 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   stays the last run that started. `vani status` adds `last_skip` when that slot is newer than the
   last real run, and the Pipeline tab says "A daily slot was skipped" instead of "No run in over a day".
 - **`internal/vault` is built but not wired (left as is, Fable D21, 2026-10-19).** Nothing imports
-  it. It is the planned `resume.HeaderSource` (`internal/resume/tools.go:94`;
-  `internal/resume/types.go:6`: typed wrappers fill the name and contact lines from the vault
-  after a call has been decided), and `internal/rule7/boundary_test.go` already gates it as a
-  package the decision code may not import. `resume.Client.Synthesize` already takes a
-  `HeaderSource`, but nothing calls `Synthesize` yet, so wiring the vault means adding that
-  caller. It brings personal data into the resume path and needs the owner's go-ahead.
-  Until then it is kept: its allowlist is sealed (`Allowed()` returns a copy) and it refuses
-  with `ErrNoKeychain` off macOS.
+  it. It implements `resume.HeaderSource` (`internal/resume/tools.go`), and
+  `internal/rule7/boundary_test.go` already gates it as a package the decision code may not import.
+  `resume.Client.Synthesize` was removed 2026-10-23 with the DevPrism resume path (`vani resume`
+  now builds with rkb, whose header comes from the bank), so `HeaderSource` has no caller left
+  but the vault itself: either delete the vault and `Header`/`HeaderSource` together, or keep
+  them for a header Vani would supply. It brings personal data into the resume path and needs the
+  owner's go-ahead. Until then it is kept: its allowlist is sealed (`Allowed()` returns a copy) and
+  it refuses with `ErrNoKeychain` off macOS.
+- **`vani resume` on rkb (2026-10-23).** Built (docs/RUNTIME.md, "Building a resume"). Open:
+  - `kb.vm_report` is not a config key: the validator report is guessed from `kb.code_root`
+    (`resumeVMReport`). Without one, figures with no manual verification are dropped as unverified.
+  - `JobKind.resume.usesModel` is false (`macos/Sources/VaniApplyKit/Agent.swift`), so the app runs
+    `vani resume` with no model key and it always builds the base selection; its comment and
+    `DraftingTests` still say DevPrism and "no model". The 180 s job timeout is tight with a retry.
+  - The agent's PATH is the system folders: `pdftotext` is found in Homebrew's prefixes by
+    `rkbresume`; Chrome by rkb's own list.
+  - Copies to fold: `kbsync.tokenIDs` (here `rkbresume.tokens`) and the untrusted-marker regexp
+    (`llmbackend`, `draft`, `rkbresume`) want exported owners; `rkbresume.Runner` (stdout and exit
+    code) could replace `kbsync.Runner`.
+  - The extension's `OWN_TEXT` (`extension/src/resume.ts`) lists `devprism`, not the new codes
+    (`kb`, `lint`, `fit`, `figures`); the bar then shows vani's own message, which is fine.
 - **Jev naming left after the Liquid D rename (2026-10-20, branch `liquid-d-rename`).** The decision
   model is Liquid D (`liquid/d1-ultra` over OpenRouter). `config.Default()` (what `vani init`
   writes) now names it and, by the owner's call, no llm: tests that need one set `testLLM`. And
@@ -1341,6 +1383,42 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     it fresh with scoped ids, because `Plan` adds any block DevPrism lacks.
   - No real sync has run, so only the Phase 0 copy of career.db has bare ids.
   - Tests: `internal/kbsync/scoped_test.go`.
+- **`kb sync` sends the approved pool only, and `--replace` retires the old blocks (built 2026-10-23;
+  fakes and a copy only, the real sync is the lead's step).** Two problems with the first design:
+  it sent every bank entry (superseded wordings, unreviewed drafts, 11 CAUTION claims in synced
+  bullets), and it never deleted, so DevPrism's 43 blocks from the 2026-08-22 markdown import
+  (LiquiTask "Deprecated", WisDev, Chronicle, filler) kept feeding `resume_gap_analysis`, which
+  Vani ranks postings with. Now:
+  - `kbsync.ResolvePool` (`internal/kbsync/pool.go`) cuts the bank to `kbsync.Eligible`'s verdict
+    over `kb.selections` (`eligible.go` owns the rule). An entry no selection lists is not synced;
+    a listed entry with no eligible bullet is withheld with a reason; a listed degree with no
+    bullets syncs as a bullet-less block. `kb.selections` empty refuses the run. The block hash
+    covers the bullet list, so a block whose bullets all pass hashes as before (no `hashVersion`
+    bump, no re-send); one that loses a bullet updates, and `buildUpdate` now drops an rkb bullet
+    (id under the block's `entry/` prefix) that rkb no longer lists, which DevPrism gates behind a
+    confirmation. DevPrism's own bullets stay. `Plan.Cautioned` is computed over what is sent and is
+    empty for a pool.
+  - `--replace` (`internal/kbsync/replace.go`, `backup.go`, `cmd/vani/kbcmd.go`): orphans are the
+    DevPrism blocks the pool does not produce. Only kinds the sync writes (`experience`, `work`,
+    `project`, `education`) are deleted; the 2 `publication` blocks have no rkb source to re-add them
+    and are spared unless `--delete-all-kinds` (or named with `--keep`). Order: copy `career.db`,
+    start DevPrism, check the copy holds exactly the ids DevPrism lists, upsert the pool, delete
+    only if every pool block landed (`Result.Landed`), then `career_delete_block` per orphan through
+    the same confirmation round trip as upserts (`confirm.go`, now shared); stops at the first
+    DevPrism error; a block already gone is not an error; a block changed since the plan is `stale`
+    and kept. Guards: at most `--max-delete` (default 100, ceiling 500), and nothing is deleted when
+    the pool has no block to sync.
+  - **Backup is Vani's.** DevPrism writes no `career-db-backups/`: `rg -uu "career-db-backups"` over
+    the DevPrism checkout finds nothing (the only backup code is `plugins/path_guard.rs` for project
+    files), and `career_delete_block` removes the row and embeddings with nothing kept
+    (`tools_career.rs:1044-1060`). The five files there are not from DevPrism's code. `sqlite3
+    .backup` takes a consistent snapshot of a WAL database with a writer present
+    (`TestBackupIncludesUncheckpointedWAL`); the copy is read back (`quick_check` ok, ids listed).
+    Needs a `sqlite3` binary (macOS ships `/usr/bin/sqlite3`).
+  - Not changed, worth knowing: Vani sends `kind:"work"` (`blocks.go:44`); DevPrism's canonical kind
+    is `experience` (`src/lib/resume-sections.ts`). Ranking normalizes it (`career_match/selection.rs:93`),
+    the UI's kind list may not.
+  - Tests: `internal/kbsync/{pool,replace,backup}_test.go`, `cmd/vani/{kbpool,kbreplace}_test.go`.
 - **kbsync tagging: built, smoke-tested on a copy, real sync still held by the owner.** DevPrism
   scores synced blocks without embeddings (skills, persona, recency, seniority), so rkb blocks were
   never picked. `hashVersion` 3 now sends skills from the stack, persona `ai`, plain titles/orgs and

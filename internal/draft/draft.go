@@ -6,6 +6,9 @@
 // says about the company and the role and leaves out pay and logistics), the
 // seeker's own target-roles summary, and the knowledge base bullets most
 // relevant to the question, each with its role title, organisation and dates.
+// Only bullets the owner's current resumes list and kbsync.Eligible passes are
+// evidence (FromResolved); after the reply, a figure the model was not shown is
+// refused (ground.go).
 // For a motivation question ("Why <company>?") the bullets are the ones closest
 // to the role's work and the target summary, and the model is told to tie them
 // to this company's mission and this role; the seeker's own motivation notes,
@@ -65,6 +68,9 @@ const (
 	CodeTimeout    = "timeout"
 	CodeProvider   = "provider"
 	CodeEmpty      = "empty_reply"
+	// CodeUngrounded: the draft holds a figure that is in nothing the model was
+	// shown (ground.go).
+	CodeUngrounded = "ungrounded"
 )
 
 // Error is a failure with a code the caller can act on.
@@ -184,6 +190,7 @@ func (r *Request) Validate() error {
 
 const systemPrompt = `You draft one answer to a job-application question for a job seeker, written in the first person as the seeker.
 Use only the facts in the seeker's evidence and the posting. Never invent employers, projects, metrics, dates, degrees or skills; if the evidence does not support a point, leave it out.
+Every number you write (a figure, percentage, multiple, version or year) must appear in the evidence, the posting or the question exactly as given; do not add up, average or round them, and do not work out durations or totals.
 Do not include a name, email, phone number, address, location or immigration status.
 Write for this posting: where the question allows, tie the seeker's evidence to what the posting says about the company and the role, so the answer could not be sent to another company unchanged.
 Write plain prose: no markdown, no headings, no lists, no greeting or sign-off, no placeholders in brackets.
@@ -230,7 +237,7 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 		Messages:  []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: userMessage(r, post, motive, ev, d.cfg.TargetSummary, d.cfg.MotivationNotes)}}}},
 		MaxTokens: maxTokens(r.MaxWords),
 	}
-	llmbackend.Shape(d.p, &req)
+	shape(d.p, &req)
 	text, err := llmbackend.Turn(ctx, d.p, req)
 	switch {
 	case errors.Is(err, budget.ErrExhausted):
@@ -244,11 +251,36 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 	if text == "" {
 		return Result{}, fail(CodeEmpty, "the model returned no text")
 	}
-	return Result{Draft: clip(text, MaxReplyRunes), Model: d.cfg.Model, EvidenceItems: len(ev)}, nil
+	text = clip(text, MaxReplyRunes)
+	sources := []string{r.Question, r.Job.Company, r.Job.Title, post.text(), d.cfg.TargetSummary}
+	if motive {
+		sources = append(sources, d.cfg.MotivationNotes)
+	}
+	for _, e := range ev {
+		sources = append(sources, e.Title, e.Org, e.Dates)
+		sources = append(sources, e.Bullets...)
+	}
+	if f, n := newGrounding(sources...).ungrounded(text); n > 0 {
+		fig := clip(f.String(), maxFigureRunes)
+		if runes(f.String()) > maxFigureRunes {
+			fig += "..."
+		}
+		more := ""
+		if n > 1 {
+			more = fmt.Sprintf(" (and %d more)", n-1)
+		}
+		return Result{}, fail(CodeUngrounded, "the draft says %q%s, which is not in the evidence, the posting, the question or the target text; refusing a figure the seeker's record does not support", fig, more)
+	}
+	return Result{Draft: text, Model: d.cfg.Model, EvidenceItems: len(ev)}, nil
 }
 
 // maxTokens is the visible-reply budget: about 1.5 tokens a word plus margin.
 func maxTokens(words int) int { return words*3/2 + 120 }
+
+// Drafts are a place the model's judgment is the product (which evidence fits
+// this posting, how to say it without adding to it), so they run at high
+// effort (llmbackend.ShapeHigh) where the decision calls run at "low".
+func shape(p llm.Provider, req *llm.Request) { llmbackend.ShapeHigh(p, req) }
 
 // userMessage renders the turn. notes (whitespace-collapsed by New) reach
 // motivation questions only.
@@ -274,7 +306,7 @@ func userMessage(r Request, post postingText, motive bool, ev []Evidence, target
 		}
 		if notes != "" {
 			// Trusted, but still free text: it must not pass for a frame marker.
-			fmt.Fprintf(&b, "\n%s: %s\n", notesLabel, unmark(notes))
+			fmt.Fprintf(&b, "\n%s: %s\n", notesLabel, llmbackend.Unmark(notes))
 		}
 		b.WriteString("\nThe seeker's evidence closest to this role (trusted, from their own knowledge base):\n")
 	} else {
@@ -316,15 +348,10 @@ func userMessage(r Request, post postingText, motive bool, ev []Evidence, target
 	}
 	// Unmarked as one piece, so a marker split across fields or lines is caught too.
 	b.WriteString("\n" + llmbackend.BeginMarker + "\n")
-	b.WriteString(unmark(in.String()))
+	b.WriteString(llmbackend.Unmark(in.String()))
 	b.WriteString(llmbackend.EndMarker + "\n")
 	return b.String()
 }
-
-var markerRE = regexp.MustCompile(`(?i)-{2,}\s*(begin|end)\s+untrusted\s+content\s*-{2,}`)
-
-// unmark removes anything in page text that could pass for a frame marker.
-func unmark(s string) string { return markerRE.ReplaceAllString(s, "[marker removed]") }
 
 var wordRE = regexp.MustCompile(`[\p{L}\p{N}][\p{L}\p{N}+#.\-]*`)
 
@@ -522,14 +549,23 @@ func pick(kb []Evidence, maxRunes int, own bool, weight func(string) float64) []
 	return out
 }
 
-// FromResolved turns a resolved bank into draft evidence. A blocked block is
-// skipped (its bullets may hold unresolved claim tokens); locations are dropped.
-func FromResolved(r kbsync.Resolved) []Evidence {
+// FromResolved turns a resolved bank into draft evidence, keeping only the
+// bullets el allows under the entry that holds them: the owner's current
+// selections decide, never the bank alone (kbsync.Eligible is the one rule).
+// A block is judged bullet by bullet, not skipped whole when blocked: kb sync
+// blocks an entry when any bullet in it has an unresolved claim token, and a
+// withdrawn figure is exactly what makes a sibling ineligible, so skipping the
+// block would hide its eligible bullets. An eligible bullet has every token
+// resolved (Eligible's rule 2); a bullet still holding a {{clm}} token is
+// dropped regardless. Locations are dropped. A block is an rkb entry, so b.ID
+// is the entry id and a bullet's RkbID is the id the selections name.
+// unresolvedRE matches a claim token left unresolved: ResolveText keeps the
+// raw {{clmX}}, and a marked form "[clmX?]" is refused as well.
+var unresolvedRE = regexp.MustCompile(`\{\{clm|\[clm[A-Za-z0-9]*\?\]`)
+
+func FromResolved(r kbsync.Resolved, el kbsync.Eligibility) []Evidence {
 	var out []Evidence
 	for _, b := range r.Blocks {
-		if b.Blocked != "" {
-			continue
-		}
 		dates := b.Start
 		if b.End != nil {
 			dates += " to " + *b.End
@@ -538,6 +574,9 @@ func FromResolved(r kbsync.Resolved) []Evidence {
 		}
 		ev := Evidence{Title: b.Title, Org: b.Org, Dates: dates}
 		for _, bl := range b.Bullets {
+			if !el.Allowed(b.ID, bl.RkbID) || unresolvedRE.MatchString(bl.Canonical) {
+				continue
+			}
 			if t := strings.TrimSpace(bl.Canonical); t != "" {
 				ev.Bullets = append(ev.Bullets, t)
 			}

@@ -85,7 +85,7 @@ Process boundaries (each versioned, none is an in-process import except Manvi):
 | Filter | liveness, dedupe, location/remote, seniority keywords | `career.jd_triage` slots: role_fit, sponsorship, work_mode, seniority | only when every decision backend abstains |
 | Rank | DevPrism `resume_gap_analysis` + `resume_score_and_select` (deterministic scores) | — | — |
 | Explain | — | — | 3-line "why this role / what's missing" grounded in the gap report |
-| Tailor (on request) | DevPrism `resume_synthesize` (page_budget 2), `resume_ats_check` | — | draft bullet rewrites → DevPrism `resume_rewrite_bullets` verifies metrics survive |
+| Tailor (on request) | **Superseded 2026-10-23:** `vani resume` builds with rkb (`internal/rkbresume`), not DevPrism `resume_synthesize`; DevPrism only ranks | — | one bounded model turn picks eligible bullets by id; rkb lint and `fit --strict` gate the PDF (docs/RUNTIME.md, "Building a resume") |
 | Exceptions | — | — | triage failures, propose adapter fixes |
 
 The LLM is the brain for anything open-ended; it is not consulted for things a parser or a

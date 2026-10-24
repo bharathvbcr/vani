@@ -176,7 +176,9 @@ func (e *env) kbmatchSetup() (config.Config, semantic.Profile, kbmatch.Digest, s
 	if err != nil {
 		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", err
 	}
-	prof, err := semanticProfile(cfg)
+	ctx, cancel := boundedKBContext()
+	defer cancel()
+	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
 		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", fmt.Errorf("kbmatch: the knowledge base: %w", err)
 	}
@@ -503,7 +505,9 @@ func kbmatchLookup(cfg config.Config, stateDir string) (func(ledger.Record) (job
 	if err != nil {
 		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
 	}
-	prof, err := semanticProfile(cfg)
+	ctx, cancel := boundedKBContext()
+	defer cancel()
+	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
 		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
 	}

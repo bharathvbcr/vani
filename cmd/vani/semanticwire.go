@@ -13,7 +13,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/digest"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
-	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -118,13 +117,27 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 	}
 }
 
-// semanticProfile cuts the configured bank into the profile to embed.
-func semanticProfile(cfg config.Config) (semantic.Profile, error) {
-	b, err := kbsync.Load(cfg.KB.Bank)
+// semanticProfile cuts the configured bank into the profile to embed, and to
+// digest for kbmatch's questions to a model: only the bullets the owner's
+// selections list and kbsync.Eligible passes (eligibleBank), never the whole
+// bank. With no selections or no rkb it is an error, so semantic matching reads
+// "not run" instead of ranking by retired wording.
+func semanticProfile(ctx context.Context, cfg config.Config) (semantic.Profile, error) {
+	b, _, el, err := eligibleBank(ctx, cfg)
 	if err != nil {
 		return semantic.Profile{}, err
 	}
-	return semantic.ProfileFromBank(b, cfg.TargetSummary)
+	p, err := semantic.ProfileFromBank(el.Restrict(b), cfg.TargetSummary)
+	if errors.Is(err, semantic.ErrEmpty) {
+		return semantic.Profile{}, fmt.Errorf("%w (%s)", err, eligibleSummary(cfg, el))
+	}
+	return p, err
+}
+
+// boundedKBContext is a context for callers that hold none of their own: the
+// ranking views read the profile to find their cache.
+func boundedKBContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), eligibleKBTimeout)
 }
 
 // semanticReport is what one warm did, for the run record and the CLI. Note is
@@ -328,7 +341,7 @@ func warmSemanticDocs(ctx context.Context, cfg config.Config, stateDir string, d
 	if !cfg.SemanticOn() {
 		return notRun(rep, "semantic.snapshot and kb.bank are not both set", nil)
 	}
-	prof, err := semanticProfile(cfg)
+	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
 		return notRun(rep, "the knowledge base profile could not be built", err)
 	}
@@ -385,7 +398,9 @@ func semanticLookup(cfg config.Config, stateDir string) (m *semantic.Matcher, wa
 	if !cfg.SemanticOn() {
 		return nil, ""
 	}
-	prof, err := semanticProfile(cfg)
+	ctx, cancel := boundedKBContext()
+	defer cancel()
+	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
 		return nil, "knowledge-base matching is off: the profile could not be built: " + oneLine(err.Error(), 200)
 	}

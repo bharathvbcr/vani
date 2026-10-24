@@ -2,8 +2,9 @@
 // DevPrism's headless MCP tools. DevPrism makes no model calls; everything
 // here is deterministic given the knowledge base and the JD text.
 //
-// Personal data (name, contact lines) is never a model-visible parameter:
-// typed wrappers fill those from the vault after a call has been decided.
+// Personal data (name, contact lines) is never a model-visible parameter.
+// DevPrism only ranks postings here (gap, score, JD analysis); the resume
+// itself is built by rkb (internal/rkbresume).
 package resume
 
 import "context"

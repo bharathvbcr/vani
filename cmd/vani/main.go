@@ -104,8 +104,11 @@ commands:
   track show ID              show and check one track (docs/TRACKS.md)
   track use [--dry-run] ID   copy a track's target summary, drop rules and employer
                              preferences into the config; other rules are kept
-  kb sync [--dry-run | --confirm] [--bank P] [--rkb P] [--code-root D]
-                             copy rkb's bank one way into DevPrism (never deletes)
+  kb sync [--dry-run | --confirm] [--replace [--keep IDS] [--delete-all-kinds]
+          [--max-delete N] [--career-db P]] [--bank P] [--rkb P] [--code-root D]
+                             copy the bank bullets that kb.selections approve one way into
+                             DevPrism; --replace also deletes the blocks outside that pool,
+                             after copying career.db (see README, Knowledge base)
   reasons draft [--force]    have the llm draft, once, the catalog notes are picked from
                              (spends from the daily llm budget; never overwrites without --force)
   reasons import [--force] FILE

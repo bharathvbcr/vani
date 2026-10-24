@@ -1,5 +1,5 @@
 // The offer Fill makes on a form whose resume box it left empty because no resume is
-// chosen for this job: build one with DevPrism and attach it, or choose a PDF. Nothing
+// chosen for this job: build one with rkb in the owner's template and attach it, or choose a PDF. Nothing
 // happens without a click. Either way the PDF is then bound to the job (resumePut), so
 // the next Fill on this job attaches it without asking, and it is attached now, outlined
 // yellow. No DOM and no chrome.* here: content.ts draws the bar and supplies the pieces.
@@ -45,7 +45,7 @@ export interface OfferDeps {
 
 export const OFFER_TEXT =
   "No resume is chosen for this job, so the resume box is empty. Build one now from your knowledge base " +
-  "(DevPrism's plain layout, not one of your LaTeX resumes: check it), or choose a PDF?";
+  "tailored to this posting in your own resume template (check it before you submit), or choose a PDF?";
 
 export function createResumeOffer(d: OfferDeps) {
   let dismissed = false;
@@ -94,8 +94,8 @@ export function createResumeOffer(d: OfferDeps) {
           d.ui.ask(`Cannot build one here: ${e instanceof Error ? e.message : String(e)}.`, ["choose", "dismiss"]);
           return;
         }
-        d.ui.busy("Building a resume for this job with DevPrism…");
-        const reply = await d.build(request, ms => d.ui.busy(`Building a resume for this job with DevPrism… ${Math.round(ms / 1000)} s`));
+        d.ui.busy("Building a resume for this job in your template…");
+        const reply = await d.build(request, ms => d.ui.busy(`Building a resume for this job in your template… ${Math.round(ms / 1000)} s`));
         await finish(parseBuiltResume(reply), "Building the resume");
       } finally {
         working = false;

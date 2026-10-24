@@ -45,7 +45,7 @@ describe("the offer", () => {
     expect(h.offer.offerAfterFill(noResume)).toBe(true);
     expect(h.log).toEqual([`ask: ${OFFER_TEXT}`]);
     expect(h.asked[0]).toEqual(["build", "choose", "dismiss"]);
-    expect(OFFER_TEXT).toContain("not one of your LaTeX resumes");
+    expect(OFFER_TEXT).toContain("your own resume template");
   });
 
   test("Not now: gone, and not offered again on this page", () => {

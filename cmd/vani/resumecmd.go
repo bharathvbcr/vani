@@ -9,60 +9,63 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/resume"
+	"github.com/bharathvbcr/Vani/internal/rkbresume"
 )
 
-// `vani resume` builds a resume for one job: DevPrism's resume_synthesize picks
-// and orders the knowledge base's blocks for the job description and renders its
-// plain Typst layout to a PDF. No model is called. The Vani Apply agent runs it
-// (job kind "resume") when the owner accepts the offer to build one for a form
-// that has no resume chosen; the extension then binds the PDF to the job page and
+// `vani resume` builds a resume for one job with rkb, the owner's resume tool
+// (internal/rkbresume). rkb renders the owner's own template from the bank and
+// the selection in kb.base_selection; DevPrism no longer builds anything, it
+// only ranks postings. One bounded model turn on the configured model chooses
+// which eligible bullets go on the page; with no provider, no budget or an
+// invalid answer the base selection is built instead, and the reply's
+// "selection" and "reason" say which. The Vani Apply agent runs it (job kind
+// "resume") when the owner accepts the offer to build one for a form that has
+// no resume chosen; the extension then binds the PDF to the job page and
 // attaches it.
 //
-// The header (name and contact lines) arrives in the request, from the owner's
-// "Your basics" in Vani Apply, because the vault is not wired yet. It reaches
-// DevPrism only through resume.HeaderSource, never in the JD text, and never
-// appears in an error, a log line or the reply.
+// The request still carries a header (name and contact lines, the owner's "Your
+// basics" in Vani Apply) and it is still checked, so a bad request is refused,
+// but the PDF no longer needs it: rkb prints the header of the base selection
+// from the bank. The request's header is never sent to a model, written to a
+// file, logged or returned.
 
 const (
 	// maxResumeInput caps the request read from stdin: a long posting plus the header.
 	maxResumeInput = 128 << 10
 	// maxResumePDF is ResumeStore.maxBytes (macos) and MAX_RESUME_BYTES (extension):
 	// a larger PDF could not cross Chrome's 1 MiB native-messaging reply.
-	maxResumePDF = 512 << 10
-	// resumeCallTimeout covers block selection and one Typst compile.
-	resumeCallTimeout = 120 * time.Second
-	maxHeaderName     = 200
-	maxContactLine    = 200
-	maxContactLines   = 4
-	maxDiagnostic     = 300
+	maxResumePDF    = 512 << 10
+	maxHeaderName   = 200
+	maxContactLine  = 200
+	maxContactLines = 4
 )
 
-// Reply codes.
+// Reply codes of `vani resume` (rkbresume's, plus the request's).
 const (
 	codeNoName   = "no_name"
-	codeDevPrism = "devprism"
-	codeRender   = "render"
-	codeTooLarge = "too_large"
-	codePages    = "pages"
+	codeRender   = rkbresume.CodeRender
+	codeTooLarge = rkbresume.CodeTooLarge
+	codePages    = rkbresume.CodePages
 )
 
 // resumeInput is where `vani resume` reads its request. Tests replace it.
 var resumeInput io.Reader = os.Stdin
 
-// synthesizer is what `vani resume` uses of a started DevPrism.
-type synthesizer interface {
-	Synthesize(ctx context.Context, src resume.HeaderSource, args resume.SynthesizeArgs) (json.RawMessage, error)
-	Close() error
-}
+// resumeRunner runs rkb; nil is rkbresume's ExecRunner. Tests replace it.
+var resumeRunner rkbresume.Runner
 
-// startSynth starts DevPrism. Tests replace it.
-var startSynth = func(ctx context.Context, cfg resume.Config) (synthesizer, error) { return resume.Start(ctx, cfg) }
+// resumeProvider builds the metered provider for the model turn; it is the
+// draft path's, so decide.daily_usd.llm caps both together. Tests replace it.
+var resumeProvider = func(ctx context.Context, w *wired) (llm.Provider, error) { return draftProvider(ctx, w) }
 
 type resumeRequest struct {
 	Job struct {
@@ -83,15 +86,17 @@ type resumeReply struct {
 	Bytes       int     `json:"bytes,omitempty"`
 	Pages       int     `json:"pages,omitempty"`
 	ATSCoverage float64 `json:"ats_coverage_pct,omitempty"`
-	Error       string  `json:"error,omitempty"`
-	Code        string  `json:"code,omitempty"`
+	// Selection is "tailored" (the model's choice was built) or "base" (the
+	// owner's base selection); Reason says why base. UnverifiedDropped lists
+	// bullet ids left off because rkb has not double-verified a figure in them.
+	Selection         string   `json:"selection,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	UnverifiedDropped []string `json:"unverified_dropped,omitempty"`
+	// Notes are layout flaws accepted on the base selection, as rkb reported them.
+	Notes []string `json:"notes,omitempty"`
+	Error string   `json:"error,omitempty"`
+	Code  string   `json:"code,omitempty"`
 }
-
-// requestHeader is the header from the request, checked; it is the HeaderSource
-// Synthesize reads, so the name never travels in SynthesizeArgs.
-type requestHeader struct{ h resume.Header }
-
-func (r requestHeader) Header(context.Context) (resume.Header, error) { return r.h, nil }
 
 // codedError carries a reply code with an error message that holds no personal data.
 type codedError struct {
@@ -106,7 +111,7 @@ func coded(code, format string, a ...any) error {
 }
 
 // cmdResume reads one request (JSON) on stdin and writes one reply (JSON) on
-// stdout: {"pdf","name","bytes","pages","ats_coverage_pct"} or {"error","code"}.
+// stdout: {"pdf","name","bytes","pages","selection","reason"} or {"error","code"}.
 func (e *env) cmdResume(args []string) error {
 	fs := e.newFlags("resume")
 	if err := parse(fs, args); err != nil {
@@ -146,12 +151,10 @@ func (e *env) resumeOnce() (resumeReply, error) {
 	if err := dec.Decode(&req); err != nil {
 		return resumeReply{}, coded("bad_request", "resume: request is not a resume request")
 	}
-	jd := jobText(req)
 	if strings.TrimSpace(req.Job.Description) == "" {
 		return resumeReply{}, coded("bad_request", "resume: the request has no job description")
 	}
-	h, err := checkHeader(req)
-	if err != nil {
+	if err := checkHeader(req); err != nil {
 		return resumeReply{}, err
 	}
 
@@ -159,40 +162,97 @@ func (e *env) resumeOnce() (resumeReply, error) {
 	if err != nil {
 		return resumeReply{}, coded(codeConfig, "resume: %v", err)
 	}
-	if cfg.DevPrism.Binary == "" {
-		return resumeReply{}, coded(codeConfig, "resume: devprism.binary is not set in Vani's config, so no resume can be built (docs/PHASE0-devprism.md)")
+	if cfg.KB.Bank == "" || cfg.KB.RKB == "" {
+		return resumeReply{}, coded(codeConfig, "resume: kb.bank and kb.rkb are not set in Vani's config, so rkb cannot build a resume")
+	}
+	vmReport, vmNote, err := resumeVMReport(cfg, time.Now())
+	if err != nil {
+		return resumeReply{}, coded(codeConfig, "resume: %v", err)
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	c, err := startSynth(ctx, resume.Config{BinaryPath: cfg.DevPrism.Binary, PinnedToolsHash: cfg.DevPrism.ToolsHash, CallTimeout: resumeCallTimeout})
-	if err != nil {
-		return resumeReply{}, coded(codeDevPrism, "resume: start DevPrism: %v", err)
+
+	rc := rkbresume.Config{
+		RKB: cfg.KB.RKB, CodeRoot: cfg.KB.CodeRoot, Bank: cfg.KB.Bank,
+		Selections: cfg.KB.Selections, BaseSelection: cfg.KB.BaseSelection,
+		VMReport: vmReport,
+		Runner:   resumeRunner,
+		MaxPDF:   maxResumePDF,
+		Model:    cfg.LLM.Model,
 	}
-	defer c.Close()
-	out, err := c.Synthesize(ctx, requestHeader{h}, resume.SynthesizeArgs{JD: jd})
-	if err != nil {
-		return resumeReply{}, coded(codeDevPrism, "resume: DevPrism: %v", err)
+	rc.Provider, rc.NoModel = e.resumeModel(ctx, cfg)
+	if rc.Provider == nil {
+		rc.Model = ""
 	}
-	r, err := readSynthesis(out)
+	res, err := rkbresume.Build(ctx, rc, rkbresume.Request{Company: req.Job.Company, Title: req.Job.Title, Description: req.Job.Description})
+	if err != nil {
+		var re *rkbresume.Error
+		if errors.As(err, &re) {
+			return resumeReply{}, &codedError{code: re.Code, msg: re.Msg}
+		}
+		return resumeReply{}, coded(codeRender, "resume: %v", err)
+	}
+	r, err := readBuilt(res)
 	if err != nil {
 		return resumeReply{}, err
 	}
 	r.Name = resumeFileName(req.Job.Company)
+	if vmNote != "" {
+		r.Notes = append(r.Notes, vmNote)
+	}
+	fmt.Fprintf(e.stderr, "vani: resume: %s selection (%d pages)%s\n", r.Selection, r.Pages, reasonSuffix(r.Reason))
 	return r, nil
 }
 
-// jobText is what DevPrism reads: the title and company as a heading over the
-// description. It holds nothing from the header.
-func jobText(req resumeRequest) string {
-	var b strings.Builder
-	for _, s := range []string{req.Job.Title, req.Job.Company} {
-		if s = strings.TrimSpace(s); s != "" {
-			b.WriteString(s)
-			b.WriteString("\n")
+func reasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
+}
+
+// resumeModel is the provider for the tailoring turn, or why there is none: a
+// resume is then built from the base selection. Nothing about the owner reaches
+// the reason.
+func (e *env) resumeModel(ctx context.Context, cfg config.Config) (llm.Provider, string) {
+	if cfg.LLM.Provider == "" || cfg.LLM.Model == "" {
+		return nil, "no llm provider is configured"
+	}
+	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
+	p, err := resumeProvider(ctx, w)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: resume: no model: %v\n", err)
+		return nil, "the model provider is not available"
+	}
+	if _, ok := p.Capability(cfg.LLM.Model); !ok {
+		return nil, "the provider does not serve the configured model"
+	}
+	return p, ""
+}
+
+// resumeVMReport is the validator report rkb's claims export reads, so figures
+// the validator backs count as verified: which bullets may print depends on
+// it. kb.vm_report names it; one that is set but missing is an error, never a
+// silent fallback. Unset, it falls back to rkb's CV folder under kb.code_root
+// (career/CurriculumVitae: vm_report_full.txt, else vm_report.txt), and note
+// says which file and how old, so the reply never hides the choice. Empty
+// path with a note when there is none.
+func resumeVMReport(cfg config.Config, now time.Time) (path, note string, err error) {
+	if p := cfg.KB.VMReport; p != "" {
+		if st, serr := os.Stat(p); serr != nil || !st.Mode().IsRegular() {
+			return "", "", fmt.Errorf("kb.vm_report %s is not a readable file", filepath.Base(p))
+		}
+		return p, "", nil
+	}
+	if cfg.KB.CodeRoot != "" {
+		for _, name := range []string{"vm_report_full.txt", "vm_report.txt"} {
+			p := filepath.Join(cfg.KB.CodeRoot, "career", "CurriculumVitae", name)
+			if st, serr := os.Stat(p); serr == nil && st.Mode().IsRegular() {
+				return p, fmt.Sprintf("kb.vm_report is not set: figures were checked against %s, modified %s ago", name, now.Sub(st.ModTime()).Round(time.Minute)), nil
+			}
 		}
 	}
-	b.WriteString(strings.TrimSpace(req.Job.Description))
-	return b.String()
+	return "", "kb.vm_report is not set and no validator report was found: a figure only the validator backs is left off", nil
 }
 
 func printable(s string, max int) bool {
@@ -207,87 +267,48 @@ func printable(s string, max int) bool {
 	return true
 }
 
-func checkHeader(req resumeRequest) (resume.Header, error) {
+// checkHeader refuses a request whose header is unusable. The header is not
+// used afterwards: rkb prints its own.
+func checkHeader(req resumeRequest) error {
 	name := strings.TrimSpace(req.Header.Name)
 	if name == "" {
-		return resume.Header{}, coded(codeNoName, "resume: no name for the header; add your first and last name in Your basics")
+		return coded(codeNoName, "resume: no name for the header; add your first and last name in Your basics")
 	}
 	if !printable(name, maxHeaderName) {
-		return resume.Header{}, coded("bad_request", "resume: the header name is not one printable line of at most %d characters", maxHeaderName)
+		return coded("bad_request", "resume: the header name is not one printable line of at most %d characters", maxHeaderName)
 	}
 	if len(req.Header.ContactLines) > maxContactLines {
-		return resume.Header{}, coded("bad_request", "resume: at most %d contact lines", maxContactLines)
+		return coded("bad_request", "resume: at most %d contact lines", maxContactLines)
 	}
-	h := resume.Header{Name: name}
 	for _, l := range req.Header.ContactLines {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
+		if l = strings.TrimSpace(l); l != "" && !printable(l, maxContactLine) {
+			return coded("bad_request", "resume: a contact line is not one printable line of at most %d characters", maxContactLine)
 		}
-		if !printable(l, maxContactLine) {
-			return resume.Header{}, coded("bad_request", "resume: a contact line is not one printable line of at most %d characters", maxContactLine)
-		}
-		h.ContactLines = append(h.ContactLines, l)
 	}
-	return h, nil
+	return nil
 }
 
-// readSynthesis accepts resume_synthesize's reply only when it rendered a PDF
-// that decodes, starts with %PDF-, matches the length DevPrism reported, fits
-// the cap, and fits resume.PageBudget pages.
-func readSynthesis(raw json.RawMessage) (resumeReply, error) {
-	var out struct {
-		Materialization *struct {
-			Status         string   `json:"status"`
-			PageCount      int      `json:"pageCount"`
-			Errors         []string `json:"errors"`
-			Reason         string   `json:"reason"`
-			PDFBytesLength int      `json:"pdfBytesLength"`
-			PDFBase64      string   `json:"pdfBase64"`
-		} `json:"materialization"`
-		MatchReport struct {
-			ATS float64 `json:"atsCoveragePercentage"`
-		} `json:"matchReport"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil || out.Materialization == nil {
-		return resumeReply{}, coded(codeRender, "resume: DevPrism's reply has no rendered resume")
-	}
-	m := out.Materialization
-	if m.Status != "rendered" {
-		why := strings.Join(m.Errors, "; ")
-		if why == "" {
-			why = m.Reason
-		}
-		return resumeReply{}, coded(codeRender, "resume: DevPrism did not render a PDF (%s): %s", clip(m.Status, 40), clip(why, maxDiagnostic))
-	}
-	// A base64 string past the cap is refused before it is decoded.
-	if len(m.PDFBase64) > base64.StdEncoding.EncodedLen(maxResumePDF)+4 {
-		return resumeReply{}, coded(codeTooLarge, "resume: the PDF is over %d KB", maxResumePDF>>10)
-	}
-	pdf, err := base64.StdEncoding.DecodeString(m.PDFBase64)
-	if err != nil || len(pdf) == 0 || !bytes.HasPrefix(pdf, []byte("%PDF-")) {
-		return resumeReply{}, coded(codeRender, "resume: DevPrism's PDF is damaged")
-	}
-	if len(pdf) != m.PDFBytesLength {
-		return resumeReply{}, coded(codeRender, "resume: DevPrism's PDF is %d bytes, not the %d it reported", len(pdf), m.PDFBytesLength)
+// readBuilt turns a built resume into the reply, re-checking what the app and
+// the extension rely on: it starts with %PDF-, fits the cap, and fits
+// resume.PageBudget pages.
+func readBuilt(res rkbresume.Result) (resumeReply, error) {
+	pdf := res.PDF
+	if len(pdf) == 0 || !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		return resumeReply{}, coded(codeRender, "resume: the built PDF is damaged")
 	}
 	if len(pdf) > maxResumePDF {
 		return resumeReply{}, coded(codeTooLarge, "resume: the PDF is over %d KB", maxResumePDF>>10)
 	}
-	if m.PageCount <= 0 {
-		return resumeReply{}, coded(codeRender, "resume: DevPrism did not report a page count")
+	if res.Pages <= 0 {
+		return resumeReply{}, coded(codeRender, "resume: no page count for the built PDF")
 	}
-	if m.PageCount > resume.PageBudget {
-		return resumeReply{}, coded(codePages, "resume: the PDF has %d pages, over the %d-page budget", m.PageCount, resume.PageBudget)
+	if res.Pages > resume.PageBudget {
+		return resumeReply{}, coded(codePages, "resume: the PDF has %d pages, over the %d-page budget", res.Pages, resume.PageBudget)
 	}
-	return resumeReply{PDF: base64.StdEncoding.EncodeToString(pdf), Bytes: len(pdf), Pages: m.PageCount, ATSCoverage: out.MatchReport.ATS}, nil
-}
-
-func clip(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return string([]rune(s)[:n-1]) + "…"
+	return resumeReply{
+		PDF: base64.StdEncoding.EncodeToString(pdf), Bytes: len(pdf), Pages: res.Pages,
+		Selection: res.Selection, Reason: res.Reason, UnverifiedDropped: res.UnverifiedDropped, Notes: res.Notes,
+	}, nil
 }
 
 // resumeFileName is the name the page shows for the built PDF: Resume_<Company>.pdf,

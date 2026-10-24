@@ -50,6 +50,7 @@ export const JOB_HELP: Record<string, string> = {
   config: "Vani has no model or no Anthropic key configured (Vani Apply > Settings).",
   keychain: "Keychain access was denied, so Vani couldn't read its API key.",
   budget_exhausted: "Today's Claude budget is spent. Try again tomorrow.",
+  ungrounded: "The draft cited a figure that isn't in your knowledge base or the posting, so Vani threw it away. Try again, or write this answer yourself.",
   bad_reply: "Vani sent a reply that isn't a suggestion.",
   unsupported: "This version of the Vani Apply app can't run suggestions. Rebuild and reopen it.",
 };

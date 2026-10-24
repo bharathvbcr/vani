@@ -136,6 +136,101 @@ Pipeline ▸ Run on schedule (`macos/README.md`, the schedule agent); `vani stat
 "schedule not kept" until a daemon announces itself. Whether the owner has turned it on is not
 checked here.
 
+## The knowledge base: only eligible bullets leave
+
+rkb's bank (`kb.bank`) holds superseded wordings, bullets that cite figures `Claims.tex` has
+withdrawn (CAUTION) and drafts nobody reviewed. Nothing built from it goes to a model, an
+embedding or an answer unless the owner's current resumes list the bullet and it passes
+`kbsync.Eligible` (`internal/kbsync/eligible.go`, the one rule): a listed bullet whose claim
+tokens all resolve, with no CAUTION claim unless its `caution_ok` names it, that passes rkb's
+reader gate on this exact wording (rkb's 12-hex `text_hash`): for HR and for the hiring manager,
+the latest round-2 verdict is a pass and there is a second pass (round 1, or round 2 by another
+reviewer), the round-2 reviewer is named, is not "drafter" and is not the bullet's author, and HR
+and hiring manager are different reviewers. Selections are read with rkb's defaults (a section
+without `kind` is inferred; an entry without `bullets` shows all its bank bullets). The real-bank
+oracle (`TestRealBankFinalizedResumeIsEligible`) holds the rule to rkb's: every bullet of the last
+resume `rkb finalize` passed must be eligible.
+
+So these need `kb.selections` (absolute paths of rkb `resumes/*.json` you currently use) and
+`kb.rkb` (for claim values and CAUTION flags), and fail closed without them, never reading
+the whole bank:
+
+| Consumer | Without `kb.selections` or `kb.rkb` |
+|---|---|
+| `vani draft`, `vani suggest` (`cmd/vani/eligiblebank.go`, `draft.FromResolved`) | refused, code `kb` |
+| The semantic profile: embedding matching and the digest `vani kbmatch` sends to OpenRouter (`semanticProfile`, `Eligibility.Restrict`) | "semantic matching not run" / "language-model reads not used"; ranking falls back to its prior |
+
+An entry with no eligible bullet contributes no title and no stack terms to the profile.
+Changing which bullets are eligible changes the profile hash: the semantic score cache is
+discarded and re-scored locally (Tessl, no spend, bounded by `semantic.warm_per_run`), and
+stored `kbmatch` answers no longer match (`kbmatch.json` is keyed by the digest hash) until
+`vani kbmatch run` asks again, which is the only thing that spends on them. `vani draft` also
+refuses a draft that cites a figure none of its sources contain (code `ungrounded`,
+`internal/draft/ground.go`).
+
+## Building a resume
+
+`vani resume` (`cmd/vani/resumecmd.go`, `internal/rkbresume`) builds one job's resume with rkb, in
+the owner's template; DevPrism only ranks postings (the DevPrism `resume_synthesize` path was
+removed 2026-10-23: its `career.db` held stale blocks and its layout is not the owner's).
+
+| Config | Use |
+|---|---|
+| `kb.bank`, `kb.rkb`, `kb.code_root` | as above; `code_root` is rkb's `RKB_CODE_ROOT` |
+| `kb.selections`, `kb.base_selection` | eligibility (above), and the selection tailored: its header, meta, layout, `lines` sections and per-entry overrides are kept as written; it must be one of `kb.selections`, 1 to 2 pages, every entry listing its bullets |
+| `kb.vm_report` | the rkb validator report the claims export reads (which figures count as verified). Set but missing is code `config`; unset, `vm_report_full.txt` else `vm_report.txt` under `<code_root>/career/CurriculumVitae` is used and the reply's `notes` names it and its age |
+| `llm.provider`, `llm.model` | the tailoring turn, at high effort (`llmbackend.ShapeHigh`); spends from the same daily `decide.daily_usd.llm` ledger as `vani draft`. Two live runs on 2026-10-24 cost $0.22 and $0.13 (each one retry) |
+
+Steps: claims export, `kbsync.Eligible`, one `claims export --used-in` of the base (proves rkb runs
+and names figures rkb has not double-verified), one tool-less model turn, then in a 0700 temp dir
+`claims export --used-in`, `lint` (draft, not `--final`), `render`, `fit --pages N --strict`. It does
+not run `rkb build`, which writes LaTeX into the career tree.
+
+- The model sees the posting inside the untrusted markers, the base skeleton (section titles, entry
+  ids and titles) and the eligible pool (bullet id, resolved text, entry). Never the bank's headers,
+  the name, contact or locations. It answers with ids, the order of the project sections, and 8 to
+  15 keywords from the posting; every bullet must be `Allowed` under its entry, unique, within
+  bounds, and every entry must sit in a section that may hold it (a job only in Professional
+  Experience, a project only in a project section), else the choice is refused. The project sections
+  between Professional Experience and the first non-entries section may be reordered for the role;
+  Summary, Experience, Skills, Education and Publications keep their places. Work-history entries
+  the base lists stay, even when every bullet of one is left off (it prints as a heading).
+- Say each thing once: bank entries that list a bullet in common or name a common origin are one
+  family (two framings of one project, e.g. "Custom LLM Inference Runtime" and "GPU Performance:
+  gemma-metal Runtime" share six bullets); a tailored page shows at most one entry of a family
+  unless the base itself pairs them (`internal/rkbresume/family.go`).
+- Continuations: a bullet that reads on from the one before it ("beneath those features", "the same
+  lessons", a summary line opening "Also") is offered only with, and only directly after, the bullet
+  it follows in the owner's selections (`internal/rkbresume/continuation.go`).
+- No provider, no key, budget spent, an invalid answer, or a choice rkb rejects twice (one retry
+  that tells the model the lint error or fit advice, ids only): the base selection is built,
+  filtered to eligible bullets. The reply says `"selection":"tailored"` or `"base"` and why.
+- Figures: a bullet using a figure rkb has not double-verified would print highlighted yellow
+  (the template's `print-color-adjust: exact`), so it is not offered, and one the model's own
+  export flags is left off and listed in `unverified_dropped`; the rendered page is checked for any
+  `unverified` mark before the PDF is accepted.
+- Fit: OVERFLOW, and a SHORT that ends a page early, fail. Soft flaws with every page in use (a SHORT
+  last page, GAP, STRICT orphan lines) give the model one retry with rkb's advice, then the tailored
+  PDF is kept with a `notes` entry rather than replaced by the untailored base, the owner's choice
+  (2026-10-24). A retry that runs out of time keeps a soft-fit tailored PDF already built. rkb's
+  `die()` exits 2 like OVERFLOW; a verdict counts only when `fit --report` exists and carries the exit
+  code, so a missing Chrome or `pdftotext` is code `render`, never a pass.
+- Text rkb prints (lint lines, stderr) is scrubbed of the base header's name and contact strings
+  before it reaches an error, the reply or a model prompt (`internal/rkbresume/scrub.go`).
+- Codes: `config`, `kb`, `render`, `lint`, `fit`, `figures`, `too_large`, `pages`, `timeout`,
+  `cancelled`. The whole build is bounded at 360 s (`rkbresume.DefaultDeadline`; the app's agent
+  allows a resume job 375 s, the extension waits 390 s); steps are bounded (claims 30 s, lint 30 s,
+  render 30 s, fit 100 s, model turn 90 s). A model turn starts only with 195 s left, the base build
+  only with 45 s left. Typical runs take about a minute. Under heavy machine load (a load average
+  of 119 on 2026-10-24, other sessions compiling) rkb's Chrome fit outlived its 100 s and the build
+  failed with code `timeout`: an honest failure, not a wrong PDF; rerun when the machine is quieter.
+- `pdftotext` is looked up on the child's PATH, then in `/opt/homebrew/bin` and `/usr/local/bin`
+  (the Mac app's agent runs with the system folders only).
+- Checked on 2026-10-23 with the live bank and `ai-agent-systems.json`, no model: two pages, the
+  owner's sections, a base build in about 25 s of CPU (FOLLOWUPS, "vani resume on rkb"). Checked
+  on 2026-10-24 with Opus 5.5 on a real Amazon SageMaker Inference posting: a tailored two-page
+  PDF with GPU & ML Systems moved ahead of the agent sections, every page full, nothing retired.
+
 ## Running without a decision backend
 
 A run that advances and has no decision backend (no key anywhere, no llm) is refused at its

@@ -27,7 +27,7 @@ func (f *failNthUpsert) CallTool(ctx context.Context, name string, args any) (js
 }
 
 func TestKBSyncErrorSaysTheSummaryIsPartial(t *testing.T) {
-	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	bank, rkb, _ := kbApprovedSimple(t, "/opt/devprism/devprism")
 	f := &failNthUpsert{fakeDevPrism: &fakeDevPrism{}, n: 2}
 	old := startKB
 	startKB = func(context.Context, resume.Config) (kbClient, error) { return &kbFailClient{f}, nil }
@@ -42,7 +42,7 @@ func TestKBSyncErrorSaysTheSummaryIsPartial(t *testing.T) {
 }
 
 func TestKBSyncSuccessSummaryIsNotLabelledPartial(t *testing.T) {
-	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	bank, rkb, _ := kbApprovedSimple(t, "/opt/devprism/devprism")
 	fakeStart(t, &fakeDevPrism{})
 	o, _ := mustCode(t, 0, "kb", "sync", "--bank", bank, "--rkb", rkb)
 	if strings.Contains(o, "partial") || !strings.Contains(o, "2 added") {

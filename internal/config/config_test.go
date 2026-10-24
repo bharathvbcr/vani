@@ -84,6 +84,23 @@ func TestValidateRules(t *testing.T) {
 		{"zero llm budget with llm", func(c *Config) { c.LLM = LLM{Provider: "gemini", Model: "m"}; c.Decide.DailyUSD.LLM = 0 }, "daily_usd.llm must be above 0"},
 		{"anthropic without prices", func(c *Config) { c.LLM = LLM{Provider: "anthropic", Model: "m"} }, "needs input_nano_usd_per_token"},
 		{"absurd price", func(c *Config) { c.LLM.InputNanoUSDPerToken = 2_000_000 }, "per-token price above"},
+		{"relative selection", func(c *Config) { c.KB.Bank = "/b/bank.json"; c.KB.Selections = []string{"resumes/a.json"} }, "must be an absolute path"},
+		{"duplicate selection", func(c *Config) {
+			c.KB.Bank = "/b/bank.json"
+			c.KB.Selections = []string{"/b/resumes/a.json", "/b/resumes/../resumes/a.json"}
+		}, "twice"},
+		{"base not a selection", func(c *Config) {
+			c.KB.Bank = "/b/bank.json"
+			c.KB.Selections = []string{"/b/resumes/a.json"}
+			c.KB.BaseSelection = "/b/resumes/b.json"
+		}, "must be one of kb.selections"},
+		{"selections without bank", func(c *Config) { c.KB.Selections = []string{"/b/resumes/a.json"} }, "needs kb.bank"},
+		{"too many selections", func(c *Config) {
+			c.KB.Bank = "/b/bank.json"
+			for i := 0; i <= MaxKBSelections; i++ {
+				c.KB.Selections = append(c.KB.Selections, fmt.Sprintf("/b/resumes/%d.json", i))
+			}
+		}, "at most"},
 		{"negative price", func(c *Config) { c.LLM.OutputNanoUSDPerToken = -1 }, "needs input_nano_usd_per_token"},
 		{"drop rule", func(c *Config) { c.DropRules = []DropRule{{Slot: "", MinOpenRouterProb: 2}} }, "drop_rules[0]"},
 		{"drop rule slot typo", func(c *Config) {

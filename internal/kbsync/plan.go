@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -80,6 +81,9 @@ type Item struct {
 	Action  string
 	Reason  string // why blocked
 	Bullets int
+	// Dropped counts the bullets of DevPrism's copy an update removes (rkb
+	// bullets the pool no longer lists); DevPrism asks for confirmation first.
+	Dropped int
 	Hash    string
 	// Payload is the exact ExperienceBlock JSON career_upsert_block receives
 	// (add and update only).
@@ -93,7 +97,7 @@ type Item struct {
 // SyncPlan is the full plan. Items are sorted by block id.
 type SyncPlan struct {
 	Items      []Item
-	Orphaned   []string // in DevPrism, not in rkb: reported, never touched
+	Orphaned   []string // in DevPrism, not in the approved pool: reported; only a --replace run deletes them (replace.go)
 	Unattached int      // rkb bullets with no entry
 	Unresolved int      // distinct claim tokens without a value
 	Cautioned  []string // CAUTION claim ids used by synced bullets
@@ -113,7 +117,8 @@ func (p SyncPlan) Count(action string) int {
 }
 
 // Plan decides add / update / unchanged / blocked per rkb block and lists
-// DevPrism-only blocks as orphaned. It never plans a deletion. A block is
+// DevPrism-only blocks as orphaned. It never plans a deletion: ReplacePlan
+// does, and only when asked. A block is
 // unchanged only when DevPrism has it and the recorded hash equals the current
 // one; a block DevPrism lacks is added even if the state file says it was
 // synced (the user deleted it there), and a block DevPrism has but the state
@@ -122,15 +127,21 @@ func Plan(res Resolved, current DevPrismState, state SyncState, now time.Time) S
 	plan := SyncPlan{Unattached: res.Unattached, Unresolved: res.Unresolved, Cautioned: res.Cautioned, VariantOnly: res.VariantOnly}
 	known := map[string]bool{}
 	for _, b := range res.Blocks {
-		known[b.ID] = true
 		it := Item{ID: b.ID, Bullets: len(b.Bullets), Hash: b.Hash}
 		if b.VariantOf != "" {
-			// A variant DevPrism already holds (synced before hashVersion 3)
-			// is left there, as an orphan would be.
+			// A variant is never synced, so it is not "known": a copy DevPrism
+			// already holds (synced before hashVersion 3) is an orphan, reported
+			// by every run and deleted by --replace. The pool never re-judges its
+			// bullets, so a withdrawn wording would otherwise stay in the table
+			// ranking reads.
 			it.Action, it.Reason = ActionVariant, "variant of "+b.VariantOf+" in rkb; not synced"
+			if _, held := current.Blocks[b.ID]; held {
+				it.Reason += "; DevPrism holds an older copy, orphaned (--replace deletes it)"
+			}
 			plan.Items = append(plan.Items, it)
 			continue
 		}
+		known[b.ID] = true
 		if b.Blocked != "" {
 			it.Action, it.Reason = ActionBlocked, b.Blocked
 			plan.Items = append(plan.Items, it)
@@ -146,7 +157,7 @@ func Plan(res Resolved, current DevPrismState, state SyncState, now time.Time) S
 			it.Action = ActionUnchanged
 		default:
 			it.Action = ActionUpdate
-			it.Payload, it.Reason = buildUpdate(b, existing, now)
+			it.Payload, it.Dropped, it.Reason = buildUpdate(b, existing, res.BankBulletIDs, now)
 		}
 		if it.Reason == "" && it.Payload != nil && len(it.Payload) > maxPayloadBytes {
 			it.Reason = fmt.Sprintf("block JSON is %d bytes, over DevPrism's limit", len(it.Payload))
@@ -327,21 +338,24 @@ func unchangedStamp(existing json.RawMessage, blk map[string]json.RawMessage) (j
 // buildUpdate merges rkb's fields into DevPrism's existing block. The upsert
 // replaces the whole document, so everything DevPrism owns (facts, notes,
 // seniority, domains, per-bullet locked/variants/metrics) is carried over,
-// and DevPrism bullets rkb does not list are kept after rkb's. Skills and
+// and DevPrism's own bullets rkb does not list are kept after rkb's. A bullet
+// rkb sent earlier and no longer lists is dropped: one under this block's
+// scoped id prefix, or one stored under the bare id of a bank bullet
+// (hashVersion 1; bankBullets holds every bank bullet id). Skills and
 // personas are a union: DevPrism's stay, rkb's are added when missing. Bullets
 // match by scoped id; a bullet stored under its bare rkb id (hashVersion 1) is
 // renamed to the scoped id. The only content changes left are ones DevPrism
 // itself gates with a confirmation request: a locked bullet whose text
 // changes, and a renamed bare id, which DevPrism counts as a dropped bullet.
-func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMessage, string) {
+func buildUpdate(b Block, existing json.RawMessage, bankBullets map[string]bool, now time.Time) (payload json.RawMessage, dropped int, reason string) {
 	var blk map[string]json.RawMessage
 	if err := json.Unmarshal(existing, &blk); err != nil || blk == nil {
-		return nil, "the existing DevPrism block is not a JSON object"
+		return nil, 0, "the existing DevPrism block is not a JSON object"
 	}
 	var oldBullets []json.RawMessage
 	if raw, ok := blk["bullets"]; ok && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &oldBullets); err != nil {
-			return nil, "the existing DevPrism block has unreadable bullets"
+			return nil, 0, "the existing DevPrism block has unreadable bullets"
 		}
 	}
 	byID := map[string]map[string]json.RawMessage{}
@@ -352,10 +366,10 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 			ID string `json:"id"`
 		}
 		if json.Unmarshal(ob, &m) != nil || json.Unmarshal(ob, &h) != nil || h.ID == "" {
-			return nil, "the existing DevPrism block has a bullet without an id"
+			return nil, 0, "the existing DevPrism block has a bullet without an id"
 		}
 		if _, dup := byID[h.ID]; dup {
-			return nil, "the existing DevPrism block lists a bullet id twice"
+			return nil, 0, "the existing DevPrism block lists a bullet id twice"
 		}
 		byID[h.ID] = m
 		order = append(order, h.ID)
@@ -375,8 +389,10 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 	}
 	merged := make([]any, 0, len(b.Bullets)+len(oldBullets))
 	listed := map[string]bool{}
+	kept := map[string]bool{} // rkb ids the pool keeps for this entry
 	for _, x := range b.Bullets {
 		listed[x.ID] = true
+		kept[x.RkbID] = true
 		old, ok := byID[x.ID]
 		if !ok && x.RkbID != "" && x.RkbID != x.ID {
 			// A block synced under hashVersion 1 holds this bullet under its
@@ -401,17 +417,30 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 		merged = append(merged, old)
 	}
 	for _, id := range order {
-		if !listed[id] {
-			merged = append(merged, byID[id])
+		if listed[id] {
+			continue
 		}
+		// A bullet under this block's scoped prefix, or one stored under the bare
+		// id of a bank bullet (a hashVersion 1 sync did) that is not listed
+		// above, is one rkb sent earlier and no longer lists: its wording was
+		// superseded or no longer passes the approval rule (pool.go). It must
+		// not stay in DevPrism, where ranking would still count it. DevPrism
+		// asks for confirmation before dropping it, as for any dropped bullet.
+		// A bare id the pool still keeps for this entry (its scoped copy is
+		// listed) and any other bullet are DevPrism's own and stay.
+		if strings.HasPrefix(id, b.ID+bulletIDSep) || (bankBullets[id] && !kept[id]) {
+			dropped++
+			continue
+		}
+		merged = append(merged, byID[id])
 	}
 	skills, reason := unionSkills(blk["skills"], b.Skills)
 	if reason != "" {
-		return nil, reason
+		return nil, 0, reason
 	}
 	personas, reason := unionPersonas(blk["personas"], b.Personas)
 	if reason != "" {
-		return nil, reason
+		return nil, 0, reason
 	}
 	for _, kv := range []struct {
 		k string
@@ -423,12 +452,12 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 		{"bullets", merged}, {"updatedAt", stamp(now)},
 	} {
 		if err := set(kv.k, kv.v); err != nil {
-			return nil, "cannot encode block: " + err.Error()
+			return nil, 0, "cannot encode block: " + err.Error()
 		}
 	}
 	if b.Location != "" {
 		if err := set("location", b.Location); err != nil {
-			return nil, "cannot encode block: " + err.Error()
+			return nil, 0, "cannot encode block: " + err.Error()
 		}
 	}
 	// embeddingText is derived from the content just replaced; a stale copy
@@ -443,7 +472,7 @@ func buildUpdate(b Block, existing json.RawMessage, now time.Time) (json.RawMess
 	}
 	raw, err := json.Marshal(blk)
 	if err != nil {
-		return nil, "cannot encode block: " + err.Error()
+		return nil, 0, "cannot encode block: " + err.Error()
 	}
-	return raw, ""
+	return raw, dropped, ""
 }

@@ -28,7 +28,7 @@ export interface JobInfo {
 }
 
 export type DraftCode =
-  | "bad_request" | "budget_exhausted" | "timeout" | "provider" | "empty_reply"
+  | "bad_request" | "budget_exhausted" | "timeout" | "provider" | "empty_reply" | "ungrounded"
   | "config" | "kb" | "account" | "unsupported" | "unreachable" | "bad_reply" | "busy";
 
 export type DraftReply =
@@ -36,7 +36,7 @@ export type DraftReply =
   | { ok: false; code: DraftCode; error: string };
 
 const HOST_CODES: ReadonlySet<string> = new Set([
-  "bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "config", "kb", "account", "unsupported",
+  "bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "ungrounded", "config", "kb", "account", "unsupported",
 ]);
 
 /** What to tell the user for each failure. */
@@ -46,6 +46,7 @@ export const DRAFT_HELP: Record<DraftCode, string> = {
   timeout: "The draft took too long. Try again.",
   provider: "The model provider returned an error. Try again later.",
   empty_reply: "The model returned an empty draft. Try again.",
+  ungrounded: "The draft cited a figure that isn't in your knowledge base or the posting, so Vani threw it away. Try again, or write this answer yourself.",
   config: "Drafting isn't set up: Vani has no model or no Anthropic key configured.",
   kb: "Vani couldn't read your knowledge base for evidence.",
   account: "anthropic-account couldn't start Vani with an Anthropic key. Pick an account in the Vani Apply app's Settings, or run anthropic-account doctor.",

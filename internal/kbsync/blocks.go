@@ -97,6 +97,11 @@ type Resolved struct {
 	// VariantOnly counts bullets that only variant entries list: with the
 	// variants unsynced, DevPrism does not get them.
 	VariantOnly int
+	// BankBulletIDs is every bullet id in the bank, whether or not a block lists
+	// it. An update drops a bullet DevPrism holds under one of these bare ids
+	// (a hashVersion 1 sync stored them so) that the block no longer lists; an
+	// id that is not a bank bullet id is DevPrism's own bullet and stays.
+	BankBulletIDs map[string]bool
 }
 
 var degreeRe = regexp.MustCompile(`(?i)^(bachelor|master|doctor|ph\.?\s?d)\b`)
@@ -219,6 +224,10 @@ func ResolveBank(b Bank, c Claims) Resolved {
 	unresolved := map[string]bool{}
 	caution := map[string]bool{}
 	r.Unattached = b.Unattached()
+	r.BankBulletIDs = make(map[string]bool, len(b.Bullets))
+	for bid := range b.Bullets {
+		r.BankBulletIDs[bid] = true
+	}
 	baseBullets := map[string]bool{}    // listed by an entry that is synced
 	variantBullets := map[string]bool{} // listed by a variant
 	for _, id := range b.EntryIDs() {

@@ -124,15 +124,12 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 func (e *env) newDrafter(ctx context.Context, cfg config.Config, p llm.Provider) (*draft.Drafter, string, error) {
 	var evidence []draft.Evidence
 	if cfg.KB.Bank != "" && cfg.KB.RKB != "" {
-		b, err := kbsync.Load(cfg.KB.Bank)
+		b, claims, el, err := eligibleBank(ctx, cfg)
 		if err != nil {
-			return nil, codeKB, err
+			return nil, codeKB, fmt.Errorf("draft: %w", err)
 		}
-		claims, err := kbsync.RKB{Binary: cfg.KB.RKB, CodeRoot: cfg.KB.CodeRoot, Runner: rkbRunner}.Claims(ctx)
-		if err != nil {
-			return nil, codeKB, err
-		}
-		evidence = draft.FromResolved(kbsync.ResolveBank(b, claims))
+		fmt.Fprintf(e.stderr, "vani: draft: %s\n", eligibleSummary(cfg, el))
+		evidence = draft.FromResolved(kbsync.ResolveBank(b, claims), el)
 	} else {
 		fmt.Fprintln(e.stderr, "vani: draft: kb.bank and kb.rkb are not configured; drafting without knowledge-base evidence")
 	}

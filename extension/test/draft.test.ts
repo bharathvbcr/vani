@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  DEFAULT_WORDS, DRAFT_FIELD_ABSENT, DRAFT_FIELD_BUSY, DRAFT_FIELD_NONE, MAX_DESCRIPTION_CHARS, MAX_QUESTION_CHARS, MAX_WORDS, MIN_WORDS,
+  DEFAULT_WORDS, DRAFT_FIELD_ABSENT, DRAFT_HELP, DRAFT_FIELD_BUSY, DRAFT_FIELD_NONE, MAX_DESCRIPTION_CHARS, MAX_QUESTION_CHARS, MAX_WORDS, MIN_WORDS,
   buildDraftRequest, draftStartError, parseDraftReply, requestDraft,
 } from "../src/draft";
 
@@ -52,13 +52,20 @@ describe("parseDraftReply", () => {
   });
 
   test("every host error code is kept; an unknown code reads as provider", () => {
-    for (const code of ["bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "config", "kb", "account", "unsupported"]) {
+    for (const code of ["bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "ungrounded", "config", "kb", "account", "unsupported"]) {
       const r = parseDraftReply({ error: "x", code });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.code).toBe(code as typeof r.code);
     }
     const r = parseDraftReply({ error: "x", code: "weird" });
     expect(!r.ok && r.code).toBe("provider");
+  });
+
+  test("an ungrounded draft is refused with a message the user can act on", () => {
+    expect(DRAFT_HELP.ungrounded).toMatch(/figure/);
+    expect(DRAFT_HELP.ungrounded).toMatch(/Try again, or write this answer yourself/);
+    const r = parseDraftReply({ error: 'draft: the draft says "73%"', code: "ungrounded" });
+    expect(r).toEqual({ ok: false, code: "ungrounded", error: 'draft: the draft says "73%"' });
   });
 
   test("anything that is not a draft is a failure, never an empty or partial draft", () => {

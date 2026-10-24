@@ -9,9 +9,12 @@
 //   - DevPrism: src-tauri/src/mcp/tools_career.rs (career_upsert_block :840,
 //     career_get_profile :808) and career_db/mod.rs (ExperienceBlock :82).
 //
-// The sync never deletes: a DevPrism block rkb does not know is reported as
-// orphaned and left alone. It never auto-confirms DevPrism's overwrite
-// confirmation: that block is reported as needs_confirmation.
+// Only the approved pool is synced (Eligible over kb.selections, pool.go). A
+// plain sync never deletes: a DevPrism block rkb does not know is reported as
+// orphaned and left alone; only `kb sync --replace` (replace.go) deletes
+// orphans, after a verified backup (backup.go). The sync never auto-confirms
+// DevPrism's overwrite confirmation without --confirm: that block is reported
+// as needs_confirmation.
 package kbsync
 
 import (
@@ -58,9 +61,22 @@ type Entry struct {
 const maxOrigins = 64
 
 // Bullet is the part of rkb's Bullet this sync reads (rkb/bank.go:49). Text
-// still carries {{clm...}} tokens until Resolve.
+// still carries {{clm...}} tokens until Resolve. CautionOK and Review feed
+// Eligible (eligible.go).
 type Bullet struct {
-	Text string `json:"text"`
+	Text      string              `json:"text"`
+	Author    string              `json:"author"`
+	CautionOK map[string]string   `json:"caution_ok"`
+	Review    map[string][]Review `json:"review"`
+}
+
+// Review is one reader verdict rkb recorded on a bullet's wording (rkb/bank.go
+// Review). TextHash is a prefix of sha1 over the resolved plain text.
+type Review struct {
+	Round    int    `json:"round"`
+	Verdict  string `json:"verdict"`
+	TextHash string `json:"text_hash"`
+	By       string `json:"by"`
 }
 
 // Bank is the parsed bank.json: entries and bullets keyed by rkb id. Headers

@@ -74,6 +74,10 @@ describe("parseSuggestReply", () => {
   test("errors and junk are failures, never suggestions", () => {
     expect(parseSuggestReply({ error: "spent", code: "budget_exhausted" }, asked)).toEqual({ ok: false, code: "budget_exhausted", error: JOB_HELP.budget_exhausted! });
     expect(parseSuggestReply({ error: "x".repeat(900), code: "weird" }, asked)).toMatchObject({ ok: false, code: "weird" });
+    expect(parseSuggestReply({ error: "draft: the draft says \"73%\"", code: "ungrounded" }, asked)).toEqual({ ok: false, code: "ungrounded", error: JOB_HELP.ungrounded! });
+    // An unknown code keeps the host's own text, clipped, so nothing is lost.
+    const weird = parseSuggestReply({ error: "x".repeat(900), code: "weird" }, asked);
+    expect(!weird.ok && weird.error.length).toBe(500);
     for (const junk of [null, "text", [], { fields: "no" }, {}]) expect(parseSuggestReply(junk, asked).ok).toBe(false);
   });
 });

@@ -134,6 +134,24 @@ final class DraftingTests: XCTestCase {
         XCTAssertEqual(VaniConfig.llmProvider(configPath: try vaniConfig(self, provider: "anthropic")), "anthropic")
     }
 
+    /// A code the app has never heard of (vani's `ungrounded`, a draft refused for a
+    /// figure nobody showed the model) is the host's own reply, passed on whole.
+    func testAHostCodeTheAppDoesNotKnowReachesTheCallerWhole() throws {
+        let vani = try fakeVani(self, body: """
+        #!/bin/sh
+        cat >/dev/null
+        echo '{"error":"draft: the draft says \\"73%\\"","code":"ungrounded"}'
+        exit 1
+        """)
+        let reply = DraftRunner(vaniBinary: vani).run(DraftRequest(question: "q"))
+        XCTAssertEqual(reply.code, "ungrounded")
+        XCTAssertNil(reply.draft)
+        XCTAssertEqual(reply.error, #"draft: the draft says "73%""#)
+        let job = DraftRunner(vaniBinary: vani).runJob(.draft, input: Data(#"{"question":"q"}"#.utf8))
+        let object = try JSONSerialization.jsonObject(with: job) as? [String: Any]
+        XCTAssertEqual(object?["code"] as? String, "ungrounded")
+    }
+
     func testNoKeyNeverUsesTheLauncherEvenForAnthropic() throws {
         let cfg = try vaniConfig(self, provider: "anthropic")
         XCTAssertEqual(DraftRunner(vaniBinary: try fakeVani(self), configPath: cfg, keys: .noKey, account: "org500")
@@ -152,9 +170,11 @@ final class DraftingTests: XCTestCase {
             .run(DraftRequest(question: "q")).error)
     }
 
-    /// `vani resume` calls no model: it runs vani itself, never through anthropic-account, and
-    /// reads no key, even with an anthropic config and the launcher missing.
-    func testAResumeJobRunsVaniDirectlyWithNoKey() throws {
+    /// `vani resume` asks the model which bullets fit the job, so it starts like a draft:
+    /// through anthropic-account, which adds the key. With no key (`.noKey`) it runs vani
+    /// itself and vani builds the owner's base resume; with the launcher missing it is
+    /// refused like a draft rather than quietly going untailored.
+    func testAResumeJobGetsTheModelKeyLikeADraft() throws {
         let vani = try fakeVani(self, body: """
         #!/bin/sh
         [ "$1" = "resume" ] || { echo '{"error":"wrong subcommand","code":"bad_request"}'; exit 1; }
@@ -162,21 +182,28 @@ final class DraftingTests: XCTestCase {
         printf '{"pdf":"JVBERi0=","name":"Resume_Acme.pdf","bytes":5,"key":"%s"}\\n' "${ANTHROPIC_API_KEY:-unset}"
         """)
         let cfg = try vaniConfig(self, provider: "anthropic")
-        let launcher = try fakeLauncher(self)
+        let input = Data(#"{"job":{"description":"d"},"header":{"name":"Test Applicant"}}"#.utf8)
         final class Count: @unchecked Sendable { let lock = NSLock(); var n = 0; func bump() { lock.lock(); n += 1; lock.unlock() } }
-        for keys: DraftRunner.KeySource in [.anthropicAccount(nil), .anthropicAccount(launcher.url), .noKey] {
-            let asked = Count()
-            let runner = DraftRunner(vaniBinary: vani, configPath: cfg, keys: keys, key: { asked.bump(); return "should-not-be-read" })
-            let out = runner.runJob(.resume, input: Data(#"{"job":{"description":"d"},"header":{"name":"Test Applicant"}}"#.utf8))
-            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: out) as? [String: Any])
-            XCTAssertEqual(reply["name"] as? String, "Resume_Acme.pdf", "\(keys): \(reply)")
-            XCTAssertEqual(reply["key"] as? String, "unset", "\(keys): no model key reaches vani resume")
-            XCTAssertEqual(asked.n, 0, "\(keys): the Keychain is not read for a resume")
-        }
-        XCTAssertNil(launcher.recordedArguments, "the launcher never ran")
-        XCTAssertEqual(JobKind.resume.timeout, 180)
+
+        let launcher = try fakeLauncher(self)
+        let asked = Count()
+        let viaLauncher = DraftRunner(vaniBinary: vani, configPath: cfg, keys: .anthropicAccount(launcher.url), key: { asked.bump(); return "should-not-be-read" })
+        var reply = try XCTUnwrap(JSONSerialization.jsonObject(with: viaLauncher.runJob(.resume, input: input)) as? [String: Any])
+        XCTAssertEqual(reply["name"] as? String, "Resume_Acme.pdf", "\(reply)")
+        XCTAssertEqual(reply["key"] as? String, "launcher-key", "the model key reaches vani resume through the launcher")
+        XCTAssertTrue(launcher.recordedArguments?.contains("resume") == true, "the launcher ran vani resume")
+        XCTAssertEqual(asked.n, 0, "a resume takes no decision key, so the Keychain is not read")
+
+        let keyless = try fakeLauncher(self)
+        reply = try XCTUnwrap(JSONSerialization.jsonObject(with: DraftRunner(vaniBinary: vani, configPath: cfg, keys: .noKey).runJob(.resume, input: input)) as? [String: Any])
+        XCTAssertEqual(reply["key"] as? String, "unset", "with no key, vani builds the base resume")
+        XCTAssertNil(keyless.recordedArguments)
+
+        reply = try XCTUnwrap(JSONSerialization.jsonObject(with: DraftRunner(vaniBinary: vani, configPath: cfg, keys: .anthropicAccount(URL(fileURLWithPath: "/nonexistent/anthropic-account"))).runJob(.resume, input: input)) as? [String: Any])
+        XCTAssertEqual(reply["code"] as? String, "account", "a missing launcher is refused, as for a draft")
+        XCTAssertEqual(JobKind.resume.timeout, 375)
         XCTAssertEqual(JobKind.resume.maxRequestBytes, 128 * 1024)
-        XCTAssertFalse(JobKind.resume.usesModel)
+        XCTAssertTrue(JobKind.resume.usesModel, "a resume asks the model which bullets fit the job")
         // The largest PDF, base64-encoded, fits the reply cap, and the cap fits Chrome's 1 MiB native reply.
         XCTAssertGreaterThan(JobKind.resume.maxReplyBytes, (ResumeStore.maxBytes + 2) / 3 * 4 + 4096)
         XCTAssertLessThan(JobKind.resume.maxReplyBytes, NativeMessaging.maxReplyBytes - 4096)

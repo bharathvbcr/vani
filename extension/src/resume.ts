@@ -223,12 +223,13 @@ export async function runResume(m: ResumeMessage, native: (op: object) => Promis
 
 // --- building one (the offer on a form with no resume chosen) ---------------------------
 // `vani resume` (run by the Vani Apply agent, job kind "resume") builds a PDF for the job
-// with DevPrism: its own plain layout from the knowledge base, not one of the owner's LaTeX
-// resumes, and no model call. The header is the owner's Your basics, the same name and
-// contact details Fill puts on the form; it goes to the Mac app with the job and nowhere else.
+// with rkb in the owner's own resume template: the model picks which of the owner's
+// approved bullets fit this posting, and rkb lays them out and checks them. The PDF's
+// header is rkb's (the owner's base resume); the request still carries Your basics, which
+// vani validates and does not send anywhere.
 
-/** The agent allows a resume job 180 s; leave room for start-up and the last poll. */
-export const RESUME_JOB_TIMEOUT_MS = 195_000;
+/** The agent allows a resume job 375 s; leave room for start-up and the last poll. */
+export const RESUME_JOB_TIMEOUT_MS = 390_000;
 /** The request is capped at 128 KiB by the agent; a long posting fits well under it. */
 const MAX_JOB_DESCRIPTION = 100_000;
 const MAX_JOB_LINE = 300;
@@ -259,7 +260,7 @@ export function buildResumeRequest(job: JobInfo, header: ResumeHeader): object {
 }
 
 /** Codes whose text from vani itself says more than the shared job help does. */
-const OWN_TEXT = new Set(["config", "devprism", "render", "pages", "too_large", "no_name", "bad_request"]);
+const OWN_TEXT = new Set(["config", "kb", "render", "lint", "fit", "pages", "too_large", "no_name", "bad_request"]);
 
 /** A built resume from `vani resume`'s reply (through runJob), checked like a stored one; or why not. */
 export function parseBuiltResume(r: unknown): ResumeFetch {

@@ -90,7 +90,9 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		return nil
 	}
 	fmt.Fprintf(w, "snapshot: %s\nwarm per run: %d\n", cfg.Semantic.Snapshot, cfg.SemanticWarmLimit())
-	prof, err := semanticProfile(cfg)
+	ctx, cancel := boundedKBContext()
+	defer cancel()
+	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(w, "profile: unavailable: %s\n", oneLine(err.Error(), 200))
 		return nil

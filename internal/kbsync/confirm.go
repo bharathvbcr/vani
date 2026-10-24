@@ -155,11 +155,37 @@ type confirmAnswer struct {
 	reason string
 }
 
-// confirm runs one block's confirmation round trip. It returns an error only
-// for a failure that stops the sync (DevPrism down, a timeout, an answer it
-// cannot map); a refusal or a change in DevPrism is a per-block outcome.
+// confirmCall is one DevPrism confirmation round trip: career_upsert_block for
+// an overwrite (confirm) or career_delete_block for a deletion (confirmDelete).
+// Both share the MRTR protocol, the stale re-read, the refusal mapping and the
+// answer check; only the first call's arguments, how the requestState is read
+// and which answer field names the block differ.
+type confirmCall struct {
+	tool  string
+	id    string
+	prior json.RawMessage // DevPrism's copy the plan was built from; nil when it had none
+	// first is the first call's arguments, resent with the confirmation.
+	first map[string]json.RawMessage
+	// decode reads what the call would destroy from the requestState.
+	decode func(state string, prior json.RawMessage) (Loss, error)
+	// doneID names the block in a successful answer.
+	doneID func(answerBlockID, answerDeletedID string) string
+}
+
+// confirm runs one block's upsert confirmation round trip. It returns an error
+// only for a failure that stops the sync (DevPrism down, a timeout, an answer
+// it cannot map); a refusal or a change in DevPrism is a per-block outcome.
 func confirm(ctx context.Context, caller ToolCaller, it Item, state string, ok Confirmer) (confirmAnswer, error) {
-	loss, err := decodeLoss(state, it.Prior)
+	return confirmCall{
+		tool: "career_upsert_block", id: it.ID, prior: it.Prior,
+		first:  map[string]json.RawMessage{"block": it.Payload},
+		decode: decodeLoss,
+		doneID: func(block, _ string) string { return block },
+	}.run(ctx, caller, state, ok)
+}
+
+func (c confirmCall) run(ctx context.Context, caller ToolCaller, state string, ok Confirmer) (confirmAnswer, error) {
+	loss, err := c.decode(state, c.prior)
 	if err != nil {
 		return confirmAnswer{status: StatusNeedsConfirmation, reason: "not confirmed: " + err.Error()}, nil
 	}
@@ -170,10 +196,10 @@ func confirm(ctx context.Context, caller ToolCaller, it Item, state string, ok C
 	if err != nil {
 		return confirmAnswer{}, err
 	}
-	if cur, has := now.Blocks[it.ID]; has != (it.Prior != nil) || (has && !sameValue(cur, it.Prior)) {
+	if cur, has := now.Blocks[c.id]; has != (c.prior != nil) || (has && !sameValue(cur, c.prior)) {
 		return confirmAnswer{status: StatusStale, reason: "DevPrism's copy changed after this run read it; not confirmed, run kb sync again"}, nil
 	}
-	if !ok(it.ID, loss) {
+	if !ok(c.id, loss) {
 		return confirmAnswer{status: StatusNeedsConfirmation, reason: "not confirmed"}, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -184,31 +210,85 @@ func confirm(ctx context.Context, caller ToolCaller, it Item, state string, ok C
 		return confirmAnswer{}, err
 	}
 	args := map[string]json.RawMessage{
-		"block":           it.Payload,
 		"request_state":   st,
 		"input_responses": json.RawMessage(`{"confirm":true}`),
 	}
-	raw, err := caller.CallTool(ctx, "career_upsert_block", args)
+	for k, v := range c.first {
+		args[k] = v
+	}
+	raw, err := caller.CallTool(ctx, c.tool, args)
 	var te *resume.ToolError
 	if errors.As(err, &te) && te.Code == errElicitationFailed {
 		return confirmAnswer{status: StatusConfirmRejected, reason: "DevPrism refused the confirmation: " + truncate(te.Message, 300)}, nil
 	}
 	if err != nil {
-		return confirmAnswer{}, fmt.Errorf("kbsync: confirming career_upsert_block %s: %w", it.ID, err)
+		return confirmAnswer{}, fmt.Errorf("kbsync: confirming %s %s: %w", c.tool, c.id, err)
 	}
 	var ans struct {
-		Success   *bool  `json:"success"`
-		Cancelled bool   `json:"cancelled"`
-		BlockID   string `json:"blockId"`
+		Success        *bool  `json:"success"`
+		Cancelled      bool   `json:"cancelled"`
+		BlockID        string `json:"blockId"`
+		DeletedBlockID string `json:"deletedBlockId"`
 	}
 	if err := json.Unmarshal(raw, &ans); err != nil {
-		return confirmAnswer{}, fmt.Errorf("%w: confirming career_upsert_block %s: answer is not an object", ErrDevPrism, it.ID)
+		return confirmAnswer{}, fmt.Errorf("%w: confirming %s %s: answer is not an object", ErrDevPrism, c.tool, c.id)
 	}
 	switch {
-	case ans.Success != nil && *ans.Success && ans.BlockID == it.ID:
+	case ans.Success != nil && *ans.Success && c.doneID(ans.BlockID, ans.DeletedBlockID) == c.id:
 		return confirmAnswer{status: StatusConfirmed}, nil
 	case ans.Success != nil && !*ans.Success && ans.Cancelled:
-		return confirmAnswer{status: StatusNeedsConfirmation, reason: "DevPrism reported the overwrite cancelled"}, nil
+		return confirmAnswer{status: StatusNeedsConfirmation, reason: "DevPrism reported the request cancelled"}, nil
 	}
-	return confirmAnswer{}, fmt.Errorf("%w: confirming career_upsert_block %s: unexpected answer %s", ErrDevPrism, it.ID, truncate(string(raw), 200))
+	return confirmAnswer{}, fmt.Errorf("%w: confirming %s %s: unexpected answer %s", ErrDevPrism, c.tool, c.id, truncate(string(raw), 200))
+}
+
+// decodeDeleteState reads the requestState career_delete_block answers with
+// (tools_career.rs:1101-1110: {tool, blockId, title, org, timestamp, __nonce}).
+// It must name this block and this tool; anything else is not confirmed. What a
+// deletion destroys is the whole block, so Loss lists every bullet and fact of
+// DevPrism's copy.
+func decodeDeleteState(id string) func(string, json.RawMessage) (Loss, error) {
+	return func(state string, prior json.RawMessage) (Loss, error) {
+		s := strings.TrimSpace(state)
+		if s == "" {
+			return Loss{}, errors.New("DevPrism sent no requestState")
+		}
+		if len(s) > maxRequestStateChars {
+			return Loss{}, fmt.Errorf("requestState is over %d bytes", maxRequestStateChars)
+		}
+		raw, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return Loss{}, errors.New("requestState is not base64")
+		}
+		var st struct {
+			Tool    string `json:"tool"`
+			BlockID string `json:"blockId"`
+		}
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return Loss{}, errors.New("requestState is not a JSON object")
+		}
+		if st.Tool != "career_delete_block" || st.BlockID != id {
+			return Loss{}, errors.New("requestState is not for deleting this block")
+		}
+		var b struct {
+			Bullets []struct {
+				ID        string `json:"id"`
+				Canonical string `json:"canonical"`
+			} `json:"bullets"`
+			Facts []struct {
+				ID   string `json:"id"`
+				Text string `json:"text"`
+			} `json:"facts"`
+		}
+		var l Loss
+		if len(prior) > 0 && json.Unmarshal(prior, &b) == nil {
+			for _, x := range b.Bullets {
+				l.DroppedBullets = append(l.DroppedBullets, LostItem{ID: x.ID, Text: x.Canonical})
+			}
+			for _, x := range b.Facts {
+				l.DroppedFacts = append(l.DroppedFacts, LostItem{ID: x.ID, Text: x.Text})
+			}
+		}
+		return l, nil
+	}
 }

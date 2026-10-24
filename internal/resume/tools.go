@@ -3,7 +3,6 @@ package resume
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
@@ -103,6 +102,12 @@ func (c *Client) AnalyzeJD(ctx context.Context, jd string) (json.RawMessage, err
 
 // Header is the personal data rendered at the top of a resume. It exists only
 // on the trusted side of the PII seam: no model-facing type carries it.
+//
+// Nothing in this package uses it any more: `vani resume` builds the resume
+// with rkb, whose header comes from the bank (internal/rkbresume), and
+// DevPrism's resume_synthesize, which took this header, is no longer called.
+// Header and HeaderSource stay because internal/vault implements HeaderSource
+// (docs/FOLLOWUPS.md, "internal/vault is built but not wired").
 type Header struct {
 	Name         string
 	ContactLines []string
@@ -111,49 +116,4 @@ type Header struct {
 // HeaderSource supplies the header from the vault.
 type HeaderSource interface {
 	Header(ctx context.Context) (Header, error)
-}
-
-// SynthesizeArgs are the model-safe arguments of resume_synthesize. It has no
-// name or contact fields by design; see Synthesize.
-type SynthesizeArgs struct {
-	JD         string `json:"jd_text"`
-	PersonaID  string `json:"persona_id,omitempty"`
-	TemplateID string `json:"template_id,omitempty"`
-}
-
-// synthesizeRequest is the wire form: the model-safe args plus the pinned page
-// budget and the header filled in here from the HeaderSource.
-type synthesizeRequest struct {
-	SynthesizeArgs
-	PageBudget   int      `json:"page_budget"`
-	HeaderName   string   `json:"header_name"`
-	ContactLines []string `json:"contact_lines,omitempty"`
-}
-
-// maxContactLines is resume_synthesize's documented limit (tools_resume.rs:178).
-const maxContactLines = 4
-
-// Synthesize calls resume_synthesize. header_name and contact_lines are read
-// from src inside this function, so callers (and any model) never supply them
-// and they never appear in SynthesizeArgs. Errors never include header values.
-func (c *Client) Synthesize(ctx context.Context, src HeaderSource, args SynthesizeArgs) (json.RawMessage, error) {
-	if src == nil {
-		return nil, errors.New("resume: Synthesize requires a HeaderSource")
-	}
-	h, err := src.Header(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("resume: header unavailable: %w", err)
-	}
-	if h.Name == "" {
-		return nil, errors.New("resume: header has no name")
-	}
-	if len(h.ContactLines) > maxContactLines {
-		return nil, fmt.Errorf("resume: header has %d contact lines, limit is %d", len(h.ContactLines), maxContactLines)
-	}
-	return c.CallTool(ctx, "resume_synthesize", synthesizeRequest{
-		SynthesizeArgs: args,
-		PageBudget:     PageBudget,
-		HeaderName:     h.Name,
-		ContactLines:   h.ContactLines,
-	})
 }

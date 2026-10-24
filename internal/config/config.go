@@ -245,7 +245,23 @@ type KB struct {
 	Bank     string `json:"bank,omitempty"`      // rkb bank.json
 	RKB      string `json:"rkb,omitempty"`       // rkb binary
 	CodeRoot string `json:"code_root,omitempty"` // folder holding career/ (rkb's RKB_CODE_ROOT)
+	// Selections are the rkb selection files (resumes/*.json) the owner keeps
+	// current. Only bullets they list, and that pass kbsync.Eligible, leave
+	// the career pipeline (kb sync, answer drafts, a built resume). Empty
+	// means no bullet is eligible: the bank alone never vouches for one.
+	Selections []string `json:"selections,omitempty"`
+	// BaseSelection is the selection `vani resume` tailors: its header,
+	// layout and section skeleton, rendered by rkb in the owner's template.
+	// It must be one of Selections.
+	BaseSelection string `json:"base_selection,omitempty"`
+	// VMReport is the rkb validator report (`rkb claims vm --out …`) that
+	// `vani resume` passes to rkb's claims export: which figures count as
+	// verified, and so which bullets may print, depends on it. Absolute.
+	VMReport string `json:"vm_report,omitempty"`
 }
+
+// MaxKBSelections caps kb.selections.
+const MaxKBSelections = 32
 
 // Schedule says when the daily run fires.
 type Schedule struct {
@@ -1144,7 +1160,7 @@ func (c Config) Validate() error {
 			add("decide.openrouter_model %q: %v", c.Decide.OpenRouterModel, err)
 		}
 	}
-	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot,
+	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot, "kb.vm_report": c.KB.VMReport,
 		"lightpanda_binary": c.LightpandaBinary, "devprism.binary": c.DevPrism.Binary, "tracks_dir": c.TracksDir,
 		"semantic.snapshot": c.Semantic.Snapshot, "rank_weights_file": c.RankWeightsFile} {
 		if p != "" && !filepath.IsAbs(p) {
@@ -1159,6 +1175,25 @@ func (c Config) Validate() error {
 	}
 	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
 		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
+	}
+	if n := len(c.KB.Selections); n > MaxKBSelections {
+		add("kb.selections lists %d files, at most %d", n, MaxKBSelections)
+	}
+	seenSel := map[string]bool{}
+	for _, p := range c.KB.Selections {
+		switch {
+		case !filepath.IsAbs(p):
+			add("kb.selections entry %q must be an absolute path", p)
+		case seenSel[filepath.Clean(p)]:
+			add("kb.selections lists %q twice", p)
+		}
+		seenSel[filepath.Clean(p)] = true
+	}
+	if p := c.KB.BaseSelection; p != "" && !seenSel[filepath.Clean(p)] {
+		add("kb.base_selection %q must be one of kb.selections", p)
+	}
+	if len(c.KB.Selections) > 0 && c.KB.Bank == "" {
+		add("kb.selections needs kb.bank")
 	}
 	if n := c.DigestTopOpen(); n < 0 || n > MaxDigestTopOpen {
 		add("digest.top_open %d must be within 0..%d (absent means %d)", n, MaxDigestTopOpen, DefaultDigestTopOpen)

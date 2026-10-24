@@ -53,10 +53,89 @@ type fakeDevPrism struct {
 	// an upsert carrying a request_state is then accepted.
 	state     string
 	confirmed []string
+
+	// calls is every tool name received, in order; payloads is the last block
+	// bytes upserted per id.
+	calls    []string
+	payloads map[string][]byte
+	// deletes is every block id DevPrism deleted. A block listing bullets or
+	// facts is answered with inputRequired first, as tools_career.rs:1081-1115
+	// does; the state is bound to the id.
+	deletes []string
+	// deleteRejects names ids whose confirming call is refused with -32002;
+	// deleteDown names an id whose delete call fails as if DevPrism died;
+	// afterDeleteAsk runs after DevPrism asked about id, so a change made
+	// there is a change between the plan and the confirmation.
+	deleteRejects  map[string]bool
+	deleteDown     string
+	afterDeleteAsk func(f *fakeDevPrism, id string)
+}
+
+// mutating reports whether any received call changed DevPrism.
+func (f *fakeDevPrism) mutating() bool {
+	for _, c := range f.calls {
+		if c == "career_upsert_block" || c == "career_delete_block" {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeDevPrism) deleteBlock(args any) (json.RawMessage, error) {
+	m, ok := args.(map[string]json.RawMessage)
+	if !ok {
+		return nil, fmt.Errorf("args %T", args)
+	}
+	var id string
+	if err := json.Unmarshal(m["block_id"], &id); err != nil {
+		return nil, err
+	}
+	if f.deleteDown == id {
+		return nil, errors.New("devprism went away")
+	}
+	idx := -1
+	var blk struct {
+		Bullets []json.RawMessage `json:"bullets"`
+		Facts   []json.RawMessage `json:"facts"`
+	}
+	for i, raw := range f.blocks {
+		var h struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &h) == nil && h.ID == id {
+			idx = i
+			_ = json.Unmarshal(raw, &blk)
+		}
+	}
+	if idx < 0 {
+		return nil, &resume.ToolError{Code: -32602, Message: "Block '" + id + "' not found"}
+	}
+	remove := func() json.RawMessage {
+		f.blocks = append(f.blocks[:idx:idx], f.blocks[idx+1:]...)
+		f.deletes = append(f.deletes, id)
+		return json.RawMessage(fmt.Sprintf(`{"success":true,"deletedBlockId":%q}`, id))
+	}
+	if m["request_state"] != nil {
+		if f.deleteRejects[id] {
+			return nil, &resume.ToolError{Code: -32002, Message: "requestState was not issued by this server, or has already been used"}
+		}
+		return remove(), nil
+	}
+	if len(blk.Bullets) == 0 && len(blk.Facts) == 0 {
+		return remove(), nil
+	}
+	state := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(`{"tool":"career_delete_block","blockId":%q,"title":"t","org":"o","timestamp":1,"__nonce":"n-%s"}`, id, id)))
+	if f.afterDeleteAsk != nil {
+		defer f.afterDeleteAsk(f, id)
+	}
+	return json.Marshal(map[string]any{"resultType": "inputRequired", "inputRequests": map[string]any{"confirm": map[string]any{"message": "Are you sure?"}}, "requestState": state})
 }
 
 func (f *fakeDevPrism) CallTool(_ context.Context, name string, args any) (json.RawMessage, error) {
+	f.calls = append(f.calls, name)
 	switch name {
+	case "career_delete_block":
+		return f.deleteBlock(args)
 	case "career_get_profile":
 		blocks := f.blocks
 		if blocks == nil {
@@ -75,6 +154,10 @@ func (f *fakeDevPrism) CallTool(_ context.Context, name string, args any) (json.
 			return nil, err
 		}
 		f.upserts = append(f.upserts, b.ID)
+		if f.payloads == nil {
+			f.payloads = map[string][]byte{}
+		}
+		f.payloads[b.ID] = append([]byte(nil), m["block"]...)
 		if m["request_state"] != nil {
 			f.confirmed = append(f.confirmed, b.ID)
 			return json.Marshal(map[string]any{"success": true, "blockId": b.ID})
@@ -132,7 +215,7 @@ func fakeStart(t *testing.T, f *fakeDevPrism) *int {
 }
 
 func TestKBSyncDryRunStartsNothing(t *testing.T) {
-	bank, rkb, fk := kbSetup(t, "")
+	bank, rkb, fk := kbApprovedSimple(t, "")
 	starts := fakeStart(t, &fakeDevPrism{})
 	o, _ := mustCode(t, 0, "kb", "sync", "--dry-run", "--bank", bank, "--rkb", rkb)
 	if !strings.Contains(o, "live DevPrism state was not read") || !strings.Contains(o, "2 add") {
@@ -172,7 +255,7 @@ func TestKBSyncRefusals(t *testing.T) {
 }
 
 func TestKBSyncAppliesAndRemembers(t *testing.T) {
-	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	bank, rkb, _ := kbApprovedSimple(t, "/opt/devprism/devprism")
 	f := &fakeDevPrism{confirm: map[string]bool{"beta-proj": true}}
 	fakeStart(t, f)
 	o, _ := mustCode(t, 0, "kb", "sync", "--bank", bank, "--rkb", rkb)
@@ -206,7 +289,7 @@ func (f *fakeDevPrism) blocksFor(t *testing.T, ids ...string) []json.RawMessage 
 }
 
 func TestKBSyncDevPrismStartFailure(t *testing.T) {
-	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	bank, rkb, _ := kbApprovedSimple(t, "/opt/devprism/devprism")
 	old := startKB
 	startKB = func(context.Context, resume.Config) (kbClient, error) { return nil, errors.New("boom") }
 	t.Cleanup(func() { startKB = old })
@@ -226,7 +309,7 @@ const lockedAlpha = `{"id":"alpha-job","kind":"work","title":"Engineer","org":"A
 var lockedAlphaState = base64.StdEncoding.EncodeToString([]byte(`{"tool":"career_upsert_block","blockId":"alpha-job","droppedBulletIds":[],"droppedFactIds":[],"modifiedLockedBullets":["alpha-job/b1"],"timestamp":1,"__nonce":"n1"}`))
 
 func TestKBSyncConfirm(t *testing.T) {
-	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	bank, rkb, _ := kbApprovedSimple(t, "/opt/devprism/devprism")
 	f := &fakeDevPrism{confirm: map[string]bool{"alpha-job": true}, state: lockedAlphaState, blocks: []json.RawMessage{json.RawMessage(lockedAlpha)}}
 	fakeStart(t, f)
 	o, _ := mustCode(t, 0, "kb", "sync", "--confirm", "--bank", bank, "--rkb", rkb)
@@ -249,7 +332,7 @@ func TestKBSyncConfirm(t *testing.T) {
 
 // Without --confirm the run is unchanged: reported, skipped, nothing sent back.
 func TestKBSyncWithoutConfirmSendsNoConfirmation(t *testing.T) {
-	bank, rkb, _ := kbSetup(t, "/opt/devprism/devprism")
+	bank, rkb, _ := kbApprovedSimple(t, "/opt/devprism/devprism")
 	f := &fakeDevPrism{confirm: map[string]bool{"alpha-job": true}, state: lockedAlphaState, blocks: []json.RawMessage{json.RawMessage(lockedAlpha)}}
 	fakeStart(t, f)
 	o, _ := mustCode(t, 0, "kb", "sync", "--bank", bank, "--rkb", rkb)

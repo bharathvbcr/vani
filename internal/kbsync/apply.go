@@ -188,24 +188,49 @@ func Apply(ctx context.Context, caller ToolCaller, plan SyncPlan, state *SyncSta
 
 // DryRun prints the plan and calls nothing: it takes no ToolCaller. It names
 // block ids and counts only.
-func DryRun(w io.Writer, plan SyncPlan) error {
+func DryRun(w io.Writer, plan SyncPlan) error { return dryRun(w, plan, nil) }
+
+// DryRunReplace is DryRun for a --replace run: the orphans are listed as what
+// would be deleted and what would be spared, with ids, kinds and titles of
+// DevPrism's own blocks (never the rkb header or contact). It calls nothing.
+func DryRunReplace(w io.Writer, plan SyncPlan, rp ReplacePlan) error { return dryRun(w, plan, &rp) }
+
+func dryRun(w io.Writer, plan SyncPlan, rp *ReplacePlan) error {
 	var werr error
 	pf := func(format string, a ...any) {
 		if werr == nil {
 			_, werr = fmt.Fprintf(w, format, a...)
 		}
 	}
-	pf("kbsync plan (dry run, nothing sent): %d add, %d update, %d unchanged, %d blocked, %d orphaned\n",
-		plan.Count(ActionAdd), plan.Count(ActionUpdate), plan.Count(ActionUnchanged), plan.Count(ActionBlocked), len(plan.Orphaned))
+	if rp != nil {
+		pf("kbsync plan (dry run, nothing sent or deleted): %d add, %d update, %d unchanged, %d blocked, %d to delete, %d spared\n",
+			plan.Count(ActionAdd), plan.Count(ActionUpdate), plan.Count(ActionUnchanged), plan.Count(ActionBlocked), len(rp.Delete), len(rp.Keep))
+	} else {
+		pf("kbsync plan (dry run, nothing sent): %d add, %d update, %d unchanged, %d blocked, %d orphaned\n",
+			plan.Count(ActionAdd), plan.Count(ActionUpdate), plan.Count(ActionUnchanged), plan.Count(ActionBlocked), len(plan.Orphaned))
+	}
 	for _, it := range plan.Items {
 		if it.Action == ActionBlocked || it.Action == ActionVariant {
 			pf("  %-9s %s (%d bullets): %s\n", it.Action, it.ID, it.Bullets, it.Reason)
 			continue
 		}
+		if it.Dropped > 0 {
+			pf("  %-9s %s (%d bullets; drops %d bullets DevPrism holds, which it asks to confirm)\n", it.Action, it.ID, it.Bullets, it.Dropped)
+			continue
+		}
 		pf("  %-9s %s (%d bullets)\n", it.Action, it.ID, it.Bullets)
 	}
-	for _, id := range plan.Orphaned {
-		pf("  orphaned  %s (in DevPrism, not in rkb; left alone)\n", id)
+	if rp != nil {
+		for _, d := range rp.Delete {
+			pf("  delete    %s [%s] %q (%d bullets, %d facts)\n", d.ID, d.Kind, d.Title, d.Bullets, d.Facts)
+		}
+		for _, k := range rp.Keep {
+			pf("  spared    %s [%s] %q: %s\n", k.ID, k.Kind, k.Title, k.Why)
+		}
+	} else {
+		for _, id := range plan.Orphaned {
+			pf("  orphaned  %s (in DevPrism, not in the approved pool; left alone)\n", id)
+		}
 	}
 	if plan.Unattached > 0 {
 		pf("  note: %d rkb bullets belong to no entry and are not synced\n", plan.Unattached)

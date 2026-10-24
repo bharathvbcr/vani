@@ -484,14 +484,38 @@ flowchart TD
   "likely non-profit" badge. It never filters; a track's employer preference only adds to rank.
 - **Tracks:** `vani track list|show|use` applies a track decider's target summary and drop rules,
   keeping sponsorship and other track-independent rules ([`docs/TRACKS.md`](docs/TRACKS.md)).
-- **Knowledge base:** `vani kb sync` copies rkb's `bank.json` (claims resolved by
-  `rkb claims export`) one way into DevPrism with `career_upsert_block`. Hash-tracked, never
-  deletes. An overwrite that would drop bullets or facts, or rewrite a locked bullet, is reported
-  as `needs_confirmation` and skipped. `--confirm` confirms those overwrites for the blocks
-  DevPrism asks about in that run: it prints each dropped or rewritten bullet and fact first, and
-  skips a block that changed in DevPrism since the run read it (`stale`). Passing the flag is the
-  consent; there is no prompt. `--dry-run` reads no live DevPrism state, sends nothing and cannot
-  be combined with `--confirm`.
+- **Resume:** `vani resume` (run by the Vani Apply agent) builds one job's two-page resume with rkb
+  in the owner's template: `kb.base_selection` with the eligible bullets that suit the posting,
+  chosen by one bounded model turn when a provider and budget exist, else as the owner wrote it.
+  rkb lint and `fit --strict` gate the PDF; bullets with a figure rkb has not double-verified are
+  left off. DevPrism only ranks postings ([`docs/RUNTIME.md`](docs/RUNTIME.md), "Building a resume").
+- **Knowledge base:** `vani kb sync` copies the approved part of rkb's `bank.json` (claims resolved
+  by `rkb claims export`) one way into DevPrism with `career_upsert_block`, so DevPrism's ranking
+  sees only wording the owner stands behind. Approved means: a file in `kb.selections` (rkb
+  `resumes/*.json` the owner keeps current) lists the bullet under its entry, its claims all
+  resolve, none is flagged CAUTION in `Claims.tex` unless the bullet's `caution_ok` clears it, and
+  the HR and hiring-manager readers both passed that exact wording (`kbsync.Eligible`). A block
+  carries only its approved bullets; an entry no selection lists, or none of whose bullets pass, is
+  not synced; a listed degree (education entry, no bullets) is. Empty `kb.selections` refuses the
+  run: it never falls back to the whole bank. Hash-tracked. An overwrite that would drop bullets or
+  facts, or rewrite a locked bullet, is reported as `needs_confirmation` and skipped; so is the
+  update of a block whose bullet stopped being approved. `--confirm` confirms those overwrites for
+  the blocks DevPrism asks about in that run: it prints each dropped or rewritten bullet and fact
+  first, and skips a block that changed in DevPrism since the run read it (`stale`). Passing the
+  flag is the consent; there is no prompt. A plain `--dry-run` reads no live DevPrism state, sends
+  nothing, lists the withheld entries and ineligible bullets with reasons, and cannot be combined
+  with `--confirm`.
+  `--replace` also deletes the DevPrism blocks the pool does not produce (the "orphaned" set), so
+  ranking is fed from the pool alone. It first copies `career.db` with SQLite's online backup into
+  `<state dir>/kbsync/backups/career-<time>.db` (verified; the newest 10 are kept; DevPrism takes
+  no backup of its own), syncs the pool, and deletes only if every pool block landed. Only orphans
+  of a kind the sync writes (experience, project, education) are deleted; others, such as
+  publications, are spared unless `--delete-all-kinds`; `--keep ID,ID` spares named blocks. It
+  refuses to delete more than `--max-delete` (default 100, at most 500) or anything while the pool
+  is empty, stops at the first DevPrism error, and DevPrism's own confirmation for each block with
+  bullets is answered by the same round trip as `--confirm`, for the printed list only.
+  `--replace --dry-run` reads DevPrism's block list (`career_get_profile`, which changes nothing),
+  prints what it would delete and spare, and calls no mutating tool.
 
 - **Applying (browser extension):** [`extension/`](extension/) saves your answers when you submit an
   application and fills the next form's known questions, marked green or yellow. It never submits
@@ -576,7 +600,8 @@ build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager 
 build/vani jobs stats --view all
 build/vani rescore --dry-run
 build/vani bench local --model /abs/candidate.gguf --model /abs/d1-3B-Q8_0.gguf
-build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code
+build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code   # needs kb.selections
+build/vani kb sync --replace --dry-run     # reads DevPrism's block list; prints what a --replace run would delete
 build/vani launchd plist --binary /absolute/path/to/vani
 ```
 

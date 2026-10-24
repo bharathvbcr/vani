@@ -51,6 +51,7 @@ func kbmSetup(t *testing.T, seeds ...kbmSeed) *kbmEnv {
 	k.cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	k.cfg.Decide.DailyUSD.LLM = 5
 	k.cfg.KB.Bank = k.bankPath
+	wireEligibleKB(t, &k.cfg, k.bankPath, kbmBank) // the digest carries eligible bullets only
 	k.save(t)
 
 	l, err := ledger.Open(filepath.Join(state, "ledger"))
@@ -214,9 +215,10 @@ func TestKBMatchEditingTheKnowledgeBaseAsksAgain(t *testing.T) {
 	mustCode(t, 0, "kbmatch", "run")
 	f.contexts = nil
 	edited := strings.Replace(kbmBank, "Built a request batching scheduler in Rust", "Built a request batching scheduler in Go", 1)
-	if err := os.WriteFile(k.bankPath, []byte(edited), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// The edited bullet is re-reviewed on its new wording, so it stays eligible and
+	// only the digest changes (the selection file the config lists still lists it).
+	scratch := k.cfg
+	wireEligibleKB(t, &scratch, k.bankPath, edited)
 	o, _ := mustCode(t, 0, "kbmatch", "status")
 	if !strings.Contains(o, "0 current") {
 		t.Errorf("answers given another knowledge base are still current:\n%s", o)

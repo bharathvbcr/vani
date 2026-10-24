@@ -298,17 +298,19 @@ public enum AgentIdentity {
 
 /// The kinds of job the agent runs, each one `vani <kind>` with JSON on stdin.
 public enum JobKind: String, CaseIterable, Sendable {
-    /// `resume` builds a PDF for one job with DevPrism (`vani resume`); it calls no model.
+    /// `resume` builds a PDF for one job with rkb in the owner's template
+    /// (`vani resume`): the model picks the bullets for the job, rkb lays them out.
     case draft, suggest, resume
 
     /// Ceiling on one job. A suggest triages (45 s) and writes up to three
-    /// drafts (90 s each); a draft is DraftRunner.timeout; a resume starts
-    /// DevPrism and compiles one Typst document (about a second today).
+    /// drafts (90 s each); a draft is DraftRunner.timeout; a resume is one model
+    /// turn and an rkb build, with one retry, bounded by vani at 360 s
+    /// (rkbresume.DefaultDeadline) — about a minute when nothing is retried.
     public var timeout: TimeInterval {
         switch self {
         case .draft: return DraftRunner.timeout
         case .suggest: return 330
-        case .resume: return 180
+        case .resume: return 375
         }
     }
 
@@ -331,9 +333,10 @@ public enum JobKind: String, CaseIterable, Sendable {
         }
     }
 
-    /// Whether the job spends model budget. One that does not runs `vani` directly:
-    /// no anthropic-account launcher and no Keychain read for a model key.
-    public var usesModel: Bool { self != .resume }
+    /// Whether the job spends model budget. Every kind does: a resume asks the
+    /// model which bullets fit the job (without a key it builds the owner's base
+    /// resume, untailored).
+    public var usesModel: Bool { true }
 }
 
 /// The agent's job table: at most one job runs at a time (each spends real

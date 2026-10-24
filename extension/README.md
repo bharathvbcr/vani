@@ -87,13 +87,17 @@ being filled and nowhere else. Its name is never written to the activity log.
 
 When Fill leaves the resume box empty because none is chosen, a bar (bottom left) offers
 **Build and attach**, **Choose PDF…** or **Not now**. Nothing happens without a click.
-- **Build and attach** has the Vani Apply agent run `vani resume`: DevPrism picks blocks from your
-  knowledge base for this posting and renders its own plain two-page layout. It is not one of your
-  LaTeX resumes and calls no model. The header is your name and contact lines from Your basics,
-  so it needs a first and last name there. The page must publish its job description (JSON-LD,
-  as Greenhouse, Lever and Ashby do). Vani's config must name `devprism.binary`
-  (docs/PHASE0-devprism.md); without it the bar shows Vani's reason. What DevPrism picks depends
-  on what `career.db` holds, so open the PDF before you submit.
+- **Build and attach** has the Vani Apply agent run `vani resume`, which builds the resume with
+  rkb, your resume tool, in your own template: the base selection (`kb.base_selection`) with the
+  bullets that suit this posting, two pages, every bullet one that passed `kbsync.Eligible` and
+  whose figures rkb has double-verified. DevPrism builds nothing. When the model can be asked
+  (a configured provider, today's budget left) it chooses the bullets; otherwise, or when its
+  answer is refused, the base selection is built as you wrote it. The header is the base
+  selection's own, from rkb's bank, so "Your basics" is only checked, not used. The page must
+  publish its job description (JSON-LD, as Greenhouse, Lever and Ashby do). Vani's config must
+  name `kb.bank`, `kb.rkb`, `kb.selections` and `kb.base_selection` (docs/RUNTIME.md, "Building
+  a resume"), and Chrome and poppler must be installed; without them the bar shows Vani's
+  reason. Open the PDF before you submit.
 - **Choose PDF…** opens a file picker for a PDF you already have.
 
 Either way the PDF is saved for this job, as if chosen in the popup, and attached now, outlined

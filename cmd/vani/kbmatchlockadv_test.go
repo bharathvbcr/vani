@@ -29,6 +29,9 @@ func TestKBMatchRunHelper(t *testing.T) {
 		t.Skip("helper process only")
 	}
 	fixedNow(t)
+	// This child is a separate process, so the parent's fake rkb is not here: the
+	// digest is built from eligible bullets, which needs rkb's claims.
+	rkbRunner = claimsRKB{eligibleTestClaims}
 	sleep, _ := time.ParseDuration(os.Getenv("VANI_KBM_HELPER_SLEEP"))
 	oldD, oldF := kbmatchDecider, kbmatchFocus
 	defer func() { kbmatchDecider, kbmatchFocus = oldD, oldF }()
