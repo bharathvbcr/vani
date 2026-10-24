@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "extension-dom-tests",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "extension/test/serve.ts"],
+      "port": 4789
+    }
+  ]
+}
