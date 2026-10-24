@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
 // failedBoards is a boards report in the shape of the owner's 2026-10-22 run:
@@ -510,6 +512,58 @@ func TestRunHasFailuresRule(t *testing.T) {
 		"only unrecorded backend": {mk(func(r *runRecord) { r.BackendErrors = &backendErrorReport{Unrecorded: 2} }), true},
 		"empty backend report":    {mk(func(r *runRecord) { r.BackendErrors = &backendErrorReport{} }), false},
 		"running and alive":       {mk(func(r *runRecord) { r.Outcome, r.FinishedAt = outcomeRunning, time.Time{} }), false},
+		"skipped slot is not a failure": {mk(func(r *runRecord) {
+			r.Outcome, r.Error = outcomeSkipped, "skipped: 7h0m0s late, past the 6h0m0s window"
+		}), false},
+		"impressions gap":                      {mk(func(r *runRecord) { r.ImpressionsError = "disk full" }), true},
+		"log lines dropped":                    {mk(func(r *runRecord) { r.LogDropped = 2 }), true},
+		"shadow did not start":                 {mk(func(r *runRecord) { r.Shadow = &shadowNote{Local: "not started"} }), true},
+		"empty shadow note":                    {mk(func(r *runRecord) { r.Shadow = &shadowNote{} }), false},
+		"exclusion could not read":             {mk(func(r *runRecord) { r.Exclusions = &exclusionSummary{Unread: 1} }), true},
+		"exclusion body unavailable":           {mk(func(r *runRecord) { r.Exclusions = &exclusionSummary{BodyUnavailable: 1} }), true},
+		"exclusion drops are not a failure":    {mk(func(r *runRecord) { r.Exclusions = &exclusionSummary{Dropped: 4} }), false},
+		"logos failed":                         {mk(func(r *runRecord) { r.Logos = &logoSummary{Failed: 1} }), true},
+		"logos state reset":                    {mk(func(r *runRecord) { r.Logos = &logoSummary{StateReset: "reset"} }), true},
+		"logos that fetched":                   {mk(func(r *runRecord) { r.Logos = &logoSummary{Fetched: 1, Fresh: 2} }), false},
+		"near-dup partial":                     {mk(func(r *runRecord) { r.NearDup = &nearDupSummary{Partial: true} }), true},
+		"near-dup similarity errors":           {mk(func(r *runRecord) { r.NearDup = &nearDupSummary{SimilarityErrors: 1} }), true},
+		"near-dup that finished":               {mk(func(r *runRecord) { r.NearDup = &nearDupSummary{Records: 2, Compared: 1} }), false},
+		"near-dup cosine off":                  {mk(func(r *runRecord) { r.NearDup = &nearDupSummary{SimilarityOff: "cosine off"} }), true},
+		"near-dup cache note is not a failure": {mk(func(r *runRecord) { r.NearDup = &nearDupSummary{SimilarityNote: "vector cache off"} }), false},
+		"shadow errors":                        {mk(func(r *runRecord) { r.Shadow = &shadowNote{Errors: 1} }), true},
+		"shadow busy skips":                    {mk(func(r *runRecord) { r.Shadow = &shadowNote{BusySkips: 2} }), true},
+		"shadow attachment note":               {mk(func(r *runRecord) { r.Shadow = &shadowNote{Note: "lappi disabled"} }), true},
+		"semantic not run": {mk(func(r *runRecord) {
+			r.Semantic = &semanticReport{Note: "semantic matching not run: the embedding model could not be loaded"}
+		}), true},
+		"semantic failed":           {mk(func(r *runRecord) { r.Semantic = &semanticReport{Ran: true, Failed: 1} }), true},
+		"semantic unavailable":      {mk(func(r *runRecord) { r.Semantic = &semanticReport{Unavailable: true} }), true},
+		"semantic canceled":         {mk(func(r *runRecord) { r.SemanticPre = &semanticReport{Canceled: true} }), true},
+		"semantic marks unreadable": {mk(func(r *runRecord) { r.Semantic = &semanticReport{Ran: true, Note: "marks could not be read: open"} }), true},
+		"semantic budget is not a failure": {mk(func(r *runRecord) {
+			r.Semantic = &semanticReport{Ran: true, Note: "kept postings not warmed: semantic.warm_per_run was spent before the advance phase"}
+		}), false},
+		"semantic that scored":        {mk(func(r *runRecord) { r.Semantic = &semanticReport{Ran: true, Scored: 3, Cached: 1} }), false},
+		"digest warning":              {mk(func(r *runRecord) { r.DigestWarning = "rank weights missing" }), true},
+		"notes off":                   {mk(func(r *runRecord) { r.Explain = &explainNote{Mode: explainOff, Note: "notes off"} }), true},
+		"notes paused":                {mk(func(r *runRecord) { r.Explain = &explainNote{Mode: explainPaused, Note: "notes paused"} }), true},
+		"notes that ran":              {mk(func(r *runRecord) { r.Explain = nil }), false},
+		"fail-open empty description": {mk(func(r *runRecord) { r.Advance = &advanceReport{FailOpen: pipeline.FailOpenCounts{EmptyDescription: 1}} }), true},
+		"fail-open title unread":      {mk(func(r *runRecord) { r.Advance = &advanceReport{FailOpen: pipeline.FailOpenCounts{TitleUnread: 1}} }), true},
+		"fail-open location": {mk(func(r *runRecord) {
+			r.Advance = &advanceReport{FailOpen: pipeline.FailOpenCounts{LocationUnreadable: 1}}
+		}), true},
+		"fail-open prescore":                 {mk(func(r *runRecord) { r.Advance = &advanceReport{FailOpen: pipeline.FailOpenCounts{PrescoreFailed: 1}} }), true},
+		"fail-open other":                    {mk(func(r *runRecord) { r.Advance = &advanceReport{FailOpen: pipeline.FailOpenCounts{Other: 1}} }), true},
+		"coverage unknown is not a failure":  {mk(func(r *runRecord) { r.Advance = &advanceReport{FailOpen: pipeline.FailOpenCounts{CoverageUnknown: 4}} }), false},
+		"notes relevance unknown":            {mk(func(r *runRecord) { r.Advance = &advanceReport{Notes: pipeline.NotesCounts{UnknownRelevance: 1}} }), true},
+		"notes below the floor":              {mk(func(r *runRecord) { r.Advance = &advanceReport{Notes: pipeline.NotesCounts{Below: 3}} }), false},
+		"notes budget spent":                 {mk(func(r *runRecord) { r.Advance = &advanceReport{Notes: pipeline.NotesCounts{BudgetSpent: 2}} }), false},
+		"pay fetches failed":                 {mk(func(r *runRecord) { r.Boards = &boardsReport{PayFailed: 2} }), true},
+		"pay failed only on the total":       {mk(func(r *runRecord) { r.Boards = &boardsReport{PayFailed: 1, Items: nil} }), true},
+		"deferred details are not a failure": {mk(func(r *runRecord) { r.Boards = &boardsReport{Deferred: 9} }), false},
+		"pay skipped is not a failure":       {mk(func(r *runRecord) { r.Boards = &boardsReport{PaySkipped: 4} }), false},
+		"gone details are not a failure":     {mk(func(r *runRecord) { r.Boards = &boardsReport{Gone: 1} }), false},
 	} {
 		if got := runHasFailures(tc.r, at); got != tc.want {
 			t.Errorf("%s: runHasFailures = %v, want %v", name, got, tc.want)

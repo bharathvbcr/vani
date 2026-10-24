@@ -3,8 +3,8 @@
 // the bytes pass before they reach a page. No personal data: names are neutral.
 import { describe, expect, test } from "bun:test";
 import {
-  MAX_RESUME_BYTES, buildResumeRequest, checkResumeName, fromBase64, isPdf, isResumeField, parseBuiltResume, parseResumeGet,
-  parseResumeInfo, resumeHeader, resumeKey, resumeOp, runResume, toBase64,
+  MAX_RESUME_BYTES, buildResumeRequest, checkResumeName, fromBase64, isPdf, isResumeField, openHeldResume, parseBuiltResume, parseResumeGet,
+  parseResumeInfo, parseResumeOpen, resumeHeader, resumeKey, resumeOp, runResume, toBase64,
 } from "../src/resume";
 import { type FieldInfo, emptyBank } from "../src/types";
 import { mergeCapture } from "../src/bank";
@@ -133,6 +133,63 @@ describe("parseResumeGet", () => {
   });
 });
 
+describe("parseResumeOpen", () => {
+  test("an opened file is its name and size, never the PDF", () => {
+    expect(parseResumeOpen({ ok: true, name: "Resume_Acme.pdf", bytes: 1200 })).toEqual({ ok: true, name: "Resume_Acme.pdf", bytes: 1200 });
+    expect(parseResumeOpen({ ok: true, name: " Resume_Acme.pdf ", bytes: 1200, pdf: "AAAA" })).toEqual({ ok: true, name: "Resume_Acme.pdf", bytes: 1200 });
+  });
+  test("nothing saved is not an error", () => {
+    expect(parseResumeOpen({ found: false })).toEqual({ found: false });
+    expect(parseResumeOpen({ found: false, changed: true })).toEqual({ found: false, changed: true });
+    expect(parseResumeOpen({ found: false, several: true, pdf: "SECRET" })).toEqual({ found: false, several: true });
+  });
+  test("a missing reply, a bad name, a bad size and a huge error are refused", () => {
+    for (const c of [null, undefined, "ok", 1, {}, { ok: true }, { ok: true, name: "../x.pdf", bytes: 10 },
+      { ok: true, name: "a.pdf", bytes: 0 }, { ok: true, name: "a.pdf", bytes: MAX_RESUME_BYTES + 1 },
+      { ok: true, name: "a.pdf", bytes: 1.5 }, { ok: true, name: "a.docx", bytes: 10 }]) {
+      const r = parseResumeOpen(c);
+      expect("error" in r && r.error.length > 0 && r.error.length <= 200).toBe(true);
+    }
+    const huge = parseResumeOpen({ error: "e".repeat(10_000), code: "io" });
+    expect("error" in huge && huge.error.length <= 200).toBe(true);
+  });
+});
+
+describe("openHeldResume", () => {
+  const file = { name: "Resume_Acme.pdf", bytes: PDF };
+  function preview() {
+    return { closed: 0, shown: 0, close() { this.closed++; }, show() { this.shown++; } };
+  }
+
+  test("a Preview that opens closes a fallback preview and does not draw another", async () => {
+    const ui = preview();
+    const sent: unknown[] = [];
+    const r = await openHeldResume(file, async msg => {
+      sent.push(msg);
+      return { ok: true, name: file.name, bytes: file.bytes.length, pdf: "SECRET" };
+    }, ui);
+    expect(r).toEqual({});
+    expect(ui.closed).toBe(1);
+    expect(ui.shown).toBe(0);
+    expect(sent).toEqual([{ type: "resumeShow", name: file.name, pdf: toBase64(PDF) }]);
+  });
+
+  test("a refusal, a missing file, or a throw shows the page's own copy and leaves any open preview to be replaced", async () => {
+    for (const reply of [{ error: "the Vani Apply Mac app isn't reachable" }, { found: false }, null]) {
+      const ui = preview();
+      const r = await openHeldResume(file, async () => reply, ui);
+      expect(r.error && r.error.length > 0).toBe(true);
+      expect(ui.closed).toBe(0);
+      expect(ui.shown).toBe(1);
+    }
+    const ui = preview();
+    const r = await openHeldResume(file, async () => { throw new Error("the port closed"); }, ui);
+    expect(r).toEqual({ error: "the port closed" });
+    expect(ui.shown).toBe(1);
+    expect(ui.closed).toBe(0);
+  });
+});
+
 describe("resumeOp", () => {
   const url = "https://job-boards.greenhouse.io/acme/jobs/123?gh_src=x";
   const key = "https://boards.greenhouse.io/acme/jobs/123";
@@ -140,6 +197,7 @@ describe("resumeOp", () => {
     expect(resumeOp({ type: "resumeGet", url })).toEqual({ op: "resumeGet", key });
     expect(resumeOp({ type: "resumeInfo", url })).toEqual({ op: "resumeInfo", key });
     expect(resumeOp({ type: "resumeDelete", url })).toEqual({ op: "resumeDelete", key });
+    expect(resumeOp({ type: "resumeOpen", url })).toEqual({ op: "resumeOpen", key });
   });
   test("a put carries a checked PDF", () => {
     expect(resumeOp({ type: "resumePut", url, name: " Resume_Test.pdf ", pdf: toBase64(PDF) }))
@@ -211,6 +269,12 @@ describe("runResume: the canonical key, then the key a resume was stored under b
     const m = mac();
     expect(await runResume({ type: "resumeGet", url: oldDirect }, m.native)).toEqual({ found: false });
     expect(m.calls.length).toBe(2);
+  });
+
+  test("opening falls back to the old key the same way a read does", async () => {
+    const m = mac({ [oldDirect]: B64 });
+    expect(await runResume({ type: "resumeOpen", url: oldDirect }, m.native)).toMatchObject({ found: true });
+    expect(m.calls).toEqual([{ op: "resumeOpen", key: canon }, { op: "resumeOpen", key: oldDirect }]);
   });
 
   test("a page whose key is unchanged is looked up once", async () => {
@@ -322,7 +386,12 @@ describe("parseResumeInfo", () => {
   test("what the popup shows: the bound file's name and when it was chosen, or none", () => {
     expect(parseResumeInfo({ found: true, name: "Resume_Test.pdf", bytes: 10, pickedAt: "2026-10-19T12:00:00Z" }))
       .toEqual({ found: true, name: "Resume_Test.pdf", bytes: 10, pickedAt: "2026-10-19T12:00:00Z" });
+    expect(parseResumeInfo({ found: true, name: "Resume_Test.pdf", bytes: 10, pickedAt: "2026-10-19T12:00:00Z", key: "https://boards.greenhouse.io/acme/jobs/1" }))
+      .toEqual({ found: true, name: "Resume_Test.pdf", bytes: 10, pickedAt: "2026-10-19T12:00:00Z", key: "https://boards.greenhouse.io/acme/jobs/1" });
+    expect(parseResumeInfo({ found: true, name: "Resume_Test.pdf", bytes: 10, pickedAt: "", key: "not a posting" }))
+      .toEqual({ found: true, name: "Resume_Test.pdf", bytes: 10, pickedAt: "" });
     expect(parseResumeInfo({ found: false })).toEqual({ found: false });
+    expect(parseResumeInfo({ found: false, several: true })).toEqual({ found: false, several: true });
     expect(parseResumeInfo({ error: "x", code: "unreachable" })).toEqual({ error: "x" });
     expect(parseResumeInfo(null)).toEqual({ error: expect.any(String) });
   });

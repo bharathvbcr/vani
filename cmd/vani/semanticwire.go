@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/digest"
@@ -66,6 +67,11 @@ var nearDupLoadTimeout = 2 * time.Minute
 // vector cache is rebuilt, and failing that the cosine runs uncached.
 func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context, string, string) (float64, bool, error), finish func()) {
 	finish = func() {}
+	// A previous run's cosine line must not leak into this one. Semantic
+	// matching off is not a cosine that failed to load.
+	w.mu.Lock()
+	w.simOff, w.simNote = "", ""
+	w.mu.Unlock()
 	if !w.cfg.SemanticOn() || ctx.Err() != nil {
 		return nil, finish
 	}
@@ -73,7 +79,9 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 	emb, closeEmb, err := openEmbedder(lctx, w.cfg)
 	cancel()
 	if err != nil {
-		w.warnf("near-duplicate cosine off, shingles only: %s", oneLine(err.Error(), 200))
+		msg := "near-duplicate cosine off, shingles only: " + oneLine(err.Error(), 200)
+		w.warnf("%s", msg)
+		w.noteSimilarity(true, msg)
 		return nil, finish
 	}
 	dir := semanticDir(w.stateDir)
@@ -85,7 +93,9 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 	}
 	if err != nil {
 		cache = nil // no caching this run; the cosine still works
-		w.warnf("near-duplicate vector cache off: %s", oneLine(err.Error(), 200))
+		msg := "near-duplicate vector cache off: " + oneLine(err.Error(), 200)
+		w.warnf("%s", msg)
+		w.noteSimilarity(false, msg)
 	}
 	titles := semantic.NewTitleIndex()
 	for _, r := range w.led.All() {
@@ -97,7 +107,9 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 	return semantic.NewTitledSimilarity(emb, cache, titles), func() {
 		if cache != nil {
 			if err := cache.Save(); err != nil {
-				w.warnf("near-duplicate vector cache not saved: %s", oneLine(err.Error(), 200))
+				msg := "near-duplicate vector cache not saved: " + oneLine(err.Error(), 200)
+				w.warnf("%s", msg)
+				w.noteSimilarity(false, msg)
 			}
 		}
 		if closeEmb != nil {
@@ -223,6 +235,26 @@ func (r *semanticReport) noteUnreadable(n int) {
 		msg = r.Note + "; " + msg
 	}
 	r.Note = msg
+}
+
+// noteMarks records that the Jobs marks could not be read, so the warm saw
+// kept postings only. The marks clause stays even when the earlier note is
+// already long. A nil error changes nothing.
+func noteMarks(r *semanticReport, err error) {
+	if r == nil || err == nil {
+		return
+	}
+	clause := "marks could not be read: " + oneLine(err.Error(), maxStageNote)
+	if r.Note == "" {
+		r.Note = clause
+		return
+	}
+	joined := r.Note + "; " + clause
+	if utf8.RuneCountInString(joined) <= 2*maxStageNote {
+		r.Note = joined
+		return
+	}
+	r.Note = oneLine(r.Note, maxStageNote) + "; " + clause
 }
 
 // warmSemanticRun is warmSemantic as the daily run calls it; a variable only so

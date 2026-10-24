@@ -2,7 +2,7 @@
 // test/dom.html. Writes PASS/FAIL lines into #results and sets document.title.
 import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, scanForm } from "../src/extract";
 import { clearMarks, fillAll, fillRef, insertDraft } from "../src/fill";
-import { currentText, draftable, suggest } from "../src/suggest";
+import { currentText, draftOffer, draftable, suggest } from "../src/suggest";
 import { readJobInfo } from "../src/jobinfo";
 import { scrapePageJobs } from "../src/scraper";
 import { mergeCapture } from "../src/bank";
@@ -22,6 +22,20 @@ function check(name: string, ok: boolean, detail = ""): void {
   lines.push(`${ok ? "PASS" : "FAIL"} ${name}${ok || !detail ? "" : ` :: ${detail}`}`);
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/** Listen before the frame is inserted. A srcdoc load can finish inside append, and a listener added afterwards never runs. */
+function frameLoaded(frame: HTMLIFrameElement): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, 3000);
+    frame.addEventListener("load", () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
+}
+
+/** A frame whose document never arrived. Callers record one failure and return, rather than throwing on null. */
+function loadedDocument(frame: HTMLIFrameElement): Document | null {
+  const doc = frame.contentDocument;
+  return doc?.defaultView ? doc : null;
+}
 
 const gh = document.getElementById("gh") as HTMLFormElement;
 const lv = document.getElementById("lv") as HTMLFormElement;
@@ -184,14 +198,18 @@ async function shadowAndFrames(): Promise<void> {
 
   const fsrc = q<HTMLIFrameElement>(document, "#if-src"), fdst = q<HTMLIFrameElement>(document, "#if-dst");
   for (let i = 0; i < 60 && !(fsrc.contentDocument?.getElementById("g") && fdst.contentDocument?.getElementById("g")); i++) await sleep(50);
+  const srcDoc = loadedDocument(fsrc), dstDoc = loadedDocument(fdst);
+  if (!srcDoc || !dstDoc) {
+    check("same-origin iframe: the frame document loaded", false, "no document");
+    return;
+  }
   const wrapSrc = q<HTMLElement>(document, "#if-wrap-src"), wrapDst = q<HTMLElement>(document, "#if-wrap-dst");
   const s = scanForm(wrapSrc).refs;
   check("same-origin iframe: fields found through the iframe element", s.length === 2 && s[0]!.info.label === "GitHub URL" && s[0]!.info.value.join() === "https://github.example/sam", `${s.length}: ${labels(wrapSrc).join(" | ")}`);
   const fb = learn(wrapSrc);
   const out = await fillAll(scanForm(wrapDst).refs, fb, "x.example");
-  const d = fdst.contentDocument!;
-  check("same-origin iframe: filled across the frame boundary", (d.getElementById("g") as HTMLInputElement).value === "https://github.example/sam" && (d.getElementById("nm") as HTMLInputElement).value === "Sammy", out.map(o => `${o.label}:${o.reason ?? "ok"}`).join(" "));
-  check("same-origin iframe: file input untouched", (d.getElementById("f") as HTMLInputElement).value === "" && out.some(o => o.reason === "untouchable"));
+  check("same-origin iframe: filled across the frame boundary", (dstDoc.getElementById("g") as HTMLInputElement).value === "https://github.example/sam" && (dstDoc.getElementById("nm") as HTMLInputElement).value === "Sammy", out.map(o => `${o.label}:${o.reason ?? "ok"}`).join(" "));
+  check("same-origin iframe: file input untouched", (dstDoc.getElementById("f") as HTMLInputElement).value === "" && out.some(o => o.reason === "untouchable"));
 }
 
 async function repeated(): Promise<void> {
@@ -387,6 +405,7 @@ async function liveHelp(): Promise<void> {
   check("live help: a picked suggestion fills yellow", o.filled && q<HTMLInputElement>(box, "#lh-go").value === "6" && q<HTMLElement>(box, "#lh-go").getAttribute("data-vani-fill") === "review", JSON.stringify(o));
 
   check("draft: offered for an empty free-text field only", draftable(why) && !draftable(office), `why ${draftable(why)} office ${draftable(office)}`);
+  check("draft: empty prose with a posting offers a draft, a choice does not", draftOffer(why.info, why.manual, 80).offer === "draft" && draftOffer(office.info, office.manual, 80).offer === "choice");
   const typed = document.createElement("div");
   typed.innerHTML = '<input id="lh-typed" value="jane@example.invalid">';
   box.append(typed);
@@ -405,6 +424,8 @@ async function liveHelp(): Promise<void> {
   const saved = mergeCapture(emptyBank(), [rescanned.info], "x.example", NOW()).bank;
   const savedWhy = Object.values(saved.answers)[0];
   check("draft: a kept draft is saved for review, never as a confident answer", rescanned.info.drafted === true && savedWhy?.review === true, JSON.stringify(savedWhy));
+  const again = draftOffer(rescanned.info, rescanned.manual, 80);
+  check("draft: a field holding a Vani draft offers regenerate, and the offer carries no field text", again.offer === "regenerate" && again.button === "Regenerate" && !JSON.stringify(again).includes("Replacement"), JSON.stringify(again));
 
   clearMarks();
   box.remove();
@@ -613,9 +634,15 @@ async function notQuestions(): Promise<void> {
   // or hiding it saves nothing. Saving it on purpose still does.
   const frame = document.createElement("iframe");
   frame.srcdoc = '<!doctype html><form action="#" onsubmit="return false"><input name="q" aria-label="Search" value=""></form>';
+  const searchLoaded = frameLoaded(frame);
   document.body.append(frame);
-  await new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
-  const doc = frame.contentDocument!;
+  await searchLoaded;
+  const doc = loadedDocument(frame);
+  if (!doc) {
+    check("one search box: the search page loaded", false, "iframe document did not load");
+    frame.remove();
+    return;
+  }
   let mem: Bank = emptyBank();
   let sends = 0;
   const t = createTracker({
@@ -692,9 +719,15 @@ async function greenhouseFixture(): Promise<void> {
   const frame = document.createElement("iframe");
   frame.style.cssText = "width:900px;height:600px";
   frame.srcdoc = "<!doctype html><meta charset=utf-8><body>" + await (await fetch("fixtures/greenhouse-anthropic-2026-10.html")).text();
+  const formLoaded = frameLoaded(frame);
   document.body.append(frame);
-  await new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
-  const doc = frame.contentDocument!;
+  await formLoaded;
+  const doc = loadedDocument(frame);
+  if (!doc) {
+    check("greenhouse form: the fixture document loaded", false, "iframe document did not load");
+    frame.remove();
+    return;
+  }
   const refs = scanForm(doc).refs;
   const labels = refs.map(r => r.info.label);
   check("greenhouse form: 25 fields, every one labelled, no hidden proxies or search boxes", refs.length === 25 && !labels.includes("") && !labels.some(l => /^search$/i.test(l)),
@@ -826,7 +859,11 @@ async function resumeAttach(): Promise<void> {
     ["no resume chosen for this job", { ok: false, reason: "no_resume", detail: "no resume chosen for this job" }],
     ["the Mac app unreachable", { ok: false, reason: "resume_unavailable", detail: "the Vani Apply Mac app isn't reachable" }],
   ] as const) {
-    box.querySelectorAll<HTMLInputElement>("input[type=file]").forEach(i => { i.value = ""; });
+    box.querySelectorAll<HTMLInputElement>("input[type=file]").forEach(i => {
+      i.value = "";
+      // Some engines leave FileList in place after value = "". Assigning an empty list is what a real clear does.
+      if ((i.files?.length ?? 0) > 0) i.files = new DataTransfer().files;
+    });
     const got = await fillAll(scanForm(box).refs, emptyBank(), "x", { resume: source(r) });
     const row = got[scanForm(box).refs.findIndex(x => x.els[0] === res)];
     check(`${why}: a reason, not a skip, and not filled`, row?.filled === false && row.reason === r.reason && row.detail === r.detail && res.files?.length === 0, JSON.stringify(row));
@@ -923,9 +960,15 @@ async function greenhouseScraperFixture(): Promise<void> {
         </table>
       </div>
     </div>`;
+  const boardLoaded = frameLoaded(frame);
   document.body.append(frame);
-  await new Promise<void>(r => frame.addEventListener("load", () => r(), { once: true }));
-  const doc = frame.contentDocument!;
+  await boardLoaded;
+  const doc = loadedDocument(frame);
+  if (!doc) {
+    check("greenhouse board scraper: the board document loaded", false, "iframe document did not load");
+    frame.remove();
+    return;
+  }
   const res = scrapePageJobs(doc, "job-boards.greenhouse.io");
   check("greenhouse board scraper: extracts both jobs", res.totalFound === 2, `got ${res.totalFound}`);
   check("greenhouse board scraper: company is Anthropic", res.jobs.every(j => j.company === "Anthropic"), res.jobs[0]?.company ?? "");
@@ -1041,6 +1084,77 @@ async function dependentFieldsInShadow(): Promise<void> {
   host.remove();
 }
 
+/** A per-row save records the value. A later flush must not send it again while the bank read is still empty. */
+async function oneFieldSave(): Promise<void> {
+  const box = document.createElement("form");
+  box.innerHTML = `<div class="field"><label for="ns-co">Current company</label><input id="ns-co" name="ns-company"></div>`;
+  document.body.append(box);
+  const input = document.getElementById("ns-co") as HTMLInputElement;
+  const companyIn = (batches: FieldInfo[][]): string[] =>
+    batches.flat().filter(f => f.label === "Current company").map(f => f.value.join("|"));
+  const open = () => {
+    const sent: FieldInfo[][] = [];
+    const t = createTracker({
+      doc: document,
+      host: "boards.example",
+      getBank: async () => emptyBank(),
+      send: async fields => {
+        sent.push(fields.map(f => ({ ...f, value: [...f.value] })));
+        return { added: fields.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 };
+      },
+    });
+    return { sent, t };
+  };
+  const field = (): FieldInfo | undefined => scanForm(box).refs.find(r => r.info.label === "Current company")?.info;
+  try {
+    input.value = "Initech";
+    const saved = field();
+    check("one-field save: the company field scans", saved?.value.join() === "Initech", JSON.stringify(saved));
+    if (!saved) return;
+    const same = open();
+    try {
+      same.t.noteSent(saved, false);
+      const first = await same.t.flush("saved", true);
+      check(
+        "one-field save: a stale empty bank does not send the saved value again",
+        companyIn(same.sent).length === 0 && (first?.unchanged ?? 0) > 0,
+        `company ${companyIn(same.sent).join(",")} unchanged ${first?.unchanged ?? "none"}`,
+      );
+      input.value = "Northwind";
+      await same.t.flush("saved", true);
+      check("one-field save: a new value is sent once", companyIn(same.sent).join(",") === "Northwind", companyIn(same.sent).join(","));
+    } finally {
+      same.t.dispose();
+    }
+
+    input.value = "Initech";
+    const other = open();
+    try {
+      const live = field();
+      if (!live) { check("one-field save: the company field is still on the page", false); return; }
+      other.t.noteSent({ ...live, value: ["Other"] }, false);
+      await other.t.flush("saved", true);
+      check("one-field save: noting a different value does not hide the page", companyIn(other.sent).join(",") === "Initech", companyIn(other.sent).join(","));
+    } finally {
+      other.t.dispose();
+    }
+
+    input.value = "Initech";
+    const blank = open();
+    try {
+      const live = field();
+      if (!live) { check("one-field save: the company field is still on the page", false); return; }
+      blank.t.noteSent({ ...live, value: ["  "] }, false);
+      await blank.t.flush("saved", true);
+      check("one-field save: an empty note does not hide the answer", companyIn(blank.sent).join(",") === "Initech", companyIn(blank.sent).join(","));
+    } finally {
+      blank.t.dispose();
+    }
+  } finally {
+    box.remove();
+  }
+}
+
 async function main(): Promise<void> {
   for (const [name, fn] of [
     ["resume attach", resumeAttach],
@@ -1051,6 +1165,7 @@ async function main(): Promise<void> {
     ["shadow+frames", shadowAndFrames],
     ["repeated", repeated],
     ["tracking", tracking],
+    ["one-field save", oneFieldSave],
     ["adversarial", adversarial],
     ["live help", liveHelp],
     ["multi-select", multiSelect],

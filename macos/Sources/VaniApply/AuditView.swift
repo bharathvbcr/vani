@@ -10,6 +10,15 @@ struct AuditView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
+            if let err = model.impressionsError {
+                Text(verbatim: String(err.prefix(500)))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+            }
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

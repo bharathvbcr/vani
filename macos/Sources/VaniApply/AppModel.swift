@@ -184,11 +184,19 @@ final class AppModel {
         }
         switch agentStatus {
         case .enabled:
-            if let agentError { return "Registered, but \(agentError)" }
+            if let agentError, !agentError.isEmpty {
+                return "Registered, but \(BoundedText.sentence(agentError))"
+            }
             return "Running on demand: Safari and Chrome can ask for drafts and suggestions."
         case .requiresApproval: return "Waiting for approval in System Settings > General > Login Items."
-        case .notFound: return "Not found in this copy of the app; rebuild it with scripts/bundle.sh."
-        case .notRegistered: return "Not registered" + (agentError.map { ": \($0)" } ?? ".")
+        case .notFound:
+            let relative = "Contents/Library/LaunchAgents/\(AgentConstants.plistName)"
+            let inside: Bool
+            if case .file = BundleMember.place(bundle: Bundle.main.bundleURL, relative: relative) { inside = true } else { inside = false }
+            return AgentCopy.notFoundLine(error: agentError, plistInside: inside)
+        case .notRegistered:
+            guard let agentError, !agentError.isEmpty else { return "Not registered." }
+            return "Not registered: \(BoundedText.sentence(agentError))"
         @unknown default: return "Unknown state."
         }
     }
@@ -200,8 +208,13 @@ final class AppModel {
     /// tab's "Run on schedule" switch. Read when the tab appears and after each change, since
     /// the owner can also switch it in System Settings.
     private(set) var scheduleStatus: ScheduleToggle.Registration = .notRegistered
+    /// What this bundle can register. ServiceManagement's `.notFound` is also a
+    /// never-registered agent, so the file decides whether the switch can turn it on.
+    private(set) var scheduleCopy: ScheduleAgent.BundleCopy = .absent
     private(set) var scheduleError: String?
     private(set) var scheduleBusy = false
+    /// Invalidates a status read that started before a register or unregister.
+    private var scheduleEpoch = ScheduleToggle.Epoch()
 
     static func registration(_ status: SMAppService.Status) -> ScheduleToggle.Registration {
         switch status {
@@ -217,8 +230,15 @@ final class AppModel {
     /// alone (and the tests) does not ask at all.
     func refreshSchedule() {
         guard !agentLeftAlone else { return }
+        let token = scheduleEpoch.current
         Task {
             let status = await BlockingWork.value { SMAppService.agent(plistName: ScheduleAgentConstants.plistName).status }
+            let copy = ScheduleAgent.inspect(bundle: Bundle.main.bundleURL)
+            // A change that started after this read, or one still in flight, owns the screen.
+            guard scheduleEpoch.isCurrent(token), !scheduleBusy else { return }
+            // The file first: publishing `.notFound` while `scheduleCopy` is still `.absent`
+            // would flash "this copy has no schedule agent" for a bundle that has one.
+            scheduleCopy = copy
             scheduleStatus = Self.registration(status)
         }
     }
@@ -230,20 +250,86 @@ final class AppModel {
         guard !agentLeftAlone, !scheduleBusy else { return }
         scheduleBusy = true
         scheduleError = nil
+        // Drops a refresh that already read the old status.
+        _ = scheduleEpoch.begin()
+        let statusNow = scheduleStatus
+        let bundle = Bundle.main.bundleURL
         Task {
             var failure: String?
+            let copy = ScheduleAgent.inspect(bundle: bundle)
+            if on, copy != .ready {
+                // Do not ask ServiceManagement to register a plist that is missing or refused.
+                let why: String? = { if case let .unusable(text) = copy { return text } else { return nil } }()
+                self.publishSchedule(status: copy == .absent ? .notFound : statusNow, copy: copy, failure: why)
+                return
+            }
             do {
-                let service = SMAppService.agent(plistName: ScheduleAgentConstants.plistName)
-                if !on || repair, service.status != .notRegistered { try await service.unregister() }
-                if on { try await BlockingWork.run { try SMAppService.agent(plistName: ScheduleAgentConstants.plistName).register() }.get() }
+                try await Self.performSchedule(ScheduleToggle.order(on: on, repair: repair, status: statusNow))
+            } catch let fault as ScheduleToggle.Fault {
+                failure = fault.text
             } catch {
-                failure = error.localizedDescription
+                failure = BoundedText.sentence(error.localizedDescription)
             }
             let status = await BlockingWork.value { SMAppService.agent(plistName: ScheduleAgentConstants.plistName).status }
+            let after = ScheduleAgent.inspect(bundle: bundle)
             // A registration that now waits for approval is the expected result, not a failure.
-            scheduleError = status == .requiresApproval ? nil : failure
-            scheduleStatus = Self.registration(status)
+            self.publishSchedule(status: Self.registration(status), copy: after, failure: status == .requiresApproval ? nil : failure)
+        }
+    }
+
+    /// Publishes a schedule read only if no newer change has started. Clears the busy flag
+    /// either way when this call was the one that set it: a dropped publish must not leave
+    /// the switch stuck.
+    private func publishSchedule(status: ScheduleToggle.Registration, copy: ScheduleAgent.BundleCopy, failure: String?) {
+        let token = scheduleEpoch.begin()
+        guard scheduleEpoch.isCurrent(token) else {
             scheduleBusy = false
+            return
+        }
+        scheduleCopy = copy
+        scheduleError = failure
+        scheduleStatus = status
+        scheduleBusy = false
+    }
+
+    /// Runs `order`. A missing job on unregister is success. A register that finds the agent
+    /// already registered is unregistered and registered once more, and not again.
+    private static func performSchedule(_ order: ScheduleToggle.Order) async throws {
+        switch order {
+        case .leave: return
+        case .unregister:
+            try await scheduleUnregister(missingOK: true)
+        case .register:
+            try await scheduleRegister(replaceIfPresent: true)
+        case .replace:
+            try await scheduleUnregister(missingOK: true)
+            try await scheduleRegister(replaceIfPresent: false)
+        }
+    }
+
+    private static func scheduleRegister(replaceIfPresent: Bool) async throws {
+        do {
+            try await scheduleRegisterCall()
+        } catch ScheduleToggle.Fault.alreadyRegistered where replaceIfPresent {
+            try await scheduleUnregister(missingOK: true)
+            try await scheduleRegisterCall()
+        }
+    }
+
+    private static func scheduleRegisterCall() async throws {
+        let result = await BlockingWork.run {
+            try SMAppService.agent(plistName: ScheduleAgentConstants.plistName).register()
+        }
+        if case let .failure(error) = result { throw ScheduleToggle.Fault.classify(error as NSError) }
+    }
+
+    private static func scheduleUnregister(missingOK: Bool) async throws {
+        do {
+            try await SMAppService.agent(plistName: ScheduleAgentConstants.plistName).unregister()
+        } catch {
+            let fault = ScheduleToggle.Fault.classify(error as NSError)
+            if missingOK, case .jobMissing = fault { return }
+            throw fault
         }
     }
 

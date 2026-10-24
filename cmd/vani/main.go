@@ -24,6 +24,13 @@ const (
 	exitOK      = 0
 	exitRuntime = 1
 	exitUsage   = 2
+	// exitConfigRestart is sysexits EX_TEMPFAIL (75). `vani daemon` returns it
+	// when a process-lifetime field changed — the schedule, or devprism.binary
+	// / devprism.tools_hash — so a supervisor starts a process that reads the
+	// file. Nothing else in vani uses 75. The schedule agent's
+	// ScheduleAgentConstants.configRestartStatus is the same number. launchd
+	// KeepAlive with SuccessfulExit false also restarts any non-zero exit.
+	exitConfigRestart = 75
 )
 
 const usageText = `usage: vani <command> [flags]
@@ -227,15 +234,23 @@ type env struct {
 	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it
 	// said was refused. dailyJob records it in the run record.
 	runLog string
+	// runTee copies a run's stderr into runs/history/<id>.log when runLog is
+	// empty. Nil for commands that do not run the pipeline.
+	runTee *cappedTee
 
 	// applied is the config the last run's reload left (reloadConfig); nil
 	// before the first. A run whose config file cannot be read falls back to it.
 	appliedMu sync.Mutex
 	applied   *config.Config
+
+	// restart ends the daemon when a process-lifetime config field changes.
+	// Nil outside `vani daemon`; reloadConfig still returns errConfigRestart.
+	restart context.CancelCauseFunc
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
-// 2 usage error.
+// 2 usage error, exitConfigRestart when the daemon must restart for a
+// process-lifetime config change.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usageText)
@@ -347,14 +362,30 @@ func runEnv(e *env, args []string) int {
 		cmdErr = usagef("unknown command %q", args[0])
 	}
 
-	switch {
-	case cmdErr == nil, errors.Is(cmdErr, flag.ErrHelp):
+	switch code := exitCode(cmdErr); code {
+	case exitOK:
 		return exitOK
-	case errors.As(cmdErr, new(usageError)):
+	case exitUsage:
 		fmt.Fprintf(stderr, "vani: %v\n\n%s", cmdErr, usageText)
 		return exitUsage
 	default:
 		fmt.Fprintf(stderr, "vani: %v\n", cmdErr)
+		return code
+	}
+}
+
+// exitCode is the process exit code for a command error. A wrapped
+// errConfigRestart is exitConfigRestart, including through errors.Join.
+// Named exitCode because statusOf is the test helper that reads `vani status`.
+func exitCode(err error) int {
+	switch {
+	case err == nil, errors.Is(err, flag.ErrHelp):
+		return exitOK
+	case errors.As(err, new(usageError)):
+		return exitUsage
+	case errors.Is(err, errConfigRestart):
+		return exitConfigRestart
+	default:
 		return exitRuntime
 	}
 }
@@ -464,6 +495,7 @@ func (e *env) cmdDaemon(args []string) error {
 	if err != nil {
 		return err
 	}
+	e.installRunTee()
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
 	if err != nil {
 		return err
@@ -497,7 +529,10 @@ func (e *env) cmdDaemon(args []string) error {
 	defer stop()
 	// A manual run that leaves the ledger unusable ends the daemon as a
 	// scheduled one does: cancelling ctx ends daemon.Run, and fatal is returned.
-	ctx, cancel := context.WithCancel(sigCtx)
+	// The cause distinguishes a process-lifetime config change (exit 75) from a
+	// signal (exit 0). The first cancel wins.
+	ctx, cancel := context.WithCancelCause(sigCtx)
+	e.bindRestart(cancel)
 	var (
 		fatal   error
 		fatalMu sync.Mutex
@@ -509,7 +544,7 @@ func (e *env) cmdDaemon(args []string) error {
 			fatal = err
 		}
 		fatalMu.Unlock()
-		cancel()
+		cancel(err)
 	}
 	fmt.Fprintf(e.stderr, "vani: daemon started, daily at %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
 	// The daily run, the inbox poll and a requested manual run all write the
@@ -527,7 +562,7 @@ func (e *env) cmdDaemon(args []string) error {
 	var wg sync.WaitGroup
 	// Registered after app.close's defer, so it runs first: the polls must be
 	// done with the ledger before the ledger closes.
-	defer func() { cancel(); wg.Wait() }()
+	defer func() { cancel(nil); wg.Wait() }()
 	if app.PollInbox != nil {
 		wg.Add(1)
 		go func() {
@@ -548,13 +583,20 @@ func (e *env) cmdDaemon(args []string) error {
 			setFatal(err)
 		}
 	}()
-	err = daemon.Run(ctx, cfg.Schedule, job, daemonClock)
-	cancel()
+	err = daemon.RunWith(ctx, cfg.Schedule, job, daemonClock, daemon.Hooks{Skipped: e.recordSkippedSlot})
+	cancel(nil)
 	wg.Wait()
 	fatalMu.Lock()
 	defer fatalMu.Unlock()
 	if err == nil {
-		err = fatal
+		// A signal cancels the parent with context.Canceled and stays exit 0.
+		// A pinned config change cancels with errConfigRestart. Whichever
+		// landed first is the cause; a later cancel does not replace it.
+		if errors.Is(context.Cause(ctx), errConfigRestart) {
+			err = errConfigRestart
+		} else {
+			err = fatal
+		}
 	}
 	return err
 }
@@ -568,7 +610,9 @@ var inboxPollInterval = 2 * time.Minute
 // reported and the loop goes on: the spooled files stay for the next one. A
 // poll that leaves the ledger unusable ends the loop with daemon.ErrFatal, as a
 // run does (ledgerBroken): the daemon exits within one poll interval instead of
-// holding a poisoned ledger until the next daily slot.
+// holding a poisoned ledger until the next daily slot. errConfigRestart ends it
+// the same way, without the poll-failure line: the process is exiting so the
+// new schedule or DevPrism settings apply.
 func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) error, mu *sync.Mutex, led ledger.Ledger) error {
 	t := time.NewTicker(inboxPollInterval)
 	defer t.Stop()
@@ -578,8 +622,13 @@ func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) erro
 			return nil
 		case <-t.C:
 		}
-		if err := e.pollInboxOnce(ctx, poll, mu); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
+		if err := e.pollInboxOnce(ctx, poll, mu); err != nil {
+			if errors.Is(err, errConfigRestart) || errors.Is(err, daemon.ErrFatal) {
+				return err
+			}
+			if ctx.Err() == nil {
+				fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
+			}
 		}
 		if err := ledgerBroken(led); err != nil {
 			return err
@@ -590,10 +639,14 @@ func (e *env) pollInboxLoop(ctx context.Context, poll func(context.Context) erro
 // inboxPoll is app.PollInbox as the daemon calls it: the config is re-read
 // first, as a run does (reloadConfig), so a poll advances new postings under
 // the exclusions saved since the last one. An unreadable config is said and the
-// poll goes on with the previous one.
+// poll goes on with the previous one. A process-lifetime change does not: the
+// poll does not run, and the error is returned so the daemon exits.
 func (e *env) inboxPoll(app *App, cfg config.Config) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if _, err := e.reloadConfig(app, cfg, nil); err != nil {
+			if errors.Is(err, errConfigRestart) {
+				return err
+			}
 			fmt.Fprintf(e.stderr, "vani: inbox poll: %v\n", err)
 		}
 		return app.PollInbox(ctx)
@@ -605,10 +658,49 @@ func (e *env) pollInboxOnce(ctx context.Context, poll func(context.Context) erro
 	defer mu.Unlock()
 	defer func() {
 		if p := recover(); p != nil {
+			writePanic(e.stderr, "vani: inbox poll panicked: ", p)
 			err = fmt.Errorf("panic: %s", panicText(p))
+			// pollInbox did not return, so its status was not the panic. Replace
+			// it with the panic value only; the stack stays on stderr.
+			if werr := writeInboxStatus(e.stateDir, inboxStatus{At: now().UTC(), Error: panicText(p)}); werr != nil {
+				fmt.Fprintf(e.stderr, "vani: inbox poll: could not record the panic: %s\n", oneLine(werr.Error(), maxStageNote))
+			}
 		}
 	}()
 	return poll(ctx)
+}
+
+// recordSkippedSlot keeps a daily slot the daemon woke too late to run. It
+// writes the history only: last.json stays the last run that actually started.
+// A write failure is said and does not stop the daemon.
+func (e *env) recordSkippedSlot(slot time.Time, late time.Duration) {
+	if late < 0 {
+		late = 0
+	}
+	rec := runRecord{
+		PID:        0,
+		StartedAt:  slot.UTC(),
+		FinishedAt: slot.Add(late).UTC(),
+		Outcome:    outcomeSkipped,
+		Trigger:    triggerSchedule,
+		Error: oneLine(fmt.Sprintf("skipped: %s late, past the %s window",
+			late.Round(time.Second), daemon.MissedRunWindow), maxRunErrorRunes),
+	}
+	if err := writeRunHistory(e.stateDir, rec); err != nil {
+		fmt.Fprintf(e.stderr, "vani: could not record the skipped run: %s\n", oneLine(err.Error(), maxRunErrorRunes))
+	}
+}
+
+// installRunTee wraps stderr so a pipeline run can keep its own log without
+// replacing the process log. buildApp must see the same writer, so call this
+// before buildApp. A second call does nothing.
+func (e *env) installRunTee() {
+	if e.runTee != nil {
+		return
+	}
+	tee := newCappedTee(e.stderr)
+	e.runTee = tee
+	e.stderr = tee
 }
 
 // cmdRunOnce runs the pipeline once, by hand. Its flags tune this run only;
@@ -628,6 +720,7 @@ func (e *env) cmdRunOnce(args []string) error {
 	if err := checkRunOptions(opts, cfg.Watchlist); err != nil {
 		return err
 	}
+	e.installRunTee()
 	e.useRunLog()
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
 	if errors.Is(err, ledger.ErrLocked) {

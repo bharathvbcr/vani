@@ -45,6 +45,21 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"ok","backend_errors":{"causes":[]}}"#,
             // A last run vani could not read has nothing to report; the facet says why.
             #"{"ok":false,"reason":"run record is corrupt","state":"unknown"}"#,
+            // A stage that ran and finished, including an empty object, is not a failure.
+            #"{"ok":true,"state":"ok","shadow":{}}"#,
+            #"{"ok":true,"state":"ok","exclusions":{"dropped":2,"reopened":1}}"#,
+            #"{"ok":true,"state":"ok","logos":{"fetched":1,"fresh":3}}"#,
+            #"{"ok":true,"state":"ok","near_dup":{"records":4,"compared":4}}"#,
+            #"{"ok":true,"state":"ok","log_dropped":0}"#,
+            #"{"ok":true,"state":"ok","semantic":{"ran":true,"scored":3,"cached":1}}"#,
+            #"{"ok":true,"state":"ok","semantic":{"ran":true,"note":"kept postings not warmed: semantic.warm_per_run was spent before the advance phase"}}"#,
+            #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"fail_open":{"coverage_unknown":4}}}"#,
+            #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"notes":{"below_floor":3,"budget_spent":2}}}"#,
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"deferred":4,"pay_skipped":2,"gone":1}}"#,
+            #"{"ok":true,"state":"ok","near_dup":{"similarity_note":"vector cache off"}}"#,
+            #"{"ok":true,"state":"ok","shadow":{"errors":0,"busy_skips":0}}"#,
+            #"{"ok":true,"state":"ok","explain":{}}"#,
+            #"{"ok":true,"state":"ok","advance":{"eligible":0,"limit":0,"attempted":0,"unread":0,"failed":0,"deferred":0,"fail_open":{},"notes":{}}}"#,
         ]
         for json in quiet {
             XCTAssertFalse(try decodeRun(json).hasFailures, json)
@@ -65,6 +80,30 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"ok","boards":{"configured":3,"read":2,"failed":1,"skipped":0,"listed":9,"items":[]}}"#,
             #"{"ok":true,"state":"ok","backend_errors":{"causes":[{"backend":"openrouter","count":2,"example":"402"}]}}"#,
             #"{"ok":true,"state":"ok","backend_errors":{"unrecorded":3}}"#,
+            #"{"ok":true,"state":"ok","impressions_error":"could not record what the digest showed"}"#,
+            #"{"ok":true,"state":"ok","log_dropped":3}"#,
+            #"{"ok":true,"state":"ok","shadow":{"local":"bind: address in use"}}"#,
+            #"{"ok":true,"state":"ok","exclusions":{"unread":1}}"#,
+            #"{"ok":true,"state":"ok","exclusions":{"body_unavailable":2}}"#,
+            #"{"ok":true,"state":"ok","logos":{"failed":1,"example":"cdn.example"}}"#,
+            #"{"ok":true,"state":"ok","logos":{"state_reset":"state.json was unreadable"}}"#,
+            #"{"ok":true,"state":"ok","near_dup":{"partial":true}}"#,
+            #"{"ok":true,"state":"ok","near_dup":{"similarity_errors":2}}"#,
+            #"{"ok":true,"state":"ok","near_dup":{"similarity_off":"cosine off, shingles only"}}"#,
+            #"{"ok":true,"state":"ok","shadow":{"errors":1}}"#,
+            #"{"ok":true,"state":"ok","shadow":{"busy_skips":2}}"#,
+            #"{"ok":true,"state":"ok","shadow":{"note":"lappi disabled"}}"#,
+            #"{"ok":true,"state":"ok","semantic":{"unavailable":true}}"#,
+            #"{"ok":true,"state":"ok","semantic":{"failed":1}}"#,
+            #"{"ok":true,"state":"ok","semantic":{"canceled":true}}"#,
+            #"{"ok":true,"state":"ok","semantic":{"note":"marks could not be read: open"}}"#,
+            #"{"ok":true,"state":"ok","semantic_pre":{"note":"semantic matching not run: model"}}"#,
+            #"{"ok":true,"state":"ok","digest_warning":"rank weights missing"}"#,
+            #"{"ok":true,"state":"ok","explain":{"mode":"paused","note":"notes paused"}}"#,
+            #"{"ok":true,"state":"ok","explain":{"mode":"off","note":"notes off"}}"#,
+            #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"fail_open":{"empty_description":1}}}"#,
+            #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"notes":{"unknown_relevance":1}}}"#,
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"pay_failed":2}}"#,
         ]
         for json in failing {
             XCTAssertTrue(try decodeRun(json).hasFailures, json)
@@ -78,8 +117,23 @@ final class RunFailuresTests: XCTestCase {
         XCTAssertNil(old.boards)
         XCTAssertNil(old.backendErrors)
         XCTAssertNil(old.trigger)
+        XCTAssertNil(old.nearDup)
+        XCTAssertNil(old.exclusions)
+        XCTAssertNil(old.logos)
+        XCTAssertNil(old.shadow)
+        XCTAssertNil(old.semantic)
+        XCTAssertNil(old.semanticPre)
+        XCTAssertNil(old.explain)
+        XCTAssertNil(old.digestWarning)
+        XCTAssertEqual(old.logDropped, 0)
         let plain = try decodeRun(#"{"ok":true,"state":"ok","started_at":"2026-10-19T12:00:00Z"}"#)
         XCTAssertFalse(plain.hasFailures)
+        let ran = try decodeRun(#"{"ok":true,"state":"ok","near_dup":{},"exclusions":{},"logos":{},"shadow":{}}"#)
+        XCTAssertEqual(ran.nearDup?.summary, "finished (0 compared)")
+        XCTAssertEqual(ran.exclusions?.summary, "finished")
+        XCTAssertEqual(ran.logos?.summary, "0 fetched, 0 fresh")
+        XCTAssertFalse(ran.hasFailures)
+        XCTAssertFalse(ran.shadow?.isFailure ?? true)
     }
 
     // MARK: the board line

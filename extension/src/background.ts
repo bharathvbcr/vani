@@ -19,7 +19,7 @@ import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames 
 import { DRAFT_HELP, createDrafter } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker } from "./applied";
 import { parseFindRow } from "./jobrow";
-import { checkResumeFile, resumeKey, runResume } from "./resume";
+import { checkResumeFile, checkResumeName, resumeKey, runResume } from "./resume";
 
 const draft = createDrafter();
 
@@ -55,6 +55,188 @@ async function native(msg: object, ms = JOB_CALL_MS): Promise<unknown> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** A resume-open reply for the popup or the page: name and size, or an error. Never the PDF. */
+function withoutResumeBytes(r: unknown): unknown {
+  if (typeof r !== "object" || r === null || Array.isArray(r) || !("pdf" in r)) return r;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(r)) if (k !== "pdf") out[k] = v;
+  return out;
+}
+
+function replyRecord(r: unknown): Record<string, unknown> | null {
+  return typeof r === "object" && r !== null && !Array.isArray(r) ? r as Record<string, unknown> : null;
+}
+
+function isFoundResume(r: unknown): boolean {
+  const o = replyRecord(r);
+  return o?.found === true && typeof o.name === "string";
+}
+
+function isMissingResume(r: unknown): boolean {
+  return replyRecord(r)?.found === false;
+}
+
+function isHostError(r: unknown): boolean {
+  return typeof replyRecord(r)?.error === "string";
+}
+
+/** How many other frames of a tab are asked whether they have a resume. More than this is "several", unasked. */
+const MAX_FRAME_PROBES = 8;
+/** One probe. The whole scan is this times the cap, and a down host stops at the first error. */
+const FRAME_PROBE_MS = 2_000;
+const NOTE_MS = 1_000;
+const BADGE_MS = 4_000;
+
+/** The tab the popup named, read here. A missing tab is null. The message's own URL is not used. */
+async function namedTab(tabId: number): Promise<{ id: number; url: string } | null> {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    return { id: tabId, url: typeof t?.url === "string" ? t.url : "" };
+  } catch {
+    return null;
+  }
+}
+
+/** The tab the popup is looking at, while the popup is open. A miss is null. */
+async function activeTab(): Promise<{ id?: number; url: string } | null> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const t = tabs[0];
+    if (!t) return null;
+    return { id: t.id, url: typeof t.url === "string" ? t.url : "" };
+  } catch {
+    return null;
+  }
+}
+
+function withResumeKey(info: unknown, key: string): unknown {
+  const o = replyRecord(info);
+  if (!o || o.found !== true) return info;
+  return withoutResumeBytes({ ...o, key });
+}
+
+/**
+ * Resumes saved for frames of this tab other than the top page. The top page wins when it has one,
+ * so this runs only after the top page's own lookup said there is none. One hit is that frame.
+ * Two hits, or more candidates than the probe cap, are "several": nothing is chosen.
+ */
+async function probeOtherFrames(tabId: number, topKey: string | null): Promise<
+  | { kind: "none" }
+  | { kind: "several" }
+  | { kind: "one"; url: string; key: string; info: unknown }
+  | { kind: "error"; reply: unknown }
+> {
+  let pages: string[] = [];
+  try { pages = await frameRegistry.pages(tabId); } catch { return { kind: "none" }; }
+  const seen = new Set<string>();
+  const candidates: { url: string; key: string }[] = [];
+  for (const url of pages) {
+    const key = resumeKey(url);
+    if (!key || key === topKey || seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ url, key });
+    if (candidates.length > MAX_FRAME_PROBES) return { kind: "several" };
+  }
+  const hits: { url: string; key: string; info: unknown }[] = [];
+  for (const c of candidates) {
+    const info = await runResume({ type: "resumeInfo", url: c.url }, m => native(m, FRAME_PROBE_MS));
+    if (isHostError(info)) return { kind: "error", reply: info };
+    if (!replyRecord(info)) return { kind: "error", reply: { error: "the Vani Apply Mac app isn't reachable", code: "unreachable" } };
+    if (isFoundResume(info)) {
+      hits.push({ ...c, info });
+      if (hits.length > 1) return { kind: "several" };
+    } else if (!isMissingResume(info)) {
+      return { kind: "error", reply: info };
+    }
+  }
+  if (hits.length === 1) return { kind: "one", url: hits[0]!.url, key: hits[0]!.key, info: hits[0]!.info };
+  return { kind: "none" };
+}
+
+/** Tell the page Preview opened, so the note survives the popup closing. A page with no content script gets a toolbar badge. The name is checked; the page URL is not sent. */
+async function confirmOpened(tabId: number | undefined, reply: unknown): Promise<void> {
+  const o = replyRecord(reply);
+  if (!o || o.ok !== true || tabId === undefined) return;
+  const name = checkResumeName(o.name);
+  let shown = false;
+  if (name) {
+    try {
+      const r = await Promise.race([
+        chrome.tabs.sendMessage(tabId, { type: "resumeNoted", name } satisfies ToContent, { frameId: 0 }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("note timeout")), NOTE_MS)),
+      ]);
+      shown = replyRecord(r)?.shown === true;
+    } catch {
+      shown = false;
+    }
+  }
+  if (!shown) await pdfBadge(tabId);
+}
+
+async function pdfBadge(tabId: number): Promise<void> {
+  const action = chrome.action;
+  if (!action) return;
+  try {
+    const current = await action.getBadgeText({ tabId });
+    // A "✓?" marks a question waiting. Covering it would also clear it four seconds later.
+    if (current !== "" && current !== "PDF") return;
+    await action.setBadgeText({ tabId, text: "PDF" });
+    await action.setBadgeBackgroundColor({ tabId, color: "#2e8b57" });
+  } catch { return; }
+  setTimeout(() => {
+    void action.getBadgeText({ tabId }).then(text => {
+      if (text === "PDF") return action.setBadgeText({ tabId, text: "" });
+    }).catch(() => undefined);
+  }, BADGE_MS);
+}
+
+/** The popup's resume row. `tabId` is re-read with chrome.tabs.get. A key is opened only when it is that page, or one frame of that tab. */
+async function popupResumeInfo(tabId: number): Promise<unknown> {
+  const tab = await namedTab(tabId);
+  if (!tab) return { found: false };
+  const topKey = resumeKey(tab.url);
+  if (topKey) {
+    const info = await runResume({ type: "resumeInfo", url: tab.url }, native);
+    if (isFoundResume(info)) return withResumeKey(info, topKey);
+    if (!isMissingResume(info)) return withoutResumeBytes(info);
+  }
+  const probe = await probeOtherFrames(tab.id, topKey);
+  if (probe.kind === "error") return withoutResumeBytes(probe.reply);
+  if (probe.kind === "several") return { found: false, several: true };
+  if (probe.kind === "one") return withResumeKey(probe.info, probe.key);
+  return { found: false };
+}
+
+/** The popup's View. No key: the active tab, then its one embed. A key that is no longer on the tab opens nothing. */
+async function popupResumePreview(key: string | undefined, tabId: number | undefined): Promise<unknown> {
+  const tab = tabId !== undefined ? await namedTab(tabId) : await activeTab();
+  if (!tab) return { found: false };
+  const topKey = resumeKey(tab.url);
+  const claimed = key && key.length > 0 ? key : undefined;
+  const open = async (url: string) => withoutResumeBytes(await runResume({ type: "resumeOpen", url }, native));
+  const finish = async (reply: unknown) => {
+    await confirmOpened(tab.id, reply);
+    return reply;
+  };
+  if (claimed) {
+    if (topKey && claimed === topKey) return finish(await open(tab.url));
+    if (tab.id === undefined) return { found: false, changed: true };
+    const pages = await frameRegistry.pages(tab.id);
+    const match = pages.find(u => resumeKey(u) === claimed);
+    if (!match) return { found: false, changed: true };
+    return finish(await open(match));
+  }
+  if (!topKey) return { found: false };
+  const opened = await open(tab.url);
+  if (!isMissingResume(opened)) return finish(opened);
+  if (tab.id === undefined) return opened;
+  const probe = await probeOtherFrames(tab.id, topKey);
+  if (probe.kind === "error") return withoutResumeBytes(probe.reply);
+  if (probe.kind === "several") return { found: false, several: true };
+  if (probe.kind === "one") return finish(await open(probe.url));
+  return opened;
 }
 
 // Offers to mark a job Applied are kept per tab in chrome.storage.session, so a stopped
@@ -248,7 +430,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       // but a buggy content script can): re-check the shape here.
       const job = typeof msg.job === "object" && msg.job !== null ? msg.job : { company: "", title: "", description: "" };
       const r = await draft(str(msg.question), { company: str(job.company), title: str(job.title), description: str(job.description) },
-        typeof msg.maxWords === "number" ? msg.maxWords : undefined);
+        typeof msg.maxWords === "number" ? msg.maxWords : undefined,
+        typeof msg.attempt === "number" ? msg.attempt : 0);
       // The user sees our explanation; the host's own text is kept only where it adds detail.
       if (!r.ok && r.code !== "provider" && r.code !== "bad_request") return { ...r, error: DRAFT_HELP[r.code] };
       return r;
@@ -299,8 +482,10 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     }
     case "frameReady": {
       // Only a content script is in a frame; the popup has no tab and no frameId.
+      // The page URL is the browser's sender.url. A URL on the message is ignored.
       if (sender.tab?.id === undefined || sender.frameId === undefined) return { error: "not from a frame", code: "bad_request" };
-      await frameRegistry.add(sender.tab.id, sender.frameId, senderOrigin(sender) ?? undefined);
+      const pageURL = typeof sender.url === "string" ? sender.url : undefined;
+      await frameRegistry.add(sender.tab.id, sender.frameId, senderOrigin(sender) ?? undefined, pageURL);
       return { ok: true };
     }
     case "frames": {
@@ -319,13 +504,12 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
         })),
       }, INGEST_CALL_MS);
     case "resumeGet":
-    case "resumeInfo":
     case "resumePut":
     case "resumeDelete": {
       // The bytes go only to the content script that asked, for its own tab (resumeGet is content-only in
-      // the sender policy); the popup gets the name, never the file.
+      // the sender policy); the popup binds and unbinds the active tab's page and never receives the file.
       // A content script acts for its own frame: the key is that frame's URL, never the one its message claims.
-      // The popup is in no tab and names the active tab's page.
+      // The popup is in no tab and names the page in the message (Choose and Remove).
       const r = await runResume({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url }, native);
       // A form in a frame has a URL of its own; the resume may be bound to the page around it (as for appliedSignal).
       const frame = sender.tab ? sender.frameId ?? 0 : 0;
@@ -333,6 +517,38 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
         return runResume({ type: "resumeGet", url: sender.tab.url }, native);
       }
       return r;
+    }
+    case "resumeInfo": {
+      // A tab id means the popup asked about that tab. The background reads the tab. The message's URL
+      // is not the page that is looked up, so a stale URL cannot show another job's file. With no tab
+      // id the popup still names the page, which is how the row worked before frames were recorded.
+      if (typeof msg.tabId === "number") return popupResumeInfo(msg.tabId);
+      return runResume({ type: "resumeInfo", url: msg.url }, native);
+    }
+    case "resumePreview": {
+      // A content script is its own frame. A key or tab id it sends is ignored, so it cannot name
+      // another page's file. The popup is not in a tab: the background reads the tab.
+      if (sender.tab) {
+        const frameURL = sender.url ?? sender.tab.url ?? "";
+        const frame = sender.frameId ?? 0;
+        const top = sender.tab.url ?? "";
+        const open = async (url: string) => withoutResumeBytes(await runResume({ type: "resumeOpen", url }, native));
+        if (!resumeKey(frameURL)) {
+          if (frame !== 0 && top !== frameURL && resumeKey(top)) return open(top);
+          return { found: false };
+        }
+        const r = await runResume({ type: "resumeOpen", url: frameURL }, native);
+        if (frame !== 0 && top && isMissingResume(r) && resumeKey(top)) return open(top);
+        return withoutResumeBytes(r);
+      }
+      return popupResumePreview(msg.key, msg.tabId);
+    }
+    case "resumeShow": {
+      // The page already holds this PDF (it just built or chose it). Check it before the host sees it.
+      // The host opens Preview and does not store it. The reply has no PDF, even if the host echoed one.
+      const file = checkResumeFile(msg.name, msg.pdf);
+      if ("error" in file) return file;
+      return withoutResumeBytes(await native({ op: "resumeOpenData", name: file.name, pdf: msg.pdf }));
     }
     case "attachResume": {
       // Only a content script sends this (sender policy), and it acts for its own tab: never the active one,

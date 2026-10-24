@@ -65,8 +65,8 @@ The ranking and filtering audit and its status per finding are in
   (`internal/resume/tools.go`), so this is not blocking.
 - **Jobs-tab impressions carry no scores.** `vani impressions log` takes keys and positions, so a
   fitter that wants a Jobs row's Score parts joins the key to the ledger at read time. Digest rows
-  carry their parts as shown. The Jobs and Audit models keep `impressionsError`, but no screen
-  shows it yet: a failed report is kept, not displayed.
+  carry their parts as shown. A failed report is shown on the Jobs tab and the Audit tab
+  (`impressionsError`); it still carries no scores.
 - **The Mac app's UI-automation tests are skipped without accessibility trust** (the test runner
   must be trusted); `swift test` reports them as skipped, not passed. Run them once on a trusted
   session before a release that touches the Jobs tab.
@@ -648,10 +648,10 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   `{"version":1,"days":{day:{key:usd}}}` format itself. A test writes the file with the real
   `DailyCap`, so a format change fails there. The fix is a `DailyCap.Spent(key)` accessor in
   `decide`, then delete the parser.
-- **Skipped daily runs are not in the run record.** `daemon.Run` logs a run it skips for starting
-  more than 6 h late (and one that runs late) but does not record it, so Vani Apply's Pipeline tab
-  shows "No run in over a day" rather than why. A hook from `daemon.Run` into the run record
-  (`cmd/vani/runrecord.go`) would say "skipped: 7 h late".
+- **Skipped daily runs are history, not last.json** (2026-10-23). A slot more than 6 h late writes
+  `runs/history/<id>.json` with outcome `skipped`, the slot time and how late it was. `runs/last.json`
+  stays the last run that started. `vani status` adds `last_skip` when that slot is newer than the
+  last real run, and the Pipeline tab says "A daily slot was skipped" instead of "No run in over a day".
 - **`internal/vault` is built but not wired (left as is, Fable D21, 2026-10-19).** Nothing imports
   it. It is the planned `resume.HeaderSource` (`internal/resume/tools.go:94`;
   `internal/resume/types.go:6`: typed wrappers fill the name and contact lines from the vault
@@ -1671,8 +1671,9 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   Top open and Explore sections (`digest.top_open`, `digest.explore`), `vani audit` and the
   age-neutral advance order. The recency red-team case is policy now, not a skip.
 - Open: the Mac app's New / Top open sections and an audit sheet wait on the uncommitted
-  JobsView/JobsModel work in the main checkout. Fail-open counters, the semantic floor, the notes
-  gate and the agreement drop rule are the Phase 3 session's. The Go Platt and weight fitter is the
+  JobsView/JobsModel work in the main checkout. Fail-open and notes-gate counts are on the run
+  record and the Pipeline tab (2026-10-23). The semantic floor and the agreement drop rule stay
+  Phase 3. The Go Platt and weight fitter is the
   Phase 4-5 session's; they read `<state>/feedback/judgments.jsonl` and must refuse below 100 and
   150 usable judgments.
 - An app that calls `vani jobs` does not log impressions yet: only the digest does. Adding a

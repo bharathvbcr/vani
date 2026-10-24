@@ -81,5 +81,26 @@ final class ApplyKitTests: XCTestCase {
 
     func testResumeNoteSaysWhereItIsChosen() {
         XCTAssertTrue(ApplyKit.resumeNote.contains("browser popup"))
+        XCTAssertTrue(ApplyKit.resumeNote.contains("View"))
+    }
+
+    func testResumeStepIsDoneOnlyWhenOneIsSaved() {
+        let pending = Reading<ApplyKit.AnswerCounts>.pending
+        XCTAssertEqual(ApplyKit.steps(job: job(), answers: pending)[1].state, .manual)
+        XCTAssertEqual(ApplyKit.steps(job: job(), answers: pending, resume: .none)[1].state, .manual)
+        XCTAssertEqual(ApplyKit.steps(job: job(), answers: pending, resume: .saved("Resume_Acme.pdf"))[1].state, .done)
+        XCTAssertEqual(ApplyKit.steps(job: job(), answers: pending, resume: .unavailable("locked"))[1].state, .unavailable("locked"))
+        // A store failure is not "no resume", and it does not change the other steps.
+        let failed = ApplyKit.steps(job: job(mark: .applied), answers: .failed("locked"), resume: .unavailable("locked"))
+        XCTAssertEqual(failed[0].state, .unavailable("locked"))
+        XCTAssertEqual(failed[1].state, .unavailable("locked"))
+        XCTAssertEqual(failed[3].state, .done)
+    }
+
+    func testResumeDetailNamesTheFileTheSizeAndTheDay() {
+        XCTAssertEqual(ApplyKit.resumeDetail(name: "Resume_Acme.pdf", bytes: 1200, pickedAt: "2026-10-23T01:02:03Z"),
+                       "Resume_Acme.pdf · 1 KB · 2026-10-23")
+        XCTAssertEqual(ApplyKit.resumeDetail(name: "Resume_Acme.pdf", bytes: 0, pickedAt: "not-a-date"),
+                       "Resume_Acme.pdf · 1 KB")
     }
 }

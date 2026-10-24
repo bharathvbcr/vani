@@ -82,6 +82,63 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         return args
     }
 
+    /// One on-demand pass over the backlog: advance (triage, score, explain) at
+    /// the config's `advance_per_run`, every board, no digest. The cap stays 0
+    /// on purpose. Eligible postings include ones already triaged and waiting
+    /// to be scored or explained, so a cap of the awaiting-triage count would
+    /// stop short of them. A shorter pass is the sheet's own cap.
+    public static let backlog = ManualRunOptions(noDigest: true)
+
+    /// Shown in the Run Now sheet when Triage now opened it.
+    public static let triageNowBanner = "Triage now prefilled this sheet: every board, advance at advance_per_run (this also scores and explains postings already triaged), and no digest. Changes here apply to this run only and are not kept for the next Run Now."
+
+    /// The sheet's footer. While the daemon holds the ledger it makes the run;
+    /// otherwise another vani holding the ledger is why a run is refused.
+    public static func runFootnote(daemonRunning: Bool) -> String {
+        if daemonRunning {
+            return "The daemon is running and holds the ledger, so it will make this run with its own keys."
+        }
+        return "A run is refused while another vani holds the ledger."
+    }
+
+    /// What Triage now tells the person before they confirm.
+    /// `waiting` is the awaiting-triage count. `advancePerRun` is
+    /// `schedule.unkept.advance_per_run` when that facet carries it. The two
+    /// numbers are separate sentences: the cap also scores and explains
+    /// postings already past triage, and a kept schedule omits the number.
+    public static func backlogHelp(waiting: Int, advancePerRun: Int? = nil) -> String {
+        let waitingSentence: String
+        switch waiting {
+        case ..<1: waitingSentence = "Nothing is awaiting triage."
+        case 1: waitingSentence = "1 posting is awaiting triage."
+        default: waitingSentence = "\(waiting.formatted()) postings are awaiting triage."
+        }
+        let capSentence: String
+        if let cap = advancePerRun, cap > 0, waiting > cap {
+            let rest = waiting - cap
+            // Slots also go to scoring and explaining, so more of this list can
+            // stay than waiting minus the cap. The count is a floor.
+            let restSentence = rest == 1
+                ? "At least 1 awaiting triage stays for a later run."
+                : "At least \(rest.formatted()) awaiting triage stay for a later run."
+            capSentence = "This pass advances at most \(cap.formatted()) postings (advance_per_run). That cap also covers scoring and explaining postings already past triage. \(restSentence)"
+        } else if let cap = advancePerRun, cap > 0 {
+            capSentence = "The cap is advance_per_run of \(cap.formatted()). It is not the awaiting-triage count, because this pass also scores and explains postings already past triage."
+        } else {
+            capSentence = "The cap is advance_per_run. It is not the awaiting-triage count, because this pass also scores and explains postings already past triage. This status does not say what advance_per_run is."
+        }
+        return "\(waitingSentence) \(capSentence) Every board is listed first. No digest is written. A cap set in the sheet is a shorter pass. Start Run is what spends. These choices are not kept for the next Run Now."
+    }
+
+    /// Help for the Triage now button. `kept` is `schedule.kept` and
+    /// `advancePerRun` is `schedule.unkept.advance_per_run`. Go reports that
+    /// number only while the schedule is unkept, so a kept or unknown schedule
+    /// is not given a cap from a stray value.
+    public static func backlogHelp(waiting: Int, kept: Bool?, advancePerRun: Int?) -> String {
+        let quoted: Int? = kept == false ? advancePerRun : nil
+        return backlogHelp(waiting: waiting, advancePerRun: quoted)
+    }
+
     /// "3 boards; advance cap 50; no digest". Nil for a run with no overrides.
     public var summary: String? {
         guard !isDefault else { return nil }
@@ -90,6 +147,60 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         if listOnly { parts.append("list only") } else if advance > 0 { parts.append("advance cap \(advance)") }
         if noDigest { parts.append("no digest") }
         return parts.joined(separator: "; ")
+    }
+}
+
+/// The open Run Now sheet. `id` is its presentation identity and is left out
+/// of equality, which compares the source and the options only.
+public struct RunSheet: Identifiable, Equatable, Sendable {
+    public enum Source: String, Sendable {
+        case triageNow
+        case runNow
+    }
+
+    public let id: UUID
+    public var options: ManualRunOptions
+    public var source: Source
+
+    /// Run Now keeps the confirmed choices. Triage now does not.
+    public var remembers: Bool { source == .runNow }
+
+    /// Present only when Triage now opened the sheet.
+    public var banner: String? {
+        source == .triageNow ? ManualRunOptions.triageNowBanner : nil
+    }
+
+    public init(options: ManualRunOptions, source: Source, id: UUID = UUID()) {
+        self.id = id
+        self.options = options
+        self.source = source
+    }
+
+    public static func == (lhs: RunSheet, rhs: RunSheet) -> Bool {
+        lhs.source == rhs.source && lhs.options == rhs.options
+    }
+
+    /// Banner, footer and whether Start Run keeps the choices. The sheet view
+    /// shows this and passes `remembers` through; it does not decide them.
+    public func presentation(daemonRunning: Bool) -> RunSheetPresentation {
+        RunSheetPresentation(options: options, banner: banner,
+                             footnote: ManualRunOptions.runFootnote(daemonRunning: daemonRunning),
+                             remembers: remembers)
+    }
+}
+
+/// What the Run Now sheet shows for one `RunSheet`.
+public struct RunSheetPresentation: Equatable, Sendable {
+    public var options: ManualRunOptions
+    public var banner: String?
+    public var footnote: String
+    public var remembers: Bool
+
+    public init(options: ManualRunOptions, banner: String?, footnote: String, remembers: Bool) {
+        self.options = options
+        self.banner = banner
+        self.footnote = footnote
+        self.remembers = remembers
     }
 }
 

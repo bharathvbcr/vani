@@ -31,6 +31,7 @@ function harness(over: Partial<OfferDeps> = {}) {
     pick: async () => ({ name: "Resume_Chosen.pdf", size: PDF.length, bytes: PDF }),
     save: async (name, pdf) => { saves.push({ name, pdf }); return {}; },
     attach: async r => { attached.push(r); return [{ label: "Resume/CV", filled: true, review: true }]; },
+    open: async () => ({}),
     ...over,
   };
   return { offer: createResumeOffer(d), log, asked, saves, attached, requests };
@@ -65,7 +66,9 @@ describe("the offer", () => {
     expect(h.saves).toEqual([{ name: "Resume_Acme_AI.pdf", pdf: toBase64(PDF) }]);
     expect(h.attached.length === 1 && h.attached[0]!.ok && h.attached[0]!.name === "Resume_Acme_AI.pdf").toBe(true);
     expect(h.log.some(l => l.startsWith("busy: Building a resume") && l.endsWith("3 s"))).toBe(true);
-    expect(h.log.at(-1)).toMatch(/^done: Attached Resume_Acme_AI\.pdf \(yellow\)/);
+    expect(h.log.at(-1)).toMatch(/^ask: Attached Resume_Acme_AI\.pdf \(yellow\)/);
+    expect(h.asked.at(-1)).toEqual(["view", "dismiss"]);
+    expect(h.log.some(l => l.startsWith("done:"))).toBe(false);
   });
 
   test("Build without a name in Your basics: says so, never starts a job", async () => {
@@ -124,7 +127,8 @@ describe("the offer", () => {
     const h = harness();
     await h.offer.choose();
     expect(h.saves[0]?.name).toBe("Resume_Chosen.pdf");
-    expect(h.log.at(-1)).toMatch(/^done: Attached Resume_Chosen\.pdf/);
+    expect(h.log.at(-1)).toMatch(/^ask: Attached Resume_Chosen\.pdf/);
+    expect(h.asked.at(-1)).toEqual(["view", "dismiss"]);
 
     const c = harness({ pick: async () => null });
     await c.offer.choose();
@@ -137,6 +141,37 @@ describe("the offer", () => {
       expect(n.saves.length + n.attached.length).toBe(0);
       expect(n.log.at(-1)).toMatch(/^ask: Choosing the PDF failed: /);
     }
+  });
+
+  test("View opens the PDF that was just built and leaves the bar up", async () => {
+    const opened: string[] = [];
+    const h = harness({ open: async r => { opened.push(r.name); return {}; } });
+    await h.offer.build();
+    await h.offer.view();
+    expect(opened).toEqual(["Resume_Acme_AI.pdf"]);
+    expect(h.log.some(l => l === "busy: Opening Resume_Acme_AI.pdf in Preview…")).toBe(true);
+    expect(h.log.at(-1)).toMatch(/^ask: Opened Resume_Acme_AI\.pdf in Preview/);
+    expect(h.asked.at(-1)).toEqual(["view", "dismiss"]);
+    expect(h.log.some(l => l === "hide")).toBe(false);
+  });
+
+  test("View still opens the PDF when saving it for the job failed", async () => {
+    const opened: string[] = [];
+    const h = harness({
+      save: async () => ({ error: "the resume index is unreadable" }),
+      open: async r => { opened.push(r.name); return {}; },
+    });
+    await h.offer.build();
+    await h.offer.view();
+    expect(opened).toEqual(["Resume_Acme_AI.pdf"]);
+  });
+
+  test("when Preview does not open, the bar says the page is showing the PDF and stays", async () => {
+    const h = harness({ open: async () => ({ error: "the Vani Apply Mac app isn't reachable" }) });
+    await h.offer.build();
+    await h.offer.view();
+    expect(h.log.at(-1)).toMatch(/Preview did not open Resume_Acme_AI\.pdf \(the Vani Apply Mac app isn't reachable\)\. It is shown on this page instead\. If the preview is blank, this page blocked it/);
+    expect(h.asked.at(-1)).toEqual(["view", "dismiss"]);
   });
 
   test("a second click while building does not start a second job", async () => {

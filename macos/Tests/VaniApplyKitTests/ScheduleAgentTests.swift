@@ -233,9 +233,10 @@ final class ScheduleAgentTests: XCTestCase {
                            fingerprint: @escaping @Sendable () -> String? = { nil },
                            keyExists: @escaping @Sendable () -> Bool? = { nil },
                            policy: RelaunchPolicy = RelaunchPolicy(base: 0.05, cap: 0.1, stableAfter: 60),
-                           watch: TimeInterval = 0.1, grace: TimeInterval = 5) -> (ScheduleSupervisor, DispatchSemaphore) {
+                           watch: TimeInterval = 0.1, grace: TimeInterval = 5,
+                           watchBound: TimeInterval = ScheduleAgentConstants.watchBound) -> (ScheduleSupervisor, DispatchSemaphore) {
         let s = ScheduleSupervisor(attempt: attempt, currentFingerprint: fingerprint, keyExists: keyExists, policy: policy,
-                                   fallbackLog: rig.log, watchInterval: watch, stopGrace: grace)
+                                   fallbackLog: rig.log, watchInterval: watch, stopGrace: grace, watchBound: watchBound)
         let done = DispatchSemaphore(value: 0)
         Thread { s.run(); done.signal() }.start()
         return (s, done)
@@ -392,10 +393,301 @@ final class ScheduleAgentTests: XCTestCase {
         XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
     }
 
+    func testStopSignalsTheChildWhileAWatchCheckIsStuck() throws {
+        let r = try rig()
+        let cleaned = r.dir.appendingPathComponent("cleaned")
+        let program = try r.script("trap 'echo done > \"\(cleaned.path)\"; exit 0' TERM; while :; do sleep 0.05; done")
+        // The watch check outlives the assertion. The child is signalled in time only if
+        // stop() itself SIGTERMs it, not when that check returns.
+        let (s, done) = supervise(r, attempt: { r.start(program) },
+                                  fingerprint: { Thread.sleep(forTimeInterval: 30); return "fp" },
+                                  watch: 0.05, watchBound: 8)
+        XCTAssertTrue(waitUntil { s.starts >= 1 })
+        Thread.sleep(forTimeInterval: 0.15) // the watch check is inside the stuck fingerprint
+        let started = Date()
+        s.stop()
+        s.stop() // a second signal must not crash or start another daemon
+        XCTAssertTrue(waitUntil(2) { FileManager.default.fileExists(atPath: cleaned.path) },
+                      "stop must SIGTERM while the watch check is stuck: \(r.logText)")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        XCTAssertEqual(done.wait(timeout: .now() + 12), .success)
+        XCTAssertEqual(s.starts, 1)
+    }
+
+    func testForceStopChildKillsADaemonThatIgnoresSigterm() throws {
+        let r = try rig()
+        let pidFile = r.dir.appendingPathComponent("pid")
+        let program = try r.script("echo $$ > '\(pidFile.path)'; trap '' TERM; while :; do sleep 0.05; done")
+        let slow = RelaunchPolicy(base: 30, cap: 30, stableAfter: 300)
+        let (s, done) = supervise(r, attempt: { r.start(program) }, policy: slow, watch: 60, grace: 30)
+        XCTAssertTrue(waitUntil { FileManager.default.fileExists(atPath: pidFile.path) })
+        let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let started = Date()
+        s.forceStopChild()
+        XCTAssertTrue(waitUntil(2) { kill(pid, 0) != 0 && errno == ESRCH }, "SIGKILL without waiting out the grace")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        s.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+    }
+
+    func testAConfigRestartStartsAgainImmediatelyAfterTheDaemonHasLived() throws {
+        let r = try rig()
+        let slow = RelaunchPolicy(base: 30, cap: 30, stableAfter: 300)
+        let program = try r.script("sleep 1.5; exit 75")
+        let (s, done) = supervise(r, attempt: { r.start(program) }, policy: slow)
+        XCTAssertTrue(waitUntil(8) { s.starts >= 2 }, r.logText)
+        XCTAssertTrue(r.logText.contains(ScheduleAgentConstants.configRestartNote), r.logText)
+        XCTAssertFalse(r.logText.contains("starting it again in 30"), r.logText)
+        s.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
+    }
+
+    func testAnImmediateConfigRestartUsesBackoff() throws {
+        let r = try rig()
+        let policy = RelaunchPolicy(base: 0.4, cap: 0.4, stableAfter: 60)
+        let program = try r.script("exit 75")
+        let (s, done) = supervise(r, attempt: { r.start(program) }, policy: policy, watch: 60)
+        XCTAssertTrue(waitUntil { s.starts >= 1 })
+        let marked = Date()
+        XCTAssertTrue(waitUntil(3) { s.starts >= 2 }, r.logText)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(marked), 0.3, "the first gap is the backoff, not an immediate restart: \(r.logText)")
+        XCTAssertTrue(r.logText.contains("starting it again in"), r.logText)
+        XCTAssertFalse(r.logText.contains(ScheduleAgentConstants.configRestartNote), r.logText)
+        s.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+    }
+
+    func testAWatchCheckThatHangsDoesNotRestartTheDaemon() throws {
+        let r = try rig()
+        let program = try r.script("exec sleep 30")
+        // Longer than the bound, and the value would restart the daemon if the check were awaited.
+        let (s, done) = supervise(r, attempt: { r.start(program, fingerprint: "old") },
+                                  fingerprint: { Thread.sleep(forTimeInterval: 1.2); return "new" },
+                                  watch: 0.05, watchBound: 0.2)
+        XCTAssertTrue(waitUntil { s.starts >= 1 })
+        Thread.sleep(forTimeInterval: 1.6)
+        XCTAssertEqual(s.starts, 1, r.logText)
+        XCTAssertFalse(r.logText.contains("the app's Vani settings changed"), r.logText)
+        s.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+    }
+
+    func testAMissingStoreIsLoggedAsAFixedLine() throws {
+        let r = try rig()
+        ScheduleAgent.reportStoreFailure(to: r.log)
+        XCTAssertTrue(r.logText.contains(ScheduleAgentConstants.storeFailureLine), r.logText)
+        XCTAssertFalse(r.logText.contains("/Users/"), r.logText)
+        XCTAssertFalse(r.logText.contains("HAUHVD8M37"), r.logText)
+    }
+
     // MARK: shipped files
 
     private var macos: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    func testInspectRefusesABundleThatCannotRegisterThisAgent() throws {
+        let root = try tempDir(self)
+        let app = root.appendingPathComponent("App.app")
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .absent)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: root.appendingPathComponent("missing.app")), .absent)
+
+        let wrong = root.appendingPathComponent("Wrong.app/Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: wrong, withIntermediateDirectories: true)
+        try Data("not the agent".utf8).write(to: wrong.appendingPathComponent(ScheduleAgentConstants.plistName))
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: root.appendingPathComponent("Wrong.app")), .absent,
+                       "the plist has to be in Contents/Library/LaunchAgents")
+
+        try FileManager.default.createDirectory(at: agentsDir(app), withIntermediateDirectories: true)
+        let plist = plistURL(app)
+        try FileManager.default.createDirectory(at: plist, withIntermediateDirectories: true)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is not a file."))
+        try FileManager.default.removeItem(at: plist)
+
+        try FileManager.default.createSymbolicLink(at: plist, withDestinationURL: root.appendingPathComponent("no-such-plist"))
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is outside this copy of the app."))
+        try FileManager.default.removeItem(at: plist)
+
+        // A dangling link whose target would still be inside the bundle is simply missing.
+        let insideMissing = app.appendingPathComponent("Contents/Helpers/missing-plist")
+        try FileManager.default.createSymbolicLink(at: plist, withDestinationURL: insideMissing)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .absent)
+        try FileManager.default.removeItem(at: plist)
+
+        // A good plist that lives outside is not made registrable by a link, and is not read as this bundle's.
+        let outside = root.appendingPathComponent("real.plist")
+        try schedulePlist([:]).write(to: outside)
+        try FileManager.default.createSymbolicLink(at: plist, withDestinationURL: outside)
+        try executableHelper(in: app)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is outside this copy of the app."))
+        try FileManager.default.removeItem(at: plist)
+
+        try Data().write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is empty."))
+        try Data("not a plist".utf8).write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is not a property list."))
+        let array = try PropertyListSerialization.data(fromPropertyList: ["nope"], format: .xml, options: 0)
+        try array.write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is not a dictionary."))
+        try Data(count: ScheduleAgent.plistByteCap).write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is not a property list."))
+        try Data(count: ScheduleAgent.plistByteCap + 1).write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is larger than 64 KiB."))
+
+        try schedulePlist([:]).write(to: plist)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: plist.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plist.path) }
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist could not be read."))
+    }
+
+    func testInspectAcceptsOnlyThisAgentsPlistAndAnInsideExecutableHelper() throws {
+        let root = try tempDir(self)
+        let app = root.appendingPathComponent("App.app")
+        try FileManager.default.createDirectory(at: agentsDir(app), withIntermediateDirectories: true)
+        let plist = plistURL(app)
+
+        try schedulePlist(["MachServices": [String: String]()]).write(to: plist)
+        try executableHelper(in: app)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app),
+                       .unusable("The schedule agent plist contains MachServices, so it was not registered."))
+        try schedulePlist(["EnvironmentVariables": [String: String](), "MachServices": [String: String]()]).write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app),
+                       .unusable("The schedule agent plist contains EnvironmentVariables, so it was not registered."))
+        try schedulePlist(["Label": "other.agent"]).write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist is not the schedule agent."))
+        try schedulePlist(["BundleProgram": "/usr/bin/true"]).write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent plist does not name its helper."))
+
+        try schedulePlist([:]).write(to: plist)
+        let helper = helperURL(app)
+        try FileManager.default.removeItem(at: helper)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent helper is not in this copy of the app."))
+
+        try FileManager.default.createDirectory(at: helper, withIntermediateDirectories: true)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent helper is not a file."))
+        try FileManager.default.removeItem(at: helper)
+
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: helper.path)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent helper cannot be run."))
+        try FileManager.default.removeItem(at: helper)
+        try FileManager.default.createSymbolicLink(at: helper, withDestinationURL: URL(fileURLWithPath: "/bin/echo"))
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .unusable("The schedule agent helper is outside this copy of the app."))
+
+        try FileManager.default.removeItem(at: helper)
+        try executableHelper(in: app)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .ready)
+
+        // A link to a good plist that resolves inside the bundle is this bundle's plist.
+        let inner = agentsDir(app).appendingPathComponent("inner.plist")
+        try schedulePlist([:]).write(to: inner)
+        try FileManager.default.removeItem(at: plist)
+        try FileManager.default.createSymbolicLink(at: plist, withDestinationURL: inner)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .ready)
+
+        try FileManager.default.removeItem(at: plist)
+        let binary = try PropertyListSerialization.data(fromPropertyList: scheduleFields([:]), format: .binary, options: 0)
+        try binary.write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .ready)
+
+        let shipped = try Data(contentsOf: macos.appendingPathComponent("Support/LaunchAgents/\(ScheduleAgentConstants.plistName)"))
+        try shipped.write(to: plist)
+        XCTAssertEqual(ScheduleAgent.inspect(bundle: app), .ready, "the shipped schedule agent plist has to stay registrable")
+    }
+
+    func testPlaceRefusesPathsThatLeaveTheBundle() throws {
+        let root = try tempDir(self)
+        let app = root.appendingPathComponent("App.app")
+        let relative = "Contents/Library/LaunchAgents/note.txt"
+        let file = app.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("ok".utf8).write(to: file)
+        guard case .file = BundleMember.place(bundle: app, relative: relative) else {
+            return XCTFail("a regular file inside the bundle")
+        }
+        for bad in ["Contents/../\(relative)", "Contents/./Library/LaunchAgents/note.txt",
+                    "Contents//Library/LaunchAgents/note.txt", "", "Contents/Library/LaunchAgents/a\0b"] {
+            XCTAssertEqual(BundleMember.place(bundle: app, relative: bad), .absent, bad)
+        }
+
+        for sibling in ["App.app.evil", "App.app2"] {
+            let dir = root.appendingPathComponent(sibling)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let payload = dir.appendingPathComponent("payload")
+            try Data("no".utf8).write(to: payload)
+            try FileManager.default.removeItem(at: file)
+            try FileManager.default.createSymbolicLink(at: file, withDestinationURL: payload)
+            XCTAssertEqual(BundleMember.place(bundle: app, relative: relative), .outside, sibling)
+        }
+
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createSymbolicLink(atPath: file.path, withDestinationPath: "../../../../missing-outside")
+        XCTAssertEqual(BundleMember.place(bundle: app, relative: relative), .outside,
+                       "a dangling relative link that climbs out is outside, not missing")
+
+        let contents = app.appendingPathComponent("Contents")
+        try FileManager.default.removeItem(at: contents)
+        let evil = root.appendingPathComponent("evil/Library/LaunchAgents", isDirectory: true)
+        try FileManager.default.createDirectory(at: evil, withIntermediateDirectories: true)
+        let evilFile = evil.appendingPathComponent("note.txt")
+        try Data(count: 1024 * 1024).write(to: evilFile)
+        try FileManager.default.createSymbolicLink(at: contents, withDestinationURL: root.appendingPathComponent("evil"))
+        XCTAssertEqual(BundleMember.place(bundle: app, relative: relative), .outside)
+        try FileManager.default.removeItem(at: evilFile)
+        XCTAssertEqual(BundleMember.place(bundle: app, relative: relative), .outside,
+                       "the same link with nothing at the far end is still outside")
+
+        try FileManager.default.removeItem(at: contents)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: file.path, withDestinationPath: "note.txt")
+        XCTAssertEqual(BundleMember.place(bundle: app, relative: relative), .notFile, "a link to itself is not a file")
+    }
+
+    func testNotFoundLinePrefersABoundedError() {
+        XCTAssertEqual(AgentCopy.notFoundLine(error: "no\npe", plistInside: true), "Could not register the login agent: no pe")
+        XCTAssertEqual(AgentCopy.notFoundLine(error: "", plistInside: true),
+                       "Not registered yet. Vani Apply registers it when it opens.")
+        XCTAssertEqual(AgentCopy.notFoundLine(error: nil, plistInside: true),
+                       "Not registered yet. Vani Apply registers it when it opens.")
+        XCTAssertEqual(AgentCopy.notFoundLine(error: nil, plistInside: false),
+                       "Not found in this copy of the app; rebuild it with scripts/bundle.sh.")
+        let long = AgentCopy.notFoundLine(error: String(repeating: "y", count: 500), plistInside: false)
+        XCTAssertTrue(long.hasPrefix("Could not register the login agent: "))
+        XCTAssertTrue(long.hasSuffix("…"))
+        XCTAssertLessThanOrEqual(long.count, "Could not register the login agent: ".count + BoundedText.cap + 1)
+        XCTAssertFalse(long.contains("\n"))
+    }
+
+    private func agentsDir(_ app: URL) -> URL {
+        app.appendingPathComponent("Contents/Library/LaunchAgents", isDirectory: true)
+    }
+
+    private func plistURL(_ app: URL) -> URL {
+        agentsDir(app).appendingPathComponent(ScheduleAgentConstants.plistName)
+    }
+
+    private func helperURL(_ app: URL) -> URL {
+        app.appendingPathComponent("Contents/Helpers/\(ScheduleAgentConstants.helperName)")
+    }
+
+    private func scheduleFields(_ extra: [String: Any]) -> [String: Any] {
+        var fields: [String: Any] = [
+            "Label": ScheduleAgentConstants.label,
+            "BundleProgram": "Contents/Helpers/\(ScheduleAgentConstants.helperName)",
+        ]
+        for (key, value) in extra { fields[key] = value }
+        return fields
+    }
+
+    private func schedulePlist(_ extra: [String: Any]) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: scheduleFields(extra), format: .xml, options: 0)
+    }
+
+    private func executableHelper(in app: URL) throws {
+        let helper = helperURL(app)
+        try FileManager.default.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
     }
 
     func testThePlistRegistersAHelperThatListensOnNothingAndHoldsNoKey() throws {

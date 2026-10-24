@@ -115,6 +115,79 @@ type idleClock struct{}
 func (idleClock) Now() time.Time                       { return time.Date(2026, 10, 18, 6, 0, 0, 0, time.UTC) }
 func (idleClock) After(time.Duration) <-chan time.Time { return make(chan time.Time) }
 
+// A schedule saved while the daemon sits between runs exits 75. The inbox
+// poll is what notices; the daily job is not started and no run is recorded.
+func TestScheduleChangeExitsSoTheDaemonRestarts(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	start, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBuild, oldClock, oldInterval, oldSig := buildApp, daemonClock, inboxPollInterval, signalContext
+	t.Cleanup(func() {
+		buildApp, daemonClock, inboxPollInterval, signalContext = oldBuild, oldClock, oldInterval, oldSig
+	})
+	parent, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	signalContext = func() (context.Context, context.CancelFunc) { return parent, func() {} }
+	daemonClock, inboxPollInterval = idleClock{}, 5*time.Millisecond
+	var polls atomic.Int32
+	buildApp = func(config.Config, string, io.Writer) (*App, error) {
+		return &App{
+			Ledger:    fixture(),
+			Reload:    func(config.Config) {},
+			RunOnce:   func(context.Context) error { return nil },
+			PollInbox: func(context.Context) error { polls.Add(1); return nil },
+		}, nil
+	}
+	type result struct {
+		code   int
+		stderr string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, _, stderr := do(t, "daemon")
+		done <- result{code, stderr}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for polls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if polls.Load() < 1 {
+		stop()
+		<-done
+		t.Fatal("the inbox poll never ran")
+	}
+	seen := polls.Load()
+	edited := start
+	edited.Schedule.DailyAt = "03:15"
+	writeConfig(t, cfgPath, edited)
+	select {
+	case r := <-done:
+		if r.code != exitConfigRestart {
+			t.Fatalf("exit %d, want %d\n%s", r.code, exitConfigRestart, r.stderr)
+		}
+		if !strings.Contains(r.stderr, "restarting") || !strings.Contains(r.stderr, "schedule") {
+			t.Fatalf("stderr:\n%s", r.stderr)
+		}
+		if strings.Contains(r.stderr, "job failed") {
+			t.Fatalf("a schedule change was logged as a failed job:\n%s", r.stderr)
+		}
+		if polls.Load() > seen+1 {
+			t.Fatalf("poll kept running after the schedule change: %d then %d", seen, polls.Load())
+		}
+		rec, rerr := readRunRecord(stateDir)
+		if rerr != nil || rec != nil {
+			t.Fatalf("a schedule change wrote a run record: %v %+v", rerr, rec)
+		}
+	case <-time.After(3 * time.Second):
+		stop()
+		<-done
+		t.Fatal("the daemon stayed up after the schedule changed")
+	}
+}
+
 // A poll that leaves the ledger poisoned ends the daemon within a poll
 // interval, not at the next daily slot hours away.
 func TestPoisonedByAnInboxPollEndsTheDaemon(t *testing.T) {

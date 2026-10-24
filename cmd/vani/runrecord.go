@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/logo"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
@@ -51,6 +52,10 @@ const (
 	// as the outcome of such a record it keeps in the run history. last.json never
 	// holds it: the next run replaces that record the moment it starts.
 	outcomeInterrupted = "interrupted"
+	// outcomeSkipped is a daily slot the daemon woke too late to run. It is
+	// written only to the run history, never to last.json, so the last real run
+	// stays what status and the Pipeline tab show as the last run.
+	outcomeSkipped = "skipped"
 )
 
 // Run stages: where a failed run stopped.
@@ -103,10 +108,10 @@ type runRecord struct {
 	Trigger string `json:"trigger,omitempty"`
 	// Options are a manual run's overrides; nil when it had none.
 	Options *runOptions `json:"options,omitempty"`
-	// Log is the file the run's output was sent to, when the process that
-	// started it said so (VANI_RUN_LOG, validated by checkRunLog: always a path
-	// under <state dir>/runs). "" for a run that did not say (the daemon's, a
-	// shell's, an older app's); readers then list the logs that exist.
+	// Log is the file the run's output was sent to. A manual run the app started
+	// names the path it set (VANI_RUN_LOG). A run that named none keeps its own
+	// file at runs/history/<id>.log. "" when neither was possible. The path is
+	// always inside <state dir>/runs (checkRunLog).
 	Log   string `json:"log,omitempty"`
 	Stage string `json:"stage,omitempty"`
 	Error string `json:"error,omitempty"`
@@ -155,6 +160,129 @@ type runDetail struct {
 	// readings by kind, cost, wall time, and what the circuit breaker turned
 	// away. Additive: readers that do not know the key ignore it.
 	BackendStats map[string]backendStat `json:"backend_stats,omitempty"`
+	// NearDup, Exclusions and Logos are the stages' counts. A nil pointer means
+	// the stage did not run; a pointer, even to zeros, means it did. None of
+	// them carries a posting key, a description or a host list.
+	NearDup    *nearDupSummary   `json:"near_dup,omitempty"`
+	Exclusions *exclusionSummary `json:"exclusions,omitempty"`
+	Logos      *logoSummary      `json:"logos,omitempty"`
+	// Shadow is set when a configured shadow did not start, did not attach, or
+	// missed calls. Nil when there is nothing to say, including a list-only run.
+	Shadow *shadowNote `json:"shadow,omitempty"`
+	// Explain is set when the digest's notes were off or paused. Nil when they
+	// ran, or the run was not going to ask a backend.
+	Explain *explainNote `json:"explain,omitempty"`
+	// LogDropped counts lines the per-run log did not keep after maxRunLogBytes.
+	LogDropped int `json:"log_dropped,omitempty"`
+}
+
+// maxStageNote bounds one example or error kept on a stage summary.
+const maxStageNote = 200
+
+// nearDupSummary is pipeline.NearDupReport as counts. Note is set when the
+// stage returned an error, one line, and never a posting.
+type nearDupSummary struct {
+	Records           int    `json:"records,omitempty"`
+	Examined          int    `json:"examined,omitempty"`
+	Compared          int    `json:"compared,omitempty"`
+	Duplicates        int    `json:"duplicates,omitempty"`
+	Siblings          int    `json:"siblings,omitempty"`
+	Candidates        int    `json:"candidates,omitempty"`
+	Partial           bool   `json:"partial,omitempty"`
+	SimilarityErrors  int    `json:"similarity_errors,omitempty"`
+	SimilaritySkipped int    `json:"similarity_skipped,omitempty"`
+	Note              string `json:"note,omitempty"`
+	// SimilarityOff is why the cosine did not run. Empty when it ran, and when
+	// semantic matching is off: a load failure is not a shingles-only pass.
+	SimilarityOff string `json:"similarity_off,omitempty"`
+	// SimilarityNote is a cache that could not be used or saved. The cosine
+	// still ran. Empty when there is nothing to say.
+	SimilarityNote string `json:"similarity_note,omitempty"`
+}
+
+func summarizeNearDup(nd pipeline.NearDupReport, err error) *nearDupSummary {
+	s := &nearDupSummary{
+		Records: nd.Records, Examined: nd.Examined, Compared: nd.Compared,
+		Duplicates: nd.Duplicates, Siblings: nd.Siblings, Candidates: nd.Candidates,
+		Partial: nd.Partial, SimilarityErrors: nd.SimilarityErrors, SimilaritySkipped: nd.SimilaritySkipped,
+	}
+	if err != nil {
+		s.Note = oneLine(err.Error(), maxStageNote)
+	}
+	return s
+}
+
+// exclusionSummary is pipeline.ExclusionChange as counts. Unread and
+// BodyUnavailable are checks that could not run, which is not a pass.
+type exclusionSummary struct {
+	Dropped         int `json:"dropped,omitempty"`
+	Reopened        int `json:"reopened,omitempty"`
+	Unread          int `json:"unread,omitempty"`
+	BodyUnavailable int `json:"body_unavailable,omitempty"`
+}
+
+func summarizeExclusions(ch pipeline.ExclusionChange) *exclusionSummary {
+	return &exclusionSummary{
+		Dropped: len(ch.Drop), Reopened: len(ch.Reopen), Unread: len(ch.Unread),
+		BodyUnavailable: ch.BodyUnavailable,
+	}
+}
+
+// logoSummary is logo.Result as counts. MissingHosts is how many hosts were
+// not asked; Example is the first failure, one line.
+type logoSummary struct {
+	Fetched      int    `json:"fetched,omitempty"`
+	Fresh        int    `json:"fresh,omitempty"`
+	Waiting      int    `json:"waiting,omitempty"`
+	Failed       int    `json:"failed,omitempty"`
+	Deferred     int    `json:"deferred,omitempty"`
+	MissingHosts int    `json:"missing_hosts,omitempty"`
+	StateReset   string `json:"state_reset,omitempty"`
+	Example      string `json:"example,omitempty"`
+}
+
+func summarizeLogos(res logo.Result, missing int, err error) *logoSummary {
+	s := &logoSummary{
+		Fetched: res.Fetched, Fresh: res.Fresh, Waiting: res.Waiting, Failed: res.Failed,
+		Deferred: res.Deferred, MissingHosts: missing,
+	}
+	if res.StateReset != "" {
+		s.StateReset = oneLine(res.StateReset, maxStageNote)
+	}
+	switch {
+	case len(res.Errors) > 0:
+		s.Example = oneLine(res.Errors[0], maxStageNote)
+	case err != nil:
+		s.Example = oneLine(err.Error(), maxStageNote)
+	}
+	return s
+}
+
+// shadowNote is a configured shadow that did not do what the run asked.
+// Local is a local-server start error. Note is why a configured shadow never
+// attached (one line). Errors counts calls or slots that failed, timed out, or
+// came back unusable. BusySkips counts sampled postings skipped while the
+// shadow was busy: those carry no shadow reading. An empty note is not a miss.
+type shadowNote struct {
+	Local     string `json:"local,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Errors    int    `json:"errors,omitempty"`
+	BusySkips int    `json:"busy_skips,omitempty"`
+}
+
+func (s *shadowNote) failed() bool {
+	return s != nil && (s.Local != "" || s.Note != "" || s.Errors > 0 || s.BusySkips > 0)
+}
+
+// explainNote says the digest's notes did not run. Mode is explainOff or
+// explainPaused. Note is one line, the same words as the warning.
+type explainNote struct {
+	Mode string `json:"mode,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+func (n *explainNote) failed() bool {
+	return n != nil && (n.Mode == explainOff || n.Mode == explainPaused)
 }
 
 // Board outcomes in the run's board report (boardReport.Outcome).
@@ -186,6 +314,15 @@ type boardsReport struct {
 	NotReached int `json:"not_reached,omitempty"`
 	// Listed is the postings the read boards listed, together.
 	Listed int `json:"listed"`
+	// Deferred, PayFailed, PaySkipped and Gone are detail and pay counts for
+	// the whole listing. They stay exact when Items is cut. A pay failure
+	// leaves no pay line, the same shape as a job that publishes none.
+	// Deferred rows were not stored, and their absence does not age them.
+	Deferred   int    `json:"deferred,omitempty"`
+	PayFailed  int    `json:"pay_failed,omitempty"`
+	PaySkipped int    `json:"pay_skipped,omitempty"`
+	Gone       int    `json:"gone,omitempty"`
+	PayError   string `json:"pay_error,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
 	// bounds cut it, failed and skipped boards are kept before read ones.
 	Items []boardReport `json:"items"`
@@ -209,6 +346,16 @@ type boardReport struct {
 	// bounded line (it names the board, a search term or a posting's path,
 	// never a description).
 	Error string `json:"error,omitempty"`
+	// Deferred is new Workday rows past the detail cap: not stored, and their
+	// absence does not age them.
+	Deferred int `json:"deferred,omitempty"`
+	// PayFailed and PaySkipped are Greenhouse pay requests that did not land.
+	PayFailed  int    `json:"pay_failed,omitempty"`
+	PaySkipped int    `json:"pay_skipped,omitempty"`
+	PayError   string `json:"pay_error,omitempty"`
+	// Gone is details that answered 404 under a listing that succeeded, under
+	// the threshold that fails the board.
+	Gone int `json:"gone,omitempty"`
 }
 
 // reconcileCounts is pipeline.Summary as the run record writes it.
@@ -286,7 +433,7 @@ func readRunRecordFile(path string) (*runRecord, error) {
 		return nil, fmt.Errorf("run record version %d, want %d", r.V, runRecordVersion)
 	}
 	switch r.Outcome {
-	case outcomeRunning, outcomeOK, outcomeFailed, outcomeCancelled, outcomeInterrupted:
+	case outcomeRunning, outcomeOK, outcomeFailed, outcomeCancelled, outcomeInterrupted, outcomeSkipped:
 	default:
 		return nil, fmt.Errorf("run record has outcome %q", r.Outcome)
 	}

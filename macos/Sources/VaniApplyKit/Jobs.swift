@@ -817,12 +817,22 @@ public struct PendingTriage: Codable, Equatable, Sendable {
         total > 0 ? "· \(total) awaiting triage (see the \(JobView.pending.title) view)" : nil
     }
 
-    /// The footer note's help: who waits, and where to see them.
+    /// The footer note's help: who waits, where to see them, and that
+    /// `advance_per_run` is the whole advance pass, not this list's length.
     public var footerHelp: String {
         let top = companies.prefix(5).map { "\($0.company) \($0.n)" }.joined(separator: ", ")
-        return "\(total) postings were read from their boards but not triaged yet, so the ranked views do not list them"
+        let lead: String
+        let whereSeen: String
+        if total == 1 {
+            lead = "1 posting was read from its board but not triaged yet, so the ranked views do not list it"
+            whereSeen = "The \(JobView.pending.title) view lists it, unranked."
+        } else {
+            lead = "\(total) postings were read from their boards but not triaged yet, so the ranked views do not list them"
+            whereSeen = "The \(JobView.pending.title) view lists them, unranked."
+        }
+        return lead
             + (top.isEmpty ? "" : " (\(top))")
-            + ". The \(JobView.pending.title) view lists them, unranked. Each run triages up to the config's advance_per_run of them."
+            + ". \(whereSeen) Each run advances at most the config's advance_per_run postings. That cap also scores and explains postings already past triage."
     }
 
     /// What an empty ranked view adds when postings wait: where to see them. Nil

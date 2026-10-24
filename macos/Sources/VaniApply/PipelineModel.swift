@@ -38,6 +38,9 @@ final class PipelineModel {
     private(set) var lastLog: URL?
     /// When this app asked the daemon for a run that has not started yet.
     private(set) var requestedAt: Date?
+    /// The Run Now sheet, when it is open. Nil dismisses it. Triage now and
+    /// Run Now are different sources: only a Run Now confirmation is kept.
+    var runSheet: RunSheet?
     /// Where Copy failures stands: vani words the report, so copying is a call to it.
     private(set) var failureCopy = FailureCopy.idle
 
@@ -156,14 +159,37 @@ final class PipelineModel {
         }
     }
 
+    /// Offer these options from Triage now. A run that cannot start is not
+    /// offered. Confirming that sheet does not keep the choices.
+    func proposeRun(_ options: ManualRunOptions) {
+        guard runBlocker == nil else { return }
+        runSheet = RunSheet(options: options, source: .triageNow)
+    }
+
+    /// Offer the remembered options from Run Now. Confirming that sheet keeps
+    /// the choices. A run that cannot start is not offered.
+    func openRunNow() {
+        guard runBlocker == nil else { return }
+        runSheet = RunSheet(options: savedOptions, source: .runNow)
+    }
+
     /// Start `vani run-once` with these options, or, while the daemon runs,
     /// ask it for the run. vani refuses a run-once while another holds the
     /// ledger; that refusal, like a refused request, reaches `runError`.
-    func startRun(_ options: ManualRunOptions) async {
-        guard runBlocker == nil, let stateDir = status?.stateDir else { return }
+    /// `remember` is false for a sheet Triage now opened, so a refused start
+    /// leaves the options Run Now will offer next time.
+    func startRun(_ options: ManualRunOptions, remember: Bool = true) async {
+        if let blocker = runBlocker {
+            runError = blocker
+            return
+        }
+        guard let stateDir = status?.stateDir, !stateDir.isEmpty else {
+            runError = "Vani has not reported its state folder yet."
+            return
+        }
         runError = nil
         if daemonRunning {
-            await requestRun(options)
+            await requestRun(options, remember: remember)
             return
         }
         guard let launcher = launcher() else {
@@ -171,7 +197,7 @@ final class PipelineModel {
             return
         }
         startingRun = true
-        if let data = try? JSONEncoder().encode(options) { defaults.set(data, forKey: Self.optionsKey) }
+        storeOptions(options, remember: remember)
         // An exit that lands before manualRun is set is picked up below.
         let onExit: @Sendable (Int32) -> Void = { [weak self] code in
             Task { @MainActor in
@@ -204,10 +230,17 @@ final class PipelineModel {
         manualRun?.stop()
     }
 
+    /// Keep choices for the next Run Now. A Triage now confirmation passes
+    /// false, including when vani then refuses the run.
+    private func storeOptions(_ options: ManualRunOptions, remember: Bool) {
+        guard remember, let data = try? JSONEncoder().encode(options) else { return }
+        defaults.set(data, forKey: Self.optionsKey)
+    }
+
     /// Ask the daemon for the run (`vani run-request`), then follow it.
-    private func requestRun(_ options: ManualRunOptions) async {
+    private func requestRun(_ options: ManualRunOptions, remember: Bool) async {
         startingRun = true
-        if let data = try? JSONEncoder().encode(options) { defaults.set(data, forKey: Self.optionsKey) }
+        storeOptions(options, remember: remember)
         let c = client()
         let result = await BlockingWork.run { try c.requestRun(options) }
         startingRun = false

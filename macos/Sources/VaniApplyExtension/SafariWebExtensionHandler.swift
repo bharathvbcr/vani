@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SafariServices
 import VaniApplyKit
@@ -18,7 +19,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         let reply: [String: Any]
         if let message {
             do {
-                reply = NativeProtocol.handle(message, store: try BankStore.shared(), source: .safari, agent: XPCAgentClient())
+                reply = NativeProtocol.handle(message, store: try BankStore.shared(), source: .safari, agent: XPCAgentClient(),
+                                              openResume: { NSWorkspace.shared.open($0) })
             } catch {
                 reply = ["error": String(describing: error)]
             }

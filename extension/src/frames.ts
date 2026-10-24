@@ -22,7 +22,7 @@ import {
   checkToContent, isCaptureReply, isFillReply, isScanReply,
 } from "./messages";
 import type { FillOutcome } from "./fill";
-import { checkResumeFile } from "./resume";
+import { checkResumeFile, checkResumeName } from "./resume";
 
 declare global {
   interface Window {
@@ -99,7 +99,10 @@ export const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
   getRelevance: r => typeof r === "object" && r !== null,
   jumpToMissed: () => true,
   insertTailored: () => true,
+  draftField: r => typeof r === "object" && r !== null && !Array.isArray(r) &&
+    ((r as { ok?: unknown }).ok === true || typeof (r as { error?: unknown }).error === "string"),
   attachResume: isFillReply,
+  resumeNoted: r => typeof r === "object" && r !== null && "shown" in r,
 };
 
 export interface ToFramesOptions {
@@ -114,6 +117,17 @@ export interface ToFramesOptions {
   origin?: string;
   /** The tab to ask. Absent, the active tab (the popup's and the shortcut's own); a content script's request names its own tab, never the active one. */
   tabId?: number;
+  /**
+   * Ask only this frame. A field action must not run in every frame that
+   * happens to show the same question: that would start two paid drafts.
+   */
+  frameId?: number;
+}
+
+/** The one frame a field action may message. Throws when the id is not a frame id. */
+export function pinnedFrame(frameId: number): number {
+  if (!Number.isInteger(frameId) || frameId < 0) throw new Error("bad frame");
+  return frameId;
 }
 
 /**
@@ -132,6 +146,10 @@ export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promis
   }
   const target = tabId;
   const accept = ACCEPT[msg.type] as (r: unknown) => r is T;
+  if (opts.frameId !== undefined) {
+    const only = pinnedFrame(opts.frameId);
+    return fanOut([only], frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
+  }
   if (opts.origin !== undefined) {
     const ids = await bounded(opts.registered(target, opts.origin), timeoutMs, "the background's frame list");
     const pinned = await fanOut(ids, frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
@@ -158,8 +176,16 @@ export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promis
 export const MAX_FRAMES_PER_TAB = 32;
 export const MAX_TABS = 64;
 
-/** `origins` maps a frame id to the origin its content script reported; a frame with no entry has no known origin. */
-interface TabFrames { frames: number[]; at: number; origins?: Record<string, string> }
+/** `origins` maps a frame id to the origin its content script reported; a frame with no entry has no known origin.
+ *  `urls` maps a frame id to the page URL the browser put on that frame's sender, never a URL a message claimed. */
+interface TabFrames { frames: number[]; at: number; origins?: Record<string, string>; urls?: Record<string, string> }
+
+/** A frame page the browser reported. Anything else (a script URL, an over-long string) is not kept. */
+function keptPage(raw: string | undefined): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 2048) return undefined;
+  if (raw.startsWith("https://") || raw.startsWith("http://")) return raw;
+  return undefined;
+}
 
 /** Where the list is kept: chrome.storage.session survives the worker being stopped; without it, memory only. */
 export interface FrameStore {
@@ -168,10 +194,12 @@ export interface FrameStore {
 }
 
 export interface FrameRegistry {
-  /** A content script started in this frame (at `origin`, when known). The newest MAX_FRAMES_PER_TAB frames of a tab are kept. */
-  add(tabId: number, frameId: number, origin?: string): Promise<void>;
+  /** A content script started in this frame (at `origin`, when known). `pageURL` is the browser's frame URL. The newest MAX_FRAMES_PER_TAB frames of a tab are kept. */
+  add(tabId: number, frameId: number, origin?: string, pageURL?: string): Promise<void>;
   /** The tab's frames; with `origin`, only those registered at exactly that origin. */
   list(tabId: number, origin?: string): Promise<number[]>;
+  /** Page URLs recorded for this tab's frames, in frame order. Empty when none were recorded. */
+  pages(tabId: number): Promise<string[]>;
   forget(tabId: number): Promise<void>;
 }
 
@@ -203,7 +231,14 @@ export function createFrameRegistry(d: { store?: FrameStore; now?: () => number 
         if (typeof e.origins === "object" && e.origins !== null) {
           for (const [f, o] of Object.entries(e.origins)) if (typeof o === "string" && frames.includes(Number(f))) origins[f] = o;
         }
-        out[k] = { frames, at: e.at, origins };
+        const urls: Record<string, string> = {};
+        if (typeof e.urls === "object" && e.urls !== null) {
+          for (const [f, u] of Object.entries(e.urls)) {
+            const page = typeof u === "string" ? keptPage(u) : undefined;
+            if (page && frames.includes(Number(f))) urls[f] = page;
+          }
+        }
+        out[k] = { frames, at: e.at, origins, urls };
       }
     }
     return out;
@@ -217,7 +252,7 @@ export function createFrameRegistry(d: { store?: FrameStore; now?: () => number 
   const slot = (tabId: number): string | null => (Number.isInteger(tabId) && tabId >= 0 ? String(tabId) : null);
 
   return {
-    add: (tabId, frameId, origin) => locked(async () => {
+    add: (tabId, frameId, origin, pageURL) => locked(async () => {
       const k = slot(tabId);
       if (k === null || !isFrameId(frameId)) return;
       const m = await read();
@@ -225,13 +260,16 @@ export function createFrameRegistry(d: { store?: FrameStore; now?: () => number 
       // document, and its iframes are still there. Frames that did go are dropped when asked (gone).
       const old = (m[k]?.frames ?? []).filter(f => f !== frameId);
       const frames = [...old, frameId].slice(-MAX_FRAMES_PER_TAB);
-      // A frame id is reused by the next document in that frame: its origin is replaced, or dropped when not reported.
+      // A frame id is reused by the next document in that frame: its origin and page are replaced, or dropped when not reported.
       const origins: Record<string, string> = {};
+      const urls: Record<string, string> = {};
       for (const f of frames) {
         const o = f === frameId ? origin : m[k]?.origins?.[String(f)];
         if (typeof o === "string" && o !== "") origins[String(f)] = o;
+        const u = f === frameId ? keptPage(pageURL) : m[k]?.urls?.[String(f)];
+        if (typeof u === "string") urls[String(f)] = u;
       }
-      m[k] = { frames, at: now(), origins };
+      m[k] = { frames, at: now(), origins, urls };
       await write(m);
     }),
     list: (tabId, origin) => locked(async () => {
@@ -240,6 +278,18 @@ export function createFrameRegistry(d: { store?: FrameStore; now?: () => number 
       const e = (await read())[k];
       if (!e) return [];
       return origin === undefined ? [...e.frames] : e.frames.filter(f => e.origins?.[String(f)] === origin);
+    }),
+    pages: tabId => locked(async () => {
+      const k = slot(tabId);
+      if (k === null) return [];
+      const e = (await read())[k];
+      if (!e) return [];
+      const out: string[] = [];
+      for (const f of e.frames) {
+        const u = e.urls?.[String(f)];
+        if (typeof u === "string") out.push(u);
+      }
+      return out;
     }),
     forget: tabId => locked(async () => {
       const k = slot(tabId);
@@ -281,8 +331,12 @@ export interface ContentHandlers {
   scrapeJobs?(): Promise<unknown> | unknown;
   getRelevance?(): Promise<unknown> | unknown;
   jumpToMissed?(index: number): void | Promise<void>;
-  insertTailored?(label: string, text: string): void | Promise<void>;
+  insertTailored?(label: string, text: string, ordinal?: number, overwrite?: boolean): { ok: boolean; error?: string; reason?: string } | Promise<{ ok: boolean; error?: string; reason?: string }>;
+  /** Start a draft for one question. Returns immediately; the editor stays on the page. */
+  draftField?(label: string, ordinal?: number): { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
   attachResume?(name: string, pdf: string, pickedAt: string): Promise<unknown> | unknown;
+  /** The Mac app opened this file in Preview. The name is already checked. */
+  resumeNoted?(name: string): void;
 }
 
 type Listener = (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean;
@@ -325,7 +379,16 @@ export function contentListener(h: ContentHandlers): Listener {
       return true;
     }
     if (msg.type === "insertTailored") {
-      void Promise.resolve().then(() => h.insertTailored?.(msg.label, msg.text)).then(() => sendResponse({ ok: true }), (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      void Promise.resolve()
+        .then(() => h.insertTailored ? h.insertTailored(msg.label, msg.text, msg.ordinal, msg.overwrite) : { ok: false, error: "This frame cannot insert." })
+        .then(result => sendResponse(result && typeof result === "object" ? result : { ok: false, error: "This frame cannot insert." }),
+          (e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+    if (msg.type === "draftField") {
+      void Promise.resolve()
+        .then(() => h.draftField ? h.draftField(msg.label, msg.ordinal) : { ok: false, error: "This frame cannot draft." })
+        .then(sendResponse, (e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
     if (msg.type === "attachResume") {
@@ -334,6 +397,14 @@ export function contentListener(h: ContentHandlers): Listener {
       if ("error" in file) { sendResponse({ error: file.error }); return false; }
       void Promise.resolve().then(() => h.attachResume?.(msg.name, msg.pdf, msg.pickedAt)).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
       return true;
+    }
+    if (msg.type === "resumeNoted") {
+      // A disguised name is not shown. A frame with no note handler does not claim it showed one.
+      const name = checkResumeName(msg.name);
+      if (!name || !h.resumeNoted) { sendResponse({ shown: false }); return false; }
+      h.resumeNoted(name);
+      sendResponse({ shown: true });
+      return false;
     }
     const run = (): Promise<unknown> => msg.type === "scan" ? h.scan() : msg.type === "fill" ? h.fill(msg.overwrite, msg.typeahead) : h.capture();
     void Promise.resolve().then(run).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));

@@ -45,6 +45,8 @@ describe("popup.html home page UI and UX structure", () => {
     expect(html).toContain('id="resume"');
     expect(html).toContain('id="resume-name"');
     expect(html).toContain('id="resume-pick"');
+    expect(html).toContain('id="resume-view"');
+    expect(html).toContain('id="resume-status"');
     expect(html).toContain('id="resume-remove"');
     expect(html).toContain('accept="application/pdf,.pdf"');
   });
@@ -92,6 +94,8 @@ describe("popup.html home page UI and UX structure", () => {
     expect(html).toContain('id="framebox"');
     expect(html).toContain('id="frames"');
     expect(html).toContain('id="coverage"');
+    expect(html).toContain('id="coverage-note"');
+    expect(html).toContain("never what you typed");
     expect(html).toContain('id="unknown"');
     expect(html).toContain('id="toast"');
   });
@@ -137,11 +141,12 @@ describe("a scraped job's link in the popup", () => {
     const a = titleElement(doc, "Backend Engineer", "https://acme.com/jobs/1");
     expect(a.tagName).toBe("A");
     expect((a as HTMLAnchorElement).href).toBe("https://acme.com/jobs/1");
+    expect((a as HTMLAnchorElement).rel).toBe("noopener noreferrer");
     const opened: unknown[][] = [];
     const b = openButton(doc, "https://acme.com/jobs/1", (...args) => opened.push(args))!;
     expect(b.textContent).toBe("Open role");
     b.onclick!(new Event("click") as MouseEvent);
-    expect(opened).toEqual([["https://acme.com/jobs/1", "_blank"]]);
+    expect(opened).toEqual([["https://acme.com/jobs/1", "_blank", "noopener,noreferrer"]]);
   });
 
   test("an empty or non-http(s) url gets no anchor and no Open button", () => {

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
 // `vani runs` reads the run history (runhistory.go): list the finished runs,
@@ -179,19 +181,78 @@ func rowOf(id, source string, r runRecord, at time.Time) runRow {
 }
 
 // runHasFailures says whether a run has anything to report: a failed or
-// interrupted run, a run error, a board that failed to list, or a backend
-// error. The Mac app's button follows the same rule (LastRun.hasFailures); a
-// contract test holds the two together.
+// interrupted run, a run error, a board that failed to list, a pay fetch that
+// failed, a backend error, or a stage that could not finish its check
+// (impressions, the per-run log, the shadow, exclusions that could not read a
+// posting, logos, a partial near-duplicate pass, a cosine that did not load,
+// a knowledge-base warm that did not run, a digest warning, notes that were
+// off or paused, a fail-open keep other than coverage unknown, a note whose
+// relevance could not be computed). A skipped slot is not a failure. Coverage
+// unknown, a notes floor or budget, deferred or gone details, and a pay fetch
+// that was skipped are shown and are not failures. The Mac app's button
+// follows the same rule (LastRun.hasFailures); a contract test holds the two
+// together.
 func runHasFailures(r runRecord, at time.Time) bool {
 	st := runState(r, at)
+	if st == outcomeSkipped {
+		return false
+	}
 	if st == outcomeFailed || st == outcomeInterrupted || r.Error != "" {
 		return true
 	}
 	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0) {
 		return true
 	}
+	if r.ImpressionsError != "" || r.LogDropped > 0 {
+		return true
+	}
+	if r.Shadow.failed() {
+		return true
+	}
+	if ex := r.Exclusions; ex != nil && (ex.BodyUnavailable > 0 || ex.Unread > 0) {
+		return true
+	}
+	if lg := r.Logos; lg != nil && (lg.Failed > 0 || lg.StateReset != "") {
+		return true
+	}
+	if nd := r.NearDup; nd != nil && (nd.Partial || nd.SimilarityErrors > 0 || nd.SimilarityOff != "") {
+		return true
+	}
+	if semanticFailed(r.Semantic) || semanticFailed(r.SemanticPre) {
+		return true
+	}
+	if r.DigestWarning != "" || r.Explain.failed() {
+		return true
+	}
+	if a := r.Advance; a != nil && (failOpenUnchecked(a.FailOpen) || a.Notes.UnknownRelevance > 0) {
+		return true
+	}
+	if r.Boards != nil && r.Boards.PayFailed > 0 {
+		return true
+	}
 	b := r.BackendErrors
 	return b != nil && (len(b.Causes) > 0 || b.Unrecorded > 0)
+}
+
+// semanticFailed is a knowledge-base warm that did not do what it was asked.
+// A warm that ran and spent its budget is not one: the cosine, or the next
+// run, still has the work. Nil means the warm did not run.
+func semanticFailed(s *semanticReport) bool {
+	if s == nil {
+		return false
+	}
+	if s.Unavailable || s.Failed > 0 || s.Canceled {
+		return true
+	}
+	n := strings.ToLower(s.Note)
+	return strings.Contains(n, "not run") || strings.Contains(n, "stopped early") ||
+		strings.Contains(n, "stored description unreadable") || strings.Contains(n, "marks could not be read")
+}
+
+// failOpenUnchecked is a check that did not run. Coverage unknown is not one:
+// the check ran and found no must-haves.
+func failOpenUnchecked(c pipeline.FailOpenCounts) bool {
+	return c.EmptyDescription > 0 || c.TitleUnread > 0 || c.LocationUnreadable > 0 || c.PrescoreFailed > 0 || c.Other > 0
 }
 
 func failedBoardItems(b *boardsReport) int {
@@ -451,18 +512,45 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 	}
 	if detail {
 		if r.Boards != nil {
-			b.add(b.clean(fmt.Sprintf("Boards: %d of %d read, %d failed, %d skipped, %d not reached; %d postings listed",
-				r.Boards.Read, r.Boards.Configured, r.Boards.Failed, r.Boards.Skipped, r.Boards.NotReached, r.Boards.Listed)))
+			line := fmt.Sprintf("Boards: %d of %d read, %d failed, %d skipped, %d not reached; %d postings listed",
+				r.Boards.Read, r.Boards.Configured, r.Boards.Failed, r.Boards.Skipped, r.Boards.NotReached, r.Boards.Listed)
+			if extra := boardFetchSummary(r.Boards); extra != "" {
+				line += "; " + extra
+			}
+			b.add(b.clean(line))
 		}
 		if a := r.Advance; a != nil {
 			b.add(b.clean(fmt.Sprintf("Advance: %d of %d eligible attempted (cap %d), %d unread, %d failed, %d deferred; stopped: %s",
 				a.Attempted, a.Eligible, a.Limit, a.Unread, a.Failed, a.Deferred, orNone(a.Stopped))))
+			if s := failOpenSummary(a.FailOpen); s != "" {
+				b.add(b.clean("Could not check: " + s))
+			}
+			if s := notesGateSummary(a.Notes); s != "" {
+				b.add(b.clean("Notes gate: " + s))
+			}
 		}
 		if r.CountsBefore != nil && r.CountsAfter != nil {
 			b.add(fmt.Sprintf("Ledger: %d -> %d postings", sumCounts(r.CountsBefore), sumCounts(r.CountsAfter)))
 		}
 		if r.DigestWarning != "" {
 			b.add(b.clean("Digest warning: " + r.DigestWarning))
+		}
+		if s := r.SemanticPre; s != nil {
+			b.add(b.clean("Semantic before advance: " + semanticShowLine(s)))
+		}
+		if s := r.Semantic; s != nil {
+			b.add(b.clean("Semantic: " + semanticShowLine(s)))
+		}
+		if n := r.Explain; n != nil {
+			b.add(b.clean("Notes: " + n.Mode + ": " + n.Note))
+		}
+		if nd := r.NearDup; nd != nil && (nd.SimilarityOff != "" || nd.SimilarityNote != "") {
+			if nd.SimilarityOff != "" {
+				b.add(b.clean("Near-duplicates: " + nd.SimilarityOff))
+			}
+			if nd.SimilarityNote != "" {
+				b.add(b.clean("Near-duplicates: " + nd.SimilarityNote))
+			}
 		}
 	}
 	b.add(b.clean("Run record: " + ref.Path))
@@ -504,6 +592,74 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		if be.Unrecorded > 0 {
 			detailLines = append(detailLines, fmt.Sprintf("(%d more call(s) failed with causes not recorded)", be.Unrecorded))
 		}
+	}
+	if r.ImpressionsError != "" {
+		detailLines = append(detailLines, b.clean("Impressions: "+r.ImpressionsError))
+	}
+	if r.LogDropped > 0 {
+		detailLines = append(detailLines, fmt.Sprintf("Run log: %d line(s) dropped after the %d byte cap", r.LogDropped, maxRunLogBytes))
+	}
+	if s := r.Shadow; s.failed() {
+		if s.Local != "" {
+			detailLines = append(detailLines, b.clean("Shadow: local decision model not started: "+s.Local))
+		}
+		if s.Note != "" {
+			detailLines = append(detailLines, b.clean("Shadow: "+s.Note))
+		}
+		if s.Errors > 0 || s.BusySkips > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Shadow: %d call(s) or slot(s) failed, %d sampled posting(s) skipped while busy", s.Errors, s.BusySkips))
+		}
+	}
+	if ex := r.Exclusions; ex != nil && (ex.BodyUnavailable > 0 || ex.Unread > 0) {
+		detailLines = append(detailLines, fmt.Sprintf("Exclusions: %d description(s) could not be read back, %d location check(s) could not run", ex.BodyUnavailable, ex.Unread))
+	}
+	if lg := r.Logos; lg != nil && (lg.Failed > 0 || lg.StateReset != "") {
+		line := fmt.Sprintf("Logos: %d failed", lg.Failed)
+		if lg.Example != "" {
+			line += ": " + lg.Example
+		}
+		if lg.StateReset != "" {
+			line += "; state reset: " + lg.StateReset
+		}
+		detailLines = append(detailLines, b.clean(line))
+	}
+	if nd := r.NearDup; nd != nil && (nd.Partial || nd.SimilarityErrors > 0 || nd.SimilarityOff != "") {
+		if nd.Partial || nd.SimilarityErrors > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Near-duplicates: partial=%t, %d similarity error(s)", nd.Partial, nd.SimilarityErrors))
+		}
+		if nd.Note != "" {
+			detailLines = append(detailLines, b.clean("Near-duplicates: "+nd.Note))
+		}
+		if nd.SimilarityOff != "" {
+			detailLines = append(detailLines, b.clean("Near-duplicates: "+nd.SimilarityOff))
+		}
+	}
+	if semanticFailed(r.Semantic) {
+		detailLines = append(detailLines, b.clean("Semantic: "+semanticFailureLine(r.Semantic)))
+	}
+	if semanticFailed(r.SemanticPre) {
+		detailLines = append(detailLines, b.clean("Semantic before advance: "+semanticFailureLine(r.SemanticPre)))
+	}
+	if r.DigestWarning != "" {
+		detailLines = append(detailLines, b.clean("Digest warning: "+r.DigestWarning))
+	}
+	if r.Explain.failed() {
+		detailLines = append(detailLines, b.clean("Notes: "+r.Explain.Mode+": "+r.Explain.Note))
+	}
+	if a := r.Advance; a != nil {
+		if s := failOpenUncheckedSummary(a.FailOpen); s != "" {
+			detailLines = append(detailLines, b.clean("Could not check: "+s))
+		}
+		if a.Notes.UnknownRelevance > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Notes: %d posting(s) had no usable relevance, so no note was picked", a.Notes.UnknownRelevance))
+		}
+	}
+	if r.Boards != nil && r.Boards.PayFailed > 0 {
+		line := fmt.Sprintf("Pay: %d fetch(es) failed", r.Boards.PayFailed)
+		if r.Boards.PayError != "" {
+			line += ": " + r.Boards.PayError
+		}
+		detailLines = append(detailLines, b.clean(line))
 	}
 	if len(detailLines) == 0 && !has {
 		b.add("No failures in this run.")
@@ -547,6 +703,84 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+func semanticShowLine(s *semanticReport) string {
+	if s.Note != "" {
+		return s.Note
+	}
+	return fmt.Sprintf("scored %d, cached %d, failed %d, skipped %d", s.Scored, s.Cached, s.Failed, s.Skipped)
+}
+
+func semanticFailureLine(s *semanticReport) string {
+	if s.Note != "" {
+		return s.Note
+	}
+	return fmt.Sprintf("scored %d, failed %d, unavailable=%t, canceled=%t", s.Scored, s.Failed, s.Unavailable, s.Canceled)
+}
+
+func boardFetchSummary(b *boardsReport) string {
+	if b == nil {
+		return ""
+	}
+	var parts []string
+	if b.Deferred > 0 {
+		parts = append(parts, fmt.Sprintf("%d deferred", b.Deferred))
+	}
+	if b.PayFailed > 0 {
+		parts = append(parts, fmt.Sprintf("%d pay failed", b.PayFailed))
+	}
+	if b.PaySkipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d pay skipped", b.PaySkipped))
+	}
+	if b.Gone > 0 {
+		parts = append(parts, fmt.Sprintf("%d gone", b.Gone))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func failOpenSummary(c pipeline.FailOpenCounts) string {
+	return joinCounts([]countPart{
+		{c.EmptyDescription, "empty description"},
+		{c.TitleUnread, "title unread"},
+		{c.LocationUnreadable, "location unreadable"},
+		{c.PrescoreFailed, "prescore failed"},
+		{c.CoverageUnknown, "coverage unknown"},
+		{c.Other, "other"},
+	})
+}
+
+func failOpenUncheckedSummary(c pipeline.FailOpenCounts) string {
+	return joinCounts([]countPart{
+		{c.EmptyDescription, "empty description"},
+		{c.TitleUnread, "title unread"},
+		{c.LocationUnreadable, "location unreadable"},
+		{c.PrescoreFailed, "prescore failed"},
+		{c.Other, "other"},
+	})
+}
+
+func notesGateSummary(n pipeline.NotesCounts) string {
+	return joinCounts([]countPart{
+		{n.Below, "below the floor"},
+		{n.UnknownRelevance, "relevance unknown"},
+		{n.BudgetSpent, "notes budget spent"},
+	})
+}
+
+type countPart struct {
+	n     int
+	label string
+}
+
+func joinCounts(parts []countPart) string {
+	var out []string
+	for _, p := range parts {
+		if p.n > 0 {
+			out = append(out, fmt.Sprintf("%d %s", p.n, p.label))
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 // optionsSummary words a manual run's overrides, as the app does ("3 boards;

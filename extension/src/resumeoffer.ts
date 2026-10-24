@@ -8,7 +8,7 @@ import type { JobInfo } from "./draft";
 import type { FillOutcome } from "./fill";
 import { MAX_RESUME_BYTES, type ResumeFetch, buildResumeRequest, checkResumeName, isPdf, parseBuiltResume, resumeHeader, toBase64 } from "./resume";
 
-export type OfferAction = "build" | "choose" | "dismiss";
+export type OfferAction = "build" | "choose" | "view" | "dismiss";
 
 /** A picked file: bytes is null when it was over the cap and so never read. */
 export interface PickedFile { name: string; size: number; bytes: Uint8Array | null }
@@ -18,7 +18,7 @@ export interface OfferUi {
   ask(text: string, actions: OfferAction[]): void;
   /** Working: the buttons are disabled and the text says what is happening. */
   busy(text: string): void;
-  /** The outcome; the bar goes away by itself. */
+  /** The outcome; the bar goes away by itself. A built resume does not use this: View has to stay. */
   done(text: string): void;
   hide(): void;
 }
@@ -35,6 +35,12 @@ export interface OfferDeps {
   save(name: string, pdf: string): Promise<{ error?: string }>;
   /** Attach it to the page's resume box now. */
   attach(r: Extract<ResumeFetch, { ok: true }>): Promise<FillOutcome[]>;
+  /**
+   * Open this PDF in Preview. The bytes are the ones just built or chosen, so this works
+   * even when saving them for the job failed. `error` means Preview did not open and the
+   * page is showing the PDF itself.
+   */
+  open(r: Extract<ResumeFetch, { ok: true }>): Promise<{ error?: string }>;
 }
 
 export const OFFER_TEXT =
@@ -44,6 +50,7 @@ export const OFFER_TEXT =
 export function createResumeOffer(d: OfferDeps) {
   let dismissed = false;
   let working = false;
+  let ready: Extract<ResumeFetch, { ok: true }> | null = null;
 
   async function finish(r: ResumeFetch, what: string): Promise<void> {
     if (!r.ok) { d.ui.ask(`${what} failed: ${r.detail}`, ["build", "choose", "dismiss"]); return; }
@@ -56,15 +63,16 @@ export function createResumeOffer(d: OfferDeps) {
       saved = ` It was not saved for this job (${e instanceof Error ? e.message : String(e)}).`;
     }
     const out = await d.attach(r);
+    ready = r;
     const filled = out.find(o => o.filled);
     if (filled) {
-      d.ui.done(`Attached ${r.name} (yellow): open it and check it before you submit.${saved}`);
+      d.ui.ask(`Attached ${r.name} (yellow). Open it and check it before you submit.${saved}`, ["view", "dismiss"]);
       return;
     }
     const miss = out.find(o => !o.filled);
     const why = miss?.detail ?? (miss?.reason === "has_value" ? "the resume box already holds a file"
       : miss?.reason === "detached" || !miss ? "the resume box is gone from the page" : `the resume box was left as it was (${miss.reason})`);
-    d.ui.ask(`${r.name} was not attached: ${why}.${saved}`, ["choose", "dismiss"]);
+    d.ui.ask(`${r.name} was not attached: ${why}.${saved}`, ["view", "choose", "dismiss"]);
   }
 
   return {
@@ -107,6 +115,20 @@ export function createResumeOffer(d: OfferDeps) {
         else if (!isPdf(f.bytes)) r = { ok: false, reason: "resume_unavailable", detail: "that file is not a PDF" };
         else r = { ok: true, name, bytes: f.bytes, pickedAt: new Date().toISOString() };
         await finish(r, "Choosing the PDF");
+      } finally {
+        working = false;
+      }
+    },
+
+    async view(): Promise<void> {
+      if (working || !ready) return;
+      working = true;
+      const file = ready;
+      d.ui.busy(`Opening ${file.name} in Preview…`);
+      try {
+        const o = await d.open(file);
+        if (o.error) d.ui.ask(`Preview did not open ${file.name} (${o.error}). It is shown on this page instead. If the preview is blank, this page blocked it. Check it before you submit.`, ["view", "dismiss"]);
+        else d.ui.ask(`Opened ${file.name} in Preview. Check it before you submit.`, ["view", "dismiss"]);
       } finally {
         working = false;
       }

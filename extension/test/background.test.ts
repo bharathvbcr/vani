@@ -17,8 +17,12 @@ const removed: Array<(tabId: number) => void> = [];
 const updated: Array<(tabId: number, info: { status?: string }) => void> = [];
 /** What the background asked the (absent) Mac app, in order. */
 const nativeSent: object[] = [];
+/** When set, sendNativeMessage answers with this instead of "host not found". */
+let nativeReply: ((m: object) => unknown) | undefined;
 /** The tab(s) chrome.tabs.query reports as active, and every message the background sent to a tab's frame. */
-let activeTabs: Array<{ id?: number }> = [];
+let activeTabs: Array<{ id?: number; url?: string }> = [];
+/** Tabs chrome.tabs.get can see. The popup names an id; the background reads the URL from here. */
+let tabsById: Array<{ id: number; url?: string }> = [];
 const tabSent: Array<{ tabId: number; msg: unknown; frameId: number | undefined }> = [];
 /** What a frame answers; a test replaces it to make a frame throw or a tab disappear. */
 let tabReply: (tabId: number, frameId: number) => unknown = () => undefined;
@@ -32,9 +36,15 @@ beforeAll(async () => {
       // No Mac app: the store falls back to chrome.storage.local.
       sendNativeMessage(_app: string, m: object, cb: (r: unknown) => void) {
         nativeSent.push(m);
-        (g.chrome as { runtime: { lastError?: { message: string } } }).runtime.lastError = { message: "host not found" };
+        const runtime = (g.chrome as { runtime: { lastError?: { message: string } | undefined } }).runtime;
+        if (nativeReply) {
+          runtime.lastError = undefined;
+          cb(nativeReply(m));
+          return;
+        }
+        runtime.lastError = { message: "host not found" };
         cb(undefined);
-        (g.chrome as { runtime: { lastError?: unknown } }).runtime.lastError = undefined;
+        runtime.lastError = undefined;
       },
       connectNative() { throw new Error("no host"); },
       lastError: undefined,
@@ -54,6 +64,11 @@ beforeAll(async () => {
       onUpdated: { addListener(cb: (tabId: number, info: { status?: string }) => void) { updated.push(cb); } },
       onRemoved: { addListener(cb: (tabId: number) => void) { removed.push(cb); } },
       query: async () => activeTabs,
+      get: async (id: number) => {
+        const t = tabsById.find(x => x.id === id);
+        if (!t) throw new Error("No tab with id");
+        return t;
+      },
       sendMessage: async (tabId: number, msg: unknown, opts?: { frameId?: number }) => {
         tabSent.push({ tabId, msg, frameId: opts?.frameId });
         return tabReply(tabId, opts?.frameId ?? 0);
@@ -318,7 +333,8 @@ describe("sender policy", () => {
     appliedSignal: { url: own }, appliedPending: {}, jobRow: { url: own }, appliedMark: {}, appliedDismiss: {},
     frameReady: {}, frames: {}, ingestJobs: { page: { url: own, title: "Jobs at Acme" }, saveSearch: false, jobs: [{ title: "Staff Engineer", company: "Acme", location: "Remote", url: "https://careers.acme.com/jobs/1", snippet: "Build things" }] },
     resumeGet: { url: own }, resumeInfo: { url: own }, resumePut: { url: own, name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
-    resumeDelete: { url: own }, attachResume: { name: "Resume_Synthetic.pdf", pdf: pdfOf(32), pickedAt: "" },
+    resumeDelete: { url: own }, resumePreview: {}, resumeShow: { name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
+    attachResume: { name: "Resume_Synthetic.pdf", pdf: pdfOf(32), pickedAt: "" },
   };
 
   test("the policy table and the shape table name exactly the same message types, each with a valid policy", () => {
@@ -396,6 +412,292 @@ describe("resume messages", () => {
     expect(r.replies).toEqual([{ error: "resumeGet is not accepted from the popup", code: "bad_request" }]);
     expect(nativeSent.length).toBe(before);
   });
+
+  test("View from the popup opens the active tab's resume, never a URL the message claims", async () => {
+    activeTabs = [{ id: 1, url: own }];
+    const r = await ask({ type: "resumePreview", url: claimed }, {});
+    expect(last()).toEqual({ op: "resumeOpen", key: own });
+    expect(r.replies).toEqual([{ error: "the Vani Apply Mac app isn't reachable", code: "unreachable" }]);
+    activeTabs = [];
+  });
+
+  test("View with no active tab, or a page that is not a job, does not call the Mac app", async () => {
+    activeTabs = [];
+    const before = nativeSent.length;
+    expect((await ask({ type: "resumePreview", url: own }, {})).replies).toEqual([{ found: false }]);
+    activeTabs = [{ id: 1, url: "chrome://extensions" }];
+    expect((await ask({ type: "resumePreview" }, {})).replies).toEqual([{ found: false }]);
+    activeTabs = [{ id: 1 }];
+    expect((await ask({ type: "resumePreview" }, {})).replies).toEqual([{ found: false }]);
+    expect(nativeSent.length).toBe(before);
+    activeTabs = [];
+  });
+
+  test("a content script's View uses its own frame URL", async () => {
+    await ask({ type: "resumePreview", url: claimed }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    expect(last()).toEqual({ op: "resumeOpen", key: own });
+  });
+
+  test("resumeShow from the popup is refused, and a page's bad PDF never reaches the Mac app", async () => {
+    const before = nativeSent.length;
+    const popup = await ask({ type: "resumeShow", name: "Resume_Synthetic.pdf", pdf: pdfOf(32) }, {});
+    expect(popup.replies).toEqual([{ error: "resumeShow is not accepted from the popup", code: "bad_request" }]);
+    const bad = await ask({ type: "resumeShow", name: "notes.docx", pdf: pdfOf(32) }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    expect(bad.replies[0]).toMatchObject({ code: "bad_request" });
+    const html = await ask({ type: "resumeShow", name: "r.pdf", pdf: btoa("<html>") }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    expect(html.replies[0]).toMatchObject({ code: "bad_request" });
+    expect(nativeSent.length).toBe(before);
+  });
+
+  test("resumeShow sends the checked PDF as resumeOpenData and not as a stored resume", async () => {
+    const pdf = btoa("%PDF-1.4\n%%EOF\n");
+    await ask({ type: "resumeShow", name: " Resume_Acme.pdf ", pdf }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    expect(last()).toMatchObject({ op: "resumeOpenData", name: "Resume_Acme.pdf", pdf });
+    expect(last()).not.toMatchObject({ op: "resumePut" });
+  });
+
+  test("a host that echoes the PDF does not get that echo through to the popup or the page", async () => {
+    nativeReply = () => ({ ok: true, name: "Resume_Acme.pdf", bytes: 12, pdf: "SECRET" });
+    try {
+      activeTabs = [{ id: 1, url: own }];
+      const popup = await ask({ type: "resumePreview", url: claimed }, {});
+      expect(popup.replies).toEqual([{ ok: true, name: "Resume_Acme.pdf", bytes: 12 }]);
+      expect(JSON.stringify(popup.replies)).not.toContain("SECRET");
+      const page = await ask(
+        { type: "resumeShow", name: "Resume_Acme.pdf", pdf: pdfOf(32) },
+        { tab: { id: 3, url: own }, frameId: 0, url: own },
+      );
+      expect(page.replies).toEqual([{ ok: true, name: "Resume_Acme.pdf", bytes: 12 }]);
+      expect(JSON.stringify(page.replies)).not.toContain("SECRET");
+    } finally {
+      nativeReply = undefined;
+      activeTabs = [];
+    }
+  });
+
+  test("a frame that is not the job falls back to the top page and still receives no PDF", async () => {
+    const frame = "https://evil.example/pixel";
+    nativeReply = m => {
+      const key = (m as { key?: string }).key;
+      return key === own
+        ? { ok: true, name: "Resume_Acme.pdf", bytes: 20, pdf: "SECRET" }
+        : { found: false };
+    };
+    try {
+      const r = await ask(
+        { type: "resumePreview", url: claimed },
+        { tab: { id: 3, url: own }, frameId: 4, url: frame },
+      );
+      expect(nativeSent.filter(m => (m as { op?: string }).op === "resumeOpen").map(m => (m as { key?: string }).key)).toContain(own);
+      expect(r.replies).toEqual([{ ok: true, name: "Resume_Acme.pdf", bytes: 20 }]);
+      expect(JSON.stringify(r.replies)).not.toContain("SECRET");
+    } finally {
+      nativeReply = undefined;
+    }
+  });
+
+  const job = (n: number) => `https://boards.greenhouse.io/acme/jobs/${n}`;
+  const topPage = "https://careers.acme.com/roles/1";
+
+  async function forget(tabId: number): Promise<void> {
+    for (const cb of updated) cb(tabId, { status: "loading" });
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  test("a key or tab id from a content script is ignored: it opens its own frame", async () => {
+    const before = nativeSent.length;
+    await ask(
+      { type: "resumePreview", key: claimed, tabId: 99 },
+      { tab: { id: 3, url: own }, frameId: 0, url: own },
+    );
+    expect(nativeSent.slice(before)).toEqual([{ op: "resumeOpen", key: own }]);
+  });
+
+  test("a popup key that is not the tab the background reads, and not one of its frames, opens nothing", async () => {
+    tabsById = [{ id: 7, url: job(2) }];
+    const before = nativeSent.length;
+    const r = await ask({ type: "resumePreview", key: own, tabId: 7 }, {});
+    expect(r.replies).toEqual([{ found: false, changed: true }]);
+    expect(nativeSent.length).toBe(before);
+    tabsById = [];
+  });
+
+  test("the popup's tab id is re-read, and a URL in the message is not the page", async () => {
+    tabsById = [{ id: 8, url: own }];
+    nativeReply = m => (m as { key?: string }).key === own
+      ? { found: true, name: "Resume_Acme.pdf", bytes: 20, pickedAt: "2026-10-19T00:00:00Z", pdf: "SECRET" }
+      : { found: false };
+    try {
+      const r = await ask({ type: "resumeInfo", url: claimed, tabId: 8 }, {});
+      expect(r.replies).toEqual([{ found: true, name: "Resume_Acme.pdf", bytes: 20, pickedAt: "2026-10-19T00:00:00Z", key: own }]);
+      expect(JSON.stringify(r.replies)).not.toContain("SECRET");
+      expect(nativeSent.filter(m => (m as { op?: string }).op === "resumeInfo").at(-1)).toEqual({ op: "resumeInfo", key: own });
+    } finally {
+      nativeReply = undefined;
+      tabsById = [];
+    }
+  });
+
+  test("a resume saved from a frame is shown when the top page has none", async () => {
+    tabsById = [{ id: 40, url: topPage }];
+    // The message claims a different job. Only the browser's frame URL is recorded.
+    await ask({ type: "frameReady", url: job(9) }, { tab: { id: 40 }, frameId: 4, url: job(2) });
+    nativeReply = m => {
+      const key = (m as { key?: string }).key;
+      const op = (m as { op?: string }).op;
+      if (key === job(2) && op === "resumeInfo") return { found: true, name: "Resume_Other.pdf", bytes: 30, pickedAt: "2026-10-20T00:00:00Z", pdf: "SECRET" };
+      if (key === job(2) && op === "resumeOpen") return { ok: true, name: "Resume_Other.pdf", bytes: 30, pdf: "SECRET" };
+      return { found: false };
+    };
+    try {
+      const info = await ask({ type: "resumeInfo", url: claimed, tabId: 40 }, {});
+      expect(info.replies).toEqual([{ found: true, name: "Resume_Other.pdf", bytes: 30, pickedAt: "2026-10-20T00:00:00Z", key: job(2) }]);
+      expect(JSON.stringify(info.replies)).not.toContain("SECRET");
+      const before = nativeSent.length;
+      const opened = await ask({ type: "resumePreview", key: job(2), tabId: 40 }, {});
+      expect(opened.replies).toEqual([{ ok: true, name: "Resume_Other.pdf", bytes: 30 }]);
+      expect(JSON.stringify(opened.replies)).not.toContain("SECRET");
+      const openedKeys = nativeSent.slice(before).filter(m => (m as { op?: string }).op === "resumeOpen").map(m => (m as { key?: string }).key);
+      expect(openedKeys).toEqual([job(2)]);
+      const probed = nativeSent.filter(m => (m as { op?: string }).op === "resumeInfo").map(m => (m as { key?: string }).key);
+      expect(probed).toContain(job(2));
+      expect(probed).not.toContain(job(9));
+    } finally {
+      nativeReply = undefined;
+      await forget(40);
+      tabsById = [];
+    }
+  });
+
+  test("the top page's resume wins over a frame, and two frames are not guessed", async () => {
+    tabsById = [{ id: 41, url: own }];
+    await ask({ type: "frameReady" }, { tab: { id: 41 }, frameId: 4, url: job(3) });
+    nativeReply = () => ({ found: true, name: "Resume_Top.pdf", bytes: 11, pickedAt: "2026-10-19T00:00:00Z" });
+    try {
+      const info = await ask({ type: "resumeInfo", url: claimed, tabId: 41 }, {});
+      expect(info.replies[0]).toMatchObject({ found: true, name: "Resume_Top.pdf", key: own });
+      const infos = nativeSent.filter(m => (m as { op?: string }).op === "resumeInfo").map(m => (m as { key?: string }).key);
+      expect(infos.at(-1)).toBe(own);
+      expect(infos.filter(k => k === job(3)).length).toBe(0);
+    } finally {
+      nativeReply = undefined;
+    }
+    await forget(41);
+    tabsById = [{ id: 42, url: topPage }];
+    await ask({ type: "frameReady" }, { tab: { id: 42 }, frameId: 2, url: job(4) });
+    await ask({ type: "frameReady" }, { tab: { id: 42 }, frameId: 3, url: job(5) });
+    nativeReply = m => {
+      const key = (m as { key?: string }).key;
+      if (key === job(4) || key === job(5)) return { found: true, name: "Resume_Other.pdf", bytes: 10, pickedAt: "" };
+      return { found: false };
+    };
+    try {
+      const before = nativeSent.length;
+      const r = await ask({ type: "resumePreview", tabId: 42 }, {});
+      expect(r.replies).toEqual([{ found: false, several: true }]);
+      const opens = nativeSent.slice(before).filter(m => (m as { op?: string }).op === "resumeOpen").map(m => (m as { key?: string }).key);
+      expect(opens).toEqual([topPage]);
+    } finally {
+      nativeReply = undefined;
+      await forget(41);
+      await forget(42);
+      tabsById = [];
+    }
+  });
+
+  test("more frame resumes than the probe cap are not opened and are not all asked", async () => {
+    tabsById = [{ id: 43, url: topPage }];
+    for (let n = 2; n <= 11; n++) {
+      await ask({ type: "frameReady" }, { tab: { id: 43 }, frameId: n, url: job(n) });
+    }
+    nativeReply = () => ({ found: false });
+    try {
+      const before = nativeSent.length;
+      const r = await ask({ type: "resumeInfo", url: topPage, tabId: 43 }, {});
+      expect(r.replies).toEqual([{ found: false, several: true }]);
+      const asked = nativeSent.slice(before).filter(m => (m as { op?: string }).op === "resumeInfo");
+      expect(asked).toEqual([{ op: "resumeInfo", key: topPage }]);
+    } finally {
+      nativeReply = undefined;
+      await forget(43);
+      tabsById = [];
+    }
+  });
+
+  test("a successful popup open tells the page, with the file name and without the page URL", async () => {
+    activeTabs = [{ id: 1, url: own }];
+    nativeReply = () => ({ ok: true, name: "Resume_Acme.pdf", bytes: 12, pdf: "SECRET" });
+    tabReply = () => ({ shown: true });
+    const before = tabSent.length;
+    try {
+      await ask({ type: "resumePreview" }, {});
+      const notes = tabSent.slice(before).filter(s => (s.msg as { type?: string }).type === "resumeNoted");
+      expect(notes).toEqual([{ tabId: 1, msg: { type: "resumeNoted", name: "Resume_Acme.pdf" }, frameId: 0 }]);
+      expect(JSON.stringify(notes)).not.toContain("SECRET");
+      expect(JSON.stringify(notes)).not.toContain(own);
+    } finally {
+      nativeReply = undefined;
+      activeTabs = [];
+      tabReply = () => undefined;
+    }
+  });
+
+  test("a page with no content script gets a toolbar badge, and a disguised name is not sent to the page", async () => {
+    const badges: string[] = [];
+    const chromeObj = g.chrome as { action?: { setBadgeText: (d: { tabId: number; text: string }) => Promise<void>; setBadgeBackgroundColor?: (d: unknown) => Promise<void>; getBadgeText?: (d: { tabId: number }) => Promise<string> } };
+    chromeObj.action = {
+      setBadgeText: async d => { badges.push(d.text); },
+      setBadgeBackgroundColor: async () => undefined,
+      getBadgeText: async () => badges.at(-1) ?? "",
+    };
+    activeTabs = [{ id: 1, url: own }];
+    tabReply = () => { throw new Error("no receiver"); };
+    nativeReply = () => ({ ok: true, name: "Resume_\u202Efdp.pdf", bytes: 12 });
+    const before = tabSent.length;
+    try {
+      const r = await ask({ type: "resumePreview" }, {});
+      expect(r.replies[0]).toMatchObject({ ok: true });
+      const notes = tabSent.slice(before).filter(s => (s.msg as { type?: string }).type === "resumeNoted");
+      expect(notes).toEqual([]);
+      expect(badges).toContain("PDF");
+    } finally {
+      nativeReply = undefined;
+      activeTabs = [];
+      tabReply = () => undefined;
+      chromeObj.action = undefined;
+    }
+  });
+
+  test("a waiting question badge is not replaced by the PDF badge", async () => {
+    const badges: string[] = [];
+    const chromeObj = g.chrome as { action?: { setBadgeText: (d: { tabId: number; text: string }) => Promise<void>; setBadgeBackgroundColor?: (d: unknown) => Promise<void>; getBadgeText?: (d: { tabId: number }) => Promise<string> } };
+    chromeObj.action = {
+      setBadgeText: async d => { badges.push(d.text); },
+      setBadgeBackgroundColor: async () => undefined,
+      getBadgeText: async () => "✓?",
+    };
+    activeTabs = [{ id: 1, url: own }];
+    tabReply = () => { throw new Error("no receiver"); };
+    nativeReply = () => ({ ok: true, name: "Resume_Acme.pdf", bytes: 12 });
+    try {
+      const r = await ask({ type: "resumePreview" }, {});
+      expect(r.replies[0]).toMatchObject({ ok: true });
+      expect(badges).toEqual([]);
+    } finally {
+      nativeReply = undefined;
+      activeTabs = [];
+      tabReply = () => undefined;
+      chromeObj.action = undefined;
+    }
+  });
+
+  test("a resumePreview key that is not a string is refused before the Mac app is asked", async () => {
+    const before = nativeSent.length;
+    expect((await ask({ type: "resumePreview", key: 1 }, {})).replies).toEqual([{ error: "malformed resumePreview message" }]);
+    expect((await ask({ type: "resumePreview", tabId: -1 }, {})).replies).toEqual([{ error: "malformed resumePreview message" }]);
+    expect((await ask({ type: "resumeInfo", url: own, tabId: 1.5 }, {})).replies).toEqual([{ error: "malformed resumeInfo message" }]);
+    expect(nativeSent.length).toBe(before);
+  });
 });
 
 describe("ingestJobs", () => {
@@ -424,9 +726,10 @@ describe("ingestJobs", () => {
 
 describe("message checks", () => {
   test("every content message type is accepted with its own fields, and bad options are refused", () => {
-    for (const m of [{ type: "scan" }, { type: "fill" }, { type: "fill", overwrite: true, typeahead: false }, { type: "capture" }, { type: "clearMarks" }, { type: "appliedShow" }]) {
+    for (const m of [{ type: "scan" }, { type: "fill" }, { type: "fill", overwrite: true, typeahead: false }, { type: "capture" }, { type: "clearMarks" }, { type: "appliedShow" }, { type: "resumeNoted", name: "Resume_Acme.pdf" }]) {
       expect(checkToContent(m)).toEqual({ msg: m as never });
     }
+    expect(checkToContent({ type: "resumeNoted", name: "" })).toEqual({ error: "malformed resumeNoted message" });
     expect(checkToContent({ type: "fill", overwrite: "yes" })).toEqual({ error: "malformed fill message" });
   });
 

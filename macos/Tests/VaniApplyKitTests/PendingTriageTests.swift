@@ -16,6 +16,8 @@ final class PendingTriageTests: XCTestCase {
         XCTAssertEqual(p, PendingTriage(total: 2639, matching: 656, companies: [.init(company: "Databricks", n: 895), .init(company: "Anthropic", n: 656)]))
         XCTAssertEqual(p.footerNote, "· 2639 awaiting triage (see the Awaiting triage view)")
         XCTAssertTrue(p.footerHelp.contains("(Databricks 895, Anthropic 656)"), p.footerHelp)
+        XCTAssertTrue(p.footerHelp.contains("Each run advances at most the config's advance_per_run postings."), p.footerHelp)
+        XCTAssertFalse(p.footerHelp.contains("advance_per_run of them"), p.footerHelp)
         XCTAssertEqual(p.emptySearchNote(query: "anthropic"),
                        "656 postings matching “anthropic” are awaiting triage; see them, unranked, in the Awaiting triage view.")
     }

@@ -117,7 +117,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			d, runner, stop, err = w.startRun(ctx, !w.skipsAdvance())
 			return stop, err
 		},
-		Drain: func(ctx context.Context) { w.drainSpool(ctx) },
+		Drain: func(ctx context.Context) { _, _ = w.drainSpool(ctx) },
 		Boards: func(ctx context.Context) (pipeline.BoardCounts, error) {
 			protect = w.markProtector()
 			return w.readBoards(ctx, d, runner.Policy, protect)
@@ -158,6 +158,8 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		},
 		Report: func(b sources.Board, st greenhouse.PayStats) {
 			w.warnf("board %s/%s: pay %+v", b.ATS, b.Token, st)
+			// NotFound is a closed posting, not a fetch that failed.
+			w.noteBoardFetch(b, boardFetch{PayFailed: st.Failed, PaySkipped: st.Skipped, PayError: st.FirstError})
 		},
 	})
 	if err != nil {
@@ -172,6 +174,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
 		},
 	})
 	if err != nil {
@@ -181,11 +184,13 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
 		},
 	})
 	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
 		Report: func(b sources.Board, st apple.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
 		},
 	})
 	var pageErr error
@@ -207,6 +212,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	rec.Protect(protect)
 	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, rec.Reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
 	w.mu.Lock()
+	w.applyFetchesLocked(&boards)
 	w.boards = &boards
 	w.mu.Unlock()
 	return pipeline.BoardCounts{Configured: boards.Configured, Read: boards.Read}, err
@@ -221,7 +227,15 @@ func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) 
 	nd, err := pipeline.AnnotateNearDuplicates(ctx, w.led, now, pipeline.NearDupOptions{Protected: protect, Similarity: sim})
 	finish() // saves the vector cache once, whatever the stage returned
 	if err != nil {
-		return nd, fmt.Errorf("near-duplicates: %w", err)
+		err = fmt.Errorf("near-duplicates: %w", err)
+	}
+	s := summarizeNearDup(nd, err)
+	w.finishSimilarity(s)
+	w.mu.Lock()
+	w.nearDup = s
+	w.mu.Unlock()
+	if err != nil {
+		return nd, err
 	}
 	w.warnf("near-duplicates: %+v", nd)
 	return nd, nil
@@ -234,6 +248,9 @@ func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) 
 // not read is kept and counted on fo (pipeline.CauseLocationUnreadable).
 func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, protect func(posting.Key) bool, now time.Time, fo *pipeline.FailOpen) error {
 	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo)
+	w.mu.Lock()
+	w.exclusions = summarizeExclusions(ch)
+	w.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("exclusions: %w", err)
 	}
@@ -268,6 +285,12 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	errs := newBackendErrors()
 	w.mu.Lock()
 	w.backendErrs, w.boards, w.advance, w.semPre = errs, nil, nil, nil
+	w.nearDup, w.exclusions, w.logos, w.shadow = nil, nil, nil, nil
+	w.explain, w.fetches = nil, nil
+	w.simOff, w.simNote = "", ""
+	// Written here, before any board is read and before runnerFor asks a
+	// backend. noteExplain and noteShadow read it from that goroutine.
+	w.recordGaps = advance
 	// A new run retries a Keychain read that failed in the last one (keychain.go).
 	w.keychainRun++
 	w.mu.Unlock()
@@ -280,6 +303,9 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 		})
 		if err != nil {
 			w.warnf("local decision model not started; running without the shadow: %v", err)
+			w.mu.Lock()
+			w.shadow = &shadowNote{Local: oneLine(err.Error(), maxStageNote)}
+			w.mu.Unlock()
 		} else {
 			stop = func() { w.localEndpoint = ""; srv.Stop() }
 			w.localEndpoint = srv.Endpoint
@@ -297,7 +323,7 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 // what it did. A failure is a warning: the batch stays spooled and is folded
 // next time, and the run's boards do not depend on it. It returns what the
 // drain left Live, for a caller that advances them itself.
-func (w *wired) drainSpool(ctx context.Context) []posting.Key {
+func (w *wired) drainSpool(ctx context.Context) (drainResult, error) {
 	res, err := drainInbox(ctx, w.led, w.stateDir, w.markProtector())
 	if res.Report.Folded > 0 {
 		w.warnf("inbox: folded %d batch(es), %d job(s): %d new, %d duplicate", res.Report.Folded, res.Report.Jobs, res.New, res.Duplicate)
@@ -314,41 +340,66 @@ func (w *wired) drainSpool(ctx context.Context) []posting.Key {
 	if err != nil && ctx.Err() == nil {
 		w.warnf("inbox: drain stopped, the rest waits: %v", err)
 	}
-	return res.Live
+	return res, err
 }
 
 // pollInbox is the daemon's between-runs pass: fold what the extension
 // spooled and advance the postings that landed Live, bounded by
 // advance_per_run, through the same pipeline.Advance the daily run uses. The caller
 // serialises it with the daily run (one ledger writer at a time).
-func (w *wired) pollInbox(ctx context.Context) error {
-	if n, err := inbox.Pending(filepath.Join(w.stateDir, inbox.Dir)); err != nil {
+func (w *wired) pollInbox(ctx context.Context) (err error) {
+	st := inboxStatus{At: now().UTC()}
+	defer func() {
+		if werr := writeInboxStatus(w.stateDir, st); werr != nil {
+			w.warnf("inbox: could not record the poll: %s", oneLine(werr.Error(), maxStageNote))
+		}
+	}()
+	n, err := inbox.Pending(filepath.Join(w.stateDir, inbox.Dir))
+	if err != nil {
+		st.Error = err.Error()
 		return err
-	} else if n == 0 {
+	}
+	if n == 0 {
 		return nil
 	}
-	live := w.drainSpool(ctx)
-	if len(live) == 0 {
+	res, derr := w.drainSpool(ctx)
+	st.Folded, st.Bad, st.Unreadable = res.Report.Folded, len(res.Report.Bad), res.Report.Unreadable
+	st.Remaining, st.New, st.Duplicate, st.Live = res.Report.Remaining, res.New, res.Duplicate, len(res.Live)
+	if derr != nil && ctx.Err() == nil {
+		st.Error = derr.Error()
+	}
+	if len(res.Live) == 0 {
+		if ctx.Err() != nil && st.Error == "" {
+			st.Error = ctx.Err().Error()
+		}
 		return ctx.Err()
 	}
-	recs := make([]ledger.Record, 0, len(live))
-	for _, k := range live {
+	recs := make([]ledger.Record, 0, len(res.Live))
+	for _, k := range res.Live {
 		if r, ok := w.led.Get(k); ok {
 			recs = append(recs, r)
 		}
 	}
 	if testHookAdvanceNew != nil {
-		return testHookAdvanceNew(ctx, recs)
+		err = testHookAdvanceNew(ctx, recs)
+		if err != nil {
+			st.Error = err.Error()
+		}
+		return err
 	}
 	_, runner, stop, err := w.startRun(ctx, true)
 	if err != nil {
 		// No backend, no egress: the postings stay Live for the next run.
 		w.warnf("inbox: %d new job(s) wait for the next run: %v", len(recs), err)
+		st.Error = err.Error()
 		return nil
 	}
 	defer stop()
 	_, err = pipeline.Advance(ctx, w.advancePlan(kindInbox, runner.Policy), pipeline.AdvanceDeps{Records: recs, Advance: runner.Advance, Runner: runner})
 	w.warnShadowNotes(runner)
+	if err != nil {
+		st.Error = err.Error()
+	}
 	return err
 }
 

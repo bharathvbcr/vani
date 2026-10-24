@@ -29,6 +29,99 @@ private final class ExitBox: @unchecked Sendable {
 final class ManualRunTests: XCTestCase {
     // MARK: Options
 
+    func testBacklogPassUsesTheConfigCapAndWritesNoDigest() throws {
+        let o = ManualRunOptions.backlog
+        XCTAssertEqual(o, ManualRunOptions(noDigest: true))
+        XCTAssertEqual(try o.arguments(), ["run-once", "--no-digest"])
+        XCTAssertEqual(o.summary, "no digest")
+        XCTAssertFalse(o.listOnly)
+        XCTAssertEqual(o.advance, 0, "a cap of the awaiting-triage count would skip postings waiting to be scored")
+        XCTAssertTrue(ManualRunOptions.backlogHelp(waiting: 0).hasPrefix("Nothing is awaiting triage."))
+        XCTAssertTrue(ManualRunOptions.backlogHelp(waiting: 1).contains("1 posting is awaiting triage."))
+        XCTAssertTrue(ManualRunOptions.backlogHelp(waiting: 2).contains("2 postings are awaiting triage."))
+        XCTAssertTrue(ManualRunOptions.backlogHelp(waiting: 2).contains("advance_per_run"))
+        XCTAssertTrue(ManualRunOptions.backlogHelp(waiting: -1).hasPrefix("Nothing is awaiting triage."))
+    }
+
+    /// The awaiting-triage count and advance_per_run are different numbers.
+    /// A kept schedule does not report the cap, and a shorter remainder waits.
+    func testBacklogHelpSeparatesTheWaitingCountFromTheCap() {
+        let unknown = ManualRunOptions.backlogHelp(waiting: 2)
+        XCTAssertTrue(unknown.contains("2 postings are awaiting triage."))
+        XCTAssertTrue(unknown.contains("The cap is advance_per_run."))
+        XCTAssertTrue(unknown.contains("It is not the awaiting-triage count, because this pass also scores and explains postings already past triage."))
+        XCTAssertTrue(unknown.contains("This status does not say what advance_per_run is."))
+        XCTAssertFalse(unknown.contains("advance_per_run of 2"))
+        XCTAssertTrue(unknown.contains("Every board is listed first."))
+        XCTAssertTrue(unknown.contains("No digest is written."))
+        XCTAssertTrue(unknown.contains("A cap set in the sheet is a shorter pass."))
+        XCTAssertTrue(unknown.contains("Start Run is what spends."))
+        XCTAssertTrue(unknown.contains("These choices are not kept for the next Run Now."))
+        for missing in [nil as Int?, 0, -4] {
+            XCTAssertTrue(ManualRunOptions.backlogHelp(waiting: 5, advancePerRun: missing).contains("This status does not say what advance_per_run is."), "\(String(describing: missing))")
+        }
+
+        let room = ManualRunOptions.backlogHelp(waiting: 2, advancePerRun: 300)
+        XCTAssertTrue(room.contains("2 postings are awaiting triage."))
+        XCTAssertTrue(room.contains("The cap is advance_per_run of \(300.formatted())."))
+        XCTAssertTrue(room.contains("It is not the awaiting-triage count"))
+        XCTAssertFalse(room.contains("at most 2"))
+        XCTAssertFalse(room.contains("This status does not say what advance_per_run is."))
+
+        let over = ManualRunOptions.backlogHelp(waiting: 4000, advancePerRun: 300)
+        XCTAssertTrue(over.contains("\(4000.formatted()) postings are awaiting triage."))
+        XCTAssertTrue(over.contains("This pass advances at most \(300.formatted()) postings (advance_per_run)."))
+        XCTAssertTrue(over.contains("That cap also covers scoring and explaining postings already past triage."))
+        XCTAssertTrue(over.contains("At least \((4000 - 300).formatted()) awaiting triage stay for a later run."))
+        XCTAssertFalse(over.contains("The cap is advance_per_run of \(4000.formatted())"))
+
+        let oneLeft = ManualRunOptions.backlogHelp(waiting: 301, advancePerRun: 300)
+        XCTAssertTrue(oneLeft.contains("At least 1 awaiting triage stays for a later run."))
+
+        let kept = ManualRunOptions.backlogHelp(waiting: 4000, kept: true, advancePerRun: 300)
+        XCTAssertTrue(kept.contains("This status does not say what advance_per_run is."))
+        XCTAssertFalse(kept.contains("at most \(300.formatted())"))
+        let unknownKept = ManualRunOptions.backlogHelp(waiting: 4, kept: nil, advancePerRun: 300)
+        XCTAssertTrue(unknownKept.contains("This status does not say what advance_per_run is."))
+        let unkept = ManualRunOptions.backlogHelp(waiting: 4000, kept: false, advancePerRun: 300)
+        XCTAssertTrue(unkept.contains("At least \((4000 - 300).formatted()) awaiting triage stay for a later run."))
+        XCTAssertFalse(unkept.contains("This status does not say what advance_per_run is."))
+        // An unkept schedule can still omit the number, and 0 is not a cap.
+        for missing in [nil as Int?, 0] {
+            let help = ManualRunOptions.backlogHelp(waiting: 4000, kept: false, advancePerRun: missing)
+            XCTAssertTrue(help.contains("This status does not say what advance_per_run is."), "\(String(describing: missing)): \(help)")
+            XCTAssertFalse(help.contains("at most"), help)
+        }
+    }
+
+    /// The sheet says which path will run, and says it was opened from Triage now.
+    func testRunSheetSaysWhereItCameFromAndWhetherItIsKept() {
+        let triage = RunSheet(options: .backlog, source: .triageNow)
+        let again = RunSheet(options: .backlog, source: .triageNow)
+        XCTAssertEqual(triage, again)
+        XCTAssertNotEqual(triage.id, again.id)
+        XCTAssertEqual(triage.banner, ManualRunOptions.triageNowBanner)
+        XCTAssertFalse(triage.remembers)
+        let whileDaemon = triage.presentation(daemonRunning: true)
+        XCTAssertEqual(whileDaemon.banner, ManualRunOptions.triageNowBanner)
+        XCTAssertFalse(whileDaemon.remembers)
+        XCTAssertEqual(whileDaemon.options, .backlog)
+        XCTAssertEqual(whileDaemon.footnote, "The daemon is running and holds the ledger, so it will make this run with its own keys.")
+        XCTAssertFalse(whileDaemon.footnote.contains("refused"))
+
+        let runNow = RunSheet(options: ManualRunOptions(advance: 9), source: .runNow)
+        XCTAssertNil(runNow.banner)
+        XCTAssertTrue(runNow.remembers)
+        XCTAssertNotEqual(runNow, triage)
+        let alone = runNow.presentation(daemonRunning: false)
+        XCTAssertNil(alone.banner)
+        XCTAssertTrue(alone.remembers)
+        XCTAssertEqual(alone.footnote, "A run is refused while another vani holds the ledger.")
+        XCTAssertFalse(alone.footnote.contains("daemon is running"))
+        XCTAssertEqual(ManualRunOptions.runFootnote(daemonRunning: true), whileDaemon.footnote)
+        XCTAssertEqual(ManualRunOptions.runFootnote(daemonRunning: false), alone.footnote)
+    }
+
     func testDefaultOptionsAreAPlainRunOnce() throws {
         let o = ManualRunOptions()
         XCTAssertTrue(o.isDefault)

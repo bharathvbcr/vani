@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 )
@@ -388,8 +389,121 @@ func TestJobErrorAndPanicKeepSchedule(t *testing.T) {
 	h.clock.Advance(time.Date(2026, 10, 19, 8, 30, 0, 0, loc))
 	h.waitRan()
 	h.clock.waitReg(t)
-	if !logs.has("job failed: boom") || !logs.has("job panicked: kaboom") {
-		t.Errorf("failures not logged: %v", logs.lines)
+	if !logs.has("job failed: boom") || !logs.has("job panicked: kaboom") || !logs.has("goroutine") {
+		t.Errorf("failures not logged with a stack: %v", logs.lines)
+	}
+	h.stop()
+}
+
+func TestSkippedHookFiresOncePastTheWindow(t *testing.T) {
+	loc := la(t)
+	clock := newClock(time.Date(2026, 10, 18, 7, 0, 0, 0, loc))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var runs, skips atomic.Int32
+	var gotSlot time.Time
+	var gotLate time.Duration
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWith(ctx, sched, func(context.Context) error {
+			runs.Add(1)
+			return nil
+		}, clock, Hooks{Skipped: func(slot time.Time, late time.Duration) {
+			skips.Add(1)
+			gotSlot, gotLate = slot, late
+		}})
+	}()
+	clock.waitReg(t)
+	clock.Advance(time.Date(2026, 10, 18, 15, 0, 0, 0, loc))
+	clock.waitReg(t)
+	if runs.Load() != 0 {
+		t.Fatal("job ran past the window")
+	}
+	if skips.Load() != 1 {
+		t.Fatalf("Skipped called %d times, want 1", skips.Load())
+	}
+	want := time.Date(2026, 10, 18, 8, 30, 0, 0, loc)
+	if !gotSlot.Equal(want) {
+		t.Fatalf("slot = %s, want %s", gotSlot, want)
+	}
+	if gotLate <= MissedRunWindow {
+		t.Fatalf("late = %s, want more than %s", gotLate, MissedRunWindow)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunWith did not exit")
+	}
+}
+
+func TestSkippedHookStaysQuietInsideTheWindow(t *testing.T) {
+	loc := la(t)
+	clock := newClock(time.Date(2026, 10, 18, 7, 0, 0, 0, loc))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var skips atomic.Int32
+	ran := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWith(ctx, sched, func(context.Context) error {
+			ran <- struct{}{}
+			return nil
+		}, clock, Hooks{Skipped: func(time.Time, time.Duration) { skips.Add(1) }})
+	}()
+	clock.waitReg(t)
+	clock.Advance(time.Date(2026, 10, 18, 11, 0, 0, 0, loc))
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job did not run")
+	}
+	clock.waitReg(t)
+	if skips.Load() != 0 {
+		t.Fatalf("Skipped called inside the window: %d", skips.Load())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunWith did not exit")
+	}
+}
+
+func TestJobPanicValueIsOneBoundedLine(t *testing.T) {
+	loc := la(t)
+	logs := captureLogs(t)
+	huge := "kaboom\n" + strings.Repeat("x", 5000)
+	h := start(t, time.Date(2026, 10, 18, 7, 0, 0, 0, loc), func(context.Context, *harness) error {
+		panic(huge)
+	})
+	h.clock.Advance(time.Date(2026, 10, 18, 8, 30, 0, 0, loc))
+	h.waitRan()
+	h.clock.waitReg(t)
+	logs.mu.Lock()
+	var line string
+	for _, l := range logs.lines {
+		if strings.Contains(l, "job panicked:") {
+			line = l
+			break
+		}
+	}
+	logs.mu.Unlock()
+	if line == "" {
+		t.Fatal("panic was not logged")
+	}
+	head, _, _ := strings.Cut(line, "\n")
+	if strings.Contains(head, "\n") || utf8.RuneCountInString(head) > len("daemon: job panicked: ")+maxJobPanicText {
+		t.Fatalf("panic value was not one bounded line: %q", head)
+	}
+	if !strings.Contains(line, "goroutine") {
+		t.Fatal("panic log has no stack")
 	}
 	h.stop()
 }

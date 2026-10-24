@@ -43,6 +43,10 @@ const (
 	MinWords            = 40
 	MaxWords            = 400
 	DefaultWords        = 180
+	// MaxAttempt is how many distinct wordings one question may ask for.
+	// Zero is a first draft and is omitted on the wire. The extension sends
+	// this small integer; it is never page text and never the field's value.
+	MaxAttempt = 8
 	// MaxEvidenceRunes caps the knowledge-base excerpt sent per draft.
 	MaxEvidenceRunes = 6000
 	DefaultTimeout   = 90 * time.Second
@@ -88,6 +92,9 @@ type Request struct {
 	Question string `json:"question"`
 	Job      Job    `json:"job"`
 	MaxWords int    `json:"max_words,omitempty"`
+	// Attempt is a small counter from the extension, so a later draft of the
+	// same question is not the same prompt. It is never page text.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // Evidence is one knowledge-base entry reduced to what a draft may cite.
@@ -167,6 +174,9 @@ func (r *Request) Validate() error {
 		r.MaxWords = DefaultWords
 	case r.MaxWords < MinWords || r.MaxWords > MaxWords:
 		return fail(CodeBadRequest, "max_words %d outside [%d, %d]", r.MaxWords, MinWords, MaxWords)
+	}
+	if r.Attempt < 0 || r.Attempt > MaxAttempt {
+		return fail(CodeBadRequest, "attempt %d outside [0, %d]", r.Attempt, MaxAttempt)
 	}
 	r.Job.Description = clip(r.Job.Description, MaxPostingRunes)
 	return nil
@@ -248,6 +258,10 @@ func userMessage(r Request, post postingText, motive bool, ev []Evidence, target
 		fmt.Fprintf(&b, "Target roles (written by the seeker): %s\n\n", t)
 	}
 	fmt.Fprintf(&b, "Write at most %d words.\n\n", r.MaxWords)
+	if r.Attempt > 0 {
+		// Trusted side only, before any page text. The counter is the extension's, not the field.
+		fmt.Fprintf(&b, "This is attempt %d. Write a different answer from a typical first draft of this question. Do not mention the attempt number, and do not say that the answer was rewritten.\n\n", r.Attempt)
+	}
 	if motive {
 		b.WriteString(motivationBrief)
 		if notes == "" {

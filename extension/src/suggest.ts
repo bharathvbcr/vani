@@ -75,3 +75,101 @@ export function draftable(ref: FieldRef): boolean {
   const textual = ref.els.length === 1 && (ref.info.kind === "text" || ref.info.kind === "textarea" || ref.widget === "contenteditable");
   return textual && !ref.manual && ref.info.value.length === 0 && currentText(ref) === "";
 }
+
+/** Same floor `vani draft` uses: a shorter posting is not something to draft from. */
+export const MIN_POSTING_CHARS = 40;
+
+/**
+ * What the row can do for one detected field. Regenerating reads the question
+ * and the posting again. The offer never includes the field's text.
+ */
+export type DraftOffer = "draft" | "regenerate" | "replace" | "needs-posting" | "choice" | "manual" | "other";
+
+export interface DraftOfferInfo {
+  offer: DraftOffer;
+  /** Button label. Empty when the row has no draft action. */
+  button: string;
+  /** One sentence for the row. A manual row uses the scanner's reason. */
+  note: string;
+  chip: string;
+}
+
+export const DRAFT_EMPTY_NOTE = "Empty. A draft sends the question and the posting only.";
+export const UNDRAFTED_NOTE = "Vani does not draft this.";
+const REGENERATE_NOTE = "Vani drafted this. Regenerating asks again and does not send what is in the field.";
+const REPLACE_NOTE = "This field has your text. Nothing is replaced until you confirm.";
+const EDITED_NOTE = "You edited this draft. Nothing is replaced until you confirm.";
+const UNTRACKED_NOTE = "Vani drafted this, and the original wording was not recorded. Nothing is replaced until you confirm.";
+const POSTING_NOTE = "No job description on this page to draft from.";
+
+const OFFERS: ReadonlySet<string> = new Set(["draft", "regenerate", "replace", "needs-posting", "choice", "manual", "other"]);
+
+export function isDraftOffer(x: unknown): x is DraftOffer {
+  return typeof x === "string" && OFFERS.has(x);
+}
+
+/** A model draft is only for a single free-text control. Choice widgets and pickers are not. */
+function proseKind(kind: FieldInfo["kind"]): boolean {
+  return kind === "text" || kind === "textarea";
+}
+
+export function draftOffer(info: FieldInfo, manual: string, postingChars: number): DraftOfferInfo {
+  if (manual) {
+    const note = /[.!?]$/.test(manual) ? manual : `${manual}.`;
+    return { offer: "manual", button: "", note, chip: "By hand" };
+  }
+  if (!proseKind(info.kind)) {
+    if (info.kind === "select" || info.kind === "radio" || info.kind === "checkbox") {
+      return { offer: "choice", button: "", note: "Choose an option on the page.", chip: "Choice" };
+    }
+    return { offer: "other", button: "", note: "Fill this one on the page.", chip: "On the page" };
+  }
+  const sens = classify(info);
+  if (sens === "secret" || sens === "self_id") {
+    return { offer: "other", button: "", note: UNDRAFTED_NOTE, chip: "On the page" };
+  }
+  const text = (info.value[0] ?? "").replace(/\s+/g, " ").trim();
+  const empty = info.value.length === 0 || text === "";
+  if (!Number.isFinite(postingChars) || postingChars < MIN_POSTING_CHARS) {
+    return { offer: "needs-posting", button: "Draft", note: POSTING_NOTE, chip: "No posting" };
+  }
+  if (info.drafted === true && !empty) {
+    const stored = (info.draftText ?? "").replace(/\s+/g, " ").trim();
+    if (stored !== "" && stored === text) return { offer: "regenerate", button: "Regenerate", note: REGENERATE_NOTE, chip: "Drafted" };
+    return { offer: "replace", button: "New draft", note: stored === "" ? UNTRACKED_NOTE : EDITED_NOTE, chip: "Your text" };
+  }
+  if (empty) return { offer: "draft", button: "Draft", note: DRAFT_EMPTY_NOTE, chip: "Empty" };
+  return { offer: "replace", button: "New draft", note: REPLACE_NOTE, chip: "Your text" };
+}
+
+/**
+ * Which scanned field a label refers to. An ordinal is trusted only when it
+ * still points at that label. Without one, a label that matches two fields is
+ * ambiguous: the first field must not stand in for the others.
+ */
+export function pickOrdinal(count: number, label: string, ordinal: number | undefined, labelAt: (i: number) => string): number | "absent" | "ambiguous" {
+  const want = label.trim().toLowerCase();
+  if (typeof ordinal === "number") {
+    if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= count) return "absent";
+    return labelAt(ordinal).trim().toLowerCase() === want ? ordinal : "absent";
+  }
+  const hits: number[] = [];
+  for (let i = 0; i < count; i++) {
+    if (labelAt(i).trim().toLowerCase() === want) hits.push(i);
+  }
+  if (hits.length === 1) return hits[0]!;
+  if (hits.length === 0) return "absent";
+  return "ambiguous";
+}
+
+/** True when the button asks for a draft. A needs-posting row shows the button disabled. */
+export function draftEnabled(offer: DraftOffer): boolean {
+  return offer === "draft" || offer === "regenerate" || offer === "replace";
+}
+
+export function draftButton(offer: DraftOffer): string {
+  if (offer === "regenerate") return "Regenerate";
+  if (offer === "replace") return "New draft";
+  if (offer === "draft" || offer === "needs-posting") return "Draft";
+  return "";
+}

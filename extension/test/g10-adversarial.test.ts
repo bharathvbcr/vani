@@ -84,7 +84,8 @@ describe("adversarial: sender shapes", () => {
     setSettings: { settings: { captureSelfId: true } }, deleteAnswer: { key: "zz" }, editAnswer: { key: "zz", value: ["v"] },
     replaceBank: { json: bankJson }, resumeInfo: { url: own }, resumeDelete: { url: own },
     filled: { keys: [] }, draft: { question: "Why?" }, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" },
-    jobRow: { url: own }, frameReady: {}, resumeGet: { url: own }, attachResume: { name: "R.pdf", pdf: pdfOf(32), pickedAt: "" },
+    jobRow: { url: own }, frameReady: {}, resumeGet: { url: own }, resumePreview: {},
+    resumeShow: { name: "R.pdf", pdf: pdfOf(32) }, attachResume: { name: "R.pdf", pdf: pdfOf(32), pickedAt: "" },
   };
 
   test("the manifest has one tabless context (the popup): no options page, offscreen document, side panel, devtools page or externally_connectable, in either build", () => {

@@ -3,21 +3,23 @@ import type { Answer, Bank, FieldInfo } from "./types";
 import { MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
 import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
-import { type Coverage, type FrameAnswer, type TabCoverage, coverageLine, tabCoverage } from "./coverage";
+import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, coverageLine, questionRows, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
 import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
-import { type IngestSource, describeIngest, prepareIngest } from "./ingest";
+import { type IngestSource, buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
 import { type RelevanceResult, targetProfileFromBank } from "./relevance";
 import { scoreWord } from "./jobrow";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
-import type { JobInfo } from "./draft";
+import { draftStartError, type JobInfo } from "./draft";
+import { UNDRAFTED_NOTE, draftButton, draftEnabled, isDraftOffer } from "./suggest";
 import { formatJobDetails } from "./jobinfo";
 import { resumeRow } from "./resumerow";
 import { isHttpUrl, openButton, titleElement } from "./joblink";
+import { type JobFilter, actionTitle, companyLine, copyActionTitle, countLabel, filtering, jobsToActOn, saveLabel, saveSendNote, scopeNote, scorePillText, scoreTone, selectJobs, workplaceLabel } from "./joblist";
 import { type HomeView, bankSummary, basicsCompleteness, compactCount, friendlyError, homeHeadline, homeState, meterModel, nextStep, ratedFrame, viewSections } from "./home";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -573,66 +575,171 @@ function openTab(name: string): void {
   document.querySelector<HTMLButtonElement>(`.tab-btn[data-tab="${name}"]`)?.click();
 }
 
+function chipFor(offer: PageQuestion["offer"]): string {
+  if (offer === "regenerate") return "q-chip on";
+  if (offer === "replace" || offer === "needs-posting") return "q-chip warn";
+  return "q-chip";
+}
+
+const CHIP_TEXT: Record<PageQuestion["offer"], string> = {
+  draft: "Empty",
+  regenerate: "Drafted",
+  replace: "Your text",
+  "needs-posting": "No posting",
+  choice: "Choice",
+  manual: "By hand",
+  other: "On the page",
+};
+
+/** Ask one frame to open the draft editor. A row with no frame is not fanned out. */
+async function askDraftField(q: PageQuestion, button: HTMLButtonElement): Promise<void> {
+  if (q.frameId === undefined) {
+    toast("Open the question list on the page to draft this one.");
+    return;
+  }
+  const before = button.textContent ?? "";
+  button.disabled = true;
+  button.textContent = "Opening…";
+  try {
+    const r = await toFrames<{ ok?: boolean; error?: string }>(
+      { type: "draftField", label: q.label, ordinal: q.ordinal },
+      { registered, frameId: q.frameId },
+    );
+    const replies = r.answered.map(a => a.reply);
+    const err = draftStartError(replies);
+    if (err) {
+      const failed = r.failed[0]?.error;
+      toast(failed && replies.length === 0 ? failed : err);
+      return;
+    }
+    toast("The draft is opening on the page. Read it, then insert it. Nothing is submitted for you.");
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e));
+  } finally {
+    button.disabled = false;
+    button.textContent = before;
+  }
+}
+
+function questionItem(q: PageQuestion): HTMLElement {
+  const offer = isDraftOffer(q.offer) ? q.offer : "other";
+  const li = document.createElement("li");
+  li.className = "q-row";
+  const top = document.createElement("div");
+  top.className = "q-top";
+  const text = document.createElement("div");
+  text.className = "q-label";
+  const label = document.createElement("div");
+  label.textContent = q.label;
+  label.title = q.label;
+  const chip = document.createElement("span");
+  chip.className = chipFor(offer);
+  chip.textContent = CHIP_TEXT[offer];
+  text.append(label, chip);
+  const actions = document.createElement("div");
+  actions.className = "q-actions";
+  const buttonLabel = draftButton(offer);
+  const prose = offer === "draft" || offer === "regenerate" || offer === "replace" || offer === "needs-posting";
+  if (buttonLabel) {
+    const draftBtn = document.createElement("button");
+    draftBtn.type = "button";
+    draftBtn.className = offer === "regenerate" || offer === "draft" ? "sm accent" : "sm";
+    draftBtn.textContent = buttonLabel;
+    draftBtn.title = q.note;
+    draftBtn.disabled = !draftEnabled(offer);
+    if (draftEnabled(offer)) draftBtn.addEventListener("click", () => { void askDraftField(q, draftBtn); });
+    actions.append(draftBtn);
+  }
+  const tailorable = prose ? templateTailoring(q.label, activeJob?.company) : null;
+  if (tailorable) {
+    const tb = document.createElement("button");
+    tb.type = "button";
+    tb.className = "sm";
+    tb.textContent = "Tailor";
+    tb.title = `Write a tailored answer for "${tailorable.title}" from this posting and insert it`;
+    tb.addEventListener("click", () => {
+      void (async () => {
+        if (q.frameId === undefined) {
+          toast("Open the question list on the page to tailor this one.");
+          return;
+        }
+        const overwrite = tb.dataset.overwrite === "1";
+        const text = generateTailoredDraft(
+          tailorable.kind,
+          activeJob ?? { title: "", company: "", description: "" },
+          targetProfileFromBank(current),
+        );
+        try {
+          const r = await toFrames<{ ok?: boolean; error?: string; reason?: string }>(
+            { type: "insertTailored", label: q.label, text, ordinal: q.ordinal, overwrite },
+            { registered, frameId: q.frameId },
+          );
+          if (r.answered.some(a => a.reply.ok === true)) {
+            try {
+              await navigator.clipboard.writeText(text);
+              toast(`Tailored answer inserted into "${q.label}". It stays yellow until you review it. Copied.`);
+            } catch {
+              toast(`Tailored answer inserted into "${q.label}". It stays yellow until you review it. Copy failed.`);
+            }
+            delete tb.dataset.overwrite;
+            tb.textContent = "Tailor";
+            const scanned = await scanTabExtended().catch(() => null);
+            if (scanned) renderCoverage(scanned.tabCoverage.total);
+            return;
+          }
+          if (r.answered.some(a => a.reply.reason === "has_value") && !overwrite) {
+            tb.dataset.overwrite = "1";
+            tb.textContent = "Replace the field's text";
+            toast(`"${q.label}" already has text. Click again to replace it.`);
+            return;
+          }
+          const err = r.answered.map(a => a.reply.error).find((e): e is string => typeof e === "string" && e !== "")
+            ?? r.failed[0]?.error
+            ?? "The field is not on this page.";
+          toast(err);
+        } catch (e) {
+          toast(`Could not insert the answer: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      })();
+    });
+    actions.append(tb);
+  }
+  if (q.note !== UNDRAFTED_NOTE) {
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "sm";
+    save.textContent = "Answer";
+    save.title = `Save an answer for "${q.label}"`;
+    save.addEventListener("click", () => openAddModal(q.label));
+    actions.append(save);
+  }
+  top.append(text, actions);
+  const note = document.createElement("p");
+  note.className = "q-note";
+  note.textContent = q.note;
+  li.append(top, note);
+  return li;
+}
+
 /** Per-page breakdown and the questions with no saved answer. */
 function renderCoverage(c: Coverage): void {
   const list = $("#unknown");
   list.textContent = "";
-  for (const label of c.unknownLabels) {
-    const li = document.createElement("li");
-    li.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;padding:3px 0;";
-
-    const textSpan = document.createElement("span");
-    textSpan.textContent = label;
-    textSpan.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;";
-    textSpan.title = label;
-
-    const btnGroup = document.createElement("div");
-    btnGroup.style.cssText = "display:flex;gap:4px;flex-shrink:0;";
-
-    const tailorable = templateTailoring(label, activeJob?.company);
-    if (tailorable) {
-      const tb = document.createElement("button");
-      tb.className = "sm";
-      tb.textContent = "✨ Tailor";
-      tb.title = `Generate tailored answer for "${tailorable.title}" from JD and insert into field`;
-      tb.onclick = async () => {
-        const text = generateTailoredDraft(
-          tailorable.kind,
-          activeJob ?? { title: "", company: "", description: "" },
-          targetProfileFromBank(current)
-        );
-        try {
-          await toFrames({ type: "insertTailored", label, text }, { registered });
-          await navigator.clipboard.writeText(text).catch(() => {});
-          toast(`Tailored answer inserted into "${label}" & copied!`);
-        } catch (e) {
-          toast(`Could not insert answer: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      };
-      btnGroup.append(tb);
-    }
-
-    const ab = document.createElement("button");
-    ab.className = "sm";
-    ab.textContent = "+ Answer";
-    ab.title = `Save an answer for "${label}"`;
-    ab.onclick = () => openAddModal(label);
-    btnGroup.append(ab);
-
-    li.append(textSpan, btnGroup);
-    list.append(li);
-  }
+  for (const q of questionRows(c)) list.append(questionItem(q));
   if (c.unknown > c.unknownLabels.length) {
     const li = document.createElement("li");
-    li.textContent = `+${c.unknown - c.unknownLabels.length} more not listed`;
+    li.className = "q-note";
+    li.textContent = `+${c.unknown - c.unknownLabels.length} more not listed. The scan stopped at ${c.unknownLabels.length}.`;
     list.append(li);
   }
-  for (const label of c.manualLabels) {
-    const li = document.createElement("li");
-    li.textContent = `${label} (do by hand)`;
-    list.append(li);
-  }
-  $("#coverage").hidden = c.unknown === 0 && c.manual === 0;
+  const manuals = Array.isArray(c.manualQuestions)
+    ? c.manualQuestions
+    : c.manualLabels.map(label => ({ label, offer: "manual" as const, note: "Fill this one by hand." }));
+  for (const q of manuals) list.append(questionItem(q));
+  for (const q of (Array.isArray(c.held) ? c.held : [])) list.append(questionItem(q));
+  const card = $("#coverage");
+  const heldCount = Array.isArray(c.held) ? c.held.length : 0;
+  card.hidden = c.unknown === 0 && c.manual === 0 && heldCount === 0;
   updateMeter(c);
 }
 
@@ -734,6 +841,8 @@ function initTabs(): void {
 }
 
 let scrapedJobs: ScrapedJob[] = [];
+/** Bumped when a scrape replaces the list, so an in-flight save cannot write its result onto the new page. */
+let scrapeGen = 0;
 /** The listing page the scrape came from (ScrapeResult.pageUrl is already scrubbed). */
 let scrapedPage = { pageUrl: "", pageTitle: "" };
 
@@ -1006,137 +1115,191 @@ function renderMissedChecklist(audit?: FormAuditReport): void {
   }
 }
 
+function readJobFilter(): JobFilter {
+  const query = ($("#scraper-filter") as HTMLInputElement | null)?.value ?? "";
+  const active = document.querySelector<HTMLButtonElement>("#tab-scraper [data-min].active");
+  const parsed = parseInt(active?.dataset.min ?? "0", 10);
+  const remoteOnly = $("#scraper-remote-only")?.getAttribute("aria-pressed") === "true";
+  return { query, minScore: Number.isFinite(parsed) ? parsed : 0, remoteOnly };
+}
+
+function setScoreChip(min: string): void {
+  document.querySelectorAll<HTMLButtonElement>("#tab-scraper [data-min]").forEach(b => {
+    const on = b.dataset.min === min;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+/** Save and export follow the jobs on screen. Scrape is the green button only before the first result. A save in flight is left disabled. */
+function setScraperActions(shown: number, total: number, active: boolean, saveTitle = ""): void {
+  const has = shown > 0;
+  for (const id of ["export-csv", "export-json"] as const) {
+    const el = document.getElementById(id) as HTMLButtonElement | null;
+    if (!el) continue;
+    el.disabled = !has;
+    el.title = actionTitle(id === "export-csv" ? "csv" : "json", shown, total, active);
+  }
+  const scrape = document.getElementById("scrape-page-btn");
+  if (scrape) scrape.classList.toggle("primary", total === 0);
+  const save = document.getElementById("scraper-save") as HTMLButtonElement | null;
+  if (!save || save.dataset.sending === "1") return;
+  save.title = saveTitle || actionTitle("save", shown, total, active);
+  const lbl = save.querySelector(".lbl");
+  if (lbl) lbl.textContent = saveLabel(shown, total, active);
+  save.disabled = !has;
+  save.classList.toggle("primary", has);
+}
+
+function jobCard(j: ScrapedJob): HTMLElement {
+  const card = document.createElement("article");
+  card.className = "job-card";
+
+  const top = document.createElement("div");
+  top.className = "job-top";
+  const titleEl = titleElement(document, j.title, j.url);
+  titleEl.classList.add("job-card-title");
+  titleEl.title = j.title;
+  const pill = document.createElement("span");
+  pill.className = `badge badge-${scoreTone(j.relevance.score)}`;
+  pill.textContent = scorePillText(j.relevance);
+  pill.title = j.relevance.fitLabel;
+  top.append(titleEl, pill);
+
+  const meta = document.createElement("div");
+  meta.className = "job-meta";
+  const comp = document.createElement("span");
+  comp.className = "co";
+  comp.textContent = companyLine(j.company);
+  const loc = document.createElement("span");
+  loc.textContent = j.location.trim() || "Location not listed";
+  meta.append(comp, loc);
+  const place = workplaceLabel(j);
+  if (place) {
+    const wp = document.createElement("span");
+    wp.className = "badge badge-muted";
+    wp.textContent = place;
+    meta.append(wp);
+  }
+  if (j.salary) {
+    const sal = document.createElement("span");
+    sal.className = "badge badge-muted";
+    sal.textContent = j.salary;
+    meta.append(sal);
+  }
+  if (j.posted) {
+    const posted = document.createElement("span");
+    posted.textContent = j.posted;
+    meta.append(posted);
+  }
+
+  const fit = document.createElement("div");
+  fit.className = "job-fit";
+  fit.textContent = j.relevance.fitLabel;
+  fit.title = j.relevance.fitLabel;
+
+  const parts: HTMLElement[] = [top, meta, fit];
+  const snippet = j.snippet.trim();
+  if (snippet) {
+    const sn = document.createElement("p");
+    sn.className = "job-snippet";
+    sn.textContent = snippet;
+    parts.push(sn);
+  }
+  if (j.relevance.dealbreakers.length > 0) {
+    const flag = document.createElement("p");
+    flag.className = "job-flag";
+    flag.textContent = j.relevance.dealbreakers.join("; ");
+    parts.push(flag);
+  }
+  const skills = j.relevance.matchedSkills;
+  if (skills.length > 0) {
+    const row = document.createElement("div");
+    row.className = "job-skills";
+    for (const s of skills.slice(0, 4)) {
+      const chip = document.createElement("span");
+      chip.className = "badge badge-ok";
+      chip.textContent = s;
+      row.append(chip);
+    }
+    if (skills.length > 4) {
+      const more = document.createElement("span");
+      more.className = "badge badge-muted";
+      const rest = skills.slice(4).join(", ");
+      more.textContent = `+${skills.length - 4}`;
+      more.title = rest;
+      more.setAttribute("aria-label", `${skills.length - 4} more: ${rest}`);
+      row.append(more);
+    }
+    parts.push(row);
+  }
+
+  const act = document.createElement("div");
+  act.className = "job-card-actions";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "sm";
+  copyBtn.textContent = "Copy";
+  copyBtn.title = copyActionTitle(isHttpUrl(j.url), j.snippet.trim() !== "");
+  copyBtn.onclick = async () => {
+    const text = formatJobDetails({ title: j.title, company: j.company, description: j.snippet }, isHttpUrl(j.url) ? j.url : "");
+    try {
+      await navigator.clipboard.writeText(text);
+      flashCopied(copyBtn, "Copied");
+    } catch {
+      toast("Could not copy job details.");
+    }
+  };
+  const trackBtn = document.createElement("button");
+  trackBtn.type = "button";
+  trackBtn.className = "sm";
+  trackBtn.textContent = "Track";
+  trackBtn.title = "Send this job to Vani";
+  trackBtn.onclick = async () => {
+    trackBtn.disabled = true;
+    try {
+      const r = await sendToVani({ pageUrl: scrapedPage.pageUrl, pageTitle: scrapedPage.pageTitle, jobs: [j] }, false);
+      status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");
+      if (r.ok) flashCopied(trackBtn, "Sent");
+      else toast(r.text);
+    } finally {
+      trackBtn.disabled = false;
+    }
+  };
+  const openBtn = openButton(document, j.url, (u, t, f) => window.open(u, t, f));
+  act.append(copyBtn, trackBtn, ...(openBtn ? [openBtn] : []));
+  parts.push(act);
+  card.append(...parts);
+  return card;
+}
+
 function renderScraper(): void {
   const list = $("#scraper-list");
   if (!list) return;
 
-  const q = ($("#scraper-filter") as HTMLInputElement | null)?.value.toLowerCase() ?? "";
-  const minScore = parseInt(($("#scraper-score-filter") as HTMLSelectElement | null)?.value ?? "0", 10);
-  const remoteOnly = ($("#scraper-remote-only") as HTMLInputElement | null)?.checked ?? false;
-
-  const filtered = scrapedJobs.filter(j => {
-    if (j.relevance.score < minScore) return false;
-    if (remoteOnly && j.relevance.workplaceType !== "Remote" && !j.location.toLowerCase().includes("remote")) return false;
-    if (q) {
-      const haystack = `${j.title} ${j.company} ${j.location} ${j.snippet} ${j.relevance.matchedSkills.join(" ")}`.toLowerCase();
-      if (!haystack.includes(q)) return false;
-    }
-    return true;
-  });
-
+  const filter = readJobFilter();
+  const filtered = selectJobs(scrapedJobs, filter);
+  const active = filtering(filter);
+  const acted = jobsToActOn(scrapedJobs, filter);
+  const batch = buildIngestBatch(acted);
+  const sendNote = saveSendNote(acted.length, batch.jobs.length, leftOutText(batch));
   const countEl = $("#scraper-count");
-  if (countEl) countEl.textContent = `${filtered.length} of ${scrapedJobs.length} jobs`;
+  if (countEl) countEl.textContent = countLabel(filtered.length, scrapedJobs.length, active);
+  const scope = $("#scraper-scope");
+  if (scope) scope.textContent = [scopeNote(filtered.length, scrapedJobs.length, active), sendNote].filter(Boolean).join(" ");
+  setScraperActions(filtered.length, scrapedJobs.length, active, sendNote);
 
-  list.textContent = "";
+  // The empty states live outside the list. Clearing the list must not remove them.
+  list.replaceChildren();
+  const none = scrapedJobs.length === 0;
+  const nomatch = !none && filtered.length === 0;
   const empty = $("#scraper-empty");
-  if (filtered.length === 0) {
-    if (empty) {
-      empty.hidden = false;
-      list.append(empty);
-    }
-    return;
-  }
+  const missed = $("#scraper-nomatch");
+  if (empty) empty.hidden = !none;
+  if (missed) missed.hidden = !nomatch;
+  if (none || nomatch) return;
 
-  for (const j of filtered) {
-    const card = document.createElement("div");
-    card.className = "section-card";
-    card.style.cssText = "margin-bottom:8px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);";
-
-    const topRow = document.createElement("div");
-    topRow.className = "row-between";
-    topRow.style.margin = "0 0 4px";
-
-    const titleEl = titleElement(document, j.title, j.url);
-    titleEl.style.cssText = "font-weight:600;font-size:13px;color:var(--text);text-decoration:none;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-    titleEl.title = j.title;
-
-    const scoreBadge = document.createElement("span");
-    scoreBadge.className = `badge ${j.relevance.score >= 80 ? "badge-ok" : j.relevance.score >= 60 ? "badge-rev" : "badge-muted"}`;
-    scoreBadge.textContent = `${j.relevance.score}% Match`;
-    topRow.append(titleEl, scoreBadge);
-
-    const subRow = document.createElement("div");
-    subRow.className = "row";
-    subRow.style.cssText = "margin:2px 0 6px;gap:6px;font-size:11px;color:var(--muted);";
-
-    const compSpan = document.createElement("span");
-    compSpan.style.fontWeight = "600";
-    compSpan.textContent = j.company || "Company";
-
-    const locSpan = document.createElement("span");
-    locSpan.textContent = `• ${j.location || "Remote/Unspecified"}`;
-
-    subRow.append(compSpan, locSpan);
-    if (j.salary) {
-      const salSpan = document.createElement("span");
-      salSpan.className = "badge badge-muted";
-      salSpan.textContent = j.salary;
-      subRow.append(salSpan);
-    }
-
-    const skillsRow = document.createElement("div");
-    skillsRow.className = "row";
-    skillsRow.style.cssText = "margin:4px 0 8px;gap:4px;";
-    for (const s of j.relevance.matchedSkills.slice(0, 4)) {
-      const chip = document.createElement("span");
-      chip.className = "badge badge-ok";
-      chip.style.fontSize = "10px";
-      chip.textContent = s;
-      skillsRow.append(chip);
-    }
-
-    const actRow = document.createElement("div");
-    actRow.className = "row";
-    actRow.style.cssText = "margin:0;justify-content:flex-end;gap:6px;";
-
-    const copyDetailsBtn = document.createElement("button");
-    copyDetailsBtn.className = "sm";
-    copyDetailsBtn.textContent = "Copy details";
-    copyDetailsBtn.title = "Copy job title, company, URL and description snippet to clipboard";
-    copyDetailsBtn.onclick = async () => {
-      const textToCopy = formatJobDetails({ title: j.title, company: j.company, description: j.snippet }, j.url);
-      try {
-        await navigator.clipboard.writeText(textToCopy);
-        flashCopied(copyDetailsBtn, "✓ Copied");
-        toast("Job details copied to clipboard!");
-      } catch {
-        toast("Could not copy job details.");
-      }
-    };
-
-    const copyBtn = document.createElement("button");
-    copyBtn.className = "sm";
-    copyBtn.textContent = "Copy link";
-    copyBtn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(j.url);
-        flashCopied(copyBtn, "✓ Copied");
-        toast("Link copied to clipboard!");
-      } catch {
-        toast("Could not copy link.");
-      }
-    };
-
-    const trackBtn = document.createElement("button");
-    trackBtn.className = "sm";
-    trackBtn.textContent = "Track in Vani";
-    trackBtn.onclick = async () => {
-      trackBtn.disabled = true;
-      try {
-        const r = await sendToVani({ pageUrl: scrapedPage.pageUrl, pageTitle: scrapedPage.pageTitle, jobs: [j] }, false);
-        status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");
-        toast(r.ok ? `Sent "${j.title.slice(0, 60)}" to Vani.` : "Vani did not take the job.");
-      } finally {
-        trackBtn.disabled = false;
-      }
-    };
-
-    const openBtn = openButton(document, j.url, (u, t) => window.open(u, t));
-
-    actRow.append(copyDetailsBtn, ...(isHttpUrl(j.url) ? [copyBtn] : []), trackBtn, ...(openBtn ? [openBtn] : []));
-    card.append(topRow, subRow, skillsRow, actRow);
-    list.append(card);
-  }
+  for (const j of filtered) list.append(jobCard(j));
 }
 
 function initScraper(): void {
@@ -1144,27 +1307,32 @@ function initScraper(): void {
   if (scrapeBtn) {
     scrapeBtn.onclick = async () => {
       const b = scrapeBtn as HTMLButtonElement;
-      b.disabled = true;
-      b.textContent = "Scraping page...";
+      const done = busy(b, "Scraping...");
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab?.id !== undefined) {
-          // The top frame answers: its URL is the listing page's (every frame has a content script and would answer otherwise).
-          const r = await chrome.tabs.sendMessage<ScrapeResult>(tab.id, { type: "scrapeJobs" }, { frameId: 0 }).catch(() => null);
-          if (r && Array.isArray(r.jobs)) {
-            scrapedJobs = r.jobs;
-            scrapedPage = { pageUrl: typeof r.pageUrl === "string" ? r.pageUrl : "", pageTitle: typeof r.pageTitle === "string" ? r.pageTitle : "" };
-            renderScraper();
-            toast(`Scraped ${r.jobs.length} jobs!`);
-          } else {
-            toast("No jobs found to scrape on this page.");
-          }
+        if (tab?.id === undefined) {
+          toast("No page to scrape.");
+          return;
         }
+        // The top frame answers: its URL is the listing page's (every frame has a content script and would answer otherwise).
+        const r = await chrome.tabs.sendMessage<ScrapeResult>(tab.id, { type: "scrapeJobs" }, { frameId: 0 }).catch(() => null);
+        if (!r || !Array.isArray(r.jobs)) {
+          toast("This page did not answer. Reload it, then scrape again.");
+          return;
+        }
+        scrapeGen += 1;
+        const save = $("#scraper-save") as HTMLButtonElement | null;
+        if (save) delete save.dataset.sending;
+        const out = $("#scraper-save-result");
+        if (out) out.textContent = "";
+        scrapedJobs = r.jobs;
+        scrapedPage = { pageUrl: typeof r.pageUrl === "string" ? r.pageUrl : "", pageTitle: typeof r.pageTitle === "string" ? r.pageTitle : "" };
+        renderScraper();
+        toast(r.jobs.length === 0 ? "No jobs found on this page." : `Scraped ${r.jobs.length} ${r.jobs.length === 1 ? "job" : "jobs"}.`);
       } catch (e) {
         toast(`Scrape failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
-        b.disabled = false;
-        b.textContent = "🔍 Scrape Jobs on This Page";
+        done();
       }
     };
   }
@@ -1173,16 +1341,25 @@ function initScraper(): void {
   if (saveBtn) {
     saveBtn.onclick = async () => {
       const out = $("#scraper-save-result");
-      if (scrapedJobs.length === 0) { if (out) out.textContent = "Scrape a page first."; return; }
+      const jobs = jobsToActOn(scrapedJobs, readJobFilter());
+      if (jobs.length === 0) {
+        if (out) out.textContent = scrapedJobs.length === 0 ? "Scrape a page first." : "Nothing matches these filters.";
+        return;
+      }
+      const gen = scrapeGen;
+      saveBtn.dataset.sending = "1";
       saveBtn.disabled = true;
-      if (out) out.textContent = "Sending…";
+      if (out) out.textContent = "Sending...";
       try {
         const again = ($("#scraper-save-search") as HTMLInputElement | null)?.checked ?? false;
-        const r = await sendToVani({ ...scrapedPage, jobs: scrapedJobs }, again);
+        const r = await sendToVani({ ...scrapedPage, jobs }, again);
+        if (gen !== scrapeGen) return;
         if (out) out.textContent = r.text;
         status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");
       } finally {
-        saveBtn.disabled = false;
+        if (gen !== scrapeGen) return;
+        delete saveBtn.dataset.sending;
+        renderScraper();
       }
     };
   }
@@ -1190,8 +1367,9 @@ function initScraper(): void {
   const exportCsv = $("#export-csv");
   if (exportCsv) {
     exportCsv.onclick = () => {
-      if (scrapedJobs.length === 0) { toast("No scraped jobs to export."); return; }
-      const csv = exportJobsAsCSV(scrapedJobs);
+      const jobs = jobsToActOn(scrapedJobs, readJobFilter());
+      if (jobs.length === 0) { toast(scrapedJobs.length === 0 ? "No scraped jobs to export." : "Nothing matches these filters."); return; }
+      const csv = exportJobsAsCSV(jobs);
       const blob = new Blob([csv], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -1206,8 +1384,9 @@ function initScraper(): void {
   const exportJson = $("#export-json");
   if (exportJson) {
     exportJson.onclick = () => {
-      if (scrapedJobs.length === 0) { toast("No scraped jobs to export."); return; }
-      const json = exportJobsAsJSON(scrapedJobs);
+      const jobs = jobsToActOn(scrapedJobs, readJobFilter());
+      if (jobs.length === 0) { toast(scrapedJobs.length === 0 ? "No scraped jobs to export." : "Nothing matches these filters."); return; }
+      const json = exportJobsAsJSON(jobs);
       const blob = new Blob([json], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -1219,14 +1398,32 @@ function initScraper(): void {
     };
   }
 
-  const scraperFilter = $("#scraper-filter");
-  if (scraperFilter) scraperFilter.oninput = renderScraper;
+  $("#scraper-filter").oninput = renderScraper;
 
-  const scoreFilter = $("#scraper-score-filter");
-  if (scoreFilter) scoreFilter.onchange = renderScraper;
+  document.querySelectorAll<HTMLButtonElement>("#tab-scraper [data-min]").forEach(btn => {
+    btn.onclick = () => {
+      setScoreChip(btn.dataset.min ?? "0");
+      renderScraper();
+    };
+  });
 
-  const remoteOnly = $("#scraper-remote-only");
-  if (remoteOnly) remoteOnly.onchange = renderScraper;
+  $("#scraper-remote-only").onclick = () => {
+    const on = $("#scraper-remote-only").getAttribute("aria-pressed") !== "true";
+    $("#scraper-remote-only").setAttribute("aria-pressed", on ? "true" : "false");
+    $("#scraper-remote-only").classList.toggle("active", on);
+    renderScraper();
+  };
+
+  $("#scraper-clear-filters").onclick = () => {
+    const input = $("#scraper-filter") as HTMLInputElement;
+    input.value = "";
+    setScoreChip("0");
+    $("#scraper-remote-only").setAttribute("aria-pressed", "false");
+    $("#scraper-remote-only").classList.remove("active");
+    renderScraper();
+  };
+
+  renderScraper();
 }
 
 async function init(): Promise<void> {
@@ -1275,7 +1472,13 @@ async function rescanTab(notify = false): Promise<void> {
     const hostEl = $("#host");
     if (hostEl) hostEl.textContent = host || "(no page)";
     if (tab?.id !== undefined) void appliedRow(tab.id, tab.url);
-    void resumeRow(tab?.url, { row: $("#resume"), name: $("#resume-name"), pick: $("#resume-pick"), remove: $("#resume-remove") }, bg);
+    void resumeRow(tab?.url, {
+      row: $("#resume"), name: $("#resume-name"), status: $("#resume-status"),
+      pick: $("#resume-pick"), view: $("#resume-view"), remove: $("#resume-remove"),
+    }, bg, async () => {
+      const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return { url: t?.url, tabId: t?.id };
+    }, tab?.id);
     await refresh();
 
     const t = await scanTabExtended();
@@ -1319,7 +1522,10 @@ async function rescanTab(notify = false): Promise<void> {
       unread: 0,
       unknownLabels: [],
       unknownListed: 0,
+      questions: [],
       manualLabels: [],
+      manualQuestions: [],
+      held: [],
     });
     if (notify) toast("Re-scan failed.");
   } finally {

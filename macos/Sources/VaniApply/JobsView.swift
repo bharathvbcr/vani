@@ -18,6 +18,15 @@ struct JobsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
+            if let err = jobs.impressionsError {
+                Text(verbatim: String(err.prefix(500)))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            }
             if jobs.showInsights {
                 InsightsPanel()
                 Divider()
@@ -577,6 +586,9 @@ private struct JobList: View {
                         if !jobs.query.isEmpty {
                             Button("Clear Search") { jobs.query = "" }
                         }
+                        if let waiting = jobs.page?.pending?.total, waiting > 0 {
+                            TriageNowButton(waiting: waiting)
+                        }
                     }
                 } else if hideDuplicates && Job.hidingPossibleDuplicates(jobs.jobs).isEmpty {
                     ContentUnavailableView {
@@ -629,12 +641,16 @@ private struct JobList: View {
         // In the Awaiting triage view the list itself is the backlog: no pill for it.
         let triage = jobs.view == .pending ? nil : JobListPresentation.triageBanner(page.pending)
         let cap = JobListPresentation.capNotice(shown: page.shown, total: page.total)
+        let waiting = page.pending?.total ?? 0
         VStack(alignment: .leading, spacing: 6) {
             Text(JobListPresentation.sortCaption(jobs.sort, view: jobs.view))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if triage != nil || cap != nil || page.torn == true {
+            if triage != nil || cap != nil || page.torn == true || waiting > 0 {
                 WrapLayout(spacing: 6) {
+                    if waiting > 0 {
+                        TriageNowButton(waiting: waiting)
+                    }
                     if let triage, let pending = page.pending {
                         // A button, so the backlog is one click from the ranked views.
                         Button { jobs.view = .pending } label: {
@@ -1707,6 +1723,28 @@ private func gradeTint(_ g: JobScore.Grade) -> Color {
     case .high: .green
     case .medium: .accentColor
     case .low: .secondary
+    }
+}
+
+/// Opens Pipeline's Run Now sheet prefilled for one advance of the backlog.
+/// Start Run is still required; this button spends nothing.
+private struct TriageNowButton: View {
+    @Environment(AppModel.self) private var model
+    @Environment(PipelineModel.self) private var pipeline
+    let waiting: Int
+
+    var body: some View {
+        Button("Triage now") {
+            pipeline.proposeRun(.backlog)
+            if pipeline.runSheet?.source == .triageNow { model.pane = .pipeline }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(pipeline.runBlocker != nil)
+        .help(pipeline.runBlocker ?? ManualRunOptions.backlogHelp(
+            waiting: waiting,
+            kept: pipeline.status?.schedule.kept,
+            advancePerRun: pipeline.status?.schedule.unkept?.advancePerRun))
     }
 }
 

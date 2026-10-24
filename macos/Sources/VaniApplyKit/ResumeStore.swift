@@ -11,9 +11,10 @@ import Foundation
 //   <group>/apply/resumes/index.lock   the advisory lock every writer holds
 //
 // A job with nothing bound has nothing: there is no default resume, because a resume made
-// for another job is the wrong one. The bytes leave this store only in a resumeGet reply to
-// the browser tab being filled. The file name (it carries the owner's name) is kept here and
-// shown in the popup and on the page; it never reaches the activity log.
+// for another job is the wrong one. The bytes leave this store in a resumeGet reply to the
+// browser tab being filled, and in a temporary copy the owner opens in Preview. The file
+// name (it carries the owner's name) is kept here and shown in the popup, on the page and
+// in Preview's title; it never reaches the activity log or a model prompt.
 
 public final class ResumeStore: @unchecked Sendable {
     /// The largest resume. A Chrome native-messaging reply is capped at 1 MiB and base64 adds a
@@ -21,7 +22,10 @@ public final class ResumeStore: @unchecked Sendable {
     public static let maxBytes = 512 * 1024
     /// Jobs with a resume bound. Rebinding a job already in the index is allowed when full.
     public static let maxEntries = 200
+    /// Preview copies kept under the temporary directory. Older ones are removed.
+    public static let maxPreviewCopies = 8
     static let maxNameChars = 200
+    static let previewRootName = "VaniApply-resume-preview"
     /// index.json is a few hundred bytes per job; anything far past that is not ours.
     static let maxIndexBytes = 1024 * 1024
 
@@ -31,6 +35,20 @@ public final class ResumeStore: @unchecked Sendable {
         public var bytes: Int
         public var sha256: String
         public var pickedAt: String
+    }
+
+    /// One saved resume, without its bytes. `key` is the page key and is not shown.
+    public struct Listed: Equatable, Sendable {
+        public var key: String
+        public var name: String
+        public var bytes: Int
+        public var pickedAt: String
+        public init(key: String, name: String, bytes: Int, pickedAt: String) {
+            self.key = key
+            self.name = name
+            self.bytes = bytes
+            self.pickedAt = pickedAt
+        }
     }
 
     struct Index: Codable {
@@ -59,12 +77,20 @@ public final class ResumeStore: @unchecked Sendable {
     // MARK: - Checks at the boundary
 
     /// A bounded, printable file name ending in .pdf, trimmed; nil otherwise.
+    /// Format characters (bidi overrides, zero-width, BOM) are refused: Preview's title
+    /// is this string, and one of them can make a different name look like a .pdf.
     public static func checkedName(_ raw: Any?) -> String? {
         guard let s = (raw as? String)?.trimmingCharacters(in: .whitespaces), s.count > 4, s.count <= maxNameChars,
-              s.lowercased().hasSuffix(".pdf"),
-              s.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0 != "/" && $0 != "\\" })
+              s.lowercased().hasSuffix(".pdf")
         else { return nil }
-        return s
+        let bad = s.unicodeScalars.contains { scalar in
+            if scalar == "/" || scalar == "\\" || scalar == "\u{2028}" || scalar == "\u{2029}" { return true }
+            switch scalar.properties.generalCategory {
+            case .control, .format: return true
+            default: return false
+            }
+        }
+        return bad ? nil : s
     }
 
     static func isPDF(_ d: Data) -> Bool { d.starts(with: Array("%PDF-".utf8)) }
@@ -127,6 +153,83 @@ public final class ResumeStore: @unchecked Sendable {
                 throw Failure("unreadable", "the stored resume was changed or damaged; choose it again")
             }
             return (entry, data)
+        }
+    }
+
+    /// Every binding, newest first. The bytes stay in the store.
+    public func catalog() throws -> [Listed] {
+        try withLock(exclusive: false) {
+            try readIndex().entries.map { Listed(key: $0.key, name: $0.value.name, bytes: $0.value.bytes, pickedAt: $0.value.pickedAt) }
+                .sorted { $0.pickedAt == $1.pickedAt ? $0.key < $1.key : $0.pickedAt > $1.pickedAt }
+        }
+    }
+
+    /// The binding whose key is a URL's posting key, or its older page key. The first URL that hits wins.
+    public static func match(urls: [String], listed: [Listed]) -> Listed? {
+        for raw in urls {
+            guard let post = ResumePageKey.postingKey(raw) else { continue }
+            if let hit = listed.first(where: { $0.key == post }) { return hit }
+            if let page = ResumePageKey.pageKey(raw), page != post, let hit = listed.first(where: { $0.key == page }) {
+                return hit
+            }
+        }
+        return nil
+    }
+
+    /// A copy Preview can open, named for the owner, under a private temporary directory.
+    /// The job's URL is not part of the path. A name that is not a safe file name is `Resume.pdf`.
+    /// At most `maxPreviewCopies` copies are kept.
+    public static func previewCopy(name: String, data: Data) throws -> URL {
+        guard !data.isEmpty, data.count <= maxBytes, isPDF(data) else {
+            throw Failure(data.count > maxBytes ? "too_large" : "bad_request",
+                          data.count > maxBytes ? "the resume is over \(maxBytes / 1024) KB" : "the resume is not a PDF")
+        }
+        let display = checkedName(name) ?? "Resume.pdf"
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(previewRootName, isDirectory: true)
+        do {
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        } catch {
+            throw Failure("io", "cannot create a folder for the resume preview: \(error.localizedDescription)")
+        }
+        let dir = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = dir.appendingPathComponent(display, isDirectory: false)
+        let dirPath = dir.standardizedFileURL.path
+        guard file.standardizedFileURL.path.hasPrefix(dirPath + "/") else {
+            throw Failure("bad_request", "the resume's file name was refused")
+        }
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: false)
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            try data.write(to: file, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        } catch {
+            throw Failure("io", "the resume could not be prepared for Preview: \(error.localizedDescription)")
+        }
+        prunePreviews(root, keeping: dir)
+        return file
+    }
+
+    private static func prunePreviews(_ root: URL, keeping: URL) {
+        let fm = FileManager.default
+        // contentsOfDirectory does not mark a directory with a trailing slash, so
+        // hasDirectoryPath would see no directories and the cap would never run.
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey]
+        guard let kids = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return }
+        let dirs = kids.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        guard dirs.count > maxPreviewCopies else { return }
+        let sorted = dirs.sorted { a, b in
+            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return da < db
+        }
+        let keep = keeping.standardizedFileURL.path
+        var extra = dirs.count - maxPreviewCopies
+        for dir in sorted where extra > 0 {
+            if dir.standardizedFileURL.path == keep { continue }
+            try? fm.removeItem(at: dir)
+            extra -= 1
         }
     }
 

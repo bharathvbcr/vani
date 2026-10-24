@@ -1,4 +1,228 @@
+import Darwin
 import Foundation
+
+/// A file named by a bundle-relative path, after resolving links. Used to tell a
+/// missing login-item plist from one that is outside the bundle or not a file.
+public enum BundleMember {
+    public enum Place: Equatable, Sendable {
+        case file(URL)
+        case absent
+        case outside
+        case notFile
+    }
+
+    /// `relative` is slash-separated (`Contents/Library/LaunchAgents/name.plist`).
+    /// An empty part, `.`, or `..` is `.absent`: the path is not a member of the bundle.
+    /// A symlink is followed, including a dangling one. `resolvingSymlinksInPath` leaves a
+    /// dangling link where it stands, which would report a link to the outside as missing.
+    public static func place(bundle: URL, relative: String) -> Place {
+        let root = bundle.resolvingSymlinksInPath().standardizedFileURL
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("\0") }) else {
+            return .absent
+        }
+        var current = root
+        for part in parts {
+            current.appendPathComponent(part, isDirectory: false)
+            switch resolveLinks(&current, root: root) {
+            case .outside: return .outside
+            case .loop: return .notFile
+            case .ok: break
+            }
+        }
+        guard contains(current, root) else { return .outside }
+        var directory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: current.path, isDirectory: &directory) else { return .absent }
+        if directory.boolValue { return .notFile }
+        guard (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return .notFile }
+        return .file(current)
+    }
+
+    enum MemberBytes {
+        case data(Data)
+        case oversized
+        case outside
+        case unreadable
+    }
+
+    enum MemberRun {
+        case yes
+        case outside
+        case no
+    }
+
+    /// Reads at most `maxBytes + 1` bytes. The final path component is not followed
+    /// (`O_NOFOLLOW`), and the descriptor's path has to stay inside `bundle`. A file
+    /// larger than `maxBytes` is `.oversized` and is not read past that.
+    static func read(file: URL, bundle: URL, maxBytes: Int) -> MemberBytes {
+        guard maxBytes >= 0 else { return .unreadable }
+        switch openMember(file, bundle: bundle) {
+        case .outside: return .outside
+        case .unreadable: return .unreadable
+        case let .opened(fd, st):
+            defer { close(fd) }
+            if st.st_size > off_t(maxBytes) { return .oversized }
+            var data = Data()
+            let limit = maxBytes + 1
+            var spins = 0
+            while data.count < limit {
+                var tmp = [UInt8](repeating: 0, count: limit - data.count)
+                let n = tmp.withUnsafeMutableBytes { raw -> Int in
+                    guard let base = raw.baseAddress else { return -1 }
+                    return Darwin.read(fd, base, raw.count)
+                }
+                if n == 0 { break }
+                if n < 0 {
+                    if errno == EINTR, spins < 8 { spins += 1; continue }
+                    return .unreadable
+                }
+                spins = 0
+                data.append(contentsOf: tmp.prefix(n))
+            }
+            if data.count > maxBytes { return .oversized }
+            return .data(data)
+        }
+    }
+
+    /// Whether `file` is a regular file the current user can execute, still inside `bundle`.
+    static func executable(_ file: URL, bundle: URL) -> MemberRun {
+        switch openMember(file, bundle: bundle) {
+        case .outside: return .outside
+        case .unreadable: return .no
+        case let .opened(fd, _):
+            defer { close(fd) }
+            guard let path = descriptorPath(fd) else { return .no }
+            return FileManager.default.isExecutableFile(atPath: path) ? .yes : .no
+        }
+    }
+
+    private enum Opened {
+        case opened(Int32, stat)
+        case outside
+        case unreadable
+    }
+
+    /// True when `file` is strictly inside `root`, by path components, so `App.app` does
+    /// not contain `App.app.evil`. `/private/var` and `/var` (and tmp, etc) compare equal.
+    static func contains(_ file: URL, _ root: URL) -> Bool {
+        let rootParts = comparable(root)
+        let fileParts = comparable(file)
+        guard fileParts.count > rootParts.count else { return false }
+        return Array(fileParts.prefix(rootParts.count)) == rootParts
+    }
+
+    private static func comparable(_ url: URL) -> [String] {
+        var parts = url.standardizedFileURL.pathComponents
+        if parts.count >= 3, parts[1] == "private", ["var", "tmp", "etc"].contains(parts[2]) {
+            parts.remove(at: 1)
+        }
+        return parts
+    }
+
+    private enum Walk { case ok, outside, loop }
+
+    /// Replaces `current` with the file a symlink names, including a dangling one.
+    /// A destination outside `root` is `.outside` whether or not it exists. A cycle is `.loop`.
+    private static func resolveLinks(_ current: inout URL, root: URL) -> Walk {
+        for _ in 0..<8 {
+            guard isSymbolicLink(current) else { return .ok }
+            guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: current.path),
+                  !dest.isEmpty, !dest.contains("\0") else { return .loop }
+            if dest.hasPrefix("/") {
+                current = URL(fileURLWithPath: dest).standardizedFileURL
+            } else {
+                current = current.deletingLastPathComponent().appendingPathComponent(dest).standardizedFileURL
+            }
+            if !contains(current, root) { return .outside }
+        }
+        return isSymbolicLink(current) ? .loop : .ok
+    }
+
+    private static func isSymbolicLink(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
+    }
+
+    private static func openMember(_ file: URL, bundle: URL) -> Opened {
+        let root = bundle.resolvingSymlinksInPath().standardizedFileURL
+        let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard rootFD >= 0 else { return .unreadable }
+        defer { close(rootFD) }
+        let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return .unreadable }
+        var st = stat()
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+            close(fd)
+            return .unreadable
+        }
+        guard let filePath = descriptorPath(fd), let rootPath = descriptorPath(rootFD) else {
+            close(fd)
+            return .unreadable
+        }
+        guard contains(URL(fileURLWithPath: filePath), URL(fileURLWithPath: rootPath)) else {
+            close(fd)
+            return .outside
+        }
+        return .opened(fd, st)
+    }
+
+    private static func descriptorPath(_ fd: Int32) -> String? {
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let rc = buf.withUnsafeMutableBufferPointer { ptr -> Int32 in
+            guard let base = ptr.baseAddress else { return -1 }
+            return fcntl(fd, F_GETPATH, base)
+        }
+        guard rc == 0 else { return nil }
+        let end = buf.firstIndex(of: 0) ?? buf.count
+        let bytes = buf[..<end].map { UInt8(bitPattern: $0) }
+        let path = String(decoding: bytes, as: UTF8.self)
+        return path.isEmpty ? nil : path
+    }
+}
+
+/// One line of UI text taken from an error. Newlines become a space, other control
+/// characters are dropped, and the length is capped, so a message cannot carry a file
+/// or a log into the window.
+public enum BoundedText {
+    public static let cap = 300
+
+    public static func sentence(_ raw: String) -> String {
+        var scalars: [Unicode.Scalar] = []
+        scalars.reserveCapacity(min(raw.unicodeScalars.count, cap))
+        var broke = false
+        for scalar in raw.unicodeScalars {
+            if scalar == " " || scalar == "\t" {
+                scalars.append(scalar)
+                broke = false
+            } else if CharacterSet.newlines.contains(scalar) {
+                if !broke {
+                    scalars.append(" ")
+                    broke = true
+                }
+            } else if !CharacterSet.controlCharacters.contains(scalar) {
+                scalars.append(scalar)
+                broke = false
+            }
+        }
+        let text = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return "The system refused." }
+        if text.count <= cap { return text }
+        return String(text.prefix(cap)) + "…"
+    }
+}
+
+/// What Settings says when ServiceManagement reports `.notFound` for the browser
+/// login agent. That status is also a never-registered agent, and a failed register
+/// must not be dropped on the floor.
+public enum AgentCopy {
+    public static func notFoundLine(error: String?, plistInside: Bool) -> String {
+        if let error, !error.isEmpty {
+            return "Could not register the login agent: \(BoundedText.sentence(error))"
+        }
+        if plistInside { return "Not registered yet. Vani Apply registers it when it opens." }
+        return "Not found in this copy of the app; rebuild it with scripts/bundle.sh."
+    }
+}
 
 // The Vani Apply agent: a login item (SMAppService) that runs long `vani` jobs
 // for both browsers. Safari's sandboxed appex cannot start `vani`, and a

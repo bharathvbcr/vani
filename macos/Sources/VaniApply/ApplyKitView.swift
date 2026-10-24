@@ -6,8 +6,8 @@ import VaniApplyKit
 /// applied, each backed by something the app already does.
 ///
 ///  1. Draft answers   DraftSheet, opened with this job's company, title and description.
-///  2. Attach resume   Explained only. The resume is bound to the extension's page key, which
-///                     the app cannot derive from a job's URL (ApplyKit.resumeNote).
+///  2. Attach resume   The resume saved for this job, opened in Preview. Choosing another
+///                     file still happens in the browser popup (ApplyKit.resumeNote).
 ///  3. Open & Fill     The apply link when it differs from the posting; Fill runs in the browser.
 ///  4. Mark applied    JobsModel.setMark.
 struct ApplyKitView: View {
@@ -21,6 +21,13 @@ struct ApplyKitView: View {
     @Environment(JobsModel.self) private var jobs
     @State private var drafting = false
     @State private var marking = false
+    @State private var listed: [ResumeStore.Listed] = []
+    @State private var matched: ResumeStore.Listed?
+    @State private var loaded = false
+    @State private var resumeError: String?
+    @State private var opening = false
+    @State private var openError: String?
+    @State private var showingSaved = false
 
     private var answers: Reading<ApplyKit.AnswerCounts> {
         guard let model else { return .failed("the answer bank is not open in this window") }
@@ -29,10 +36,17 @@ struct ApplyKitView: View {
         return .ready(.init(total: all.count, review: all.filter(\.review).count))
     }
 
+    private var resumePresence: ApplyKit.ResumePresence {
+        if let resumeError { return .unavailable(resumeError) }
+        if !loaded { return .unknown }
+        if let matched { return .saved(matched.name) }
+        return .none
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Apply kit", systemImage: "paperplane").font(.headline)
-            ForEach(ApplyKit.steps(job: job, answers: answers)) { step in
+            ForEach(ApplyKit.steps(job: job, answers: answers, resume: resumePresence)) { step in
                 row(step)
             }
         }
@@ -46,7 +60,17 @@ struct ApplyKitView: View {
             let p = ApplyKit.draftPrefill(job, description: description)
             DraftSheet(company: p.company, title: p.title, posting: p.posting)
         }
+        .sheet(isPresented: $showingSaved) {
+            SavedResumesSheet(items: listed, opening: opening, error: openError, open: openListed)
+        }
+        .task(id: resumeTaskID) { await reloadResumes() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard !opening else { return }
+            Task { await reloadResumes() }
+        }
     }
+
+    private var resumeTaskID: String { "\(job.key)|\(job.url ?? "")|\(job.applyURL ?? "")" }
 
     @ViewBuilder
     private func row(_ step: ApplyKit.Step) -> some View {
@@ -95,6 +119,35 @@ struct ApplyKitView: View {
         case 2:
             Text(ApplyKit.resumeNote).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            switch resumePresence {
+            case .unknown:
+                Text("Checking saved resumes…").font(.caption).foregroundStyle(.secondary)
+            case let .unavailable(why):
+                Text("Saved resumes could not be read: \(why)").font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .none:
+                Text(listed.isEmpty ? "No resume is saved yet." : "No resume is saved for this posting.")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .saved:
+                if let matched {
+                    Text(verbatim: ApplyKit.resumeDetail(name: matched.name, bytes: matched.bytes, pickedAt: matched.pickedAt))
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(opening ? "Opening…" : "View resume") { openListed(matched) }
+                        .controlSize(.small)
+                        .disabled(opening)
+                        .help("Open this job's resume in Preview")
+                }
+            }
+            if !listed.isEmpty {
+                Button("Saved resumes (\(listed.count))") { showingSaved = true }
+                    .controlSize(.small)
+                    .help("Every resume saved for a job, including ones this posting did not match")
+            }
+            if let openError {
+                Text(openError).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case 3:
             if let link = ApplyKit.distinctApplyLink(job) {
                 Button("Open application page") { NSWorkspace.shared.open(link) }
@@ -123,5 +176,110 @@ struct ApplyKitView: View {
             await jobs.setMark(job.key, .applied)
             marking = false
         }
+    }
+
+    private func reloadResumes() async {
+        openError = nil
+        guard let model, model.storeError == nil, let dir = model.store?.directory else {
+            listed = []
+            matched = nil
+            loaded = true
+            resumeError = model?.storeError ?? "the answer bank is not open in this window"
+            return
+        }
+        let urls = [job.url, job.applyURL].compactMap { $0 }
+        let result = await BlockingWork.run { () throws -> (ResumeStore.Listed?, [ResumeStore.Listed]) in
+            let resumes = ResumeStore(directory: dir.appendingPathComponent("resumes", isDirectory: true))
+            let all = try resumes.catalog()
+            return (ResumeStore.match(urls: urls, listed: all), all)
+        }
+        switch result {
+        case let .success((hit, all)):
+            matched = hit
+            listed = all
+            resumeError = nil
+            loaded = true
+        case let .failure(error):
+            matched = nil
+            listed = []
+            resumeError = String(describing: error)
+            loaded = true
+        }
+    }
+
+    private func openListed(_ item: ResumeStore.Listed) {
+        guard !opening, let dir = model?.store?.directory else { return }
+        opening = true
+        openError = nil
+        let key = item.key
+        Task {
+            let result = await BlockingWork.run { () throws -> URL in
+                let resumes = ResumeStore(directory: dir.appendingPathComponent("resumes", isDirectory: true))
+                guard let got = try resumes.get(key: key) else {
+                    throw OpenFailure(message: "that resume is no longer saved")
+                }
+                // The name just read with the bytes, not the one the list was showing.
+                return try ResumeStore.previewCopy(name: got.entry.name, data: got.data)
+            }
+            opening = false
+            switch result {
+            case let .success(url):
+                if !NSWorkspace.shared.open(url) {
+                    openError = "Preview did not open the resume"
+                }
+            case let .failure(error):
+                openError = String(describing: error)
+            }
+        }
+    }
+}
+
+/// A resume the list still names, whose file the store no longer has.
+private struct OpenFailure: Error, CustomStringConvertible {
+    var message: String
+    var description: String { message }
+}
+
+/// Every resume in the store, so a key that does not match this job still leaves the file reachable.
+private struct SavedResumesSheet: View {
+    let items: [ResumeStore.Listed]
+    let opening: Bool
+    let error: String?
+    let open: (ResumeStore.Listed) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Saved resumes").font(.headline)
+            Text("Each file is the resume chosen for one job. Open it in Preview and check it before you submit.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(items, id: \.key) { item in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(verbatim: ApplyKit.resumeDetail(name: item.name, bytes: item.bytes, pickedAt: item.pickedAt))
+                                .font(.callout)
+                                .lineLimit(2)
+                            Spacer(minLength: 8)
+                            Button("View") { open(item) }
+                                .controlSize(.small)
+                                .disabled(opening)
+                        }
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 420, minHeight: 280)
     }
 }

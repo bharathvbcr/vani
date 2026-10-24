@@ -3,7 +3,8 @@ import { type FieldInfo, emptyBank } from "../src/types";
 import { mergeCapture } from "../src/bank";
 import { matchField } from "../src/match";
 import { fieldDigest, pendingDiff } from "../src/capture";
-import { MAX_LISTED, bucketOf, coverageLine, coverageOf, tabCoverage } from "../src/coverage";
+import { MAX_LISTED, bucketOf, coverageLine, coverageOf, questionRows, tabCoverage } from "../src/coverage";
+import { DRAFT_EMPTY_NOTE } from "../src/suggest";
 import {
   assignSections, codeDigits, composeDate, composePhone, datePartRole, entryReadings, isPhoneCode, legacyEntryKey, monthIndex, parseDate, parsePhone, sectionLabel, sectionOf,
 } from "../src/sections";
@@ -335,7 +336,7 @@ describe("coverage", () => {
     { info: field({ label: "Start date", kind: "date" }), manual: "date or dialog picker" },
     { info: field({ label: "Resume", kind: "file" }), manual: "" },
     { info: field({ label: "Password", kind: "password" }), manual: "" },
-    { info: field({ label: "Social Security Number" }), manual: "" },
+    { info: field({ label: "Social Security Number", value: ["000-00-0000"] }), manual: "" },
     { info: field({ label: "Gender", kind: "select", options: ["A", "B"] }), manual: "" },
   ];
 
@@ -346,6 +347,11 @@ describe("coverage", () => {
     expect(c).toMatchObject({ fillable: 1, unknown: 1, manual: 1, skipped: 4, known: 1 });
     expect(c.unknownLabels).toEqual(["Favourite colour"]);
     expect(c.manualLabels).toEqual(["Start date"]);
+    expect(c.manualQuestions.map(q => [q.label, q.offer, q.ordinal])).toEqual([["Start date", "manual", 2]]);
+    expect(c.held.map(q => [q.label, q.ordinal])).toEqual([["Password", 4], ["Social Security Number", 5], ["Gender", 6]]);
+    expect(c.held.every(q => q.note === "Vani does not draft this." && q.offer === "other")).toBe(true);
+    expect(JSON.stringify(c.held)).not.toContain("000-00-0000");
+    expect(c.held.some(q => q.label === "Resume")).toBe(false);
     expect(c.capped).toBe(false);
   });
 
@@ -368,6 +374,61 @@ describe("coverage", () => {
     expect(c.unknown).toBe(80);
     expect(c.unknownLabels).toHaveLength(MAX_LISTED);
     expect(coverageLine(c)).toContain("700 more controls were not read");
+    expect(c.questions).toHaveLength(MAX_LISTED);
     expect(coverageLine(coverageOf([], bank, "y.com"))).toBe("0 fields, 0 ready, 0 new.");
+  });
+
+  test("each new question says whether it can be drafted or regenerated, and the field text stays out of the row", () => {
+    const posting = "We build inference systems for robots in production. ".repeat(3);
+    const written = "I build the inference stack.";
+    const refs = [
+      { info: field({ label: "Why this team?", value: [written], drafted: true, draftText: written }), manual: "" },
+      { info: field({ label: "Years of Go" }), manual: "" },
+      { info: field({ label: "Office", kind: "select", options: ["Berlin"] }), manual: "" },
+      { info: field({ label: "Phone", kind: "tel" }), manual: "" },
+    ];
+    const c = coverageOf(refs, null, "y.com", undefined, undefined, posting.length);
+    expect(c.questions.map(q => [q.label, q.offer])).toEqual([
+      ["Why this team?", "regenerate"],
+      ["Years of Go", "draft"],
+      ["Office", "choice"],
+      ["Phone", "other"],
+    ]);
+    expect(c.unknownLabels).toEqual(c.questions.map(q => q.label));
+    expect(c.questions.map(q => q.ordinal)).toEqual([0, 1, 2, 3]);
+    expect(JSON.stringify(c.questions)).not.toContain(written);
+    const edited = "I changed the draft.";
+    const changed = coverageOf(
+      [{ info: field({ label: "Why this team?", value: [edited], drafted: true, draftText: written }), manual: "" }],
+      null, "y.com", undefined, undefined, posting.length,
+    );
+    expect(changed.questions[0]?.offer).toBe("replace");
+    expect(JSON.stringify(changed.questions)).not.toContain(edited);
+    expect(JSON.stringify(changed.questions)).not.toContain(written);
+    expect(coverageOf([refs[1]!], null, "y.com", undefined, undefined, 39).questions[0]?.offer).toBe("needs-posting");
+  });
+
+  test("questions from every frame are listed in frame order and cut at the same cap as labels", () => {
+    const block = (host: string, n: number) => coverageOf(
+      Array.from({ length: n }, (_, i) => ({ info: field({ label: `${host} question ${i} here` }), manual: "" })),
+      null, host, undefined, undefined, 80,
+    );
+    const t = tabCoverage([
+      { frameId: 1, result: { host: "b", disabled: false, fields: 40, coverage: block("b", 40) } },
+      { frameId: 0, result: { host: "a", disabled: false, fields: 40, coverage: block("a", 40) } },
+    ]);
+    expect(t.total.questions).toHaveLength(MAX_LISTED);
+    expect(t.total.questions[0]?.frameId).toBe(0);
+    expect(t.total.questions[40]?.frameId).toBe(1);
+    expect(t.total.questions[0]?.label.startsWith("a ")).toBe(true);
+    expect(t.total.questions[39]?.label.startsWith("a ")).toBe(true);
+    expect(t.total.questions[40]?.label.startsWith("b ")).toBe(true);
+    expect(t.total.unknownLabels).toEqual(t.total.questions.map(q => q.label));
+  });
+
+  test("a coverage that lists labels but no questions still offers Draft", () => {
+    expect(questionRows({ unknownLabels: ["Pet"], questions: [] })).toEqual([{ label: "Pet", offer: "draft", note: DRAFT_EMPTY_NOTE }]);
+    expect(questionRows({ questions: [{ label: "Why", offer: "regenerate", note: "n" }], unknownLabels: ["Why"] })[0]?.offer).toBe("regenerate");
+    expect(questionRows({ unknownLabels: null, questions: null })).toEqual([]);
   });
 });

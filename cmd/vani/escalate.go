@@ -48,7 +48,9 @@ func (w *wired) escalating(router decide.Decider, esc decide.Backend) decide.Dec
 		return router
 	}
 	if esc == nil {
-		w.warnf("decide.escalate is on but the llm is disabled this run; no slot is escalated")
+		msg := "decide.escalate is on but the llm is disabled this run; no slot is escalated"
+		w.warnf("%s", msg)
+		w.noteShadow(msg)
 		return router
 	}
 	return newEscalator(router, decide.NewRouter(esc), w.cfg.Decide.EscalateBelowP(), w.cfg.Decide.EscalateMaxPerRun(), w.warnf)

@@ -280,9 +280,16 @@ final class DraftingTests: XCTestCase {
     func testRequestFromBrowserIsStrict() throws {
         XCTAssertEqual(try DraftRunner.request(from: ["question": "Why?", "job": ["company": "Modal"], "max_words": 100]),
                        DraftRequest(question: "Why?", job: .init(company: "Modal"), maxWords: 100))
-        for bad: Any? in [nil, "Why?", ["question": 3], ["question": "Why?", "answers": ["x"]], ["job": [:]]] {
+        XCTAssertEqual(try DraftRunner.request(from: ["question": "Why?", "job": ["company": "Modal"], "max_words": 100, "attempt": 2]),
+                       DraftRequest(question: "Why?", job: .init(company: "Modal"), maxWords: 100, attempt: 2))
+        for bad: Any? in [nil, "Why?", ["question": 3], ["question": "Why?", "answers": ["x"]], ["job": [:]],
+                          ["question": "Why?", "attempt": "2"], ["question": "Why?", "attempt": 9], ["question": "Why?", "attempt": -1]] {
             XCTAssertThrowsError(try DraftRunner.request(from: bad), "\(String(describing: bad))")
         }
+        let zero = try JSONEncoder().encode(DraftRequest(question: "Why?", attempt: 0))
+        XCTAssertFalse(String(data: zero, encoding: .utf8)!.contains("attempt"))
+        let two = try JSONEncoder().encode(DraftRequest(question: "Why?", attempt: 2))
+        XCTAssertTrue(String(data: two, encoding: .utf8)!.contains("\"attempt\":2"))
     }
 
     func testProtocolDraftOp() throws {

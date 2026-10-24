@@ -2,6 +2,11 @@ import Foundation
 import XCTest
 @testable import VaniApplyKit
 
+/// The opener closure is `@Sendable`. A class box is how the test keeps the URL it was handed.
+private final class URLLog: @unchecked Sendable {
+    var urls: [URL] = []
+}
+
 /// The per-job resume ops: resumePut binds a PDF to a job page, resumeGet hands it back
 /// to the tab being filled, resumeDelete unbinds it. A generated PDF with a neutral name
 /// stands in for a real resume: no personal data in any test.
@@ -183,5 +188,126 @@ final class ResumeStoreTests: XCTestCase {
         let raw = try String(contentsOf: store.directory.appendingPathComponent("activity.jsonl"), encoding: .utf8)
         XCTAssertFalse(raw.contains("Neutral"))
         XCTAssertFalse(raw.contains("greenhouse"))
+    }
+
+    func testResumeOpenWritesAPreviewCopyAndDoesNotLogOrReturnThePDF() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let bytes = pdf()
+        _ = try put(job, bytes, name: "Resume_Neutral_Name.pdf", store)
+        let before = try store.recentActivity().count
+        let opened = URLLog()
+        let reply = NativeProtocol.handle(["op": "resumeOpen", "key": job], store: store, source: .chrome, openResume: { url in
+            opened.urls.append(url)
+            return true
+        })
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertNil(reply["pdf"])
+        XCTAssertEqual(reply["name"] as? String, "Resume_Neutral_Name.pdf")
+        XCTAssertEqual(reply["bytes"] as? Int, bytes.count)
+        XCTAssertEqual(opened.urls.count, 1)
+        XCTAssertEqual(try Data(contentsOf: opened.urls[0]), bytes)
+        XCTAssertEqual(opened.urls[0].lastPathComponent, "Resume_Neutral_Name.pdf")
+        XCTAssertFalse(opened.urls[0].path.contains(job))
+        XCTAssertEqual(try store.recentActivity().count, before, "opening is not an activity-log event")
+        let raw = try String(contentsOf: store.directory.appendingPathComponent("activity.jsonl"), encoding: .utf8)
+        XCTAssertFalse(raw.contains("Neutral"))
+        XCTAssertFalse(raw.contains("greenhouse"))
+    }
+
+    func testResumeOpenWithoutAnOpenerWritesNothing() throws {
+        let store = BankStore(directory: try tempDir(self))
+        _ = try put(job, pdf(), store)
+        let reply = NativeProtocol.handle(["op": "resumeOpen", "key": job], store: store, source: .chrome)
+        XCTAssertEqual(reply["code"] as? String, "unsupported", "\(reply)")
+        XCTAssertNil(reply["pdf"])
+        let missing = NativeProtocol.handle(["op": "resumeOpen", "key": other], store: store, source: .chrome, openResume: { _ in true })
+        XCTAssertEqual(missing["found"] as? Bool, false)
+        let refused = NativeProtocol.handle(["op": "resumeOpen", "key": job], store: store, source: .chrome, openResume: { _ in false })
+        XCTAssertEqual(refused["code"] as? String, "io", "\(refused)")
+        XCTAssertNil(refused["pdf"])
+    }
+
+    func testResumeOpenDataDoesNotStoreTheFile() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let bytes = pdf()
+        let opened = URLLog()
+        let reply = NativeProtocol.handle(
+            ["op": "resumeOpenData", "name": " Resume_Built.pdf ", "pdf": bytes.base64EncodedString()],
+            store: store, source: .chrome, openResume: { opened.urls.append($0); return true })
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertNil(reply["pdf"])
+        XCTAssertEqual(reply["name"] as? String, "Resume_Built.pdf")
+        XCTAssertEqual(opened.urls.count, 1)
+        XCTAssertEqual(try Data(contentsOf: opened.urls[0]), bytes)
+        XCTAssertEqual(try call(["op": "resumeInfo", "key": job], store)["found"] as? Bool, false, "a preview is not a saved resume")
+        let resumes = ResumeStore(directory: store.directory.appendingPathComponent("resumes"))
+        XCTAssertEqual(try resumes.catalog(), [])
+
+        opened.urls.removeAll()
+        for bad in [
+            ["op": "resumeOpenData", "name": "../a.pdf", "pdf": bytes.base64EncodedString()],
+            ["op": "resumeOpenData", "name": "Resume_\u{202E}fdp.pdf", "pdf": bytes.base64EncodedString()],
+            ["op": "resumeOpenData", "name": "a\u{200B}b.pdf", "pdf": bytes.base64EncodedString()],
+            ["op": "resumeOpenData", "name": "a.docx", "pdf": bytes.base64EncodedString()],
+            ["op": "resumeOpenData", "name": "a.pdf", "pdf": Data("<html>".utf8).base64EncodedString()],
+            ["op": "resumeOpenData", "name": "a.pdf", "pdf": ""],
+            ["op": "resumeOpenData", "name": "a.pdf"],
+            ["op": "resumeOpenData", "pdf": bytes.base64EncodedString()],
+        ] {
+            let r = NativeProtocol.handle(bad, store: store, source: .chrome, openResume: { _ in true })
+            XCTAssertEqual(r["code"] as? String, "bad_request", "\(bad) -> \(r)")
+            XCTAssertNil(r["pdf"])
+        }
+        XCTAssertEqual(opened.urls.count, 0)
+        let huge = NativeProtocol.handle(
+            ["op": "resumeOpenData", "name": "a.pdf", "pdf": pdf(ResumeStore.maxBytes + 1).base64EncodedString()],
+            store: store, source: .chrome, openResume: { _ in true })
+        XCTAssertEqual(huge["code"] as? String, "too_large", "\(huge)")
+        XCTAssertEqual(opened.urls.count, 0)
+        XCTAssertEqual(try store.recentActivity().filter { $0.event == .resume }.count, 0)
+    }
+
+    func testPreviewCopyRefusesAPathAndCapsTheCopies() throws {
+        let bytes = pdf(fill: 0x42)
+        XCTAssertNil(ResumeStore.checkedName("Resume_\u{202E}fdp.pdf"))
+        XCTAssertNil(ResumeStore.checkedName("a\u{200B}b.pdf"))
+        XCTAssertEqual(ResumeStore.checkedName("résumé.PDF"), "résumé.PDF")
+        let url = try ResumeStore.previewCopy(name: "../Resume_Secret.pdf", data: bytes)
+        XCTAssertEqual(url.lastPathComponent, "Resume.pdf")
+        let disguised = try ResumeStore.previewCopy(name: "Resume_\u{202E}fdp.pdf", data: bytes)
+        XCTAssertEqual(disguised.lastPathComponent, "Resume.pdf")
+        XCTAssertFalse(url.pathComponents.contains(".."))
+        XCTAssertEqual(url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, ResumeStore.previewRootName)
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        var last = url
+        for _ in 0..<12 {
+            last = try ResumeStore.previewCopy(name: "Resume_Acme.pdf", data: bytes)
+        }
+        let root = last.deletingLastPathComponent().deletingLastPathComponent()
+        let keys: Set<URLResourceKey> = [.isDirectoryKey]
+        let kids = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
+            .filter { (try? $0.resourceValues(forKeys: keys).isDirectory) == true }
+        XCTAssertGreaterThan(kids.count, 0, "the directory listing has to see the copy that was just written")
+        XCTAssertLessThanOrEqual(kids.count, ResumeStore.maxPreviewCopies)
+        XCTAssertEqual(try Data(contentsOf: last), bytes)
+        XCTAssertThrowsError(try ResumeStore.previewCopy(name: "a.pdf", data: Data("<html>".utf8)))
+        XCTAssertThrowsError(try ResumeStore.previewCopy(name: "a.pdf", data: Data()))
+    }
+
+    func testCatalogAndMatch() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let h = "https://utaustin.wd1.myworkdayjobs.com"
+        let slug = "Forward-Deployed-Engineer_R_00049483"
+        let canon = "\(h)/UTstaff/job/\(slug)"
+        let apply = "\(h)/en-US/UTstaff/job/AUSTIN%2C-TX/\(slug)/apply/applyManually"
+        _ = try put(canon, pdf(), name: "Resume_Acme.pdf", store)
+        _ = try put(other, pdf(fill: 0x43), name: "Resume_Other.pdf", store)
+        let resumes = ResumeStore(directory: store.directory.appendingPathComponent("resumes"))
+        let listed = try resumes.catalog()
+        XCTAssertEqual(Set(listed.map(\.name)), ["Resume_Acme.pdf", "Resume_Other.pdf"])
+        XCTAssertEqual(ResumeStore.match(urls: [apply], listed: listed)?.name, "Resume_Acme.pdf")
+        XCTAssertEqual(ResumeStore.match(urls: ["javascript:alert(1)", other], listed: listed)?.name, "Resume_Other.pdf")
+        XCTAssertNil(ResumeStore.match(urls: ["https://example.com/nope"], listed: listed))
+        XCTAssertNil(ResumeStore.match(urls: [], listed: listed))
     }
 }

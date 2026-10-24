@@ -527,6 +527,7 @@ export function insertDraft(ref: FieldRef, text: string, opts: { overwrite?: boo
     setText(el as HTMLInputElement, text);
   }
   el.setAttribute("data-vani-draft", "1");
+  el.setAttribute("data-vani-draft-text", text);
   mark(ref, true, "draft: review before you submit");
   return { label, filled: true, review: true };
 }

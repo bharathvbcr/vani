@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 )
@@ -109,14 +112,26 @@ func sameDay(t time.Time, y int, m time.Month, d int) bool {
 	return time.Date(ty, tm, td, 0, 0, 0, 0, time.UTC).Equal(time.Date(y, m, d, 0, 0, 0, 0, time.UTC))
 }
 
+// Hooks are optional observers of scheduler decisions. The zero value changes
+// nothing. Skipped is called, on the scheduler goroutine, when a slot is past
+// MissedRunWindow and will not run. A nil Skipped only logs, as Run always did.
+type Hooks struct {
+	Skipped func(slot time.Time, late time.Duration)
+}
+
 // Run fires job once per day at sched.DailyAt in sched.Timezone until ctx is
-// cancelled, then returns nil. Jobs run on this goroutine, so two never
-// overlap: a job that overruns delays the next run and runs are not stacked.
-// A run that starts late (sleep/wake, or after an overrun) runs once if it is
-// within MissedRunWindow of its slot and is skipped, with a log line, if not.
-// A job error is logged and the schedule continues, except one wrapping
-// ErrFatal, which Run returns after logging it.
+// cancelled, then returns nil. It is RunWith with no hooks.
 func Run(ctx context.Context, sched config.Schedule, job Job, clock Clock) error {
+	return RunWith(ctx, sched, job, clock, Hooks{})
+}
+
+// RunWith is Run with hooks. Jobs run on this goroutine, so two never overlap:
+// a job that overruns delays the next run and runs are not stacked. A run that
+// starts late (sleep/wake, or after an overrun) runs once if it is within
+// MissedRunWindow of its slot and is skipped, with a log line, if not. A job
+// error is logged and the schedule continues, except one wrapping ErrFatal,
+// which RunWith returns after logging it.
+func RunWith(ctx context.Context, sched config.Schedule, job Job, clock Clock, hooks Hooks) error {
 	hour, minute, loc, err := sched.Parsed()
 	if err != nil {
 		return fmt.Errorf("daemon: schedule: %w", err)
@@ -137,6 +152,9 @@ func Run(ctx context.Context, sched config.Schedule, job Job, clock Clock) error
 		case late > MissedRunWindow:
 			Logf("daemon: skipping run scheduled %s: %s late exceeds %s window",
 				next.In(loc).Format(time.RFC3339), late.Round(time.Second), MissedRunWindow)
+			if hooks.Skipped != nil {
+				hooks.Skipped(next, late)
+			}
 			cursor = now
 			continue
 		case late > onTimeSlack:
@@ -182,10 +200,48 @@ func waitUntil(ctx context.Context, clock Clock, t time.Time) bool {
 	}
 }
 
+// maxJobPanicText and maxJobPanicStack bound what a recovered job panic logs.
+// The value can carry untrusted text; the stack is the same 4 KiB the daily
+// run prints and is never stored.
+const (
+	maxJobPanicText  = 200
+	maxJobPanicStack = 4096
+)
+
+// panicLine is a recovered panic as one line of at most maxJobPanicText runes,
+// with controls turned into spaces so a value cannot forge extra log lines.
+func panicLine(p any) string {
+	s := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, fmt.Sprint(p))
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "unknown panic"
+	}
+	if utf8.RuneCountInString(s) <= maxJobPanicText {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == maxJobPanicText {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
 func runJob(ctx context.Context, job Job) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			Logf("daemon: job panicked: %v", r)
+			stack := debug.Stack()
+			if len(stack) > maxJobPanicStack {
+				stack = stack[:maxJobPanicStack]
+			}
+			Logf("daemon: job panicked: %s\n%s", panicLine(r), stack)
 		}
 	}()
 	if err = job(ctx); err != nil {

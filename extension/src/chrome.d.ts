@@ -40,6 +40,8 @@ declare namespace chrome {
     /** `url` is present for the active tab once the user has opened the popup (activeTab) or on a matched host. */
     interface Tab { id?: number; url?: string }
     function query(q: { active: boolean; currentWindow: boolean }): Promise<Tab[]>;
+    /** The tab's own URL. Throws when the tab is gone. */
+    function get(tabId: number): Promise<Tab>;
     /** Without `frameId` every frame with a listener receives it and the promise takes the first reply; frames.ts always names one. */
     function sendMessage<T = unknown>(tabId: number, message: unknown, options?: { frameId?: number }): Promise<T>;
     const onUpdated: { addListener(cb: (tabId: number, changeInfo: { status?: string; url?: string }) => void): void };
@@ -49,6 +51,8 @@ declare namespace chrome {
   const action: {
     setBadgeText(d: { tabId: number; text: string }): Promise<void>;
     setBadgeBackgroundColor(d: { tabId: number; color: string }): Promise<void>;
+    /** The badge text on one tab, so a temporary "PDF" is not cleared over a question that is waiting. */
+    getBadgeText(d: { tabId: number }): Promise<string>;
   } | undefined;
   namespace scripting {
     /** One entry per frame the script ran in; `result` is the function's return value (a returned promise is awaited). */

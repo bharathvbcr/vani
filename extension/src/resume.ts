@@ -30,10 +30,12 @@ export type ResumeFetch =
   | { ok: true; name: string; bytes: Uint8Array; pickedAt: string }
   | { ok: false; reason: "no_resume" | "resume_unavailable"; detail: string };
 
-/** What the popup shows for the active job: the bound file, none, or why it cannot say. */
+/** What the popup shows for the active job: the bound file, none, or why it cannot say.
+ *  `key` is the posting key of the file that was found (the top page, or the one embed that has one).
+ *  `several` means more than one frame of the tab has a resume, so none is shown as the page's. */
 export type ResumeInfo =
-  | { found: true; name: string; bytes: number; pickedAt: string }
-  | { found: false }
+  | { found: true; name: string; bytes: number; pickedAt: string; key?: string }
+  | { found: false; several?: boolean }
   | { error: string };
 
 const RESUME_WORDS = new Set(["resume", "resumes", "cv", "cvs"]);
@@ -142,8 +144,16 @@ export function parseResumeGet(r: unknown): ResumeFetch {
 }
 
 export type ResumeMessage =
-  | { type: "resumeGet" | "resumeInfo" | "resumeDelete"; url: string }
+  | { type: "resumeGet" | "resumeInfo" | "resumeDelete" | "resumeOpen"; url: string }
   | { type: "resumePut"; url: string; name: string; pdf: string };
+
+/** What opening a resume in Preview answered. The PDF itself is never in this reply.
+ *  `changed` means the tab is no longer the posting the popup asked for, so nothing was opened.
+ *  `several` means more than one frame of the tab has a resume, so none was opened. */
+export type ResumeOpenResult =
+  | { ok: true; name: string; bytes: number }
+  | { found: false; changed?: boolean; several?: boolean }
+  | { error: string };
 
 /** base64 of MAX_RESUME_BYTES plus padding slack: a longer string is refused before it is decoded. */
 const MAX_BASE64 = Math.ceil(MAX_RESUME_BYTES / 3) * 4 + 8;
@@ -198,6 +208,7 @@ export async function runResume(m: ResumeMessage, native: (op: object) => Promis
   switch (m.type) {
     case "resumeGet":
     case "resumeInfo":
+    case "resumeOpen":
       return isRecord(r) && r.found === false ? native(old) : r;
     case "resumeDelete": {
       const o = await native(old);
@@ -267,14 +278,60 @@ export function parseBuiltResume(r: unknown): ResumeFetch {
   return { ok: true, name, bytes, pickedAt: new Date().toISOString() };
 }
 
+/**
+ * The Mac app's resumeOpen / resumeOpenData reply. A missing file is `found: false`.
+ * Anything else that is not `{ok, name, bytes}` is an error, and the error text is clipped.
+ */
+export function parseResumeOpen(r: unknown): ResumeOpenResult {
+  if (!isRecord(r)) return { error: "the Vani Apply Mac app sent no reply" };
+  if (typeof r.error === "string") return { error: clip(r.error) };
+  if (r.found === false) {
+    const out: { found: false; changed?: true; several?: true } = { found: false };
+    if (r.changed === true) out.changed = true;
+    if (r.several === true) out.several = true;
+    return out;
+  }
+  const name = checkResumeName(r.name);
+  if (r.ok === true && name && typeof r.bytes === "number" && Number.isSafeInteger(r.bytes) && r.bytes > 0 && r.bytes <= MAX_RESUME_BYTES) {
+    return { ok: true, name, bytes: r.bytes };
+  }
+  return { error: "the Vani Apply Mac app's reply was not understood" };
+}
+
+/**
+ * Ask the Mac app to open a PDF this page already holds. Success closes a fallback
+ * preview left up by an earlier failure. Anything else shows that preview. The
+ * reply's own bytes are ignored: this page already has the file.
+ */
+export async function openHeldResume(
+  file: { name: string; bytes: Uint8Array },
+  send: (msg: { type: "resumeShow"; name: string; pdf: string }) => Promise<unknown>,
+  preview: { close(): void; show(name: string, bytes: Uint8Array): void },
+): Promise<{ error?: string }> {
+  let why = "Preview did not open";
+  try {
+    const parsed = parseResumeOpen(await send({ type: "resumeShow", name: file.name, pdf: toBase64(file.bytes) }));
+    if ("ok" in parsed) {
+      preview.close();
+      return {};
+    }
+    why = "error" in parsed ? parsed.error : "Preview did not open";
+  } catch (e) {
+    why = e instanceof Error ? e.message : String(e);
+  }
+  preview.show(file.name, file.bytes);
+  return { error: why };
+}
+
 /** The Mac app's resumeInfo reply, for the popup. */
 export function parseResumeInfo(r: unknown): ResumeInfo {
   if (!isRecord(r)) return { error: "the Vani Apply Mac app sent no reply" };
   if (typeof r.error === "string") return { error: clip(r.error) };
-  if (r.found === false) return { found: false };
+  if (r.found === false) return r.several === true ? { found: false, several: true } : { found: false };
   const name = checkResumeName(r.name);
   if (r.found === true && name && typeof r.bytes === "number" && Number.isSafeInteger(r.bytes) && r.bytes >= 0) {
-    return { found: true, name, bytes: r.bytes, pickedAt: typeof r.pickedAt === "string" ? r.pickedAt.slice(0, 40) : "" };
+    const key = typeof r.key === "string" && resumeKey(r.key) === r.key ? r.key : undefined;
+    return { found: true, name, bytes: r.bytes, pickedAt: typeof r.pickedAt === "string" ? r.pickedAt.slice(0, 40) : "", ...(key ? { key } : {}) };
   }
   return { error: "the Vani Apply Mac app's reply was not understood" };
 }

@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 import XCTest
 @testable import VaniApplyKit
 
@@ -6,8 +7,8 @@ import XCTest
 /// error and the daemon `vani status` reports. No SMAppService is touched.
 final class ScheduleToggleTests: XCTestCase {
     private func make(_ r: ScheduleToggle.Registration, error: String? = nil, daemon: PipelineStatus.Daemon? = nil,
-                      leftAlone: Bool = false) -> ScheduleToggle {
-        ScheduleToggle.make(registration: r, error: error, daemon: daemon, leftAlone: leftAlone)
+                      leftAlone: Bool = false, copy: ScheduleAgent.BundleCopy = .absent) -> ScheduleToggle {
+        ScheduleToggle.make(registration: r, error: error, daemon: daemon, leftAlone: leftAlone, copy: copy)
     }
 
     private func running(model: PipelineStatus.Daemon.Model? = nil) -> PipelineStatus.Daemon {
@@ -97,6 +98,89 @@ final class ScheduleToggleTests: XCTestCase {
         XCTAssertTrue((t.detail ?? "").contains("bundle.sh"))
     }
 
+    /// ServiceManagement reports `.notFound` for an agent it has never registered, which is
+    /// this app's schedule agent until the switch is turned on. A bundle inspect of `.ready`
+    /// is what makes that registrable; the old reading disabled the switch and said to rebuild.
+    func testNotFoundWithAReadyBundleIsTheSameAsNeverRegistered() {
+        let quiet = PipelineStatus.Daemon(reason: "no daemon has announced itself", running: false)
+        XCTAssertEqual(make(.notFound, daemon: quiet, copy: .ready), make(.notRegistered, daemon: quiet))
+        XCTAssertEqual(make(.notFound, daemon: running(), copy: .ready), make(.notRegistered, daemon: running()))
+        XCTAssertTrue(make(.notFound, copy: .ready).isEnabled)
+        XCTAssertEqual(make(.notFound, copy: .ready).headline, "Off")
+        let alone = make(.notFound, daemon: running(), leftAlone: true, copy: .ready)
+        XCTAssertFalse(alone.isEnabled)
+        XCTAssertTrue(alone.headline.contains("Left alone"))
+    }
+
+    func testNotFoundWithAnUnusablePlistSaysWhyAndStaysOff() {
+        let why = "The schedule agent plist is empty."
+        let t = make(.notFound, copy: .unusable(why))
+        XCTAssertFalse(t.isOn)
+        XCTAssertFalse(t.isEnabled)
+        XCTAssertEqual(t.headline, "This copy of the app cannot register the schedule agent")
+        XCTAssertEqual(t.detail, why)
+        // A refused register is shown as the error, and an agent that is already on can be turned off.
+        XCTAssertEqual(make(.notFound, error: "boom", copy: .unusable(why)).detail, "boom")
+        let on = make(.enabled, daemon: running(), copy: .unusable(why))
+        XCTAssertTrue(on.isOn)
+        XCTAssertTrue(on.isEnabled)
+    }
+
+    func testAnErrorIsCappedAndHasNoControlCharacters() {
+        let t = make(.notRegistered, error: "no\u{0}pe " + String(repeating: "x", count: 400))
+        let detail = t.detail ?? ""
+        XCTAssertFalse(detail.contains("\u{0}"))
+        XCTAssertLessThanOrEqual(detail.count, BoundedText.cap + 1)
+        XCTAssertTrue(detail.hasSuffix("…"))
+    }
+
+    func testTurningOnAServiceMacOSHasNoRecordOfRegisters() {
+        XCTAssertEqual(ScheduleToggle.order(on: true, repair: false, status: .notFound), .register)
+        XCTAssertEqual(ScheduleToggle.order(on: true, repair: false, status: .notRegistered), .register)
+        XCTAssertEqual(ScheduleToggle.order(on: false, repair: false, status: .notFound), .leave)
+        XCTAssertEqual(ScheduleToggle.order(on: false, repair: true, status: .notFound), .leave)
+        XCTAssertEqual(ScheduleToggle.order(on: true, repair: true, status: .notFound), .replace)
+        XCTAssertEqual(ScheduleToggle.order(on: true, repair: false, status: .enabled), .leave)
+        XCTAssertEqual(ScheduleToggle.order(on: true, repair: true, status: .enabled), .replace)
+        XCTAssertEqual(ScheduleToggle.order(on: false, repair: true, status: .enabled), .unregister)
+        XCTAssertEqual(ScheduleToggle.order(on: false, repair: false, status: .requiresApproval), .unregister)
+    }
+
+    func testAMissingJobAndAnAlreadyRegisteredAgentAreNotGenericFailures() {
+        if #available(macOS 15, *) {
+            let missing = NSError(domain: SMAppServiceErrorDomain, code: Int(kSMErrorJobNotFound), userInfo: [NSLocalizedDescriptionKey: "gone"])
+            XCTAssertEqual(ScheduleToggle.Fault.classify(missing), .jobMissing)
+            let present = NSError(domain: SMAppServiceErrorDomain, code: Int(kSMErrorAlreadyRegistered), userInfo: [NSLocalizedDescriptionKey: "there"])
+            XCTAssertEqual(ScheduleToggle.Fault.classify(present), .alreadyRegistered)
+            let other = NSError(domain: SMAppServiceErrorDomain, code: Int(kSMErrorInvalidPlist), userInfo: [NSLocalizedDescriptionKey: "bad\nplist"])
+            if case let .message(text) = ScheduleToggle.Fault.classify(other) {
+                XCTAssertEqual(text, "bad plist")
+            } else {
+                XCTFail("an invalid plist is a message")
+            }
+        }
+        let foreign = NSError(domain: "other", code: Int(kSMErrorJobNotFound), userInfo: [NSLocalizedDescriptionKey: "not ours"])
+        XCTAssertEqual(ScheduleToggle.Fault.classify(foreign), .message("not ours"))
+        let blank = NSError(domain: "other", code: 1, userInfo: [NSLocalizedDescriptionKey: " \n\u{0}"])
+        XCTAssertEqual(ScheduleToggle.Fault.classify(blank).text, "The system refused.")
+        let stock = ScheduleToggle.Fault.classify(NSError(domain: "other", code: 1, userInfo: [:])).text
+        XCTAssertFalse(stock.isEmpty)
+        XCTAssertNotEqual(stock, "The system refused.")
+        XCTAssertFalse(stock.contains("\n"))
+        XCTAssertLessThanOrEqual(stock.count, BoundedText.cap + 1)
+    }
+
+    func testAStaleStatusReadIsDroppedWhenAChangeStarts() {
+        var epoch = ScheduleToggle.Epoch()
+        let first = epoch.current
+        let change = epoch.begin()
+        XCTAssertFalse(epoch.isCurrent(first))
+        XCTAssertTrue(epoch.isCurrent(change))
+        let published = epoch.begin()
+        XCTAssertFalse(epoch.isCurrent(change), "a read that started during the change does not publish over it")
+        XCTAssertTrue(epoch.isCurrent(published))
+    }
+
     func testAFailedChangeShowsTheErrorAndKeepsTheSwitchWhereMacOSHasIt() {
         let t = make(.notRegistered, error: "Operation not permitted")
         XCTAssertFalse(t.isOn)
@@ -121,7 +205,9 @@ final class ScheduleToggleTests: XCTestCase {
         for r in [ScheduleToggle.Registration.notRegistered, .enabled, .requiresApproval, .notFound] {
             for d in daemons {
                 for e in [nil, "boom"] as [String?] {
-                    XCTAssertFalse(make(r, error: e, daemon: d).headline.isEmpty)
+                    for copy in [ScheduleAgent.BundleCopy.absent, .ready, .unusable("why")] {
+                        XCTAssertFalse(make(r, error: e, daemon: d, copy: copy).headline.isEmpty)
+                    }
                 }
             }
         }

@@ -22,7 +22,13 @@ résumé roles best (`semantic.evidence`). Both are display only, decoded lenien
 Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R), which starts
 `vani run-once` with options for that run only: every board or the ones you pick from the watchlist,
 whether to triage, score and explain (and a cap in place of `advance_per_run`), and whether to write a
-digest. The last choices are remembered. The run gets the keys drafting gets, writes its output to
+digest. The last choices are remembered. **Triage now**, on Jobs while postings are awaiting
+triage, opens this same sheet prefilled for one advance at `advance_per_run`, every board, and no digest.
+Start Run is what spends. That confirmation is not kept for the next Run Now. The awaiting-triage count
+is separate from the cap, because the same pass also scores and explains postings already triaged, and a
+kept schedule does not report the number. While the daemon is running, the sheet says the daemon will make
+the run.
+The run gets the keys drafting gets, writes its output to
 `<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes. Before each run
 the app moves the previous `manual.log` to `<state>/runs/history/manual-<run id>.log` when `last.json` records that run
 as the one that wrote it (`RunLogOwner`; else `manual-<time>.log`), and starts `vani run-once` with `VANI_RUN_LOG` set to
@@ -281,7 +287,10 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
    - **Supervision.** If the daemon ends (a crash, a poisoned ledger, or a second daemon the ledger lock
      refuses) the helper starts it again after 10 s, doubling to 5 min while it keeps ending, and starting
      over after one has run 5 min. It never gives up and never spins. A change to the Vani config or state
-     folder in Settings restarts the daemon on the new pair. launchd restarts the helper itself after a crash
+     folder in Settings restarts the daemon on the new pair. A change to the schedule (`daily_at` or the
+     timezone) or to `devprism.binary` / `devprism.tools_hash` makes `vani daemon` exit 75; the helper starts
+     it again immediately when that process has been up at least a second, and uses the same backoff if it
+     exits 75 at once. launchd restarts the helper itself after a crash
      (`KeepAlive` on failed exit, throttled).
    - **The log** is `<state>/logs/vani.err.log`, the file `vani launchd plist` also uses: the daemon's output
      appended across restarts, plus the helper's timestamped lines ("starting vani daemon (…)", "daemon ended

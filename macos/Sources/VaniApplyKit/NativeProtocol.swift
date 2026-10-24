@@ -9,7 +9,7 @@ import Foundation
 //   {"op":"put","baseRev":N,"bank":{...}} -> {"rev":N+1,"droppedSecret":K}
 //                                          | {"conflict":true,"rev":M,"bank":{...}}
 //   {"op":"log","entry":{"event":...,"host"?:...,"counts"?:{...}}} -> {"ok":true}
-//   {"op":"draft","request":{"question":...,"job":{...},"max_words"?:N}}
+//   {"op":"draft","request":{"question":...,"job":{...},"max_words"?:N,"attempt"?:N}}
 //                                         -> {"draft","model","evidence_items"} | {"error","code"}
 //   {"op":"jobStart","kind":"draft"|"suggest","request":{...}}
 //                                         -> {"job":id} | {"error","code"}
@@ -27,6 +27,10 @@ import Foundation
 //                                          | {"error","code"}
 //   {"op":"resumeInfo","key":pageKey}     -> resumeGet without "pdf"
 //   {"op":"resumeDelete","key":pageKey}   -> {"ok":true,"removed":bool} | {"error","code"}
+//   {"op":"resumeOpen","key":pageKey}     -> {"ok":true,"name","bytes"} | {"found":false} | {"error","code"}
+//                                          the PDF is opened in Preview; the reply has no "pdf" and nothing is logged
+//   {"op":"resumeOpenData","name","pdf"}  -> {"ok":true,"name","bytes"} | {"error","code"}
+//                                          a PDF the page already holds (just built); not stored, not logged
 //   anything refused                      -> {"error":"..."}
 //
 // Merging stays in the extension (one implementation); this side is a
@@ -43,25 +47,29 @@ import Foundation
 // XPC calls, since XPCAgentClient is a JobsBackend. With neither they answer code
 // "unsupported".
 //
-// The resume ops (ResumeStore.swift) bind one PDF to a job page (its pageKey, the
-// same reduced URL jobFind compares) and hand it to the tab being filled. Both
-// browsers run them in-process: the store is a folder beside the bank in the App
-// Group container. The log gets an event and a count, never the file name or the page.
+// The resume ops (ResumeStore.swift) bind one PDF to a job page (its posting key,
+// the same reduced URL the extension stores under) and hand it to the tab being
+// filled. resumeOpen and resumeOpenData also write a temporary copy and hand that
+// URL to `openResume`, which the host and the Safari appex implement with
+// NSWorkspace; the kit itself stays free of AppKit. With no opener those two ops
+// answer "unsupported" and write nothing. The log gets an event and a count for a
+// put or a delete, never for a read or an open, and never the file name or the page.
 
 public enum NativeProtocol {
     public static let version = 1
 
     public static func handle(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner? = nil,
-                              agent: AgentClient? = nil, jobs: JobsBackend? = nil) -> [String: Any] {
+                              agent: AgentClient? = nil, jobs: JobsBackend? = nil,
+                              openResume: (@Sendable (URL) -> Bool)? = nil) -> [String: Any] {
         do {
-            return try dispatch(request, store: store, source: source, drafter: drafter, agent: agent, jobs: jobs)
+            return try dispatch(request, store: store, source: source, drafter: drafter, agent: agent, jobs: jobs, openResume: openResume)
         } catch {
             return ["error": String(describing: error)]
         }
     }
 
     private static func dispatch(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner?,
-                                 agent: AgentClient?, jobs: JobsBackend?) throws -> [String: Any] {
+                                 agent: AgentClient?, jobs: JobsBackend?, openResume: (@Sendable (URL) -> Bool)?) throws -> [String: Any] {
         guard let req = request as? [String: Any], let op = req["op"] as? String else {
             throw BankError("request is not an object with an op")
         }
@@ -200,8 +208,10 @@ public enum NativeProtocol {
             } catch {
                 return ["error": String(describing: error), "code": "jobs"]
             }
-        case "resumePut", "resumeGet", "resumeInfo", "resumeDelete":
-            return resumeOp(op, req, store: store, source: source)
+        case "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "resumeOpen":
+            return resumeOp(op, req, store: store, source: source, openResume: openResume)
+        case "resumeOpenData":
+            return resumeOpenData(req, openResume: openResume)
         case "draft":
             guard let drafter else {
                 return ["error": "drafting is not available here; use Draft in the Vani Apply app", "code": "unsupported"]
@@ -273,7 +283,8 @@ public enum NativeProtocol {
     /// base64 of ResumeStore.maxBytes plus padding slack: a longer string is refused before it is decoded.
     private static let maxResumeBase64 = (ResumeStore.maxBytes + 2) / 3 * 4 + 8
 
-    private static func resumeOp(_ op: String, _ req: [String: Any], store: BankStore, source: Source) -> [String: Any] {
+    private static func resumeOp(_ op: String, _ req: [String: Any], store: BankStore, source: Source,
+                                 openResume: (@Sendable (URL) -> Bool)?) -> [String: Any] {
         let resumes = ResumeStore(directory: store.directory.appendingPathComponent("resumes", isDirectory: true))
         guard let key = JobLinks.checkedURL(req["key"]) else {
             return ["error": "\(op) needs the job page's http(s) key", "code": "bad_request"]
@@ -303,11 +314,53 @@ public enum NativeProtocol {
             case "resumeInfo":
                 guard let e = try resumes.info(key: key) else { return ["found": false] }
                 return described(e)
+            case "resumeOpen":
+                // No opener: refuse before a copy is written. A read is not logged, and the reply has no PDF.
+                guard let openResume else {
+                    return ["error": "opening a resume is not available here", "code": "unsupported"]
+                }
+                guard let (e, data) = try resumes.get(key: key) else { return ["found": false] }
+                let url = try ResumeStore.previewCopy(name: e.name, data: data)
+                guard openResume(url) else { return ["error": "Preview did not open the resume", "code": "io"] }
+                return ["ok": true, "name": e.name, "bytes": e.bytes]
             default: // resumeDelete
                 let removed = try resumes.delete(key: key)
                 if removed { try? store.log(ActivityEntry(source: source, event: .resume, counts: ["removed": 1])) }
                 return ["ok": true, "removed": removed]
             }
+        } catch let f as ResumeStore.Failure {
+            return ["error": f.message, "code": f.code]
+        } catch {
+            return ["error": String(describing: error), "code": "io"]
+        }
+    }
+
+    /// Open a PDF the page already holds (a resume just built or chosen). It is checked again
+    /// and not stored. The reply names the file and its size; it does not echo the PDF.
+    private static func resumeOpenData(_ req: [String: Any], openResume: (@Sendable (URL) -> Bool)?) -> [String: Any] {
+        guard let openResume else {
+            return ["error": "opening a resume is not available here", "code": "unsupported"]
+        }
+        guard let name = ResumeStore.checkedName(req["name"]) else {
+            return ["error": "resumeOpenData needs a file name ending in .pdf, at most \(ResumeStore.maxNameChars) characters", "code": "bad_request"]
+        }
+        guard let b64 = req["pdf"] as? String else { return ["error": "resumeOpenData needs the PDF", "code": "bad_request"] }
+        if b64.utf8.count > maxResumeBase64 {
+            return ["error": "the resume is over \(ResumeStore.maxBytes / 1024) KB", "code": "too_large"]
+        }
+        guard let data = Data(base64Encoded: b64), !data.isEmpty else {
+            return ["error": "the resume is not a PDF", "code": "bad_request"]
+        }
+        if data.count > ResumeStore.maxBytes {
+            return ["error": "the resume is over \(ResumeStore.maxBytes / 1024) KB", "code": "too_large"]
+        }
+        guard ResumeStore.isPDF(data) else {
+            return ["error": "the resume is not a PDF", "code": "bad_request"]
+        }
+        do {
+            let url = try ResumeStore.previewCopy(name: name, data: data)
+            guard openResume(url) else { return ["error": "Preview did not open the resume", "code": "io"] }
+            return ["ok": true, "name": name, "bytes": data.count]
         } catch let f as ResumeStore.Failure {
             return ["error": f.message, "code": f.code]
         } catch {

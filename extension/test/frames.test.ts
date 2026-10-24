@@ -291,6 +291,26 @@ describe("frame registry", () => {
     expect(await r.list(100 + MAX_TABS - 1)).toEqual([1]);
   });
 
+  test("a frame's page is the URL it was given, and a script URL or an over-long one is not kept", async () => {
+    const r = createFrameRegistry();
+    const job = "https://boards.greenhouse.io/acme/jobs/2";
+    await r.add(7, 4, "https://boards.greenhouse.io", job);
+    await r.add(7, 0, "https://careers.acme.com", "https://careers.acme.com/roles/1");
+    expect(await r.pages(7)).toEqual([job, "https://careers.acme.com/roles/1"]);
+    await r.add(7, 4, "https://evil.example", "javascript:alert(1)");
+    expect(await r.pages(7)).toEqual(["https://careers.acme.com/roles/1"]);
+    await r.add(7, 5, "https://evil.example", `https://evil.example/${"a".repeat(2100)}`);
+    expect(await r.pages(7)).toEqual(["https://careers.acme.com/roles/1"]);
+    await r.forget(7);
+    expect(await r.pages(7)).toEqual([]);
+  });
+
+  test("a stored page that is not http is dropped on read", async () => {
+    const stored = { 4: { frames: [1], at: 1, urls: { 1: "javascript:alert(1)", 2: "https://boards.greenhouse.io/acme/jobs/2" } } };
+    const r = createFrameRegistry({ store: { load: async () => stored, save: async () => undefined } });
+    expect(await r.pages(4)).toEqual([]);
+  });
+
   test("bad ids are ignored, never stored", async () => {
     const r = createFrameRegistry();
     for (const [tab, f] of [[-1, 1], [1.5, 1], [Number.NaN, 1], [3, -2], [3, 0.5], [3, Number.POSITIVE_INFINITY]] as Array<[number, number]>) await r.add(tab, f);
@@ -348,6 +368,17 @@ describe("content script replies", () => {
     expect(seen).toEqual([true, false]);
   });
 
+  test("resumeNoted shows a checked file name and refuses a disguised one", async () => {
+    const names: string[] = [];
+    const l = subframe({ resumeNoted: name => names.push(name) });
+    expect(await ask(l, { type: "resumeNoted", name: "Resume_Acme.pdf" })).toEqual({ async: false, replies: [{ shown: true }] });
+    expect(names).toEqual(["Resume_Acme.pdf"]);
+    expect(await ask(l, { type: "resumeNoted", name: "Resume_\u202Efdp.pdf" })).toEqual({ async: false, replies: [{ shown: false }] });
+    expect(await ask(l, { type: "resumeNoted", name: "../Resume_Acme.pdf" })).toEqual({ async: false, replies: [{ shown: false }] });
+    expect(names).toEqual(["Resume_Acme.pdf"]);
+    expect(await ask(subframe(), { type: "resumeNoted", name: "Resume_Acme.pdf" })).toEqual({ async: false, replies: [{ shown: false }] });
+  });
+
   test("appliedShow: a sub-frame says it cannot show the question, the top frame answers after showing it", async () => {
     expect(await ask(subframe(), { type: "appliedShow" })).toEqual({ async: false, replies: [{ shown: false }] });
     let shown = 0;
@@ -387,6 +418,40 @@ describe("content script replies", () => {
     expect(ran).toBe(0);
     expect(await ask(l, { ...good, pdf: pdf(MAX_RESUME_BYTES) })).toEqual({ async: true, replies: [{ outcomes: [] }] });
     expect(ran).toBe(1);
+  });
+
+  test("draftField starts in the frame that has the handler, and a bad label never reaches it", async () => {
+    let seen: unknown[] = [];
+    const l = subframe({ draftField: (label, ordinal) => { seen = [label, ordinal]; return { ok: true }; } });
+    expect(await ask(l, { type: "draftField", label: "Why us?" })).toEqual({ async: true, replies: [{ ok: true }] });
+    expect(seen).toEqual(["Why us?", undefined]);
+    expect(await ask(l, { type: "draftField", label: "Why us?", ordinal: 2 })).toEqual({ async: true, replies: [{ ok: true }] });
+    expect(seen).toEqual(["Why us?", 2]);
+    for (const label of [undefined, "", "x".repeat(1001)]) {
+      const r = await ask(l, { type: "draftField", label });
+      expect(r).toEqual({ async: false, replies: [{ error: "malformed draftField message" }] });
+    }
+    for (const ordinal of [1.5, -1, 10001]) {
+      const r = await ask(l, { type: "draftField", label: "Why us?", ordinal });
+      expect(r).toEqual({ async: false, replies: [{ error: "malformed draftField message" }] });
+    }
+    expect(seen).toEqual(["Why us?", 2]);
+    const bare = subframe();
+    expect(await ask(bare, { type: "draftField", label: "Why us?" })).toEqual({ async: true, replies: [{ ok: false, error: "This frame cannot draft." }] });
+  });
+
+  test("insertTailored returns the handler's result, including a refusal", async () => {
+    const l = subframe({ insertTailored: (_label, _text, ordinal, overwrite) => ({ ok: false, error: "no", reason: ordinal === 3 && overwrite ? "has_value" : undefined }) });
+    expect(await ask(l, { type: "insertTailored", label: "Why us?", text: "hello", ordinal: 3, overwrite: true })).toEqual({
+      async: true, replies: [{ ok: false, error: "no", reason: "has_value" }],
+    });
+    const bare = subframe();
+    expect(await ask(bare, { type: "insertTailored", label: "Why us?", text: "hello" })).toEqual({
+      async: true, replies: [{ ok: false, error: "This frame cannot insert." }],
+    });
+    expect(await ask(l, { type: "insertTailored", label: "Why us?", text: "hello", ordinal: 1.5 })).toEqual({
+      async: false, replies: [{ error: "malformed insertTailored message" }],
+    });
   });
 
   test("a message that is not one of ours is answered with an error and runs nothing", async () => {

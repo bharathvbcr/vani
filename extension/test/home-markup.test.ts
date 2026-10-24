@@ -93,8 +93,11 @@ describe("Home tab states", () => {
     }
   });
 
-  test("the resume card is hidden on the dashboard views", () => {
-    expect(html).toContain('[data-view="error"]) > #resume { display: none; }');
+  test("the resume card stays available when the site is off or the scan failed, and stays hidden on an idle page", () => {
+    expect(html).toContain('#tab-page[data-view="idle"] > #resume { display: none; }');
+    expect(html).toContain('#tab-page:is([data-view="disabled"], [data-view="error"]) > #resume { order: 2; }');
+    expect(html).not.toContain('[data-view="disabled"], [data-view="error"]) > #resume { display: none; }');
+    expect(html).not.toContain('[data-view="error"]) > #resume { display: none; }');
   });
 
   test("status is a polite live region with a tone attribute", () => {

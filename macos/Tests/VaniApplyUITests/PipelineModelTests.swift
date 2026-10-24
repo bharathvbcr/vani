@@ -170,7 +170,9 @@ final class PipelineModelTests: XCTestCase {
         XCTAssertTrue(m.runInProgress)
         XCTAssertNotNil(m.runBlocker)
         await m.startRun(ManualRunOptions())
+        XCTAssertEqual(m.runError, "A run is going.")
         XCTAssertNil(m.manualRun)
+        XCTAssertEqual(m.savedOptions, ManualRunOptions(), "a blocked start keeps nothing")
         m.stopRun() // nothing of this app's to stop
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") }, "\(f.calls())")
     }
@@ -224,6 +226,128 @@ final class PipelineModelTests: XCTestCase {
         try await eventually("run-once's refusal") { m.runError != nil && m.manualRun == nil }
         XCTAssertTrue(f.calls().contains("run-once --no-digest"), "\(f.calls())")
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-request") }, "\(f.calls())")
+    }
+
+    /// Triage now only proposes options. It writes nothing and remembers
+    /// nothing, and a run that cannot start is not offered a sheet.
+    func testProposeRunDoesNotStartOrRemember() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun)
+        let m = try model(f)
+        m.proposeRun(.backlog)
+        XCTAssertNil(m.runSheet, "no status yet")
+        m.openRunNow()
+        XCTAssertNil(m.runSheet, "no status yet")
+        XCTAssertEqual(m.savedOptions, ManualRunOptions())
+        XCTAssertTrue(f.calls().isEmpty)
+        await m.refresh()
+        m.proposeRun(.backlog)
+        XCTAssertEqual(m.runSheet?.source, .triageNow)
+        XCTAssertEqual(m.runSheet?.options, .backlog)
+        XCTAssertEqual(m.runSheet?.remembers, false)
+        XCTAssertEqual(m.runSheet?.banner, ManualRunOptions.triageNowBanner)
+        XCTAssertEqual(m.runSheet?.presentation(daemonRunning: m.daemonRunning).footnote,
+                       ManualRunOptions.runFootnote(daemonRunning: false))
+        XCTAssertEqual(m.savedOptions, ManualRunOptions(), "remembered only when Start Run is pressed")
+        XCTAssertTrue(f.calls().allSatisfy { $0.hasPrefix("status") }, "\(f.calls())")
+    }
+
+    func testProposeRunIsRefusedWhileARunIsGoing() async throws {
+        let f = try PipelineFixture(self, mode: "refused",
+                                    lastRun: #"{"ok":true,"state":"running","trigger":"schedule","started_at":"2026-10-20T00:00:00Z"}"#)
+        let m = try model(f)
+        await m.refresh()
+        m.proposeRun(.backlog)
+        m.openRunNow()
+        XCTAssertNil(m.runSheet)
+        XCTAssertTrue(f.calls().allSatisfy { $0.hasPrefix("status") }, "\(f.calls())")
+    }
+
+    /// Run Now opens the sheet on the remembered options and keeps a confirmation.
+    func testOpenRunNowUsesTheRememberedOptions() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun)
+        let m = try model(f)
+        await m.refresh()
+        let kept = ManualRunOptions(advance: 12, boards: ["gh:acme"])
+        await m.startRun(kept)
+        try await eventually("the refusal") { m.runError != nil && m.manualRun == nil }
+        XCTAssertEqual(m.savedOptions, kept)
+        m.openRunNow()
+        XCTAssertEqual(m.runSheet?.source, .runNow)
+        XCTAssertEqual(m.runSheet?.options, kept)
+        XCTAssertEqual(m.runSheet?.remembers, true)
+        XCTAssertNil(m.runSheet?.banner)
+        let shown = try XCTUnwrap(m.runSheet).presentation(daemonRunning: m.daemonRunning)
+        XCTAssertNil(shown.banner)
+        XCTAssertTrue(shown.remembers)
+        XCTAssertEqual(shown.footnote, ManualRunOptions.runFootnote(daemonRunning: false))
+    }
+
+    /// A Triage now confirmation does not replace remembered Run Now options,
+    /// including when vani refuses the run before it records anything.
+    func testTriageNowDoesNotReplaceRememberedOptionsWhenVaniRefuses() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun)
+        let m = try model(f)
+        await m.refresh()
+        let kept = ManualRunOptions(advance: 12, boards: ["gh:acme"])
+        await m.startRun(kept)
+        try await eventually("the first refusal") { m.runError != nil && m.manualRun == nil }
+        await m.startRun(.backlog, remember: false)
+        try await eventually("the second refusal") { m.runError != nil && !m.startingRun && m.manualRun == nil }
+        XCTAssertEqual(m.savedOptions, kept)
+        XCTAssertTrue(f.calls().contains("run-once --no-digest"), "\(f.calls())")
+        XCTAssertTrue(f.calls().contains("run-once --advance 12 --board gh:acme"), "\(f.calls())")
+    }
+
+    /// The same holds when the daemon makes the run: the request is filed and
+    /// the remembered options stay.
+    func testTriageNowRequestDoesNotReplaceRememberedOptions() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun, daemon: daemonUp)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "vani-pipeline-tests-\(UUID().uuidString)"))
+        let kept = ManualRunOptions(advance: 12, boards: ["gh:acme"])
+        defaults.set(try JSONEncoder().encode(kept), forKey: PipelineModel.optionsKey)
+        let vani = f.vani
+        let m = PipelineModel(client: { PipelineClient(vaniBinary: vani, timeout: 10) },
+                              launcher: { ManualRunLauncher(runner: DraftRunner(vaniBinary: vani, keys: .noKey, decisionKey: { nil })) },
+                              defaults: defaults)
+        await m.refresh()
+        XCTAssertTrue(m.daemonRunning)
+        XCTAssertEqual(m.savedOptions, kept)
+        await m.startRun(.backlog, remember: false)
+        XCTAssertNil(m.runError)
+        XCTAssertTrue(m.waitingForDaemon)
+        XCTAssertEqual(m.savedOptions, kept)
+        XCTAssertTrue(f.calls().contains("run-request --no-digest --json"), "\(f.calls())")
+        XCTAssertFalse(f.calls().contains { $0.contains("--advance") }, "\(f.calls())")
+    }
+
+    /// Start pressed before status has arrived says why, and starts nothing.
+    func testStartBeforeStatusSaysWhy() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun)
+        let m = try model(f)
+        await m.startRun(.backlog)
+        XCTAssertEqual(m.runError, "Vani has not reported its status yet.")
+        XCTAssertNil(m.manualRun)
+        XCTAssertEqual(m.savedOptions, ManualRunOptions())
+        XCTAssertTrue(f.calls().isEmpty)
+    }
+
+    /// A status with no state folder is named, and vani is not started.
+    func testStartWithNoStateFolderSaysWhy() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun)
+        let statusURL = f.dir.appendingPathComponent("status.json")
+        let raw = try String(contentsOf: statusURL, encoding: .utf8)
+        let emptied = raw.replacingOccurrences(of: "\"state_dir\":\"\(f.dir.path)\"", with: "\"state_dir\":\"\"")
+        XCTAssertNotEqual(raw, emptied)
+        try Data(emptied.utf8).write(to: statusURL)
+        let m = try model(f)
+        await m.refresh()
+        XCTAssertEqual(m.status?.stateDir, "")
+        XCTAssertNil(m.runBlocker)
+        await m.startRun(.backlog)
+        XCTAssertEqual(m.runError, "Vani has not reported its state folder yet.")
+        XCTAssertNil(m.manualRun)
+        XCTAssertEqual(m.savedOptions, ManualRunOptions())
+        XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") || $0.hasPrefix("run-request") }, "\(f.calls())")
     }
 
     /// Options vani would refuse never start a process.

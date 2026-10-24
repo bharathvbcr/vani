@@ -27,6 +27,23 @@ public enum ScheduleAgentConstants {
     /// The Keychain read's bound. A first read can wait on an "allow access" prompt nobody
     /// answers; the daemon then starts without the key rather than not at all.
     public static let keychainTimeout: TimeInterval = 30
+    /// `vani daemon` exits with this status (sysexits EX_TEMPFAIL) when a
+    /// process-lifetime field changed: the schedule, or devprism.binary /
+    /// devprism.tools_hash. cmd/vani's exitConfigRestart is the same number.
+    /// A life under `configRestartMinLife` is a crash loop and uses the normal
+    /// backoff instead of starting again at once.
+    public static let configRestartStatus: Int32 = 75
+    public static let configRestartMinLife: TimeInterval = 1
+    /// What the helper logs when it starts the daemon again for that exit.
+    /// A fixed phrase: no config body and no key.
+    public static let configRestartNote = "daemon asked to restart so a schedule or devprism change applies"
+    /// Each settings read and key-existence check on the once-a-minute watch.
+    /// Two of them, then stopGrace and a 2s reap, stay inside the signal
+    /// handler's wait (stopGrace + 10) and launchd's ExitTimeOut (60).
+    public static let watchBound: TimeInterval = 2
+    /// Logged when the App Group store cannot be resolved. A fixed sentence:
+    /// no path and no account.
+    public static let storeFailureLine = "the apply store is unavailable and no writable store directory could be resolved"
 }
 
 /// How long to wait before starting the daemon again after it ends. It never gives up
@@ -66,6 +83,73 @@ public enum ScheduleAttempt: Sendable {
 }
 
 public enum ScheduleAgent {
+    /// Whether this bundle can register the schedule agent. `.absent` is no plist.
+    /// `.unusable` is a file that must not be registered; the string is a fixed sentence
+    /// and never the file's bytes.
+    public enum BundleCopy: Equatable, Sendable {
+        case ready
+        case absent
+        case unusable(String)
+    }
+
+    /// Above this, the plist is refused unread past the cap. The shipped file is about 1 KiB.
+    public static let plistByteCap = 64 * 1024
+
+    /// What ServiceManagement would be asked to register. A link is followed, and the
+    /// resolved path has to stay inside `bundle`. The plist has to be this agent (the
+    /// label and the helper path), with no listener and no environment, and the helper
+    /// has to be an executable file in the bundle.
+    public static func inspect(bundle: URL) -> BundleCopy {
+        switch BundleMember.place(bundle: bundle, relative: "Contents/Library/LaunchAgents/\(ScheduleAgentConstants.plistName)") {
+        case .absent: return .absent
+        case .outside: return .unusable("The schedule agent plist is outside this copy of the app.")
+        case .notFile: return .unusable("The schedule agent plist is not a file.")
+        case let .file(url): return inspectPlist(url, bundle: bundle)
+        }
+    }
+
+    private static let forbiddenPlistKeys = [
+        "EnvironmentVariables", "MachServices", "Program", "ProgramArguments", "Sockets",
+        "StandardErrorPath", "StandardOutPath", "UserName", "WatchPaths", "inetdCompatibility",
+    ]
+
+    private static func inspectPlist(_ url: URL, bundle: URL) -> BundleCopy {
+        let data: Data
+        switch BundleMember.read(file: url, bundle: bundle, maxBytes: plistByteCap) {
+        case let .data(bytes): data = bytes
+        case .oversized: return .unusable("The schedule agent plist is larger than 64 KiB.")
+        case .outside: return .unusable("The schedule agent plist is outside this copy of the app.")
+        case .unreadable: return .unusable("The schedule agent plist could not be read.")
+        }
+        if data.isEmpty { return .unusable("The schedule agent plist is empty.") }
+        guard let object = try? PropertyListSerialization.propertyList(from: data, format: nil) else {
+            return .unusable("The schedule agent plist is not a property list.")
+        }
+        guard let dict = object as? [String: Any] else {
+            return .unusable("The schedule agent plist is not a dictionary.")
+        }
+        if let key = forbiddenPlistKeys.first(where: { dict[$0] != nil }) {
+            return .unusable("The schedule agent plist contains \(key), so it was not registered.")
+        }
+        guard (dict["Label"] as? String) == ScheduleAgentConstants.label else {
+            return .unusable("The schedule agent plist is not the schedule agent.")
+        }
+        guard (dict["BundleProgram"] as? String) == "Contents/Helpers/\(ScheduleAgentConstants.helperName)" else {
+            return .unusable("The schedule agent plist does not name its helper.")
+        }
+        switch BundleMember.place(bundle: bundle, relative: "Contents/Helpers/\(ScheduleAgentConstants.helperName)") {
+        case .absent: return .unusable("The schedule agent helper is not in this copy of the app.")
+        case .outside: return .unusable("The schedule agent helper is outside this copy of the app.")
+        case .notFile: return .unusable("The schedule agent helper is not a file.")
+        case let .file(helper):
+            switch BundleMember.executable(helper, bundle: bundle) {
+            case .yes: return .ready
+            case .outside: return .unusable("The schedule agent helper is outside this copy of the app.")
+            case .no: return .unusable("The schedule agent helper cannot be run.")
+            }
+        }
+    }
+
     /// The config and state folder the app resolved: its saved settings, else Vani's own
     /// defaults. Both are pinned in the daemon's environment, so the daemon never resolves
     /// them from a launchd environment of its own.
@@ -83,6 +167,13 @@ public enum ScheduleAgent {
     /// the log the Pipeline tab names is the same either way.
     public static func logURL(stateDir: String) -> URL {
         URL(fileURLWithPath: stateDir).appendingPathComponent("logs/vani.err.log")
+    }
+
+    /// Writes the fixed store-failure line before the helper exits 1. launchd
+    /// discards the helper's stderr, so this is the line that says why it is
+    /// exiting. The error is not interpolated: it can carry a path.
+    public static func reportStoreFailure(to url: URL, log: ScheduleLog = ScheduleLog()) {
+        log.write(ScheduleAgentConstants.storeFailureLine, to: url)
     }
 
     static func fingerprint(_ settings: DraftSettings, _ paths: Paths) -> String {
@@ -175,8 +266,8 @@ public struct ScheduleLog: Sendable {
 /// Runs the daemon as a child and starts it again when it ends, until `stop()`.
 ///
 /// One thread runs `run()`; `stop()` is safe from any other (a signal handler's queue). A stop
-/// ends the daemon with SIGTERM, so it cancels its run and removes daemon.json, waits up to
-/// `stopGrace` and then SIGKILLs it.
+/// SIGTERMs the running daemon at once, even while a watch check is in flight, then waits up to
+/// `stopGrace` and SIGKILLs it.
 public final class ScheduleSupervisor: @unchecked Sendable {
     private let attempt: @Sendable () -> ScheduleAttempt
     private let currentFingerprint: @Sendable () -> String?
@@ -185,6 +276,7 @@ public final class ScheduleSupervisor: @unchecked Sendable {
     private let fallbackLog: URL
     private let watchInterval: TimeInterval
     private let stopGrace: TimeInterval
+    private let watchBound: TimeInterval
     private let clock: @Sendable () -> Date
     private var policy: RelaunchPolicy
 
@@ -192,6 +284,9 @@ public final class ScheduleSupervisor: @unchecked Sendable {
     private var stopped = false
     private var childExited = false
     private var childStatus: Int32 = 0
+    /// The daemon `supervise` is watching, if one has a pid. `stop` signals it
+    /// without waiting for the watch thread to leave a Keychain or file read.
+    private var child: LaunchedJob?
     /// How many times the daemon has been started (tests and the log).
     public private(set) var starts = 0
 
@@ -210,6 +305,7 @@ public final class ScheduleSupervisor: @unchecked Sendable {
                 fallbackLog: URL,
                 watchInterval: TimeInterval = 60,
                 stopGrace: TimeInterval = ScheduleAgentConstants.stopGrace,
+                watchBound: TimeInterval = ScheduleAgentConstants.watchBound,
                 clock: @escaping @Sendable () -> Date = { Date() }) {
         self.attempt = attempt
         self.currentFingerprint = currentFingerprint
@@ -219,18 +315,32 @@ public final class ScheduleSupervisor: @unchecked Sendable {
         self.fallbackLog = fallbackLog
         self.watchInterval = watchInterval
         self.stopGrace = stopGrace
+        self.watchBound = watchBound
         self.clock = clock
     }
 
     public var isStopped: Bool { cond.lock(); defer { cond.unlock() }; return stopped }
 
-    /// Ends the daemon and makes `run()` return. Returns at once; `run()` returns once the child
-    /// is gone (within `stopGrace` plus a moment).
+    /// Ends the daemon and makes `run()` return. Returns at once. The running child is SIGTERMed
+    /// here, not when the watch thread next notices, so a stuck settings or Keychain check cannot
+    /// keep the daemon up. `run()` returns once the child is gone (within `stopGrace` plus a moment).
+    /// Safe to call twice.
     public func stop() {
         cond.lock()
         stopped = true
+        let job = child
         cond.broadcast()
         cond.unlock()
+        job?.stop()
+    }
+
+    /// SIGKILL the running child. The signal handler calls this when `run()` has not returned
+    /// before its wait ends. Safe to call twice, and when no child is running.
+    public func forceStopChild() {
+        cond.lock()
+        let job = child
+        cond.unlock()
+        job?.forceStop()
     }
 
     /// Blocks, starting the daemon and starting it again, until `stop()`.
@@ -272,7 +382,17 @@ public final class ScheduleSupervisor: @unchecked Sendable {
             note("trying again in \(Int(wait)) s", logURL)
             return wait
         }
+        // Visible to stop() before the watch loop, which drops the lock while it reads
+        // settings and the Keychain.
+        cond.lock()
+        child = job
+        cond.unlock()
         starts += 1
+        defer {
+            cond.lock()
+            child = nil
+            cond.unlock()
+        }
         var reason: String?
         cond.lock()
         var checkAt = Date().addingTimeInterval(watchInterval)
@@ -287,8 +407,9 @@ public final class ScheduleSupervisor: @unchecked Sendable {
         let alreadyGone = childExited
         cond.unlock()
         if !alreadyGone {
-            note(isStopped ? "stopping the daemon" : "restarting the daemon: \(reason ?? "")", logURL)
+            // Signal before any log write: a stuck log must not leave the child running.
             end(job)
+            note(isStopped ? "stopping the daemon" : "restarting the daemon: \(reason ?? "")", logURL)
         }
         cond.lock(); let status = childStatus; cond.unlock()
         let lived = clock().timeIntervalSince(started)
@@ -296,15 +417,36 @@ public final class ScheduleSupervisor: @unchecked Sendable {
             note("daemon ended (status \(status)) after \(Int(lived)) s; the agent is stopping", logURL)
             return 0
         }
+        // Exit 75 is the daemon asking to be replaced so a schedule or DevPrism
+        // change applies. One restart, immediately, once it has actually been up.
+        // An instant 75 is the crash-loop backoff, or a bug would spin.
+        if status == ScheduleAgentConstants.configRestartStatus && lived >= ScheduleAgentConstants.configRestartMinLife {
+            note(ScheduleAgentConstants.configRestartNote, logURL)
+            return 0
+        }
         let wait = policy.exited(after: lived)
         note("daemon ended (status \(status)) after \(Int(lived)) s; starting it again in \(Int(wait)) s", logURL)
         return wait
     }
 
-    /// Why the running daemon should be replaced, or nil.
+    /// Why the running daemon should be replaced, or nil. Each check is bounded.
+    /// A check that does not return is not a change: a hang must not restart the
+    /// daemon and must not hold up `stop()`. A nil fingerprint (settings unreadable)
+    /// is a value, not a timeout.
     private func restartReason(_ key: DraftRunner.KeyOutcome, _ startedFrom: String) -> String? {
-        if let now = currentFingerprint(), now != startedFrom { return "the app's Vani settings changed" }
-        if key == .notFound, keyExists() == true { return "the decision key is now in the Keychain" }
+        switch bound(currentFingerprint, seconds: watchBound) {
+        case .timedOut:
+            return nil
+        case let .value(now):
+            if let now, now != startedFrom { return "the app's Vani settings changed" }
+        }
+        if isStopped { return nil }
+        switch bound(keyExists, seconds: watchBound) {
+        case .timedOut:
+            return nil
+        case let .value(exists):
+            if key == .notFound, exists == true { return "the decision key is now in the Keychain" }
+        }
         return nil
     }
 
@@ -337,4 +479,50 @@ public final class ScheduleSupervisor: @unchecked Sendable {
     private func note(_ message: String, _ url: URL?) {
         log.write(message, to: url ?? fallbackLog)
     }
+}
+
+/// One watch-path read. `.value` is what it returned, including nil. `.timedOut`
+/// means it did not return: that is not a change and must not be flattened into
+/// the nil a missing settings file already returns.
+private enum WatchBound<T: Sendable>: Sendable {
+    case value(T)
+    case timedOut
+}
+
+/// One stored result. The outer optional is "was it stored", so a stored nil
+/// (T itself optional) is not the same as a read that has not finished.
+private struct WatchSlot<T: Sendable>: Sendable {
+    var value: T
+}
+
+/// Holds one result across the watch thread and the bounded call.
+private final class WatchBox<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var slot: WatchSlot<T>?
+    func set(_ v: T) {
+        lock.lock()
+        slot = WatchSlot(value: v)
+        lock.unlock()
+    }
+    func get() -> WatchSlot<T>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return slot
+    }
+}
+
+/// Runs `work` and waits up to `seconds`. The work is abandoned, not cancelled,
+/// if it outlives the wait: the same pattern as DraftRunner.bounded. The box
+/// stays retained by the queued block, so a late finish does not use a freed box.
+private func bound<T: Sendable>(_ work: @escaping @Sendable () -> T, seconds: TimeInterval) -> WatchBound<T> {
+    let done = DispatchSemaphore(value: 0)
+    let box = WatchBox<T>()
+    DispatchQueue.global(qos: .utility).async {
+        box.set(work())
+        done.signal()
+    }
+    guard done.wait(timeout: .now() + seconds) == .success, let slot = box.get() else {
+        return .timedOut
+    }
+    return .value(slot.value)
 }

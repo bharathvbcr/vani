@@ -95,6 +95,50 @@ func TestWarnShadowNotesReportsFailedCalls(t *testing.T) {
 	if got := out.String(); !strings.HasPrefix(got, `vani: shadow "local-test-d1-combined": 1`) {
 		t.Fatalf("warning = %q", got)
 	}
+	if w.shadow == nil || w.shadow.Errors != 1 {
+		t.Fatalf("shadow miss = %+v", w.shadow)
+	}
+}
+
+func TestShadowErrorsNoteUnwrapsTheEscalator(t *testing.T) {
+	r, rt := shadowRunner(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}, 0)
+	route(t, rt)
+	r.Triager.(*jdtriage.Triager).D = &escalator{primary: rt}
+	if got := shadowErrorsNote(r); !strings.Contains(got, `shadow "local-test-d1-combined": 1`) {
+		t.Fatalf("wrapped note = %q", got)
+	}
+	r.Triager.(*jdtriage.Triager).D = shadowTestPrimary{}
+	if got := shadowErrorsNote(r); got != "" {
+		t.Fatalf("unknown decider recorded %q", got)
+	}
+	r.Triager.(*jdtriage.Triager).D = &escalator{primary: shadowTestPrimary{}}
+	if got := shadowErrorsNote(r); got != "" {
+		t.Fatalf("escalated unknown decider recorded %q", got)
+	}
+}
+
+func TestShadowMissOnANilRunnerRecordsNothing(t *testing.T) {
+	w := &wired{}
+	w.warnShadowNotes(nil)
+	if w.shadow != nil {
+		t.Fatalf("%+v", w.shadow)
+	}
+}
+
+func TestShadowBusySkipsAreRecorded(t *testing.T) {
+	rt := decide.NewRouter(shadowTestPrimary{})
+	g := newShadowGate(1, 1)
+	g.slots <- struct{}{}
+	g.busy.Add(3)
+	rt.Shadow = gatedShadow{Backend: shadowTestPrimary{}, gate: g}
+	r := &pipeline.Runner{Triager: &jdtriage.Triager{D: rt}}
+	w := &wired{}
+	w.warnShadowNotes(r)
+	if w.shadow == nil || w.shadow.BusySkips != 3 || w.shadow.Errors != 0 {
+		t.Fatalf("%+v", w.shadow)
+	}
 }
 
 func TestShadowErrorsNote(t *testing.T) {

@@ -24,7 +24,15 @@ if CommandLine.arguments.dropFirst().first == "--version" {
 
 let vaniBinary = VaniProcess.helpersDirectory().appendingPathComponent("vani")
 let storeDir: URL
-do { storeDir = try AppGroup.storeDirectory() } catch { fail("\(error)") }
+do {
+    storeDir = try AppGroup.storeDirectory()
+} catch {
+    // stderr is discarded (the plist sets no StandardErrorPath). The fixed line
+    // goes to the default state log, then exit 1 so launchd tries again.
+    // The error is not interpolated: it can carry a path.
+    ScheduleAgent.reportStoreFailure(to: ScheduleAgent.logURL(stateDir: VaniProcess.defaultStateDir))
+    fail("the apply store is unavailable")
+}
 
 let supervisor = ScheduleSupervisor(
     attempt: { ScheduleAgent.attempt(settingsDir: storeDir, vaniBinary: vaniBinary) },
@@ -41,7 +49,12 @@ for sig in [SIGTERM, SIGINT] {
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
     source.setEventHandler {
         supervisor.stop()
-        _ = finished.wait(timeout: .now() + ScheduleAgentConstants.stopGrace + 10)
+        if finished.wait(timeout: .now() + ScheduleAgentConstants.stopGrace + 10) == .timedOut {
+            // The watch thread did not reach end(). SIGKILL the child, then
+            // give it a moment to be reaped, before this process exits.
+            supervisor.forceStopChild()
+            _ = finished.wait(timeout: .now() + 2)
+        }
         exit(0)
     }
     source.resume()

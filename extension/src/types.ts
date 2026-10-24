@@ -27,6 +27,8 @@ export interface FieldInfo {
   required: boolean;
   value: string[];      // chosen value(s); text kinds hold one element
   drafted?: boolean;    // holds a model draft the user inserted: saved for review, never as a confident answer
+  /** The wording insertDraft wrote, so a later edit is not treated as that draft. Never sent to a model. */
+  draftText?: string;
   multi?: boolean;      // a multi-select widget: it takes every saved value, not the first
 }
 

@@ -66,6 +66,12 @@ export interface Tracker {
   /** Fold the page's current fields into the pending set (synchronous). */
   snapshot(): void;
   flush(reason: string, explicit?: boolean): Promise<FlushResult | null>;
+  /**
+   * This page already saved `field` itself. A later flush must not send the same
+   * value again: mergeCapture counts a use for every field it is handed, and the
+   * bank read can still be the one from before this save.
+   */
+  noteSent(field: FieldInfo, captureSelfId: boolean): void;
   pendingCount(): number;
   observedRoots(): number;
   dispose(): void;
@@ -80,6 +86,14 @@ function isAdvance(t: Element): boolean {
   if (text.length <= 40 && ADVANCE.test(text)) return true;
   if (t.getAttribute("type") === "submit") return true;
   return ADVANCE_ID.test(t.getAttribute("data-automation-id") ?? "");
+}
+
+/** The recorded draft wording stays on the page. A save sends the answer, not a second copy of it. */
+function forCapture(f: FieldInfo): FieldInfo {
+  if (f.draftText === undefined) return f;
+  const copy = { ...f };
+  delete copy.draftText;
+  return copy;
 }
 
 export function createTracker(d: TrackerDeps): Tracker {
@@ -115,15 +129,16 @@ export function createTracker(d: TrackerDeps): Tracker {
         const f = r.info;
         if (f.kind === "file" || f.kind === "hidden" || f.kind === "other") continue;
         const k = `${answerKey(f)}|${f.kind}`;
+        const kept = forCapture(f);
         if (f.kind === "password" || classify(f) === "secret") {
           // Kept so the count of skipped sensitive fields is honest; the value is never held.
           pending.delete(k);
-          pending.set(k, { ...f, value: [] });
+          pending.set(k, { ...kept, value: [] });
         } else if (f.value.every(v => v.trim() === "")) {
           pending.delete(k); // the user cleared it
         } else {
           pending.delete(k);
-          pending.set(k, f);
+          pending.set(k, kept);
         }
         if (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value as string);
       }
@@ -313,6 +328,7 @@ export function createTracker(d: TrackerDeps): Tracker {
   return {
     snapshot,
     flush,
+    noteSent(field, captureSelfId) { markSent([field], captureSelfId); },
     pendingCount: () => pending.size,
     observedRoots: () => observers.length,
     dispose() {

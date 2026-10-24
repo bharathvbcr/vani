@@ -13,6 +13,7 @@ import {
 import { isWorkdaySharedHost, postingKey } from "./applied";
 import { excerpt } from "./crawler";
 import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent } from "./jobinfo";
+import { scorePillText } from "./joblist";
 
 const WORKDAY_JOBS_HOST = /(^|\.)myworkdayjobs\.com$/;
 /** A Workday host: tenant-labelled, or the shared wd{N}.myworkdaysite.com. */
@@ -781,11 +782,11 @@ function escapeCsvCell(raw: string): string {
 
 /** Export scraped jobs to CSV format. */
 export function exportJobsAsCSV(jobs: ScrapedJob[]): string {
-  const header = ["Title", "Company", "Relevance", "Fit", "Location", "Salary", "URL"];
+  const header = ["Title", "Company", "Score", "Fit", "Location", "Salary", "URL"];
   const rows = jobs.map(j => [
     escapeCsvCell(j.title),
     escapeCsvCell(j.company),
-    `${j.relevance.score}%`,
+    escapeCsvCell(scorePillText(j.relevance)),
     escapeCsvCell(j.relevance.fitLabel),
     escapeCsvCell(j.location),
     escapeCsvCell(j.salary ?? ""),

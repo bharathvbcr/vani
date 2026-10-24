@@ -29,7 +29,7 @@ private func iso(_ d: Date) -> String {
 
 /// What `vani status --json` printed for a healthy install, with Go's times.
 private func statusReply(lastRun: String? = nil, backends: String? = nil, ledgerOK: Bool = true,
-                         version: Int = 1, generated: Date = now, scheduleExtra: String = "") -> String {
+                         version: Int = 1, generated: Date = now, scheduleExtra: String = "", tail: String = "") -> String {
     let finished = iso(now.addingTimeInterval(-3 * 3600))
     let started = iso(now.addingTimeInterval(-3 * 3600 - 312))
     return """
@@ -39,7 +39,7 @@ private func statusReply(lastRun: String? = nil, backends: String? = nil, ledger
     "last_run":\(lastRun ?? #"{"ok":true,"state":"ok","started_at":"\#(started)","finished_at":"\#(finished)","duration_sec":312.4,"postings_before":780,"postings_after":812,"counts_before":{"live":10,"digested":300,"dropped":240,"dead":200,"unsure":30},"counts_after":{"live":50,"digested":300,"dropped":250,"dead":200,"unsure":12}}"#),\
     "schedule":{"ok":true,"daily_at":"08:30","timezone":"America/Los_Angeles","next_run":"2026-10-15T15:30:00Z"\(scheduleExtra)},\
     "backends":\(backends ?? #"{"ok":true,"day":"2026-10-14","items":[{"ok":true,"name":"d1-ultra","kind":"openrouter","cap_usd":0.25,"spent_usd":0.1,"remaining_usd":0.15},{"ok":true,"name":"gemini","kind":"llm","cap_usd":1,"spent_usd":0.7,"remaining_usd":0.3}]}"#),\
-    "decide":{"ok":true,"shadow":"local","local_configured":true,"local_mode":"server","local_model":"d1-3b","lappi_configured":false}}
+    "decide":{"ok":true,"shadow":"local","local_configured":true,"local_mode":"server","local_model":"d1-3b","lappi_configured":false}\(tail)}
     """
 }
 
@@ -208,6 +208,61 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(issue.title, "No run in over a day")
         XCTAssertEqual(issue.severity, .warning)
         XCTAssertTrue(try XCTUnwrap(issue.detail).contains("43 h"))
+    }
+
+    func testASkippedSlotReplacesTheStaleWarningAndARecentOneStillShows() throws {
+        let later = now.addingTimeInterval(40 * 3600)
+        let slot = iso(now.addingTimeInterval(-2 * 3600))
+        let skip = #""last_skip":{"ok":true,"slot":"\#(slot)","late_sec":27000,"error":"skipped: 7h30m0s late, past the 6h0m0s window"}"#
+        let stale = try decode(statusReply(tail: "," + skip))
+        let issue = try XCTUnwrap(stale.issues(at: later).first { $0.title == "A daily slot was skipped" })
+        XCTAssertEqual(issue.severity, .warning)
+        XCTAssertEqual(issue.detail, "skipped: 7h30m0s late, past the 6h0m0s window")
+        XCTAssertFalse(stale.issues(at: later).contains { $0.title == "No run in over a day" })
+        XCTAssertNotNil(stale.skippedSlot)
+
+        // A manual run three hours ago, then a daily slot skipped after it.
+        let recent = try decode(statusReply(tail: "," + skip))
+        XCTAssertEqual(recent.issues(at: now).map(\.title), ["A daily slot was skipped"])
+
+        // A skip older than the last run is not shown, and a running run hides one.
+        let older = iso(now.addingTimeInterval(-10 * 3600))
+        let hidden = #""last_skip":{"ok":true,"slot":"\#(older)","late_sec":100,"error":"skipped"}"#
+        XCTAssertEqual(try decode(statusReply(tail: "," + hidden)).issues(at: now), [])
+        let running = #"{"ok":true,"state":"running","started_at":"\#(iso(now.addingTimeInterval(-10 * 3600)))"}"#
+        let runningSkip = try decode(statusReply(lastRun: running, tail: "," + skip))
+        XCTAssertNil(runningSkip.skippedSlot)
+        XCTAssertEqual(runningSkip.issues(at: now), [])
+
+        let never = #"{"ok":true,"reason":"no run has been recorded yet","state":"none"}"#
+        let fresh = try decode(statusReply(lastRun: never, tail: "," + skip))
+        XCTAssertEqual(fresh.issues(at: now).map(\.title), ["A daily slot was skipped"])
+        XCTAssertFalse(fresh.issues(at: now).contains { $0.title == "No daily run has been recorded yet" })
+    }
+
+    func testAnUnreadableSkipAndAFailedInboxPollAreWarnings() throws {
+        let badSkip = #""last_skip":"not an object""#
+        let unread = try decode(statusReply(tail: "," + badSkip))
+        XCTAssertEqual(unread.lastSkip?.ok, false)
+        XCTAssertEqual(unread.issues(at: now).map(\.title), ["A skipped daily slot could not be read"])
+
+        let poll = #""inbox":{"ok":true,"at":"2026-10-14T12:00:00Z","error":"drain stopped","bad":2,"live":1}"#
+        let failed = try decode(statusReply(tail: "," + poll))
+        XCTAssertEqual(failed.inbox?.bad, 2)
+        XCTAssertEqual(failed.inbox?.live, 1)
+        XCTAssertEqual(failed.issues(at: now).map(\.title), ["The last inbox poll failed"])
+        XCTAssertTrue(try XCTUnwrap(failed.inbox).summary.contains("drain stopped"))
+
+        let quiet = #""inbox":{"ok":true,"at":"2026-10-14T12:00:00Z","folded":3,"new":1}"#
+        let ok = try decode(statusReply(tail: "," + quiet))
+        XCTAssertEqual(ok.issues(at: now), [])
+        XCTAssertTrue(try XCTUnwrap(ok.inbox).summary.contains("3 folded"))
+        XCTAssertTrue(ok.inbox?.summary.contains("1 new") == true)
+
+        let left = #""inbox":{"ok":true,"bad":1,"unreadable":2}"#
+        XCTAssertEqual(try decode(statusReply(tail: "," + left)).issues(at: now).map(\.title), ["The last inbox poll left files unread"])
+        let broken = #""inbox":{"ok":false,"reason":"inbox status is corrupt"}"#
+        XCTAssertEqual(try decode(statusReply(tail: "," + broken)).issues(at: now).first?.detail, "inbox status is corrupt")
     }
 
     func testUnreadableSpendIsUnknownNeverZero() throws {

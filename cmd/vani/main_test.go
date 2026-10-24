@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -535,6 +537,22 @@ func TestDaemonExitsCleanlyOnCancel(t *testing.T) {
 	_, e := mustCode(t, 0, "daemon")
 	if !strings.Contains(e, "daemon started") {
 		t.Errorf("stderr %q", e)
+	}
+}
+
+func TestExitCodeConfigRestart(t *testing.T) {
+	if exitCode(nil) != exitOK || exitCode(flag.ErrHelp) != exitOK {
+		t.Fatalf("ok: %d %d", exitCode(nil), exitCode(flag.ErrHelp))
+	}
+	if exitCode(usagef("nope")) != exitUsage {
+		t.Fatalf("usage: %d", exitCode(usagef("nope")))
+	}
+	wrapped := fmt.Errorf("during daemon: %w", errConfigRestart)
+	if exitCode(wrapped) != exitConfigRestart || exitCode(errors.Join(errors.New("also"), errConfigRestart)) != exitConfigRestart {
+		t.Fatal("a wrapped restart must be exit 75")
+	}
+	if exitCode(errors.New("boom")) != exitRuntime {
+		t.Fatal("runtime")
 	}
 }
 

@@ -144,6 +144,25 @@ type wired struct {
 	// semPre is the last run's knowledge-base warm before the advance phase
 	// (semanticwire.go warmBeforeAdvance); nil when it did not run.
 	semPre *semanticReport
+	// nearDup, exclusions, logos and shadow are the current run's stage
+	// summaries. startRun clears them. nil means that stage has not run.
+	nearDup    *nearDupSummary
+	exclusions *exclusionSummary
+	logos      *logoSummary
+	shadow     *shadowNote
+	// explain is set when the digest's notes were off or paused on a run that
+	// was going to ask a backend. Nil when notes ran, or the run was list-only.
+	explain *explainNote
+	// simOff and simNote are the near-duplicate cosine's load and cache lines
+	// for this run. finishSimilarity copies them onto the summary.
+	simOff  string
+	simNote string
+	// fetches is each board's detail and pay counts, keyed the way the board
+	// report spells the token. applyFetchesLocked copies them onto the report.
+	fetches map[boardKey]boardFetch
+	// recordGaps is true when this run will ask a decision backend. A list-only
+	// pass leaves shadow and notes gaps off the record.
+	recordGaps bool
 	// keychainRun counts runs (startRun), so a failed Keychain read is retried
 	// once per run; keychain caches the OpenRouter key (keychain.go).
 	keychainRun int
@@ -154,7 +173,10 @@ type wired struct {
 func (w *wired) runReport() runDetail {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return runDetail{Boards: w.boards, Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats(), SemanticPre: w.semPre}
+	return runDetail{
+		Boards: w.boards, Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats(), SemanticPre: w.semPre,
+		NearDup: w.nearDup, Exclusions: w.exclusions, Logos: w.logos, Shadow: w.shadow, Explain: w.explain,
+	}
 }
 
 func (w *wired) close() error {
@@ -315,14 +337,22 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 		}
 		lb, err := newLappi()
 		if err != nil {
-			w.warnf("lappi disabled: %v", err)
+			msg := fmt.Sprintf("lappi disabled: %v", err)
+			w.warnf("%s", msg)
+			if advance {
+				w.noteShadow(msg)
+			}
 		} else if len(promoted) > 0 {
 			backends = append([]decide.Backend{onlySlots(logFallback(lb, w.warnf, w.backendErrs), promoted)}, backends...)
 			if w.cfg.Decide.Shadow == "lappi" {
 				// The shadow is its own client over the slots not yet promoted:
 				// one backend cannot be both in the chain and the shadow.
 				if sb, err := newLappi(); err != nil {
-					w.warnf("lappi shadow disabled: %v", err)
+					msg := fmt.Sprintf("lappi shadow disabled: %v", err)
+					w.warnf("%s", msg)
+					if advance {
+						w.noteShadow(msg)
+					}
 				} else {
 					lappiShadow = exceptSlots(logErrors(sb, w.warnf, w.backendErrs), promoted)
 				}
@@ -348,7 +378,11 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 			// A pass that asks nothing starts no server (startRun): no endpoint
 			// is expected, and saying the model is disabled would be noise.
 		case err != nil:
-			w.warnf("local decision model disabled: %v", err)
+			msg := fmt.Sprintf("local decision model disabled: %v", err)
+			w.warnf("%s", msg)
+			if advance {
+				w.noteShadow(msg)
+			}
 		default:
 			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
 		}
@@ -368,7 +402,9 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 			}
 		}
 		if shadow == nil && advance {
-			w.warnf("shadow %q unavailable; running without a shadow", name)
+			msg := fmt.Sprintf("shadow %q unavailable; running without a shadow", name)
+			w.warnf("%s", msg)
+			w.noteShadow(msg)
 		}
 	}
 	// d1-ultra is retired per promoted slot: the OpenRouter model no longer

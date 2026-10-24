@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  DEFAULT_WORDS, MAX_DESCRIPTION_CHARS, MAX_QUESTION_CHARS, MAX_WORDS, MIN_WORDS,
-  buildDraftRequest, parseDraftReply, requestDraft,
+  DEFAULT_WORDS, DRAFT_FIELD_ABSENT, DRAFT_FIELD_BUSY, DRAFT_FIELD_NONE, MAX_DESCRIPTION_CHARS, MAX_QUESTION_CHARS, MAX_WORDS, MIN_WORDS,
+  buildDraftRequest, draftStartError, parseDraftReply, requestDraft,
 } from "../src/draft";
 
 const job = { company: "Acme", title: "ML Engineer", description: "We build inference systems on GPUs. ".repeat(5) };
@@ -28,6 +28,15 @@ describe("buildDraftRequest", () => {
     expect(MAX_DESCRIPTION_CHARS).toBe(60_000);
     expect(req(buildDraftRequest("Why us?", { ...job, description: "d".repeat(50_000) })).job.description.length).toBe(50_000);
     expect(req(big).job.company.length).toBe(200);
+  });
+
+  test("a first draft omits attempt, and a later one sends only the counter", () => {
+    expect(Object.keys(buildDraftRequest("Why us?", job, undefined, 0).request).sort()).toEqual(["job", "max_words", "question"]);
+    const again = buildDraftRequest("Why us?", job, undefined, 2).request as { attempt?: number; question: string };
+    expect(again.attempt).toBe(2);
+    expect(again.question).toBe("Why us?");
+    expect(Object.keys(again).sort()).toEqual(["attempt", "job", "max_words", "question"]);
+    for (const bad of [-1, 9, 1.5]) expect(() => buildDraftRequest("Why us?", job, undefined, bad)).toThrow(/attempt is out of range/);
   });
 
   test("refuses a field with no question or a page with no description", () => {
@@ -90,5 +99,15 @@ describe("requestDraft", () => {
   test("the default timeout is long enough for the host's 150 s budget", async () => {
     const { DRAFT_TIMEOUT_MS } = await import("../src/draft");
     expect(DRAFT_TIMEOUT_MS).toBeGreaterThanOrEqual(160_000);
+  });
+});
+
+describe("draftStartError", () => {
+  test("one frame starting is enough, and a real refusal beats 'not on this page'", () => {
+    expect(draftStartError([{ ok: true }, { ok: false, error: DRAFT_FIELD_ABSENT }])).toBeNull();
+    expect(draftStartError([{ ok: false, error: DRAFT_FIELD_ABSENT }, { ok: false, error: DRAFT_FIELD_BUSY }])).toBe(DRAFT_FIELD_BUSY);
+    expect(draftStartError([{ ok: false, error: DRAFT_FIELD_ABSENT }, { ok: false, error: DRAFT_FIELD_ABSENT }])).toBe(DRAFT_FIELD_ABSENT);
+    expect(draftStartError([])).toBe(DRAFT_FIELD_NONE);
+    expect(draftStartError([{ ok: false }])).toBe(DRAFT_FIELD_ABSENT);
   });
 });

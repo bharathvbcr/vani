@@ -8,9 +8,9 @@ import VaniApplyKit
 /// read says so; it never shows as zero or fine.
 struct PipelineView: View {
     @Environment(PipelineModel.self) private var pipeline
-    @State private var showRunSheet = false
 
     var body: some View {
+        @Bindable var pipeline = pipeline
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let err = pipeline.error {
@@ -38,7 +38,9 @@ struct PipelineView: View {
         .navigationTitle("Pipeline")
         .toolbar {
             ToolbarItem {
-                Button { showRunSheet = true } label: { Label("Run Now…", systemImage: "play.fill") }
+                Button {
+                    pipeline.openRunNow()
+                } label: { Label("Run Now…", systemImage: "play.fill") }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(pipeline.runBlocker != nil)
                     .help(pipeline.runBlocker ?? "Run the pipeline now, with options for this run only (⇧⌘R)")
@@ -51,9 +53,11 @@ struct PipelineView: View {
             }
         }
         .task { await pipeline.refresh() }
-        .sheet(isPresented: $showRunSheet) {
-            RunNowSheet(initial: pipeline.savedOptions) { options in
-                Task { await pipeline.startRun(options) }
+        .sheet(item: $pipeline.runSheet) { sheet in
+            let shown = sheet.presentation(daemonRunning: pipeline.daemonRunning)
+            RunNowSheet(presentation: shown) { options in
+                let remember = shown.remembers
+                Task { await pipeline.startRun(options, remember: remember) }
             }
         }
     }
@@ -110,6 +114,7 @@ private struct RunningBanner: View {
 private struct RunNowSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    let presentation: RunSheetPresentation
     let start: (ManualRunOptions) -> Void
 
     @State private var allBoards: Bool
@@ -123,8 +128,10 @@ private struct RunNowSheet: View {
     @State private var loadingBoards = true
     @State private var filter = ""
 
-    init(initial: ManualRunOptions, start: @escaping (ManualRunOptions) -> Void) {
+    init(presentation: RunSheetPresentation, start: @escaping (ManualRunOptions) -> Void) {
+        self.presentation = presentation
         self.start = start
+        let initial = presentation.options
         _allBoards = State(initialValue: initial.boards.isEmpty)
         _chosen = State(initialValue: Set(initial.boards))
         _advance = State(initialValue: !initial.listOnly)
@@ -135,6 +142,9 @@ private struct RunNowSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let banner = presentation.banner {
+                Text(banner).font(.callout).foregroundStyle(.secondary)
+            }
             Text("Run the pipeline now").font(.headline)
             Text("These choices apply to this run only. Your config and the daily run stay as they are.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -178,10 +188,11 @@ private struct RunNowSheet: View {
             if let problem {
                 Text(problem).font(.callout).foregroundStyle(.red)
             }
-            HStack {
-                Text("A run is refused while the daemon or another vani holds the ledger.")
+            HStack(alignment: .center) {
+                Text(presentation.footnote)
                     .font(.caption).foregroundStyle(.secondary)
-                Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Start Run") {
                     start(options)
@@ -192,7 +203,7 @@ private struct RunNowSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: allBoards ? 560 : 720)
+        .frame(width: 560, height: (allBoards ? 560 : 720) + (presentation.banner == nil ? 0 : 110))
         .task { await loadBoards() }
     }
 
@@ -361,11 +372,21 @@ private struct Row: View {
     let label: String
     let value: String
     var secondary = false
+    /// Untrusted text (a stage note, a poll error) is shown as written, never as Markdown.
+    var verbatim = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label).foregroundStyle(.secondary).frame(width: 130, alignment: .leading)
-            Text(value).foregroundStyle(secondary ? .secondary : .primary).textSelection(.enabled)
+            Group {
+                if verbatim {
+                    Text(verbatim: value)
+                } else {
+                    Text(value)
+                }
+            }
+            .foregroundStyle(secondary ? .secondary : .primary)
+            .textSelection(.enabled)
             Spacer(minLength: 0)
         }
     }
@@ -380,7 +401,7 @@ private struct ScheduleSection: View {
 
     var body: some View {
         let state = ScheduleToggle.make(registration: app.scheduleStatus, error: app.scheduleError,
-                                        daemon: daemon, leftAlone: app.agentLeftAlone)
+                                        daemon: daemon, leftAlone: app.agentLeftAlone, copy: app.scheduleCopy)
         Panel(title: "Run on schedule") {
             Toggle(isOn: Binding(get: { state.isOn }, set: { app.setScheduleEnabled($0) })) {
                 Text(state.headline).foregroundStyle(tone(state.tone))
@@ -456,6 +477,45 @@ private struct LastRunSection: View {
                 if let errs = run.backendErrors {
                     BackendErrorRows(errors: errs)
                 }
+                if let err = run.impressionsError, !err.isEmpty {
+                    Row(label: "Impressions", value: PipelineStatus.bounded(err, max: 500), verbatim: true)
+                }
+                if run.logDropped > 0 {
+                    Row(label: "Run log", value: "\(run.logDropped) line(s) dropped after the 1 MiB cap")
+                }
+                if let shadow = run.shadow, shadow.isFailure {
+                    Row(label: "Shadow", value: shadow.summary, verbatim: true)
+                }
+                if let exclusions = run.exclusions {
+                    Row(label: "Exclusions", value: exclusions.summary, secondary: !exclusions.isFailure, verbatim: exclusions.isFailure)
+                }
+                if let logos = run.logos {
+                    Row(label: "Logos", value: logos.summary, secondary: !logos.isFailure, verbatim: logos.isFailure)
+                }
+                if let near = run.nearDup {
+                    Row(label: "Near-duplicates", value: near.summary, secondary: !near.isFailure,
+                        verbatim: near.isFailure || !(near.similarityNote ?? "").isEmpty)
+                }
+                if let pre = run.semanticPre {
+                    Row(label: "Semantic, before advance", value: pre.summary, secondary: !pre.isFailure, verbatim: pre.isFailure)
+                }
+                if let sem = run.semantic {
+                    Row(label: "Semantic", value: sem.summary, secondary: !sem.isFailure, verbatim: sem.isFailure)
+                }
+                if let warn = run.digestWarning, !warn.isEmpty {
+                    Row(label: "Digest", value: PipelineStatus.bounded(warn, max: 500), verbatim: true)
+                }
+                if let notes = run.explain {
+                    Row(label: "Notes", value: notes.summary, secondary: !notes.isFailure, verbatim: true)
+                }
+            }
+            if let skip = status.lastSkip, !skip.ok {
+                Row(label: "Skipped slot", value: "Could not be read: \(skip.reason ?? "unreadable")", verbatim: true)
+            } else if let skip = status.skippedSlot {
+                Row(label: "Skipped slot", value: skip.detail ?? "A daily slot was skipped", verbatim: true)
+            }
+            if let inbox = status.inbox {
+                Row(label: "Inbox", value: PipelineStatus.bounded(inbox.summary, max: 500), secondary: !inbox.needsAttention, verbatim: true)
             }
             RunToolsRow(status: status)
             if status.schedule.isUnkept {
@@ -552,7 +612,7 @@ private struct RunToolsRow: View {
             }
         }
         .disabled(pipeline.failureCopy == .copying)
-        .help("Copy the last run's failed boards, backend errors, error and log paths as plain text")
+        .help("Copy the last run's failed boards, backend errors, stage gaps, error and log paths as plain text")
     }
 
     private func logsMenu(_ files: RunFiles) -> some View {
@@ -584,6 +644,9 @@ private struct BoardRows: View {
         if let o = boards.outcome {
             Row(label: "", value: o, secondary: true)
         }
+        if let fetch = boards.fetchSummary {
+            Row(label: "Board fetches", value: fetchLine(fetch), secondary: boards.payFailed == 0, verbatim: true)
+        }
         ForEach(Array(boards.problems().enumerated()), id: \.offset) { _, line in
             HStack(alignment: .firstTextBaseline) {
                 // Not a Spacer: see BackendErrorRows.
@@ -611,6 +674,13 @@ private struct BoardRows: View {
             Row(label: "", value: more, secondary: true)
         }
     }
+
+    /// The fetch counts, plus the pay error when a pay fetch failed. Built
+    /// outside `body` because a ViewBuilder cannot assign into a local.
+    private func fetchLine(_ fetch: String) -> String {
+        guard boards.payFailed > 0, let err = boards.payError, !err.isEmpty else { return fetch }
+        return fetch + ": " + PipelineStatus.bounded(err, max: 200)
+    }
 }
 
 /// What the run's advance phase got through, and what the per-run cap or an
@@ -626,6 +696,12 @@ private struct AdvanceRows: View {
         }
         if let s = advance.stopNote {
             Row(label: "", value: s, secondary: advance.stopped == .cap)
+        }
+        if let line = advance.failOpen.summary {
+            Row(label: "", value: line, secondary: !advance.failOpen.isFailure, verbatim: true)
+        }
+        if let line = advance.notes.summary {
+            Row(label: "", value: line, secondary: !advance.notes.isFailure, verbatim: true)
         }
     }
 }

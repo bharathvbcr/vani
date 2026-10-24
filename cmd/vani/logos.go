@@ -109,6 +109,9 @@ func (w *wired) warnLogos(res logo.Result, missing []string, err error) {
 	}
 	w.warnf("logos: fetched %d, fresh %d, waiting %d, failed %d, deferred %d",
 		res.Fetched, res.Fresh, res.Waiting, res.Failed, res.Deferred)
+	w.mu.Lock()
+	w.logos = summarizeLogos(res, len(missing), err)
+	w.mu.Unlock()
 }
 
 func (e *env) cmdLogos(args []string) error {

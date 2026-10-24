@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
 	"sort"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/digest"
@@ -80,13 +82,44 @@ var buildApp = wireApp
 // run replaces it.
 func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOptions) daemon.Job {
 	return func(ctx context.Context) error {
+		// A process-lifetime change is not a run. Decide it before any record,
+		// so a schedule edit is not stored as failed or cancelled and is not
+		// announced. reloadConfig cancels ctx when this process is the daemon;
+		// the job then returns nil and the process exits errConfigRestart.
+		// With no cancel (a test, or run-once) the error is returned as-is.
+		// An exclusion-only edit falls through; dailySteps reloads it again.
+		if _, err := e.reloadConfig(app, cfg, opts.Boards); errors.Is(err, errConfigRestart) {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
 		e.keepInterruptedRun()
 		rec := runRecord{PID: os.Getpid(), StartedAt: now(), Outcome: outcomeRunning, Trigger: trigger, Options: opts.recorded(), Log: e.runLog}
+		// A run the app already logs (VANI_RUN_LOG) is not copied a second time.
+		// One that named no log keeps runs/history/<id>.log for this job only.
+		ownedLog := rec.Log == ""
+		finishLog := e.captureRunLog(&rec)
+		defer finishLog()
 		if app.Ledger != nil {
 			rec.CountsBefore = statusCounts(app.Ledger.All())
 		}
+		// The run's own reload can still see a change that landed after the
+		// check above. Snapshot the record first so that path can put it back.
+		priorRecord, priorErr := os.ReadFile(runRecordPath(e.stateDir))
 		e.saveRunRecord(rec)
 		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
+		if errors.Is(err, errConfigRestart) && !errors.Is(err, daemon.ErrFatal) {
+			finishLog()
+			if ownedLog && rec.Log != "" {
+				_ = os.Remove(rec.Log)
+			}
+			e.restoreRecordAfterRestart(priorRecord, priorErr)
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
 		rec.FinishedAt = now()
 		if app.RunReport != nil {
 			rec.runDetail = app.RunReport()
@@ -105,9 +138,35 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
 			rec.Cause = runCause(err)
 		}
+		finishLog()
 		e.saveRunRecord(rec)
 		e.announceFailure(ctx, app, rec)
 		return err
+	}
+}
+
+// captureRunLog tees this run's stderr into runs/history/<id>.log when the
+// run named no log of its own. The returned function is idempotent: it stops
+// the tee, records how many lines the cap dropped, and closes the file.
+func (e *env) captureRunLog(rec *runRecord) func() {
+	if rec == nil || rec.Log != "" || e.runTee == nil {
+		return func() {}
+	}
+	f, path, err := openOwnedRunLog(e.stateDir, runID(*rec))
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: this run's log was not kept: %s\n", oneLine(err.Error(), maxRunErrorRunes))
+		return func() {}
+	}
+	e.runTee.setExtra(f, maxRunLogBytes)
+	rec.Log = path
+	done := false
+	return func() {
+		if done {
+			return
+		}
+		done = true
+		rec.LogDropped = e.runTee.clearExtra()
+		_ = f.Close()
 	}
 }
 
@@ -123,6 +182,17 @@ func panicText(p any) string { return oneLine(fmt.Sprint(p), maxPanicText) }
 // maxPanicStack bounds the stack a recovered run panic prints.
 const maxPanicStack = 4096
 
+// writePanic prints a recovered panic: the value as one bounded line, then the
+// stack cut at maxPanicStack. The stack is not stored. prefix is the words
+// before the value, including its trailing space.
+func writePanic(w io.Writer, prefix string, p any) {
+	stack := debug.Stack()
+	if len(stack) > maxPanicStack {
+		stack = stack[:maxPanicStack]
+	}
+	fmt.Fprintf(w, "%s%s\n%s\n", prefix, panicText(p), stack)
+}
+
 // guardedRun is the run between its first and last record write. A panic comes
 // back as an error wrapping errRunPanic, joined with whatever the run had
 // already failed with, and the stack goes to stderr.
@@ -130,11 +200,7 @@ func (e *env) guardedRun(ctx context.Context, app *App, cfg config.Config, opts 
 	stage = stagePipeline
 	defer func() {
 		if p := recover(); p != nil {
-			stack := debug.Stack()
-			if len(stack) > maxPanicStack {
-				stack = stack[:maxPanicStack]
-			}
-			fmt.Fprintf(e.stderr, "vani: the run panicked: %s\n%s\n", panicText(p), stack)
+			writePanic(e.stderr, "vani: the run panicked: ", p)
 			err = errors.Join(err, fmt.Errorf("%w: %s", errRunPanic, panicText(p)))
 			if berr := ledgerBroken(app.Ledger); berr != nil {
 				err = errors.Join(err, berr)
@@ -182,11 +248,35 @@ func ledgerBroken(l ledger.Ledger) error {
 // anything.
 func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts runOptions, rec *runRecord) (stage string, err error) {
 	cfg, reloadErr := e.reloadConfig(app, cfg, opts.Boards)
+	// A restart is not this run. Do not start the pipeline and do not join a
+	// cancelled pipeline error into it; dailyJob drops the running record.
+	if errors.Is(reloadErr, errConfigRestart) {
+		return stagePipeline, reloadErr
+	}
 	if errors.Is(reloadErr, errBoardSelection) {
 		return stagePipeline, reloadErr
 	}
 	stage, err = e.runAndPublish(ctx, app, cfg, opts, rec)
 	return stage, errors.Join(reloadErr, err)
+}
+
+// restoreRecordAfterRestart puts back the record from before this job wrote
+// "running". A process-lifetime change found by the run's own reload is not a
+// run, and the record status reads must keep showing the previous one.
+func (e *env) restoreRecordAfterRestart(prior []byte, priorErr error) {
+	path := runRecordPath(e.stateDir)
+	switch {
+	case priorErr == nil:
+		if werr := atomicfile.Write(path, prior); werr != nil {
+			fmt.Fprintf(e.stderr, "vani: could not restore the run record after a config restart: %v\n", werr)
+		}
+	case errors.Is(priorErr, os.ErrNotExist):
+		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			fmt.Fprintf(e.stderr, "vani: could not drop the run record after a config restart: %v\n", rmErr)
+		}
+	default:
+		fmt.Fprintf(e.stderr, "vani: could not read the run record to restore it after a config restart: %v\n", priorErr)
+	}
 }
 
 // reloadConfig is the one place a run's config is refreshed: it reads the whole
@@ -195,10 +285,14 @@ func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts 
 // weights file) apply from the next run on.
 //
 // The schedule is fixed for the process's life (daemon.Run holds it), as are
-// the state dir and the ledger path, which no config key sets; a changed
-// schedule keeps the running one and says so. When the file cannot be read or
-// is invalid, the run goes on with the last config a run applied (cfg, the
-// config the process started with, before the first) and the error is
+// the state dir and the ledger path, which no config key sets, and the DevPrism
+// binary and tools hash the scorer was started with. A change to one of those
+// keeps the running value, says so, and returns errConfigRestart: the process
+// exits and a new one reads the file. A process whose start config equals the
+// file does not. The same process still reports it on a later reload, because
+// the file still differs from the value it is running. When the file cannot be
+// read or is invalid, the run goes on with the last config a run applied (cfg,
+// the config the process started with, before the first) and the error is
 // errConfigStale. The watchlist is cut to the boards only names when it names
 // any; the cut is this run's and is never remembered.
 func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.Config, error) {
@@ -219,26 +313,54 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		}
 		fresh = prev
 	}
+	restart := false
 	for _, p := range processPinned {
 		if p.differs(fresh, prev) {
-			fmt.Fprintf(e.stderr, "vani: config: %s changed; it applies after the daemon restarts\n", p.name)
+			fmt.Fprintf(e.stderr, "vani: config: %s changed; restarting so it applies\n", p.name)
 			p.pin(&fresh, prev)
+			restart = true
 		}
 	}
 	e.setApplied(fresh)
 	if len(only) > 0 {
 		if fresh.Watchlist, err = selectBoards(fresh.Watchlist, only); err != nil {
+			if restart {
+				e.requestConfigRestart()
+				return prev, errConfigRestart
+			}
 			return prev, errors.Join(stale, err)
 		}
 	}
 	app.Reload(fresh)
+	if restart {
+		e.requestConfigRestart()
+		return fresh, errConfigRestart
+	}
 	return fresh, stale
+}
+
+// errConfigRestart means a process-lifetime field changed (processPinned).
+// This process keeps the value it started with. The caller exits
+// exitConfigRestart so a supervisor starts a process that reads the file.
+// It is not a failed run and it is not announced.
+var errConfigRestart = errors.New("config changed; restarting so the schedule or devprism change applies")
+
+// bindRestart is how `vani daemon` hears a process-lifetime config change.
+// The first cancel wins, including a signal that already stopped the process.
+func (e *env) bindRestart(cancel context.CancelCauseFunc) { e.restart = cancel }
+
+// requestConfigRestart cancels the daemon with errConfigRestart. A nil cancel
+// (tests, run-once) does nothing; reloadConfig still returns the error.
+func (e *env) requestConfigRestart() {
+	if e.restart != nil {
+		e.restart(errConfigRestart)
+	}
 }
 
 // processPinned lists the config fields fixed for the process's life: the
 // daemon's schedule and the DevPrism binary and tools hash its scorer is
-// started with. reloadConfig keeps the running value of each and says so; add a
-// process-lifetime field here and nowhere else.
+// started with. reloadConfig keeps the running value of each and asks the
+// process to restart; add a process-lifetime field here and nowhere else.
 var processPinned = []struct {
 	name    string
 	differs func(fresh, prev config.Config) bool
@@ -303,7 +425,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		return stageDigest, err
 	}
 	if cfg.SemanticOn() && app.Ledger != nil && ctx.Err() == nil {
-		mk, _ := marks.ReadMarks(marks.Dir(e.stateDir)) // unreadable marks: the kept postings only
+		mk, marksErr := marks.ReadMarks(marks.Dir(e.stateDir)) // unreadable marks: the kept postings only
 		// semantic.warm_per_run is one budget for the run: what the warm before
 		// the advance phase embedded is not spent twice (preAdvanceBudget).
 		limit := cfg.SemanticWarmLimit()
@@ -322,6 +444,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 			rec.Semantic = &semanticReport{Ran: true, Note: "kept postings not warmed: semantic.warm_per_run was spent before the advance phase"}
 			e.logSemantic(*rec.Semantic)
 		}
+		noteMarks(rec.Semantic, marksErr)
 	}
 	dopts, warning := digestOptions(cfg, e.stateDir)
 	if warning != "" {

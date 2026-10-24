@@ -23,19 +23,44 @@ public struct DraftRequest: Codable, Equatable, Sendable {
     public var question: String
     public var job: Job
     public var max_words: Int?
+    /// A later wording of the same question. Nil and 0 are a first draft and are omitted on the wire.
+    /// The extension's counter, never page text. Out of 0...8 is refused.
+    public var attempt: Int?
 
-    public init(question: String, job: Job = Job(), maxWords: Int? = nil) {
+    public init(question: String, job: Job = Job(), maxWords: Int? = nil, attempt: Int? = nil) {
         self.question = question
         self.job = job
         self.max_words = maxWords
+        self.attempt = attempt
     }
 
     // `job` and `max_words` may be absent; vani applies its own defaults.
+    // `attempt` is omitted when it is nil or 0, so a first draft stays the old request.
+    // Both methods are written out, so the keys are too: a custom encode and
+    // decode together are not given a synthesized CodingKeys.
+    private enum CodingKeys: String, CodingKey {
+        case question, job, max_words, attempt
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         question = try c.decode(String.self, forKey: .question)
         job = try c.decodeIfPresent(Job.self, forKey: .job) ?? Job()
         max_words = try c.decodeIfPresent(Int.self, forKey: .max_words)
+        attempt = try c.decodeIfPresent(Int.self, forKey: .attempt)
+        if let attempt, attempt < 0 || attempt > 8 {
+            throw DecodingError.dataCorruptedError(forKey: .attempt, in: c, debugDescription: "attempt is out of range")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(question, forKey: .question)
+        try c.encode(job, forKey: .job)
+        try c.encodeIfPresent(max_words, forKey: .max_words)
+        if let attempt, attempt > 0 {
+            try c.encode(attempt, forKey: .attempt)
+        }
     }
 }
 
@@ -253,7 +278,7 @@ public struct DraftRunner: Sendable {
     /// Validate a request given as Foundation JSON objects (from a browser) into a DraftRequest.
     public static func request(from raw: Any?) throws -> DraftRequest {
         guard let dict = raw as? [String: Any] else { throw BankError("draft needs a request object") }
-        let allowed: Set<String> = ["question", "job", "max_words"]
+        let allowed: Set<String> = ["question", "job", "max_words", "attempt"]
         if let extra = dict.keys.first(where: { !allowed.contains($0) }) {
             throw BankError("draft request has an unknown field \(String(extra.prefix(40)))")
         }

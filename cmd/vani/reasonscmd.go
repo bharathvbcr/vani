@@ -175,16 +175,24 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 	c, err := jdreasons.Load(filepath.Join(w.stateDir, jdreasons.FileName), w.cfg.TargetSummary)
 	switch {
 	case errors.Is(err, jdreasons.ErrStale):
-		w.warnf("notes off: %v; run `vani reasons draft --force`", err)
+		msg := fmt.Sprintf("notes off: %v; run `vani reasons draft --force`", err)
+		w.warnf("%s", msg)
+		w.noteExplain(explainOff, msg)
 		return nil, true
 	case err != nil:
-		w.warnf("notes paused: %v (fix it, or check it with `vani reasons check`)", err)
+		msg := fmt.Sprintf("notes paused: %v (fix it, or check it with `vani reasons check`)", err)
+		w.warnf("%s", msg)
+		w.noteExplain(explainPaused, msg)
 		return nil, false
 	case c == nil:
-		w.warnf("notes off: no reasons catalog; run `vani reasons draft` to have one drafted")
+		msg := "notes off: no reasons catalog; run `vani reasons draft` to have one drafted"
+		w.warnf("%s", msg)
+		w.noteExplain(explainOff, msg)
 		return nil, true
 	case !w.cfg.OpenRouterConfigured():
-		w.warnf("notes off: picking notes needs decide.openrouter_model")
+		msg := "notes off: picking notes needs decide.openrouter_model"
+		w.warnf("%s", msg)
+		w.noteExplain(explainOff, msg)
 		return nil, true
 	}
 	var spend decide.Spend
@@ -203,7 +211,9 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 		SpendKey:     openRouterSpendKey,
 	}, d)
 	if err != nil {
-		w.warnf("notes paused: %v", err)
+		msg := fmt.Sprintf("notes paused: %v", err)
+		w.warnf("%s", msg)
+		w.noteExplain(explainPaused, msg)
 		return nil, false
 	}
 	return jdreasons.Picker{D: decide.NewRouter(logErrors(jb, w.warnf, w.backendErrs)), Catalog: *c, TargetSummary: w.cfg.TargetSummary}, false

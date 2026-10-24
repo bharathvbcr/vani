@@ -26,16 +26,17 @@ export function titleElement(doc: Doc, title: string, url: string): HTMLElement 
   const a = doc.createElement("a");
   a.href = url;
   a.target = "_blank";
+  a.rel = "noopener noreferrer";
   a.textContent = title;
   return a;
 }
 
 /** The "Open role" button, or null when the job has no usable link. `open` is window.open in the popup. */
-export function openButton(doc: Doc, url: string, open: (url: string, target: string) => unknown): HTMLButtonElement | null {
+export function openButton(doc: Doc, url: string, open: (url: string, target: string, features?: string) => unknown): HTMLButtonElement | null {
   if (!isHttpUrl(url)) return null;
   const b = doc.createElement("button");
   b.className = "sm primary";
   b.textContent = "Open role";
-  b.onclick = () => { open(url, "_blank"); };
+  b.onclick = () => { open(url, "_blank", "noopener,noreferrer"); };
   return b;
 }

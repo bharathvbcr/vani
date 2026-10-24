@@ -335,8 +335,13 @@
   #tab-page > #job-area { order: 5; }
   #tab-page > #form-extra { order: 6; }
   #tab-page[data-view="job"] > #job-area { order: 3; }
-  /* A resume belongs with a form or a posting, not with the dashboard */
-  #tab-page:is([data-view="idle"], [data-view="disabled"], [data-view="error"]) > #resume { display: none; }
+  /* A resume belongs with a form or a posting. On a posting, put it above the description so View is on screen.
+     An idle page is hidden: any https URL has a posting key, so the card would say "none chosen" on every page.
+     A site that is switched off, or a scan that failed, still shows the card: View, Choose and Remove manage
+     the saved file and do not fill the form. */
+  #tab-page[data-view="job"] > #resume { order: 2; }
+  #tab-page:is([data-view="disabled"], [data-view="error"]) > #resume { order: 2; }
+  #tab-page[data-view="idle"] > #resume { display: none; }
 
   .card {
     background: var(--surface-card);
@@ -358,6 +363,18 @@
   .card-note { margin: var(--s2) 0 0; font-size: 12px; color: var(--muted); }
   .item-list { margin: 0; padding: 0; list-style: none; font-size: 12px; }
   .item-list li { margin-bottom: 5px; }
+  #unknown { max-height: 320px; overflow-y: auto; }
+  #coverage-note { margin: 0 0 8px; font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .q-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .q-row:last-child { border-bottom: 0; padding-bottom: 0; }
+  .q-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .q-label { flex: 1; min-width: 0; font-weight: 600; line-height: 1.35; }
+  .q-label > div { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .q-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; flex-shrink: 0; max-width: 58%; }
+  .q-note { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .q-chip { display: inline-block; margin-top: 3px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--surface-hover); color: var(--muted); }
+  .q-chip.on { background: var(--ai-bg); color: var(--ai); }
+  .q-chip.warn { background: var(--rev-bg); color: var(--rev-text); }
   .link-btn { padding: 0; border: none; background: none; color: var(--accent-text); font-size: 11px; }
   .link-btn:hover:not(:disabled) { background: none; text-decoration: underline; }
 
@@ -626,7 +643,7 @@
   .dot-unk { background: var(--border-hover); }
 
   /* Resume attachment */
-  .card-actions { display: flex; align-items: center; gap: var(--s2); }
+  .card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
   .btn-file-upload {
     display: inline-flex;
     align-items: center;
@@ -653,6 +670,7 @@
     color: var(--muted);
     word-break: break-all;
   }
+  .resume-status { margin: 6px 0 0; font-size: 12px; color: var(--text); }
 
   /* Applied banner */
   #applied {
@@ -907,6 +925,98 @@
     font-size: 24px;
     margin-bottom: 6px;
   }
+  .empty-title { font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .empty-desc { font-size: 12px; line-height: 1.45; max-width: 36em; margin: 0 auto; }
+  .empty-state .empty-hero-icon { margin: 0 auto 8px; }
+  .empty-state .sm { margin-top: 10px; }
+
+  /* Jobs tab. The head sticks while the list scrolls inside the pane. */
+  .scraper-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+    margin: -14px -16px 10px;
+    padding: 14px 16px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .scraper-toolbar { display: flex; gap: 6px; align-items: center; }
+  .scraper-toolbar .primary { flex: 1; }
+  .scraper-sub {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .scraper-tools { display: flex; gap: 4px; flex: none; }
+  .scraper-note:empty { display: none; }
+  .scraper-note:not(:empty) { margin: 8px 0 0; }
+  .scraper-search { margin-top: 8px; }
+  .search-icon .ico { display: block; }
+  .scraper-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .scraper-meta .chips-row { flex: 1; margin: 0; min-width: 0; }
+  #tab-scraper .chip-btn.active {
+    color: var(--accent-text);
+    border-color: var(--ok-border);
+    background: var(--ok-bg);
+  }
+  #scraper-count { flex: none; white-space: nowrap; }
+  .scraper-list { display: flex; flex-direction: column; gap: 8px; }
+  .job-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+  }
+  .job-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .job-card-title {
+    min-width: 0;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  a.job-card-title:hover { color: var(--accent-text); }
+  .job-top .badge { flex: none; }
+  .job-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .job-meta .co { font-weight: 600; color: var(--text); }
+  .job-fit, .job-snippet {
+    margin: 4px 0 0;
+    font-size: 11.5px;
+    line-height: 1.4;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .job-fit { color: var(--muted); }
+  .job-snippet { color: var(--text); }
+  .job-flag {
+    margin: 4px 0 0;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--danger-text);
+  }
+  .job-skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .job-card-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 
   /* Settings Tab */
   .setting-row {
@@ -1270,11 +1380,13 @@
             <svg class="ico ico-sm" aria-hidden="true"><use href="#i-clip"/></svg><span>Attach PDF</span>
             <input type="file" id="resume-pick" accept="application/pdf,.pdf">
           </label>
+          <button type="button" id="resume-view" class="sm primary" hidden title="Open this job's resume in Preview">View resume</button>
           <button id="resume-remove" class="sm danger" hidden title="Remove attached resume">Remove</button>
         </div>
       </div>
       <div class="resume-file-info">
         <span id="resume-name">none chosen; Fill leaves the resume box empty</span>
+        <p id="resume-status" class="resume-status" hidden></p>
       </div>
     </div>
 
@@ -1286,7 +1398,8 @@
       </div>
 
       <div id="coverage" class="card" hidden>
-        <h2 class="card-title">New questions on this page</h2>
+        <h2 class="card-title">Detected questions</h2>
+        <p id="coverage-note">Fields on this page with no saved answer. Draft and Regenerate send the question and the posting only, never what you typed. Yellow means review it before you submit. Vani never submits for you.</p>
         <ul id="unknown" class="item-list"></ul>
       </div>
 
@@ -1296,50 +1409,57 @@
     </section>
   </main>
 
-  <!-- TAB: Job Scraper -->
+  <!-- TAB: Job Scraper. Empty states sit outside the list so a render cannot throw them away. -->
   <section id="tab-scraper" class="tab-pane">
-    <div class="filter-bar">
-      <button id="scrape-page-btn" class="primary" style="flex: 1;">
-        🔍 Scrape Jobs on This Page
-      </button>
-      <button id="export-csv" class="sm" title="Export listings to CSV">CSV</button>
-      <button id="export-json" class="sm" title="Export listings to JSON">JSON</button>
-    </div>
-
-    <div class="row-between" style="margin:6px 0 4px;gap:8px;">
-      <label class="toggle-label" title="Vani searches this page again every day">
-        <input type="checkbox" id="scraper-save-search" checked> Search this page again daily
-      </label>
-      <button id="scraper-save" class="sm" title="Send every scraped job to Vani">Save to Vani</button>
-    </div>
-    <div id="scraper-save-result" class="muted" role="status" style="margin:0 0 6px;"></div>
-
-    <div class="row-between" style="margin:6px 0 8px;gap:8px;">
-      <div class="filter-input-wrap" style="flex:1;">
-        <span class="search-icon">🔍</span>
-        <input type="search" id="scraper-filter" placeholder="Search title, company, skills...">
+    <div class="scraper-head">
+      <div class="scraper-toolbar">
+        <button type="button" id="scrape-page-btn" class="primary" title="Read the job listings on this page">
+          <svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="lbl">Scrape this page</span>
+        </button>
+        <button type="button" id="scraper-save" disabled title="Send every scraped job to Vani">
+          <svg class="ico ico-sm" aria-hidden="true"><use href="#i-save"/></svg>
+          <span class="lbl">Save to Vani</span>
+        </button>
       </div>
-      <select id="scraper-score-filter" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);">
-        <option value="0">All Scores</option>
-        <option value="50">50%+ Match</option>
-        <option value="70">70%+ Match</option>
-        <option value="85">85%+ Top Match</option>
-      </select>
-    </div>
-
-    <div class="row-between" style="margin:4px 0 8px;">
-      <label class="toggle-label">
-        <input type="checkbox" id="scraper-remote-only"> Remote only
-      </label>
-      <span id="scraper-count" class="muted">0 jobs scraped</span>
-    </div>
-
-    <div id="scraper-list" style="display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto;padding-right:2px;">
-      <div id="scraper-empty" class="empty-state">
-        <div class="empty-icon">📋</div>
-        <div class="empty-title">No Scraped Listings Yet</div>
-        <div class="empty-desc">Open a job board (LinkedIn, Indeed, Ashby, Greenhouse) or company careers page and click "Scrape Jobs on This Page" to extract and rank postings in real time.</div>
+      <div class="scraper-sub">
+        <label class="toggle-label" title="Vani searches this page again every day">
+          <input type="checkbox" id="scraper-save-search" checked>
+          <span>Search this page again daily</span>
+        </label>
+        <div class="scraper-tools">
+          <button type="button" id="export-csv" class="sm" disabled title="Export listings to CSV">CSV</button>
+          <button type="button" id="export-json" class="sm" disabled title="Export listings to JSON">JSON</button>
+        </div>
       </div>
+      <div id="scraper-scope" class="muted scraper-note"></div>
+      <div id="scraper-save-result" class="muted scraper-note" role="status"></div>
+      <div class="filter-input-wrap scraper-search">
+        <span class="search-icon" aria-hidden="true"><svg class="ico ico-sm" aria-hidden="true"><use href="#i-search"/></svg></span>
+        <input type="search" id="scraper-filter" placeholder="Filter title, company, skills" aria-label="Filter scraped jobs">
+      </div>
+      <div class="scraper-meta">
+        <div class="chips-row" role="group" aria-label="Match and workplace">
+          <button type="button" class="chip-btn active" data-min="0" aria-pressed="true">All</button>
+          <button type="button" class="chip-btn" data-min="50" aria-pressed="false">50%+</button>
+          <button type="button" class="chip-btn" data-min="70" aria-pressed="false">70%+</button>
+          <button type="button" class="chip-btn" data-min="85" aria-pressed="false">85%+</button>
+          <button type="button" class="chip-btn" id="scraper-remote-only" aria-pressed="false">Remote</button>
+        </div>
+        <span id="scraper-count" class="muted" aria-live="polite">Nothing scraped yet</span>
+      </div>
+    </div>
+
+    <div id="scraper-list" class="scraper-list"></div>
+    <div id="scraper-empty" class="empty-state">
+      <div class="empty-hero-icon"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg></div>
+      <div class="empty-title">No listings yet</div>
+      <div class="empty-desc">Open a careers page or job board, then scrape this page. Each role is scored here and the pill says whether the number is an estimate or Vani's relevance.</div>
+    </div>
+    <div id="scraper-nomatch" class="empty-state" hidden>
+      <div class="empty-title">Nothing matches these filters</div>
+      <div class="empty-desc">Clear the search or lower the match filter to see the jobs from this page.</div>
+      <button type="button" id="scraper-clear-filters" class="sm">Clear filters</button>
     </div>
   </section>
 

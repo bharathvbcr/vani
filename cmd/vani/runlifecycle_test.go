@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -76,9 +77,11 @@ func lifecycleApp(t *testing.T, cfg config.Config) (*wired, *App) {
 	}
 }
 
-// Exclusions saved while the daemon runs apply to its next run (the Settings
-// pane never restarts it), and a config that cannot be read keeps the
-// exclusions the previous run applied, not the ones the daemon started with.
+// Exclusions saved while the daemon runs apply to its next run. A schedule
+// change does not: this process keeps the schedule it started with and returns
+// errConfigRestart instead of recording a failed run. A config that cannot be
+// read keeps the exclusions the previous run applied, not the ones the daemon
+// started with.
 func TestDailyRunsApplyConfigEditedBetweenRuns(t *testing.T) {
 	for _, bad := range []struct {
 		name   string
@@ -116,12 +119,10 @@ func TestDailyRunsApplyConfigEditedBetweenRuns(t *testing.T) {
 				t.Fatalf("run 1: gh:a:1 is %s, want it kept (nothing excludes it yet)", got)
 			}
 
-			// The owner excludes Acme and a second Acme role appears; the schedule
-			// is edited too, which only a restart applies.
+			// An exclusion saved while the daemon runs applies on the next run.
 			appendLive(t, w.led, "gh:a:2", "Acme")
 			edited := start
 			edited.Exclude.Companies = []string{"Acme"}
-			edited.Schedule.DailyAt = "03:15"
 			writeConfig(t, cfgPath, edited)
 			if err := job(context.Background()); err != nil {
 				t.Fatalf("run 2: %v", err)
@@ -129,11 +130,41 @@ func TestDailyRunsApplyConfigEditedBetweenRuns(t *testing.T) {
 			if got := statusOfKey(t, w.led, "gh:a:2"); got != posting.Dropped {
 				t.Errorf("run 2: the Acme role is %s, want it dropped by the exclusion saved since run 1", got)
 			}
+
+			// The schedule is fixed for this process. Changing it is not a run.
+			edited.Schedule.DailyAt = "03:15"
+			writeConfig(t, cfgPath, edited)
+			err = job(context.Background())
+			if !errors.Is(err, errConfigRestart) {
+				t.Fatalf("schedule change: %v, want errConfigRestart", err)
+			}
 			if w.cfg.Schedule.DailyAt != start.Schedule.DailyAt {
 				t.Errorf("the schedule is %q after a reload, want the process-lifetime %q", w.cfg.Schedule.DailyAt, start.Schedule.DailyAt)
 			}
+			if len(w.cfg.Exclude.Companies) != 1 {
+				t.Error("the exclusion applied with the schedule change was dropped")
+			}
 			if !strings.Contains(stderr.String(), "schedule") || !strings.Contains(stderr.String(), "restart") {
-				t.Errorf("a schedule change applies only after a restart and must say so on stderr:\n%s", stderr.String())
+				t.Errorf("a schedule change restarts the daemon and must say so on stderr:\n%s", stderr.String())
+			}
+			if r := lastRecord(t, stateDir); r.Outcome != outcomeOK {
+				t.Errorf("a schedule change wrote outcome %s; it is not a run", r.Outcome)
+			}
+			// The file still differs from the value this process runs, so another
+			// reload in this process reports it again. A process that loaded the
+			// edited file as its start config does not.
+			if _, err := e.reloadConfig(app, start, nil); !errors.Is(err, errConfigRestart) {
+				t.Fatalf("same process, file still differs: %v", err)
+			}
+			loaded, lerr := config.Load(cfgPath)
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			freshErr := &bytes.Buffer{}
+			fresh := &env{configPath: cfgPath, stateDir: stateDir, stdout: &bytes.Buffer{}, stderr: freshErr}
+			got, lerr := fresh.reloadConfig(&App{Reload: func(config.Config) {}}, loaded, nil)
+			if lerr != nil || got.Schedule.DailyAt != "03:15" {
+				t.Fatalf("fresh process: %v, daily_at %q, stderr %s", lerr, got.Schedule.DailyAt, freshErr)
 			}
 
 			// Run 3: the config cannot be read. The previous run's exclusions stay.
@@ -213,6 +244,180 @@ func TestInboxPollReloadsTheConfig(t *testing.T) {
 	}
 	if err := e.inboxPoll(app, start)(context.Background()); err != nil || polls != 2 || len(reloaded) != 1 {
 		t.Fatalf("stale poll: %v, %d polls, %d reloads", err, polls, len(reloaded))
+	}
+}
+
+// A schedule change between polls is not a poll failure: the poll does not run
+// and the daemon is asked to exit.
+func TestInboxPollStopsWhenTheScheduleChanges(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	start, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	polls := 0
+	var stderr bytes.Buffer
+	app := &App{
+		Reload:    func(config.Config) {},
+		PollInbox: func(context.Context) error { polls++; return nil },
+	}
+	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: &bytes.Buffer{}, stderr: &stderr}
+	edited := start
+	edited.Schedule.DailyAt = "04:45"
+	writeConfig(t, cfgPath, edited)
+	err = e.inboxPoll(app, start)(context.Background())
+	if !errors.Is(err, errConfigRestart) || polls != 0 {
+		t.Fatalf("poll: %v, polls %d; a schedule change must not run the poll", err, polls)
+	}
+	if strings.Contains(stderr.String(), "inbox poll:") || !strings.Contains(stderr.String(), "restart") {
+		t.Fatalf("stderr:\n%s", stderr.String())
+	}
+}
+
+// The inbox loop returns a process-lifetime change and a fatal poll, and a
+// plain poll error is logged and the loop continues.
+func TestPollInboxLoopReturnsRestartAndFatal(t *testing.T) {
+	old := inboxPollInterval
+	inboxPollInterval = 15 * time.Millisecond
+	t.Cleanup(func() { inboxPollInterval = old })
+
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	start, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	polls := 0
+	app := &App{
+		Reload:    func(config.Config) {},
+		PollInbox: func(context.Context) error { polls++; return nil },
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var stderr bytes.Buffer
+	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: &bytes.Buffer{}, stderr: &stderr}
+	e.bindRestart(cancel)
+	edited := start
+	edited.Schedule.DailyAt = "04:45"
+	writeConfig(t, cfgPath, edited)
+	err = e.pollInboxLoop(ctx, e.inboxPoll(app, start), new(sync.Mutex), nil)
+	if !errors.Is(err, errConfigRestart) || polls != 0 {
+		t.Fatalf("loop: %v, polls %d", err, polls)
+	}
+	if !errors.Is(context.Cause(ctx), errConfigRestart) {
+		t.Fatalf("cause %v", context.Cause(ctx))
+	}
+	cancel(nil)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	err = e.pollInboxLoop(ctx, func(context.Context) error { return daemon.ErrFatal }, new(sync.Mutex), nil)
+	if !errors.Is(err, daemon.ErrFatal) {
+		t.Fatalf("fatal poll: %v", err)
+	}
+}
+
+// Cancelling the daemon for a schedule change writes no failed run. The
+// exclusion in the same file still reaches the app.
+func TestScheduleChangeCancelsWithoutARunRecord(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	start, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, app := lifecycleApp(t, start)
+	var stderr bytes.Buffer
+	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: &bytes.Buffer{}, stderr: &stderr}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	e.bindRestart(cancel)
+	job := e.dailyJob(app, start, triggerSchedule, runOptions{})
+	if err := job(ctx); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	edited := start
+	edited.Schedule.DailyAt = "03:15"
+	edited.Exclude.Companies = []string{"Acme"}
+	writeConfig(t, cfgPath, edited)
+	if err := job(ctx); err != nil {
+		t.Fatalf("restart returns nil once the daemon is cancelled, got %v", err)
+	}
+	if !errors.Is(context.Cause(ctx), errConfigRestart) {
+		t.Fatalf("cause %v", context.Cause(ctx))
+	}
+	if w.cfg.Schedule.DailyAt != start.Schedule.DailyAt {
+		t.Fatalf("schedule %q", w.cfg.Schedule.DailyAt)
+	}
+	if len(w.cfg.Exclude.Companies) != 1 {
+		t.Fatal("exclusion was not applied before the restart")
+	}
+	if r := lastRecord(t, stateDir); r.Outcome != outcomeOK {
+		t.Fatalf("record outcome %s, want the earlier run left as ok", r.Outcome)
+	}
+	if strings.Contains(stderr.String(), "job failed") {
+		t.Fatalf("stderr:\n%s", stderr.String())
+	}
+}
+
+// A change that lands after the pre-check, during the run's own reload, is
+// still not a run: the pipeline does not start and the previous record stays.
+func TestScheduleChangeFoundByTheRunReloadLeavesTheLastRecord(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	start, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, app := lifecycleApp(t, start)
+	flip := false
+	orig := app.Reload
+	app.Reload = func(cfg config.Config) {
+		orig(cfg)
+		if !flip {
+			return
+		}
+		flip = false
+		edited := start
+		edited.Schedule.DailyAt = "03:15"
+		writeConfig(t, cfgPath, edited)
+	}
+	runs := 0
+	once := app.RunOnce
+	app.RunOnce = func(ctx context.Context) error {
+		runs++
+		return once(ctx)
+	}
+	var stderr bytes.Buffer
+	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: &bytes.Buffer{}, stderr: &stderr}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	e.bindRestart(cancel)
+	job := e.dailyJob(app, start, triggerSchedule, runOptions{})
+	if err := job(ctx); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("first run executed %d times", runs)
+	}
+	first := lastRecord(t, stateDir)
+	flip = true
+	if err := job(ctx); err != nil {
+		t.Fatalf("restart returns nil once the daemon is cancelled, got %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("the pipeline ran on a config restart: %d", runs)
+	}
+	if !errors.Is(context.Cause(ctx), errConfigRestart) {
+		t.Fatalf("cause %v", context.Cause(ctx))
+	}
+	if w.cfg.Schedule.DailyAt != start.Schedule.DailyAt {
+		t.Fatalf("schedule %q", w.cfg.Schedule.DailyAt)
+	}
+	got := lastRecord(t, stateDir)
+	if got.Outcome != outcomeOK || got.StartedAt != first.StartedAt {
+		t.Fatalf("record outcome %s started %s, want the earlier run left as ok at %s", got.Outcome, got.StartedAt, first.StartedAt)
+	}
+	if strings.Contains(stderr.String(), "job failed") {
+		t.Fatalf("stderr:\n%s", stderr.String())
 	}
 }
 

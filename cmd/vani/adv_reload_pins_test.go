@@ -56,17 +56,29 @@ func TestAdvDevPrismBinaryChangeIsPinnedWithANote(t *testing.T) {
 	edited.DevPrism.Binary = "/opt/devprism-new"
 	edited.Exclude.Companies = []string{"Acme"}
 	writeConfig(t, cfgPath, edited)
-	if _, err := e.reloadConfig(app, start, nil); err != nil {
-		t.Fatal(err)
+	if _, err := e.reloadConfig(app, start, nil); !errors.Is(err, errConfigRestart) {
+		t.Fatalf("devprism binary change: %v, want errConfigRestart", err)
 	}
 	if got := w.lazyScorer().cfg.BinaryPath; got != "/opt/devprism-old" {
-		t.Fatalf("scorer binary is %q (setup)", got)
+		t.Fatalf("scorer binary is %q, want the process-lifetime binary", got)
 	}
 	if len(w.cfg.Exclude.Companies) != 1 {
 		t.Fatal("the exclusion did not apply")
 	}
-	if !strings.Contains(stderr.String(), "devprism") {
-		t.Errorf("the devprism binary change is silently ignored (the running scorer keeps the old one) with no note:\n%q", stderr.String())
+	if !strings.Contains(stderr.String(), "devprism") || !strings.Contains(stderr.String(), "restart") {
+		t.Errorf("the devprism binary change must say the process is restarting:\n%q", stderr.String())
+	}
+	// tools_hash is the same pinned field. The binary in the file matches the
+	// one this process kept, so only the hash differs.
+	hashEdit := edited
+	hashEdit.DevPrism.Binary = "/opt/devprism-old"
+	hashEdit.DevPrism.ToolsHash = "abc123"
+	writeConfig(t, cfgPath, hashEdit)
+	if _, err := e.reloadConfig(app, start, nil); !errors.Is(err, errConfigRestart) {
+		t.Fatalf("devprism tools_hash change: %v, want errConfigRestart", err)
+	}
+	if got := w.lazyScorer().cfg.BinaryPath; got != "/opt/devprism-old" {
+		t.Fatalf("scorer binary is %q after a tools_hash change", got)
 	}
 }
 

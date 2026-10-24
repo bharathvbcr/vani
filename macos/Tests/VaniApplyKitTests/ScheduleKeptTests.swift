@@ -30,6 +30,8 @@ final class ScheduleKeptTests: XCTestCase {
         XCTAssertEqual(s.schedule.kept, true)
         XCTAssertNil(s.schedule.unkept)
         XCTAssertFalse(s.schedule.isUnkept)
+        let help = ManualRunOptions.backlogHelp(waiting: 4000, kept: s.schedule.kept, advancePerRun: s.schedule.unkept?.advancePerRun)
+        XCTAssertTrue(help.contains("This status does not say what advance_per_run is."), help)
     }
 
     func testDecodesWhatGoPrintsForAnUnkeptSchedule() throws {
@@ -47,6 +49,9 @@ final class ScheduleKeptTests: XCTestCase {
         XCTAssertEqual(u.awaitingTriage, 8525)
         XCTAssertEqual(u.advancePerRun, 750)
         XCTAssertEqual(u.runsNeeded, 12)
+        let help = ManualRunOptions.backlogHelp(waiting: u.awaitingTriage ?? 0, kept: s.schedule.kept, advancePerRun: u.advancePerRun)
+        XCTAssertTrue(help.contains("This pass advances at most \(750.formatted()) postings (advance_per_run)."), help)
+        XCTAssertTrue(help.contains("At least \((8525 - 750).formatted()) awaiting triage stay for a later run."), help)
         XCTAssertEqual(u.hint, "a daemon keeps the schedule")
     }
 

@@ -150,11 +150,13 @@ func TestAnthropicRequestsAreShaped(t *testing.T) {
 
 func TestBadRequestsAreRefusedBeforeSpending(t *testing.T) {
 	cases := map[string]Request{
-		"empty":     {Question: "  "},
-		"long":      {Question: strings.Repeat("q", MaxQuestionRunes+1)},
-		"words low": {Question: "Why?", MaxWords: 10},
-		"words hi":  {Question: "Why?", MaxWords: 401},
-		"company":   {Question: "Why?", Job: Job{Company: strings.Repeat("c", MaxCompanyRunes+1)}},
+		"empty":       {Question: "  "},
+		"long":        {Question: strings.Repeat("q", MaxQuestionRunes+1)},
+		"words low":   {Question: "Why?", MaxWords: 10},
+		"words hi":    {Question: "Why?", MaxWords: 401},
+		"company":     {Question: "Why?", Job: Job{Company: strings.Repeat("c", MaxCompanyRunes+1)}},
+		"attempt low": {Question: "Why?", Attempt: -1},
+		"attempt hi":  {Question: "Why?", Attempt: 9},
 	}
 	for name, r := range cases {
 		p := &provider{text: "x"}
@@ -392,6 +394,33 @@ func frame(t *testing.T, user string) (before, inside string) {
 		t.Fatalf("frame broken: %q", user)
 	}
 	return user[:begin], user[begin:end]
+}
+
+func TestAttemptStaysInTheTrustedPrompt(t *testing.T) {
+	base := request()
+	_, user0 := draftPrompt(t, nil, "", base)
+	trusted0, inside0 := frame(t, user0)
+	if strings.Contains(strings.ToLower(trusted0), "attempt") {
+		t.Errorf("attempt 0 trusted section mentions attempt: %q", trusted0)
+	}
+	again := base
+	again.Attempt = 2
+	_, user2 := draftPrompt(t, nil, "", again)
+	trusted2, inside2 := frame(t, user2)
+	if !strings.Contains(trusted2, "This is attempt 2.") {
+		t.Errorf("attempt line missing from trusted section: %q", trusted2)
+	}
+	if strings.Contains(trusted2, base.Question) {
+		t.Error("the question leaked into the trusted section")
+	}
+	if inside0 != inside2 || !strings.Contains(inside2, "Question: "+base.Question) {
+		t.Error("the untrusted question changed between attempts")
+	}
+	marker := strings.Index(user2, llmbackend.BeginMarker)
+	line := strings.Index(user2, "This is attempt 2.")
+	if line < 0 || marker < 0 || line > marker {
+		t.Errorf("attempt line at %d, marker at %d", line, marker)
+	}
 }
 
 func TestMotivationEvidenceFavoursTheRoleOverMissionAndBoilerplate(t *testing.T) {

@@ -43,10 +43,15 @@ func TestRunOnceRecordsTheLogItWasToldAbout(t *testing.T) {
 	if rec["id"] != runID(lastRecord(t, stateDir)) {
 		t.Errorf("record id = %v, want the run's id", rec["id"])
 	}
+	// The app already captured this run. A second history/<id>.log would be a second copy.
+	id := runID(lastRecord(t, stateDir))
+	if _, err := os.Lstat(filepath.Join(stateDir, runRecordDir, runHistoryDir, id+".log")); !os.IsNotExist(err) {
+		t.Errorf("run log = %v, want no per-run file beside the one VANI_RUN_LOG named", err)
+	}
 }
 
-// A path the check refuses leaves the run alone: it runs, the record names no
-// log, and stderr says why.
+// A path the check refuses leaves the run alone: it runs, stderr says why, and
+// the record names the run's own history log instead of the refused path.
 func TestRunOnceIgnoresALogOutsideTheRunsFolder(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "elsewhere.log")
 	writeLog(t, outside, "x")
@@ -66,8 +71,14 @@ func TestRunOnceIgnoresALogOutsideTheRunsFolder(t *testing.T) {
 
 			_, stderr := mustCode(t, 0, "run-once")
 
-			if v, ok := lastRaw(t, stateDir)["log"]; ok {
-				t.Errorf("record log = %v, want none", v)
+			got, _ := lastRaw(t, stateDir)["log"].(string)
+			wantDir := filepath.Join(stateDir, runRecordDir, runHistoryDir) + string(filepath.Separator)
+			if !strings.HasPrefix(got, wantDir) || !strings.HasSuffix(got, ".log") {
+				t.Errorf("record log = %v, want a file in %s", got, wantDir)
+			}
+			refused := strings.ReplaceAll(bad, "STATE", stateDir)
+			if got == refused || strings.Contains(got, "..") {
+				t.Errorf("record kept the refused path %q as %q", refused, got)
 			}
 			if !strings.Contains(stderr, runLogEnv+" ignored") {
 				t.Errorf("stderr does not say the log was ignored: %q", stderr)

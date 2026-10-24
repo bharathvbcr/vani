@@ -119,8 +119,9 @@ They rank, never drop, and never enter a model prompt. See [EMPLOYER.md](EMPLOYE
 
 ## Title signals
 
-Each run triages at most 300 postings. With `title_signals` set, the run orders them before applying
-that cap: titles matching an exclude signal go last, and the rest go by how many distinct include
+Each run advances at most `advance_per_run` postings (default 300, at most 5000): it triages,
+scores and explains them. With `title_signals` set, the run orders them before applying that
+cap: titles matching an exclude signal go last, and the rest go by how many distinct include
 signals they match, most first; equal ones keep ledger order. Matching ignores case and runs of
 whitespace, and is whole words only: a letter or digit on either side is no match, so `Agent` does
 not match `Agents` and `Recruit` does not match `Recruiter`.

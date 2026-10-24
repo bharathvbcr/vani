@@ -3,6 +3,7 @@
 import type { Bank, FieldInfo, Match } from "./types";
 import { classify, untouchable } from "./classify";
 import { matchField } from "./match";
+import { DRAFT_EMPTY_NOTE, UNDRAFTED_NOTE, type DraftOffer, draftOffer } from "./suggest";
 
 export const MAX_LISTED = 50;
 
@@ -22,7 +23,28 @@ export interface Coverage {
   unknownLabels: string[];
   /** unknown > unknownLabels.length when the list was cut at MAX_LISTED. */
   unknownListed: number;
+  /**
+   * One row per listed unknown field, in the same order as `unknownLabels`.
+   * `offer` says whether that field can be drafted, regenerated, or only answered on the page.
+   * A scan that stopped at MAX_LISTED omits the rest here too.
+   */
+  questions: PageQuestion[];
   manualLabels: string[];
+  /** Manual fields, with the scanner's reason. Same cap as `manualLabels`. */
+  manualQuestions: PageQuestion[];
+  /** Secret and self-id fields that were not drafted. The value is never copied onto the row. */
+  held: PageQuestion[];
+}
+
+/** A detected question with no saved answer, and what the extension can do for it. */
+export interface PageQuestion {
+  label: string;
+  offer: DraftOffer;
+  note: string;
+  /** Index of this field in the frame's scan. Absent on a legacy row that only has a label. */
+  ordinal?: number;
+  /** Frame that reported the field. Set when per-frame reports are added together. */
+  frameId?: number;
 }
 
 export type Bucket = "skipped" | "manual" | "fillable" | "unknown";
@@ -49,21 +71,49 @@ export function coverageOf<R extends { info: FieldInfo; manual: string }>(
   host: string,
   scan: { capped: boolean; unread: number } = { capped: false, unread: 0 },
   matches?: Map<R, Match | null>,
+  /** Trimmed posting length. Under 40 characters, a free-text question is `needs-posting` rather than `draft`. */
+  postingChars = 0,
 ): Coverage {
   const c: Coverage = {
     found: refs.length, known: 0, fillable: 0, unknown: 0, manual: 0, skipped: 0,
-    capped: scan.capped, unread: scan.unread, unknownLabels: [], unknownListed: 0, manualLabels: [],
+    capped: scan.capped, unread: scan.unread, unknownLabels: [], unknownListed: 0, questions: [], manualLabels: [],
+    manualQuestions: [], held: [],
   };
-  for (const r of refs) {
+  for (let i = 0; i < refs.length; i++) {
+    const r = refs[i]!;
     const { bucket, known } = bucketOf(r.info, r.manual, bank, host, matches && (m => matches.set(r, m)));
     if (known) c.known++;
     c[bucket]++;
     const label = r.info.label.trim() || r.info.name || "(unlabelled)";
-    if (bucket === "unknown" && c.unknownLabels.length < MAX_LISTED) c.unknownLabels.push(label);
-    if (bucket === "manual" && c.manualLabels.length < MAX_LISTED) c.manualLabels.push(label);
+    if (bucket === "unknown" && c.unknownLabels.length < MAX_LISTED) {
+      c.unknownLabels.push(label);
+      const o = draftOffer(r.info, r.manual, postingChars);
+      c.questions.push({ label, offer: o.offer, note: o.note, ordinal: i });
+    }
+    if (bucket === "manual" && c.manualLabels.length < MAX_LISTED) {
+      c.manualLabels.push(label);
+      const o = draftOffer(r.info, r.manual, postingChars);
+      c.manualQuestions.push({ label, offer: o.offer, note: o.note, ordinal: i });
+    }
+    if (bucket === "skipped" && c.held.length < MAX_LISTED) {
+      const sens = classify(r.info);
+      if (sens === "secret" || sens === "self_id") c.held.push({ label, offer: "other", note: UNDRAFTED_NOTE, ordinal: i });
+    }
   }
   c.unknownListed = c.unknownLabels.length;
   return c;
+}
+
+/**
+ * Rows for the popup. A coverage that lists labels but no `questions` (a frame
+ * that answered before this field existed) still shows a Draft action; the
+ * page refuses it when the field cannot take one.
+ */
+export function questionRows(c: { questions?: readonly PageQuestion[] | null; unknownLabels?: readonly string[] | null }): PageQuestion[] {
+  const qs = Array.isArray(c.questions) ? c.questions.filter(q => q && typeof q.label === "string" && typeof q.offer === "string" && typeof q.note === "string") : [];
+  if (qs.length > 0) return qs;
+  const labels = Array.isArray(c.unknownLabels) ? c.unknownLabels : [];
+  return labels.filter(label => typeof label === "string").map(label => ({ label, offer: "draft", note: DRAFT_EMPTY_NOTE }));
 }
 
 /** What one frame answered when the popup asked it to scan. */
@@ -93,8 +143,22 @@ function sum(a: Coverage, b: Coverage): Coverage {
     manual: a.manual + b.manual, skipped: a.skipped + b.skipped, capped: a.capped || b.capped, unread: a.unread + b.unread,
     unknownLabels: [...a.unknownLabels, ...b.unknownLabels].slice(0, MAX_LISTED),
     unknownListed: 0,
+    questions: rows(a.questions, b.questions),
     manualLabels: [...a.manualLabels, ...b.manualLabels].slice(0, MAX_LISTED),
+    manualQuestions: rows(a.manualQuestions, b.manualQuestions),
+    held: rows(a.held, b.held),
   };
+}
+
+function rows(a: readonly PageQuestion[] | undefined, b: readonly PageQuestion[] | undefined): PageQuestion[] {
+  return [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])].slice(0, MAX_LISTED);
+}
+
+/** Stamp the frame id onto every row that frame reported, so a later action asks only that frame. */
+function withFrame(c: Coverage, frameId: number): Coverage {
+  const stamp = (list: readonly PageQuestion[] | undefined): PageQuestion[] =>
+    (Array.isArray(list) ? list : []).map(q => ({ ...q, frameId }));
+  return { ...c, questions: stamp(c.questions), manualQuestions: stamp(c.manualQuestions), held: stamp(c.held) };
 }
 
 /**
@@ -111,7 +175,7 @@ export function tabCoverage(answers: FrameAnswer[]): TabCoverage {
     const r = a.result;
     if (!r || typeof r !== "object") continue;
     answered++;
-    const coverage = r.coverage ?? { ...empty, found: r.fields };
+    const coverage = withFrame(r.coverage ?? { ...empty, found: r.fields }, a.frameId);
     if (coverage.found === 0) continue;
     frames.push({ frameId: a.frameId, host: r.host, disabled: r.disabled, coverage });
     total = sum(total, coverage);

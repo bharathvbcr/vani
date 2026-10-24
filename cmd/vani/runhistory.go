@@ -24,10 +24,11 @@ import (
 // until the next run starts, which first keeps it in the history as
 // "interrupted" (archiveInterruptedRun) before replacing it.
 //
-// The directory also holds <ts>-manual.log files, the app's rotated
-// runs/manual.log (macos ManualRunLauncher). Those are the app's: this file
-// reads, prunes and lists *.json records named by runID and nothing else, so
-// the two pruners never touch each other's files.
+// The directory also holds log files. runs/history/<id>.log is the per-run log
+// of a daemon or shell run that named no VANI_RUN_LOG; pruning a record removes
+// that sibling and no other log. manual-<id>.log files are the app's rotated
+// runs/manual.log (macos RunLogs). This file lists only *.json names that match
+// runID, so a manual log is never a record and is never removed.
 
 const (
 	runHistoryDir = "history"
@@ -199,6 +200,10 @@ func pruneRunHistory(stateDir string, keep int, maxBytes int64) (removed int, er
 		switch rerr := os.Remove(runHistoryPath(stateDir, f.ID)); {
 		case rerr == nil:
 			removed++
+			// The per-run log shares the record's id. A manual-<id>.log does not.
+			if lerr := os.Remove(filepath.Join(stateDir, runRecordDir, runHistoryDir, f.ID+".log")); lerr != nil && !errors.Is(lerr, fs.ErrNotExist) && err == nil {
+				err = fmt.Errorf("prune run log: %w", lerr)
+			}
 		case errors.Is(rerr, fs.ErrNotExist):
 		case err == nil:
 			err = fmt.Errorf("prune run history: %w", rerr)

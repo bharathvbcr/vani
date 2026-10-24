@@ -69,6 +69,11 @@ type statusJSON struct {
 	// Paths is additive: where the config and state dir came from and how
 	// they compare with the Mac app's settings. Absent when unknown.
 	Paths *pathsJSON `json:"paths,omitempty"`
+	// LastSkip is the newest daily slot the daemon did not run, when that slot
+	// is later than the last real run. Absent when there is nothing to say.
+	LastSkip *skipFacet `json:"last_skip,omitempty"`
+	// Inbox is the last extension-spool poll. Absent when none has been recorded.
+	Inbox *inboxFacet `json:"inbox,omitempty"`
 }
 
 // pathsJSON is config.Resolved for status --json.
@@ -143,12 +148,41 @@ type lastRunFacet struct {
 	CountsAfter    map[string]int `json:"counts_after,omitempty"`
 	// Semantic is the run's knowledge-base warm (runRecord.Semantic).
 	Semantic *semanticReport `json:"semantic,omitempty"`
+	// DigestWarning is the run record's ranking warning (missing weights, an
+	// unreadable knowledge base). Empty when the digest ranked as configured.
+	DigestWarning string `json:"digest_warning,omitempty"`
 	// Notice is what the Mac app announces for this run (decideNotice): the
 	// app posts it and decides nothing about it.
 	Notice *noticeFacet `json:"notice,omitempty"`
 	// Advance and BackendErrors: what the cap left waiting, and why decision
 	// backends failed (runDetail).
 	runDetail
+	// ImpressionsError is the run record's field: the digest was written but
+	// what it showed was not recorded. Empty when there is nothing to say.
+	ImpressionsError string `json:"impressions_error,omitempty"`
+}
+
+// skipFacet is one skipped daily slot (a history row, not last.json).
+type skipFacet struct {
+	facet
+	Slot       time.Time `json:"slot,omitzero"`
+	ObservedAt time.Time `json:"observed_at,omitzero"`
+	LateSec    int       `json:"late_sec"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// inboxFacet is runs/inbox.json. OK is false when the file could not be read.
+type inboxFacet struct {
+	facet
+	At         time.Time `json:"at,omitzero"`
+	Error      string    `json:"error,omitempty"`
+	Bad        int       `json:"bad,omitempty"`
+	Unreadable int       `json:"unreadable,omitempty"`
+	Remaining  int       `json:"remaining,omitempty"`
+	Folded     int       `json:"folded,omitempty"`
+	New        int       `json:"new,omitempty"`
+	Duplicate  int       `json:"duplicate,omitempty"`
+	Live       int       `json:"live,omitempty"`
 }
 
 type scheduleFacet struct {
@@ -220,6 +254,8 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	out.Ledger = e.ledgerFacet()
 	out.LastRun = e.lastRunFacet(at)
+	out.LastSkip = e.lastSkipFacet()
+	out.Inbox = e.inboxFacet()
 	if out.LastRun.State == "none" && out.Ledger.Total > 0 {
 		// "Nothing has run" would be false: the postings came from runs
 		// that kept no record (a vani from before run records) or from
@@ -310,7 +346,7 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 	f := lastRunFacet{
 		facet: facet{OK: true}, State: runState(*r, at), StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 		Trigger: r.Trigger, Options: r.Options, Stage: r.Stage, Error: r.Error, Cause: r.Cause, DigestRoles: r.DigestRoles, CountsBefore: r.CountsBefore, CountsAfter: r.CountsAfter,
-		Semantic: r.Semantic, runDetail: r.runDetail,
+		Semantic: r.Semantic, DigestWarning: r.DigestWarning, runDetail: r.runDetail, ImpressionsError: r.ImpressionsError,
 	}
 	if !r.FinishedAt.IsZero() {
 		d := math.Max(r.FinishedAt.Sub(r.StartedAt).Seconds(), 0)
@@ -325,6 +361,66 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 		f.PostingsAfter = &n
 	}
 	return f
+}
+
+// lastSkipFacet is the newest skipped slot that is later than the last real
+// run. A last.json still marked running hides it: that run has not finished,
+// and a skip must not be read as what is happening now. History is newest
+// first, so the first skip that is not later than the cutoff ends the scan.
+func (e *env) lastSkipFacet() *skipFacet {
+	last, err := readRunRecord(e.stateDir)
+	if err != nil || (last != nil && last.Outcome == outcomeRunning) {
+		return nil
+	}
+	var cutoff time.Time
+	if last != nil {
+		cutoff = last.FinishedAt
+		if cutoff.IsZero() {
+			cutoff = last.StartedAt
+		}
+	}
+	files, _, err := listRunHistory(e.stateDir, maxRunHistoryScan)
+	if err != nil {
+		return &skipFacet{facet: unknown(err)}
+	}
+	for _, f := range files {
+		if !f.Regular {
+			continue
+		}
+		r, rerr := readRunRecordFile(runHistoryPath(e.stateDir, f.ID))
+		if rerr != nil || r == nil || r.Outcome != outcomeSkipped {
+			continue
+		}
+		if !r.StartedAt.After(cutoff) {
+			return nil
+		}
+		late := r.FinishedAt.Sub(r.StartedAt)
+		if late < 0 {
+			late = 0
+		}
+		return &skipFacet{
+			facet: facet{OK: true}, Slot: r.StartedAt, ObservedAt: r.FinishedAt,
+			LateSec: int(late.Round(time.Second) / time.Second), Error: r.Error,
+		}
+	}
+	return nil
+}
+
+// inboxFacet reports the last inbox poll. A missing file is omitted. A file
+// that cannot be read is present and not ok, so an unread poll is not a pass.
+func (e *env) inboxFacet() *inboxFacet {
+	st, err := readInboxStatus(e.stateDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return &inboxFacet{facet: unknown(err)}
+	}
+	return &inboxFacet{
+		facet: facet{OK: true}, At: st.At, Error: st.Error,
+		Bad: st.Bad, Unreadable: st.Unreadable, Remaining: st.Remaining,
+		Folded: st.Folded, New: st.New, Duplicate: st.Duplicate, Live: st.Live,
+	}
 }
 
 func sumCounts(m map[string]int) int {

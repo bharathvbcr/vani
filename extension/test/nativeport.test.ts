@@ -264,11 +264,23 @@ describe("port transport: backoff and the per-message fallback", () => {
 
   test("ops that can take seconds go per message and never touch the port", async () => {
     const { t, ports, spawned } = rig();
-    for (const op of ["draft", "jobFind", "jobMark", "jobsIngest", "somethingNew"]) {
+    for (const op of ["draft", "jobFind", "jobMark", "jobsIngest", "resumeOpen", "somethingNew"]) {
       expect(((await t({ op })) as { via: string }).via).toBe("spawn");
     }
-    expect(spawned.map(m => m.op)).toEqual(["draft", "jobFind", "jobMark", "jobsIngest", "somethingNew"]);
+    expect(spawned.map(m => m.op)).toEqual(["draft", "jobFind", "jobMark", "jobsIngest", "resumeOpen", "somethingNew"]);
     expect(ports.length).toBe(0);
+  });
+
+  test("resumeOpen stays off a warm port, so Preview cannot stall the bank", async () => {
+    const { t, ports, spawned } = rig();
+    const warm = t({ op: "ping" });
+    await settle();
+    ports[0].answerNext();
+    await warm;
+    expect(((await t({ op: "resumeOpen", key: "https://boards.greenhouse.io/acme/jobs/1" })) as { via: string }).via).toBe("spawn");
+    expect(spawned.map(m => m.op)).toEqual(["resumeOpen"]);
+    expect(ports.length).toBe(1);
+    expect(ports[0].posted.map(m => m.op)).toEqual(["ping"]);
   });
 
   test("a connect that throws is a failed connection, not an exception", async () => {

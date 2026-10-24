@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import VaniApplyKit
 
@@ -106,7 +107,8 @@ while true {
 
     let reply: [String: Any]
     if let obj = try? JSONSerialization.jsonObject(with: request) {
-        reply = NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter, agent: XPCAgentClient(), jobs: jobs)
+        reply = NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter, agent: XPCAgentClient(), jobs: jobs,
+                                      openResume: { NSWorkspace.shared.open($0) })
     } else {
         reply = ["error": "request is not JSON"]
     }

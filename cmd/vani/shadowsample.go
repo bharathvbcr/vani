@@ -128,6 +128,8 @@ func gateShadow(rt *decide.Router, every, inFlight int) *shadowGate {
 func (w *wired) warnShadowNotes(r *pipeline.Runner) {
 	w.warnShadowErrors(r)
 	w.warnShadowSample(r)
+	errs, busy := shadowMissCounts(r)
+	w.noteShadowMiss(errs, busy)
 }
 
 // warnShadowSample prints shadowSampleNote to the run's warnings when there is one.
@@ -151,12 +153,12 @@ func shadowSampleNote(r *pipeline.Runner) string {
 	if !ok || t == nil {
 		return ""
 	}
-	rt, ok := t.D.(*decide.Router)
-	if !ok || rt == nil {
+	rt := routerUnder(t.D)
+	if rt == nil {
 		return ""
 	}
 	gs, ok := rt.Shadow.(gatedShadow)
-	if !ok {
+	if !ok || gs.gate == nil {
 		return ""
 	}
 	g := gs.gate

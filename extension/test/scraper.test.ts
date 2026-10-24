@@ -247,6 +247,7 @@ describe("job scraper & live relevance checks", () => {
         salary: "$150k - $180k",
         snippet: "Go, Kubernetes",
         relevance: {
+          source: "estimate",
           score: 88,
           fit: "strong_fit",
           fitLabel: "Strong Match",
@@ -259,10 +260,16 @@ describe("job scraper & live relevance checks", () => {
     ];
 
     const csv = exportJobsAsCSV(mockJobs);
-    expect(csv).toContain("Title,Company,Relevance,Fit,Location,Salary,URL");
+    expect(csv).toContain("Title,Company,Score,Fit,Location,Salary,URL");
     expect(csv).toContain('"Senior Backend Engineer"');
     expect(csv).toContain('"Acme, Inc."');
-    expect(csv).toContain("88%");
+    expect(csv).toContain("88% estimate");
+    const vani = exportJobsAsCSV([{
+      ...mockJobs[0]!,
+      relevance: { ...mockJobs[0]!.relevance, source: "vani", score: 61 },
+    }]);
+    expect(vani).toContain("61% relevance");
+    expect(vani).not.toContain("61% estimate");
 
     const jsonStr = exportJobsAsJSON(mockJobs);
     const parsed = JSON.parse(jsonStr);

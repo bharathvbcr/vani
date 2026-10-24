@@ -245,7 +245,16 @@ function base(el: HTMLElement, kind: FieldKind, label: string): FieldInfo {
     required: i.required === true || el.getAttribute("aria-required") === "true",
     value: [],
     drafted: el.getAttribute("data-vani-draft") === "1",
+    ...draftTextOf(el),
   };
+}
+
+/** The wording last inserted, when the attribute is short enough to be that wording. */
+function draftTextOf(el: HTMLElement): { draftText: string } | undefined {
+  if (el.getAttribute("data-vani-draft") !== "1") return undefined;
+  const t = el.getAttribute("data-vani-draft-text");
+  if (t === null || t === "" || t.length > 8000) return undefined;
+  return { draftText: t };
 }
 
 // --- ARIA widgets ------------------------------------------------------------------
