@@ -11,8 +11,10 @@
 // a full check that every line reads), the plan is made and refused outright
 // on any collision, the events file is backed up, a pending marker records
 // the old -> new map with the file's hash before and after, the events file
-// is replaced atomically, the user's marks follow their postings, and the
-// marker is marked done. A second run is refused; a run that died part way
+// is replaced atomically, the user's marks follow their postings, their resume
+// folders (internal/resumestore, keyed by a hash of the posting key) follow
+// them too, and the marker is marked done. A resume folder already under a new
+// key is a collision, refused with the marks'. A second run is refused; a run that died part way
 // is finished by the next one, which can tell from the hashes where it
 // stopped. The marker and the backup are what reverse it.
 package rekey
@@ -20,6 +22,7 @@ package rekey
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -38,6 +41,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/resumestore"
 )
 
 const (
@@ -78,6 +82,9 @@ type Report struct {
 	Foreign []posting.Key
 	// MarksMoved counts postings whose marks or note moved with them.
 	MarksMoved int
+	// ResumesMoved counts postings whose resume folder (internal/resumestore)
+	// moved with them in this run.
+	ResumesMoved int
 	// Backup is the events file's copy from before the run ("" in a dry run).
 	Backup string
 	DryRun bool
@@ -148,10 +155,14 @@ func Run(stateDir string, dryRun bool, now time.Time) (Report, error) {
 	if err != nil {
 		return rep, fmt.Errorf("rekey: marks: %w", err)
 	}
-	if prev != nil {
-		return resume(rep, dir, markDir, prev, now, dryRun)
+	rs, err := resumestore.Open(stateDir)
+	if err != nil {
+		return rep, fmt.Errorf("rekey: resumes: %w", err)
 	}
-	if err := collisions(rep.Changes, l, current); err != nil {
+	if prev != nil {
+		return resume(rep, dir, markDir, rs, prev, now, dryRun)
+	}
+	if err := collisions(rep.Changes, l, current, rs); err != nil {
 		return rep, err
 	}
 	if dryRun {
@@ -185,14 +196,14 @@ func Run(stateDir string, dryRun bool, now time.Time) (Report, error) {
 	if err := crash("pending"); err != nil {
 		return rep, err
 	}
-	return finish(rep, dir, markDir, m, after, now)
+	return finish(rep, dir, markDir, rs, m, after, now)
 }
 
 // resume finishes a run that wrote its pending marker and then stopped. The
 // events file is either still the old one (Before), in which case the stored
 // map is applied again, or already the new one (After); anything else means
 // the ledger moved on and nothing is done.
-func resume(rep Report, dir, markDir string, m *marker, now time.Time, dryRun bool) (Report, error) {
+func resume(rep Report, dir, markDir string, rs *resumestore.Store, m *marker, now time.Time, dryRun bool) (Report, error) {
 	rep.Resumed, rep.Backup, rep.Changes = true, filepath.Join(dir, m.Backup), m.Changes
 	path := filepath.Join(dir, eventsName)
 	cur, err := os.ReadFile(path)
@@ -215,12 +226,12 @@ func resume(rep Report, dir, markDir string, m *marker, now time.Time, dryRun bo
 	if dryRun {
 		return rep, nil
 	}
-	return finish(rep, dir, markDir, m, after, now)
+	return finish(rep, dir, markDir, rs, m, after, now)
 }
 
 // finish replaces the events file (unless after is nil: already replaced),
 // moves the marks, and marks the run done. Each step can be repeated.
-func finish(rep Report, dir, markDir string, m *marker, after []byte, now time.Time) (Report, error) {
+func finish(rep Report, dir, markDir string, rs *resumestore.Store, m *marker, after []byte, now time.Time) (Report, error) {
 	if after != nil {
 		if err := atomicfile.Write(filepath.Join(dir, eventsName), after); err != nil {
 			return rep, fmt.Errorf("rekey: replace events: %w", err)
@@ -231,6 +242,11 @@ func finish(rep Report, dir, markDir string, m *marker, after []byte, now time.T
 	}
 	n, err := moveMarks(markDir, m.Changes, now)
 	rep.MarksMoved = n
+	if err != nil {
+		return rep, err
+	}
+	rn, err := moveResumes(rs, m.Changes)
+	rep.ResumesMoved = rn
 	if err != nil {
 		return rep, err
 	}
@@ -269,7 +285,7 @@ func plan(recs []ledger.Record) Report {
 // collisions refuses a plan that would give two postings one key: two moves
 // to one key, a move onto a posting that already exists, or a move onto a
 // key the user has marks under.
-func collisions(cs []Change, l ledger.Ledger, current map[posting.Key]marks.Entry) error {
+func collisions(cs []Change, l ledger.Ledger, current map[posting.Key]marks.Entry, rs *resumestore.Store) error {
 	var bad []string
 	to := map[posting.Key]posting.Key{}
 	for _, c := range cs {
@@ -282,6 +298,14 @@ func collisions(cs []Change, l ledger.Ledger, current map[posting.Key]marks.Entr
 		}
 		if _, marked := current[c.New]; marked {
 			bad = append(bad, fmt.Sprintf("%s would become %s, which already has marks", c.Old, c.New))
+		}
+		// The same condition resumestore.Rekey refuses on (a folder of any
+		// content), checked here so the refusal comes before the ledger is touched.
+		switch has, err := rs.Exists(string(c.New)); {
+		case err != nil:
+			bad = append(bad, fmt.Sprintf("%s would become %s, whose resume folder cannot be checked: %v", c.Old, c.New, err))
+		case has:
+			bad = append(bad, fmt.Sprintf("%s would become %s, which already has a resume folder", c.Old, c.New))
 		}
 	}
 	if len(bad) > 0 {
@@ -406,6 +430,36 @@ func moveMarks(dir string, cs []Change, now time.Time) (int, error) {
 		}
 		moved++
 		if err := crash("marks"); err != nil {
+			return moved, err
+		}
+	}
+	return moved, nil
+}
+
+// moveResumes gives each moved posting's resume folder (its versions, current
+// and used pointers and attempts) to its new key. It runs after the marks move,
+// so an applied mark's resume version is found under the new key once both are
+// done; between the two a crash leaves the mark at the new key and the folder
+// at the old, and the next run finishes it. A posting with no resume folder is
+// skipped; a folder already moved is left as it is, so the step can be
+// repeated. It returns how many folders this call moved.
+func moveResumes(rs *resumestore.Store, cs []Change) (int, error) {
+	moved := 0
+	for _, c := range cs {
+		had, err := rs.Exists(string(c.Old))
+		if err != nil {
+			return moved, fmt.Errorf("rekey: resumes %s: %w", c.Old, err)
+		}
+		switch err := rs.Rekey(context.Background(), string(c.Old), string(c.New)); {
+		case errors.Is(err, resumestore.ErrNotFound):
+			continue
+		case err != nil:
+			return moved, fmt.Errorf("rekey: move resumes %s: %w", c.Old, err)
+		}
+		if had {
+			moved++
+		}
+		if err := crash("resumes"); err != nil {
 			return moved, err
 		}
 	}
