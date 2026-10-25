@@ -213,3 +213,81 @@ func (b *builder) ownerChoice(raw []byte, p pool, jd string) (choice, error) {
 	}
 	return ch, nil
 }
+
+// editDoc is the owner-edit shape (decodeEdit) written from a choice. Its
+// fields are exactly editKeys; nothing of the base selection (header, bank,
+// meta, paths) can be in it.
+type editDoc struct {
+	Sections []editSection `json:"sections"`
+	Keywords []string      `json:"jd_keywords,omitempty"`
+}
+
+type editSection struct {
+	Title   string      `json:"title"`
+	Bullets []string    `json:"bullets,omitempty"`
+	Entries []editEntry `json:"entries,omitempty"`
+}
+
+type editEntry struct {
+	Entry   string   `json:"entry"`
+	Bullets []string `json:"bullets"` // never null: a heading-only entry lists none
+	Title   string   `json:"title,omitempty"`
+	Stack   string   `json:"stack,omitempty"`
+	Lead    string   `json:"lead,omitempty"`
+	Org     string   `json:"org,omitempty"`
+	Dates   string   `json:"dates,omitempty"`
+}
+
+// editJSON writes c in the shape decodeEdit reads, so ownerChoice(editJSON(c))
+// is c again: the chosen sections in page order (the reorderable project
+// sections in the chosen order, each listed even when empty so the order
+// survives), each entry with its bullets and overrides, and the keywords the
+// choice carries. A section with nothing chosen is left out unless its place
+// matters (a reorderable one); an entry that stays as a heading lists no
+// bullets. A choice with no keywords writes none, so the base selection's own
+// stay (and are not checked against a posting they were never taken from).
+func (c choice) editJSON(b *baseSel) ([]byte, error) {
+	doc := editDoc{Sections: []editSection{}, Keywords: c.keywords}
+	reorderable := map[int]bool{}
+	for _, i := range b.reorderable {
+		reorderable[i] = true
+	}
+	for _, i := range b.sequence(c) {
+		s := b.sections[i]
+		if !s.choosable || i >= len(c.secs) {
+			continue
+		}
+		sc := c.secs[i]
+		es := editSection{Title: s.title}
+		switch s.kind {
+		case "bullets":
+			es.Bullets = sc.bullets
+			if len(es.Bullets) == 0 {
+				continue
+			}
+		case "entries":
+			for _, e := range sc.entries {
+				ids := e.bullets
+				if ids == nil {
+					ids = []string{}
+				}
+				es.Entries = append(es.Entries, editEntry{
+					Entry: e.id, Bullets: ids,
+					Title: e.over.Title, Stack: e.over.Stack, Lead: e.over.Lead, Org: e.over.Org, Dates: e.over.Dates,
+				})
+			}
+			if len(es.Entries) == 0 && !reorderable[i] {
+				continue
+			}
+		}
+		doc.Sections = append(doc.Sections, es)
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxEditBytes {
+		return nil, fmt.Errorf("the edit is over %d bytes", maxEditBytes)
+	}
+	return raw, nil
+}
