@@ -56,7 +56,10 @@ const (
 // resumeInput is where `vani resume` reads its request. Tests replace it.
 var resumeInput io.Reader = os.Stdin
 
-// resumeRunner runs rkb; nil is rkbresume's ExecRunner. Tests replace it.
+// resumeRunner runs rkb for the resume commands; nil is rkbexec.ExecRunner.
+// Tests replace it with a fake rkb that renders and fits, apart from
+// rkbRunner (kbcmd.go), which the kb commands' tests replace with claims-only
+// fakes.
 var resumeRunner rkbresume.Runner
 
 // resumeProvider builds the metered provider for the model turn; it is the
