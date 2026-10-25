@@ -167,7 +167,7 @@ commands:
                              run's reading when ranking, and never drops or undrops a role
                              (--dry-run: the estimated cost, asks nothing; --clear: remove it).
                              Not "retriage", which asks no model
-  jobs resume build|render|show|use|revalidate|diff|current [--json] ... KEY
+  jobs resume build|render|show|use|revalidate|diff|current|coverage|gaps [--json] ... KEY
                              Resume Studio: one role's resume versions, kept in state dir
                              resumes/ (docs/RUNTIME.md). build [--dry-run] [--allow-base] asks
                              Opus to pick the bullets (spends from the daily llm budget); with
@@ -177,7 +177,10 @@ commands:
                              no model); show [--no-check] KEY [vN] lists versions and whether
                              the bank still vouches for them; use KEY vN binds a checked version
                              for applying; revalidate KEY vN drops what went stale and rebuilds;
-                             diff KEY vA vB says what differs; current KEY vN restores a version
+                             diff KEY vA vB says what differs; current KEY vN restores a version;
+                             coverage KEY [vN] says which posting terms a version hits and
+                             which no eligible bullet covers; gaps [--dry-run] KEY hands those
+                             terms to state dir resumes/gaps.jsonl for the career session
   jobs gaps [--json] [-n N] [--examples N] [same selection flags as list]
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the

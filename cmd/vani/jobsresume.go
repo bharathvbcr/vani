@@ -37,6 +37,8 @@ import (
 //	revalidate KEY vN                      drop what went stale, rebuild, save
 //	diff KEY vA vB                         what differs between two stored versions
 //	current KEY vN                         make a stored version the one the Studio shows
+//	coverage KEY [vN]                      posting terms hit, missed, and uncovered by the bank
+//	gaps [--dry-run] KEY                   hand the uncovered terms to resumes/gaps.jsonl
 //
 // docs/RUNTIME.md ("Resume Studio") has the state layout, locks, deadlines and
 // codes.
@@ -179,7 +181,7 @@ func (e *env) resumeEmit(asJSON bool, v any, err error, text func()) error {
 
 func (e *env) jobsResume(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs resume: expected build, render, show, use, revalidate, diff or current")
+		return usagef("jobs resume: expected build, render, show, use, revalidate, diff, current, coverage or gaps")
 	}
 	switch args[0] {
 	case "diff":
@@ -201,7 +203,7 @@ func (e *env) jobsResume(args []string) error {
 	case "gaps":
 		return e.jobsResumeGaps(args[1:])
 	}
-	return usagef("jobs resume: unknown subcommand %q (expected build, render, show, use, revalidate, diff or current)", args[0])
+	return usagef("jobs resume: unknown subcommand %q (expected build, render, show, use, revalidate, diff, current, coverage or gaps)", args[0])
 }
 
 // resumeFlags parses a subcommand's flags and positionals; flag.ErrHelp and
