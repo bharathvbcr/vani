@@ -89,7 +89,7 @@ private let shownJSON = """
    "current":true,"eligibility":{"state":"stale","reworded":["b1"],"gone":[],"ineligible":["b9"],"inputs_changed":["bank"],"why":"changed"}},
   {"schema":1,"key":"gh:acme:1","version":2,"source":"base","reason":"no model","cost":{"usd":0,"complete":true,"turns":0},
    "checks":{"eligibility":"unknown","lint":"not_run","fit":"could_not_run","figures":"not_run"},"created":"2026-10-24T09:00:00Z","used":true}],
- "pool":{"summary":[],"entries":[]},"keywords":[{"term":"Kubernetes","cat":"infra","n":3,"target":true,"gap":true}]}
+ "pool":{"summary":[],"entries":[],"reorderable_sections":[],"headings":[]},"keywords":[{"term":"Kubernetes","cat":"infra","n":3,"target":true,"gap":true}]}
 """
 
 final class ResumeStudioClientTests: XCTestCase {

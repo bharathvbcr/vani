@@ -9,8 +9,9 @@ import Foundation
 //
 // Go owns every rule (internal/rkbresume: checkSafe, checkOverrides, continuations.check); what is
 // checked here only lets the editor mark a row before a round trip. A rule this file cannot check
-// (a family of two framings of one piece of work, a bullet whose figure the validator does not back,
-// whether a heading may stay bare) is Go's to refuse, and its refusal is shown as it comes.
+// (a family of two framings of one piece of work, a bullet whose figure the validator does not back) is Go's
+// to refuse, and its refusal is shown as it comes. Which sections reorder and where a heading may stay bare
+// are Go's too, and the pool says them (`reorderable_sections`, `headings`): nothing here infers them.
 
 // MARK: - JSON access
 
@@ -55,6 +56,13 @@ public struct ResumePool: Equatable, Sendable {
         public var bullets: [Bullet]
     }
 
+    /// A place an entry may stay on the page with no bullets: every job, and an entry in a section whose base
+    /// lists it bare (`keepsHeading`, the rule a build applies).
+    public struct Heading: Hashable, Sendable {
+        public var section: String
+        public var entry: String
+    }
+
     public var summary: [Bullet]
     public var summarySections: [String]
     public var entries: [Entry]
@@ -62,12 +70,21 @@ public struct ResumePool: Equatable, Sendable {
     public var base: ResumeJSON?
     /// Bullet id -> the bullet it continues, over every entry and the summary.
     public let follows: [String: String]
-    /// Entries the base lists with no bullets (a heading that stays bare).
-    public let bareInBase: Set<String>
+    /// The sections whose order may change: the base's run of project sections (`reorderable_sections`). Go
+    /// ignores the order of any other section, so none is offered.
+    public let reorderableSections: Set<String>
+    /// The same sections, in the base's order.
+    public let reorderableOrder: [String]
+    /// Where an entry may stay as a heading with no bullets (`headings`). Go refuses it anywhere else.
+    public let headings: Set<Heading>
 
+    /// A pool needs `reorderable_sections` and `headings` as well as its bullets and entries: a pool from a vani
+    /// that does not say which sections reorder or where a heading may stay is no pool, never one that guesses.
     public init?(_ json: ResumeJSON?) {
         guard let json, case .object = json, let summaryJSON = json["summary"]?.arrayValue,
-              let entriesJSON = json["entries"]?.arrayValue else { return nil }
+              let entriesJSON = json["entries"]?.arrayValue,
+              let reorderableJSON = json["reorderable_sections"]?.arrayValue,
+              let headingsJSON = json["headings"]?.arrayValue else { return nil }
         func bullets(_ list: [ResumeJSON]) -> [Bullet] {
             list.compactMap { b in
                 guard let id = b["id"]?.stringValue, !id.isEmpty else { return nil }
@@ -90,32 +107,33 @@ public struct ResumePool: Equatable, Sendable {
             if let f = b.follows { follows[b.id] = f }
         }
         self.follows = follows
-        var bare: Set<String> = []
-        for s in base?["sections"]?.arrayValue ?? [] {
-            for e in s["entries"]?.arrayValue ?? [] {
-                if let id = e["entry"]?.stringValue, (e["bullets"]?.arrayValue ?? []).isEmpty { bare.insert(id) }
-            }
-        }
-        bareInBase = bare
+        reorderableOrder = reorderableJSON.compactMap(\.stringValue)
+        reorderableSections = Set(reorderableOrder)
+        headings = Set(headingsJSON.compactMap { h in
+            guard let s = h["section"]?.stringValue, let e = h["entry"]?.stringValue, !s.isEmpty, !e.isEmpty else { return nil }
+            return Heading(section: s, entry: e)
+        })
     }
 
     public func entry(_ id: String) -> Entry? { entries.first { $0.id == id } }
+
+    /// Whether `entry` may stay in `section` with no bullets, as the pool says.
+    public func mayStayAsHeading(_ entry: String, in section: String) -> Bool {
+        headings.contains(Heading(section: section, entry: entry))
+    }
+
+    /// The wording of a pool bullet by id (the summary or any entry), nil when the pool does not offer it.
+    public func bulletText(_ id: String) -> String? {
+        if let b = summary.first(where: { $0.id == id }) { return b.text }
+        for e in entries { if let b = e.bullets.first(where: { $0.id == id }) { return b.text } }
+        return nil
+    }
 
     /// Every section title the pool can fill, summary first, in the order the pool lists them.
     public var sectionTitles: [String] {
         var out: [String] = []
         for t in summarySections + entries.flatMap(\.sections) where !out.contains(t) { out.append(t) }
         return out
-    }
-
-    /// The sections whose order the owner may change. The pool does not say which sections are the
-    /// reorderable project ones, so this is read from where entries may go: a project may go in any project
-    /// section (two or more titles), a job only in the work history (one). Moving any other section does
-    /// nothing in Go, so none is offered; Go has the last word on the order it prints.
-    public var reorderableSections: Set<String> {
-        var out: Set<String> = []
-        for e in entries where e.sections.count >= 2 { out.formUnion(e.sections) }
-        return out.count >= 2 ? out : []
     }
 
     /// The pool bullet `id` of `place`, wherever it is listed.
@@ -625,13 +643,15 @@ public struct ResumeDraft: Equatable, Sendable {
                         if let p = ResumeOverrideRules.problem(f, e.overrides[f]) { add(.override(entry: e.id, field: f), p) }
                     }
                     if let pool {
+                        let bare = !e.bullets.contains(where: \.included)
                         if let pe = pool.entry(e.id) {
                             if !pe.sections.contains(s.title) { add(.entry(e.id), "This entry does not go in \(s.title).") }
-                            let isJob = !pe.org.isEmpty && !pe.dates.isEmpty
-                            if !e.bullets.contains(where: \.included), !isJob, !pool.bareInBase.contains(e.id) {
-                                add(.entry(e.id), "This entry has no bullets. Only a job, or an entry your base resume lists with none, may stay as a heading (checked roughly here; Vani decides).", blocking: false)
+                            if bare, !pool.mayStayAsHeading(e.id, in: s.title) {
+                                add(.entry(e.id), "This entry has no bullets. Only a job, or an entry your base resume lists with none, may stay as a heading.")
                             }
-                        } else {
+                        } else if !(bare && pool.mayStayAsHeading(e.id, in: s.title)) {
+                            // An entry the base lists bare has no eligible bullet, so the pool has no entry for it;
+                            // it is on offer as a heading, and only as one.
                             add(.entry(e.id), "Your knowledge base does not offer this entry any more.")
                         }
                     }

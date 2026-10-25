@@ -10,6 +10,8 @@ final class ResumeEditTests: XCTestCase {
                 {"id":"s2","text":"Keeps them fast.","text_hash":"bbbbbbbbbbbb","follows":"s1"},
                 {"id":"s3","text":"Writes Kubernetes operators.","text_hash":"cccccccccccc"}],
      "summary_sections":["Summary"],
+     "reorderable_sections":["Projects","Open Source"],
+     "headings":[{"section":"Experience","entry":"job1"},{"section":"Education","entry":"edu"}],
      "entries":[
        {"id":"job1","title":"ML Engineer","org":"Acme","dates":"2022 – 2024","sections":["Experience"],
         "bullets":[{"id":"j1","text":"Trained models.","text_hash":"111111111111"},
@@ -57,19 +59,40 @@ final class ResumeEditTests: XCTestCase {
         XCTAssertEqual(p.follows, ["s2": "s1", "j2": "j1", "j3": "j2"])
         XCTAssertEqual(p.entry("job1")?.bullets.count, 4)
         XCTAssertEqual(p.entry("projA")?.sections, ["Projects", "Open Source"])
-        XCTAssertEqual(p.bareInBase, ["edu"])
         XCTAssertEqual(p.sectionTitles, ["Summary", "Experience", "Projects", "Open Source", "Education"])
-        XCTAssertEqual(p.reorderableSections, ["Projects", "Open Source"], "only the sections a project may go in can be reordered")
+        XCTAssertEqual(p.reorderableSections, ["Projects", "Open Source"], "the sections the pool says may be reordered, nothing inferred")
+        XCTAssertEqual(p.reorderableOrder, ["Projects", "Open Source"])
+        XCTAssertEqual(p.headings, [.init(section: "Experience", entry: "job1"), .init(section: "Education", entry: "edu")])
+        XCTAssertTrue(p.mayStayAsHeading("job1", in: "Experience"))
+        XCTAssertFalse(p.mayStayAsHeading("projA", in: "Projects"), "a project the base lists with bullets is not kept bare")
+        XCTAssertFalse(p.mayStayAsHeading("job1", in: "Projects"), "a heading is allowed in a place, not everywhere")
+    }
+
+    func testThePoolSaysWhatReordersAndNotTheEntriesTheSectionsTheyMayGoIn() throws {
+        // Two sections that take the same entries, yet the pool says neither reorders: the app does not infer it.
+        let none = try XCTUnwrap(ResumePool(try json(Self.poolJSON.replacingOccurrences(of: #""reorderable_sections":["Projects","Open Source"]"#,
+                                                                                         with: #""reorderable_sections":[]"#))))
+        XCTAssertEqual(none.reorderableSections, [], "entries with two homes no longer make sections reorderable")
+        XCTAssertEqual(none.entry("projA")?.sections.count, 2)
     }
 
     func testAPoolThatIsNotWholeIsNoPoolNeverAnEmptyOne() throws {
+        let rules = #""reorderable_sections":[],"headings":[]"#
         XCTAssertNil(ResumePool(nil))
         XCTAssertNil(ResumePool(try json("[]")))
-        XCTAssertNil(ResumePool(try json(#"{"summary":[]}"#)), "no entries list: not an empty pool")
-        XCTAssertNil(ResumePool(try json(#"{"entries":[]}"#)))
-        XCTAssertNotNil(ResumePool(try json(#"{"summary":[],"entries":[]}"#)))
-        let junk = try XCTUnwrap(ResumePool(try json(#"{"summary":[{"text":"no id"},{"id":""}],"entries":[{"title":"no id"}]}"#)))
+        XCTAssertNil(ResumePool(try json(#"{"summary":[],\#(rules)}"#)), "no entries list: not an empty pool")
+        XCTAssertNil(ResumePool(try json(#"{"entries":[],\#(rules)}"#)))
+        XCTAssertNotNil(ResumePool(try json(#"{"summary":[],"entries":[],\#(rules)}"#)))
+        // A pool from a vani that does not say which sections reorder or where a heading may stay is no pool:
+        // the editor would otherwise guess, and Go decides.
+        XCTAssertNil(ResumePool(try json(#"{"summary":[],"entries":[]}"#)), "no rules at all")
+        XCTAssertNil(ResumePool(try json(#"{"summary":[],"entries":[],"headings":[]}"#)), "no reorderable_sections")
+        XCTAssertNil(ResumePool(try json(#"{"summary":[],"entries":[],"reorderable_sections":[]}"#)), "no headings")
+        let junk = try XCTUnwrap(ResumePool(try json(#"{"summary":[{"text":"no id"},{"id":""}],"entries":[{"title":"no id"}],\#(rules)}"#)))
         XCTAssertTrue(junk.summary.isEmpty && junk.entries.isEmpty, "a bullet or entry with no id cannot be placed")
+        let odd = try XCTUnwrap(ResumePool(try json(#"{"summary":[],"entries":[],"reorderable_sections":["A",1,null],"headings":[{"section":"S"},{"entry":"e"},{"section":"S","entry":"e"}]}"#)))
+        XCTAssertEqual(odd.reorderableSections, ["A"])
+        XCTAssertEqual(odd.headings, [.init(section: "S", entry: "e")], "a heading needs both its section and its entry")
     }
 
     // MARK: Draft and edit JSON
@@ -324,7 +347,22 @@ final class ResumeEditTests: XCTestCase {
         XCTAssertEqual(targets(d, p), [.entry("projA")], "a project with nothing under it is refused")
         d.sections[2].entries[0].bullets = [.init(id: "p1", included: false)]
         XCTAssertEqual(targets(d, p), [.entry("projA")], "switching its only bullet off leaves it bare")
-        XCTAssertEqual(d.issues(pool: p).map(\.blocking), [false], "the heading rule is approximate here, so it warns and does not block")
+        XCTAssertEqual(d.issues(pool: p).map(\.blocking), [true], "the pool says it may not stay bare, so it blocks, as Go refuses it")
+    }
+
+    func testAnEntryTheBaseListsBareThatThePoolHasNoEntryForStaysAsAHeadingAndOnlyAsOne() throws {
+        // A bare entry has no eligible bullet, so it is not among the pool's entries; its place is in `headings`.
+        let bare = try XCTUnwrap(ResumePool(try json(Self.poolJSON.replacingOccurrences(
+            of: #""headings":["#, with: #""headings":[{"section":"Open Source","entry":"projBare"},"#))))
+        var d = try XCTUnwrap(ResumeDraft.parse(selection: try json(Self.selectionJSON), pool: bare))
+        XCTAssertNil(bare.entry("projBare"))
+        d.sections[d.sections.firstIndex { $0.title == "Open Source" }!].entries = [.init(id: "projBare")]
+        XCTAssertEqual(targets(d, bare), [], "listed as a heading there")
+        var other = d
+        other.sections[d.sections.firstIndex { $0.title == "Open Source" }!].entries = [.init(id: "projBare", bullets: [.init(id: "p1")])]
+        XCTAssertEqual(Set(targets(other, bare)), [.entry("projBare"), .bullet("p1")], "an entry the pool does not offer is refused once it has bullets")
+        d.sections[d.sections.firstIndex { $0.title == "Projects" }!].entries = [.init(id: "projBare")]
+        XCTAssertTrue(targets(d, bare).contains(.entry("projBare")), "and refused bare in a section where the pool does not list it")
     }
 
     func testAnEmptyPageIsMarkedWhateverThePool() throws {
