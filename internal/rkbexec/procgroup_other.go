@@ -1,6 +1,6 @@
 //go:build !unix
 
-package rkbresume
+package rkbexec
 
 import "os/exec"
 

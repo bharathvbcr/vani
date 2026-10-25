@@ -13,6 +13,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/resume"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // kbStatePath is where kbsync remembers which block hashes DevPrism accepted.
@@ -32,8 +33,8 @@ var startKB = func(ctx context.Context, cfg resume.Config) (kbClient, error) {
 	return resume.Start(ctx, cfg)
 }
 
-// rkbRunner runs the rkb binary; nil is kbsync's ExecRunner. Tests replace it.
-var rkbRunner kbsync.Runner
+// rkbRunner runs the rkb binary; nil is rkbexec.ExecRunner. Tests replace it.
+var rkbRunner rkbexec.Runner
 
 // careerBackup copies DevPrism's career.db into dir and verifies the copy. Tests
 // replace it.

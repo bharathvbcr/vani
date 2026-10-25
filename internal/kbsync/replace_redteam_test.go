@@ -196,7 +196,7 @@ func TestRedteamRKBGrandchildHoldingThePipeIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	_, err := RKB{Binary: script, Runner: ExecRunner{Timeout: 300 * time.Millisecond}}.Claims(context.Background())
+	_, err := RKB{Binary: script, Timeout: 300 * time.Millisecond}.Claims(context.Background())
 	if err == nil || !errors.Is(err, ErrResolve) {
 		t.Fatalf("err = %v", err)
 	}

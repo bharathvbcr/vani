@@ -12,6 +12,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 func mustBuild(t *testing.T, f *fixture) Result {
@@ -616,7 +617,7 @@ func (r runnerFunc) Run(ctx context.Context, c Command, to time.Duration) (Outpu
 func TestRkbThatCannotRunIsACodedError(t *testing.T) {
 	t.Run("binary missing, real runner", func(t *testing.T) {
 		f := newFixture(t)
-		f.cfg.Runner = ExecRunner{}
+		f.cfg.Runner = rkbexec.ExecRunner{}
 		f.cfg.RKB = filepath.Join(f.dir, "no-such-rkb")
 		_, err := f.build()
 		e := wantCode(t, err, CodeKB)

@@ -1,4 +1,10 @@
-package rkbresume
+// Package rkbexec is the one place Vani runs the rkb binary (and the other
+// bounded helper processes the knowledge-bank code starts): a Runner seam that
+// tests fake, and an ExecRunner that bounds the run's time and captured output
+// and, on unix, stops the whole process group when it is cancelled or times out.
+// Both internal/kbsync (rkb claims export) and internal/rkbresume (every rkb
+// step of a resume build) run through it.
+package rkbexec
 
 import (
 	"bytes"
@@ -6,15 +12,15 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strings"
 	"time"
-	"unicode/utf8"
-
-	"github.com/bharathvbcr/Vani/internal/kbsync"
 )
 
-// Command is one rkb invocation. Env is the complete environment.
-type Command = kbsync.Command
+// Command is one process invocation. Env is the complete environment.
+type Command struct {
+	Path string
+	Args []string
+	Env  []string
+}
 
 // Output is what a finished process left. A non-zero Exit is not an error:
 // rkb's exit code is part of its answer (lint 1, fit 2-5).
@@ -26,20 +32,21 @@ type Output struct {
 // Runner runs one process under a timeout. It is the seam tests fake. An error
 // means the process did not finish: it could not start, outlived timeout
 // (ErrStepTimeout) or ctx ended.
-//
-// kbsync.Runner cannot serve here: it drops stdout and the exit code, and rkb
-// lint reports its errors on stdout and rkb fit its verdict in its exit code.
 type Runner interface {
 	Run(ctx context.Context, c Command, timeout time.Duration) (Output, error)
 }
 
-// ErrStepTimeout means one rkb step outlived its own bound.
+// ErrStepTimeout means one step outlived its own bound.
 var ErrStepTimeout = errors.New("did not finish within its time limit")
 
 const (
-	maxProcOutput = 64 << 10
-	maxStepTime   = 5 * time.Minute
-	waitDelay     = 2 * time.Second
+	// MaxOutput bounds what is kept of each of a process's output streams. A
+	// stream that reaches it was cut.
+	MaxOutput = 64 << 10
+	// MaxTimeout bounds every run; a zero or larger timeout means MaxTimeout.
+	MaxTimeout = 5 * time.Minute
+
+	waitDelay = 2 * time.Second
 )
 
 // ExecRunner runs real processes with a bounded timeout and bounded captured
@@ -49,7 +56,7 @@ type ExecRunner struct{}
 type capWriter struct{ buf bytes.Buffer }
 
 func (w *capWriter) Write(p []byte) (int, error) {
-	if room := maxProcOutput - w.buf.Len(); room > 0 {
+	if room := MaxOutput - w.buf.Len(); room > 0 {
 		if len(p) > room {
 			w.buf.Write(p[:room])
 		} else {
@@ -61,8 +68,8 @@ func (w *capWriter) Write(p []byte) (int, error) {
 
 // Run implements Runner.
 func (ExecRunner) Run(ctx context.Context, c Command, timeout time.Duration) (Output, error) {
-	if timeout <= 0 || timeout > maxStepTime {
-		timeout = maxStepTime
+	if timeout <= 0 || timeout > MaxTimeout {
+		timeout = MaxTimeout
 	}
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -93,14 +100,4 @@ func (ExecRunner) Run(ctx context.Context, c Command, timeout time.Duration) (Ou
 		return o, nil
 	}
 	return o, fmt.Errorf("%s: %w", c.Path, err)
-}
-
-// clip shortens s to n runes on one line, for an error message.
-func clip(s string, n int) string {
-	s = strings.ToValidUTF8(strings.TrimSpace(s), "?")
-	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return string([]rune(s)[:n-1]) + "…"
 }

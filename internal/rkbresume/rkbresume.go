@@ -52,12 +52,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/filelock"
-	"github.com/bharathvbcr/Vani/internal/kbsync"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
+
+// The rkb runner is rkbexec's: these names are what this package's callers and
+// tests have always used for it.
+type (
+	// Command is one rkb invocation. Env is the complete environment.
+	Command = rkbexec.Command
+	// Output is what a finished rkb step left; a non-zero Exit is not an error.
+	Output = rkbexec.Output
+	// Runner runs one rkb step under a timeout. It is the seam tests fake.
+	Runner = rkbexec.Runner
+)
+
+// ErrStepTimeout means one rkb step outlived its own bound.
+var ErrStepTimeout = rkbexec.ErrStepTimeout
 
 // Codes classify a failure for the caller (the Mac app, the browser extension).
 const (
@@ -168,7 +184,7 @@ type Config struct {
 	// with the reason in the Result.
 	AllowBase bool
 
-	Runner   Runner        // nil means ExecRunner
+	Runner   Runner        // nil means rkbexec.ExecRunner
 	MaxPDF   int           // default DefaultMaxPDF
 	Deadline time.Duration // default DefaultDeadline
 	// ToolDirs are searched for pdftotext when the child's PATH lacks it. The
@@ -278,7 +294,7 @@ func (c Config) normalize() (Config, *Error) {
 		return c, fail(CodeConfig, "the resume lock folder must be an absolute path")
 	}
 	if c.Runner == nil {
-		c.Runner = ExecRunner{}
+		c.Runner = rkbexec.ExecRunner{}
 	}
 	switch {
 	case c.MaxPDF == 0:
@@ -374,24 +390,34 @@ func ctxError(ctx context.Context) *Error {
 	return fail(CodeCancel, "the resume build was cancelled")
 }
 
-// claimsRunner lets kbsync.RKB run rkb through this package's Runner, in the
-// environment every other rkb step gets (a PATH that finds pdftotext).
+// claimsRunner is the Runner kbsync.RKB runs `rkb claims export` through: the
+// build's own Runner, in the environment every other rkb step gets (a PATH that
+// finds pdftotext), with everything rkb says scrubbed of the owner's header
+// before kbsync quotes it in an error.
 type claimsRunner struct {
 	r     Runner
 	env   []string
 	scrub scrubber
 }
 
-func (a claimsRunner) Run(ctx context.Context, c kbsync.Command) error {
+func (a claimsRunner) Run(ctx context.Context, c Command, timeout time.Duration) (Output, error) {
 	if a.env != nil {
 		c.Env = a.env
 	}
-	out, err := a.r.Run(ctx, c, exportTimeout)
+	out, err := a.r.Run(ctx, c, timeout)
+	out.Stdout, out.Stderr = a.scrub.clean(out.Stdout), a.scrub.clean(out.Stderr)
 	if err != nil {
-		return fmt.Errorf("%w: rkb: %s", kbsync.ErrResolve, a.scrub.clean(err.Error()))
+		return out, errors.New(a.scrub.clean(err.Error()))
 	}
-	if out.Exit != 0 {
-		return fmt.Errorf("%w: rkb exited %d: %s", kbsync.ErrResolve, out.Exit, clip(a.scrub.clean(out.Stderr), 300))
+	return out, nil
+}
+
+// clip shortens s to n runes on one line, for an error message.
+func clip(s string, n int) string {
+	s = strings.ToValidUTF8(strings.TrimSpace(s), "?")
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) <= n {
+		return s
 	}
-	return nil
+	return string([]rune(s)[:n-1]) + "…"
 }

@@ -10,6 +10,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // ---- Load ----
@@ -134,17 +137,41 @@ func TestRKBClaimsFailures(t *testing.T) {
 	}
 }
 
-func TestExecRunnerBoundsAndFailure(t *testing.T) {
-	if err := (ExecRunner{}).Run(context.Background(), Command{Path: "/usr/bin/false"}); !errors.Is(err, ErrResolve) {
+// The default runner is rkbexec's: a failing process, a process that writes no
+// claims and a cancelled context are all ErrResolve failures, and the runner is
+// handed the default timeout when RKB.Timeout is unset.
+func TestRKBClaimsRealRunnerBoundsAndFailure(t *testing.T) {
+	if _, err := (RKB{Binary: "/usr/bin/false"}).Claims(context.Background()); !errors.Is(err, ErrResolve) || !strings.Contains(err.Error(), "exited 1") {
 		t.Fatalf("failing process: %v", err)
 	}
-	if err := (ExecRunner{}).Run(context.Background(), Command{Path: "/usr/bin/true"}); err != nil {
+	if _, err := (RKB{Binary: "/usr/bin/true"}).Claims(context.Background()); !errors.Is(err, ErrResolve) || !strings.Contains(err.Error(), "wrote no claims file") {
 		t.Fatalf("true: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := (ExecRunner{}).Run(ctx, Command{Path: "/bin/sleep", Args: []string{"5"}}); err == nil {
-		t.Fatal("cancelled context did not stop the process")
+	if _, err := (RKB{Binary: "/bin/sleep"}).Claims(ctx); !errors.Is(err, ErrResolve) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context: %v", err)
+	}
+}
+
+func TestRKBClaimsTimeoutAndNonZeroExit(t *testing.T) {
+	fr := &fakeRunner{exit: 3, stderr: "  bad Claims.tex\n"}
+	_, err := RKB{Binary: "/opt/rkb", Runner: fr}.Claims(context.Background())
+	if !errors.Is(err, ErrResolve) || !strings.Contains(err.Error(), "rkb exited 3: bad Claims.tex") {
+		t.Fatalf("non-zero exit: %v", err)
+	}
+	if fr.timeout != DefaultRKBTimeout {
+		t.Fatalf("runner timeout = %s, want the default %s", fr.timeout, DefaultRKBTimeout)
+	}
+	fr = &fakeRunner{content: []byte(`{"claims":{"clmA":{"value":"1"}}}`)}
+	if _, err := (RKB{Binary: "/opt/rkb", Runner: fr, Timeout: 7 * time.Second}).Claims(context.Background()); err != nil || fr.timeout != 7*time.Second {
+		t.Fatalf("timeout = %s err = %v, want 7s", fr.timeout, err)
+	}
+	// A runner that cannot finish the step reports a failure that is both a
+	// resolve error and the runner's own.
+	_, err = RKB{Binary: "/opt/rkb", Runner: &fakeRunner{err: rkbexec.ErrStepTimeout}}.Claims(context.Background())
+	if !errors.Is(err, ErrResolve) || !errors.Is(err, rkbexec.ErrStepTimeout) {
+		t.Fatalf("timeout error = %v", err)
 	}
 }
 

@@ -1,14 +1,12 @@
 package kbsync
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -16,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/childenv"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // Resolution decision. rkb owns claim values: Claims.tex is the only place a
@@ -28,12 +27,11 @@ import (
 // mechanical {{clmX}} substitution itself, with the same token pattern and
 // the same plain-text markup rules as rkb's own text renderer.
 
-// Bounds for the rkb subprocess.
+// Bounds for the rkb subprocess. The runner (rkbexec) clamps the timeout to
+// rkbexec.MaxTimeout and keeps at most rkbexec.MaxOutput of each stream.
 const (
 	DefaultRKBTimeout = 60 * time.Second
-	MaxRKBTimeout     = 5 * time.Minute
 	MaxClaimsBytes    = 4 << 20
-	maxProcOutput     = 64 << 10
 )
 
 // ErrResolve wraps every claim-resolution failure.
@@ -52,71 +50,14 @@ var (
 	linkRe   = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^)]+)\)`)
 )
 
-// Command is one subprocess invocation. Env is the complete environment.
-type Command struct {
-	Path string
-	Args []string
-	Env  []string
-}
-
-// Runner runs a subprocess. It is the seam tests fake: the fake plays rkb and
-// writes the --out file it is handed.
-type Runner interface {
-	Run(ctx context.Context, c Command) error
-}
-
-// ExecRunner runs real processes with a bounded timeout and bounded captured
-// output. Its Timeout is clamped to MaxRKBTimeout.
-type ExecRunner struct {
-	Timeout time.Duration
-}
-
-type capWriter struct {
-	buf bytes.Buffer
-}
-
-func (w *capWriter) Write(p []byte) (int, error) {
-	if room := maxProcOutput - w.buf.Len(); room > 0 {
-		if len(p) > room {
-			w.buf.Write(p[:room])
-		} else {
-			w.buf.Write(p)
-		}
-	}
-	return len(p), nil // keep draining so a noisy child cannot block
-}
-
-// Run implements Runner.
-func (r ExecRunner) Run(ctx context.Context, c Command) error {
-	to := r.Timeout
-	if to <= 0 {
-		to = DefaultRKBTimeout
-	}
-	if to > MaxRKBTimeout {
-		to = MaxRKBTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, to)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
-	cmd.Env = c.Env
-	cmd.Stdin = nil
-	var out, errw capWriter
-	cmd.Stdout, cmd.Stderr = &out, &errw
-	cmd.WaitDelay = 2 * time.Second
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("%w: rkb: %v", ErrResolve, ctx.Err())
-		}
-		return fmt.Errorf("%w: rkb: %v: %s", ErrResolve, err, truncate(strings.TrimSpace(errw.buf.String()), 400))
-	}
-	return nil
-}
-
 // RKB resolves claim values by calling the rkb binary.
 type RKB struct {
-	Binary   string // absolute path to the rkb binary
-	CodeRoot string // the folder holding career/ (rkb's RKB_CODE_ROOT); empty lets rkb search
-	Runner   Runner // nil means ExecRunner with the default timeout
+	Binary   string        // absolute path to the rkb binary
+	CodeRoot string        // the folder holding career/ (rkb's RKB_CODE_ROOT); empty lets rkb search
+	Timeout  time.Duration // zero means DefaultRKBTimeout; rkbexec clamps it to rkbexec.MaxTimeout
+	// Runner runs rkb; nil means rkbexec.ExecRunner. Tests fake it: the fake
+	// plays rkb and writes the --out file it is handed.
+	Runner rkbexec.Runner
 }
 
 // Claims runs `rkb claims export` into a private temp dir and returns
@@ -129,7 +70,11 @@ func (k RKB) Claims(ctx context.Context) (Claims, error) {
 	}
 	run := k.Runner
 	if run == nil {
-		run = ExecRunner{}
+		run = rkbexec.ExecRunner{}
+	}
+	timeout := k.Timeout
+	if timeout <= 0 {
+		timeout = DefaultRKBTimeout
 	}
 	dir, err := os.MkdirTemp("", "vani-kbsync-")
 	if err != nil {
@@ -141,8 +86,12 @@ func (k RKB) Claims(ctx context.Context) (Claims, error) {
 	if k.CodeRoot != "" {
 		env = append(env, "RKB_CODE_ROOT="+k.CodeRoot)
 	}
-	if err := run.Run(ctx, Command{Path: k.Binary, Args: []string{"claims", "export", "--out", out}, Env: env}); err != nil {
-		return Claims{}, err
+	res, err := run.Run(ctx, rkbexec.Command{Path: k.Binary, Args: []string{"claims", "export", "--out", out}, Env: env}, timeout)
+	if err != nil {
+		return Claims{}, fmt.Errorf("%w: rkb: %w", ErrResolve, err)
+	}
+	if res.Exit != 0 {
+		return Claims{}, fmt.Errorf("%w: rkb exited %d: %s", ErrResolve, res.Exit, truncate(strings.TrimSpace(res.Stderr), 400))
 	}
 	f, err := os.Open(out)
 	if err != nil {

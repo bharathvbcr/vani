@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/resume"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // Synthetic fixtures only: nothing here comes from the real bank.
@@ -315,26 +316,34 @@ func asList(v any) []map[string]any {
 
 // fakeRunner plays rkb: it writes the claims file named by --out.
 type fakeRunner struct {
-	cmd     Command
+	cmd     rkbexec.Command
 	content []byte
 	err     error
 	noFile  bool
+	// exit and stderr make the fake rkb finish with a non-zero exit code.
+	exit   int
+	stderr string
+	// timeout is the bound the runner was asked to apply.
+	timeout time.Duration
 }
 
-func (r *fakeRunner) Run(_ context.Context, c Command) error {
-	r.cmd = c
+func (r *fakeRunner) Run(_ context.Context, c rkbexec.Command, timeout time.Duration) (rkbexec.Output, error) {
+	r.cmd, r.timeout = c, timeout
 	if r.err != nil {
-		return r.err
+		return rkbexec.Output{}, r.err
+	}
+	if r.exit != 0 {
+		return rkbexec.Output{Exit: r.exit, Stderr: r.stderr}, nil
 	}
 	if r.noFile {
-		return nil
+		return rkbexec.Output{}, nil
 	}
 	for i, a := range c.Args {
 		if a == "--out" && i+1 < len(c.Args) {
-			return os.WriteFile(c.Args[i+1], r.content, 0o600)
+			return rkbexec.Output{}, os.WriteFile(c.Args[i+1], r.content, 0o600)
 		}
 	}
-	return errors.New("fake: no --out")
+	return rkbexec.Output{}, errors.New("fake: no --out")
 }
 
 func writeTemp(t *testing.T, name, content string) string {
