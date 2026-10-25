@@ -342,6 +342,9 @@ func (s *Store) openJob(key string) (dir string, l listing, err error) {
 		return "", listing{}, ErrNotFound
 	}
 	if err != nil {
+		if st, serr := os.Lstat(dir); serr == nil && !st.IsDir() {
+			return "", listing{}, fmt.Errorf("%w: %s is not a folder", ErrDamaged, jobFolder(key)[:12])
+		}
 		return "", listing{}, fmt.Errorf("resumestore: %w", err)
 	}
 	got, err := readRegular(filepath.Join(dir, keyFile), MaxKeyBytes)
@@ -724,6 +727,12 @@ func (s *Store) Summary(key string) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
+	return summarize(dir, key, l)
+}
+
+// summarize is the Summary of the job in dir, whose key file already names key
+// and whose listing is l: Summary and Summaries share it.
+func summarize(dir, key string, l listing) (Summary, error) {
 	sum := Summary{Versions: len(l.jsons)}
 	for _, p := range []struct {
 		name string

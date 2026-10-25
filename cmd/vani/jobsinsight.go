@@ -249,9 +249,11 @@ type insight struct {
 	// manual holds the owner's manual readings (internal/manualtriage) so Enrich
 	// can show them, stale ones too; nil when none could be read.
 	manual *manualReadingSet
-	// resumes is the per-job resume store (internal/resumestore) Enrich reads a
-	// summary from; nil when the state directory is unknown.
-	resumes *resumestore.Store
+	// resumes is every job's resume summary (internal/resumestore), read from the
+	// store in one walk when the insight is built, as manual is; Enrich only
+	// looks a job up in it. A store that could not be read answers every job
+	// with an error, never as no resume.
+	resumes *resumestore.Summaries
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -358,10 +360,13 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	var warn string
 	in.manual, in.rc.Manual, warn = manualReadings(stateDir)
 	in.warn(warn)
-	// Open creates nothing and reads nothing; an unusable store shows per job
-	// (jobview.ResumeOf), so it can never look like "no resume".
-	var rerr error
-	if in.resumes, rerr = resumestore.Open(stateDir); rerr != nil {
+	// One walk of the resume store, not a probe per job. An unusable store shows
+	// per job (jobview.ResumeOf), so it can never look like "no resume".
+	rs, rerr := resumestore.Open(stateDir)
+	if rerr == nil {
+		in.resumes, rerr = rs.Summaries()
+	}
+	if rerr != nil {
 		in.warn("resume versions not shown: " + oneLine(rerr.Error(), 200))
 	}
 	return in, nil

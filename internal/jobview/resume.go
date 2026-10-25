@@ -55,10 +55,12 @@ func ResumeOf(s resumestore.Summary, err error) *ResumeSummary {
 	return r
 }
 
-// ResumeFor reads key's summary from st; nil st (no store) is no resume.
-func ResumeFor(st *resumestore.Store, key string) *ResumeSummary {
-	if st == nil {
+// ResumeFor is key's summary from x, the store read once for the whole listing
+// (resumestore.Store.Summaries); nil x (no store) is no resume. It touches no
+// file: a listing of many jobs does one walk, not a probe per job.
+func ResumeFor(x *resumestore.Summaries, key string) *ResumeSummary {
+	if x == nil {
 		return nil
 	}
-	return ResumeOf(st.Summary(key))
+	return ResumeOf(x.Of(key))
 }
