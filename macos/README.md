@@ -541,7 +541,18 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - That Swift's `flock(LOCK_EX)` and Go's shared probe exclude each other: the bundled app above
     held the lock and the daemon's notifier stayed quiet.
 - **Not verified here:**
-  - A click on a notification, with the window open or closed. Computer use cannot reach
+  - The Resume Studio window in a running app (its model, its draft rules, the preview guards and the close guard
+    are tested; ImageRenderer cannot draw buttons, menus, drag targets, PDFKit or WebKit). Open Studio from a job's
+    card opens one window titled "Resume — Company, Title", and pressing it again brings that window forward rather than
+    opening a second; unchecking a bullet puts the edited dot on the close button, and the close button or ⌘W then asks
+    "Close this window and discard your edits?" (the guard wraps SwiftUI's own window delegate, checked only against a
+    plain NSWindow); dragging a bullet group reorders it and takes the bullets that continue it along; the Swap popover
+    lists the bullets not on the page with the posting's keywords in orange bold; the fitted version's PDF is drawn
+    by PDFKit; the split divider moves; Save PDF As offers `Resume_<Company>.pdf`, Reveal and Open in Preview work. A real
+    rkb page in the unfitted preview, which draws without any external font or stylesheet it asks for (the web view blocks
+    the network).
+  - A click on a notification, with the window open or closed. A Studio window is never the one it raises
+    (the reveal looks for the window titled "Vani Apply"); that filter is not covered by a test. Computer use cannot reach
     Notification Center, and no click on the test copy's notices showed up in the log. The
     reopen goes through `MainWindowReveal` (`MainWindowRevealTests`). Without the fix, closing
     the window quit the app, so there was no running app to click through to.

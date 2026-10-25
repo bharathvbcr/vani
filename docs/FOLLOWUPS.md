@@ -721,7 +721,7 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     Studio". Still open: the pool is about the base resume until rkb round-2 review runs (`vani kb
     sync --dry-run`: 17 entries / 36 slots; the career/ session's handoff); the Swift app has the
     client, model, card, bind-and-log and the Studio window (macos/README.md, "Resume Studio"; what
-    only the running app can confirm is listed there), and the extension's keyed path, the
+    only the running app can confirm is under its "Not verified here"), and the extension's keyed path, the
     agent's `resumeJob` and header removal step 2 are done; the Studio's preview cannot select a
     bullet by clicking it (that needs scripts in the page, which stay off); a build
     that falls back to base is kept but never current over a real version; marks' sent version and

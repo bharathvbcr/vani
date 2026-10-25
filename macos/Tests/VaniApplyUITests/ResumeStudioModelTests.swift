@@ -71,6 +71,8 @@ final class ResumeStudioModelTests: XCTestCase {
         printf '%s\\n' "$*" >> "$d/calls.log"
         case " $* " in
         *" --dry-run "*) cat "$d/dry.json"; exit 0 ;;
+        # With no show.json this falls through to build.json, which is not a show reply: the app reads it as
+        # unreadable_reply, by design (testPreviewOpensTheKnownPDF... relies on it to exercise the fallback).
         *" show "*) if [ -f "$d/show.json" ]; then cat "$d/show.json"; exit 0; fi ;;
         *" use "*) cat "$d/use.json"; [ -f "$d/use.fail" ] && exit 1; exit 0 ;;
         *" revalidate "*) cat "$d/revalidate.json"; [ -f "$d/revalidate.fail" ] && exit 1; exit 0 ;;
