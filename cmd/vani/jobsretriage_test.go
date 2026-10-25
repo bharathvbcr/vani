@@ -96,9 +96,9 @@ func (s *retriageStream) Close() error { return nil }
 type rtJob struct {
 	key, title, desc string
 	status           posting.Status
-	fit              string  // role_fit; "" leaves no triage reading
-	p                string  // its probability annotation
-	rank             string  // the run's rank annotation
+	fit              string // role_fit; "" leaves no triage reading
+	p                string // its probability annotation
+	rank             string // the run's rank annotation
 	extra            map[string]string
 }
 
@@ -242,7 +242,10 @@ func rtNoStore(t *testing.T, state string) {
 func rtQuestion(t *testing.T, p posting.Posting, summary string) decide.Question {
 	t.Helper()
 	var q decide.Question
-	d := askFunc(func(_ context.Context, got decide.Question) (decide.Answer, error) { q = got; return decide.Answer{}, nil })
+	d := askFunc(func(_ context.Context, got decide.Question) (decide.Answer, error) {
+		q = got
+		return decide.Answer{}, nil
+	})
 	if _, err := (jdtriage.Triager{D: d, TargetSummary: summary}).Triage(context.Background(), p); err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +638,9 @@ func TestJobsRetriageErrors(t *testing.T) {
 		{name: "cap spent at the provider", code: "cap_reached", key: "gh:acme:1", jobs: ok,
 			llm: &retriageLLM{err: fmt.Errorf("budget: reserve: %w", budget.ErrExhausted)}},
 		{name: "cap spent building", code: "cap_reached", key: "gh:acme:1", jobs: ok,
-			seam: func(context.Context, *wired) (llm.Provider, error) { return nil, fmt.Errorf("llm budget: %w", budget.ErrExhausted) }},
+			seam: func(context.Context, *wired) (llm.Provider, error) {
+				return nil, fmt.Errorf("llm budget: %w", budget.ErrExhausted)
+			}},
 		{name: "provider down", code: "provider", key: "gh:acme:1", jobs: ok, llm: &retriageLLM{err: errors.New("dial tcp: connection refused")}},
 		{name: "refused", code: "refused", key: "gh:acme:1", jobs: ok, cost: true,
 			llm: &retriageLLM{text: "", stop: llm.StopRefusal, usage: paid}},
