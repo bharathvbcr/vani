@@ -68,6 +68,9 @@ func runHistoryPath(stateDir, id string) string {
 // writeRunHistory writes a finished run's record to the history, atomically,
 // then prunes. Writing the same run twice replaces its file, so a retry is safe.
 func writeRunHistory(stateDir string, r runRecord) error {
+	if stateDir == "" {
+		return errNoStateDir
+	}
 	if r.Outcome == outcomeRunning {
 		return errors.New("a run that has not ended is not history")
 	}

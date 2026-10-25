@@ -227,8 +227,16 @@ func TestDailyRunRereadsTheWatchlist(t *testing.T) {
 		return errors.New("stop")
 	})
 	mustCode(t, exitRuntime, "daemon")
-	if len(reloads) != 2 || len(reloads[0]) != 0 || len(reloads[1]) != 1 || reloads[1][0].Token != "initech" {
-		t.Fatalf("reloads %+v; want none on the first run and initech on the second", reloads)
+	// Two runs, reloadsPerRun reloads each: none of the first run's reloads see
+	// the board, every one of the second run's does.
+	if len(reloads) != 2*reloadsPerRun {
+		t.Fatalf("reloads %+v; want %d (two runs)", reloads, 2*reloadsPerRun)
+	}
+	for i, r := range reloads {
+		firstRun := i < reloadsPerRun
+		if firstRun && len(r) != 0 || !firstRun && (len(r) != 1 || r[0].Token != "initech") {
+			t.Fatalf("reload %d is %+v; want none on the first run and initech on the second (all %+v)", i, r, reloads)
+		}
 	}
 }
 
@@ -331,7 +339,9 @@ func TestDaemonPollsTheInboxSerialisedWithTheDailyRun(t *testing.T) {
 }
 
 func TestPollInboxOnceWaitsForTheMutexAndContainsPanics(t *testing.T) {
-	e := &env{stderr: io.Discard}
+	// The panic path writes runs/inbox.json under the state dir; an empty one
+	// put it in the source tree (cmd/vani/runs/).
+	e := &env{stateDir: t.TempDir(), stderr: io.Discard}
 	var mu sync.Mutex
 	mu.Lock()
 	var called atomic.Bool

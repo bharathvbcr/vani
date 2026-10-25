@@ -44,6 +44,9 @@ func inboxStatusPath(stateDir string) string {
 }
 
 func writeInboxStatus(stateDir string, st inboxStatus) error {
+	if stateDir == "" {
+		return errNoStateDir
+	}
 	st.V = inboxStatusVersion
 	if st.At.IsZero() {
 		st.At = time.Now().UTC()

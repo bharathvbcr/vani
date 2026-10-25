@@ -286,6 +286,34 @@ func TestInboxStatusBoundsAndRejectsACorruptFile(t *testing.T) {
 	}
 }
 
+// An empty state dir joins to a relative runs/ path. Each runs/ writer refuses
+// it and creates nothing in the working directory.
+func TestRunsWritersRefuseAnEmptyStateDir(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	rec := runRecord{Outcome: outcomeOK, StartedAt: time.Unix(1_700_000_000, 0).UTC(), FinishedAt: time.Unix(1_700_000_060, 0).UTC()}
+	for name, err := range map[string]error{
+		"inbox status": writeInboxStatus("", inboxStatus{Error: "boom"}),
+		"run record":   writeRunRecord("", rec),
+		"run history":  writeRunHistory("", rec),
+	} {
+		if !errors.Is(err, errNoStateDir) {
+			t.Errorf("%s: err %v, want errNoStateDir", name, err)
+		}
+	}
+	if entries, err := os.ReadDir(cwd); err != nil || len(entries) != 0 {
+		t.Fatalf("working directory %v after refused writes: %v (err %v)", cwd, entries, err)
+	}
+	// A real state dir still works, and the same writers still succeed there.
+	state := t.TempDir()
+	if err := writeInboxStatus(state, inboxStatus{Error: "boom"}); err != nil {
+		t.Fatalf("inbox status in a real state dir: %v", err)
+	}
+	if err := writeRunRecord(state, rec); err != nil {
+		t.Fatalf("run record in a real state dir: %v", err)
+	}
+}
+
 func TestPollInboxPanicKeepsABoundedStatusAndPrintsAStack(t *testing.T) {
 	var buf bytes.Buffer
 	e := &env{stateDir: t.TempDir(), stderr: &buf}

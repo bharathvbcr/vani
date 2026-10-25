@@ -379,9 +379,17 @@ func runRecordPath(stateDir string) string {
 	return filepath.Join(stateDir, runRecordDir, runRecordFile)
 }
 
+// errNoStateDir is what a runs/ writer returns for an empty state dir. Joined
+// onto "", runs/... is relative, so the write would land in the working
+// directory (a test run from the source tree left runs/inbox.json there).
+var errNoStateDir = errors.New("no state dir: refusing to write under the working directory")
+
 // writeRunRecord replaces the record atomically: a reader sees the old record
 // or the new one, never half of either.
 func writeRunRecord(stateDir string, r runRecord) error {
+	if stateDir == "" {
+		return errNoStateDir
+	}
 	raw, err := marshalRunRecord(r)
 	if err != nil {
 		return err

@@ -92,6 +92,13 @@ func TestRunOnceRefusesTooManyBoards(t *testing.T) {
 	mustCode(t, exitUsage, args...)
 }
 
+// reloadsPerRun is how many times a run applies the config file to the app
+// (App.Reload): dailyJob's pre-check, which decides a process-lifetime change
+// before any run record exists, then dailySteps' own reload, which feeds the
+// pipeline (app.go; TestScheduleChangeFoundByTheRunReloadLeavesTheLastRecord
+// needs the second). Introduced together in e9710ea.
+const reloadsPerRun = 2
+
 // A plain run-once is a manual run with no overrides: the record says manual,
 // carries no options, and the app's advance phase is reset to the config's.
 func TestRunOnceRecordsAManualRun(t *testing.T) {
@@ -122,9 +129,15 @@ func TestRunOnceOverridesReachTheAppAndTheRecord(t *testing.T) {
 	if !slices.Equal(got.tunes, [][2]any{{7, false}}) {
 		t.Errorf("tunes %v, want [7 false]", got.tunes)
 	}
-	// Watchlist order, each board once, whatever the flags' order and case.
-	if len(got.reloads) != 1 || len(got.reloads[0]) != 2 || got.reloads[0][0].Token != "acme" || got.reloads[0][1].Token != "globex" {
-		t.Fatalf("reloads %+v, want acme then globex", got.reloads)
+	// Watchlist order, each board once, whatever the flags' order and case. Both
+	// of the run's reloads (reloadsPerRun) apply the selection.
+	if len(got.reloads) != reloadsPerRun {
+		t.Fatalf("reloads %+v, want %d (one run)", got.reloads, reloadsPerRun)
+	}
+	for i, r := range got.reloads {
+		if len(r) != 2 || r[0].Token != "acme" || r[1].Token != "globex" {
+			t.Fatalf("reload %d is %+v, want acme then globex", i, r)
+		}
 	}
 	r := lastRecord(t, stateDir)
 	if r.Trigger != triggerManual || r.Options == nil || r.Options.Advance != 7 || len(r.Options.Boards) != 3 {
