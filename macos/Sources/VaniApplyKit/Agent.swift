@@ -296,21 +296,26 @@ public enum AgentIdentity {
     }
 }
 
-/// The kinds of job the agent runs, each one `vani <kind>` with JSON on stdin.
+/// The kinds of job the agent runs. All but `resumeJob` are one `vani <kind>` with JSON on stdin.
 public enum JobKind: String, CaseIterable, Sendable {
     /// `resume` builds a PDF for one job with rkb in the owner's template
     /// (`vani resume`): the model picks the bullets for the job, rkb lays them out.
-    case draft, suggest, resume
+    /// It is stateless: nothing is kept, for a page Vani does not track.
+    /// `resumeJob` is the same build for a tracked posting, by key, kept as the next
+    /// version of its resume (`vani jobs resume build`, then `use`; see ResumeJob.swift).
+    case draft, suggest, resume, resumeJob
 
     /// Ceiling on one job. A suggest triages (45 s) and writes up to three
     /// drafts (90 s each); a draft is DraftRunner.timeout; a resume is one model
     /// turn and an rkb build, with one retry, bounded by vani at 360 s
     /// (rkbresume.DefaultDeadline) — about a minute when nothing is retried.
+    /// A resumeJob is that build and then a `use` (their own bounds, summed).
     public var timeout: TimeInterval {
         switch self {
         case .draft: return DraftRunner.timeout
         case .suggest: return 330
         case .resume: return 375
+        case .resumeJob: return DraftRunner.resumeBuildTimeout + DraftRunner.resumeUseTimeout
         }
     }
 
@@ -320,6 +325,7 @@ public enum JobKind: String, CaseIterable, Sendable {
         case .draft: return 64 * 1024
         case .suggest: return 256 * 1024
         case .resume: return 128 * 1024
+        case .resumeJob: return 4 * 1024 // a posting key and nothing else
         }
     }
 
@@ -329,9 +335,12 @@ public enum JobKind: String, CaseIterable, Sendable {
     public var maxReplyBytes: Int {
         switch self {
         case .draft, .suggest: return DraftRunner.maxOutputBytes
-        case .resume: return 900 * 1024
+        case .resume, .resumeJob: return 900 * 1024
         }
     }
+
+    /// A kind that builds a resume, so the activity log counts it as one.
+    public var buildsResume: Bool { self == .resume || self == .resumeJob }
 
     /// Whether the job spends model budget. Every kind does: a resume asks the
     /// model which bullets fit the job (without a key it builds the owner's base

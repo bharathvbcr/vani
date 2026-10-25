@@ -182,7 +182,8 @@ final class DraftingTests: XCTestCase {
         printf '{"pdf":"JVBERi0=","name":"Resume_Acme.pdf","bytes":5,"key":"%s"}\\n' "${ANTHROPIC_API_KEY:-unset}"
         """)
         let cfg = try vaniConfig(self, provider: "anthropic")
-        let input = Data(#"{"job":{"description":"d"},"header":{"name":"Test Applicant"}}"#.utf8)
+        // The request is the posting alone: the owner's name and contact lines are not part of it (rkb prints its own header).
+        let input = Data(#"{"job":{"description":"d"}}"#.utf8)
         final class Count: @unchecked Sendable { let lock = NSLock(); var n = 0; func bump() { lock.lock(); n += 1; lock.unlock() } }
 
         let launcher = try fakeLauncher(self)
