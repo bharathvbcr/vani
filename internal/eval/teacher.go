@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sort"
@@ -376,6 +377,62 @@ func readBy(r ledger.Record, n Names, first string) bool {
 		}
 	}
 	return false
+}
+
+// Has reports whether key has a stored reading under the current identity (the
+// model, the shared fixture and the prompt), whatever its slots hold. It is the
+// restriction `vani teacher --with-readings-of` applies, so a sample can be
+// compared against another model's readings of the same question.
+func (c CurrentReadings) Has(key string) bool {
+	if c.s == nil {
+		return false
+	}
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	for _, r := range c.s.byKey[posting.Key(key)] {
+		if r.Model == c.model && r.FixtureSHA == c.fixture && r.PromptHash == c.prompt {
+			return true
+		}
+	}
+	return false
+}
+
+// WithCurrentReading keeps, in order, the candidates c has a current reading of.
+func WithCurrentReading(cands []TeacherCandidate, c CurrentReadings) []TeacherCandidate {
+	var out []TeacherCandidate
+	for _, cand := range cands {
+		if c.Has(string(cand.Posting.Key)) {
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+// sampleStream is the fixed second word of the PCG state; the seed is the first.
+const sampleStream = 0x76616e69_7465616d // "vani" "team"
+
+// SampleCandidates draws n of cands uniformly at random without replacement,
+// deterministically for seed (a partial Fisher-Yates shuffle over a PCG
+// generator, whose stream is part of math/rand/v2's compatibility promise), and
+// returns them in the order they were drawn. That order is the point: every
+// prefix of a draw is itself a uniform sample, and for the same candidates and
+// seed a draw of m is the first m of a draw of n >= m, so `--sample 1000
+// --max 300` asks about a uniform 300-subset of the 1000. n above len(cands)
+// returns every candidate (shuffled); n < 1 is an error, never "all". cands is
+// not modified; its order must itself be deterministic (TeacherCandidates sorts
+// by key).
+func SampleCandidates(cands []TeacherCandidate, n int, seed uint64) ([]TeacherCandidate, error) {
+	if n < 1 {
+		return nil, fmt.Errorf("eval: sample size %d, want at least 1", n)
+	}
+	out := append([]TeacherCandidate(nil), cands...)
+	rng := rand.New(rand.NewPCG(seed, sampleStream))
+	m := min(n, len(out))
+	for i := range m {
+		j := i + rng.IntN(len(out)-i)
+		out[i], out[j] = out[j], out[i]
+	}
+	return out[:m], nil
 }
 
 // TeacherRun is one run's settings.

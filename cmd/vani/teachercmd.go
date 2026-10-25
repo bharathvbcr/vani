@@ -107,15 +107,29 @@ func (e *env) cmdTeacher(args []string) error {
 	of := fs.String("of", "", "the first teacher whose postings are read again (default the OpenRouter decision model's backend name)")
 	conc := fs.Int("concurrency", defaultTeacherConcurrency, fmt.Sprintf("questions in flight (1-%d)", eval.MaxTeacherConcurrency))
 	maxN := fs.Int("max", 0, "ask about at most this many postings this run (0: all)")
+	sampleN := fs.Int("sample", 0, "ask about a uniform random sample of this many of the postings (0: no sampling); drawn before --max, deterministic for --seed")
+	seed := fs.Uint64("seed", 0, "the seed of --sample's draw (only with --sample)")
+	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a stored reading by this model (this fixture and prompt), applied before --sample")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	budgetSet := false
+	budgetSet, sampleSet, seedSet := false, false, false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "budget-usd" {
+		switch f.Name {
+		case "budget-usd":
 			budgetSet = true
+		case "sample":
+			sampleSet = true
+		case "seed":
+			seedSet = true
 		}
 	})
+	if sampleSet && *sampleN < 1 {
+		return usagef("teacher: --sample must be at least 1")
+	}
+	if seedSet && !sampleSet {
+		return usagef("teacher: --seed needs --sample")
+	}
 	if !*dry {
 		if !budgetSet {
 			return usagef("teacher: a real run needs --budget-usd N (no default); use --dry-run to see the cost first")
@@ -182,6 +196,23 @@ func (e *env) cmdTeacher(args []string) error {
 	}
 	if store.Skipped > 0 {
 		fmt.Fprintf(e.stderr, "vani: teacher readings: %d unreadable lines skipped (a torn tail or a hand edit)\n", store.Skipped)
+	}
+	// The candidates are narrowed before anything is asked: first to those the
+	// named model already read (so a sample can be compared against it), then to
+	// a uniform sample of what is left; --max and the already-stored check apply
+	// to the sample, in the order it was drawn.
+	if *readingsOf != "" {
+		before := len(sel.Candidates)
+		sel.Candidates = eval.WithCurrentReading(sel.Candidates, store.Current(*readingsOf, summary))
+		fmt.Fprintf(e.stdout, "teacher: kept %d of %d postings that have a current reading by %s\n", len(sel.Candidates), before, *readingsOf)
+	}
+	if sampleSet {
+		drawn, err := eval.SampleCandidates(sel.Candidates, *sampleN, *seed)
+		if err != nil {
+			return usagef("teacher: %v", err)
+		}
+		fmt.Fprintf(e.stdout, "teacher: sampled %d of %d postings (seed %d)\n", len(drawn), len(sel.Candidates), *seed)
+		sel.Candidates = drawn
 	}
 	var pending []eval.TeacherCandidate
 	fixture, ph := eval.FixtureSHA(), eval.PromptHash(summary)
