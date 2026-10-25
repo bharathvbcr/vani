@@ -356,8 +356,11 @@ type reply struct {
 	Keywords []string `json:"jd_keywords"`
 }
 
-// replyKeys are the only keys a reply may have, at each level, spelled exactly.
-var replyKeys = struct{ top, section, entry []string }{
+// keySet lists the keys a reply may have at each level, spelled exactly.
+type keySet struct{ top, section, entry []string }
+
+// replyKeys are the only keys the model's reply may have.
+var replyKeys = keySet{
 	top:     []string{"sections", "jd_keywords"},
 	section: []string{"title", "bullets", "entries"},
 	entry:   []string{"entry", "bullets"},
@@ -369,10 +372,20 @@ var replyKeys = struct{ top, section, entry []string }{
 // and another for the decoder; neither is allowed. Repeated keys at any depth
 // are refused by kbsync.ParseSelection, the package's strict reader (a reply's
 // sections have a selection's shape; it also holds every id to the bank's
-// alphabet). Keys must match the names above exactly.
+// alphabet). Keys must match replyKeys exactly: the model may not carry an
+// entry override.
 func decodeReply(text string) (reply, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(text)))
-	dec.DisallowUnknownFields()
+	return decodeKeyed([]byte(text), replyKeys, true)
+}
+
+// decodeKeyed is decodeReply for the key set keys. The decoder refuses a field
+// the reply type lacks only when strictFields (the owner's edit carries more
+// keys than reply holds; exactKeys still holds it to keys).
+func decodeKeyed(raw []byte, keys keySet, strictFields bool) (reply, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if strictFields {
+		dec.DisallowUnknownFields()
+	}
 	var r reply
 	if err := dec.Decode(&r); err != nil {
 		return reply{}, errors.New("the reply is not the JSON object asked for")
@@ -380,17 +393,17 @@ func decodeReply(text string) (reply, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return reply{}, errors.New("the reply has text after the JSON object")
 	}
-	if _, err := kbsync.ParseSelection([]byte(text)); err != nil {
+	if _, err := kbsync.ParseSelection(raw); err != nil {
 		return reply{}, errors.New("the reply is not the JSON object asked for: a key is repeated, an id is malformed, or there are no sections")
 	}
-	if err := exactKeys([]byte(text)); err != nil {
+	if err := exactKeys(raw, keys); err != nil {
 		return reply{}, err
 	}
 	return r, nil
 }
 
-// exactKeys refuses a reply whose keys are not exactly the ones asked for.
-func exactKeys(raw []byte) error {
+// exactKeys refuses a reply whose keys are not exactly the ones in keys.
+func exactKeys(raw []byte, keys keySet) error {
 	only := func(m map[string]json.RawMessage, allowed []string) error {
 		for k := range m {
 			if !slices.Contains(allowed, k) {
@@ -403,7 +416,7 @@ func exactKeys(raw []byte) error {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return errors.New("the reply is not the JSON object asked for")
 	}
-	if err := only(top, replyKeys.top); err != nil {
+	if err := only(top, keys.top); err != nil {
 		return err
 	}
 	var secs []map[string]json.RawMessage
@@ -411,7 +424,7 @@ func exactKeys(raw []byte) error {
 		return errors.New("the reply is not the JSON object asked for")
 	}
 	for _, sec := range secs {
-		if err := only(sec, replyKeys.section); err != nil {
+		if err := only(sec, keys.section); err != nil {
 			return err
 		}
 		var ents []map[string]json.RawMessage
@@ -419,7 +432,7 @@ func exactKeys(raw []byte) error {
 			return errors.New("the reply is not the JSON object asked for")
 		}
 		for _, e := range ents {
-			if err := only(e, replyKeys.entry); err != nil {
+			if err := only(e, keys.entry); err != nil {
 				return err
 			}
 		}

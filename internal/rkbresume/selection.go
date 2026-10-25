@@ -197,6 +197,9 @@ type entChoice struct {
 	// (baseSel.keepsHeading). A job does not disappear from the work history
 	// because the evidence under it could not be verified.
 	heading bool
+	// over are the owner's per-resume overrides of the entry's own fields. Empty
+	// fields override nothing. Only the owner's edit sets them (ownerChoice).
+	over entryOverride
 }
 
 // keeps reports whether the entry stays on the page with no bullets.
@@ -327,7 +330,7 @@ func (c choice) without(drop map[string]bool, isCont func(id string) bool) (out 
 		out.secs[i].bullets, cas = filterList(s.bullets, keep, isCont)
 		dependents = append(dependents, cas...)
 		for _, e := range s.entries {
-			ne := entChoice{id: e.id, keepEmpty: e.keepEmpty, heading: e.heading}
+			ne := entChoice{id: e.id, keepEmpty: e.keepEmpty, heading: e.heading, over: e.over}
 			ne.bullets, cas = filterList(e.bullets, keep, isCont)
 			dependents = append(dependents, cas...)
 			if len(ne.bullets) > 0 || ne.keeps() {
@@ -446,6 +449,7 @@ func (b *baseSel) selectionJSON(bankPath string, ch choice) ([]byte, error) {
 						break
 					}
 				}
+				e.over.apply(m) // over the base entry's own field, or the only value of a borrowed entry
 				m["entry"], _ = json.Marshal(e.id)
 				ids := e.bullets
 				if ids == nil {
