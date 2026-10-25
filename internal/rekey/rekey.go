@@ -374,8 +374,18 @@ func moveMarks(dir string, cs []Change, now time.Time) (int, error) {
 			continue
 		}
 		have := cur[c.New]
-		if have.Mark != old.Mark && old.Mark != marks.None {
-			if _, err := marks.SetMark(dir, c.New, old.Mark, old.MarkedAt); err != nil {
+		if (have.Mark != old.Mark || have.ResumeVersion != old.ResumeVersion) && old.Mark != marks.None {
+			// An applied mark carries the resume version that was sent; it is a
+			// record of what went out, so it moves with the mark.
+			set := func() error {
+				if old.Mark == marks.Applied {
+					_, err := marks.SetApplied(dir, c.New, old.ResumeVersion, old.MarkedAt)
+					return err
+				}
+				_, err := marks.SetMark(dir, c.New, old.Mark, old.MarkedAt)
+				return err
+			}
+			if err := set(); err != nil {
 				return moved, fmt.Errorf("rekey: move mark %s: %w", c.Old, err)
 			}
 		}
