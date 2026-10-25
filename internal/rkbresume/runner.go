@@ -71,11 +71,15 @@ func (ExecRunner) Run(ctx context.Context, c Command, timeout time.Duration) (Ou
 	cmd.Stdin = nil
 	var out, errw capWriter
 	cmd.Stdout, cmd.Stderr = &out, &errw
+	configureProcess(cmd)
 	cmd.WaitDelay = waitDelay
 	err := cmd.Run()
 	o := Output{Stdout: out.buf.String(), Stderr: errw.buf.String()}
 	if err == nil {
 		return o, nil
+	}
+	if stepCtx.Err() != nil {
+		reapGroup(cmd)
 	}
 	if ctx.Err() != nil {
 		return o, ctx.Err()
