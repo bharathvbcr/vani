@@ -28,11 +28,15 @@ import (
 // a resume, in a reply, a log line or an error: PDFs and HTML are files (0600),
 // named by path.
 //
-//	build [--dry-run] [--allow-base] KEY   Opus picks the bullets; saves a version
+//	build [--dry-run] [--allow-base] [--from vN] [--scope NAME] [--lock NAME ...]
+//	      [--instruction TEXT] KEY         Opus picks the bullets (or re-picks, from
+//	                                       a version); saves a version
 //	render [--fit] [--from vN] KEY         the owner's edit (JSON on stdin), no model
 //	show [--no-check] KEY [vN]             versions, and whether the bank still vouches
 //	use KEY vN                             bind a freshly checked version for applying
 //	revalidate KEY vN                      drop what went stale, rebuild, save
+//	diff KEY vA vB                         what differs between two stored versions
+//	current KEY vN                         make a stored version the one the Studio shows
 //
 // docs/RUNTIME.md ("Resume Studio") has the state layout, locks, deadlines and
 // codes.
@@ -175,9 +179,13 @@ func (e *env) resumeEmit(asJSON bool, v any, err error, text func()) error {
 
 func (e *env) jobsResume(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs resume: expected build, render, show, use or revalidate")
+		return usagef("jobs resume: expected build, render, show, use, revalidate, diff or current")
 	}
 	switch args[0] {
+	case "diff":
+		return e.jobsResumeDiff(args[1:])
+	case "current":
+		return e.jobsResumeCurrent(args[1:])
 	case "build":
 		return e.jobsResumeBuild(args[1:])
 	case "render":
@@ -189,7 +197,7 @@ func (e *env) jobsResume(args []string) error {
 	case "revalidate":
 		return e.jobsResumeRevalidate(args[1:])
 	}
-	return usagef("jobs resume: unknown subcommand %q (expected build, render, show, use or revalidate)", args[0])
+	return usagef("jobs resume: unknown subcommand %q (expected build, render, show, use, revalidate, diff or current)", args[0])
 }
 
 // resumeFlags parses a subcommand's flags and positionals; flag.ErrHelp and
@@ -212,6 +220,8 @@ var resumeUsage = map[string]string{
 	"show":       "expected a posting key and, optionally, a version (v3)",
 	"use":        "expected a posting key and a version (v3)",
 	"revalidate": "expected a posting key and a version (v3)",
+	"diff":       "expected a posting key and two versions (v1 v3)",
+	"current":    "expected a posting key and a version (v3)",
 }
 
 var versionArg = regexp.MustCompile(`^v([1-9][0-9]{0,3})$`)
@@ -429,6 +439,27 @@ type resumeDryReply struct {
 	Current    int             `json:"current,omitempty"`
 	Budget     resumeBudget    `json:"budget"`
 	Estimate   *resumeEstimate `json:"estimate,omitempty"`
+	// The redraft the flags ask for (all absent for a plain build): the version it
+	// starts from, the scope and locks as given, and the instruction's length in
+	// characters, never its text. A dry run checks what needs no rkb (the
+	// instruction, the shape of the names, the version); which section or entry a
+	// name means is known only once a build reads the bank (bad_scope).
+	From             int      `json:"from,omitempty"`
+	Scope            string   `json:"scope,omitempty"`
+	Lock             []string `json:"lock,omitempty"`
+	InstructionRunes int      `json:"instruction_runes,omitempty"`
+}
+
+// resumeBuildOpts are the flags of `build` that shape a redraft.
+type resumeBuildOpts struct {
+	AllowBase bool
+	// From is the version ("v3") a redraft starts from. With a scope, a lock or an
+	// instruction and no From, the job's current version is the one (an instruction
+	// alone on a job with no version is a plain build with a preference).
+	From        string
+	Scope       string
+	Lock        []string
+	Instruction string
 }
 
 func (e *env) jobsResumeBuild(args []string) error {
@@ -436,12 +467,19 @@ func (e *env) jobsResumeBuild(args []string) error {
 	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
 	dry := fs.Bool("dry-run", false, "say whether Opus is usable and what a build would cost at most, and spend nothing")
 	allowBase := fs.Bool("allow-base", false, "when Opus cannot run, build and keep the owner's base selection instead of refusing (it never becomes the current version of a job that has one)")
+	opts := resumeBuildOpts{}
+	fs.StringVar(&opts.From, "from", "", "redraft from this version (v3): Opus is shown its choice by ids and chooses differently where the posting is better served (default the current version when --scope, --lock or --instruction is given)")
+	fs.StringVar(&opts.Scope, "scope", "", "re-pick only this section (its title) or entry (its id) of the version; everything else is kept as it was")
+	var locks stringList
+	fs.Var(&locks, "lock", "keep this section (its title) as it is (repeatable)")
+	fs.StringVar(&opts.Instruction, "instruction", "", "the owner's one-line preference for Opus (at most 500 characters, no email address or phone number); it cannot override the rules, is never printed on the page, and is kept with the version")
 	if err := parseResumeArgs(fs, args, "build", 1); err != nil {
 		return err
 	}
 	if *dry && *allowBase {
 		return usagef("jobs resume build: --dry-run and --allow-base are exclusive")
 	}
+	opts.AllowBase, opts.Lock = *allowBase, locks
 	ctx, cancel := signalContext()
 	defer cancel()
 	var out any
@@ -449,9 +487,9 @@ func (e *env) jobsResumeBuild(args []string) error {
 	if *dry {
 		dctx, dcancel := context.WithTimeout(ctx, resumeDryRunDeadline)
 		defer dcancel()
-		out, err = e.resumeDryRun(dctx, fs.Arg(0))
+		out, err = e.resumeDryRun(dctx, fs.Arg(0), opts)
 	} else {
-		out, err = e.resumeBuild(ctx, fs.Arg(0), *allowBase)
+		out, err = e.resumeBuild(ctx, fs.Arg(0), opts)
 	}
 	return e.resumeEmit(*asJSON, out, err, func() {
 		switch v := out.(type) {
@@ -484,9 +522,44 @@ func printSaved(e *env, v resumeSaved) {
 	}
 }
 
+// redraftOf is the redraft the flags ask for: the version it starts from (0 for a
+// plain build) and what rkbresume is told. Everything that needs no rkb is checked
+// here, before anything is spent: the version (it must read), the combination of
+// flags, and (through rkbresume.CheckTailor) the instruction and the names.
+func redraftOf(st *resumestore.Store, key posting.Key, cur int, o resumeBuildOpts) (rkbresume.Tailor, int, *resumeError) {
+	t := rkbresume.Tailor{Scope: o.Scope, Lock: o.Lock, Instruction: o.Instruction}
+	from := 0
+	switch {
+	case o.From != "":
+		n, perr := parseVersion(o.From)
+		if perr != nil {
+			return t, 0, perr
+		}
+		from = n
+	case o.Scope != "" || len(o.Lock) > 0 || o.Instruction != "":
+		from = cur
+	}
+	if from != 0 {
+		m, _, err := st.Get(string(key), from)
+		if err != nil {
+			return t, 0, storeError(err)
+		}
+		t.Previous = m.Selection
+	}
+	if from == 0 && (o.Scope != "" || len(o.Lock) > 0) {
+		return t, 0, jrErr(jrBadRequest, "jobs resume build: --scope and --lock keep parts of an existing version, and this job has none (--from names one)")
+	}
+	if err := rkbresume.CheckTailor(t, o.AllowBase); err != nil {
+		return t, 0, asResumeError(err)
+	}
+	return t, from, nil
+}
+
 // resumeBuild is the paid command: Opus picks the bullets and the version is
-// saved. A damaged store is found before anything is spent.
-func (e *env) resumeBuild(ctx context.Context, rawKey string, allowBase bool) (resumeSaved, error) {
+// saved. A damaged store is found before anything is spent. With a redraft (--from,
+// --scope, --lock, --instruction) the new version is made from the one it started
+// from, so it takes the current one's place only when that was the current one.
+func (e *env) resumeBuild(ctx context.Context, rawKey string, o resumeBuildOpts) (resumeSaved, error) {
 	job, jerr := e.resumeJobFor(rawKey, true)
 	if jerr != nil {
 		return resumeSaved{}, jerr
@@ -499,12 +572,16 @@ func (e *env) resumeBuild(ctx context.Context, rawKey string, allowBase bool) (r
 	if serr != nil {
 		return resumeSaved{}, serr
 	}
+	tailor, from, rerr := redraftOf(st, job.key, cur, o)
+	if rerr != nil {
+		return resumeSaved{}, rerr
+	}
 	w, err := e.resumeConfig(ctx, true)
 	if err != nil {
 		return resumeSaved{}, err
 	}
 	rc := w.RC
-	rc.AllowBase = allowBase
+	rc.AllowBase, rc.Tailor = o.AllowBase, tailor
 	res, err := rkbresume.Build(ctx, rc, job.req)
 	if err != nil {
 		return resumeSaved{}, e.paidFailure(ctx, st, job.key, res, err)
@@ -516,6 +593,9 @@ func (e *env) resumeBuild(ctx context.Context, rawKey string, allowBase bool) (r
 	// selection is a fallback, not a choice: it is kept but never displaces a
 	// current version (no Parent, so the store leaves the pointer where it is).
 	parent, note := cur, ""
+	if from != 0 {
+		parent = from // a redraft is made from the version it started from
+	}
 	if res.Source == rkbresume.SourceBase && cur != 0 {
 		parent = 0
 		note = fmt.Sprintf("v%d stays current: this is the owner's base selection, a fallback (%s)", cur, oneLine(res.Reason, 200))
@@ -526,7 +606,11 @@ func (e *env) resumeBuild(ctx context.Context, rawKey string, allowBase bool) (r
 	}
 	if !out.CurrentMoved {
 		out.CurrentNote = note
-		if out.CurrentNote == "" {
+		switch {
+		case out.CurrentNote != "":
+		case parent != 0 && parent != cur:
+			out.CurrentNote = fmt.Sprintf("v%d stays current: this version was made from v%d", cur, parent)
+		default:
 			out.CurrentNote = fmt.Sprintf("v%d stays current: a newer version was made while this one was built", cur)
 		}
 	}
@@ -539,7 +623,7 @@ func (e *env) resumeBuild(ctx context.Context, rawKey string, allowBase bool) (r
 // resumeDryRun says what a build would do and cost, and spends nothing: it
 // builds the provider (which resolves a credential, sends nothing) to know
 // whether Opus is usable and at what price, and runs no rkb.
-func (e *env) resumeDryRun(ctx context.Context, rawKey string) (resumeDryReply, error) {
+func (e *env) resumeDryRun(ctx context.Context, rawKey string, o resumeBuildOpts) (resumeDryReply, error) {
 	job, jerr := e.resumeJobFor(rawKey, true)
 	if jerr != nil {
 		return resumeDryReply{}, jerr
@@ -552,12 +636,17 @@ func (e *env) resumeDryRun(ctx context.Context, rawKey string) (resumeDryReply, 
 	if serr != nil {
 		return resumeDryReply{}, serr
 	}
+	tailor, from, rerr := redraftOf(st, job.key, cur, o)
+	if rerr != nil {
+		return resumeDryReply{}, rerr
+	}
 	w, err := e.resumeConfig(ctx, true)
 	if err != nil {
 		return resumeDryReply{}, err
 	}
 	rep := resumeDryReply{Key: string(job.key), DryRun: true, Model: rkbresume.Model, Current: cur,
-		Budget: resumeBudget{DailyCapUSD: w.Cfg.Decide.DailyUSD.LLM}}
+		Budget: resumeBudget{DailyCapUSD: w.Cfg.Decide.DailyUSD.LLM},
+		From:   from, Scope: tailor.Scope, Lock: tailor.Lock, InstructionRunes: len([]rune(tailor.Instruction))}
 	wd := &wired{cfg: w.Cfg, stateDir: e.stateDir, warn: e.stderr}
 	var remaining *float64
 	if spent, err := readLLMSpend(ctx, wd.budgetLedgerPath()); err == nil {
@@ -582,7 +671,7 @@ func (e *env) resumeDryRun(ctx context.Context, rawKey string) (resumeDryReply, 
 		PriceSource: "Anthropic's published rates for " + rkbresume.Model}
 	var firstMax float64
 	for turn := 1; turn <= est.Turns; turn++ {
-		in := int64(rkbresume.PromptBound(turn, runes)+kbMatchBytesPerTok-1) / kbMatchBytesPerTok
+		in := int64(rkbresume.PromptBound(turn, runes)+tailor.PromptBytes()+kbMatchBytesPerTok-1) / kbMatchBytesPerTok
 		est.InputTokens += in
 		usd := float64(in*prices.Rates.Input+est.MaxOutputTokens*prices.Rates.Output) / nanoPerUSD
 		est.MaxUSD += usd
