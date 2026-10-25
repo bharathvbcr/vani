@@ -252,8 +252,8 @@ export function buildResumeJobRequest(key: string): object {
   return { key };
 }
 
-/** Codes whose text from vani itself says more than the shared job help does. */
-const OWN_TEXT = new Set(["config", "kb", "render", "lint", "fit", "pages", "too_large", "bad_request"]);
+/** Codes whose text from vani itself says more than the shared job help does (no_model names why; ineligible names the bullet). */
+const OWN_TEXT = new Set(["config", "kb", "render", "lint", "fit", "pages", "too_large", "bad_request", "no_model", "ineligible", "bad_edit", "not_usable"]);
 
 /** A built resume from `vani resume` or the keyed job's reply (through runJob), checked like a stored one; or why not. */
 export function parseBuiltResume(r: unknown): ResumeFetch {
