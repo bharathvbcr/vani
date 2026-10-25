@@ -403,29 +403,14 @@ func (e *env) saveVersion(ctx context.Context, st *resumestore.Store, key postin
 
 // ---- build -----------------------------------------------------------------
 
+// resumeEstimate is a build's estimate (llmestimate.go): its Turns, the most model
+// turns a build sends (the first and one retry), and the shared fields.
+// InputTokens is an upper bound over those turns (rkbresume.PromptBound, and what a
+// redraft adds); CapReached says what is left of today's cap is less than the
+// first turn reserves at most.
 type resumeEstimate struct {
-	// Turns is the most model turns a build sends: the first and one retry.
 	Turns int `json:"turns"`
-	// InputTokens is an upper bound over those turns (rkbresume.PromptBound at the
-	// byte-per-token ratio kbmatch uses); MaxOutputTokens is one turn's ceiling as
-	// the provider shapes it (high effort adds thinking room).
-	InputTokens     int64   `json:"input_tokens"`
-	MaxOutputTokens int64   `json:"max_output_tokens"`
-	MaxUSD          float64 `json:"max_usd"`
-	PriceSource     string  `json:"price_source"`
-	// CapReached says what is left of today's cap is less than the first turn
-	// reserves at most. Advice only: the metered provider is the gate. Absent
-	// (false) when today's spend could not be read.
-	CapReached bool `json:"cap_reached"`
-}
-
-// resumeBudget is today's llm cap (decide.daily_usd.llm), shared with every
-// other model call Vani makes. SpentUSD and RemainingUSD are absent when
-// today's spend could not be read: unknown is never shown as zero.
-type resumeBudget struct {
-	DailyCapUSD  float64  `json:"daily_cap_usd"`
-	SpentUSD     *float64 `json:"spent_usd,omitempty"`
-	RemainingUSD *float64 `json:"remaining_usd,omitempty"`
+	llmEstimate
 }
 
 type resumeDryReply struct {
@@ -437,7 +422,7 @@ type resumeDryReply struct {
 	OpusUsable bool            `json:"opus_usable"`
 	NoModel    string          `json:"no_model,omitempty"`
 	Current    int             `json:"current,omitempty"`
-	Budget     resumeBudget    `json:"budget"`
+	Budget     llmBudget       `json:"budget"`
 	Estimate   *resumeEstimate `json:"estimate,omitempty"`
 	// The redraft the flags ask for (all absent for a plain build): the version it
 	// starts from, the scope and locks as given, and the instruction's length in
@@ -645,14 +630,9 @@ func (e *env) resumeDryRun(ctx context.Context, rawKey string, o resumeBuildOpts
 		return resumeDryReply{}, err
 	}
 	rep := resumeDryReply{Key: string(job.key), DryRun: true, Model: rkbresume.Model, Current: cur,
-		Budget: resumeBudget{DailyCapUSD: w.Cfg.Decide.DailyUSD.LLM},
-		From:   from, Scope: tailor.Scope, Lock: tailor.Lock, InstructionRunes: len([]rune(tailor.Instruction))}
+		From: from, Scope: tailor.Scope, Lock: tailor.Lock, InstructionRunes: len([]rune(tailor.Instruction))}
 	wd := &wired{cfg: w.Cfg, stateDir: e.stateDir, warn: e.stderr}
-	var remaining *float64
-	if spent, err := readLLMSpend(ctx, wd.budgetLedgerPath()); err == nil {
-		left := max(rep.Budget.DailyCapUSD-spent, 0)
-		rep.Budget.SpentUSD, rep.Budget.RemainingUSD, remaining = &spent, &left, &left
-	}
+	rep.Budget = readBudget(ctx, wd.budgetLedgerPath(), w.Cfg.Decide.DailyUSD.LLM)
 	p := w.RC.Provider
 	if p == nil {
 		rep.NoModel = w.RC.NoModel
@@ -667,8 +647,8 @@ func (e *env) resumeDryRun(ctx context.Context, rawKey string, o resumeBuildOpts
 	req := llm.Request{Model: rkbresume.Model, MaxTokens: rkbresume.TurnMaxTokens}
 	llmbackend.ShapeHigh(p, &req)
 	runes := len([]rune(job.req.Description))
-	est := &resumeEstimate{Turns: rkbresume.MaxTurns, MaxOutputTokens: int64(req.MaxTokens),
-		PriceSource: "Anthropic's published rates for " + rkbresume.Model}
+	est := &resumeEstimate{Turns: rkbresume.MaxTurns}
+	est.MaxOutputTokens, est.PriceSource = int64(req.MaxTokens), "Anthropic's published rates for "+rkbresume.Model
 	var firstMax float64
 	for turn := 1; turn <= est.Turns; turn++ {
 		in := int64(rkbresume.PromptBound(turn, runes)+tailor.PromptBytes()+kbMatchBytesPerTok-1) / kbMatchBytesPerTok
@@ -679,7 +659,7 @@ func (e *env) resumeDryRun(ctx context.Context, rawKey string, o resumeBuildOpts
 			firstMax = usd
 		}
 	}
-	est.CapReached = remaining != nil && *remaining < firstMax
+	est.CapReached = rep.Budget.reached(firstMax)
 	rep.Estimate = est
 	return rep, nil
 }

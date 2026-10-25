@@ -456,11 +456,11 @@ func TestJobsResumeUseRefusesADamagedPDF(t *testing.T) {
 func TestJobsResumeIsInTheUsage(t *testing.T) {
 	setup(t)
 	_, stderr := mustCode(t, 2, "bogus")
-	if !strings.Contains(stderr, "jobs resume build|render|show|use|revalidate") {
+	if !strings.Contains(stderr, "jobs resume build|render|show|use|revalidate|diff|current") {
 		t.Errorf("usage does not list jobs resume:\n%s", stderr)
 	}
 	_, stderr = mustCode(t, 2, "jobs", "resume")
-	if !strings.Contains(stderr, "expected build, render, show, use or revalidate") {
+	if !strings.Contains(stderr, "expected build, render, show, use, revalidate, diff or current") {
 		t.Errorf("stderr = %s", stderr)
 	}
 	_, stderr = mustCode(t, 2, "jobs", "resume", "sideways")

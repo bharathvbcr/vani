@@ -112,22 +112,15 @@ type retriageCost struct {
 	USD          float64 `json:"usd"`
 }
 
+// retriageEstimate is a re-triage's estimate: the shared fields (llmEstimate; its
+// CapReached says what is left of today's cap is less than a call reserves, for a
+// batch its dearest call's), today's budget inline (llmBudget), and what is the
+// re-triage's own.
 type retriageEstimate struct {
-	InputTokens         int64   `json:"input_tokens"`
+	llmEstimate
+	llmBudget
 	TypicalOutputTokens int64   `json:"typical_output_tokens"`
-	MaxOutputTokens     int64   `json:"max_output_tokens"`
 	TypicalUSD          float64 `json:"typical_usd"`
-	MaxUSD              float64 `json:"max_usd"`
-	PriceSource         string  `json:"price_source"`
-	DailyCapUSD         float64 `json:"daily_cap_usd"`
-	// SpentUSD and RemainingUSD are absent when today's spend could not be read:
-	// unknown is never shown as zero.
-	SpentUSD     *float64 `json:"spent_usd,omitempty"`
-	RemainingUSD *float64 `json:"remaining_usd,omitempty"`
-	// CapReached says what is left of today's cap is less than a call reserves
-	// (MaxUSD; for a batch, its dearest call's). Advice only: the metered
-	// provider is the gate.
-	CapReached bool `json:"cap_reached"`
 	// Postings is how many postings a batch estimate sums (absent for one).
 	Postings int `json:"postings,omitempty"`
 	// FitAtMax is, for a batch, how many of its postings, taken in order, fit in
@@ -517,8 +510,8 @@ func (a *retriageAsker) usd(in, out int64) float64 { return float64(in*a.pin+out
 // in order, fit there at their most.
 func (a *retriageAsker) estimate(ctx context.Context, ps []retriagePrompt) *retriageEstimate {
 	maxOut := int64(llmbackend.DefaultMaxTokens + llmbackend.ReasoningHeadroom)
-	est := &retriageEstimate{TypicalOutputTokens: retriageTypicalOut, MaxOutputTokens: maxOut,
-		PriceSource: a.priceSource, DailyCapUSD: a.cfg.Decide.DailyUSD.LLM}
+	est := &retriageEstimate{TypicalOutputTokens: retriageTypicalOut, llmBudget: readBudget(ctx, a.w.budgetLedgerPath(), a.cfg.Decide.DailyUSD.LLM)}
+	est.MaxOutputTokens, est.PriceSource = maxOut, a.priceSource
 	maxes := make([]float64, len(ps))
 	var dearest float64
 	for i, p := range ps {
@@ -532,12 +525,10 @@ func (a *retriageAsker) estimate(ctx context.Context, ps []retriagePrompt) *retr
 	if len(ps) > 1 {
 		est.Postings = len(ps)
 	}
-	if spent, err := readLLMSpend(ctx, a.w.budgetLedgerPath()); err == nil {
-		remaining := max(est.DailyCapUSD-spent, 0)
-		est.SpentUSD, est.RemainingUSD = &spent, &remaining
-		est.CapReached = len(ps) > 0 && remaining < dearest
+	if est.RemainingUSD != nil {
+		est.CapReached = len(ps) > 0 && est.reached(dearest)
 		if len(ps) > 1 {
-			fit, left := 0, remaining
+			fit, left := 0, *est.RemainingUSD
 			for _, m := range maxes {
 				if m > left {
 					break
