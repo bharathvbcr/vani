@@ -23,7 +23,7 @@ func TestLineCapCoversWorstCaseNoteKeyAndEnvelope(t *testing.T) {
 	empty := ""
 	at := time.Date(2026, 10, 20, 23, 59, 59, 999999999, time.UTC)
 	envelope := func() int {
-		b, err := json.Marshal(event{V: Version, At: at, Key: "", Mark: &m, Note: &empty})
+		b, err := json.Marshal(event{V: Version, At: at, Key: "", Mark: &m, Note: &empty, ResumeVersion: MaxResumeVersion})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +41,7 @@ func TestLineCapCoversWorstCaseNoteKeyAndEnvelope(t *testing.T) {
 	// And the real thing, encoded rather than computed.
 	key := posting.Key("ab:" + strings.Repeat("<", MaxKeyBytes-3))
 	note := strings.Repeat("<", MaxNoteBytes)
-	b, err := json.Marshal(event{V: Version, At: at, Key: key, Mark: &m, Note: &note})
+	b, err := json.Marshal(event{V: Version, At: at, Key: key, Mark: &m, Note: &note, ResumeVersion: MaxResumeVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

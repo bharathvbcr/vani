@@ -104,6 +104,15 @@ type event struct {
 	Key  posting.Key `json:"key"`
 	Mark *Mark       `json:"mark,omitempty"`
 	Note *string     `json:"note,omitempty"`
+	// ResumeVersion is the resume version that was sent (resumestore's used
+	// version) when Mark is Applied; 0 means none was. It belongs to the mark
+	// and is replaced with it: any later mark line resets it to what that line
+	// says.
+	//
+	// Compatibility: a store only gains this field on an applied mark made while
+	// a used version existed. A binary older than this field reads such a line
+	// as ErrCorrupt (unknown field), like the line-size note above.
+	ResumeVersion int `json:"resume_version,omitempty"`
 }
 
 // Entry is the folded state of one posting's marks.
@@ -111,9 +120,17 @@ type Entry struct {
 	Key      posting.Key `json:"key"`
 	Mark     Mark        `json:"mark,omitempty"`
 	MarkedAt time.Time   `json:"marked_at,omitzero"`
-	Note     string      `json:"note,omitempty"`
-	NoteAt   time.Time   `json:"note_at,omitzero"`
+	// ResumeVersion is the resume version the owner applied with (Mark is
+	// Applied and a used version existed when it was set); 0 is none or unknown.
+	// An entry written before the field existed reads as 0.
+	ResumeVersion int       `json:"resume_version,omitempty"`
+	Note          string    `json:"note,omitempty"`
+	NoteAt        time.Time `json:"note_at,omitzero"`
 }
+
+// MaxResumeVersion is the highest resume version a mark records
+// (resumestore.MaxVersion; marks does not import it).
+const MaxResumeVersion = 9999
 
 func (e Entry) empty() bool { return e.Mark == None && e.Note == "" }
 
@@ -179,6 +196,14 @@ func validate(e event) error {
 	if e.Mark == nil && e.Note == nil {
 		return fmt.Errorf("%w: a line changes neither mark nor note", ErrInvalid)
 	}
+	if e.ResumeVersion != 0 {
+		if e.Mark == nil || *e.Mark != Applied {
+			return fmt.Errorf("%w: a resume version goes only with an applied mark", ErrInvalid)
+		}
+		if e.ResumeVersion < 1 || e.ResumeVersion > MaxResumeVersion {
+			return fmt.Errorf("%w: resume version %d is not in 1..%d", ErrInvalid, e.ResumeVersion, MaxResumeVersion)
+		}
+	}
 	if e.Mark != nil && !e.Mark.Valid() {
 		return fmt.Errorf("%w: mark %q", ErrInvalid, truncate(string(*e.Mark), 40))
 	}
@@ -193,6 +218,7 @@ func fold(m map[posting.Key]Entry, e event) {
 	cur.Key = e.Key
 	if e.Mark != nil {
 		cur.Mark, cur.MarkedAt = *e.Mark, e.At
+		cur.ResumeVersion = e.ResumeVersion
 		if cur.Mark == None {
 			cur.MarkedAt = time.Time{}
 		}
@@ -421,6 +447,15 @@ func SetMark(dir string, k posting.Key, mark Mark, now time.Time) (Entry, error)
 	return write(dir, event{V: Version, At: now.UTC(), Key: k, Mark: &mark})
 }
 
+// SetApplied records mark Applied for k at now together with the resume
+// version that was sent (resumestore's used version; 0 when there was none,
+// which is SetMark(Applied)) and returns the entry. A later mark of any kind
+// replaces the version with its own.
+func SetApplied(dir string, k posting.Key, resumeVersion int, now time.Time) (Entry, error) {
+	mark := Applied
+	return write(dir, event{V: Version, At: now.UTC(), Key: k, Mark: &mark, ResumeVersion: resumeVersion})
+}
+
 // SetNote records note for k at now ("" clears it) and returns the entry.
 func SetNote(dir string, k posting.Key, note string, now time.Time) (Entry, error) {
 	return write(dir, event{V: Version, At: now.UTC(), Key: k, Note: &note})
@@ -601,7 +636,7 @@ func writeCompacted(path string, m map[posting.Key]Entry) error {
 		en := m[k]
 		if en.Mark != None {
 			mark := en.Mark
-			if err := put(event{V: Version, At: en.MarkedAt, Key: k, Mark: &mark}); err != nil {
+			if err := put(event{V: Version, At: en.MarkedAt, Key: k, Mark: &mark, ResumeVersion: en.ResumeVersion}); err != nil {
 				return err
 			}
 		}

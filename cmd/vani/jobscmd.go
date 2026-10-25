@@ -352,6 +352,9 @@ func (e *env) jobsMark(args []string) error {
 			return usagef("jobs mark: %q is not saved, applied, hidden or clear", fs.Arg(1))
 		}
 		return e.jobsWrite(fs.Arg(0), &out, func(dir string, k posting.Key) (marks.Entry, error) {
+			if mark == marks.Applied {
+				return e.markApplied(dir, k) // also records the resume version that was sent
+			}
 			return marks.SetMark(dir, k, mark, now())
 		})
 	}()

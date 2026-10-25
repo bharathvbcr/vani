@@ -110,7 +110,7 @@ func TestFallbackPostingMovesAndNothingElseChanges(t *testing.T) {
 	appendAll(t, state, stored(tk, twin)[0], ledger.Event{V: ledger.SchemaVersion, At: t0.Add(2 * time.Hour), Key: tk, Status: posting.Duplicate,
 		Annotations: map[string]string{pipeline.DuplicateOfKey: string(ok)}, Reason: "duplicate of " + string(ok)})
 	md := marks.Dir(state)
-	if _, err := marks.SetMark(md, ok, marks.Applied, t0.Add(3*time.Hour)); err != nil {
+	if _, err := marks.SetApplied(md, ok, 3, t0.Add(3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := marks.SetNote(md, ok, "called back", t0.Add(4*time.Hour)); err != nil {
@@ -164,7 +164,7 @@ func TestFallbackPostingMovesAndNothingElseChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, still := m[ok]; still || m[nk].Mark != marks.Applied || m[nk].Note != "called back" || !m[nk].MarkedAt.Equal(t0.Add(3*time.Hour)) {
+	if _, still := m[ok]; still || m[nk].Mark != marks.Applied || m[nk].ResumeVersion != 3 || m[nk].Note != "called back" || !m[nk].MarkedAt.Equal(t0.Add(3*time.Hour)) {
 		t.Fatalf("marks %+v", m)
 	}
 
