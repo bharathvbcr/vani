@@ -303,7 +303,11 @@ func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 	b := &builder{cfg: cfg, dir: dir, last: notRun()}
 	res, berr := b.run(ctx, req)
 	if berr != nil {
-		return b.partial(), berr
+		res = b.partial()
+	}
+	b.cost.stamp(&res)
+	if berr != nil {
+		return res, berr
 	}
 	return res, nil
 }

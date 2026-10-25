@@ -321,7 +321,7 @@ func (b *builder) turn(ctx context.Context, msgs []llm.Message) turnResult {
 	defer cancel()
 	req := llm.Request{Model: b.cfg.Model, System: systemPrompt, Messages: msgs, MaxTokens: replyMaxTokens}
 	llmbackend.ShapeHigh(b.cfg.Provider, &req)
-	text, err := llmbackend.Turn(tctx, b.cfg.Provider, req)
+	text, err := llmbackend.Turn(tctx, b.cost.meter(b.cfg.Provider), req)
 	switch {
 	case errors.Is(err, budget.ErrExhausted):
 		return turnResult{reason: "today's Claude budget is spent"}
