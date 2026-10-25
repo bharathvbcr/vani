@@ -112,8 +112,8 @@ final class ResumeStudioModelTests: XCTestCase {
         var resumes: ResumeStore { ResumeStore(directory: resumesDir) }
     }
 
-    private func rig(_ jobs: JobsFixture, _ f: Fake?, bank: Bool = true) throws -> Rig {
-        let vani = jobs.dir.appendingPathComponent("vani")
+    private func rig(_ jobs: JobsFixture, _ f: Fake?, bank: Bool = true, jobsVani: URL? = nil) throws -> Rig {
+        let vani = jobsVani ?? jobs.dir.appendingPathComponent("vani")
         let store = BankStore(directory: try tempDirectory())
         guard let f else { return Rig(m: JobsModel { JobsClient(vaniBinary: vani, timeout: 10) }, bank: store) }
         let runner = DraftRunner(vaniBinary: f.vani, key: { nil }, decisionKey: { nil })
@@ -458,6 +458,62 @@ final class ResumeStudioModelTests: XCTestCase {
         XCTAssertTrue(note.contains("1 address"), note)
         XCTAssertTrue(note.contains("The application page has no address"), note)
         XCTAssertEqual(try r.resumes.catalog().count, 1)
+    }
+
+    // MARK: Not knowing is not "no resume"
+
+    func testBeforeAndAfterAFailedShowTheJobsResumesAreUnknownNeverNone() async throws {
+        let jobs = try JobsFixture(self), f = try fake()
+        let r = try rig(jobs, f), m = r.m
+        await m.refresh()
+        let row = try XCTUnwrap(m.jobs.first)
+        XCTAssertNil(row.resume, "a list row carries no resume summary")
+
+        // Nothing has answered yet: loading, not "no resume".
+        XCTAssertEqual(ResumeKnowledge.of(detail: nil, job: row, detailFailed: false), .loading)
+
+        // `jobs show` fails for the selected job: unknown, and no Build button is drawn for it.
+        try FileManager.default.removeItem(at: jobs.dir.appendingPathComponent("show-\(Self.key).json"))
+        m.selection = row.key
+        try await eventually("the show to fail") { m.detailError != nil }
+        XCTAssertNil(m.detail)
+        let failed = ResumeKnowledge.of(detail: m.detail, job: try XCTUnwrap(m.selected), detailFailed: m.selection == row.key && m.detailError != nil)
+        XCTAssertEqual(failed, .failed)
+        XCTAssertNil(failed.summary)
+
+        // Once shown, a job with no resume is known to have none; with one, it is known.
+        try show(jobs, resume: nil)
+        m.selection = nil
+        m.selection = row.key
+        try await eventually("the detail") { m.detail?.key == row.key }
+        XCTAssertEqual(ResumeKnowledge.of(detail: m.detail, job: row, detailFailed: false), .known(nil))
+    }
+
+    func testSavingAJobKeepsItsResumeSummaryWhichAMarkReplyDoesNotCarry() async throws {
+        let jobs = try JobsFixture(self), f = try fake()
+        try show(jobs, resume: #"{"current":3,"used":3,"versions":3,"pages":2,"fit":"passed","eligibility":"current","source":"tailored"}"#)
+        // `jobs mark` answers with the job but, as vani does, no `resume`; everything else is the fixture's.
+        let dir = try tempDirectory()
+        let wrapper = dir.appendingPathComponent("vani")
+        let script = """
+        #!/bin/sh
+        case "$1 $2" in
+        "jobs mark") cat '\(dir.path)/mark.json'; exit 0 ;;
+        esac
+        exec '\(jobs.dir.path)/vani' "$@"
+        """
+        try Data(script.utf8).write(to: wrapper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+        try Data(#"{"key":"fx:alpha:1","company":"Alpha Labs","title":"Platform Engineer","status":"digested","mark":"saved"}"#.utf8)
+            .write(to: dir.appendingPathComponent("mark.json"))
+        let r = try rig(jobs, f, jobsVani: wrapper), m = r.m
+        let job = try await open(r, jobs)
+        XCTAssertEqual(m.detail?.resume?.current, 3)
+
+        await m.setMark(job.key, .saved)
+        XCTAssertEqual(m.detail?.mark, .saved, "the mark reply is what is shown")
+        XCTAssertEqual(m.detail?.resume?.current, 3, "saving a job never turns its resumes into no resume")
+        XCTAssertEqual(ResumeCardPresentation.card(for: m.detail?.resume).kind, .ready)
     }
 
     // MARK: Preview, hooks, availability

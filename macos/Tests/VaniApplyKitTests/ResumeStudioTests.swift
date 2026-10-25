@@ -605,6 +605,20 @@ final class ResumeCardTests: XCTestCase {
         guard case .blocked = ResumeCardPresentation.useAction(forSaved: try version { $0.replacingOccurrences(of: #""pages":2,"#, with: "") }) else { return XCTFail("an unfitted version has no PDF to use") }
     }
 
+    func testAJobWhoseDetailHasNotLoadedOrFailedIsUnknownNeverNoResume() throws {
+        func job(_ extra: String) throws -> Job {
+            try JobsClient.decoder.decode(Job.self, from: Data(#"{"key":"gh:acme:1","company":"Acme","title":"Engineer","status":"scored"\#(extra)}"#.utf8))
+        }
+        let row = try job(""), withResume = try job(#","resume":{"current":2,"versions":2}"#)
+        XCTAssertEqual(ResumeKnowledge.of(detail: nil, job: row, detailFailed: false), .loading, "a list row has no summary yet: not 'none'")
+        XCTAssertEqual(ResumeKnowledge.of(detail: nil, job: row, detailFailed: true), .failed, "a failed show is not 'none' either")
+        XCTAssertNil(ResumeKnowledge.loading.summary)
+        XCTAssertNil(ResumeKnowledge.failed.summary)
+        XCTAssertEqual(ResumeKnowledge.of(detail: row, job: row, detailFailed: false), .known(nil), "shown, and it has none")
+        XCTAssertEqual(ResumeKnowledge.of(detail: withResume, job: row, detailFailed: true), .known(withResume.resume), "a loaded detail wins over an old failure")
+        XCTAssertEqual(ResumeKnowledge.of(detail: nil, job: withResume, detailFailed: false), .known(withResume.resume))
+    }
+
     func testTheApplyKitLineSaysWhatIsAttached() throws {
         let used = try summary(#""current":3,"used":2,"versions":3"#)
         XCTAssertEqual(ResumeCardPresentation.applyKitLine(for: used, browserCopy: true), "Tailored resume v2 is the one attached for this job.")

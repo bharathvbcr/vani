@@ -51,6 +51,31 @@ public struct ResumeSummary: Codable, Equatable, Sendable {
     }
 }
 
+/// Whether this app knows a job's resumes yet. A list row carries no `resume` (only `jobs show` does), so
+/// until the job's detail has loaded, or after it failed to, the summary is not known, and an unknown must
+/// never be drawn as "no resume".
+public enum ResumeKnowledge: Equatable, Sendable {
+    /// `jobs show` answered (or the job carried a summary): nil is a job with no resume.
+    case known(ResumeSummary?)
+    /// `jobs show` has not answered yet.
+    case loading
+    /// `jobs show` failed for this job.
+    case failed
+
+    /// `detail` is the job as `jobs show` returned it, when it is this job's; `job` is what the pane was
+    /// handed (the detail, or the list's row before it); `detailFailed` is that the detail read failed.
+    public static func of(detail: Job?, job: Job, detailFailed: Bool) -> ResumeKnowledge {
+        if let detail { return .known(detail.resume) }
+        if let carried = job.resume { return .known(carried) }
+        return detailFailed ? .failed : .loading
+    }
+
+    public var summary: ResumeSummary? {
+        if case let .known(s) = self { return s }
+        return nil
+    }
+}
+
 /// What "Use for this job" does for the current version.
 public enum ResumeUseAction: Equatable, Sendable {
     /// There is no current version to use.
