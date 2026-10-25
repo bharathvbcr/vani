@@ -84,7 +84,7 @@ describe("adversarial: sender shapes", () => {
     setSettings: { settings: { captureSelfId: true } }, deleteAnswer: { key: "zz" }, editAnswer: { key: "zz", value: ["v"] },
     replaceBank: { json: bankJson }, resumeInfo: { url: own }, resumeDelete: { url: own },
     filled: { keys: [] }, draft: { question: "Why?" }, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" },
-    jobRow: { url: own }, frameReady: {}, resumeGet: { url: own }, resumePreview: {},
+    jobRow: { url: own }, jobKey: { url: own }, frameReady: {}, resumeGet: { url: own }, resumePreview: {},
     resumeShow: { name: "R.pdf", pdf: pdfOf(32) }, attachResume: { name: "R.pdf", pdf: pdfOf(32), pickedAt: "" },
   };
 

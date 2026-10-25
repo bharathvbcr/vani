@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DISMISS_QUIET_MS, ID_PARAMS, MAX_URL_BYTES, type AppliedUi, type Offer,
-  createAppliedFlow, isFinalSubmit, offerSubject, pageKey, parseFind, postingKey,
+  createAppliedFlow, isFinalSubmit, offerSubject, pageKey, parseFind, parseFindKey, postingKey,
 } from "../src/applied";
 import type { ToBackground } from "../src/messages";
 import vectors from "./vectors/joburl.json";
@@ -182,6 +182,28 @@ describe("parseFind", () => {
     const r = parseFind({ ...job, job: { ...job.job, company: "A".repeat(500), title: "T\u001b[2J\nx" } });
     expect(r.ok && r.offer?.company.length).toBe(200);
     expect(r.ok && r.offer?.title).toBe("T [2J x");
+  });
+});
+
+describe("parseFindKey (the resume build's reading of jobFind)", () => {
+  test("a tracked job's key, whatever its mark: an applied job is still tracked", () => {
+    expect(parseFindKey(job)).toEqual({ ok: true, key: "gh:acme:1" });
+    expect(parseFindKey({ ...job, job: { ...job.job, mark: "applied" } })).toEqual({ ok: true, key: "gh:acme:1" });
+    // ...where parseFind offers nothing for it.
+    expect(parseFind({ ...job, job: { ...job.job, mark: "applied" } })).toMatchObject({ offer: null });
+  });
+
+  test("an untracked page has no key, an ambiguous one says so and is not guessed", () => {
+    expect(parseFindKey({ found: false, url: "x", matches: 0 })).toEqual({ ok: true, key: null });
+    expect(parseFindKey({ found: false, url: "x", matches: 2, ambiguous: true })).toEqual({ ok: true, key: null, ambiguous: true });
+  });
+
+  test("a coded error and every malformed reply fail, never read as untracked", () => {
+    expect(parseFindKey({ error: "x", code: "unreachable" })).toEqual({ ok: false, error: "x", code: "unreachable" });
+    for (const r of [undefined, null, "x", 3, {}, { found: "yes" }, { found: true }, { found: true, job: null },
+      { found: true, job: { key: "" } }, { found: true, job: { key: 5 } }, { found: true, job: { key: "k".repeat(513) } }]) {
+      expect(parseFindKey(r).ok).toBe(false);
+    }
   });
 });
 

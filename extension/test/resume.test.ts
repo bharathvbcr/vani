@@ -3,12 +3,10 @@
 // the bytes pass before they reach a page. No personal data: names are neutral.
 import { describe, expect, test } from "bun:test";
 import {
-  MAX_RESUME_BYTES, buildResumeRequest, checkResumeName, fromBase64, isPdf, isResumeField, openHeldResume, parseBuiltResume, parseResumeGet,
-  parseResumeInfo, parseResumeOpen, resumeHeader, resumeKey, resumeOp, runResume, toBase64,
+  MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, RESUME_KEYED_TIMEOUT_MS, buildResumeJobRequest, buildResumeRequest, checkResumeName, fromBase64, isPdf,
+  isResumeField, openHeldResume, parseBuiltResume, parseResumeGet, parseResumeInfo, parseResumeOpen, resumeKey, resumeOp, runResume, toBase64,
 } from "../src/resume";
-import { type FieldInfo, emptyBank } from "../src/types";
-import { mergeCapture } from "../src/bank";
-import { BASICS_HOST, basicsFields } from "../src/basics";
+import type { FieldInfo } from "../src/types";
 
 const field = (label: string, name = "", automationId = "", kind: FieldInfo["kind"] = "file") =>
   ({ kind, label, name, automationId });
@@ -336,38 +334,45 @@ describe("runResume: the canonical key, then the key a resume was stored under b
 });
 
 describe("building one", () => {
-  const bankWith = (values: Record<string, string>) =>
-    mergeCapture(emptyBank(), basicsFields(values), BASICS_HOST, new Date("2026-10-19T00:00:00Z")).bank;
-
-  test("resumeHeader: the name and contact lines come from Your basics", () => {
-    const b = bankWith({ first: "Test", last: "Applicant", email: "applicant@example.invalid", phone: "555-0100", city: "Testville", country: "Nowhere", linkedin: "https://example.invalid/in/t" });
-    expect(resumeHeader(b)).toEqual({
-      name: "Test Applicant",
-      contact_lines: ["applicant@example.invalid | 555-0100 | Testville, Nowhere", "https://example.invalid/in/t"],
-    });
-  });
-  test("resumeHeader: no name, no header (the offer says to add one)", () => {
-    expect(resumeHeader(null)).toBeNull();
-    expect(resumeHeader(bankWith({ email: "applicant@example.invalid" }))).toBeNull();
-    expect(resumeHeader(bankWith({ first: "Test" }))).toEqual({ name: "Test", contact_lines: [] });
-  });
-
-  const header = { name: "Test Applicant", contact_lines: [] };
-  test("buildResumeRequest: the job, bounded, and the header beside it", () => {
-    const r = buildResumeRequest({ company: " Acme\n AI ", title: "Engineer", description: "  Build tools.  " }, header) as { job: Record<string, string>; header: unknown };
-    expect(r.job).toEqual({ company: "Acme AI", title: "Engineer", description: "Build tools." });
-    expect(r.header).toEqual(header);
-    const long = buildResumeRequest({ company: "A", title: "T", description: "d".repeat(500_000) }, header) as { job: { description: string } };
+  test("buildResumeRequest: the job, bounded, and nothing of the owner beside it", () => {
+    const r = buildResumeRequest({ company: " Acme\n AI ", title: "Engineer", description: "  Build tools.  " }) as { job: Record<string, string> };
+    expect(r).toEqual({ job: { company: "Acme AI", title: "Engineer", description: "Build tools." } });
+    expect("header" in r).toBe(false);
+    const long = buildResumeRequest({ company: "A", title: "T", description: "d".repeat(500_000) }) as { job: { description: string } };
     expect(long.job.description.length).toBe(100_000);
     expect(JSON.stringify(long).length).toBeLessThan(128 * 1024);
   });
   test("buildResumeRequest: a page with no description is refused", () => {
-    expect(() => buildResumeRequest({ company: "A", title: "T", description: " " }, header)).toThrow(/no job description/);
+    expect(() => buildResumeRequest({ company: "A", title: "T", description: " " })).toThrow(/no job description/);
+  });
+  test("buildResumeJobRequest: the posting's key and nothing else", () => {
+    expect(buildResumeJobRequest("greenhouse:acme:4012")).toEqual({ key: "greenhouse:acme:4012" });
+  });
+  test("the keyed job outlasts the agent's build and use (375 s + 25 s), the stateless one its 375 s", () => {
+    expect(RESUME_KEYED_TIMEOUT_MS).toBeGreaterThan((375 + 25) * 1000);
+    expect(RESUME_JOB_TIMEOUT_MS).toBeGreaterThan(375 * 1000);
+    expect(RESUME_KEYED_TIMEOUT_MS).toBeGreaterThan(RESUME_JOB_TIMEOUT_MS);
   });
 
   test("parseBuiltResume: a checked PDF", () => {
     const r = parseBuiltResume({ pdf: toBase64(PDF), name: "Resume_Acme.pdf", bytes: PDF.length, pages: 2 });
-    expect(r.ok && r.name === "Resume_Acme.pdf" && r.bytes.length === PDF.length).toBe(true);
+    expect(r.ok && r.name === "Resume_Acme.pdf" && r.bytes.length === PDF.length && r.version === undefined).toBe(true);
+  });
+  test("parseBuiltResume: a keyed build carries its version; a bad version is dropped, not trusted", () => {
+    const good = parseBuiltResume({ pdf: toBase64(PDF), name: "Resume_Acme.pdf", bytes: PDF.length, key: "greenhouse:acme:1", version: 3 });
+    expect(good.ok && good.version).toBe(3);
+    for (const v of [0, -1, 1.5, "3", null, Number.MAX_SAFE_INTEGER + 2]) {
+      const r = parseBuiltResume({ pdf: toBase64(PDF), name: "Resume_Acme.pdf", bytes: PDF.length, version: v });
+      expect(r.ok && r.version === undefined).toBe(true);
+    }
+  });
+  test("parseBuiltResume: a saved version that could not be used is named, within the detail bound", () => {
+    const r = parseBuiltResume({ error: "the built version's fit did not pass", code: "fit", version: 4 });
+    expect(!r.ok && r.detail).toBe("the built version's fit did not pass (saved as v4 in Vani)");
+    const long = parseBuiltResume({ error: "x".repeat(500), code: "fit", version: 12 });
+    expect(!long.ok && long.detail.length <= 200 && long.detail.endsWith("(saved as v12 in Vani)")).toBe(true);
+    const none = parseBuiltResume({ error: "boom", code: "fit", version: 0 });
+    expect(!none.ok && none.detail).toBe("boom");
   });
   test("parseBuiltResume: vani's own reason for its codes, the shared help for the agent's", () => {
     const own = parseBuiltResume({ error: "resume: devprism.binary is not set in Vani's config", code: "config" });

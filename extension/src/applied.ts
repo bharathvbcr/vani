@@ -160,19 +160,45 @@ function clip(x: unknown): string {
   return typeof x === "string" ? x.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, MAX_TEXT) : "";
 }
 
-/** The host's jobFind reply. A job already marked Applied, or a page two postings claim, is not offered. */
-export function parseFind(r: unknown): FindOutcome {
+/** What a jobFind reply says, before anyone decides what to do about it. */
+type Found =
+  | { ok: true; found: false; ambiguous: boolean }
+  | { ok: true; found: true; posting: string; job: Record<string, unknown> }
+  | { ok: false; error: string; code: string };
+
+function readFind(r: unknown): Found {
   if (typeof r !== "object" || r === null) return { ok: false, error: "no reply from the Mac app", code: "bad_reply" };
   const o = r as Record<string, unknown>;
   if (typeof o.error === "string") return { ok: false, error: o.error.slice(0, 300), code: typeof o.code === "string" ? o.code : "error" };
   if (typeof o.found !== "boolean") return { ok: false, error: "bad reply from the Mac app", code: "bad_reply" };
-  if (!o.found) return { ok: true, offer: null, why: o.ambiguous === true ? "ambiguous" : "none" };
+  if (!o.found) return { ok: true, found: false, ambiguous: o.ambiguous === true };
   const j = o.job;
   if (typeof j !== "object" || j === null) return { ok: false, error: "bad reply from the Mac app", code: "bad_reply" };
   const job = j as Record<string, unknown>;
   if (typeof job.key !== "string" || job.key === "" || job.key.length > 512) return { ok: false, error: "bad reply from the Mac app", code: "bad_reply" };
-  if (job.mark === "applied") return { ok: true, offer: null, why: "applied" };
-  return { ok: true, offer: { key: job.key, company: clip(job.company), title: clip(job.title) }, why: "match" };
+  return { ok: true, found: true, posting: job.key, job };
+}
+
+/** The host's jobFind reply. A job already marked Applied, or a page two postings claim, is not offered. */
+export function parseFind(r: unknown): FindOutcome {
+  const f = readFind(r);
+  if (!f.ok) return f;
+  if (!f.found) return { ok: true, offer: null, why: f.ambiguous ? "ambiguous" : "none" };
+  if (f.job.mark === "applied") return { ok: true, offer: null, why: "applied" };
+  return { ok: true, offer: { key: f.posting, company: clip(f.job.company), title: clip(f.job.title) }, why: "match" };
+}
+
+/**
+ * The posting a jobFind reply names, for building a resume against that job. Unlike parseFind it keeps a job
+ * marked Applied (still tracked, and its resume may still be wanted). `key: null` is a page Vani does not
+ * track, or one two postings claim (`ambiguous`: no guess is made between them).
+ */
+export type FoundKey = { ok: true; key: string | null; ambiguous?: true } | { ok: false; error: string; code: string };
+export function parseFindKey(r: unknown): FoundKey {
+  const f = readFind(r);
+  if (!f.ok) return f;
+  if (f.found) return { ok: true, key: f.posting };
+  return f.ambiguous ? { ok: true, key: null, ambiguous: true } : { ok: true, key: null };
 }
 
 // --- background side -------------------------------------------------------------

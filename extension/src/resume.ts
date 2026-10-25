@@ -9,10 +9,9 @@
 // file name (which carries the owner's name) is shown on the page and in the
 // popup, and never logged.
 import { isRecord } from "./guards";
-import type { Bank, FieldInfo } from "./types";
+import type { FieldInfo } from "./types";
 import type { JobInfo } from "./draft";
 import { pageKey, postingKey } from "./applied";
-import { basicsValues } from "./basics";
 import { JOB_HELP } from "./suggestjob";
 
 /**
@@ -27,7 +26,7 @@ const MAX_DETAIL = 200;
 const MAX_READ = 300;
 
 export type ResumeFetch =
-  | { ok: true; name: string; bytes: Uint8Array; pickedAt: string }
+  | { ok: true; name: string; bytes: Uint8Array; pickedAt: string; version?: number }
   | { ok: false; reason: "no_resume" | "resume_unavailable"; detail: string };
 
 /** What the popup shows for the active job: the bound file, none, or why it cannot say.
@@ -222,52 +221,49 @@ export async function runResume(m: ResumeMessage, native: (op: object) => Promis
 }
 
 // --- building one (the offer on a form with no resume chosen) ---------------------------
-// `vani resume` (run by the Vani Apply agent, job kind "resume") builds a PDF for the job
-// with rkb in the owner's own resume template: the model picks which of the owner's
-// approved bullets fit this posting, and rkb lays them out and checks them. The PDF's
-// header is rkb's (the owner's base resume); the request still carries Your basics, which
-// vani validates and does not send anywhere.
+// Two jobs in the Vani Apply agent build a PDF for the job with rkb in the owner's own
+// resume template (the model picks which of the owner's approved bullets fit this posting;
+// rkb lays them out and checks them):
+//  - "resume" (`vani resume`) is stateless, for a page Vani does not track: the request is
+//    the posting as the page shows it, and nothing is kept.
+//  - "resumeJob" (`vani jobs resume build`, then `use`) is for a tracked posting: the request
+//    is its key only (the posting's text is Vani's own), and the PDF is saved as the next
+//    version of that job's resume, the one the Mac app's Studio shows.
+// Neither request carries the owner's name or contact lines: rkb prints its own header.
 
-/** The agent allows a resume job 375 s; leave room for start-up and the last poll. */
+/** The agent allows a stateless resume job 375 s; leave room for start-up and the last poll. */
 export const RESUME_JOB_TIMEOUT_MS = 390_000;
+/** A keyed job is a build (375 s) and a use (25 s) in the agent. The extension must outwait both, or a version is marked used that nobody attaches. */
+export const RESUME_KEYED_TIMEOUT_MS = 415_000;
 /** The request is capped at 128 KiB by the agent; a long posting fits well under it. */
 const MAX_JOB_DESCRIPTION = 100_000;
 const MAX_JOB_LINE = 300;
 
-export interface ResumeHeader { name: string; contact_lines: string[] }
-
-/**
- * The resume header from Your basics: first and last name, then "email | phone | city, country"
- * and "LinkedIn | GitHub | website" (each line only when something is in it). Null without a name.
- */
-export function resumeHeader(bank: Bank | null): ResumeHeader | null {
-  const v = basicsValues(bank);
-  const name = [v.first, v.last].map(s => (s ?? "").trim()).filter(Boolean).join(" ");
-  if (!name) return null;
-  const line = (parts: (string | undefined)[]) => parts.map(s => (s ?? "").trim()).filter(Boolean).join(" | ");
-  const place = [v.city, v.country].map(s => (s ?? "").trim()).filter(Boolean).join(", ");
-  const contact_lines = [line([v.email, v.phone, place]), line([v.linkedin, v.github, v.website])].filter(Boolean)
-    .map(l => l.slice(0, 200));
-  return { name: name.slice(0, 200), contact_lines };
-}
-
-/** The `vani resume` request; throws when the page has no job description to build from. */
-export function buildResumeRequest(job: JobInfo, header: ResumeHeader): object {
+/** The stateless `vani resume` request; throws when the page has no job description to build from. */
+export function buildResumeRequest(job: JobInfo): object {
   const description = job.description.trim().slice(0, MAX_JOB_DESCRIPTION);
   if (!description) throw new Error("this page has no job description to build a resume from");
   const one = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, MAX_JOB_LINE);
-  return { job: { company: one(job.company), title: one(job.title), description }, header };
+  return { job: { company: one(job.company), title: one(job.title), description } };
+}
+
+/** The keyed request for a tracked posting: its key and nothing else (the agent refuses any other field). */
+export function buildResumeJobRequest(key: string): object {
+  return { key };
 }
 
 /** Codes whose text from vani itself says more than the shared job help does. */
-const OWN_TEXT = new Set(["config", "kb", "render", "lint", "fit", "pages", "too_large", "no_name", "bad_request"]);
+const OWN_TEXT = new Set(["config", "kb", "render", "lint", "fit", "pages", "too_large", "bad_request"]);
 
-/** A built resume from `vani resume`'s reply (through runJob), checked like a stored one; or why not. */
+/** A built resume from `vani resume` or the keyed job's reply (through runJob), checked like a stored one; or why not. */
 export function parseBuiltResume(r: unknown): ResumeFetch {
   if (!isRecord(r)) return unavailable("Vani sent no resume");
   if (typeof r.error === "string") {
     const code = typeof r.code === "string" ? r.code : "";
-    return unavailable(!OWN_TEXT.has(code) && JOB_HELP[code] ? JOB_HELP[code]! : r.error);
+    const why = (!OWN_TEXT.has(code) && JOB_HELP[code] ? JOB_HELP[code]! : r.error).trim();
+    // A paid build that saved a version and then could not be attached says so: that version is not lost.
+    const saved = typeof r.version === "number" && Number.isSafeInteger(r.version) && r.version > 0 ? ` (saved as v${r.version} in Vani)` : "";
+    return unavailable(`${clip(why).slice(0, MAX_DETAIL - saved.length)}${saved}`);
   }
   const name = checkResumeName(r.name);
   const bytes = fromBase64(r.pdf);
@@ -276,7 +272,8 @@ export function parseBuiltResume(r: unknown): ResumeFetch {
   if (bytes.length > MAX_RESUME_BYTES) return unavailable(`the built resume is over ${MAX_RESUME_BYTES / 1024} KB`);
   if (!isPdf(bytes)) return unavailable("the built resume is not a PDF");
   if (r.bytes !== bytes.length) return unavailable("the built resume arrived incomplete");
-  return { ok: true, name, bytes, pickedAt: new Date().toISOString() };
+  const version = typeof r.version === "number" && Number.isSafeInteger(r.version) && r.version > 0 ? r.version : undefined;
+  return { ok: true, name, bytes, pickedAt: new Date().toISOString(), ...(version ? { version } : {}) };
 }
 
 /**

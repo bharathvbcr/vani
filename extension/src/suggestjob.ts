@@ -20,7 +20,8 @@ export const SUGGEST_TIMEOUT_MS = 345_000;
 /** A draft job is bounded at 150 s by the agent. */
 export const DRAFT_JOB_TIMEOUT_MS = 165_000;
 
-export type JobKind = "suggest" | "draft" | "resume";
+/** `resume` is the stateless build (`vani resume`); `resumeJob` is the keyed one (`vani jobs resume build` then `use`) for a tracked posting. */
+export type JobKind = "suggest" | "draft" | "resume" | "resumeJob";
 
 export interface SuggestField { id: string; label: string; kind: "text" | "textarea" }
 
