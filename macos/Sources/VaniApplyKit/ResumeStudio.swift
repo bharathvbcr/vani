@@ -191,12 +191,18 @@ public struct ResumeVersion: Decodable, Equatable, Sendable {
     public var current: Bool
     public var used: Bool
     public var eligibility: ResumeEligibility?
+    /// Absolute path of the version's PDF (0600), when it has one: `show` names it for every version
+    /// that has a PDF, and so does a reply that saved one.
+    public var pdfPath: String?
+    /// Bullet id -> rendered lines, from rkb's fit report: present only for a version that was fitted.
+    public var fitLines: [String: Int]
 
     /// The version has a PDF (a render without `--fit` has none).
     public var hasPDF: Bool { !(pdfSHA256 ?? "").isEmpty }
 
     private enum CodingKeys: String, CodingKey {
         case version, parent, source, reason, model, cost, checks, pages, notes, bullets, created, selection, current, used, eligibility
+        case pdfPath = "pdf_path", fitLines = "fit_lines"
         case unverifiedDropped = "unverified_dropped"
         case keywords = "jd_keywords"
         case pdfSHA256 = "pdf_sha256"
@@ -223,6 +229,9 @@ public struct ResumeVersion: Decodable, Equatable, Sendable {
         keywords = (try? c.decode([String].self, forKey: .keywords)) ?? []
         bullets = (try? c.decode([ResumeBulletRef].self, forKey: .bullets)) ?? []
         pdfSHA256 = try? c.decode(String.self, forKey: .pdfSHA256)
+        pdfPath = (try? c.decode(String.self, forKey: .pdfPath)).flatMap { $0.isEmpty ? nil : $0 }
+        // A count outside what rkb can report is not a measurement: left out, never clamped.
+        fitLines = ((try? c.decode([String: Int].self, forKey: .fitLines)) ?? [:]).filter { $0.value >= 1 && $0.value <= 50 }
         created = try c.decode(Date.self, forKey: .created)
         selection = try? c.decode(ResumeJSON.self, forKey: .selection)
         current = (try? c.decode(Bool.self, forKey: .current)) ?? false

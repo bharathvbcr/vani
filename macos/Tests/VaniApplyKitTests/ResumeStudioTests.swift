@@ -84,7 +84,7 @@ private let shownJSON = """
 {"key":"gh:acme:1","eligibility_checked":true,"current":3,"used":2,"version":3,
  "versions":[
   {"schema":1,"key":"gh:acme:1","version":3,"parent":2,"source":"tailored","cost":{"usd":0.31,"complete":false,"turns":2},"checks":\(checksJSON),
-   "pages":2,"bullets":[{"id":"b1","text_hash":"abc123def456"}],"pdf_sha256":"aabbcc","created":"2026-10-25T12:00:00Z",
+   "pages":2,"bullets":[{"id":"b1","text_hash":"abc123def456"}],"pdf_sha256":"aabbcc","pdf_path":"/s/resumes/h/v3.pdf","fit_lines":{"b1":2,"b2":0,"b3":51},"created":"2026-10-25T12:00:00Z",
    "selection":{"sections":[{"title":"Experience","entries":[{"id":"e1","bullets":["b1"]}]}]},
    "current":true,"eligibility":{"state":"stale","reworded":["b1"],"gone":[],"ineligible":["b9"],"inputs_changed":["bank"],"why":"changed"}},
   {"schema":1,"key":"gh:acme:1","version":2,"source":"base","reason":"no model","cost":{"usd":0,"complete":true,"turns":0},
@@ -243,6 +243,8 @@ final class ResumeStudioClientTests: XCTestCase {
         XCTAssertEqual(v.created.timeIntervalSince1970, expected + 0.123456, accuracy: 0.001)
         XCTAssertTrue(saved.currentMoved)
         XCTAssertEqual(saved.pdfPath, "/s/resumes/h/v3.pdf")
+        XCTAssertEqual(v.pdfPath, "/s/resumes/h/v3.pdf")
+        XCTAssertEqual(v.fitLines, ["b1": 2])
         XCTAssertEqual(saved.droppedStale, [])
         XCTAssertNil(v.selection, "build's reply carries no choice")
     }
@@ -343,6 +345,10 @@ final class ResumeStudioClientTests: XCTestCase {
         XCTAssertEqual(v3.cost, ResumeCost(usd: 0.31, complete: false, turns: 2))
         XCTAssertNotNil(v3.selection, "the chosen version carries its selection")
         XCTAssertNotNil(shown.pool)
+        XCTAssertEqual(v3.pdfPath, "/s/resumes/h/v3.pdf", "show names the PDF of any version that has one")
+        XCTAssertEqual(v3.fitLines, ["b1": 2], "a line count rkb cannot have reported (0, 51) is dropped, never clamped")
+        XCTAssertNil(shown.versions[1].pdfPath)
+        XCTAssertEqual(shown.versions[1].fitLines, [:])
         let v2 = shown.versions[1]
         XCTAssertTrue(v2.used)
         XCTAssertNil(v2.selection)
