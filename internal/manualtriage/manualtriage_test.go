@@ -132,8 +132,8 @@ func TestWorstCaseLineFits(t *testing.T) {
 
 func TestTornTailIsSkippedAndCutByTheNextWrite(t *testing.T) {
 	for name, tail := range map[string]string{
-		"half a json line":     `{"v":1,"at":"2026-10-24T10:00:00Z","key":"gh:acme:2","op":"se`,
-		"garbage no newline":   `\x00\x00 not json`,
+		"half a json line":      `{"v":1,"at":"2026-10-24T10:00:00Z","key":"gh:acme:2","op":"se`,
+		"garbage no newline":    `\x00\x00 not json`,
 		"whole json no newline": `{"v":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {

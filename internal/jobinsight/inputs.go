@@ -188,6 +188,7 @@ var listedValues = jdtriage.SlotValues()
 //     primary's p was: the owner asked for it. It is a listed option, backend
 //     BackendManual, with no p, so it takes AnsweredConf (or the Calibration named
 //     for BackendManual).
+//
 //   - otherwise the primary's (SlotOf), except where the primary was unsure and
 //     the escalation tier read the slot (decide.escalate; ledger annotations
 //     triage.<slot>.shadow*). That needs all of
@@ -195,8 +196,10 @@ var listedValues = jdtriage.SlotValues()
 //   - EscalateBelowP set (the config's decide.escalate.below_p), and the primary
 //     answered with a calibrated p under it. A primary at or above it, one with no
 //     p (Lappi, the LLM itself) or none at all keeps its reading.
+//
 //   - the shadow reading recorded by the escalation tier (shadow_backend
 //     "escalate", not a Lappi or local shadow), with reading "answered".
+//
 //   - its value one of the slot's listed options.
 //
 // The slot then takes the escalation's value under Backend ShadowEscalate, with
