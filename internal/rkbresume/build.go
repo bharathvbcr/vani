@@ -130,19 +130,25 @@ func (b *builder) remaining(ctx context.Context) time.Duration {
 	return MaxDeadline
 }
 
-func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
+// prepare readies a build: the environment rkb runs in (with a PATH that finds
+// pdftotext when the build will fit a page), then everything load reads.
+func (b *builder) prepare(ctx context.Context, needFit bool) *Error {
 	if ctx.Err() != nil {
-		return Result{}, ctxError(ctx)
+		return ctxError(ctx)
 	}
-	env, err := b.childEnv()
+	env, err := b.childEnv(needFit)
 	if err != nil {
-		return Result{}, err
+		return err
 	}
 	// rkb makes its Chrome profile and fit work folders in its temp folder, and
 	// cleans them only when it exits normally: inside the build folder they go
 	// with it, whatever happens to rkb.
 	b.env = withTempDir(env, filepath.Join(b.dir, tmpDirName))
-	if err := b.load(ctx); err != nil {
+	return b.load(ctx)
+}
+
+func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
+	if err := b.prepare(ctx, true); err != nil {
 		return Result{}, err
 	}
 	baseCh := b.base.baseChoice(b.el.Allowed, b.isCont)
@@ -779,9 +785,10 @@ func lintProblems(stdout string) []problem {
 }
 
 // childEnv is the environment rkb runs with: the minimal one plus RKB_CODE_ROOT,
-// and a PATH that finds pdftotext. A missing pdftotext is an error here, before
-// a model turn is spent: rkb fit cannot measure a page without it.
-func (b *builder) childEnv() ([]string, *Error) {
+// and, when needFit, a PATH that finds pdftotext. A missing pdftotext is an error
+// here, before a model turn is spent: rkb fit cannot measure a page without it.
+// A build that fits no page does not need it.
+func (b *builder) childEnv(needFit bool) ([]string, *Error) {
 	var extra []string
 	if b.cfg.CodeRoot != "" {
 		extra = append(extra, "RKB_CODE_ROOT="+b.cfg.CodeRoot)
@@ -793,7 +800,7 @@ func (b *builder) childEnv() ([]string, *Error) {
 			idx, path = i, v
 		}
 	}
-	if onPath(path, "pdftotext") {
+	if !needFit || onPath(path, "pdftotext") {
 		return env, nil
 	}
 	dirs := b.cfg.ToolDirs
