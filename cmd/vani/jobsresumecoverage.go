@@ -51,6 +51,8 @@ type resumeCoverageReply struct {
 	// GapMissing are the vocabulary terms DevPrism found missing or weak for this
 	// posting (the ledger's gap.missing annotation), sorted.
 	GapMissing []string `json:"gap_missing"`
+
+	pool []rkbcoverage.Bullet // every eligible bullet, for `gaps`
 }
 
 func (e *env) jobsResumeCoverage(args []string) error {
@@ -145,8 +147,11 @@ func (e *env) resumeCoverage(ctx context.Context, rawKey, rawVersion string) (re
 
 	posting, kerr := withContext(ctx, func() ([]string, error) {
 		j, _, ok, err := e.showJob(job.key)
-		if err != nil || !ok {
+		if err != nil {
 			return nil, err
+		}
+		if !ok { // resumeJobFor found it a moment ago; a view that cannot is not "no keywords"
+			return nil, errors.New("the job view has no such posting")
 		}
 		terms := make([]string, 0, len(j.Keywords))
 		for _, k := range j.Keywords {
@@ -184,6 +189,7 @@ func (e *env) resumeCoverage(ctx context.Context, rawKey, rawVersion string) (re
 		return fail(jrErr(jrDamaged, "jobs resume: v%d's stored choice could not be read: %s", want, oneLine(err.Error(), 200)))
 	}
 	out.GapMissing = gapMissingTerms(job.rec)
+	out.pool = in.Pool
 	return out, job, nil
 }
 
@@ -267,9 +273,21 @@ func (e *env) resumeGaps(ctx context.Context, rawKey string, dry bool) (resumeGa
 	if err != nil {
 		return resumeGapsReply{}, err
 	}
+	// The hand-off is "what the bank cannot cover", judged on the posting's
+	// keywords: when they could not be read there is nothing to judge, and an empty
+	// answer would look like a bank that covers everything.
+	if cov.KeywordsError != "" {
+		return resumeGapsReply{}, jrErr(jrFailed, "jobs resume: %s, so the gaps cannot be judged and nothing was written", cov.KeywordsError)
+	}
+	// DevPrism's must-haves are handed over only when no eligible bullet covers them
+	// now (its annotation may predate a bullet the bank has since gained).
+	gapOnly, gerr := rkbcoverage.PoolUncovered(cov.pool, cov.GapMissing)
+	if gerr != nil {
+		return resumeGapsReply{}, jrErr(jrFailed, "jobs resume: %s", oneLine(gerr.Error(), 200))
+	}
 	out := resumeGapsReply{Key: cov.Key, Terms: []string{}, File: filepath.Join(e.stateDir, "resumes", "gaps.jsonl"), DryRun: dry}
 	seen := map[string]bool{}
-	for _, t := range append(append([]string{}, cov.Uncovered...), cov.GapMissing...) {
+	for _, t := range append(append([]string{}, cov.Uncovered...), gapOnly...) {
 		t = oneLine(t, maxGapTermRunes)
 		if k := strings.ToLower(t); t != "" && !seen[k] {
 			seen[k] = true

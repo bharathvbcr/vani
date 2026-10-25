@@ -140,6 +140,17 @@ func SelectedIDs(sel json.RawMessage) ([]string, error) {
 	return ids, nil
 }
 
+// PoolUncovered returns, in order, the vocabulary terms no bullet of pool covers.
+// It is Compute's uncovered list for terms asked of the pool alone, with no
+// version chosen.
+func PoolUncovered(pool []Bullet, terms []string) ([]string, error) {
+	rep, err := Compute(Input{Selection: json.RawMessage(`{"sections":[]}`), Pool: pool, Posting: terms})
+	if err != nil {
+		return nil, err
+	}
+	return rep.Uncovered, nil
+}
+
 // term is one thing to look for: shown is how the reply spells it, and exactly
 // one of the two vocabularies names it.
 type term struct {

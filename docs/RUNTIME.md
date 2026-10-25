@@ -356,7 +356,7 @@ guessed answer.
 | Command | What it does |
 |---|---|
 | `coverage [--json] KEY [vN]` | Default: the current version; a job with no version gets its base selection (`base:true`, no `version`). Reply: `{key, version \| base, keywords_source, keywords_error?, hit, miss, uncovered, unjudged, unresolved, terms_total, terms_truncated?, gap_missing}`. |
-| `gaps [--json] [--dry-run] KEY` | Appends one line `{at, key, company, title, terms}` to `<state>/resumes/gaps.jsonl`. Terms: the `uncovered` terms of the current version (the base, when there is none) plus `gap_missing`, each at most 80 runes, at most 100. Reply: `{key, terms, written, file, dry_run?, unchanged?, terms_truncated?, note?}`. `--dry-run` writes nothing and takes no lock. A job with no terms writes nothing (`written:false`, `note`). |
+| `gaps [--json] [--dry-run] KEY` | Appends one line `{at, key, company, title, terms}` to `<state>/resumes/gaps.jsonl`. Terms: the `uncovered` terms of the current version (the base, when there is none) plus the `gap_missing` terms no eligible bullet covers now (DevPrism's annotation may predate a bullet the bank gained), each at most 80 runes, at most 100. The posting's keywords must be readable, else `failed` and nothing is written: an empty hand-off would read as a bank that covers everything. Reply: `{key, terms, written, file, dry_run?, unchanged?, terms_truncated?, note?}`. `--dry-run` writes nothing and takes no lock. A job with no terms writes nothing (`written:false`, `note`). |
 
 **What the lists mean.** `hit` is `[{term, bullets, n}]`: a term some chosen bullet covers, the ids
 (at most 40, page order) and how many chosen bullets cover it. `miss` is every other judged term.
@@ -377,11 +377,14 @@ terms in the ledger's `gap.missing` annotation (DevPrism's must-haves found miss
 the annotation's own text is untrusted and is never passed on.
 
 **Matching rule.** jobinsight's, so a term occurs in a bullet exactly where `jobs show` found it in the
-posting: whole token sequences, case-insensitive (`C++`, `scikit-learn` and `.NET` tokenize as there),
-aliases and stop phrases and the case-sensitive terms ("Go") included, the longest spelling winning. A
-posting keyword is matched through `jobinsight.Default().Terms`; a version's `jd_keywords` through a
-one-term vocabulary built from them with `jobinsight.ParseVocab`. No substring matching: `Pythonic`
-does not cover `Python`.
+posting: whole token sequences, case-insensitive (`C++`, `scikit-learn` and `.NET` tokenize as there).
+No substring matching: `Pythonic` does not cover `Python`. A posting keyword is matched through
+`jobinsight.Default().Terms`, so the vocabulary's aliases, stop phrases and case-sensitive terms ("Go")
+apply, and **a match consumes its tokens**: the longest spelling wins, so a bullet that says `CUDA
+kernels` covers the term `GPU kernels` and not `CUDA`. A version's `jd_keywords` are the model's own
+words, matched through a one-term vocabulary built from them with `jobinsight.ParseVocab`: they have
+none of that (a `jd_keyword` `Go` matches the verb "go", and one `training` is consumed by another
+`distributed training` in the same version).
 
 **The hand-off file.** `<state>/resumes/gaps.jsonl` is 0600, written atomically under
 `gaps.jsonl.lock` (waits at most 10 s or the command's deadline, then `busy`), at most 500 lines and 256

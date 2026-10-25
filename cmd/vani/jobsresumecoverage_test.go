@@ -391,6 +391,24 @@ func TestJobsResumeGapsHandsOverUncoveredTermsAndDevPrismsMissing(t *testing.T) 
 	}
 }
 
+// DevPrism's annotation may predate a bullet the bank has since gained: a
+// gap.missing term some eligible bullet covers now is not a gap the bank has.
+func TestJobsResumeGapsLeavesOutWhatTheBankCoversNow(t *testing.T) {
+	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+	state, _ := jrSetup(t, f, nil)
+	jrBankDoc(t, []string{"b1", "b2", "b3"}, map[string]map[string]any{"b3": reviewedBullet("Built Python tooling.", "Built Python tooling.")})
+	jcSeed(t, state, "gh:globex:7", "Terraform everywhere.", map[string]string{ledger.AnnMissing: "Python; Rust (weak)"})
+
+	cov := jrCoverage(t, "gh:globex:7")
+	if !sameSet(cov.GapMissing, []string{"Python", "Rust"}) { // coverage reports DevPrism's view whole
+		t.Errorf("gap_missing = %v", cov.GapMissing)
+	}
+	r := jrGaps(t, "gh:globex:7")
+	if !sameSet(r.Terms, []string{"Terraform", "Rust"}) {
+		t.Errorf("terms = %v, want Terraform and Rust but not Python", r.Terms)
+	}
+}
+
 func TestJobsResumeGapsDryRunWritesNothing(t *testing.T) {
 	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
 	state, _ := jrSetup(t, f, nil)

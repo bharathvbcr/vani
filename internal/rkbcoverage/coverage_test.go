@@ -277,6 +277,41 @@ func TestCoverageTwoSpellingsOfOneTokenSequenceDoNotBreakTheRest(t *testing.T) {
 	}
 }
 
+// The version's own words get no vocabulary rules (RUNTIME.md, "Matching rule").
+func TestCoverageAVersionsOwnWordsAreMatchedPlainly(t *testing.T) {
+	r := mustCompute(t, Input{
+		Selection: sel("b1", "b2"),
+		Pool:      pool("We go far.", "Ran distributed training."),
+		JD:        []string{"Go", "training", "distributed training"},
+	})
+	if got := hitTerms(r); !reflect.DeepEqual(got, []string{"Go", "distributed training"}) || !reflect.DeepEqual(r.Miss, []string{"training"}) {
+		t.Errorf("hit %v miss %v", got, r.Miss)
+	}
+}
+
+func TestCoveragePoolUncoveredAsksThePoolAlone(t *testing.T) {
+	got, err := PoolUncovered(pool("Built Python tooling.", "Optimized CUDA."), []string{"Python", "Rust", "CUDA", "Kubernetes"})
+	if err != nil || !reflect.DeepEqual(got, []string{"Rust", "Kubernetes"}) {
+		t.Errorf("uncovered = %v, %v", got, err)
+	}
+	if got, err := PoolUncovered(nil, nil); err != nil || len(got) != 0 {
+		t.Errorf("nothing asked: %v, %v", got, err)
+	}
+}
+
+// A match consumes its tokens (jobinsight's rule): "CUDA kernels" is the term
+// "GPU kernels", not CUDA, so a bullet that says it does not cover CUDA.
+func TestCoverageAMatchConsumesItsTokens(t *testing.T) {
+	r := mustCompute(t, Input{
+		Selection: sel("b1"),
+		Pool:      pool("Wrote CUDA kernels for attention."),
+		Posting:   []string{"CUDA", "GPU kernels"},
+	})
+	if got := hitTerms(r); !reflect.DeepEqual(got, []string{"GPU kernels"}) || !reflect.DeepEqual(r.Miss, []string{"CUDA"}) {
+		t.Errorf("hit %v miss %v", got, r.Miss)
+	}
+}
+
 func TestCoverageNeverCarriesBulletText(t *testing.T) {
 	r := mustCompute(t, Input{
 		Selection: sel("b1"),
