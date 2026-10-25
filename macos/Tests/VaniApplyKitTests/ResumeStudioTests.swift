@@ -592,6 +592,19 @@ final class ResumeCardTests: XCTestCase {
         guard case .blocked = try use(#""pages":2,"eligibility":"current""#) else { return XCTFail("a missing fit state is not a pass") }
     }
 
+    func testASavedVersionIsUsableOnlyFromTheStatesItWasSavedWith() throws {
+        func version(_ replace: (String) -> String) throws -> ResumeVersion {
+            try JobsClient.decoder.decode(ResumeSaved.self, from: Data(replace(savedJSON).utf8)).version
+        }
+        XCTAssertEqual(ResumeCardPresentation.useAction(forSaved: try version { $0 }), .available(version: 3))
+        XCTAssertEqual(ResumeCardPresentation.useAction(forSaved: try version { $0 }, inUse: true), .inUse(version: 3))
+        guard case let .blocked(_, _, fitOffer) = ResumeCardPresentation.useAction(forSaved: try version { $0.replacingOccurrences(of: #""fit":"passed""#, with: #""fit":"could_not_run""#) }) else { return XCTFail() }
+        XCTAssertEqual(fitOffer, .buildAgain)
+        guard case let .blocked(_, _, eligOffer) = ResumeCardPresentation.useAction(forSaved: try version { $0.replacingOccurrences(of: #""eligibility":"current""#, with: #""eligibility":"unknown""#) }) else { return XCTFail() }
+        XCTAssertEqual(eligOffer, .revalidate)
+        guard case .blocked = ResumeCardPresentation.useAction(forSaved: try version { $0.replacingOccurrences(of: #""pages":2,"#, with: "") }) else { return XCTFail("an unfitted version has no PDF to use") }
+    }
+
     func testTheApplyKitLineSaysWhatIsAttached() throws {
         let used = try summary(#""current":3,"used":2,"versions":3"#)
         XCTAssertEqual(ResumeCardPresentation.applyKitLine(for: used, browserCopy: true), "Tailored resume v2 is the one attached for this job.")

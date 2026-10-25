@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import VaniApplyKit
 
@@ -68,9 +69,24 @@ struct ApplyKitView: View {
             guard !opening else { return }
             Task { await reloadResumes() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vaniResumeBound).receive(on: DispatchQueue.main)) { note in
+            guard !opening, boundForThisJob(note) else { return }
+            Task { await reloadResumes() }
+        }
     }
 
     private var resumeTaskID: String { "\(job.key)|\(job.url ?? "")|\(job.applyURL ?? "")" }
+
+    /// This job's tailored resume summary: the full one once shown, the list's copy until then.
+    private var tailoredSummary: ResumeSummary? { jobs.detail?.key == job.key ? jobs.detail?.resume : job.resume }
+
+    /// A resume was bound (Resume Studio's Use, or a browser's popup in this process): read the store again
+    /// when it was for one of this job's addresses.
+    private func boundForThisJob(_ note: Notification) -> Bool {
+        guard let keys = note.userInfo?[ResumeBinding.keysUserInfoKey] as? [String] else { return true }
+        let mine = ResumeBinding.targets(url: job.url, applyURL: job.applyURL).keys
+        return keys.contains { mine.contains($0) }
+    }
 
     @ViewBuilder
     private func row(_ step: ApplyKit.Step) -> some View {
@@ -138,6 +154,21 @@ struct ApplyKitView: View {
                         .disabled(opening)
                         .help("Open this job's resume in Preview")
                 }
+            }
+            // The tailored resume (Resume Studio): the version in use is the one attached, one built but not
+            // in use is offered, and a used version the browsers have no copy of is said, not shown as attached.
+            if let line = ResumeCardPresentation.applyKitLine(for: tailoredSummary, browserCopy: matched != nil) {
+                Text(verbatim: line).font(.caption)
+                    .foregroundStyle(matched == nil && (tailoredSummary?.used ?? 0) > 0 ? Color.orange : Color.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("applykit.tailored")
+            }
+            if jobs.resume.isAvailable, case let .available(v) = ResumeCardPresentation.card(for: tailoredSummary).use {
+                Button("Use v\(v) for this job") { jobs.resume.use(job, version: v) }
+                    .controlSize(.small)
+                    .disabled(jobs.resume.blockedReason(for: job) != nil)
+                    .help("Check this tailored version afresh, then save it for the browsers under this job's addresses.")
+                    .accessibilityIdentifier("applykit.useTailored")
             }
             if !listed.isEmpty {
                 Button("Saved resumes (\(listed.count))") { showingSaved = true }

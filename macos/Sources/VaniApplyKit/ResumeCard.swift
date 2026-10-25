@@ -141,6 +141,13 @@ public enum ResumeCardPresentation {
         return .available(version: v)
     }
 
+    /// Whether a version just saved (a build or a revalidation) can be used, from the states it was saved with.
+    /// Its `used` is whether it is the one in use now (false for a version just made).
+    public static func useAction(forSaved v: ResumeVersion, inUse: Bool = false) -> ResumeUseAction {
+        useAction(ResumeSummary(current: v.version, used: inUse ? v.version : 0, versions: 1, pages: v.pages,
+                                fit: v.checks.fit, eligibility: v.checks.eligibility, source: v.source))
+    }
+
     /// The Apply kit's step 2 line about the tailored resume; nil when the job has none (the step then says
     /// only what the browsers' own copy says).
     public static func applyKitLine(for summary: ResumeSummary?, browserCopy: Bool) -> String? {
