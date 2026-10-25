@@ -1,5 +1,7 @@
 package semantic
 
+import "math"
+
 // Calibration.
 //
 // A real embedding model's cosines sit in a narrow band (EmbeddingGemma on an
@@ -12,7 +14,30 @@ package semantic
 //     the profile exactly as a real posting is. It is where "unrelated" sits
 //     for this model and this profile.
 //   - ceiling: the raw score of an on-domain anchor built from the target
-//     summary, chunked and aggregated exactly like a posting.
+//     summary, chunked like a posting's description (onDomainAnchor) and
+//     aggregated with the same statistic (anchorDepth: the mean of its best third
+//     of chunk maxima). A target of several sentences gives a sharper ceiling
+//     than a one-sentence target (DefaultTarget), which is a single chunk.
+//
+// Why the anchor takes a top third. A posting's raw score is the mean of its
+// best topChunks (8) distinct chunk maxima out of at most MaxPostingChunks (24)
+// chunks, and a real posting is always at that cap: it is a top-third order
+// statistic, the score of the posting's best third. An anchor that averaged ALL
+// of its sentences (six, for the owner's target) was measuring a different
+// statistic, a mean over the whole target including its connective sentences
+// that no posting line resembles, and so sat below most fitting postings: on the
+// owner's live profile and the real model the ceiling was 0.758, 82% of their
+// saved jobs scored 0.95 or more, and the top of the scale carried no ordering.
+// The anchor now reads the same top third, round(n*topChunks/MaxPostingChunks)
+// chunks (at least one): 2 of 6, giving a ceiling of 0.807, 8.8% of saved jobs at
+// 0.95 or more, 85% of them inside (0.6, 0.95), and the saved median at 0.823
+// against 0.601 for the posting population. Measured 2026-10-24 (variant V5; V0
+// is the old rule); the order of postings is the same under both, since the
+// ceiling only rescales, so the ranking AUC is unchanged. The floor is untouched:
+// moving it is a separate decision.
+//
+// The off-domain anchors keep reading every chunk: each is a title and three
+// lines, at most four chunks, which is fewer than topChunks.
 //
 // The ceiling is the target-summary anchor, not the profile's own
 // nearest-neighbour similarity. Self-similarity is inflated by the bank's
@@ -27,6 +52,40 @@ package semantic
 type anchor struct {
 	title string
 	desc  string
+}
+
+// onDomainAnchor is the ceiling anchor: the target summary as the description
+// of a posting that has no title line. ChunkPosting splits it into sentences,
+// one chunk each at weight 1 (a target names no role, so no line earns the
+// title weight), and rawScoreN aggregates them as it does a posting, so a
+// target of several sentences gives a ceiling that is a mean over its
+// sentences. Passing the target as the title instead would make the whole
+// summary one chunk cut to MaxPostingChunkBytes, a blurred paragraph that a
+// posting's sharp lines out-score.
+//
+// A target that ChunkPosting leaves nothing of (one short phrase, a heading, a
+// generic line) is a single chunk of its own text, so the ceiling always exists.
+func onDomainAnchor(target string) []Chunk {
+	chunks := ChunkPosting("", target)
+	if len(chunks) == 0 {
+		chunks = []Chunk{{Label: "line", Text: truncBytes(target, MaxPostingChunkBytes), Weight: 1}}
+	}
+	return chunks
+}
+
+// anchorDepth is how many of the on-domain anchor's n chunks its ceiling
+// averages: the share of a full posting that rawScoreN keeps (topChunks of
+// MaxPostingChunks, a third), rounded, and never fewer than one or more than a
+// posting keeps. n is the chunk count as ChunkPosting returns it, before
+// near-duplicate removal: a posting's third is taken of its raw chunk count too,
+// and the near-duplicate rule (nearDupCos) then applies inside the top-k cut, so
+// a target that restates itself fills the cut with weaker sentences and so
+// cannot raise its own ceiling. (ChunkPosting already drops exact repeats.) One to four chunks
+// read at depth one, five or six at two, a full 24 at topChunks. The result is
+// the anchor's raw score as it is; score()'s evidence discount is for postings.
+func anchorDepth(n int) int {
+	k := int(math.Round(float64(n) * topChunks / MaxPostingChunks))
+	return min(max(k, 1), topChunks)
 }
 
 // offDomainAnchors is the fixed floor set. Changing it changes every floor:

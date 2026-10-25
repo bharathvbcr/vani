@@ -713,7 +713,7 @@ func TestCancelMidWarmSavesPartial(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || !rep.Canceled {
 		t.Fatalf("%+v %v", rep, err)
 	}
-	if rep.Scored == 0 || rep.Scored >= 40 || rep.Scored+rep.Skipped != 40 || rep.Failed != 0 {
+	if rep.Scored == 0 || rep.Scored >= 40 || rep.Scored+rep.Rescored+rep.Skipped != 40 || rep.Failed != 0 || rep.Rescored != 0 {
 		t.Fatalf("partial result wrong: %+v", rep)
 	}
 	m2, err := NewMatcher(newSpy(), synthProfile(t), dir)
@@ -838,8 +838,10 @@ func TestProfileOrModelChangeInvalidates(t *testing.T) {
 	if _, ok := changed.Lookup("k8s", TextHash(k8sDoc().Title, k8sDoc().Description)); ok {
 		t.Error("score survived a profile change")
 	}
+	// The score is gone, but the posting's chunk vectors are not: it is
+	// rescored from them, not embedded again (vectors_test.go).
 	rep, err := changed.Warm(context.Background(), []Doc{k8sDoc()}, 10)
-	if err != nil || rep.Scored != 1 || rep.Cached != 0 {
+	if err != nil || rep.Rescored != 1 || rep.Scored != 0 || rep.Cached != 0 {
 		t.Fatalf("%+v %v", rep, err)
 	}
 

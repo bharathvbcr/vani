@@ -63,9 +63,14 @@ type Matcher struct {
 	pd       *profileData  // nil until embedded or loaded
 	lockWait time.Duration // how long Warm waits for the cache lock; 0 is DefaultLockWait
 
-	mu         sync.RWMutex // guards sf and maxEntries
+	vs          *chunkStore // chunk-vector log index; guarded by warmMu and the cache lock
+	vecMax      int64       // chunk-vector log bound; 0 is MaxVectorBytes
+	rescoreTick func(n int) // test seam: called after each rescored posting with the running count
+
+	mu         sync.RWMutex // guards sf, maxEntries and vecPrio
 	sf         *scoreFile
 	maxEntries int
+	vecPrio    map[string]float64 // see SetVectorPriority
 }
 
 // NewMatcher opens (or starts) the cache in cacheDir for this profile and
@@ -131,6 +136,8 @@ func (m *Matcher) Len() int {
 type pending struct {
 	doc    Doc
 	hash   string
+	h      [16]byte // hash as a vector-log key; valid when hok
+	hok    bool
 	chunks []Chunk
 }
 
@@ -156,14 +163,22 @@ func (r *Report) note(err error) {
 // even when the embedder is down. Duplicate keys count once (the first wins);
 // a posting with no text, or whose vectors are unusable, is Failed, never 0.
 //
+// A posting that lacks a score but whose chunk vectors are in the chunk-vector
+// log (a profile change dropped its score, or another key held the same text)
+// is rescored from them with no embedding. Those are Rescored, are not limited
+// by max, and run before any embedding; the vectors of every posting that is
+// embedded are appended to the log. Only the profile and the calibration
+// anchors still need the model after a profile change.
+//
 // The Report always says what happened. The error is nil only when every
-// posting was scored, cached, skipped for max, or failed individually; it is
-// non-nil when the run stopped early (embedder unavailable, ctx ended, setup
-// or save failed), and what was scored before that is saved first.
-func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error) {
+// posting was scored, cached, rescored, skipped for max, or failed
+// individually; it is non-nil when the run stopped early (embedder
+// unavailable, ctx ended, setup or save failed), and what was scored before
+// that is saved first. A chunk-vector log that cannot be used never stops a
+// warm: it is reported (VectorsErr) and the postings are embedded.
+func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, runErr error) {
 	m.warmMu.Lock()
 	defer m.warmMu.Unlock()
-	var rep Report
 	max = min(max, MaxWarmDocs)
 
 	// The cache lock spans load, embed and save, so a warm in another process
@@ -193,7 +208,18 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 		return rep, lerr
 	}
 
-	var todo []pending
+	var vs *chunkStore
+	vsOpened := false
+	defer func() { m.finishVectors(&rep, vs) }()
+	openVecs := func() *chunkStore {
+		if !vsOpened {
+			vsOpened = true
+			vs = m.openVectors(&rep, docs)
+		}
+		return vs
+	}
+
+	var todo, rescore []pending
 	seen := map[string]bool{}
 	for _, d := range docs {
 		if d.Key == "" {
@@ -216,13 +242,24 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 			rep.note(errors.New("semantic: a posting has no text to embed"))
 			continue
 		}
+		p := pending{doc: d, hash: th, chunks: chunks}
+		p.h, p.hok = parseTextHash(th)
+		if s := openVecs(); s != nil && p.hok {
+			switch err := s.lookup(p.h, len(chunks)); {
+			case err == nil:
+				rescore = append(rescore, p)
+				continue
+			case errors.Is(err, errVecStale):
+				rep.VectorsStale++
+			}
+		}
 		if len(todo) >= max {
 			rep.Skipped++
 			continue
 		}
-		todo = append(todo, pending{doc: d, hash: th, chunks: chunks})
+		todo = append(todo, p)
 	}
-	if len(todo) == 0 {
+	if len(todo) == 0 && len(rescore) == 0 {
 		return rep, nil
 	}
 
@@ -230,14 +267,90 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 	if err != nil {
 		rep.note(err)
 		if rep.Canceled {
-			rep.Skipped += len(todo)
+			rep.Skipped += len(todo) + len(rescore)
 		} else {
-			rep.Failed += len(todo)
+			rep.Failed += len(todo) + len(rescore)
 		}
 		return rep, err
 	}
 
-	var runErr error
+	// toEmbed sends a posting whose stored vectors cannot be used to the embed
+	// list, within max like any other.
+	toEmbed := func(p pending) {
+		if len(todo) >= max {
+			rep.Skipped++
+			return
+		}
+		todo = append(todo, p)
+	}
+
+	// Vectors of another width than the model now gives belong to no usable
+	// model (the id is meant to change with the width): start the log over.
+	if vs != nil && vs.dim != 0 && vs.dim != pd.dim {
+		rep.VectorsRebuilt = true
+		rep.noteVectors(vecCorrupt("stored vectors are %d wide, the model gives %d", vs.dim, pd.dim))
+		if rerr := vs.reset(); rerr != nil {
+			rep.noteVectors(rerr)
+			vs.close()
+			vs = nil
+		}
+		for _, p := range rescore {
+			toEmbed(p)
+		}
+		rescore = nil
+	}
+
+	// Rescore from stored vectors first: no embedding, so no max.
+	ri := 0
+	for ; ri < len(rescore); ri++ {
+		if err := ctx.Err(); err != nil {
+			runErr = err
+			break
+		}
+		p := rescore[ri]
+		vecs, err := vs.read(p.h, len(p.chunks), pd.dim)
+		if err != nil {
+			if errors.Is(err, errVecStale) {
+				rep.VectorsStale++
+			} else {
+				rep.VectorsCorrupt++
+				rep.noteVectors(err)
+				vs.drop(p.h)
+			}
+			toEmbed(p)
+			continue
+		}
+		raw, ev, taken := m.rawScoreN(p.chunks, vecs, pd, topChunks)
+		m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.score(raw, taken), Evidence: ev, Thin: taken < minDistinctChunks})
+		rep.Rescored++
+		if m.rescoreTick != nil {
+			m.rescoreTick(rep.Rescored)
+		}
+		if rep.Rescored%rescoreSaveEvery == 0 {
+			if err := m.save(); err != nil {
+				rep.note(err)
+				rep.Skipped += len(rescore) - ri - 1 + len(todo)
+				return rep, err
+			}
+		}
+	}
+	if runErr != nil {
+		rep.note(runErr)
+		rep.Skipped += len(rescore) - ri + len(todo)
+	}
+	if rep.Rescored > 0 {
+		if err := m.save(); err != nil {
+			rep.note(err)
+			if runErr == nil {
+				runErr = err
+				rep.Skipped += len(todo)
+			}
+		}
+	}
+	if runErr != nil {
+		return rep, runErr
+	}
+
 	groups, consecBad, i := 0, 0, 0
 	for i < len(todo) && runErr == nil {
 		if err := ctx.Err(); err != nil {
@@ -270,6 +383,7 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 			break
 		}
 		off := 0
+		var recs []vecRec
 		for _, p := range todo[i:j] {
 			n := len(p.chunks)
 			vecs, ok := make([][]float32, 0, n), true
@@ -287,14 +401,19 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error)
 				rep.note(fmt.Errorf("%w: a row is the wrong width, non-finite or zero", ErrEmbed))
 				continue
 			}
-			raw, ev, taken := m.rawScoreN(p.chunks, vecs, pd)
+			raw, ev, taken := m.rawScoreN(p.chunks, vecs, pd, topChunks)
 			m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.score(raw, taken), Evidence: ev, Thin: taken < minDistinctChunks})
 			rep.Scored++
+			if p.hok {
+				recs = append(recs, vecRec{h: p.h, vecs: vecs})
+			}
 		}
+		m.appendVectors(vs, recs, &rep)
 		i = j
 		if groups++; groups%8 == 0 {
 			if err := m.save(); err != nil {
 				rep.note(err)
+				rep.Skipped += len(todo) - i
 				return rep, err
 			}
 		}
@@ -361,53 +480,94 @@ func (m *Matcher) ensureProfile(ctx context.Context) (*profileData, error) {
 		return nil, fmt.Errorf("semantic: embedding the profile: %w", err)
 	}
 	pd := &profileData{vecs: vecs, dim: dim}
+	if err := m.calibrate(ctx, pd); err != nil {
+		return nil, err
+	}
+	if err := saveProfile(filepath.Join(m.dir, profileFileName), m.hash, m.model, pd); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.pd = pd
+	m.mu.Unlock()
+	return pd, nil
+}
 
+// calibrate sets pd.floor and pd.ceil from the anchors, embedded and scored
+// against pd.vecs the way a posting is. It is separate from ensureProfile so a
+// check holding profile vectors it did not embed itself (a real-model run over
+// a profile cache) can run the production calibration unchanged.
+func (m *Matcher) calibrate(ctx context.Context, pd *profileData) error {
 	// Floor: the off-domain anchors; ceiling: the on-domain anchor.
 	var anchors [][]Chunk
 	for _, a := range offDomainAnchors {
 		anchors = append(anchors, ChunkPosting(a.title, a.desc))
 	}
-	onDomain := ChunkPosting(m.p.Target, "")
-	if len(onDomain) == 0 {
-		onDomain = []Chunk{{Label: "line", Text: truncBytes(m.p.Target, MaxPostingChunkBytes), Weight: 1}}
-	}
-	anchors = append(anchors, onDomain)
+	anchors = append(anchors, onDomainAnchor(m.p.Target))
 	var flat []string
 	for _, a := range anchors {
 		for _, c := range a {
 			flat = append(flat, c.Text)
 		}
 	}
-	rows, _, err := embedStrict(ctx, m.e, flat, KindQuery, dim)
+	rows, _, err := embedStrict(ctx, m.e, flat, KindQuery, pd.dim)
 	if err != nil {
-		return nil, fmt.Errorf("semantic: embedding the calibration anchors: %w", err)
+		return fmt.Errorf("semantic: embedding the calibration anchors: %w", err)
 	}
 	var floorSum float64
 	off := 0
 	for i, a := range anchors {
-		raw, _, _ := m.rawScoreN(a, rows[off:off+len(a)], pd)
-		off += len(a)
 		if i < len(offDomainAnchors) {
+			// Each off-domain anchor is a title and three lines, at most topChunks
+			// chunks, so depth topChunks reads all of them (the floor is unchanged
+			// by the ceiling's depth rule; TestOffDomainAnchorsAreReadInFull).
+			raw, _, _ := m.rawScoreN(a, rows[off:off+len(a)], pd, topChunks)
 			floorSum += raw
 		} else {
-			pd.ceil = raw
+			// The ceiling reads the same top third a posting is read at. Its raw
+			// score is used as it is: score()'s evidence discount applies to
+			// postings only, and a short target must not lower its own ceiling.
+			pd.ceil, _, _ = m.rawScoreN(a, rows[off:off+len(a)], pd, anchorDepth(len(a)))
 		}
+		off += len(a)
 	}
 	pd.floor = floorSum / float64(len(offDomainAnchors))
 	if !finite(pd.floor, pd.ceil) || pd.ceil-pd.floor < minSpread {
-		return nil, fmt.Errorf("%w: floor %.3f, ceiling %.3f", ErrCalibration, pd.floor, pd.ceil)
+		return fmt.Errorf("%w: floor %.3f, ceiling %.3f", ErrCalibration, pd.floor, pd.ceil)
 	}
-	if err := saveProfile(filepath.Join(m.dir, profileFileName), m.hash, m.model, pd); err != nil {
-		return nil, err
-	}
-	m.pd = pd
-	return pd, nil
+	return nil
 }
 
-// rawScoreN is the weight-aware mean of the top m=min(8,n) chunk maxima, where
-// a chunk's maximum is its best cosine over the profile chunks, the evidence for
-// the best three chunks, and how many distinct chunks the mean rests on.
-func (m *Matcher) rawScoreN(chunks []Chunk, vecs [][]float32, pd *profileData) (float64, []Evidence, int) {
+// Calibration is the mapping a profile's scores use: the raw cosines that score
+// 0 and 1 before the knee, and how many chunks the on-domain ceiling anchor was
+// cut into (one means the target summary is a single sentence or too short to
+// split, and the ceiling is that one line's score).
+type Calibration struct {
+	Floor, Ceil  float64
+	AnchorChunks int
+}
+
+// Calibration reports the profile's calibration. ok is false until the profile
+// has been embedded (or loaded from the cache): a Matcher that has not yet
+// warmed has no floor or ceiling, which is not the same as a zero one. It
+// never waits for a Warm and never calls the Embedder.
+func (m *Matcher) Calibration() (c Calibration, ok bool) {
+	m.mu.RLock()
+	pd := m.pd
+	m.mu.RUnlock()
+	if pd == nil {
+		return Calibration{}, false
+	}
+	return Calibration{Floor: pd.floor, Ceil: pd.ceil, AnchorChunks: len(onDomainAnchor(m.p.Target))}, true
+}
+
+// rawScoreN is the weight-aware mean of the best depth distinct chunk maxima
+// (or of all of them when there are fewer), where a chunk's maximum is its best
+// cosine over the profile chunks, the evidence for the best three chunks, and
+// how many distinct chunks the mean rests on. A posting is read at depth
+// topChunks; the on-domain anchor at anchorDepth (anchors.go). A depth below 1
+// reads one chunk, never none.
+func (m *Matcher) rawScoreN(chunks []Chunk, vecs [][]float32, pd *profileData, depth int) (float64, []Evidence, int) {
+	depth = max(depth, 1)
 	type best struct {
 		idx   int
 		cos   float64
@@ -429,7 +589,7 @@ func (m *Matcher) rawScoreN(chunks []Chunk, vecs [][]float32, pd *profileData) (
 	// counts once, so repetition cannot fill the top-m mean.
 	var taken []best
 	for _, b := range bs {
-		if len(taken) == topChunks {
+		if len(taken) == depth {
 			break
 		}
 		dup := false

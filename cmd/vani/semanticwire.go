@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -144,16 +145,86 @@ func boundedKBContext() (context.Context, context.CancelFunc) {
 // empty when the warm ran to its end; otherwise it says why it did not, in the
 // words "semantic matching not run: ..." when nothing could be scored.
 type semanticReport struct {
-	Ran         bool `json:"ran"`
-	Scored      int  `json:"scored"`
-	Cached      int  `json:"cached"`
-	Failed      int  `json:"failed"`
-	Skipped     int  `json:"skipped"`
+	Ran     bool `json:"ran"`
+	Scored  int  `json:"scored"`
+	Cached  int  `json:"cached"`
+	Failed  int  `json:"failed"`
+	Skipped int  `json:"skipped"`
+	// Rescored: postings scored from stored chunk vectors with no embedding.
+	// Scored is what the model embedded, and only Scored spends warm_per_run.
+	Rescored    int  `json:"rescored,omitempty"`
 	Unavailable bool `json:"unavailable,omitempty"`
 	Canceled    bool `json:"canceled,omitempty"`
 	// Rebuilt: the score cache could not be read and was started again.
-	Rebuilt bool   `json:"cache_rebuilt,omitempty"`
-	Note    string `json:"note,omitempty"`
+	Rebuilt bool `json:"cache_rebuilt,omitempty"`
+	// The chunk-vector log (semantic.Report's Vectors* fields). VectorsRebuilt
+	// is its own flag: losing the log costs a re-embed, unlike the score cache.
+	VectorsRebuilt   bool   `json:"vectors_rebuilt,omitempty"`
+	VectorsStale     int    `json:"vectors_stale,omitempty"`
+	VectorsCorrupt   int    `json:"vectors_corrupt,omitempty"`
+	VectorsTornBytes int64  `json:"vectors_torn_bytes,omitempty"`
+	VectorsAppended  int    `json:"vectors_appended,omitempty"`
+	VectorsRefused   int    `json:"vectors_refused,omitempty"`
+	VectorsEvicted   int    `json:"vectors_evicted,omitempty"`
+	VectorsCompacted bool   `json:"vectors_compacted,omitempty"`
+	VectorsCount     int    `json:"vectors_count,omitempty"`
+	VectorsBytes     int64  `json:"vectors_bytes,omitempty"`
+	VectorsErr       string `json:"vectors_error,omitempty"`
+	Note             string `json:"note,omitempty"`
+}
+
+// fromWarm copies a semantic.Report's counts into the report.
+func (s *semanticReport) fromWarm(r semantic.Report) {
+	s.Scored, s.Cached, s.Failed, s.Skipped, s.Rescored = r.Scored, r.Cached, r.Failed, r.Skipped, r.Rescored
+	s.Unavailable, s.Canceled = r.Unavailable, r.Canceled
+	s.VectorsRebuilt, s.VectorsStale, s.VectorsCorrupt, s.VectorsTornBytes = r.VectorsRebuilt, r.VectorsStale, r.VectorsCorrupt, r.VectorsTornBytes
+	s.VectorsAppended, s.VectorsRefused, s.VectorsEvicted, s.VectorsCompacted = r.VectorsAppended, r.VectorsRefused, r.VectorsEvicted, r.VectorsCompacted
+	s.VectorsCount, s.VectorsBytes, s.VectorsErr = r.VectorsCount, r.VectorsBytes, oneLine(r.VectorsErr, 200)
+}
+
+// countsLine is the warm's counts as one line. Rescored is shown only when
+// there was one: a zero says nothing a reader needs.
+func (s *semanticReport) countsLine() string {
+	line := fmt.Sprintf("scored %d, cached %d, failed %d, skipped %d", s.Scored, s.Cached, s.Failed, s.Skipped)
+	if s.Rescored > 0 {
+		line += fmt.Sprintf(", rescored %d from stored vectors", s.Rescored)
+	}
+	return line
+}
+
+// vectorsLine says what the chunk-vector log did and how big it is, or "" when
+// it holds nothing and did nothing. A log that could not be used says so: that
+// must not read like one that was.
+func (s *semanticReport) vectorsLine() string {
+	var parts []string
+	if s.VectorsCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d posting(s), %.1f MB", s.VectorsCount, float64(s.VectorsBytes)/(1<<20)))
+	}
+	if s.VectorsRebuilt {
+		parts = append(parts, "the log was unreadable and was started again (postings are re-embedded as warm_per_run allows)")
+	}
+	if s.VectorsTornBytes > 0 {
+		parts = append(parts, fmt.Sprintf("cut %d bytes of an incomplete tail", s.VectorsTornBytes))
+	}
+	if s.VectorsCorrupt > 0 {
+		parts = append(parts, fmt.Sprintf("%d corrupt record(s)", s.VectorsCorrupt))
+	}
+	if s.VectorsStale > 0 {
+		parts = append(parts, fmt.Sprintf("%d stale set(s) (the posting now chunks differently)", s.VectorsStale))
+	}
+	if s.VectorsRefused > 0 {
+		parts = append(parts, fmt.Sprintf("%d posting(s) not stored (log full of higher-ranked postings, or unwritable)", s.VectorsRefused))
+	}
+	if s.VectorsEvicted > 0 {
+		parts = append(parts, fmt.Sprintf("evicted %d", s.VectorsEvicted))
+	}
+	if s.VectorsErr != "" {
+		parts = append(parts, "problem: "+s.VectorsErr)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "vectors: " + strings.Join(parts, "; ")
 }
 
 func notRun(rep semanticReport, why string, err error) semanticReport {
@@ -165,10 +236,28 @@ func notRun(rep semanticReport, why string, err error) semanticReport {
 	return rep
 }
 
-// warmDocs are the postings the Jobs views can list (kept, or marked), freshest
-// first by the one freshness rule (orderAdvance, jobinsight.FreshAge), so a
-// capped warm scores what the owner is about to read.
-func warmDocs(recs []ledger.Record, mk map[posting.Key]marks.Mark) []semantic.Doc {
+// warmOrder is the order a warm embeds in, for a cfg: the best Score first
+// (jobinsight.Score with no semantic reading, the rank context the advance
+// phase and kbmatch's candidates use, so the posting most worth reading is
+// scored first), freshness as the tiebreak. Order only (Rule 7): a warm that
+// the budget cuts short leaves the lowest-ranked postings for the next one.
+func warmOrder(cfg config.Config) []orderOption {
+	rules, titleRank := rankRules(cfg)
+	return []orderOption{withWarmPriority(), withAgeNeutral(jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)), withRank(rules, titleRank)}
+}
+
+// warmDocs are the postings the Jobs views can list (kept, or marked). With no
+// opts they go freshest first by the one freshness rule (orderAdvance,
+// jobinsight.FreshAge); warmOrder's opts put the best Score first, so a capped
+// warm scores what the owner is about to read.
+func warmDocs(recs []ledger.Record, mk map[posting.Key]marks.Mark, opts ...orderOption) []semantic.Doc {
+	todo, _ := warmRecords(recs, mk, opts...)
+	return recordDocs(todo)
+}
+
+// warmRecords are the records warmDocs embeds, in opts' order, with the Score
+// they were ordered by (orderAdvance's, nil when opts read no Score).
+func warmRecords(recs []ledger.Record, mk map[posting.Key]marks.Mark, opts ...orderOption) ([]ledger.Record, map[posting.Key]float64) {
 	var todo []ledger.Record
 	for _, r := range recs {
 		// A closed job someone marked has no resident text (ledger.Record.BodyEvicted):
@@ -178,12 +267,43 @@ func warmDocs(recs []ledger.Record, mk map[posting.Key]marks.Mark) []semantic.Do
 			todo = append(todo, r)
 		}
 	}
-	orderAdvance(todo, recs, nil)
-	docs := make([]semantic.Doc, len(todo))
-	for i, r := range todo {
+	scores := orderAdvance(todo, recs, nil, opts...)
+	return todo, scores
+}
+
+// warmRanked is the postings a warm embeds in warmOrder, with the priority the
+// chunk-vector log keeps their vectors by: the same Score that ordered them, so
+// what a warm embeds first is what a full log evicts last.
+func warmRanked(recs []ledger.Record, mk map[posting.Key]marks.Mark, cfg config.Config) ([]semantic.Doc, map[string]float64) {
+	todo, scores := warmRecords(recs, mk, warmOrder(cfg)...)
+	return recordDocs(todo), vectorRanks(todo, scores)
+}
+
+// recordDocs are recs as the warm's input, in recs' order.
+func recordDocs(recs []ledger.Record) []semantic.Doc {
+	docs := make([]semantic.Doc, len(recs))
+	for i, r := range recs {
 		docs[i] = semantic.Doc{Key: string(r.Key), Title: r.Posting.Title, Description: r.Posting.Description}
 	}
 	return docs
+}
+
+// vectorRanks are the TextHashes of recs, each with its Score: the postings
+// whose vectors the chunk-vector log keeps before it evicts anything else, and
+// how long it keeps them (semantic.Matcher.SetVectorPriority; the higher Score
+// lasts longer). One text under several postings takes the best Score. A posting
+// without a Score (scores nil) ranks 0, so age decides among them. The result is
+// never nil: an empty one names an empty live set.
+func vectorRanks(recs []ledger.Record, scores map[posting.Key]float64) map[string]float64 {
+	ranks := make(map[string]float64, len(recs))
+	for _, r := range recs {
+		h := semantic.TextHash(r.Posting.Title, r.Posting.Description)
+		s := scores[r.Key]
+		if old, ok := ranks[h]; !ok || s > old {
+			ranks[h] = s
+		}
+	}
+	return ranks
 }
 
 // openScoreCache opens the score cache for the model. A cache file that cannot
@@ -207,7 +327,8 @@ func openScoreCache(emb semantic.Embedder, p semantic.Profile, dir string) (m *s
 // owner's knowledge base and caches the scores under stateDir. It never returns
 // an error: whatever stopped it is in the report.
 func warmSemantic(ctx context.Context, cfg config.Config, stateDir string, recs []ledger.Record, mk map[posting.Key]marks.Mark, max int) semanticReport {
-	return warmSemanticDocs(ctx, cfg, stateDir, warmDocs(recs, mk), max)
+	docs, ranks := warmRanked(recs, mk, cfg)
+	return warmSemanticWith(ctx, cfg, stateDir, docs, ranks, max)
 }
 
 // withMarkedText returns recs with the description of every record warmDocs
@@ -282,21 +403,28 @@ var warmSemanticRun = warmSemantic
 // the first warm spends all it may. Cached postings cost nothing in either.
 func preAdvanceBudget(limit int) int { return limit - limit/4 }
 
-// preAdvanceDocs are the live postings the title rule would not drop, freshest
-// first: the ones the advance phase may hand to the decision model.
-func preAdvanceDocs(recs []ledger.Record, drop func(ledger.Record) bool) []semantic.Doc {
+// postAdvanceBudget is what the first warm left of limit. Only the postings it
+// embedded (Scored) were spent: Rescored ones came from stored vectors, cost no
+// embedding, and are not counted against warm_per_run in either warm.
+func postAdvanceBudget(limit int, pre *semanticReport) int {
+	if pre == nil {
+		return limit
+	}
+	return max(limit-pre.Scored, 0)
+}
+
+// preAdvanceDocs are the live postings the title rule would not drop: the ones
+// the advance phase may hand to the decision model. They go freshest first, or
+// by warmOrder's opts best Score first.
+func preAdvanceDocs(recs []ledger.Record, drop func(ledger.Record) bool, opts ...orderOption) []semantic.Doc {
 	var todo []ledger.Record
 	for _, r := range recs {
 		if r.Status == posting.Live && (drop == nil || !drop(r)) {
 			todo = append(todo, r)
 		}
 	}
-	orderAdvance(todo, recs, nil)
-	docs := make([]semantic.Doc, len(todo))
-	for i, r := range todo {
-		docs[i] = semantic.Doc{Key: string(r.Key), Title: r.Posting.Title, Description: r.Posting.Description}
-	}
-	return docs
+	orderAdvance(todo, recs, nil, opts...)
+	return recordDocs(todo)
 }
 
 // warmBeforeAdvance scores the live postings pipeline.Advance may triage so that
@@ -307,7 +435,15 @@ func (w *wired) warmBeforeAdvance(ctx context.Context, recs []ledger.Record, dro
 	if !w.cfg.SemanticOn() || ctx.Err() != nil {
 		return
 	}
-	rep := warmSemanticDocs(ctx, w.cfg, w.stateDir, preAdvanceDocs(recs, drop), preAdvanceBudget(w.cfg.SemanticWarmLimit()))
+	// The live set (what a compaction of the vector log keeps first) is every
+	// browsable posting, ranked by Score, so it needs the marks. Marks that cannot
+	// be read give no live set at all, never a partial one: the log then evicts by
+	// age alone rather than treat a marked posting as closed.
+	var ranks map[string]float64
+	if mk, err := marks.ReadMarks(marks.Dir(w.stateDir)); err == nil {
+		_, ranks = warmRanked(recs, mk, w.cfg)
+	}
+	rep := warmSemanticWith(ctx, w.cfg, w.stateDir, preAdvanceDocs(recs, drop, warmOrder(w.cfg)...), ranks, preAdvanceBudget(w.cfg.SemanticWarmLimit()))
 	w.mu.Lock()
 	w.semPre = &rep
 	w.mu.Unlock()
@@ -335,8 +471,17 @@ func (w *wired) advanceOrder() orderOption {
 	}
 }
 
-// warmSemanticDocs scores up to max of docs; warmSemantic's body.
+// warmSemanticDocs scores up to max of docs, naming no live set for the
+// chunk-vector log (age alone decides what a compaction evicts).
 func warmSemanticDocs(ctx context.Context, cfg config.Config, stateDir string, docs []semantic.Doc, max int) semanticReport {
+	return warmSemanticWith(ctx, cfg, stateDir, docs, nil, max)
+}
+
+// warmSemanticWith scores up to max of docs; warmSemantic's body. ranks is the
+// Score of each posting still browsable, by TextHash (nil names none): a
+// compaction of the vector log evicts the vectors of the rest first, then the
+// lowest Score (semantic.Matcher.SetVectorPriority).
+func warmSemanticWith(ctx context.Context, cfg config.Config, stateDir string, docs []semantic.Doc, ranks map[string]float64, max int) semanticReport {
 	var rep semanticReport
 	if !cfg.SemanticOn() {
 		return notRun(rep, "semantic.snapshot and kb.bank are not both set", nil)
@@ -360,10 +505,11 @@ func warmSemanticDocs(ctx context.Context, cfg config.Config, stateDir string, d
 	if err != nil {
 		return notRun(rep, "the score cache could not be opened", err)
 	}
+	m.SetVectorPriority(ranks)
 	r, werr := m.Warm(wctx, docs, max)
 	rep.Ran = true
-	rep.Scored, rep.Cached, rep.Failed, rep.Skipped = r.Scored, r.Cached, r.Failed, r.Skipped
-	rep.Unavailable, rep.Canceled, rep.Rebuilt = r.Unavailable, r.Canceled, rebuilt
+	rep.fromWarm(r)
+	rep.Rebuilt = rebuilt
 	switch {
 	case errors.Is(werr, semantic.ErrWarmBusy):
 		rep.Ran = false
@@ -380,10 +526,13 @@ func warmSemanticDocs(ctx context.Context, cfg config.Config, stateDir string, d
 // logSemantic writes the report as one or two stderr lines of counts and reasons.
 func (e *env) logSemantic(rep semanticReport) {
 	if rep.Ran {
-		fmt.Fprintf(e.stderr, "vani: semantic: scored %d, cached %d, failed %d, skipped %d\n", rep.Scored, rep.Cached, rep.Failed, rep.Skipped)
+		fmt.Fprintf(e.stderr, "vani: semantic: %s\n", rep.countsLine())
 	}
 	if rep.Rebuilt {
 		fmt.Fprintln(e.stderr, "vani: semantic: the score cache was unreadable and was started again")
+	}
+	if l := rep.vectorsLine(); l != "" {
+		fmt.Fprintf(e.stderr, "vani: semantic: %s\n", l)
 	}
 	if rep.Note != "" {
 		fmt.Fprintf(e.stderr, "vani: %s\n", rep.Note)

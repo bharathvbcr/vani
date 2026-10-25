@@ -244,6 +244,12 @@ func semanticFailed(s *semanticReport) bool {
 	if s.Unavailable || s.Failed > 0 || s.Canceled {
 		return true
 	}
+	// A vector log that could not be used (or had to be started again) did not
+	// stop the warm, but it is not a clean one: the postings it held are
+	// embedded again, which costs hours.
+	if s.VectorsErr != "" || s.VectorsRefused > 0 || s.VectorsRebuilt {
+		return true
+	}
 	n := strings.ToLower(s.Note)
 	return strings.Contains(n, "not run") || strings.Contains(n, "stopped early") ||
 		strings.Contains(n, "stored description unreadable") || strings.Contains(n, "marks could not be read")
@@ -706,17 +712,30 @@ func orNone(s string) string {
 }
 
 func semanticShowLine(s *semanticReport) string {
-	if s.Note != "" {
-		return s.Note
-	}
-	return fmt.Sprintf("scored %d, cached %d, failed %d, skipped %d", s.Scored, s.Cached, s.Failed, s.Skipped)
+	return semanticLine(s, s.countsLine())
 }
 
 func semanticFailureLine(s *semanticReport) string {
+	return semanticLine(s, fmt.Sprintf("scored %d, failed %d, unavailable=%t, canceled=%t", s.Scored, s.Failed, s.Unavailable, s.Canceled))
+}
+
+// semanticLine is the note when the warm has one, else counts. Either way the
+// postings it rescored from stored vectors and what the vector log did are
+// added when there is something to say: a note must not hide them.
+func semanticLine(s *semanticReport, counts string) string {
+	line := counts
 	if s.Note != "" {
-		return s.Note
+		line = s.Note
+		if s.Rescored > 0 {
+			line += fmt.Sprintf("; rescored %d from stored vectors", s.Rescored)
+		}
+	} else if s.Rescored > 0 && !strings.Contains(counts, "rescored") {
+		line += fmt.Sprintf(", rescored %d from stored vectors", s.Rescored)
 	}
-	return fmt.Sprintf("scored %d, failed %d, unavailable=%t, canceled=%t", s.Scored, s.Failed, s.Unavailable, s.Canceled)
+	if v := s.vectorsLine(); v != "" {
+		line += "; " + v
+	}
+	return line
 }
 
 func boardFetchSummary(b *boardsReport) string {

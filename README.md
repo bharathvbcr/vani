@@ -801,7 +801,12 @@ It is on when both keys are set, and off otherwise:
 
 - `kb.bank` is rkb's `bank.json`. The profile is built from role titles, stack terms and bullet text
   only; organisations, dates, locations and contact fields are never read. `target_summary` is the
-  calibration ceiling and is required.
+  calibration ceiling and is required. The ceiling is the summary scored like a posting's
+  description: cut into sentences, each a line, and the best third of them averaged (a posting is
+  scored on its best third of lines too; two of six sentences, for a six-sentence summary). Write
+  it as several concrete sentences (what you build, with what, at what scale), up to 1,024 bytes;
+  that gives a sharper ceiling, so a posting that fits lands below 1.0 and keeps its order. A
+  one-sentence summary, or the default when none is set, is one line and a coarser ceiling.
 - `semantic.snapshot` is the absolute path of a Hugging Face snapshot directory of
   `google/embeddinggemma-2` (the `snapshots/<revision>` folder, not the repository root).
   `warm_per_run` (default 1000, at most 5000) bounds the postings one daily run embeds.
@@ -838,14 +843,38 @@ It is on when both keys are set, and off otherwise:
   succeeds and writes the digest; its run record (`vani status --json`, `last_run.semantic`) and
   stderr say `semantic matching not run: <reason>`, and `vani jobs` carries no `semantic` field.
   It is never reported as success.
-- The daily run scores the freshest browsable postings first (the Jobs views' rule), up to
-  `warm_per_run`, within 10 minutes, between the pipeline and the digest. `vani semantic warm
-  [--max N]` does the same on demand (use it for the first big backlog); `vani semantic status`
+- The daily run scores the browsable postings in rank order, up to `warm_per_run`, within 10
+  minutes, between the pipeline and the digest: the best `jobinsight.Score` first (the rank
+  context the advance phase uses, with no semantic reading yet), freshness as the tiebreak, so a
+  capped warm scores what is most worth reading. Postings rescored from stored chunk vectors cost
+  no embedding and are not counted against `warm_per_run`; the run record and `vani semantic warm`
+  show them as `rescored N`, with what the vector log did (size, torn tail, rebuilt, evicted).
+  `vani semantic warm [--max N]` does the same on demand (use it for the first big backlog);
+  `vani semantic status`
   prints whether this binary has Tessl, whether the config is on, the profile's chunk count, the
-  cached scores and the model id, and warns when the cache on disk was warmed for an earlier profile
+  cached scores and the model id, the calibration (floor, ceiling, anchor chunks; "not embedded
+  yet" before the first warm), the vector log (postings, MB, model, chunking version, an
+  incomplete tail, a rebuild), the idle warm's state, and warns when the cache on disk was warmed for an earlier profile
   (those scores are not shown; `vani semantic warm` replaces them). Scores are cached in `<state dir>/semantic/` per
   (profile, model, posting text); a changed bank, target summary, model or posting rescores.
-  An unreadable cache is rebuilt by the next warm.
+  An unreadable cache is rebuilt by the next warm. Two versions govern it
+  (`internal/semantic/semantic.go`): `Version` changes scoring (anchors, calibration) and
+  rescoring then reads the stored chunk vectors, so it costs seconds, no model run over the
+  postings; `ChunkVersion` changes how postings are cut and embedded, and only that replaces the
+  chunk-vector log and re-embeds every posting.
+- **Idle warm (daemon).** Between runs the daemon scores the browsable postings that have no
+  current score (a new posting, or every one after a profile change), in chunks of at most 16
+  postings or 2 minutes, best rank first, so the daily run finds them done. It runs only on AC
+  power (`/usr/bin/pmset -g batt`, 5 s bound); a power state it cannot read skips the warm and is
+  recorded as "power state unknown", distinct from "nothing to warm". It looks at the backlog
+  every 10 minutes (and soon after each run or inbox poll) without loading the model, loads it
+  only when there is something to do, and closes it when the backlog is empty, a run starts, the
+  Mac goes onto battery, or the model is unavailable (backoff 10 minutes doubling to 4 hours). A
+  scheduled or requested run pauses it first and waits for it to drop the cache lock and close
+  the model, so the run's own warm is never skipped as busy. It never takes the ledger lock and
+  only adds scores (Rule 7). Its state is `<state dir>/semantic/semantic-idle.json`, shown by
+  `vani status` and `vani semantic status`. `VANI_NO_IDLE_WARM=1` in the daemon's environment
+  turns it off (there is no config key; adding one would make a config an older binary rejects).
 - `vani jobs` and the digest only read that cache (no model is loaded). Each job gets
   `semantic: {score, evidence: [{snippet, label, cosine}]}` when a score is cached. If the bank or
   the cache cannot be read, `insight.warning` says so and the score stays unknown.

@@ -82,6 +82,18 @@ The ranking and filtering audit and its status per finding are in
 - **The semantic floor before Liquid D** (Phase 3). Pick it from the live distribution once the
   owner has seen it. Without a local model, a posting under the floor would wait for the paid
   call, so the floor only defers.
+- **Semantic calibration, `internal/semantic` Version 4 → 5 (2026-10-24).** The ceiling anchor now
+  averages its best third of sentences (`anchorDepth`: `round(n*8/24)`, at least 1: 2 of the owner's
+  6) instead of all of them, the same top-third statistic a posting's raw score is (best 8 of the
+  24-chunk cap). Measured with the real model on the owner's live profile (variant V5, 34 saved, 12
+  hidden, 300 random new postings): ceiling 0.758 → 0.807, saved jobs at 0.95 or more 82% → 8.8%, 85%
+  of saved inside (0.6, 0.95), saved median 0.823 against 0.601 for the population; the order of
+  postings and the ranking AUC (saved over population 0.849) are unchanged, since only the scale
+  moved. Floor, knee 0.8 and tanh are unchanged; the off-domain anchors are read in full as before.
+  `ChunkVersion` stays 3, so the bump rescores from the vector log and embeds no posting. Still
+  open: the floor (0.655 here; pooling or a top-third floor were measured and rejected or deferred
+  as a separate decision) and that the saved set is 34 jobs (bootstrap 90% interval for the share
+  inside (0.6, 0.95): 74% to 94%). `tmp/kbaudit/calib/` holds the harness and `full3.out`.
 - **Calibration (≥100 judged labels) and the weight fit (≥150).** Nothing to build until the weekly
   `vani audit` has produced them (about 150 a month at the planned cadence). Both must refuse below
   their threshold with a "could not run" result, never a quiet fit.

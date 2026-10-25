@@ -5,6 +5,7 @@ package semantic
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,6 +131,55 @@ func TestTesslRealSimilarityKind(t *testing.T) {
 	if _, err := e.Embed(context.Background(), []string{"x"}, Kind("nope")); !errors.Is(err, ErrEmbed) {
 		t.Fatalf("unknown kind: %v, want ErrEmbed", err)
 	}
+}
+
+// TestTesslRealRescoreParity is the real-model arm of TestRescoreParityOracle:
+// after a profile change, scores rescored from the stored chunk vectors equal
+// scores from embedding every posting again, exactly. Both arms start from the
+// same directory state, so only the provenance of the posting vectors differs.
+// The postings are synthetic.
+func TestTesslRealRescoreParity(t *testing.T) {
+	e := realTessl(t)
+	docs := append(vecDocs(12), hugeDoc())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	dir := filepath.Join(t.TempDir(), "semantic")
+	m1, err := NewMatcher(e, synthProfile(t), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := m1.Warm(ctx, docs, len(docs)); err != nil || rep.Scored != len(docs) || rep.VectorsAppended != len(docs) {
+		t.Fatalf("first warm: %v %+v", err, rep)
+	}
+	dir2 := filepath.Join(t.TempDir(), "semantic2")
+	copyDir(t, dir, dir2)
+	if err := os.Remove(logPath(dir2)); err != nil {
+		t.Fatal(err)
+	}
+	p2 := profile2(t)
+	arm := func(d string) (map[string]Match, Report) {
+		m, err := NewMatcher(e, p2, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := m.Warm(ctx, docs, len(docs))
+		if err != nil {
+			t.Fatalf("warm: %v %+v", err, rep)
+		}
+		return matchesOf(t, m, docs), rep
+	}
+	a, repA := arm(dir)
+	b, repB := arm(dir2)
+	if repA.Rescored != len(docs) || repA.Scored != 0 || repB.Scored != len(docs) || repB.Rescored != 0 {
+		t.Fatalf("the arms did not take the paths under test: rescore %+v, fresh %+v", repA, repB)
+	}
+	var worst float64
+	for _, d := range docs {
+		worst = max(worst, math.Abs(a[d.Key].Raw-b[d.Key].Raw))
+	}
+	t.Logf("model=%s postings=%d max |raw difference|=%g", e.Model(), len(docs), worst)
+	assertSame(t, a, b)
 }
 
 func TestTesslRealMatcherOrders(t *testing.T) {

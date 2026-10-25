@@ -16,6 +16,14 @@ type orderOption func(*orderSettings)
 
 type orderSettings struct {
 	semantic func(ledger.Record) (float64, bool)
+	// scoreOrder sorts postings of the same title rank by jobinsight.Score. A
+	// semantic reading turns it on (withSemantic); withWarmPriority turns it on
+	// with none, so a posting's Score uses the semantic prior.
+	scoreOrder bool
+	// warm is the order a semantic warm embeds in. It is the Score order
+	// without the advance phase's demotion of postings whose note is deferred:
+	// a posting with an unknown relevance is the one a warm is for.
+	warm bool
 	// ageNeutral is jobinsight.RankContext.AgeNeutral for the Score order, so
 	// advance ages an age-neutral employer's undated postings no more than
 	// `vani jobs` and the digest do.
@@ -39,18 +47,29 @@ func settingsOf(opts []orderOption) orderSettings {
 // withSemantic orders by Score with f as the knowledge-base similarity (see
 // semanticRank); a nil f changes nothing.
 func withSemantic(f func(ledger.Record) (float64, bool)) orderOption {
-	return func(s *orderSettings) { s.semantic = f }
+	return func(s *orderSettings) {
+		if f != nil {
+			s.semantic, s.scoreOrder = f, true
+		}
+	}
+}
+
+// withWarmPriority is the order a semantic warm embeds in: the Score order with
+// no semantic reading (none exists yet for what a warm is about to score), and
+// without the advance phase's deferred-notes demotion.
+func withWarmPriority() orderOption {
+	return func(s *orderSettings) { s.scoreOrder, s.warm = true, true }
 }
 
 // withAgeNeutral passes the config's age_neutral_companies (as
 // jobinsight.AgeNeutralSet) to the Score order; it changes nothing without
-// withSemantic, whose Score order is the only one that reads age through Score.
+// withSemantic or withWarmPriority, the only orders that read age through Score.
 func withAgeNeutral(set map[string]bool) orderOption {
 	return func(s *orderSettings) { s.ageNeutral = set }
 }
 
 // withRank passes the config's drop rules and title signals (rankRules) to the
-// Score order; like withAgeNeutral it changes nothing without withSemantic.
+// Score order; like withAgeNeutral it changes nothing without a Score order.
 func withRank(rules []jobinsight.DropRule, titleRank func(string) int) orderOption {
 	return func(s *orderSettings) { s.rules, s.titleRank = rules, titleRank }
 }
@@ -73,13 +92,19 @@ func withRank(rules []jobinsight.DropRule, titleRank func(string) int) orderOpti
 // that does not, and freshness still counts through Score's own age term. A
 // live posting has no triage readings: fit and coverage are Score's unknown
 // priors. Ties fall back to the freshness and ledger-order rules above. Without
-// it the order is exactly the one above. Either way this only orders (Rule 7):
+// it the order is exactly the one above. withWarmPriority is the same Score
+// order with no semantic reading, for a warm (semanticwire.go warmOrder). Either way this only orders (Rule 7):
 // no posting is dropped or skipped.
-func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opts ...orderOption) {
+//
+// It returns the Score each posting of todo was ordered by (nil when the order
+// reads no Score), so a caller that needs the Score too (the chunk-vector log's
+// eviction priority, semanticwire.go vectorRanks) reads it from here instead of
+// computing it again.
+func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opts ...orderOption) map[posting.Key]float64 {
 	set := settingsOf(opts)
 	at := now()
 	var rc jobinsight.RankContext
-	if set.semantic != nil {
+	if set.scoreOrder {
 		rc = jobinsight.NewRankContext(all, nil, at)
 		rc.Semantic, rc.AgeNeutral = set.semantic, set.ageNeutral
 		rc.DropRules, rc.TitleRank = set.rules, set.titleRank
@@ -98,6 +123,10 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 		fresh time.Time
 	}
 	keys := make(map[posting.Key]order, len(todo))
+	var scores map[posting.Key]float64
+	if set.scoreOrder {
+		scores = make(map[posting.Key]float64, len(todo))
+	}
 	for _, r := range todo {
 		o := order{}
 		if rank != nil {
@@ -107,8 +136,9 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 		if !o.known {
 			o.fresh = time.Time{} // unknown ages tie, in ledger order
 		}
-		if set.semantic != nil {
+		if set.scoreOrder {
 			o.score = jobinsight.Score(jobinsight.InputsFor(r, rc)).Score
+			scores[r.Key] = o.score
 		}
 		keys[r.Key] = o
 	}
@@ -130,10 +160,15 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 	})
 	// A scored posting whose note is deferred (unknown relevance, notes budget
 	// spent) costs no call but still takes an advance slot each run; it waits
-	// behind every posting that can move. Stable, so the order above holds.
+	// behind every posting that can move. Stable, so the order above holds. A
+	// warm has no such slots to spend.
+	if set.warm {
+		return scores
+	}
 	slices.SortStableFunc(todo, func(a, b ledger.Record) int {
 		return cmp.Compare(boolInt(pipeline.NotesDeferred(a)), boolInt(pipeline.NotesDeferred(b)))
 	})
+	return scores
 }
 
 func boolInt(b bool) int {

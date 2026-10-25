@@ -439,9 +439,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		// the advance phase embedded is not spent twice (preAdvanceBudget).
 		limit := cfg.SemanticWarmLimit()
 		if app.RunReport != nil {
-			if pre := app.RunReport().SemanticPre; pre != nil {
-				limit = max(limit-pre.Scored, 0)
-			}
+			limit = postAdvanceBudget(limit, app.RunReport().SemanticPre)
 		}
 		if limit > 0 {
 			recs := withMarkedText(app.Ledger, app.Ledger.All(), mk)
@@ -659,6 +657,11 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	}
 	for _, l := range daemonLines(dfacet) {
 		fmt.Fprintln(e.stdout, l)
+	}
+	if cfg.SemanticOn() {
+		for _, l := range idleLines(e.stateDir, at) {
+			fmt.Fprintln(e.stdout, l)
+		}
 	}
 	e.printPaths()
 	return nil

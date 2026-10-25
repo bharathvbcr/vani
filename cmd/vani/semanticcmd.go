@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -56,9 +57,12 @@ func (e *env) cmdSemanticWarm(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	rep := warmSemantic(ctx, cfg, e.stateDir, recs, mk, limit)
-	fmt.Fprintf(e.stdout, "scored %d, cached %d, failed %d, skipped %d\n", rep.Scored, rep.Cached, rep.Failed, rep.Skipped)
+	fmt.Fprintln(e.stdout, rep.countsLine())
 	if rep.Rebuilt {
 		fmt.Fprintln(e.stdout, "the score cache was unreadable and was started again")
+	}
+	if l := rep.vectorsLine(); l != "" {
+		fmt.Fprintln(e.stdout, l)
 	}
 	if rep.Note != "" {
 		return errors.New(rep.Note)
@@ -90,6 +94,14 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		return nil
 	}
 	fmt.Fprintf(w, "snapshot: %s\nwarm per run: %d\n", cfg.Semantic.Snapshot, cfg.SemanticWarmLimit())
+	// The vector log and the idle warm do not depend on the profile: they are
+	// shown whichever way the profile and the score cache read below.
+	defer func() {
+		e.printVectorStatus()
+		for _, l := range idleLines(e.stateDir, now()) {
+			fmt.Fprintln(w, l)
+		}
+	}()
 	ctx, cancel := boundedKBContext()
 	defer cancel()
 	prof, err := semanticProfile(ctx, cfg)
@@ -112,6 +124,7 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		model = "none yet"
 	}
 	fmt.Fprintf(w, "cached scores: %d\nmodel: %s\n", m.Len(), model)
+	e.printCalibration(prof, m.Model())
 	if n, err := semantic.StaleScores(prof, semanticDir(e.stateDir)); err != nil {
 		fmt.Fprintf(w, "score cache: unreadable: %s\n", oneLine(err.Error(), 200))
 	} else if n > 0 {
@@ -125,4 +138,70 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		fmt.Fprintf(w, "warning: the cached scores are from another model than semantic.snapshot; run `vani semantic warm`\n")
 	}
 	return nil
+}
+
+// recordedModel is an Embedder that only names a model and never embeds, so the
+// profile cache a warm stored can be read (semantic.NewMatcher) without loading
+// anything.
+type recordedModel string
+
+func (r recordedModel) Model() string { return string(r) }
+
+func (recordedModel) Embed(context.Context, []string, semantic.Kind) ([][]float32, error) {
+	return nil, fmt.Errorf("%w: this matcher was opened to read the stored profile only", semantic.ErrUnavailable)
+}
+
+// printCalibration shows the floor, ceiling and anchor chunk count the current
+// profile's scores use, read from the profile cache the last warm stored. Until
+// the profile has been embedded there are none, which is said, not shown as 0.
+func (e *env) printCalibration(prof semantic.Profile, model string) {
+	w := e.stdout
+	if model == "" {
+		fmt.Fprintln(w, "calibration: not embedded yet (no warm has scored this profile)")
+		return
+	}
+	m, err := semantic.NewMatcher(recordedModel(model), prof, semanticDir(e.stateDir))
+	if err != nil {
+		fmt.Fprintf(w, "calibration: unavailable: %s\n", oneLine(err.Error(), 200))
+		return
+	}
+	c, ok := m.Calibration()
+	if !ok {
+		fmt.Fprintln(w, "calibration: not embedded yet (the stored profile is missing or for another model)")
+		return
+	}
+	fmt.Fprintf(w, "calibration: floor %.3f, ceiling %.3f, anchor chunks %d\n", c.Floor, c.Ceil, c.AnchorChunks)
+}
+
+// printVectorStatus describes the chunk-vector log (semantic.VectorStatus: read
+// only, no lock, no model). A log it cannot read is said, not shown as empty; a
+// rebuild is known only from the last run's record and the idle warm's state,
+// so it is reported from those.
+func (e *env) printVectorStatus() {
+	w := e.stdout
+	vs, err := semantic.VectorStatus(semanticDir(e.stateDir))
+	switch {
+	case err != nil:
+		fmt.Fprintf(w, "vectors: unreadable: %s\n", oneLine(err.Error(), 200))
+		return
+	case !vs.Present:
+		fmt.Fprintln(w, "vectors: none yet (a warm stores them; a profile change then rescores from them without the model)")
+	default:
+		fmt.Fprintf(w, "vectors: %d posting(s), %.1f MB (%.1f MB in use), model %s, chunking v%d\n",
+			vs.Records, float64(vs.Bytes)/(1<<20), float64(vs.LiveBytes)/(1<<20), orNone(vs.Model), vs.Version)
+		// The log is keyed on how postings are cut (ChunkVersion), not on the
+		// scoring version, which changes without making any vector stale.
+		if vs.Version != semantic.ChunkVersion {
+			fmt.Fprintf(w, "warning: the vectors were chunked under v%d, this binary chunks under v%d; the next warm replaces them\n", vs.Version, semantic.ChunkVersion)
+		}
+	}
+	if vs.TornBytes > 0 {
+		fmt.Fprintf(w, "vectors: %d byte(s) of an incomplete tail (the next warm cuts it, or an append is in flight)\n", vs.TornBytes)
+	}
+	if r, rerr := readRunRecord(e.stateDir); rerr == nil && r != nil && r.Semantic != nil && r.Semantic.VectorsRebuilt {
+		fmt.Fprintln(w, "vectors: the last run found the log unreadable and started it again")
+	}
+	if st, serr := readIdleState(e.stateDir); serr == nil && st.VectorsRebuilt {
+		fmt.Fprintln(w, "vectors: the idle warm found the log unreadable and started it again")
+	}
 }

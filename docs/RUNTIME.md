@@ -160,6 +160,16 @@ the whole bank:
 | `vani draft`, `vani suggest` (`cmd/vani/eligiblebank.go`, `draft.FromResolved`) | refused, code `kb` |
 | The semantic profile: embedding matching and the digest `vani kbmatch` sends to OpenRouter (`semanticProfile`, `Eligibility.Restrict`) | "semantic matching not run" / "language-model reads not used"; ranking falls back to its prior |
 
+Semantic state under `<state dir>/semantic/`: `semantic-scores.json` and `semantic-profile.json`
+(the caches), `vectors.log` (the append-only chunk vectors a rescore reads instead of the model;
+bounded at 512 MiB (about 7,600 postings at ~69 KB each), compacted evicting closed postings
+first, then the lowest `jobinsight.Score` (the order a warm embeds in), then the oldest written; at
+the bound a posting that ranks below everything stored is not stored (`vectors_refused`) and its
+score is still saved; rebuilt by the next warm when unreadable), `semantic.lock` (held by a warm), and `semantic-idle.json` (what the daemon's idle
+warm last did, its backoff and next eligible time). The daemon's idle warm is documented in
+README.md ("Idle warm"); `VANI_NO_IDLE_WARM=1` turns it off, and `vani status` and `vani
+semantic status` print its state.
+
 An entry with no eligible bullet contributes no title and no stack terms to the profile.
 Changing which bullets are eligible changes the profile hash: the semantic score cache is
 discarded and re-scored locally (Tessl, no spend, bounded by `semantic.warm_per_run`), and

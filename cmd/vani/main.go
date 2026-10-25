@@ -561,8 +561,12 @@ func (e *env) cmdDaemon(args []string) error {
 	// The daily run, the inbox poll and a requested manual run all write the
 	// ledger: one at a time.
 	var ledgerMu sync.Mutex
+	// The idle warm (idlewarm.go) never takes ledgerMu. A run stops it first, so
+	// the run's own semantic warm finds the cache lock free.
+	gate := newIdleGate()
 	daily := e.dailyJob(app, cfg, triggerSchedule, runOptions{})
 	job := func(ctx context.Context) error {
+		defer e.pauseIdle(ctx, gate)()
 		ledgerMu.Lock()
 		defer ledgerMu.Unlock()
 		if err := ctx.Err(); err != nil {
@@ -575,15 +579,30 @@ func (e *env) cmdDaemon(args []string) error {
 	// done with the ledger before the ledger closes.
 	defer func() { cancel(nil); wg.Wait() }()
 	if app.PollInbox != nil {
+		poll := e.inboxPoll(app, cfg)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := e.pollInboxLoop(ctx, e.inboxPoll(app, cfg), &ledgerMu, app.Ledger); err != nil {
+			// A poll warms nothing, so it does not pause the idle warm; it may have
+			// added postings, so it nudges it.
+			nudged := func(ctx context.Context) error { defer gate.nudge(); return poll(ctx) }
+			if err := e.pollInboxLoop(ctx, nudged, &ledgerMu, app.Ledger); err != nil {
 				setFatal(err)
 			}
 		}()
 	}
+	if idleWarmEnabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e.idleWarmLoop(ctx, &idleWarmer{stateDir: e.stateDir, stderr: e.stderr, led: app.Ledger,
+				cfg: func() config.Config { return e.lastApplied(cfg) }, gate: gate})
+		}()
+	}
+	// serveRunRequest holds ledgerMu before it calls this, so the pause comes
+	// after the lock here; the idle warm never takes it, so that cannot wait on it.
 	manual := func(ctx context.Context, opts runOptions) error {
+		defer e.pauseIdle(ctx, gate)()
 		return e.dailyJob(app, cfg, triggerManual, opts)(ctx)
 	}
 	wg.Add(1)

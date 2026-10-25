@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,10 +223,37 @@ func TestSemanticCorruptCache(t *testing.T) {
 		t.Errorf("semantic %+v, warning %q", l.Jobs[0].Semantic, l.Insight.Warning)
 	}
 
+	// The score cache holds nothing the chunk-vector log does not: the rebuilt
+	// cache is refilled by rescoring the posting from its stored vectors, with no
+	// posting text sent to the model. (The profile is embedded again, because
+	// starting the cache over removes the stored profile too.) So the right
+	// report is rescored 1, scored 0 -- not "scored 1", which would mean the
+	// posting was embedded a second time for a cache loss that cost nothing.
+	spy := &countingEmbedder{Embedder: semantic.NewFakeEmbedder(256, semSynonyms)}
+	var mu sync.Mutex
+	var postingTexts int
+	spy.hook = func(_ context.Context, texts []string) ([][]float32, error, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, tx := range texts {
+			if strings.Contains(tx, "k8s") { // only the posting says k8s; the bank says Kubernetes
+				postingTexts++
+			}
+		}
+		return nil, nil, false
+	}
+	openEmbedder = func(context.Context, config.Config) (semantic.Embedder, func() error, error) {
+		return spy, func() error { return nil }, nil
+	}
 	out, _ := mustCode(t, 0, "semantic", "warm")
-	if !strings.Contains(out, "scored 1") || !strings.Contains(out, "started again") {
+	if !strings.Contains(out, "scored 0,") || !strings.Contains(out, "rescored 1 from stored vectors") || !strings.Contains(out, "started again") {
 		t.Errorf("warm after corruption: %q", out)
 	}
+	mu.Lock()
+	if postingTexts != 0 {
+		t.Errorf("%d posting text(s) were embedded again after a score-cache loss; the vectors were stored", postingTexts)
+	}
+	mu.Unlock()
 	if l = listJSON(t); l.Jobs[0].Semantic == nil || l.Insight.Warning != "" {
 		t.Errorf("after rebuild: semantic %+v warning %q", l.Jobs[0].Semantic, l.Insight.Warning)
 	}

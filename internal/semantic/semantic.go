@@ -71,9 +71,23 @@ var (
 
 // Bounds. All are ceilings, not targets.
 const (
-	// Version is folded into Profile.Hash. Bump it when chunking, the anchors
-	// or the scoring change, so cached scores are recomputed.
-	Version = 3
+	// Version is the scoring version, folded into Profile.Hash. Bump it when the
+	// anchors, the calibration or the scoring change, so cached scores and the
+	// profile's floor and ceiling are recomputed. A bump costs seconds: the
+	// profile and anchors are embedded again and every posting is rescored from
+	// the chunk-vector log. 4: the ceiling anchor is the target cut into
+	// sentences like a posting, not its first 512 bytes as one chunk. 5: the
+	// ceiling anchor averages its best third of sentences (anchorDepth), as a
+	// posting averages its best third of chunks, not all of them.
+	Version = 5
+
+	// ChunkVersion is how postings are cut and embedded, and is the only version
+	// the chunk-vector log is keyed on (its header). Bump it only when
+	// ChunkPosting, the chunk text or the way chunks are embedded changes: the
+	// log is then replaced and every posting embedded again, which for the
+	// owner's ledger is hours of model time. A scoring change bumps Version
+	// instead.
+	ChunkVersion = 3
 
 	// MaxBatch is the most texts one Embed call takes.
 	MaxBatch = 32
@@ -132,16 +146,31 @@ type Match struct {
 	Thin bool
 }
 
-// Report says what a Warm call did. Scored + Cached + Failed + Skipped covers
-// the distinct postings it was given.
+// Report says what a Warm call did. Scored + Cached + Rescored + Failed +
+// Skipped covers the distinct postings it was given.
 type Report struct {
 	Scored      int    // postings embedded and scored now
 	Cached      int    // postings that already had a current score
+	Rescored    int    // postings scored now from stored chunk vectors, with no embedding (max does not limit them)
 	Failed      int    // postings that could not be scored
 	Skipped     int    // postings not attempted: over max, or the run stopped first
 	Unavailable bool   // the embedding model was unavailable
 	Canceled    bool   // the context ended before the run did
 	Err         string // first problem, empty when none
+
+	// The chunk-vector log (vectors.go). None of these changes how a posting is
+	// counted above: a posting whose vectors could not be used is embedded.
+	VectorsStale     int    // stored vectors skipped: the posting now chunks into a different count
+	VectorsCorrupt   int    // records that failed their checksum or shape, read or shed by a compaction
+	VectorsTornBytes int64  // bytes of an incomplete tail cut off (a crash or interrupted append)
+	VectorsRebuilt   bool   // the log was corrupt or the wrong width and was removed; vectors are re-embedded as max allows
+	VectorsAppended  int    // postings whose vectors were stored this call
+	VectorsRefused   int    // postings whose vectors could not be stored (bound reached, or ranked below everything it would evict; write failed)
+	VectorsEvicted   int    // postings dropped by a compaction (outside the live set, then lowest priority, then oldest)
+	VectorsCompacted bool   // the log was compacted
+	VectorsCount     int    // postings with stored vectors when the call ended
+	VectorsBytes     int64  // log size when the call ended
+	VectorsErr       string // first problem with the log, empty when none; scoring went on without it
 }
 
 // TextHash identifies a posting's scored text.

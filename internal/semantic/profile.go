@@ -111,9 +111,12 @@ func ProfileFromBank(b kbsync.Bank, targetSummary string) (Profile, error) {
 
 // Hash identifies the profile content for cache keys: every chunk label and
 // text, the target and Version. Equal profiles hash equal; any change differs.
-func (p Profile) Hash() string {
+func (p Profile) Hash() string { return p.hashAt(Version) }
+
+// hashAt is Hash as a binary of the given scoring version computes it.
+func (p Profile) hashAt(version int) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "semantic/v%d\x00%d:%s\x00", Version, len(p.Target), p.Target)
+	fmt.Fprintf(h, "semantic/v%d\x00%d:%s\x00", version, len(p.Target), p.Target)
 	for _, c := range p.Chunks {
 		fmt.Fprintf(h, "%d:%s\x00%d:%s\x00", len(c.Label), c.Label, len(c.Text), c.Text)
 	}
