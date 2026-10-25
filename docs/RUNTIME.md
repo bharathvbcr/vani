@@ -328,9 +328,21 @@ is killed and a paid build's cost is recorded.
 `timeout`, `cancelled`, `kb_changed`, `no_model`, `ineligible` (the message names the bullet id),
 `bad_edit`. Exit 1 for any of them, 2 for a usage error.
 
-The request header of `vani resume` is decoded and ignored (step 1 of its removal): nothing requires
-or validates it, since rkb prints its own. The extension still sends one and still lists `no_name`
-among the codes it words itself; both go in step 2.
+The request header of `vani resume` is decoded and ignored: nothing requires or validates it, since
+rkb prints its own, and the extension no longer sends one (step 2 of its removal; `no_name` is off
+its list of worded codes). Vani can drop the decode once no older extension is installed.
+
+**The browser's two builds.** The extension's offer asks Vani which tracked posting the page is
+(`jobFind`), then starts one of two agent jobs. A tracked posting runs `resumeJob`
+(`{"key"}` and nothing else): `vani jobs resume build --json KEY` (375 s), then, only when the
+reply's `checks.fit` is `passed` or `soft`, `checks.eligibility` is `current` and `pdf_path` is
+present, `vani jobs resume use --json KEY vN` (25 s). The agent reads the PDF at `pdf_path` (the
+store's own `<state>/resumes/<sha256(key)>/vN.pdf`, a regular file, at most 512 KiB, its SHA-256
+equal to `use`'s `pdf_sha256`; the login agent is not sandboxed) and replies in `vani resume`'s
+shape plus `key` and `version`. A refusal is `{error, code}`, naming `version` when one was saved
+and not used. A build that falls back to the base selection is used like any other (`selection`
+"base" and its `reason` say so). Any other page (untracked, ambiguous, or one jobFind could not
+answer, which the bar says) runs the stateless `resume` job and keeps nothing.
 
 ## Running without a decision backend
 

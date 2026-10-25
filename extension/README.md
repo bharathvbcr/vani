@@ -87,14 +87,19 @@ being filled and nowhere else. Its name is never written to the activity log.
 
 When Fill leaves the resume box empty because none is chosen, a bar (bottom left) offers
 **Build and attach**, **Choose PDF…** or **Not now**. Nothing happens without a click.
-- **Build and attach** has the Vani Apply agent run `vani resume`, which builds the resume with
+- **Build and attach** first asks Vani whether it tracks this posting. A tracked posting is built
+  as the next saved version of that job's resume (`vani jobs resume build`, then `use`: the same
+  builder the Mac app's Resume Studio uses), and the bar names the version. Any other page is built
+  from the page's own text by the stateless `vani resume` and is not saved as a version; the bar
+  says so, and says when Vani could not be asked. Either way the agent runs `vani`, which builds the resume with
   rkb, your resume tool, in your own template: the base selection (`kb.base_selection`) with the
   bullets that suit this posting, two pages, every bullet one that passed `kbsync.Eligible` and
   whose figures rkb has double-verified. DevPrism builds nothing. When the model can be asked
   (a configured provider, today's budget left) it chooses the bullets; otherwise, or when its
   answer is refused, the base selection is built as you wrote it. The header is the base
-  selection's own, from rkb's bank, so "Your basics" is only checked, not used. The page must
-  publish its job description (JSON-LD, as Greenhouse, Lever and Ashby do). Vani's config must
+  selection's own, from rkb's bank: "Your basics" is neither needed nor sent. An untracked page
+  must publish its job description (JSON-LD, as Greenhouse, Lever and Ashby do); a tracked
+  one uses the text Vani already holds. Vani's config must
   name `kb.bank`, `kb.rkb`, `kb.selections` and `kb.base_selection` (docs/RUNTIME.md, "Building
   a resume"), and Chrome and poppler must be installed; without them the bar shows Vani's
   reason. Open the PDF before you submit.

@@ -706,7 +706,7 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   - `kb.vm_report` is not a config key: the validator report is guessed from `kb.code_root`
     (`resumeVMReport`). Without one, figures with no manual verification are dropped as unverified.
   - Done (verified 2026-10-25): `JobKind.resume.usesModel` is true and its timeout is 375 s
-    (`Agent.swift`); the extension's `OWN_TEXT` lists `kb`, `lint`, `fit` (`resume.ts:263`); the
+    (`Agent.swift`); the extension's `OWN_TEXT` lists `kb`, `lint`, `fit` (`resume.ts:256`); the
     untrusted-marker regexp has one production owner (`llmbackend/unmark.go:16`, which
     `rkbresume` calls).
   - The agent's PATH is the system folders: `pdftotext` is found in Homebrew's prefixes by
@@ -720,8 +720,8 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     show|use|revalidate`), the store and the owner's decisions are in docs/RUNTIME.md, "Resume
     Studio". Still open: the pool is about the base resume until rkb round-2 review runs (`vani kb
     sync --dry-run`: 17 entries / 36 slots; the career/ session's handoff); the Swift app (Resume
-    client and model, the card, the Studio window, bind-and-log) and the extension's keyed path
-    with header removal step 2 (its `OWN_TEXT` still lists `no_name`) are later waves; a build
+    client and model, the card, the Studio window, bind-and-log) is a later wave (the extension's
+    keyed path, the agent's `resumeJob` and header removal step 2 are done); a build
     that falls back to base is kept but never current over a real version; marks' sent version and
     `vani migrate rekey-*` moving the resume folder (keyed by the key's hash); the app and CLI
     binaries must be rebuilt and reinstalled together before the first `use` (marks with
