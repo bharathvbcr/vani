@@ -7,6 +7,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -104,6 +105,30 @@ func text(field, s string, max int, allowNL bool) error {
 	return nil
 }
 
+// checkInstruction holds a record's instruction to what the builder produces:
+// at most MaxInstructionRunes runes of valid, printable text on one line (no
+// control, format or invisible character), with no space around it. Empty is no
+// instruction. What reads as an email address or a phone number is the builder's
+// to refuse (rkbresume); the store bounds and cleans what it keeps.
+func checkInstruction(s string) error {
+	switch {
+	case s == "":
+		return nil
+	case !utf8.ValidString(s):
+		return fmt.Errorf("%w: instruction is not UTF-8", ErrInvalid)
+	case utf8.RuneCountInString(s) > MaxInstructionRunes:
+		return fmt.Errorf("%w: instruction is %d characters, over %d", ErrInvalid, utf8.RuneCountInString(s), MaxInstructionRunes)
+	case strings.TrimSpace(s) != s:
+		return fmt.Errorf("%w: instruction has space around it", ErrInvalid)
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("%w: instruction holds a control, formatting or invisible character", ErrInvalid)
+		}
+	}
+	return nil
+}
+
 func texts(field string, ss []string, allowNL bool) error {
 	if len(ss) > maxListEntries {
 		return fmt.Errorf("%w: %s holds %d entries, over %d", ErrInvalid, field, len(ss), maxListEntries)
@@ -176,6 +201,9 @@ func checkMeta(m Meta) error {
 		return err
 	}
 	if err := text("model", m.Model, 128, false); err != nil {
+		return err
+	}
+	if err := checkInstruction(m.Instruction); err != nil {
 		return err
 	}
 	if err := checkCost(m.Cost); err != nil {

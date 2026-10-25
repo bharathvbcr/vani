@@ -66,7 +66,7 @@ func TestSummariesAnswerLikeSummaryForEveryKindOfFolder(t *testing.T) {
 	mustSave(t, s, "bad-schema", goodMeta(), pdfBytes("x"))
 	if raw, err := os.ReadFile(versionFile(folder("bad-schema"), 1, "json")); err != nil {
 		t.Fatal(err)
-	} else if err := os.WriteFile(versionFile(folder("bad-schema"), 1, "json"), []byte(string(raw[:len(`{"schema":`)])+"2"+string(raw[len(`{"schema":1`):])), 0o600); err != nil {
+	} else if err := os.WriteFile(versionFile(folder("bad-schema"), 1, "json"), []byte(string(raw[:len(`{"schema":`)])+"3"+string(raw[len(`{"schema":2`):])), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	mustSave(t, s, "record-other-key", goodMeta(), pdfBytes("x"))

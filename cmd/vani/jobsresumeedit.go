@@ -298,13 +298,19 @@ func (e *env) resumeRevalidate(ctx context.Context, rawKey, rawVersion string) (
 	if err != nil {
 		return resumeSaved{}, err
 	}
-	pool, bank, err := e.freshPool(ctx, w)
+	fc, err := e.freshCheck(ctx, w, []resumestore.Meta{meta})
 	if err != nil {
 		return resumeSaved{}, uncheckedError(err)
 	}
-	el := checkEligibility(meta, pool, bank)
-	if el.State == eligCurrent {
+	pool := fc.pool
+	el := fc.eligibility(0, meta)
+	switch el.State {
+	case eligCurrent:
 		re := jrErr(jrNotStale, "jobs resume: v%d is still vouched for; there is nothing to revalidate", n)
+		re.elig = &el
+		return resumeSaved{}, re
+	case eligUnknown: // a verdict that was not reached is not a reason to rebuild
+		re := jrErr(jrUnchecked, "jobs resume: v%d could not be checked against the bank, so it is not revalidated (%s)", n, oneLine(el.Why, 200))
 		re.elig = &el
 		return resumeSaved{}, re
 	}

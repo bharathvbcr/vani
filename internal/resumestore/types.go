@@ -6,8 +6,17 @@ import (
 	"time"
 )
 
-// Schema is the only version record layout this package reads or writes.
-const Schema = 1
+const (
+	// Schema is the version record layout this package writes. Schema 2 adds
+	// Meta.Instruction (the owner's preference a redraft was asked with).
+	Schema = 2
+	// MinSchema is the oldest layout still read: a schema 1 record reads as it
+	// always did, with no instruction. A newer record is ErrSchema, so an older
+	// vani never misreads one (it reports "unsupported": reinstall together).
+	MinSchema = 1
+	// MaxInstructionRunes bounds Meta.Instruction, in runes.
+	MaxInstructionRunes = 500
+)
 
 // Meta is one version of a job's resume: vN.json, beside vN.pdf. The store does
 // not import rkbresume; Selection is the choice as raw JSON in the owner-edit
@@ -15,25 +24,30 @@ const Schema = 1
 // never carries bank, meta, header or a path (Save refuses those top-level
 // keys).
 type Meta struct {
-	Schema    int             `json:"schema"`           // = Schema
-	Key       string          `json:"key"`              // posting.Key the job is under
-	Version   int             `json:"version"`          // N of vN, assigned by the store on Save
-	Parent    int             `json:"parent,omitempty"` // the version this was made from; 0 = none
-	Source    string          `json:"source"`           // "tailored" | "base" | "edited" | "revalidated"
-	Reason    string          `json:"reason,omitempty"` // why base / what revalidation dropped
-	Model     string          `json:"model,omitempty"`  // model id when a model turn ran
-	Cost      Cost            `json:"cost"`
-	Checks    Checks          `json:"checks"`
-	Pages     int             `json:"pages,omitempty"` // 0 = unknown (not fitted)
-	Notes     []string        `json:"notes,omitempty"` // rkb layout notes (scrubbed)
-	Dropped   []string        `json:"unverified_dropped,omitempty"`
-	Keywords  []string        `json:"jd_keywords,omitempty"`
-	Selection json.RawMessage `json:"selection"`           // the choice in the owner-edit shape (rkbresume decodeEdit accepts it)
-	Bullets   []BulletRef     `json:"bullets"`             // every bullet on the page, page order
-	FitLines  map[string]int  `json:"fit_lines,omitempty"` // bullet id -> rendered lines (from rkb fit report)
-	Prints    Fingerprints    `json:"fingerprints"`
-	PDFSHA256 string          `json:"pdf_sha256,omitempty"` // "" when there is no PDF (render without fit)
-	Created   time.Time       `json:"created"`
+	Schema  int    `json:"schema"`           // 1 or 2; Save writes Schema
+	Key     string `json:"key"`              // posting.Key the job is under
+	Version int    `json:"version"`          // N of vN, assigned by the store on Save
+	Parent  int    `json:"parent,omitempty"` // the version this was made from; 0 = none
+	Source  string `json:"source"`           // "tailored" | "base" | "edited" | "revalidated"
+	Reason  string `json:"reason,omitempty"` // why base / what revalidation dropped
+	// Instruction is the owner's one-line preference the build was asked with
+	// (schema 2): at most MaxInstructionRunes printable runes, already scrubbed
+	// of the header's strings and free of anything that reads as an email address
+	// or phone number by the builder. Never rendered on the page.
+	Instruction string          `json:"instruction,omitempty"`
+	Model       string          `json:"model,omitempty"` // model id when a model turn ran
+	Cost        Cost            `json:"cost"`
+	Checks      Checks          `json:"checks"`
+	Pages       int             `json:"pages,omitempty"` // 0 = unknown (not fitted)
+	Notes       []string        `json:"notes,omitempty"` // rkb layout notes (scrubbed)
+	Dropped     []string        `json:"unverified_dropped,omitempty"`
+	Keywords    []string        `json:"jd_keywords,omitempty"`
+	Selection   json.RawMessage `json:"selection"`           // the choice in the owner-edit shape (rkbresume decodeEdit accepts it)
+	Bullets     []BulletRef     `json:"bullets"`             // every bullet on the page, page order
+	FitLines    map[string]int  `json:"fit_lines,omitempty"` // bullet id -> rendered lines (from rkb fit report)
+	Prints      Fingerprints    `json:"fingerprints"`
+	PDFSHA256   string          `json:"pdf_sha256,omitempty"` // "" when there is no PDF (render without fit)
+	Created     time.Time       `json:"created"`
 }
 
 // Cost is what a build's model turns cost.

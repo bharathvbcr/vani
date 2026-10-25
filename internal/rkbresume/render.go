@@ -44,7 +44,7 @@ const (
 // The build lock is taken as Build takes it; the Chrome lock only when fitting.
 // The Result of an error carries what ran (Checks) and the fingerprints.
 func Render(ctx context.Context, cfg Config, req Request, edit []byte, fit bool) (Result, error) {
-	cfg.Provider, cfg.NoModel, cfg.Model = nil, "", ""
+	cfg.Provider, cfg.NoModel, cfg.Model, cfg.Tailor = nil, "", "", Tailor{}
 	if cfg.Deadline == 0 {
 		cfg.Deadline = RenderDeadline
 		if fit {

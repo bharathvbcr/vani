@@ -167,14 +167,17 @@ commands:
                              run's reading when ranking, and never drops or undrops a role
                              (--dry-run: the estimated cost, asks nothing; --clear: remove it).
                              Not "retriage", which asks no model
-  jobs resume build|render|show|use|revalidate [--json] ... KEY
+  jobs resume build|render|show|use|revalidate|diff|current [--json] ... KEY
                              Resume Studio: one role's resume versions, kept in state dir
                              resumes/ (docs/RUNTIME.md). build [--dry-run] [--allow-base] asks
-                             Opus to pick the bullets (spends from the daily llm budget);
+                             Opus to pick the bullets (spends from the daily llm budget); with
+                             [--from vN] [--scope NAME] [--lock NAME ...] [--instruction TEXT]
+                             it redrafts a version, keeping what is locked or out of scope;
                              render [--fit] [--from vN] builds the owner's edit (JSON on stdin,
                              no model); show [--no-check] KEY [vN] lists versions and whether
                              the bank still vouches for them; use KEY vN binds a checked version
-                             for applying; revalidate KEY vN drops what went stale and rebuilds
+                             for applying; revalidate KEY vN drops what went stale and rebuilds;
+                             diff KEY vA vB says what differs; current KEY vN restores a version
   jobs gaps [--json] [-n N] [--examples N] [same selection flags as list]
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the

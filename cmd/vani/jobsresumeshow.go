@@ -131,20 +131,19 @@ func (e *env) resumeShow(ctx context.Context, rawKey, rawVersion string, check b
 		return resumeShown{}, jrErr(jrNotFound, "jobs resume: %s has no v%d", job.key, want)
 	}
 
-	var pool rkbresume.PoolView
-	var bank map[string]bool
+	var fc freshCheck
 	if check {
 		w, err := e.resumeConfig(ctx, false)
 		if err == nil {
-			pool, bank, err = e.freshPool(ctx, w)
+			fc, err = e.freshCheck(ctx, w, metas)
 		}
 		if err != nil {
 			out.CheckError = oneLine(asResumeError(err).msg, 300)
 		} else {
-			out.Pool = &pool
+			out.Pool = &fc.pool
 		}
 	}
-	for _, m := range metas {
+	for i, m := range metas {
 		v := resumeVersion{Meta: m, Current: m.Version == out.Current, Used: m.Version == out.Used}
 		v.Selection = nil
 		if m.PDFSHA256 != "" {
@@ -161,7 +160,7 @@ func (e *env) resumeShow(ctx context.Context, rawKey, rawVersion string, check b
 		if check {
 			el := unknownEligibility("the bank could not be read: " + out.CheckError)
 			if out.Pool != nil {
-				el = checkEligibility(m, pool, bank)
+				el = fc.eligibility(i, m)
 			}
 			v.Eligibility = &el
 		}
@@ -255,11 +254,11 @@ func (e *env) resumeUse(ctx context.Context, rawKey, rawVersion string) (resumeU
 	if err != nil {
 		return resumeUsed{}, err
 	}
-	pool, bank, err := e.freshPool(ctx, w)
+	fc, err := e.freshCheck(ctx, w, []resumestore.Meta{meta})
 	if err != nil {
 		return resumeUsed{}, uncheckedError(err)
 	}
-	el := checkEligibility(meta, pool, bank)
+	el := fc.eligibility(0, meta)
 	switch el.State {
 	case eligCurrent:
 	case eligStale:
@@ -288,7 +287,7 @@ func staleSummary(el resumeEligibility) string {
 	for _, p := range []struct {
 		what string
 		ids  []string
-	}{{"reworded", el.Reworded}, {"gone", el.Gone}, {"ineligible", el.Ineligible}} {
+	}{{"reworded", el.Reworded}, {"gone", el.Gone}, {"ineligible", el.Ineligible}, {"unverified", el.Unverified}} {
 		if len(p.ids) > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", len(p.ids), p.what))
 		}

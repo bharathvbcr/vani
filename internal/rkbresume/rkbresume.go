@@ -183,6 +183,10 @@ type Config struct {
 	// with a choice that was refused or rejected falls back to the base either way,
 	// with the reason in the Result.
 	AllowBase bool
+	// Tailor is what a redraft adds to a build (redraft.go); the zero value is a
+	// plain build. Render and Pool ignore it. It cannot be combined with AllowBase
+	// when it keeps something (a scope or a lock).
+	Tailor Tailor
 
 	Runner   Runner        // nil means rkbexec.ExecRunner
 	MaxPDF   int           // default DefaultMaxPDF
@@ -232,6 +236,10 @@ type Result struct {
 	// Model is the model id when a model turn was sent.
 	Model string `json:"model,omitempty"`
 	Cost  Cost   `json:"cost"`
+	// Instruction is the owner's preference a tailored build was asked with, as it
+	// was sent (scrubbed of the header's strings); empty for a base or edited page,
+	// which no model shaped.
+	Instruction string `json:"instruction,omitempty"`
 	// Checks says how each check ended; a check that did not run says so.
 	Checks Checks `json:"checks"`
 	// Notes are layout flaws accepted on the page (an orphan last line, an
@@ -311,6 +319,11 @@ func (c Config) normalize() (Config, *Error) {
 	if c.Provider != nil && c.Model == "" {
 		return c, fail(CodeConfig, "a provider needs a model")
 	}
+	t, terr := normalizeTailor(c.Tailor, c.AllowBase)
+	if terr != nil {
+		return c, terr
+	}
+	c.Tailor = t
 	return c, nil
 }
 

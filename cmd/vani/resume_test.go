@@ -31,6 +31,25 @@ type fakeResumeRKB struct {
 	pdf   []byte // what fit writes
 	die   bool   // fit dies: exit 2, no report
 	err   error  // runner error for every call
+	// unverified: the used-in export no longer double-verifies clmLat (rkb gives a
+	// reason against it); usedErr: the used-in export cannot run.
+	unverified bool
+	usedErr    error
+}
+
+// usedIn counts the `claims export --used-in` runs recorded so far.
+func (f *fakeResumeRKB) usedIn() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, a := range f.args {
+		for _, s := range a {
+			if s == "--used-in" {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 var testPDF = []byte("%PDF-1.7\n%neutral test file\n%%EOF\n")
@@ -52,11 +71,21 @@ func (f *fakeResumeRKB) Run(_ context.Context, c rkbresume.Command, _ time.Durat
 	}
 	switch c.Args[0] {
 	case "claims":
+		// Like real rkb, an export of no selection judges no claim double-verified (and
+		// says nothing against it); one of a selection judges it for that selection.
+		view := `{"claims":{"clmLat":{"value":"42%","double_verified":false}}}`
 		if sel := val("--used-in"); sel != "" {
+			if f.usedErr != nil {
+				return rkbresume.Output{}, f.usedErr
+			}
 			b, _ := os.ReadFile(sel)
 			f.sels = append(f.sels, string(b))
+			view = `{"claims":{"clmLat":{"value":"42%","double_verified":true}}}`
+			if f.unverified {
+				view = `{"claims":{"clmLat":{"value":"42%","double_verified":false,"problems":["pass 2 missing for: a sentence"]}}}`
+			}
 		}
-		return rkbresume.Output{}, os.WriteFile(val("--out"), []byte(`{"claims":{"clmLat":{"value":"42%","double_verified":true}}}`), 0o600)
+		return rkbresume.Output{}, os.WriteFile(val("--out"), []byte(view), 0o600)
 	case "lint":
 		return rkbresume.Output{Exit: f.lint, Stdout: "ERROR b1: weak verb\n"}, nil
 	case "render":

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/resumestore"
@@ -13,10 +14,13 @@ import (
 // hash of the wording it was chosen for, and the fingerprints of every input
 // its build read. The check compares those to a fresh rkbresume.Pool (the
 // bullets that are eligible now, with their wording hashes) and the bank's own
-// bullet ids. It judges eligibility only; whether a figure rkb has not
-// double-verified would be dropped is decided when a page is built, which is
-// why a changed validator report alone makes a version stale (rebuild, or
-// revalidate, to re-check the figures).
+// bullet ids. That is eligibility. Whether rkb still double-verifies the figures
+// of the bullets is a property of the whole choice (rkb judges it against the
+// sentences the choice uses), so each version's own choice is exported once,
+// as the build that made it was (rkbresume.PoolAndVerify): a bullet whose figure
+// no longer verifies makes the version stale, and a version whose figures could
+// not be re-checked is "unknown", never "current". A changed validator report
+// alone also makes a version stale (rebuild, or revalidate, to re-check).
 
 // Fresh eligibility states. A check that could not run is "unknown" and is never
 // read as "current".
@@ -30,23 +34,25 @@ const (
 // wording changed since the version was built (the new wording is eligible, but
 // the version was not judged on it); Gone are ids the bank no longer has;
 // Ineligible are ids still in the bank that the pool no longer offers
-// (including a continuation whose lead went). InputsChanged names, by the
-// fingerprint's JSON name, each input that differs from what the version read;
-// only the validator report makes a version stale by itself, the rest are
-// reported for information (the bullets say whether they mattered).
+// (including a continuation whose lead went); Unverified are bullets whose
+// figure rkb no longer double-verifies for this version's choice. InputsChanged
+// names, by the fingerprint's JSON name, each input that differs from what the
+// version read; only the validator report makes a version stale by itself, the
+// rest are reported for information (the bullets say whether they mattered).
 type resumeEligibility struct {
 	State         string   `json:"state"`
 	Reworded      []string `json:"reworded,omitempty"`
 	Gone          []string `json:"gone,omitempty"`
 	Ineligible    []string `json:"ineligible,omitempty"`
+	Unverified    []string `json:"unverified,omitempty"`
 	InputsChanged []string `json:"inputs_changed,omitempty"`
 	Why           string   `json:"why,omitempty"`
 }
 
-// staleIDs is every bullet the check found a fault with, in page order.
+// staleIDs is every bullet the check found a fault with.
 func (r resumeEligibility) staleIDs() map[string]bool {
 	bad := map[string]bool{}
-	for _, l := range [][]string{r.Reworded, r.Gone, r.Ineligible} {
+	for _, l := range [][]string{r.Reworded, r.Gone, r.Ineligible, r.Unverified} {
 		for _, id := range l {
 			bad[id] = true
 		}
@@ -126,21 +132,65 @@ func checkEligibility(m resumestore.Meta, pool rkbresume.PoolView, bank map[stri
 	return r
 }
 
-// freshPool is what the staleness check compares to: the pool as it stands now
-// (one rkb run, no model, no build lock) and the bank's bullet ids. A bank that
-// cannot be read leaves the ids nil. A pool that cannot be had is the error.
-func (e *env) freshPool(ctx context.Context, w resumeWiring) (rkbresume.PoolView, map[string]bool, error) {
-	pool, err := rkbresume.Pool(ctx, w.RC, rkbresume.Request{})
+// foldVerification adds what rkb said of a version's own choice to its bullet
+// verdict. Bullets whose figure no longer verifies are listed and make the
+// version stale; a choice that could not be verified leaves a current version
+// "unknown" (a verdict that was not reached is not a pass). A version already
+// stale or unknown keeps that state: the bullets say why, and a verification
+// error would only repeat it.
+func foldVerification(r resumeEligibility, v rkbresume.Verification) resumeEligibility {
+	if len(v.Unverified) > 0 {
+		r.State, r.Unverified = eligStale, v.Unverified
+		if r.Why == "" {
+			r.Why = "rkb no longer double-verifies a figure in " + strings.Join(v.Unverified, ", ") + "; revalidate drops those bullets, or build again"
+		}
+		return r
+	}
+	if r.State == eligCurrent && v.Err != "" {
+		r.State = eligUnknown
+		r.Why = oneLine("the figures of this version could not be re-checked: "+v.Err, 300)
+	}
+	return r
+}
+
+// freshCheck is what the staleness check compares to: the pool as it stands now,
+// the bank's bullet ids, and rkb's verdict on each version's own choice (parallel
+// to the versions asked about).
+type freshCheck struct {
+	pool rkbresume.PoolView
+	bank map[string]bool
+	ver  []rkbresume.Verification
+}
+
+// eligibility is version i's fresh verdict: its bullets against the pool, then
+// its figures against rkb.
+func (fc freshCheck) eligibility(i int, m resumestore.Meta) resumeEligibility {
+	el := checkEligibility(m, fc.pool, fc.bank)
+	if i < len(fc.ver) {
+		return foldVerification(el, fc.ver[i])
+	}
+	return el
+}
+
+// freshCheck reads the pool and re-exports each of metas' choices (one rkb run
+// each, no model, no build lock, nothing rendered). A bank that cannot be read
+// leaves the ids nil. A pool that cannot be had is the error.
+func (e *env) freshCheck(ctx context.Context, w resumeWiring, metas []resumestore.Meta) (freshCheck, error) {
+	edits := make([][]byte, len(metas))
+	for i, m := range metas {
+		edits[i] = m.Selection
+	}
+	pool, ver, err := rkbresume.PoolAndVerify(ctx, w.RC, edits)
 	if err != nil {
-		return rkbresume.PoolView{}, nil, err
+		return freshCheck{}, err
 	}
 	bank, err := kbsync.Load(w.Cfg.KB.Bank)
 	if err != nil {
-		return pool, nil, nil
+		return freshCheck{pool: pool, ver: ver}, nil
 	}
 	ids := make(map[string]bool, len(bank.Bullets))
 	for id := range bank.Bullets {
 		ids[id] = true
 	}
-	return pool, ids, nil
+	return freshCheck{pool: pool, bank: ids, ver: ver}, nil
 }

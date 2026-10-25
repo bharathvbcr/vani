@@ -565,7 +565,7 @@ func TestDamageDetection(t *testing.T) {
 	t.Run("unknown schema", func(t *testing.T) {
 		s, f := setup(t)
 		b, _ := os.ReadFile(filepath.Join(f, "v1.json"))
-		os.WriteFile(filepath.Join(f, "v1.json"), bytes.Replace(b, []byte(`"schema":1`), []byte(`"schema":2`), 1), 0o600)
+		os.WriteFile(filepath.Join(f, "v1.json"), bytes.Replace(b, []byte(`"schema":2`), []byte(`"schema":3`), 1), 0o600)
 		if _, _, err := s.Get("k", 1); !errors.Is(err, ErrSchema) || errors.Is(err, ErrDamaged) {
 			t.Fatalf("Get = %v, want ErrSchema", err)
 		}
@@ -573,7 +573,7 @@ func TestDamageDetection(t *testing.T) {
 	t.Run("unknown field", func(t *testing.T) {
 		s, f := setup(t)
 		b, _ := os.ReadFile(filepath.Join(f, "v1.json"))
-		os.WriteFile(filepath.Join(f, "v1.json"), bytes.Replace(b, []byte(`{"schema":1,`), []byte(`{"schema":1,"header":"x",`), 1), 0o600)
+		os.WriteFile(filepath.Join(f, "v1.json"), bytes.Replace(b, []byte(`{"schema":2,`), []byte(`{"schema":2,"header":"x",`), 1), 0o600)
 		if _, _, err := s.Get("k", 1); !errors.Is(err, ErrDamaged) {
 			t.Fatalf("Get = %v", err)
 		}
