@@ -207,7 +207,7 @@ func kbmatchCandidates(snap ledger.Snapshot, m map[posting.Key]marks.Entry, in *
 		}
 		// The fit the ranking uses (SlotFor), so a mismatch the escalation overturned
 		// is asked about and one it found is not.
-		if strings.HasPrefix(in.rc.SlotFor(r.Annotations, "role_fit").Value, "mismatch_") {
+		if strings.HasPrefix(in.rc.SlotFor(r, "role_fit").Value, "mismatch_") {
 			mismatch++
 			continue
 		}

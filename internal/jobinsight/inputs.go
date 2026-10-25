@@ -74,6 +74,13 @@ type RankContext struct {
 	// and the escalation tier answered with a listed option, is ranked on the
 	// escalation's value (SlotFor).
 	EscalateBelowP float64
+
+	// Manual returns the owner's current manual reading of slot for r (a Claude
+	// model asked by hand, internal/manualtriage), or false when there is none, it
+	// is stale (the posting text changed since) or it names no listed option. A
+	// manual reading outranks the primary's and the escalation's (SlotFor). nil
+	// means there are none.
+	Manual func(r ledger.Record, slot string) (value string, ok bool)
 }
 
 // ScoreOf scores r under c: InputsFor, then c.Weights or DefaultWeights.
@@ -174,10 +181,16 @@ func SlotOf(ann map[string]string, slot string) Slot {
 // escalation reading outside them is not an answer the ranking can use.
 var listedValues = jdtriage.SlotValues()
 
-// SlotFor is the reading of slot the ranking uses, and the one owner of which
-// reading that is: the primary's (SlotOf), except where the primary was unsure and
-// the escalation tier read the slot (decide.escalate; ledger annotations
-// triage.<slot>.shadow*). That needs all of
+// SlotFor is the reading of slot the ranking uses for r, and the one owner of
+// which reading that is. In order:
+//
+//   - the owner's current manual reading (RankContext.Manual), whatever the
+//     primary's p was: the owner asked for it. It is a listed option, backend
+//     BackendManual, with no p, so it takes AnsweredConf (or the Calibration named
+//     for BackendManual).
+//   - otherwise the primary's (SlotOf), except where the primary was unsure and
+//     the escalation tier read the slot (decide.escalate; ledger annotations
+//     triage.<slot>.shadow*). That needs all of
 //
 //   - EscalateBelowP set (the config's decide.escalate.below_p), and the primary
 //     answered with a calibrated p under it. A primary at or above it, one with no
@@ -191,8 +204,15 @@ var listedValues = jdtriage.SlotValues()
 // ShadowEscalate. Anything short of that is the primary's reading, as before.
 //
 // This only orders (Rule 7). Drops are decided at triage by pipeline.DropPolicy
-// on the primary's calibrated reading and never read this.
-func (c RankContext) SlotFor(ann map[string]string, slot string) Slot {
+// on the primary's calibrated reading and never read this: a manual reading
+// neither drops a posting nor brings a dropped one back.
+func (c RankContext) SlotFor(r ledger.Record, slot string) Slot {
+	if c.Manual != nil {
+		if v, ok := c.Manual(r, slot); ok && slices.Contains(listedValues[slot], v) {
+			return Slot{Value: v, Answered: true, Backend: BackendManual}
+		}
+	}
+	ann := r.Annotations
 	s := SlotOf(ann, slot)
 	if !(c.EscalateBelowP > 0 && c.EscalateBelowP <= 1) || !s.Answered || !s.HasP || !(s.P < c.EscalateBelowP) {
 		return s
@@ -224,7 +244,7 @@ const employerBoostSlack = 1e-6
 func InputsFor(r ledger.Record, c RankContext) Inputs {
 	ann := r.Annotations
 	in := Inputs{
-		RoleFit:      c.SlotFor(ann, "role_fit"),
+		RoleFit:      c.SlotFor(r, "role_fit"),
 		Unsure:       IsUnsure(r),
 		HalfLifeDays: c.HalfLifeDays,
 		AgeDays:      -1,
@@ -270,7 +290,7 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 		if seen[rule.Slot] {
 			continue
 		}
-		s := c.SlotFor(ann, rule.Slot)
+		s := c.SlotFor(r, rule.Slot)
 		if !s.Answered {
 			continue
 		}

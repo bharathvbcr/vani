@@ -70,8 +70,34 @@ final class JobsModel {
     private var listGeneration = 0
     private var detailGeneration = 0
 
-    init(client: @escaping () -> JobsClient) {
+    /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
+    /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
+    /// draft keys; without one (a test host) the action is not offered.
+    let retriage: RetriageModel
+
+    init(client: @escaping () -> JobsClient, retriage: (() -> RetriageClient)? = nil) {
         self.client = client
+        self.retriage = RetriageModel(client: retriage)
+        self.retriage.onManualChange = { [weak self] key in await self?.reloadAfterManualTriage(key) }
+        self.retriage.candidate = { [weak self] key in
+            guard let self else { return nil }
+            return self.detail?.key == key ? self.detail : self.jobs.first { $0.key == key }
+        }
+    }
+
+    /// Re-list (the reading moves the job in the order) and re-read the open posting, so its
+    /// `manual_triage` and score factors are the ones vani now reports.
+    private func reloadAfterManualTriage(_ key: String) async {
+        await refresh()
+        if selection == key { loadDetail() }
+    }
+
+    /// Re-triage from a row or the detail: show the posting (the progress, the answer and any error
+    /// appear in its detail pane) and ask vani for the cost.
+    func startRetriage(_ job: Job) {
+        guard retriage.blockedReason(for: job) == nil else { return }
+        selection = job.key
+        retriage.start(job)
     }
 
     var jobs: [Job] { page?.jobs ?? [] }

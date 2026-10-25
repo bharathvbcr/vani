@@ -159,6 +159,14 @@ commands:
                              record what you did with a role (state dir marks/, never the ledger)
   jobs note [--json] KEY TEXT
                              a private note on a role ("" clears it); never sent to a model
+  jobs retriage [--json] [--dry-run | --clear] KEY
+                             have the llm triage model (llm.triage_model, Sonnet) read this one
+                             role by hand: the triage question, all four slots (spends from the
+                             daily llm budget; sends the posting and the target summary to the
+                             provider). The reading is kept in state dir retriage/, outranks the
+                             run's reading when ranking, and never drops or undrops a role
+                             (--dry-run: the estimated cost, asks nothing; --clear: remove it).
+                             Not "retriage", which asks no model
   jobs gaps [--json] [-n N] [--examples N] [same selection flags as list]
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the

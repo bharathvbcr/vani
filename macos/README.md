@@ -81,6 +81,19 @@ is kept in the model, not shown, and never blocks the list.
 Your marks and notes live in `<state>/marks/marks.jsonl`, never in the ledger, and nothing
 in the pipeline reads them, so a note never reaches a model. Hiding a role only removes it from
 New; the daily digest does not read marks yet.
+**Re-triage with Sonnet** (a card in a triaged role's detail, the row's context menu, ⌥⌘R) asks the configured Claude
+triage model (`llm.triage_model`) the same four triage questions again for that one posting, by hand
+(`vani jobs retriage --json KEY`, cmd/vani). It first runs `--dry-run`, which asks nothing and spends nothing, and
+shows the estimated cost, how much of today's `decide.daily_usd.llm` cap is left (or that today's spend could not be
+read, never as zero) and what is sent: the posting's text and your target summary, never your name, contact details or
+work authorization. Only Ask Sonnet spends, from the same daily cap as drafts and the daily run; a spent cap disables it.
+While it runs the card has Cancel (SIGTERM, then SIGKILL after a second, and the child is reaped). The answer is a
+before/after row per slot (role fit, seniority, sponsorship, work mode), the relevance change, and the cost; the list
+re-sorts. vani stores the reading in `<state>/retriage/`, beside the ledger, not in it. A reading older than the posting's
+text, or whose text is gone, shows muted as out of date, and ranking ignores it. Clear removes it. A manual reading only
+changes the order: it never drops a posting or brings a dropped one back (Rule 7). Errors show inline with vani's code
+in plain words; Retry goes back through the cost confirmation. The reading's `manual_triage` on each job and a fit
+factor's `backend` (`manual`, `escalate`) decode leniently, so an older `vani` or a malformed value never fails the list.
 
 ```mermaid
 flowchart TD
@@ -419,6 +432,12 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   Default leaves the pick to the launcher (the first line of `~/.anthropic-accounts`). A file from
   before accounts carried an `anthropicWorkspace`; it is ignored, because the workspace now belongs
   to the account's registry line.
+- **Re-triage with Sonnet** reaches the key exactly as a draft does: the paid call (`vani jobs retriage KEY`) starts
+  through `DraftRunner.prepare`, so `anthropic-account exec` adds the key when the config names the anthropic provider
+  and this app reads, holds and passes none. Its estimate (`--dry-run`) and `--clear` start `vani` directly, with no key
+  at all. All three set `VANI_NO_KEYCHAIN=1`, and none reads the OpenRouter key: the app is the one reader of keys for a
+  `vani` it starts, so `vani` never asks the Keychain behind it. The call is bounded at 90 s, its reply at 64 KB, and an
+  estimate or clear at 30 s.
 - **Spending.** Each draft charges Manvi's budget ledger before the request is sent. When today's
   cap is spent, the reply is `budget_exhausted`, never an empty draft.
 
@@ -453,7 +472,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 410 tests, 0 failures (2026-10-19; first counted at 129). They cover the TS vectors, validation, the store
+  - `swift test`: 728 tests, 0 failures (2026-10-24; first counted at 129; the real-vani and accessibility-driven tests skip when `build/vani` is absent or the runner is not trusted). They cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).

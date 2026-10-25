@@ -85,6 +85,12 @@ struct JobsView: View {
         } message: {
             Text(verbatim: jobs.actionError ?? "")
         }
+        // The cost of a Sonnet re-triage, asked about before anything is spent. Closing it any
+        // other way than Ask Sonnet cancels; a dismissal after Ask Sonnet must not stop the run.
+        .sheet(isPresented: Binding(get: { jobs.retriage.confirming != nil },
+                                    set: { if !$0 { jobs.retriage.dismissConfirmation() } })) {
+            RetriageConfirmSheet()
+        }
     }
 }
 
@@ -918,6 +924,15 @@ private struct JobMenu: View {
         Button(job.mark == .saved ? "Unsave" : "Save", systemImage: "bookmark") { act(.saved) }
         Button(job.mark == .applied ? "Unmark Applied" : "Mark Applied", systemImage: "checkmark.seal") { act(.applied) }
         Button(job.mark == .hidden ? "Unhide" : "Hide", systemImage: "eye.slash") { act(.hidden) }
+        // Shows the cost first and spends only on confirmation; not offered for a posting no run has triaged.
+        if jobs.retriage.isAvailable {
+            let reason = jobs.retriage.blockedReason(for: job)
+            Button(job.manualTriage == nil ? "Re-triage with Sonnet…" : "Re-run with Sonnet…", systemImage: "sparkles") {
+                jobs.startRetriage(job)
+            }
+            .disabled(reason != nil)
+            .help(reason ?? "Ask Sonnet to read this posting again. The cost is shown first.")
+        }
         // Every role at the company, not just this one; undone in Settings ›
         // Exclude postings. Roles you saved, applied to or hid stay.
         if !job.company.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1037,6 +1052,7 @@ private struct JobDetailContent: View {
                         .onGeometryChange(for: Bool.self) { $0.frame(in: .scrollView).maxY < 0 } action: { headerScrolledOff = $0 }
                     ApplyKitView(job: job, description: currentDescription)
                     if !job.reasons.isEmpty { reasons }
+                    RetriageSection(job: job, shortcutEnabled: !noteFocused)
                     if let ranking = job.rankingBreakdown { rankingCard(ranking) }
                     if !job.keywordList.isEmpty { keywords }
                     let others = otherPostings
@@ -1404,8 +1420,14 @@ private struct JobDetailContent: View {
         }
     }
 
-    /// The factor's share of the blend, or what a multiplier did to it.
+    /// The factor's note, and for a fit that rests on another model's reading, whose it is
+    /// ("read by Sonnet (manual)", "read by the escalation model").
     private func factorNote(_ f: ScoreFactor, ageKnown: Bool) -> String {
+        [factorBaseNote(f, ageKnown: ageKnown), f.sourceNote ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// The factor's share of the blend, or what a multiplier did to it.
+    private func factorBaseNote(_ f: ScoreFactor, ageKnown: Bool) -> String {
         // An undated posting is assumed to be as old as Vani's first sighting plus a prior (the
         // value shown is that assumption); a vani from before that reports the floor as known.
         if f.name == "fresh" && !ageKnown {
@@ -1640,7 +1662,7 @@ private struct FlowChips: View {
 
 // MARK: - Pieces
 
-private struct Chip: View {
+struct Chip: View {
     let text: String
     let tint: Color
     // On a selected list row the system paints the accent colour behind the
@@ -1777,7 +1799,7 @@ private struct StatePill: View {
     }
 }
 
-private extension View {
+extension View {
     /// The rounded secondary card Home uses.
     func cardStyle(padding: CGFloat = 14) -> some View {
         self.padding(padding)

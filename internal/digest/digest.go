@@ -94,6 +94,10 @@ type Options struct {
 	// role's work, where it was asked.
 	KBMatch func(r ledger.Record) (jobinsight.Slot, bool)
 
+	// Manual is jobinsight.RankContext.Manual: the owner's current manual
+	// readings, which outrank the primary's and the escalation's.
+	Manual func(r ledger.Record, slot string) (string, bool)
+
 	// EscalateBelowP is jobinsight.RankContext.EscalateBelowP: the escalation
 	// threshold under which a slot is ranked on the escalation tier's reading; 0
 	// ranks on the primary's alone.
@@ -166,7 +170,7 @@ type scorer struct {
 func newScorer(all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) *scorer {
 	c := jobinsight.NewRankContext(all, m, now)
 	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
-	c.HalfLifeDays, c.Weights, c.EscalateBelowP = o.HalfLifeDays, o.Weights, o.EscalateBelowP
+	c.HalfLifeDays, c.Weights, c.EscalateBelowP, c.Manual = o.HalfLifeDays, o.Weights, o.EscalateBelowP, o.Manual
 	return &scorer{c: c, memo: map[posting.Key]jobinsight.Result{}}
 }
 

@@ -116,6 +116,13 @@ final class AppModel {
         ManualRunLauncher(runner: draftRunner)
     }
 
+    /// `vani jobs retriage` for the Jobs tab's "Re-triage with Sonnet": it asks a model, so it runs
+    /// through the draft runner and gets the keys drafting gets (never read here: on the anthropic
+    /// path `anthropic-account` adds them). Its estimate and clear start `vani` with no key.
+    var retriageClient: RetriageClient {
+        RetriageClient(runner: draftRunner)
+    }
+
     // MARK: - Agent
 
     /// The login-item agent that runs drafts and suggestions for both browsers.

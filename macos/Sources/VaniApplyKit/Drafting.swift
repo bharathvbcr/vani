@@ -435,16 +435,30 @@ public struct DraftRunner: Sendable {
     /// environment, in the process it replaces itself with.
     func invoke(_ subcommand: String, input: Data, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
                 usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes) -> Invocation {
+        invoke(arguments: [subcommand], input: input, timeout: timeout, withDecisionKey: withDecisionKey,
+               usesModel: usesModel, maxOutputBytes: maxOutputBytes)
+    }
+
+    /// `vani <arguments>` through `prepare`, so the keys, launcher and refusal are the ones every
+    /// other job gets. `extraEnvironment` is added to the launch's, after the keys; `cancellation`
+    /// ends the child early (the reply is then the failure code "cancelled"). Nothing is read from
+    /// the Keychain for a call with `usesModel` false.
+    func invoke(arguments: [String], input: Data? = nil, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
+                usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes,
+                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil) -> Invocation {
         let launch: Launch
-        switch prepare([subcommand], withDecisionKey: withDecisionKey, usesModel: usesModel) {
+        switch prepare(arguments, withDecisionKey: withDecisionKey, usesModel: usesModel) {
         case let .refused(f): return .failure(f)
         case let .launch(l): launch = l
         }
+        let name = arguments.prefix { !$0.hasPrefix("-") }.prefix(2).joined(separator: " ")
         let t = timeout ?? self.timeout
-        let out = VaniProcess.run(launch.program, arguments: launch.arguments, environment: launch.environment, input: input,
-                                  timeout: t, maxOutputBytes: maxOutputBytes)
+        let out = VaniProcess.run(launch.program, arguments: launch.arguments,
+                                  environment: launch.environment.merging(extraEnvironment) { _, extra in extra }, input: input,
+                                  timeout: t, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
+        if out.cancelled { return .failure(.failure("cancelled", "vani \(name) was cancelled")) }
         if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
-        if out.timedOut { return .failure(.failure("timeout", "vani \(subcommand) did not finish within \(Int(t)) s")) }
+        if out.timedOut { return .failure(.failure("timeout", "vani \(name) did not finish within \(Int(t)) s")) }
         return .output(out)
     }
 

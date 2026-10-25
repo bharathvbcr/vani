@@ -86,6 +86,15 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     var untriagedWire: Lenient<Bool>?
     var prefilterDropWire: Lenient<String>?
 
+    /// Sonnet's manual re-triage of this posting (`vani jobs retriage`), stored beside
+    /// the ledger. Absent until one is made, and from an older vani. Lenient like the
+    /// fields above: an object this app cannot read is nil and never fails the list.
+    public var manualTriage: ManualTriage? {
+        get { manualTriageWire?.value }
+        set { manualTriageWire = newValue.map { Lenient($0) } }
+    }
+    var manualTriageWire: Lenient<ManualTriage>?
+
     // Display-only insight from `vani jobs` (cmd/vani/jobsinsight.go).
     /// The date the age is measured from: the board's posted date, or when
     /// Vani first saw the posting (`freshSource == .seen`, an upper bound).
@@ -177,6 +186,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
              explanation, missing, unsure, lca, employer, triage, category, mark, note, description,
              relevance, priority, keywords, semantic, row
         case untriagedWire = "untriaged"
+        case manualTriageWire = "manual_triage"
         case prefilterDropWire = "prefilter_drop"
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
@@ -542,13 +552,32 @@ public struct ScoreFactor: Equatable, Sendable {
     /// Why the value is what it is, for the few factors that say (`age_neutral`
     /// on a freshness held flat for an employer that closes by application cap).
     public var note: String?
+    /// Which reading a fit factor rests on when it is not the primary model's: "escalate"
+    /// (the escalation tier) or "manual" (Sonnet, asked by hand). Nil for every other
+    /// factor and for a primary reading.
+    public var backend: String?
+    /// That reading's value (a role-fit option), when `backend` names one.
+    public var reading: String?
 
-    public init(name: String, value: Double, weight: Double = 0, known: Bool = true, note: String? = nil) {
+    public init(name: String, value: Double, weight: Double = 0, known: Bool = true, note: String? = nil,
+                backend: String? = nil, reading: String? = nil) {
         self.name = name
         self.value = value
         self.weight = weight
         self.known = known
         self.note = note
+        self.backend = backend
+        self.reading = reading
+    }
+
+    /// Who read the value, in words, for a factor that does not rest on the primary
+    /// model; nil otherwise (and for a backend this app has no words for).
+    public var sourceNote: String? {
+        switch backend {
+        case "manual": "read by \(RetriageWords.manualName)"
+        case "escalate": "read by the escalation model"
+        default: nil
+        }
     }
 
     /// The order Score builds them in; a name this app does not know sorts after.
@@ -635,8 +664,10 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
         var weight: Double?
         var known: Bool?
         var note: String?
+        var backend: String?
+        var reading: String?
 
-        private enum CodingKeys: String, CodingKey { case name, value, weight, known, note }
+        private enum CodingKeys: String, CodingKey { case name, value, weight, known, note, backend, reading }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -646,6 +677,8 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
             known = try c.decodeIfPresent(Bool.self, forKey: .known)
             // Unlike the numbers, a note that is not a string is dropped, not fatal: it only explains.
             note = try? c.decode(String.self, forKey: .note)
+            backend = try? c.decode(String.self, forKey: .backend)
+            reading = try? c.decode(String.self, forKey: .reading)
         }
     }
 
@@ -657,7 +690,8 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
                 guard let raw = try? list.decode(Raw.self) else { _ = try? list.decode(Skip.self); continue }
                 guard !raw.name.isEmpty, raw.value.isFinite else { continue }
                 // No `known` means the signal's presence was not stated: not known.
-                out.append(ScoreFactor(name: raw.name, value: raw.value, weight: raw.weight ?? 0, known: raw.known ?? false, note: raw.note))
+                out.append(ScoreFactor(name: raw.name, value: raw.value, weight: raw.weight ?? 0, known: raw.known ?? false, note: raw.note,
+                                       backend: raw.backend, reading: raw.reading))
             }
         }
         items = out.reduce(into: [ScoreFactor]()) { acc, f in
@@ -668,7 +702,8 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.unkeyedContainer()
         for f in items {
-            try c.encode(Wire(name: f.name, value: f.value, weight: f.weight, known: f.known, note: f.note))
+            try c.encode(Wire(name: f.name, value: f.value, weight: f.weight, known: f.known, note: f.note,
+                              backend: f.backend, reading: f.reading))
         }
     }
 
@@ -678,6 +713,8 @@ public struct ScoreFactors: Codable, Equatable, Sendable {
         var weight: Double
         var known: Bool
         var note: String?
+        var backend: String?
+        var reading: String?
     }
 }
 

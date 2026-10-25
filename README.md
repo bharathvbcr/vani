@@ -406,6 +406,21 @@ flowchart TD
     order. Scores cached by an older build are ignored, so the ranker treats every posting as
     unknown until `vani semantic warm --max 5000` recomputes them (about 2 minutes for 1,700
     postings; a plain `warm` does `semantic.warm_per_run`, default 1,000).
+  - `vani jobs retriage [--json] [--dry-run | --clear] KEY` has the Claude triage model
+    (`llm.triage_model`, Sonnet) read one role by hand: the exact triage question, all four
+    slots, on that posting's text and your target summary only (the text framed as untrusted;
+    no personal data, notes or marks). The reading is kept in `<state>/retriage/readings.jsonl`
+    (append-only, last wins, written without the ledger lock so it works while the daemon runs)
+    and, while the posting's text is unchanged, outranks the run's reading of the fit and the
+    rank-penalty slots when ranking (`RankContext.SlotFor`; the fit factor then reads
+    `backend: manual`). Rule 7 holds: it only orders, and never drops a role or brings a dropped
+    one back. A changed posting makes the reading stale (shown, not used). `--dry-run` prints the
+    estimated tokens and USD and the day's remaining llm cap and asks nothing; a real run charges
+    the same daily llm cap as drafts and reports its own cost. The reply is `{before, after, cost}`
+    or `{error, code}` (`unknown_key`, `untriaged`, `text_gone`, `no_llm`, `no_key`,
+    `cap_reached`, `provider`, `refused`, `unsure`, `unreadable`, `busy`, `cancelled`, `store`,
+    `config`, `ledger`, `bad_request`). It is not `vani retriage`, which asks no model. The Mac app's
+    Jobs detail has the button (macos/README.md).
   - `vani kbmatch run [--top N] [--dry-run] [--backend llm|openrouter] [--model ID] [--no-retrieve]`
     asks a model, for the top N postings by priority (default 40) that triage did not read as a
     mismatch, whether the work each describes is the work in your knowledge base: `core`,

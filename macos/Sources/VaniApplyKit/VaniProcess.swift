@@ -29,6 +29,9 @@ public enum VaniProcess {
         /// The first 64 KB of stderr. Never put in a reply as is: a caller
         /// picks out only lines it knows carry no secret.
         public var stderr = Data()
+        /// The caller's `CancelFlag` was set: the child was stopped (SIGTERM, then SIGKILL) and
+        /// reaped, and `stdout` is empty. Not a failure of the child.
+        public var cancelled = false
     }
 
     /// Vani's own default config file (config.Paths in the Go CLI), used when
@@ -63,17 +66,25 @@ public enum VaniProcess {
     public static let terminationGrace: TimeInterval = 1
     /// How often a reader or writer thread looks at its cancel flag while it waits on a pipe.
     private static let pollMilliseconds: Int32 = 100
+    /// How often `run` looks at the caller's `CancelFlag` and its deadline while it waits.
+    private static let cancelPollMilliseconds: Int32 = 25
 
     /// Runs `binary` and returns when it has exited and both of its pipes have ended, or at
     /// `timeout` seconds. A child still running then gets SIGTERM, and SIGKILL after
     /// `terminationGrace` if it ignores that, and the call reports `timedOut` however the child
     /// behaved (closed its pipes and sat, ignored TERM, left a grandchild holding the pipes). The
     /// I/O threads always end with the call: they poll their pipes and stop when told to.
+    ///
+    /// `cancellation` lets another thread end the call early: once it is set the child gets the
+    /// same SIGTERM, then SIGKILL, and is reaped before the call returns `cancelled`. A flag set
+    /// before the call starts nothing. It is looked at every `cancelPollMilliseconds`.
     public static func run(_ binary: URL, arguments: [String], environment: [String: String],
-                           input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int) -> Outcome {
+                           input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int,
+                           cancellation: CancelFlag? = nil) -> Outcome {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: "the vani binary is missing at \(binary.path)")
         }
+        if cancellation?.isSet == true { return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: nil, cancelled: true) }
         let p = Process()
         p.executableURL = binary
         p.arguments = arguments
@@ -118,9 +129,24 @@ public enum VaniProcess {
             try? outPipe.fileHandleForReading.close()
             try? errPipe.fileHandleForReading.close()
         }
-        if done.wait(timeout: deadline) == .timedOut || exited.wait(timeout: deadline) == .timedOut {
-            stop(p, exited: exited)
-            return Outcome(status: nil, stdout: Data(), timedOut: true, launchError: nil)
+        // Only a caller that passed a flag waits in short slices, so its cancel is noticed promptly;
+        // every other caller keeps the single wait on the deadline.
+        var pipesEnded = false, childExited = false
+        while !(pipesEnded && childExited) {
+            if cancellation?.isSet == true {
+                stop(p, exited: exited)
+                return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: nil, cancelled: true)
+            }
+            if DispatchTime.now() >= deadline {
+                stop(p, exited: exited)
+                return Outcome(status: nil, stdout: Data(), timedOut: true, launchError: nil)
+            }
+            let slice = cancellation == nil ? deadline : min(deadline, DispatchTime.now() + .milliseconds(Int(cancelPollMilliseconds)))
+            if !pipesEnded {
+                pipesEnded = done.wait(timeout: slice) == .success
+            } else {
+                childExited = exited.wait(timeout: slice) == .success
+            }
         }
         let truncated = box.out.count > maxOutputBytes
         return Outcome(status: p.terminationStatus, stdout: truncated ? Data(box.out.prefix(maxOutputBytes)) : box.out,
@@ -376,10 +402,12 @@ private final class OutputBox: @unchecked Sendable {
     var err = Data()
 }
 
-/// Set once to tell a pipe thread to stop.
-private final class CancelFlag: @unchecked Sendable {
+/// Set once to tell a thread to stop: `run`'s own pipe threads, and (passed as `cancellation`)
+/// the call itself.
+public final class CancelFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func set() { lock.lock(); value = true; lock.unlock() }
+    public init() {}
+    public var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    public func set() { lock.lock(); value = true; lock.unlock() }
 }

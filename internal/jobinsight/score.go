@@ -82,6 +82,13 @@ func (c Calibration) Conf(p float64, hasP bool) (conf float64, ok bool) {
 // confidence when it comes.
 const ShadowEscalate = "escalate"
 
+// BackendManual is the backend name of a reading the owner asked a Claude model
+// for by hand (`vani jobs retriage`, internal/manualtriage). It outranks the
+// primary's and the escalation's reading of the slots it names (SlotFor), has no
+// p of its own, and so takes Weights.AnsweredConf unless a Calibration is named
+// for it. It only orders (Rule 7).
+const BackendManual = "manual"
+
 // Penalty is a drop rule whose slot value matched a posting the policy kept
 // (the rule's confidence threshold was not met). It softens the score in
 // proportion to how sure the reading is. The rule's values never leave the
@@ -185,7 +192,8 @@ type Factor struct {
 	Note string `json:"note,omitempty"`
 	// Backend names the reading the value rests on when it is not the primary's:
 	// ShadowEscalate on a fit the escalation tier read where the primary was
-	// unsure. Reading is then the option it chose. Both are omitted otherwise.
+	// unsure, BackendManual on a fit the owner had a Claude model read by hand.
+	// Reading is then the option it chose. Both are omitted otherwise.
 	Backend string `json:"backend,omitempty"`
 	Reading string `json:"reading,omitempty"`
 }
@@ -617,10 +625,10 @@ func ScoreWith(in Inputs, w Weights) Result {
 		if p.known {
 			f.Conf = p.conf
 		}
-		if i == 0 && in.RoleFit.Backend == ShadowEscalate {
-			// The fit rests on the escalation tier's reading (SlotFor), not the
-			// primary's: say so, and which option it chose.
-			f.Backend, f.Reading = ShadowEscalate, in.RoleFit.Value
+		if i == 0 && (in.RoleFit.Backend == ShadowEscalate || in.RoleFit.Backend == BackendManual) {
+			// The fit rests on the escalation tier's reading or the owner's manual one
+			// (SlotFor), not the primary's: say so, and which option it chose.
+			f.Backend, f.Reading = in.RoleFit.Backend, in.RoleFit.Value
 		}
 		r.Factors = append(r.Factors, f)
 	}

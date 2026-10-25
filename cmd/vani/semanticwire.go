@@ -593,7 +593,8 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 	rules, titleRank := rankRules(cfg)
 	kb, kbWarning := kbmatchLookup(cfg, stateDir)
 	weights, _, weightsWarning := rankWeights(cfg)
-	for _, w := range []string{kbWarning, weightsWarning} {
+	manual, manualWarning := manualLookup(stateDir)
+	for _, w := range []string{kbWarning, weightsWarning, manualWarning} {
 		if w == "" {
 			continue
 		}
@@ -604,7 +605,7 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 	}
 	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank, KBMatch: kb,
 		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies), HalfLifeDays: jobinsight.DefaultScoreHalfLifeDays,
-		Weights: weights, EscalateBelowP: rankEscalateBelowP(cfg), TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(),
+		Weights: weights, EscalateBelowP: rankEscalateBelowP(cfg), Manual: manual, TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(),
 		ExploreDropped: cfg.DigestExploreDropped()}, warning
 }
 

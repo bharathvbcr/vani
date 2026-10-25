@@ -245,6 +245,9 @@ type insight struct {
 	// prefilter` and the run apply it); nil when the config sets none or could
 	// not be read.
 	drop *pipeline.DropPolicy
+	// manual holds the owner's manual readings (internal/manualtriage) so Enrich
+	// can show them, stale ones too; nil when none could be read.
+	manual *manualReadingSet
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -347,6 +350,10 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 		in.rc.Weights, in.info.Weights, warn = rankWeights(cfg)
 		in.warn(warn)
 	}
+	// The owner's manual readings need no config: the store is beside the ledger.
+	var warn string
+	in.manual, in.rc.Manual, warn = manualReadings(stateDir)
+	in.warn(warn)
 	return in, nil
 }
 
@@ -414,6 +421,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 	j.RelevanceKnown = res.RelevanceKnown
 	j.Reasons = jobview.ParseReasons(j.Explanation)
 	in.semanticInto(j, r)
+	j.ManualTriage = in.manual.view(r)
 	j.Pay = jobinsight.PostingPay(r.Posting)
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	row := jobview.RowOf(*j)

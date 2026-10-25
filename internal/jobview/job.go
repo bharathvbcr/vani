@@ -240,6 +240,10 @@ type Job struct {
 	Logo string `json:"logo,omitempty"`
 	// Row is the versioned contract every surface reads (internal/jobview).
 	Row *Row `json:"row,omitempty"`
+	// ManualTriage is the reading the owner had a Claude model make by hand
+	// (`vani jobs retriage`), shown whether or not ranking still uses it. Display
+	// only: it orders the list when Current and never drops or undrops a posting.
+	ManualTriage *ManualTriage `json:"manual_triage,omitempty"`
 
 	// Untriaged marks a posting no run has triaged yet (status live): it has no
 	// fit, relevance, priority, keywords or row, and the reply carries none of
@@ -423,6 +427,18 @@ func RowOf(j Job) Row {
 		DupLinks: []string{j.DupOf, j.DupCandidateOf, j.DupSiblingOf},
 		AgeDays:  j.AgeDays, FreshSrc: j.FreshSrc,
 	})
+}
+
+// ManualTriage is a job's manual reading as `vani jobs` reports it. Current false
+// means the posting text changed (or is gone) since the model read it, so the
+// ranking ignores the reading; StaleReason then says which ("text_changed" or
+// "text_gone").
+type ManualTriage struct {
+	Slots       map[string]string `json:"slots"`
+	Model       string            `json:"model"`
+	At          time.Time         `json:"at"`
+	Current     bool              `json:"current"`
+	StaleReason string            `json:"stale_reason,omitempty"`
 }
 
 // Semantic is a job's knowledge-base match as `vani jobs` reports it.
