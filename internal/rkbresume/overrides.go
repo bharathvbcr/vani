@@ -60,7 +60,7 @@ var forbiddenInOverride = []string{"{{", "}}", "](", "*", "`", "<", ">"}
 // checkOverrides holds each override to one plain printable line of its field's
 // length: no control, format (bidi) or unassigned character, no newline, no
 // padding, no markup rkb would render, dates only letters, digits, spaces and
-// "–-/,.", and a lead of exactly "-" meaning none. An empty field is not an
+// "–-/,.", no figure in a lead, and a lead of exactly "-" meaning none. An empty field is not an
 // override; a whitespace-only one is refused rather than read as empty. Entries
 // are checked in id order so the refusal is the same every time. Messages name
 // the field, never its text.
@@ -107,6 +107,12 @@ func checkOverride(name, v string, max int) error {
 		}
 		if name == "dates" && !datesRune(r) {
 			return fmt.Errorf("dates may hold only letters, digits, spaces and – - / , .")
+		}
+		// A figure on the page comes only from a claim rkb verified. A lead is a
+		// sentence, so a number in it would be an unverified figure; a title, an
+		// org, a stack and dates hold names and versions ("CUDA 12", "3M").
+		if name == "lead" && unicode.IsNumber(r) {
+			return errors.New("lead may not hold a figure: figures on the page come only from verified claims")
 		}
 	}
 	for _, bad := range forbiddenInOverride {
