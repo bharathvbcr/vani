@@ -39,8 +39,9 @@ const (
 // ErrResolve wraps every claim-resolution failure.
 var ErrResolve = errors.New("kbsync: resolve claims")
 
-// tokenRe is rkb/render.go:12.
-var tokenRe = regexp.MustCompile(`\{\{(clm[A-Za-z]+)\}\}`)
+// TokenRe is rkb's claim token (rkb/render.go:12): {{clmName}}. Exported so
+// rkbresume reads claim tokens with the one pattern, not a copy.
+var TokenRe = regexp.MustCompile(`\{\{(clm[A-Za-z]+)\}\}`)
 
 // Plain-text markup, mirroring rkb/render.go:13-15 and the text renderer
 // (render.go:99-114), so resolved text matches rkb's own .txt output and no
@@ -198,8 +199,8 @@ func ParseClaims(raw []byte) (Claims, error) {
 func ResolveText(s string, claims map[string]string) (string, []string) {
 	var missing []string
 	seen := map[string]bool{}
-	s = tokenRe.ReplaceAllStringFunc(s, func(m string) string {
-		id := tokenRe.FindStringSubmatch(m)[1]
+	s = TokenRe.ReplaceAllStringFunc(s, func(m string) string {
+		id := TokenRe.FindStringSubmatch(m)[1]
 		if v, ok := claims[id]; ok {
 			return v
 		}
@@ -224,7 +225,7 @@ func ResolveText(s string, claims map[string]string) (string, []string) {
 // tokenIDs lists the distinct claim ids a text uses, sorted.
 func tokenIDs(s string) []string {
 	set := map[string]bool{}
-	for _, m := range tokenRe.FindAllStringSubmatch(s, -1) {
+	for _, m := range TokenRe.FindAllStringSubmatch(s, -1) {
 		set[m[1]] = true
 	}
 	ids := make([]string, 0, len(set))

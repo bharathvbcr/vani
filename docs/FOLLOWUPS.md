@@ -711,8 +711,8 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     `rkbresume` calls).
   - The agent's PATH is the system folders: `pdftotext` is found in Homebrew's prefixes by
     `rkbresume`; Chrome by rkb's own list.
-  - Copies to fold: rkb's claim-token regexp lives in both `kbsync` (unexported `tokenRe`) and
-    `rkbresume.tokenRe`; `rkbresume.Runner` (stdout and exit code) could replace `kbsync.Runner`.
+  - Copies to fold: `rkbresume.Runner` (stdout and exit code) could replace `kbsync.Runner`. (The
+    claim-token regexp is folded: `kbsync.TokenRe` is the one copy.)
   - An education entry with org and dates is a job to `kbsync.KindOf`, so if one ever gains an
     eligible bullet it becomes placeable in the work history (`rkbresume.canHold`). Today no
     education bullet is eligible.

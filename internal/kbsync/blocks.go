@@ -274,7 +274,7 @@ func ResolveBank(b Bank, c Claims) Resolved {
 			}
 			bb := BlockBullet{ID: sid, RkbID: bid, Canonical: text}
 			seen := map[string]bool{}
-			for _, m := range tokenRe.FindAllStringSubmatch(raw, -1) {
+			for _, m := range TokenRe.FindAllStringSubmatch(raw, -1) {
 				if v, ok := c.Values[m[1]]; ok && !seen[v] {
 					seen[v] = true
 					bb.Metrics = append(bb.Metrics, v)
