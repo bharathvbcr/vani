@@ -35,9 +35,11 @@ const (
 // Checks.Fit). fit=false stops after rkb has rendered the page: no PDF, Pages 0,
 // Checks.Fit "not_run", and Result.HTMLPath is rkb's page inside the folder
 // Result.BuildDir, which the caller must remove (os.RemoveAll) when it is done:
-// the page holds the owner's header. Only that page and rkb's inputs remain in it
-// (the bank copy is removed); the work-folder sweep removes a forgotten one after
-// MaxDeadline. Either way Source is SourceEdited.
+// the page holds the owner's header. Only that page remains in it (the bank copy
+// and the selection, which carries the header, are removed). The work-folder
+// sweep removes a forgotten folder after MaxDeadline, but only when cfg.WorkDir
+// is set; without it the folder is in the system temp folder and is never swept.
+// Either way Source is SourceEdited.
 //
 // The build lock is taken as Build takes it; the Chrome lock only when fitting.
 // The Result of an error carries what ran (Checks) and the fingerprints.
@@ -81,6 +83,8 @@ func Render(ctx context.Context, cfg Config, req Request, edit []byte, fit bool)
 		_ = os.Remove(b.bankPath)
 		_ = os.RemoveAll(filepath.Join(b.dir, tmpDirName))
 		_ = os.RemoveAll(filepath.Join(b.dir, "probe"))
+		_ = os.Remove(filepath.Join(b.dir, "edited", "sel.json")) // carries the header
+		_ = os.Remove(filepath.Join(b.dir, "edited", "claims.json"))
 		res.BuildDir = b.dir
 		keep = true
 	} else {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -316,18 +317,36 @@ func TestEachFingerprintMovesWithItsOwnInput(t *testing.T) {
 	}
 }
 
-func TestFingerprintsOfAFileThatIsNotThereAreNeverAHashOrEmpty(t *testing.T) {
+// A named validator report that cannot be read fails the build before anything is
+// spent (the store accepts only a hash or "none" there); an unreadable rkb binary,
+// only possible with a fake Runner, is "" (also what the store accepts).
+func TestAnUnreadableValidatorReportFailsTheBuildAndEveryFingerprintIsHexOrEmpty(t *testing.T) {
 	f := newFixture(t)
-	f.cfg.Provider, f.cfg.NoModel = nil, "off"
 	f.cfg.VMReport = filepath.Join(f.dir, "gone.txt")
-	fp := mustBuild(t, f).Fingerprints
-	if fp.VMReport != "unreadable" || fp.RKB != "unreadable" {
-		t.Errorf("vm report %q, rkb %q: a named file that could not be read is not a hash and not 'none'", fp.VMReport, fp.RKB)
+	_, err := f.build()
+	wantCode(t, err, CodeConfig)
+	if len(f.provider.reqs) != 0 {
+		t.Errorf("the model was asked despite an unreadable validator report")
 	}
+	big := filepath.Join(f.dir, "big.txt")
+	if err := os.WriteFile(big, make([]byte, kbsync.MaxClaimsBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.VMReport = big
+	_, err = f.build()
+	wantCode(t, err, CodeConfig)
+
 	g := newFixture(t)
 	g.cfg.Provider, g.cfg.NoModel = nil, "off"
-	if fp := mustBuild(t, g).Fingerprints; fp.VMReport != "" {
-		t.Errorf("no validator report configured: vm report = %q, want empty", fp.VMReport)
+	fp := mustBuild(t, g).Fingerprints // /fake/rkb is not a file
+	if fp.VMReport != "" || fp.RKB != "" {
+		t.Errorf("vm report %q, rkb %q: want empty for none and for an unreadable fake binary", fp.VMReport, fp.RKB)
+	}
+	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	for name, v := range map[string]string{"bank": fp.Bank, "base": fp.BaseSelection, "selections": fp.Selections, "claims": fp.Claims} {
+		if !hex64.MatchString(v) {
+			t.Errorf("%s fingerprint %q is not 64 hex characters, which the store requires", name, v)
+		}
 	}
 }
 

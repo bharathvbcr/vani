@@ -120,6 +120,9 @@ func TestRenderWithoutFitReturnsThePageAndNoPDF(t *testing.T) {
 	if _, serr := os.Stat(filepath.Join(res.BuildDir, "bank.json")); serr == nil {
 		t.Error("the bank copy was left in the folder the caller gets")
 	}
+	if _, serr := os.Stat(filepath.Join(res.BuildDir, "edited", "sel.json")); serr == nil {
+		t.Error("the selection (with the header) was left in the folder the caller gets")
+	}
 	if got := workEntries(t, f.cfg.WorkDir); len(got) != 1 {
 		t.Errorf("work folder = %v, want only the caller's build folder", got)
 	}

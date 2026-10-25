@@ -283,8 +283,17 @@ func (b *builder) load(ctx context.Context) *Error {
 	}
 	b.bank = bank
 	b.fp.Bank = sha256Hex(raw)
-	b.fp.RKB = optionalFileSHA256(b.cfg.RKB, maxFingerprintFile)
-	b.fp.VMReport = optionalFileSHA256(b.cfg.VMReport, kbsync.MaxClaimsBytes)
+	b.fp.RKB = rkbFingerprint(b.cfg.RKB)
+	if b.cfg.VMReport != "" {
+		// The validator report decides which figures count as verified, and rkb reads
+		// it itself: a version must name what it was judged on, so an unreadable
+		// report is no build.
+		sum, err := fileSHA256(b.cfg.VMReport, kbsync.MaxClaimsBytes)
+		if err != nil {
+			return fail(CodeConfig, "the validator report %s cannot be read (it must be a readable file of at most %d bytes)", filepath.Base(b.cfg.VMReport), kbsync.MaxClaimsBytes)
+		}
+		b.fp.VMReport = sum
+	}
 	// The base comes before the first rkb call so the owner's header strings are
 	// known to the scrubber for everything rkb says from here on.
 	base, berr := loadBase(b.cfg.BaseSelection, MaxPages)
