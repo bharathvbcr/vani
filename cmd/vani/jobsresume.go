@@ -534,7 +534,8 @@ func redraftOf(st *resumestore.Store, key posting.Key, cur int, o resumeBuildOpt
 	if from == 0 && (o.Scope != "" || len(o.Lock) > 0) {
 		return t, 0, jrErr(jrBadRequest, "jobs resume build: --scope and --lock keep parts of an existing version, and this job has none (--from names one)")
 	}
-	if err := rkbresume.CheckTailor(t, o.AllowBase); err != nil {
+	t, err := rkbresume.CheckTailor(t, o.AllowBase)
+	if err != nil {
 		return t, 0, asResumeError(err)
 	}
 	return t, from, nil

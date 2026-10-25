@@ -657,6 +657,21 @@ func TestPreviousBlockIsBounded(t *testing.T) {
 	}
 }
 
+// A dry run reports what a build will use, not what was typed.
+func TestCheckTailorReturnsTheTailorABuildWillUse(t *testing.T) {
+	in := Tailor{Previous: json.RawMessage(`{"sections":[]}`), Scope: "  GPU Systems ", Lock: []string{"Summary", " Summary", "Experience"}, Instruction: "  prefer tracing \t"}
+	got, err := CheckTailor(in, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Instruction != "prefer tracing" || got.Scope != "GPU Systems" || strings.Join(got.Lock, ",") != "Summary,Experience" {
+		t.Fatalf("normalized = %+v", got)
+	}
+	if _, err := CheckTailor(Tailor{Instruction: "a@b.co"}, false); err == nil {
+		t.Fatal("an email passed CheckTailor")
+	}
+}
+
 func TestPhoneAndEmailRules(t *testing.T) {
 	for in, want := range map[string]bool{
 		"5551234567": true, "555-123-4567": true, "(555) 123-4567": true, "+1 (555) 123-4567": true, "+44 20 7946 0958": true,

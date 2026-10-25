@@ -210,6 +210,11 @@ func TestDryRunCoversTheRedraftFlags(t *testing.T) {
 	if len(p.reqs) != 0 {
 		t.Errorf("a dry run sent %d turns", len(p.reqs))
 	}
+	// It counts what a build would send: trimmed.
+	out, _ = jrRun(t, 0, "", "build", "--json", "--dry-run", "--instruction", "  prefer tracing  ", jrKey)
+	if m := jrObject(t, out); m["instruction_runes"] != float64(len("prefer tracing")) {
+		t.Errorf("instruction_runes = %v", m["instruction_runes"])
+	}
 	// A refusal the dry run can know of is the build's own.
 	out, _ = jrRun(t, 1, "", "build", "--json", "--dry-run", "--instruction", "mail me at a@b.co", jrKey)
 	if r := jrFail(t, out); r.Code != "bad_instruction" {

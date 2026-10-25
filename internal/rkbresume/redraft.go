@@ -96,13 +96,15 @@ func (t Tailor) PromptBytes() int {
 // instruction, the shape of the scope and lock names, and the combinations that
 // cannot work. It is what Build checks first, before a lock or a turn; a dry run
 // calls it to say the same thing a build would. Which section or entry a name
-// means is known only once the bank is read (CodeBadScope again).
-func CheckTailor(t Tailor, allowBase bool) error {
-	_, err := normalizeTailor(t, allowBase)
+// means is known only once the bank is read (CodeBadScope again). It returns the
+// Tailor as a build will use it: the instruction and names trimmed, the locks
+// without duplicates.
+func CheckTailor(t Tailor, allowBase bool) (Tailor, error) {
+	n, err := normalizeTailor(t, allowBase)
 	if err != nil {
-		return err
+		return t, err
 	}
-	return nil
+	return n, nil
 }
 
 func normalizeTailor(t Tailor, allowBase bool) (Tailor, *Error) {
