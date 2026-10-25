@@ -19,6 +19,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/resumestore"
 	"github.com/bharathvbcr/Vani/internal/semantic"
 )
 
@@ -248,6 +249,9 @@ type insight struct {
 	// manual holds the owner's manual readings (internal/manualtriage) so Enrich
 	// can show them, stale ones too; nil when none could be read.
 	manual *manualReadingSet
+	// resumes is the per-job resume store (internal/resumestore) Enrich reads a
+	// summary from; nil when the state directory is unknown.
+	resumes *resumestore.Store
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -354,6 +358,9 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	var warn string
 	in.manual, in.rc.Manual, warn = manualReadings(stateDir)
 	in.warn(warn)
+	// Open creates nothing and reads nothing; an unusable store shows per job
+	// (jobview.ResumeOf), so it can never look like "no resume".
+	in.resumes, _ = resumestore.Open(stateDir)
 	return in, nil
 }
 
@@ -401,6 +408,7 @@ func oneLine(s string, n int) string { return jobview.CleanText(s, n, false) }
 // keyword hits (for stats).
 func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobinsight.Hit {
 	jobview.Locate(j, r.Posting)
+	j.Resume = jobview.ResumeFor(in.resumes, string(r.Key))
 	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
 		age := jobinsight.AgeDays(at, in.now)
 		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
