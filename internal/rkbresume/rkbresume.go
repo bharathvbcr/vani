@@ -16,9 +16,10 @@
 //     (bullet id, resolved plain text, entry id and title). It answers with
 //     ids. The answer is validated strictly: a bullet must be Allowed under
 //     its entry, ids are unique, counts are bounded, keywords occur in the
-//     posting. Anything invalid, no provider, an exhausted budget or a timeout
-//     falls back to the base selection (filtered to eligible bullets), and the
-//     Result says which happened.
+//     posting. Anything invalid falls back to the base selection (filtered to
+//     eligible bullets), and the Result says which happened. A model that could
+//     not run at all (no provider, no budget, unreachable, timed out) falls back
+//     only when Config.AllowBase is set; otherwise Build fails with no_model.
 //  4. Writes the chosen selection into a private temp dir and runs rkb on it:
 //     `claims export --used-in`, `lint` (draft, not --final), `render` and
 //     `fit --pages N --strict`. It does not use `rkb build`: that also writes
@@ -30,6 +31,10 @@
 //     page text); then the base selection is built. If the base fails too, the
 //     error is coded. A missing Chrome or pdftotext means fit could not run:
 //     that is an error, never a pass.
+//
+// Render (the owner's edit, no model) and Pool (what the editor may place) are
+// the other entry points; every Result carries the record of how its page was
+// made (record.go) in the shape the resume store keeps.
 //
 // Personal data: the base selection's header is only copied into a file rkb
 // reads; it is never put in a prompt. The tailored selection's
