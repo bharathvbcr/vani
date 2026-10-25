@@ -366,6 +366,24 @@ describe("building one", () => {
       expect(r.ok && r.version === undefined).toBe(true);
     }
   });
+  test("parseBuiltResume: the codes Resume Studio added are worded, and vani's own text stays where it says more", () => {
+    const help = (code: string) => { const r = parseBuiltResume({ error: "vani's own message", code }); return r.ok ? "" : r.detail; };
+    expect(help("busy")).toMatch(/still working on an earlier request/);
+    expect(help("kb_changed")).toMatch(/knowledge base changed while the resume was being built/);
+    expect(help("unchecked")).toMatch(/could not check the resume/);
+    expect(help("stale")).toMatch(/changed in your knowledge base after it was built/);
+    // vani names the reason (no_model) or the bullet (ineligible) itself, so its message is shown.
+    expect(help("no_model")).toBe("vani's own message");
+    expect(help("ineligible")).toBe("vani's own message");
+    expect(help("not_usable")).toBe("vani's own message");
+    // A code the extension does not know falls back to vani's message.
+    expect(help("something_new")).toBe("vani's own message");
+    expect(help("")).toBe("vani's own message");
+  });
+  test("no_name is no longer a code the extension words: nothing sends a header for vani to refuse", () => {
+    const r = parseBuiltResume({ error: "vani's own message", code: "no_name" });
+    expect(!r.ok && r.detail).toBe("vani's own message");
+  });
   test("parseBuiltResume: a saved version that could not be used is named, within the detail bound", () => {
     const r = parseBuiltResume({ error: "the built version's fit did not pass", code: "fit", version: 4 });
     expect(!r.ok && r.detail).toBe("the built version's fit did not pass (saved as v4 in Vani)");

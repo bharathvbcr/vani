@@ -54,6 +54,11 @@ export const JOB_HELP: Record<string, string> = {
   ungrounded: "The draft cited a figure that isn't in your knowledge base or the posting, so Vani threw it away. Try again, or write this answer yourself.",
   bad_reply: "Vani sent a reply that isn't a suggestion.",
   unsupported: "This version of the Vani Apply app can't run suggestions. Rebuild and reopen it.",
+  // Resume Studio's codes. Where vani's own message says more (no_model names why, ineligible names the bullet),
+  // resume.ts lists the code in OWN_TEXT and the message is shown instead.
+  kb_changed: "Your knowledge base changed while the resume was being built, so Vani did not use that build. Build again.",
+  unchecked: "Vani could not check the resume against your knowledge base, so it did not use it. Try again.",
+  stale: "A bullet on that resume changed in your knowledge base after it was built, so Vani did not use it. Build again.",
 };
 
 /** The `vani suggest` request, or an error when there is nothing to ask about. */

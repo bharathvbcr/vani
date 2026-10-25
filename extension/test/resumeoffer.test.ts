@@ -105,6 +105,25 @@ describe("the offer", () => {
     expect(h.asked.at(-1)).toEqual(["build", "choose", "dismiss"]);
   });
 
+  test("each refusal Resume Studio adds reaches the bar in words, with the choices again", async () => {
+    const want: Record<string, RegExp> = {
+      busy: /still working on an earlier request/,
+      kb_changed: /knowledge base changed while the resume was being built/,
+      unchecked: /could not check the resume/,
+      stale: /changed in your knowledge base after it was built/,
+      no_model: /the model could not run \(no key\)/,
+      ineligible: /bullet "b1" is no longer eligible/,
+    };
+    const own: Record<string, string> = { no_model: "the model could not run (no key), so no tailored resume was built", ineligible: 'bullet "b1" is no longer eligible (reworded); replace it' };
+    for (const [code, re] of Object.entries(want)) {
+      const h = harness({ find: async () => ({ key: "greenhouse:acme:4012" }), build: async () => ({ error: own[code] ?? "vani's message", code }) });
+      await h.offer.build();
+      expect([code, h.log.at(-1)]).toEqual([code, expect.stringMatching(re)]);
+      expect(h.asked.at(-1)).toEqual(["build", "choose", "dismiss"]);
+      expect(h.saves.length + h.attached.length).toBe(0);
+    }
+  });
+
   test("an ambiguous page is not guessed: stateless, and the bar says why it was not saved", async () => {
     const h = harness({ find: async () => ({ key: null, ambiguous: true }) });
     await h.offer.build();
