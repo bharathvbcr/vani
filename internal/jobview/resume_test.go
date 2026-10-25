@@ -152,7 +152,7 @@ func TestResumeSummaryOtherSchemaIsUnsupported(t *testing.T) {
 	for _, e := range ents {
 		p := filepath.Join(root, e.Name(), "v1.json")
 		if b, err := os.ReadFile(p); err == nil {
-			if err := os.WriteFile(p, []byte(strings.Replace(string(b), `"schema":1`, `"schema":2`, 1)), 0o600); err != nil {
+			if err := os.WriteFile(p, []byte(strings.Replace(string(b), `"schema":2`, `"schema":3`, 1)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -160,6 +160,28 @@ func TestResumeSummaryOtherSchemaIsUnsupported(t *testing.T) {
 	got := resumeFor(t, st, "gh:acme:1")
 	if got == nil || got.Error != "unsupported" {
 		t.Fatalf("summary = %+v", got)
+	}
+}
+
+// A schema 1 record (written before the instruction existed) summarises exactly
+// as a schema 2 one does: the job list does not read the instruction.
+func TestResumeSummaryOfASchema1RecordIsTheSame(t *testing.T) {
+	st, state := resumeStore(t)
+	saveResume(t, st, "gh:acme:1", resumeMeta(nil))
+	want := resumeFor(t, st, "gh:acme:1")
+	root := resumestore.Dir(state)
+	ents, _ := os.ReadDir(root)
+	for _, e := range ents {
+		p := filepath.Join(root, e.Name(), "v1.json")
+		if b, err := os.ReadFile(p); err == nil {
+			if err := os.WriteFile(p, []byte(strings.Replace(string(b), `"schema":2`, `"schema":1`, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got := resumeFor(t, st, "gh:acme:1")
+	if got == nil || want == nil || *got != *want || got.Error != "" {
+		t.Fatalf("schema 1 summary = %+v, schema 2 = %+v", got, want)
 	}
 }
 

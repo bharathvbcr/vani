@@ -222,14 +222,8 @@ func loadRecord(path string, n int, oldKey, newKey string) ([]byte, time.Time, e
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("v%d: %w", n, damaged(err))
 	}
-	var probe struct {
-		Schema int `json:"schema"`
-	}
-	if err := json.Unmarshal(b, &probe); err != nil {
-		return nil, time.Time{}, fmt.Errorf("%w: v%d does not read: %v", ErrDamaged, n, err)
-	}
-	if probe.Schema != Schema {
-		return nil, time.Time{}, fmt.Errorf("%w: v%d has schema %d, this reads %d", ErrSchema, n, probe.Schema, Schema)
+	if _, err := probeSchema(b, n); err != nil {
+		return nil, time.Time{}, err
 	}
 	var m Meta
 	dec := json.NewDecoder(bytes.NewReader(b))

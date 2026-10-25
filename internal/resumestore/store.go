@@ -374,14 +374,9 @@ func readMeta(dir, key string, n int) (Meta, error) {
 	if err != nil {
 		return Meta{}, fmt.Errorf("v%d: %w", n, damaged(err))
 	}
-	var probe struct {
-		Schema int `json:"schema"`
-	}
-	if err := json.Unmarshal(b, &probe); err != nil {
-		return Meta{}, fmt.Errorf("%w: v%d does not read: %v", ErrDamaged, n, err)
-	}
-	if probe.Schema != Schema {
-		return Meta{}, fmt.Errorf("%w: v%d has schema %d, this reads %d", ErrSchema, n, probe.Schema, Schema)
+	schema, err := probeSchema(b, n)
+	if err != nil {
+		return Meta{}, err
 	}
 	var m Meta
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -399,6 +394,8 @@ func readMeta(dir, key string, n int) (Meta, error) {
 		return Meta{}, fmt.Errorf("%w: v%d records version %d", ErrDamaged, n, m.Version)
 	case m.Parent >= n:
 		return Meta{}, fmt.Errorf("%w: v%d has parent %d", ErrDamaged, n, m.Parent)
+	case schema < 2 && m.Instruction != "":
+		return Meta{}, fmt.Errorf("%w: v%d is schema %d, which has no instruction", ErrDamaged, n, schema)
 	}
 	if err := checkMeta(m); err != nil {
 		return Meta{}, fmt.Errorf("%w: v%d: %v", ErrDamaged, n, err)
@@ -410,6 +407,22 @@ func readMeta(dir, key string, n int) (Meta, error) {
 		}
 	}
 	return m, nil
+}
+
+// probeSchema reads a record's schema number and refuses one outside
+// MinSchema..Schema (ErrSchema, so a newer record is "unsupported", never
+// damage). Every reader of a vN.json (readMeta, Rekey) goes through it.
+func probeSchema(b []byte, n int) (int, error) {
+	var probe struct {
+		Schema int `json:"schema"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return 0, fmt.Errorf("%w: v%d does not read: %v", ErrDamaged, n, err)
+	}
+	if probe.Schema < MinSchema || probe.Schema > Schema {
+		return 0, fmt.Errorf("%w: v%d has schema %d, this reads %d to %d", ErrSchema, n, probe.Schema, MinSchema, Schema)
+	}
+	return probe.Schema, nil
 }
 
 func damaged(err error) error {
