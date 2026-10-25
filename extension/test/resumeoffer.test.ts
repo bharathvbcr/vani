@@ -1,15 +1,11 @@
 // The build-or-choose offer on a form whose resume box Fill left empty. Fakes for the
 // bar, the agent job, the file picker, the Mac app and the page. Neutral test values only.
 import { describe, expect, test } from "bun:test";
-import { OFFER_TEXT, type OfferAction, type OfferDeps, createResumeOffer } from "../src/resumeoffer";
+import { type BuildJob, OFFER_TEXT, type OfferAction, type OfferDeps, createResumeOffer } from "../src/resumeoffer";
 import type { FillOutcome } from "../src/fill";
 import { type ResumeFetch, toBase64 } from "../src/resume";
-import { emptyBank } from "../src/types";
-import { mergeCapture } from "../src/bank";
-import { BASICS_HOST, basicsFields } from "../src/basics";
 
 const PDF = new TextEncoder().encode("%PDF-1.4\n%neutral test file\n%%EOF\n");
-const named = mergeCapture(emptyBank(), basicsFields({ first: "Test", last: "Applicant", email: "applicant@example.invalid" }), BASICS_HOST, new Date()).bank;
 const noResume: FillOutcome[] = [{ label: "Resume/CV", filled: false, reason: "no_resume", detail: "no resume chosen for this job" }];
 
 function harness(over: Partial<OfferDeps> = {}) {
@@ -17,7 +13,7 @@ function harness(over: Partial<OfferDeps> = {}) {
   const asked: OfferAction[][] = [];
   const saves: { name: string; pdf: string }[] = [];
   const attached: ResumeFetch[] = [];
-  const requests: object[] = [];
+  const requests: BuildJob[] = [];
   const d: OfferDeps = {
     ui: {
       ask: (t, a) => { log.push(`ask: ${t}`); asked.push(a); },
@@ -25,8 +21,8 @@ function harness(over: Partial<OfferDeps> = {}) {
       done: t => log.push(`done: ${t}`),
       hide: () => log.push("hide"),
     },
-    bank: async () => named,
     job: () => ({ company: "Acme AI", title: "Engineer", description: "Build research tools." }),
+    find: async () => ({ key: null }),
     build: async (req, tick) => { requests.push(req); tick(3000); return { pdf: toBase64(PDF), name: "Resume_Acme_AI.pdf", bytes: PDF.length, pages: 2 }; },
     pick: async () => ({ name: "Resume_Chosen.pdf", size: PDF.length, bytes: PDF }),
     save: async (name, pdf) => { saves.push({ name, pdf }); return {}; },
@@ -56,27 +52,74 @@ describe("the offer", () => {
     expect(h.log.at(-1)).toBe("hide");
   });
 
-  test("Build: the job and the header go to the agent, the PDF is bound to the job and attached", async () => {
+  test("Build on an untracked page: the posting goes to the stateless job with no header, the PDF is bound and attached, and the bar says it is not a saved version", async () => {
     const h = harness();
     await h.offer.build();
     expect(h.requests).toEqual([{
-      job: { company: "Acme AI", title: "Engineer", description: "Build research tools." },
-      header: { name: "Test Applicant", contact_lines: ["applicant@example.invalid"] },
+      kind: "resume",
+      request: { job: { company: "Acme AI", title: "Engineer", description: "Build research tools." } },
     }]);
+    expect(JSON.stringify(h.requests)).not.toContain("header");
     expect(h.saves).toEqual([{ name: "Resume_Acme_AI.pdf", pdf: toBase64(PDF) }]);
     expect(h.attached.length === 1 && h.attached[0]!.ok && h.attached[0]!.name === "Resume_Acme_AI.pdf").toBe(true);
-    expect(h.log.some(l => l.startsWith("busy: Building a resume") && l.endsWith("3 s"))).toBe(true);
-    expect(h.log.at(-1)).toMatch(/^ask: Attached Resume_Acme_AI\.pdf \(yellow\)/);
+    expect(h.log.some(l => l.startsWith("busy: Building a resume for this job (not saved as a version)") && l.endsWith("3 s"))).toBe(true);
+    expect(h.log.at(-1)).toMatch(/^ask: Attached Resume_Acme_AI\.pdf \(yellow\)\. Vani does not track this posting, so this resume was not saved as a version\. Open it/);
     expect(h.asked.at(-1)).toEqual(["view", "dismiss"]);
     expect(h.log.some(l => l.startsWith("done:"))).toBe(false);
   });
 
-  test("Build without a name in Your basics: says so, never starts a job", async () => {
-    const h = harness({ bank: async () => emptyBank() });
+  test("Build needs no name anywhere: nothing asks for Your basics, and the request never holds one", async () => {
+    const h = harness();
     await h.offer.build();
-    expect(h.requests.length).toBe(0);
-    expect(h.log.at(-1)).toMatch(/Your basics/);
-    expect(h.asked.at(-1)).toEqual(["choose", "dismiss"]);
+    expect(h.requests.length).toBe(1);
+    expect(h.log.some(l => /Your basics/.test(l))).toBe(false);
+    expect(JSON.stringify(h.requests)).not.toMatch(/Test|Applicant|contact/);
+  });
+
+  test("Build on a tracked page: the key alone goes to the keyed job (no page text), the version is named, the PDF is bound and attached", async () => {
+    const keyed = { pdf: toBase64(PDF), name: "Resume_Acme_AI.pdf", bytes: PDF.length, pages: 1, key: "greenhouse:acme:4012", version: 3 };
+    const h = harness({ find: async () => ({ key: "greenhouse:acme:4012" }), build: async (j, tick) => { h.requests.push(j); tick(3000); return keyed; } });
+    await h.offer.build();
+    expect(h.requests).toEqual([{ kind: "resumeJob", request: { key: "greenhouse:acme:4012" } }]);
+    expect(h.saves).toEqual([{ name: "Resume_Acme_AI.pdf", pdf: toBase64(PDF) }]);
+    expect(h.attached.length).toBe(1);
+    expect(h.log.some(l => l.startsWith("busy: Building a version for this tracked job (saved in Vani)") && l.endsWith("3 s"))).toBe(true);
+    expect(h.log.at(-1)).toMatch(/^ask: Attached Resume_Acme_AI\.pdf \(yellow\)\. Saved in Vani as v3 of this job's resume\. Open it/);
+    expect(h.log.at(-1)).not.toMatch(/not saved as a version/);
+  });
+
+  test("a tracked page with no job description on it still builds (the posting's text is Vani's)", async () => {
+    const h = harness({ find: async () => ({ key: "greenhouse:acme:4012" }), job: () => ({ company: "", title: "", description: "" }) });
+    await h.offer.build();
+    expect(h.requests).toEqual([{ kind: "resumeJob", request: { key: "greenhouse:acme:4012" } }]);
+  });
+
+  test("a keyed refusal is its reason with the choices again, names a saved version, and attaches nothing", async () => {
+    const h = harness({
+      find: async () => ({ key: "greenhouse:acme:4012" }),
+      build: async () => ({ error: "the built version's fit did not pass", code: "fit", version: 2 }),
+    });
+    await h.offer.build();
+    expect(h.saves.length + h.attached.length).toBe(0);
+    expect(h.log.at(-1)).toBe("ask: Building the resume failed: the built version's fit did not pass (saved as v2 in Vani)");
+    expect(h.asked.at(-1)).toEqual(["build", "choose", "dismiss"]);
+  });
+
+  test("an ambiguous page is not guessed: stateless, and the bar says why it was not saved", async () => {
+    const h = harness({ find: async () => ({ key: null, ambiguous: true }) });
+    await h.offer.build();
+    expect(h.requests[0]!.kind).toBe("resume");
+    expect(h.log.at(-1)).toMatch(/More than one posting Vani tracks claims this page, so this resume was not saved as a version/);
+  });
+
+  test("when Vani cannot say whether the page is tracked, the build still goes statelessly and the bar says the check failed (not 'untracked')", async () => {
+    for (const find of [async () => ({ error: "the Vani Apply Mac app isn't reachable" }), async () => { throw new Error("worker gone"); }]) {
+      const h = harness({ find });
+      await h.offer.build();
+      expect(h.requests.map(r => r.kind)).toEqual(["resume"]);
+      expect(h.log.at(-1)).toMatch(/Vani could not tell whether it tracks this posting \(.+\), so this resume was not saved as a version/);
+      expect(h.log.at(-1)).not.toMatch(/does not track/);
+    }
   });
 
   test("Build on a page with no description: says so, never starts a job", async () => {

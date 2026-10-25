@@ -330,7 +330,7 @@ describe("sender policy", () => {
     getBank: {}, capture: { host: "vani-basics", fields: [] }, filled: { keys: [] },
     setSettings: { settings: { captureSelfId: true } }, deleteAnswer: { key: "k" }, editAnswer: { key: "k", value: ["v"] },
     replaceBank: { json: bankJson }, draft: { question: "Why?" }, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" },
-    appliedSignal: { url: own }, appliedPending: {}, jobRow: { url: own }, appliedMark: {}, appliedDismiss: {},
+    appliedSignal: { url: own }, appliedPending: {}, jobRow: { url: own }, jobKey: { url: own }, appliedMark: {}, appliedDismiss: {},
     frameReady: {}, frames: {}, ingestJobs: { page: { url: own, title: "Jobs at Acme" }, saveSearch: false, jobs: [{ title: "Staff Engineer", company: "Acme", location: "Remote", url: "https://careers.acme.com/jobs/1", snippet: "Build things" }] },
     resumeGet: { url: own }, resumeInfo: { url: own }, resumePut: { url: own, name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
     resumeDelete: { url: own }, resumePreview: {}, resumeShow: { name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
@@ -742,6 +742,10 @@ describe("message checks", () => {
   test("background messages: the inherited Object keys are not message types", () => {
     for (const t of ["constructor", "hasOwnProperty", "valueOf"]) expect(checkToBackground({ type: t })).toEqual({ error: "unknown message type" });
     expect(checkToBackground({ type: "jobStart", kind: "rm", request: {} })).toEqual({ error: "malformed jobStart message" });
+    // The keyed resume build is a job kind of its own, and its lookup is bounded like jobRow's.
+    expect(checkToBackground({ type: "jobStart", kind: "resumeJob", request: { key: "gh:acme:1" } })).toEqual({ msg: { type: "jobStart", kind: "resumeJob", request: { key: "gh:acme:1" } } as never });
+    expect(checkToBackground({ type: "jobKey", url: "x".repeat(2049) })).toEqual({ error: "malformed jobKey message" });
+    expect(checkToBackground({ type: "jobKey" })).toEqual({ error: "malformed jobKey message" });
   });
 });
 

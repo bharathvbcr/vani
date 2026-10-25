@@ -33,7 +33,7 @@ import { templateTailoring, generateTailoredDraft } from "./tailor";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
 import { DRAWER_PREVIEW, companyLine, drawerSummary, scorePillText, scoreTone, selectJobs } from "./joblist";
 import { isHttpUrl } from "./joblink";
-import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, type ResumeFetch, checkResumeFile, isResumeField, openHeldResume, parseResumeGet, toBase64 } from "./resume";
+import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, RESUME_KEYED_TIMEOUT_MS, type ResumeFetch, checkResumeFile, isResumeField, openHeldResume, parseResumeGet, toBase64 } from "./resume";
 import { type OfferAction, type OfferUi, type PickedFile, createResumeOffer } from "./resumeoffer";
 import { emptyBank, type Match } from "./types";
 import { createBankMemo } from "./bankcache";
@@ -1654,14 +1654,25 @@ function pickPdf(): Promise<PickedFile | null> {
 
 const resumeOffer = createResumeOffer({
   ui: resumeUi,
-  bank,
   job: () => jobInfo(),
-  build: async (request, onTick) => {
+  find: async () => {
+    try {
+      const r = await send<{ key: string | null; ambiguous?: boolean } | { error: string } | undefined>({ type: "jobKey", url: location.href });
+      if (r && typeof r === "object" && "error" in r && typeof r.error === "string") return { error: r.error };
+      if (r && typeof r === "object" && "key" in r && (r.key === null || (typeof r.key === "string" && r.key !== ""))) {
+        return r.ambiguous === true ? { key: null, ambiguous: true } : { key: r.key };
+      }
+      return { error: "no answer from the Vani Apply Mac app" };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  },
+  build: async ({ kind, request }, onTick) => {
     const r = await runJob({
-      start: () => send({ type: "jobStart", kind: "resume", request }),
+      start: () => send({ type: "jobStart", kind, request }),
       poll: id => send({ type: "jobPoll", job: id }),
       onTick,
-    }, RESUME_JOB_TIMEOUT_MS);
+    }, kind === "resumeJob" ? RESUME_KEYED_TIMEOUT_MS : RESUME_JOB_TIMEOUT_MS);
     return r.ok ? r.reply : { error: r.error, code: r.code };
   },
   pick: pickPdf,

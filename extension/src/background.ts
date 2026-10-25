@@ -17,7 +17,7 @@ import {
 import { type FillReply, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
 import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { DRAFT_HELP, createDrafter } from "./draft";
-import { type OfferStore, type StoredOffer, createBroker } from "./applied";
+import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
 import { parseFindRow } from "./jobrow";
 import { checkResumeFile, checkResumeName, resumeKey, runResume } from "./resume";
 
@@ -437,7 +437,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return r;
     }
     case "jobStart": {
-      if (msg.kind !== "suggest" && msg.kind !== "draft" && msg.kind !== "resume") return { error: "unknown job kind", code: "bad_request" };
+      if (msg.kind !== "suggest" && msg.kind !== "draft" && msg.kind !== "resume" && msg.kind !== "resumeJob") return { error: "unknown job kind", code: "bad_request" };
       if (typeof msg.request !== "object" || msg.request === null || Array.isArray(msg.request)) return { error: "bad job request", code: "bad_request" };
       return native({ op: "jobStart", kind: msg.kind, request: msg.request });
     }
@@ -461,6 +461,11 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return { offer: await applied.pending(actingTab(sender, msg.tabId)) };
     case "jobRow":
       return parseFindRow(await native({ op: "jobFind", url: msg.url }));
+    case "jobKey": {
+      // The same jobFind as jobRow, read for the posting's key (which every tracked job has, scored or not).
+      const f = parseFindKey(await native({ op: "jobFind", url: msg.url }));
+      return f.ok ? (f.ambiguous ? { key: null, ambiguous: true } : { key: f.key }) : { error: f.error, code: f.code };
+    }
     case "appliedMark": {
       const tabId = actingTab(sender, msg.tabId);
       const r = await applied.mark(tabId);

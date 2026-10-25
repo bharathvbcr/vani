@@ -24,7 +24,7 @@ export type ToBackground =
   /** Only the question label and the posting as shown on the page: never field values or bank content. */
   | { type: "draft"; question: string; job: JobInfo; maxWords?: number; attempt?: number }
   /** A job in the Vani Apply agent: a request built by buildSuggestRequest or buildDraftRequest (labels and the posting only). */
-  | { type: "jobStart"; kind: "suggest" | "draft" | "resume"; request: object }
+  | { type: "jobStart"; kind: "suggest" | "draft" | "resume" | "resumeJob"; request: object }
   | { type: "jobPoll"; job: string }
   // Offering to mark a job Applied (applied.ts). The page sends its URL without the query or fragment;
   // the background asks the Mac app which tracked job it is, keeps the offer for the sender's tab, and marks only on appliedMark.
@@ -34,6 +34,8 @@ export type ToBackground =
   | { type: "appliedPending"; tabId?: number }
   /** Vani's own jobs row for the page's posting (jobrow.ts), asked of the Mac app; `{ row: null }` when there is none. */
   | { type: "jobRow"; url: string }
+  /** The posting key Vani tracks the page under (jobFind), to build a resume for that job; `{ key: null }` when none. */
+  | { type: "jobKey"; url: string }
   | { type: "appliedMark"; tabId?: number }
   | { type: "appliedDismiss"; tabId?: number }
   /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
@@ -113,11 +115,12 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
   editAnswer: m => typeof m.key === "string" && Array.isArray(m.value) && (m.review === undefined || typeof m.review === "boolean"),
   replaceBank: m => typeof m.json === "string" && utf8Within(m.json, MAX_BANK_BYTES),
   draft: m => typeof m.question === "string" && optAttempt(m.attempt),
-  jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume",
+  jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume" || m.kind === "resumeJob",
   jobPoll: m => typeof m.job === "string",
   appliedSignal: m => optTab(m),
   appliedPending: optTab,
   jobRow: m => typeof m.url === "string" && m.url.length <= 2048,
+  jobKey: m => typeof m.url === "string" && m.url.length <= 2048,
   appliedMark: optTab,
   appliedDismiss: optTab,
   frameReady: () => true,
@@ -154,6 +157,7 @@ export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
   appliedSignal: "either",
   appliedPending: "either",
   jobRow: "content",
+  jobKey: "content",
   appliedMark: "either",
   appliedDismiss: "either",
   frameReady: "content",
