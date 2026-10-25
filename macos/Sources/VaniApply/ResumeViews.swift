@@ -17,7 +17,14 @@ struct ResumeSection: View {
     private var resume: ResumeStudioModel { jobs.resume }
     /// This posting's state; another posting's is not shown here.
     private var phase: ResumeStudioModel.Phase { resume.phase.key == job.key ? resume.phase : .idle }
-    private var summary: ResumeSummary? { jobs.detail?.key == job.key ? jobs.detail?.resume : job.resume }
+    /// What this app knows of the job's resumes: unknown (loading, or `jobs show` failed) is never drawn as "no resume".
+    private var known: ResumeKnowledge {
+        ResumeKnowledge.of(detail: jobs.detail?.key == job.key ? jobs.detail : nil, job: job,
+                           detailFailed: jobs.selection == job.key && jobs.detailError != nil)
+    }
+
+    private var summary: ResumeSummary? { known.summary }
+
     private var card: ResumeCard { ResumeCardPresentation.card(for: summary) }
     private var workingOnThis: Bool {
         switch phase {
@@ -36,8 +43,23 @@ struct ResumeSection: View {
                 }
                 stateView
                 if !workingOnThis {
-                    summaryView
-                    actionRow
+                    switch known {
+                    case .known:
+                        summaryView
+                        actionRow
+                    case .loading:
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Checking this job's resumes…").font(.callout).foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("resume.loading")
+                    case .failed:
+                        Label("This job's details could not be read, so its tailored resumes are not known. Select another role and come back to try again.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("resume.unknown")
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

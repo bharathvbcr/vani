@@ -78,7 +78,9 @@ struct ApplyKitView: View {
     private var resumeTaskID: String { "\(job.key)|\(job.url ?? "")|\(job.applyURL ?? "")" }
 
     /// This job's tailored resume summary: the full one once shown, the list's copy until then.
-    private var tailoredSummary: ResumeSummary? { jobs.detail?.key == job.key ? jobs.detail?.resume : job.resume }
+    private var tailoredSummary: ResumeSummary? {
+        ResumeKnowledge.of(detail: jobs.detail?.key == job.key ? jobs.detail : nil, job: job, detailFailed: false).summary
+    }
 
     /// A resume was bound (Resume Studio's Use, or a browser's popup in this process): read the store again
     /// when it was for one of this job's addresses.

@@ -398,10 +398,12 @@ final class JobsModel {
         }
     }
 
-    /// A mark or note reply carries no description; keep the one already shown.
+    /// A mark or note reply carries no description and no `resume` summary (only `jobs show` does); keep
+    /// the ones already shown, so saving a job never turns its resumes into "no resume".
     private func merged(_ j: Job) -> Job {
         var out = j
         if out.description == nil { out.description = detail?.description }
+        if out.resume == nil, detail?.key == out.key { out.resume = detail?.resume }
         return out
     }
 }
