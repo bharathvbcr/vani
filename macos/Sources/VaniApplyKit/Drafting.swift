@@ -445,7 +445,8 @@ public struct DraftRunner: Sendable {
     /// the Keychain for a call with `usesModel` false.
     func invoke(arguments: [String], input: Data? = nil, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
                 usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes,
-                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil) -> Invocation {
+                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil,
+                onStdout: (@Sendable (Data) -> Void)? = nil) -> Invocation {
         let launch: Launch
         switch prepare(arguments, withDecisionKey: withDecisionKey, usesModel: usesModel) {
         case let .refused(f): return .failure(f)
@@ -455,7 +456,7 @@ public struct DraftRunner: Sendable {
         let t = timeout ?? self.timeout
         let out = VaniProcess.run(launch.program, arguments: launch.arguments,
                                   environment: launch.environment.merging(extraEnvironment) { _, extra in extra }, input: input,
-                                  timeout: t, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
+                                  timeout: t, maxOutputBytes: maxOutputBytes, cancellation: cancellation, onStdout: onStdout)
         if out.cancelled { return .failure(.failure("cancelled", "vani \(name) was cancelled")) }
         if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
         if out.timedOut { return .failure(.failure("timeout", "vani \(name) did not finish within \(Int(t)) s")) }

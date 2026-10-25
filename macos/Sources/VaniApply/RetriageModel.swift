@@ -41,6 +41,8 @@ final class RetriageModel {
     /// Called, on the main actor, with the posting's key once a reading was made, may have been made
     /// (a cancelled run) or was cleared: JobsModel re-lists and reloads the open posting.
     var onManualChange: (String) async -> Void = { _ in }
+    /// A batch re-triage (`RetriageBatchModel`) is in flight; set by JobsModel.
+    var otherBusy: () -> Bool = { false }
     private var flag: CancelFlag?
     private var generation = 0
 
@@ -67,7 +69,7 @@ final class RetriageModel {
 
     /// Why `job` cannot be re-triaged right now, or nil when it can.
     func blockedReason(for job: Job) -> String? {
-        RetriagePresentation.blockedReason(for: job, busy: isBusy)
+        RetriagePresentation.blockedReason(for: job, busy: isBusy || otherBusy())
     }
 
     // MARK: Steps
@@ -145,7 +147,7 @@ final class RetriageModel {
 
     /// Forget the stored reading. Spends nothing.
     func clear(_ job: Job) {
-        guard let client, !isBusy else { return }
+        guard let client, !isBusy, !otherBusy() else { return }
         begin(key: job.key, phase: .clearing(key: job.key))
         let c = client(), key = job.key, before = job.relevance, flag = flag, gen = generation
         Task {

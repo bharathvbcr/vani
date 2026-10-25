@@ -12,6 +12,7 @@ final class JobsModel {
         didSet {
             guard oldValue != view else { return }
             selection = nil
+            selectedKeys = []
             // A sort still at the old view's default follows the view; one the owner
             // picked stays. Setting `sort` relists, so only one list is asked for.
             let next = JobSort.defaultSort(for: view)
@@ -35,9 +36,33 @@ final class JobsModel {
     var showInsights = false {
         didSet { if showInsights, !oldValue { reload() } }
     }
+    /// The one open role, shown in the detail pane; nil when none is, or several are selected. Setting
+    /// it selects that role alone.
     var selection: String? {
-        didSet { if oldValue != selection { loadDetail() } }
+        didSet {
+            if oldValue != selection { loadDetail() }
+            if let selection {
+                if selectedKeys != [selection] { selectedKeys = [selection] }
+            } else if selectedKeys.count == 1 {
+                selectedKeys = []
+            }
+        }
     }
+    /// Every selected row (⌘-click, ⇧-click). One key makes it the open role (`selection`); several
+    /// show the selection pane, whose action is the batch re-triage. Mark shortcuts stay one-role.
+    var selectedKeys: Set<String> = [] {
+        didSet {
+            guard oldValue != selectedKeys else { return }
+            let single = selectedKeys.count == 1 ? selectedKeys.first : nil
+            if selection != single { selection = single }
+        }
+    }
+
+    /// Several rows are selected.
+    var isMultiSelection: Bool { selectedKeys.count > 1 }
+
+    /// The selected roles in list order (selected rows a reload removed are left out).
+    var selectedJobs: [Job] { jobs.filter { selectedKeys.contains($0.key) } }
 
     private(set) var page: JobsPage?
     /// Distributions over the selection, loaded with the list while Insights is open.
@@ -74,10 +99,21 @@ final class JobsModel {
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
     /// draft keys; without one (a test host) the action is not offered.
     let retriage: RetriageModel
+    /// "Re-triage the selection with Sonnet": the same runner, many roles; busy for `retriage` and it
+    /// for this.
+    let batch: RetriageBatchModel
 
     init(client: @escaping () -> JobsClient, retriage: (() -> RetriageClient)? = nil) {
         self.client = client
         self.retriage = RetriageModel(client: retriage)
+        self.batch = RetriageBatchModel(client: retriage.map { make in { RetriageBatchClient(runner: make().runner) } })
+        self.retriage.otherBusy = { [weak self] in self?.batch.isBusy ?? false }
+        self.batch.otherBusy = { [weak self] in self?.retriage.isBusy ?? false }
+        self.batch.onManualChange = { [weak self] in
+            guard let self else { return }
+            await refresh()
+            if selection != nil { loadDetail() }
+        }
         self.retriage.onManualChange = { [weak self] key in await self?.reloadAfterManualTriage(key) }
         self.retriage.candidate = { [weak self] key in
             guard let self else { return nil }
@@ -98,6 +134,28 @@ final class JobsModel {
         guard retriage.blockedReason(for: job) == nil else { return }
         selection = job.key
         retriage.start(job)
+    }
+
+    /// Re-triage every selected role at once: ask vani for the cost, then confirm.
+    func startBatchRetriage() {
+        batch.start(selectedJobs)
+    }
+
+    /// Select the roles whose fit Sonnet changed in the last batch, to look them over.
+    func selectChanged() {
+        let keys = Set(batch.changedKeys).intersection(jobs.map(\.key))
+        guard !keys.isEmpty else { return }
+        selectedKeys = keys
+    }
+
+    /// Ask again about the roles of the last batch that failed or were not asked.
+    func retryBatch() {
+        let keys = Set(batch.retryable)
+        let again = jobs.filter { keys.contains($0.key) }
+        batch.dismiss()
+        guard !again.isEmpty else { return }
+        selectedKeys = Set(again.map(\.key))
+        batch.start(again)
     }
 
     var jobs: [Job] { page?.jobs ?? [] }

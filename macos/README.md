@@ -95,6 +95,19 @@ changes the order: it never drops a posting or brings a dropped one back (Rule 7
 in plain words; Retry goes back through the cost confirmation. The reading's `manual_triage` on each job and a fit
 factor's `backend` (`manual`, `escalate`) decode leniently, so an older `vani` or a malformed value never fails the list.
 
+**Re-triage several roles at once.** The Jobs list takes several rows (⌘-click, ⇧-click). With more than one
+selected, the detail pane becomes the selection pane: what is selected (how many are not triaged, how many Sonnet
+already read), **Re-triage N with Sonnet…** (⌥⌘R, or the right-click menu over the selection, which also copies the
+titles or links), and the roles, each of which opens alone on click. It runs `vani jobs retriage --batch --dry-run`
+first and shows one confirmation: the total typical and worst-case cost, today's cap left, a warning when not every
+role fits in it at its worst, which roles are skipped and why, and **Read them again**, off by default, so roles Sonnet
+already has a current reading of are left out (`--skip-read`). Ask Sonnet starts the batch; a banner above the list
+shows its progress bar, count and spend, and Stop (the readings already made are kept). Rows show their state (queued,
+Fit changed, read, failed, not asked) and, afterwards, a Sonnet chip when they hold a current manual reading. The list
+re-sorts once, when the batch ends, so rows stay put while it runs. The finished banner says how many were read, on how
+many the role fit changed, what failed or was not asked and why, and what it cost, with **Select N Changed** and
+**Retry N…** (back through the confirmation). One role's re-triage and a batch block each other, as vani does.
+
 ```mermaid
 flowchart TD
     subgraph BrowserLayer["Browsers & Extensions"]

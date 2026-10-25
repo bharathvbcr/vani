@@ -96,7 +96,7 @@ struct RetriageSection: View {
                 Spacer()
                 Button("Clear", systemImage: "xmark.circle") { retriage.clear(job) }
                     .buttonStyle(.borderless)
-                    .disabled(retriage.isBusy)
+                    .disabled(retriage.isBusy || retriage.otherBusy())
                     .accessibilityIdentifier("retriage.clear")
                     .help("Remove Sonnet's reading. Ranking goes back to the readings it used before. Spends nothing.")
             }

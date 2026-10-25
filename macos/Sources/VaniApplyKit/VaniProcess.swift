@@ -78,9 +78,13 @@ public enum VaniProcess {
     /// `cancellation` lets another thread end the call early: once it is set the child gets the
     /// same SIGTERM, then SIGKILL, and is reaped before the call returns `cancelled`. A flag set
     /// before the call starts nothing. It is looked at every `cancelPollMilliseconds`.
+    ///
+    /// `onStdout`, when set, is given every chunk of stdout as it is read, on the reader thread and
+    /// in order, past `maxOutputBytes` too (that ceiling bounds only what `Outcome.stdout` keeps), so
+    /// a caller can follow a long command's progress; it must return quickly.
     public static func run(_ binary: URL, arguments: [String], environment: [String: String],
                            input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int,
-                           cancellation: CancelFlag? = nil) -> Outcome {
+                           cancellation: CancelFlag? = nil, onStdout: (@Sendable (Data) -> Void)? = nil) -> Outcome {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: "the vani binary is missing at \(binary.path)")
         }
@@ -120,7 +124,7 @@ public enum VaniProcess {
         }
         let outFd = outPipe.fileHandleForReading.fileDescriptor, errFd = errPipe.fileHandleForReading.fileDescriptor
         // One byte past the ceiling is read, so a reply of exactly the ceiling is told from a longer one.
-        spawn(done) { box.out = drain(outFd, limit: maxOutputBytes + 1, cancel: cancel) }
+        spawn(done) { box.out = drain(outFd, limit: maxOutputBytes + 1, cancel: cancel, onChunk: onStdout) }
         spawn(done) { box.err = drain(errFd, limit: 64 * 1024, cancel: cancel) }
         defer {
             // Whatever happened, no thread is left on these descriptors when they are closed.
@@ -177,8 +181,8 @@ public enum VaniProcess {
 
     /// Read `fd` to end of file, keeping at most `limit` bytes (the rest is drained and dropped),
     /// or until `cancel` is set. It waits in poll(2), so it notices `cancel` within `pollMilliseconds`
-    /// even when a grandchild keeps the pipe open and silent.
-    private static func drain(_ fd: Int32, limit: Int, cancel: CancelFlag) -> Data {
+    /// even when a grandchild keeps the pipe open and silent. `onChunk` sees every chunk read.
+    private static func drain(_ fd: Int32, limit: Int, cancel: CancelFlag, onChunk: (@Sendable (Data) -> Void)? = nil) -> Data {
         var out = Data()
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while !cancel.isSet {
@@ -189,6 +193,7 @@ public enum VaniProcess {
             let n = read(fd, &chunk, chunk.count)
             if n < 0 { if errno == EINTR || errno == EAGAIN { continue } else { break } }
             if n == 0 { break }
+            onChunk?(Data(chunk.prefix(n)))
             if out.count < limit { out.append(contentsOf: chunk.prefix(min(n, limit - out.count))) }
         }
         return out

@@ -421,6 +421,15 @@ flowchart TD
     `cap_reached`, `provider`, `refused`, `unsure`, `unreadable`, `busy`, `cancelled`, `store`,
     `config`, `ledger`, `bad_request`). It is not `vani retriage`, which asks no model. The Mac app's
     Jobs detail has the button (macos/README.md).
+    `--batch [--skip-read] [--parallel N] KEY...` reads up to 500 roles in one command (the ledger read
+    once, the ask lock held throughout, N at a time, default 3, at most 8). `--batch --dry-run` answers
+    one object: each key's state (`skip`: `unknown_key`, `text_gone`, `untriaged`; `read`: `current`
+    or `stale`) and the summed estimate for every eligible role and for those with no current reading,
+    with how many fit in what is left of the cap at their most (`fit_at_max`). A real batch writes one
+    JSON object per line as it goes (`start`, an `item` per role with the one-role reply or its
+    `{error, code, cost}`, `done` with the totals). A failure about one role moves on; `no_key`,
+    `cap_reached`, `config`, `store`, `busy`, three provider failures in a row, or SIGTERM stop the batch,
+    keep what was read, and list the rest in `done.not_asked_keys` (exit 1).
   - `vani kbmatch run [--top N] [--dry-run] [--backend llm|openrouter] [--model ID] [--no-retrieve]`
     asks a model, for the top N postings by priority (default 40) that triage did not read as a
     mismatch, whether the work each describes is the work in your knowledge base: `core`,

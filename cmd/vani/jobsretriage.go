@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -124,8 +125,14 @@ type retriageEstimate struct {
 	SpentUSD     *float64 `json:"spent_usd,omitempty"`
 	RemainingUSD *float64 `json:"remaining_usd,omitempty"`
 	// CapReached says what is left of today's cap is less than a call reserves
-	// (MaxUSD). Advice only: the metered provider is the gate.
+	// (MaxUSD; for a batch, its dearest call's). Advice only: the metered
+	// provider is the gate.
 	CapReached bool `json:"cap_reached"`
+	// Postings is how many postings a batch estimate sums (absent for one).
+	Postings int `json:"postings,omitempty"`
+	// FitAtMax is, for a batch, how many of its postings, taken in order, fit in
+	// what is left of today's cap at their most; absent when the spend is unknown.
+	FitAtMax *int `json:"fit_at_max,omitempty"`
 }
 
 type retriageReply struct {
@@ -278,8 +285,22 @@ func (e *env) jobsRetriage(args []string) error {
 	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
 	dry := fs.Bool("dry-run", false, "say what asking would cost and ask nothing (no key is read)")
 	clr := fs.Bool("clear", false, "remove the manual reading of this posting instead of making one")
+	batch := fs.Bool("batch", false, fmt.Sprintf("read every KEY given (at most %d); with --json a run writes one JSON object per line as it goes", maxRetriageBatch))
+	skipRead := fs.Bool("skip-read", false, "with --batch: leave out postings Sonnet already has a current reading of")
+	parallel := fs.Int("parallel", defaultRetriageParallel, fmt.Sprintf("with --batch: postings asked at once (1..%d)", maxRetriageParallel))
 	if err := parsePositional(fs, args); err != nil {
 		return err
+	}
+	if *batch {
+		if *clr {
+			return usagef("jobs retriage: --batch and --clear are exclusive")
+		}
+		ctx, cancel := signalContext()
+		defer cancel()
+		return e.jobsRetriageBatch(ctx, fs.Args(), *dry, *skipRead, *parallel, *asJSON)
+	}
+	if *skipRead || *parallel != defaultRetriageParallel {
+		return usagef("jobs retriage: --skip-read and --parallel need --batch")
 	}
 	if fs.NArg() != 1 {
 		return usagef("jobs retriage: expected one posting key (this is the manual Sonnet reading; `vani retriage` is a different command)")
@@ -378,59 +399,22 @@ func (e *env) manualRetriage(ctx context.Context, rawKey string, dry, clr bool) 
 		return retriageClearReply{Key: string(k), Cleared: true, HadManual: had, Relevance: side.Relevance, Priority: side.Priority}, nil
 	}
 
-	cfg, err := e.loadConfig()
+	ask, err := e.retriageSetup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	a, err := ask.question(ctx, r)
 	if err != nil {
 		return nil, rtErr(rtConfig, "%v", err)
 	}
-	if cfg.LLM.Provider == "" || cfg.LLM.Model == "" {
-		return nil, rtErr(rtNoLLM, "jobs retriage: no llm provider is configured (llm.provider, llm.model), so there is no Claude model to ask")
-	}
-	model := cfg.LLM.EffectiveTriageModel()
-	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
-	if err != nil {
-		return nil, rtErr(rtConfig, "%v", err)
-	}
-	// The question is triage's own, built by its own Triager, so the manual
-	// reading is made from exactly what a run would send.
-	var q decide.Question
-	capture := askFunc(func(_ context.Context, got decide.Question) (decide.Answer, error) {
-		q = got
-		return decide.Answer{}, nil
-	})
-	if _, err := (jdtriage.Triager{D: capture, TargetSummary: summary}).Triage(ctx, r.Posting); err != nil {
-		return nil, rtErr(rtConfig, "%v", err)
-	}
-	system, user := llmbackend.Messages(q)
-
 	in, err := e.newRowInsight(snap, m, r)
 	if err != nil {
 		return nil, rtErr(rtLedger, "%v", err)
 	}
-	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
-
-	pin, pout, source, err := kbmatchPrices(cfg, model)
-	if err != nil {
-		return nil, rtErr(rtConfig, "%v", err)
-	}
-	costOf := func(u llm.Usage) float64 {
-		return float64(int64(u.InputTokens)*pin+int64(u.OutputTokens)*pout) / nanoPerUSD
-	}
 
 	if dry {
-		inTok := int64((len(system) + len(user) + kbMatchBytesPerTok - 1) / kbMatchBytesPerTok)
-		maxOut := int64(llmbackend.DefaultMaxTokens + llmbackend.ReasoningHeadroom)
-		est := &retriageEstimate{
-			InputTokens: inTok, TypicalOutputTokens: retriageTypicalOut, MaxOutputTokens: maxOut,
-			TypicalUSD:  float64(inTok*pin+retriageTypicalOut*pout) / nanoPerUSD,
-			MaxUSD:      float64(inTok*pin+maxOut*pout) / nanoPerUSD,
-			PriceSource: source, DailyCapUSD: cfg.Decide.DailyUSD.LLM,
-		}
-		if spent, err := readLLMSpend(ctx, w.budgetLedgerPath()); err == nil {
-			remaining := max(est.DailyCapUSD-spent, 0)
-			est.SpentUSD, est.RemainingUSD = &spent, &remaining
-			est.CapReached = remaining < est.MaxUSD
-		}
-		return retriageReply{Key: string(k), DryRun: true, Model: model, Status: r.Status, Estimate: est, ManualTriage: in.manual.view(r)}, nil
+		est := ask.estimate(ctx, []retriagePrompt{a})
+		return retriageReply{Key: string(k), DryRun: true, Model: ask.model, Status: r.Status, Estimate: est, ManualTriage: in.manual.view(r)}, nil
 	}
 
 	// One paid reading at a time: a second click while a model is being asked
@@ -449,57 +433,168 @@ func (e *env) manualRetriage(ctx context.Context, rawKey string, dry, clr bool) 
 		return nil, storeErr(err, nil)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, retriageAskTimeout)
+	pctx, cancel := context.WithTimeout(ctx, retriageAskTimeout)
 	defer cancel()
-	p, err := retriageProvider(ctx, w)
+	p, err := retriageProvider(pctx, ask.w)
 	if err != nil {
-		return nil, mapProviderErr(ctx, err, "building the provider")
-	}
-	rec := &usageRecorder{Provider: p}
-	lb, err := llmbackend.New(rec, llmbackend.Config{Model: model, Name: jobinsight.BackendManual})
-	if err != nil {
-		return nil, rtErr(rtConfig, "%v", err)
+		return nil, mapProviderErr(pctx, err, "building the provider")
 	}
 	before := sideOf(in, r)
-	ans, askErr := lb.Decide(ctx, q)
-	use, stop := rec.snapshot()
-	var cost *retriageCost
-	if use.InputTokens+use.OutputTokens > 0 {
-		cost = &retriageCost{InputTokens: use.InputTokens, OutputTokens: use.OutputTokens, USD: costOf(use)}
-	}
-	if askErr != nil {
-		re := mapProviderErr(ctx, askErr, "asking "+model)
-		if re.code != rtCancelled {
-			re.cost = cost
-		}
-		return nil, re
-	}
-	if ctx.Err() != nil {
-		return nil, mapProviderErr(ctx, ctx.Err(), "asking "+model)
-	}
-	slots, re := readingSlots(ans, stop, model)
+	rd, cost, re := ask.read(pctx, p, dir, r, a)
 	if re != nil {
-		re.cost = cost
 		return nil, re
-	}
-	at := now().UTC()
-	rd := manualtriage.Reading{
-		Key: k, Slots: slots, Model: model, At: at,
-		Text: manualtriage.TextSHA256(r.Posting), Prompt: manualtriage.PromptSHA256(system, summary),
-	}
-	if err := manualtriage.Set(dir, rd); err != nil {
-		return nil, storeErr(err, cost)
 	}
 	in2, err := e.newRowInsight(snap, m, r)
 	if err != nil {
 		return nil, &retriageError{code: rtLedger, msg: err.Error(), cost: cost}
 	}
 	after := sideOf(in2, r)
-	after.Model, after.At = model, &at
+	after.Model, after.At = ask.model, &rd.At
+	return retriageReply{Key: string(k), Model: ask.model, Status: r.Status, Before: before, After: after, Cost: cost}, nil
+}
+
+// retriageAsker is what every manual reading in one command shares: the config,
+// the model, the target summary and the prices.
+type retriageAsker struct {
+	cfg         config.Config
+	w           *wired
+	model       string
+	summary     string
+	pin, pout   int64
+	priceSource string
+}
+
+// retriagePrompt is the triage question for one posting and the two messages
+// llmbackend frames it as.
+type retriagePrompt struct {
+	q            decide.Question
+	system, user string
+}
+
+// retriageSetup reads the config a manual reading needs: an llm provider, the
+// triage model, the target summary and that model's prices.
+func (e *env) retriageSetup(ctx context.Context) (*retriageAsker, error) {
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return nil, rtErr(rtConfig, "%v", err)
+	}
+	if cfg.LLM.Provider == "" || cfg.LLM.Model == "" {
+		return nil, rtErr(rtNoLLM, "jobs retriage: no llm provider is configured (llm.provider, llm.model), so there is no Claude model to ask")
+	}
+	model := cfg.LLM.EffectiveTriageModel()
+	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
+	if err != nil {
+		return nil, rtErr(rtConfig, "%v", err)
+	}
+	pin, pout, source, err := kbmatchPrices(cfg, model)
+	if err != nil {
+		return nil, rtErr(rtConfig, "%v", err)
+	}
+	return &retriageAsker{cfg: cfg, w: &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}, model: model,
+		summary: summary, pin: pin, pout: pout, priceSource: source}, nil
+}
+
+// question is triage's own question for r, built by its own Triager, so the
+// manual reading is made from exactly what a run would send.
+func (a *retriageAsker) question(ctx context.Context, r ledger.Record) (retriagePrompt, error) {
+	var q decide.Question
+	capture := askFunc(func(_ context.Context, got decide.Question) (decide.Answer, error) {
+		q = got
+		return decide.Answer{}, nil
+	})
+	if _, err := (jdtriage.Triager{D: capture, TargetSummary: a.summary}).Triage(ctx, r.Posting); err != nil {
+		return retriagePrompt{}, err
+	}
+	system, user := llmbackend.Messages(q)
+	return retriagePrompt{q: q, system: system, user: user}, nil
+}
+
+func (a *retriageAsker) usd(in, out int64) float64 { return float64(in*a.pin+out*a.pout) / nanoPerUSD }
+
+// estimate is what asking about every prompt would cost, typically and at
+// most, against what is left of today's cap. CapReached says not even the
+// dearest single call fits in what is left; FitAtMax how many of them, taken
+// in order, fit there at their most.
+func (a *retriageAsker) estimate(ctx context.Context, ps []retriagePrompt) *retriageEstimate {
+	maxOut := int64(llmbackend.DefaultMaxTokens + llmbackend.ReasoningHeadroom)
+	est := &retriageEstimate{TypicalOutputTokens: retriageTypicalOut, MaxOutputTokens: maxOut,
+		PriceSource: a.priceSource, DailyCapUSD: a.cfg.Decide.DailyUSD.LLM}
+	maxes := make([]float64, len(ps))
+	var dearest float64
+	for i, p := range ps {
+		inTok := int64((len(p.system) + len(p.user) + kbMatchBytesPerTok - 1) / kbMatchBytesPerTok)
+		est.InputTokens += inTok
+		est.TypicalUSD += a.usd(inTok, retriageTypicalOut)
+		maxes[i] = a.usd(inTok, maxOut)
+		est.MaxUSD += maxes[i]
+		dearest = max(dearest, maxes[i])
+	}
+	if len(ps) > 1 {
+		est.Postings = len(ps)
+	}
+	if spent, err := readLLMSpend(ctx, a.w.budgetLedgerPath()); err == nil {
+		remaining := max(est.DailyCapUSD-spent, 0)
+		est.SpentUSD, est.RemainingUSD = &spent, &remaining
+		est.CapReached = len(ps) > 0 && remaining < dearest
+		if len(ps) > 1 {
+			fit, left := 0, remaining
+			for _, m := range maxes {
+				if m > left {
+					break
+				}
+				left -= m
+				fit++
+			}
+			est.FitAtMax = &fit
+		}
+	}
+	return est
+}
+
+// read asks the model about r through p and keeps its reading. The cost is that
+// call's own tokens at the configured prices (the budget ledger is shared with
+// the daemon, which spends into it at the same time, so its difference would not
+// be this call's); it is set on an error whenever a paid call completed, so the
+// money is not hidden. ctx bounds the call.
+func (a *retriageAsker) read(ctx context.Context, p llm.Provider, dir string, r ledger.Record, pr retriagePrompt) (manualtriage.Reading, *retriageCost, *retriageError) {
+	rec := &usageRecorder{Provider: p}
+	lb, err := llmbackend.New(rec, llmbackend.Config{Model: a.model, Name: jobinsight.BackendManual})
+	if err != nil {
+		return manualtriage.Reading{}, nil, rtErr(rtConfig, "%v", err)
+	}
+	ans, askErr := lb.Decide(ctx, pr.q)
+	use, stop := rec.snapshot()
+	var cost *retriageCost
+	if use.InputTokens+use.OutputTokens > 0 {
+		cost = &retriageCost{InputTokens: use.InputTokens, OutputTokens: use.OutputTokens,
+			USD: a.usd(int64(use.InputTokens), int64(use.OutputTokens))}
+	}
+	if askErr != nil {
+		re := mapProviderErr(ctx, askErr, "asking "+a.model)
+		if re.code != rtCancelled {
+			re.cost = cost
+		}
+		return manualtriage.Reading{}, nil, re
+	}
+	if ctx.Err() != nil {
+		return manualtriage.Reading{}, nil, mapProviderErr(ctx, ctx.Err(), "asking "+a.model)
+	}
+	slots, re := readingSlots(ans, stop, a.model)
+	if re != nil {
+		re.cost = cost
+		return manualtriage.Reading{}, nil, re
+	}
+	rd := manualtriage.Reading{
+		Key: r.Key, Slots: slots, Model: a.model, At: now().UTC(),
+		Text: manualtriage.TextSHA256(r.Posting), Prompt: manualtriage.PromptSHA256(pr.system, a.summary),
+	}
+	if err := manualtriage.Set(dir, rd); err != nil {
+		return manualtriage.Reading{}, nil, storeErr(err, cost)
+	}
 	if cost == nil {
 		cost = &retriageCost{}
 	}
-	return retriageReply{Key: string(k), Model: model, Status: r.Status, Before: before, After: after, Cost: cost}, nil
+	return rd, cost, nil
 }
 
 // readingSlots turns the model's answer into the slots to keep, or says why it

@@ -40,6 +40,9 @@ const (
 	// messages for the request envelope (role markers, framing the provider adds).
 	teacherPromptOverhead = 256
 	teacherLockWait       = 10 * time.Second
+	// teacherMaxBudgetUSD bounds one teacher run's --budget-usd. It was 30 days
+	// of the old $20 daily ceiling; it stays $600 now that ceiling is $50.
+	teacherMaxBudgetUSD = 600.0
 )
 
 // teacherCeilingTokens is a physical upper bound on the input tokens of the
@@ -134,8 +137,8 @@ func (e *env) cmdTeacher(args []string) error {
 		if !budgetSet {
 			return usagef("teacher: a real run needs --budget-usd N (no default); use --dry-run to see the cost first")
 		}
-		if math.IsNaN(*budgetUSD) || math.IsInf(*budgetUSD, 0) || *budgetUSD <= 0 || *budgetUSD > config.MaxDailyUSD*30 {
-			return usagef("teacher: --budget-usd must be above 0 and at most %v", config.MaxDailyUSD*30)
+		if math.IsNaN(*budgetUSD) || math.IsInf(*budgetUSD, 0) || *budgetUSD <= 0 || *budgetUSD > teacherMaxBudgetUSD {
+			return usagef("teacher: --budget-usd must be above 0 and at most %v", teacherMaxBudgetUSD)
 		}
 	}
 	if *conc < 1 || *conc > eval.MaxTeacherConcurrency {

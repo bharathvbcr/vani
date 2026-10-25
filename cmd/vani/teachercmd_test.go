@@ -153,6 +153,7 @@ func TestTeacherRefusesARealRunWithoutABudget(t *testing.T) {
 		{"teacher", "--of", "d1-ultra", "--budget-usd", "0"},
 		{"teacher", "--of", "d1-ultra", "--budget-usd", "-1"},
 		{"teacher", "--of", "d1-ultra", "--budget-usd", "NaN"},
+		{"teacher", "--of", "d1-ultra", "--budget-usd", "600.01"},
 		{"teacher", "--of", "d1-ultra", "--budget-usd", "1", "--concurrency", "0"},
 	} {
 		code, _, stderr := do(t, args...)

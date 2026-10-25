@@ -34,7 +34,7 @@ const (
 	// Version is the only config schema version this build reads.
 	Version = 1
 	// MaxDailyUSD is the ceiling for any per-day spend cap.
-	MaxDailyUSD = 20.0
+	MaxDailyUSD = 50.0
 	// maxFileBytes bounds how much of a config file is read.
 	maxFileBytes = 1 << 20
 

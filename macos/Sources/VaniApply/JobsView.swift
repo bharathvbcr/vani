@@ -91,6 +91,10 @@ struct JobsView: View {
                                     set: { if !$0 { jobs.retriage.dismissConfirmation() } })) {
             RetriageConfirmSheet()
         }
+        .sheet(isPresented: Binding(get: { jobs.batch.confirming != nil },
+                                    set: { if !$0 { jobs.batch.dismissConfirmation() } })) {
+            RetriageBatchConfirmSheet()
+        }
     }
 }
 
@@ -556,6 +560,7 @@ private struct JobList: View {
     var body: some View {
         @Bindable var jobs = jobs
         VStack(spacing: 0) {
+            RetriageBatchBanner()
             if let page = jobs.page, !jobs.jobs.isEmpty {
                 listHeader(page)
             }
@@ -605,22 +610,31 @@ private struct JobList: View {
                         Button("Show Them") { hideDuplicates = false }
                     }
                 } else {
-                    // Rows stay one per posting, so selection and the ⌘S / ⇧⌘A / ⌘⌫
-                    // shortcuts keep acting on a single job key; a repost is noted
-                    // on its rows and listed in the detail.
+                    // Rows stay one per posting, so the ⌘S / ⇧⌘A / ⌘⌫ shortcuts keep
+                    // acting on the one open job key; a repost is noted on its rows and
+                    // listed in the detail. Several selected rows (⌘-click, ⇧-click)
+                    // open the selection pane instead, whose action is the batch re-triage.
                     let postings = PostingGroups(jobs.jobs)
                     let shown = hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
                     // Targets are named from the whole loaded list, hidden rows included.
                     let loaded = Dictionary(jobs.jobs.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
                     ScrollViewReader { proxy in
-                        List(shown, selection: $jobs.selection) { job in
+                        List(shown, selection: $jobs.selectedKeys) { job in
                             JobRow(job: job, others: postings.others(of: job.key), duplicates: job.duplicateBadges(loaded: loaded))
                                 .tag(job.key)
-                                .contextMenu { JobMenu(job: job) }
                                 .onAppear { visibleRows.rows.appeared(job.key) }
                                 .onDisappear { visibleRows.rows.disappeared(job.key) }
                         }
                         .listStyle(.inset)
+                        // Right-click acts on the selection when the row is in it, else on the row.
+                        .contextMenu(forSelectionType: String.self) { keys in
+                            let picked = jobs.jobs.filter { keys.contains($0.key) }
+                            if picked.count == 1, let job = picked.first {
+                                JobMenu(job: job)
+                            } else if picked.count > 1 {
+                                SelectionMenu(picked: picked)
+                            }
+                        }
                         // A reload rebuilds the list; keep the selected role in view.
                         .onChange(of: jobs.page) {
                             if let s = jobs.selection { proxy.scrollTo(s) }
@@ -805,6 +819,13 @@ private struct JobRow: View {
                     // No fit, rank or score for these: say so where they would be.
                     if job.isUntriaged { Chip(text: "Not triaged yet", tint: .orange).help(Job.untriagedNote) }
                     if let drop = job.prefilterNote { Chip(text: "Next run drops it", tint: .secondary).help(drop) }
+                    // A batch re-triage's state for this row, else whether Sonnet has read it.
+                    if let state = jobs.batch.rows[job.key] {
+                        let label = RetriageBatchPresentation.rowLabel(state)
+                        Chip(text: label.text, tint: batchTint(state)).help(label.help)
+                    } else if let m = job.manualTriage, m.current {
+                        Chip(text: "Sonnet", tint: .purple).help(RetriagePresentation.header(at: m.at))
+                    }
                     ForEach(targetKeywords, id: \.term) { Chip(text: $0.term, tint: .secondary) }
                 }
                 if let first = job.reasons.first, first.kind != .other {
@@ -976,7 +997,9 @@ private struct JobDetail: View {
     @Environment(JobsModel.self) private var jobs
 
     var body: some View {
-        if let job = jobs.selected {
+        if jobs.isMultiSelection {
+            SelectionPane()
+        } else if let job = jobs.selected {
             JobDetailContent(job: job)
                 .id(job.key)
         } else {
@@ -1851,6 +1874,16 @@ private struct JobBadge: View {
 
 private func fitTint(_ job: Job) -> Color {
     fitColor(code: job.triage?["role_fit"] ?? "none")
+}
+
+func batchTint(_ state: RetriageRowState) -> Color {
+    switch state {
+    case .queued: .secondary
+    case .done(true): .accentColor
+    case .done(false): .purple
+    case .failed: .orange
+    case .notAsked: .secondary
+    }
 }
 
 /// A 0-100 score as a thin bar.

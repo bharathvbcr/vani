@@ -194,10 +194,15 @@ public struct RetriageEstimate: Decodable, Equatable, Sendable {
     public var spentUSD: Double?
     public var remainingUSD: Double?
     public var capReached: Bool
+    /// A batch estimate: how many postings it sums, and how many of them, in order, fit in what is
+    /// left of today's cap at their most (nil when the spend could not be read). Nil for one posting.
+    public var postings: Int?
+    public var fitAtMax: Int?
 
     public init(inputTokens: Int? = nil, typicalOutputTokens: Int? = nil, maxOutputTokens: Int? = nil,
                 typicalUSD: Double? = nil, maxUSD: Double? = nil, priceSource: String? = nil,
-                dailyCapUSD: Double? = nil, spentUSD: Double? = nil, remainingUSD: Double? = nil, capReached: Bool = false) {
+                dailyCapUSD: Double? = nil, spentUSD: Double? = nil, remainingUSD: Double? = nil, capReached: Bool = false,
+                postings: Int? = nil, fitAtMax: Int? = nil) {
         self.inputTokens = inputTokens
         self.typicalOutputTokens = typicalOutputTokens
         self.maxOutputTokens = maxOutputTokens
@@ -208,12 +213,15 @@ public struct RetriageEstimate: Decodable, Equatable, Sendable {
         self.spentUSD = spentUSD
         self.remainingUSD = remainingUSD
         self.capReached = capReached
+        self.postings = postings
+        self.fitAtMax = fitAtMax
     }
 
     private enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens", typicalOutputTokens = "typical_output_tokens", maxOutputTokens = "max_output_tokens"
         case typicalUSD = "typical_usd", maxUSD = "max_usd", priceSource = "price_source"
         case dailyCapUSD = "daily_cap_usd", spentUSD = "spent_usd", remainingUSD = "remaining_usd", capReached = "cap_reached"
+        case postings, fitAtMax = "fit_at_max"
     }
 
     public init(from decoder: Decoder) throws {
@@ -230,6 +238,8 @@ public struct RetriageEstimate: Decodable, Equatable, Sendable {
         spentUSD = money(.spentUSD)
         remainingUSD = money(.remainingUSD)
         capReached = (try? c.decode(Bool.self, forKey: .capReached)) ?? false
+        postings = count(.postings)
+        fitAtMax = count(.fitAtMax)
     }
 }
 

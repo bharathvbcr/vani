@@ -55,7 +55,7 @@ func TestValidateRules(t *testing.T) {
 		{"bad zone", func(c *Config) { c.Schedule.Timezone = "Mars/Base" }, "timezone"},
 		{"local zone", func(c *Config) { c.Schedule.Timezone = "Local" }, "explicit IANA"},
 		{"negative usd", func(c *Config) { c.Decide.DailyUSD.OpenRouter = -1 }, "daily_usd.openrouter"},
-		{"huge usd", func(c *Config) { c.Decide.DailyUSD.LLM = 20.01 }, "daily_usd.llm"},
+		{"huge usd", func(c *Config) { c.Decide.DailyUSD.LLM = 50.01 }, "daily_usd.llm"},
 		{"bad provider", func(c *Config) { c.LLM.Provider = "openai" }, "llm.provider"},
 		{"workday without host", func(c *Config) { c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext"}} }, "needs host"},
 		{"workday host of another tenant", func(c *Config) {
