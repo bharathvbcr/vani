@@ -198,6 +198,9 @@ type Result struct {
 	// HTMLPath is where Render without fit left rkb's page (a file the caller
 	// must remove); empty otherwise.
 	HTMLPath string `json:"-"`
+	// BuildDir is the folder HTMLPath is in, when Render left one for its caller to
+	// remove (Render without fit); empty otherwise.
+	BuildDir string `json:"-"`
 	// Pages is 0 when the page was not fitted (Render without fit).
 	Pages int `json:"pages,omitempty"`
 	// Source is SourceTailored when the model's choice was built, SourceBase
@@ -304,24 +307,11 @@ func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 		}
 		return nothing(), fail(CodeNoModel, "the model could not run (%s), so no tailored resume was built", reason)
 	}
-	if cfg.LockDir != "" {
-		l, err := filelock.TryAcquire(filepath.Join(cfg.LockDir, buildLockName))
-		switch {
-		case errors.Is(err, filelock.ErrWouldBlock):
-			return nothing(), fail(CodeBusy, "another resume is being built; wait for it to finish")
-		case err != nil:
-			return nothing(), fail(CodeConfig, "the resume build lock could not be taken: %v", err)
-		}
-		defer l.Release()
+	ctx, b, done, berr := begin(ctx, cfg, true)
+	if berr != nil {
+		return nothing(), berr
 	}
-	ctx, cancel := context.WithTimeout(ctx, cfg.Deadline)
-	defer cancel()
-	dir, err := makeBuildDir(cfg.WorkDir, time.Now())
-	if err != nil {
-		return nothing(), fail(CodeRender, "no private temp folder: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	b := &builder{cfg: cfg, dir: dir, last: notRun()}
+	defer done(false)
 	res, berr := b.run(ctx, req)
 	if berr != nil {
 		res = b.partial()
@@ -331,6 +321,44 @@ func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 		return res, berr
 	}
 	return res, nil
+}
+
+// begin readies one build on a normalized cfg: it takes the build lock when lock
+// is set (held elsewhere: CodeBusy, nothing spent), bounds ctx by cfg.Deadline and makes the
+// private build folder (sweeping stale ones first). done releases it all: it
+// removes the folder unless keep (Render without fit hands the page to its
+// caller in it).
+func begin(ctx context.Context, cfg Config, lock bool) (context.Context, *builder, func(keep bool), *Error) {
+	var unlock func()
+	if lock && cfg.LockDir != "" {
+		l, err := filelock.TryAcquire(filepath.Join(cfg.LockDir, buildLockName))
+		switch {
+		case errors.Is(err, filelock.ErrWouldBlock):
+			return ctx, nil, nil, fail(CodeBusy, "another resume is being built; wait for it to finish")
+		case err != nil:
+			return ctx, nil, nil, fail(CodeConfig, "the resume build lock could not be taken: %v", err)
+		}
+		unlock = func() { _ = l.Release() }
+	}
+	ctx, cancel := context.WithTimeout(ctx, cfg.Deadline)
+	dir, err := makeBuildDir(cfg.WorkDir, time.Now())
+	if err != nil {
+		cancel()
+		if unlock != nil {
+			unlock()
+		}
+		return ctx, nil, nil, fail(CodeRender, "no private temp folder: %v", err)
+	}
+	done := func(keep bool) {
+		cancel()
+		if !keep {
+			_ = os.RemoveAll(dir)
+		}
+		if unlock != nil {
+			unlock()
+		}
+	}
+	return ctx, &builder{cfg: cfg, dir: dir, last: notRun()}, done, nil
 }
 
 // ctxError turns a finished context into the coded error for it.

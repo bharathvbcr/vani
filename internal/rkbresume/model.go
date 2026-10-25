@@ -103,10 +103,16 @@ func (p pool) has(entry, id string) bool { return p.allowed[entry][id] }
 // buildPool lists the eligible bullets that pass keep, base entries first (in
 // base order), then the others by id, within maxPoolBytes.
 func (b *builder) buildPool(keep func(id string) bool) pool {
+	return b.buildPoolSized(keep, maxPoolBytes)
+}
+
+// buildPoolSized is buildPool within max bytes of text; max <= 0 lists every
+// eligible bullet (the owner edits against the whole pool, not the model's share).
+func (b *builder) buildPoolSized(keep func(id string) bool, max int) pool {
 	p := pool{allowed: map[string]map[string]bool{}}
 	size := 0
 	add := func(entry, id string, text string) bool {
-		if size+len(text)+len(id)+8 > maxPoolBytes {
+		if max > 0 && size+len(text)+len(id)+8 > max {
 			p.omitted++
 			return false
 		}
