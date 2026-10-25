@@ -1889,8 +1889,10 @@ Left open:
     not picked up until the switch is turned off and on (a retry would prompt again); and `daemon.model`
     is read at the daemon's start, so a config edit that adds an OpenRouter model to a running daemon is
     not reflected until it restarts.
-  - **An updated app does not replace the running daemon.** After reinstalling, turn the switch off and
-    on (or Register Again); the old `vani` keeps running until then.
+  - **An updated app does not replace the running daemon** (fixed 2026-10-24: the daemon records its
+    executable's inode, size and mtime at start and exits 75 between runs when the file at that path
+    differs, `cmd/vani/binarywatch.go`). Where it logs `could not identify its own binary`, turn the switch
+    off and on (or Register Again) after reinstalling.
   - **`daemon.json` gained `model`.** An older installed `vani` reading it rejects the file as corrupt
     (its reader is strict) and reports no daemon; the new reader tolerates unknown fields. Rebuild every
     installed `vani` together.

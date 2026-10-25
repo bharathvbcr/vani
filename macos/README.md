@@ -290,13 +290,18 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
      folder in Settings restarts the daemon on the new pair. A change to the schedule (`daily_at` or the
      timezone) or to `devprism.binary` / `devprism.tools_hash` makes `vani daemon` exit 75; the helper starts
      it again immediately when that process has been up at least a second, and uses the same backoff if it
-     exits 75 at once. launchd restarts the helper itself after a crash
+     exits 75 at once. It also exits 75, between runs, when the `vani` file it started from was replaced on
+     disk (a reinstall: a different inode, size or modification time; a missing path mid-install is ignored).
+     launchd restarts the helper itself after a crash
      (`KeepAlive` on failed exit, throttled).
    - **The log** is `<state>/logs/vani.err.log`, the file `vani launchd plist` also uses: the daemon's output
      appended across restarts, plus the helper's timestamped lines ("starting vani daemon (…)", "daemon ended
      (status N) after T s; starting it again in D s"). It moves to `vani.err.log.1` past 4 MiB.
-   - **After reinstalling the app** the running daemon is still the old `vani`: turn the switch off and on
-     (or "Register Again", offered when it is on but no daemon has announced itself).
+   - **After reinstalling the app** the running daemon notices its binary was replaced at its next check (an
+     inbox poll, every 2 minutes, or the start of a run), logs `the vani binary was replaced on disk`, and
+     exits 75 so the helper starts the new one; if it logs `could not identify its own binary` it cannot, and
+     the old behaviour holds: turn the switch off and on (or "Register Again", offered when it is on but no
+     daemon has announced itself).
    - **Security impact.** Same user, same signing identity (team `HAUHVD8M37`, App Group entitlement only),
      same Keychain item through the same code path. The key now sits in a long-lived process's environment
      (readable by the same user with `ps eww`, as a manual run's already is, for longer). Nothing widens: the

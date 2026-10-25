@@ -290,13 +290,21 @@ func (e *env) restoreRecordAfterRestart(prior []byte, priorErr error) {
 // keeps the running value, says so, and returns errConfigRestart: the process
 // exits and a new one reads the file. A process whose start config equals the
 // file does not. The same process still reports it on a later reload, because
-// the file still differs from the value it is running. When the file cannot be
+// the file still differs from the value it is running. A daemon whose own
+// binary was replaced on disk (e.binary) returns errConfigRestart the same way,
+// before the file is read. When the file cannot be
 // read or is invalid, the run goes on with the last config a run applied (cfg,
 // the config the process started with, before the first) and the error is
 // errConfigStale. The watchlist is cut to the boards only names when it names
 // any; the cut is this run's and is never remembered.
 func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.Config, error) {
 	prev := e.lastApplied(cfg)
+	// A replaced binary is decided before the file is read: the new binary may
+	// have added keys this one rejects, and a restart is the only fix.
+	if e.binary.replaced(e.stderr) {
+		e.requestConfigRestart()
+		return prev, errConfigRestart
+	}
 	if app.Reload == nil {
 		if len(only) > 0 {
 			return prev, fmt.Errorf("%w: this app cannot limit a run to some boards", errBoardSelection)
@@ -342,8 +350,9 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 // errConfigRestart means a process-lifetime field changed (processPinned).
 // This process keeps the value it started with. The caller exits
 // exitConfigRestart so a supervisor starts a process that reads the file.
-// It is not a failed run and it is not announced.
-var errConfigRestart = errors.New("config changed; restarting so the schedule or devprism change applies")
+// It is not a failed run and it is not announced. The same exit serves a
+// replaced vani binary (binWatch), which is why the text names both.
+var errConfigRestart = errors.New("restarting: a schedule or devprism setting changed, or the vani binary was replaced")
 
 // bindRestart is how `vani daemon` hears a process-lifetime config change.
 // The first cancel wins, including a signal that already stopped the process.

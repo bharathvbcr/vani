@@ -27,7 +27,8 @@ const (
 	// exitConfigRestart is sysexits EX_TEMPFAIL (75). `vani daemon` returns it
 	// when a process-lifetime field changed — the schedule, or devprism.binary
 	// / devprism.tools_hash — so a supervisor starts a process that reads the
-	// file. Nothing else in vani uses 75. The schedule agent's
+	// file, or when its own binary was replaced on disk (binarywatch.go). Nothing
+	// else in vani uses 75. The schedule agent's
 	// ScheduleAgentConstants.configRestartStatus is the same number. launchd
 	// KeepAlive with SuccessfulExit false also restarts any non-zero exit.
 	exitConfigRestart = 75
@@ -249,6 +250,11 @@ type env struct {
 	// restart ends the daemon when a process-lifetime config field changes.
 	// Nil outside `vani daemon`; reloadConfig still returns errConfigRestart.
 	restart context.CancelCauseFunc
+
+	// binary is the daemon's own executable as it started (binarywatch.go);
+	// reloadConfig asks it whether the file was replaced. Nil outside
+	// `vani daemon`, or when the identity could not be recorded: no check.
+	binary *binWatch
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
@@ -499,6 +505,8 @@ func (e *env) cmdDaemon(args []string) error {
 		return err
 	}
 	e.installRunTee()
+	// Before the app is built, so a binary replaced while it starts is seen.
+	e.binary = watchOwnBinary(e.stderr)
 	app, err := buildApp(cfg, e.stateDir, e.stderr)
 	if err != nil {
 		return err

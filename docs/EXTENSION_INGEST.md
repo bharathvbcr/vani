@@ -9,7 +9,7 @@ When the extension scrapes a listing page, the user can send the jobs to Vani. V
 ## Why there is a spool
 
 - The daemon holds the ledger's exclusive lock (`ledger.Open`, `filelock.TryLock`) for its whole life, so no other process can write the ledger while it runs.
-- The daemon loads `config.json` at start (`cmdDaemon`) and re-reads the whole file before each run and each inbox poll (`env.reloadConfig`). Only the schedule is fixed for the process's life (a change is noted on stderr and applies after a restart). A file that cannot be read keeps the previous config and records `config_stale`.
+- The daemon loads `config.json` at start (`cmdDaemon`) and re-reads the whole file before each run and each inbox poll (`env.reloadConfig`). Only the schedule is fixed for the process's life (a change is noted on stderr and applies after a restart; so does a replaced `vani` binary, which the same reload notices and answers with exit 75). A file that cannot be read keeps the previous config and records `config_stale`.
 
 So `vani jobs ingest` does not write the ledger. It writes a batch file to an inbox, and the ledger owner drains the inbox. A poll that leaves the ledger unusable ends the daemon (exit 1, `daemon.ErrFatal`) within one poll interval.
 
