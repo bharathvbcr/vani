@@ -325,7 +325,7 @@ public enum ResumeWords {
         return ResumeFailureText(message: message, costNote: note, canRetry: retry, offer: offer)
     }
 
-    static func clipped(_ s: String, _ max: Int = 240) -> String {
+    public static func clipped(_ s: String, _ max: Int = 240) -> String {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.count <= max ? t : String(t.prefix(max)) + "…"
     }

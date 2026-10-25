@@ -22,9 +22,25 @@ struct VaniApplyApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
+        // Resume Studio: one window per job, keyed by the posting's key. Opening a job whose window is
+        // already open brings that window forward; another job gets its own.
+        WindowGroup("Resume Studio", id: Self.studioWindowID, for: String.self) { $key in
+            if let key {
+                ResumeStudioWindow(key: key)
+                    .environment(delegate.model)
+                    .environment(delegate.jobs)
+            } else {
+                Text("Open a job's Resume Studio from the Tailored resume card in Jobs.")
+                    .foregroundStyle(.secondary)
+                    .padding(40)
+            }
+        }
+        .defaultSize(width: 1320, height: 840)
     }
 
     static let mainWindowID = "main"
+    static let studioWindowID = "resume-studio"
 }
 
 /// Hands the delegate SwiftUI's window opener, which only a view can read, so a
@@ -37,6 +53,8 @@ private struct CaptureMainWindowOpener: ViewModifier {
         content.onAppear {
             let open = openWindow
             delegate.openMainWindow = { open(id: VaniApplyApp.mainWindowID) }
+            // The Tailored resume card's Open Studio: a window per job key, an open one brought forward.
+            delegate.jobs.resume.openStudio = { key in open(id: VaniApplyApp.studioWindowID, value: key) }
         }
     }
 }

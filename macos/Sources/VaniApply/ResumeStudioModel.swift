@@ -43,9 +43,9 @@ final class ResumeStudioModel {
         }
     }
 
-    /// A version's PDF this process was told the path of (a build, a revalidation or a use), so the card
-    /// can open it in Preview. `jobs resume show` names no path, so a version built in an earlier session
-    /// has none until it is used again.
+    /// A version's PDF this process was told the path of (a build, a revalidation or a use). `previewCopy`
+    /// asks `jobs resume show` for any version's path first; this is what it falls back to when `show`
+    /// cannot answer (an older vani, a reply this app cannot read).
     struct KnownPDF: Equatable {
         var version: Int
         var path: String
@@ -73,9 +73,12 @@ final class ResumeStudioModel {
     var onChange: (String) async -> Void = { _ in }
     /// Where `retry()` and the offers find the posting again; set by JobsModel.
     var candidate: (String) -> Job? = { _ in nil }
-    /// The Studio window's way in, set by the window's owner. Nil until it exists: the card shows
-    /// "Open Studio" disabled, with a tooltip saying so, and nothing pretends to open.
+    /// The Studio window's way in, set by the main window's scene once it can open another window. Nil until
+    /// then: the card shows "Open Studio" disabled, and nothing pretends to open.
     var openStudio: ((String) -> Void)?
+    /// The posting a Studio window was opened for, by key: its title and Use need the job even after the
+    /// list has moved on (a filter, a refresh).
+    var studioJobs: [String: Job] = [:]
 
     init(client: (() -> ResumeStudioClient)?, bankStore: @escaping () -> BankStore? = { nil }) {
         self.client = client
@@ -85,12 +88,32 @@ final class ResumeStudioModel {
     /// The feature needs a runner the app built; a test host without one does not offer it.
     var isAvailable: Bool { client != nil }
 
-    /// An operation is in flight (or waiting on the owner's confirmation), so no other may start.
+    /// An operation is in flight (or waiting on the owner's confirmation), so no other may start. A Studio
+    /// window's Preview or Fit counts: it holds vani's build lock too, and answers `busy` to a second one.
     var isBusy: Bool {
+        if externalOps > 0 { return true }
         switch phase {
-        case .estimating, .confirming, .building, .revalidating, .using: true
-        case .idle, .built, .used, .failed: false
+        case .estimating, .confirming, .building, .revalidating, .using: return true
+        case .idle, .built, .used, .failed: return false
         }
+    }
+
+    /// Studio renders in flight (Preview or Fit; at most one app-wide, see `claimRender`).
+    private(set) var externalOps = 0
+
+    /// A Studio window's Preview or Fit takes the one slot, or is refused when any resume step is running.
+    func claimRender() -> Bool {
+        guard !isBusy else { return false }
+        externalOps += 1
+        return true
+    }
+
+    func releaseRender() { externalOps = max(0, externalOps - 1) }
+
+    /// The Studio saved a version (a fitted edit): remember its PDF and let the Jobs tab re-show the posting.
+    func noteSaved(key: String, saved: ResumeSaved) async {
+        remember(key: key, saved: saved)
+        await onChange(key)
     }
 
     /// The estimate is in and the confirmation is open.
@@ -304,22 +327,52 @@ final class ResumeStudioModel {
 
     // MARK: Preview
 
-    /// A copy of the job's current version's PDF Preview can open: the one this process was told the path
-    /// of, else the browsers' copy when that version is the one in use. Failure is a sentence, never an
-    /// empty success.
+    /// The runner the Studio window's editor uses; nil in a host without one.
+    func makeClient() -> ResumeStudioClient? { client?() }
+
+    /// A copy of the job's current version's PDF Preview can open. `jobs resume show` names the PDF of any
+    /// version that has one, so that is asked first (stored files only, no check). When it cannot answer
+    /// (an older vani, a reply this app cannot read), the PDF this process was told the path of is used,
+    /// else the browsers' copy when that version is the one in use. Failure is a sentence, never an empty
+    /// success.
     func previewCopy(for job: Job, summary: ResumeSummary?) async -> Result<URL, ResumePreviewError> {
         let bank = bankStore()
         let known = knownPDF[job.key]
         let current = summary?.current ?? 0
         let usedIsCurrent = current > 0 && summary?.used == current
         let urls = [job.url, job.applyURL].compactMap { $0 }
+        let name = ResumeWords.resumeFileName(company: job.company)
+        var asked: String?
+        if current > 0, let client {
+            let c = client(), key = job.key
+            switch await BlockingWork.value({ c.show(key, version: current, check: false) }) {
+            case let .success(shown):
+                if let v = shown.versions.first(where: { $0.version == current }), let path = v.pdfPath, let sha = v.pdfSHA256, !sha.isEmpty {
+                    let copy = await BlockingWork.run { try ResumeStore.previewCopy(name: name, data: try ResumeBinding.loadPDF(path: path, sha256: sha)) }
+                    switch copy {
+                    case let .success(url): return .success(url)
+                    case let .failure(error): return .failure(ResumePreviewError(message: (error as? ResumeStore.Failure)?.message ?? String(describing: error)))
+                    }
+                }
+                if shown.versions.contains(where: { $0.version == current }), shown.versionsError == nil {
+                    return .failure(ResumePreviewError(message: "This version has no PDF: its layout was never fitted to pages. Fit it in the Studio window."))
+                }
+                asked = "Vani did not name this version's PDF"
+            case let .failure(f):
+                asked = ResumeWords.failure(f)?.message ?? f.message
+            case .cancelled:
+                asked = "the request was stopped"
+            }
+        }
+        let askedNote = asked
         let result = await BlockingWork.run { () throws -> URL in
             if let known, known.version == current, let sha = known.sha256 {
                 let data = try ResumeBinding.loadPDF(path: known.path, sha256: sha)
-                return try ResumeStore.previewCopy(name: "Resume.pdf", data: data)
+                return try ResumeStore.previewCopy(name: name, data: data)
             }
             guard usedIsCurrent, let bank else {
-                throw ResumePreviewError(message: "This version's PDF is not on hand. Build or use it from here to open it in Preview, or open the Studio window.")
+                throw ResumePreviewError(message: "This version's PDF is not on hand" + (askedNote.map { " (\($0))" } ?? "")
+                    + ". Build or use it from here to open it in Preview, or open the Studio window.")
             }
             let resumes = ResumeStore(directory: bank.directory.appendingPathComponent("resumes", isDirectory: true))
             guard let hit = ResumeStore.match(urls: urls, listed: try resumes.catalog()), let got = try resumes.get(key: hit.key) else {

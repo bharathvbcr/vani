@@ -108,6 +108,26 @@ re-sorts once, when the batch ends, so rows stay put while it runs. The finished
 many the role fit changed, what failed or was not asked and why, and what it cost, with **Select N Changed** and
 **Retry N…** (back through the confirmation). One role's re-triage and a batch block each other, as vani does.
 
+**Resume Studio.** A role's detail has a *Tailored resume* card (`vani jobs resume`, docs/RUNTIME.md "Resume Studio"): the
+current version, whether it fits and whether your knowledge base still vouches for it (a state that did not run is grey,
+never green), Build (Opus 5.5, after a cost confirmation), Use for this job, Revalidate and Open in Preview (any version's
+PDF: `show` names its path). **Open Studio** opens one window per job (`WindowGroup(for: String.self)`; opening a job again
+brings its window forward): a version picker, a preview, and an outline of the page you can edit.
+The outline lists the sections in page order, each entry with its bullets. A bullet has a checkbox (off keeps its place,
+dimmed), drags to reorder within its entry, and carries the bullets that continue it, which move and switch with it. **Swap**
+lists the bullets your knowledge base offers for that entry that are not on the page, with the posting's keywords each
+holds, and adds one or replaces one; **Add entry** puts another entry in a section; the sliders open the five overrides
+(title, organization, stack, lead line, dates) with their limits checked as you type; project sections move up and down.
+What is cheap to check is checked here and marks the row (`ResumeDraft.issues`); Go has the last word and its refusal is
+shown on the row it names. **Preview** (`render`) draws the draft as rkb's screen HTML and saves nothing: the page holds your
+header, so the app reads it and deletes the file in one step, and shows it in a web view with scripts off, no network (a
+content rule blocks http, https, ws and ftp), no storage and no navigation, under the banner "Layout not fitted". **Fit**
+(`render --fit --from vN`, no model) fits the page in Chrome and saves it as a new "edited" version, which is then shown
+as a PDF (PDFKit), with line counts per bullet while the draft is that version. Save PDF As, Reveal in Finder and Open in
+Preview work on the shown version's PDF, read through the hash vani reported. Unsaved edits ask before a version switch,
+Reset to base, or closing the window. Clicking a bullet in the page cannot select its row: that would need scripts in the
+page, and they stay off.
+
 ```mermaid
 flowchart TD
     subgraph BrowserLayer["Browsers & Extensions"]
@@ -485,7 +505,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 728 tests, 0 failures (2026-10-24; first counted at 129; the real-vani and accessibility-driven tests skip when `build/vani` is absent or the runner is not trusted). They cover the TS vectors, validation, the store
+  - `swift test`: 850 tests, 12 skipped, 0 failures (2026-10-25; first counted at 129; the real-vani and accessibility-driven tests skip when `build/vani` is absent or the runner is not trusted). They cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).
@@ -521,7 +541,18 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
   - That Swift's `flock(LOCK_EX)` and Go's shared probe exclude each other: the bundled app above
     held the lock and the daemon's notifier stayed quiet.
 - **Not verified here:**
-  - A click on a notification, with the window open or closed. Computer use cannot reach
+  - The Resume Studio window in a running app (its model, its draft rules, the preview guards and the close guard
+    are tested; ImageRenderer cannot draw buttons, menus, drag targets, PDFKit or WebKit). Open Studio from a job's
+    card opens one window titled "Resume — Company, Title", and pressing it again brings that window forward rather than
+    opening a second; unchecking a bullet puts the edited dot on the close button, and the close button or ⌘W then asks
+    "Close this window and discard your edits?" (the guard wraps SwiftUI's own window delegate, checked only against a
+    plain NSWindow); dragging a bullet group reorders it and takes the bullets that continue it along; the Swap popover
+    lists the bullets not on the page with the posting's keywords in orange bold; the fitted version's PDF is drawn
+    by PDFKit; the split divider moves; Save PDF As offers `Resume_<Company>.pdf`, Reveal and Open in Preview work. A real
+    rkb page in the unfitted preview, which draws without any external font or stylesheet it asks for (the web view blocks
+    the network).
+  - A click on a notification, with the window open or closed. A Studio window is never the one it raises
+    (the reveal looks for the window titled "Vani Apply"); that filter is not covered by a test. Computer use cannot reach
     Notification Center, and no click on the test copy's notices showed up in the log. The
     reopen goes through `MainWindowReveal` (`MainWindowRevealTests`). Without the fix, closing
     the window quit the app, so there was no running app to click through to.

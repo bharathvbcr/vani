@@ -147,7 +147,7 @@ public enum ResumeCardPresentation {
     }
 
     /// Whether the current version can be used, from what was recorded when it was built.
-    static func useAction(_ s: ResumeSummary) -> ResumeUseAction {
+    public static func useAction(_ s: ResumeSummary) -> ResumeUseAction {
         guard s.current > 0 else { return .none }
         if s.used == s.current { return .inUse(version: s.current) }
         let v = s.current

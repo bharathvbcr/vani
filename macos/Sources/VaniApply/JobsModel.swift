@@ -153,6 +153,14 @@ final class JobsModel {
         resume.start(job)
     }
 
+    /// Open the Resume Studio window for a job (the window for a job already open is brought forward).
+    /// The posting is remembered by key so the window keeps its title and its Use after the list changes.
+    func openStudio(_ job: Job) {
+        guard resume.isAvailable, let open = resume.openStudio else { return }
+        resume.studioJobs[job.key] = job
+        open(job.key)
+    }
+
     /// Re-triage from a row or the detail: show the posting (the progress, the answer and any error
     /// appear in its detail pane) and ask vani for the cost.
     func startRetriage(_ job: Job) {
