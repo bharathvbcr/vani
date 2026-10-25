@@ -364,6 +364,32 @@ func TestJobsResumeUseRefusesAVersionTheStoreCannotBind(t *testing.T) {
 	}
 }
 
+// Every subcommand is bounded by its own deadline; a check that runs out of time
+// is a refusal with the timeout code, never a bound version.
+func TestJobsResumeDeadlinesBoundTheCommands(t *testing.T) {
+	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+	_, st := jrTwoVersions(t, f)
+	old := resumeUseDeadline
+	resumeUseDeadline = 1 // one nanosecond
+	t.Cleanup(func() { resumeUseDeadline = old })
+	out, _ := jrRun(t, 1, "", "use", "--json", jrKey, "v1")
+	if r := jrFail(t, out); r.Code != "timeout" {
+		t.Fatalf("reply = %+v", r)
+	}
+	if _, err := st.Used(jrKey); !errors.Is(err, resumestore.ErrNotFound) {
+		t.Errorf("bound after the deadline: %v", err)
+	}
+
+	// show --no-check keeps what it read and says what it could not get.
+	oldShow := resumeShowStoredDeadline
+	resumeShowStoredDeadline = 1
+	t.Cleanup(func() { resumeShowStoredDeadline = oldShow })
+	m := jrShow(t, "--no-check", jrKey)
+	if len(jrVersionsOf(t, m)) != 2 || m["keywords_error"] == nil {
+		t.Errorf("show = %v", m)
+	}
+}
+
 func TestJobsResumeUseRefusals(t *testing.T) {
 	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
 	jrTwoVersions(t, f)

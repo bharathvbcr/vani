@@ -716,9 +716,17 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   - An education entry with org and dates is a job to `kbsync.KindOf`, so if one ever gains an
     eligible bullet it becomes placeable in the work history (`rkbresume.canHold`). Today no
     education bullet is eligible.
-  - Resume Studio (2026-10-25): per-job tailored resumes in the app. Plan and owner decisions in
-    the session that started it; the pool is about the base resume until rkb round-2 review runs
-    (`vani kb sync --dry-run`: 17 entries / 36 slots).
+  - Resume Studio (2026-10-25): per-job tailored resumes. The CLI (`vani jobs resume build|render|
+    show|use|revalidate`), the store and the owner's decisions are in docs/RUNTIME.md, "Resume
+    Studio". Still open: the pool is about the base resume until rkb round-2 review runs (`vani kb
+    sync --dry-run`: 17 entries / 36 slots; the career/ session's handoff); the Swift app (Resume
+    client and model, the card, the Studio window, bind-and-log) and the extension's keyed path
+    with header removal step 2 (its `OWN_TEXT` still lists `no_name`) are later waves; a build
+    that falls back to base is kept but never current over a real version; marks' sent version and
+    `vani migrate rekey-*` moving the resume folder (keyed by the key's hash); the app and CLI
+    binaries must be rebuilt and reinstalled together before the first `use` (marks with
+    `resume_version` read as corrupt to an older binary); estimate types of `jobs resume build
+    --dry-run` and `jobs retriage` are two copies (`resumeEstimate`, `retriageEstimate`) to fold.
 - **Jev naming left after the Liquid D rename (2026-10-20, branch `liquid-d-rename`).** The decision
   model is Liquid D (`liquid/d1-ultra` over OpenRouter). `config.Default()` (what `vani init`
   writes) now names it and, by the owner's call, no llm: tests that need one set `testLLM`. And

@@ -189,7 +189,7 @@ removed 2026-10-23: its `career.db` held stale blocks and its layout is not the 
 | `kb.bank`, `kb.rkb`, `kb.code_root` | as above; `code_root` is rkb's `RKB_CODE_ROOT` |
 | `kb.selections`, `kb.base_selection` | eligibility (above), and the selection tailored: its header, meta, layout, `lines` sections and per-entry overrides are kept as written; it must be one of `kb.selections`, 1 to 2 pages, every entry listing its bullets |
 | `kb.vm_report` | the rkb validator report the claims export reads (which figures count as verified). Set but missing is code `config`; unset, `vm_report_full.txt` else `vm_report.txt` under `<code_root>/career/CurriculumVitae` is used and the reply's `notes` names it and its age |
-| `llm.provider`, `llm.model` | the tailoring turn, at high effort (`llmbackend.ShapeHigh`); spends from the same daily `decide.daily_usd.llm` ledger as `vani draft`. Two live runs on 2026-10-24 cost $0.22 and $0.13 (each one retry) |
+| `llm.provider` | must be `anthropic`: the tailoring turn runs on `rkbresume.Model` (Opus 5.5), not on `llm.model`, at high effort (`llmbackend.ShapeHigh`), and the provider must serve and price it (Resume Studio, below); spends from the same daily `decide.daily_usd.llm` ledger as `vani draft`. Two live runs on 2026-10-24 (before the pin) cost $0.22 and $0.13 (each one retry) |
 
 Steps: claims export, `kbsync.Eligible`, one `claims export --used-in` of the base (proves rkb runs
 and names figures rkb has not double-verified), one tool-less model turn, then in a 0700 temp dir
@@ -240,6 +240,97 @@ not run `rkb build`, which writes LaTeX into the career tree.
   owner's sections, a base build in about 25 s of CPU (FOLLOWUPS, "vani resume on rkb"). Checked
   on 2026-10-24 with Opus 5.5 on a real Amazon SageMaker Inference posting: a tailored two-page
   PDF with GPU & ML Systems moved ahead of the agent sections, every page full, nothing retired.
+
+## Resume Studio
+
+`vani jobs resume` keeps a job's resume as numbered versions, built by `internal/rkbresume` (above)
+and stored by `internal/resumestore`. `vani resume` stays the stateless path the extension uses for
+a page Vani does not track (it keeps nothing); both build through one config owner
+(`resumeConfig` in `cmd/vani/resumecmd.go`), so the knowledge-base keys, the validator report, the
+work and lock folders and the Opus pin are the same. The Studio window, the Resume card and the
+extension's keyed path are the app's and the extension's (FOLLOWUPS, "Resume Studio").
+
+Owner decisions (2026-10-25): **Opus only** (`rkbresume.Model`, `claude-opus-5-5`, whatever
+`llm.model` says; `llm.provider` must be `anthropic` and the provider must serve and price it); the
+Studio swaps **bank bullets and rkb entry overrides only** (title, org, stack, dates, lead), never
+new wording; an **owner's edit obeys the page-safety rules only** (eligible, in the right entry,
+continuations kept directly after their lead, one entry per family, plain one-line overrides, rkb
+lint, 1 to 2 pages), not the caps that steer the model; a **lead line holds no figures**.
+
+Every subcommand takes `--json` and writes one object: the reply, or `{"error","code"}` (exit 1;
+usage errors exit 2, as the other `jobs` commands). `KEY` is a posting key that must be in the
+ledger; a bad key is `bad_request`, an unknown one `unknown_key`. A version is written `v3`.
+Nothing here puts the owner's name, contact lines or any resume text in a reply, a log line or an
+error: a PDF or page is a 0600 file, named by path.
+
+| Command | What it does |
+|---|---|
+| `build [--dry-run] [--allow-base] KEY` | Opus picks the bullets (the build above); the result is saved as the next version, made from the current one. Needs the posting's text (`bad_request` without it). Reply: the version record without its choice, plus `current_moved`, `current_note` and `pdf_path` (absolute). `--dry-run` asks no model and runs no rkb: `opus_usable` and why not (`no_model`), `budget` (cap, spent and remaining today; absent, never zero, when the spend cannot be read) and an `estimate` for at most 2 turns (`rkbresume.MaxTurns`, an upper bound on input tokens from `rkbresume.PromptBound`, the shaped output ceiling, `max_usd` at Anthropic's published rates, `cap_reached`). |
+| `render [--fit] [--from vN] KEY` | The owner's edit (JSON on stdin, at most 64 KiB, the shape of a version's `selection`), no model, so nothing is spent. **Without `--fit` nothing is saved**: rkb's screen HTML is copied to `<state>/resumes/.tmp/preview-N.html` (0600; ones over an hour old are swept by the next render), the build folder with the header is removed, and the reply is `{key, saved:false, html_path, checks, notes, keywords, bullets}` with `checks.fit` always `not_run` and no pages, version or PDF: the layout was not measured. **With `--fit`** the page is fitted in Chrome and saved as a version (`source` "edited") made from `--from` (default the current one); the reply is `build`'s. `--from` needs `--fit`. |
+| `show [--no-check] KEY [vN]` | Every version (record, `current`, `used`), the asked-for version's full `selection` (default the current one), the editor's `pool` (`rkbresume.PoolView`: eligible bullets by entry with resolved text, `follows`, the sections an entry may go in, the base choice) and the posting's `keywords` from `jobs show`'s data. Unless `--no-check`, each version has a fresh `eligibility` (below). `--no-check` reads stored files only (5 s), runs no rkb, gives no pool and says `eligibility_checked:false`; a version's own `checks.eligibility` is then what was true when it was built. |
+| `use KEY vN` | Checks the version freshly, then binds it for applying: `{key, version, pdf_path, name, pdf_sha256}`. Stale is refused (`stale`, with the verdict), a version that could not be checked is refused (`unchecked`, or `timeout` / `cancelled`): an unchecked version is never used. The store also refuses a version whose fit did not pass or soft-pass, whose recorded eligibility is not current or that has no PDF (`not_usable`), and a PDF that does not match its hash (`damaged`). |
+| `revalidate KEY vN` | Drops from vN's choice the bullets that went stale, and the continuations of a dropped lead (the pool says what each continuation follows), rebuilds it with fit (no model) and saves a version with `source` "revalidated", made from vN, whose `reason` names the dropped ids (`dropped_stale` in the reply). A version that is still vouched for is `not_stale`; one that could not be checked is `unchecked`. What is left must still build: an empty page is `bad_edit`, and nothing is saved. A dropped wording is not replaced; the owner places a swap in the editor. |
+
+**Eligibility of a stored version** (`jobsresumecheck.go`). A version records each bullet's id and
+the 12-hex hash of the wording it was chosen for, and the fingerprints of every input its build read
+(bank, base selection, selection set, validator report, claims, rkb binary). `show`, `use` and
+`revalidate` compare them to one fresh `rkbresume.Pool` and the bank's bullet ids:
+`{state: current | stale | unknown, reworded, gone, ineligible, inputs_changed, why}`. `reworded`:
+still offered, but the version was not judged on the new wording. `gone`: no longer in the bank.
+`ineligible`: in the bank, no longer offered (including a continuation whose lead went). A version is
+stale when any bullet is in one of those lists, or when the validator report changed (the pool shows
+eligibility only; which figures print is decided when a page is built, so rebuild or revalidate to
+re-check them). The other changed inputs are listed for information. `unknown` means the check could
+not run and is never read as `current`. A claim's own verified flag moving is in no fingerprint: a
+rebuild is what re-checks it.
+
+**Replies for versions.** The record is `resumestore.Meta`: `version`, `parent`, `source`
+(tailored, base, edited, revalidated), `reason`, `model`, `cost {usd, complete, turns}` (a turn whose
+cost is unknown makes `complete` false and `usd` a lower bound), `checks {eligibility, lint, fit,
+figures}`, `pages` (0: not fitted), `notes`, `unverified_dropped`, `jd_keywords`, `bullets`,
+`fit_lines`, `fingerprints`, `pdf_sha256`, `created`. `render` without `--fit` names its keywords
+`keywords`.
+
+**Current and the base fallback.** A new version is made from the current one and takes its place
+(the store moves `current` only when the version's parent is the current one, or there is none). A
+build that fell back to the owner's base selection (a model that answered badly, or no model with
+`--allow-base`) is a fallback, not a choice: it is saved with no parent so a job that already has a
+current version keeps it (`current_moved:false`, `current_note` says so); the first version of a job
+is current whatever it is. Without `--allow-base`, a build that cannot run Opus is refused with
+`no_model` before anything is spent.
+
+**State** (`internal/resumestore`; `<state>` is the state dir, which must be absolute):
+
+```
+<state>/resumes/<sha256(key)>/   key  vN.json  vN.pdf  current  used  attempts.jsonl  .lock
+<state>/resumes/.tmp/            rkb build folders (swept at the next build) and preview-N.html
+<state>/resume-build.lock        one paid build / render at a time per state dir
+<state>/resume-chrome.lock       one Chrome fit at a time
+```
+
+Files are 0600 and folders 0700, written atomically (PDF, then JSON as the commit point, then the
+pointers). At most 20 versions per job and 200 jobs; the oldest version that is neither current nor
+used goes first, and a job with a used version is never pruned. `attempts.jsonl` records builds that
+were paid for and saved nothing (cancelled, timed out, failed after a model turn: code, cost with
+`complete`), so the money is never invisible; the reply of that failure carries `cost` and
+`attempt_recorded`. A built version is written on a context that outlives a Stop that arrives after
+the model was paid. A second build or render while one runs is `busy`, nothing spent; `show` and
+`use` take no build lock.
+
+**Deadlines** (Go side): `build` 360 s (two turns at most), `build
+--dry-run` 45 s, `render` 100 s, `render --fit` 260 s, `show` 45 s (`--no-check` 5 s), `use` 10 s,
+`revalidate` 260 s (pool and fit together; the plan gives the app 15 s more per call). SIGINT and SIGTERM cancel cleanly: rkb's process group
+is killed and a paid build's cost is recorded.
+
+**Codes**: `bad_request`, `unknown_key`, `ledger`, `config`, `store`, `not_found`, `damaged`,
+`unsupported` (a record of another schema), `full`, `busy`, `not_usable`, `stale`, `unchecked`,
+`not_stale`, `failed`, and rkbresume's `kb`, `render`, `lint`, `fit`, `too_large`, `pages`,
+`timeout`, `cancelled`, `kb_changed`, `no_model`, `ineligible` (the message names the bullet id),
+`bad_edit`. Exit 1 for any of them, 2 for a usage error.
+
+The request header of `vani resume` is decoded and ignored (step 1 of its removal): nothing requires
+or validates it, since rkb prints its own. The extension still sends one and still lists `no_name`
+among the codes it words itself; both go in step 2.
 
 ## Running without a decision backend
 
