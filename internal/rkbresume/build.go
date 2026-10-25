@@ -54,6 +54,10 @@ type builder struct {
 	answered int
 	// cost sums the model turns (cost.go).
 	cost costMeter
+	// rd is the resolved redraft (nil for a build with no previous choice) and instr
+	// the owner's instruction as it enters the prompt and the record (redraft.go).
+	rd    *redraft
+	instr string
 }
 
 // isCont reports whether a bank bullet's text refers back to an earlier bullet.
@@ -100,6 +104,9 @@ type outcome struct {
 	fitLines map[string]int
 	// htmlPath is rkb's page, set when the attempt rendered one.
 	htmlPath string
+	// orphans are the bullets of ch that rkb's fit reported ending in an orphan last
+	// line (ids only, report order), for the retry's feedback.
+	orphans []string
 }
 
 // finish is the Result of a built outcome: the choice written back in the
@@ -110,11 +117,15 @@ func (b *builder) finish(source, reason string, out outcome) (Result, *Error) {
 	if err != nil {
 		return Result{}, fail(CodeKB, "the built choice cannot be recorded: %v", err)
 	}
-	return Result{
+	res := Result{
 		PDF: out.pdf, HTMLPath: out.htmlPath, Pages: out.pages, Source: source, Reason: reason,
 		Checks: out.checks, Notes: out.notes, UnverifiedDropped: out.dropped, Keywords: out.ch.keywords,
 		SelectionJSON: sel, Bullets: b.bulletRefs(out.ch), FitLines: out.fitLines, Fingerprints: b.fp,
-	}, nil
+	}
+	if source == SourceTailored {
+		res.Instruction = b.instr // a base page was shaped by no model, so by no instruction
+	}
+	return res, nil
 }
 
 // partial is the Result an error carries: nothing built, but what ran, and what
@@ -149,6 +160,11 @@ func (b *builder) prepare(ctx context.Context, needFit bool) *Error {
 
 func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	if err := b.prepare(ctx, true); err != nil {
+		return Result{}, err
+	}
+	// The previous choice, scope and locks are read against the bank before the
+	// first rkb export of the build and long before a turn is spent.
+	if err := b.resolveTailor(req); err != nil {
 		return Result{}, err
 	}
 	baseCh := b.base.baseChoice(b.el.Allowed, b.isCont)
@@ -198,6 +214,15 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	}
 	if noModel && !b.cfg.AllowBase {
 		return Result{}, fail(CodeNoModel, "the model could not run (%s), so no tailored resume was built", reason)
+	}
+	if b.rd.keeps() {
+		// The base selection would not keep what the owner kept: no page is better
+		// than one that undoes the lock.
+		code := b.rd.refusal
+		if code == "" {
+			code = CodeRedraft
+		}
+		return Result{}, fail(code, "the redraft was not made (%s); the base selection is not built in its place, because it would not keep what is kept", reason)
 	}
 	if b.remaining(ctx) < minForBase {
 		return Result{}, fail(CodeTimeout, "not enough time was left to build the base resume")
@@ -332,7 +357,14 @@ func (b *builder) load(ctx context.Context) *Error {
 // tells the model what was wrong. It returns the result, or why the base
 // selection is used instead; a non-nil error ends the build.
 func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badClaims map[string]bool) (*Result, string, *Error) {
+	var onKept map[string]bool
+	if b.rd.keeps() {
+		onKept = b.keptBullets()
+	}
 	p := b.buildPool(func(id string) bool {
+		if onKept[id] {
+			return false // a kept part already uses it, and an id is used once
+		}
 		for _, t := range tokens(b.bank.Bullets[id].Text) {
 			if badClaims[t] {
 				return false
@@ -340,6 +372,9 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 		}
 		return true
 	})
+	if b.rd.keeps() {
+		p = b.restrictPool(p)
+	}
 	kw := keywordText(req)
 	msgs := []llm.Message{userMsg(b.prompt(p, req, baseCh.count()))}
 	// soft is the last tailored build whose only flaw was a soft layout one. It
@@ -363,13 +398,16 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 			return keepSoft(tr.reason)
 		}
 		b.answered++
-		ch, err := b.parseChoice(tr.text, p, kw)
+		ch, err := b.parseTailored(tr.text, p, kw)
 		if err != nil {
+			if b.rd != nil {
+				b.rd.refusal = refusalCode(err)
+			}
 			// A refused choice shares the one retry: the model is told why.
 			if round == 1 {
 				return keepSoft("the model's choice was refused: " + err.Error())
 			}
-			msgs = append(msgs, assistantMsg(tr.text), userMsg(feedback([]problem{{"choice", err.Error()}}, nil)))
+			msgs = append(msgs, assistantMsg(tr.text), userMsg(feedback([]problem{{"choice", err.Error()}}, nil, nil)))
 			continue
 		}
 		out, ferr := b.attempt(ctx, fmt.Sprintf("tailored%d", round), ch, false, true)
@@ -400,7 +438,10 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 		if round == 1 {
 			return keepSoft("the model's choice was rejected twice: " + kinds(out.problems))
 		}
-		msgs = append(msgs, assistantMsg(tr.text), userMsg(feedback(out.problems, out.dropped)))
+		if b.rd != nil {
+			b.rd.refusal = CodeRedraft
+		}
+		msgs = append(msgs, assistantMsg(tr.text), userMsg(feedback(out.problems, out.dropped, out.orphans)))
 	}
 	return nil, "the model's choice was rejected", nil
 }
@@ -707,6 +748,7 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 		return out, fail(CodeRender, "rkb fit did not run to a verdict (exit %d; is Chrome or poppler missing?): %s", fitOut.Exit, clip(fitOut.Stderr, 300))
 	}
 	out.fitLines = fitLinesOf(rep, ch)
+	out.orphans = orphanIDs(rep, ch)
 	out.checks.Fit = checkPassed
 	if rep.Status != 0 {
 		msg := clip(b.scrub.clean(rep.Advice), 300)

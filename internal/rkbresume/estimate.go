@@ -21,7 +21,9 @@ func PromptBound(turn, descRunes int) int {
 	posting := max(min(descRunes, MaxPostingRunes), 0) * 4 // a rune is at most 4 bytes
 	n := len(systemPrompt) + posting + maxPoolBytes + 5000
 	if turn > 1 {
-		n += maxReplyBytes + maxFeedbackProblems*maxFeedbackRunes*4
+		// The first reply, the problems rkb found, and the orphan sentence (up to
+		// maxFeedbackProblems ids of at most 128 bytes and a fixed lead).
+		n += maxReplyBytes + maxFeedbackProblems*maxFeedbackRunes*4 + maxFeedbackProblems*130 + 300
 	}
 	return n
 }

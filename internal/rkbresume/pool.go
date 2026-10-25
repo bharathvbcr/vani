@@ -60,7 +60,7 @@ type PoolView struct {
 // shape, and is not read.
 func Pool(ctx context.Context, cfg Config, req Request) (PoolView, error) {
 	_ = req
-	cfg.Provider, cfg.NoModel, cfg.Model = nil, "", ""
+	cfg.Provider, cfg.NoModel, cfg.Model, cfg.Tailor = nil, "", "", Tailor{}
 	if cfg.Deadline == 0 {
 		cfg.Deadline = PoolDeadline
 	}

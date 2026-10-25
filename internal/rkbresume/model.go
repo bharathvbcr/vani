@@ -207,7 +207,7 @@ func (b *builder) prompt(p pool, req Request, baseBullets int) string {
 	var kept []string
 	for i, sec := range b.base.sections {
 		switch {
-		case !sec.choosable:
+		case !sec.choosable || b.rd.sectionKept(i):
 			kept = append(kept, sec.title)
 		case sec.kind == "bullets" && !b.fillable(i, p):
 			fmt.Fprintf(&s, "- %q: nothing eligible to put here; leave it out of your answer\n", sec.title)
@@ -221,6 +221,15 @@ func (b *builder) prompt(p pool, req Request, baseBullets int) string {
 				}
 			}
 			switch {
+			case b.rd.entryScoped() && i == b.rd.scopeSec:
+				var others []string
+				for _, e := range b.rd.prev.secs[i].entries {
+					if e.id != b.rd.scopeEnt {
+						others = append(others, e.id)
+					}
+				}
+				fmt.Fprintf(&s, "- %q: re-pick only the bullets of entry %s: list that one entry in \"entries\" with its bullet ids (1 to %d); the other entries of this section are kept as they are (%s), so leave them out of your answer\n",
+					sec.title, b.rd.scopeEnt, MaxEntryBullets, strings.Join(others, ", "))
 			case len(ids) == 0:
 				fmt.Fprintf(&s, "- %q: nothing eligible to put here; leave it out of your answer\n", sec.title)
 			case !b.fillable(i, p):
@@ -237,7 +246,7 @@ func (b *builder) prompt(p pool, req Request, baseBullets int) string {
 	}
 	var order []string
 	for _, i := range b.base.reorderable {
-		if b.fillable(i, p) {
+		if b.fillable(i, p) && !b.rd.sectionKept(i) {
 			order = append(order, fmt.Sprintf("%q", b.base.sections[i].title))
 		}
 	}
@@ -245,7 +254,7 @@ func (b *builder) prompt(p pool, req Request, baseBullets int) string {
 		titles := order
 		fmt.Fprintf(&s, "Section order: the order you list these sections in is their order on the page, so put the one that answers the posting best first: %s. List every one of them, once. All other sections keep their place.\n", strings.Join(titles, ", "))
 	}
-	if b.base.expIdx >= 0 {
+	if b.base.expIdx >= 0 && !b.rd.sectionKept(b.base.expIdx) && !b.rd.entryScoped() {
 		fmt.Fprintf(&s, "Keep every entry of %q that is listed above in your answer (with the bullets of it that bear on the posting best): the work history stays whole.\n", b.base.sections[b.base.expIdx].title)
 	}
 	fmt.Fprintf(&s, "\nRules:\n- Use only the ids listed below, each id at most once, each bullet under the entry that lists it (summary bullets under a summary section).\n")
@@ -260,8 +269,23 @@ func (b *builder) prompt(p pool, req Request, baseBullets int) string {
 		fmt.Fprintf(&s, "- These entries describe the same work under different titles; use at most one entry of each group: %s.\n", "["+strings.Join(gs, "]; [")+"]")
 	}
 	fmt.Fprintf(&s, "- At most %d bullets under one entry, %d entries in a section, %d bullets in all.\n", MaxEntryBullets, MaxSectionEntries, MaxTotalBullets)
-	fmt.Fprintf(&s, "- The two pages hold about %d bullets in all; aim for that number (the base resume uses %d).\n", baseBullets, baseBullets)
-	fmt.Fprintf(&s, "- \"jd_keywords\": %d to %d words or short phrases that occur verbatim in the posting.\n\n", MinKeywords, MaxKeywords)
+	if b.rd.keeps() {
+		fmt.Fprintf(&s, "- The page holds %d bullets in all, %d of them in the part you fill; aim for about %d there, so the two pages still hold it.\n", b.rd.prev.count(), b.rd.openBullets(), b.rd.openBullets())
+	} else {
+		fmt.Fprintf(&s, "- The two pages hold about %d bullets in all; aim for that number (the base resume uses %d).\n", baseBullets, baseBullets)
+	}
+	if b.rd.scopedRun() {
+		s.WriteString("- Leave \"jd_keywords\" out of your answer: the page's keywords are kept.\n")
+	} else {
+		fmt.Fprintf(&s, "- \"jd_keywords\": %d to %d words or short phrases that occur verbatim in the posting.\n", MinKeywords, MaxKeywords)
+	}
+	s.WriteString("\n")
+	if blk := b.previousBlock(p); blk != "" {
+		s.WriteString(blk + "\n")
+	}
+	if blk := b.instructionBlock(); blk != "" {
+		s.WriteString(blk + "\n")
+	}
 	s.WriteString(`Reply shape: {"sections":[{"title":"<section title>","bullets":["<id>"]},{"title":"<section title>","entries":[{"entry":"<entry id>","bullets":["<id>"]}]}],"jd_keywords":["<word>"]}` + "\n\n")
 	s.WriteString("Evidence (trusted, the seeker's own; each line is `bullet id: text`):\n")
 	if len(p.summary) > 0 {
@@ -298,7 +322,7 @@ func nonEmpty(xs ...string) []string {
 
 // feedback is the second user message: what rkb found wrong with the first
 // choice. It holds ids and rkb's messages, never page text.
-func feedback(problems []problem, dropped []string) string {
+func feedback(problems []problem, dropped, orphans []string) string {
 	var s strings.Builder
 	s.WriteString("That choice was rejected:\n")
 	for i, p := range problems {
@@ -310,6 +334,11 @@ func feedback(problems []problem, dropped []string) string {
 	}
 	if len(dropped) > 0 {
 		fmt.Fprintf(&s, "These ids were left off because a figure in them is not verified; do not use them: %s\n", strings.Join(dropped, ", "))
+	}
+	if len(orphans) > 0 {
+		// Wording is reviewed text, so the model cannot fix an orphan by rewriting: it
+		// can pick other bullets, or put them in another order. Ids only.
+		fmt.Fprintf(&s, "These bullets end with a one-word last line: %s. Prefer other bullets, or an order, that avoids that; you cannot reword a bullet.\n", strings.Join(orphans, ", "))
 	}
 	s.WriteString("Reply again with the full JSON object, fixing exactly this.")
 	return s.String()
@@ -351,15 +380,21 @@ func assistantMsg(text string) llm.Message {
 
 // reply is the model's answer, as JSON.
 type reply struct {
-	Sections []struct {
-		Title   string   `json:"title"`
-		Bullets []string `json:"bullets"`
-		Entries []struct {
-			Entry   string   `json:"entry"`
-			Bullets []string `json:"bullets"`
-		} `json:"entries"`
-	} `json:"sections"`
-	Keywords []string `json:"jd_keywords"`
+	Sections []replySection `json:"sections"`
+	Keywords []string       `json:"jd_keywords"`
+}
+
+// replySection is one section of a reply: a summary's bullets, or entries with
+// their bullets.
+type replySection struct {
+	Title   string       `json:"title"`
+	Bullets []string     `json:"bullets"`
+	Entries []replyEntry `json:"entries"`
+}
+
+type replyEntry struct {
+	Entry   string   `json:"entry"`
+	Bullets []string `json:"bullets"`
 }
 
 // keySet lists the keys a reply may have at each level, spelled exactly.
@@ -676,13 +711,14 @@ func (b *builder) checkSteering(r reply, ch choice, p pool) error {
 	// Every section with something to fill it must be answered. One with nothing
 	// eligible may be left out (or listed empty).
 	for i, s := range b.base.sections {
-		if s.choosable && !filled[i] && b.fillable(i, p) {
+		if s.choosable && !filled[i] && !b.rd.sectionKept(i) && b.fillable(i, p) {
 			return fmt.Errorf("section %q is missing", s.title)
 		}
 	}
 	// The work history stays whole: every experience entry that has evidence on
-	// offer must be present.
-	if e0 := b.base.expIdx; e0 >= 0 {
+	// offer must be present. (A redraft that keeps the work history, or one entry of
+	// it, keeps the page's own choice of entries: that was the owner's to make.)
+	if e0 := b.base.expIdx; e0 >= 0 && !b.rd.sectionKept(e0) && !b.rd.entryScoped() {
 		have := map[string]bool{}
 		for _, e := range ch.secs[e0].entries {
 			have[e.id] = true
@@ -693,10 +729,13 @@ func (b *builder) checkSteering(r reply, ch choice, p pool) error {
 			}
 		}
 	}
-	if n := ch.count(); n > MaxTotalBullets {
+	// A redraft that keeps parts may not grow a page past the cap, but a page the
+	// owner's own edit already took past it is not refused for that.
+	if n := ch.count(); n > MaxTotalBullets && (!b.rd.keeps() || n > b.rd.prev.count()) {
 		return fmt.Errorf("%d bullets in all, over %d", n, MaxTotalBullets)
 	}
-	if n := len(ch.keywords); n < MinKeywords || n > MaxKeywords {
+	// With a scope the page's keywords stand, and the model was not asked for any.
+	if n := len(ch.keywords); !b.rd.scopedRun() && (n < MinKeywords || n > MaxKeywords) {
 		return fmt.Errorf("%d keywords, want %d to %d", n, MinKeywords, MaxKeywords)
 	}
 	return nil

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/bharathvbcr/Vani/internal/kbsync"
@@ -177,6 +178,27 @@ func (b *builder) bulletRefs(ch choice) []BulletRef {
 		refs = append(refs, BulletRef{ID: id, TextHash: kbsync.WordingHash(plain)})
 	}
 	return refs
+}
+
+// orphanIDs are the bullets of ch that rkb's fit report lists with an orphan last
+// line, in report order, each once. Only ids are read (the report's own text for
+// a bullet is never decoded); an id that is not a bullet of ch is dropped, and so
+// is anything past maxFeedbackProblems, which is all a retry can name.
+func orphanIDs(rep fitReport, ch choice) []string {
+	on := map[string]bool{}
+	for _, id := range ch.bulletIDs() {
+		on[id] = true
+	}
+	var ids []string
+	for _, o := range rep.Orphans {
+		if on[o.ID] && !slices.Contains(ids, o.ID) {
+			ids = append(ids, o.ID)
+		}
+		if len(ids) == maxFeedbackProblems {
+			break
+		}
+	}
+	return ids
 }
 
 // maxFitLines bounds a per-bullet line count taken from rkb's report: a bullet
