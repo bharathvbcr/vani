@@ -303,7 +303,7 @@ func (b *builder) load(ctx context.Context) *Error {
 	b.base = base
 	b.fp.BaseSelection = base.sha
 	b.scrub = newScrubber(headerStrings(base, b.bankPath))
-	claims, err := kbsync.RKB{Binary: b.cfg.RKB, CodeRoot: b.cfg.CodeRoot, Runner: claimsRunner{b.cfg.Runner, b.env, b.scrub}}.Claims(ctx)
+	claims, err := kbsync.RKB{Binary: b.cfg.RKB, CodeRoot: b.cfg.CodeRoot, Timeout: exportTimeout, Runner: claimsRunner{b.cfg.Runner, b.env, b.scrub}}.Claims(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctxError(ctx)

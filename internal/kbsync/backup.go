@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/childenv"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // Backup of DevPrism's career.db before a replace run deletes from it.
@@ -159,24 +159,17 @@ func sqliteURI(path, query string) string {
 }
 
 func runSQLite(ctx context.Context, sqlite string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, BackupTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, sqlite, args...)
-	cmd.Env = childenv.Minimal()
-	cmd.Stdin = nil
-	var out, errw capWriter
-	cmd.Stdout, cmd.Stderr = &out, &errw
-	cmd.WaitDelay = 2 * time.Second
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("%w: sqlite3: %v", ErrBackup, ctx.Err())
-		}
-		return "", fmt.Errorf("%w: sqlite3: %v: %s", ErrBackup, err, truncate(strings.TrimSpace(errw.buf.String()), 400))
+	out, err := rkbexec.ExecRunner{}.Run(ctx, rkbexec.Command{Path: sqlite, Args: args, Env: childenv.Minimal()}, BackupTimeout)
+	if err != nil {
+		return "", fmt.Errorf("%w: sqlite3: %v", ErrBackup, err)
 	}
-	if out.buf.Len() >= maxProcOutput {
-		return "", fmt.Errorf("%w: sqlite3 printed more than %d bytes", ErrBackup, maxProcOutput)
+	if out.Exit != 0 {
+		return "", fmt.Errorf("%w: sqlite3: exit status %d: %s", ErrBackup, out.Exit, truncate(strings.TrimSpace(out.Stderr), 400))
 	}
-	return out.buf.String(), nil
+	if len(out.Stdout) >= rkbexec.MaxOutput {
+		return "", fmt.Errorf("%w: sqlite3 printed more than %d bytes", ErrBackup, rkbexec.MaxOutput)
+	}
+	return out.Stdout, nil
 }
 
 // pruneBackups removes all but the newest keep files named like a backup. A

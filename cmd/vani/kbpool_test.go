@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
-	"github.com/bharathvbcr/Vani/internal/kbsync"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // A synthetic bank for the approved-pool tests. Every reader passed b1, b2 and
@@ -69,11 +70,11 @@ const kbPoolClaims = `{"claims":{"clmLat":{"value":"42%"},"clmRag":{"value":"92%
 // poolRKB plays `rkb claims export --out FILE` with a fixed claims document.
 type poolRKB string
 
-func (p poolRKB) Run(_ context.Context, c kbsync.Command) error {
+func (p poolRKB) Run(_ context.Context, c rkbexec.Command, _ time.Duration) (rkbexec.Output, error) {
 	if len(c.Args) != 4 || c.Args[2] != "--out" {
-		return fmt.Errorf("unexpected rkb args %v", c.Args)
+		return rkbexec.Output{}, fmt.Errorf("unexpected rkb args %v", c.Args)
 	}
-	return os.WriteFile(c.Args[3], []byte(p), 0o600)
+	return rkbexec.Output{}, os.WriteFile(c.Args[3], []byte(p), 0o600)
 }
 
 // kbApproved is kbSetup plus the approved pool: the reviewed bank, an rkb that

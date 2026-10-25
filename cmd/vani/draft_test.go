@@ -11,12 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/draft"
-	"github.com/bharathvbcr/Vani/internal/kbsync"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 type draftStream struct {
@@ -66,11 +67,11 @@ type draftKB struct {
 // claimsRKB plays `rkb claims export --out FILE` with the claims it was given.
 type claimsRKB struct{ claims string }
 
-func (c claimsRKB) Run(_ context.Context, cmd kbsync.Command) error {
+func (c claimsRKB) Run(_ context.Context, cmd rkbexec.Command, _ time.Duration) (rkbexec.Output, error) {
 	if len(cmd.Args) != 4 || cmd.Args[2] != "--out" {
-		return fmt.Errorf("unexpected rkb args %v", cmd.Args)
+		return rkbexec.Output{}, fmt.Errorf("unexpected rkb args %v", cmd.Args)
 	}
-	return os.WriteFile(cmd.Args[3], []byte(c.claims), 0o600)
+	return rkbexec.Output{}, os.WriteFile(cmd.Args[3], []byte(c.claims), 0o600)
 }
 
 // reviewedBullet is a bullet both readers passed on exactly this wording; plain

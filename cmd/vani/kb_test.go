@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
-	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/resume"
+	"github.com/bharathvbcr/Vani/internal/rkbexec"
 )
 
 // A synthetic bank: no real person, no real employer.
@@ -34,12 +35,12 @@ const kbBank = `{
 // fakeRKB plays `rkb claims export --out FILE`.
 type fakeRKB struct{ calls int }
 
-func (f *fakeRKB) Run(_ context.Context, c kbsync.Command) error {
+func (f *fakeRKB) Run(_ context.Context, c rkbexec.Command, _ time.Duration) (rkbexec.Output, error) {
 	f.calls++
 	if len(c.Args) != 4 || c.Args[2] != "--out" {
-		return fmt.Errorf("unexpected rkb args %v", c.Args)
+		return rkbexec.Output{}, fmt.Errorf("unexpected rkb args %v", c.Args)
 	}
-	return os.WriteFile(c.Args[3], []byte(`{"claims":{"clmLat":{"value":"42%"}}}`), 0o600)
+	return rkbexec.Output{}, os.WriteFile(c.Args[3], []byte(`{"claims":{"clmLat":{"value":"42%"}}}`), 0o600)
 }
 
 // fakeDevPrism answers career_get_profile and career_upsert_block. Blocks in
