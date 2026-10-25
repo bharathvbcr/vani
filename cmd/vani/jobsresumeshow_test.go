@@ -154,6 +154,28 @@ func TestJobsResumeShowNoCheckReadsStoredFilesOnly(t *testing.T) {
 	}
 }
 
+// Every version with a PDF names it, so the app can open any version, not
+// only the one just built or used.
+func TestJobsResumeShowNamesEachVersionsPDF(t *testing.T) {
+	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+	_, st := jrTwoVersions(t, f)
+	m := jrShow(t, "--no-check", jrKey)
+	vs := jrVersionsOf(t, m)
+	if len(vs) != 2 {
+		t.Fatalf("versions = %v", vs)
+	}
+	for _, v := range vs {
+		n := int(v["version"].(float64))
+		want, err := st.PDFPath(jrKey, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := v["pdf_path"].(string); got != want {
+			t.Errorf("v%d pdf_path = %q, want %q", n, got, want)
+		}
+	}
+}
+
 // A check that could not run leaves every version "unknown", never "current".
 func TestJobsResumeShowWhenTheCheckCannotRunNothingIsCurrent(t *testing.T) {
 	f := &fakeResumeRKB{pages: 2, pdf: testPDF}

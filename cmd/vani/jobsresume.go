@@ -287,7 +287,9 @@ func currentOf(st *resumestore.Store, key posting.Key) (int, *resumeError) {
 // choice (the field below shadows Meta's, and stays out unless set).
 type resumeVersion struct {
 	resumestore.Meta
-	Selection   json.RawMessage    `json:"selection,omitempty"`
+	Selection json.RawMessage `json:"selection,omitempty"`
+	// PDFPath is the absolute path of the version's PDF (0600), when it has one.
+	PDFPath     string             `json:"pdf_path,omitempty"`
 	Current     bool               `json:"current,omitempty"`
 	Used        bool               `json:"used,omitempty"`
 	Eligibility *resumeEligibility `json:"eligibility,omitempty"`
@@ -300,8 +302,6 @@ type resumeSaved struct {
 	// CurrentNote says why not, when it is not.
 	CurrentMoved bool   `json:"current_moved"`
 	CurrentNote  string `json:"current_note,omitempty"`
-	// PDFPath is the absolute path of the version's PDF (0600), when it has one.
-	PDFPath string `json:"pdf_path,omitempty"`
 	// DroppedStale lists the bullets a revalidation took off the page.
 	DroppedStale []string `json:"dropped_stale,omitempty"`
 }

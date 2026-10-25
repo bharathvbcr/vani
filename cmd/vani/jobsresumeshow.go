@@ -147,6 +147,13 @@ func (e *env) resumeShow(ctx context.Context, rawKey, rawVersion string, check b
 	for _, m := range metas {
 		v := resumeVersion{Meta: m, Current: m.Version == out.Current, Used: m.Version == out.Used}
 		v.Selection = nil
+		if m.PDFSHA256 != "" {
+			// The app opens any version's PDF from here; a path that cannot be
+			// formed is left out, and the version still lists.
+			if p, err := st.PDFPath(string(job.key), m.Version); err == nil {
+				v.PDFPath = p
+			}
+		}
 		if m.Version == want && found {
 			v.Selection = m.Selection
 			out.Version = m.Version
