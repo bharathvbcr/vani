@@ -320,6 +320,8 @@ public struct DraftRunner: Sendable {
     /// as JSON bytes: vani's own object when it wrote one (it always has
     /// "error" on failure), else a {"error","code"} object. Never throws.
     public func runJob(_ kind: JobKind, input: Data) -> Data {
+        // The keyed resume is not one `vani <kind>`: it is a build and a use (ResumeJob.swift).
+        if kind == .resumeJob { return runResumeJob(input: input) }
         let failure: DraftReply
         switch invoke(kind.rawValue, input: input, timeout: kind == .draft ? timeout : kind.timeout, withDecisionKey: kind == .suggest,
                       usesModel: kind.usesModel, maxOutputBytes: kind.maxReplyBytes) {
