@@ -93,8 +93,11 @@ func TestTailoredChoiceIsBuiltInThePrivateDirWithRkbsOwnCommands(t *testing.T) {
 			t.Errorf("selection has a key rkb would refuse: %q", k)
 		}
 	}
-	if string(top["bank"]) != `"`+f.bank+`"` {
-		t.Errorf("bank = %s, want the absolute path", top["bank"])
+	// The bank is the build's own snapshot (absolute, beside the probe and attempt
+	// folders), never the live file the owner may be editing.
+	buildDir := filepath.Dir(filepath.Dir(f.rkb.selPaths[len(f.rkb.selPaths)-1]))
+	if string(top["bank"]) != mustJSON(filepath.Join(buildDir, "bank.json")) || string(top["bank"]) == mustJSON(f.bank) {
+		t.Errorf("bank = %s, want the build's snapshot of it", top["bank"])
 	}
 	var meta map[string]any
 	_ = json.Unmarshal(top["meta"], &meta)

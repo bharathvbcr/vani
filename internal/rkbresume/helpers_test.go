@@ -229,6 +229,12 @@ type fakeRKB struct {
 	// rkb report it as not double-verified (no ids: always).
 	unverified map[string][]string
 	block      string // step that waits for ctx to end
+	// onStep runs at the start of every call, with the fake's lock held: it must
+	// not call back into the fake.
+	onStep func(step string, c Command)
+	// claimValue, when set, rewrites each claim's value in an export (sel is empty
+	// for the plain export, the selection's JSON for a used-in one).
+	claimValue func(id, v, sel string) string
 }
 
 var testPDF = []byte("%PDF-1.7\n% fake pdf with no personal data\n%%EOF\n")
@@ -248,6 +254,9 @@ func (r *fakeRKB) Run(ctx context.Context, c Command, timeout time.Duration) (Ou
 		}
 	}
 	r.steps = append(r.steps, step)
+	if r.onStep != nil {
+		r.onStep(step, c)
+	}
 	if r.block == step {
 		r.mu.Unlock()
 		<-ctx.Done()
@@ -360,6 +369,9 @@ func (r *fakeRKB) writeClaims(path, sel string) {
 		// Like rkb (claims.go evaluate), a claim that is not double-verified for a
 		// reason says so in problems. (rkb also reports false, with none, for a claim
 		// nothing in the probed selection uses; this fake never does.)
+		if r.claimValue != nil {
+			v = r.claimValue(id, v, sel)
+		}
 		view := map[string]any{"value": v, "double_verified": dv}
 		if !dv {
 			view["problems"] = []string{"pass 2 missing for: a sentence"}

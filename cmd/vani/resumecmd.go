@@ -180,6 +180,9 @@ func (e *env) resumeOnce() (resumeReply, error) {
 		MaxPDF:   maxResumePDF,
 		Model:    rkbresume.Model,
 	}
+	if filepath.IsAbs(e.stateDir) { // builds are exclusive per state dir, and their temp folders swept
+		rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
+	}
 	rc.Provider, rc.NoModel = e.resumeModel(ctx, cfg)
 	if rc.Provider == nil {
 		rc.Model = ""
