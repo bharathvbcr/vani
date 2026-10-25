@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // A stored version was built from bullets rkb had double-verified for the
@@ -31,6 +32,9 @@ type Verification struct {
 // maxVerify bounds the choices one PoolAndVerify call exports (a job keeps at
 // most 20 versions).
 const maxVerify = 64
+
+// verifyParallel bounds the choices exported at once.
+const verifyParallel = 4
 
 // PoolAndVerify is Pool and, for each of edits (the choices of stored versions, in
 // the owner-edit shape), one `claims export --used-in` of that choice: the same
@@ -67,12 +71,32 @@ func PoolAndVerify(ctx context.Context, cfg Config, edits [][]byte) (PoolView, [
 	}
 	full := b.buildPoolSized(func(string) bool { return true }, 0)
 	out := make([]Verification, len(edits))
+	// Each choice is its own rkb process in its own folder and reads nothing the
+	// others write, so a few run at once: at most verifyParallel, never an unbounded
+	// fan-out. The first failure of the context ends the call.
+	var (
+		wg    sync.WaitGroup
+		slots = make(chan struct{}, verifyParallel)
+		mu    sync.Mutex
+		first *Error
+	)
 	for i, raw := range edits {
-		v, err := b.verifyEdit(ctx, full, raw, i)
-		if err != nil {
-			return PoolView{}, nil, err // the context ended: nothing partial is passed off as a result
-		}
-		out[i] = v
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			v, err := b.verifyEdit(ctx, full, raw, i)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil && first == nil {
+				first = err
+			}
+			out[i] = v
+		}()
+	}
+	wg.Wait()
+	if first != nil {
+		return PoolView{}, nil, first // the context ended: nothing partial is passed off as a result
 	}
 	return view, out, nil
 }
