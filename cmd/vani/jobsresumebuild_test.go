@@ -237,7 +237,7 @@ func TestJobsResumeBuildUsageErrorsExitTwo(t *testing.T) {
 func TestJobsResumeBuildFindsADamagedStoreBeforeSpending(t *testing.T) {
 	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
 	p, prov := jrTailor()
-	state, st := jrSetup(t, f, prov)
+	jrSetup(t, f, prov)
 	v1 := jrBuild(t)
 	if v1.Version != 1 {
 		t.Fatal(v1.Version)
@@ -254,8 +254,6 @@ func TestJobsResumeBuildFindsADamagedStoreBeforeSpending(t *testing.T) {
 	if len(p.reqs) != before {
 		t.Errorf("a model turn was paid for a store that could not take its result")
 	}
-	_ = state
-	_ = st
 }
 
 func TestJobsResumeBuildRefusedWhileAnotherBuildHoldsTheLock(t *testing.T) {

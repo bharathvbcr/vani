@@ -182,6 +182,10 @@ func (e *env) jobsResume(args []string) error {
 		return e.jobsResumeBuild(args[1:])
 	case "render":
 		return e.jobsResumeRender(args[1:])
+	case "show":
+		return e.jobsResumeShow(args[1:])
+	case "use":
+		return e.jobsResumeUse(args[1:])
 	case "revalidate":
 		return e.jobsResumeRevalidate(args[1:])
 	}

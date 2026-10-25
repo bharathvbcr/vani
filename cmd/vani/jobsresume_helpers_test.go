@@ -13,6 +13,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resumestore"
@@ -106,6 +107,17 @@ func jrBuild(t *testing.T) resumeSaved {
 	t.Helper()
 	out, _ := jrRun(t, 0, "", "build", "--json", jrKey)
 	return jrSaved(t, out)
+}
+
+// jrHoldBuildLock holds the build lock of state until the test ends, as a build
+// in another process would.
+func jrHoldBuildLock(t *testing.T, state string) {
+	t.Helper()
+	l, err := filelock.TryAcquire(filepath.Join(state, "resume-build.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Release() })
 }
 
 // jrNoVersion fails when the job has a saved version.
