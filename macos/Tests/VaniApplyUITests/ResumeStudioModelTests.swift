@@ -71,6 +71,7 @@ final class ResumeStudioModelTests: XCTestCase {
         printf '%s\\n' "$*" >> "$d/calls.log"
         case " $* " in
         *" --dry-run "*) cat "$d/dry.json"; exit 0 ;;
+        *" show "*) if [ -f "$d/show.json" ]; then cat "$d/show.json"; exit 0; fi ;;
         *" use "*) cat "$d/use.json"; [ -f "$d/use.fail" ] && exit 1; exit 0 ;;
         *" revalidate "*) cat "$d/revalidate.json"; [ -f "$d/revalidate.fail" ] && exit 1; exit 0 ;;
         esac
@@ -545,6 +546,44 @@ final class ResumeStudioModelTests: XCTestCase {
         guard case .failure = await later.resume.previewCopy(for: job, summary: ResumeSummary(current: 4, used: 3, versions: 2, pages: 2, fit: "passed", eligibility: "current")) else {
             return XCTFail("the browsers' copy is of v3, not v4")
         }
+    }
+
+    /// Gap 37: `jobs resume show` names every version's PDF, so the card opens any version in Preview, one this
+    /// session never built or used and one the browsers never saw.
+    func testPreviewAsksShowForTheVersionsPDFWhateverThisSessionKnows() async throws {
+        let jobs = try JobsFixture(self), f = try fake()
+        try show(jobs, resume: nil)
+        let r = try rig(jobs, f), m = r.m
+        let job = try await open(r, jobs)
+        let summary = ResumeSummary(current: 3, versions: 2, pages: 2, fit: "passed", eligibility: "current", source: "edited")
+        func version(_ n: Int, pdf: Bool) -> String {
+            """
+            {"schema":1,"key":"fx:alpha:1","version":\(n),"source":"edited","checks":{"eligibility":"current","lint":"passed","fit":"passed","figures":"verified"},
+             "pages":2,"created":"2026-10-25T12:00:00Z"\(pdf ? #","pdf_sha256":"\#(f.sha)","pdf_path":"\#(f.pdf.path)""# : "")}
+            """
+        }
+        try f.put("show.json", #"{"key":"fx:alpha:1","eligibility_checked":false,"current":3,"version":3,"versions":["# + version(3, pdf: true) + "]}")
+        XCTAssertNil(m.resume.knownPDF[Self.key], "this session was told nothing, and nothing was used")
+        guard case let .success(url) = await m.resume.previewCopy(for: job, summary: summary) else { return XCTFail("show names the PDF") }
+        XCTAssertEqual(try Data(contentsOf: url), pdfData())
+        XCTAssertEqual(url.lastPathComponent, "Resume_Alpha_Labs.pdf", "named for the company, as vani names it")
+        XCTAssertTrue(f.calls().contains("jobs resume show --json --no-check fx:alpha:1 v3"), "\(f.calls())")
+
+        // A version with no PDF says so (never fitted), and does not fall back to another version's file.
+        try f.put("show.json", #"{"key":"fx:alpha:1","eligibility_checked":false,"current":3,"version":3,"versions":["# + version(3, pdf: false) + "]}")
+        guard case let .failure(none) = await m.resume.previewCopy(for: job, summary: summary) else { return XCTFail("no PDF") }
+        XCTAssertTrue(none.message.contains("no PDF"), none.message)
+
+        // A PDF that does not match the hash vani reported is refused.
+        try f.put("show.json", #"{"key":"fx:alpha:1","eligibility_checked":false,"current":3,"version":3,"versions":["#
+            + version(3, pdf: true).replacingOccurrences(of: f.sha, with: String(repeating: "0", count: 64)) + "]}")
+        guard case let .failure(bad) = await m.resume.previewCopy(for: job, summary: summary) else { return XCTFail("checksum") }
+        XCTAssertTrue(bad.message.contains("checksum"), bad.message)
+
+        // A show that fails is said, and the fallback for a version this session knows still opens.
+        f.remove("show.json")
+        guard case let .failure(why) = await m.resume.previewCopy(for: job, summary: summary) else { return XCTFail("nothing on hand") }
+        XCTAssertTrue(why.message.contains("not on hand") && why.message.contains("cannot read"), why.message)
     }
 
     func testTheStudioHookIsAbsentUntilTheWindowSetsIt() async throws {
