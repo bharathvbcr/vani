@@ -157,38 +157,16 @@ func (e *env) resumeOnce() (resumeReply, error) {
 		return resumeReply{}, err
 	}
 
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return resumeReply{}, coded(codeConfig, "resume: %v", err)
-	}
-	if cfg.KB.Bank == "" || cfg.KB.RKB == "" {
-		return resumeReply{}, coded(codeConfig, "resume: kb.bank and kb.rkb are not set in Vani's config, so rkb cannot build a resume")
-	}
-	vmReport, vmNote, err := resumeVMReport(cfg, time.Now())
-	if err != nil {
-		return resumeReply{}, coded(codeConfig, "resume: %v", err)
-	}
 	ctx, cancel := signalContext()
 	defer cancel()
-
-	rc := rkbresume.Config{
-		RKB: cfg.KB.RKB, CodeRoot: cfg.KB.CodeRoot, Bank: cfg.KB.Bank,
-		Selections: cfg.KB.Selections, BaseSelection: cfg.KB.BaseSelection,
-		VMReport: vmReport,
-		Runner:   resumeRunner,
-		MaxPDF:   maxResumePDF,
-		Model:    rkbresume.Model,
-		// The extension path builds the owner's base when no model can run, saying so in
-		// the reply (selection "base", reason).
-		AllowBase: true,
+	w, err := e.resumeConfig(ctx, true)
+	if err != nil {
+		return resumeReply{}, err
 	}
-	if filepath.IsAbs(e.stateDir) { // builds are exclusive per state dir, and their temp folders swept
-		rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
-	}
-	rc.Provider, rc.NoModel = e.resumeModel(ctx, cfg)
-	if rc.Provider == nil {
-		rc.Model = ""
-	}
+	rc, vmNote := w.RC, w.VMNote
+	// The extension path builds the owner's base when no model can run, saying so in
+	// the reply (selection "base", reason).
+	rc.AllowBase = true
 	res, err := rkbresume.Build(ctx, rc, rkbresume.Request{Company: req.Job.Company, Title: req.Job.Title, Description: req.Job.Description})
 	if err != nil {
 		var re *rkbresume.Error
@@ -207,6 +185,55 @@ func (e *env) resumeOnce() (resumeReply, error) {
 	}
 	fmt.Fprintf(e.stderr, "vani: resume: %s selection (%d pages)%s\n", r.Selection, r.Pages, reasonSuffix(r.Reason))
 	return r, nil
+}
+
+// resumeWiring is what every resume command runs rkb with: the rkbresume
+// config, the loaded Vani config, and the note about which validator report
+// stood in for an unset kb.vm_report ("" when none did).
+type resumeWiring struct {
+	RC     rkbresume.Config
+	Cfg    config.Config
+	VMNote string
+}
+
+// resumeConfig is the one owner of the rkbresume.Config every resume command
+// (`vani resume`, `vani jobs resume ...`) builds: the kb.* keys, the validator
+// report, the runner, the PDF cap, the work and lock folders under the state
+// dir, and, when withModel, the Opus provider (Provider and NoModel, with
+// Model cleared when there is none). The caller sets what differs between
+// commands: AllowBase and Deadline. A command that asks no model (show, use,
+// render) passes withModel false and so never builds a provider or reads a key.
+// Its errors are coded (codeConfig) and hold no personal data.
+func (e *env) resumeConfig(ctx context.Context, withModel bool) (resumeWiring, error) {
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return resumeWiring{}, coded(codeConfig, "resume: %v", err)
+	}
+	if cfg.KB.Bank == "" || cfg.KB.RKB == "" {
+		return resumeWiring{}, coded(codeConfig, "resume: kb.bank and kb.rkb are not set in Vani's config, so rkb cannot build a resume")
+	}
+	vmReport, vmNote, err := resumeVMReport(cfg, time.Now())
+	if err != nil {
+		return resumeWiring{}, coded(codeConfig, "resume: %v", err)
+	}
+	rc := rkbresume.Config{
+		RKB: cfg.KB.RKB, CodeRoot: cfg.KB.CodeRoot, Bank: cfg.KB.Bank,
+		Selections: cfg.KB.Selections, BaseSelection: cfg.KB.BaseSelection,
+		VMReport: vmReport,
+		Runner:   resumeRunner,
+		MaxPDF:   maxResumePDF,
+	}
+	if filepath.IsAbs(e.stateDir) { // builds are exclusive per state dir, and their temp folders swept
+		rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
+	}
+	if withModel {
+		rc.Model = rkbresume.Model
+		rc.Provider, rc.NoModel = e.resumeModel(ctx, cfg)
+		if rc.Provider == nil {
+			rc.Model = ""
+		}
+	}
+	return resumeWiring{RC: rc, Cfg: cfg, VMNote: vmNote}, nil
 }
 
 func reasonSuffix(reason string) string {
