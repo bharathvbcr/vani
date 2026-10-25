@@ -216,46 +216,86 @@ func emailLike(s string) bool {
 	return false
 }
 
-// phoneLike reports a run of digits and the separators a phone number uses
-// (" -.()", at most two in a row between digit groups) of seven digits or more,
-// except a run whose every group is exactly four digits long ("2019-2024"): a
-// range of years is not a number to dial. 5551234567, 555-123-4567, +1 (555)
-// 123-4567 and 555 1234 are all refused; a version ("3.12"), a count ("100,000")
-// and a year are not.
+const (
+	// phoneSeparators are what may join the digit groups of a number: a space, a dot,
+	// a hyphen, an en dash and the two parentheses, at most phoneMaxSeparator in a row
+	// (") " and " (" are two).
+	phoneSeparators   = " -–.()"
+	phoneMaxSeparator = 2
+	// phoneWindow is how many characters, from the first digit of a group to the last
+	// digit of a later one, the digits of a number may be spread over.
+	phoneWindow = 20
+	// phoneDigits is how many digits make a number: a local number has seven.
+	phoneDigits = 7
+)
+
+// phoneLike reports digit groups joined by spaces, dots, dashes or parentheses
+// (phoneSeparators, at most two in a row) that total seven digits or more within
+// phoneWindow characters, or one group of seven or more. 5551234567, 555-123-4567,
+// (555) 123-4567, +1 555 123 4567, 555.123.4567, 1234 5678 and 555 1234 are all
+// refused; a version ("3.12", "Go 1.26"), a count ("100,000") and a year are not.
+//
+// One shape is let through: a range of two years, written "2019-2024" or
+// "2019–2024" (a hyphen or an en dash, no spaces; both groups four digits from 1900
+// to 2099) and nothing else joined to it. Four-digit groups in any other shape are
+// not years ("1234 5678" is a number, and so is "2019 2024": a space does not make a
+// range), so the rule that let every run of four-digit groups pass is gone.
 func phoneLike(s string) bool {
 	rs := []rune(s)
+	type group struct{ start, end int } // rune offsets, end exclusive
 	for i := 0; i < len(rs); {
 		if !unicode.IsDigit(rs[i]) {
 			i++
 			continue
 		}
-		var groups []int
+		var groups []group
+		var seps []string // seps[k] joins groups[k] to groups[k+1]
 		for i < len(rs) {
 			j := i
 			for j < len(rs) && unicode.IsDigit(rs[j]) {
 				j++
 			}
-			groups = append(groups, j-i)
+			groups = append(groups, group{i, j})
 			i = j
 			k := i
-			for k < len(rs) && k-i < 2 && strings.ContainsRune(" -.()", rs[k]) {
+			for k < len(rs) && k-i < phoneMaxSeparator && strings.ContainsRune(phoneSeparators, rs[k]) {
 				k++
 			}
 			if k == i || k >= len(rs) || !unicode.IsDigit(rs[k]) {
 				break
 			}
+			seps = append(seps, string(rs[i:k]))
 			i = k
 		}
-		total, allFour := 0, true
-		for _, g := range groups {
-			total += g
-			allFour = allFour && g == 4
+		if len(groups) == 2 && (seps[0] == "-" || seps[0] == "–") && yearGroup(rs[groups[0].start:groups[0].end]) && yearGroup(rs[groups[1].start:groups[1].end]) {
+			continue
 		}
-		if total >= 7 && !(allFour && len(groups) > 1) {
-			return true
+		for a := range groups {
+			digits := 0
+			for b := a; b < len(groups) && (b == a || groups[b].end-groups[a].start <= phoneWindow); b++ {
+				digits += groups[b].end - groups[b].start
+				if digits >= phoneDigits {
+					return true
+				}
+			}
 		}
 	}
 	return false
+}
+
+// yearGroup reports four ASCII digits that read as a year, 1900 to 2099.
+func yearGroup(rs []rune) bool {
+	if len(rs) != 4 {
+		return false
+	}
+	n := 0
+	for _, r := range rs {
+		if r < '0' || r > '9' {
+			return false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n >= 1900 && n <= 2099
 }
 
 // redraft is a resolved Tailor: the previous page, and what is kept.

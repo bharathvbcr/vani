@@ -203,6 +203,10 @@ func TestInstructionIsRefusedBeforeAnythingIsSpent(t *testing.T) {
 		"phone with a plus":  "call +1 (555) 123-4567",
 		"short phone":        "call 555 1234",
 		"dotted phone":       "call 555.123.4567",
+		"two 4 digit groups": "call 1234 5678",
+		"area code in ()":    "call (555) 123-4567",
+		"plus and spaces":    "call +1 555 123 4567",
+		"en dashes":          "call 555–123–4567",
 	} {
 		f := newFixture(t)
 		f.cfg.Tailor = Tailor{Instruction: in}
@@ -225,6 +229,8 @@ func TestInstructionsThatAreNotContactDetailsAreKept(t *testing.T) {
 		"about 100,000 users and 1,000,000 requests",
 		"emphasise GPU kernels @ scale",
 		"a 4 digit year range 2019 - 2024",
+		"an en dash range 2019–2024 only",
+		"Go 1.26 and Go 1.25 services",
 		strings.Repeat("é", MaxInstructionRunes), // the bound is runes, not bytes
 	} {
 		f := newFixture(t)
@@ -723,7 +729,14 @@ func TestPhoneAndEmailRules(t *testing.T) {
 	for in, want := range map[string]bool{
 		"5551234567": true, "555-123-4567": true, "(555) 123-4567": true, "+1 (555) 123-4567": true, "+44 20 7946 0958": true,
 		"1234567": true, "123 4567": true, "1 2 3 4 5 6 7": true,
-		"2019-2024": false, "2019 2024": false, "3.12": false, "12.4.1": false, "100,000": false, "123456": false, "version 12 of 34": false,
+		// Gap 53: four-digit groups are no longer let through as such.
+		"1234 5678": true, "1234-5678": true, "+1 555 123 4567": true, "555–123–4567": true,
+		"555.123.4567": true, "call 1234 5678 now": true, "12345678901234567890123": true, "2019 2024": true, "2019-2024-2025": true,
+		"2019-2024 2": true, "2019-2024 5555": true, "0123-2024": true, "2019—2024": false, // an em dash joins nothing: two separate years
+		"2019-2024": false, "2019–2024": false, "1999-2005": false, "2000-2099": false, "from 2019-2024 on": false,
+		"2019-2024 and 2015-2018": false, "Go 1.26": false, "3.12": false, "12.4.1": false, "100,000": false, "123456": false,
+		"version 12 of 34": false, "1.2.3": false, "12 34 56": false, "": false, "no digits": false,
+		"٢٠١٩-٢٠٢٤": true, // Arabic-Indic digits are digits, and not a year range
 	} {
 		if got := phoneLike(in); got != want {
 			t.Errorf("phoneLike(%q) = %v, want %v", in, got, want)
