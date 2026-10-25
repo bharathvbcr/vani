@@ -180,6 +180,10 @@ func (e *env) jobsResume(args []string) error {
 	switch args[0] {
 	case "build":
 		return e.jobsResumeBuild(args[1:])
+	case "render":
+		return e.jobsResumeRender(args[1:])
+	case "revalidate":
+		return e.jobsResumeRevalidate(args[1:])
 	}
 	return usagef("jobs resume: unknown subcommand %q (expected build, render, show, use or revalidate)", args[0])
 }
