@@ -303,8 +303,10 @@ public enum NativeProtocol {
                     return ["error": "the resume is over \(ResumeStore.maxBytes / 1024) KB", "code": "too_large"]
                 }
                 guard let data = Data(base64Encoded: b64) else { return ["error": "the resume arrived damaged", "code": "bad_request"] }
-                let e = try resumes.put(key: key, name: name, data: data)
-                try? store.log(ActivityEntry(source: source, event: .resume, counts: ["chosen": 1]))
+                // The one bind-and-log (also Resume Studio's "Use for this job"): a single key here, so any
+                // failure is thrown and caught below exactly as a failed put was.
+                let outcome = try ResumeBinding.bind(data: data, name: name, keys: [key], resumes: resumes, store: store, source: source)
+                let e = outcome.bound[0].entry
                 return ["ok": true, "key": key, "name": e.name, "bytes": e.bytes, "sha256": e.sha256, "pickedAt": e.pickedAt]
             case "resumeGet":
                 guard let (e, data) = try resumes.get(key: key) else { return ["found": false] }
