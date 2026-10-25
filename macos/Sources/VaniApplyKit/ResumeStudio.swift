@@ -130,21 +130,25 @@ public struct ResumeEligibility: Decodable, Equatable, Sendable {
     public var reworded: [String]
     public var gone: [String]
     public var ineligible: [String]
+    /// Bullets whose figure rkb no longer double-verifies for this version's own choice. They make the
+    /// version stale (Revalidate drops them).
+    public var unverified: [String]
     public var inputsChanged: [String]
     public var why: String?
 
     public init(state: String, reworded: [String] = [], gone: [String] = [], ineligible: [String] = [],
-                inputsChanged: [String] = [], why: String? = nil) {
+                unverified: [String] = [], inputsChanged: [String] = [], why: String? = nil) {
         self.state = state
         self.reworded = reworded
         self.gone = gone
         self.ineligible = ineligible
+        self.unverified = unverified
         self.inputsChanged = inputsChanged
         self.why = why
     }
 
     private enum CodingKeys: String, CodingKey {
-        case state, reworded, gone, ineligible, why
+        case state, reworded, gone, ineligible, unverified, why
         case inputsChanged = "inputs_changed"
     }
 
@@ -154,18 +158,20 @@ public struct ResumeEligibility: Decodable, Equatable, Sendable {
         reworded = (try? c.decode([String].self, forKey: .reworded)) ?? []
         gone = (try? c.decode([String].self, forKey: .gone)) ?? []
         ineligible = (try? c.decode([String].self, forKey: .ineligible)) ?? []
+        unverified = (try? c.decode([String].self, forKey: .unverified)) ?? []
         inputsChanged = (try? c.decode([String].self, forKey: .inputsChanged)) ?? []
         why = try? c.decode(String.self, forKey: .why)
     }
 
-    /// "2 reworded, 1 gone": the ids' counts, no text. Nil when no bullet is named.
+    /// "2 reworded, 1 gone, 1 with a figure no longer verified": the ids' counts, no text. Nil when no bullet is named.
     public var summary: String? {
-        let parts = [(reworded.count, "reworded"), (gone.count, "gone"), (ineligible.count, "no longer eligible")]
+        let parts = [(reworded.count, "reworded"), (gone.count, "gone"), (ineligible.count, "no longer eligible"),
+                     (unverified.count, "with a figure no longer verified")]
             .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
-    public var staleIDs: [String] { reworded + gone + ineligible }
+    public var staleIDs: [String] { reworded + gone + ineligible + unverified }
 }
 
 /// One version of a job's resume (`resumestore.Meta` plus what `show` adds). `selection` and the
@@ -176,6 +182,13 @@ public struct ResumeVersion: Decodable, Equatable, Sendable {
     /// "tailored", "base", "edited" or "revalidated".
     public var source: String
     public var reason: String?
+    /// The owner's one-line preference a tailored version was asked with (never on the page). Absent for a
+    /// base or edited page and for a version no model shaped: those do not copy their parent's.
+    public var instruction: String?
+    /// What a redraft kept: the section title or entry id re-picked alone, and the section titles locked.
+    /// Names only. Both empty for a build that kept nothing and for a version no model shaped.
+    public var scope: String?
+    public var lock: [String]
     public var model: String?
     public var cost: ResumeCost?
     public var checks: ResumeChecks
@@ -201,7 +214,7 @@ public struct ResumeVersion: Decodable, Equatable, Sendable {
     public var hasPDF: Bool { !(pdfSHA256 ?? "").isEmpty }
 
     private enum CodingKeys: String, CodingKey {
-        case version, parent, source, reason, model, cost, checks, pages, notes, bullets, created, selection, current, used, eligibility
+        case version, parent, source, reason, instruction, scope, lock, model, cost, checks, pages, notes, bullets, created, selection, current, used, eligibility
         case pdfPath = "pdf_path", fitLines = "fit_lines"
         case unverifiedDropped = "unverified_dropped"
         case keywords = "jd_keywords"
@@ -220,6 +233,9 @@ public struct ResumeVersion: Decodable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .source, in: c, debugDescription: "a version has a source")
         }
         reason = try? c.decode(String.self, forKey: .reason)
+        instruction = (try? c.decode(String.self, forKey: .instruction)).flatMap { $0.isEmpty ? nil : $0 }
+        scope = (try? c.decode(String.self, forKey: .scope)).flatMap { $0.isEmpty ? nil : $0 }
+        lock = (try? c.decode([String].self, forKey: .lock)) ?? []
         model = try? c.decode(String.self, forKey: .model)
         cost = try? c.decode(ResumeCost.self, forKey: .cost)
         checks = try c.decode(ResumeChecks.self, forKey: .checks)
@@ -347,9 +363,16 @@ public struct ResumeDryRun: Decodable, Equatable, Sendable {
     public var current: Int
     public var budget: ResumeBudget
     public var estimate: ResumeEstimate?
+    /// What the redraft flags asked for, echoed (all nil or empty for a plain build): the version it starts
+    /// from, the scope and locks as given, and the instruction's length in characters, never its text.
+    public var from: Int?
+    public var scope: String?
+    public var lock: [String]
+    public var instructionRunes: Int?
 
     public init(key: String? = nil, model: String? = nil, opusUsable: Bool, noModel: String? = nil, current: Int = 0,
-                budget: ResumeBudget = ResumeBudget(), estimate: ResumeEstimate? = nil) {
+                budget: ResumeBudget = ResumeBudget(), estimate: ResumeEstimate? = nil,
+                from: Int? = nil, scope: String? = nil, lock: [String] = [], instructionRunes: Int? = nil) {
         self.key = key
         self.model = model
         self.opusUsable = opusUsable
@@ -357,11 +380,15 @@ public struct ResumeDryRun: Decodable, Equatable, Sendable {
         self.current = current
         self.budget = budget
         self.estimate = estimate
+        self.from = from
+        self.scope = scope
+        self.lock = lock
+        self.instructionRunes = instructionRunes
     }
 
     private enum CodingKeys: String, CodingKey {
-        case key, model, current, budget, estimate
-        case opusUsable = "opus_usable", noModel = "no_model"
+        case key, model, current, budget, estimate, from, scope, lock
+        case opusUsable = "opus_usable", noModel = "no_model", instructionRunes = "instruction_runes"
     }
 
     /// `opus_usable` is required, and a usable Opus must come with its estimate: a cost this app
@@ -374,6 +401,10 @@ public struct ResumeDryRun: Decodable, Equatable, Sendable {
         noModel = try? c.decode(String.self, forKey: .noModel)
         current = (try? c.decode(Int.self, forKey: .current)).flatMap { $0 >= 0 ? $0 : nil } ?? 0
         budget = (try? c.decode(ResumeBudget.self, forKey: .budget)) ?? ResumeBudget()
+        from = (try? c.decode(Int.self, forKey: .from)).flatMap { $0 >= 1 ? $0 : nil }
+        scope = (try? c.decode(String.self, forKey: .scope)).flatMap { $0.isEmpty ? nil : $0 }
+        lock = (try? c.decode([String].self, forKey: .lock)) ?? []
+        instructionRunes = (try? c.decode(Int.self, forKey: .instructionRunes)).flatMap { $0 >= 1 ? $0 : nil }
         if c.contains(.estimate) {
             estimate = try c.decode(ResumeEstimate.self, forKey: .estimate)
         } else if opusUsable {
@@ -565,6 +596,12 @@ public struct ResumeStudioClient: Sendable {
         public var showStored: TimeInterval = 20
         public var use: TimeInterval = 25
         public var revalidate: TimeInterval = 275
+        /// `diff` reads stored files (Go 5 s), `current` writes one pointer (10 s), `coverage` and `gaps` read
+        /// the pool once (45 s each).
+        public var diff: TimeInterval = 20
+        public var current: TimeInterval = 25
+        public var coverage: TimeInterval = 60
+        public var gaps: TimeInterval = 60
 
         public static let standard = Timeouts()
         public init() {}
@@ -596,13 +633,32 @@ public struct ResumeStudioClient: Sendable {
 
     static func versionArgument(_ n: Int) -> String { "v\(n)" }
 
-    func estimateCall(_ key: String) -> Call {
-        Call(arguments: ["jobs", "resume", "build", "--json", "--dry-run", key], timeout: timeouts.estimate, usesModel: true)
+    func estimateCall(_ key: String, redraft: ResumeRedraft? = nil) -> Call {
+        Call(arguments: ["jobs", "resume", "build", "--json", "--dry-run"] + (redraft?.arguments ?? []) + [key],
+             timeout: timeouts.estimate, usesModel: true)
     }
 
-    func buildCall(_ key: String, allowBase: Bool) -> Call {
-        Call(arguments: ["jobs", "resume", "build", "--json"] + (allowBase ? ["--allow-base"] : []) + [key],
+    func buildCall(_ key: String, allowBase: Bool, redraft: ResumeRedraft? = nil) -> Call {
+        Call(arguments: ["jobs", "resume", "build", "--json"] + (allowBase ? ["--allow-base"] : []) + (redraft?.arguments ?? []) + [key],
              timeout: timeouts.build, usesModel: true)
+    }
+
+    func diffCall(_ key: String, from: Int, to: Int) -> Call {
+        Call(arguments: ["jobs", "resume", "diff", "--json", key, Self.versionArgument(from), Self.versionArgument(to)],
+             timeout: timeouts.diff, usesModel: false)
+    }
+
+    func currentCall(_ key: String, version: Int) -> Call {
+        Call(arguments: ["jobs", "resume", "current", "--json", key, Self.versionArgument(version)], timeout: timeouts.current, usesModel: false)
+    }
+
+    func coverageCall(_ key: String, version: Int?) -> Call {
+        Call(arguments: ["jobs", "resume", "coverage", "--json", key] + (version.map { [Self.versionArgument($0)] } ?? []),
+             timeout: timeouts.coverage, usesModel: false)
+    }
+
+    func gapsCall(_ key: String, dryRun: Bool) -> Call {
+        Call(arguments: ["jobs", "resume", "gaps", "--json"] + (dryRun ? ["--dry-run"] : []) + [key], timeout: timeouts.gaps, usesModel: false)
     }
 
     func renderPreviewCall(_ key: String, edit: Data) -> Call {
@@ -645,15 +701,85 @@ public struct ResumeStudioClient: Sendable {
 
     /// What a build would cost at most, and whether Opus can run. Asks no model and spends nothing.
     /// Blocks: call it off the main thread.
-    public func estimate(_ key: String, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeDryRun> {
-        perform(key, estimateCall(key), cancellation: cancellation)
+    public func estimate(_ key: String, redraft: ResumeRedraft? = nil, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeDryRun> {
+        if let redraft, let refusal = Self.refuse(redraft: redraft, key: key) { return .failure(refusal) }
+        return perform(key, estimateCall(key, redraft: redraft), cancellation: cancellation)
     }
 
     /// Build a tailored version with Opus and save it. Spends. Blocks for up to 375 s. With
     /// `allowBase`, a build that cannot run Opus saves the owner's base selection instead of being
-    /// refused (it never displaces a job's current version); it is the owner's explicit choice.
-    public func build(_ key: String, allowBase: Bool = false, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeSaved> {
-        perform(key, buildCall(key, allowBase: allowBase), cancellation: cancellation)
+    /// refused (it never displaces a job's current version); it is the owner's explicit choice. A `redraft`
+    /// starts from a stored version and may keep parts of it: it cannot be combined with `allowBase` when it
+    /// keeps something (vani says `config`; the base selection would not keep what was kept).
+    public func build(_ key: String, allowBase: Bool = false, redraft: ResumeRedraft? = nil,
+                      cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeSaved> {
+        if let redraft {
+            if let refusal = Self.refuse(redraft: redraft, key: key) { return .failure(refusal) }
+            if allowBase, redraft.keeps {
+                return .failure(ResumeFailure(code: "config", message: "a scope or a lock cannot be combined with the base fallback: the base selection would not keep what was kept"))
+            }
+        }
+        return perform(key, buildCall(key, allowBase: allowBase, redraft: redraft), cancellation: cancellation)
+    }
+
+    /// What differs between two stored versions (`to` against `from`). Stored files only: no rkb, no model.
+    public func diff(_ key: String, from: Int, to: Int, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeDiff> {
+        if let refusal = Self.refuse(key: key, version: from) ?? Self.refuse(key: key, version: to) { return .failure(refusal) }
+        return Self.checked(perform(key, diffCall(key, from: from, to: to), cancellation: cancellation) as ResumeOutcome<ResumeDiff>) { d in
+            d.from.version == from && d.to.version == to && (d.same == d.listsAreEmpty)
+                ? nil : "vani's comparison does not describe v\(from) and v\(to), or contradicts itself"
+        }
+    }
+
+    /// Make a stored version the current one: what the Studio shows and the next redraft starts from. Nothing
+    /// is deleted and the version in use does not change.
+    public func makeCurrent(_ key: String, version: Int, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeCurrentSet> {
+        if let refusal = Self.refuse(key: key, version: version) { return .failure(refusal) }
+        return Self.checked(perform(key, currentCall(key, version: version), cancellation: cancellation) as ResumeOutcome<ResumeCurrentSet>) { r in
+            r.version == version ? nil : "vani answered for v\(r.version), not v\(version)"
+        }
+    }
+
+    /// Which of the posting's keywords a version's bullets cover (the job's base selection when `version` is
+    /// nil and it has none). Reads the pool once; no model, nothing spent.
+    public func coverage(_ key: String, version: Int? = nil, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeCoverage> {
+        if let refusal = Self.refuse(key: key, version: version) { return .failure(refusal) }
+        return Self.checked(perform(key, coverageCall(key, version: version), cancellation: cancellation) as ResumeOutcome<ResumeCoverage>) { r in
+            if let version, r.version != version { return "vani measured another version than v\(version)" }
+            return nil
+        }
+    }
+
+    /// Hand the terms no eligible bullet covers to the career session. `dryRun` says which terms and writes
+    /// nothing; without it a line is appended to the hand-off file. A real write that comes back as a dry run
+    /// (or the reverse) is refused as unreadable: one must never pass for the other.
+    public func gaps(_ key: String, dryRun: Bool, cancellation: CancelFlag? = nil) -> ResumeOutcome<ResumeGaps> {
+        Self.checked(perform(key, gapsCall(key, dryRun: dryRun), cancellation: cancellation) as ResumeOutcome<ResumeGaps>) { r in
+            if r.dryRun != dryRun { return dryRun ? "vani's reply is not a dry run" : "vani's reply says it was a dry run" }
+            if dryRun, r.written { return "vani's dry run says it wrote" }
+            return nil
+        }
+    }
+
+    /// A reply that decoded but does not answer what was asked is unreadable, not a success.
+    private static func checked<T>(_ outcome: ResumeOutcome<T>, _ problem: (T) -> String?) -> ResumeOutcome<T> {
+        guard case let .success(value) = outcome, let why = problem(value) else { return outcome }
+        return .failure(ResumeFailure(code: "unreadable_reply", message: why))
+    }
+
+    /// What Go certainly refuses, refused here so nothing odd is put in an argument list: an instruction over
+    /// 500 characters or with a control, format or invisible character, a name that is empty, over 120
+    /// characters or not one printable line, more than 16 locks, and a version outside v1 to v9999. Whether a
+    /// name means a section or entry is Go's to say (`bad_scope`), as is the phone and email screen.
+    static func refuse(redraft: ResumeRedraft, key: String) -> ResumeFailure? {
+        if let f = refuse(key: key, version: redraft.from) { return f }
+        if let text = redraft.instruction, let problem = ResumeRedraftRules.instructionProblem(text) {
+            return ResumeFailure(code: "bad_instruction", message: problem)
+        }
+        if let problem = ResumeRedraftRules.namesProblem(scope: redraft.scope, lock: redraft.lock) {
+            return ResumeFailure(code: "bad_scope", message: problem)
+        }
+        return nil
     }
 
     /// Render the owner's edit (JSON, at most 64 KiB) without fitting it: a page to look at, nothing saved.

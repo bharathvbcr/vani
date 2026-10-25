@@ -57,8 +57,23 @@ public struct ResumeConfirmation: Equatable, Sendable {
     public var offersBase: Bool
     /// What a base build is, said beside its button.
     public var baseNote: String?
-    /// The job already has a current version, which a new build is made from.
+    /// The job already has a current version, which a new build is made from (a redraft says which one).
     public var madeFromText: String?
+    /// What a redraft re-picks and keeps; nil for a plain build.
+    public var redraftText: String?
+
+    public init(costText: String?, sentText: String, priceSource: String?, canConfirm: Bool, blockedReason: String?,
+                offersBase: Bool, baseNote: String?, madeFromText: String?, redraftText: String? = nil) {
+        self.costText = costText
+        self.sentText = sentText
+        self.priceSource = priceSource
+        self.canConfirm = canConfirm
+        self.blockedReason = blockedReason
+        self.offersBase = offersBase
+        self.baseNote = baseNote
+        self.madeFromText = madeFromText
+        self.redraftText = redraftText
+    }
 }
 
 public enum ResumeWords {
@@ -168,17 +183,28 @@ public enum ResumeWords {
 
     // MARK: Before the spend
 
-    public static func confirmation(for dry: ResumeDryRun, locale: Locale = .current) -> ResumeConfirmation {
+    /// `redraft` is what was asked for (a redraft); vani's own echo in the dry run, when it has one, is what is
+    /// worded, so the owner confirms what vani will do and not only what the app meant to send.
+    public static func confirmation(for dry: ResumeDryRun, redraft: ResumeRedraft? = nil, locale: Locale = .current) -> ResumeConfirmation {
         let model = displayModel(dry.model)
-        let madeFrom = dry.current > 0 ? "A new version is made from v\(dry.current), the current one, and replaces it as the current version." : nil
+        let isRedraft = redraft != nil || dry.from != nil
+        let from = dry.from ?? redraft?.from ?? dry.current
+        let madeFrom: String?
+        switch (from, dry.current) {
+        case (0, _): madeFrom = nil
+        case let (f, c) where f == c: madeFrom = "A new version is made from v\(f), the current one, and replaces it as the current version."
+        case let (f, c): madeFrom = "A new version is made from v\(f). It does not replace the current version\(c > 0 ? ", v\(c)" : ""); make it current afterwards if you want it."
+        }
+        let redraftText = isRedraft ? redraftSentence(dry: dry, redraft: redraft) : nil
         guard dry.opusUsable, let e = dry.estimate else {
             let why = dry.noModel.map { clipped($0, 200) } ?? "no reason was given"
+            // A redraft is Opus's job: the base selection is not a redraft and would not keep what was kept.
             return ResumeConfirmation(
                 costText: nil, sentText: sentLine(model: dry.model), priceSource: nil, canConfirm: false,
-                blockedReason: "\(model) cannot run right now (\(why)), so a tailored resume cannot be built and nothing can be spent.",
-                offersBase: true,
-                baseNote: "Build base selection anyway uses your base choice of bullets, with no model and no cost. It is a fallback, not tailored to this posting, and it does not replace a current version this job already has.",
-                madeFromText: madeFrom)
+                blockedReason: "\(model) cannot run right now (\(why)), so \(isRedraft ? "no redraft can be made" : "a tailored resume cannot be built") and nothing can be spent.",
+                offersBase: !isRedraft,
+                baseNote: isRedraft ? nil : "Build base selection anyway uses your base choice of bullets, with no model and no cost. It is a fallback, not tailored to this posting, and it does not replace a current version this job already has.",
+                madeFromText: madeFrom, redraftText: redraftText)
         }
         var parts = ["At most \(money(e.maxUSD))", "up to \(e.turns) turn\(e.turns == 1 ? "" : "s")",
                      "\(e.inputTokens.formatted(.number.locale(locale))) input tokens at most", capText(dry.budget, capReached: e.capReached)]
@@ -187,7 +213,41 @@ public enum ResumeWords {
             ? "What is left of today's cap (decide.daily_usd.llm in Vani's config) is less than the first turn can cost, so \(model) cannot be asked until it resets."
             : nil
         return ResumeConfirmation(costText: parts.joined(separator: " · "), sentText: sentLine(model: dry.model), priceSource: e.priceSource,
-                                  canConfirm: blocked == nil, blockedReason: blocked, offersBase: false, baseNote: nil, madeFromText: madeFrom)
+                                  canConfirm: blocked == nil, blockedReason: blocked, offersBase: false, baseNote: nil, madeFromText: madeFrom,
+                                  redraftText: redraftText)
+    }
+
+    /// "Redraft of v3: re-picks only GPU Systems, keeps Summary and Experience, and sends your 62-character
+    /// instruction with the posting (it is never printed on the page)."
+    static func redraftSentence(dry: ResumeDryRun, redraft: ResumeRedraft?) -> String {
+        let from = dry.from ?? redraft?.from ?? dry.current
+        let scope = dry.from != nil ? dry.scope : redraft?.scope
+        let lock = dry.from != nil ? dry.lock : (redraft?.lock ?? [])
+        let runes = dry.from != nil ? dry.instructionRunes : redraft.flatMap { r in r.trimmedInstruction.map { $0.unicodeScalars.count } }
+        var parts: [String] = []
+        if let scope, !scope.isEmpty { parts.append("re-picks only \(clipped(scope, 60))") } else { parts.append("re-picks the whole page") }
+        if !lock.isEmpty { parts.append("keeps \(lock.map { clipped($0, 40) }.joined(separator: ", "))") }
+        var line = "Redraft of v\(from): " + parts.joined(separator: ", ")
+        if let runes {
+            line += ", and sends your \(runes)-character instruction with the posting (it is never printed on the page)"
+        }
+        return line + "."
+    }
+
+    /// Why a version is out of date, naming what the knowledge base found: the counts and the bullet ids (never
+    /// text), including a figure rkb no longer double-verifies. Nil for a current version.
+    public static func eligibilityDetail(_ e: ResumeEligibility?) -> String? {
+        guard let e, e.state != "current" else { return nil }
+        func ids(_ list: [String]) -> String {
+            list.prefix(6).joined(separator: ", ") + (list.count > 6 ? " and \(list.count - 6) more" : "")
+        }
+        var parts: [String] = []
+        if !e.unverified.isEmpty { parts.append("rkb no longer double-verifies a figure in \(ids(e.unverified))") }
+        if !e.reworded.isEmpty { parts.append("reworded in the bank: \(ids(e.reworded))") }
+        if !e.gone.isEmpty { parts.append("gone from the bank: \(ids(e.gone))") }
+        if !e.ineligible.isEmpty { parts.append("no longer eligible: \(ids(e.ineligible))") }
+        if let why = e.why, !why.isEmpty { parts.append(clipped(why, 300)) }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ") + "."
     }
 
     /// The cap clause: spent, how much is left, or that the spend could not be read.
@@ -234,6 +294,7 @@ public enum ResumeWords {
         "bad_request", "unknown_key", "ledger", "config", "store", "not_found", "damaged", "unsupported", "full", "busy",
         "not_usable", "stale", "unchecked", "not_stale", "failed", "kb", "render", "lint", "fit", "too_large", "pages",
         "timeout", "cancelled", "kb_changed", "no_model", "ineligible", "bad_edit", "figures",
+        "bad_instruction", "bad_scope", "scope", "redraft",
         "account", "keychain", "settings", "provider", "budget", "budget_exhausted", "cap_reached", "no_reply", "unreadable_reply", "bind",
     ]
 
@@ -268,6 +329,15 @@ public enum ResumeWords {
             message = "The edit uses a bullet the knowledge base does not offer for this page: \(detail)"
         case "bad_edit":
             message = "The edit is not a page Vani can build: \(detail)"
+        case "bad_instruction":
+            // Go's message names the rule, never the text.
+            message = "Vani did not accept the instruction: \(stop(detail)) Nothing was spent. Change it, or leave it out."
+        case "bad_scope":
+            message = "Vani cannot re-pick or keep what you chose: \(stop(detail)) Nothing was spent."
+        case "scope":
+            message = "\(modelName) changed a part you asked to keep, even after one retry, so no page was built and nothing was saved. \(detail)"
+        case "redraft":
+            message = "\(modelName)'s choices did not make a page that keeps what you asked to keep, so nothing was saved. Your base selection is not built in its place. \(detail)"
         case "not_stale":
             message = "Your knowledge base still vouches for this version, so there is nothing to revalidate. If it cannot be used for another reason (its layout was never measured, or it was recorded unchecked), build again."
             offer = .buildAgain
@@ -323,6 +393,12 @@ public enum ResumeWords {
                 + (f.attemptRecorded ? "; Vani recorded the attempt." : "; Vani could not record the attempt.")
         }
         return ResumeFailureText(message: message, costNote: note, canRetry: retry, offer: offer)
+    }
+
+    /// `s` as the end of a sentence: Go's messages carry no full stop, and a sentence follows them.
+    static func stop(_ s: String) -> String {
+        guard let last = s.last else { return s }
+        return ".!?)\"".contains(last) ? s : s + "."
     }
 
     public static func clipped(_ s: String, _ max: Int = 240) -> String {
