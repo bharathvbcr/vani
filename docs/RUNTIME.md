@@ -318,8 +318,8 @@ refuses a v2 record: reinstall the app and the CLI together), `version`, `parent
 version was asked with, at most 500 characters on one printable line, scrubbed of the header's
 strings; never on the page; absent for a base or edited page), `scope` (the section title or entry id
 a redraft re-picked alone) and `lock` (the section titles it kept), names only, each at most 120
-characters on one printable line and at most 20 locks (checked when saved; rkbresume refuses longer
-names before a turn), written for a page a model shaped. **A version made without a model
+characters on one printable line, the store keeping at most 20 locks (checked when saved; rkbresume
+refuses a longer name, or more than 16 locks, before a turn, so a paid build is never refused its record), written for a page a model shaped. **A version made without a model
 (`render --fit`, `revalidate`) copies nothing from its parent**: no instruction, scope or lock. The
 app shows the parent's through `parent` ("from v3: ..."). `model`, `cost {usd, complete, turns}` (a turn whose
 cost is unknown makes `complete` false and `usd` a lower bound), `checks {eligibility, lint, fit,
