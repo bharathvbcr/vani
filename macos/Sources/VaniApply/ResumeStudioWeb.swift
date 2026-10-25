@@ -185,6 +185,10 @@ struct WindowCloseGuard: NSViewRepresentable {
             self.window = window
             self.closer = closer
             closer.window = window
+            // macOS must not reopen this window at the next launch: it would come back with only its job's key and
+            // run a full `show` (a minute of rkb) before anything was asked. `NSWindow.isRestorable` works on the
+            // macOS 14 target; the scene's `restorationBehavior` is macOS 15 and later.
+            window.isRestorable = false
             if window.delegate !== self {
                 original = window.delegate
                 window.delegate = self

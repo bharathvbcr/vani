@@ -728,8 +728,12 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     `vani migrate rekey-*` moving the resume folder (keyed by the key's hash); the app and CLI
     binaries must be rebuilt and reinstalled together before the first `use` (marks with
     `resume_version` read as corrupt to an older binary, and now records of schema 2, which
-    carry the redraft's instruction). The redraft (`build --from/--scope/--lock/--instruction`),
-    `diff`, `current`, the orphan-aware retry and the per-version figure check are in RUNTIME.md;
+    carry the redraft's instruction, scope and locks). The redraft (`build --from/--scope/--lock/--instruction`),
+    `diff`, `current`, the orphan-aware retry and the per-version figure check are in RUNTIME.md; the
+    app has the Redraft sheet, the versions and coverage panels, the career-session hand-off, the
+    quit prompt and the explicit pool rules (macos/README.md; what only the running app confirms is
+    listed there); fit orphans reach the app only through the fit note's text (`(orphan b1, ...)`), not a
+    field of the version;
     the estimate types of `jobs resume build --dry-run` and `jobs retriage` are one (`llmestimate.go`).
     Open: `jobs resume show` spends most of its 0.6 s reading the job's keywords (`jobs show` alone is
     0.4 to 0.5 s), not rkb (docs/RUNTIME.md, "Figures").

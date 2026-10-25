@@ -93,7 +93,7 @@ struct JobsView: View {
         }
         // The cost of an Opus resume build, asked about before anything is spent; closing it any other way
         // than Build cancels.
-        .sheet(isPresented: Binding(get: { jobs.resume.confirming != nil },
+        .sheet(isPresented: Binding(get: { jobs.resume.confirmingInJobs },
                                     set: { if !$0 { jobs.resume.dismissConfirmation() } })) {
             ResumeConfirmSheet()
         }
@@ -968,6 +968,14 @@ private struct JobMenu: View {
             }
             .disabled(reason != nil)
             .help(reason ?? "Ask \(ResumeWords.modelName) to pick this posting's bullets for a tailored resume. The cost is shown first.")
+            // The Studio window itself spends nothing: it shows the job's versions and edits them (a redraft,
+            // inside it, shows its own cost first). A window already open for this job is brought forward.
+            Button("Open Resume Studio", systemImage: "doc.text.magnifyingglass") {
+                jobs.openStudio(job)
+            }
+            .disabled(jobs.resume.openStudio == nil)
+            .help(jobs.resume.openStudio == nil ? "The Studio window cannot be opened from here."
+                  : "Open the Resume Studio window for this job: its versions, the bullets, the page and how well it covers the posting.")
         }
         // Every role at the company, not just this one; undone in Settings ›
         // Exclude postings. Roles you saved, applied to or hid stay.

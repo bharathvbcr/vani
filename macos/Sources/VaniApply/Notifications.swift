@@ -54,6 +54,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { [jobs] in await jobs.loadLabels() }
     }
 
+    /// ⌘Q asks once when any Resume Studio window holds edits that were not fitted: they are a draft, never a
+    /// version, so quitting would drop them. A window's own close button asks for itself (WindowCloseGuard).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        StudioWindows.shared.terminateReply(ask: StudioWindows.askWithAlert)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         pollTask?.cancel()
     }

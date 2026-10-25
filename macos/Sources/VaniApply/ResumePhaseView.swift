@@ -20,7 +20,8 @@ struct ResumePhaseView: View {
         case .confirming:
             progress("Waiting for your confirmation…", detail: "Nothing is spent until you confirm.", stoppable: false)
         case let .building(_, allowBase, cancelling):
-            progress(cancelling ? "Stopping…" : (allowBase ? "Building the base selection…" : "Asking \(ResumeWords.modelName)…"),
+            let asking = resume.activeRedraft.map { "Asking \(ResumeWords.modelName) to redraft v\($0.from)…" } ?? "Asking \(ResumeWords.modelName)…"
+            progress(cancelling ? "Stopping…" : (allowBase ? "Building the base selection…" : asking),
                      detail: cancelling ? "Vani is being stopped. A version saved a moment before the stop still appears here."
                                         : "This can take up to \(Int(ResumeStudioClient.Timeouts.standard.build / 60)) minutes. Stop keeps nothing half-made.",
                      stoppable: !cancelling)

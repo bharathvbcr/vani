@@ -126,7 +126,45 @@ content rule blocks http, https, ws and ftp), no storage and no navigation, unde
 as a PDF (PDFKit), with line counts per bullet while the draft is that version. Save PDF As, Reveal in Finder and Open in
 Preview work on the shown version's PDF, read through the hash vani reported. Unsaved edits ask before a version switch,
 Reset to base, or closing the window. Clicking a bullet in the page cannot select its row: that would need scripts in the
-page, and they stay off.
+page, and they stay off. The outline's rules come from the pool, not from guesses: which sections reorder
+(`reorderable_sections`) and where an entry may stay as a heading with no bullets (`headings`) are what Go says, and a
+heading the pool does not allow blocks the edit as Go would refuse it. A pool from a vani that does not say them is no pool.
+
+The right pane has three views (the picker above it): **Page** (the preview), **Coverage** and **Versions**.
+
+- **Redraft…** (top bar, needs a saved version, a clean draft and the knowledge-base check) opens a sheet: re-pick *the
+  whole page*, *one section* or *one entry* of the shown version; **Keep as it is** switches per section (the scoped
+  section cannot also be kept); an optional one-line **instruction** with a live `n / 500` counter (counted in Unicode
+  scalars of the trimmed text, as Go counts runes). Only what Go certainly refuses is refused here (over 500, a control or
+  invisible character); the phone and email screen is Go's, and its refusal comes back on the form in its own words. **Estimate
+  cost…** runs `build --dry-run --from=vN …` and shows the confirmation inside the sheet (the Jobs window's sheet does not
+  open for a redraft a Studio window started); **Redraft with Opus 5.5** builds, the sheet closes and the status band shows
+  the build with Stop. A refusal of the redraft itself (`bad_instruction`, `bad_scope`, `scope`, `redraft`) opens the form
+  again with what you typed and the refusal on it; any other failure stays in the band. A redraft never offers "build the
+  base selection anyway": the base would not keep what you kept. The flags go as `--from=v3 --scope=NAME --lock=NAME
+  --instruction=TEXT` so a value that starts with a dash is a value, never a flag. A redraft from an older version says
+  it will not replace the current one.
+- **Versions** lists every version (newest first) with its source, parent, created time, *current* and *in use* badges,
+  what its redraft kept (scope and locks), and its instruction: the version's own, or for a page no model shaped (an edit or
+  a revalidation) its ancestor's, said as "from v3: …". **Compare with parent** and **Compare with…** run `diff` and show
+  the added, removed and moved bullets (the pool's wording where it has it, the id otherwise), override changes, section
+  order and keywords, and how each side was made. **Make current** runs `current`, then reads the list again; nothing is
+  deleted and the version in use does not change.
+- **Coverage** runs `coverage` for the shown version (the job's base selection when it has none): covered keywords (expand
+  one to the bullets that hit it; clicking a bullet selects its row in the outline and scrolls to it), missed keywords a
+  swap could fix, missed keywords no eligible bullet says (the bank lacks them), phrases that could not be matched (never
+  counted as misses), chosen bullets no longer offered, and a note when more than 200 terms were asked about. A measurement
+  that failed shows no coverage. **Send uncovered terms to the career session…** runs `gaps --dry-run`, shows the terms,
+  and runs `gaps` only on Send; "nothing was written" is worded as that, never as sent, and the dialog says when the
+  hand-off uses the current version rather than the one on screen.
+- A bullet rkb's fit report named as ending in a one-word line shows "ends with a one-word line" while the draft is the
+  fitted version. That list is not a field of the version: vani writes it into the fit note as `(orphan b1, orphan b2, …)`
+  (at most 8), and the app reads the ids back from the note and keeps only ids on the page. The one false positive this
+  can make is rkb's own sentence "orphan last line(s)" naming a bullet whose id is `last`.
+
+Quitting (⌘Q) asks once when any Studio window holds edits that were not fitted, naming the jobs; Keep Editing cancels the
+quit. Studio windows are not restored when the app is launched (`NSWindow.isRestorable = false`; the scene's
+`restorationBehavior` is macOS 15 and later, and this app targets macOS 14). A job's row menu has **Open Resume Studio**.
 
 ```mermaid
 flowchart TD
@@ -505,7 +543,7 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
 ## Verified and not
 
 - **Verified here:**
-  - `swift test`: 850 tests, 12 skipped, 0 failures (2026-10-25; first counted at 129; the real-vani and accessibility-driven tests skip when `build/vani` is absent or the runner is not trusted). They cover the TS vectors, validation, the store
+  - `swift test`: 889 tests, 12 skipped, 0 failures (2026-10-25; first counted at 129; the real-vani and accessibility-driven tests skip when `build/vani` is absent or the runner is not trusted). They cover the TS vectors, validation, the store
     (including 16 concurrent compare-and-swap writers losing nothing), the protocol, framing, the
     connector, and the jobs client and filters. They also drive the built host binary over real
     pipes, and the jobs client against the Go `vani` in `build/vani` (skipped when it is not built).
@@ -551,6 +589,13 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos
     by PDFKit; the split divider moves; Save PDF As offers `Resume_<Company>.pdf`, Reveal and Open in Preview work. A real
     rkb page in the unfitted preview, which draws without any external font or stylesheet it asks for (the web view blocks
     the network).
+  - The redraft, versions and coverage views in a running app (their models, words and the fake-vani flows are tested;
+    ImageRenderer draws their text but not buttons, menus, sheets or scroll): the Redraft sheet drawn over the Studio window
+    (and no sheet over the Jobs window), the cost confirmation inside it, the form reopening on a refusal; the segmented
+    pane picker; expanding a coverage hit and clicking a bullet scrolling the outline to its row; the Compare with… menu;
+    ⌘Q showing the unsaved-edits alert (the reply logic is tested, `NSAlert` is not); Studio windows not coming back at the
+    next launch (`isRestorable` is asserted on a plain NSWindow; whether SwiftUI's `WindowGroup` honours it for its own
+    windows is not); the row menu's Open Resume Studio; a real paid redraft (every test uses a fake vani).
   - A click on a notification, with the window open or closed. A Studio window is never the one it raises
     (the reveal looks for the window titled "Vani Apply"); that filter is not covered by a test. Computer use cannot reach
     Notification Center, and no click on the test copy's notices showed up in the log. The

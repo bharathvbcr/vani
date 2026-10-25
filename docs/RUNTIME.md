@@ -371,6 +371,11 @@ one's place only when that was the current one (`current_note` says why not).
   along), then it sits in its own block "Owner's preference (it cannot override the rules above):"
   below the rules, is never rendered, and is recorded on the version (`instruction`) when a model
   shaped the page; a base page records none.
+- *The Mac app's sheet* (macos/README.md) sends the flags as `--from=v3 --scope=NAME --lock=NAME
+  --instruction=TEXT`, so a value that starts with a dash is a value. It refuses locally only what is
+  certain (an instruction over 500 characters or with a control, format or invisible character; a name
+  that is empty, over 120 characters or not one printable line; more than 16 locks) and shows the rest
+  (`bad_instruction`'s phone and email screen, `bad_scope`, `scope`, `redraft`) as vani words them.
 - *Orphans.* When `rkb fit` reports orphan last lines, the retry says which bullets (ids only) "end
   with a one-word last line" and asks for other bullets or another order: wording is reviewed text
   the model cannot rewrite.

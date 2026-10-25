@@ -81,10 +81,60 @@ final class ResumeStudioEditor {
     /// Discard was chosen for a close: the window may now close without asking again.
     private(set) var closeApproved = false
 
+    // The right pane's three views, the comparison, the coverage and the hand-off, and the redraft form. The
+    // extension at the end of this file runs them; they are set only there.
+    enum RightPane: String, CaseIterable, Identifiable {
+        case page = "Page", coverage = "Coverage", versions = "Versions"
+        var id: String { rawValue }
+    }
+
+    /// A comparison of two stored versions: running, read, or refused (never an empty "no difference").
+    enum Comparison: Equatable {
+        case loading(from: Int, to: Int)
+        case loaded(ResumeDiff)
+        case failed(from: Int, to: Int, ResumeFailure)
+    }
+
+    enum CoverageState: Equatable {
+        case idle
+        case loading(version: Int?)
+        case loaded(ResumeCoverage)
+        case failed(ResumeFailure)
+    }
+
+    /// Sending the terms no bullet covers to the career session: ask which (a dry run), then confirm, then write.
+    enum HandOff: Equatable {
+        case idle
+        case asking
+        case confirming(ResumeGaps)
+        case sending(ResumeGaps)
+        case done(ResumeGaps)
+        case failed(ResumeFailure)
+    }
+
+    var rightPane: RightPane = .page
+    private(set) var comparison: Comparison?
+    /// What Make current said, or why it failed.
+    private(set) var versionsNote: String?
+    private(set) var versionsFailure: ResumeFailure?
+    private(set) var coverage: CoverageState = .idle
+    private(set) var handOff: HandOff = .idle
+    /// The bullet a coverage hit was clicked on: the outline marks and scrolls to it. `selectionTick` changes on every
+    /// click so clicking the same bullet again scrolls again.
+    private(set) var selectedBullet: String?
+    private(set) var selectionTick = 0
+    /// The Redraft sheet: its fields stay across a refusal, so the owner corrects them in place.
+    var redraftForm = ResumeRedraftForm()
+    private(set) var isRedraftOpen = false
+
     // Bookkeeping no view reads: not observed, so changing it never redraws anything.
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var htmlCount = 0
     @ObservationIgnored private var flag = CancelFlag()
+    @ObservationIgnored private var panelFlag = CancelFlag()
+    @ObservationIgnored private var compareGen = 0
+    @ObservationIgnored private var coverageGen = 0
+    @ObservationIgnored private var handOffGen = 0
 
     init(key: String, resume: ResumeStudioModel, job: Job?) {
         self.key = key
@@ -95,9 +145,15 @@ final class ResumeStudioEditor {
     // MARK: Words for the window
 
     var title: String {
-        guard let job else { return "Resume Studio" }
+        guard let name = jobName else { return "Resume Studio" }
+        return "Resume — \(name)"
+    }
+
+    /// "Company, Role", nil when the posting is not known or has neither.
+    var jobName: String? {
+        guard let job else { return nil }
         let name = [job.company, job.title].filter { !$0.isEmpty }.joined(separator: ", ")
-        return name.isEmpty ? "Resume Studio" : "Resume — \(name)"
+        return name.isEmpty ? nil : name
     }
 
     var failureText: ResumeFailureText? { failure.flatMap(ResumeWords.failure) }
@@ -122,6 +178,7 @@ final class ResumeStudioEditor {
         }
         if let e = shown.keywordsError, !e.isEmpty { out.append("The posting's keywords could not be read (\(ResumeWords.clipped(e))).") }
         if let e = selectionProblem { out.append(e) }
+        if let detail = eligibilityDetail { out.append("v\(shownVersion ?? 0) is not vouched for: \(detail)") }
         return out
     }
 
@@ -404,7 +461,12 @@ final class ResumeStudioEditor {
     func shutdown() {
         generation += 1
         flag.set()
+        panelFlag.set()
+        compareGen += 1
+        coverageGen += 1
+        handOffGen += 1
         if step != nil { step = nil }
+        StudioWindows.shared.forget(key: key)
     }
 
     // MARK: Preview and Fit
@@ -441,6 +503,7 @@ final class ResumeStudioEditor {
         flag = CancelFlag()
         let cancel = flag, key = key
         step = .previewing
+        rightPane = .page
         failure = nil
         notice = nil
         let result = await BlockingWork.value { client.renderPreview(key, edit: edit, cancellation: cancel) }
@@ -478,6 +541,7 @@ final class ResumeStudioEditor {
         flag = CancelFlag()
         let cancel = flag, key = key, from = shownVersion
         step = .fitting(cancelling: false)
+        rightPane = .page
         failure = nil
         notice = nil
         let result = await BlockingWork.value { client.renderFit(key, edit: edit, from: from, cancellation: cancel) }
@@ -589,9 +653,19 @@ final class ResumeStudioEditor {
     func phaseChanged(_ phase: ResumeStudioModel.Phase) async {
         guard phase.key == key else { return }
         switch phase {
+        case .estimating, .confirming:
+            if resume.confirmationHost == .studio { isRedraftOpen = true }
+        case .building:
+            // The build runs in the window's status band, where it can be stopped; the sheet gets out of the way.
+            if resume.confirmationHost == .studio { isRedraftOpen = false }
+        case let .failed(_, failure):
+            // A refusal of the redraft itself (the instruction, the scope, the model's reply) opens the form again
+            // with what the owner typed, the refusal on it, so it is corrected in place.
+            if resume.confirmationHost == .studio, Self.redraftCodes.contains(failure.code) { isRedraftOpen = true }
         case .used:
             await reload(version: shownVersion, check: true, keepDraft: isDirty)
         case let .built(_, saved):
+            isRedraftOpen = false
             if isDirty {
                 await reload(version: shownVersion, check: false, keepDraft: true)
                 notice = ResumeWords.savedLine(saved) + " Your edits here are unchanged."
@@ -648,4 +722,235 @@ final class ResumeStudioEditor {
     }
 
     var hasPDF: Bool { version?.hasPDF ?? false }
+}
+
+// MARK: - Redraft, versions, coverage
+
+extension ResumeStudioEditor {
+    /// The codes that mean the redraft itself was refused: the form opens again with the refusal on it.
+    static let redraftCodes: Set<String> = ["bad_instruction", "bad_scope", "scope", "redraft"]
+
+    /// Why the bullet rows say "ends with a one-word line", from the shown version's fit note; only while the
+    /// draft is exactly the fitted version (as a line count is).
+    var orphanBullets: Set<String> {
+        guard !isDirty, let v = version, v.checks.fit == "passed" || v.checks.fit == "soft" else { return [] }
+        return ResumeOrphans.ids(inNotes: v.notes, bullets: v.bullets)
+    }
+
+    /// Why a version is out of date, naming the bullets (a figure rkb no longer verifies among them).
+    var eligibilityDetail: String? {
+        guard let v = version, !checkFailed else { return nil }
+        return ResumeWords.eligibilityDetail(v.eligibility)
+    }
+
+    // MARK: Redraft
+
+    /// What the redraft may be scoped to or lock: the shown version's own sections and entries.
+    var redraftTargets: ResumeRedraftTargets? { ResumeRedraftTargets.of(selection: version?.selection, pool: pool) }
+
+    /// Why Redraft cannot be asked for now; nil when it can. A redraft starts from the version as saved.
+    var redraftBlockedReason: String? {
+        guard let v = version else { return "There is no saved version to redraft yet. Fit your draft first, or build one from the Jobs tab." }
+        if pool == nil { return "Redrafting is paused: your knowledge base could not be checked, so what the model may fill is not known." }
+        if isDirty { return "Fit or discard your edits first: a redraft starts from v\(v.version) as saved, so it would not use them." }
+        if let step { return step == .loading ? "Loading…" : "A step of this window is running." }
+        guard let job, resume.isAvailable else { return "This job is not in the Jobs list right now. Select it there and open the Studio again." }
+        if let reason = resume.blockedReason(for: job) { return reason }
+        if redraftTargets == nil { return "v\(v.version) has no section Vani can redraft." }
+        return nil
+    }
+
+    /// Why the form cannot be sent yet, in sentences (the instruction's length, every section locked).
+    var redraftProblems: [String] { redraftTargets.map { redraftForm.problems($0) } ?? [] }
+
+    func openRedraft() {
+        guard redraftBlockedReason == nil, let targets = redraftTargets else { return }
+        // What the last form named may not be on this version: drop it rather than send a name Go will refuse.
+        switch redraftForm.scope {
+        case .whole: break
+        case let .section(t): if !targets.sections.contains(where: { $0.title == t }) { redraftForm.scope = .whole }
+        case let .entry(id): if targets.section(containingEntry: id) == nil { redraftForm.scope = .whole }
+        }
+        redraftForm.locked.formIntersection(targets.sections.map(\.title))
+        if resume.phase.key == key, case .failed = resume.phase { resume.dismiss() }
+        isRedraftOpen = true
+    }
+
+    /// Close the sheet. A cost that was asked for and not confirmed is dropped: nothing was spent.
+    func closeRedraft() {
+        if resume.phase.key == key {
+            switch resume.phase {
+            case .estimating, .confirming: resume.cancel()
+            case .failed: resume.dismiss()
+            default: break
+            }
+        }
+        isRedraftOpen = false
+    }
+
+    /// Ask what the redraft would cost (a dry run: no model, nothing spent). The confirmation is shown in this
+    /// window's sheet, and Build is only there.
+    func askRedraftCost() {
+        guard redraftBlockedReason == nil, let job, let targets = redraftTargets, let from = shownVersion,
+              redraftForm.problems(targets).isEmpty else { return }
+        resume.start(job, redraft: redraftForm.request(from: from, targets: targets), host: .studio)
+    }
+
+    // MARK: Versions
+
+    var versionRows: [ResumeVersionRow] { ResumeVersions.rows(shown?.versions ?? []) }
+
+    /// What the comparison says, with the pool's wording where it has it.
+    var comparisonView: ResumeDiffView? {
+        guard case let .loaded(d) = comparison else { return nil }
+        return ResumeDiffPresentation.make(d, pool: pool, versions: shown?.versions ?? [])
+    }
+
+    func clearComparison() {
+        compareGen += 1
+        comparison = nil
+    }
+
+    /// `to` against `from`: what changed from one stored version to the other (stored files only).
+    func compare(from: Int, to: Int) async {
+        guard let client = resume.makeClient() else { return }
+        compareGen += 1
+        let gen = compareGen, key = key, cancel = panelFlag
+        comparison = .loading(from: from, to: to)
+        let result = await BlockingWork.value { client.diff(key, from: from, to: to, cancellation: cancel) }
+        guard gen == compareGen else { return }
+        switch result {
+        case let .success(d): comparison = .loaded(d)
+        case let .failure(f): comparison = .failed(from: from, to: to, f)
+        case .cancelled: comparison = nil
+        }
+    }
+
+    /// A version against the one it was made from.
+    func compareWithParent(_ version: Int) async {
+        guard let parent = shown?.versions.first(where: { $0.version == version })?.parent, parent >= 1 else { return }
+        await compare(from: parent, to: version)
+    }
+
+    /// Why Make current cannot run for `version`; nil when it can.
+    func makeCurrentBlockedReason(_ version: Int) -> String? {
+        if shown?.versions.first(where: { $0.version == version })?.current == true { return "v\(version) already is the current version." }
+        if step != nil { return step == .loading ? "Loading…" : "A step of this window is running." }
+        if resume.isBusy { return "Another resume step is running: it may move the current version itself. Wait for it to finish." }
+        return nil
+    }
+
+    /// Make a stored version the current one: the one this window shows and a redraft starts from. Nothing is
+    /// deleted and the version in use does not change.
+    func makeCurrent(_ version: Int) async {
+        guard makeCurrentBlockedReason(version) == nil, let client = resume.makeClient() else { return }
+        versionsNote = nil
+        versionsFailure = nil
+        let key = key, cancel = panelFlag
+        let result = await BlockingWork.value { client.makeCurrent(key, version: version, cancellation: cancel) }
+        switch result {
+        case let .success(r):
+            versionsNote = r.changed
+                ? "v\(r.version) is now the current version" + (r.previous.map { " (it was v\($0))." } ?? ".")
+                : "v\(r.version) already was the current version. Nothing changed."
+            await resume.onChange(key)
+            await reload(version: shownVersion, check: false, keepDraft: isDirty)
+        case let .failure(f):
+            versionsFailure = f
+        case .cancelled:
+            break
+        }
+    }
+
+    func dismissVersionsMessage() {
+        versionsNote = nil
+        versionsFailure = nil
+    }
+
+    // MARK: Coverage
+
+    var coverageView: ResumeCoverageView? {
+        guard case let .loaded(c) = coverage else { return nil }
+        return ResumeCoveragePresentation.make(c, pool: pool, dirty: isDirty)
+    }
+
+    /// The coverage on screen belongs to another version than the shown one (a version was switched to).
+    var coverageIsStale: Bool {
+        guard case let .loaded(c) = coverage else { return false }
+        return c.version != shownVersion
+    }
+
+    /// Measure the shown version (the base selection when the job has none). One pool read, no model.
+    func loadCoverage(force: Bool = false) async {
+        if !force, case .loaded = coverage, !coverageIsStale { return }
+        guard let client = resume.makeClient() else { return }
+        coverageGen += 1
+        let gen = coverageGen, key = key, version = shownVersion, cancel = panelFlag
+        coverage = .loading(version: version)
+        let result = await BlockingWork.value { client.coverage(key, version: version, cancellation: cancel) }
+        guard gen == coverageGen else { return }
+        switch result {
+        case let .success(c): coverage = .loaded(c)
+        case let .failure(f): coverage = .failed(f)
+        case .cancelled: coverage = .idle
+        }
+    }
+
+    /// A coverage hit was clicked: show that bullet's row in the outline. The coverage is of the saved version, so
+    /// the bullet may not be in an edited draft.
+    func select(bullet id: String) {
+        let present = draft?.sections.contains { s in
+            s.bullets.contains { $0.id == id } || s.entries.contains { $0.bullets.contains { $0.id == id } }
+        } ?? false
+        guard present else {
+            editNote = "That bullet is not on the page you are editing (it is on v\(shownVersion ?? 0) as saved)."
+            return
+        }
+        editNote = nil
+        selectedBullet = id
+        selectionTick += 1
+    }
+
+    // MARK: Hand-off to the career session
+
+    /// The version `gaps` measures is the current one, which may not be the one on screen.
+    var handOffNote: String? {
+        guard let current = shown?.current, current > 0, let shownVersion, shownVersion != current else { return nil }
+        return "The hand-off uses the current version, v\(current), not the v\(shownVersion) on screen."
+    }
+
+    /// Which terms would go (a dry run: nothing is written), for the owner to confirm.
+    func startHandOff() async {
+        guard let client = resume.makeClient() else { return }
+        handOffGen += 1
+        let gen = handOffGen, key = key, cancel = panelFlag
+        handOff = .asking
+        let result = await BlockingWork.value { client.gaps(key, dryRun: true, cancellation: cancel) }
+        guard gen == handOffGen else { return }
+        switch result {
+        case let .success(g): handOff = .confirming(g)
+        case let .failure(f): handOff = .failed(f)
+        case .cancelled: handOff = .idle
+        }
+    }
+
+    /// The owner confirmed the terms: write them for the career session.
+    func confirmHandOff() async {
+        guard case let .confirming(dry) = handOff, !dry.terms.isEmpty, let client = resume.makeClient() else { return }
+        handOffGen += 1
+        let gen = handOffGen, key = key, cancel = panelFlag
+        handOff = .sending(dry)
+        let result = await BlockingWork.value { client.gaps(key, dryRun: false, cancellation: cancel) }
+        guard gen == handOffGen else { return }
+        switch result {
+        case let .success(g): handOff = .done(g)
+        case let .failure(f): handOff = .failed(f)
+        case .cancelled: handOff = .idle
+        }
+    }
+
+    func dismissHandOff() {
+        handOffGen += 1
+        handOff = .idle
+    }
 }

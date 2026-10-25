@@ -209,15 +209,26 @@ struct ResumeConfirmSheet: View {
 
     var body: some View {
         if let pending = jobs.resume.confirming {
-            content(key: pending.key, dry: pending.dry)
+            ResumeConfirmContent(key: pending.key, dry: pending.dry)
         }
     }
+}
 
-    private func content(key: String, dry: ResumeDryRun) -> some View {
-        let confirmation = ResumeWords.confirmation(for: dry)
-        let job = jobs.jobs.first { $0.key == key }
+/// The confirmation's content: the Jobs window's sheet shows it, and so does a Studio window's Redraft sheet
+/// for a redraft it started (`ResumeStudioModel.confirmationHost`).
+struct ResumeConfirmContent: View {
+    @Environment(JobsModel.self) private var jobs
+    let key: String
+    let dry: ResumeDryRun
+    var width: CGFloat? = 480
+
+    var body: some View {
+        let redraft = jobs.resume.activeRedraft
+        let isRedraft = redraft != nil || dry.from != nil
+        let confirmation = ResumeWords.confirmation(for: dry, redraft: redraft)
+        let job = jobs.jobs.first { $0.key == key } ?? jobs.resume.candidate(key)
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Build a tailored resume").font(.headline)
+            Text(isRedraft ? "Redraft this resume" : "Build a tailored resume").font(.headline)
             if let job {
                 Text(verbatim: [job.title, job.company].filter { !$0.isEmpty }.joined(separator: " · "))
                     .foregroundStyle(.secondary)
@@ -234,6 +245,10 @@ struct ResumeConfirmSheet: View {
             Text(verbatim: confirmation.sentText)
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let what = confirmation.redraftText {
+                Text(verbatim: what).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("resume.redraftText")
+            }
             if let from = confirmation.madeFromText {
                 Text(from).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -260,13 +275,13 @@ struct ResumeConfirmSheet: View {
                         .accessibilityIdentifier("resume.confirmBase")
                         .help("No model and no cost: your base choice of bullets, not tailored to this posting.")
                 }
-                Button("Build with \(ResumeWords.displayModel(dry.model))") { jobs.resume.confirm() }
+                Button("\(isRedraft ? "Redraft" : "Build") with \(ResumeWords.displayModel(dry.model))") { jobs.resume.confirm() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!confirmation.canConfirm)
                     .accessibilityIdentifier("resume.confirm")
             }
         }
         .padding(20)
-        .frame(width: 480)
+        .frame(width: width)
     }
 }

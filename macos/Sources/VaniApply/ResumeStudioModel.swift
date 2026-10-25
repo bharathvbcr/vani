@@ -52,8 +52,20 @@ final class ResumeStudioModel {
         var sha256: String?
     }
 
+    /// Which window shows the cost confirmation of the step in flight: the Jobs window's sheet, or the Studio
+    /// window that asked (its Redraft sheet shows the confirmation itself). Only one window shows it, so a
+    /// redraft started in a Studio window never pops a sheet on the Jobs window behind it.
+    enum ConfirmationHost: Equatable {
+        case jobs
+        case studio
+    }
+
     private(set) var phase: Phase = .idle
     private(set) var knownPDF: [String: KnownPDF] = [:]
+    private(set) var confirmationHost: ConfirmationHost = .jobs
+    /// The redraft the step in flight (or the confirmation) is for; nil for a plain build. Kept through a
+    /// failure so Retry asks for the same redraft again, through the cost confirmation.
+    private(set) var activeRedraft: ResumeRedraft?
 
     private let client: (() -> ResumeStudioClient)?
     private let bankStore: () -> BankStore?
@@ -122,6 +134,15 @@ final class ResumeStudioModel {
         return nil
     }
 
+    /// The confirmation the Jobs window's sheet shows: not one a Studio window shows itself.
+    var confirmingInJobs: Bool { confirming != nil && confirmationHost == .jobs }
+
+    /// The confirmation for `key` that a Studio window shows (its Redraft sheet).
+    func confirmingInStudio(_ key: String) -> (key: String, dry: ResumeDryRun)? {
+        guard confirmationHost == .studio, let c = confirming, c.key == key else { return nil }
+        return c
+    }
+
     /// Why nothing can start for `job` right now, or nil when it can.
     func blockedReason(for job: Job) -> String? {
         isBusy ? "Another resume step is running. Wait for it to finish, or cancel it." : nil
@@ -130,12 +151,16 @@ final class ResumeStudioModel {
     // MARK: Build
 
     /// Ask vani what building a tailored resume for `job` would cost, and whether Opus can run. Nothing is spent.
-    func start(_ job: Job) {
+    /// With a `redraft` it asks for that redraft (`--from`, `--scope`, `--lock`, `--instruction`); `host` is the
+    /// window that shows the confirmation.
+    func start(_ job: Job, redraft: ResumeRedraft? = nil, host: ConfirmationHost = .jobs) {
         guard let client, blockedReason(for: job) == nil else { return }
+        activeRedraft = redraft
+        confirmationHost = host
         begin(key: job.key, phase: .estimating(key: job.key), op: .estimate)
         let c = client(), key = job.key, flag = flag, gen = generation
         Task {
-            let result = await BlockingWork.value { c.estimate(key, cancellation: flag) }
+            let result = await BlockingWork.value { c.estimate(key, redraft: redraft, cancellation: flag) }
             guard gen == generation else { return }
             switch result {
             case let .success(dry): phase = .confirming(key: key, dry: dry)
@@ -147,23 +172,25 @@ final class ResumeStudioModel {
 
     /// The owner confirmed the cost: ask Opus. This is what spends. Refused while Opus cannot run or the cap is spent.
     func confirm() {
-        guard case let .confirming(key, dry) = phase, ResumeWords.confirmation(for: dry).canConfirm else { return }
+        guard case let .confirming(key, dry) = phase, ResumeWords.confirmation(for: dry, redraft: activeRedraft).canConfirm else { return }
         build(key: key, allowBase: false)
     }
 
     /// The owner's explicit choice when Opus cannot run: build the base selection instead (`--allow-base`).
-    /// Offered only on a confirmation that says Opus cannot run, and never taken for the paid path.
+    /// Offered only on a confirmation that says Opus cannot run, and never taken for the paid path. Never for
+    /// a redraft: the base selection is not a redraft and would not keep what was kept.
     func confirmBase() {
-        guard case let .confirming(key, dry) = phase, !dry.opusUsable else { return }
+        guard case let .confirming(key, dry) = phase, !dry.opusUsable, activeRedraft == nil, dry.from == nil else { return }
         build(key: key, allowBase: true)
     }
 
     private func build(key: String, allowBase: Bool) {
         guard let client else { return }
+        let redraft = activeRedraft
         begin(key: key, phase: .building(key: key, allowBase: allowBase, cancelling: false), op: .estimate)
         let c = client(), flag = flag, gen = generation
         Task {
-            let result = await BlockingWork.value { c.build(key, allowBase: allowBase, cancellation: flag) }
+            let result = await BlockingWork.value { c.build(key, allowBase: allowBase, redraft: redraft, cancellation: flag) }
             guard gen == generation else { return }
             switch result {
             case let .success(saved):
@@ -303,7 +330,7 @@ final class ResumeStudioModel {
         guard case let .failed(key, _) = phase, let job = candidate(key), let op = lastOp else { return }
         phase = .idle
         switch op {
-        case .estimate: start(job)
+        case .estimate: start(job, redraft: activeRedraft, host: confirmationHost)
         case let .use(v): use(job, version: v)
         case let .revalidate(v): revalidate(job, version: v)
         }

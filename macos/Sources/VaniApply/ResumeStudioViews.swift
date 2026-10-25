@@ -26,6 +26,7 @@ struct ResumeStudioWindow: View {
             guard editor == nil else { return }
             let made = ResumeStudioEditor(key: key, resume: jobs.resume, job: nil)
             editor = made
+            StudioWindows.shared.register(made)
             await made.open()
         }
     }
@@ -50,13 +51,13 @@ struct ResumeStudioContent: View {
                 HStack(alignment: .top, spacing: 0) {
                     ResumeOutline(editor: editor, flat: true).frame(width: 520)
                     Divider()
-                    ResumePreviewPane(editor: editor, flat: true).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ResumeRightPane(editor: editor, flat: true).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
                 HSplitView {
                     ResumeOutline(editor: editor)
                         .frame(minWidth: 380, idealWidth: 460)
-                    ResumePreviewPane(editor: editor)
+                    ResumeRightPane(editor: editor)
                         .frame(minWidth: 380, idealWidth: 520)
                 }
             }
@@ -68,6 +69,9 @@ struct ResumeStudioContent: View {
             Task { await editor.phaseChanged(phase) }
         }
         .onDisappear { editor.shutdown() }
+        .sheet(isPresented: Binding(get: { editor.isRedraftOpen }, set: { if !$0 { editor.closeRedraft() } })) {
+            RedraftSheet(editor: editor)
+        }
         .confirmationDialog(pendingTitle, isPresented: Binding(get: { editor.pending != nil }, set: { if !$0 { editor.keepEditing() } }),
                             titleVisibility: .visible) {
             Button("Discard edits", role: .destructive) {
@@ -115,6 +119,11 @@ struct ResumeStudioTopBar: View {
                     .help(editor.fitBlockedReason ?? "Fit the page in Chrome and save it as a new version. No model, nothing is spent.")
                     .accessibilityIdentifier("studio.fit")
                 UseButton(editor: editor)
+                Button { editor.openRedraft() } label: { Label("Redraft…", systemImage: "arrow.triangle.2.circlepath") }
+                    .disabled(editor.redraftBlockedReason != nil)
+                    .help(editor.redraftBlockedReason
+                          ?? "Ask \(ResumeWords.modelName) to pick again from this version: the whole page or one part of it, with sections kept and a one-line instruction. The cost is shown first; nothing is spent until you confirm.")
+                    .accessibilityIdentifier("studio.redraft")
                 if editor.canRevalidate {
                     Button("Revalidate") { editor.revalidate() }
                         .help("Drop what your knowledge base no longer vouches for and rebuild the page. No model, nothing is spent.")
@@ -175,7 +184,9 @@ struct ResumeStudioTopBar: View {
             if let s = editor.sourceWord { Chip(text: s, tint: .secondary) }
             if let pages = editor.pagesWord { Chip(text: pages, tint: .secondary) }
             if let fit = editor.fitWord { Chip(text: fit.short, tint: levelColor(fit.level)).help(fit.long) }
-            if let el = editor.eligibilityWord { Chip(text: el.short, tint: levelColor(el.level)).help(el.long) }
+            if let el = editor.eligibilityWord {
+                Chip(text: el.short, tint: levelColor(el.level)).help([el.long, editor.eligibilityDetail].compactMap { $0 }.joined(separator: " "))
+            }
             if let cost = editor.costWord { Chip(text: cost, tint: .secondary).help("What the model turns that made this version charged. Unknown is never shown as $0.") }
             if let note = editor.noteLine { Text(verbatim: note).font(.caption).foregroundStyle(.secondary).help(editor.version?.notes.joined(separator: "\n") ?? "") }
         }
@@ -295,7 +306,17 @@ struct ResumeOutline: View {
     var flat = false
 
     var body: some View {
-        if flat { content } else { ScrollView { content } }
+        if flat {
+            content
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView { content }
+                    // A coverage hit was clicked: bring that bullet's row into view.
+                    .onChange(of: editor.selectionTick) { _, _ in
+                        if let id = editor.selectedBullet { withAnimation { proxy.scrollTo("bullet-\(id)", anchor: .center) } }
+                    }
+            }
+        }
     }
 
     private var content: some View {
@@ -531,10 +552,21 @@ private struct BulletRowView: View {
                         .help("How many lines this bullet takes on the fitted page.")
                 }
             }
+            if row.included, editor.orphanBullets.contains(row.id) {
+                Label(ResumeOrphans.words, systemImage: "text.alignleft")
+                    .font(.caption).foregroundStyle(.orange)
+                    .help("rkb's fit report names this bullet: its last line is a single word. The wording is reviewed text, so it cannot be reworded here; swap it, or move it, to change the break.")
+                    .accessibilityIdentifier("studio.orphan.\(row.id)")
+            }
             ForEach(editor.issues(for: .bullet(row.id))) { IssueText(issue: $0) }
         }
+        .padding(.horizontal, selected ? 4 : 0)
+        .background(selected ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+        .id("bullet-\(row.id)")
         .accessibilityIdentifier("studio.bullet.\(row.id)")
     }
+
+    private var selected: Bool { editor.selectedBullet == row.id }
 }
 
 /// "Swap" on an entry (or "Add bullet" on the summary): the pool's bullets that are not on the page for this

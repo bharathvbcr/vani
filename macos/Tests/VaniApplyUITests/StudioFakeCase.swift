@@ -46,12 +46,13 @@ class StudioFakeCase: XCTestCase {
         return d
     }
 
+    /// `meta` is extra record fields written after `source`, each ending in a comma: `"parent":3,"instruction":"x",`.
     func versionJSON(_ n: Int, source: String = "tailored", fit: String = "passed", eligibility: String = "current", pages: Int = 2,
                              pdfPath: String?, pdfSHA: String?, selection: String? = nil, current: Bool = false, used: Bool = false,
                              fresh: String? = "current", cost: String = #""cost":{"usd":0.031,"complete":false,"turns":2},"#,
-                             notes: String = "") -> String {
+                             notes: String = "", meta: String = "") -> String {
         var s = """
-        {"schema":1,"key":"fx:alpha:1","version":\(n),"source":"\(source)",\(cost)
+        {"schema":2,"key":"fx:alpha:1","version":\(n),"source":"\(source)",\(meta)\(cost)
          "checks":{"eligibility":"\(eligibility)","lint":"passed","fit":"\(fit)","figures":"verified"},"pages":\(pages),\(notes)
          "created":"2026-10-25T12:00:00Z","current":\(current),"used":\(used)
         """
@@ -83,18 +84,36 @@ class StudioFakeCase: XCTestCase {
         printf '%s\\n' "$*" >> "$d/calls.log"
         v=''
         for a in "$@"; do case "$a" in v[0-9]*) v="$a" ;; esac; done
-        case " $* " in
-        *" show "*)
+        # argv is always `jobs resume VERB ...`: dispatch on the verb, never on text an owner typed (an
+        # instruction that says "show" or "v2" must not look like a verb or a version).
+        case "$3" in
+        show)
             f="$d/show-$v.json"; [ -n "$v" ] && [ -f "$f" ] || f="$d/show.json"
             cat "$f"; [ -f "$d/show.fail" ] && exit 1; exit 0 ;;
-        *" use "*) cat "$d/use.json"; exit 0 ;;
-        *" revalidate "*) cat "$d/revalidate.json"; exit 0 ;;
-        *" render "*)
+        use) cat "$d/use.json"; exit 0 ;;
+        revalidate) cat "$d/revalidate.json"; exit 0 ;;
+        render)
             case " $* " in *" --fit "*) kind=fit ;; *) kind=preview ;; esac
             cat > "$d/stdin-$kind.json"
             if [ -f "$d/slow" ]; then echo $$ > "$d/pid"; exec sleep 30; fi
             cat "$d/$kind.json"
             [ -f "$d/$kind.fail" ] && exit 1
+            exit 0 ;;
+        build)
+            case " $* " in
+            *" --dry-run "*) cat "$d/dry.json"; [ -f "$d/dry.fail" ] && exit 1; exit 0 ;;
+            esac
+            if [ -f "$d/slowbuild" ]; then echo $$ > "$d/pid"; exec sleep 30; fi
+            cat "$d/build.json"; [ -f "$d/build.fail" ] && exit 1; exit 0 ;;
+        diff) cat "$d/diff.json"; [ -f "$d/diff.fail" ] && exit 1; exit 0 ;;
+        current) cat "$d/current.json"; [ -f "$d/current.fail" ] && exit 1; exit 0 ;;
+        coverage) cat "$d/coverage.json"; [ -f "$d/coverage.fail" ] && exit 1; exit 0 ;;
+        gaps)
+            case " $* " in
+            *" --dry-run "*) cat "$d/gaps-dry.json" ;;
+            *) cat "$d/gaps.json" ;;
+            esac
+            [ -f "$d/gaps.fail" ] && exit 1
             exit 0 ;;
         esac
         exit 2

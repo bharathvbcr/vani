@@ -590,6 +590,8 @@ enum ResumeEditTestsData {
                 {"id":"s2","text":"Keeps them fast.","text_hash":"bbbbbbbbbbbb","follows":"s1"},
                 {"id":"s3","text":"Writes Kubernetes operators.","text_hash":"cccccccccccc"}],
      "summary_sections":["Summary"],
+     "reorderable_sections":["Projects","Open Source"],
+     "headings":[{"section":"Experience","entry":"job1"},{"section":"Education","entry":"edu"}],
      "entries":[
        {"id":"job1","title":"ML Engineer","org":"Acme","dates":"2022 – 2024","sections":["Experience"],
         "bullets":[{"id":"j1","text":"Trained models.","text_hash":"111111111111"},
