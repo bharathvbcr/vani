@@ -119,7 +119,7 @@ public struct ResumePool: Equatable, Sendable {
     }
 
     /// The pool bullet `id` of `place`, wherever it is listed.
-    func bullet(_ id: String, in place: ResumeDraft.Place) -> Bullet? {
+    public func bullet(_ id: String, in place: ResumeDraft.Place) -> Bullet? {
         switch place {
         case .summary: summary.first { $0.id == id }
         case let .entry(e): entry(e)?.bullets.first { $0.id == id }
@@ -695,6 +695,40 @@ public struct ResumeDraft: Equatable, Sendable {
 // MARK: - Keywords and names
 
 public enum ResumeKeywordHits {
+    /// `text` cut into runs, each marked when it is (part of) a keyword hit: every case-insensitive
+    /// occurrence of any term, overlaps merged. The runs joined are `text`.
+    public static func segments(in text: String, terms: [String]) -> [(text: String, hit: Bool)] {
+        let ns = text as NSString
+        var ranges: [NSRange] = []
+        for t in terms where !t.isEmpty {
+            var from = 0
+            while from < ns.length {
+                let r = ns.range(of: t, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: ns.length - from))
+                if r.location == NSNotFound || r.length == 0 { break }
+                ranges.append(r)
+                from = r.location + r.length
+            }
+        }
+        ranges.sort { $0.location < $1.location }
+        var merged: [NSRange] = []
+        for r in ranges {
+            if let last = merged.last, r.location <= last.location + last.length {
+                merged[merged.count - 1].length = max(last.length, r.location + r.length - last.location)
+            } else {
+                merged.append(r)
+            }
+        }
+        var out: [(text: String, hit: Bool)] = []
+        var at = 0
+        for r in merged {
+            if r.location > at { out.append((ns.substring(with: NSRange(location: at, length: r.location - at)), false)) }
+            out.append((ns.substring(with: r), true))
+            at = r.location + r.length
+        }
+        if at < ns.length { out.append((ns.substring(from: at), false)) }
+        return out
+    }
+
     /// The posting's keywords a bullet's text contains (case-insensitive substring, in the order given,
     /// each once). Empty terms match nothing.
     public static func hits(in text: String, terms: [String]) -> [String] {

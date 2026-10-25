@@ -407,6 +407,22 @@ final class ResumeEditTests: XCTestCase {
         XCTAssertEqual(ResumeKeywordHits.hits(in: "Résumé", terms: ["resume"]), ["resume"])
     }
 
+    func testHighlightedRunsJoinBackToTheTextAndMarkEveryHit() {
+        func runs(_ text: String, _ terms: [String]) -> [String] {
+            ResumeKeywordHits.segments(in: text, terms: terms).map { ($0.hit ? "[" : "") + $0.text + ($0.hit ? "]" : "") }
+        }
+        XCTAssertEqual(runs("Wrote CUDA kernels for kubernetes.", ["cuda", "Kubernetes"]), ["Wrote ", "[CUDA]", " kernels for ", "[kubernetes]", "."])
+        XCTAssertEqual(runs("no hits", ["go"]), ["no hits"])
+        XCTAssertEqual(runs("", ["go"]), [])
+        XCTAssertEqual(runs("abc", []), ["abc"])
+        XCTAssertEqual(runs("GoGo go", ["go"]), ["[GoGo]", " ", "[go]"], "each occurrence; touching ones are one run")
+        XCTAssertEqual(runs("kubernetes", ["kube", "netes", "kubernetes"]), ["[kubernetes]"], "overlapping hits merge into one run")
+        XCTAssertEqual(runs("a ☕ b", [""]), ["a ☕ b"], "an empty term matches nothing")
+        for text in ["Wrote CUDA kernels", "Résumé café", "ÀÉ x", "a ☕ cuda"] {
+            XCTAssertEqual(ResumeKeywordHits.segments(in: text, terms: ["cuda", "e", "é"]).map(\.text).joined(), text)
+        }
+    }
+
     func testTheSaveAsNameIsVanisOwnRule() {
         for (company, want) in [
             ("Acme Robotics", "Resume_Acme_Robotics.pdf"),

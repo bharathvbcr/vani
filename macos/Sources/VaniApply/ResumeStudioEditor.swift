@@ -51,7 +51,10 @@ final class ResumeStudioEditor {
     let key: String
     private let resume: ResumeStudioModel
 
-    private(set) var job: Job?
+    /// The posting this window is for: the one it was opened with, else what the Jobs list or detail holds now
+    /// (a window restored at launch finds it once the list has loaded).
+    var job: Job? { opened ?? resume.studioJobs[key] ?? resume.candidate(key) }
+    private let opened: Job?
     private(set) var loading: Loading = .loading
     private(set) var shown: ResumeShown?
     /// The version the draft was made from (and the one Fit builds on), nil for a job with none yet.
@@ -78,14 +81,15 @@ final class ResumeStudioEditor {
     /// Discard was chosen for a close: the window may now close without asking again.
     private(set) var closeApproved = false
 
-    private var generation = 0
-    private var htmlCount = 0
-    private var flag = CancelFlag()
+    // Bookkeeping no view reads: not observed, so changing it never redraws anything.
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var htmlCount = 0
+    @ObservationIgnored private var flag = CancelFlag()
 
     init(key: String, resume: ResumeStudioModel, job: Job?) {
         self.key = key
         self.resume = resume
-        self.job = job ?? resume.candidate(key)
+        self.opened = job
     }
 
     // MARK: Words for the window
@@ -124,8 +128,17 @@ final class ResumeStudioEditor {
     /// The version's eligibility in words: fresh when this `show` checked it, as built otherwise.
     var eligibilityWord: ResumeCheckWord? {
         guard let v = version else { return nil }
-        let fresh = (shown?.eligibilityChecked ?? false) && v.eligibility != nil
-        return ResumeWords.eligibility(v.eligibility?.state ?? v.checks.eligibility, fresh: fresh)
+        let fresh = (shown?.eligibilityChecked ?? false) && v.eligibility != nil && !checkFailed
+        return ResumeWords.eligibility(eligibilityState(v), fresh: fresh)
+    }
+
+    /// `show` could not run its check (no pool either): whatever a version says, none is vouched for.
+    private var checkFailed: Bool { !(shown?.checkError ?? "").isEmpty }
+
+    /// The state to word and to gate Use on: the fresh verdict, else what was recorded when the version was
+    /// built, and `unknown` whenever the check could not run, so a check that did not run is never a pass.
+    private func eligibilityState(_ v: ResumeVersion) -> String {
+        checkFailed ? "unknown" : (v.eligibility?.state ?? v.checks.eligibility)
     }
 
     var fitWord: ResumeCheckWord? { version.map { ResumeWords.fit($0.checks.fit) } }
@@ -391,7 +404,7 @@ final class ResumeStudioEditor {
     func shutdown() {
         generation += 1
         flag.set()
-        step = nil
+        if step != nil { step = nil }
     }
 
     // MARK: Preview and Fit
@@ -536,9 +549,8 @@ final class ResumeStudioEditor {
     /// What "Use for this job" does for the shown version, from its fresh states.
     var useAction: ResumeUseAction {
         guard let v = version else { return .none }
-        let state = v.eligibility?.state ?? v.checks.eligibility
         return ResumeCardPresentation.useAction(ResumeSummary(current: v.version, used: v.used ? v.version : 0, versions: 1, pages: v.pages,
-                                                              fit: v.checks.fit, eligibility: state, source: v.source))
+                                                              fit: v.checks.fit, eligibility: eligibilityState(v), source: v.source))
     }
 
     /// Why Use cannot run now; nil when it can.

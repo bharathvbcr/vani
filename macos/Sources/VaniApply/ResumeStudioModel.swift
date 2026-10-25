@@ -73,9 +73,12 @@ final class ResumeStudioModel {
     var onChange: (String) async -> Void = { _ in }
     /// Where `retry()` and the offers find the posting again; set by JobsModel.
     var candidate: (String) -> Job? = { _ in nil }
-    /// The Studio window's way in, set by the window's owner. Nil until it exists: the card shows
-    /// "Open Studio" disabled, with a tooltip saying so, and nothing pretends to open.
+    /// The Studio window's way in, set by the main window's scene once it can open another window. Nil until
+    /// then: the card shows "Open Studio" disabled, and nothing pretends to open.
     var openStudio: ((String) -> Void)?
+    /// The posting a Studio window was opened for, by key: its title and Use need the job even after the
+    /// list has moved on (a filter, a refresh).
+    var studioJobs: [String: Job] = [:]
 
     init(client: (() -> ResumeStudioClient)?, bankStore: @escaping () -> BankStore? = { nil }) {
         self.client = client
