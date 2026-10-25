@@ -95,6 +95,15 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     }
     var manualTriageWire: Lenient<ManualTriage>?
 
+    /// The job's tailored resume versions (`vani jobs resume`, summarised by `jobs show`). Nil when the
+    /// job has none, and from a vani that predates it. A `resume` value this app cannot read is
+    /// `ResumeSummary.unreadableReply`, never nil: absence would read as "no resume was ever built".
+    public var resume: ResumeSummary? {
+        get { resumeWire.map { $0.value ?? .unreadableReply } }
+        set { resumeWire = newValue.map { Lenient($0) } }
+    }
+    var resumeWire: Lenient<ResumeSummary>?
+
     // Display-only insight from `vani jobs` (cmd/vani/jobsinsight.go).
     /// The date the age is measured from: the board's posted date, or when
     /// Vani first saw the posting (`freshSource == .seen`, an upper bound).
@@ -187,6 +196,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
              relevance, priority, keywords, semantic, row
         case untriagedWire = "untriaged"
         case manualTriageWire = "manual_triage"
+        case resumeWire = "resume"
         case prefilterDropWire = "prefilter_drop"
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
