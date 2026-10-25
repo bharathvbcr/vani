@@ -55,6 +55,25 @@ final class RankingTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(b.factors.first { $0.name == "company" }).fraction, 1, "clamped for display")
     }
 
+    func testUnknownSemanticExplainsItselfAndOthersDoNot() {
+        let semantic = ScoreFactor(name: "semantic", value: 0.4, weight: 0.35, known: false)
+        XCTAssertEqual(semantic.valueLabel, "not known", "the value label itself is unchanged")
+        XCTAssertTrue(semantic.unknownNote.contains("not scored yet"))
+        XCTAssertTrue(semantic.unknownNote.contains("knowledge base"))
+        XCTAssertTrue(semantic.unknownNote.contains("poor match"), "says it is not a judgement of the job")
+        XCTAssertTrue(semantic.unknownNote.contains("vani semantic warm"))
+        for name in ["coverage", "keyword", "title", "employer", "kb_match", "brand_new"] {
+            XCTAssertEqual(ScoreFactor(name: name, value: 0.4, weight: 0.1, known: false).unknownNote,
+                           "no signal: a neutral prior stands in", name)
+        }
+    }
+
+    func testKnownSemanticLabelUnchanged() {
+        let semantic = ScoreFactor(name: "semantic", value: 0.74, weight: 0.35, known: true)
+        XCTAssertEqual(semantic.valueLabel, "74")
+        XCTAssertEqual(semantic.weightLabel, "35% of the blend")
+    }
+
     func testMissingSemanticStillShowsFactors() throws {
         let j = try job(allFactors)
         XCTAssertNil(j.semantic)

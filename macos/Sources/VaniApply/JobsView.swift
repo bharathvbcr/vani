@@ -642,10 +642,23 @@ private struct JobList: View {
         let triage = jobs.view == .pending ? nil : JobListPresentation.triageBanner(page.pending)
         let cap = JobListPresentation.capNotice(shown: page.shown, total: page.total)
         let waiting = page.pending?.total ?? 0
+        let warning = JobListPresentation.insightWarning(page.insight)
         VStack(alignment: .leading, spacing: 6) {
             Text(JobListPresentation.sortCaption(jobs.sort, view: jobs.view))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let warning {
+                // The same yellow-triangle label Insights shows for this warning.
+                Label {
+                    Text(verbatim: warning)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                }
+                .font(.caption)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(warning)
+            }
             if triage != nil || cap != nil || page.torn == true || waiting > 0 {
                 WrapLayout(spacing: 6) {
                     if waiting > 0 {
@@ -1404,7 +1417,7 @@ private struct JobDetailContent: View {
                 : "age unknown: ×" + String(format: "%.2f", f.fraction) + " assumed from when Vani first saw it"
         }
         // Score counts an unknown component at a neutral prior, so say that, not "left out".
-        if !f.known { return [f.weightLabel, "no signal: a neutral prior stands in"].compactMap { $0 }.joined(separator: ", ") }
+        if !f.known { return [f.weightLabel, f.unknownNote].compactMap { $0 }.joined(separator: ", ") }
         if let w = f.weightLabel { return w }
         if f.isMultiplier { return f.fraction >= 0.995 ? "no effect" : (f.fraction < 1 ? "lowers the score" : "raises the score") }
         return ""

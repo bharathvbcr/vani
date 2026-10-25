@@ -603,6 +603,17 @@ public struct ScoreFactor: Equatable, Sendable {
         return "\(Int((fraction * 100).rounded()))"
     }
 
+    /// What an absent signal means for this factor, shown beside "not known".
+    /// The knowledge-base match is absent until the posting has been embedded
+    /// against the current knowledge base, which is a gap in what Vani has
+    /// computed, not a reading of the job.
+    public var unknownNote: String {
+        if name == "semantic" {
+            return "not scored yet: this posting has not been compared with your knowledge base (`vani semantic warm`), so it is ranked on the other factors, held toward a cautious default until it is scored; it does not mean the job is a poor match"
+        }
+        return "no signal: a neutral prior stands in"
+    }
+
     /// "25% of the blend", for an additive component that carries weight.
     public var weightLabel: String? {
         guard weight.isFinite, weight > 0 else { return nil }

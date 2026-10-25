@@ -177,6 +177,13 @@ public enum JobListPresentation {
         return "\(pending.total.formatted(.number.locale(locale))) awaiting triage"
     }
 
+    /// Vani's `insight.warning` (a fixed sentence, never posting text) for the
+    /// banner above the list, trimmed; nil when it is absent, empty or blank.
+    public static func insightWarning(_ insight: JobsInsight?) -> String? {
+        guard let w = insight?.warning?.trimmingCharacters(in: .whitespacesAndNewlines), !w.isEmpty else { return nil }
+        return w
+    }
+
     /// "Showing 1,000 of 1,682", or nil when the list is whole or the numbers
     /// make no sense.
     public static func capNotice(shown: Int, total: Int, locale: Locale = .current) -> String? {

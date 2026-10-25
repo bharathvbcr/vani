@@ -156,6 +156,21 @@ final class JobListPresentationTests: XCTestCase {
         XCTAssertNil(JobListPresentation.capNotice(shown: -1, total: 3, locale: us))
     }
 
+    private func insight(_ json: String) throws -> JobsInsight {
+        try JobsClient.decoder.decode(JobsInsight.self, from: Data(json.utf8))
+    }
+
+    func testInsightWarningShownOnlyWhenPresent() throws {
+        let w = "knowledge-base matching has no scores yet; run `vani semantic warm`"
+        XCTAssertEqual(JobListPresentation.insightWarning(try insight(#"{"target":true,"warning":"\#(w)"}"#)), w)
+        XCTAssertEqual(JobListPresentation.insightWarning(try insight(#"{"target":true,"warning":"  \#(w)\n"}"#)), w, "trimmed")
+        XCTAssertNil(JobListPresentation.insightWarning(nil), "no insight block: an older vani")
+        XCTAssertNil(JobListPresentation.insightWarning(try insight(#"{"target":true}"#)))
+        XCTAssertNil(JobListPresentation.insightWarning(try insight(#"{"target":true,"warning":null}"#)))
+        XCTAssertNil(JobListPresentation.insightWarning(try insight(#"{"target":true,"warning":""}"#)))
+        XCTAssertNil(JobListPresentation.insightWarning(try insight(#"{"target":true,"warning":" \t\n "}"#)))
+    }
+
     func testParagraphs() {
         XCTAssertEqual(JobListPresentation.paragraphs(""), [])
         XCTAssertEqual(JobListPresentation.paragraphs(" \n \n\t"), [])
