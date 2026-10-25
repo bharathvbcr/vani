@@ -12,7 +12,7 @@ import (
 )
 
 func reviewHash(text string, claims map[string]string) string {
-	s := sha1.Sum([]byte(rkbPlain(text, claims)))
+	s := sha1.Sum([]byte(RKBPlain(text, claims)))
 	return hex.EncodeToString(s[:])[:12]
 }
 
@@ -174,9 +174,9 @@ func TestParseSelectionAdversarial(t *testing.T) {
 // TestRkbPlainMatchesRkbOrder pins the order rkb strips markup in: a link's
 // target is dropped (ResolveText keeps it for DevPrism).
 func TestRkbPlainMatchesRkbOrder(t *testing.T) {
-	got := rkbPlain("**Lead {{clmA}}:** see [*Docs*](https://x.dev/docs) and *this*.", map[string]string{"clmA": "2x"})
+	got := RKBPlain("**Lead {{clmA}}:** see [*Docs*](https://x.dev/docs) and *this*.", map[string]string{"clmA": "2x"})
 	if want := "Lead 2x: see Docs and this."; got != want {
-		t.Fatalf("rkbPlain = %q, want %q", got, want)
+		t.Fatalf("RKBPlain = %q, want %q", got, want)
 	}
 }
 

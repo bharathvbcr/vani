@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 )
@@ -16,15 +15,11 @@ import (
 // them.
 const outputBasename = "resume"
 
-// tokenRe is rkb's claim token (rkb render.go:12, as kbsync's tokenRe). kbsync
-// keeps its copy unexported.
-var tokenRe = regexp.MustCompile(`\{\{(clm[A-Za-z]+)\}\}`)
-
 // tokens lists the distinct claim ids a bullet's text uses.
 func tokens(text string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, m := range tokenRe.FindAllStringSubmatch(text, -1) {
+	for _, m := range kbsync.TokenRe.FindAllStringSubmatch(text, -1) {
 		if !seen[m[1]] {
 			seen[m[1]] = true
 			out = append(out, m[1])

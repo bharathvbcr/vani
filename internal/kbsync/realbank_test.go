@@ -40,7 +40,7 @@ func TestRealBankCounts(t *testing.T) {
 		}
 	}
 	for _, bl := range b.Bullets {
-		if tokenRe.MatchString(bl.Text) {
+		if TokenRe.MatchString(bl.Text) {
 			withTokens++
 		}
 	}

@@ -3,6 +3,7 @@ package kbsync
 import (
 	"bytes"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -76,7 +77,11 @@ func (e Eligibility) Allowed(entry, id string) bool {
 // Selection is the part of an rkb selection file (rkb bank.go:206-240) the
 // eligibility rule reads: which entries and bullets it puts on a page.
 type Selection struct {
-	Path     string
+	Path string
+	// SHA256 is the hex sha256 of the bytes LoadSelection parsed, so a caller that
+	// fingerprints its inputs hashes what it judged, not a second read. ParseSelection
+	// leaves it empty.
+	SHA256   string
 	Sections []SelSection
 }
 
@@ -120,6 +125,8 @@ func LoadSelection(path string) (Selection, error) {
 		return Selection{}, fmt.Errorf("%s: %w", path, err)
 	}
 	s.Path = path
+	sum := sha256.Sum256(raw)
+	s.SHA256 = hex.EncodeToString(sum[:])
 	return s, nil
 }
 
@@ -283,7 +290,7 @@ func bulletWhy(b Bank, c Claims, id string) string {
 			return "claim " + t + " is flagged CAUTION in Claims.tex and caution_ok does not clear it"
 		}
 	}
-	cur := wordingHash(rkbPlain(bl.Text, c.Values))
+	cur := WordingHash(RKBPlain(bl.Text, c.Values))
 	by := map[string]string{}
 	for _, reader := range eligibleReaders {
 		r2, ok := readerPassed(bl.Review[reader], cur)
@@ -301,9 +308,9 @@ func bulletWhy(b Bank, c Claims, id string) string {
 	return ""
 }
 
-// wordingHash is rkb's sha1hex (util.go): the first 12 hex characters of sha1,
+// WordingHash is rkb's sha1hex (util.go): the first 12 hex characters of sha1,
 // the form a review's text_hash records.
-func wordingHash(plain string) string {
+func WordingHash(plain string) string {
 	sum := sha1.Sum([]byte(plain))
 	return hex.EncodeToString(sum[:])[:12]
 }
@@ -334,12 +341,12 @@ func readerPassed(rs []Review, cur string) (string, bool) {
 	return "", false
 }
 
-// rkbPlain is rkb's resolvePlain (lint.go:236, render.go:19): tokens resolved,
+// RKBPlain is rkb's resolvePlain (lint.go:236, render.go:19): tokens resolved,
 // then links reduced to their text, bold and italic markers removed, in that
 // order. It differs from ResolveText, which keeps link targets for DevPrism.
-func rkbPlain(s string, claims map[string]string) string {
-	s = tokenRe.ReplaceAllStringFunc(s, func(m string) string {
-		if v, ok := claims[tokenRe.FindStringSubmatch(m)[1]]; ok {
+func RKBPlain(s string, claims map[string]string) string {
+	s = TokenRe.ReplaceAllStringFunc(s, func(m string) string {
+		if v, ok := claims[TokenRe.FindStringSubmatch(m)[1]]; ok {
 			return v
 		}
 		return m
