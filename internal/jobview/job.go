@@ -244,6 +244,9 @@ type Job struct {
 	// (`vani jobs retriage`), shown whether or not ranking still uses it. Display
 	// only: it orders the list when Current and never drops or undrops a posting.
 	ManualTriage *ManualTriage `json:"manual_triage,omitempty"`
+	// Resume is the job's tailored resume (internal/resumestore): nil when it has
+	// none, Error set when the store could not be read. Display only.
+	Resume *ResumeSummary `json:"resume,omitempty"`
 
 	// Untriaged marks a posting no run has triaged yet (status live): it has no
 	// fit, relevance, priority, keywords or row, and the reply carries none of
