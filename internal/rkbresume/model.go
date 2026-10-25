@@ -478,12 +478,9 @@ func (b *builder) fillable(i int, p pool) bool {
 	return false
 }
 
-// parseChoice validates the model's text into a choice, or says why not. A
-// bullet must be in the pool under the entry it is listed under (so it passed
-// kbsync.Eligible and was shown), an entry only in a section it belongs to
-// (entryHomes), ids are unique, counts are bounded, and every keyword occurs in
-// jd. The work history stays whole: its entries are kept as headings, and the
-// base's heading-only entries and entries with no evidence are carried in.
+// parseChoice validates the model's text into a choice, or says why not: the
+// page-safety rules every choice obeys (checkSafe), then the rules that steer
+// the model (checkSteering).
 func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 	if len(text) > maxReplyBytes {
 		return choice{}, fmt.Errorf("the reply is over %d bytes", maxReplyBytes)
@@ -492,6 +489,27 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 	if err != nil {
 		return choice{}, err
 	}
+	ch, err := b.checkSafe(r, p, jd)
+	if err != nil {
+		return choice{}, err
+	}
+	if err := b.checkSteering(r, ch, p); err != nil {
+		return choice{}, err
+	}
+	return ch, nil
+}
+
+// checkSafe turns a listed choice (the model's reply, or the owner's edit, in
+// the reply's shape) into a choice, or says why it cannot go on the page. These
+// rules bind every path. A bullet must be in the pool under the entry it is
+// listed under (so it passed kbsync.Eligible), an entry only in a section it
+// belongs to (canHold), ids are unique, a continuation directly follows its
+// predecessor, two framings of one piece of work never share the page, an entry
+// with no bullets stays only as a heading it may keep (keepsHeading), and every
+// keyword occurs in jd. The base's heading-only entries are carried in. How
+// much goes on the page is not checked here: that is checkSteering's for the
+// model, and rkb's fit for every page.
+func (b *builder) checkSafe(r reply, p pool, jd string) (choice, error) {
 	ch := choice{secs: make([]secChoice, len(b.base.sections))}
 	byTitle := map[string]int{}
 	for i, s := range b.base.sections {
@@ -507,7 +525,6 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 	var order []int // the project sections in the order the reply lists them
 	usedBullet := map[string]bool{}
 	usedEntry := map[string]bool{}
-	total := 0
 	for _, rs := range r.Sections {
 		i, ok := byTitle[rs.Title]
 		if !ok {
@@ -526,9 +543,6 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 			if len(rs.Entries) > 0 {
 				return choice{}, fmt.Errorf("section %q takes bullets, not entries", rs.Title)
 			}
-			if len(rs.Bullets) > MaxSummaryBullets || (len(rs.Bullets) == 0 && b.fillable(i, p)) {
-				return choice{}, fmt.Errorf("section %q needs 1 to %d bullets", rs.Title, MaxSummaryBullets)
-			}
 			for _, id := range rs.Bullets {
 				if !p.has("", id) {
 					return choice{}, fmt.Errorf("bullet %q is not available for section %q", clip(id, 60), rs.Title)
@@ -538,7 +552,6 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 				}
 				usedBullet[id] = true
 				sc.bullets = append(sc.bullets, id)
-				total++
 			}
 			if err := b.cont.check("", rs.Bullets); err != nil {
 				return choice{}, err
@@ -547,9 +560,6 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 		}
 		if len(rs.Bullets) > 0 {
 			return choice{}, fmt.Errorf("section %q takes entries, not bullets", rs.Title)
-		}
-		if len(rs.Entries) > MaxSectionEntries || (len(rs.Entries) == 0 && b.fillable(i, p)) {
-			return choice{}, fmt.Errorf("section %q needs 1 to %d entries", rs.Title, MaxSectionEntries)
 		}
 		for _, re := range rs.Entries {
 			// "" is the summary's key in the pool: an entry id must never reach it.
@@ -563,10 +573,10 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 				return choice{}, fmt.Errorf("entry %q is used twice", clip(re.Entry, 60))
 			}
 			usedEntry[re.Entry] = true
-			if len(re.Bullets) == 0 || len(re.Bullets) > MaxEntryBullets {
-				return choice{}, fmt.Errorf("entry %q needs 1 to %d bullets", clip(re.Entry, 60), MaxEntryBullets)
-			}
 			ec := entChoice{id: re.Entry, heading: b.base.keepsHeading(i, re.Entry)}
+			if len(re.Bullets) == 0 && !ec.heading {
+				return choice{}, fmt.Errorf("entry %q has no bullets: only a job, or an entry the base lists bare, stays as a heading", clip(re.Entry, 60))
+			}
 			for _, id := range re.Bullets {
 				if !p.has(re.Entry, id) {
 					return choice{}, fmt.Errorf("bullet %q is not available under entry %q", clip(id, 60), clip(re.Entry, 60))
@@ -576,7 +586,6 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 				}
 				usedBullet[id] = true
 				ec.bullets = append(ec.bullets, id)
-				total++
 			}
 			if err := b.cont.check(re.Entry, re.Bullets); err != nil {
 				return choice{}, err
@@ -584,31 +593,10 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 			sc.entries = append(sc.entries, ec)
 		}
 	}
-	// Every section with something to fill it must be answered. One with nothing
-	// eligible may be left out (or listed empty): it then shows no heading, as in
-	// the base, and takes its slot in the order unused.
-	for i, s := range b.base.sections {
-		if !s.choosable || filled[i] {
-			continue
-		}
-		if b.fillable(i, p) {
-			return choice{}, fmt.Errorf("section %q is missing", s.title)
-		}
-		if reorderable[i] {
+	// A section left out shows no heading and takes its slot in the order unused.
+	for _, i := range b.base.reorderable {
+		if !filled[i] {
 			order = append(order, i)
-		}
-	}
-	// The work history stays whole: every experience entry that has evidence on
-	// offer must be present.
-	if e0 := b.base.expIdx; e0 >= 0 {
-		have := map[string]bool{}
-		for _, e := range ch.secs[e0].entries {
-			have[e.id] = true
-		}
-		for _, e := range b.base.sections[e0].entries {
-			if len(p.allowed[e.id]) > 0 && !have[e.id] {
-				return choice{}, fmt.Errorf("entry %q of section %q is missing: the work history stays whole", clip(e.id, 60), b.base.sections[e0].title)
-			}
 		}
 	}
 	// Say each thing once: two framings of one piece of work never share a page
@@ -623,16 +611,76 @@ func (b *builder) parseChoice(text string, p pool, jd string) (choice, error) {
 		return choice{}, err
 	}
 	b.carryHeadings(&ch, usedEntry)
-	ch.order = order // a permutation of the project sections: each is filled once, or has nothing to fill it (checked above)
-	if total > MaxTotalBullets {
-		return choice{}, fmt.Errorf("%d bullets in all, over %d", total, MaxTotalBullets)
-	}
+	ch.order = order // a permutation of the project sections: each listed once (checked above), the rest after
 	kw, err := checkKeywords(r.Keywords, jd)
 	if err != nil {
 		return choice{}, err
 	}
-	ch.keywords = kw
+	if len(kw) > 0 {
+		ch.keywords = kw
+	}
 	return ch, nil
+}
+
+// checkSteering holds the model to the shape of a good page, beyond what is
+// safe to print: every section with evidence of its own answered, 1 to
+// MaxSummaryBullets summary bullets, 1 to MaxSectionEntries entries in a
+// section, 1 to MaxEntryBullets bullets under an entry, the work history whole,
+// at most MaxTotalBullets in all and MinKeywords to MaxKeywords keywords. The
+// owner's own edits are not held to these.
+func (b *builder) checkSteering(r reply, ch choice, p pool) error {
+	byTitle := map[string]int{}
+	for i, s := range b.base.sections {
+		if s.choosable {
+			byTitle[s.title] = i
+		}
+	}
+	filled := map[int]bool{}
+	for _, rs := range r.Sections {
+		i := byTitle[rs.Title] // checkSafe refused any other title
+		filled[i] = true
+		if b.base.sections[i].kind == "bullets" {
+			if len(rs.Bullets) > MaxSummaryBullets || (len(rs.Bullets) == 0 && b.fillable(i, p)) {
+				return fmt.Errorf("section %q needs 1 to %d bullets", rs.Title, MaxSummaryBullets)
+			}
+			continue
+		}
+		if len(rs.Entries) > MaxSectionEntries || (len(rs.Entries) == 0 && b.fillable(i, p)) {
+			return fmt.Errorf("section %q needs 1 to %d entries", rs.Title, MaxSectionEntries)
+		}
+		for _, re := range rs.Entries {
+			if len(re.Bullets) == 0 || len(re.Bullets) > MaxEntryBullets {
+				return fmt.Errorf("entry %q needs 1 to %d bullets", clip(re.Entry, 60), MaxEntryBullets)
+			}
+		}
+	}
+	// Every section with something to fill it must be answered. One with nothing
+	// eligible may be left out (or listed empty).
+	for i, s := range b.base.sections {
+		if s.choosable && !filled[i] && b.fillable(i, p) {
+			return fmt.Errorf("section %q is missing", s.title)
+		}
+	}
+	// The work history stays whole: every experience entry that has evidence on
+	// offer must be present.
+	if e0 := b.base.expIdx; e0 >= 0 {
+		have := map[string]bool{}
+		for _, e := range ch.secs[e0].entries {
+			have[e.id] = true
+		}
+		for _, e := range b.base.sections[e0].entries {
+			if len(p.allowed[e.id]) > 0 && !have[e.id] {
+				return fmt.Errorf("entry %q of section %q is missing: the work history stays whole", clip(e.id, 60), b.base.sections[e0].title)
+			}
+		}
+	}
+	if n := ch.count(); n > MaxTotalBullets {
+		return fmt.Errorf("%d bullets in all, over %d", n, MaxTotalBullets)
+	}
+	if n := len(ch.keywords); n < MinKeywords || n > MaxKeywords {
+		return fmt.Errorf("%d keywords, want %d to %d", n, MinKeywords, MaxKeywords)
+	}
+	return nil
 }
 
 // carryHeadings adds to the choice the entries the base lists bare (a role with
@@ -681,9 +729,10 @@ func asciiLower(s string) string {
 // any posting and says nothing.
 const MinKeywordRunes = 2
 
-// checkKeywords wants MinKeywords to MaxKeywords short printable strings, each
-// at least MinKeywordRunes long with a letter or digit, occurring in the posting
-// as written (ignoring ASCII case only), distinct ignoring ASCII case.
+// checkKeywords wants short printable strings, each at least MinKeywordRunes
+// long with a letter or digit, occurring in the posting as written (ignoring
+// ASCII case only); it keeps the first of those equal ignoring ASCII case. How
+// many there must be is checkSteering's.
 func checkKeywords(in []string, jd string) ([]string, error) {
 	low := asciiLower(jd)
 	seen := map[string]bool{}
@@ -712,9 +761,6 @@ func checkKeywords(in []string, jd string) ([]string, error) {
 		}
 		seen[lk] = true
 		out = append(out, k)
-	}
-	if len(out) < MinKeywords || len(out) > MaxKeywords {
-		return nil, fmt.Errorf("%d keywords, want %d to %d", len(out), MinKeywords, MaxKeywords)
 	}
 	return out, nil
 }

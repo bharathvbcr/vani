@@ -266,7 +266,10 @@ func TestInvalidRepliesAreToldWhyRetriedOnceAndThenFallBackToTheBase(t *testing.
 		"entry id as summary": `"a3" is not available for section "Summary"`, "unknown entry": `entry "nope"`,
 		"duplicate bullet": `"a3" is used twice`, "duplicate across": `"s3" is used twice`, "duplicate entry": `entry "exp-a" is used twice`,
 		"over the entry limit": "needs 1 to 6 bullets", "entry without bullets": "needs 1 to 6 bullets", "no entries": "needs 1 to 10 entries",
-		"too many summary": "needs 1 to 4 bullets", "empty summary": "needs 1 to 4 bullets",
+		// The fixture offers three summary bullets, so five repeat one, and the
+		// safety rules (checkSafe) speak before the summary cap (checkSteering,
+		// TestSteeringCapsTheSummary).
+		"too many summary": `"s1" is used twice`, "empty summary": "needs 1 to 4 bullets",
 		"unknown section": `"Hobbies" is not one to fill`, "fixed section": `"Education" is not one to fill`, "missing section": `"Experience" is missing`,
 		"section twice": "appears twice", "bullets in entries sec": "takes entries, not bullets", "entries in summary": "takes bullets, not entries",
 		"keyword not in the JD": `keyword "Fortran"`, "seven keywords": "7 keywords", "sixteen keywords": "16 keywords",
