@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 )
 
@@ -63,6 +64,12 @@ const (
 	CodePages    = "pages"
 	CodeTimeout  = "timeout"
 	CodeCancel   = "cancelled"
+	// CodeBusy means another resume build holds the build lock (Config.LockDir).
+	// Nothing was spent.
+	CodeBusy = "busy"
+	// CodeKBChanged means the knowledge base's claims changed after this build
+	// read them; nothing was rendered from the mixed state.
+	CodeKBChanged = "kb_changed"
 )
 
 // Selection values of Result.Selection.
@@ -148,6 +155,18 @@ type Config struct {
 	// Mac app's agent runs with the system folders only, so nil means Homebrew's
 	// two prefixes.
 	ToolDirs []string
+
+	// WorkDir, when set, is where build folders are made (mode 0700, prefix
+	// buildDirPrefix), and where Build first removes such folders left by a
+	// build that was killed. Empty uses the system temp folder and sweeps
+	// nothing. rkb's own temp folders (its Chrome profile and fit work folders)
+	// are made inside the build folder either way, so they go with it.
+	WorkDir string
+	// LockDir, when set, makes builds exclusive: Build takes a non-blocking
+	// "resume build" lock there before anything is spent (held: CodeBusy), and the
+	// fit step waits for a "chrome" lock, so no two resumes drive Chrome at once.
+	// Empty takes no lock.
+	LockDir string
 }
 
 // Result is a built resume.
@@ -198,6 +217,12 @@ func (c Config) normalize() (Config, *Error) {
 	if c.VMReport != "" && !filepath.IsAbs(c.VMReport) {
 		return c, fail(CodeConfig, "the validator report path must be absolute")
 	}
+	if c.WorkDir != "" && !filepath.IsAbs(c.WorkDir) {
+		return c, fail(CodeConfig, "the resume work folder must be an absolute path")
+	}
+	if c.LockDir != "" && !filepath.IsAbs(c.LockDir) {
+		return c, fail(CodeConfig, "the resume lock folder must be an absolute path")
+	}
 	if c.Runner == nil {
 		c.Runner = ExecRunner{}
 	}
@@ -226,9 +251,19 @@ func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 	if nerr != nil {
 		return Result{}, nerr
 	}
+	if cfg.LockDir != "" {
+		l, err := filelock.TryAcquire(filepath.Join(cfg.LockDir, buildLockName))
+		switch {
+		case errors.Is(err, filelock.ErrWouldBlock):
+			return Result{}, fail(CodeBusy, "another resume is being built; wait for it to finish")
+		case err != nil:
+			return Result{}, fail(CodeConfig, "the resume build lock could not be taken: %v", err)
+		}
+		defer l.Release()
+	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Deadline)
 	defer cancel()
-	dir, err := os.MkdirTemp("", "vani-resume-")
+	dir, err := makeBuildDir(cfg.WorkDir, time.Now())
 	if err != nil {
 		return Result{}, fail(CodeRender, "no private temp folder: %v", err)
 	}

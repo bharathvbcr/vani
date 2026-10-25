@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/childenv"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 )
 
@@ -23,13 +25,18 @@ import (
 const CodeFigures = "figures"
 
 type builder struct {
-	cfg    Config
-	dir    string
-	env    []string
-	bank   kbsync.Bank
-	claims kbsync.Claims
-	el     kbsync.Eligibility
-	base   *baseSel
+	cfg Config
+	dir string
+	env []string
+	// bankPath is the build's own copy of bank.json, made once in load. Every rkb
+	// step reads this copy (the selection's bank points at it), so the bank Vani
+	// judged eligibility on is the bank rkb prints, even if the owner edits the
+	// live one meanwhile.
+	bankPath string
+	bank     kbsync.Bank
+	claims   kbsync.Claims
+	el       kbsync.Eligibility
+	base     *baseSel
 	// cont: the bullets that continue the one before them (continuation.go).
 	cont continuations
 	// homes: for each entry, the base sections it may be placed in (entryHomes).
@@ -92,7 +99,10 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	if err != nil {
 		return Result{}, err
 	}
-	b.env = env
+	// rkb makes its Chrome profile and fit work folders in its temp folder, and
+	// cleans them only when it exits normally: inside the build folder they go
+	// with it, whatever happens to rkb.
+	b.env = withTempDir(env, filepath.Join(b.dir, tmpDirName))
 	if err := b.load(ctx); err != nil {
 		return Result{}, err
 	}
@@ -202,9 +212,19 @@ func summarize(ps []problem) string {
 // load reads the bank, fresh claims and every selection, and applies the
 // eligibility rule.
 func (b *builder) load(ctx context.Context) *Error {
-	bank, err := kbsync.Load(b.cfg.Bank)
+	// The bank is read once, bounded, and kept as a private copy: the same bytes
+	// are parsed here and handed to every rkb step.
+	raw, err := readCapped(b.cfg.Bank, kbsync.MaxBankBytes)
+	if err != nil {
+		return fail(CodeKB, "bank: %v", err)
+	}
+	bank, err := kbsync.Parse(raw)
 	if err != nil {
 		return fail(CodeKB, "%v", err)
+	}
+	b.bankPath = filepath.Join(b.dir, "bank.json")
+	if err := os.WriteFile(b.bankPath, raw, 0o600); err != nil {
+		return fail(CodeRender, "write the bank snapshot: %v", err)
 	}
 	b.bank = bank
 	// The base comes before the first rkb call so the owner's header strings are
@@ -214,7 +234,7 @@ func (b *builder) load(ctx context.Context) *Error {
 		return berr
 	}
 	b.base = base
-	b.scrub = newScrubber(headerStrings(base, b.cfg.Bank))
+	b.scrub = newScrubber(headerStrings(base, b.bankPath))
 	claims, err := kbsync.RKB{Binary: b.cfg.RKB, CodeRoot: b.cfg.CodeRoot, Runner: claimsRunner{b.cfg.Runner, b.env, b.scrub}}.Claims(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -375,7 +395,7 @@ func (b *builder) rkb(ctx context.Context, step string, timeout time.Duration, a
 // on it.
 func (b *builder) export(ctx context.Context, d string, ch choice) (claimsFile, *Error) {
 	var cf claimsFile
-	sel, err := b.base.selectionJSON(b.cfg.Bank, ch)
+	sel, err := b.base.selectionJSON(b.bankPath, ch)
 	if err != nil {
 		return cf, fail(CodeKB, "selection: %v", err)
 	}
@@ -403,7 +423,44 @@ func (b *builder) export(ctx context.Context, d string, ch choice) (claimsFile, 
 	if err := json.Unmarshal(raw, &cf); err != nil || len(cf.Claims) == 0 {
 		return cf, fail(CodeKB, "rkb's claims file holds no claims")
 	}
+	// The claims are rkb's, read live from its repos on every export (the bank is
+	// pinned to the snapshot, the claims are not). A figure that now reads
+	// differently from the one eligibility was judged on would print wording the
+	// owner never reviewed.
+	now, perr := kbsync.ParseClaims(raw)
+	if perr != nil {
+		return cf, fail(CodeKB, "rkb's claims file is not usable: %v", perr)
+	}
+	for id, v := range now.Values {
+		if want, ok := b.claims.Values[id]; ok && v != want {
+			return cf, fail(CodeKBChanged, "the knowledge base changed during the build; build again")
+		}
+	}
 	return cf, nil
+}
+
+// rkbFit runs `rkb fit`. With a lock folder it first waits, until the step's own
+// time is up, for the Chrome lock: fit starts a headless Chrome, and two at once
+// (two resumes, or a resume and an editor's fit) starve each other past rkb's 90 s
+// Chrome limit.
+func (b *builder) rkbFit(ctx context.Context, args ...string) (Output, *Error) {
+	if b.cfg.LockDir == "" {
+		return b.rkb(ctx, "fit", fitTimeout, args...)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, fitTimeout)
+	l, err := filelock.Acquire(waitCtx, filepath.Join(b.cfg.LockDir, chromeLockName))
+	cancel()
+	switch {
+	case err == nil:
+		defer l.Release()
+	case ctx.Err() != nil:
+		return Output{}, ctxError(ctx)
+	case errors.Is(err, filelock.ErrWouldBlock):
+		return Output{}, fail(CodeTimeout, "rkb fit waited %s for another page fit to release Chrome", fitTimeout)
+	default:
+		return Output{}, fail(CodeRender, "the Chrome lock could not be taken: %v", err)
+	}
+	return b.rkb(ctx, "fit", fitTimeout, args...)
 }
 
 // readCapped reads a regular file of at most max bytes.
@@ -532,7 +589,7 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 
 	pdfPath := filepath.Join(outDir, outputBasename+".pdf")
 	reportPath := filepath.Join(outDir, "fit.json")
-	fit, err := b.rkb(ctx, "fit", fitTimeout, "fit", htmlPath, "--pages", fmt.Sprint(b.base.pages), "--strict", "--out", pdfPath, "--report", reportPath)
+	fit, err := b.rkbFit(ctx, "fit", htmlPath, "--pages", fmt.Sprint(b.base.pages), "--strict", "--out", pdfPath, "--report", reportPath)
 	if err != nil {
 		return out, err
 	}
@@ -658,6 +715,29 @@ func (b *builder) childEnv() ([]string, *Error) {
 		}
 	}
 	return nil, fail(CodeRender, "pdftotext (poppler) was not found on PATH or in %s; rkb cannot measure the page without it", strings.Join(dirs, ", "))
+}
+
+// withTempDir returns env with every temp-folder variable the platform reads
+// (TMPDIR; also TEMP and TMP on Windows) set to dir.
+func withTempDir(env []string, dir string) []string {
+	keys := []string{"TMPDIR"}
+	if runtime.GOOS == "windows" {
+		keys = append(keys, "TEMP", "TMP")
+	}
+	out := make([]string, 0, len(env)+len(keys))
+next:
+	for _, e := range env {
+		for _, k := range keys {
+			if strings.HasPrefix(e, k+"=") {
+				continue next
+			}
+		}
+		out = append(out, e)
+	}
+	for _, k := range keys {
+		out = append(out, k+"="+dir)
+	}
+	return out
 }
 
 func onPath(path, name string) bool {
