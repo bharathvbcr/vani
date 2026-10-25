@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/rkbresume"
@@ -80,6 +81,36 @@ func (f *fakeResumeRKB) Run(_ context.Context, c rkbresume.Command, _ time.Durat
 	return rkbresume.Output{}, errors.New("unexpected rkb command " + c.Args[0])
 }
 
+// resumeLLM is the llm the resume tests configure: anthropic, on a model that is
+// not Opus, so a request on Opus can only come from the pin (rkbresume.Model).
+var resumeLLM = config.LLM{Provider: "anthropic", Model: "claude-sonnet-5-5", InputNanoUSDPerToken: 2000, OutputNanoUSDPerToken: 10000}
+
+// resumePriced is a provider that, like the metered Anthropic one, publishes
+// Anthropic's price table.
+type resumePriced struct{ llm.Provider }
+
+func (resumePriced) PriceOf(model string) (budget.Prices, bool) { return anthropic.PriceOf(model) }
+
+// resumeOnly serves and prices only the models it lists, and counts the turns.
+type resumeOnly struct {
+	*draftLLM
+	serves map[string]bool
+}
+
+func (p resumeOnly) Capability(model string) (llm.Capability, bool) {
+	if !p.serves[model] {
+		return llm.Capability{}, false
+	}
+	return p.draftLLM.Capability(model)
+}
+
+func (p resumeOnly) PriceOf(model string) (budget.Prices, bool) {
+	if !p.serves[model] {
+		return budget.Prices{}, false
+	}
+	return anthropic.PriceOf(model)
+}
+
 const goodResumeReq = `{"job":{"company":"Acme Robotics","title":"Software Engineer, Tools","description":"Build research tools in Python and TypeScript for evaluation, tracing, latency, agents and kernels."},` +
 	`"header":{"name":"Test Applicant","contact_lines":["applicant@example.invalid | 555-0100","https://example.invalid/in/test"]}}`
 
@@ -132,7 +163,7 @@ func resumeSetup(t *testing.T, input string, f *fakeResumeRKB, p llm.Provider) {
 	}
 	cfg.KB = config.KB{Bank: bank, RKB: "/fake/rkb", CodeRoot: dir, Selections: []string{base}, BaseSelection: base}
 	if p != nil {
-		cfg.LLM = testLLM
+		cfg.LLM = resumeLLM
 	}
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
@@ -205,7 +236,7 @@ func TestResumeBuildsABasePDFWithoutAModelAndWithoutDevPrism(t *testing.T) {
 func TestResumeTailorsWithTheProviderAndNeverSendsTheHeader(t *testing.T) {
 	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
 	p := &draftLLM{text: resumeReply1}
-	resumeSetup(t, goodResumeReq, f, p)
+	resumeSetup(t, goodResumeReq, f, resumePriced{p})
 	stdout, stderr := mustCode(t, 0, "resume")
 	r := resumeOut(t, stdout)
 	if r.Selection != "tailored" || r.Reason != "" || r.Error != "" || r.Pages != 2 {
@@ -213,6 +244,9 @@ func TestResumeTailorsWithTheProviderAndNeverSendsTheHeader(t *testing.T) {
 	}
 	if len(p.reqs) != 1 {
 		t.Fatalf("%d model turns", len(p.reqs))
+	}
+	if p.reqs[0].Model != rkbresume.Model || resumeLLM.Model == rkbresume.Model {
+		t.Errorf("the turn ran on %q with llm.model %q, want %q whatever llm.model says", p.reqs[0].Model, resumeLLM.Model, rkbresume.Model)
 	}
 	noPersonalData(t, "the prompt", p.reqs[0].System, p.reqs[0].Messages[0].Text())
 	noPersonalData(t, "the reply or stderr", stdout, stderr)
@@ -232,7 +266,7 @@ func TestResumeFallsBackToTheBaseWhenTheModelCannotAnswer(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeResumeRKB{pages: 2, pdf: testPDF}
-			resumeSetup(t, goodResumeReq, f, p)
+			resumeSetup(t, goodResumeReq, f, resumePriced{p})
 			stdout, _ := mustCode(t, 0, "resume")
 			r := resumeOut(t, stdout)
 			if r.Selection != "base" || r.Reason == "" || r.PDF == "" {
@@ -247,7 +281,7 @@ func TestResumeWithoutAUsableProviderBuildsTheBase(t *testing.T) {
 	resumeSetup(t, goodResumeReq, f, nil)
 	cfgPath := os.Getenv("VANI_CONFIG")
 	cfg, _ := config.Load(cfgPath)
-	cfg.LLM = testLLM // configured, but the provider cannot be built (no key)
+	cfg.LLM = resumeLLM // configured, but the provider cannot be built (no key)
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +292,54 @@ func TestResumeWithoutAUsableProviderBuildsTheBase(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "no model") {
 		t.Errorf("stderr = %q", stderr)
+	}
+}
+
+// Opus is the only model for a resume: a provider that is not anthropic, one
+// that does not serve it and one that has no price for it each build the base,
+// say why, and never make a model turn.
+func TestResumeRefusesWhenOpusCannotAnswer(t *testing.T) {
+	cases := map[string]struct {
+		llm    config.LLM
+		serves map[string]bool
+		want   string
+	}{
+		"provider is not anthropic": {testLLM, map[string]bool{rkbresume.Model: true}, "resumes use claude-opus-5-5, which needs llm.provider anthropic"},
+		"model not served":          {resumeLLM, map[string]bool{"claude-sonnet-5-5": true}, "the provider does not serve claude-opus-5-5"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+			p := &draftLLM{text: resumeReply1}
+			resumeSetup(t, goodResumeReq, f, resumeOnly{p, c.serves})
+			cfgPath := os.Getenv("VANI_CONFIG")
+			cfg, _ := config.Load(cfgPath)
+			cfg.LLM = c.llm
+			if err := config.Save(cfgPath, cfg); err != nil {
+				t.Fatal(err)
+			}
+			stdout, _ := mustCode(t, 0, "resume")
+			r := resumeOut(t, stdout)
+			if r.Selection != "base" || r.Reason != c.want || r.PDF == "" {
+				t.Fatalf("reply = %+v, want a base resume because %q", r, c.want)
+			}
+			if len(p.reqs) != 0 {
+				t.Errorf("%d model turns were made", len(p.reqs))
+			}
+		})
+	}
+}
+
+// A provider that publishes no price for Opus would meter it at nothing known,
+// so the turn is not made.
+func TestResumeRefusesAnUnpricedProvider(t *testing.T) {
+	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+	p := &draftLLM{text: resumeReply1}
+	resumeSetup(t, goodResumeReq, f, p) // draftLLM is not a budget.Pricer
+	stdout, _ := mustCode(t, 0, "resume")
+	r := resumeOut(t, stdout)
+	if r.Selection != "base" || r.Reason != "the provider has no price for claude-opus-5-5" || len(p.reqs) != 0 {
+		t.Fatalf("reply = %+v, %d turns", r, len(p.reqs))
 	}
 }
 
