@@ -32,6 +32,8 @@ type orderSettings struct {
 	// (rankRules), so the Score order reads them as `vani jobs` and the digest do.
 	rules     []jobinsight.DropRule
 	titleRank func(string) int
+	// escalateBelowP is jobinsight.RankContext.EscalateBelowP.
+	escalateBelowP float64
 }
 
 func settingsOf(opts []orderOption) orderSettings {
@@ -74,6 +76,14 @@ func withRank(rules []jobinsight.DropRule, titleRank func(string) int) orderOpti
 	return func(s *orderSettings) { s.rules, s.titleRank = rules, titleRank }
 }
 
+// withEscalation passes the config's escalation threshold (rankEscalateBelowP) to
+// the Score order, so a slot the escalation tier read where the primary was
+// unsure is ranked as `vani jobs` and the digest rank it; like withRank it changes
+// nothing without a Score order.
+func withEscalation(belowP float64) orderOption {
+	return func(s *orderSettings) { s.escalateBelowP = belowP }
+}
+
 // orderAdvance sorts todo in the order a run advances it: highest title rank
 // first (rank nil ranks every posting alike), then the freshest posting first,
 // then ledger order. all is every ledger record, eligible or not; it says when
@@ -108,6 +118,7 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 		rc = jobinsight.NewRankContext(all, nil, at)
 		rc.Semantic, rc.AgeNeutral = set.semantic, set.ageNeutral
 		rc.DropRules, rc.TitleRank = set.rules, set.titleRank
+		rc.EscalateBelowP = set.escalateBelowP
 	}
 	firstCrawl := map[string]time.Time{}
 	for _, r := range all {

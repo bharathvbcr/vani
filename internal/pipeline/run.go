@@ -94,6 +94,11 @@ type RunStages struct {
 	// Advanced receives the advance report however the phase ended (a refused
 	// or failed phase leaves a report too). Optional.
 	Advanced func(AdvanceReport)
+	// Backfill runs after the advance phase when it ended without an error and the
+	// run was not cancelled: it spends what the phase left of a bounded budget on
+	// postings already triaged (the escalation backfill). It shares the ledger
+	// the run holds and never fails the run. Optional.
+	Backfill func(ctx context.Context)
 }
 
 // ErrNoBoardRead means boards were configured and none could be read.
@@ -149,6 +154,9 @@ func Run(ctx context.Context, st RunStages) error {
 	rep, err := Advance(ctx, plan, st.Deps())
 	if st.Advanced != nil {
 		st.Advanced(rep)
+	}
+	if err == nil && st.Backfill != nil && ctx.Err() == nil {
+		st.Backfill(ctx)
 	}
 	return err
 }

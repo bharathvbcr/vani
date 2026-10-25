@@ -144,6 +144,9 @@ type wired struct {
 	// semPre is the last run's knowledge-base warm before the advance phase
 	// (semanticwire.go warmBeforeAdvance); nil when it did not run.
 	semPre *semanticReport
+	// backfill is the last run's escalation backfill (escalatebackfill.go); nil
+	// when it did not run.
+	backfill *escalateBackfillReport
 	// nearDup, exclusions, logos and shadow are the current run's stage
 	// summaries. startRun clears them. nil means that stage has not run.
 	nearDup    *nearDupSummary
@@ -176,6 +179,7 @@ func (w *wired) runReport() runDetail {
 	return runDetail{
 		Boards: w.boards, Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats(), SemanticPre: w.semPre,
 		NearDup: w.nearDup, Exclusions: w.exclusions, Logos: w.logos, Shadow: w.shadow, Explain: w.explain,
+		EscalateBackfill: w.backfill,
 	}
 }
 

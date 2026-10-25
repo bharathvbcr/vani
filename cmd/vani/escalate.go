@@ -71,13 +71,15 @@ func (w *wired) escalating(router decide.Decider, esc decide.Backend) decide.Dec
 // on a later run; a slot the LLM answered itself carries no such calibration; Lappi readings
 // carry a Lappi one. Neither is a candidate.
 //
-// MEASURE MODE FOR DROPS AND FOR RANKING: DropPolicy ignores Shadow, so
-// escalation never changes what is dropped. The ranker (branch rank-relevance)
-// skips its DisagreeConf confidence cut for shadow_backend=escalate until a
-// slot is promoted by config, so it does not change ranking either.
+// DROPS AND RANKING: DropPolicy ignores Shadow, so escalation never changes what
+// is dropped (Rule 7). The ranking does read it: where the primary's p is under
+// below_p and this tier answered with a listed option, jobinsight.RankContext.SlotFor
+// ranks the slot on the tier's value (backend "escalate"). That only orders.
 // triageAnnotations still writes triage.<slot>.disagree=true whenever an
 // Answered shadow value differs from the primary's, on purpose: `vani eval`'s
 // Promotion report reads that key to measure the cheap tier against the primary.
+// Postings triaged before escalation was on get the same readings from the
+// backfill (escalatebackfill.go), which asks through askSlots and shares maxRun.
 //
 // decide.escalate and decide.shadow are exclusive in the config because both
 // write Answer.Shadow for the same slots (one slot has one shadow reading).
@@ -126,9 +128,7 @@ func (e *escalator) Decide(ctx context.Context, q decide.Question) (decide.Answe
 	if len(slots) == 0 {
 		return a, nil
 	}
-	sub := q
-	sub.Slots = slots
-	got := e.askSafely(ctx, sub)
+	got := e.askSlots(ctx, q, slots)
 
 	// a is the primary's answer by value; its Slots map is shared and left
 	// alone, and Shadow is copied before it is written.
@@ -136,15 +136,30 @@ func (e *escalator) Decide(ctx context.Context, q decide.Question) (decide.Answe
 	for name, rd := range a.Shadow {
 		shadow[name] = rd
 	}
+	for name, rd := range got {
+		shadow[name] = rd
+	}
+	a.Shadow = shadow
+	return a, nil
+}
+
+// askSlots asks the escalation tier slots of q (already reserved from max_per_run)
+// and returns its reading of every one of them by name: a slot the tier left out
+// reads Unavailable. It is the one way the tier is asked, for a posting being
+// triaged (Decide) and for one already triaged (the backfill).
+func (e *escalator) askSlots(ctx context.Context, q decide.Question, slots []decide.Slot) map[string]decide.SlotReading {
+	sub := q
+	sub.Slots = slots
+	got := e.askSafely(ctx, sub)
+	out := make(map[string]decide.SlotReading, len(slots))
 	for _, s := range slots {
 		rd, ok := got[s.Name]
 		if !ok {
 			rd = decide.SlotReading{Reading: decide.Unavailable, Detail: "missing_slot;backend=" + escalateName}
 		}
-		shadow[s.Name] = rd
+		out[s.Name] = rd
 	}
-	a.Shadow = shadow
-	return a, nil
+	return out
 }
 
 // candidates are the triage slots of q whose primary reading is a calibrated

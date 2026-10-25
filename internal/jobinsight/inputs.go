@@ -2,10 +2,12 @@ package jobinsight
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -65,6 +67,13 @@ type RankContext struct {
 	// Weights are the fitted weights (a rank weights file, internal/rankfit)
 	// ScoreOf ranks by; nil means DefaultWeights.
 	Weights *Weights
+
+	// EscalateBelowP is the probability under which the primary's reading was
+	// escalated to a second model (the config's decide.escalate.below_p; 0 means
+	// escalation does not take part in ranking). A slot the primary read under it,
+	// and the escalation tier answered with a listed option, is ranked on the
+	// escalation's value (SlotFor).
+	EscalateBelowP float64
 }
 
 // ScoreOf scores r under c: InputsFor, then c.Weights or DefaultWeights.
@@ -161,6 +170,45 @@ func SlotOf(ann map[string]string, slot string) Slot {
 	return s
 }
 
+// listedValues is each triage slot's legal values (the fixture's options): an
+// escalation reading outside them is not an answer the ranking can use.
+var listedValues = jdtriage.SlotValues()
+
+// SlotFor is the reading of slot the ranking uses, and the one owner of which
+// reading that is: the primary's (SlotOf), except where the primary was unsure and
+// the escalation tier read the slot (decide.escalate; ledger annotations
+// triage.<slot>.shadow*). That needs all of
+//
+//   - EscalateBelowP set (the config's decide.escalate.below_p), and the primary
+//     answered with a calibrated p under it. A primary at or above it, one with no
+//     p (Lappi, the LLM itself) or none at all keeps its reading.
+//   - the shadow reading recorded by the escalation tier (shadow_backend
+//     "escalate", not a Lappi or local shadow), with reading "answered".
+//   - its value one of the slot's listed options.
+//
+// The slot then takes the escalation's value under Backend ShadowEscalate, with
+// no p: Weights.conf gives it AnsweredConf, or the Calibration named
+// ShadowEscalate. Anything short of that is the primary's reading, as before.
+//
+// This only orders (Rule 7). Drops are decided at triage by pipeline.DropPolicy
+// on the primary's calibrated reading and never read this.
+func (c RankContext) SlotFor(ann map[string]string, slot string) Slot {
+	s := SlotOf(ann, slot)
+	if !(c.EscalateBelowP > 0 && c.EscalateBelowP <= 1) || !s.Answered || !s.HasP || !(s.P < c.EscalateBelowP) {
+		return s
+	}
+	pre := ledger.AnnTriagePrefix + slot
+	if strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixShadowBackend]) != ShadowEscalate ||
+		strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixShadowReading]) != "answered" {
+		return s
+	}
+	v := strings.TrimSpace(ann[pre+ledger.AnnTriageSuffixShadow])
+	if !slices.Contains(listedValues[slot], v) {
+		return s
+	}
+	return Slot{Value: v, Answered: true, Backend: ShadowEscalate, ShadowBackend: ShadowEscalate}
+}
+
 // employerBoostSlack absorbs binary rounding in rank - coverage.
 const employerBoostSlack = 1e-6
 
@@ -176,7 +224,7 @@ const employerBoostSlack = 1e-6
 func InputsFor(r ledger.Record, c RankContext) Inputs {
 	ann := r.Annotations
 	in := Inputs{
-		RoleFit:      SlotOf(ann, "role_fit"),
+		RoleFit:      c.SlotFor(ann, "role_fit"),
 		Unsure:       IsUnsure(r),
 		HalfLifeDays: c.HalfLifeDays,
 		AgeDays:      -1,
@@ -222,7 +270,7 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 		if seen[rule.Slot] {
 			continue
 		}
-		s := SlotOf(ann, rule.Slot)
+		s := c.SlotFor(ann, rule.Slot)
 		if !s.Answered {
 			continue
 		}

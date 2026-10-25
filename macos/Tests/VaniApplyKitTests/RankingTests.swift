@@ -146,6 +146,21 @@ final class RankingTests: XCTestCase {
         XCTAssertNil(items[2].note)
     }
 
+    /// vani adds `backend` and `reading` to a fit factor that rests on the escalation
+    /// tier's reading. An app that does not model them keeps the factor and its numbers.
+    func testAFitFactorFromTheEscalationTierDecodesLikeAnyOther() throws {
+        let j = try job(#"""
+        "score_factors":[{"name":"fit","value":1,"weight":0.3,"known":true,"conf":0.7,"backend":"escalate","reading":"strong_fit"},
+        {"name":"gate","value":1,"weight":0,"known":true,"backend":7,"reading":null}]
+        """#)
+        let items = try XCTUnwrap(j.scoreFactors).items
+        XCTAssertEqual(items.map(\.name), ["fit", "gate"], "an added or a mistyped optional field never drops a factor")
+        XCTAssertEqual(items[0].value, 1)
+        XCTAssertEqual(items[0].weight, 0.3)
+        XCTAssertTrue(items[0].known)
+        XCTAssertEqual(j.priority, 61.2)
+    }
+
     func testAFactorWithoutKnownIsNotKnown() throws {
         let j = try job(#""score_factors":[{"name":"fit","value":0.8,"weight":0.3}]"#)
         XCTAssertEqual(try XCTUnwrap(j.scoreFactors).items.first?.known, false)

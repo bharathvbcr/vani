@@ -169,6 +169,12 @@ type runDetail struct {
 	// Shadow is set when a configured shadow did not start, did not attach, or
 	// missed calls. Nil when there is nothing to say, including a list-only run.
 	Shadow *shadowNote `json:"shadow,omitempty"`
+	// EscalateBackfill is the escalation backfill after the advance phase: how
+	// many already-triaged postings it asked the escalation tier about and what
+	// came back (escalatebackfill.go). Nil when decide.escalate is off or the
+	// advance phase did not end well. Additive: readers that do not know the key
+	// ignore it.
+	EscalateBackfill *escalateBackfillReport `json:"escalate_backfill,omitempty"`
 	// Explain is set when the digest's notes were off or paused. Nil when they
 	// ran, or the run was not going to ask a backend.
 	Explain *explainNote `json:"explain,omitempty"`

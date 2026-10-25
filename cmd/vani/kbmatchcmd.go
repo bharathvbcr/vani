@@ -205,7 +205,9 @@ func kbmatchCandidates(snap ledger.Snapshot, m map[posting.Key]marks.Entry, in *
 		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
-		if strings.HasPrefix(jobinsight.SlotOf(r.Annotations, "role_fit").Value, "mismatch_") {
+		// The fit the ranking uses (SlotFor), so a mismatch the escalation overturned
+		// is asked about and one it found is not.
+		if strings.HasPrefix(in.rc.SlotFor(r.Annotations, "role_fit").Value, "mismatch_") {
 			mismatch++
 			continue
 		}

@@ -375,17 +375,31 @@ func triageAnnotations(a decide.Answer) map[string]string {
 		}
 		// A NotAsked shadow reading (a slot-filtered shadow, or a slot the
 		// shadow never ran) is not a shadow reading: record nothing for it.
-		if sh, ok := a.Shadow[name]; ok && sh.Reading != decide.NotAsked {
-			ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadowReading] = string(sh.Reading)
-			if b := slotBackend(decide.Answer{}, sh); b != "" {
-				ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadowBackend] = b
-			}
-			if sh.Reading == decide.Answered {
-				ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixShadow] = sh.Value
-				if sr.Reading == decide.Answered && sr.Value != sh.Value {
-					ann[ledger.AnnTriagePrefix+name+ledger.AnnTriageSuffixDisagree] = "true"
-				}
-			}
+		if sh, ok := a.Shadow[name]; ok {
+			maps.Copy(ann, shadowAnnotations(name, sr.Reading == decide.Answered, sr.Value, sh))
+		}
+	}
+	return ann
+}
+
+// shadowAnnotations are the annotations that record sh, a shadow's (or the
+// escalation tier's) reading of slot, beside the primary's: the one owner of the
+// shadow keys, written by a triage (triageAnnotations) and by an escalation
+// backfill (Runner.RecordShadows) alike. A NotAsked reading (a slot-filtered
+// shadow, or a slot the shadow never ran) is not a shadow reading: nothing.
+func shadowAnnotations(slot string, primaryAnswered bool, primaryValue string, sh decide.SlotReading) map[string]string {
+	if sh.Reading == decide.NotAsked {
+		return nil
+	}
+	pre := ledger.AnnTriagePrefix + slot
+	ann := map[string]string{pre + ledger.AnnTriageSuffixShadowReading: string(sh.Reading)}
+	if b := slotBackend(decide.Answer{}, sh); b != "" {
+		ann[pre+ledger.AnnTriageSuffixShadowBackend] = b
+	}
+	if sh.Reading == decide.Answered {
+		ann[pre+ledger.AnnTriageSuffixShadow] = sh.Value
+		if primaryAnswered && primaryValue != sh.Value {
+			ann[pre+ledger.AnnTriageSuffixDisagree] = "true"
 		}
 	}
 	return ann

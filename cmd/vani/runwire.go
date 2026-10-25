@@ -143,6 +143,7 @@ func (w *wired) runOnce(ctx context.Context) error {
 			w.mu.Unlock()
 			w.warnShadowNotes(runner)
 		},
+		Backfill: func(ctx context.Context) { w.escalateBackfill(ctx, runner) },
 	})
 }
 
@@ -284,7 +285,7 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	w.localEndpoint = ""
 	errs := newBackendErrors()
 	w.mu.Lock()
-	w.backendErrs, w.boards, w.advance, w.semPre = errs, nil, nil, nil
+	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = errs, nil, nil, nil, nil
 	w.nearDup, w.exclusions, w.logos, w.shadow = nil, nil, nil, nil
 	w.explain, w.fetches = nil, nil
 	w.simOff, w.simNote = "", ""

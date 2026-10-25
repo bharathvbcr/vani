@@ -183,6 +183,11 @@ type Factor struct {
 	// Note says, for the few factors that need it, why the value is what it is
 	// (a NoteAgeNeutral for a freshness held flat); empty otherwise.
 	Note string `json:"note,omitempty"`
+	// Backend names the reading the value rests on when it is not the primary's:
+	// ShadowEscalate on a fit the escalation tier read where the primary was
+	// unsure. Reading is then the option it chose. Both are omitted otherwise.
+	Backend string `json:"backend,omitempty"`
+	Reading string `json:"reading,omitempty"`
 }
 
 // NoteAgeNeutral is the fresh factor's Note when the employer is age-neutral and
@@ -611,6 +616,11 @@ func ScoreWith(in Inputs, w Weights) Result {
 		f := Factor{Name: p.name, Value: p.value, Weight: nominal[i], Known: p.known}
 		if p.known {
 			f.Conf = p.conf
+		}
+		if i == 0 && in.RoleFit.Backend == ShadowEscalate {
+			// The fit rests on the escalation tier's reading (SlotFor), not the
+			// primary's: say so, and which option it chose.
+			f.Backend, f.Reading = ShadowEscalate, in.RoleFit.Value
 		}
 		r.Factors = append(r.Factors, f)
 	}

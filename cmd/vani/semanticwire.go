@@ -243,7 +243,7 @@ func notRun(rep semanticReport, why string, err error) semanticReport {
 // the budget cuts short leaves the lowest-ranked postings for the next one.
 func warmOrder(cfg config.Config) []orderOption {
 	rules, titleRank := rankRules(cfg)
-	return []orderOption{withWarmPriority(), withAgeNeutral(jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)), withRank(rules, titleRank)}
+	return []orderOption{withWarmPriority(), withAgeNeutral(jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)), withRank(rules, titleRank), withEscalation(rankEscalateBelowP(cfg))}
 }
 
 // warmDocs are the postings the Jobs views can list (kept, or marked). With no
@@ -468,6 +468,7 @@ func (w *wired) advanceOrder() orderOption {
 		withSemantic(semanticRank(m))(s)
 		withAgeNeutral(neutral)(s)
 		withRank(rules, titleRank)(s)
+		withEscalation(rankEscalateBelowP(w.cfg))(s)
 	}
 }
 
@@ -603,7 +604,7 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 	}
 	return digest.Options{Semantic: semanticRank(m), Rules: rules, TitleRank: titleRank, KBMatch: kb,
 		AgeNeutral: jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies), HalfLifeDays: jobinsight.DefaultScoreHalfLifeDays,
-		Weights: weights, TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(),
+		Weights: weights, EscalateBelowP: rankEscalateBelowP(cfg), TopOpen: cfg.DigestTopOpen(), ExploreBelowFold: cfg.DigestExploreBelowFold(),
 		ExploreDropped: cfg.DigestExploreDropped()}, warning
 }
 

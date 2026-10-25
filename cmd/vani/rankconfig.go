@@ -25,6 +25,18 @@ func rankRules(cfg config.Config) (rules []jobinsight.DropRule, titleRank func(s
 	return rules, titleRank
 }
 
+// rankEscalateBelowP is the threshold under which the ranking reads the escalation
+// tier's reading of a slot in place of an unsure primary's
+// (jobinsight.RankContext.EscalateBelowP): the config's decide.escalate.below_p
+// while decide.escalate is on, 0 (never) otherwise. Every ranking caller reads it
+// here, so turning escalation off in the config returns the order to the primary's.
+func rankEscalateBelowP(cfg config.Config) float64 {
+	if !cfg.Decide.EscalateEnabled() {
+		return 0
+	}
+	return cfg.Decide.EscalateBelowP()
+}
+
 // rankWeightsHand is what rankWeights reports when Score uses the hand weights.
 const rankWeightsHand = "hand"
 

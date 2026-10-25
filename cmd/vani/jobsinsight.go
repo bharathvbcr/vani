@@ -336,6 +336,7 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	if err == nil {
 		in.attachSemantic(cfg, stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
+		in.rc.EscalateBelowP = rankEscalateBelowP(cfg)
 		if p := dropPolicy(cfg, cfg.Decide.OpenRouterName()); p.Prefilters() {
 			in.drop = &p
 		}

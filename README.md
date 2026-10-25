@@ -729,6 +729,22 @@ it. `status --json` shows
 the last run's `advance` report (eligible, attempted, unread, deferred, why it stopped) and
 `backend_errors`: every decision-backend call that failed, counted by cause, with one example.
 
+`decide.escalate` (on `llm.triage_model`) also takes part in the order. Where the primary's
+probability for a slot is under `below_p` and the escalation answered with a listed option, the
+ranking reads the escalation's value for the fit and for the slots the drop rules and rank
+penalties name (confidence as an answered reading with no probability, or a calibration named
+`escalate` in a rank weights file); the fit factor in `jobs --json` then carries `backend:
+"escalate"` and `reading`. A primary at or above `below_p`, an escalation that was not answered or
+named no listed option, and `decide.escalate` switched off keep the primary's reading. Drops are
+unchanged: they follow the primary's calibrated reading alone. After the advance phase of a run
+that ended well, a bounded backfill asks the escalation about postings triaged earlier (kept or
+digested, best by the no-semantic score first) whose primary was under `below_p` and that have no
+escalation reading, spending what `max_per_run` the run's triage left, through the same llm daily
+cap; a refused or unreachable call is not recorded and is asked again by a later run. The run
+record's `escalate_backfill` counts candidates, slots asked, answered, recorded, unavailable,
+failed and deferred. It runs only inside the daemon's run; `vani run-request` asks the daemon for
+one now, which is how to backfill sooner than the schedule (each run does at most `max_per_run`).
+
 Before setting `devprism.binary` (which enables ranking and a real `kb sync`), run the Phase 0
 check that the installed DevPrism answers `--mcp` without migrating `career.db`.
 

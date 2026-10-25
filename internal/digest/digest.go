@@ -94,6 +94,11 @@ type Options struct {
 	// role's work, where it was asked.
 	KBMatch func(r ledger.Record) (jobinsight.Slot, bool)
 
+	// EscalateBelowP is jobinsight.RankContext.EscalateBelowP: the escalation
+	// threshold under which a slot is ranked on the escalation tier's reading; 0
+	// ranks on the primary's alone.
+	EscalateBelowP float64
+
 	// HalfLifeDays is jobinsight.RankContext.HalfLifeDays: the age that halves
 	// the freshness bonus, as `vani jobs --half-life`. Outside (0, MaxHalfLifeDays]
 	// means the default.
@@ -161,7 +166,7 @@ type scorer struct {
 func newScorer(all []ledger.Record, m map[posting.Key]marks.Mark, now time.Time, o Options) *scorer {
 	c := jobinsight.NewRankContext(all, m, now)
 	c.Semantic, c.DropRules, c.TitleRank, c.AgeNeutral, c.KBMatch = o.Semantic, o.Rules, o.TitleRank, o.AgeNeutral, o.KBMatch
-	c.HalfLifeDays, c.Weights = o.HalfLifeDays, o.Weights
+	c.HalfLifeDays, c.Weights, c.EscalateBelowP = o.HalfLifeDays, o.Weights, o.EscalateBelowP
 	return &scorer{c: c, memo: map[posting.Key]jobinsight.Result{}}
 }
 
