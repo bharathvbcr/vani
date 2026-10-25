@@ -91,6 +91,12 @@ struct JobsView: View {
                                     set: { if !$0 { jobs.retriage.dismissConfirmation() } })) {
             RetriageConfirmSheet()
         }
+        // The cost of an Opus resume build, asked about before anything is spent; closing it any other way
+        // than Build cancels.
+        .sheet(isPresented: Binding(get: { jobs.resume.confirming != nil },
+                                    set: { if !$0 { jobs.resume.dismissConfirmation() } })) {
+            ResumeConfirmSheet()
+        }
         .sheet(isPresented: Binding(get: { jobs.batch.confirming != nil },
                                     set: { if !$0 { jobs.batch.dismissConfirmation() } })) {
             RetriageBatchConfirmSheet()
@@ -954,6 +960,15 @@ private struct JobMenu: View {
             .disabled(reason != nil)
             .help(reason ?? "Ask Sonnet to read this posting again. The cost is shown first.")
         }
+        // Picks this posting's bullets with Opus; the cost is shown first and nothing is spent until confirmed.
+        if jobs.resume.isAvailable {
+            let reason = jobs.resume.blockedReason(for: job)
+            Button("Build Tailored Resume…", systemImage: "doc.badge.gearshape") {
+                jobs.startResume(job)
+            }
+            .disabled(reason != nil)
+            .help(reason ?? "Ask \(ResumeWords.modelName) to pick this posting's bullets for a tailored resume. The cost is shown first.")
+        }
         // Every role at the company, not just this one; undone in Settings ›
         // Exclude postings. Roles you saved, applied to or hid stay.
         if !job.company.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1074,6 +1089,7 @@ private struct JobDetailContent: View {
                     headerCard
                         .onGeometryChange(for: Bool.self) { $0.frame(in: .scrollView).maxY < 0 } action: { headerScrolledOff = $0 }
                     ApplyKitView(job: job, description: currentDescription)
+                    ResumeSection(job: job, shortcutEnabled: !noteFocused)
                     if !job.reasons.isEmpty { reasons }
                     RetriageSection(job: job, shortcutEnabled: !noteFocused)
                     if let ranking = job.rankingBreakdown { rankingCard(ranking) }
