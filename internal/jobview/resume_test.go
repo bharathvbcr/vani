@@ -42,9 +42,16 @@ func saveResume(t *testing.T, st *resumestore.Store, key string, m resumestore.M
 	}
 }
 
+// resumeFor is ResumeFor over a fresh walk of st, as a listing does it.
+func resumeFor(t *testing.T, st *resumestore.Store, key string) *ResumeSummary {
+	t.Helper()
+	x, _ := st.Summaries() // a walk that failed answers every job with its error
+	return ResumeFor(x, key)
+}
+
 func TestResumeSummaryNone(t *testing.T) {
 	st, _ := resumeStore(t)
-	if got := ResumeFor(st, "gh:acme:1"); got != nil {
+	if got := resumeFor(t, st, "gh:acme:1"); got != nil {
 		t.Fatalf("a job with no versions has a summary: %+v", got)
 	}
 	if got := ResumeFor(nil, "gh:acme:1"); got != nil {
@@ -60,7 +67,7 @@ func TestResumeSummaryNone(t *testing.T) {
 func TestResumeSummaryCurrentOnly(t *testing.T) {
 	st, _ := resumeStore(t)
 	saveResume(t, st, "gh:acme:1", resumeMeta(func(m *resumestore.Meta) { m.Pages = 2; m.Checks.Fit = "soft"; m.Source = "edited" }))
-	got := ResumeFor(st, "gh:acme:1")
+	got := resumeFor(t, st, "gh:acme:1")
 	want := ResumeSummary{Current: 1, Versions: 1, Pages: 2, Fit: "soft", Eligibility: "current", Source: "edited"}
 	if got == nil || *got != want {
 		t.Fatalf("summary = %+v, want %+v", got, want)
@@ -83,7 +90,7 @@ func TestResumeSummaryCurrentAndUsed(t *testing.T) {
 	if _, err := st.Use(context.Background(), "gh:acme:1", 1); err != nil {
 		t.Fatal(err)
 	}
-	got := ResumeFor(st, "gh:acme:1")
+	got := resumeFor(t, st, "gh:acme:1")
 	want := ResumeSummary{Current: 2, Used: 1, Versions: 2, Pages: 2, Fit: "passed", Eligibility: "current", Source: "edited"}
 	if got == nil || *got != want {
 		t.Fatalf("summary = %+v, want %+v", got, want)
@@ -94,7 +101,7 @@ func TestResumeSummaryParentlessVersionKeepsCurrent(t *testing.T) {
 	st, _ := resumeStore(t)
 	saveResume(t, st, "gh:acme:1", resumeMeta(nil))
 	saveResume(t, st, "gh:acme:1", resumeMeta(nil)) // parentless: current stays v1
-	got := ResumeFor(st, "gh:acme:1")
+	got := resumeFor(t, st, "gh:acme:1")
 	if got == nil || got.Versions != 2 || got.Current != 1 || got.Used != 0 {
 		t.Fatalf("summary = %+v", got)
 	}
@@ -123,7 +130,7 @@ func TestResumeSummaryDamagedIsAnErrorNotAbsence(t *testing.T) {
 	if err := os.Remove(filepath.Join(damaged, "v1.pdf")); err != nil {
 		t.Fatal(err)
 	}
-	got := ResumeFor(st, "gh:acme:1")
+	got := resumeFor(t, st, "gh:acme:1")
 	if got == nil || got.Error != "unreadable" || got.Versions != 0 || got.Current != 0 {
 		t.Fatalf("damaged job = %+v, want an unreadable summary", got)
 	}
@@ -132,7 +139,7 @@ func TestResumeSummaryDamagedIsAnErrorNotAbsence(t *testing.T) {
 		t.Fatalf("error not on the wire: %s", raw)
 	}
 	// The other job is unaffected.
-	if other := ResumeFor(st, "gh:acme:2"); other == nil || other.Error != "" || other.Current != 1 {
+	if other := resumeFor(t, st, "gh:acme:2"); other == nil || other.Error != "" || other.Current != 1 {
 		t.Fatalf("job 2 = %+v", other)
 	}
 }
@@ -150,7 +157,7 @@ func TestResumeSummaryOtherSchemaIsUnsupported(t *testing.T) {
 			}
 		}
 	}
-	got := ResumeFor(st, "gh:acme:1")
+	got := resumeFor(t, st, "gh:acme:1")
 	if got == nil || got.Error != "unsupported" {
 		t.Fatalf("summary = %+v", got)
 	}
@@ -166,7 +173,7 @@ func TestResumeSummaryUnusableStoreRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ResumeFor(st, "gh:acme:1"); got == nil || got.Error != "unreadable" {
+	if got := resumeFor(t, st, "gh:acme:1"); got == nil || got.Error != "unreadable" {
 		t.Fatalf("summary = %+v", got)
 	}
 }
