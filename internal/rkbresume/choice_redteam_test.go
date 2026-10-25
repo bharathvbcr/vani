@@ -175,7 +175,7 @@ func TestRedteamKeywordMarkupStaysInertInTheSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Skipf("scenario did not reach rkb as tailored: %s", res.Reason)
 	}
 	sel := f.rkb.sels[len(f.rkb.sels)-1]

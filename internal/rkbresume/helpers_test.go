@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -207,6 +208,11 @@ type fitSpec struct {
 	exit     int  // overrides the exit code when noReport
 	stderr   string
 	orphans  []string
+	// lines are per-bullet line counts for the report's "bullets" (id, text and
+	// lines, as rkb writes them; the text is the owner's, to prove it is never kept).
+	lines map[string]int
+	// extra are further report bullets as rkb could write them (ids not on the page, odd counts).
+	extra []map[string]any
 }
 
 type fakeRKB struct {
@@ -316,6 +322,18 @@ func (r *fakeRKB) Run(ctx context.Context, c Command, timeout time.Duration) (Ou
 			orph = append(orph, map[string]string{"id": id})
 		}
 		rep["orphan_last_lines"] = orph
+		if len(spec.lines) > 0 || len(spec.extra) > 0 {
+			var bl []map[string]any
+			ids := make([]string, 0, len(spec.lines))
+			for id := range spec.lines {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				bl = append(bl, map[string]any{"id": id, "text": ownerName + " " + ownerContact, "lines": spec.lines[id], "last_line_fill": 0.5})
+			}
+			rep["bullets"] = append(bl, spec.extra...)
+		}
 		b, _ := json.Marshal(rep)
 		if err := os.WriteFile(flag(c.Args, "--report"), b, 0o600); err != nil {
 			r.t.Fatal(err)

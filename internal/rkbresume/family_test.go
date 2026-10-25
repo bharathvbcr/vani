@@ -77,7 +77,7 @@ func TestBuildRefusesTwoFramingsOfOneProjectThenBuildsTheRetry(t *testing.T) {
 		replyWith(secSummary, secExperience, secAgent, secGPU),
 	}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("result = %+v, want the corrected reply built", res)
 	}
 	if len(f.provider.reqs) != 2 {

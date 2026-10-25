@@ -81,7 +81,7 @@ func TestTheModelMayReorderOnlyTheProjectSections(t *testing.T) {
 	addProjects(t, f)
 	f.provider.replies = []string{replyWith(secSummary, secExperience, secGPU, secAgent)}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("result = %+v", res)
 	}
 	got := strings.Join(selTitles(t, f.rkb.sels[len(f.rkb.sels)-1]), ",")
@@ -136,7 +136,7 @@ func TestReorderedSectionsMustBeAPermutation(t *testing.T) {
 			addProjects(t, f)
 			f.provider.replies = []string{c.reply}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionBase || !strings.Contains(res.Reason, c.why) {
+			if res.Source != SourceBase || !strings.Contains(res.Reason, c.why) {
 				t.Fatalf("result = %+v, want a refusal containing %q", res, c.why)
 			}
 			if got := strings.Join(selTitles(t, f.rkb.sels[len(f.rkb.sels)-1]), ","); got != "Summary,Experience,Agent Systems,GPU Systems,Skills,Education" {
@@ -236,7 +236,7 @@ func TestAContinuationDirectlyAfterItsPredecessorIsBuilt(t *testing.T) {
 	f := newFixture(t)
 	f.provider.replies = []string{replyExpA(`["a1","a7","a8"]`)}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("result = %+v", res)
 	}
 	ids := selBullets(t, f.rkb.sels[len(f.rkb.sels)-1])
@@ -262,7 +262,7 @@ func TestAContinuationApartFromItsPredecessorIsRefusedAndTheRetryExplains(t *tes
 			f := newFixture(t)
 			f.provider.replies = []string{replyExpA(ids), replyExpA(`["a1","a7","a8"]`)}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionTailored || res.Reason != "after one retry" {
+			if res.Source != SourceTailored || res.Reason != "after one retry" {
 				t.Fatalf("result = %+v", res)
 			}
 			fb := f.provider.reqs[1].Messages[2].Text()
@@ -275,7 +275,7 @@ func TestAContinuationApartFromItsPredecessorIsRefusedAndTheRetryExplains(t *tes
 		f := newFixture(t)
 		f.provider.replies = []string{replyExpA(`["a1","a8"]`)}
 		res := mustBuild(t, f)
-		if res.Selection != SelectionBase || !strings.Contains(res.Reason, `"a8" continues the bullet before it`) {
+		if res.Source != SourceBase || !strings.Contains(res.Reason, `"a8" continues the bullet before it`) {
 			t.Fatalf("result = %+v", res)
 		}
 		for _, sel := range f.rkb.sels {
@@ -291,7 +291,7 @@ func TestAContinuationWithNoKnownPredecessorIsRefused(t *testing.T) {
 	reply := replyWith(secSummary, `{"title":"Experience","entries":[{"entry":"exp-a","bullets":["a1"]},{"entry":"exp-b","bullets":["b1"]},{"entry":"exp-c","bullets":["c2","c1"]}]}`)
 	f.provider.replies = []string{reply}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionBase || !strings.Contains(res.Reason, `"c2" is not available`) {
+	if res.Source != SourceBase || !strings.Contains(res.Reason, `"c2" is not available`) {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -315,7 +315,7 @@ func TestDroppingAnUnverifiedBulletDropsTheContinuationAfterIt(t *testing.T) {
 	f.provider.replies = []string{reply}
 	f.rkb.unverified = map[string][]string{"clmUnv": {"u1"}}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored || strings.Join(res.UnverifiedDropped, ",") != "c3,u1" {
+	if res.Source != SourceTailored || strings.Join(res.UnverifiedDropped, ",") != "c3,u1" {
 		t.Fatalf("result = %+v", res)
 	}
 	for _, sel := range f.rkb.sels[len(f.rkb.sels)-3:] {

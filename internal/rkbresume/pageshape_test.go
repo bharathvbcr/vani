@@ -71,7 +71,7 @@ func TestAProjectEntryWithNoVerifiedBulletLeftIsDropped(t *testing.T) {
 	f.provider.replies = []string{replyWith(secSummary, secExperience,
 		`{"title":"Agent Systems","entries":[{"entry":"proj-a","bullets":["p2"]}]}`, secGPU)}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored || !has(res.UnverifiedDropped, "p2") {
+	if res.Source != SourceTailored || !has(res.UnverifiedDropped, "p2") {
 		t.Fatalf("scenario did not drop p2: %+v", res)
 	}
 	sel := lastSel(t, f)
@@ -106,7 +106,7 @@ func TestASectionWithNothingEligibleMayBeLeftOut(t *testing.T) {
 			secs := append([]string{secSummary, secExperience, secAgent}, gpu...)
 			f.provider.replies = []string{replyWith(secs...)}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionTailored {
+			if res.Source != SourceTailored {
 				t.Fatalf("not tailored: %s", res.Reason)
 			}
 			if got := strings.Join(selTitles(t, lastSel(t, f)), ","); got != "Summary,Experience,Agent Systems,Skills,Education" {
@@ -121,7 +121,7 @@ func TestASectionWithNothingEligibleMayBeLeftOut(t *testing.T) {
 	f := newFixture(t)
 	addProjects(t, f)
 	f.provider.replies = []string{replyWith(secSummary, secExperience, secAgent)}
-	if res := mustBuild(t, f); res.Selection != SelectionBase || !strings.Contains(res.Reason, `"GPU Systems" is missing`) {
+	if res := mustBuild(t, f); res.Source != SourceBase || !strings.Contains(res.Reason, `"GPU Systems" is missing`) {
 		t.Errorf("a section with evidence was left out: %+v", res)
 	}
 }
@@ -141,7 +141,7 @@ func TestLeavingASectionOutKeepsTheModelsOrderOfTheRest(t *testing.T) {
 	})
 	f.provider.replies = []string{replyWith(secSummary, secExperience, secGPU, secAgent)}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("not tailored: %s", res.Reason)
 	}
 	if got := strings.Join(selTitles(t, lastSel(t, f)), ","); got != "Summary,Experience,GPU Systems,Agent Systems,Skills,Education" {
@@ -215,7 +215,7 @@ func TestAProjectMayGoUnderAnotherProjectSection(t *testing.T) {
 		`{"title":"GPU Systems","entries":[{"entry":"proj-a","bullets":["p1","p2"]}]}`)
 	f.provider.replies = []string{swapped}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("a project under another project section was refused: %s", res.Reason)
 	}
 	if user := userText(f.provider.reqs[0]); !strings.Contains(user, "a project goes under the section whose title fits its topic") {
@@ -238,7 +238,7 @@ func TestABareRoleKeepsItsPlaceInTheTailoredWorkHistory(t *testing.T) {
 	})
 	f.provider.replies = []string{validReply()}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("not tailored: %s", res.Reason)
 	}
 	var order []string
@@ -365,7 +365,7 @@ func TestANamedBankHeaderIsMaskedInEveryRkbChannel(t *testing.T) {
 // Only running out of time keeps the soft-fit result; a caller who cancels does
 // not get a page after saying stop.
 func TestKeepSoftOnTimeoutOnlyKeepsOnATimeout(t *testing.T) {
-	soft := &Result{PDF: testPDF, Selection: SelectionTailored, Reason: "kept with a layout note"}
+	soft := &Result{PDF: testPDF, Source: SourceTailored, Reason: "kept with a layout note"}
 	expired, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 	<-expired.Done()

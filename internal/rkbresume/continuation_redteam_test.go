@@ -216,8 +216,8 @@ func TestRedteamChainDropsEveryLinkAfterTheDroppedOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if res.Selection != SelectionTailored || !has(res.UnverifiedDropped, "k2") {
-		t.Fatalf("the scenario did not run: selection=%s dropped=%v reason=%q", res.Selection, res.UnverifiedDropped, res.Reason)
+	if res.Source != SourceTailored || !has(res.UnverifiedDropped, "k2") {
+		t.Fatalf("the scenario did not run: selection=%s dropped=%v reason=%q", res.Source, res.UnverifiedDropped, res.Reason)
 	}
 	last := f.rkb.sels[len(f.rkb.sels)-1]
 	if has(selBullets(t, last), "k3") {
