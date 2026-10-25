@@ -375,7 +375,7 @@ func (r *fakeRKB) readSel(path string) string {
 func (r *fakeRKB) writeClaims(path, sel string) {
 	claims := map[string]any{}
 	for id, v := range claimValues {
-		dv := true
+		dv := sel != "" // like real rkb (claims.go: P2OK is len(sentences) > 0), an export of no selection judges no claim double-verified (measured on the owner's bank: 340 claims, 0 verified) and says nothing against it
 		if triggers, ok := r.unverified[id]; ok && sel != "" {
 			dv = false
 			if len(triggers) > 0 { // unverified only while one of these bullets is on the page
@@ -394,7 +394,7 @@ func (r *fakeRKB) writeClaims(path, sel string) {
 			v = r.claimValue(id, v, sel)
 		}
 		view := map[string]any{"value": v, "double_verified": dv}
-		if !dv {
+		if !dv && sel != "" {
 			view["problems"] = []string{"pass 2 missing for: a sentence"}
 		}
 		claims[id] = view
