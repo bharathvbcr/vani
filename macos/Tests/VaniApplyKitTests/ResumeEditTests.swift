@@ -324,6 +324,7 @@ final class ResumeEditTests: XCTestCase {
         XCTAssertEqual(targets(d, p), [.entry("projA")], "a project with nothing under it is refused")
         d.sections[2].entries[0].bullets = [.init(id: "p1", included: false)]
         XCTAssertEqual(targets(d, p), [.entry("projA")], "switching its only bullet off leaves it bare")
+        XCTAssertEqual(d.issues(pool: p).map(\.blocking), [false], "the heading rule is approximate here, so it warns and does not block")
     }
 
     func testAnEmptyPageIsMarkedWhateverThePool() throws {

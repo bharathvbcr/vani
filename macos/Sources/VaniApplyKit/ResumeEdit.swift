@@ -540,6 +540,25 @@ public struct ResumeDraft: Equatable, Sendable {
         }
     }
 
+    // MARK: What the pool still offers
+
+    /// The pool's bullets for a place that have no row there yet (switched off ones are rows, and are
+    /// switched back on in place), in the pool's order.
+    public func candidates(in place: Place, pool: ResumePool) -> [ResumePool.Bullet] {
+        let have = rowIDs(place)
+        let all: [ResumePool.Bullet]
+        switch place {
+        case .summary: all = pool.summary
+        case let .entry(id): all = pool.entry(id)?.bullets ?? []
+        }
+        return all.filter { !have.contains($0.id) }
+    }
+
+    /// The pool's entries that may go in the section and are not on the page yet.
+    public func addableEntries(in title: String, pool: ResumePool) -> [ResumePool.Entry] {
+        pool.entries.filter { $0.sections.contains(title) && entry($0.id) == nil }
+    }
+
     // MARK: Issues
 
     public struct Issue: Equatable, Sendable, Identifiable {
@@ -553,7 +572,15 @@ public struct ResumeDraft: Equatable, Sendable {
 
         public var target: Target
         public var message: String
+        /// False for a rule this file can only approximate: it is shown, and Go decides.
+        public var blocking = true
         public var id: String { "\(target)|\(message)" }
+
+        public init(target: Target, message: String, blocking: Bool = true) {
+            self.target = target
+            self.message = message
+            self.blocking = blocking
+        }
     }
 
     /// What Go would refuse that is cheap to see here, each on the row it is about. With no pool only the
@@ -561,7 +588,7 @@ public struct ResumeDraft: Equatable, Sendable {
     /// that is switched off is not on the page and is not checked.
     public func issues(pool: ResumePool?) -> [Issue] {
         var out: [Issue] = []
-        func add(_ t: Issue.Target, _ m: String) { out.append(Issue(target: t, message: m)) }
+        func add(_ t: Issue.Target, _ m: String, blocking: Bool = true) { out.append(Issue(target: t, message: m, blocking: blocking)) }
         var seenBullets: Set<String> = []
         var seenEntries: Set<String> = []
         var any = false
@@ -602,7 +629,7 @@ public struct ResumeDraft: Equatable, Sendable {
                             if !pe.sections.contains(s.title) { add(.entry(e.id), "This entry does not go in \(s.title).") }
                             let isJob = !pe.org.isEmpty && !pe.dates.isEmpty
                             if !e.bullets.contains(where: \.included), !isJob, !pool.bareInBase.contains(e.id) {
-                                add(.entry(e.id), "This entry has no bullets. Only a job, or an entry your base resume lists with none, may stay as a heading (checked roughly here; Vani decides).")
+                                add(.entry(e.id), "This entry has no bullets. Only a job, or an entry your base resume lists with none, may stay as a heading (checked roughly here; Vani decides).", blocking: false)
                             }
                         } else {
                             add(.entry(e.id), "Your knowledge base does not offer this entry any more.")
