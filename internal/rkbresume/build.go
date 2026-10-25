@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -124,6 +125,7 @@ func (b *builder) finish(source, reason string, out outcome) (Result, *Error) {
 	}
 	if source == SourceTailored {
 		res.Instruction = b.instr // a base page was shaped by no model, so by no instruction
+		res.Scope, res.Lock = b.cfg.Tailor.Scope, slices.Clone(b.cfg.Tailor.Lock)
 	}
 	return res, nil
 }

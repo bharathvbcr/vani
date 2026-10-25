@@ -396,6 +396,8 @@ func readMeta(dir, key string, n int) (Meta, error) {
 		return Meta{}, fmt.Errorf("%w: v%d has parent %d", ErrDamaged, n, m.Parent)
 	case schema < 2 && m.Instruction != "":
 		return Meta{}, fmt.Errorf("%w: v%d is schema %d, which has no instruction", ErrDamaged, n, schema)
+	case schema < 2 && (m.Scope != "" || len(m.Lock) > 0):
+		return Meta{}, fmt.Errorf("%w: v%d is schema %d, which has no scope or lock", ErrDamaged, n, schema)
 	}
 	if err := checkMeta(m); err != nil {
 		return Meta{}, fmt.Errorf("%w: v%d: %v", ErrDamaged, n, err)

@@ -392,25 +392,28 @@ func TestFileSHA256IsBoundedAndRefusesAFolder(t *testing.T) {
 // it, copied here so rkbresume need not import the store. A Result must marshal
 // into it without a key Meta lacks, and survive the trip unchanged.
 type metaFields struct {
-	Schema    int             `json:"schema"`
-	Key       string          `json:"key"`
-	Version   int             `json:"version"`
-	Parent    int             `json:"parent,omitempty"`
-	Source    string          `json:"source"`
-	Reason    string          `json:"reason,omitempty"`
-	Model     string          `json:"model,omitempty"`
-	Cost      metaCost        `json:"cost"`
-	Checks    metaChecks      `json:"checks"`
-	Pages     int             `json:"pages,omitempty"`
-	Notes     []string        `json:"notes,omitempty"`
-	Dropped   []string        `json:"unverified_dropped,omitempty"`
-	Keywords  []string        `json:"jd_keywords,omitempty"`
-	Selection json.RawMessage `json:"selection"`
-	Bullets   []metaBullet    `json:"bullets"`
-	FitLines  map[string]int  `json:"fit_lines,omitempty"`
-	Prints    metaPrints      `json:"fingerprints"`
-	PDFSHA256 string          `json:"pdf_sha256,omitempty"`
-	Created   time.Time       `json:"created"`
+	Schema      int             `json:"schema"`
+	Key         string          `json:"key"`
+	Version     int             `json:"version"`
+	Parent      int             `json:"parent,omitempty"`
+	Source      string          `json:"source"`
+	Reason      string          `json:"reason,omitempty"`
+	Instruction string          `json:"instruction,omitempty"`
+	Scope       string          `json:"scope,omitempty"`
+	Lock        []string        `json:"lock,omitempty"`
+	Model       string          `json:"model,omitempty"`
+	Cost        metaCost        `json:"cost"`
+	Checks      metaChecks      `json:"checks"`
+	Pages       int             `json:"pages,omitempty"`
+	Notes       []string        `json:"notes,omitempty"`
+	Dropped     []string        `json:"unverified_dropped,omitempty"`
+	Keywords    []string        `json:"jd_keywords,omitempty"`
+	Selection   json.RawMessage `json:"selection"`
+	Bullets     []metaBullet    `json:"bullets"`
+	FitLines    map[string]int  `json:"fit_lines,omitempty"`
+	Prints      metaPrints      `json:"fingerprints"`
+	PDFSHA256   string          `json:"pdf_sha256,omitempty"`
+	Created     time.Time       `json:"created"`
 }
 
 type metaCost struct {

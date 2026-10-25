@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,92 @@ func TestReadRefusesAnInstructionWrittenByHandThatBreaksTheBound(t *testing.T) {
 	p := versionFile(filepath.Join(Dir(state), jobFolder("k")), 1, "json")
 	raw, _ := os.ReadFile(p)
 	os.WriteFile(p, bytes.Replace(raw, []byte(`"instruction":"fine"`), []byte(`"instruction":"`+strings.Repeat("x", MaxInstructionRunes+1)+`"`), 1), 0o600)
+	if _, _, err := s.Get("k", 1); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("Get = %v, want ErrDamaged", err)
+	}
+}
+
+func TestSchema2RoundTripsScopeAndLockAndASchema1RecordWithThemIsDamage(t *testing.T) {
+	s, state := newStore(t)
+	m := goodMeta()
+	m.Scope = "GPU Systems"
+	m.Lock = []string{"Summary", "Agent Systems"}
+	mustSave(t, s, "k", m, pdfBytes("a"))
+	got, _, err := s.Get("k", 1)
+	if err != nil || got.Scope != "GPU Systems" || strings.Join(got.Lock, "|") != "Summary|Agent Systems" {
+		t.Fatalf("Get = %+v, %v", got, err)
+	}
+	if cur, err := s.Current("k"); err != nil || cur.Scope != "GPU Systems" || len(cur.Lock) != 2 {
+		t.Fatalf("Current = %+v, %v", cur, err)
+	}
+	// Nothing kept writes neither key.
+	mustSave(t, s, "k2", goodMeta(), pdfBytes("b"))
+	raw, _ := os.ReadFile(versionFile(filepath.Join(Dir(state), jobFolder("k2")), 1, "json"))
+	if bytes.Contains(raw, []byte(`"scope"`)) || bytes.Contains(raw, []byte(`"lock"`)) {
+		t.Fatalf("a record that kept nothing names the keys: %s", raw)
+	}
+	// Schema 1 never had them.
+	asSchema1(t, state, "k", 1)
+	if _, _, err := s.Get("k", 1); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("Get = %v, want ErrDamaged: schema 1 never had a scope or lock", err)
+	}
+	// A rekey carries them.
+	mustSave(t, s, "x:old", m, pdfBytes("c"))
+	if err := s.Rekey(t.Context(), "x:old", "x:new"); err != nil {
+		t.Fatal(err)
+	}
+	if all, err := s.List("x:new"); err != nil || len(all) != 1 || all[0].Scope != "GPU Systems" || len(all[0].Lock) != 2 {
+		t.Fatalf("after Rekey: %+v, %v", all, err)
+	}
+}
+
+func TestSaveRefusesAScopeOrLockTheStoreWillNotKeep(t *testing.T) {
+	s, state := newStore(t)
+	names := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "S" + strconv.Itoa(i)
+		}
+		return out
+	}
+	for name, edit := range map[string]func(*Meta){
+		"121 rune scope":    func(m *Meta) { m.Scope = strings.Repeat("é", MaxNameRunes+1) },
+		"121 rune lock":     func(m *Meta) { m.Lock = []string{strings.Repeat("é", MaxNameRunes+1)} },
+		"21 locks":          func(m *Meta) { m.Lock = names(MaxLocks + 1) },
+		"newline in scope":  func(m *Meta) { m.Scope = "a\nb" },
+		"bidi in a lock":    func(m *Meta) { m.Lock = []string{"abc‮def"} },
+		"invalid utf8":      func(m *Meta) { m.Scope = "ab\xffcd" },
+		"empty lock":        func(m *Meta) { m.Lock = []string{""} },
+		"space around lock": func(m *Meta) { m.Lock = []string{" Summary"} },
+		"scope with space":  func(m *Meta) { m.Scope = "Summary " },
+		"a lock twice":      func(m *Meta) { m.Lock = []string{"Summary", "Summary"} },
+	} {
+		m := goodMeta()
+		edit(&m)
+		if _, _, err := s.Save(t.Context(), "k", m, pdfBytes("a")); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: Save = %v, want ErrInvalid", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(Dir(state), jobFolder("k"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused record touched the disk: %v", err)
+	}
+	// The bounds themselves are kept: 120 two-byte runes, 20 locks.
+	m := goodMeta()
+	m.Scope = strings.Repeat("é", MaxNameRunes)
+	m.Lock = names(MaxLocks)
+	if got, _ := mustSave(t, s, "k", m, pdfBytes("a")); got.Scope != m.Scope || len(got.Lock) != MaxLocks {
+		t.Fatalf("a record at the bounds was not kept")
+	}
+}
+
+func TestReadRefusesAScopeWrittenByHandThatBreaksTheBound(t *testing.T) {
+	s, state := newStore(t)
+	m := goodMeta()
+	m.Scope = "fine"
+	mustSave(t, s, "k", m, pdfBytes("a"))
+	p := versionFile(filepath.Join(Dir(state), jobFolder("k")), 1, "json")
+	raw, _ := os.ReadFile(p)
+	os.WriteFile(p, bytes.Replace(raw, []byte(`"scope":"fine"`), []byte(`"scope":"`+strings.Repeat("x", MaxNameRunes+1)+`"`), 1), 0o600)
 	if _, _, err := s.Get("k", 1); !errors.Is(err, ErrDamaged) {
 		t.Fatalf("Get = %v, want ErrDamaged", err)
 	}

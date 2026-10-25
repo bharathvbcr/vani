@@ -120,6 +120,42 @@ func TestBuildFromAloneRedraftsWholeAndAScopeRepicksOneEntry(t *testing.T) {
 	}
 }
 
+// A version records the scope it re-picked (owner decision 2026-10-25) and the diff
+// says so per side; a version no model shaped (render --fit) carries neither the
+// scope nor the instruction of its parent.
+func TestAScopedRedraftRecordsItsScopeAndADerivedVersionInheritsNothing(t *testing.T) {
+	_, p, st := jrRedraftSetup(t)
+	p.text = `{"sections":[{"title":"Experience","entries":[{"entry":"alpha-job","bullets":["b2"]}]}]}`
+	out, _ := jrRun(t, 0, "", "build", "--json", "--scope", "alpha-job", "--instruction", "prefer b2", jrKey)
+	v2 := jrSaved(t, out)
+	if v2.Version != 2 || v2.Scope != "alpha-job" || len(v2.Lock) != 0 || v2.Instruction != "prefer b2" {
+		t.Fatalf("v2 = %+v", v2.Meta)
+	}
+	got, _, err := st.Get(jrKey, 2)
+	if err != nil || got.Scope != "alpha-job" || got.Schema != 2 {
+		t.Fatalf("stored v2 = %+v, %v", got, err)
+	}
+	// The page carries the scope's name nowhere but the record.
+	if strings.Contains(string(got.Selection), "scope") {
+		t.Errorf("the scope is in the stored choice: %s", got.Selection)
+	}
+
+	out, _ = jrRun(t, 0, jrEditOf("alpha-job", "b2"), "render", "--json", "--fit", "--from", "v2", jrKey)
+	v3 := jrSaved(t, out)
+	if v3.Version != 3 || v3.Parent != 2 || v3.Scope != "" || v3.Lock != nil || v3.Instruction != "" {
+		t.Errorf("a derived version inherited what its parent was asked: %+v", v3.Meta)
+	}
+
+	_, d := jrDiff(t, 0, jrKey, "v1", "v2")
+	if d.To.Scope != "alpha-job" || d.To.Instruction != "prefer b2" || d.From.Scope != "" || len(d.From.Lock) != 0 {
+		t.Errorf("sides = %+v / %+v", d.From, d.To)
+	}
+	_, d = jrDiff(t, 0, jrKey, "v2", "v3")
+	if d.From.Scope != "alpha-job" || d.To.Scope != "" {
+		t.Errorf("sides = %+v / %+v", d.From, d.To)
+	}
+}
+
 func TestRedraftRefusalsAreCodedAndCostNothing(t *testing.T) {
 	for name, tc := range map[string]struct {
 		args []string

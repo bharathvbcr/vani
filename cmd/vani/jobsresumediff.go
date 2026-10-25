@@ -16,12 +16,15 @@ import (
 // shows (a restore). Both read the store alone: no rkb, no model, nothing spent.
 
 // resumeDiffSide names one side of a diff: which version, how it was made and, for
-// a tailored one, the preference it was asked with (as recorded, scrubbed).
+// a tailored one, the preference it was asked with (as recorded, scrubbed) and
+// what its redraft kept: the scope and the locked section names.
 type resumeDiffSide struct {
 	Version     int       `json:"version"`
 	Source      string    `json:"source"`
 	Parent      int       `json:"parent,omitempty"`
 	Instruction string    `json:"instruction,omitempty"`
+	Scope       string    `json:"scope,omitempty"`
+	Lock        []string  `json:"lock,omitempty"`
 	Created     time.Time `json:"created"`
 }
 
@@ -348,7 +351,7 @@ func (e *env) resumeDiff(ctx context.Context, rawKey, rawA, rawB string) (resume
 	}
 	bd, ov, so, kd := diffChoices(pa, pb)
 	side := func(m resumestore.Meta) resumeDiffSide {
-		return resumeDiffSide{Version: m.Version, Source: m.Source, Parent: m.Parent, Instruction: m.Instruction, Created: m.Created}
+		return resumeDiffSide{Version: m.Version, Source: m.Source, Parent: m.Parent, Instruction: m.Instruction, Scope: m.Scope, Lock: m.Lock, Created: m.Created}
 	}
 	same := len(bd.Added)+len(bd.Removed)+len(bd.Moved)+len(ov)+len(kd.Added)+len(kd.Removed) == 0 && so == nil
 	return resumeDiffed{Key: string(job.key), From: side(sides[0]), To: side(sides[1]), Same: same,

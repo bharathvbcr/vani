@@ -8,7 +8,8 @@ import (
 
 const (
 	// Schema is the version record layout this package writes. Schema 2 adds
-	// Meta.Instruction (the owner's preference a redraft was asked with).
+	// Meta.Instruction (the owner's preference a redraft was asked with), Meta.Scope
+	// and Meta.Lock (what it kept).
 	Schema = 2
 	// MinSchema is the oldest layout still read: a schema 1 record reads as it
 	// always did, with no instruction. A newer record is ErrSchema, so an older
@@ -16,6 +17,11 @@ const (
 	MinSchema = 1
 	// MaxInstructionRunes bounds Meta.Instruction, in runes.
 	MaxInstructionRunes = 500
+	// MaxLocks bounds Meta.Lock (the names a redraft kept) and MaxNameRunes each
+	// name and Meta.Scope, in runes. rkbresume refuses a scope or lock past these
+	// before a model turn, so a paid build is never refused its record.
+	MaxLocks     = 20
+	MaxNameRunes = 120
 )
 
 // Meta is one version of a job's resume: vN.json, beside vN.pdf. The store does
@@ -34,20 +40,27 @@ type Meta struct {
 	// (schema 2): at most MaxInstructionRunes printable runes, already scrubbed
 	// of the header's strings and free of anything that reads as an email address
 	// or phone number by the builder. Never rendered on the page.
-	Instruction string          `json:"instruction,omitempty"`
-	Model       string          `json:"model,omitempty"` // model id when a model turn ran
-	Cost        Cost            `json:"cost"`
-	Checks      Checks          `json:"checks"`
-	Pages       int             `json:"pages,omitempty"` // 0 = unknown (not fitted)
-	Notes       []string        `json:"notes,omitempty"` // rkb layout notes (scrubbed)
-	Dropped     []string        `json:"unverified_dropped,omitempty"`
-	Keywords    []string        `json:"jd_keywords,omitempty"`
-	Selection   json.RawMessage `json:"selection"`           // the choice in the owner-edit shape (rkbresume decodeEdit accepts it)
-	Bullets     []BulletRef     `json:"bullets"`             // every bullet on the page, page order
-	FitLines    map[string]int  `json:"fit_lines,omitempty"` // bullet id -> rendered lines (from rkb fit report)
-	Prints      Fingerprints    `json:"fingerprints"`
-	PDFSHA256   string          `json:"pdf_sha256,omitempty"` // "" when there is no PDF (render without fit)
-	Created     time.Time       `json:"created"`
+	Instruction string `json:"instruction,omitempty"`
+	// Scope and Lock are what a redraft kept (schema 2): Scope is the section title
+	// or entry id whose bullets alone were re-picked, Lock the section titles kept
+	// as they were. Names only, never page text; bounded by MaxNameRunes and
+	// MaxLocks; absent for a build that kept nothing and for a version no model
+	// shaped (a derived page does not inherit its parent's).
+	Scope     string          `json:"scope,omitempty"`
+	Lock      []string        `json:"lock,omitempty"`
+	Model     string          `json:"model,omitempty"` // model id when a model turn ran
+	Cost      Cost            `json:"cost"`
+	Checks    Checks          `json:"checks"`
+	Pages     int             `json:"pages,omitempty"` // 0 = unknown (not fitted)
+	Notes     []string        `json:"notes,omitempty"` // rkb layout notes (scrubbed)
+	Dropped   []string        `json:"unverified_dropped,omitempty"`
+	Keywords  []string        `json:"jd_keywords,omitempty"`
+	Selection json.RawMessage `json:"selection"`           // the choice in the owner-edit shape (rkbresume decodeEdit accepts it)
+	Bullets   []BulletRef     `json:"bullets"`             // every bullet on the page, page order
+	FitLines  map[string]int  `json:"fit_lines,omitempty"` // bullet id -> rendered lines (from rkb fit report)
+	Prints    Fingerprints    `json:"fingerprints"`
+	PDFSHA256 string          `json:"pdf_sha256,omitempty"` // "" when there is no PDF (render without fit)
+	Created   time.Time       `json:"created"`
 }
 
 // Cost is what a build's model turns cost.

@@ -45,8 +45,11 @@ const (
 	// MaxInstructionRunes bounds the owner's instruction (the resume store keeps the
 	// same bound on the record).
 	MaxInstructionRunes = 500
-	maxScopeRunes       = 200
-	maxLocks            = 16
+	// maxScopeRunes bounds a scope or lock name and maxLocks the locks: the resume
+	// store keeps both on the record (resumestore.MaxNameRunes, MaxLocks) and
+	// refuses a longer one, so a build must refuse them before it spends a turn.
+	maxScopeRunes = 120
+	maxLocks      = 16
 	// maxPreviousBytes bounds the previous-choice block of the prompt.
 	maxPreviousBytes = 6000
 	// keptPromptBytes bounds the lines a scope or lock adds to the prompt.

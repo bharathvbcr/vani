@@ -322,6 +322,53 @@ func TestSectionScopeRepicksOneSectionAndKeepsEverythingElseFromThePreviousChoic
 	}
 }
 
+func TestARedraftRecordsItsScopeAndLocksAsNormalizedNamesOnly(t *testing.T) {
+	f, prev := previousPage(t)
+	f.cfg.Tailor = Tailor{Previous: prev, Scope: "  GPU Systems ", Lock: []string{" Summary", "Experience", "Summary"}}
+	f.provider.replies = []string{`{"sections":[{"title":"GPU Systems","entries":[{"entry":"proj-b","bullets":["p4"]}]}]}`}
+	res := mustBuild(t, f)
+	if res.Scope != "GPU Systems" || strings.Join(res.Lock, "|") != "Summary|Experience" {
+		t.Errorf("recorded scope %q, lock %q (trimmed, each name once)", res.Scope, res.Lock)
+	}
+	raw, _ := json.Marshal(res)
+	if !strings.Contains(string(raw), `"scope":"GPU Systems"`) || !strings.Contains(string(raw), `"lock":["Summary","Experience"]`) {
+		t.Errorf("the record's keys: %s", raw)
+	}
+	// A build that kept nothing writes neither key.
+	f2, prev2 := previousPage(t)
+	f2.cfg.Tailor = Tailor{Previous: prev2}
+	f2.provider.replies = []string{replyWith(secSummary, secExperience, secAgent, secGPU)}
+	whole := mustBuild(t, f2)
+	if whole.Scope != "" || whole.Lock != nil {
+		t.Errorf("a whole redraft recorded scope %q lock %q", whole.Scope, whole.Lock)
+	}
+	if raw, _ := json.Marshal(whole); strings.Contains(string(raw), `"scope"`) || strings.Contains(string(raw), `"lock"`) {
+		t.Errorf("a whole redraft names the keys: %s", raw)
+	}
+}
+
+func TestAScopeOrLockNameOverTheStoresBoundIsRefusedBeforeATurn(t *testing.T) {
+	// The store keeps names of at most 120 runes and 20 locks; a longer one would
+	// refuse the record of a build that was already paid for.
+	for name, tc := range map[string]Tailor{
+		"121 rune scope": {Scope: strings.Repeat("é", 121)},
+		"121 rune lock":  {Lock: []string{strings.Repeat("é", 121)}},
+	} {
+		f, prev := previousPage(t)
+		tc.Previous = prev
+		f.cfg.Tailor = tc
+		f.provider.replies = []string{validReply()}
+		_, err := f.build()
+		wantCode(t, err, CodeBadScope)
+		if len(f.provider.reqs) != 0 {
+			t.Errorf("%s: spent %d turns", name, len(f.provider.reqs))
+		}
+	}
+	if maxScopeRunes != 120 || maxLocks > 20 {
+		t.Errorf("bounds %d runes, %d locks drifted from the store's 120 and 20", maxScopeRunes, maxLocks)
+	}
+}
+
 func TestEntryScopeRepicksOneEntryInPlace(t *testing.T) {
 	f, prev := previousPage(t)
 	f.cfg.Tailor = Tailor{Previous: prev, Scope: "exp-a"}

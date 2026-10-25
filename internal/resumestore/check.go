@@ -129,6 +129,49 @@ func checkInstruction(s string) error {
 	return nil
 }
 
+// checkName holds a redraft's scope or lock name to what the builder produces:
+// at most MaxNameRunes runes of valid, printable text on one line, trimmed.
+func checkName(field, s string) error {
+	switch {
+	case !utf8.ValidString(s):
+		return fmt.Errorf("%w: %s is not UTF-8", ErrInvalid, field)
+	case s == "" || strings.TrimSpace(s) != s:
+		return fmt.Errorf("%w: %s is empty or has space around it", ErrInvalid, field)
+	case utf8.RuneCountInString(s) > MaxNameRunes:
+		return fmt.Errorf("%w: %s is %d characters, over %d", ErrInvalid, field, utf8.RuneCountInString(s), MaxNameRunes)
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("%w: %s holds a control, formatting or invisible character", ErrInvalid, field)
+		}
+	}
+	return nil
+}
+
+// checkScope holds Meta.Scope and Meta.Lock to their bounds: empty scope is none,
+// at most MaxLocks distinct lock names.
+func checkScope(scope string, lock []string) error {
+	if scope != "" {
+		if err := checkName("scope", scope); err != nil {
+			return err
+		}
+	}
+	if len(lock) > MaxLocks {
+		return fmt.Errorf("%w: %d locks, over %d", ErrInvalid, len(lock), MaxLocks)
+	}
+	seen := map[string]bool{}
+	for _, l := range lock {
+		if err := checkName("lock", l); err != nil {
+			return err
+		}
+		if seen[l] {
+			return fmt.Errorf("%w: lock %q is listed twice", ErrInvalid, truncate(l, 40))
+		}
+		seen[l] = true
+	}
+	return nil
+}
+
 func texts(field string, ss []string, allowNL bool) error {
 	if len(ss) > maxListEntries {
 		return fmt.Errorf("%w: %s holds %d entries, over %d", ErrInvalid, field, len(ss), maxListEntries)
@@ -204,6 +247,9 @@ func checkMeta(m Meta) error {
 		return err
 	}
 	if err := checkInstruction(m.Instruction); err != nil {
+		return err
+	}
+	if err := checkScope(m.Scope, m.Lock); err != nil {
 		return err
 	}
 	if err := checkCost(m.Cost); err != nil {

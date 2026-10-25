@@ -240,6 +240,12 @@ type Result struct {
 	// was sent (scrubbed of the header's strings); empty for a base or edited page,
 	// which no model shaped.
 	Instruction string `json:"instruction,omitempty"`
+	// Scope and Lock are what the redraft kept, as normalized (names only): the
+	// section title or entry id re-picked alone, and the sections locked. Empty for
+	// a build that kept nothing and for a base or edited page, which no model shaped
+	// (like Instruction).
+	Scope string   `json:"scope,omitempty"`
+	Lock  []string `json:"lock,omitempty"`
 	// Checks says how each check ended; a check that did not run says so.
 	Checks Checks `json:"checks"`
 	// Notes are layout flaws accepted on the page (an orphan last line, an
