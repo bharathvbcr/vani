@@ -109,7 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func revealMainWindow() {
         NSApp.activate()
         let reveal = MainWindowReveal(open: openMainWindow) {
-            guard let window = NSApp.windows.first(where: { $0.canBecomeMain && ($0.isVisible || $0.isMiniaturized) }) else {
+            // The main window, not a Resume Studio window (those are titled "Resume — ...").
+            guard let window = NSApp.windows.first(where: { $0.canBecomeMain && $0.title == "Vani Apply" && ($0.isVisible || $0.isMiniaturized) }) else {
                 return false
             }
             window.makeKeyAndOrderFront(nil)

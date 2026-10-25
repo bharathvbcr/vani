@@ -719,9 +719,11 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   - Resume Studio (2026-10-25): per-job tailored resumes. The CLI (`vani jobs resume build|render|
     show|use|revalidate`), the store and the owner's decisions are in docs/RUNTIME.md, "Resume
     Studio". Still open: the pool is about the base resume until rkb round-2 review runs (`vani kb
-    sync --dry-run`: 17 entries / 36 slots; the career/ session's handoff); the Swift app (Resume
-    client and model, the card, the Studio window, bind-and-log) is a later wave (the extension's
-    keyed path, the agent's `resumeJob` and header removal step 2 are done); a build
+    sync --dry-run`: 17 entries / 36 slots; the career/ session's handoff); the Swift app has the
+    client, model, card, bind-and-log and the Studio window (macos/README.md, "Resume Studio"; what
+    only the running app can confirm is listed there), and the extension's keyed path, the
+    agent's `resumeJob` and header removal step 2 are done; the Studio's preview cannot select a
+    bullet by clicking it (that needs scripts in the page, which stay off); a build
     that falls back to base is kept but never current over a real version; marks' sent version and
     `vani migrate rekey-*` moving the resume folder (keyed by the key's hash); the app and CLI
     binaries must be rebuilt and reinstalled together before the first `use` (marks with
