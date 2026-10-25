@@ -104,6 +104,9 @@ var (
 	// ErrFull means a bound was reached and nothing may be deleted to make room:
 	// every job folder holds a used version, or the version numbers ran out.
 	ErrFull = errors.New("resumestore: full")
+	// ErrExists means a Rekey would land on a job folder that is already there:
+	// two jobs are never merged.
+	ErrExists = errors.New("resumestore: already exists")
 	// ErrNotUsable means a version cannot be bound for applying: its fit did not
 	// pass (or soft-pass), its eligibility is not current, or it has no PDF.
 	ErrNotUsable = errors.New("resumestore: not usable")

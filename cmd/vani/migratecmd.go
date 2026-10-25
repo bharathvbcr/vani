@@ -39,8 +39,8 @@ func (e *env) cmdMigrate(args []string) error {
 		if rep.Resumed {
 			fmt.Fprintln(e.stdout, "finished an earlier run that had stopped part way")
 		}
-		fmt.Fprintf(e.stdout, "marks moved: %d\nbackup: %s\nrecord: %s (in the ledger directory; a second run is refused)\n",
-			rep.MarksMoved, rep.Backup, rekey.MarkerName)
+		fmt.Fprintf(e.stdout, "marks moved: %d\nresume folders moved: %d\nbackup: %s\nrecord: %s (in the ledger directory; a second run is refused)\n",
+			rep.MarksMoved, rep.ResumesMoved, rep.Backup, rekey.MarkerName)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/resumestore"
 )
 
 func TestMigrateRekeyFallback(t *testing.T) {
@@ -34,13 +36,35 @@ func TestMigrateRekeyFallback(t *testing.T) {
 	l.Close()
 	newKey, _ := posting.FallbackKey(p.Company, p.Title, p.Location)
 
+	// The posting has a resume version; it must follow the posting.
+	rs, err := resumestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hex := func(c string) string { return strings.Repeat(c, 64) }
+	meta := resumestore.Meta{
+		Source: "tailored", Pages: 1, Selection: json.RawMessage(`{"sections":[]}`),
+		Checks:  resumestore.Checks{Eligibility: "current", Lint: "passed", Fit: "passed", Figures: "verified"},
+		Bullets: []resumestore.BulletRef{{ID: "b1", TextHash: "0123456789ab"}},
+		Prints:  resumestore.Fingerprints{Bank: hex("a"), BaseSelection: hex("b"), Selections: hex("c"), Claims: hex("d"), RKB: hex("e")},
+	}
+	if _, _, err := rs.Save(context.Background(), string(oldKey), meta, []byte("%PDF-1.7\nr\n%%EOF\n")); err != nil {
+		t.Fatal(err)
+	}
+
 	o, _ := mustCode(t, 0, "migrate", "rekey-fallback", "--dry-run")
 	if !strings.Contains(o, "would move: 1") || !strings.Contains(o, string(oldKey)+" -> "+string(newKey)) {
 		t.Fatalf("dry run:\n%s", o)
 	}
 	o, _ = mustCode(t, 0, "migrate", "rekey-fallback")
-	if !strings.Contains(o, "moved: 1") || !strings.Contains(o, "backup: ") {
+	if !strings.Contains(o, "moved: 1") || !strings.Contains(o, "resume folders moved: 1") || !strings.Contains(o, "backup: ") {
 		t.Fatalf("run:\n%s", o)
+	}
+	if ms, err := rs.List(string(newKey)); err != nil || len(ms) != 1 || ms[0].Key != string(newKey) {
+		t.Fatalf("the resume did not follow the posting: %v %v", ms, err)
+	}
+	if _, err := rs.List(string(oldKey)); err == nil {
+		t.Fatal("the old key still has a resume")
 	}
 	if _, e := mustCode(t, 1, "migrate", "rekey-fallback"); !strings.Contains(e, "already ran") {
 		t.Fatalf("second run: %s", e)
