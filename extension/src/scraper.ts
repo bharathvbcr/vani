@@ -3,6 +3,7 @@
 // Extracts listings and immediately computes real-time relevance scores for each.
 
 import { clean } from "./guards";
+import { cardRest, readCard, withoutGluedLabel } from "./card";
 import {
   type RelevanceResult,
   type UserTargetProfile,
@@ -634,31 +635,37 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
     if (!url || seenUrls.has(url)) continue;
     seenUrls.add(url);
 
-    let title = clean(a.textContent);
+    // A card that is one link around several elements (title, badge, location row) is read from its own
+    // markup: a.textContent glues them into "TitleFeaturedOffice: City". A plain text link keeps its text.
+    const card = a.children.length > 0 ? readCard(a) : null;
+    if (card !== null && card.title === "") continue; // badges, icons or a location only: no title here
+    let title = card ? card.title : withoutGluedLabel(clean(a.textContent));
     const container = a.closest("li, tr, article, div[class*='job'], div[class*='card'], div[class*='item']") ?? a.parentElement;
 
-    // If anchor text contains nested elements or is generic ("Apply", etc.), extract actual title from heading
+    // If the title is generic ("Apply", etc.), extract the actual title from a heading beside the link. A text
+    // link also does so when its text is too short or too long to be a title; a card's own title is kept.
     const heading = container?.querySelector("h1, h2, h3, h4, h5, [class*='title'], [class*='name']");
-    if (heading && (!title || title.length < 3 || title.length > 100 || /^(apply|apply now|view job|view|read more|details|learn more|see details|open position)$/i.test(title))) {
+    const generic = /^(apply|apply now|view job|view|read more|details|learn more|see details|open position)$/i.test(title);
+    if (heading && (generic || (card === null && (!title || title.length < 3 || title.length > 100)))) {
       title = clean(heading.textContent);
-    } else if (a.querySelector("p, h3, h4, h5, [class*='title']")) {
-      const nestedTitle = a.querySelector("p, h3, h4, h5, [class*='title']");
-      if (nestedTitle) title = clean(nestedTitle.textContent);
     }
 
     if (!title || title.length < 4 || title.length > 160 || /^(apply|apply now|view job|view|read more|details)$/i.test(title)) continue;
 
     const containerText = clean(container?.textContent);
-    const location = extractWorkplaceType(containerText);
+    const workplace = extractWorkplaceType(containerText);
+    const place = card?.location ?? "";
     const salary = extractSalaryRange(containerText);
-    const snippet = containerText.slice(0, 250);
+    // What the card says beyond its title; empty when it says nothing, never the title handed back.
+    const rest = card ? (container ? cardRest(container, title) : "") : containerText;
+    const snippet = (rest === title ? "" : rest).slice(0, 250);
 
-    const relevance = evaluateRelevance({ title, description: `${snippet} ${salary ?? ""}`, location }, profile);
+    const relevance = evaluateRelevance({ title, description: `${snippet} ${salary ?? ""}`, location: place || workplace }, profile);
     jobs.push({
       id: jobId(title, "", url),
       title,
       company: extractCompanyName(doc, clean(doc.querySelector("meta[property='og:site_name']")?.getAttribute("content") ?? doc.title)),
-      location: location !== "Unknown" ? location : "",
+      location: place || (workplace !== "Unknown" ? workplace : ""),
       url,
       salary,
       snippet,
