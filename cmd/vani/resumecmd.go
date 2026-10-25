@@ -179,6 +179,9 @@ func (e *env) resumeOnce() (resumeReply, error) {
 		Runner:   resumeRunner,
 		MaxPDF:   maxResumePDF,
 		Model:    rkbresume.Model,
+		// The extension path builds the owner's base when no model can run, saying so in
+		// the reply (selection "base", reason).
+		AllowBase: true,
 	}
 	if filepath.IsAbs(e.stateDir) { // builds are exclusive per state dir, and their temp folders swept
 		rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
