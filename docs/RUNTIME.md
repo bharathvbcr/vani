@@ -344,6 +344,54 @@ and not used. A build that falls back to the base selection is used like any oth
 "base" and its `reason` say so). Any other page (untracked, ambiguous, or one jobFind could not
 answer, which the bar says) runs the stateless `resume` job and keeps nothing.
 
+### Coverage
+
+`jobs resume coverage` says which of a posting's keywords a version's bullets cover, and `jobs resume
+gaps` hands the ones the bank cannot cover to the owner's career session. Neither asks a model, takes
+a build lock or spends anything; each reads the pool once (the read-only rkb claims export `show`
+uses) under the `show` deadline class, 45 s (`resumeCoverageDeadline`). The computation is
+`internal/rkbcoverage`; a failed pool read is the failure's own code (`kb`, `timeout`, ...), never a
+guessed answer.
+
+| Command | What it does |
+|---|---|
+| `coverage [--json] KEY [vN]` | Default: the current version; a job with no version gets its base selection (`base:true`, no `version`). Reply: `{key, version \| base, keywords_source, keywords_error?, hit, miss, uncovered, unjudged, unresolved, terms_total, terms_truncated?, gap_missing}`. |
+| `gaps [--json] [--dry-run] KEY` | Appends one line `{at, key, company, title, terms}` to `<state>/resumes/gaps.jsonl`. Terms: the `uncovered` terms of the current version (the base, when there is none) plus `gap_missing`, each at most 80 runes, at most 100. Reply: `{key, terms, written, file, dry_run?, unchanged?, terms_truncated?, note?}`. `--dry-run` writes nothing and takes no lock. A job with no terms writes nothing (`written:false`, `note`). |
+
+**What the lists mean.** `hit` is `[{term, bullets, n}]`: a term some chosen bullet covers, the ids
+(at most 40, page order) and how many chosen bullets cover it. `miss` is every other judged term.
+`uncovered` is the part of `miss` that no *eligible* bullet in the whole pool covers either: a swap
+cannot fix those, the bank lacks them. A term only an ineligible bullet says is therefore uncovered.
+`unjudged` are phrases the vocabulary format cannot hold (over 4 tokens, over 64 bytes, a `|`, a leading
+`=`, or the same tokens as an earlier one): they are in none of hit, miss and uncovered, so an
+unmatched phrase is never read as a miss. `unresolved` are chosen bullet ids with no eligible wording
+now (gone from the bank, or no longer offered): they cover nothing here, and a miss may be theirs; `show`'s
+`eligibility` says why. At most 200 terms are judged (`terms_total` says how many were asked about,
+`terms_truncated` that the rest were not). Replies hold terms and ids only, never bullet text. The wording is the
+bank's as it stands now, so coverage of an old version reads today's text.
+
+**Which terms.** `keywords_source` says: `posting` (the keywords `jobs show` reports, at most 30,
+boilerplate removed), `jd_keywords` (the version's own, the words Opus took from the posting), both
+joined by `+`, or `none`. Each term counts once whatever its case. `gap_missing` is the vocabulary
+terms in the ledger's `gap.missing` annotation (DevPrism's must-haves found missing or weak), sorted;
+the annotation's own text is untrusted and is never passed on.
+
+**Matching rule.** jobinsight's, so a term occurs in a bullet exactly where `jobs show` found it in the
+posting: whole token sequences, case-insensitive (`C++`, `scikit-learn` and `.NET` tokenize as there),
+aliases and stop phrases and the case-sensitive terms ("Go") included, the longest spelling winning. A
+posting keyword is matched through `jobinsight.Default().Terms`; a version's `jd_keywords` through a
+one-term vocabulary built from them with `jobinsight.ParseVocab`. No substring matching: `Pythonic`
+does not cover `Python`.
+
+**The hand-off file.** `<state>/resumes/gaps.jsonl` is 0600, written atomically under
+`gaps.jsonl.lock` (waits at most 10 s or the command's deadline, then `busy`), at most 500 lines and 256
+KiB (the oldest go first, the newest is kept), one line at most 16 KiB (terms are dropped, never the line).
+A call whose terms equal the newest line for the same job adds nothing (`unchanged`). A file that cannot
+be read whole (over its bound, not a regular file, lines that are not JSON) is replaced, since it is a
+window onto recent jobs; a link at its path is replaced, never written through. The job folders of the
+resume store ignore it. It holds posting data (company, title, key) and skills, nothing about the owner.
+The owner's career session reads it and works the terms into the bank through `rkb review`.
+
 ## Running without a decision backend
 
 A run that advances and has no decision backend (no key anywhere, no llm) is refused at its
