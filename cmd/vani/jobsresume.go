@@ -188,6 +188,10 @@ func (e *env) jobsResume(args []string) error {
 		return e.jobsResumeUse(args[1:])
 	case "revalidate":
 		return e.jobsResumeRevalidate(args[1:])
+	case "coverage":
+		return e.jobsResumeCoverage(args[1:])
+	case "gaps":
+		return e.jobsResumeGaps(args[1:])
 	}
 	return usagef("jobs resume: unknown subcommand %q (expected build, render, show, use or revalidate)", args[0])
 }
