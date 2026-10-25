@@ -50,6 +50,8 @@ type builder struct {
 	// last is how the checks of the most recent attempt stood, for the Result an
 	// error carries.
 	last Checks
+	// cost sums the model turns (cost.go).
+	cost costMeter
 }
 
 // isCont reports whether a bank bullet's text refers back to an earlier bullet.
