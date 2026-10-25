@@ -37,9 +37,6 @@ const (
 	checkVerified    = "verified"
 	checkDropped     = "dropped"
 	checkUnknown     = "unknown"
-	// fingerprintUnreadable stands for a file that is named but could not be read
-	// when the build fingerprinted it. It is not a hash, and it matches no hash.
-	fingerprintUnreadable = "unreadable"
 )
 
 // Cost is what a build's model turns cost: the sum of every turn that was sent.
@@ -85,10 +82,11 @@ type BulletRef struct {
 
 // Fingerprints name the exact inputs a build read, each a sha256 in hex of the
 // bytes it read (the bank's is of the snapshot rkb was given): later, a stored
-// version is stale when one of them no longer matches. VMReport is "" when no
-// validator report is configured, and "unreadable" when one is named but could
-// not be read; RKB is "unreadable" when the binary could not be read (a Runner
-// that is not the real one, since the real one could not run it).
+// version is stale when one of them no longer matches. Each is a 64-hex sha256 or
+// "" (what the store accepts). VMReport is "" only when no validator report is
+// configured: a named one that cannot be read fails the build (CodeConfig).
+// RKB is "" when the binary could not be read, which only a Runner that is not
+// the real one can survive (the real one could not run it).
 type Fingerprints struct {
 	Bank          string `json:"bank"`
 	BaseSelection string `json:"base_selection"`
@@ -160,14 +158,11 @@ func selectionsDigest(sels []kbsync.Selection) string {
 	return sha256Hex(raw)
 }
 
-// optionalFileSHA256 is the fingerprint of a file that may be named or not.
-func optionalFileSHA256(path string, max int64) string {
-	if path == "" {
-		return ""
-	}
-	sum, err := fileSHA256(path, max)
+// rkbFingerprint is the sha256 of the rkb binary, or "" when it cannot be read.
+func rkbFingerprint(path string) string {
+	sum, err := fileSHA256(path, maxFingerprintFile)
 	if err != nil {
-		return fingerprintUnreadable
+		return ""
 	}
 	return sum
 }

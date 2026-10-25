@@ -1078,13 +1078,17 @@ func TestConfigIsValidatedAtTheBoundary(t *testing.T) {
 func TestVMReportIsPassedToTheExport(t *testing.T) {
 	f := newFixture(t)
 	f.cfg.Provider, f.cfg.NoModel = nil, "off"
-	f.cfg.VMReport = "/fake/vm_report.txt"
+	// The report must exist now: its hash is part of the version's record.
+	f.cfg.VMReport = filepath.Join(f.dir, "vm_report.txt")
+	if err := os.WriteFile(f.cfg.VMReport, []byte("validator report\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	mustBuild(t, f)
 	n := 0
 	for _, c := range f.rkb.calls {
 		if c.Args[0] == "claims" && flag(c.Args, "--used-in") != "" {
 			n++
-			if flag(c.Args, "--vm-report") != "/fake/vm_report.txt" {
+			if flag(c.Args, "--vm-report") != f.cfg.VMReport {
 				t.Errorf("export args = %v", c.Args)
 			}
 		}
