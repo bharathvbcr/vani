@@ -360,7 +360,10 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	in.warn(warn)
 	// Open creates nothing and reads nothing; an unusable store shows per job
 	// (jobview.ResumeOf), so it can never look like "no resume".
-	in.resumes, _ = resumestore.Open(stateDir)
+	var rerr error
+	if in.resumes, rerr = resumestore.Open(stateDir); rerr != nil {
+		in.warn("resume versions not shown: " + oneLine(rerr.Error(), 200))
+	}
 	return in, nil
 }
 
