@@ -178,7 +178,7 @@ func (e *env) resumeOnce() (resumeReply, error) {
 		VMReport: vmReport,
 		Runner:   resumeRunner,
 		MaxPDF:   maxResumePDF,
-		Model:    cfg.LLM.Model,
+		Model:    rkbresume.Model,
 	}
 	rc.Provider, rc.NoModel = e.resumeModel(ctx, cfg)
 	if rc.Provider == nil {
@@ -212,11 +212,16 @@ func reasonSuffix(reason string) string {
 }
 
 // resumeModel is the provider for the tailoring turn, or why there is none: a
-// resume is then built from the base selection. Nothing about the owner reaches
-// the reason.
+// resume is then built from the base selection. The model is always
+// rkbresume.Model (the owner's decision), never llm.model; llm.provider must be
+// anthropic, and the provider must serve and price that model, checked before
+// any turn is spent. Nothing about the owner reaches the reason.
 func (e *env) resumeModel(ctx context.Context, cfg config.Config) (llm.Provider, string) {
 	if cfg.LLM.Provider == "" || cfg.LLM.Model == "" {
 		return nil, "no llm provider is configured"
+	}
+	if cfg.LLM.Provider != "anthropic" {
+		return nil, "resumes use " + rkbresume.Model + ", which needs llm.provider anthropic"
 	}
 	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
 	p, err := resumeProvider(ctx, w)
@@ -224,8 +229,11 @@ func (e *env) resumeModel(ctx context.Context, cfg config.Config) (llm.Provider,
 		fmt.Fprintf(e.stderr, "vani: resume: no model: %v\n", err)
 		return nil, "the model provider is not available"
 	}
-	if _, ok := p.Capability(cfg.LLM.Model); !ok {
-		return nil, "the provider does not serve the configured model"
+	if _, ok := p.Capability(rkbresume.Model); !ok {
+		return nil, "the provider does not serve " + rkbresume.Model
+	}
+	if _, ok := tablePrices(p, rkbresume.Model); !ok {
+		return nil, "the provider has no price for " + rkbresume.Model
 	}
 	return p, ""
 }

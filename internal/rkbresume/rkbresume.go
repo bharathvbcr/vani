@@ -116,6 +116,12 @@ func fail(code, format string, a ...any) *Error {
 	return &Error{Code: code, Msg: "resume: " + fmt.Sprintf(format, a...)}
 }
 
+// Model is the one model that answers a resume turn. It is the owner's
+// decision: Claude Opus 5.5 is the only model for resumes, whatever llm.model
+// configures for the rest of Vani. The caller wires it into Config.Model and
+// checks the provider serves and prices it before any turn is spent.
+const Model = "claude-opus-5-5"
+
 // Request is the job to build for. Every field is untrusted page text.
 type Request struct {
 	Company     string
