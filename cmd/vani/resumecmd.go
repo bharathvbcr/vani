@@ -81,11 +81,10 @@ type resumeRequest struct {
 
 // resumeReply is the one JSON object `vani resume` writes.
 type resumeReply struct {
-	PDF         string  `json:"pdf,omitempty"`
-	Name        string  `json:"name,omitempty"`
-	Bytes       int     `json:"bytes,omitempty"`
-	Pages       int     `json:"pages,omitempty"`
-	ATSCoverage float64 `json:"ats_coverage_pct,omitempty"`
+	PDF   string `json:"pdf,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Bytes int    `json:"bytes,omitempty"`
+	Pages int    `json:"pages,omitempty"`
 	// Selection is "tailored" (the model's choice was built) or "base" (the
 	// owner's base selection); Reason says why base. UnverifiedDropped lists
 	// bullet ids left off because rkb has not double-verified a figure in them.
