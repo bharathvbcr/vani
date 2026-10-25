@@ -48,8 +48,26 @@ type PoolView struct {
 	Entries         []PoolEntry  `json:"entries"`
 	// Base is the base selection's choice (filtered to what is eligible now) in
 	// the owner-edit shape: the editor's starting point and "reset to base".
-	Base         json.RawMessage `json:"base"`
-	Fingerprints Fingerprints    `json:"fingerprints"`
+	Base json.RawMessage `json:"base"`
+	// ReorderableSections are the titles of the sections whose order the model and
+	// the owner may change, in the base's order: the base's run of project sections
+	// (reorderableSections). Every other section keeps its place and Go ignores a
+	// changed order of it. Never null.
+	ReorderableSections []string `json:"reorderable_sections"`
+	// Headings lists each place an entry may stay on the page as a heading with no
+	// bullets (baseSel.keepsHeading): every entry of the work history, and an entry
+	// in a section whose base lists it bare. An entry with no bullets anywhere else
+	// is refused. It covers the entries of Entries (in each section they may go in)
+	// and the entries the base lists bare, which have no eligible bullet and so are
+	// not in Entries. Never null.
+	Headings     []PoolHeading `json:"headings"`
+	Fingerprints Fingerprints  `json:"fingerprints"`
+}
+
+// PoolHeading says an entry may stay as a heading with no bullets in a section.
+type PoolHeading struct {
+	Section string `json:"section"`
+	Entry   string `json:"entry"`
 }
 
 // Pool reads the live bank and selections and returns every eligible bullet,
@@ -83,6 +101,35 @@ func Pool(ctx context.Context, cfg Config, req Request) (PoolView, error) {
 	return v, nil
 }
 
+// headings lists, section by section in page order, each entry that may stay as a
+// heading there: the base's own entries first (in the base's order), then the pool's
+// entries the base does not list in that section, in the pool's order. It asks
+// keepsHeading, the rule a build applies, so the owner's editor and a build agree.
+func (b *builder) headings(p pool) []PoolHeading {
+	out := []PoolHeading{}
+	for i, s := range b.base.sections {
+		if !s.choosable || s.kind != "entries" {
+			continue
+		}
+		seen := map[string]bool{}
+		add := func(id string) {
+			if !seen[id] && b.base.keepsHeading(i, id) {
+				seen[id] = true
+				out = append(out, PoolHeading{Section: s.title, Entry: id})
+			}
+		}
+		for _, e := range s.entries {
+			add(e.id)
+		}
+		for _, pe := range p.entries {
+			if b.canHold(i, pe.id) {
+				add(pe.id)
+			}
+		}
+	}
+	return out
+}
+
 func (b *builder) poolView() (PoolView, *Error) {
 	p := b.buildPoolSized(func(string) bool { return true }, 0)
 	bullet := func(pb poolBullet) PoolBullet {
@@ -90,7 +137,7 @@ func (b *builder) poolView() (PoolView, *Error) {
 		plain := kbsync.RKBPlain(bl.Text, b.claims.Values)
 		return PoolBullet{ID: pb.id, Text: plain, TextHash: kbsync.WordingHash(plain), Follows: pb.follows}
 	}
-	v := PoolView{Summary: []PoolBullet{}, SummarySections: []string{}, Entries: []PoolEntry{}, Fingerprints: b.fp}
+	v := PoolView{Summary: []PoolBullet{}, SummarySections: []string{}, Entries: []PoolEntry{}, ReorderableSections: []string{}, Headings: []PoolHeading{}, Fingerprints: b.fp}
 	for _, pb := range p.summary {
 		v.Summary = append(v.Summary, bullet(pb))
 	}
@@ -111,6 +158,10 @@ func (b *builder) poolView() (PoolView, *Error) {
 		}
 		v.Entries = append(v.Entries, e)
 	}
+	for _, i := range b.base.reorderable {
+		v.ReorderableSections = append(v.ReorderableSections, b.base.sections[i].title)
+	}
+	v.Headings = b.headings(p)
 	base, err := b.base.baseChoice(b.el.Allowed, b.isCont).editJSON(b.base)
 	if err != nil {
 		return PoolView{}, fail(CodeKB, "the base choice cannot be written as an edit: %v", err)

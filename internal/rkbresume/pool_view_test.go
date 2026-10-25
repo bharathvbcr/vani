@@ -122,6 +122,76 @@ func TestPoolSaysWhichSectionsEachEntryMayGoIn(t *testing.T) {
 	}
 }
 
+// The pool states which sections may be reordered and where an entry may stay as a
+// heading, by the rules a build applies, so the editor needs no inference.
+func TestPoolStatesTheReorderableSectionsAndWhereAnEntryMayStayAsAHeading(t *testing.T) {
+	f := newFixture(t)
+	addProjects(t, f)
+	editJSON(t, f.bank, func(m map[string]any) {
+		m["entries"].(map[string]any)["proj-bare"] = map[string]any{"title": "Listed Bare", "bullets": []string{}}
+	})
+	editJSON(t, f.base, func(m map[string]any) {
+		for _, s := range m["sections"].([]any) {
+			sec := s.(map[string]any)
+			if sec["title"] == "Agent Systems" {
+				sec["entries"] = append(sec["entries"].([]any), map[string]any{"entry": "proj-bare", "bullets": []string{}})
+			}
+		}
+	})
+	v, err := f.pool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(v.ReorderableSections, ","); got != "Agent Systems,GPU Systems" {
+		t.Errorf("reorderable = %q: the project run after Experience, and nothing else", got)
+	}
+	var heads []string
+	for _, h := range v.Headings {
+		heads = append(heads, h.Section+"/"+h.Entry)
+	}
+	// Every job may stay as a heading; a project only where the base lists it bare.
+	want := "Experience/exp-a,Experience/exp-b,Experience/exp-c,Agent Systems/proj-bare"
+	if got := strings.Join(heads, ","); got != want {
+		t.Errorf("headings = %q, want %q", got, want)
+	}
+	// The pool agrees with the rule a build applies, for every entry in every section.
+	b := &builder{cfg: f.cfg, dir: t.TempDir()}
+	if err := b.load(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, h := range v.Headings {
+		listed[h.Section+"/"+h.Entry] = true
+	}
+	for _, e := range v.Entries {
+		for i, s := range b.base.sections {
+			if s.choosable && s.kind == "entries" && b.canHold(i, e.ID) && listed[s.title+"/"+e.ID] != b.base.keepsHeading(i, e.ID) {
+				t.Errorf("%s in %s: pool says %v, keepsHeading says %v", e.ID, s.title, listed[s.title+"/"+e.ID], b.base.keepsHeading(i, e.ID))
+			}
+		}
+	}
+	// Never null on the wire, even with nothing to say.
+	raw, _ := json.Marshal(PoolView{Summary: []PoolBullet{}, SummarySections: []string{}, Entries: []PoolEntry{}, ReorderableSections: []string{}, Headings: []PoolHeading{}})
+	if strings.Contains(string(raw), `"reorderable_sections":null`) || strings.Contains(string(raw), `"headings":null`) {
+		t.Errorf("null on the wire: %s", raw)
+	}
+}
+
+func TestPoolWithNoProjectSectionsHasNoReorderableOnesAndNeverNull(t *testing.T) {
+	f := newFixture(t) // Experience only: nothing to reorder
+	v, err := f.pool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ReorderableSections == nil || len(v.ReorderableSections) != 0 || v.Headings == nil || len(v.Headings) == 0 {
+		t.Errorf("reorderable %#v, headings %#v", v.ReorderableSections, v.Headings)
+	}
+	raw, _ := json.Marshal(v)
+	if !strings.Contains(string(raw), `"reorderable_sections":[]`) {
+		t.Errorf("wire: %s", raw)
+	}
+}
+
 // The base's choice is in the edit shape: Render's own reader accepts it and it
 // is the base choice.
 func TestPoolBaseIsTheBaseChoiceInTheEditShape(t *testing.T) {
