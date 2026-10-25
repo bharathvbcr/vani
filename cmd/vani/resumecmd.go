@@ -318,7 +318,7 @@ func readBuilt(res rkbresume.Result) (resumeReply, error) {
 	}
 	return resumeReply{
 		PDF: base64.StdEncoding.EncodeToString(pdf), Bytes: len(pdf), Pages: res.Pages,
-		Selection: res.Selection, Reason: res.Reason, UnverifiedDropped: res.UnverifiedDropped, Notes: res.Notes,
+		Selection: res.Source, Reason: res.Reason, UnverifiedDropped: res.UnverifiedDropped, Notes: res.Notes,
 	}, nil
 }
 

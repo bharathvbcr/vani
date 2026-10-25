@@ -45,6 +45,11 @@ type builder struct {
 	scrub scrubber
 	// fam groups entries that describe the same work (family.go).
 	fam families
+	// fp names the inputs this build read (record.go), filled by load.
+	fp Fingerprints
+	// last is how the checks of the most recent attempt stood, for the Result an
+	// error carries.
+	last Checks
 }
 
 // isCont reports whether a bank bullet's text refers back to an earlier bullet.
@@ -82,6 +87,36 @@ type outcome struct {
 	// softFit is set on a tailored build whose only flaw is a soft layout one:
 	// pdf is filled, and problems holds that one "fit" problem.
 	softFit string
+	// ch is the choice that was built: the one attempt was given, less what it
+	// dropped as unverified.
+	ch choice
+	// checks say how each check of this attempt ended (record.go).
+	checks Checks
+	// fitLines are rkb's per-bullet line counts for ch (fitLinesOf).
+	fitLines map[string]int
+	// htmlPath is rkb's page, set when the attempt rendered one.
+	htmlPath string
+}
+
+// finish is the Result of a built outcome: the choice written back in the
+// owner-edit shape, its bullets with the hash of their wording, and the
+// fingerprints of what was read.
+func (b *builder) finish(source, reason string, out outcome) (Result, *Error) {
+	sel, err := out.ch.editJSON(b.base)
+	if err != nil {
+		return Result{}, fail(CodeKB, "the built choice cannot be recorded: %v", err)
+	}
+	return Result{
+		PDF: out.pdf, HTMLPath: out.htmlPath, Pages: out.pages, Source: source, Reason: reason,
+		Checks: out.checks, Notes: out.notes, UnverifiedDropped: out.dropped, Keywords: out.ch.keywords,
+		SelectionJSON: sel, Bullets: b.bulletRefs(out.ch), FitLines: out.fitLines, Fingerprints: b.fp,
+	}, nil
+}
+
+// partial is the Result an error carries: nothing built, but what ran, and what
+// was read.
+func (b *builder) partial() Result {
+	return Result{Checks: b.last, Fingerprints: b.fp}
 }
 
 func (b *builder) remaining(ctx context.Context) time.Duration {
@@ -147,7 +182,7 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	if b.remaining(ctx) < minForBase {
 		return Result{}, fail(CodeTimeout, "not enough time was left to build the base resume")
 	}
-	out, err := b.attempt(ctx, "base", baseCh, true)
+	out, err := b.attempt(ctx, "base", baseCh, true, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -159,7 +194,7 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 		}
 		return Result{}, fail(p.code(), "the base selection could not be built (%s)", why)
 	}
-	return Result{PDF: out.pdf, Pages: out.pages, Selection: SelectionBase, Reason: reason, UnverifiedDropped: out.dropped, Notes: out.notes}, nil
+	return b.finish(SourceBase, reason, out)
 }
 
 // badFigures names the claims the pool must not offer. rkb's export covers every
@@ -227,6 +262,9 @@ func (b *builder) load(ctx context.Context) *Error {
 		return fail(CodeRender, "write the bank snapshot: %v", err)
 	}
 	b.bank = bank
+	b.fp.Bank = sha256Hex(raw)
+	b.fp.RKB = optionalFileSHA256(b.cfg.RKB, maxFingerprintFile)
+	b.fp.VMReport = optionalFileSHA256(b.cfg.VMReport, kbsync.MaxClaimsBytes)
 	// The base comes before the first rkb call so the owner's header strings are
 	// known to the scrubber for everything rkb says from here on.
 	base, berr := loadBase(b.cfg.BaseSelection, MaxPages)
@@ -234,6 +272,7 @@ func (b *builder) load(ctx context.Context) *Error {
 		return berr
 	}
 	b.base = base
+	b.fp.BaseSelection = base.sha
 	b.scrub = newScrubber(headerStrings(base, b.bankPath))
 	claims, err := kbsync.RKB{Binary: b.cfg.RKB, CodeRoot: b.cfg.CodeRoot, Runner: claimsRunner{b.cfg.Runner, b.env, b.scrub}}.Claims(ctx)
 	if err != nil {
@@ -243,10 +282,12 @@ func (b *builder) load(ctx context.Context) *Error {
 		return fail(CodeKB, "claims: %v", err)
 	}
 	b.claims = claims
+	b.fp.Claims = claimsDigest(claims)
 	sels, err := kbsync.LoadSelections(b.cfg.Selections)
 	if err != nil {
 		return fail(CodeKB, "%v", err)
 	}
+	b.fp.Selections = selectionsDigest(sels)
 	b.el = kbsync.Eligible(bank, claims, sels)
 	b.cont = buildContinuations(sels, func(id string) (string, bool) {
 		bl, ok := bank.Bullets[id]
@@ -254,6 +295,7 @@ func (b *builder) load(ctx context.Context) *Error {
 	})
 	b.homes = entryHomes(base, sels)
 	b.fam = newFamilies(bank, base)
+	b.last.Eligibility = checkCurrent
 	return nil
 }
 
@@ -300,7 +342,7 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 			msgs = append(msgs, assistantMsg(tr.text), userMsg(feedback([]problem{{"choice", err.Error()}}, nil)))
 			continue
 		}
-		out, ferr := b.attempt(ctx, fmt.Sprintf("tailored%d", round), ch, false)
+		out, ferr := b.attempt(ctx, fmt.Sprintf("tailored%d", round), ch, false, true)
 		if ferr != nil {
 			if ferr.Code == CodeTimeout {
 				return keepSoftOnTimeout(soft, ctx, ferr)
@@ -312,10 +354,18 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 			why = "after one retry"
 		}
 		if len(out.problems) == 0 {
-			return &Result{PDF: out.pdf, Pages: out.pages, Selection: SelectionTailored, Reason: why, UnverifiedDropped: out.dropped, Notes: out.notes}, "", nil
+			res, rerr := b.finish(SourceTailored, why, out)
+			if rerr != nil {
+				return nil, "", rerr
+			}
+			return &res, "", nil
 		}
 		if out.softFit != "" && len(out.problems) == 1 && out.pdf != nil {
-			soft = &Result{PDF: out.pdf, Pages: out.pages, Selection: SelectionTailored, Reason: strings.TrimSpace(why + " kept with a layout note"), UnverifiedDropped: out.dropped, Notes: out.notes}
+			res, rerr := b.finish(SourceTailored, strings.TrimSpace(why+" kept with a layout note"), out)
+			if rerr != nil {
+				return nil, "", rerr
+			}
+			soft = &res
 		}
 		if round == 1 {
 			return keepSoft("the model's choice was rejected twice: " + kinds(out.problems))
@@ -498,7 +548,9 @@ func (b *builder) unverifiedBullets(ch choice, cf claimsFile) []string {
 
 var unverifiedRe = regexp.MustCompile(`class="unverified" title="(clm[A-Za-z]+)"`)
 
-// fitReport is the part of `rkb fit --report` this package reads.
+// fitReport is the part of `rkb fit --report` this package reads. Bullets holds
+// ids and line counts only: the report's own text for each bullet is never
+// decoded.
 type fitReport struct {
 	Status  int    `json:"status"`
 	Advice  string `json:"advice"`
@@ -509,14 +561,22 @@ type fitReport struct {
 	Long []struct {
 		ID string `json:"id"`
 	} `json:"over_line_limit"`
+	Bullets []struct {
+		ID    string `json:"id"`
+		Lines int    `json:"lines"`
+	} `json:"bullets"`
 }
 
-// attempt builds ch into a PDF in its own folder: claims export, drop what is
-// unverified, lint, render, fit --strict, then the PDF's own checks. A tool
-// that cannot run ends the build (*Error); content rkb rejects comes back as
-// problems.
-func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLayout bool) (outcome, *Error) {
-	var out outcome
+// attempt builds ch in its own folder: claims export, drop what is unverified,
+// lint, render, and with fit set `rkb fit --strict` and the PDF's own checks. A
+// tool that cannot run ends the build (*Error); content rkb rejects comes back
+// as problems. Without fit the attempt stops after the page is rendered: out.pdf
+// is nil, out.pages 0, out.htmlPath is rkb's page and the Fit check is not_run.
+// out always says how far the checks got (out.checks), error or not.
+func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLayout, fit bool) (out outcome, aerr *Error) {
+	out.ch = ch
+	out.checks = Checks{Eligibility: checkCurrent, Lint: checkNotRun, Fit: checkNotRun, Figures: checkNotRun}
+	defer func() { b.last = out.checks }()
 	d := filepath.Join(b.dir, label)
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return out, fail(CodeRender, "no private temp folder: %v", err)
@@ -540,11 +600,18 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 		// Continuations that referred to a dropped bullet go with it.
 		out.dropped = append(out.dropped, dependents...)
 		if ch.count() == 0 || round == 1 {
+			out.ch = ch
+			out.checks.Figures = checkDropped
 			out.problems = append(out.problems, problem{"figures", "figures in " + strings.Join(bad, ", ") + " are not double-verified in rkb"})
 			return out, nil
 		}
 	}
 	sort.Strings(out.dropped)
+	out.ch = ch
+	out.checks.Figures = checkVerified
+	if len(out.dropped) > 0 {
+		out.checks.Figures = checkDropped
+	}
 
 	selPath := filepath.Join(d, "sel.json")
 	claimsPath := filepath.Join(d, "claims.json")
@@ -554,7 +621,9 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 	}
 	switch lint.Exit {
 	case 0:
+		out.checks.Lint = checkPassed
 	case 1:
+		out.checks.Lint = checkFailed
 		out.problems = append(out.problems, lintProblems(lint.Stdout)...)
 		return out, nil
 	default:
@@ -583,23 +652,32 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 				claimIDs = append(claimIDs, m[1])
 			}
 		}
+		out.checks.Figures = checkDropped
 		out.problems = append(out.problems, problem{"figures", "the page still marks figures as unverified: " + strings.Join(claimIDs, ", ")})
+		return out, nil
+	}
+	out.htmlPath = htmlPath
+	if !fit {
 		return out, nil
 	}
 
 	pdfPath := filepath.Join(outDir, outputBasename+".pdf")
 	reportPath := filepath.Join(outDir, "fit.json")
-	fit, err := b.rkbFit(ctx, "fit", htmlPath, "--pages", fmt.Sprint(b.base.pages), "--strict", "--out", pdfPath, "--report", reportPath)
+	fitOut, err := b.rkbFit(ctx, "fit", htmlPath, "--pages", fmt.Sprint(b.base.pages), "--strict", "--out", pdfPath, "--report", reportPath)
 	if err != nil {
+		out.checks.Fit = checkCouldNotRun
 		return out, err
 	}
 	// rkb's die() exits 2, the same code as OVERFLOW, and writes no report: a
 	// verdict counts only when the report exists and carries the exit code.
 	var rep fitReport
 	raw, rerr := readCapped(reportPath, 1<<20)
-	if rerr != nil || json.Unmarshal(raw, &rep) != nil || rep.Status != fit.Exit {
-		return out, fail(CodeRender, "rkb fit did not run to a verdict (exit %d; is Chrome or poppler missing?): %s", fit.Exit, clip(fit.Stderr, 300))
+	if rerr != nil || json.Unmarshal(raw, &rep) != nil || rep.Status != fitOut.Exit {
+		out.checks.Fit = checkCouldNotRun
+		return out, fail(CodeRender, "rkb fit did not run to a verdict (exit %d; is Chrome or poppler missing?): %s", fitOut.Exit, clip(fitOut.Stderr, 300))
 	}
+	out.fitLines = fitLinesOf(rep, ch)
+	out.checks.Fit = checkPassed
 	if rep.Status != 0 {
 		msg := clip(b.scrub.clean(rep.Advice), 300)
 		if ids := fitIDs(rep); ids != "" {
@@ -614,9 +692,11 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 		// over the base: a tailored page with an orphan beats an untailored one.
 		soft := rep.Status == 4 || rep.Status == 5 || (rep.Status == 3 && rep.Pages == b.base.pages)
 		if !soft {
+			out.checks.Fit = checkFailed
 			out.problems = append(out.problems, problem{"fit", msg})
 			return out, nil
 		}
+		out.checks.Fit = checkSoft
 		out.notes = append(out.notes, msg)
 		if !acceptLayout {
 			out.softFit = msg
@@ -625,18 +705,23 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 	pdf, perr := readCapped(pdfPath, b.cfg.MaxPDF)
 	if perr != nil {
 		if st, serr := os.Stat(pdfPath); serr == nil && st.Size() > int64(b.cfg.MaxPDF) {
+			out.checks.Fit = checkFailed
 			out.problems = append(out.problems, problem{"size", fmt.Sprintf("the PDF is over %d KB", b.cfg.MaxPDF>>10)})
 			return out, nil
 		}
+		out.checks.Fit = checkCouldNotRun
 		return out, fail(CodeRender, "rkb wrote no PDF: %v", perr)
 	}
 	if len(pdf) == 0 || !strings.HasPrefix(string(pdf[:min(5, len(pdf))]), "%PDF-") {
+		out.checks.Fit = checkCouldNotRun
 		return out, fail(CodeRender, "rkb's PDF is damaged")
 	}
 	if rep.Pages <= 0 {
+		out.checks.Fit = checkCouldNotRun
 		return out, fail(CodeRender, "rkb did not report a page count")
 	}
 	if rep.Pages > b.base.pages {
+		out.checks.Fit = checkFailed
 		out.problems = append(out.problems, problem{"pages", fmt.Sprintf("the PDF has %d pages, over the %d-page budget", rep.Pages, b.base.pages)})
 		return out, nil
 	}

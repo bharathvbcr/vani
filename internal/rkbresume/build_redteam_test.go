@@ -59,7 +59,7 @@ func TestRedteamASectionWithNothingEligibleDoesNotForceBorrowedEntries(t *testin
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if res.Selection == SelectionTailored {
+	if res.Source == SourceTailored {
 		t.Errorf("the tailored resume prints exp-c, a job, under the project section GPU Systems because that section had nothing of its own")
 	}
 }
@@ -81,7 +81,7 @@ func TestRedteamTailoredBuildKeepsHeadingOnlyEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("scenario did not build the tailored choice: %s", res.Reason)
 	}
 	if !strings.Contains(lastSel(t, f), `"exp-d"`) {
@@ -135,7 +135,7 @@ func TestRedteamDroppingAnUnverifiedBulletDoesNotDeleteAJob(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 	if !has(res.UnverifiedDropped, "b2") {
-		t.Fatalf("scenario did not drop b2: selection=%s dropped=%v", res.Selection, res.UnverifiedDropped)
+		t.Fatalf("scenario did not drop b2: selection=%s dropped=%v", res.Source, res.UnverifiedDropped)
 	}
 	if !strings.Contains(lastSel(t, f), `"exp-b"`) {
 		t.Errorf("exp-b (in the base's work history) is gone from the PDF after its only bullet was dropped; the base keeps it")
@@ -179,7 +179,7 @@ func TestRedteamSectionsAroundALinesSectionKeepTheirPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("not tailored: %s", res.Reason)
 	}
 	got := strings.Join(selTitles(t, lastSel(t, f)), ",")
@@ -195,7 +195,7 @@ func TestRedteamNothingToReorderKeepsTheBaseOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if res.Selection != SelectionTailored {
+	if res.Source != SourceTailored {
 		t.Fatalf("not tailored: %s", res.Reason)
 	}
 	got := strings.Join(selTitles(t, lastSel(t, f)), ",")
@@ -240,8 +240,8 @@ func TestRedteamARetryThatRunsOutOfTimeKeepsTheSoftFitResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a soft-fit tailored PDF was in hand and the retry timed out, but the build failed: %v", err)
 	}
-	if res.Selection != SelectionTailored || len(res.PDF) == 0 {
-		t.Errorf("result = %s, %d bytes", res.Selection, len(res.PDF))
+	if res.Source != SourceTailored || len(res.PDF) == 0 {
+		t.Errorf("result = %s, %d bytes", res.Source, len(res.PDF))
 	}
 }
 

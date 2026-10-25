@@ -42,6 +42,7 @@ package rkbresume
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -70,12 +71,6 @@ const (
 	// CodeKBChanged means the knowledge base's claims changed after this build
 	// read them; nothing was rendered from the mixed state.
 	CodeKBChanged = "kb_changed"
-)
-
-// Selection values of Result.Selection.
-const (
-	SelectionTailored = "tailored"
-	SelectionBase     = "base"
 )
 
 // Bounds. All are ceilings.
@@ -175,21 +170,52 @@ type Config struct {
 	LockDir string
 }
 
-// Result is a built resume.
+// Result is a built resume and the record of how it was built. Every field
+// after Pages maps onto a resumestore.Meta field of the same JSON tag (see
+// record.go); the CLI copies them across.
+//
+// On an error Build and Render still return a Result when something was
+// learned or spent before the failure: no PDF, but Cost (a paid build that
+// failed or was cancelled must be recorded), Model, Checks (what ran) and
+// Fingerprints. Errors before the build began (bad config, a held lock) return
+// the zero Result.
 type Result struct {
-	PDF   []byte
-	Pages int
-	// Selection is SelectionTailored when the model's choice was built, else
-	// SelectionBase; Reason says why base, in a few words (empty when tailored).
-	Selection string
-	Reason    string
+	PDF []byte `json:"-"`
+	// HTMLPath is where Render without fit left rkb's page (a file the caller
+	// must remove); empty otherwise.
+	HTMLPath string `json:"-"`
+	// Pages is 0 when the page was not fitted (Render without fit).
+	Pages int `json:"pages,omitempty"`
+	// Source is SourceTailored when the model's choice was built, SourceBase
+	// when the owner's base selection was, SourceEdited for Render. Reason says
+	// why base, in a few words (empty when tailored).
+	Source string `json:"source"`
+	Reason string `json:"reason,omitempty"`
+	// Model is the model id when a model turn was sent.
+	Model string `json:"model,omitempty"`
+	Cost  Cost   `json:"cost"`
+	// Checks says how each check ended; a check that did not run says so.
+	Checks Checks `json:"checks"`
+	// Notes are layout flaws accepted on the page (an orphan last line, an
+	// inner page that ends early), as rkb reported them: ids and counts, no
+	// page text.
+	Notes []string `json:"notes,omitempty"`
 	// UnverifiedDropped lists bullet ids left off because rkb has not double
 	// verified a figure in them.
-	UnverifiedDropped []string
-	// Notes are layout flaws accepted on the base selection (an orphan last
-	// line, an inner page that ends early), as rkb reported them: ids and
-	// counts, no page text.
-	Notes []string
+	UnverifiedDropped []string `json:"unverified_dropped,omitempty"`
+	// Keywords are the job keywords the choice carries; none when the base
+	// selection's own are kept.
+	Keywords []string `json:"jd_keywords,omitempty"`
+	// SelectionJSON is the choice that was built, in the owner-edit shape
+	// (choice.editJSON): what Render accepts as its edit. Never a header, bank,
+	// meta or path.
+	SelectionJSON json.RawMessage `json:"selection"`
+	// Bullets is every bullet on the page, in page order.
+	Bullets []BulletRef `json:"bullets"`
+	// FitLines is bullet id -> rendered lines, from rkb's fit report (ids and
+	// counts only); nil when the page was not fitted or Chrome measured none.
+	FitLines     map[string]int `json:"fit_lines,omitempty"`
+	Fingerprints Fingerprints   `json:"fingerprints"`
 }
 
 func (c Config) normalize() (Config, *Error) {
@@ -274,10 +300,10 @@ func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 		return Result{}, fail(CodeRender, "no private temp folder: %v", err)
 	}
 	defer os.RemoveAll(dir)
-	b := &builder{cfg: cfg, dir: dir}
+	b := &builder{cfg: cfg, dir: dir, last: notRun()}
 	res, berr := b.run(ctx, req)
 	if berr != nil {
-		return Result{}, berr
+		return b.partial(), berr
 	}
 	return res, nil
 }

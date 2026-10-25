@@ -42,7 +42,7 @@ func TestTailoredChoiceIsBuiltInThePrivateDirWithRkbsOwnCommands(t *testing.T) {
 	f := newFixture(t)
 	f.provider.replies = []string{validReply()}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored || res.Reason != "" || string(res.PDF) != string(testPDF) {
+	if res.Source != SourceTailored || res.Reason != "" || string(res.PDF) != string(testPDF) {
 		t.Fatalf("result = %+v", res)
 	}
 	want := []string{"claims-plain", "claims-used", "claims-used", "lint", "render", "fit"}
@@ -287,7 +287,7 @@ func TestInvalidRepliesAreToldWhyRetriedOnceAndThenFallBackToTheBase(t *testing.
 			f := newFixture(t)
 			f.provider.replies = []string{reply}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionBase || !strings.HasPrefix(res.Reason, "the model's choice was refused") || !strings.Contains(res.Reason, why[name]) {
+			if res.Source != SourceBase || !strings.HasPrefix(res.Reason, "the model's choice was refused") || !strings.Contains(res.Reason, why[name]) {
 				t.Fatalf("result = %+v, want a refusal containing %q", res, why[name])
 			}
 			// A refused reply shares the one retry; the model is told why. The same
@@ -314,8 +314,8 @@ func TestAnInjectedIDInTheJDCannotSelectAnythingIneligible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Selection != SelectionBase {
-		t.Fatalf("selection = %q", res.Selection)
+	if res.Source != SourceBase {
+		t.Fatalf("selection = %q", res.Source)
 	}
 	for _, sel := range f.rkb.sels {
 		if has(selBullets(t, sel), "x1") {
@@ -351,7 +351,7 @@ func TestNoModelPathsBuildTheBase(t *testing.T) {
 			f.provider.replies = []string{validReply()}
 			c.setup(f)
 			res := mustBuild(t, f)
-			if res.Selection != SelectionBase || !strings.Contains(res.Reason, c.reason) {
+			if res.Source != SourceBase || !strings.Contains(res.Reason, c.reason) {
 				t.Fatalf("result = %+v, want a base build for %q", res, c.reason)
 			}
 			if f.rkb.count("fit") != 1 {
@@ -372,7 +372,7 @@ func TestLintFailingOnceRetriesWithTheProblemAndTheSecondChoiceIsBuilt(t *testin
 		return 0, ""
 	}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionTailored || res.Reason != "after one retry" {
+	if res.Source != SourceTailored || res.Reason != "after one retry" {
 		t.Fatalf("result = %+v", res)
 	}
 	if len(f.provider.reqs) != 2 {
@@ -406,7 +406,7 @@ func TestLintFailingTwiceFallsBackToTheBase(t *testing.T) {
 		return 0, ""
 	}
 	res := mustBuild(t, f)
-	if res.Selection != SelectionBase || !strings.Contains(res.Reason, "rejected twice: lint") {
+	if res.Source != SourceBase || !strings.Contains(res.Reason, "rejected twice: lint") {
 		t.Fatalf("result = %+v", res)
 	}
 	if len(f.provider.reqs) != 2 || f.rkb.count("lint") != 3 {
@@ -435,7 +435,7 @@ func TestHardFitFailuresRetryOnceThenFallBack(t *testing.T) {
 				return fitSpec{pages: 2, pdf: testPDF}
 			}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionBase || !strings.Contains(res.Reason, "rejected twice: fit") {
+			if res.Source != SourceBase || !strings.Contains(res.Reason, "rejected twice: fit") {
 				t.Fatalf("result = %+v", res)
 			}
 			fb := f.provider.reqs[1].Messages[2].Text()
@@ -466,7 +466,7 @@ func TestSoftFitFlawsKeepTheTailoredResume(t *testing.T) {
 				return fitSpec{pages: 2, pdf: testPDF}
 			}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionTailored || !strings.Contains(res.Reason, "layout note") || len(res.Notes) == 0 || !strings.Contains(res.Notes[0], advice[:5]) {
+			if res.Source != SourceTailored || !strings.Contains(res.Reason, "layout note") || len(res.Notes) == 0 || !strings.Contains(res.Notes[0], advice[:5]) {
 				t.Fatalf("result = %+v", res)
 			}
 			if len(f.provider.reqs) != 2 {
@@ -490,7 +490,7 @@ func TestBaseAcceptsLayoutFlawsWithANoteButNotAShortPage(t *testing.T) {
 			return fitSpec{status: status, advice: advice, pages: 2, pdf: testPDF, orphans: []string{"a2"}}
 		}
 		res := mustBuild(t, f)
-		if res.Selection != SelectionBase || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], advice[:4]) || !strings.Contains(res.Notes[0], "orphan a2") {
+		if res.Source != SourceBase || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], advice[:4]) || !strings.Contains(res.Notes[0], "orphan a2") {
 			t.Errorf("status %d: result = %+v", status, res)
 		}
 	}
@@ -555,7 +555,7 @@ func TestATailoredPDFThatIsTooLargeOrOverThePageBudgetFallsBackToTheBase(t *test
 				return fitSpec{pages: 2, pdf: testPDF}
 			}
 			res := mustBuild(t, f)
-			if res.Selection != SelectionBase {
+			if res.Source != SourceBase {
 				t.Fatalf("result = %+v", res)
 			}
 		})
@@ -744,7 +744,7 @@ func TestContextCancelledAndDeadline(t *testing.T) {
 		f.provider.replies = []string{validReply()}
 		f.cfg.Deadline = 60 * time.Second // under minForModel, over minForBase
 		res := mustBuild(t, f)
-		if res.Selection != SelectionBase || !strings.Contains(res.Reason, "not enough time") || len(f.provider.reqs) != 0 {
+		if res.Source != SourceBase || !strings.Contains(res.Reason, "not enough time") || len(f.provider.reqs) != 0 {
 			t.Fatalf("result = %+v, turns %d", res, len(f.provider.reqs))
 		}
 	})
@@ -763,7 +763,7 @@ func TestContextCancelledAndDeadline(t *testing.T) {
 			return 0, ""
 		}
 		res := mustBuild(t, f)
-		if res.Selection != SelectionBase || !strings.Contains(res.Reason, "no time was left to retry") || len(f.provider.reqs) != 1 {
+		if res.Source != SourceBase || !strings.Contains(res.Reason, "no time was left to retry") || len(f.provider.reqs) != 1 {
 			t.Fatalf("result = %+v, turns %d", res, len(f.provider.reqs))
 		}
 	})
@@ -818,7 +818,7 @@ func TestUnverifiedFiguresAreDroppedNeverShipped(t *testing.T) {
 		f.provider.replies = []string{reply}
 		f.rkb.unverified = map[string][]string{"clmUnv": {"u1"}}
 		res := mustBuild(t, f)
-		if res.Selection != SelectionTailored || strings.Join(res.UnverifiedDropped, ",") != "u1" {
+		if res.Source != SourceTailored || strings.Join(res.UnverifiedDropped, ",") != "u1" {
 			t.Fatalf("result = %+v", res)
 		}
 		for _, sel := range f.rkb.sels[len(f.rkb.sels)-3:] { // final export, lint, render
@@ -839,7 +839,7 @@ func TestUnverifiedFiguresAreDroppedNeverShipped(t *testing.T) {
 			}
 		}
 		// The reply used s1 and a1 anyway: not shown, so refused; the base is built without them.
-		if res.Selection != SelectionBase || strings.Join(res.UnverifiedDropped, ",") != "a1,s1" {
+		if res.Source != SourceBase || strings.Join(res.UnverifiedDropped, ",") != "a1,s1" {
 			t.Fatalf("result = %+v", res)
 		}
 		for _, sel := range f.rkb.sels[len(f.rkb.sels)-3:] {
@@ -888,7 +888,7 @@ func TestUnverifiedFiguresAreDroppedNeverShipped(t *testing.T) {
 			return "<html></html>"
 		}
 		res := mustBuild(t, f)
-		if res.Selection != SelectionBase || !strings.Contains(res.Reason, "figures") {
+		if res.Source != SourceBase || !strings.Contains(res.Reason, "figures") {
 			t.Fatalf("result = %+v", res)
 		}
 	})
@@ -912,8 +912,8 @@ func TestIneligibleBulletsNeverReachTheBaseBuild(t *testing.T) {
 			t.Fatal("a bullet no reader passed reached rkb")
 		}
 	}
-	if res.Selection != SelectionBase {
-		t.Errorf("selection = %q", res.Selection)
+	if res.Source != SourceBase {
+		t.Errorf("selection = %q", res.Source)
 	}
 }
 

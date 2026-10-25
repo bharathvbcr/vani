@@ -31,6 +31,8 @@ func tokens(text string) []string {
 // baseSel is the base selection as the owner wrote it. Everything this package
 // does not choose stays in the raw maps and is written back unchanged.
 type baseSel struct {
+	// sha is the sha256 of the bytes that were read (Fingerprints.BaseSelection).
+	sha      string
 	top      map[string]json.RawMessage
 	meta     map[string]json.RawMessage
 	pages    int
@@ -76,7 +78,7 @@ func loadBase(path string, maxPages int) (*baseSel, *Error) {
 	if _, err := kbsync.ParseSelection(raw); err != nil {
 		return nil, fail(CodeKB, "base selection: %v", err)
 	}
-	b := &baseSel{}
+	b := &baseSel{sha: sha256Hex(raw)}
 	if err := json.Unmarshal(raw, &b.top); err != nil || b.top == nil {
 		return nil, fail(CodeKB, "base selection is not a JSON object")
 	}

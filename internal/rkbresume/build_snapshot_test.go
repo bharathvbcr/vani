@@ -98,8 +98,8 @@ func TestEveryRkbStepReadsTheSnapshotOfTheBank(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Selection != SelectionTailored {
-		t.Fatalf("selection = %s (%s)", res.Selection, res.Reason)
+	if res.Source != SourceTailored {
+		t.Fatalf("selection = %s (%s)", res.Source, res.Reason)
 	}
 	for _, step := range []string{"claims-used", "lint", "render"} {
 		if !has(seen, step) {
