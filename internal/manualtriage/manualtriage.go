@@ -18,14 +18,17 @@
 // ranking's one slot owner (SlotFor), and nothing in the drop policy reads this
 // package.
 //
-// The near-duplication of marks' replay and lock code is deliberate for now:
-// marks is pinned by fifteen test files, and the follow-up is a shared
-// append-only-fold helper both packages call (docs/FOLLOWUPS.md).
+// The near-duplication of marks' replay code is deliberate for now: marks is
+// pinned by fifteen test files, and the follow-up is a shared append-only-fold
+// helper both packages call (docs/FOLLOWUPS.md). The flock itself is
+// internal/filelock's (TryAcquire, Acquire); marks keeps its own because it
+// also takes shared locks and must not create a store on read.
 package manualtriage
 
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -65,10 +68,9 @@ const (
 	// MaxModelBytes bounds the model id (config.MaxModelName).
 	MaxModelBytes = 128
 
-	dirName   = "retriage"
-	fileName  = "readings.jsonl"
-	lockName  = "lock"
-	lockRetry = 20 * time.Millisecond
+	dirName  = "retriage"
+	fileName = "readings.jsonl"
+	lockName = "lock"
 
 	opSet   = "set"
 	opClear = "clear"
@@ -356,30 +358,17 @@ func lock(dir string) (unlock func(), err error) {
 	case <-wait.C:
 		return nil, ErrBusy
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		<-t
-		return nil, fmt.Errorf("manualtriage: create dir: %w", err)
-	}
-	l, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDWR|os.O_CREATE, 0o600)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	l, err := filelock.Acquire(ctx, filepath.Join(dir, lockName))
 	if err != nil {
 		<-t
-		return nil, fmt.Errorf("manualtriage: open lock: %w", err)
-	}
-	for {
-		err := filelock.TryLock(l, true)
-		if err == nil {
-			return func() { _ = filelock.Unlock(l); _ = l.Close(); <-t }, nil
+		if errors.Is(err, filelock.ErrWouldBlock) {
+			return nil, ErrBusy
 		}
-		if !errors.Is(err, filelock.ErrWouldBlock) || time.Now().After(deadline) {
-			_ = l.Close()
-			<-t
-			if errors.Is(err, filelock.ErrWouldBlock) {
-				return nil, ErrBusy
-			}
-			return nil, fmt.Errorf("manualtriage: lock: %w", err)
-		}
-		time.Sleep(lockRetry)
+		return nil, fmt.Errorf("manualtriage: %w", err)
 	}
+	return func() { _ = l.Release(); <-t }, nil
 }
 
 // askLockName is the lock one paid reading holds while it asks, apart from the
@@ -392,21 +381,14 @@ const askLockName = "ask.lock"
 // is being asked would pay twice for the same posting. It gives ErrBusy when
 // another holds it. The flock is the process's: it goes when the process ends.
 func TryAskLock(dir string) (unlock func(), err error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("manualtriage: create dir: %w", err)
-	}
-	f, err := os.OpenFile(filepath.Join(dir, askLockName), os.O_RDWR|os.O_CREATE, 0o600)
+	l, err := filelock.TryAcquire(filepath.Join(dir, askLockName))
 	if err != nil {
-		return nil, fmt.Errorf("manualtriage: open lock: %w", err)
-	}
-	if err := filelock.TryLock(f, true); err != nil {
-		_ = f.Close()
 		if errors.Is(err, filelock.ErrWouldBlock) {
 			return nil, ErrBusy
 		}
-		return nil, fmt.Errorf("manualtriage: lock: %w", err)
+		return nil, fmt.Errorf("manualtriage: %w", err)
 	}
-	return func() { _ = filelock.Unlock(f); _ = f.Close() }, nil
+	return func() { _ = l.Release() }, nil
 }
 
 // syncDir is atomicfile.SyncDir; a variable only so a test can count its calls.

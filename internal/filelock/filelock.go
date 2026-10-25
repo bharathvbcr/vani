@@ -4,6 +4,10 @@
 // closing the file; callers Unlock before Close because Windows releases a
 // closed handle's locks only eventually.
 //
+// TryAcquire and Acquire (lock.go) are the whole-file form: a lock file of its
+// own, taken exclusively without waiting or waiting until a context ends, for
+// work that must not run twice at once.
+//
 // A file that is replaced by rename cannot carry its own lock, so its lock
 // lives beside it at path+".lock". The caller resolves path once (see
 // atomicfile.ResolveLeaf and atomicfile.Resolve) and uses that exact path for
