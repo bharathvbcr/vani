@@ -220,7 +220,7 @@ func TestResumeBuildsABasePDFWithoutAModelAndWithoutDevPrism(t *testing.T) {
 			t.Errorf("reply lacks %q: %v", k, m)
 		}
 	}
-	// The header was checked and then left out of everything.
+	// The header was decoded and then left out of everything.
 	noPersonalData(t, "the reply or stderr", stdout, stderr)
 	for _, sel := range f.sels {
 		noPersonalData(t, "a selection rkb read", sel)
@@ -230,6 +230,37 @@ func TestResumeBuildsABasePDFWithoutAModelAndWithoutDevPrism(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(f.args[len(f.args)-1], " "), "--final") {
 		t.Errorf("fit args = %v", f.args[len(f.args)-1])
+	}
+}
+
+// The header is no longer required or validated (step 1 of its removal): the
+// extension still sends one, an older or newer client may send none or one
+// that was refused before (no name, a control character, too many lines), and
+// each builds the same page, with nothing of it in the reply or on stderr.
+func TestResumeNeitherRequiresNorValidatesTheHeader(t *testing.T) {
+	const job = `"job":{"company":"Acme Robotics","title":"Engineer","description":"Build research tools in Python."}`
+	for name, input := range map[string]string{
+		"no header":                 `{` + job + `}`,
+		"empty header":              `{` + job + `,"header":{}}`,
+		"no name":                   `{` + job + `,"header":{"name":" "}}`,
+		"name with a newline":       `{` + job + `,"header":{"name":"Test\nApplicant"}}`,
+		"five contact lines":        `{` + job + `,"header":{"name":"Test Applicant","contact_lines":["1","2","3","4","5"]}}`,
+		"contact line with control": `{` + job + `,"header":{"name":"Test Applicant","contact_lines":["555-0100\u0007"]}}`,
+		"a normal header":           goodResumeReq,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+			resumeSetup(t, input, f, nil)
+			stdout, stderr := mustCode(t, 0, "resume")
+			r := resumeOut(t, stdout)
+			if r.Error != "" || r.Code != "" || r.PDF == "" || r.Pages != 2 {
+				t.Fatalf("reply = %+v", r)
+			}
+			noPersonalData(t, "the reply or stderr", stdout, stderr)
+			for _, sel := range f.sels {
+				noPersonalData(t, "a selection rkb read", sel)
+			}
+		})
 	}
 }
 
@@ -352,11 +383,8 @@ func TestResumeRefusalsAreJSONWithCodes(t *testing.T) {
 	}{
 		{"not json", "{", "bad_request", &fakeResumeRKB{}, nil},
 		{"unknown field", `{"job":{"description":"x"},"header":{"name":"A"},"ssn":"1"}`, "bad_request", &fakeResumeRKB{}, nil},
+		{"unknown header field", `{"job":{"description":"x"},"header":{"name":"A","ssn":"1"}}`, "bad_request", &fakeResumeRKB{}, nil},
 		{"no description", `{"job":{"company":"A"},"header":{"name":"A"}}`, "bad_request", &fakeResumeRKB{}, nil},
-		{"no name", `{"job":{"description":"x"},"header":{"name":" "}}`, "no_name", &fakeResumeRKB{}, nil},
-		{"name with a newline", `{"job":{"description":"x"},"header":{"name":"A\nB"}}`, "bad_request", &fakeResumeRKB{}, nil},
-		{"five contact lines", `{"job":{"description":"x"},"header":{"name":"A","contact_lines":["1","2","3","4","5"]}}`, "bad_request", &fakeResumeRKB{}, nil},
-		{"contact line with a control character", `{"job":{"description":"x"},"header":{"name":"A","contact_lines":["a\u0007b"]}}`, "bad_request", &fakeResumeRKB{}, nil},
 		{"oversized", `{"job":{"description":"` + strings.Repeat("d", maxResumeInput) + `"},"header":{"name":"A"}}`, "bad_request", &fakeResumeRKB{}, nil},
 		{"kb not configured", goodResumeReq, "config", &fakeResumeRKB{}, func(t *testing.T, p string) {
 			cfg, _ := config.Load(p)

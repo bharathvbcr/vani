@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -32,9 +31,10 @@ import (
 // no resume chosen; the extension then binds the PDF to the job page and
 // attaches it.
 //
-// The request still carries a header (name and contact lines, the owner's "Your
-// basics" in Vani Apply) and it is still checked, so a bad request is refused,
-// but the PDF no longer needs it: rkb prints the header of the base selection
+// The request may still carry a header (name and contact lines, the owner's
+// "Your basics" in Vani Apply: the extension sends it), and it is decoded so an
+// older client's request is not refused, but nothing reads it: it is neither
+// required nor validated, because rkb prints the header of the base selection
 // from the bank. The request's header is never sent to a model, written to a
 // file, logged or returned.
 
@@ -43,15 +43,11 @@ const (
 	maxResumeInput = 128 << 10
 	// maxResumePDF is ResumeStore.maxBytes (macos) and MAX_RESUME_BYTES (extension):
 	// a larger PDF could not cross Chrome's 1 MiB native-messaging reply.
-	maxResumePDF    = 512 << 10
-	maxHeaderName   = 200
-	maxContactLine  = 200
-	maxContactLines = 4
+	maxResumePDF = 512 << 10
 )
 
-// Reply codes of `vani resume` (rkbresume's, plus the request's).
+// Reply codes of `vani resume` (rkbresume's).
 const (
-	codeNoName   = "no_name"
 	codeRender   = rkbresume.CodeRender
 	codeTooLarge = rkbresume.CodeTooLarge
 	codePages    = rkbresume.CodePages
@@ -152,9 +148,6 @@ func (e *env) resumeOnce() (resumeReply, error) {
 	}
 	if strings.TrimSpace(req.Job.Description) == "" {
 		return resumeReply{}, coded("bad_request", "resume: the request has no job description")
-	}
-	if err := checkHeader(req); err != nil {
-		return resumeReply{}, err
 	}
 
 	ctx, cancel := signalContext()
@@ -293,39 +286,6 @@ func resumeVMReport(cfg config.Config, now time.Time) (path, note string, err er
 		}
 	}
 	return "", "kb.vm_report is not set and no validator report was found: a figure only the validator backs is left off", nil
-}
-
-func printable(s string, max int) bool {
-	if utf8.RuneCountInString(s) > max || !utf8.ValidString(s) {
-		return false
-	}
-	for _, r := range s {
-		if unicode.IsControl(r) {
-			return false
-		}
-	}
-	return true
-}
-
-// checkHeader refuses a request whose header is unusable. The header is not
-// used afterwards: rkb prints its own.
-func checkHeader(req resumeRequest) error {
-	name := strings.TrimSpace(req.Header.Name)
-	if name == "" {
-		return coded(codeNoName, "resume: no name for the header; add your first and last name in Your basics")
-	}
-	if !printable(name, maxHeaderName) {
-		return coded("bad_request", "resume: the header name is not one printable line of at most %d characters", maxHeaderName)
-	}
-	if len(req.Header.ContactLines) > maxContactLines {
-		return coded("bad_request", "resume: at most %d contact lines", maxContactLines)
-	}
-	for _, l := range req.Header.ContactLines {
-		if l = strings.TrimSpace(l); l != "" && !printable(l, maxContactLine) {
-			return coded("bad_request", "resume: a contact line is not one printable line of at most %d characters", maxContactLine)
-		}
-	}
-	return nil
 }
 
 // readBuilt turns a built resume into the reply, re-checking what the app and
