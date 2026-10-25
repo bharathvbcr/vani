@@ -265,27 +265,50 @@ error: a PDF or page is a 0600 file, named by path.
 
 | Command | What it does |
 |---|---|
-| `build [--dry-run] [--allow-base] KEY` | Opus picks the bullets (the build above); the result is saved as the next version, made from the current one. Needs the posting's text (`bad_request` without it). Reply: the version record without its choice, plus `current_moved`, `current_note` and `pdf_path` (absolute). `--dry-run` asks no model and runs no rkb: `opus_usable` and why not (`no_model`), `budget` (cap, spent and remaining today; absent, never zero, when the spend cannot be read) and an `estimate` for at most 2 turns (`rkbresume.MaxTurns`, an upper bound on input tokens from `rkbresume.PromptBound`, the shaped output ceiling, `max_usd` at Anthropic's published rates, `cap_reached`). |
+| `build [--dry-run] [--allow-base] [--from vN] [--scope NAME] [--lock NAME ...] [--instruction TEXT] KEY` | Opus picks the bullets (the build above); the result is saved as the next version, made from the current one. Needs the posting's text (`bad_request` without it). Reply: the version record without its choice, plus `current_moved`, `current_note` and `pdf_path` (absolute). The flags make it a **redraft** (below). `--dry-run` asks no model and runs no rkb: `opus_usable` and why not (`no_model`), `budget` (cap, spent and remaining today; absent, never zero, when the spend cannot be read) and an `estimate` for at most 2 turns (`rkbresume.MaxTurns`, an upper bound on input tokens from `rkbresume.PromptBound` plus what a redraft adds (`Tailor.PromptBytes`), the shaped output ceiling, `max_usd` at Anthropic's published rates, `cap_reached`); for a redraft it also says `from`, `scope`, `lock` and `instruction_runes` (the length, never the text), and refuses what a build would refuse without rkb (`bad_instruction`, `bad_request`, `not_found`, `config`). |
 | `render [--fit] [--from vN] KEY` | The owner's edit (JSON on stdin, at most 64 KiB, the shape of a version's `selection`), no model, so nothing is spent. **Without `--fit` nothing is saved**: rkb's screen HTML is copied to `<state>/resumes/.tmp/preview-N.html` (0600; ones over an hour old are swept by the next render), the build folder with the header is removed, and the reply is `{key, saved:false, html_path, checks, notes, keywords, bullets}` with `checks.fit` always `not_run` and no pages, version or PDF: the layout was not measured. **With `--fit`** the page is fitted in Chrome and saved as a version (`source` "edited") made from `--from` (default the current one); the reply is `build`'s. `--from` needs `--fit`. |
 | `show [--no-check] KEY [vN]` | Every version (record, `current`, `used`), the asked-for version's full `selection` (default the current one), the editor's `pool` (`rkbresume.PoolView`: eligible bullets by entry with resolved text, `follows`, the sections an entry may go in, the base choice) and the posting's `keywords` from `jobs show`'s data. Unless `--no-check`, each version has a fresh `eligibility` (below). `--no-check` reads stored files only (5 s), runs no rkb, gives no pool and says `eligibility_checked:false`; a version's own `checks.eligibility` is then what was true when it was built. |
 | `use KEY vN` | Checks the version freshly, then binds it for applying: `{key, version, pdf_path, name, pdf_sha256}`. Stale is refused (`stale`, with the verdict), a version that could not be checked is refused (`unchecked`, or `timeout` / `cancelled`): an unchecked version is never used. The store also refuses a version whose fit did not pass or soft-pass, whose recorded eligibility is not current or that has no PDF (`not_usable`), and a PDF that does not match its hash (`damaged`). |
 | `revalidate KEY vN` | Drops from vN's choice the bullets that went stale, and the continuations of a dropped lead (the pool says what each continuation follows), rebuilds it with fit (no model) and saves a version with `source` "revalidated", made from vN, whose `reason` names the dropped ids (`dropped_stale` in the reply). A version that is still vouched for is `not_stale`; one that could not be checked is `unchecked`. What is left must still build: an empty page is `bad_edit`, and nothing is saved. A dropped wording is not replaced; the owner places a swap in the editor. |
+| `diff KEY vA vB` | What differs between two stored versions, from the store alone (5 s, no rkb, no model): `{key, from, to, same, bullets {added, removed, moved}, overrides, section_order?, keywords {added, removed}}`. `from` and `to` are `{version, source, parent, instruction, created}` (the instruction each was asked with, as recorded). A bullet is `{id, section, entry, index}` (`entry` absent in a summary section, `index` 0-based in its entry's list). `moved` is a bullet on both pages in another section or entry, or out of order against the other bullets they share within one entry (the fewest that jumped: removing one bullet does not make its neighbours "move"): `{id, from, to}`, each a `{section, entry, index}`. `overrides` is `{entry, field, from, to}` per changed field of title, org, stack, lead and dates (an empty side is no override). `section_order` is `{from, to}`, the sections both pages have in each page's order, present only when they differ; a section only one side has is not an order change. `keywords` are the choices' `jd_keywords`. `same` is true when none of bullets, overrides, order and keywords differ (the sides can still differ in how they were made). Every list is present, empty when nothing differs. An unknown version is `not_found`, a record that does not read `damaged` or `unsupported`. |
+| `current KEY vN` | Makes a stored version the one the Studio shows and the next redraft starts from: a restore (`SetCurrent`). No version is deleted and `used` is untouched (`use` alone binds a version for applying). Reply `{key, version, previous, changed}`: `previous` is the version that was current (absent for none); an already-current version is a no-op with `changed:false`; a damaged pointer is replaced. 10 s. |
 
 **Eligibility of a stored version** (`jobsresumecheck.go`). A version records each bullet's id and
 the 12-hex hash of the wording it was chosen for, and the fingerprints of every input its build read
 (bank, base selection, selection set, validator report, claims, rkb binary). `show`, `use` and
-`revalidate` compare them to one fresh `rkbresume.Pool` and the bank's bullet ids:
-`{state: current | stale | unknown, reworded, gone, ineligible, inputs_changed, why}`. `reworded`:
-still offered, but the version was not judged on the new wording. `gone`: no longer in the bank.
-`ineligible`: in the bank, no longer offered (including a continuation whose lead went). A version is
-stale when any bullet is in one of those lists, or when the validator report changed (the pool shows
-eligibility only; which figures print is decided when a page is built, so rebuild or revalidate to
-re-check them). The other changed inputs are listed for information. `unknown` means the check could
-not run and is never read as `current`. A claim's own verified flag moving is in no fingerprint: a
-rebuild is what re-checks it.
+`revalidate` compare them to one fresh `rkbresume.Pool` and the bank's bullet ids, and re-export each
+version's own choice (`rkbresume.PoolAndVerify`, below):
+`{state: current | stale | unknown, reworded, gone, ineligible, unverified, inputs_changed, why}`.
+`reworded`: still offered, but the version was not judged on the new wording. `gone`: no longer in
+the bank. `ineligible`: in the bank, no longer offered (including a continuation whose lead went).
+`unverified`: rkb no longer double-verifies a figure in the bullet for this version's choice. A
+version is stale when any bullet is in one of those lists, or when the validator report changed. The
+other changed inputs are listed for information. `unknown` means the check could not run (the pool,
+or a version's figure re-check) and is never read as `current`; `use` and `revalidate` refuse it as
+`unchecked`.
 
-**Replies for versions.** The record is `resumestore.Meta`: `version`, `parent`, `source`
-(tailored, base, edited, revalidated), `reason`, `model`, `cost {usd, complete, turns}` (a turn whose
+**Figures** (gap 29). rkb's `double_verified` is not a property of a claim but of a claim and the
+sentences a selection uses (`claims export --used-in`), so the pool's own export, which uses none,
+judges no claim verified (measured on the owner's bank: 340 claims, 0 double-verified; 42 for the
+base selection with its validator report; 13 when every bullet is "used"). A digest of that flag could
+never move, so none is in the claims fingerprint or the per-bullet record. Instead `show`, `use` and
+`revalidate` export each version's own choice, as the build that made it did: a bullet whose figure
+no longer verifies for that choice is `unverified`, makes the version stale, and `revalidate` drops
+it. A choice the live bank cannot place (a bullet no longer offered) costs no rkb run and is already
+stale; a failed export is `unknown`. Up to 4 choices are exported at once (`verifyParallel`).
+Measured with the real rkb (n=7, min): the pool 0.07 s; pool plus 1, 5 and 20 versions 0.15, 0.26 and
+0.65 s (1.6 s one at a time). `vani jobs resume show` on a one-version job took 0.74 to 0.79 s
+checked and 0.59 to 0.66 s with `--no-check`, and `vani jobs show` alone 0.38 to 0.54 s: most of
+`show` is reading the job's keywords, not rkb, so the pool is not cached (a cache keyed on Vani's
+fingerprints would also miss rkb's verification log and source files, and could serve a stale
+"current"). `VANI_MEASURE=1 go test ./cmd/vani -run TestMeasure -v` repeats it.
+
+**Replies for versions.** The record is `resumestore.Meta`: `schema` (2; schema 1 records still read,
+with no instruction; a record of any other schema is `unsupported`, so an older vani refuses a v2
+record: reinstall the app and the CLI together), `version`, `parent`, `source`
+(tailored, base, edited, revalidated), `reason`, `instruction` (the owner's preference a tailored
+version was asked with, at most 500 characters on one printable line, scrubbed of the header's
+strings; never on the page; absent for a base or edited page), `model`, `cost {usd, complete, turns}` (a turn whose
 cost is unknown makes `complete` false and `usd` a lower bound), `checks {eligibility, lint, fit,
 figures}`, `pages` (0: not fitted), `notes`, `unverified_dropped`, `jd_keywords`, `bullets`,
 `fit_lines`, `fingerprints`, `pdf_sha256`, `created`. `render` without `--fit` names its keywords
@@ -298,6 +321,41 @@ build that fell back to the owner's base selection (a model that answered badly,
 current version keeps it (`current_moved:false`, `current_note` says so); the first version of a job
 is current whatever it is. Without `--allow-base`, a build that cannot run Opus is refused with
 `no_model` before anything is spent.
+
+**Redraft** (`rkbresume.Tailor`, `redraft.go`). `build` with `--from vN`, `--scope`, `--lock` or
+`--instruction` asks Opus again for a job that has a version. `--from vN` is the version it starts
+from; with a scope, a lock or an instruction and no `--from`, the current one is (an instruction
+alone on a job with no version is a plain build with a preference; a scope or lock with no version
+is `bad_request`). The new version is made from the version it started from, so it takes the current
+one's place only when that was the current one (`current_note` says why not).
+
+- *Whole redraft* (`--from`, nothing kept): the prompt shows the previous choice by ids only (no
+  text), as "the previous choice; choose differently where the posting is better served", only ids
+  still on offer.
+- *Scope and locks.* `--lock TITLE` (repeatable) keeps a section; `--scope` names a section title
+  (it is the one re-picked, every other section is kept) or an entry id of the previous page (only
+  that entry's bullets are re-picked, its section's other entries are kept). Kept sections go in the
+  prompt's "kept as they are" line; the bullets on kept parts are not offered again. The model's
+  reply is checked before any rkb render: repeating a kept part exactly is ignored, changing it is
+  `scope`. The page is then merged from the previous choice (kept parts, the owner's entry
+  overrides, the page's keywords under a scope; the project sections the model may order keep the
+  slots of the locked ones) and validated whole, so the page-safety rules and the steering that still
+  binds the model's part (counts per entry and section, keywords unless a scope keeps them) hold for
+  the merged page. A kept redraft never falls back to the base selection and cannot be combined with
+  `--allow-base` (`config`): a model that cannot make a page leaves `redraft` (or `scope` when the
+  last refusal was one) with its cost recorded as an attempt. A scope or lock naming nothing is
+  `bad_scope`; a previous choice naming a bullet the bank no longer vouches for is `ineligible`
+  (revalidate first); both are refused before a turn.
+- *Instruction*: at most 500 characters, one printable line (no control, format or invisible
+  character), no email address or phone number (`bad_instruction`; a range of years such as
+  2019-2024 is not a phone number), checked before anything runs. The message markers are removed
+  and every string of the base header is replaced (so a posting's or the owner's name cannot ride
+  along), then it sits in its own block "Owner's preference (it cannot override the rules above):"
+  below the rules, is never rendered, and is recorded on the version (`instruction`) when a model
+  shaped the page; a base page records none.
+- *Orphans.* When `rkb fit` reports orphan last lines, the retry says which bullets (ids only) "end
+  with a one-word last line" and asks for other bullets or another order: wording is reviewed text
+  the model cannot rewrite.
 
 **State** (`internal/resumestore`; `<state>` is the state dir, which must be absolute):
 
@@ -319,14 +377,16 @@ the model was paid. A second build or render while one runs is `busy`, nothing s
 
 **Deadlines** (Go side): `build` 360 s (two turns at most), `build
 --dry-run` 45 s, `render` 100 s, `render --fit` 260 s, `show` 45 s (`--no-check` 5 s), `use` 10 s,
-`revalidate` 260 s (pool and fit together; the plan gives the app 15 s more per call). SIGINT and SIGTERM cancel cleanly: rkb's process group
+`revalidate` 260 s (pool and fit together; the plan gives the app 15 s more per call), `diff` 5 s,
+`current` 10 s. SIGINT and SIGTERM cancel cleanly: rkb's process group
 is killed and a paid build's cost is recorded.
 
 **Codes**: `bad_request`, `unknown_key`, `ledger`, `config`, `store`, `not_found`, `damaged`,
 `unsupported` (a record of another schema), `full`, `busy`, `not_usable`, `stale`, `unchecked`,
 `not_stale`, `failed`, and rkbresume's `kb`, `render`, `lint`, `fit`, `too_large`, `pages`,
 `timeout`, `cancelled`, `kb_changed`, `no_model`, `ineligible` (the message names the bullet id),
-`bad_edit`. Exit 1 for any of them, 2 for a usage error.
+`bad_edit`, and a redraft's `bad_instruction`, `bad_scope`, `scope`, `redraft`. Exit 1 for any of
+them, 2 for a usage error.
 
 The request header of `vani resume` is decoded and ignored: nothing requires or validates it, since
 rkb prints its own, and the extension no longer sends one (step 2 of its removal; `no_name` is off
