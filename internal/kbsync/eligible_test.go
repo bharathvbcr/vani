@@ -205,7 +205,21 @@ func TestRealBankFinalizedResumeIsEligible(t *testing.T) {
 	}
 	el := Eligible(b, c, []Selection{s})
 	if n := len(el.Why); n != 0 {
-		t.Fatalf("%d bullets of the finalized resume are ineligible (ids withheld); the rule disagrees with rkb's final gate", n)
+		// A wording the readers never passed (a reworded bullet, or a claim whose
+		// value changed since finalize) fails rkb's final gate as much as this
+		// rule: that is a stale bank, not a disagreement. Reasons hold no text.
+		reasons := map[string]int{}
+		stale := 0
+		for _, why := range el.Why {
+			reasons[why]++
+			if strings.Contains(why, "has not passed this wording") {
+				stale++
+			}
+		}
+		if stale == n {
+			t.Fatalf("%d bullets of the finalized resume are ineligible (ids withheld) because their wording changed since finalize; rkb's final gate refuses them too, so they need a fresh round-2 review: %v", n, reasons)
+		}
+		t.Fatalf("%d bullets of the finalized resume are ineligible (ids withheld); unless the bank changed since finalize, the rule disagrees with rkb's final gate: %v", n, reasons)
 	}
 	t.Logf("finalized resume: %d bullets, all eligible", len(el.Bullets))
 }

@@ -705,16 +705,20 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
 - **`vani resume` on rkb (2026-10-23).** Built (docs/RUNTIME.md, "Building a resume"). Open:
   - `kb.vm_report` is not a config key: the validator report is guessed from `kb.code_root`
     (`resumeVMReport`). Without one, figures with no manual verification are dropped as unverified.
-  - `JobKind.resume.usesModel` is false (`macos/Sources/VaniApplyKit/Agent.swift`), so the app runs
-    `vani resume` with no model key and it always builds the base selection; its comment and
-    `DraftingTests` still say DevPrism and "no model". The 180 s job timeout is tight with a retry.
+  - Done (verified 2026-10-25): `JobKind.resume.usesModel` is true and its timeout is 375 s
+    (`Agent.swift`); the extension's `OWN_TEXT` lists `kb`, `lint`, `fit` (`resume.ts:263`); the
+    untrusted-marker regexp has one production owner (`llmbackend/unmark.go:16`, which
+    `rkbresume` calls).
   - The agent's PATH is the system folders: `pdftotext` is found in Homebrew's prefixes by
     `rkbresume`; Chrome by rkb's own list.
-  - Copies to fold: `kbsync.tokenIDs` (here `rkbresume.tokens`) and the untrusted-marker regexp
-    (`llmbackend`, `draft`, `rkbresume`) want exported owners; `rkbresume.Runner` (stdout and exit
-    code) could replace `kbsync.Runner`.
-  - The extension's `OWN_TEXT` (`extension/src/resume.ts`) lists `devprism`, not the new codes
-    (`kb`, `lint`, `fit`, `figures`); the bar then shows vani's own message, which is fine.
+  - Copies to fold: rkb's claim-token regexp lives in both `kbsync` (unexported `tokenRe`) and
+    `rkbresume.tokenRe`; `rkbresume.Runner` (stdout and exit code) could replace `kbsync.Runner`.
+  - An education entry with org and dates is a job to `kbsync.KindOf`, so if one ever gains an
+    eligible bullet it becomes placeable in the work history (`rkbresume.canHold`). Today no
+    education bullet is eligible.
+  - Resume Studio (2026-10-25): per-job tailored resumes in the app. Plan and owner decisions in
+    the session that started it; the pool is about the base resume until rkb round-2 review runs
+    (`vani kb sync --dry-run`: 17 entries / 36 slots).
 - **Jev naming left after the Liquid D rename (2026-10-20, branch `liquid-d-rename`).** The decision
   model is Liquid D (`liquid/d1-ultra` over OpenRouter). `config.Default()` (what `vani init`
   writes) now names it and, by the owner's call, no llm: tests that need one set `testLLM`. And

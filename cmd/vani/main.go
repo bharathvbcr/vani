@@ -200,8 +200,8 @@ commands:
                              on stdout (spends from the daily llm budget)
   suggest                    triage a form's new fields with the decision model and draft the
                              essays: JSON request on stdin, JSON reply on stdout
-  resume                     build a resume PDF for one job with DevPrism (no model): JSON
-                             request on stdin, JSON reply with the PDF on stdout
+  resume                     build a resume PDF for one job with rkb (the model picks the
+                             bullets): JSON request on stdin, JSON reply with the PDF on stdout
   migrate rekey-fallback [--dry-run]
                              one-time: move fallback-keyed (x:) postings, and their marks, to the
                              keys titles that keep C++/C#/.NET apart give them (backs up first;
