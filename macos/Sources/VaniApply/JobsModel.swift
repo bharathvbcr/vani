@@ -103,10 +103,22 @@ final class JobsModel {
     /// for this.
     let batch: RetriageBatchModel
 
-    init(client: @escaping () -> JobsClient, retriage: (() -> RetriageClient)? = nil) {
+    /// "Build a tailored resume" and "Use for this job": the same detail pane and row menu, its own one
+    /// operation at a time. A version built, revalidated or used re-shows the open posting, whose
+    /// `resume` summary is what vani now reports. Without a runner (a test host) the actions are not offered.
+    let resume: ResumeStudioModel
+
+    init(client: @escaping () -> JobsClient, retriage: (() -> RetriageClient)? = nil,
+         resume: (() -> ResumeStudioClient)? = nil, bankStore: @escaping () -> BankStore? = { nil }) {
         self.client = client
+        self.resume = ResumeStudioModel(client: resume, bankStore: bankStore)
         self.retriage = RetriageModel(client: retriage)
         self.batch = RetriageBatchModel(client: retriage.map { make in { RetriageBatchClient(runner: make().runner) } })
+        self.resume.onChange = { [weak self] key in self?.reloadAfterResume(key) }
+        self.resume.candidate = { [weak self] key in
+            guard let self else { return nil }
+            return self.detail?.key == key ? self.detail : self.jobs.first { $0.key == key }
+        }
         self.retriage.otherBusy = { [weak self] in self?.batch.isBusy ?? false }
         self.batch.otherBusy = { [weak self] in self?.retriage.isBusy ?? false }
         self.batch.onManualChange = { [weak self] in
@@ -126,6 +138,19 @@ final class JobsModel {
     private func reloadAfterManualTriage(_ key: String) async {
         await refresh()
         if selection == key { loadDetail() }
+    }
+
+    /// Re-read the open posting after its resume changed, so its `resume` summary is the one vani reports.
+    private func reloadAfterResume(_ key: String) {
+        if selection == key { loadDetail() }
+    }
+
+    /// Build a tailored resume from a row or the detail: show the posting (the progress, the answer and any
+    /// error appear in its detail pane) and ask vani for the cost.
+    func startResume(_ job: Job) {
+        guard resume.isAvailable, resume.blockedReason(for: job) == nil else { return }
+        selection = job.key
+        resume.start(job)
     }
 
     /// Re-triage from a row or the detail: show the posting (the progress, the answer and any error

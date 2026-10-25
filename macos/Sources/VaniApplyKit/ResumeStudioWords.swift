@@ -234,7 +234,7 @@ public enum ResumeWords {
         "bad_request", "unknown_key", "ledger", "config", "store", "not_found", "damaged", "unsupported", "full", "busy",
         "not_usable", "stale", "unchecked", "not_stale", "failed", "kb", "render", "lint", "fit", "too_large", "pages",
         "timeout", "cancelled", "kb_changed", "no_model", "ineligible", "bad_edit", "figures",
-        "account", "keychain", "settings", "provider", "budget", "budget_exhausted", "cap_reached", "no_reply", "unreadable_reply",
+        "account", "keychain", "settings", "provider", "budget", "budget_exhausted", "cap_reached", "no_reply", "unreadable_reply", "bind",
     ]
 
     /// Plain words for a failure; nil for a `cancelled` that cost nothing (the owner stopped it).
@@ -309,6 +309,10 @@ public enum ResumeWords {
         case "settings": message = "Vani Apply's settings could not be read: \(detail)"
         case "no_reply", "unreadable_reply":
             message = detail
+            retry = true
+        case "bind":
+            // This app's own: vani bound the version, the browsers' copy could not be saved. The sentence is complete.
+            message = f.message
             retry = true
         default:
             message = detail.isEmpty ? "The resume step failed (\(clipped(f.code, 40)))." : detail

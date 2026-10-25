@@ -123,6 +123,13 @@ final class AppModel {
         RetriageClient(runner: draftRunner)
     }
 
+    /// `vani jobs resume` for the Jobs tab's Resume card: a build asks Opus, so it runs through the draft
+    /// runner and gets the keys drafting gets (never read here: on the anthropic path `anthropic-account`
+    /// adds them). Show, use, revalidate and render start `vani` with no key; each call has its own timeout.
+    var resumeStudioClient: ResumeStudioClient {
+        ResumeStudioClient(runner: draftRunner)
+    }
+
     // MARK: - Agent
 
     /// The login-item agent that runs drafts and suggestions for both browsers.
