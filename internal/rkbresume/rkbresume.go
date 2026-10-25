@@ -71,6 +71,11 @@ const (
 	// CodeKBChanged means the knowledge base's claims changed after this build
 	// read them; nothing was rendered from the mixed state.
 	CodeKBChanged = "kb_changed"
+	// CodeNoModel means the model could not run and Config.AllowBase is off, so no
+	// base resume was built in its place.
+	CodeNoModel = "no_model"
+	// CodeIneligible means an edit names a bullet that is no longer eligible.
+	CodeIneligible = "ineligible"
 )
 
 // Bounds. All are ceilings.
@@ -143,11 +148,20 @@ type Config struct {
 	// every figure that has no manual verification is then dropped as unverified.
 	VMReport string
 
-	// Provider answers the model turn on Model. Nil means no model: the base
-	// selection is built and NoModel (a short reason) is reported.
+	// Provider answers the model turn on Model. Nil means no model: NoModel (a
+	// short reason) says why. Without AllowBase Build then fails with CodeNoModel
+	// before anything is spent; with it, the base selection is built and the Result
+	// says Source "base" with that reason.
 	Provider llm.Provider
 	Model    string
 	NoModel  string
+	// AllowBase lets Build fall back to the base selection when the model could not
+	// run (no provider, no time, a budget that refuses, a model that cannot be
+	// reached or does not answer in time). Off, those are CodeNoModel errors: a
+	// tailored resume was asked for and none is made silently. A model that answered
+	// with a choice that was refused or rejected falls back to the base either way,
+	// with the reason in the Result.
+	AllowBase bool
 
 	Runner   Runner        // nil means ExecRunner
 	MaxPDF   int           // default DefaultMaxPDF
@@ -281,15 +295,22 @@ func (c Config) normalize() (Config, *Error) {
 func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 	cfg, nerr := cfg.normalize()
 	if nerr != nil {
-		return Result{}, nerr
+		return nothing(), nerr
+	}
+	if cfg.Provider == nil && !cfg.AllowBase {
+		reason := cfg.NoModel
+		if reason == "" {
+			reason = "no model is configured"
+		}
+		return nothing(), fail(CodeNoModel, "the model could not run (%s), so no tailored resume was built", reason)
 	}
 	if cfg.LockDir != "" {
 		l, err := filelock.TryAcquire(filepath.Join(cfg.LockDir, buildLockName))
 		switch {
 		case errors.Is(err, filelock.ErrWouldBlock):
-			return Result{}, fail(CodeBusy, "another resume is being built; wait for it to finish")
+			return nothing(), fail(CodeBusy, "another resume is being built; wait for it to finish")
 		case err != nil:
-			return Result{}, fail(CodeConfig, "the resume build lock could not be taken: %v", err)
+			return nothing(), fail(CodeConfig, "the resume build lock could not be taken: %v", err)
 		}
 		defer l.Release()
 	}
@@ -297,7 +318,7 @@ func Build(ctx context.Context, cfg Config, req Request) (Result, error) {
 	defer cancel()
 	dir, err := makeBuildDir(cfg.WorkDir, time.Now())
 	if err != nil {
-		return Result{}, fail(CodeRender, "no private temp folder: %v", err)
+		return nothing(), fail(CodeRender, "no private temp folder: %v", err)
 	}
 	defer os.RemoveAll(dir)
 	b := &builder{cfg: cfg, dir: dir, last: notRun()}

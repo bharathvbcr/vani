@@ -70,6 +70,12 @@ func notRun() Checks {
 	return Checks{Eligibility: checkUnknown, Lint: checkNotRun, Fit: checkNotRun, Figures: checkNotRun}
 }
 
+// nothing is the Result of an error before the build began: nothing ran and
+// nothing was spent (a complete cost of zero, not an unknown one).
+func nothing() Result {
+	return Result{Cost: Cost{Complete: true}, Checks: notRun()}
+}
+
 // BulletRef names a bullet on the page and the wording it was judged on: the
 // 12-hex sha1 of its resolved plain text, the form rkb's reviews record.
 type BulletRef struct {

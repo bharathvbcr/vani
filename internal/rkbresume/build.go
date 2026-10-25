@@ -50,6 +50,8 @@ type builder struct {
 	// last is how the checks of the most recent attempt stood, for the Result an
 	// error carries.
 	last Checks
+	// answered counts the model turns that returned a reply.
+	answered int
 	// cost sums the model turns (cost.go).
 	cost costMeter
 }
@@ -160,13 +162,20 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	}
 	badClaims := b.badFigures(cf, baseCh)
 
-	reason := b.cfg.NoModel
+	// noModel: the model could not run at all (none configured, no time for a
+	// turn, the budget refused it, it could not be reached or timed out before
+	// it answered). A model that answered with a choice that was then refused or
+	// rejected did run: that falls back to the base with its reason whatever
+	// AllowBase says, as the cost of the turns is spent either way.
+	reason, noModel := b.cfg.NoModel, false
 	switch {
 	case b.cfg.Provider == nil:
+		noModel = true
 		if reason == "" {
 			reason = "no model is configured"
 		}
 	case b.remaining(ctx) < minForModel:
+		noModel = true
 		reason = "not enough time was left for a model turn"
 	default:
 		res, why, err := b.tailor(ctx, req, baseCh, badClaims)
@@ -176,10 +185,13 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 		if res != nil {
 			return *res, nil
 		}
-		reason = why
+		reason, noModel = why, b.answered == 0
 	}
 	if ctx.Err() != nil {
 		return Result{}, ctxError(ctx)
+	}
+	if noModel && !b.cfg.AllowBase {
+		return Result{}, fail(CodeNoModel, "the model could not run (%s), so no tailored resume was built", reason)
 	}
 	if b.remaining(ctx) < minForBase {
 		return Result{}, fail(CodeTimeout, "not enough time was left to build the base resume")
@@ -335,6 +347,7 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 		if tr.text == "" {
 			return keepSoft(tr.reason)
 		}
+		b.answered++
 		ch, err := b.parseChoice(tr.text, p, kw)
 		if err != nil {
 			// A refused choice shares the one retry: the model is told why.

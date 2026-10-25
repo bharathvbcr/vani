@@ -174,6 +174,9 @@ func newFixture(t *testing.T) *fixture {
 		RKB: "/fake/rkb", CodeRoot: "/fake/code", Bank: bankPath,
 		Selections: []string{basePath, otherPath}, BaseSelection: basePath,
 		Model: "m", Provider: f.provider, Runner: f.rkb,
+		// The fixture lets the base stand in for a model that cannot run, as `vani resume`
+		// does; the no_model tests turn it off.
+		AllowBase: true,
 	}
 	return f
 }
