@@ -34,7 +34,7 @@ const (
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, gaps, folders, show, find, ingest, mark, note or retriage")
+		return usagef("jobs: expected list, stats, gaps, folders, show, find, ingest, mark, note, retriage or resume")
 	}
 	switch args[0] {
 	case "list":
@@ -57,6 +57,8 @@ func (e *env) cmdJobs(args []string) error {
 		return e.jobsIngest(args[1:])
 	case "retriage":
 		return e.jobsRetriage(args[1:])
+	case "resume":
+		return e.jobsResume(args[1:])
 	}
 	return usagef("jobs: unknown subcommand %q", args[0])
 }
@@ -309,29 +311,42 @@ func (e *env) jobsShow(args []string) error {
 		if err != nil {
 			return err
 		}
-		snap, m, err := e.jobsStateFor(rowScope(func(ledger.Snapshot) (posting.Key, bool) { return k, true }))
-		if err != nil {
-			return err
-		}
-		r, ok, err := rowRecord(snap, k)
+		j, _, ok, err := e.showJob(k)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return fmt.Errorf("jobs show: no posting %q in the ledger", k)
 		}
-		in, err := e.newRowInsight(snap, m, r)
-		if err != nil {
-			return err
-		}
-		out = jobview.ToJob(r, m[k])
-		in.Enrich(&out, r, showKeywords)
-		out.Description = jobview.CleanText(r.Posting.Description, jobview.DescRunes, true)
+		out = j
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s at %s\n%s\n\n%s\n", out.Title, out.Company, out.URL, out.Description)
 	})
+}
+
+// showJob is what `jobs show` reports for k: the enriched job (keywords, scores,
+// resume summary, the cleaned description) and the ledger record it came from;
+// ok is false when the ledger has no such posting. `jobs resume show` reads the
+// same data, so the two never describe a posting differently.
+func (e *env) showJob(k posting.Key) (j jobview.Job, r ledger.Record, ok bool, err error) {
+	snap, m, err := e.jobsStateFor(rowScope(func(ledger.Snapshot) (posting.Key, bool) { return k, true }))
+	if err != nil {
+		return jobview.Job{}, ledger.Record{}, false, err
+	}
+	r, ok, err = rowRecord(snap, k)
+	if err != nil || !ok {
+		return jobview.Job{}, ledger.Record{}, false, err
+	}
+	in, err := e.newRowInsight(snap, m, r)
+	if err != nil {
+		return jobview.Job{}, ledger.Record{}, false, err
+	}
+	j = jobview.ToJob(r, m[k])
+	in.Enrich(&j, r, showKeywords)
+	j.Description = jobview.CleanText(r.Posting.Description, jobview.DescRunes, true)
+	return j, r, true, nil
 }
 
 func (e *env) jobsMark(args []string) error {

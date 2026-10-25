@@ -288,23 +288,32 @@ func resumeVMReport(cfg config.Config, now time.Time) (path, note string, err er
 	return "", "kb.vm_report is not set and no validator report was found: a figure only the validator backs is left off", nil
 }
 
-// readBuilt turns a built resume into the reply, re-checking what the app and
-// the extension rely on: it starts with %PDF-, fits the cap, and fits
-// resume.PageBudget pages.
-func readBuilt(res rkbresume.Result) (resumeReply, error) {
+// checkBuilt re-checks what the app and the extension rely on of a fitted
+// build: the PDF starts with %PDF-, fits the cap, and fits resume.PageBudget
+// pages. Every command that keeps or sends a built PDF calls it first.
+func checkBuilt(res rkbresume.Result) error {
 	pdf := res.PDF
 	if len(pdf) == 0 || !bytes.HasPrefix(pdf, []byte("%PDF-")) {
-		return resumeReply{}, coded(codeRender, "resume: the built PDF is damaged")
+		return coded(codeRender, "resume: the built PDF is damaged")
 	}
 	if len(pdf) > maxResumePDF {
-		return resumeReply{}, coded(codeTooLarge, "resume: the PDF is over %d KB", maxResumePDF>>10)
+		return coded(codeTooLarge, "resume: the PDF is over %d KB", maxResumePDF>>10)
 	}
 	if res.Pages <= 0 {
-		return resumeReply{}, coded(codeRender, "resume: no page count for the built PDF")
+		return coded(codeRender, "resume: no page count for the built PDF")
 	}
 	if res.Pages > resume.PageBudget {
-		return resumeReply{}, coded(codePages, "resume: the PDF has %d pages, over the %d-page budget", res.Pages, resume.PageBudget)
+		return coded(codePages, "resume: the PDF has %d pages, over the %d-page budget", res.Pages, resume.PageBudget)
 	}
+	return nil
+}
+
+// readBuilt turns a built resume into the reply, after checkBuilt.
+func readBuilt(res rkbresume.Result) (resumeReply, error) {
+	if err := checkBuilt(res); err != nil {
+		return resumeReply{}, err
+	}
+	pdf := res.PDF
 	return resumeReply{
 		PDF: base64.StdEncoding.EncodeToString(pdf), Bytes: len(pdf), Pages: res.Pages,
 		Selection: res.Source, Reason: res.Reason, UnverifiedDropped: res.UnverifiedDropped, Notes: res.Notes,
