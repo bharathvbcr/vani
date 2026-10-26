@@ -52,15 +52,22 @@ else
   # builds and reports "semantic matching not run".
   # The archive sits where go.mod's tessl/go replace points; TESSL_ARCHIVE
   # overrides it (a worktree, another checkout).
-  TESSL_ARCHIVE="${TESSL_ARCHIVE:-$VANI/../../research/tessl/go/engine/target/release/libgusset.a}"
+  TESSL_GO_DIR="$VANI/../../research/tessl/go"
+  if [ -z "${TESSL_ARCHIVE:-}" ] && [ "$(uname -s)/$(uname -m)" = "Darwin/arm64" ] && [ ! -f "$TESSL_GO_DIR/engine/target/release/libgusset.a" ] && [ -f "$TESSL_GO_DIR/Makefile" ]; then
+    make -C "$TESSL_GO_DIR" engine
+  fi
+  TESSL_ARCHIVE="${TESSL_ARCHIVE:-$TESSL_GO_DIR/engine/target/release/libgusset.a}"
   GO_TAGS=""
+  TESSL_CFLAGS=""
   if [ "$(uname -s)/$(uname -m)" = "Darwin/arm64" ] && [ -f "$TESSL_ARCHIVE" ]; then
     GO_TAGS="tessl"
+    TESSL_SHA="$(shasum -a 256 "$TESSL_ARCHIVE" | cut -c1-16)"
+    TESSL_CFLAGS="-DTESSL_ENGINE_SHA=${TESSL_SHA}"
   else
     echo "bundle.sh: building vani without -tags tessl (no Apple silicon or no $TESSL_ARCHIVE): semantic matching will report \"not run\"" >&2
   fi
   # VANI_VERSION (scripts/release.sh) stamps `vani version`; unset, it says "dev".
-  go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} ${VANI_VERSION:+-ldflags "-X main.version=$VANI_VERSION"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
+  CGO_CFLAGS="${TESSL_CFLAGS:+$TESSL_CFLAGS }${CGO_CFLAGS:-}" go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} ${VANI_VERSION:+-ldflags "-X main.version=$VANI_VERSION"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
 fi
 cp "$MACOS/Support/Extension-Info.plist" "$APPEX/Contents/Info.plist"
 cp "$BIN/VaniApplyExtension" "$APPEX/Contents/MacOS/VaniApplyExtension"

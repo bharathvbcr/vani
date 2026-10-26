@@ -34,9 +34,11 @@ import (
 // ErrBoardNotFound is returned when Workday has no such tenant/site.
 var ErrBoardNotFound = srcutil.ErrBoardNotFound
 
-// errDetailGone is a posting detail answering 404 under a listing that
-// answered: the posting closed after it was listed.
-var errDetailGone = errors.New("detail is gone (HTTP 404)")
+// errDetailGone is a posting detail answering 404 or 403 under a listing that
+// answered: the posting closed or was restricted to internal candidates while
+// still in the search index (snapchat/snap /job/RTL-Design-Engineer_R0046961,
+// 2026-10-26: HTTP 403 {"errorCode":"S22","message":"permission denied"}).
+var errDetailGone = errors.New("detail is gone (HTTP 404/403)")
 
 // maxGone is how many of n listed postings may come back gone before the board
 // fails: a tenth, at least one. A posting closing mid-run is ordinary; a
@@ -119,7 +121,7 @@ type Stats struct {
 	// Deferred rows were new but past MaxDetails: they are fetched on a later
 	// run. Not being stored, their absence ages nothing.
 	Deferred int `json:"deferred,omitempty"`
-	// Gone rows answered their detail with 404: closed since listing.
+	// Gone rows answered their detail with 404 or 403: closed or restricted since listing.
 	Gone int `json:"gone,omitempty"`
 }
 
@@ -334,7 +336,7 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			// postings closing, and would empty a healthy board. With every
 			// other row reused, one new posting gone is only that posting.
 			if st.Gone++; st.Gone > allowed || (st.Gone == len(jobs) && st.Reused == 0) {
-				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404); the detail endpoint is not answering",
+				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404/403); the detail endpoint is not answering",
 					st.Gone, len(jobs))
 			}
 			continue
@@ -424,8 +426,10 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 	}
 	var d detailResponse
 	if err := srcutil.GetJSON(ctx, s.d, base+path, &d); err != nil {
-		if errors.Is(err, srcutil.ErrBoardNotFound) {
-			// The board exists (its listing answered); only this posting is gone.
+		var se *egress.StatusError
+		if errors.Is(err, srcutil.ErrBoardNotFound) || (errors.As(err, &se) && se.Code == http.StatusForbidden) {
+			// The board exists (its listing answered); only this posting is
+			// gone (404) or unposted/internal-only (403 S22 permission denied).
 			return posting.Posting{}, errDetailGone
 		}
 		return posting.Posting{}, err

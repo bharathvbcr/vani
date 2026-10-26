@@ -19,16 +19,21 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 type ij = map[string]any
 
-// No ingest test may reach a Workday host: a test that saves a Workday search
-// installs its own answer with stubWorkdaySize, and one that forgets fails here.
+// No ingest test may reach a Workday or careers-page host: a test that saves a
+// Workday or careers-page search installs its own answer with stubWorkdaySize
+// or stubPageRobots, and one that forgets fails here.
 func init() {
 	checkWorkdaySize = func(_ context.Context, b sources.Board) error {
 		return fmt.Errorf("test reached the network for %s", b.Token)
+	}
+	checkPageRobots = func(_ context.Context, host, path string) (bool, error) {
+		return false, fmt.Errorf("test reached the network for %s%s", host, path)
 	}
 }
 
@@ -41,6 +46,20 @@ func stubWorkdaySize(t *testing.T, err error) *[]sources.Board {
 	checkWorkdaySize = func(_ context.Context, b sources.Board) error {
 		asked = append(asked, b)
 		return err
+	}
+	return &asked
+}
+
+// stubPageRobots makes the page robots.txt check answer (allowed, err), and
+// records the host+path pairs asked for.
+func stubPageRobots(t *testing.T, allowed bool, err error) *[]string {
+	t.Helper()
+	old := checkPageRobots
+	t.Cleanup(func() { checkPageRobots = old })
+	var asked []string
+	checkPageRobots = func(_ context.Context, host, path string) (bool, error) {
+		asked = append(asked, host+path)
+		return allowed, err
 	}
 	return &asked
 }
@@ -319,11 +338,15 @@ func TestIngestSaveSearch(t *testing.T) {
 func TestIngestSavesAPageBoard(t *testing.T) {
 	cfgPath, stateDir := setup(t)
 	mustCode(t, 0, "init")
+	asked := stubPageRobots(t, true, nil)
 	page := "https://careers.acme.com/search?q=engineer&location=Remote&utm_source=x&gclid=1&session_id=2"
 	out, _, _ := ingestCLI(t, 0, ingestPayload(t, page, true, ingestJobs("careers.acme.com", 3)))
 	s := out.Search
 	if s.Status != searchAdded || s.ATS != posting.Page || s.Token != "careers-acme-com" || s.Company != "Acme" {
 		t.Fatalf("search %+v", s)
+	}
+	if len(*asked) != 1 || (*asked)[0] != "careers.acme.com/search" {
+		t.Errorf("robots check asked %v, want [careers.acme.com/search]", *asked)
 	}
 	if s.URL != "https://careers.acme.com/search?location=Remote&q=engineer" {
 		t.Errorf("url %q: tracking parameters not scrubbed, or the search lost", s.URL)
@@ -431,6 +454,9 @@ func TestIngestCompanyAndSlug(t *testing.T) {
 	if got := ingestCompany(inbox.Page{URL: "https://careers.acme.com/x"}, []inbox.Job{{Title: "t"}}); got != "careers.acme.com" {
 		t.Errorf("host fallback = %q", got)
 	}
+	if got := ingestCompany(inbox.Page{URL: "https://revolutpeople.com/biorce/public/careers", Title: "Careers home"}, []inbox.Job{{Title: "t", Company: "We have 68 open positions"}, {Title: "t2", Company: "Join our team"}}); got != "revolutpeople.com" {
+		t.Errorf("generic company/title fallback = %q, want host", got)
+	}
 	if got := ingestCompany(inbox.Page{Title: strings.Repeat("é", 300)}, nil); len(got) > inbox.MaxCompany {
 		t.Errorf("company is %d bytes", len(got))
 	}
@@ -494,6 +520,7 @@ func TestAddBoard(t *testing.T) {
 func TestUnsavedScrapeSurvivesTheSavedBoardsFullReconcile(t *testing.T) {
 	cfgPath, stateDir := setup(t)
 	mustCode(t, 0, "init")
+	stubPageRobots(t, true, nil)
 	out, _, _ := ingestCLI(t, 0, ingestPayload(t, "https://careers.acme.com/search?q=engineer", true, ingestJobs("careers.acme.com", 2)))
 	if out.Search.Status != searchAdded {
 		t.Fatalf("%+v", out.Search)
@@ -654,5 +681,68 @@ func TestAddBoardRefusesTheScrapeSuffix(t *testing.T) {
 	cfg.AllowedHosts = append(cfg.AllowedHosts, "careers.acme.com")
 	if err := addBoard(&cfg, b, true); !errors.As(err, new(invalidBoardError)) || len(cfg.Watchlist) != 0 {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A careers page with more than page.MaxLinks (50) jobs cannot be followed by
+// the pg adapter (which caps at 50 posting links per board): the search is
+// refused with a narrowing message while the scraped jobs still queue.
+func TestIngestRefusesAPageBoardOverMaxLinks(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	asked := stubPageRobots(t, true, nil)
+	jobs := ingestJobs("revolutpeople.com", page.MaxLinks+18) // 68 jobs, as on revolutpeople.com/biorce/public/careers
+
+	out, _, _ := ingestCLI(t, 0, ingestPayload(t, "https://revolutpeople.com/biorce/public/careers", true, jobs))
+	if s := out.Search; s.Status != searchInvalid || !strings.Contains(s.Reason, "68") || !strings.Contains(s.Reason, "50") || !strings.Contains(s.Reason, "narrow") {
+		t.Fatalf("search = %+v, want invalid naming 68 and 50", s)
+	}
+	if len(*asked) != 0 {
+		t.Errorf("robots check ran %d times on a page already over MaxLinks", len(*asked))
+	}
+	if out.Queued != page.MaxLinks+18 || spooled(t, stateDir)+len(ledgerRecords(t, stateDir)) == 0 {
+		t.Errorf("the jobs must still be queued: %+v", out)
+	}
+	if len(watchlistOf(t, cfgPath).Watchlist) != 0 {
+		t.Error("a page over MaxLinks was saved to the watchlist")
+	}
+}
+
+// A careers page whose host's robots.txt disallows the listing path (as
+// revolutpeople.com disallows /biorce/public/careers) fails every daily run
+// with RobotsBlocked, so saveSearch refuses the board while queueing the jobs.
+func TestIngestRefusesAPageBoardDisallowedByRobots(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	asked := stubPageRobots(t, false, nil)
+	jobs := ingestJobs("revolutpeople.com", 5)
+
+	out, _, _ := ingestCLI(t, 0, ingestPayload(t, "https://revolutpeople.com/biorce/public/careers", true, jobs))
+	if s := out.Search; s.Status != searchInvalid || !strings.Contains(s.Reason, "robots.txt disallows /biorce/public/careers") {
+		t.Fatalf("search = %+v, want invalid naming robots.txt disallow", s)
+	}
+	if len(*asked) != 1 || (*asked)[0] != "revolutpeople.com/biorce/public/careers" {
+		t.Errorf("robots check asked %v", *asked)
+	}
+	if out.Queued != 5 || spooled(t, stateDir)+len(ledgerRecords(t, stateDir)) == 0 {
+		t.Errorf("the jobs must still be queued: %+v", out)
+	}
+	if len(watchlistOf(t, cfgPath).Watchlist) != 0 {
+		t.Error("a page disallowed by robots.txt was saved to the watchlist")
+	}
+}
+
+// A robots.txt check that could not run is not a pass: the search is refused.
+func TestIngestPageRobotsCheckFailureIsNotAPass(t *testing.T) {
+	cfgPath, _ := setup(t)
+	mustCode(t, 0, "init")
+	stubPageRobots(t, false, errors.New("HTTP 503"))
+
+	out, _, _ := ingestCLI(t, 0, ingestPayload(t, "https://careers.acme.com/search", true, ingestJobs("careers.acme.com", 3)))
+	if s := out.Search; s.Status != searchInvalid || !strings.Contains(s.Reason, "could not check") || !strings.Contains(s.Reason, "try again") {
+		t.Fatalf("search = %+v", s)
+	}
+	if out.Queued != 3 || len(watchlistOf(t, cfgPath).Watchlist) != 0 {
+		t.Errorf("queued %d, watchlist %+v", out.Queued, watchlistOf(t, cfgPath).Watchlist)
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
@@ -209,10 +210,15 @@ func (e *env) saveSearch(page inbox.Page, jobs []inbox.Job, company string) (ing
 	case err != nil:
 		return ingestSearchJSON{}, sources.Board{}, err
 	}
-	if board.ATS == posting.Workday {
+	switch board.ATS {
+	case posting.Workday:
 		// A board the adapter cannot list fails every daily run, so it is not saved.
 		// The jobs are still queued: only the search is refused.
 		if reason := workdayRefusal(board); reason != "" {
+			return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: reason}, sources.Board{}, nil
+		}
+	case posting.Page:
+		if reason := pageRefusal(board); reason != "" {
 			return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: reason}, sources.Board{}, nil
 		}
 	}
@@ -268,6 +274,43 @@ func workdayRefusal(b sources.Board) string {
 		return fmt.Sprintf("this Workday search lists more postings than Vani can follow (%v); narrow it with search terms and save it again", err)
 	}
 	return fmt.Sprintf("could not check how many postings this Workday search lists, so it was not saved; try again: %v", err)
+}
+
+// checkPageRobots asks the board's host whether its robots.txt allows Vani to
+// fetch path. Tests replace it so no test reaches the network.
+var checkPageRobots = func(ctx context.Context, host, path string) (bool, error) {
+	c, err := egress.New(egress.Config{AllowedHosts: []string{host}})
+	if err != nil {
+		return false, err
+	}
+	return page.RobotsAllows(ctx, c, host, path)
+}
+
+// pageRefusal is why a careers-page (pg) search cannot be saved, or "" when it
+// can. Lightpanda runs with --obey-robots, so a path the host's robots.txt
+// disallows fails every daily run with RobotsBlocked (revolutpeople.com
+// /biorce/public/careers, 2026-10-26). A check that could not run is refused
+// too, as unchecked, never as fine.
+func pageRefusal(b sources.Board) string {
+	u, err := url.Parse(b.URL)
+	if err != nil || u.Hostname() == "" {
+		return "the page URL is not a valid https URL"
+	}
+	host := strings.ToLower(u.Hostname())
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), workdayCheckTimeout)
+	defer cancel()
+	allowed, err := checkPageRobots(ctx, host, path)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("could not check %s's robots.txt, so this search was not saved; try again: %v", host, err)
+	case !allowed:
+		return fmt.Sprintf("%s's robots.txt disallows %s, so Vani cannot fetch this page on a schedule", host, path)
+	}
+	return ""
 }
 
 // aggregators are job sites that need a signed-in browser. Their subdomains too.
@@ -368,6 +411,9 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		if x.ATS == posting.Page && x.URL == scrubbed {
 			return x, ingestSearchJSON{}
 		}
+	}
+	if len(jobs) > page.MaxLinks {
+		return fail(searchInvalid, "this page lists %d jobs, over the %d limit for a saved careers page; narrow the search on the page and save it again", len(jobs), page.MaxLinks)
 	}
 	pattern, reason := linkPattern(jobs)
 	if reason != "" {
@@ -603,14 +649,24 @@ func hostSlugN(host string, limit int) string {
 	return s
 }
 
+var (
+	genericTitleRE = regexp.MustCompile(`(?i)^(?:open\s+(?:roles|positions)|current\s+(?:job\s+)?openings|job\s+openings|openings|jobs|job\s+board|careers(?:\s+home|\s+page)?|back\s+to\s+(?:careers|jobs)|career\s+opportunities|job\s+opportunities|available\s+(?:positions|roles)|all\s+(?:jobs|positions|roles)|search\s+(?:for\s+)?(?:jobs|careers|positions|roles)|explore\s+(?:jobs|careers|opportunities|roles)|find\s+a\s+job|work\s+with\s+us|(?:come\s+)?join\s+(?:our\s+team|us)|we(?:'re|\s+are)\s+hiring)(?:\s*\(\d+\))?$`)
+	genericCountRE = regexp.MustCompile(`(?i)^(?:(?:we\s+have|there\s+are|showing|found|view(?:\s+all)?|browse(?:\s+all)?)\s+)?\d+\+?\s+(?:open\s+|available\s+|current\s+)?(?:positions?|roles?|jobs?|openings?)$`)
+)
+
+func isGenericCompanyLabel(s string) bool {
+	t := strings.TrimSpace(s)
+	return t == "" || genericTitleRE.MatchString(t) || genericCountRE.MatchString(t)
+}
+
 // ingestCompany is the batch's fallback company: the majority company of the
 // scraped jobs (the first to reach the top count wins a tie), else the page
-// title, else the host.
+// title (unless it is generic career-page boilerplate), else the host.
 func ingestCompany(page inbox.Page, jobs []inbox.Job) string {
 	count := map[string]int{}
 	var order []string
 	for _, j := range jobs {
-		if j.Company == "" {
+		if isGenericCompanyLabel(j.Company) {
 			continue
 		}
 		k := strings.ToLower(j.Company)
@@ -626,7 +682,9 @@ func ingestCompany(page inbox.Page, jobs []inbox.Job) string {
 		}
 	}
 	if best == "" {
-		best = strings.TrimSpace(page.Title)
+		if t := strings.TrimSpace(page.Title); !isGenericCompanyLabel(t) {
+			best = t
+		}
 	}
 	if best == "" {
 		best = pageOrJobHost(page, jobs)

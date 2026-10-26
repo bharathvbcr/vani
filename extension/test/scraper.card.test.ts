@@ -146,11 +146,12 @@ describe("a card that is one link around several elements", () => {
   const result = scrapePageJobs(docOf(html), "revolutpeople.com", undefined, "https://revolutpeople.com/biorce/public/careers");
   const byUrlTail = (tail: string) => result.jobs.find(j => j.url.endsWith(tail))!;
 
-  test("the captured listing yields every card with its own title and no badge or location text", () => {
+  test("the captured listing yields every card with its own title, company Biorce, and no badge or location text", () => {
     expect(result.totalFound).toBe(68);
     for (const j of result.jobs) {
       expect(j.title).not.toMatch(/Featured|Office\s*:/);
       expect(j.title).toBe(j.title.trim());
+      expect(j.company).toBe("Biorce");
       expect(j.url).toStartWith("https://revolutpeople.com/biorce/public/careers/position/");
     }
   });
@@ -290,5 +291,18 @@ describe("card reading, adversarial", () => {
   test("readCard on a bare element: no children, no throw", () => {
     const a = parse(`<a href="/careers/x"></a>`).childNodes[0] as unknown as Element;
     expect(readCard(a)).toEqual({ title: "", location: "" });
+  });
+
+  test("generic page headings and titles are never returned as the company name", () => {
+    for (const [h1, title] of [
+      ["We have 68 open positions", "Careers home"],
+      ["Join our team", "Back to Careers"],
+      ["12 open roles", "Search for Jobs"],
+      ["Explore opportunities", "Careers"],
+    ]) {
+      const d = docOf(`<html><head><title>${title}</title></head><body><h1>${h1}</h1>${card("<h3>Staff Engineer</h3>")}${card("<h3>Principal Engineer</h3>", "/careers/role-2")}</body></html>`);
+      const r = scrapePageJobs(d, "careers.example.test", undefined, PAGE);
+      expect(r.jobs.map(j => j.company)).toEqual(["", ""]);
+    }
   });
 });

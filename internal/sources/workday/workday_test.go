@@ -434,23 +434,27 @@ func TestDetailFailureFailsBoard(t *testing.T) {
 	}
 }
 
-// A posting that closes between the listing and its detail answers 404. It
-// used to fail the whole board, so one closed posting hid every open one for
-// the run; now it is left out, up to maxGone.
+// A posting that closes or is restricted to internal candidates between the
+// listing and its detail answers 404 or 403 (snapchat/snap
+// /job/RTL-Design-Engineer_R0046961, 2026-10-26: HTTP 403 S22 permission
+// denied). It used to fail the whole board, so one closed or internal posting
+// hid every open one for the run; now it is left out, up to maxGone.
 func TestGoneDetailIsLeftOut(t *testing.T) {
 	h := fixtureHandler(t)
-	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
-		if strings.HasSuffix(r.URL, "CAD-Engineer_JR2014480-1") {
-			return srctest.Reply{Status: 404}, true
+	for _, code := range []int{404, 403} {
+		s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+			if strings.HasSuffix(r.URL, "CAD-Engineer_JR2014480-1") {
+				return srctest.Reply{Status: code, Body: []byte(`{"errorCode":"S22","httpStatus":403,"message":"permission denied"}`)}, true
+			}
+			return h(r)
+		})
+		got, err := s.List(context.Background(), board)
+		if err != nil {
+			t.Fatalf("status %d: %v", code, err)
 		}
-		return h(r)
-	})
-	got, err := s.List(context.Background(), board)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || !strings.Contains(got[0].URL, "JR2027047") {
-		t.Fatalf("got %+v, want only the posting whose detail answered", got)
+		if len(got) != 1 || !strings.Contains(got[0].URL, "JR2027047") {
+			t.Fatalf("status %d: got %+v, want only the posting whose detail answered", code, got)
+		}
 	}
 }
 
@@ -458,24 +462,30 @@ func TestGoneDetailIsLeftOut(t *testing.T) {
 // closing: leaving them all out would empty a healthy board.
 func TestGoneDetailsAreBounded(t *testing.T) {
 	for _, tc := range []struct {
-		total, gone int
-		wantErr     bool
+		total, gone, code int
+		wantErr           bool
 	}{
-		{50, 5, false}, // a tenth of the board
-		{50, 6, true},
-		{50, 50, true},
-		{1, 1, true}, // the only posting gone is indistinguishable from a dead endpoint
-		{5, 1, false},
-		{5, 2, true},
+		{50, 5, 404, false}, // a tenth of the board
+		{50, 6, 404, true},
+		{50, 50, 404, true},
+		{50, 5, 403, false},
+		{50, 6, 403, true},
+		{50, 50, 403, true},
+		{1, 1, 404, true}, // the only posting gone is indistinguishable from a dead endpoint
+		{1, 1, 403, true},
+		{5, 1, 404, false},
+		{5, 2, 404, true},
+		{5, 1, 403, false},
+		{5, 2, 403, true},
 	} {
-		t.Run(fmt.Sprintf("%d_of_%d", tc.gone, tc.total), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%d_of_%d_http_%d", tc.gone, tc.total, tc.code), func(t *testing.T) {
 			var offsets []int
 			h := pagedHandler(tc.total, &offsets, func(int) int { return tc.total }, detailTmpl)
 			s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
 				if r.Method == "GET" {
 					var i int
 					if _, err := fmt.Sscanf(r.URL[strings.LastIndex(r.URL, "_JR")+3:], "%d", &i); err == nil && i < tc.gone {
-						return srctest.Reply{Status: 404}, true
+						return srctest.Reply{Status: tc.code}, true
 					}
 				}
 				return h(r)
