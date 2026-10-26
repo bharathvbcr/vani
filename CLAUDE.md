@@ -4,8 +4,8 @@ Vani is a personal, listings-first career engine: a Go daemon that finds job pos
 ATS boards, filters them without spending tokens, ranks them with DevPrism's deterministic resume
 tools, and writes a daily digest. Manvi (imported as a library) is the LLM orchestrator for
 Claude; the decision model is Liquid (`liquid/d1-ultra` over OpenRouter); embeddings run through
-Tessl (`-tags tessl`). `docs/RUNTIME.md` maps each entry point to its config, state and keys. The plan
-is `/Users/bharath/Code/vani-plan.md`; follow-ups are in `docs/FOLLOWUPS.md`.
+Tessl (`-tags tessl`). `docs/RUNTIME.md` maps each entry point to its config, state and keys. First-time setup is
+`docs/SETUP.md`. The plan is `/Users/bharath/Code/vani-plan.md`; follow-ups are in `docs/FOLLOWUPS.md`.
 
 ## Build
 

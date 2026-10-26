@@ -14,6 +14,7 @@ optionally Liquid d1-3B on this Mac through llama.cpp as a shadow); **embeddings
 on Metal through Tessl (EmbeddingGemma, a `-tags tessl` build); **Claude** is reached through
 Manvi, which Vani imports as its LLM orchestrator. Jarvis is a sibling Manvi client with no code
 link to Vani. Config, state and keys per entry point: [`docs/RUNTIME.md`](docs/RUNTIME.md).
+First-time setup (workspace, OpenRouter, knowledge base, embeddings): [`docs/SETUP.md`](docs/SETUP.md).
 
 Plan: [`docs/PLAN.md`](docs/PLAN.md). Follow-ups: [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
 
