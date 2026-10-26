@@ -27,11 +27,6 @@ const (
 	// maxPayFailuresPerBoard stops a board's pay requests once this many have
 	// failed: an endpoint that is down would otherwise be asked 200 times.
 	maxPayFailuresPerBoard = 10
-	// payFanOut is how many pay requests are in flight at once.
-	payFanOut = 4
-	// payRunBudget bounds all pay requests of one run (one source), counted
-	// from its first pay request.
-	payRunBudget = 3 * time.Minute
 	// maxPayRanges is the most pay lines one posting carries.
 	maxPayRanges = 16
 )
@@ -42,24 +37,40 @@ var (
 	maxPayBody int64 = 2 << 20
 	// payRequestTimeout bounds one pay request, retries included.
 	payRequestTimeout = 15 * time.Second
+	// payRunBudget is the most time one run's pay fetches may take. It is one
+	// budget for the source, not one per board, and it runs only while a
+	// fetch is in progress. Tests shrink it.
+	payRunBudget = 3 * time.Minute
+	// payFanOut is how many pay requests are in flight at once. A variable
+	// only so a test can force one-at-a-time and see which posting is asked first.
+	payFanOut = 4
 )
 
 // Pay turns on structured pay for Greenhouse postings.
 type Pay struct {
-	// Known returns the posting stored for key by an earlier run. A posting
-	// whose content is unchanged keeps its stored pay lines (or their
-	// absence) without a request; only a new or changed posting is fetched.
-	// Required: without it every posting would be fetched every run.
+	// Known returns the posting stored for key by an earlier run. Unchanged
+	// board text keeps a completed pay check: pay lines in the stored
+	// description, or a remembered empty answer or 404. A skip or a failed
+	// request is not a completed check, and neither is a stored body that
+	// simply has no pay lines. Required: without Known every posting would
+	// be fetched every run.
 	Known func(posting.Key) (posting.Posting, bool)
 	// Report, when set, receives each board's pay counts after List reads it.
 	Report func(sources.Board, PayStats)
+	// Resolved is the file that remembers completed pay checks across runs.
+	// Empty keeps that memory for this process only.
+	Resolved string
+	// Warn receives a problem reading or writing Resolved. Nil discards it.
+	// A problem there does not fail the board: the postings are still listed,
+	// and an unreadable file means those bodies are asked again.
+	Warn func(string, ...any)
 }
 
 // PayStats counts what one board's pay step did. Every posting the board
 // listed is counted exactly once, in Reused or one of the fetch outcomes.
 type PayStats struct {
-	// Reused postings had unchanged content: their stored description was
-	// kept as it was, pay line or not, and nothing was requested.
+	// Reused postings had unchanged board text and a completed pay check, so
+	// nothing was requested.
 	Reused int `json:"reused"`
 	// Fetched postings were requested and answered; WithPay of them carry at
 	// least one pay line (the rest publish none).
@@ -77,9 +88,19 @@ type PayStats struct {
 	// was reached, the run's pay budget ran out, or the board's failure limit
 	// was hit. They carry no pay line.
 	Skipped int `json:"skipped,omitempty"`
+	// SkipReason is why a skip happened for the cap or the budget. A
+	// failure-limit skip is explained by FirstError instead. Empty when
+	// nothing was skipped for those two reasons.
+	SkipReason string `json:"skip_reason,omitempty"`
 	// FirstError is the first failure's message, for the run log.
 	FirstError string `json:"first_error,omitempty"`
 }
+
+// Why a pay fetch was skipped without a request failing.
+const (
+	payBudgetSpent = "pay budget spent"
+	payBoardCap    = "pay board cap"
+)
 
 // NewWithPay returns the Greenhouse source with structured pay: new and
 // changed postings get one bounded single-job request each, and a posting
@@ -88,64 +109,139 @@ func NewWithPay(d egress.Doer, p Pay) (sources.Source, error) {
 	if p.Known == nil {
 		return nil, errors.New("greenhouse: pay needs the stored postings (Pay.Known)")
 	}
-	s := &source{d: d, now: time.Now, pay: &payer{cfg: p}}
+	s := &source{d: d, now: time.Now, pay: &payer{cfg: p, checks: loadPayChecks(p.Resolved, p.Warn)}}
 	return s, nil
 }
 
 // payer holds a source's pay configuration and its run budget.
 type payer struct {
-	cfg Pay
+	cfg    Pay
+	checks *payChecks
 
-	mu       sync.Mutex
-	deadline time.Time // zero until the first pay request
+	mu sync.Mutex
+	// started is set by the first pay fetch. left is the pay time still
+	// available. It shrinks only while a fetch is in progress, so listing
+	// other boards does not spend it. started with left <= 0 means spent.
+	started bool
+	left    time.Duration
+	// now overrides the clock. Tests set it. It must not call back into payer.
+	now func() time.Time
 }
 
-// runDeadline returns the end of the run's pay budget, starting it on first use.
-func (p *payer) runDeadline(now time.Time) time.Time {
+// at is the payer's clock.
+func (p *payer) at() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+// startSpan opens a pay fetch against the run's remaining budget. open is
+// false when that budget is already spent. The caller then skips, and does
+// not call stopSpan.
+func (p *payer) startSpan() (deadline time.Time, open bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.deadline.IsZero() {
-		p.deadline = now.Add(payRunBudget)
+	now := p.at()
+	if !p.started {
+		p.started = true
+		p.left = payRunBudget
 	}
-	return p.deadline
+	if p.left <= 0 {
+		return now, false
+	}
+	return now.Add(p.left), true
+}
+
+// stopSpan charges the time since startSpan to the budget. deadline is what
+// startSpan returned.
+func (p *payer) stopSpan(deadline time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	left := deadline.Sub(p.at())
+	if left < 0 {
+		left = 0
+	}
+	if left > p.left {
+		left = p.left
+	}
+	p.left = left
 }
 
 // applyPay gives each posting its pay lines. out[i] came from jobs[i] and holds
 // the description without pay. It fails only when ctx is done; any pay
 // failure is counted and leaves that posting without a pay line.
+//
+// A posting is fetched when it is new, its board text changed, or its pay has
+// not been checked. Pay lines already stored are a check. So is a remembered
+// empty answer or 404. A skip or a failed request is not, and the failures are
+// asked after the ones never asked, so the next run moves past them.
 func (s *source) applyPay(ctx context.Context, b sources.Board, jobs []job, out []posting.Posting) error {
 	p := s.pay
 	var st PayStats
-	var need []int
+	var fresh, retry []int
 	for i := range out {
-		if prev, ok := p.cfg.Known(out[i].Key); ok {
-			if desc, ok := reuse(prev.Description, out[i].Description); ok {
-				out[i].Description = desc
-				st.Reused++
-				continue
+		base := out[i].Description
+		if prev, known := p.cfg.Known(out[i].Key); known {
+			if desc, same := reuse(prev.Description, base); same {
+				if len(storedPayLines(prev.Description)) > 0 || p.checks.done(out[i].Key, base) {
+					out[i].Description = desc
+					st.Reused++
+					// The lines are already in the stored posting, so the check
+					// can be written down. A later run that no longer has the
+					// lines still knows this body was checked.
+					if len(storedPayLines(prev.Description)) > 0 {
+						p.checks.remember(out[i].Key, base, true, true)
+					}
+					continue
+				}
 			}
 		}
-		need = append(need, i)
+		if p.checks.failed(out[i].Key, base) {
+			retry = append(retry, i)
+		} else {
+			fresh = append(fresh, i)
+		}
 	}
+	need := append(fresh, retry...)
+	capped := 0
 	if len(need) > maxPayFetchesPerBoard {
-		st.Skipped += len(need) - maxPayFetchesPerBoard
+		capped = len(need) - maxPayFetchesPerBoard
+		st.Skipped += capped
 		need = need[:maxPayFetchesPerBoard]
 	}
 	if len(need) > 0 {
-		lines, fetchSt := s.fetchPay(ctx, b, jobs, need)
+		lines, results, fetchSt := s.fetchPay(ctx, b, jobs, need)
 		st.Fetched += fetchSt.Fetched
 		st.BadRanges += fetchSt.BadRanges
 		st.Failed += fetchSt.Failed
 		st.NotFound += fetchSt.NotFound
 		st.Skipped += fetchSt.Skipped
 		st.FirstError = fetchSt.FirstError
+		st.SkipReason = fetchSt.SkipReason
 		for k, i := range need {
-			if len(lines[k]) > 0 {
-				out[i].Description = withPay(lines[k], out[i].Description)
-				st.WithPay++
+			base := out[i].Description
+			switch resultAt(results, k) {
+			case payChecked:
+				if len(lines[k]) > 0 {
+					out[i].Description = withPay(lines[k], base)
+					st.WithPay++
+					// Not written to the file yet: reconcile may still fail
+					// before these lines are stored. The next run sees them
+					// and writes the check then.
+					p.checks.remember(out[i].Key, base, true, false)
+				} else {
+					p.checks.remember(out[i].Key, base, true, true)
+				}
+			case payFailedTry:
+				p.checks.remember(out[i].Key, base, false, true)
 			}
 		}
 	}
+	if st.SkipReason == "" && capped > 0 {
+		st.SkipReason = payBoardCap
+	}
+	p.checks.save()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -155,14 +251,36 @@ func (s *source) applyPay(ctx context.Context, b sources.Board, jobs []job, out 
 	return nil
 }
 
+// payResult is what one pay request settled as. The zero value is a skip:
+// nothing was asked, so nothing is remembered.
+type payResult int
+
+const (
+	payMissed payResult = iota
+	payChecked
+	payFailedTry
+)
+
+func resultAt(r []payResult, k int) payResult {
+	if k < 0 || k >= len(r) {
+		return payMissed
+	}
+	return r[k]
+}
+
 // fetchPay requests pay for jobs[need[k]] with bounded fan-out, under the run
-// budget, and returns each one's pay lines by k.
-func (s *source) fetchPay(ctx context.Context, b sources.Board, jobs []job, need []int) ([][]string, PayStats) {
-	deadline := s.pay.runDeadline(time.Now())
+// budget, and returns each one's pay lines and how the request settled, by k.
+func (s *source) fetchPay(ctx context.Context, b sources.Board, jobs []job, need []int) ([][]string, []payResult, PayStats) {
+	lines := make([][]string, len(need))
+	deadline, open := s.pay.startSpan()
+	if !open {
+		return lines, nil, PayStats{Skipped: len(need), SkipReason: payBudgetSpent}
+	}
+	defer s.pay.stopSpan(deadline)
 	runCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	lines := make([][]string, len(need))
+	results := make([]payResult, len(need))
 	var (
 		mu     sync.Mutex
 		st     PayStats
@@ -190,6 +308,9 @@ func (s *source) fetchPay(ctx context.Context, b sources.Board, jobs []job, need
 				if stop || runCtx.Err() != nil {
 					mu.Lock()
 					st.Skipped++
+					if !stop {
+						st.SkipReason = payBudgetSpent
+					}
 					mu.Unlock()
 					continue
 				}
@@ -197,11 +318,13 @@ func (s *source) fetchPay(ctx context.Context, b sources.Board, jobs []job, need
 				switch {
 				case err == nil:
 					lines[k] = got
+					results[k] = payChecked
 					mu.Lock()
 					st.Fetched++
 					st.BadRanges += bad
 					mu.Unlock()
 				case errors.Is(err, srcutil.ErrBoardNotFound):
+					results[k] = payChecked
 					mu.Lock()
 					st.NotFound++
 					mu.Unlock()
@@ -209,8 +332,13 @@ func (s *source) fetchPay(ctx context.Context, b sources.Board, jobs []job, need
 					// The run's pay budget ended under this request.
 					mu.Lock()
 					st.Skipped++
+					st.SkipReason = payBudgetSpent
 					mu.Unlock()
+				case ctx.Err() != nil:
+					// The run was cancelled. That is not a failed check.
+					fail(err)
 				default:
+					results[k] = payFailedTry
 					fail(err)
 				}
 			}
@@ -221,7 +349,7 @@ func (s *source) fetchPay(ctx context.Context, b sources.Board, jobs []job, need
 	}
 	close(work)
 	wg.Wait()
-	return lines, st
+	return lines, results, st
 }
 
 type payReply struct {

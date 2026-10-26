@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -204,7 +205,9 @@ func TestPayOnlyForNewOrChanged(t *testing.T) {
 		}
 	}
 	ps.store(first)
-	// A posting stored before pay existed: same content, no pay line.
+	// Run 1 already checked posting 3's body, so putting the bare text back
+	// does not ask again. A bare body that no run has checked is fetched
+	// (TestUncheckedBodyIsFetched).
 	legacy := posting.Posting{Key: "gh:acme:3", Description: "Body 3."}
 	ps.store([]posting.Posting{legacy})
 
@@ -476,7 +479,7 @@ func TestPerBoardCap(t *testing.T) {
 	if n != maxPayFetchesPerBoard {
 		t.Errorf("%d pay requests, want %d", n, maxPayFetchesPerBoard)
 	}
-	if st := ps.lastReport(t); st.Fetched != maxPayFetchesPerBoard || st.Skipped != 7 {
+	if st := ps.lastReport(t); st.Fetched != maxPayFetchesPerBoard || st.Skipped != 7 || st.SkipReason != payBoardCap {
 		t.Errorf("stats %+v", st)
 	}
 }
@@ -498,7 +501,7 @@ func TestDownEndpointStopsEarly(t *testing.T) {
 	if n < maxPayFailuresPerBoard || n > maxPayFailuresPerBoard+payFanOut-1 {
 		t.Errorf("%d pay requests, want %d..%d", n, maxPayFailuresPerBoard, maxPayFailuresPerBoard+payFanOut-1)
 	}
-	if st := ps.lastReport(t); st.Failed != n || st.Failed+st.Skipped != 60 {
+	if st := ps.lastReport(t); st.Failed != n || st.Failed+st.Skipped != 60 || st.SkipReason != "" || st.FirstError == "" {
 		t.Errorf("stats %+v after %d requests", st, n)
 	}
 }
@@ -513,7 +516,8 @@ func TestRunBudgetSpent(t *testing.T) {
 	ps := newPaySource(t, countingDoer(&n, &mu, listOf("1", "2"), func() (*http.Response, error) {
 		return reply(200, `{"pay_input_ranges":[]}`), nil
 	}))
-	ps.pay.deadline = time.Now().Add(-time.Second)
+	ps.pay.started = true
+	ps.pay.left = 0
 	got, err := ps.List(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "acme"})
 	if err != nil || len(got) != 2 {
 		t.Fatalf("%d postings, %v", len(got), err)
@@ -521,19 +525,64 @@ func TestRunBudgetSpent(t *testing.T) {
 	if n != 0 {
 		t.Errorf("%d pay requests after the budget", n)
 	}
-	if st := ps.lastReport(t); st.Skipped != 2 {
+	if st := ps.lastReport(t); st.Skipped != 2 || st.SkipReason != payBudgetSpent || st.FirstError != "" {
 		t.Errorf("stats %+v", st)
 	}
 }
 
-// TestRunBudgetStartsOnce: the budget is fixed by the first pay request and
-// not renewed per board.
-func TestRunBudgetStartsOnce(t *testing.T) {
+// TestPayBudgetPausesBetweenBoards: time spent listing other boards is not
+// pay time. A wall clock that starts at the first pay request and keeps
+// running skips later boards after a few fetches, which is what left new
+// Greenhouse postings without pay.
+func TestPayBudgetPausesBetweenBoards(t *testing.T) {
+	prev := payRunBudget
+	payRunBudget = 40 * time.Millisecond
+	t.Cleanup(func() { payRunBudget = prev })
+
+	d := srctest.New(map[string]srctest.Reply{
+		listURL("acme"):     {Status: 200, Body: []byte(listOf("1"))},
+		payURL("acme", "1"): {Status: 200, Body: []byte(`{"pay_input_ranges":[]}`)},
+		listURL("beta"):     {Status: 200, Body: []byte(listOf("2"))},
+		payURL("beta", "2"): {Status: 200, Body: []byte(`{"pay_input_ranges":[]}`)},
+	})
+	ps := newPaySource(t, d)
+	if _, err := ps.List(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * payRunBudget)
+	if _, err := ps.List(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := payRequests(d); n != 2 {
+		t.Fatalf("%d pay requests, want 2: listing other boards spent the pay budget", n)
+	}
+	if st := ps.lastReport(t); st.Fetched != 1 || st.Skipped != 0 {
+		t.Errorf("second board %+v, want one fetch and no skip", st)
+	}
+}
+
+// TestPayBudgetDoesNotRunBetweenFetches: an hour between two fetches costs
+// one second of budget, and spending the rest closes the next fetch. The
+// budget is not renewed per board.
+func TestPayBudgetDoesNotRunBetweenFetches(t *testing.T) {
 	p := &payer{}
-	t0 := time.Now()
-	first := p.runDeadline(t0)
-	if second := p.runDeadline(t0.Add(time.Hour)); !second.Equal(first) || !first.Equal(t0.Add(payRunBudget)) {
-		t.Fatalf("deadlines %v then %v", first, second)
+	now := time.Date(2026, 10, 25, 18, 57, 0, 0, time.UTC)
+	p.now = func() time.Time { return now }
+	dl, open := p.startSpan()
+	if !open || !dl.Equal(now.Add(payRunBudget)) {
+		t.Fatalf("open %v deadline %v", open, dl)
+	}
+	now = now.Add(time.Second)
+	p.stopSpan(dl)
+	now = now.Add(time.Hour)
+	dl, open = p.startSpan()
+	if !open || !dl.Equal(now.Add(payRunBudget-time.Second)) {
+		t.Fatalf("open %v deadline %v: the hour between fetches spent the budget", open, dl)
+	}
+	now = dl
+	p.stopSpan(dl)
+	if _, open = p.startSpan(); open {
+		t.Fatal("spent budget reopened on the next board")
 	}
 }
 
@@ -551,6 +600,644 @@ func TestCanceledRunFailsTheBoard(t *testing.T) {
 func TestNewWithPayNeedsKnown(t *testing.T) {
 	if _, err := NewWithPay(srctest.New(nil), Pay{}); err == nil {
 		t.Fatal("pay without stored postings accepted")
+	}
+}
+
+// newPaySourceFile is newPaySource with a resolved-check file. warns, when
+// non-nil, collects the warnings the file load and save emit.
+func newPaySourceFile(t *testing.T, d interface {
+	Do(context.Context, *http.Request) (*http.Response, error)
+}, path string, warns *[]string) *paySource {
+	t.Helper()
+	ps := &paySource{stored: map[posting.Key]posting.Posting{}}
+	var warn func(string, ...any)
+	if warns != nil {
+		warn = func(format string, args ...any) {
+			ps.mu.Lock()
+			*warns = append(*warns, fmt.Sprintf(format, args...))
+			ps.mu.Unlock()
+		}
+	}
+	src, err := NewWithPay(d, Pay{
+		Known: func(k posting.Key) (posting.Posting, bool) {
+			ps.mu.Lock()
+			defer ps.mu.Unlock()
+			p, ok := ps.stored[k]
+			return p, ok
+		},
+		Report: func(_ sources.Board, st PayStats) {
+			ps.mu.Lock()
+			defer ps.mu.Unlock()
+			ps.reports = append(ps.reports, st)
+		},
+		Resolved: path,
+		Warn:     warn,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps.source = src.(*source)
+	ps.source.now = func() time.Time { return fixedNow }
+	return ps
+}
+
+func ghKey(t *testing.T, id string) posting.Key {
+	t.Helper()
+	k, err := posting.GreenhouseKey("acme", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// varyingList answers the board list from the current value of list.
+func varyingList(list *string, pay func(context.Context, *http.Request) (*http.Response, error)) doerFunc {
+	return func(ctx context.Context, r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.RawQuery, "pay_transparency") {
+			return pay(ctx, r)
+		}
+		return reply(200, *list), nil
+	}
+}
+
+func payID(rawURL string) string {
+	const mark = "/jobs/"
+	i := strings.LastIndex(rawURL, mark)
+	if i < 0 {
+		return ""
+	}
+	id := rawURL[i+len(mark):]
+	if q := strings.IndexByte(id, '?'); q >= 0 {
+		id = id[:q]
+	}
+	return id
+}
+
+// TestUncheckedBodyIsFetched: a stored posting with no pay lines has not been
+// checked. The next list asks. This is the row a skipped fetch left behind.
+func TestUncheckedBodyIsFetched(t *testing.T) {
+	const line = "Pay range: USD 100000 – 120000 per year\n\n"
+	d := srctest.New(map[string]srctest.Reply{
+		listURL("acme"):     {Status: 200, Body: []byte(listOf("1"))},
+		payURL("acme", "1"): {Status: 200, Body: []byte(`{"pay_input_ranges":[{"min_cents":10000000,"max_cents":12000000,"currency_type":"USD","title":"Annual"}]}`)},
+	})
+	ps := newPaySource(t, d)
+	ps.store([]posting.Posting{{Key: ghKey(t, "1"), Description: "Body 1."}})
+	got, err := ps.List(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := payRequests(d); n != 1 {
+		t.Fatalf("%d pay requests, want 1: a bare stored body was treated as checked", n)
+	}
+	if got[0].Description != line+"Body 1." {
+		t.Fatalf("description %q", got[0].Description)
+	}
+}
+
+// TestStoredPayReusedWithoutAFile: pay lines already in the stored description
+// are a completed check, with no resolved file.
+func TestStoredPayReusedWithoutAFile(t *testing.T) {
+	const line = "Pay range: USD 100000 – 120000 per year\n\n"
+	d := srctest.New(map[string]srctest.Reply{
+		listURL("acme"):     {Status: 200, Body: []byte(listOf("1"))},
+		payURL("acme", "1"): {Status: 500, Body: []byte(`{}`)},
+	})
+	ps := newPaySource(t, d)
+	ps.store([]posting.Posting{{Key: ghKey(t, "1"), Description: line + "Body 1."}})
+	got, err := ps.List(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := payRequests(d); n != 0 {
+		t.Fatalf("%d pay requests, want 0", n)
+	}
+	if got[0].Description != line+"Body 1." {
+		t.Fatalf("description %q", got[0].Description)
+	}
+	if st := ps.lastReport(t); st.Reused != 1 || st.Fetched != 0 {
+		t.Errorf("stats %+v", st)
+	}
+}
+
+// TestSkippedBudgetIsFetchedOnceTheBudgetReturns: a budget skip is not
+// remembered as "no pay". The same source asks again once the budget is back,
+// and the empty answer it then gets is not asked a third time.
+func TestSkippedBudgetIsFetchedOnceTheBudgetReturns(t *testing.T) {
+	var (
+		n  int
+		mu sync.Mutex
+	)
+	ps := newPaySource(t, countingDoer(&n, &mu, listOf("1", "2"), func() (*http.Response, error) {
+		return reply(200, `{"pay_input_ranges":[]}`), nil
+	}))
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps.pay.started = true
+	ps.pay.left = 0
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("spent budget made %d requests", n)
+	}
+	ps.store(first)
+	ps.pay.left = payRunBudget
+	if _, err := ps.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("%d pay requests after the budget returned, want 2", n)
+	}
+	if st := ps.lastReport(t); st.Fetched != 2 || st.Skipped != 0 || st.FirstError != "" {
+		t.Errorf("retry stats %+v", st)
+	}
+	ps.store(first) // still no pay lines; the empty answer is the check
+	before := n
+	if _, err := ps.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if n != before {
+		t.Fatalf("empty answer was asked again (%d more requests)", n-before)
+	}
+	if st := ps.lastReport(t); st.Reused != 2 || st.Fetched != 0 {
+		t.Errorf("third list %+v", st)
+	}
+}
+
+// TestEmptyAndSkipSurviveANewSource: an empty answer is remembered in the
+// file; a budget skip is not. The next process asks only for the skip.
+func TestEmptyAndSkipSurviveANewSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "greenhouse-pay.json")
+	list := listOf("1")
+	var (
+		n  int
+		mu sync.Mutex
+		id []string
+	)
+	d := varyingList(&list, func(_ context.Context, r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		n++
+		id = append(id, payID(r.URL.String()))
+		mu.Unlock()
+		return reply(200, `{"pay_input_ranges":[]}`), nil
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("first list made %d pay requests, want 1", n)
+	}
+	ps.store(first)
+	ps.pay.started = true
+	ps.pay.left = 0
+	list = listOf("1", "2")
+	second, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("spent budget made a request (%d total)", n)
+	}
+	if st := ps.lastReport(t); st.Reused != 1 || st.Skipped != 1 || st.SkipReason != payBudgetSpent || st.FirstError != "" {
+		t.Errorf("skip stats %+v", st)
+	}
+
+	next := newPaySourceFile(t, d, path, nil)
+	next.store(second)
+	if _, err := next.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	gotN, gotID := n, append([]string(nil), id...)
+	mu.Unlock()
+	if gotN != 2 || len(gotID) != 2 || gotID[1] != "2" {
+		t.Fatalf("next process requests %v (%d): want only posting 2", gotID, gotN)
+	}
+	if st := next.lastReport(t); st.Reused != 1 || st.Fetched != 1 || st.Skipped != 0 {
+		t.Errorf("next process %+v", st)
+	}
+}
+
+// TestCapRetriesWhatItSkipped: the board cap skips the tail. Those postings
+// are the next run's fetches, not the same first 200.
+func TestCapRetriesWhatItSkipped(t *testing.T) {
+	nPost := maxPayFetchesPerBoard + 7
+	var (
+		n  int
+		mu sync.Mutex
+	)
+	ps := newPaySource(t, countingDoer(&n, &mu, listOf(ids(nPost)...), func() (*http.Response, error) {
+		return reply(200, `{"pay_input_ranges":[]}`), nil
+	}))
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != maxPayFetchesPerBoard {
+		t.Fatalf("%d requests, want %d", n, maxPayFetchesPerBoard)
+	}
+	ps.store(first)
+	if _, err := ps.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if n != maxPayFetchesPerBoard+7 {
+		t.Fatalf("%d requests after the cap, want %d", n, maxPayFetchesPerBoard+7)
+	}
+	if st := ps.lastReport(t); st.Reused != maxPayFetchesPerBoard || st.Fetched != 7 || st.Skipped != 0 {
+		t.Errorf("second list %+v", st)
+	}
+}
+
+// TestFailureLimitTriesTheOnesItSkippedNextRun: requests that failed are
+// remembered as failures, not as "no pay", and the next process asks the
+// postings the failure limit skipped before it retries the failures.
+func TestFailureLimitTriesTheOnesItSkippedNextRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pay.json")
+	var mu sync.Mutex
+	var asked []string
+	d := listThen(listOf(ids(60)...), func(_ context.Context, r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		asked = append(asked, payID(r.URL.String()))
+		mu.Unlock()
+		return nil, errors.New("connection refused")
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	firstIDs := append([]string(nil), asked...)
+	mu.Unlock()
+	if len(firstIDs) < maxPayFailuresPerBoard || len(firstIDs) > maxPayFailuresPerBoard+payFanOut-1 {
+		t.Fatalf("first run asked %d, want %d..%d", len(firstIDs), maxPayFailuresPerBoard, maxPayFailuresPerBoard+payFanOut-1)
+	}
+	ps.store(first)
+
+	next := newPaySourceFile(t, d, path, nil)
+	next.store(first)
+	if _, err := next.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	second := append([]string(nil), asked[len(firstIDs):]...)
+	mu.Unlock()
+	if len(second) < maxPayFailuresPerBoard || len(second) > maxPayFailuresPerBoard+payFanOut-1 {
+		t.Fatalf("second run asked %d, want %d..%d", len(second), maxPayFailuresPerBoard, maxPayFailuresPerBoard+payFanOut-1)
+	}
+	seen := map[string]bool{}
+	for _, id := range firstIDs {
+		seen[id] = true
+	}
+	for _, id := range second {
+		if seen[id] {
+			t.Fatalf("second run retried %s before the postings the first run never asked", id)
+		}
+	}
+	if st := next.lastReport(t); st.Failed == 0 || st.FirstError == "" || st.SkipReason != "" {
+		t.Errorf("second run %+v", st)
+	}
+}
+
+// TestFailureIsNotRememberedAsNoPay: one failed request is asked again.
+func TestFailureIsNotRememberedAsNoPay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pay.json")
+	var n int
+	var mu sync.Mutex
+	d := listThen(listOf("1"), func(context.Context, *http.Request) (*http.Response, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return nil, errors.New("connection refused")
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	first, err := ps.List(context.Background(), b)
+	if err != nil || first[0].Description != "Body 1." {
+		t.Fatalf("%v %+v", err, first)
+	}
+	next := newPaySourceFile(t, d, path, nil)
+	next.store(first)
+	if _, err := next.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("%d pay requests across processes, want 2", n)
+	}
+}
+
+// TestNotFoundIsRemembered: a 404 is a completed check. The next process does
+// not ask again, and it is not a failure.
+func TestNotFoundIsRemembered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pay.json")
+	var n int
+	var mu sync.Mutex
+	d := listThen(listOf("1"), func(context.Context, *http.Request) (*http.Response, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return reply(404, `{"status":404}`), nil
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := ps.lastReport(t); st.NotFound != 1 || st.Failed != 0 {
+		t.Fatalf("first %+v", st)
+	}
+	next := newPaySourceFile(t, d, path, nil)
+	next.store(first)
+	got, err := next.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d pay requests, want 1: a 404 was asked again", n)
+	}
+	if got[0].Description != "Body 1." {
+		t.Fatalf("description %q", got[0].Description)
+	}
+	if st := next.lastReport(t); st.Reused != 1 || st.Fetched != 0 || st.NotFound != 0 {
+		t.Errorf("second %+v", st)
+	}
+}
+
+// TestPayLineReuseIsRememberedAfterTheLinesAreStripped: once a stored
+// description's pay lines have been seen, a later copy of the same body
+// without those lines is not asked again.
+func TestPayLineReuseIsRememberedAfterTheLinesAreStripped(t *testing.T) {
+	const line = "Pay range: USD 100000 – 120000 per year\n\n"
+	path := filepath.Join(t.TempDir(), "pay.json")
+	var n int
+	var mu sync.Mutex
+	d := listThen(listOf("1"), func(context.Context, *http.Request) (*http.Response, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return reply(500, `{}`), nil
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	ps.store([]posting.Posting{{Key: ghKey(t, "1"), Description: line + "Body 1."}})
+	if _, err := ps.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("reuse made %d requests", n)
+	}
+	next := newPaySourceFile(t, d, path, nil)
+	next.store([]posting.Posting{{Key: ghKey(t, "1"), Description: "Body 1."}})
+	got, err := next.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("stripped body was asked (%d requests)", n)
+	}
+	if got[0].Description != "Body 1." {
+		t.Fatalf("description %q", got[0].Description)
+	}
+}
+
+// TestChangedBodyIsFetchedDespiteARememberedCheck: a different board text is
+// a different check.
+func TestChangedBodyIsFetchedDespiteARememberedCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pay.json")
+	list := listOf("1")
+	var n int
+	var mu sync.Mutex
+	d := varyingList(&list, func(context.Context, *http.Request) (*http.Response, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return reply(200, `{"pay_input_ranges":[]}`), nil
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := newPaySourceFile(t, d, path, nil)
+	next.store(first)
+	list = strings.Replace(listOf("1"), "Body 1.", "Body 1, revised.", 1)
+	got, err := next.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("%d pay requests, want 2", n)
+	}
+	if got[0].Description != "Body 1, revised." {
+		t.Fatalf("description %q", got[0].Description)
+	}
+}
+
+// TestCorruptPayFileFetchesAndWarns: an unusable file is an empty check set
+// and a warning. The bare posting is asked, and the file is replaced.
+func TestCorruptPayFileFetchesAndWarns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pay.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var warns []string
+	var n int
+	var mu sync.Mutex
+	d := listThen(listOf("1"), func(context.Context, *http.Request) (*http.Response, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return reply(200, `{"pay_input_ranges":[]}`), nil
+	})
+	ps := newPaySourceFile(t, d, path, &warns)
+	if len(warns) == 0 {
+		t.Fatal("corrupt file produced no warning")
+	}
+	ps.store([]posting.Posting{{Key: ghKey(t, "1"), Description: "Body 1."}})
+	if _, err := ps.List(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d pay requests, want 1", n)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc payDoc
+	if json.Unmarshal(raw, &doc) != nil || doc.Version != payResolvedVersion {
+		t.Fatalf("file not replaced: %s", raw)
+	}
+}
+
+// TestPayChecksDropBadAndSurplusEntries: a bad entry is ignored, a duplicate
+// keeps the later one, and the bound keeps the newest.
+func TestPayChecksDropBadAndSurplusEntries(t *testing.T) {
+	prev := maxPayResolved
+	maxPayResolved = 2
+	t.Cleanup(func() { maxPayResolved = prev })
+
+	path := filepath.Join(t.TempDir(), "pay.json")
+	good := payBodyHash("body")
+	raw := []byte(`{"version":1,"checks":[
+		{"k":"gh:acme:old","h":"` + good + `","ok":true},
+		{"k":"gh:acme:1","h":"not-a-hash","ok":true},
+		{"k":" ","h":"` + good + `","ok":true},
+		{"k":"gh:acme:2","h":"` + good + `","ok":false},
+		{"k":"gh:acme:2","h":"` + good + `","ok":true},
+		{"k":"gh:acme:3","h":"` + good + `","ok":true}
+	]}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var warns []string
+	c := loadPayChecks(path, func(format string, args ...any) {
+		warns = append(warns, fmt.Sprintf(format, args...))
+	})
+	if len(warns) != 1 || !strings.Contains(warns[0], "dropped") {
+		t.Fatalf("warnings %v", warns)
+	}
+	if c.done("gh:acme:old", "body") {
+		t.Fatal("oldest check survived the bound")
+	}
+	if !c.done("gh:acme:2", "body") || !c.done("gh:acme:3", "body") {
+		t.Fatalf("kept %+v", c.marks)
+	}
+	if c.failed("gh:acme:2", "body") {
+		t.Fatal("the earlier duplicate won")
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc payDoc
+	if json.Unmarshal(rewritten, &doc) != nil || len(doc.Checks) != 2 {
+		t.Fatalf("rewritten %s", rewritten)
+	}
+}
+
+// TestUnreadablePayFileIsLeftInPlace: a file that cannot be read is not
+// replaced. Replacing it could destroy checks that were only unreadable.
+func TestUnreadablePayFileIsLeftInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pay.json")
+	body := []byte("{\"version\":1,\"checks\":[]}\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	var warns []string
+	c := loadPayChecks(path, func(format string, args ...any) {
+		warns = append(warns, fmt.Sprintf(format, args...))
+	})
+	if len(warns) != 1 || !strings.Contains(warns[0], "not read") {
+		t.Fatalf("warnings %v", warns)
+	}
+	if c.path != "" {
+		t.Fatal("an unreadable file would be overwritten")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("file changed to %s", got)
+	}
+}
+
+// TestOversizedPayFileIsIgnored: over the read bound the file is unusable.
+func TestOversizedPayFileIsIgnored(t *testing.T) {
+	prev := maxPayResolvedFile
+	maxPayResolvedFile = 32
+	t.Cleanup(func() { maxPayResolvedFile = prev })
+	path := filepath.Join(t.TempDir(), "pay.json")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var warns []string
+	c := loadPayChecks(path, func(format string, args ...any) {
+		warns = append(warns, fmt.Sprintf(format, args...))
+	})
+	if len(warns) != 1 || !strings.Contains(warns[0], "over") {
+		t.Fatalf("warnings %v", warns)
+	}
+	if c.persist != 0 {
+		t.Fatalf("loaded %d checks", c.persist)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc payDoc
+	if json.Unmarshal(raw, &doc) != nil || doc.Version != payResolvedVersion {
+		t.Fatalf("not replaced: %s", raw)
+	}
+}
+
+// TestBudgetSkipStaysAheadOfAFailure: a skip is asked before a posting whose
+// request failed, on the next process.
+func TestBudgetSkipStaysAheadOfAFailure(t *testing.T) {
+	prev := payFanOut
+	payFanOut = 1
+	t.Cleanup(func() { payFanOut = prev })
+
+	path := filepath.Join(t.TempDir(), "pay.json")
+	list := listOf("1")
+	var mu sync.Mutex
+	var idsAsked []string
+	d := varyingList(&list, func(_ context.Context, r *http.Request) (*http.Response, error) {
+		id := payID(r.URL.String())
+		mu.Lock()
+		idsAsked = append(idsAsked, id)
+		mu.Unlock()
+		if id == "1" {
+			return nil, errors.New("connection refused")
+		}
+		return reply(200, `{"pay_input_ranges":[]}`), nil
+	})
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+	ps := newPaySourceFile(t, d, path, nil)
+	first, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps.store(first)
+	ps.pay.started = true
+	ps.pay.left = 0
+	list = listOf("1", "2")
+	second, err := ps.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(idsAsked) != 1 || idsAsked[0] != "1" {
+		t.Fatalf("asks before the skip %v", idsAsked)
+	}
+	mu.Unlock()
+
+	next := newPaySourceFile(t, d, path, nil)
+	next.store(second)
+	if _, err := next.List(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]string(nil), idsAsked...)
+	mu.Unlock()
+	if len(got) != 3 || got[1] != "2" || got[2] != "1" {
+		t.Fatalf("next process asked %v, want posting 2 then the earlier failure", got)
 	}
 }
 

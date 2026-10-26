@@ -152,6 +152,12 @@ func (w *wired) runOnce(ctx context.Context) error {
 // for this listing only. The board report is kept for the run record.
 func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipeline.DropPolicy, protect func(posting.Key) bool) (pipeline.BoardCounts, error) {
 	srcs := apiSources(d)
+	resolved := ""
+	if w.stateDir != "" {
+		// Completed pay checks (empty answer or 404). A skip is not recorded,
+		// so the next run asks for it. Absent when this process has no state dir.
+		resolved = filepath.Join(w.stateDir, "sources", "greenhouse-pay.json")
+	}
 	gh, err := greenhouse.NewWithPay(d, greenhouse.Pay{
 		Known: func(k posting.Key) (posting.Posting, bool) {
 			r, ok := w.led.Get(k)
@@ -162,6 +168,8 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			// NotFound is a closed posting, not a fetch that failed.
 			w.noteBoardFetch(b, boardFetch{PayFailed: st.Failed, PaySkipped: st.Skipped, PayError: st.FirstError})
 		},
+		Resolved: resolved,
+		Warn:     w.warnf,
 	})
 	if err != nil {
 		return pipeline.BoardCounts{}, err
