@@ -42,8 +42,8 @@ function stripNotProse(html: string): string {
 export function htmlToText(html: string, doc: Document): string {
   const t = doc.createElement("template") as HTMLTemplateElement; // inert: no scripts run, no images load
   t.innerHTML = stripNotProse(html).replace(LINE_END, "$&\n");
-  const node = t.content ?? t;
-  return (node.textContent ?? "").replace(/[ \t\f\v]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+  const raw = (t.content?.textContent || t.textContent) ?? "";
+  return raw.replace(/[ \t\f\v]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
 }
 
 function postings(node: unknown, out: Record<string, unknown>[], depth = 0): void {
@@ -65,7 +65,7 @@ const RENDERED_DESCRIPTION = '[data-automation-id="jobPostingDescription"]';
 const RENDERED_ID = '[data-automation-id="requisitionId"] dd';
 // Description bodies of boards that render one, read when there is no JSON-LD posting
 // (modern Greenhouse's og:description is only the location) and they are longer.
-const DESCRIPTION_BODY = ".job__description, [class*='job__description'], .job-post-content, #content, [data-qa='job-description']";
+const DESCRIPTION_BODY = ".job__description, [class*='job__description'], .ashby-job-posting-description, .job-post-content, #content, [data-qa='job-description']";
 /** Rendered text read from one element, so a huge page cannot stall a scan. */
 const MAX_RENDERED_CHARS = 200_000;
 
@@ -121,7 +121,7 @@ function sameTitle(a: string, b: string): boolean {
 function names(tabTitle: string, name: string): boolean {
   const n = words(name);
   if (n.trim() === "") return false;
-  if (tabTitle.split(/\s+[|–—·:-]\s+/).some(part => sameTitle(part, name))) return true;
+  if (tabTitle.split(/\s+[|–—·:@-]\s+/).some(part => sameTitle(part, name))) return true;
   return n.trim().includes(" ") && words(tabTitle).includes(n);
 }
 
@@ -257,7 +257,8 @@ export function readJobInfo(doc: Document, ctx: JobReadContext = {}): JobInfo {
       : heading ? sameTitle(ogTitle, heading) : true);
   const org = jp?.hiringOrganization;
   let company = text(typeof org === "object" && org !== null ? (org as Record<string, unknown>).name : org) || (metaOk ? meta("og:site_name") : "");
-  const title = heading || text(jp?.title) || (metaOk ? ogTitle : "") || (navigated || rendersPosting ? "" : doc.title);
+  const ashbyHeading = clean(doc.querySelector(".ashby-job-posting-heading")?.textContent);
+  const title = heading || text(jp?.title) || ashbyHeading || (metaOk ? ogTitle : "") || (navigated || rendersPosting ? "" : doc.title);
   let description = jp ? htmlToText(text(jp.description), doc) : metaOk ? meta("og:description") || meta("description") : "";
 
   // The rendered posting (Workday) replaces a shorter description. A generic description
@@ -267,9 +268,11 @@ export function readJobInfo(doc: Document, ctx: JobReadContext = {}): JobInfo {
   for (const body of bodies) {
     if (body.length > description.length) description = body;
   }
-  // Company fallback: Logo alt, title pattern ("... at Company"), or Remix context
+  // Company fallback: Logo alt, title pattern ("... at Company" or "... @ Company"), or Remix/Ashby state
   if (!company.trim()) {
-    const logoAlt = doc.querySelector(".image-container img[alt], .logo img[alt], img[alt*='logo' i]")?.getAttribute("alt");
+    const logoAlt = doc
+      .querySelector(".image-container img[alt], .logo img[alt], a[class*='Logo'] img[alt], a[class*='logo'] img[alt], img[class*='Logo'][alt], img[class*='logo'][alt], img[alt*='logo' i]")
+      ?.getAttribute("alt");
     if (logoAlt) {
       const cleaned = clean(logoAlt.replace(/\s+logo$/i, ""));
       if (cleaned && cleaned.length > 1 && !/^(company|careers?|jobs?|logo)$/i.test(cleaned)) {
@@ -277,8 +280,8 @@ export function readJobInfo(doc: Document, ctx: JobReadContext = {}): JobInfo {
       }
     }
     if (!company.trim()) {
-      // Only a tab title that names this posting ("Job Application for X at Company"), not a board's.
-      const atMatch = names(tabTitle, title) ? tabTitle.match(/\bat\s+([A-Z][A-Za-z0-9\s&.,'-]+)$/) : null;
+      // Only a tab title that names this posting ("Job Application for X at Company" or "X @ Company"), not a board's.
+      const atMatch = names(tabTitle, title) ? tabTitle.match(/(?:@|\bat)\s+([A-Z][A-Za-z0-9\s&.,'-]+)$/) : null;
       if (atMatch && atMatch[1]) {
         company = clean(atMatch[1]);
       }
@@ -287,7 +290,19 @@ export function readJobInfo(doc: Document, ctx: JobReadContext = {}): JobInfo {
       const scripts = Array.from(doc.querySelectorAll("script"));
       for (const s of scripts) {
         const raw = s.textContent ?? "";
-        if (!raw.includes("__remixContext")) continue;
+        if (!raw.includes("__remixContext") && !raw.includes("__appData")) continue;
+        if (raw.includes("__appData")) {
+          const am = raw.match(/window\.__appData\s*=\s*(\{.+?\});/s) ?? raw.match(/__appData\s*=\s*(\{.+?\});/s);
+          if (am) {
+            try {
+              const appData = JSON.parse(am[1]!);
+              if (typeof appData?.organization?.name === "string" && clean(appData.organization.name)) {
+                company = clean(appData.organization.name);
+                break;
+              }
+            } catch {}
+          }
+        }
         const m = raw.match(/window\.__remixContext\s*=\s*(\{.+?\});/s) ?? raw.match(/__remixContext\s*=\s*(\{.+?\});/s);
         if (m) {
           try {

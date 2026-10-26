@@ -843,6 +843,236 @@ describe("Workday on the shared host", () => {
   test("a lookalike host is not folded", () => {
     const evil = "wd1.myworkdaysite.com.evil.com";
     const twice = scrape([card("Data Scientist", `${SITE}/details/Data-Scientist_R1`), card("Data Scientist", `/en-US${SITE}/job/LA/Data-Scientist_R1`)], evil, `https://${evil}${SITE}`);
-    expect(twice.length).toBe(2);
+    expect(jobsFrom(twice)).toBe(2);
+  });
+});
+
+function jobsFrom(xs: ScrapedJob[]): number {
+  return xs.length;
+}
+
+describe("Ashby job board & posting hardening (Perplexity regression suite)", () => {
+  const BOARD_URL = "https://jobs.ashbyhq.com/perplexity";
+
+  function ashbyBrief(id: string, title: string, metaLine: string, compLine?: string): MEl {
+    const detailsChildren = [el("p", {}, metaLine)];
+    if (compLine) {
+      detailsChildren.push(el("p", { class: "_detailsCompensation_1dvh9_394" }, compLine));
+    }
+    return el("a", { class: "_container_j2da7_1", href: `/perplexity/${id}` }, "", [
+      el("div", { class: "_jobPosting_1dvh9_378 ashby-job-posting-brief _container_f7cvd_28" }, "", [
+        el("h3", { class: "_title_1dvh9_382 ashby-job-posting-brief-title" }, title),
+        el("div", { class: "_details_1dvh9_388 ashby-job-posting-brief-details" }, "", detailsChildren),
+      ]),
+    ]);
+  }
+
+  test("scrapes every posting across all Ashby department brief-lists (not just 1 per department)", () => {
+    const doc = makeDoc([
+      el("meta", { property: "og:title", content: "Perplexity Jobs" }),
+      el("div", { class: "_navRoot_5bhg5_28 ashby-job-posting-header" }, "", [
+        el("a", { class: "_navLogoLink_5bhg5_95", href: "https://www.perplexity.ai/" }, "", [
+          el("img", { alt: "Perplexity", class: "_navLogoWordmarkImage_5bhg5_104", src: "https://app.ashbyhq.com/logo.png" }),
+        ]),
+      ]),
+      el("h1", { class: "_title_dea4p_33 ashby-job-board-heading" }, "Open Positions (5)"),
+      el("div", { class: "_departments_1dvh9_344" }, "", [
+        el("h2", { class: "_departmentHeading_1dvh9_348 ashby-department-heading" }, "AI Products"),
+        el("div", { class: "ashby-job-posting-brief-list" }, "", [
+          ashbyBrief("id-1", "Member of Technical Staff (Applied AI Engineer)", "AI Products • San Francisco; New York City • Full time", "$220K – $405K • Offers Equity"),
+          ashbyBrief("id-2", "Forward Deployed Engineer, Applied AI", "AI Products • New York City; San Francisco • Full time"),
+          ashbyBrief("id-3", "Staff Backend Engineer, Agents", "AI Products • San Francisco; Seattle • Full time • Hybrid", "$240K – $420K • Offers Equity"),
+        ]),
+        el("h2", { class: "_departmentHeading_1dvh9_348 ashby-department-heading" }, "Security"),
+        el("div", { class: "ashby-job-posting-brief-list" }, "", [
+          ashbyBrief("id-4", "Staff Security Engineer", "Security • San Francisco; London • Full time", "$220K – $405K • Offers Equity"),
+          ashbyBrief("id-5", "Application Security Engineer", "Security • Remote (United States) • Full time • Remote", "$200K – $350K"),
+        ]),
+      ]),
+    ], "Perplexity Jobs");
+
+    const res = scrapePageJobs(doc, "jobs.ashbyhq.com", undefined, BOARD_URL);
+    expect(res.totalFound).toBe(5);
+    expect(res.jobs.map(j => j.company)).toEqual(["Perplexity", "Perplexity", "Perplexity", "Perplexity", "Perplexity"]);
+
+    const byUrl = new Map(res.jobs.map(j => [j.url, j]));
+    const j1 = byUrl.get("https://jobs.ashbyhq.com/perplexity/id-1")!;
+    expect(j1.title).toBe("Member of Technical Staff (Applied AI Engineer)");
+    expect(j1.location).toBe("San Francisco; New York City");
+    expect(j1.salary).toBe("$220K – $405K • Offers Equity");
+    expect(j1.snippet).toBe("AI Products • San Francisco; New York City • Full time");
+
+    const j2 = byUrl.get("https://jobs.ashbyhq.com/perplexity/id-2")!;
+    expect(j2.location).toBe("New York City; San Francisco");
+    expect(j2.salary).toBeUndefined();
+    expect(j2.snippet).toBe("AI Products • New York City; San Francisco • Full time");
+
+    const j4 = byUrl.get("https://jobs.ashbyhq.com/perplexity/id-4")!;
+    expect(j4.location).toBe("San Francisco; London");
+    expect(j4.snippet).toBe("Security • San Francisco; London • Full time");
+    expect(j4.salary).toBe("$220K – $405K • Offers Equity");
+  });
+
+  test("scrapes unhydrated SSR Ashby board via window.__appData, skipping unlisted postings and handling '};' in strings", () => {
+    const appData = {
+      organization: { name: "Perplexity", hostedJobsPageSlug: "Perplexity" },
+      jobBoard: {
+        teams: [
+          { id: "team-ai", name: "AI Products", externalName: "AI Products (}); External)" },
+          { id: "team-sec", name: "Security" },
+        ],
+        jobPostings: [
+          {
+            id: "5c561bd0-c180-4ee1-b079-647f3c20bdc0",
+            title: "Member of Technical Staff (Agent Capabilities)",
+            teamId: "team-ai",
+            locationName: "San Francisco",
+            workplaceType: "Hybrid",
+            employmentType: "FullTime",
+            secondaryLocations: [{ locationName: "New York City" }],
+            compensationTierSummary: "$220K – $405K • Offers Equity",
+            isListed: true,
+          },
+          {
+            id: "6c9b3c71-85ba-47db-bce5-44fd9fa95d03",
+            title: "Member of Technical Staff (Security)",
+            teamId: "team-sec",
+            locationName: "London",
+            workplaceType: null,
+            employmentType: "FullTime",
+            secondaryLocations: [],
+            compensationTierSummary: null,
+            isListed: true,
+          },
+          {
+            id: "unlisted-999",
+            title: "Stealth Role",
+            teamId: "team-sec",
+            locationName: "San Francisco",
+            isListed: false,
+          },
+        ],
+      },
+    };
+    const scriptBody = `window.__appData = ${JSON.stringify(appData)};\nconst ENTRY_KEY = "index.html";`;
+    const doc = makeDoc([
+      el("meta", { property: "og:title", content: "Perplexity Jobs" }),
+      el("div", { id: "root" }),
+      el("script", {}, scriptBody),
+    ], "Perplexity Jobs");
+
+    const res = scrapePageJobs(doc, "jobs.ashbyhq.com", undefined, BOARD_URL);
+    expect(res.totalFound).toBe(2);
+    const urls = res.jobs.map(j => j.url).sort();
+    expect(urls).toEqual([
+      "https://jobs.ashbyhq.com/perplexity/5c561bd0-c180-4ee1-b079-647f3c20bdc0",
+      "https://jobs.ashbyhq.com/perplexity/6c9b3c71-85ba-47db-bce5-44fd9fa95d03",
+    ]);
+    const agentJob = res.jobs.find(j => j.url.endsWith("5c561bd0-c180-4ee1-b079-647f3c20bdc0"))!;
+    expect(agentJob.company).toBe("Perplexity");
+    expect(agentJob.location).toBe("San Francisco; New York City");
+    expect(agentJob.salary).toBe("$220K – $405K • Offers Equity");
+    expect(agentJob.snippet).toBe("AI Products (}); External) • San Francisco; New York City • Full time • Hybrid");
+  });
+
+  test("when Ashby DOM cards are rendered (e.g. filtered view), DOM cards win over unfiltered window.__appData", () => {
+    const appData = {
+      organization: { name: "Perplexity", hostedJobsPageSlug: "Perplexity" },
+      jobBoard: {
+        teams: [{ id: "t1", name: "Design" }, { id: "t2", name: "Finance" }],
+        jobPostings: [
+          { id: "d1", title: "Product Designer", teamId: "t1", locationName: "San Francisco", employmentType: "FullTime", isListed: true },
+          { id: "f1", title: "Strategic Finance Lead", teamId: "t2", locationName: "New York City", employmentType: "FullTime", isListed: true },
+        ],
+      },
+    };
+    const doc = makeDoc([
+      el("script", {}, `window.__appData = ${JSON.stringify(appData)};`),
+      el("div", { class: "ashby-job-posting-brief-list" }, "", [
+        ashbyBrief("d1", "Product Designer", "Design • San Francisco • Full time"),
+      ]),
+    ], "Perplexity Jobs");
+
+    const res = scrapePageJobs(doc, "jobs.ashbyhq.com", undefined, BOARD_URL);
+    expect(res.totalFound).toBe(1);
+    expect(res.jobs[0]!.title).toBe("Product Designer");
+    expect(res.jobs[0]!.company).toBe("Perplexity");
+  });
+
+  test("single Ashby job page: formats JSON-LD MonetaryAmount salary and PostalAddress[] locations, and ignores Overview/Application tabs", () => {
+    const jobUrl = "https://jobs.ashbyhq.com/perplexity/5c561bd0-c180-4ee1-b079-647f3c20bdc0";
+    const jsonLd = {
+      "@context": "https://schema.org/",
+      "@type": "JobPosting",
+      title: "Member of Technical Staff (Applied AI Engineer, Agent Capabilities)",
+      description: "<p>Build agentic AI systems at Perplexity.</p>",
+      datePosted: "2026-09-10",
+      hiringOrganization: { "@type": "Organization", name: "Perplexity" },
+      jobLocation: [
+        { "@type": "Place", address: { "@type": "PostalAddress", addressLocality: "San Francisco", addressRegion: "California", addressCountry: "United States" } },
+        { "@type": "Place", address: { "@type": "PostalAddress", addressLocality: "New York City", addressRegion: "New York", addressCountry: "United States" } },
+      ],
+      baseSalary: {
+        "@type": "MonetaryAmount",
+        currency: "USD",
+        value: { "@type": "QuantitativeValue", minValue: 220000, maxValue: 405000, unitText: "YEAR" },
+      },
+    };
+
+    const doc = makeDoc([
+      el("script", { type: "application/ld+json" }, JSON.stringify(jsonLd)),
+      el("h1", { class: "_title_dea4p_33 ashby-job-posting-heading" }, "Member of Technical Staff (Applied AI Engineer, Agent Capabilities)"),
+      el("div", { class: "ashby-job-posting-right-pane" }, "", [
+        el("nav", { role: "tablist" }, "", [
+          el("a", { href: "/perplexity/5c561bd0-c180-4ee1-b079-647f3c20bdc0" }, "", [
+            el("span", { class: "ashby-job-posting-right-pane-overview-tab" }, "Overview"),
+          ]),
+          el("a", { href: "/perplexity/5c561bd0-c180-4ee1-b079-647f3c20bdc0/application" }, "", [
+            el("span", { class: "ashby-job-posting-right-pane-application-tab" }, "Application"),
+          ]),
+        ]),
+        el("div", { class: "ashby-job-posting-description" }, "Build agentic AI systems at Perplexity."),
+      ]),
+    ], "Member of Technical Staff (Applied AI Engineer, Agent Capabilities) @ Perplexity");
+
+    const res = scrapePageJobs(doc, "jobs.ashbyhq.com", undefined, jobUrl, jobUrl);
+    expect(res.totalFound).toBe(1);
+    const job = res.jobs[0]!;
+    expect(job.title).toBe("Member of Technical Staff (Applied AI Engineer, Agent Capabilities)");
+    expect(job.company).toBe("Perplexity");
+    expect(job.location).toBe("San Francisco, California, United States; New York City, New York, United States");
+    expect(job.salary).toBe("$220,000 – $405,000");
+    expect(job.posted).toBe("2026-09-10");
+    expect(job.url).toBe(jobUrl);
+  });
+
+  test("single Ashby job page reached via SPA navigation from the board scrapes the rendered posting, not the stale board __appData", () => {
+    const jobUrl = "https://jobs.ashbyhq.com/perplexity/5c561bd0-c180-4ee1-b079-647f3c20bdc0";
+    const staleBoardAppData = {
+      organization: { name: "Perplexity", hostedJobsPageSlug: "Perplexity" },
+      jobBoard: {
+        teams: [],
+        jobPostings: [
+          { id: "other-1", title: "Other Board Job 1", locationName: "London", isListed: true },
+          { id: "other-2", title: "Other Board Job 2", locationName: "London", isListed: true },
+        ],
+      },
+    };
+    const doc = makeDoc([
+      el("script", {}, `window.__appData = ${JSON.stringify(staleBoardAppData)};`),
+      el("h1", { class: "ashby-job-posting-heading" }, "Member of Technical Staff (Agent Capabilities)"),
+      el("div", { class: "ashby-job-posting-left-pane" }, "", [
+        el("div", {}, "", [el("h2", {}, "Location"), el("p", {}, "San Francisco; New York City")]),
+        el("div", {}, "", [el("h2", {}, "Compensation"), el("p", {}, "$220K – $405K • Offers Equity")]),
+      ]),
+      el("div", { class: "ashby-job-posting-description" }, "Perplexity is building frontier agent capabilities."),
+    ], "Member of Technical Staff (Agent Capabilities) @ Perplexity");
+
+    const res = scrapePageJobs(doc, "jobs.ashbyhq.com", undefined, jobUrl, BOARD_URL);
+    expect(res.totalFound).toBe(1);
+    expect(res.jobs[0]!.title).toBe("Member of Technical Staff (Agent Capabilities)");
+    expect(res.jobs[0]!.company).toBe("Perplexity");
+    expect(res.jobs[0]!.location).toBe("San Francisco; New York City");
+    expect(res.jobs[0]!.salary).toBe("$220K – $405K • Offers Equity");
   });
 });

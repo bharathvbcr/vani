@@ -1279,7 +1279,7 @@ async function scheduleScan(): Promise<void> {
   const scrapeBtn = panel?.querySelector<HTMLElement>("#scrape-btn");
   if (scrapeBtn) {
     const isBoard = s.portal?.isJobBoard || document.querySelectorAll(
-      "a[href*='/jobs/'], a[href*='/job/'], a[href*='/careers/'], a[href*='/positions/'], [class*='job-card'], [class*='job-post'], tr.job-post, .opening, .posting"
+      "a[href*='/jobs/'], a[href*='/job/'], a[href*='/careers/'], a[href*='/positions/'], .ashby-job-posting-brief, [class*='job-card'], [class*='job-post'], tr.job-post, .opening, .posting"
     ).length >= 2;
     scrapeBtn.style.display = isBoard ? "inline-block" : "none";
   }

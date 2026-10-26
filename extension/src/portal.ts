@@ -150,16 +150,19 @@ export function detectPortal(
   // 4. Ashby
   if (
     host.includes("ashbyhq.com") ||
-    q("[data-ashby-embed], [class*='ashby-application']") !== null ||
+    q("[data-ashby-embed], [class*='ashby-application'], .ashby-job-posting-brief, .ashby-job-board-heading") !== null ||
     (qa("script") as Array<{ src?: string }>).some(s => s.src?.includes("ashbyhq.com"))
   ) {
+    const isAshbyBoardPath = host.includes("ashbyhq.com") && /^\/[^/]+\/?$/.test(path);
+    const hasAshbyBoardDom = q(".ashby-job-posting-brief, .ashby-job-posting-brief-list, .ashby-job-board-heading") !== null;
+    const isSinglePosting = q(".ashby-job-posting-heading, .ashby-job-posting-description, [class*='ashby-application']") !== null;
     return {
       id: "ashby",
       name: "Ashby",
       badge: "Ashby",
       icon: "⚡",
       isATS: true,
-      isJobBoard: path.includes("/jobs") && !path.includes("/application"),
+      isJobBoard: !path.includes("/application") && !isSinglePosting && (hasAshbyBoardDom || isAshbyBoardPath || path.includes("/jobs")),
       isMultiStep: false,
       tips: [
         "Ashby uses modern React comboboxes and multi-select pill inputs.",

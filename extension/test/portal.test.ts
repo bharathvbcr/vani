@@ -166,6 +166,20 @@ describe("portal detection & adaptation", () => {
     expect(p.id).toBe("ashby");
     expect(p.name).toBe("Ashby");
     expect(p.isATS).toBe(true);
+    expect(p.isJobBoard).toBe(false);
+
+    const boardDoc = makeDoc('<h1 class="ashby-job-board-heading">Open Positions (131)</h1><div class="ashby-job-posting-brief-list"><div class="ashby-job-posting-brief"></div></div>');
+    const board = detectPortal(boardDoc, "https://jobs.ashbyhq.com/perplexity");
+    expect(board.id).toBe("ashby");
+    expect(board.isJobBoard).toBe(true);
+
+    const ssrBoard = detectPortal(makeDoc('<div id="root"></div>'), "https://jobs.ashbyhq.com/perplexity");
+    expect(ssrBoard.id).toBe("ashby");
+    expect(ssrBoard.isJobBoard).toBe(true);
+
+    const appPage = detectPortal(makeDoc('<div class="ashby-job-posting-heading">Engineer</div>'), "https://jobs.ashbyhq.com/perplexity/5c561bd0/application");
+    expect(appPage.id).toBe("ashby");
+    expect(appPage.isJobBoard).toBe(false);
   });
 
   test("detects SmartRecruiters and Taleo", () => {

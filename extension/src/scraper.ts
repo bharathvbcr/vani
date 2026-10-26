@@ -13,7 +13,7 @@ import {
 } from "./relevance";
 import { isWorkdaySharedHost, postingKey } from "./applied";
 import { excerpt } from "./crawler";
-import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent } from "./jobinfo";
+import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent, routeChanged } from "./jobinfo";
 import { scorePillText } from "./joblist";
 
 const WORKDAY_JOBS_HOST = /(^|\.)myworkdayjobs\.com$/;
@@ -104,24 +104,95 @@ function isJobLink(a: HTMLAnchorElement): boolean {
   return pathMatches && (textMatches || text.length > 5);
 }
 
+const MAX_STATE_CHARS = 1_000_000;
+
+/**
+ * Extract a JSON object assigned after `marker` (e.g. `window.__appData = {...}` or
+ * `window.__remixContext = {...}`) in one bounded linear pass, ignoring braces inside strings.
+ */
+function extractAssignedJson(raw: string, marker: string): Record<string, unknown> | null {
+  if (raw.length > MAX_STATE_CHARS) return null;
+  const idx = raw.indexOf(marker);
+  if (idx < 0) return null;
+  const eq = raw.indexOf("=", idx + marker.length);
+  if (eq < 0) return null;
+  const start = raw.indexOf("{", eq + 1);
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(raw.slice(start, i + 1));
+          return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Read Ashby's embedded `window.__appData` object from document scripts when present. */
+function readAshbyAppData(doc: Document): Record<string, unknown> | null {
+  const scripts = Array.from(doc.querySelectorAll("script"));
+  for (const s of scripts) {
+    const raw = s.textContent ?? "";
+    if (!raw.includes("__appData")) continue;
+    const data = extractAssignedJson(raw, "__appData");
+    if (data) return data;
+  }
+  return null;
+}
+
 /** Intelligently extract company name from document or ATS metadata. */
 function extractCompanyName(doc: Document, fallbackTitle?: string): string {
   // 1. Open Graph site_name
   const ogSite = doc.querySelector("meta[property='og:site_name']")?.getAttribute("content");
   if (ogSite && ogSite.trim()) return clean(ogSite);
 
-  // 2. Logo image alt text (e.g. "Anthropic Logo" -> "Anthropic")
-  const logoAlt = doc.querySelector(".image-container img[alt], .logo img[alt], img[alt*='logo' i]")?.getAttribute("alt");
+  // 2. Ashby window.__appData organization.name
+  const appData = readAshbyAppData(doc);
+  const org = appData?.organization as Record<string, unknown> | undefined;
+  if (typeof org?.name === "string" && clean(org.name)) {
+    return clean(org.name);
+  }
+
+  // 3. Logo image alt text (e.g. "Anthropic Logo" -> "Anthropic", or Ashby nav logo alt="Perplexity")
+  const logoAlt = doc
+    .querySelector(".image-container img[alt], .logo img[alt], a[class*='Logo'] img[alt], a[class*='logo'] img[alt], img[class*='Logo'][alt], img[class*='logo'][alt], img[alt*='logo' i]")
+    ?.getAttribute("alt");
   if (logoAlt) {
     const cleaned = clean(logoAlt.replace(/\s+logo$/i, ""));
-    if (cleaned && cleaned.length > 1 && !/^(company|careers?|jobs?)$/i.test(cleaned)) {
+    if (cleaned && cleaned.length > 1 && !/^(company|careers?|jobs?|logo)$/i.test(cleaned)) {
       return cleaned;
     }
   }
 
-  // 3. Document title pattern: "Jobs at Anthropic", "Job Application for X at Anthropic", "Anthropic Careers"
+  // 4. Document title pattern: "Jobs at Anthropic", "Job Application for X at Anthropic", "X @ Perplexity"
   const docTitle = doc.title ?? "";
-  const atMatch = docTitle.match(/\bat\s+([A-Z][A-Za-z0-9\s&.,'-]+)$/);
+  const atMatch = docTitle.match(/(?:@|\bat)\s+([A-Z][A-Za-z0-9\s&.,'-]+)$/);
   if (atMatch && atMatch[1]) {
     const candidate = clean(atMatch[1]);
     if (candidate && !/^(greenhouse|lever|ashby|workday)$/i.test(candidate)) {
@@ -133,25 +204,35 @@ function extractCompanyName(doc: Document, fallbackTitle?: string): string {
     return clean(jobsAtMatch[1]);
   }
 
-  // 4. Open Graph title (only if not matching the job h1 title)
+  // 5. Open Graph title (only if not matching the job h1 title)
   const h1Text = clean(doc.querySelector("h1")?.textContent);
   const ogTitle = doc.querySelector("meta[property='og:title']")?.getAttribute("content");
   if (ogTitle && ogTitle.trim()) {
-    const cleanedOg = clean(ogTitle);
+    const cleanedOg = clean(ogTitle).replace(/\s+(jobs|careers|openings|open\s+positions)$/i, "").trim();
     if (
-      !/^(open roles|jobs|careers|job application)/i.test(cleanedOg) &&
+      cleanedOg &&
+      !/^(open\s+(roles|positions)|jobs|careers|job\s+application)/i.test(cleanedOg) &&
       cleanedOg.toLowerCase() !== h1Text.toLowerCase()
     ) {
       return cleanedOg;
     }
   }
 
-  // 5. Check h1 or .company-name, avoiding generic page headers
+  // 6. Check h1 or .company-name, avoiding generic page headers (including "Open Positions (131)")
   const h1 = doc.querySelector("h1, .company-name")?.textContent;
   if (h1) {
     const cleanedH1 = clean(h1);
-    if (!/^(open\s+roles|current\s+openings|openings|jobs|job\s+board|careers|we('re|\s+are)\s+hiring|available\s+positions|all\s+jobs)$/i.test(cleanedH1)) {
+    if (!/^(open\s+(roles|positions)|current\s+openings|openings|jobs|job\s+board|careers|we('re|\s+are)\s+hiring|available\s+positions|all\s+jobs)(\s*\(\d+\))?$/i.test(cleanedH1)) {
       return cleanedH1;
+    }
+  }
+
+  // 7. "<Company> Jobs" / "<Company> Careers" in document.title when h1 was a generic header
+  const suffixMatch = docTitle.match(/^([A-Z][A-Za-z0-9\s&.,'-]+?)\s+(?:jobs|careers|openings|job\s+board)$/i);
+  if (suffixMatch && suffixMatch[1]) {
+    const candidate = clean(suffixMatch[1]);
+    if (candidate && !/^(open|all|current|search|available|greenhouse|lever|ashby|workday)$/i.test(candidate)) {
+      return candidate;
     }
   }
 
@@ -174,6 +255,92 @@ function descriptionText(raw: string, doc: Document): string {
   }
 }
 
+function isJobPostingType(type: unknown): boolean {
+  return type === "JobPosting" || (Array.isArray(type) && type.includes("JobPosting"));
+}
+
+function collectJsonLdPostings(node: unknown, out: Record<string, unknown>[], depth = 0): void {
+  if (depth > 6 || out.length >= 200 || typeof node !== "object" || node === null) return;
+  if (Array.isArray(node)) {
+    for (const n of node) collectJsonLdPostings(n, out, depth + 1);
+    return;
+  }
+  const o = node as Record<string, unknown>;
+  if (isJobPostingType(o["@type"])) out.push(o);
+  if (o["@type"] === "ItemList" && Array.isArray(o.itemListElement)) {
+    for (const it of o.itemListElement) {
+      if (it && typeof it === "object") {
+        const item = (it as Record<string, unknown>).item ?? it;
+        collectJsonLdPostings(item, out, depth + 1);
+      }
+    }
+  }
+  if (o["@graph"]) collectJsonLdPostings(o["@graph"], out, depth + 1);
+}
+
+function formatSinglePlace(loc: unknown): string {
+  if (typeof loc === "string") return clean(loc);
+  if (typeof loc !== "object" || loc === null) return "";
+  const obj = loc as Record<string, unknown>;
+  if (typeof obj.name === "string" && clean(obj.name)) return clean(obj.name);
+  const addr = obj.address;
+  if (typeof addr === "string") return clean(addr);
+  if (typeof addr === "object" && addr !== null) {
+    const a = addr as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const k of ["addressLocality", "addressRegion", "addressCountry"]) {
+      const v = typeof a[k] === "string" ? clean(a[k] as string) : "";
+      if (v && !parts.includes(v)) parts.push(v);
+    }
+    return parts.join(", ");
+  }
+  return "";
+}
+
+function formatJsonLdLocation(jobLocation: unknown, jobLocationType?: unknown): string {
+  const rawList = Array.isArray(jobLocation) ? jobLocation : [jobLocation];
+  const places: string[] = [];
+  for (const item of rawList) {
+    const formatted = formatSinglePlace(item);
+    if (formatted && !places.includes(formatted)) places.push(formatted);
+  }
+  if (places.length > 0) return places.join("; ");
+  if (typeof jobLocationType === "string" && jobLocationType.trim().toUpperCase() === "TELECOMMUTE") {
+    return "Remote";
+  }
+  return "";
+}
+
+function formatJsonLdSalary(baseSalary: unknown): string | undefined {
+  if (typeof baseSalary === "string") return clean(baseSalary) || undefined;
+  if (typeof baseSalary === "number" && Number.isFinite(baseSalary)) return String(baseSalary);
+  if (typeof baseSalary !== "object" || baseSalary === null) return undefined;
+
+  const b = baseSalary as Record<string, unknown>;
+  const currency = typeof b.currency === "string" ? clean(b.currency).toUpperCase() : "";
+  const sym = currency === "" || currency === "USD" ? "$" : `${currency} `;
+  const val = typeof b.value === "object" && b.value !== null && !Array.isArray(b.value)
+    ? (b.value as Record<string, unknown>)
+    : b;
+
+  const min = typeof val.minValue === "number" ? val.minValue : (typeof val.minValue === "string" && val.minValue.trim() ? Number(val.minValue) : NaN);
+  const max = typeof val.maxValue === "number" ? val.maxValue : (typeof val.maxValue === "string" && val.maxValue.trim() ? Number(val.maxValue) : NaN);
+  if (Number.isFinite(min) && Number.isFinite(max)) {
+    return `${sym}${min.toLocaleString("en-US")} – ${sym}${max.toLocaleString("en-US")}`;
+  }
+  if (Number.isFinite(min)) return `${sym}${min.toLocaleString("en-US")}`;
+  if (Number.isFinite(max)) return `${sym}${max.toLocaleString("en-US")}`;
+
+  if (typeof val.value === "number" && Number.isFinite(val.value)) {
+    return `${sym}${val.value.toLocaleString("en-US")}`;
+  }
+  if (typeof val.value === "string" && clean(val.value)) {
+    const s = clean(val.value);
+    return s.startsWith("$") || (currency && s.toUpperCase().startsWith(currency)) ? s : `${sym}${s}`;
+  }
+  return undefined;
+}
+
 /**
  * Scrape structured JSON-LD JobPosting data from scripts if available. On a single-page board
  * <head> keeps describing the URL the document loaded at, so a posting with no url of its own is
@@ -187,27 +354,21 @@ function scrapeJsonLd(doc: Document, profile: Partial<UserTargetProfile> | undef
     try {
       const parsed = JSON.parse(s.textContent ?? "");
       const items: Record<string, unknown>[] = [];
-
-      if (Array.isArray(parsed)) items.push(...parsed);
-      else if (parsed["@type"] === "ItemList" && Array.isArray(parsed.itemListElement)) {
-        for (const it of parsed.itemListElement) {
-          if (it && typeof it === "object") items.push(it.item ?? it);
-        }
-      } else if (parsed["@type"] === "JobPosting") {
-        items.push(parsed);
-      }
+      collectJsonLdPostings(parsed, items);
 
       for (const it of items) {
-        if (!it || it["@type"] !== "JobPosting") continue;
+        if (!it || !isJobPostingType(it["@type"])) continue;
         const title = clean(String(it.title ?? ""));
         const org = it.hiringOrganization;
         const company = clean(typeof org === "object" && org !== null ? String((org as Record<string, unknown>).name ?? "") : String(org ?? ""));
-        const location = clean(typeof it.jobLocation === "object" && it.jobLocation !== null ? String((it.jobLocation as Record<string, unknown>).name ?? "") : String(it.jobLocation ?? ""));
+        const location = formatJsonLdLocation(it.jobLocation, it.jobLocationType);
         const own = typeof it.url === "string" && it.url.trim() !== "";
         if (!own && !postingIsCurrent(it, doc, ctx)) continue;
         const url = resolveUrl(own ? String(it.url) : ctx.href, ctx.href || undefined);
         const full = descriptionText(String(it.description ?? ""), doc);
         const snippet = clean(full).slice(0, SNIPPET_CHARS);
+        const salary = formatJsonLdSalary(it.baseSalary);
+        const posted = typeof it.datePosted === "string" ? clean(it.datePosted) || undefined : undefined;
 
         if (title) {
           const relevance = evaluateRelevance({ title, company, description: full, location }, profile);
@@ -217,7 +378,8 @@ function scrapeJsonLd(doc: Document, profile: Partial<UserTargetProfile> | undef
             company,
             location,
             url,
-            salary: it.baseSalary ? String(it.baseSalary) : undefined,
+            salary,
+            posted,
             snippet,
             ...roleExcerpt(full),
             relevance,
@@ -230,7 +392,7 @@ function scrapeJsonLd(doc: Document, profile: Partial<UserTargetProfile> | undef
 }
 
 /** Scrape listings from LinkedIn jobs results. */
-function scrapeLinkedIn(doc: Document, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
+function scrapeLinkedIn(doc: Document, base: string, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
   const jobs: ScrapedJob[] = [];
   const cards = doc.querySelectorAll("li.jobs-search-results__list-item, .job-card-container, .base-card");
 
@@ -244,7 +406,7 @@ function scrapeLinkedIn(doc: Document, profile?: Partial<UserTargetProfile>): Sc
     const title = clean(titleEl?.textContent);
     const company = clean(compEl?.textContent);
     const location = clean(locEl?.textContent);
-    const url = resolveUrl(linkEl?.getAttribute("href"));
+    const url = resolveUrl(linkEl?.getAttribute("href"), base);
     const snippet = clean(snippetEl?.textContent);
 
     if (title && url) {
@@ -266,7 +428,7 @@ function scrapeLinkedIn(doc: Document, profile?: Partial<UserTargetProfile>): Sc
 }
 
 /** Scrape listings from Indeed search results. */
-function scrapeIndeed(doc: Document, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
+function scrapeIndeed(doc: Document, base: string, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
   const jobs: ScrapedJob[] = [];
   const cards = doc.querySelectorAll(".job_seen_beacon, td.resultContent, [data-testid='slider_item']");
 
@@ -280,7 +442,7 @@ function scrapeIndeed(doc: Document, profile?: Partial<UserTargetProfile>): Scra
     const title = clean(titleEl?.textContent);
     const company = clean(compEl?.textContent);
     const location = clean(locEl?.textContent);
-    const url = resolveUrl(titleEl?.getAttribute("href"));
+    const url = resolveUrl(titleEl?.getAttribute("href"), base);
     const snippet = clean(snippetEl?.textContent);
     const salary = clean(salaryEl?.textContent) || undefined;
 
@@ -370,7 +532,7 @@ function scrapeWorkday(doc: Document, host: string, base: string, profile?: Part
 }
 
 /** Scrape structured job listings from modern Greenhouse (job-boards.greenhouse.io) Remix state if present. */
-function scrapeRemixGreenhouse(doc: Document, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
+function scrapeRemixGreenhouse(doc: Document, base: string, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
   const jobs: ScrapedJob[] = [];
   const scripts = Array.from(doc.querySelectorAll("script"));
 
@@ -378,12 +540,12 @@ function scrapeRemixGreenhouse(doc: Document, profile?: Partial<UserTargetProfil
     const raw = s.textContent ?? "";
     if (!raw.includes("__remixContext") && !raw.includes("jobPosts") && !raw.includes("jobPost")) continue;
 
-    const match = raw.match(/window\.__remixContext\s*=\s*(\{.+?\});/s) ?? raw.match(/__remixContext\s*=\s*(\{.+?\});/s);
-    if (!match) continue;
+    const parsed = extractAssignedJson(raw, "__remixContext");
+    if (!parsed) continue;
 
     try {
-      const parsed = JSON.parse(match[1]!);
-      const loaderData = parsed?.state?.loaderData as Record<string, Record<string, unknown>> | undefined;
+      const state = parsed.state as Record<string, unknown> | undefined;
+      const loaderData = state?.loaderData as Record<string, Record<string, unknown>> | undefined;
       if (!loaderData || typeof loaderData !== "object") continue;
 
       let company = "";
@@ -412,10 +574,10 @@ function scrapeRemixGreenhouse(doc: Document, profile?: Partial<UserTargetProfil
           const post = it as Record<string, unknown>;
           const title = clean(String(post.title ?? ""));
           const location = clean(String(post.location ?? post.job_post_location ?? ""));
-          const url = resolveUrl(String(post.absolute_url ?? post.public_url ?? ""));
+          const url = resolveUrl(String(post.absolute_url ?? post.public_url ?? ""), base);
           const dept = post.department as Record<string, unknown> | undefined;
           const deptName = typeof dept?.name === "string" ? clean(dept.name) : "";
-          const snippet = deptName ? `${deptName} • ${location}` : location;
+          const snippet = deptName && location ? `${deptName} • ${location}` : (deptName || location);
 
           if (title && url) {
             const relevance = evaluateRelevance({ title, company, description: snippet, location }, profile);
@@ -437,7 +599,7 @@ function scrapeRemixGreenhouse(doc: Document, profile?: Partial<UserTargetProfil
           const title = clean(String(singlePost.title ?? ""));
           const postCompany = clean(String(singlePost.company_name ?? company));
           const location = clean(String(singlePost.job_post_location ?? singlePost.location ?? ""));
-          const url = resolveUrl(String(singlePost.public_url ?? (globalThis.location ? globalThis.location.href : "")));
+          const url = resolveUrl(String(singlePost.public_url ?? (globalThis.location ? globalThis.location.href : base)), base);
           const rawContent = clean(String(singlePost.content ?? singlePost.introduction ?? "")).slice(0, MAX_RATED_CHARS);
           const snippet = rawContent.slice(0, SNIPPET_CHARS);
 
@@ -464,6 +626,156 @@ function scrapeRemixGreenhouse(doc: Document, profile?: Partial<UserTargetProfil
   return jobs;
 }
 
+const ASHBY_EMP_TYPE: Readonly<Record<string, string>> = {
+  FullTime: "Full time",
+  PartTime: "Part time",
+  Intern: "Intern",
+  Contract: "Contract",
+  Temporary: "Temporary",
+};
+
+const ASHBY_WORKPLACE_TYPE: Readonly<Record<string, string>> = {
+  OnSite: "On-site",
+  Hybrid: "Hybrid",
+  Remote: "Remote",
+};
+
+function firstPathSegment(href: string): string {
+  try {
+    const seg = new URL(href).pathname.split("/").filter(Boolean)[0];
+    return seg ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Scrape Ashby `window.__appData` when the document has not yet hydrated `.ashby-job-posting-brief`
+ * cards in the DOM (e.g. SSR HTML or a fetched page in `crawlPages`) and has not navigated in-app
+ * away from the board route. When `.ashby-job-posting-brief` cards are rendered in the DOM, the DOM
+ * scraper runs instead so any client-side department/location filter on screen is respected.
+ */
+function scrapeAshbyAppData(
+  doc: Document,
+  base: string,
+  profile: Partial<UserTargetProfile> | undefined,
+  ctx: JobReadContext,
+): ScrapedJob[] {
+  if (doc.querySelector(".ashby-job-posting-brief, .ashby-job-posting-heading, .ashby-job-posting-description")) {
+    return [];
+  }
+  if (routeChanged(ctx.href ?? "", ctx.loadedHref)) {
+    return [];
+  }
+  const appData = readAshbyAppData(doc);
+  if (!appData) return [];
+
+  const org = appData.organization as Record<string, unknown> | undefined;
+  const company = clean(typeof org?.name === "string" ? org.name : "") || extractCompanyName(doc);
+  const slug = firstPathSegment(ctx.href || base) || clean(typeof org?.hostedJobsPageSlug === "string" ? org.hostedJobsPageSlug : "").toLowerCase();
+
+  const jobBoard = appData.jobBoard as Record<string, unknown> | undefined;
+  if (!jobBoard || typeof jobBoard !== "object") return [];
+
+  const teamNames = new Map<string, string>();
+  if (Array.isArray(jobBoard.teams)) {
+    for (const t of jobBoard.teams) {
+      if (t && typeof t === "object") {
+        const team = t as Record<string, unknown>;
+        const id = typeof team.id === "string" ? team.id : "";
+        const name = clean(String(team.externalName ?? team.name ?? ""));
+        if (id && name) teamNames.set(id, name);
+      }
+    }
+  }
+
+  const jobs: ScrapedJob[] = [];
+  const postings = Array.isArray(jobBoard.jobPostings) ? jobBoard.jobPostings : [];
+  for (const item of postings) {
+    if (!item || typeof item !== "object") continue;
+    const p = item as Record<string, unknown>;
+    if (p.isListed === false) continue;
+
+    const id = typeof p.id === "string" ? p.id.trim() : "";
+    const title = clean(String(p.title ?? ""));
+    if (!id || !title) continue;
+
+    const path = slug ? `/${encodeURIComponent(slug)}/${encodeURIComponent(id)}` : `/${encodeURIComponent(id)}`;
+    const url = resolveUrl(path, base);
+    if (!url) continue;
+
+    const locs: string[] = [];
+    const primaryLoc = typeof p.locationName === "string" ? clean(p.locationName) : "";
+    if (primaryLoc) locs.push(primaryLoc);
+    if (Array.isArray(p.secondaryLocations)) {
+      for (const sec of p.secondaryLocations) {
+        if (sec && typeof sec === "object") {
+          const secLoc = clean(String((sec as Record<string, unknown>).locationName ?? ""));
+          if (secLoc && !locs.includes(secLoc)) locs.push(secLoc);
+        }
+      }
+    }
+    const location = locs.join("; ");
+
+    const dept = typeof p.teamId === "string" ? (teamNames.get(p.teamId) ?? "") : "";
+    const empRaw = typeof p.employmentType === "string" ? clean(p.employmentType) : "";
+    const emp = ASHBY_EMP_TYPE[empRaw] ?? empRaw;
+    const wpRaw = typeof p.workplaceType === "string" ? clean(p.workplaceType) : "";
+    const wp = ASHBY_WORKPLACE_TYPE[wpRaw] ?? wpRaw;
+
+    const metaParts = [dept, location, emp, wp].filter(Boolean);
+    const snippet = metaParts.join(" • ");
+    const salary = typeof p.compensationTierSummary === "string" ? clean(p.compensationTierSummary) || undefined : undefined;
+
+    const relevance = evaluateRelevance({ title, company, description: `${snippet} ${salary ?? ""}`, location }, profile);
+    jobs.push({
+      id: jobId(title, company, url),
+      title,
+      company,
+      location,
+      url,
+      salary,
+      snippet,
+      relevance,
+    });
+  }
+
+  return jobs;
+}
+
+const ASHBY_EMP_OR_WORKPLACE = /^(full[\s-]*time|part[\s-]*time|contract|intern(ship)?|temporary|seasonal|freelance|on[\s-]*site|hybrid|remote)$/i;
+
+/** Parse Ashby's `.ashby-job-posting-brief-details` into location, metadata snippet, and compensation. */
+function parseAshbyBriefDetails(el: Element): { location: string; snippet: string; salary?: string } {
+  const details = el.querySelector(".ashby-job-posting-brief-details");
+  const compEl = el.querySelector("[class*='Compensation'], [class*='compensation']");
+  const compText = clean(compEl?.textContent);
+  const salary = compText || extractSalaryRange(el.textContent ?? "");
+
+  if (details) {
+    const paragraphs = Array.from(details.querySelectorAll("p"));
+    const metaP = paragraphs.find(p => p !== compEl && !(p.getAttribute("class") ?? "").toLowerCase().includes("compensation"));
+    const metaText = clean(metaP?.textContent);
+    if (metaText) {
+      const parts = metaText.split(/\s*•\s*/).map(s => clean(s)).filter(Boolean);
+      let location = "";
+      if (parts.length >= 3) {
+        // Standard Ashby format: "Department • Location • EmploymentType (• WorkplaceType)"
+        location = parts[1]!;
+      } else if (parts.length === 2) {
+        location = ASHBY_EMP_OR_WORKPLACE.test(parts[1]!) ? parts[0]! : parts[1]!;
+      } else if (parts.length === 1) {
+        location = parts[0]!;
+      }
+      return { location, snippet: metaText, salary };
+    }
+  }
+
+  const locEl = el.querySelector("[class*='location'], [class*='metadata']");
+  const location = clean(locEl?.textContent);
+  return { location, snippet: location, salary };
+}
+
 /** Scrape listings from ATS boards (Greenhouse, Lever, Ashby, Workday). */
 function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
   const jobs: ScrapedJob[] = [];
@@ -476,13 +788,17 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
 
   // Modern Greenhouse: tr.job-post, [class*='job-post'], .job-posts--table tbody tr
   doc.querySelectorAll("tr.job-post, [class*='job-post'], .job-posts--table tbody tr").forEach(el => {
+    const cls = el.getAttribute("class") ?? "";
+    // Ashby uses `ashby-job-posting-*` classes which substring-match `[class*='job-post']`; leave them to the Ashby block.
+    if (cls.includes("ashby-") || el.closest("[class*='ashby-']")) return;
+
     const elTag = (el.localName ?? el.tagName ?? (el as unknown as { tag?: string }).tag ?? "").toLowerCase();
     // Avoid re-scraping wrapper containers that contain child job-post rows
     if (elTag !== "tr" && el.querySelector("tr.job-post")) return;
 
     const a = (el.querySelector("a[href*='/jobs/'], a[href*='/job/'], a") ?? (elTag === "a" ? el : null)) as HTMLAnchorElement | null;
     if (!a) return;
-    const url = resolveUrl(a.getAttribute("href"));
+    const url = resolveUrl(a.getAttribute("href"), base);
     if (!url) return;
 
     // Title: p.body--medium, heading, or first <p> in anchor
@@ -516,7 +832,7 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
     // Preceding department header
     const deptHeader = el.closest(".job-posts--table--department, [class*='department'], section")?.querySelector("h2, h3, h4, .section-header");
     const deptName = clean(deptHeader?.textContent);
-    const snippet = deptName ? `${deptName} • ${location}` : location;
+    const snippet = deptName && location ? `${deptName} • ${location}` : (deptName || location);
 
     if (title && url && !/^(apply|view|details|back\s+to\s+jobs)/i.test(title)) {
       jobs.push({
@@ -536,7 +852,7 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
     const a = el.querySelector("a") as HTMLAnchorElement | null;
     const loc = el.querySelector(".location, [class*='location']");
     const title = clean(a?.textContent);
-    const url = resolveUrl(a?.getAttribute("href"));
+    const url = resolveUrl(a?.getAttribute("href"), base);
     const location = clean(loc?.textContent);
     if (title && url && !/^(apply|view|details)/i.test(title)) {
       jobs.push({
@@ -562,7 +878,7 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
       const location = clean(locEl?.textContent);
       const full = clean(descEl?.textContent).slice(0, MAX_RATED_CHARS);
       const snippet = full.slice(0, SNIPPET_CHARS);
-      const url = resolveUrl(doc.querySelector("link[rel='canonical']")?.getAttribute("href") ?? (globalThis.location ? globalThis.location.href : ""));
+      const url = resolveUrl(doc.querySelector("link[rel='canonical']")?.getAttribute("href") ?? (globalThis.location ? globalThis.location.href : base), base);
 
       if (title && !/^(open\s+roles|jobs|careers)$/i.test(title)) {
         jobs.push({
@@ -584,7 +900,7 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
     const a = (el.querySelector("a.posting-title, a[href*='/']") ?? el.querySelector("a")) as HTMLAnchorElement | null;
     const title = clean(a?.querySelector("h5, [data-qa='posting-name']")?.textContent ?? a?.textContent);
     const loc = el.querySelector(".workplaceTypes, .location, .posting-categories");
-    const url = resolveUrl(a?.getAttribute("href"));
+    const url = resolveUrl(a?.getAttribute("href"), base);
     const location = clean(loc?.textContent);
     if (title && url && !/^(apply|view|details)/i.test(title)) {
       jobs.push({
@@ -600,24 +916,63 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
   });
 
   // Ashby
-  doc.querySelectorAll("[class*='ashby-job-posting'], [class*='job-posting-item'], a[href*='/jobs/']").forEach(el => {
-    const a = (el.localName === "a" ? el : el.querySelector("a")) as HTMLAnchorElement | null;
-    const title = clean(el.querySelector("h3, h4, [class*='title']")?.textContent ?? a?.textContent);
-    const loc = el.querySelector("[class*='location'], [class*='metadata']");
-    const url = resolveUrl(a?.getAttribute("href"));
-    const location = clean(loc?.textContent);
-    if (title && url && title.length > 3 && !/^(apply|view|details)/i.test(title)) {
+  const ashbyCompany = ghCompany;
+  doc.querySelectorAll(".ashby-job-posting-brief, .ashby-job-posting, [class*='job-posting-item']").forEach(el => {
+    const elTag = (el.localName ?? el.tagName ?? (el as unknown as { tag?: string }).tag ?? "").toLowerCase();
+    const a = (elTag === "a" ? el : (el.closest("a") ?? el.querySelector("a"))) as HTMLAnchorElement | null;
+    if (!a) return;
+    const title = clean(el.querySelector(".ashby-job-posting-brief-title, h3, h4, [class*='title']")?.textContent ?? a.textContent);
+    const url = resolveUrl(a.getAttribute("href"), base);
+    const { location, snippet, salary } = parseAshbyBriefDetails(el);
+    if (title && url && title.length > 3 && !/^(apply|view|details|overview|application)$/i.test(title)) {
       jobs.push({
-        id: jobId(title, "", url),
+        id: jobId(title, ashbyCompany, url),
         title,
-        company: clean(doc.querySelector("h1, [class*='header-title']")?.textContent),
+        company: ashbyCompany,
         location,
         url,
-        snippet: location,
-        relevance: evaluateRelevance({ title, description: location, location }, profile),
+        salary,
+        snippet,
+        relevance: evaluateRelevance({ title, company: ashbyCompany, description: `${snippet} ${salary ?? ""}`, location }, profile),
       });
     }
   });
+
+  // Ashby single job posting page rendered in the DOM (e.g. after in-app navigation from the board)
+  if (jobs.length === 0) {
+    const ashbyHeading = doc.querySelector(".ashby-job-posting-heading");
+    const ashbyDesc = doc.querySelector(".ashby-job-posting-description");
+    if (ashbyHeading && ashbyDesc) {
+      const title = clean(ashbyHeading.textContent);
+      let location = "";
+      let salary: string | undefined;
+      const leftPane = doc.querySelector(".ashby-job-posting-left-pane");
+      if (leftPane) {
+        for (const h2 of Array.from(leftPane.querySelectorAll("h2"))) {
+          const label = clean(h2.textContent).toLowerCase();
+          const val = clean(h2.parentElement?.querySelector("p")?.textContent);
+          if (label === "location" && val) location = val;
+          else if (label === "compensation" && val) salary = val;
+        }
+      }
+      const full = descriptionText(ashbyDesc.innerHTML || ashbyDesc.textContent || "", doc);
+      const snippet = clean(full).slice(0, SNIPPET_CHARS);
+      const url = resolveUrl(globalThis.location ? globalThis.location.href : base, base);
+      if (title && url) {
+        jobs.push({
+          id: jobId(title, ashbyCompany, url),
+          title,
+          company: ashbyCompany,
+          location,
+          url,
+          salary,
+          snippet,
+          ...roleExcerpt(full),
+          relevance: evaluateRelevance({ title, company: ashbyCompany, description: full, location }, profile),
+        });
+      }
+    }
+  }
 
   return jobs;
 }
@@ -718,6 +1073,7 @@ export function scrapePageJobs(
   // unless the caller says otherwise, has not navigated.
   const live = typeof document !== "undefined" && currentDoc === document;
   const docHref = live && typeof location !== "undefined" ? location.href : (pageUrl ?? (typeof location !== "undefined" ? location.href : ""));
+  const base = baseOn(docHref, host);
   const ctx: JobReadContext = { href: docHref, loadedHref: loadedHref ?? (live ? navigationHref() : undefined) };
   let jobs: ScrapedJob[] = [];
 
@@ -728,16 +1084,22 @@ export function scrapePageJobs(
   }
 
   // Try Remix structured state (modern Greenhouse job-boards.greenhouse.io)
-  const remixJobs = scrapeRemixGreenhouse(currentDoc, profile);
+  const remixJobs = scrapeRemixGreenhouse(currentDoc, base, profile);
   if (remixJobs.length > 0) {
     jobs.push(...remixJobs);
   }
 
+  // Try Ashby structured state when the board DOM is unhydrated
+  const ashbyStateJobs = scrapeAshbyAppData(currentDoc, base, profile, ctx);
+  if (ashbyStateJobs.length > 0) {
+    jobs.push(...ashbyStateJobs);
+  }
+
   // Check specific platforms or DOM ATS signatures
   if (host.includes("linkedin.com")) {
-    jobs.push(...scrapeLinkedIn(currentDoc, profile));
+    jobs.push(...scrapeLinkedIn(currentDoc, base, profile));
   } else if (host.includes("indeed.com")) {
-    jobs.push(...scrapeIndeed(currentDoc, profile));
+    jobs.push(...scrapeIndeed(currentDoc, base, profile));
   } else if (
     host.includes("greenhouse.io") ||
     host.includes("lever.co") ||
@@ -745,14 +1107,14 @@ export function scrapePageJobs(
     host.includes("myworkdayjobs.com") ||
     isWorkdaySharedHost(host) ||
     host.includes("workday.com") ||
-    currentDoc.querySelector(".opening, .posting, [class*='ashby-job-posting'], [data-automation-id*='job'], tr.job-post, [class*='job-post']") !== null
+    currentDoc.querySelector(".opening, .posting, .ashby-job-posting-brief, .ashby-job-posting, [class*='ashby-job-posting'], [data-automation-id*='job'], tr.job-post, [class*='job-post']") !== null
   ) {
-    jobs.push(...scrapeATSBoards(currentDoc, host, baseOn(docHref, host), profile));
+    jobs.push(...scrapeATSBoards(currentDoc, host, base, profile));
   }
 
   // If still empty or very few, try generic DOM scraper
   if (jobs.length < 2) {
-    jobs.push(...scrapeGeneric(currentDoc, baseOn(docHref, host), profile));
+    jobs.push(...scrapeGeneric(currentDoc, base, profile));
   }
 
   // Deduplicate by normalized URL or Title+Company

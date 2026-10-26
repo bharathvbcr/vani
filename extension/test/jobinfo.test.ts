@@ -133,6 +133,27 @@ describe("readJobInfo", () => {
     // Description should be the full job text, NOT just the location string from og:description
     expect(info.description).toContain("Anthropic’s mission is to create reliable");
   });
+
+  test("extracts job info from Ashby posting page after SPA navigation from the board", () => {
+    const doc = makeDoc([
+      el("meta", { property: "og:title", content: "Perplexity Jobs" }),
+      el("meta", { property: "og:description", content: "Open positions at Perplexity" }),
+      el("a", { class: "_navLogoLink_5bhg5_95" }, "", [
+        el("img", { alt: "Perplexity", class: "_navLogoWordmarkImage_5bhg5_104" }),
+      ]),
+      el("h1", { class: "_title_dea4p_33 ashby-job-posting-heading" }, "Member of Technical Staff (Applied AI Engineer, Agent Capabilities)"),
+      el("div", { class: "_descriptionText_5yu8i_201 ashby-job-posting-description" }, "Perplexity Computer is one of the defining products of the new era of agentic AI. Millions of people use Perplexity to transform knowledge into action."),
+    ], "Member of Technical Staff (Applied AI Engineer, Agent Capabilities) @ Perplexity");
+
+    const info = readJobInfo(doc, {
+      href: "https://jobs.ashbyhq.com/perplexity/5c561bd0-c180-4ee1-b079-647f3c20bdc0",
+      loadedHref: "https://jobs.ashbyhq.com/perplexity",
+      portal: "ashby",
+    });
+    expect(info.title).toBe("Member of Technical Staff (Applied AI Engineer, Agent Capabilities)");
+    expect(info.company).toBe("Perplexity");
+    expect(info.description).toContain("Perplexity Computer is one of the defining products");
+  });
 });
 
 describe("formatJobDetails", () => {
