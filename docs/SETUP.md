@@ -1,6 +1,6 @@
 # Setup
 
-First-time setup for this checkout, then the commands used day to day. Checked on 2026-10-25
+First-time setup for this checkout, then the commands used day to day. Checked on 2026-10-26
 against the code named below. Config, state and which process holds which key are in
 [`RUNTIME.md`](RUNTIME.md). Pipeline behaviour, the watchlist flags and the digest are in the
 [README](../README.md). This page is the order to do them in.
@@ -13,8 +13,13 @@ item `openrouter-api-key` and can spend from it. Those commands are `run-once` (
 picker inside a run. `config check`, `init`, `kb sync`, `semantic warm`, `semantic status` and
 `kbmatch run --dry-run` do not build that client. `--list-only` does build it when
 `decide.openrouter_model` is set (the triage client, and the notes picker when a reasons catalog
-exists and loads), so it reads the Keychain unless the variable is set. It does not ask the model, so it
-does not spend, and it does not stop when no backend can be built.
+exists and loads), so it reads the Keychain unless the variable is set. It does not ask the decision
+model, so it does not spend, and it does not stop when no backend can be built. The advance-phase
+semantic warm is skipped with it. When semantic matching is configured, the near-duplicate pass on
+that run still loads the embedding model. `run-request` does not build a client. The running daemon
+performs the request and spends from the daemon's key when the request advances (the default, or
+`--advance`). `VANI_NO_KEYCHAIN` on the `run-request` process does not apply to that daemon. An
+agent shell sends `run-request` only with `--list-only`.
 
 Personal data (name, contact, work authorization) does not go in `target_summary`,
 `motivation_notes`, a model prompt, a log line or a fixture. The key itself is never written into
@@ -226,8 +231,8 @@ Then, once `devprism.binary` is set (step 7):
 A real sync reads DevPrism's blocks, upserts the approved pool, and does not delete. An overwrite
 that would drop bullets or facts, or rewrite a locked bullet, is reported as needing confirmation
 and skipped. `--confirm` prints each dropped or rewritten bullet and fact, then confirms those
-blocks for that run. There is no prompt; the flag is the consent. `--confirm` cannot be combined
-with `--dry-run`.
+blocks for that run. There is no prompt; the flag is the consent. With `--dry-run` it exits 2:
+`kb sync: --confirm cannot be used with --dry-run, which sends nothing`.
 
 `--replace` also deletes DevPrism blocks the pool does not produce (`work`, `experience`,
 `project`, `education`; other kinds stay unless `--delete-all-kinds`). It first copies
@@ -235,12 +240,17 @@ with `--dry-run`.
 among `/usr/bin/sqlite3`, `/opt/homebrew/bin/sqlite3` and `/usr/local/bin/sqlite3`. The copy is
 `<state dir>/kbsync/backups/career-YYYYMMDD-HHMMSS.db` (UTC; newest 10 kept). Then it syncs the
 pool and deletes only if every pool block landed. No `sqlite3` stops the replace before DevPrism
-starts: `kbsync: career.db backup: no sqlite3 binary found`. Default `--max-delete` is 100 (at
-most 500). It refuses to delete while the approved pool has no block to sync
+starts: `kbsync: career.db backup: no sqlite3 binary found`. It refuses to delete while the approved pool has no block to sync
 (`the approved pool has no block to sync, so replace would only delete`). `--replace --dry-run`
 reads the block list and prints what it would delete; it makes no copy. `--career-db` overrides
 the default, which on macOS is `~/Library/Application Support/DevPrism/career.db`
-(`os.UserConfigDir`). `--keep ID,ID` spares named blocks.
+(`os.UserConfigDir`). `--keep ID,ID` spares named blocks. Each id has to be an orphan DevPrism
+holds and the pool does not, or the replace is refused:
+`kbsync: replace refused: --keep "<id>" is not an orphan in DevPrism (no such block, or the approved pool owns it)`.
+`--keep`, `--delete-all-kinds`, `--max-delete` and `--career-db` are accepted only with
+`--replace`. Without it the command exits 2: `kb sync: --<name> needs --replace`. With
+`--replace`, `--max-delete` is 1..500 (default 100); outside that,
+`kb sync: --max-delete <n> is outside 1..500`. `--career-db` must be an absolute path.
 
 Hash state is `<state dir>/kbsync/state.json`. A second sync of an unchanged pool sends nothing.
 
@@ -298,7 +308,8 @@ README has the full line. `ld: warning` lines about a duplicate `-lgusset` are h
 /Users/bharath/Code/apps/Vani/build/vani semantic warm --max 5000
 ```
 
-`--max` omitted uses `semantic.warm_per_run`. The command reads the ledger without its lock, so
+`--max` omitted, or `--max 0`, uses `semantic.warm_per_run`. A negative value or one above 5000
+exits 2: `semantic warm: --max must be 1-5000`. The command reads the ledger without its lock, so
 it runs while the daemon is up. It embeds postings. The profile those scores are compared with
 is eligible bullets only. With no selections, no rkb, or an rkb that fails, status prints
 `profile: unavailable:` and a warm exits with `semantic matching not run: the knowledge base profile could not be built:`.
@@ -375,15 +386,26 @@ to spend from. Cap the first one:
 /Users/bharath/Code/apps/Vani/build/vani run-once --board gh:BOARD --advance 25 --no-digest
 ```
 
-`--advance` replaces `advance_per_run` (default 300, at most 5000) for that run. It cannot be
-combined with `--list-only`. `--no-digest` leaves the roles for the next digest. The digest is
-`<state dir>/digests/YYYY-MM-DD.md`. A later run the same day that still has new roles writes
-`YYYY-MM-DD-2.md` and does not overwrite the first file. While the daemon holds the ledger, ask
-it instead: `vani run-request` with the same flags. `run-once` while the daemon holds the ledger
-fails with `ledger: directory is locked by another process`.
+`--advance` sets that run's cap, from 1 to 5000. Omitting it, or passing 0, uses `advance_per_run`
+(default 300, at most 5000). Together with `--list-only` it exits 2:
+`--list-only skips the advance phase; --advance has nothing to cap`. A value outside 0..5000 exits 2:
+`--advance <n> must be within 0..5000 (0 means advance_per_run)`. `--no-digest` still triages. The
+warm before advance still runs, up to `semantic.warm_per_run` minus a quarter of it. The digest, and
+the warm after the pipeline that uses what that budget has left, are skipped, and the roles wait
+for the next digest. The digest file is `<state dir>/digests/YYYY-MM-DD.md`. A later run the same
+day that still has new roles writes `YYYY-MM-DD-2.md` and does not overwrite the first file. One
+day holds at most 50 of these files; past that, `digest: more than 50 digests for YYYY-MM-DD`.
+While the daemon holds the ledger, `vani run-request` takes the same flags and the daemon makes
+the run (a request that advances spends; see the audience note above). `run-once` while the
+daemon holds the ledger fails with `ledger: directory is locked by another process`.
 
-`exclude` drops on the posting's own fields and spends nothing. Set it with
-`vani config exclude` (JSON on stdin with `--set`). See the README.
+`exclude` drops on the posting's own fields and spends nothing. `vani config exclude` prints the
+lists as one JSON object. `--set` replaces them from one JSON object on stdin, keys `titles`,
+`title_unless`, `companies`, `locations`, `only_locations` and `descriptions`. An unknown key or
+trailing data is refused. Each list holds at most 128 entries, `descriptions` at most 32, and each
+entry at most 100 bytes. Input over 256 KiB is refused:
+`config exclude: input larger than 262144 bytes`. Saving leaves stored postings unchanged; the
+next run applies the lists. What each list matches is in the README.
 
 ### 9. Optional: Claude, notes, schedule, badges
 
@@ -399,9 +421,13 @@ Anthropic Keychain item. The Mac app fills it through `anthropic-account`. Detai
 picks one catalog line per scored posting. Without a catalog, scored postings reach the digest
 with no note.
 
-The daily daemon is the Mac app's Pipeline ▸ Run on schedule, or `vani launchd plist` plus
-`launchctl bootstrap`. The plist installs nothing by itself. [`macos/README.md`](../macos/README.md)
-and the README's Use section have the switch and the bootout/bootstrap lines.
+The daily daemon is the Mac app's Pipeline ▸ Run on schedule
+([`macos/README.md`](../macos/README.md), Use, the schedule agent), or `vani launchd plist` plus
+`launchctl bootstrap`. The plist installs nothing by itself. `launchd` without `plist` exits 2:
+`launchd: expected subcommand "plist"`. `--binary` must be absolute (the default is this
+executable). A relative config or state path is refused, because launchd starts the agent from
+`/`. The label defaults to `dev.vani.daemon`. The README's Use section has KeepAlive, the
+5-minute throttle, and the `launchctl bootout` / `launchctl bootstrap` lines.
 
 `vani lca import` and `vani employer import` add badges. They never filter
 ([`LCA.md`](LCA.md), [`EMPLOYER.md`](EMPLOYER.md)). `vani track use` swaps the target summary and
@@ -431,7 +457,8 @@ VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani semantic warm
 ```
 
 `kbmatch` answers go stale when the bank or the target summary changes. `vani kbmatch status`
-counts them. Asking again spends.
+counts them and calls no model. Asking again (`vani kbmatch run`) spends. An agent shell uses
+`--dry-run`, which builds no OpenRouter client.
 
 After a Tessl or gusset change, rebuild the archive, then rebuild `vani` with `-tags tessl` and
 the archive hash in `CGO_CFLAGS` (step 6). `semantic status` must say the engine is present
@@ -448,7 +475,9 @@ prints the model line when it is disabled.
 |---|---|
 | `go: cannot find module` / empty `Dir` from `go list -m` | `go.work` is missing or a checkout moved. Step 1. |
 | `<config path> already exists; refusing to overwrite` | `init` will not overwrite. Edit the file or point `VANI_CONFIG` elsewhere. |
-| `kb sync: kb.selections is empty` (exit 2) | Sync refuses the whole bank. List the `resumes/*.json` files you use. The shared sentence is `kb.selections is empty: list the rkb resumes you currently use (resumes/*.json); nothing is built from the whole bank`. When `kb.bank` and `kb.rkb` are set, `vani draft` and `vani suggest` put `draft:` in front of it (exit 1; the text is on the JSON reply). `vani kbmatch` puts `kbmatch: the knowledge base:` in front (exit 1). `semantic status` prints `profile: unavailable:` and exits 0. `semantic warm` exits 1 with `semantic matching not run: the knowledge base profile could not be built:`. `vani resume` says `kb.selections names no rkb selection, so no bullet is eligible for a resume`. |
+| `kb sync: kb.selections is empty; list the rkb selection files in use (resumes/*.json) so the sync knows which bullets are approved. It never falls back to the whole bank` (exit 2) | Sync's own refusal, before rkb runs. `vani draft` and `vani suggest`, when `kb.bank` and `kb.rkb` are set, exit 1 with `draft:` in front of `kb.selections is empty: list the rkb resumes you currently use (resumes/*.json); nothing is built from the whole bank` (the text is on the JSON reply). `vani kbmatch` puts `kbmatch: the knowledge base:` in front of that same sentence (exit 1). `semantic status` prints `profile: unavailable:` and exits 0. `semantic warm` exits 1 with `semantic matching not run: the knowledge base profile could not be built:`. `vani resume` says `kb.selections names no rkb selection, so no bullet is eligible for a resume`. |
+| `kb sync: --confirm cannot be used with --dry-run, which sends nothing` | Exit 2. `--keep`, `--delete-all-kinds`, `--max-delete` or `--career-db` without `--replace` exits 2 as `kb sync: --<name> needs --replace`. |
+| `semantic warm: --max must be 1-5000` | Exit 2. `--max` omitted, or 0, uses `semantic.warm_per_run`. |
 | `kb sync: devprism.binary is not configured (use --dry-run to plan without DevPrism)` | A live sync. Exit 1. |
 | `kb sync: --replace --dry-run reads DevPrism's block list, so devprism.binary must be configured` | `--replace --dry-run` without the binary. A plain `--dry-run` does not need it. |
 | `kbsync: resolve claims: rkb exited` | `rkb claims export` failed. The stderr snippet after the exit code is the reason. Fix rkb; Vani does not substitute claims. |

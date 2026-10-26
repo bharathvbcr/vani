@@ -603,7 +603,7 @@ flowchart LR
 ```bash
 go -C /Users/bharath/Code/apps/Vani build -o build/vani ./cmd/vani
 build/vani init
-build/vani watchlist add --ats gh --token <board> --company <Name> --allow-host boards-api.greenhouse.io
+build/vani watchlist add --ats gh --token <board> --company <Name> --allow-host
 build/vani config check
 build/vani run-once
 build/vani run-once --board gh:<board> --advance 25 --no-digest
