@@ -66,4 +66,30 @@ func TestWindowsPdftotextExeIsFoundWithoutTheExecuteBit(t *testing.T) {
 	if _, err := b.childEnv(false); err != nil {
 		t.Fatalf("a build that does not fit does not need pdftotext: %v", err)
 	}
+
+	// A name that merely has pdftotext.exe as a prefix is not the tool, and a
+	// relative or empty PATH must not be searched as the working directory.
+	pref := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pref, "pdftotext.exe.bak"), []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pref, "PDFTOTEXT.EXE"), []byte("MZ"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isExecutable(filepath.Join(pref, "pdftotext.exe")) {
+		t.Fatal("mode 0644 PDFTOTEXT.EXE was not accepted")
+	}
+	t.Setenv("PATH", "")
+	b.cfg.ToolDirs = []string{}
+	if _, err := b.childEnv(true); err == nil || !strings.Contains(err.Error(), "pdftotext") {
+		t.Fatalf("empty PATH: %v", err)
+	}
+	t.Setenv("PATH", "relbin")
+	if _, err := b.childEnv(true); err == nil || !strings.Contains(err.Error(), "pdftotext") {
+		t.Fatalf("relative PATH: %v", err)
+	}
+	t.Setenv("PATH", pref)
+	if _, err := b.childEnv(true); err != nil {
+		t.Fatalf("PDFTOTEXT.EXE on PATH: %v", err)
+	}
 }

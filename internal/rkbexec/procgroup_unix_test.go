@@ -149,3 +149,24 @@ func TestFinishedRunDoesNotSignalAnyGroup(t *testing.T) {
 		t.Fatalf("out = %+v err = %v", out, err)
 	}
 }
+
+func TestSuccessfulRunDoesNotSignalTheChild(t *testing.T) {
+	dir := t.TempDir()
+	// The child ignores the signals a shell may send on exit. A successful run
+	// must not add its own; cancel and timeout are covered by the tests above.
+	// Close the child's stdio so it does not hold the runner's pipes (that
+	// makes WaitDelay fire even though the direct child already exited).
+	body := "#!/bin/sh\n(trap '' HUP TERM; sleep 300) </dev/null >/dev/null 2>&1 &\necho $! > \"$1\"\nexit 0\n"
+	script := filepath.Join(dir, "fake-rkb.sh")
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(dir, "child.pid")
+	if err := runSpawn(context.Background(), script, pidFile, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	child := childPID(t, pidFile)
+	if err := syscall.Kill(child, 0); errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("child %d was signalled on a successful run", child)
+	}
+}

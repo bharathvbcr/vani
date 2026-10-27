@@ -24,6 +24,15 @@ func TestModeExecutableRules(t *testing.T) {
 	if modeExecutable("darwin", "pdftotext", 0o644) || modeExecutable("linux", "pdftotext.exe", 0o644) {
 		t.Fatal("unix accepted a file without the execute bit")
 	}
+	if modeExecutable("darwin", "pdftotext.EXE", 0o644) || modeExecutable("linux", "pdftotext.EXE", 0o644) {
+		t.Fatal("unix treated a .EXE name as executable without the execute bit")
+	}
+	if modeExecutable("windows", "pdftotext.exe.bak", 0o644) || modeExecutable("windows", "pdftotext.exe.bak", 0) {
+		t.Fatal("windows treated a name that only starts with pdftotext.exe as an exe")
+	}
+	if !modeExecutable("windows", "pdftotext.ExE", 0) || !modeExecutable("windows", "pdftotext.EXE", 0o644) {
+		t.Fatal("windows .EXE was not accepted case-insensitively")
+	}
 	if !modeExecutable("darwin", "pdftotext", 0o755) || !modeExecutable("linux", "pdftotext", 0o755) {
 		t.Fatal("unix mode 0755 was not accepted")
 	}

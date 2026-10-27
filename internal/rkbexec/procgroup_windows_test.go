@@ -20,6 +20,25 @@ func TestReapGroupNilProcessDoesNothing(t *testing.T) {
 	reapGroup(&exec.Cmd{})
 }
 
+func TestWindowsNilCmdAndDoubleReleaseDoNotPanic(t *testing.T) {
+	if err := configureProcess(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := adoptGroup(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := adoptGroup(&exec.Cmd{}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &exec.Cmd{}
+	reapGroup(nil)
+	reapGroup(cmd)
+	reapGroup(cmd)
+	dropGroup(nil)
+	dropGroup(cmd)
+	dropGroup(cmd)
+}
+
 func TestCancelStopsTheDescendantNotOnlyTheDirectProcess(t *testing.T) {
 	switch os.Getenv("VANI_RKB_ROLE") {
 	case "child":
