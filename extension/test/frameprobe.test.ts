@@ -224,4 +224,156 @@ describe("native frame probe", () => {
     jest.advanceTimersByTime(40_000);
     await flush();
   });
+
+  test("a queued 2000ms probe is not written, the same port's next ping succeeds, and advancing to 5000ms does not poison it", async () => {
+    // The connect-throw above leaves the port backing off for 2s. This call has to reach the port.
+    await new Promise(r => setTimeout(r, 2_500));
+    jest.useFakeTimers();
+    const before = opened.length;
+    const blockers = [0, 1, 2, 3].map(n => track(native({ op: "get", n })));
+    const probe = track(native({ op: "resumeInfo", key: "https://boards.example/jobs/queued" }, 2_000));
+    const port = opened[before];
+    expect(port).toBeDefined();
+    expect(opened.length).toBe(before + 1);
+    expect(port?.posted).toEqual([{ op: "get", n: 0 }, { op: "get", n: 1 }, { op: "get", n: 2 }, { op: "get", n: 3 }]);
+    for (const m of port?.posted ?? []) {
+      expect(m).not.toHaveProperty("timeout");
+      expect(m).not.toHaveProperty("timeoutMs");
+      expect(m).not.toHaveProperty("ms");
+    }
+    expect(jest.getTimerCount()).toBe(5);
+    jest.advanceTimersByTime(2_000);
+    await flush();
+    expect(probe.box).toEqual({ settled: true, ok: true, v: UNREACHABLE });
+    expect(port?.disconnected).toBe(false);
+    expect(port?.posted).toHaveLength(4);
+    expect(jest.getTimerCount()).toBe(4);
+    for (const [n, blocker] of blockers.entries()) {
+      expect(blocker.box.settled).toBe(false);
+      port?.say({ ok: true, n });
+      await flush();
+      expect(blocker.box).toEqual({ settled: true, ok: true, v: { ok: true, n } });
+    }
+    expect(jest.getTimerCount()).toBe(0);
+    expect(port?.disconnected).toBe(false);
+
+    const ping = track(native({ op: "ping" }));
+    expect(opened.length).toBe(before + 1);
+    expect(port?.posted.at(-1)).toEqual({ op: "ping" });
+    expect(port?.posted.at(-1)).not.toHaveProperty("timeout");
+    expect(port?.posted.at(-1)).not.toHaveProperty("timeoutMs");
+    expect(port?.posted.at(-1)).not.toHaveProperty("ms");
+    jest.advanceTimersByTime(3_000);
+    await flush();
+    expect(ping.box.settled).toBe(false);
+    expect(port?.disconnected).toBe(false);
+    expect(jest.getTimerCount()).toBe(1);
+    port?.say({ ok: true, op: "ping" });
+    await flush();
+    expect(ping.box).toEqual({ settled: true, ok: true, v: { ok: true, op: "ping" } });
+    expect(port?.disconnected).toBe(false);
+    jest.advanceTimersByTime(5_000);
+    await flush();
+    expect(port?.disconnected).toBe(false);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("jobsIngest given 40000 does not settle at 5000; a reply at 39999 resolves, and silence is unreachable only at 40000", async () => {
+    jest.useFakeTimers();
+    let sent: object | undefined;
+    sendImpl = (_app, message, cb) => {
+      sent = message;
+      setTimeout(() => cb({ queued: 3 }), 39_999);
+    };
+    let threw = false;
+    const quickP = native({ op: "jobsIngest", jobs: [] }, 40_000);
+    const quick = track(quickP);
+    expect(sent).toEqual({ op: "jobsIngest", jobs: [] });
+    expect(sent).not.toHaveProperty("timeout");
+    expect(sent).not.toHaveProperty("timeoutMs");
+    expect(sent).not.toHaveProperty("ms");
+    jest.advanceTimersByTime(5_000);
+    await flush();
+    expect(quick.box.settled).toBe(false);
+    jest.advanceTimersByTime(5_000);
+    await flush();
+    expect(quick.box.settled).toBe(false);
+    jest.advanceTimersByTime(29_998);
+    await flush();
+    expect(quick.box.settled).toBe(false);
+    jest.advanceTimersByTime(1);
+    await flush();
+    try {
+      expect(await quickP).toEqual({ queued: 3 });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(quick.box).toEqual({ settled: true, ok: true, v: { queued: 3 } });
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(quick.box).toEqual({ settled: true, ok: true, v: { queued: 3 } });
+
+    sendImpl = (_app, message, _cb) => { sent = message; };
+    const hanging = track(native({ op: "draft" }, 40_000));
+    expect(sent).toEqual({ op: "draft" });
+    expect(sent).not.toHaveProperty("timeout");
+    expect(sent).not.toHaveProperty("timeoutMs");
+    expect(sent).not.toHaveProperty("ms");
+    jest.advanceTimersByTime(39_999);
+    await flush();
+    expect(hanging.box.settled).toBe(false);
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(hanging.box).toEqual({ settled: true, ok: true, v: UNREACHABLE });
+
+    const rejected = track(spawnTransport({ op: "resumeOpen" }, 40_000));
+    jest.advanceTimersByTime(39_999);
+    await flush();
+    expect(rejected.box.settled).toBe(false);
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(rejected.box.ok).toBe(false);
+    expect(String((rejected.box.e as Error).message)).toBe("timed out");
+  });
+
+  test("a string, null, or array reply does not throw out of native; unreachable is only a transport rejection", async () => {
+    await new Promise(r => setTimeout(r, 2_500));
+    const replies: unknown[] = ["host said no", null, ["not", "an", "object"]];
+    for (const reply of replies) {
+      const before = opened.length;
+      const pending = native({ op: "ping" });
+      const port = opened[opened.length - 1];
+      expect(port).toBeDefined();
+      expect(opened.length === before || opened.length === before + 1).toBe(true);
+      expect(port?.posted.at(-1)).toEqual({ op: "ping" });
+      expect(port?.posted.at(-1)).not.toHaveProperty("timeout");
+      expect(port?.posted.at(-1)).not.toHaveProperty("timeoutMs");
+      expect(port?.posted.at(-1)).not.toHaveProperty("ms");
+      port?.say(reply);
+      let threw = false;
+      let got: unknown;
+      try {
+        got = await pending;
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(false);
+      expect(got).toEqual(reply);
+    }
+    const before = opened.length;
+    const pending = native({ op: "put" }, 2_000);
+    const port = opened[opened.length - 1];
+    expect(opened.length === before || opened.length === before + 1).toBe(true);
+    port?.hangUp();
+    let threw = false;
+    let got: unknown;
+    try {
+      got = await pending;
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(got).toEqual(UNREACHABLE);
+  });
 });

@@ -485,3 +485,279 @@ describe("port transport: a shorter per-call deadline", () => {
     });
   });
 });
+
+/** The deadline stays a timer argument. It is never copied onto the host message. */
+function noDeadline(m: object | undefined) {
+  expect(m).toBeDefined();
+  expect(m).not.toHaveProperty("timeout");
+  expect(m).not.toHaveProperty("timeoutMs");
+  expect(m).not.toHaveProperty("ms");
+}
+
+describe("adversarial: frame probe deadline", () => {
+  test("a queued 2000ms probe is not in flight, the same port stays up, the next ping on it succeeds, and advancing to 5000ms does not poison", async () => {
+    await underFakeTimers(async () => {
+      const { t, ports } = rig({ maxInFlight: 1 });
+      const blocker = track(t({ op: "get", n: 1 }));
+      const probe = track(t({ op: "resumeInfo", key: "https://boards.example/jobs/queued" }, 2_000));
+      expect(ports.length).toBe(1);
+      expect(ports[0].posted).toEqual([{ op: "get", n: 1 }]);
+      noDeadline(ports[0].posted[0]);
+      expect(jest.getTimerCount()).toBe(2);
+      jest.advanceTimersByTime(1_999);
+      await flush();
+      expect(probe.box.settled).toBe(false);
+      expect(blocker.box.settled).toBe(false);
+      jest.advanceTimersByTime(1);
+      await flush();
+      expect(probe.box.settled).toBe(true);
+      expect(probe.box.ok).toBe(false);
+      expect(probe.box.e).toBeInstanceOf(PortError);
+      expect((probe.box.e as PortError).kind).toBe("timeout");
+      expect(String((probe.box.e as Error).message)).toMatch(/timed out after 2000 ms/);
+      expect(ports[0].disconnected).toBe(false);
+      expect(ports[0].posted).toEqual([{ op: "get", n: 1 }]);
+      expect(jest.getTimerCount()).toBe(1);
+      ports[0].answerNext();
+      await flush();
+      expect(blocker.box).toMatchObject({ settled: true, ok: true, v: { ok: true, n: 1, op: "get" } });
+      expect(jest.getTimerCount()).toBe(0);
+
+      const ping = track(t({ op: "ping", n: 2 }));
+      expect(ports.length).toBe(1);
+      expect(ports[0].disconnected).toBe(false);
+      expect(ports[0].posted.map(m => m.op)).toEqual(["get", "ping"]);
+      noDeadline(ports[0].posted[1]);
+      jest.advanceTimersByTime(3_000);
+      await flush();
+      expect(ping.box.settled).toBe(false);
+      expect(ports[0].disconnected).toBe(false);
+      expect(ports.length).toBe(1);
+      expect(jest.getTimerCount()).toBe(1);
+      ports[0].answerNext();
+      await flush();
+      expect(ping.box).toMatchObject({ settled: true, ok: true, v: { ok: true, n: 2, op: "ping" } });
+      expect(ports[0].disconnected).toBe(false);
+      jest.advanceTimersByTime(5_000);
+      await flush();
+      expect(ports[0].disconnected).toBe(false);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
+
+  test("a written 2000ms probe poisons that connection, its late reply is not the next call, and advancing to 5000ms does not poison the new port", async () => {
+    await underFakeTimers(async () => {
+      const { t, ports } = rig({
+        onConnect: (p) => {
+          p.disconnect = () => {
+            p.disconnected = true;
+            p.say({ ok: true, stolen: true });
+          };
+        },
+      });
+      const probe = track(t({ op: "resumeInfo", key: "https://boards.example/jobs/written" }, 2_000));
+      expect(ports[0].posted).toEqual([{ op: "resumeInfo", key: "https://boards.example/jobs/written" }]);
+      noDeadline(ports[0].posted[0]);
+      jest.advanceTimersByTime(2_000);
+      await flush();
+      expect(probe.box.ok).toBe(false);
+      expect(probe.box.v).toBeUndefined();
+      expect(String((probe.box.e as Error).message)).toMatch(/timed out after 2000 ms/);
+      expect(ports[0].disconnected).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+
+      const next = track(t({ op: "get", n: 7 }));
+      expect(ports.length).toBe(2);
+      expect(ports[1].disconnected).toBe(false);
+      expect(ports[1].posted).toEqual([{ op: "get", n: 7 }]);
+      noDeadline(ports[1].posted[0]);
+      ports[0].say({ ok: true, n: 7, late: true });
+      await flush();
+      expect(next.box.settled).toBe(false);
+      jest.advanceTimersByTime(3_000);
+      await flush();
+      expect(next.box.settled).toBe(false);
+      expect(ports[1].disconnected).toBe(false);
+      expect(ports[0].disconnected).toBe(true);
+      ports[1].answerNext();
+      await flush();
+      expect(next.box).toMatchObject({ settled: true, ok: true, v: { ok: true, n: 7, op: "get" } });
+      expect(ports[1].disconnected).toBe(false);
+    });
+  });
+
+  test("5000, 5001, NaN, Infinity, and -1 on a port op all use the 5000 timer, and a written timeout poisons", async () => {
+    const deadlines = [5_000, 5_001, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1];
+    for (const ms of deadlines) {
+      await underFakeTimers(async () => {
+        const { t, ports, spawned } = rig();
+        const call = track(t({ op: "get", n: 1 }, ms));
+        expect(ports.length).toBe(1);
+        expect(spawned).toEqual([]);
+        expect(ports[0].posted).toEqual([{ op: "get", n: 1 }]);
+        noDeadline(ports[0].posted[0]);
+        jest.advanceTimersByTime(4_999);
+        await flush();
+        expect(call.box.settled).toBe(false);
+        expect(ports[0].disconnected).toBe(false);
+        jest.advanceTimersByTime(1);
+        await flush();
+        expect(call.box.ok).toBe(false);
+        expect(String((call.box.e as Error).message)).toMatch(/timed out after 5000 ms/);
+        expect(ports[0].disconnected).toBe(true);
+        expect(jest.getTimerCount()).toBe(0);
+        jest.advanceTimersByTime(40_000);
+        await flush();
+        expect(ports.length).toBe(1);
+      });
+    }
+  });
+
+  test("an omitted per-call deadline and the default callTimeoutMs are both 5000, and a written timeout poisons", async () => {
+    await underFakeTimers(async () => {
+      const ports: FakePort[] = [];
+      const t = createPortTransport({
+        connect: () => { const p = new FakePort(); ports.push(p); return p; },
+        spawn: async () => ({ via: "spawn" }),
+      });
+      const omitted = track(t({ op: "get", n: 1 }));
+      const explicit = track(t({ op: "put", n: 2 }, undefined));
+      expect(ports.length).toBe(1);
+      expect(ports[0].posted.map(m => m.op)).toEqual(["get", "put"]);
+      noDeadline(ports[0].posted[0]);
+      noDeadline(ports[0].posted[1]);
+      jest.advanceTimersByTime(4_999);
+      await flush();
+      expect(omitted.box.settled).toBe(false);
+      expect(explicit.box.settled).toBe(false);
+      expect(ports[0].disconnected).toBe(false);
+      jest.advanceTimersByTime(1);
+      await flush();
+      expect(omitted.box.ok).toBe(false);
+      expect(explicit.box.ok).toBe(false);
+      expect(String((omitted.box.e as Error).message)).toMatch(/timed out after 5000 ms/);
+      expect(String((explicit.box.e as Error).message)).toMatch(/timed out after 5000 ms/);
+      expect(ports[0].disconnected).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
+
+  test("a queued deadline of 0 fires immediately and does not poison the connection", async () => {
+    await underFakeTimers(async () => {
+      const { t, ports } = rig({ maxInFlight: 1 });
+      const blocker = track(t({ op: "get", n: 1 }));
+      const zero = track(t({ op: "ping", n: 2 }, 0));
+      expect(ports[0].posted).toEqual([{ op: "get", n: 1 }]);
+      noDeadline(ports[0].posted[0]);
+      expect(zero.box.settled).toBe(false);
+      jest.advanceTimersByTime(0);
+      await flush();
+      expect(zero.box.settled).toBe(true);
+      expect(zero.box.ok).toBe(false);
+      expect(zero.box.e).toBeInstanceOf(PortError);
+      expect((zero.box.e as PortError).kind).toBe("timeout");
+      expect(String((zero.box.e as Error).message)).toMatch(/timed out after 0 ms/);
+      expect(ports[0].disconnected).toBe(false);
+      expect(ports[0].posted).toEqual([{ op: "get", n: 1 }]);
+      expect(blocker.box.settled).toBe(false);
+      expect(jest.getTimerCount()).toBe(1);
+      ports[0].answerNext();
+      await flush();
+      expect(blocker.box.ok).toBe(true);
+      const ping = track(t({ op: "ping", n: 3 }));
+      expect(ports.length).toBe(1);
+      ports[0].answerNext();
+      await flush();
+      expect(ping.box).toMatchObject({ settled: true, ok: true, v: { ok: true, n: 3, op: "ping" } });
+      expect(ports[0].disconnected).toBe(false);
+    });
+  });
+
+  test("a port op given 40000 is still the 5000 timer and poisons, while a non-PORT_OP given 40000 is not clamped", async () => {
+    await underFakeTimers(async () => {
+      const spawned: { msg: object; ms: number | undefined }[] = [];
+      const ports: FakePort[] = [];
+      const t = createPortTransport({
+        connect: () => { const p = new FakePort(); ports.push(p); return p; },
+        spawn: (msg, ms) => new Promise((resolve, reject) => {
+          spawned.push({ msg, ms });
+          noDeadline(msg);
+          setTimeout(() => reject(new Error(`spawn ${String(ms)}`)), (ms ?? 0) + 1);
+          setTimeout(() => resolve({ queued: 1 }), 39_999);
+        }),
+        callTimeoutMs: 5_000,
+      });
+      const portOp = track(t({ op: "get", n: 1 }, 40_000));
+      expect(ports[0].posted).toEqual([{ op: "get", n: 1 }]);
+      noDeadline(ports[0].posted[0]);
+      expect(spawned).toEqual([]);
+      jest.advanceTimersByTime(5_000);
+      await flush();
+      expect(portOp.box.ok).toBe(false);
+      expect(String((portOp.box.e as Error).message)).toMatch(/timed out after 5000 ms/);
+      expect(ports[0].disconnected).toBe(true);
+
+      for (const op of ["jobsIngest", "draft"]) {
+        const call = track(t({ op, jobs: [] }, 40_000));
+        const sent = spawned.at(-1);
+        expect(sent).toEqual({ msg: { op, jobs: [] }, ms: 40_000 });
+        noDeadline(sent?.msg);
+        expect(ports.length).toBe(1);
+        jest.advanceTimersByTime(5_000);
+        await flush();
+        expect(call.box.settled).toBe(false);
+        jest.advanceTimersByTime(34_998);
+        await flush();
+        expect(call.box.settled).toBe(false);
+        jest.advanceTimersByTime(1);
+        await flush();
+        expect(call.box).toMatchObject({ settled: true, ok: true, v: { queued: 1 } });
+        jest.advanceTimersByTime(2);
+        await flush();
+        expect(call.box).toMatchObject({ settled: true, ok: true, v: { queued: 1 } });
+      }
+    });
+  });
+
+  test("when the written call times out at 2000 the queued call is rejected by that poison, not left running until 5000 on a dead port", async () => {
+    await underFakeTimers(async () => {
+      const { t, ports } = rig({ maxInFlight: 1 });
+      const written = track(t({ op: "resumeInfo", key: "https://boards.example/jobs/overlap" }, 2_000));
+      const queued = track(t({ op: "ping", n: 2 }));
+      expect(ports[0].posted).toEqual([{ op: "resumeInfo", key: "https://boards.example/jobs/overlap" }]);
+      noDeadline(ports[0].posted[0]);
+      jest.advanceTimersByTime(1_999);
+      await flush();
+      expect(written.box.settled).toBe(false);
+      expect(queued.box.settled).toBe(false);
+      expect(ports[0].disconnected).toBe(false);
+      expect(ports[0].posted).toHaveLength(1);
+      jest.advanceTimersByTime(1);
+      await flush();
+      expect(written.box.ok).toBe(false);
+      expect(queued.box.settled).toBe(true);
+      expect(queued.box.ok).toBe(false);
+      expect(queued.box.e).toBeInstanceOf(PortError);
+      expect((queued.box.e as PortError).kind).toBe("timeout");
+      expect(String((written.box.e as Error).message)).toMatch(/timed out after 2000 ms/);
+      expect(String((queued.box.e as Error).message)).toMatch(/timed out after 2000 ms/);
+      expect(ports[0].disconnected).toBe(true);
+      expect(ports[0].posted).toHaveLength(1);
+      expect(jest.getTimerCount()).toBe(0);
+      jest.advanceTimersByTime(3_000);
+      await flush();
+      expect(queued.box.ok).toBe(false);
+      expect(ports.length).toBe(1);
+      expect(ports[0].disconnected).toBe(true);
+      const next = track(t({ op: "ping", n: 3 }));
+      expect(ports.length).toBe(2);
+      expect(ports[1].disconnected).toBe(false);
+      ports[0].say({ ok: true, n: 3, op: "ping" });
+      await flush();
+      expect(next.box.settled).toBe(false);
+      ports[1].answerNext();
+      await flush();
+      expect(next.box).toMatchObject({ settled: true, ok: true, v: { ok: true, n: 3, op: "ping" } });
+    });
+  });
+});
