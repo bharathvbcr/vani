@@ -127,6 +127,41 @@ func TestDaemonIdentityThisProcess(t *testing.T) {
 	}
 }
 
+// The shift wireDaemon installs is applied to the real lookup, not a fake.
+// Without it a frozen announcement is days before this process's wall start.
+func TestDaemonIdentityFrozenClockMatchesThisProcess(t *testing.T) {
+	frozen := time.Date(2026, 10, 18, 6, 0, 0, 0, time.UTC)
+	rec := daemonRecord{V: 1, PID: os.Getpid(), StartedAt: frozen}
+	if daemonIsLive(rec) {
+		t.Fatal("without the shift, a frozen announcement is live; the wall start is days later")
+	}
+
+	oldNow, oldClock := now, daemonClock
+	t.Cleanup(func() { now, daemonClock = oldNow, oldClock })
+	clock := &jumpClock{t: frozen}
+	daemonClock, now = clock, clock.Now
+	shiftDaemonIdentity(t, frozen)
+
+	if !daemonIsLive(rec) {
+		t.Fatal("with the shift, this process announced at the frozen instant is not live")
+	}
+	id := daemonIdentity(os.Getpid())
+	if !id.OK || id.Started.IsZero() {
+		t.Fatalf("shifted identity %+v", id)
+	}
+	early := rec
+	early.StartedAt = id.Started.Add(-daemonStartSlack - time.Second)
+	if daemonIsLive(early) {
+		t.Fatal("an announcement more than daemonStartSlack before the shifted kernel start is live")
+	}
+	// After moves the frozen clock. The skew stays the install value; a
+	// check-time skew would put the kernel start after the announcement.
+	<-clock.After(48 * time.Hour)
+	if !daemonIsLive(rec) {
+		t.Fatal("a jump after install made this process look reused")
+	}
+}
+
 func otherExecutable(t *testing.T) int {
 	t.Helper()
 	var cmd *exec.Cmd
