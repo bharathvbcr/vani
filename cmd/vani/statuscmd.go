@@ -290,9 +290,7 @@ func (e *env) daemonFacet() daemonFacet {
 		return daemonFacet{facet: unknown(err)}
 	}
 	since := d.StartedAt
-	check := d
-	check.StartedAt = announcementInstant(e.stateDir, d)
-	if !daemonIsLive(check) {
+	if !daemonIsLive(d) {
 		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: since}
 	}
 	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: since, Model: d.Model}

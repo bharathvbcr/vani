@@ -21,38 +21,16 @@ type procIdentity struct {
 // so the daemon check does not fork. pidAlive stays the existence check.
 var daemonIdentity = readProcIdentity
 
-// daemonStartSlack is the most a kernel start time may sit after the wall
-// clock time recorded in daemon.json. The kernel clock is coarser than
-// time.Now; a start several seconds later is a reused pid.
+// daemonStartSlack is the most a kernel start time may sit after the
+// started_at recorded in daemon.json. The kernel clock is coarser than
+// time.Now; a start several seconds later is a reused pid. A later rewrite
+// of the file is not a new announcement.
 const daemonStartSlack = time.Second
-
-// announcementInstant is the wall-clock time the daemon was announced.
-// daemon.json's started_at is that instant when it was written with the wall
-// clock. A test clock (var now) can sit days away from the kernel; the file's
-// mtime is then the write, and a reused pid is still a process that started
-// after the file was written.
-func announcementInstant(stateDir string, d daemonRecord) time.Time {
-	fi, err := os.Lstat(runsPath(stateDir, daemonRecordFile))
-	if err != nil {
-		return d.StartedAt
-	}
-	mt := fi.ModTime()
-	if mt.IsZero() {
-		return d.StartedAt
-	}
-	delta := mt.Sub(d.StartedAt)
-	if delta < 0 {
-		delta = -delta
-	}
-	if delta > daemonStartSlack {
-		return mt
-	}
-	return d.StartedAt
-}
 
 // daemonIsLive reports whether d names this vani process. A different
 // executable, a pid this process cannot inspect, or a process that started
-// after the announcement (beyond daemonStartSlack) is not.
+// after the recorded started_at (beyond daemonStartSlack) is not. The file's
+// mtime is not that time.
 func daemonIsLive(d daemonRecord) bool {
 	id := daemonIdentity(d.PID)
 	if !id.OK || id.Exe == "" || id.Started.IsZero() {

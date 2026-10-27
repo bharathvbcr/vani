@@ -203,9 +203,8 @@ func TestLiveDaemon(t *testing.T) {
 	}
 }
 
-// A logical started_at from a test clock can sit far from the kernel. The
-// file's mtime is the write. An mtime from before this process started is a
-// reused pid.
+// A started_at hours before this process is not this daemon. Writing the file
+// just now, or moving its mtime, does not replace the recorded announcement.
 func TestLiveDaemonClockAndReusedFile(t *testing.T) {
 	dir := t.TempDir()
 	old := daemonIdentity
@@ -216,11 +215,10 @@ func TestLiveDaemonClockAndReusedFile(t *testing.T) {
 	if err := writeDaemonRecord(dir, os.Getpid(), logical); err != nil {
 		t.Fatal(err)
 	}
-	got, err := liveDaemon(dir)
-	if err != nil || got.PID != os.Getpid() || !got.StartedAt.Equal(logical) {
-		t.Fatalf("fresh file, logical clock: %+v %v", got, err)
+	if _, err := liveDaemon(dir); !errors.Is(err, errNoDaemon) {
+		t.Fatalf("started_at 48h before this process, fresh mtime: %v", err)
 	}
-	if f := (&env{stateDir: dir}).daemonFacet(); !f.Running || !f.Since.Equal(logical) {
+	if f := (&env{stateDir: dir}).daemonFacet(); f.Running || !f.Since.Equal(logical) {
 		t.Fatalf("status: %+v", f)
 	}
 
@@ -229,6 +227,82 @@ func TestLiveDaemonClockAndReusedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := liveDaemon(dir); !errors.Is(err, errNoDaemon) {
-		t.Fatalf("file older than this process: %v", err)
+		t.Fatalf("an earlier mtime made this process live: %v", err)
 	}
+	if f := (&env{stateDir: dir}).daemonFacet(); f.Running || !f.Since.Equal(logical) {
+		t.Fatalf("status after an earlier mtime: %+v", f)
+	}
+}
+
+// A later rewrite of daemon.json must not move the announcement. The recorded
+// started_at is the only baseline the identity is compared to.
+func TestLiveDaemonFileMtimeIsNotTheAnnouncement(t *testing.T) {
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 10, 22, 15, 0, 0, 0, time.UTC).Truncate(time.Millisecond)
+	if err := writeDaemonRecord(dir, 4242, t0); err != nil {
+		t.Fatal(err)
+	}
+	path := runsPath(dir, daemonRecordFile)
+	later := t0.Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	old := daemonIdentity
+	t.Cleanup(func() { daemonIdentity = old })
+	set := func(start time.Time) {
+		t.Helper()
+		daemonIdentity = func(pid int) procIdentity {
+			if pid != 4242 {
+				return procIdentity{}
+			}
+			return procIdentity{OK: true, Exe: self, Started: start}
+		}
+	}
+	notLive := func(why string) {
+		t.Helper()
+		if _, err := liveDaemon(dir); !errors.Is(err, errNoDaemon) {
+			t.Fatalf("%s: liveDaemon %v", why, err)
+		}
+		f := (&env{stateDir: dir}).daemonFacet()
+		if f.Running || !f.Since.Equal(t0) {
+			t.Fatalf("%s: facet %+v, want not running since %s", why, f, t0)
+		}
+	}
+	liveSince := func(why string) {
+		t.Helper()
+		got, err := liveDaemon(dir)
+		if err != nil || got.PID != 4242 || !got.StartedAt.Equal(t0) {
+			t.Fatalf("%s: %+v %v", why, got, err)
+		}
+		f := (&env{stateDir: dir}).daemonFacet()
+		if !f.Running || !f.Since.Equal(t0) || f.Since.Equal(later) {
+			t.Fatalf("%s: facet %+v, want running since %s", why, f, t0)
+		}
+	}
+
+	set(t0.Add(30 * time.Minute))
+	notLive("start 30m after the record, file mtime an hour later")
+
+	set(t0)
+	liveSince("start equal to the record")
+
+	set(t0.Add(daemonStartSlack))
+	liveSince("start at the slack boundary")
+
+	set(t0.Add(daemonStartSlack + time.Millisecond))
+	notLive("start one millisecond past slack")
+
+	earlier := t0.Add(-time.Hour)
+	if err := os.Chtimes(path, earlier, earlier); err != nil {
+		t.Fatal(err)
+	}
+	set(t0)
+	liveSince("mtime before the record, start equal to the record")
+
+	set(t0.Add(30 * time.Minute))
+	notLive("mtime before the record, start 30m later")
 }

@@ -205,7 +205,8 @@ func readDaemonRecord(stateDir string) (daemonRecord, error) {
 }
 
 // liveDaemon returns the daemon record when its pid is this vani process, else
-// an error wrapping errNoDaemon that says why none is known.
+// an error wrapping errNoDaemon that says why none is known. Liveness uses the
+// record's own started_at, not the file's mtime.
 func liveDaemon(stateDir string) (daemonRecord, error) {
 	d, err := readDaemonRecord(stateDir)
 	switch {
@@ -214,9 +215,7 @@ func liveDaemon(stateDir string) (daemonRecord, error) {
 	case err != nil:
 		return daemonRecord{}, fmt.Errorf("%w: %w", errNoDaemon, err)
 	}
-	check := d
-	check.StartedAt = announcementInstant(stateDir, d)
-	if !daemonIsLive(check) {
+	if !daemonIsLive(d) {
 		return daemonRecord{}, fmt.Errorf("%w: the daemon recorded as pid %d is gone (it did not exit cleanly)", errNoDaemon, d.PID)
 	}
 	return d, nil
