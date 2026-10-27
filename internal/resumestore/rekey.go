@@ -1,7 +1,6 @@
 package resumestore
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -211,32 +210,27 @@ func (s *Store) rewriteKeys(dir, oldKey, newKey string) error {
 
 // loadRecord reads one vN.json for a rekey. It returns the bytes the record
 // takes under newKey and its modification time, or nil bytes when the record
-// already names newKey. A record that names neither key, or is not what the
-// store wrote, is damage.
+// already names newKey. Whatever readMeta would reject for the key the record
+// names — version, parent, checkMeta, or a PDF hash whose path is missing or
+// not a regular file — is damage. Rekey asks before it renames.
 func loadRecord(path string, n int, oldKey, newKey string) ([]byte, time.Time, error) {
+	dir := filepath.Dir(path)
+	// The key chooses which posting readMeta checks against. The checks
+	// themselves stay in readMeta; a second copy would drift.
+	ask := oldKey
+	if key, err := postingKeyOf(path); err == nil && key == newKey {
+		ask = newKey
+	}
+	m, err := readMeta(dir, ask, n)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
 	st, err := os.Lstat(path)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("v%d: %w", n, damaged(err))
 	}
-	b, err := readRegular(path, MaxMetaBytes)
-	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("v%d: %w", n, damaged(err))
-	}
-	if _, err := probeSchema(b, n); err != nil {
-		return nil, time.Time{}, err
-	}
-	var m Meta
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil || dec.More() {
-		return nil, time.Time{}, fmt.Errorf("%w: v%d does not read", ErrDamaged, n)
-	}
-	switch m.Key {
-	case newKey:
+	if ask == newKey {
 		return nil, st.ModTime(), nil
-	case oldKey:
-	default:
-		return nil, time.Time{}, fmt.Errorf("%w: v%d names a different posting", ErrDamaged, n)
 	}
 	m.Key = newKey
 	body, err := json.Marshal(m)
@@ -247,6 +241,22 @@ func loadRecord(path string, n int, oldKey, newKey string) ([]byte, time.Time, e
 		return nil, time.Time{}, fmt.Errorf("%w: v%d would be %d bytes under the new key, over %d", ErrInvalid, n, len(body), MaxMetaBytes)
 	}
 	return body, st.ModTime(), nil
+}
+
+// postingKeyOf reads only the record's key, so loadRecord can ask readMeta
+// about the posting the record already names. It is not a validator.
+func postingKeyOf(path string) (string, error) {
+	b, err := readRegular(path, MaxMetaBytes)
+	if err != nil {
+		return "", err
+	}
+	var probe struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return "", err
+	}
+	return probe.Key, nil
 }
 
 // writeRecord replaces a record atomically and gives it back its modification

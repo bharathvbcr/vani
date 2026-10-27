@@ -202,6 +202,103 @@ func TestRekeyRefusesADamagedJobBeforeMovingIt(t *testing.T) {
 	}
 }
 
+// A record Get rejects — version not n, parent not older, a checkMeta failure,
+// or a PDF hash whose path is missing or not a regular file — is refused
+// before the rename. The old folder, its key file and its PDF stay put.
+func TestRekeyRefusesARecordReadMetaRejectsBeforeMoving(t *testing.T) {
+	cases := []struct {
+		name string
+		hurt func(t *testing.T, dir string)
+	}{
+		{
+			name: "version is not n",
+			hurt: func(t *testing.T, dir string) {
+				editRecord(t, dir, 1, func(raw []byte) []byte {
+					return bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":2`), 1)
+				})
+			},
+		},
+		{
+			name: "parent is not older",
+			hurt: func(t *testing.T, dir string) {
+				editRecord(t, dir, 1, func(raw []byte) []byte {
+					return bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":1,"parent":1`), 1)
+				})
+			},
+		},
+		{
+			name: "checkMeta rejects the source",
+			hurt: func(t *testing.T, dir string) {
+				editRecord(t, dir, 1, func(raw []byte) []byte {
+					out := bytes.Replace(raw, []byte(`"source":"tailored"`), []byte(`"source":"nope"`), 1)
+					if bytes.Equal(out, raw) {
+						t.Fatal("source was not in the record")
+					}
+					return out
+				})
+			},
+		},
+		{
+			name: "pdf hash with no pdf",
+			hurt: func(t *testing.T, dir string) {
+				if err := os.Remove(versionFile(dir, 1, "pdf")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "pdf hash names a symlink",
+			hurt: func(t *testing.T, dir string) {
+				pdf := versionFile(dir, 1, "pdf")
+				if err := os.Remove(pdf); err != nil {
+					t.Fatal(err)
+				}
+				// The target is a regular file. Stat would follow the link and
+				// accept it; Lstat must not.
+				if err := os.Symlink(versionFile(dir, 1, "json"), pdf); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s, state := newStore(t)
+			seeded(t, s, "x:old")
+			dir := filepath.Join(state, "resumes", jobFolder("x:old"))
+			tc.hurt(t, dir)
+			before := snapshotTree(t, filepath.Join(state, "resumes"))
+			err := s.Rekey(ctx, "x:old", "x:new")
+			if !errors.Is(err, ErrDamaged) {
+				t.Fatalf("err = %v, want ErrDamaged", err)
+			}
+			if _, statErr := os.Lstat(dir); statErr != nil {
+				t.Fatalf("old folder: %v", statErr)
+			}
+			if _, statErr := os.Lstat(filepath.Join(state, "resumes", jobFolder("x:new"))); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("new folder appeared: %v", statErr)
+			}
+			if after := snapshotTree(t, filepath.Join(state, "resumes")); after != before {
+				t.Fatalf("a refused rekey changed the store:\n%s\n---\n%s", before, after)
+			}
+		})
+	}
+}
+
+func editRecord(t *testing.T, dir string, n int, edit func([]byte) []byte) {
+	t.Helper()
+	path := versionFile(dir, n, "json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, edit(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A folder under the new key's hash whose key file names some third key is not
 // ours to finish and not ours to overwrite.
 func TestRekeyRefusesAFolderThatBelongsToAnotherKey(t *testing.T) {
