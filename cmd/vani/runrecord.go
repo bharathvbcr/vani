@@ -457,8 +457,9 @@ func readRunRecordFile(path string) (*runRecord, error) {
 	return &r, nil
 }
 
-// pidAlive reports whether a process with this pid exists (processExists, per
-// platform). Tests replace it.
+// pidAlive reports whether this process can see pid (processExists, per
+// platform). A pid the kernel will not let us inspect is not alive. Tests
+// replace it. Whether the pid is this vani daemon is daemonIsLive, not this.
 var pidAlive = processExists
 
 // runState is the record's state as the user should read it: the written

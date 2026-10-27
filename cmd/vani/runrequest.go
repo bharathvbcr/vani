@@ -24,8 +24,8 @@ import (
 //
 // The daemon announces itself in <state dir>/runs/daemon.json (pid and start
 // time) once it holds the ledger, and removes it when it exits. run-request
-// refuses when that file names no live process: nobody would pick the request
-// up. A pid can be reused after a crash; a request no daemon picks up is then
+// refuses when that file does not name this vani process. A pid can be reused
+// after a crash; a request no daemon picks up is then
 // stale after runRequestMaxAge, and the next daemon drops it.
 //
 // The daemon claims a request by renaming it to request.claimed.json under the
@@ -204,8 +204,8 @@ func readDaemonRecord(stateDir string) (daemonRecord, error) {
 	return d, nil
 }
 
-// liveDaemon returns the daemon record when its process lives, else an error
-// wrapping errNoDaemon that says why none is known.
+// liveDaemon returns the daemon record when its pid is this vani process, else
+// an error wrapping errNoDaemon that says why none is known.
 func liveDaemon(stateDir string) (daemonRecord, error) {
 	d, err := readDaemonRecord(stateDir)
 	switch {
@@ -213,7 +213,10 @@ func liveDaemon(stateDir string) (daemonRecord, error) {
 		return daemonRecord{}, fmt.Errorf("%w: no daemon has announced itself in %s", errNoDaemon, runsPath(stateDir, daemonRecordFile))
 	case err != nil:
 		return daemonRecord{}, fmt.Errorf("%w: %w", errNoDaemon, err)
-	case !pidAlive(d.PID):
+	}
+	check := d
+	check.StartedAt = announcementInstant(stateDir, d)
+	if !daemonIsLive(check) {
 		return daemonRecord{}, fmt.Errorf("%w: the daemon recorded as pid %d is gone (it did not exit cleanly)", errNoDaemon, d.PID)
 	}
 	return d, nil

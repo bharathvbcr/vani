@@ -96,9 +96,9 @@ func writeRunHistory(stateDir string, r runRecord) error {
 // earlier run of this same process that never wrote its end. That is why the
 // record's pid is not asked whether it lives: a pid is reused (after a reboot
 // above all), and a live reader of it would hide the run for good. The one
-// check kept is the daemon's: if daemon.json names a live process other than
-// this one and it is the record's pid, the record is left alone, since a caller
-// that does not hold the ledger would otherwise archive a live run.
+// check kept is the daemon's: if daemon.json names this vani process and it
+// is the record's pid, the record is left alone. A pid that merely exists, or
+// whose executable is not this binary, is not that daemon.
 //
 // It returns the record it archived, or nil when it archived nothing: no
 // record, a finished one (already in the history), a live daemon's, or one the

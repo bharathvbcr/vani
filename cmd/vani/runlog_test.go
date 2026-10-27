@@ -349,17 +349,33 @@ func TestArchiveInterruptedRunNeverReplacesAnEntry(t *testing.T) {
 }
 
 // A live daemon's own record is never taken for a dead run's, even by a caller
-// that does not hold the ledger. This process's own pid is not the daemon's.
+// that does not hold the ledger. The pid has to be this binary, started no
+// later than the announcement; a pid that merely exists is not that daemon.
 func TestArchiveInterruptedRunLeavesALiveDaemonsRun(t *testing.T) {
 	_, stateDir := setup(t)
 	live := dyingRecord()
 	live.PID = 777001
 	writeLast(t, stateDir, live)
-	if err := writeDaemonRecord(stateDir, live.PID, time.Now()); err != nil {
+	announced := time.Now().UTC().Truncate(time.Millisecond)
+	if err := writeDaemonRecord(stateDir, live.PID, announced); err != nil {
 		t.Fatal(err)
 	}
-	stubPidAlive(t, func(pid int) bool { return pid == live.PID })
-
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAlive, oldID := pidAlive, daemonIdentity
+	t.Cleanup(func() { pidAlive, daemonIdentity = oldAlive, oldID })
+	ours := func(on bool) {
+		pidAlive = func(pid int) bool { return on && pid == live.PID }
+		daemonIdentity = func(pid int) procIdentity {
+			if !on || pid != live.PID {
+				return procIdentity{}
+			}
+			return procIdentity{OK: true, Exe: exe, Started: announced}
+		}
+	}
+	ours(true)
 	if r, err := archiveInterruptedRun(stateDir); r != nil || err != nil {
 		t.Fatalf("archived the live daemon's run: %v, %v", r, err)
 	}
@@ -367,10 +383,12 @@ func TestArchiveInterruptedRunLeavesALiveDaemonsRun(t *testing.T) {
 		t.Errorf("history %v", ids)
 	}
 
-	// The daemon is gone (its pid no longer lives): the record is a dead run's.
-	stubPidAlive(t, func(int) bool { return false })
-	if r, err := archiveInterruptedRun(stateDir); r == nil || err != nil {
-		t.Fatalf("a dead daemon's run was not archived: %v, %v", r, err)
+	// A different executable under the same pid is archived.
+	daemonIdentity = func(int) procIdentity {
+		return procIdentity{OK: true, Exe: exe + ".other", Started: announced.Add(-time.Hour)}
+	}
+	if r, err := archiveInterruptedRun(stateDir); r == nil || err != nil || r.Outcome != outcomeInterrupted {
+		t.Fatalf("a different executable was not archived: %v, %v", r, err)
 	}
 }
 

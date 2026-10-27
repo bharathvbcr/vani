@@ -93,6 +93,47 @@ func TestRunRequestRefusedWithoutADaemon(t *testing.T) {
 	}
 }
 
+// Seeing a pid is not enough for run-request to treat it as the daemon.
+func TestRunRequestRefusedWhenThePidIsNotThisVani(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	if err := writeDaemonRecord(stateDir, 4242, at); err != nil {
+		t.Fatal(err)
+	}
+	oldAlive, oldID := pidAlive, daemonIdentity
+	t.Cleanup(func() { pidAlive, daemonIdentity = oldAlive, oldID })
+	pidAlive = func(int) bool { return true }
+	for _, tc := range []struct {
+		name string
+		id   procIdentity
+	}{
+		{"wrong executable", procIdentity{OK: true, Exe: "/usr/bin/not-vani", Started: at.Add(-time.Hour)}},
+		{"uninspectable", procIdentity{}},
+		{"reused pid", procIdentity{OK: true, Exe: mustExe(t), Started: at.Add(5 * time.Second)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonIdentity = func(int) procIdentity { return tc.id }
+			_, e := mustCode(t, exitRuntime, "run-request")
+			if !strings.Contains(e, "no running vani daemon") {
+				t.Errorf("stderr %q", e)
+			}
+			if requestExists(stateDir, runRequestFile) {
+				t.Error("a refused request was written")
+			}
+		})
+	}
+}
+
+func mustExe(t *testing.T) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
 // A request is written once with its options and time, status reports it as
 // pending, and a second request while it waits is refused.
 func TestRunRequestIsWrittenOnce(t *testing.T) {
