@@ -291,6 +291,27 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 }
 func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
+// The Windows file index is two DWORD halves. A pack that drops them (both
+// zeros, or the volume only) makes two files with the same size and mtime
+// look like one file.
+func TestPackWindowsFileIDDiffersWhenOnlyIndexDiffers(t *testing.T) {
+	dev, ino := packWindowsFileID(0xA1B2C3D4, 0x01020304, 0x05060708)
+	if dev == 0 && ino == 0 {
+		t.Fatal("packWindowsFileID returned a zero identity for a non-zero index")
+	}
+	dev2, ino2 := packWindowsFileID(0xA1B2C3D4, 0x01020304, 0x05060709)
+	if dev == dev2 && ino == ino2 {
+		t.Fatal("same volume and a different file index packed to the same identity")
+	}
+	if dev != dev2 {
+		t.Fatalf("volume serial changed with the index: %#x vs %#x", dev, dev2)
+	}
+	const wantIno = uint64(0x01020304)<<32 | 0x05060708
+	if dev != 0xA1B2C3D4 || ino != wantIno {
+		t.Fatalf("got dev %#x ino %#x, want volume and high<<32|low", dev, ino)
+	}
+}
+
 // The real stat on real files: a delete-and-rewrite (how a reinstall puts a
 // new copy at the path), an overwrite in place, a repointed symlink and a
 // missing path, with the default statExecutable.
