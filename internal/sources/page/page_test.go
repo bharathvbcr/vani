@@ -369,7 +369,7 @@ func TestJSONLDShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := findJobPosting([]string{tc.ld})
+			got, ok := findJobPosting("", []string{tc.ld}, fixedNow)
 			if !ok {
 				t.Fatal("no JobPosting found")
 			}
@@ -388,14 +388,202 @@ func TestJSONLDShapes(t *testing.T) {
 		"other vocab":   `{"@type":"https://example.org/JobPosting"}`,
 		"prefix only":   `{"@type":"https://schema.org/"}`,
 		"other suffix":  `{"@type":"https://schema.org/JobPostingX"}`,
+		"trailing junk": `{"@type":"JobPosting","title":"X"} true`,
 	} {
-		if _, ok := findJobPosting([]string{ld}); ok {
+		if _, ok := findJobPosting("", []string{ld}, fixedNow); ok {
 			t.Errorf("%s: found a JobPosting", name)
 		}
 	}
 	// A bad block does not hide a later good one.
-	if jp, ok := findJobPosting([]string{`{bad`, `{"@type":"JobPosting","title":"late"}`}); !ok || jp.title != "late" {
+	if jp, ok := findJobPosting("", []string{`{bad`, `{"@type":"JobPosting","title":"late"}`}, fixedNow); !ok || jp.title != "late" {
 		t.Errorf("later block ignored: %+v %v", jp, ok)
+	}
+}
+
+// TestJSONLDPageURL is the page-URL selection the first-node walk got wrong:
+// an expired sibling must not drop this page, and a JobPosting is used only
+// when it names this page or it is the only one and names no page.
+func TestJSONLDPageURL(t *testing.T) {
+	const (
+		dead = "2020-01-01"
+		live = "2027-06-01"
+	)
+	sibling := `{"@type":"JobPosting","title":"Expired Sibling","description":"old body","url":"https://careers.example.com/jobs/other-9","validThrough":"` + dead + `"}`
+	pageOf := func(title, body, ld string) string {
+		return `<html><head><title>` + title + `</title><script type="application/ld+json">` + ld + `</script></head><body>` + body + `</body></html>`
+	}
+	twoBlocks := func(title, body, a, b string) string {
+		return `<html><head><title>` + title + `</title>` +
+			`<script type="application/ld+json">` + a + `</script>` +
+			`<script type="application/ld+json">` + b + `</script>` +
+			`</head><body>` + body + `</body></html>`
+	}
+	wrap := func(levels int, leaf string) string {
+		s := leaf
+		for i := 0; i < levels; i++ {
+			s = `{"nest":` + s + `}`
+		}
+		return s
+	}
+	cases := []struct {
+		name, path, html string
+		omit             bool
+		title, desc      string
+	}{
+		{
+			name:  "expired sibling then live url",
+			path:  "/jobs/live-1",
+			html:  pageOf("HTML Title", "html body", `[`+sibling+`,{"@type":"JobPosting","title":"Live Role","description":"new work","url":"https://careers.example.com/jobs/live-1","validThrough":"`+live+`"}]`),
+			title: "Live Role", desc: "new work",
+		},
+		{
+			name:  "mainEntity",
+			path:  "/jobs/nested-1",
+			html:  pageOf("HTML Title", "html body", `{"@type":"WebPage","mainEntity":{"@type":"JobPosting","title":"Nested Role","description":"under main"}}`),
+			title: "Nested Role", desc: "under main",
+		},
+		{
+			name: "single expired url omitted",
+			path: "/jobs/gone-1",
+			html: pageOf("HTML Title", "html body", `{"@type":"JobPosting","title":"Gone","description":"dead text","url":"https://careers.example.com/jobs/gone-1","validThrough":"`+dead+`"}`),
+			omit: true,
+		},
+		{
+			name:  "different url does not expire or title the page",
+			path:  "/jobs/keep-1",
+			html:  pageOf("HTML Title", "html body", `{"@type":"JobPosting","title":"Other Role","description":"other desc","url":"https://careers.example.com/jobs/other-9","validThrough":"`+dead+`"}`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "live different url is not copied",
+			path:  "/jobs/keep-2",
+			html:  pageOf("HTML Title", "html body", `{"@type":"JobPosting","title":"Other Role","description":"other desc","url":"https://careers.example.com/jobs/other-9","validThrough":"`+live+`"}`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "sameAs list",
+			path:  "/jobs/alias-1",
+			html:  pageOf("HTML Title", "html body", `[`+sibling+`,{"@type":"JobPosting","title":"Alias Role","description":"via same","sameAs":["https://example.org/elsewhere","http://careers.example.com/jobs/alias-1#apply"]}]`),
+			title: "Alias Role", desc: "via same",
+		},
+		{
+			name:  "sameAs trailing slash",
+			path:  "/jobs/slash-1",
+			html:  pageOf("HTML Title", "html body", `[`+sibling+`,{"@type":"JobPosting","title":"Slash Role","description":"slash body","sameAs":"https://careers.example.com/jobs/slash-1/"}]`),
+			title: "Slash Role", desc: "slash body",
+		},
+		{
+			name:  "url list",
+			path:  "/jobs/urls-1",
+			html:  pageOf("HTML Title", "html body", `[`+sibling+`,{"@type":"JobPosting","title":"List Role","description":"list body","url":["https://example.org/x","https://careers.example.com/jobs/urls-1/"]}]`),
+			title: "List Role", desc: "list body",
+		},
+		{
+			name:  "canonical scheme host slash utm fragment",
+			path:  "/jobs/canon-1",
+			html:  pageOf("HTML Title", "html body", `[`+sibling+`,{"@type":"JobPosting","title":"Canon Role","description":"canon body","url":"http://Careers.Example.com/jobs/canon-1/?utm_campaign=a#section"}]`),
+			title: "Canon Role", desc: "canon body",
+		},
+		{
+			name:  "path prefix does not match",
+			path:  "/jobs/prefix-1",
+			html:  pageOf("HTML Title", "html body", `{"@type":"JobPosting","title":"Prefix Role","description":"prefix desc","url":"https://careers.example.com/jobs/prefix"}`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "longer path does not match",
+			path:  "/jobs/prefix-2",
+			html:  pageOf("HTML Title", "html body", `{"@type":"JobPosting","title":"Extra Role","description":"extra desc","url":"https://careers.example.com/jobs/prefix-2/extra"}`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "non-utm query does not match",
+			path:  "/jobs/query-1",
+			html:  pageOf("HTML Title", "html body", `{"@type":"JobPosting","title":"Query Role","description":"query desc","url":"https://careers.example.com/jobs/query-1?ref=1"}`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "nested at walk cap",
+			path:  "/jobs/atcap-1",
+			html:  pageOf("HTML Title", "html body", wrap(maxJSONLDDepth, `{"@type":"JobPosting","title":"At Cap","description":"cap body","url":"https://careers.example.com/jobs/atcap-1"}`)),
+			title: "At Cap", desc: "cap body",
+		},
+		{
+			name:  "nested over walk cap",
+			path:  "/jobs/over-1",
+			html:  pageOf("HTML Title", "html body", wrap(maxJSONLDDepth+1, `{"@type":"JobPosting","title":"Over Cap","description":"over body","url":"https://careers.example.com/jobs/over-1"}`)),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "malformed falls back",
+			path:  "/jobs/bad-1",
+			html:  pageOf("HTML Title", "html body", `{"@type":"JobPosting",`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "several without url fall back",
+			path:  "/jobs/multi-1",
+			html:  pageOf("HTML Title", "html body", `[{"@type":"JobPosting","title":"One","description":"aaa"},{"@type":"JobPosting","title":"Two","description":"bbb"}]`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "bare plus a different url falls back",
+			path:  "/jobs/multi-2",
+			html:  pageOf("HTML Title", "html body", `[{"@type":"JobPosting","title":"Bare","description":"bare desc"},{"@type":"JobPosting","title":"Other","description":"other desc","url":"https://careers.example.com/jobs/other-9"}]`),
+			title: "HTML Title", desc: "html body",
+		},
+		{
+			name:  "first of two live matches",
+			path:  "/jobs/dup-1",
+			html:  pageOf("HTML Title", "html body", `[{"@type":"JobPosting","title":"First Live","description":"first body","url":"https://careers.example.com/jobs/dup-1"},{"@type":"JobPosting","title":"Second Live","description":"second body","url":"https://careers.example.com/jobs/dup-1/"}]`),
+			title: "First Live", desc: "first body",
+		},
+		{
+			name:  "expired match then live match",
+			path:  "/jobs/both-1",
+			html:  pageOf("HTML Title", "html body", `[{"@type":"JobPosting","title":"Dead Match","description":"dead body","url":"https://careers.example.com/jobs/both-1","validThrough":"`+dead+`"},{"@type":"JobPosting","title":"Live Match","description":"live body","url":"http://careers.example.com/jobs/both-1#a"}]`),
+			title: "Live Match", desc: "live body",
+		},
+		{
+			name: "every match expired",
+			path: "/jobs/alldead-1",
+			html: pageOf("HTML Title", "html body", `[{"@type":"JobPosting","title":"Dead Match","description":"dead body","url":"https://careers.example.com/jobs/alldead-1","validThrough":"`+dead+`"},{"@type":"JobPosting","title":"Other Live","description":"other body","url":"https://careers.example.com/jobs/other-9","validThrough":"`+live+`"}]`),
+			omit: true,
+		},
+		{
+			name:  "context is not a posting",
+			path:  "/jobs/ctx-1",
+			html:  pageOf("HTML Title", "html body", `{"@context":{"@type":"JobPosting","title":"Context Role","description":"ctx","url":"https://careers.example.com/jobs/ctx-1"},"mainEntity":{"@type":"JobPosting","title":"Nested Role","description":"under main"}}`),
+			title: "Nested Role", desc: "under main",
+		},
+		{
+			name:  "second block after expired sibling",
+			path:  "/jobs/block-1",
+			html:  twoBlocks("HTML Title", "html body", sibling, `{"@type":"JobPosting","title":"Second Block","description":"block body","url":"https://careers.example.com/jobs/block-1"}`),
+			title: "Second Block", desc: "block body",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := "https://careers.example.com" + tc.path
+			r := &fakeBrowser{pages: map[string]string{listURL: listing(tc.path), u: tc.html}}
+			got, err := newSrc(r).List(context.Background(), board())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.omit {
+				if len(got) != 0 {
+					t.Fatalf("kept %+v", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d postings: %+v", len(got), got)
+			}
+			if got[0].Title != tc.title || got[0].Description != tc.desc || got[0].URL != u {
+				t.Fatalf("got title %q desc %q url %q", got[0].Title, got[0].Description, got[0].URL)
+			}
+		})
 	}
 }
 

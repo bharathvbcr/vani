@@ -2,9 +2,13 @@ package page
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources/htmltext"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
@@ -23,44 +27,263 @@ type jobPosting struct {
 
 const maxJSONLDDepth = 6
 
-// findJobPosting returns the first JobPosting in any of the JSON-LD blocks. A
-// block that is not valid JSON is skipped: the page still loaded, so the caller
-// falls back to the page title rather than failing the board.
-func findJobPosting(blocks []string) (jobPosting, bool) {
+// maxJSONLDParseDepth bounds the decoder's recursion. The walk cap is lower:
+// a chosen node's location tree sits inside the node, so parsing stops later.
+const maxJSONLDParseDepth = 64
+
+// findJobPosting chooses the JobPosting for pageURL, which is already in
+// posting.CanonicalURL form (empty matches nothing). A block that is not valid
+// JSON is skipped: the page still loaded, so the caller falls back to the page
+// title rather than failing the board.
+//
+// Among nodes whose url or sameAs is this page, the first unexpired one in
+// document order is used. When every such node is expired, that expired
+// posting is returned so the caller can omit the page. When none name this
+// page, a single JobPosting that has neither url nor sameAs is used, and
+// anything else is left unread so a sibling's title or expiry cannot apply.
+func findJobPosting(pageURL string, blocks []string, now time.Time) (jobPosting, bool) {
+	var matched, bare []map[string]any
+	others := 0
 	for _, raw := range blocks {
-		var v any
-		if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &v); err != nil {
+		v, err := unmarshalOrdered(strings.TrimSpace(raw))
+		if err != nil {
 			continue
 		}
-		if m, ok := findTyped(v, "JobPosting", 0); ok {
-			return readJobPosting(m), true
+		var nodes []map[string]any
+		collectJobPostings(v, 0, &nodes)
+		for _, n := range nodes {
+			refs := postingRefs(n)
+			if len(refs) == 0 {
+				bare = append(bare, n)
+				continue
+			}
+			if refsMatch(pageURL, refs) {
+				matched = append(matched, n)
+				continue
+			}
+			others++
 		}
+	}
+	if len(matched) > 0 {
+		first := readJobPosting(matched[0])
+		for _, n := range matched {
+			jp := readJobPosting(n)
+			if !jp.expired(now) {
+				return jp, true
+			}
+		}
+		return first, true
+	}
+	if others == 0 && len(bare) == 1 {
+		return readJobPosting(bare[0]), true
 	}
 	return jobPosting{}, false
 }
 
-// findTyped walks arrays, @graph and nested objects for a node of the given
-// @type, depth-first in document order.
-func findTyped(v any, typ string, depth int) (map[string]any, bool) {
-	if depth > maxJSONLDDepth {
-		return nil, false
+// ordMap is a JSON object whose keys stay in document order. encoding/json's
+// map[string]any does not.
+type ordMap struct {
+	keys []string
+	vals map[string]any
+}
+
+func unmarshalOrdered(raw string) (any, error) {
+	if raw == "" {
+		return nil, errors.New("page: json-ld: empty")
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	v, err := parseJSONValue(dec, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("page: json-ld: trailing value")
+		}
+		return nil, err
+	}
+	return v, nil
+}
+
+func parseJSONValue(dec *json.Decoder, depth int) (any, error) {
+	if depth > maxJSONLDParseDepth {
+		return nil, errors.New("page: json-ld: nested too deep")
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	d, ok := tok.(json.Delim)
+	if !ok {
+		return tok, nil
+	}
+	switch d {
+	case '{':
+		return parseJSONObject(dec, depth)
+	case '[':
+		return parseJSONArray(dec, depth)
+	default:
+		return nil, errors.New("page: json-ld: bad delimiter")
+	}
+}
+
+func parseJSONObject(dec *json.Decoder, depth int) (*ordMap, error) {
+	m := &ordMap{vals: make(map[string]any)}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return nil, errors.New("page: json-ld: object key")
+		}
+		val, err := parseJSONValue(dec, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := m.vals[key]; !exists {
+			m.keys = append(m.keys, key)
+		}
+		m.vals[key] = val
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if tok != json.Delim('}') {
+		return nil, errors.New("page: json-ld: object end")
+	}
+	return m, nil
+}
+
+func parseJSONArray(dec *json.Decoder, depth int) ([]any, error) {
+	var arr []any
+	for dec.More() {
+		val, err := parseJSONValue(dec, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		arr = append(arr, val)
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if tok != json.Delim(']') {
+		return nil, errors.New("page: json-ld: array end")
+	}
+	return arr, nil
+}
+
+// collectJobPostings appends every JobPosting no deeper than the walk cap,
+// in document order. Arrays, @graph, mainEntity and other nested objects are
+// walked; @context is not. Depth 0 is the root, and a node deeper than
+// maxJSONLDDepth is unread.
+func collectJobPostings(v any, depth int, out *[]map[string]any) {
+	if depth > maxJSONLDDepth || out == nil {
+		return
 	}
 	switch n := v.(type) {
 	case []any:
 		for _, e := range n {
-			if m, ok := findTyped(e, typ, depth+1); ok {
-				return m, true
+			collectJobPostings(e, depth+1, out)
+		}
+	case *ordMap:
+		if hasType(n.vals["@type"], "JobPosting") {
+			*out = append(*out, n.plain())
+		}
+		for _, k := range n.keys {
+			if k == "@context" {
+				continue
+			}
+			switch n.vals[k].(type) {
+			case *ordMap, []any:
+				collectJobPostings(n.vals[k], depth+1, out)
 			}
 		}
-	case map[string]any:
-		if hasType(n["@type"], typ) {
-			return n, true
+	}
+}
+
+func (m *ordMap) plain() map[string]any {
+	out := make(map[string]any, len(m.vals))
+	for k, v := range m.vals {
+		out[k] = plainJSON(v)
+	}
+	return out
+}
+
+func plainJSON(v any) any {
+	switch t := v.(type) {
+	case *ordMap:
+		return t.plain()
+	case []any:
+		arr := make([]any, len(t))
+		for i, e := range t {
+			arr[i] = plainJSON(e)
 		}
-		if g, ok := n["@graph"]; ok {
-			return findTyped(g, typ, depth+1)
+		return arr
+	default:
+		return v
+	}
+}
+
+// postingRefs is the non-empty url and sameAs strings on a JobPosting.
+// A list contributes its strings. Anything else is not a page name.
+func postingRefs(m map[string]any) []string {
+	var out []string
+	for _, key := range []string{"url", "sameAs"} {
+		out = appendStringRefs(out, m[key])
+	}
+	return out
+}
+
+func appendStringRefs(out []string, v any) []string {
+	switch t := v.(type) {
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			out = append(out, s)
+		}
+	case []any:
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
 		}
 	}
-	return nil, false
+	return out
+}
+
+func refsMatch(pageURL string, refs []string) bool {
+	for _, ref := range refs {
+		if samePage(pageURL, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// samePage reports whether raw names pageCanon. pageCanon is the canonical
+// page URL. raw is compared through upgradeHTTP and posting.CanonicalURL, so
+// the differences that package already folds (http on the default port, a
+// trailing slash, a fragment, utm query keys, host case) match. A path prefix
+// does not: the canonical strings must be equal.
+func samePage(pageCanon, raw string) bool {
+	if pageCanon == "" {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	upgradeHTTP(u)
+	canon, err := posting.CanonicalURL(u.String())
+	if err != nil {
+		return false
+	}
+	return canon == pageCanon
 }
 
 // schemaPrefixes are the forms a schema.org type is written in besides its
