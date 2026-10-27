@@ -104,11 +104,20 @@ func historyFileKept(path string) bool {
 // file is not already a regular record, so the caller can replace last.json
 // without dropping the only copy. No record and a running record need nothing.
 // An unreadable last.json is not invented: the caller writes as it does today.
-// An empty state dir is left to that write, which refuses it. writeRunHistory
-// is tried, and on failure tried once more, then stopped. A prune error after
+// The leaf is classified with Lstat before any open. A missing file is no
+// record. A symlink, FIFO, directory, socket or device is not opened, and a
+// symlink is not followed, so the caller writes the new record. An empty
+// state dir is left to that write, which refuses it. writeRunHistory is
+// tried, and on failure tried once more, then stopped. A prune error after
 // the file is present does not block; a file that is still not regular does.
 func flushFinishedLast(stateDir string) error {
 	if stateDir == "" {
+		return nil
+	}
+	// os.Open would follow a symlink and block on a FIFO, so a leaf that is
+	// not shown to be a regular file is left for the caller to replace.
+	info, err := os.Lstat(runRecordPath(stateDir))
+	if err != nil || !info.Mode().IsRegular() {
 		return nil
 	}
 	prev, err := readRunRecord(stateDir)
