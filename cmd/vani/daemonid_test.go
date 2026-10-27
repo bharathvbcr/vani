@@ -115,9 +115,15 @@ func TestDaemonIdentityThisProcess(t *testing.T) {
 	if sameExecutable(foreign.Exe, self) {
 		t.Fatalf("child executable %q is this binary", foreign.Exe)
 	}
-	announced := foreign.Started.Add(time.Hour)
-	if daemonIsLive(daemonRecord{V: 1, PID: child, StartedAt: announced}) {
-		t.Fatal("a same-user pid with a different executable is this daemon")
+	if !processExists(child) {
+		t.Fatal("same-user child is not visible")
+	}
+	// A start equal to the announcement, or an announcement after that start,
+	// would be this daemon if the executable matched. It does not.
+	for _, announced := range []time.Time{foreign.Started, foreign.Started.Add(time.Hour)} {
+		if daemonIsLive(daemonRecord{V: 1, PID: child, StartedAt: announced}) {
+			t.Fatalf("different executable is live at announcement %s (start %s)", announced, foreign.Started)
+		}
 	}
 }
 
