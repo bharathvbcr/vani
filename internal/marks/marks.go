@@ -412,7 +412,7 @@ func Read(dir string) (map[posting.Key]Entry, error) {
 		}
 	}
 	defer l.Close()
-	f, err := os.Open(filepath.Join(dir, fileName))
+	f, err := atomicfile.OpenRead(filepath.Join(dir, fileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return map[posting.Key]Entry{}, nil
 	}
@@ -599,7 +599,7 @@ func Compact(dir string) error {
 	}
 	defer l.Close()
 	path := filepath.Join(dir, fileName)
-	f, err := os.Open(path)
+	f, err := atomicfile.OpenRead(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

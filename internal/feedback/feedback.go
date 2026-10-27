@@ -486,7 +486,7 @@ func ReadImpressions(stateDir string) (Read, error) {
 // scanLog calls each for every non-empty line of the file (an oversized line
 // arrives truncated to MaxLine+1 bytes); a missing file has no lines.
 func scanLog(path string, each func(line []byte)) error {
-	f, err := os.Open(path)
+	f, err := atomicfile.OpenRead(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
