@@ -42,18 +42,12 @@ const JOB_CALL_MS = 10_000;
  *  outlasts both, so the host's own timeout answer arrives instead of a false "unreachable". */
 const INGEST_CALL_MS = 40_000;
 
-/** One bounded native call; an unreachable host is a coded reply, never a throw. */
-async function native(msg: object, ms = JOB_CALL_MS): Promise<unknown> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+/** One bounded native call. `ms` is the transport's only timer for this call; an unreachable host is a coded reply, never a throw. */
+export async function native(msg: object, ms = JOB_CALL_MS): Promise<unknown> {
   try {
-    return await Promise.race([
-      nativeTransport(msg),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), ms); }),
-    ]);
+    return await nativeTransport(msg, ms);
   } catch {
     return { error: "the Vani Apply Mac app isn't reachable", code: "unreachable" };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
