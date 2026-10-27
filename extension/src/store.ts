@@ -77,11 +77,32 @@ export const spawnTransport: Transport = (msg, timeoutMs) =>
     });
   });
 
-/** Production transport: Safari and a Chrome without connectNative go per message; Chrome keeps one port for the bank ops. */
-export const nativeTransport: Transport =
-  globalThis.browser?.runtime?.sendNativeMessage || typeof chrome === "undefined" || !chrome.runtime?.connectNative
-    ? spawnTransport
-    : createPortTransport({ connect: () => chrome.runtime.connectNative(NATIVE_HOST), spawn: spawnTransport });
+/** Safari, or a Chrome that has no connectNative, is one host process per message. */
+function hostIsPerMessage(): boolean {
+  return Boolean(globalThis.browser?.runtime?.sendNativeMessage || typeof chrome === "undefined" || !chrome.runtime?.connectNative);
+}
+
+let portTransport: Transport | undefined;
+let portConnect: unknown;
+
+/** One port per connectNative. A later, different connectNative must not inherit the previous port's queue or backoff. */
+function chromePortTransport(): Transport {
+  const connect = chrome.runtime.connectNative;
+  if (portTransport === undefined || portConnect !== connect) {
+    portConnect = connect;
+    portTransport = createPortTransport({ connect: () => chrome.runtime.connectNative(NATIVE_HOST), spawn: spawnTransport });
+  }
+  return portTransport;
+}
+
+/** Transport for this call. Callers that captured `nativeTransport` at load keep that binding;
+ *  this reads the host again, so a Chrome that gains connectNative after the module was imported still uses one port. */
+export function currentNativeTransport(): Transport {
+  return hostIsPerMessage() ? spawnTransport : chromePortTransport();
+}
+
+/** Chosen when this module is first evaluated. Safari and a Chrome without connectNative are `spawnTransport` itself. */
+export const nativeTransport: Transport = hostIsPerMessage() ? spawnTransport : chromePortTransport();
 
 const chromeLocal: LocalArea = {
   get: k => chrome.storage.local.get(k),

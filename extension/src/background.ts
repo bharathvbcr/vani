@@ -8,7 +8,7 @@ import {
   loadBank,
   loadSnapshot,
   migrationNote,
-  nativeTransport,
+  currentNativeTransport,
   patchAnswers,
   replaceBank,
   storageMode,
@@ -45,7 +45,7 @@ const INGEST_CALL_MS = 40_000;
 /** One bounded native call. `ms` is the transport's only timer for this call; an unreachable host is a coded reply, never a throw. */
 export async function native(msg: object, ms = JOB_CALL_MS): Promise<unknown> {
   try {
-    return await nativeTransport(msg, ms);
+    return await currentNativeTransport()(msg, ms);
   } catch {
     return { error: "the Vani Apply Mac app isn't reachable", code: "unreachable" };
   }
