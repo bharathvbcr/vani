@@ -174,6 +174,47 @@ func SyncNew(path string, syncFn func(dir string) error) error {
 	return err
 }
 
+// OpenRead opens path read-only without creating it. Directory components are
+// resolved; a symlink leaf is ErrLinkedLeaf and is not followed. A missing leaf
+// is os.ErrNotExist. A leaf that is not a regular file is ErrNotRegular and is
+// not opened, so a FIFO cannot block the read.
+func OpenRead(path string) (*os.File, error) {
+	path, err := ResolveLeaf(path)
+	if err != nil {
+		return nil, err
+	}
+	st, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s is a symbolic link; Vani will not read through it: %w", path, ErrLinkedLeaf)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s (%s): %w", path, st.Mode().Type(), ErrNotRegular)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	fst, ferr := f.Stat()
+	lst, lerr := os.Lstat(path)
+	if ferr == nil && lerr == nil && lst.Mode().IsRegular() && os.SameFile(fst, lst) {
+		return f, nil
+	}
+	_ = f.Close()
+	if lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s is a symbolic link; Vani will not read through it: %w", path, ErrLinkedLeaf)
+	}
+	if lerr == nil && !lst.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s (%s): %w", path, lst.Mode().Type(), ErrNotRegular)
+	}
+	if lerr != nil {
+		return nil, lerr
+	}
+	return nil, fmt.Errorf("open %s: the file kept changing underneath the open", filepath.Base(path))
+}
+
 // TornTail reports whether f is non-empty and its last byte is not a newline:
 // a crash mid-append left a partial row, and a row appended now would be glued
 // onto it and lost with it. The caller writes a newline first. An error means

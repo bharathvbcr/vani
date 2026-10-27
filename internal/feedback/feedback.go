@@ -271,14 +271,35 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 		return 0, nil
 	}
 	live := filepath.Join(dir, ImpressionsFile)
-	if fi, err := os.Stat(live); err == nil && fi.Size()+int64(buf.Len()) > maxLogBytes {
-		if err := os.Rename(live, filepath.Join(dir, RotatedFile)); err != nil {
-			return 0, fmt.Errorf("feedback: rotate %s: %w", ImpressionsFile, err)
-		}
-	}
-	f, err := os.OpenFile(live, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
+	// Open before any rename. Stat would follow a symlink and Rename would move
+	// the link; OpenAppend refuses a symlink or a non-regular leaf (a FIFO)
+	// without creating, removing, or blocking on it.
+	f, created, err := openImpression(live)
 	if err != nil {
-		return 0, fmt.Errorf("feedback: %w", err)
+		return 0, err
+	}
+	if !created {
+		st, serr := f.Stat()
+		if serr != nil {
+			_ = f.Close()
+			return 0, fmt.Errorf("feedback: stat %s: %w", ImpressionsFile, serr)
+		}
+		if st.Size()+int64(buf.Len()) > maxLogBytes {
+			if rerr := refuseLeafSwap(live, st); rerr != nil {
+				_ = f.Close()
+				return 0, fmt.Errorf("feedback: rotate %s: %w", ImpressionsFile, rerr)
+			}
+			if cerr := f.Close(); cerr != nil {
+				return 0, fmt.Errorf("feedback: rotate %s: %w", ImpressionsFile, cerr)
+			}
+			if rerr := os.Rename(live, filepath.Join(dir, RotatedFile)); rerr != nil {
+				return 0, fmt.Errorf("feedback: rotate %s: %w", ImpressionsFile, rerr)
+			}
+			f, _, err = openImpression(live)
+			if err != nil {
+				return 0, err
+			}
+		}
 	}
 	// Read before the write: a log that ends mid-row (a crash mid-append) would
 	// glue the first new row onto that fragment and lose both.
@@ -321,6 +342,42 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 
 // writeAll is f.Write; a variable only so a test can inject a short write.
 var writeAll = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
+
+// openImpression opens the live log for append. A new file's directory entry
+// is synced before the caller trusts it. A symlink leaf is ErrLinkedLeaf and
+// a non-regular leaf is ErrNotRegular; neither is created or removed.
+func openImpression(live string) (*os.File, bool, error) {
+	f, created, err := atomicfile.OpenAppend(live, os.O_APPEND)
+	if err != nil {
+		return nil, false, fmt.Errorf("feedback: %w", err)
+	}
+	if created {
+		if err := atomicfile.SyncNew(live, atomicfile.SyncDir); err != nil {
+			_ = f.Close()
+			return nil, false, fmt.Errorf("feedback: %w", err)
+		}
+	}
+	return f, created, nil
+}
+
+// refuseLeafSwap reports whether live is still the regular file opened holds.
+// Rotation must not rename a symlink or a non-regular leaf planted in its place.
+func refuseLeafSwap(live string, opened os.FileInfo) error {
+	lst, err := os.Lstat(live)
+	if err != nil {
+		return err
+	}
+	switch {
+	case lst.Mode()&os.ModeSymlink != 0:
+		return atomicfile.ErrLinkedLeaf
+	case !lst.Mode().IsRegular():
+		return atomicfile.ErrNotRegular
+	case !os.SameFile(opened, lst):
+		return errors.New("replaced before rotation")
+	default:
+		return nil
+	}
+}
 
 type slateKey struct {
 	slate, surface string
