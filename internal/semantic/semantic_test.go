@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -1054,4 +1055,473 @@ func TestRealBankCounts(t *testing.T) {
 	}
 	rep, err := m.Warm(context.Background(), []Doc{k8sDoc()}, 1)
 	t.Logf("warm: %+v err=%v", rep, err)
+}
+
+// fnEmbedder replaces Embed and keeps Model from the inner embedder.
+type fnEmbedder struct {
+	Embedder
+	fn func(ctx context.Context, texts []string, kind Kind) ([][]float32, error)
+}
+
+func (f *fnEmbedder) Embed(ctx context.Context, texts []string, kind Kind) ([][]float32, error) {
+	return f.fn(ctx, texts, kind)
+}
+
+// stepEmbedder is one armed Embed: it closes entered, optionally waits on
+// release, then closes returned. arm replaces the channels before each call.
+type stepEmbedder struct {
+	Embedder
+	mu       sync.Mutex
+	entered  chan struct{}
+	release  chan struct{}
+	returned chan struct{}
+	calls    atomic.Int32
+}
+
+func (s *stepEmbedder) arm(entered, release, returned chan struct{}) {
+	s.mu.Lock()
+	s.entered, s.release, s.returned = entered, release, returned
+	s.mu.Unlock()
+}
+
+func (s *stepEmbedder) Embed(ctx context.Context, texts []string, kind Kind) ([][]float32, error) {
+	s.calls.Add(1)
+	s.mu.Lock()
+	entered, release, returned := s.entered, s.release, s.returned
+	s.mu.Unlock()
+	if entered != nil {
+		close(entered)
+	}
+	if release != nil {
+		<-release
+	}
+	if returned != nil {
+		close(returned)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.Embedder.Embed(context.Background(), texts, kind)
+}
+
+// TestTrackedEmbedderNilAndSinglePin: a nil embedder is not wrapped, wrapping
+// a tracker again is the same pointer (one pin, not two), and Wait stays
+// false until that one Embed returns.
+func TestTrackedEmbedderNilAndSinglePin(t *testing.T) {
+	if TrackEmbedder(nil) != nil {
+		t.Fatal("TrackEmbedder(nil) is not nil")
+	}
+	inner := NewFakeEmbedder(16, nil)
+	tr := TrackEmbedder(inner)
+	if tr == nil || TrackEmbedder(tr) != tr {
+		t.Fatal("double TrackEmbedder is not the same pointer")
+	}
+	if _, nested := tr.Embedder.(*TrackedEmbedder); nested || tr.Embedder != inner {
+		t.Fatal("double wrap nested a second tracker")
+	}
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	emb := &stepEmbedder{Embedder: inner, entered: entered, release: release, returned: make(chan struct{})}
+	tr = TrackEmbedder(emb)
+	if TrackEmbedder(tr) != tr {
+		t.Fatal("double wrap of a live tracker is a new pointer")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = callEmbed(ctx, tr, []string{"one pin"}, KindDocument)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Embed did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callEmbed did not return on cancel")
+	}
+	if tr.Wait(0) {
+		t.Fatal("Wait returned while the single Embed was inside")
+	}
+	close(release)
+	if !tr.Wait(2 * time.Second) {
+		t.Fatal("one pin did not release, or a second pin was added")
+	}
+}
+
+// Overlapping callEmbeds: cancelling some contexts returns those callers
+// without dropping the holds of the Embeds still inside. Wait is false until
+// every started Embed returns, and the counter does not go negative.
+func TestCallEmbedConcurrentCancels(t *testing.T) {
+	const n = 6
+	entered := make([]chan struct{}, n)
+	release := make([]chan struct{}, n)
+	for i := 0; i < n; i++ {
+		entered[i] = make(chan struct{})
+		release[i] = make(chan struct{})
+	}
+	inner := &fnEmbedder{Embedder: NewFakeEmbedder(16, nil), fn: func(_ context.Context, texts []string, _ Kind) ([][]float32, error) {
+		var i int
+		if _, err := fmt.Sscanf(texts[0], "n-%d", &i); err != nil || i < 0 || i >= n {
+			return nil, errors.New("bad embed id")
+		}
+		close(entered[i])
+		<-release[i]
+		return nil, context.Canceled
+	}}
+	tr := TrackEmbedder(inner)
+	done := make([]chan error, n)
+	cancels := make([]context.CancelFunc, n)
+	for i := 0; i < n; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels[i] = cancel
+		ch := make(chan error, 1)
+		done[i] = ch
+		go func(i int) {
+			_, err := callEmbed(ctx, tr, []string{fmt.Sprintf("n-%d", i)}, KindQuery)
+			ch <- err
+		}(i)
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case <-entered[i]:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("embed %d did not start", i)
+		}
+	}
+	for i := 0; i < n; i += 2 {
+		cancels[i]()
+		select {
+		case err := <-done[i]:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled call %d: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cancelled call %d did not return", i)
+		}
+	}
+	if tr.Wait(0) {
+		t.Fatal("Wait returned while Embeds were still inside")
+	}
+	for i := 0; i < n; i += 2 {
+		close(release[i])
+	}
+	if tr.Wait(0) {
+		t.Fatal("Wait returned while uncancelled Embeds were still inside")
+	}
+	for i := 1; i < n-1; i += 2 {
+		close(release[i])
+		select {
+		case <-done[i]:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("call %d did not finish", i)
+		}
+	}
+	if tr.Wait(0) {
+		t.Fatal("Wait returned with one Embed still inside")
+	}
+	close(release[n-1])
+	select {
+	case <-done[n-1]:
+	case <-time.After(2 * time.Second):
+		t.Fatal("last call did not finish")
+	}
+	if !tr.Wait(2 * time.Second) {
+		t.Fatal("Wait stayed false after every Embed returned")
+	}
+	for i := 0; i < n; i++ {
+		cancels[i]()
+	}
+}
+
+// A panic after Embed has started must release the hold. Wait returns, and a
+// later callEmbed on the same tracker still runs. An in-flight sibling Embed
+// keeps Wait false until it returns.
+func TestCallEmbedPanicDoesNotStickWait(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var n atomic.Int32
+	inner := &fnEmbedder{Embedder: NewFakeEmbedder(16, nil), fn: func(_ context.Context, texts []string, kind Kind) ([][]float32, error) {
+		switch n.Add(1) {
+		case 1:
+			close(entered)
+			<-release
+			return nil, context.Canceled
+		case 2:
+			panic("embedder bug")
+		default:
+			return NewFakeEmbedder(16, nil).Embed(context.Background(), texts, kind)
+		}
+	}}
+	tr := TrackEmbedder(inner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		_, _ = callEmbed(ctx, tr, []string{"held"}, KindDocument)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Embed did not start")
+	}
+	_, err := callEmbed(context.Background(), tr, []string{"boom"}, KindDocument)
+	if !errors.Is(err, ErrEmbed) {
+		t.Fatalf("panic err %v", err)
+	}
+	select {
+	case <-first:
+		t.Fatal("the held callEmbed returned while Embed was still inside")
+	default:
+	}
+	close(release)
+	select {
+	case <-first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first callEmbed did not finish")
+	}
+	// One Wait, and it must return before the next pin: a timed-out Wait
+	// leaves its goroutine inside WaitGroup.Wait until the counter hits zero.
+	if !tr.Wait(2 * time.Second) {
+		t.Fatal("Wait did not return after the panic and the in-flight Embed")
+	}
+	rows, err := callEmbed(context.Background(), tr, []string{"again"}, KindDocument)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("second call after panic: %v rows %d", err, len(rows))
+	}
+	if !tr.Wait(2 * time.Second) {
+		t.Fatal("Wait false after the call that followed the panic")
+	}
+}
+
+// Cancel racing a fast Embed, a blocked Embed, and an already-cancelled
+// context. Each iteration must leave the tracker idle: no leaked pin and no
+// negative WaitGroup.
+func TestCallEmbedCancelRacesFastEmbed(t *testing.T) {
+	emb := &stepEmbedder{Embedder: NewFakeEmbedder(16, nil)}
+	tr := TrackEmbedder(emb)
+	text := "héllo " + strings.Repeat("長", 64)
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		entered := make(chan struct{})
+		returned := make(chan struct{})
+		mode := i % 3
+		var release chan struct{}
+		if mode == 0 {
+			release = make(chan struct{})
+		}
+		if mode == 2 {
+			cancel()
+		}
+		emb.arm(entered, release, returned)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = callEmbed(ctx, tr, []string{text}, KindDocument)
+		}()
+		switch mode {
+		case 0:
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				cancel()
+				t.Fatalf("iter %d: Embed did not start", i)
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				close(release)
+				t.Fatalf("iter %d: callEmbed did not return on cancel", i)
+			}
+			select {
+			case <-returned:
+				close(release)
+				t.Fatalf("iter %d: Embed returned before release", i)
+			default:
+			}
+			close(release)
+			select {
+			case <-returned:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iter %d: Embed did not return", i)
+			}
+		default:
+			if mode == 1 {
+				cancel()
+			}
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iter %d: callEmbed did not return", i)
+			}
+		}
+		if !tr.Wait(2 * time.Second) {
+			t.Fatalf("iter %d: hold left on the tracker", i)
+		}
+		cancel()
+	}
+	if emb.calls.Load() == 0 {
+		t.Fatal("race loop never entered Embed")
+	}
+}
+
+// Empty batches, unicode, a posting chunk already cut to the chunk cap, a
+// wrong row count, and a context that is already cancelled. callEmbed returns
+// on cancel without a closer running while Embed is inside.
+func TestCallEmbedOddInputs(t *testing.T) {
+	fake := NewFakeEmbedder(16, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	counting := &fnEmbedder{Embedder: fake, fn: func(context.Context, []string, Kind) ([][]float32, error) {
+		calls.Add(1)
+		return nil, nil
+	}}
+	ctr := TrackEmbedder(counting)
+	if _, err := callEmbed(ctx, ctr, []string{"x"}, KindQuery); !errors.Is(err, context.Canceled) || calls.Load() != 0 {
+		t.Fatalf("pre-canceled: err and calls %d", calls.Load())
+	}
+	if !ctr.Wait(2 * time.Second) {
+		t.Fatal("pre-canceled call left a pin")
+	}
+	dctx, dcancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer dcancel()
+	if _, err := callEmbed(dctx, ctr, nil, KindDocument); !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 0 {
+		t.Fatalf("pre-expired deadline: calls %d", calls.Load())
+	}
+
+	var got [][]string
+	rec := &fnEmbedder{Embedder: fake, fn: func(_ context.Context, texts []string, kind Kind) ([][]float32, error) {
+		cp := append([]string(nil), texts...)
+		got = append(got, cp)
+		if len(texts) == 0 {
+			return nil, nil
+		}
+		return fake.Embed(context.Background(), texts, kind)
+	}}
+	rtr := TrackEmbedder(rec)
+	if rows, err := callEmbed(context.Background(), rtr, nil, KindDocument); err != nil || len(rows) != 0 {
+		t.Fatalf("nil batch: %v %d", err, len(rows))
+	}
+	if rows, err := callEmbed(context.Background(), rtr, []string{}, KindQuery); err != nil || len(rows) != 0 {
+		t.Fatalf("empty batch: %v %d", err, len(rows))
+	}
+	if len(got) != 2 || len(got[0]) != 0 || len(got[1]) != 0 {
+		t.Fatalf("empty batches received %#v", got)
+	}
+
+	title := "タイトル" + strings.Repeat("名", 800)
+	desc := "héllo \u2603 requirement line with kubernetes experience today. " + strings.Repeat("Operate kubernetes clusters daily please. ", 40)
+	chunks := ChunkPosting(title, desc)
+	if len(chunks) == 0 {
+		t.Fatal("unicode posting produced no chunks")
+	}
+	texts := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		if !utf8.ValidString(c.Text) || len(c.Text) > MaxPostingChunkBytes || c.Text == "" {
+			t.Fatalf("chunk %q is %d bytes", c.Label, len(c.Text))
+		}
+		texts = append(texts, c.Text)
+	}
+	raw := strings.Repeat("長", 4000)
+	batch := append([]string{""}, texts...)
+	batch = append(batch, raw)
+	rows, err := callEmbed(context.Background(), rtr, batch, KindQuery)
+	if err != nil || len(rows) != len(batch) {
+		t.Fatalf("batch: %v rows %d want %d", err, len(rows), len(batch))
+	}
+	seen := got[len(got)-1]
+	if len(seen) != len(batch) {
+		t.Fatalf("embedder saw %d texts, want %d", len(seen), len(batch))
+	}
+	for i, tx := range seen {
+		if tx != batch[i] {
+			t.Fatalf("text %d changed in callEmbed (%d bytes vs %d)", i, len(tx), len(batch[i]))
+		}
+		if i > 0 && i < len(batch)-1 && len(tx) > MaxPostingChunkBytes {
+			t.Fatalf("chunk text %d is %d bytes, cap %d", i, len(tx), MaxPostingChunkBytes)
+		}
+	}
+	if seen[len(seen)-1] != raw {
+		t.Fatal("callEmbed rewrote the raw long string")
+	}
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var inside atomic.Bool
+	var closed atomic.Bool
+	blocker := &fnEmbedder{Embedder: fake, fn: func(context.Context, []string, Kind) ([][]float32, error) {
+		inside.Store(true)
+		close(entered)
+		<-release
+		inside.Store(false)
+		return nil, context.Canceled
+	}}
+	btr := TrackEmbedder(blocker)
+	bctx, bcancel := context.WithCancel(context.Background())
+	defer bcancel()
+	returned := make(chan error, 1)
+	go func() {
+		_, err := callEmbed(bctx, btr, []string{texts[0], "héllo \u2603"}, KindQuery)
+		returned <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking Embed did not start")
+	}
+	bcancel()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel during Embed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("callEmbed waited for Embed after cancel")
+	}
+	closer := make(chan struct{})
+	go func() {
+		defer close(closer)
+		if !btr.Wait(2 * time.Second) {
+			return
+		}
+		if inside.Load() {
+			t.Error("Close ran while Embed was inside")
+		}
+		closed.Store(true)
+	}()
+	if closed.Load() {
+		t.Fatal("Close ran before Embed was released")
+	}
+	close(release)
+	select {
+	case <-closer:
+	case <-time.After(2 * time.Second):
+		t.Fatal("closer did not finish after Embed returned")
+	}
+	if !closed.Load() {
+		t.Fatal("Close did not run after Embed returned")
+	}
+
+	wrong := &fnEmbedder{Embedder: fake, fn: func(context.Context, []string, Kind) ([][]float32, error) {
+		return [][]float32{{1, 0}}, nil
+	}}
+	wtr := TrackEmbedder(wrong)
+	if _, err := callEmbed(context.Background(), wtr, []string{"a", "b"}, KindQuery); !errors.Is(err, ErrEmbed) {
+		t.Fatalf("wrong length: %v", err)
+	}
+	if _, err := callEmbed(context.Background(), wtr, []string{}, KindDocument); !errors.Is(err, ErrEmbed) {
+		t.Fatalf("row for an empty batch: %v", err)
+	}
+	if !wtr.Wait(2 * time.Second) {
+		t.Fatal("wrong-length calls left a hold")
+	}
 }
