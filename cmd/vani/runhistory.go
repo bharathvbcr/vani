@@ -85,6 +85,53 @@ func writeRunHistory(stateDir string, r runRecord) error {
 	return err
 }
 
+// writeFinishedHistory is writeRunHistory for the flush below. A test counts
+// the calls. Production stays at two: one try, and one retry if that fails.
+var writeFinishedHistory = writeRunHistory
+
+// historyFileKept reports whether path is the history record itself.
+// Lstat does not follow a symlink leaf, and anything that is not a regular
+// file (a link, a directory, a device) is not a keep.
+func historyFileKept(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
+}
+
+// flushFinishedLast copies a finished last.json into the history when that
+// file is not already a regular record, so the caller can replace last.json
+// without dropping the only copy. No record and a running record need nothing.
+// An unreadable last.json is not invented: the caller writes as it does today.
+// An empty state dir is left to that write, which refuses it. writeRunHistory
+// is tried, and on failure tried once more, then stopped. A prune error after
+// the file is present does not block; a file that is still not regular does.
+func flushFinishedLast(stateDir string) error {
+	if stateDir == "" {
+		return nil
+	}
+	prev, err := readRunRecord(stateDir)
+	if err != nil || prev == nil || prev.Outcome == outcomeRunning {
+		return nil
+	}
+	path := runHistoryPath(stateDir, runID(*prev))
+	if historyFileKept(path) {
+		return nil
+	}
+	werr := writeFinishedHistory(stateDir, *prev)
+	if werr != nil {
+		werr = writeFinishedHistory(stateDir, *prev)
+	}
+	if historyFileKept(path) {
+		return nil
+	}
+	if werr == nil {
+		return fmt.Errorf("run history %s is not a regular file", filepath.Base(path))
+	}
+	return werr
+}
+
 // archiveInterruptedRun keeps, in the history as "interrupted", the run that
 // last.json says is still going when it is not: it is called by a run that has
 // just taken the ledger (dailyJob), before that run replaces last.json, so the

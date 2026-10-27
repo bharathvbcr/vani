@@ -480,9 +480,17 @@ func (e *env) keepInterruptedRun() {
 
 // saveRunRecord writes the record, and a finished one to the run history too;
 // a failure is a warning, never a failed run: the run's work is in the ledger
-// either way. last.json is written first, so a history failure never costs the
-// record status reads.
+// either way. A finished record that history does not already hold is written
+// there first, once and on failure once more. If that file is still missing,
+// last.json stays and the warning is the history error. An unreadable
+// last.json is not invented. The new record is then written to last.json
+// before its own history entry, so a history failure of this run never costs
+// the record status reads; the next save flushes it.
 func (e *env) saveRunRecord(r runRecord) {
+	if err := flushFinishedLast(e.stateDir); err != nil {
+		fmt.Fprintf(e.stderr, "vani: could not keep the run in the history: %v\n", err)
+		return
+	}
 	if err := writeRunRecord(e.stateDir, r); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not record the run: %v\n", err)
 		return
