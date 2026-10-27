@@ -79,6 +79,37 @@ final class BankValidatorTests: XCTestCase {
         XCTAssertEqual(r.bank.settings.disabledHosts, [])
     }
 
+    /// sqlite3_bind_int cannot take a counter past Int32.max. Keeping it would trap the mirror;
+    /// clamping to Int32.max would store a lie. Int32.max stays. One past it, and the old safe-integer
+    /// ceiling, become 0. A count that only steps by one from zero never approaches that ceiling.
+    func testCountKeepsInt32MaxAndZeroesOnePastIt() throws {
+        let max = Int(Int32.max)
+        let r = try BankValidator.validate(bankJSON([
+            answerJSON("aa", extra: ["uses": max, "fills": max]),
+            answerJSON("bb", extra: ["uses": max + 1, "fills": max + 1]),
+            answerJSON("cc", extra: ["uses": 9_007_199_254_740_992.0, "fills": 9_007_199_254_740_991.0]),
+        ]))
+        XCTAssertEqual(r.bank.answers["aa"]?.uses, max)
+        XCTAssertEqual(r.bank.answers["aa"]?.fills, max)
+        XCTAssertEqual(r.bank.answers["bb"]?.uses, 0)
+        XCTAssertEqual(r.bank.answers["bb"]?.fills, 0)
+        XCTAssertEqual(r.bank.answers["cc"]?.uses, 0)
+        XCTAssertEqual(r.bank.answers["cc"]?.fills, 0)
+
+        var uses = 0
+        var fills = 0
+        for _ in 0..<8 {
+            uses += 1
+            fills += 1
+        }
+        let stepped = try BankValidator.validate(bankJSON([
+            answerJSON("dd", extra: ["uses": uses, "fills": fills]),
+        ]))
+        XCTAssertEqual(stepped.bank.answers["dd"]?.uses, 8)
+        XCTAssertEqual(stepped.bank.answers["dd"]?.fills, 8)
+        XCTAssertLessThan(uses, max)
+    }
+
     func testImportFileLimits() {
         XCTAssertThrowsError(try BankValidator.validate(json: Data("{nope".utf8)))
         XCTAssertThrowsError(try BankValidator.validate(json: Data(repeating: 0x20, count: 8_000_001)))

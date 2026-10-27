@@ -291,4 +291,113 @@ final class BankStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.patch(upsert: [answer("k")], deleteKeys: [])) // key too short
         XCTAssertEqual(try store.read().rev, 1)
     }
+
+    func testPutKeepsInt32MaxAndZeroesOnePastIt() throws {
+        let dir = try tempDir(self)
+        let store = BankStore(directory: dir)
+        let max = Int(Int32.max)
+        let err = try captureStderr {
+            XCTAssertEqual(try store.put(baseRev: 0, bank: bankJSON([
+                answerJSON("role title", extra: ["uses": max, "fills": max]),
+                answerJSON("city name", extra: ["uses": max + 1, "fills": max + 1]),
+            ])), .stored(rev: 1, droppedSecret: 0))
+        }
+        XCTAssertFalse(err.contains("does not fit"), "a counter the validator already zeroed is not a skipped mirror row")
+        let snap = try store.read()
+        XCTAssertEqual(snap.bank.answers["role title"]?.uses, max)
+        XCTAssertEqual(snap.bank.answers["role title"]?.fills, max)
+        XCTAssertEqual(snap.bank.answers["city name"]?.uses, 0)
+        XCTAssertEqual(snap.bank.answers["city name"]?.fills, 0)
+        let mirror = try XCTUnwrap(store.sqlite).read()
+        XCTAssertEqual(mirror.bank.answers["role title"]?.fills, max)
+        XCTAssertEqual(mirror.bank.answers["city name"]?.uses, 0)
+        XCTAssertEqual(mirror.bank.answers["city name"]?.fills, 0)
+        let onDisk = try String(contentsOf: dir.appendingPathComponent("bank.json"), encoding: .utf8)
+        XCTAssertTrue(onDisk.contains(String(max)))
+        XCTAssertFalse(onDisk.contains(String(max + 1)))
+    }
+
+    /// Five steps of +1 from zero, the way a capture increments. Not a walk to the ceiling.
+    func testNaturalIncrementStaysSmall() throws {
+        let dir = try tempDir(self)
+        let store = BankStore(directory: dir)
+        var rev = 0
+        var uses = 0
+        for _ in 0..<5 {
+            uses += 1
+            guard case let .stored(next, _) = try store.put(baseRev: rev, bank: bankJSON([
+                answerJSON("role title", extra: ["uses": uses, "fills": uses]),
+            ])) else { return XCTFail("increment \(uses) was not stored") }
+            rev = next
+        }
+        XCTAssertEqual(uses, 5)
+        XCTAssertLessThan(uses, Int(Int32.max))
+        XCTAssertEqual(try store.read().bank.answers["role title"]?.uses, 5)
+        XCTAssertEqual(try XCTUnwrap(store.sqlite).read().bank.answers["role title"]?.fills, 5)
+    }
+
+    /// A hand-edited bank.json can already hold 2147483648. Opening it must not trap. The mirror skips
+    /// that row and logs a fixed line. The file keeps the huge number until a later ordinary edit.
+    func testHandEditedCounterIsReadWithoutTrappingAndMirrorSkipsIt() throws {
+        let dir = try tempDir(self)
+        let file = dir.appendingPathComponent("bank.json")
+        let huge = 2_147_483_648
+        let wrapped: [String: Any] = [
+            "rev": 3,
+            "bank": [
+                "version": 1,
+                "settings": ["captureSelfId": false, "disabledHosts": []],
+                "answers": [
+                    "city name": answerJSON("city name", value: ["Paris"], extra: ["uses": 1, "fills": huge]),
+                    "role title": answerJSON("role title", value: ["engineer"], extra: ["uses": 2, "fills": 1]),
+                    "note text": answerJSON("note text", value: ["hello"], extra: ["uses": 3, "fills": huge]),
+                ],
+            ] as [String: Any],
+        ]
+        try JSONSerialization.data(withJSONObject: wrapped).write(to: file)
+        let sentence = "vani: bank.sqlite mirror skipped a row whose counter does not fit; bank.json is unaffected\n"
+        var store: BankStore!
+        let err = try captureStderr {
+            store = BankStore(directory: dir)
+            let snap = try store.read()
+            XCTAssertEqual(snap.rev, 3)
+            XCTAssertEqual(snap.bank.answers["city name"]?.uses, 1)
+            XCTAssertEqual(snap.bank.answers["city name"]?.fills, 0)
+            XCTAssertEqual(snap.bank.answers["city name"]?.value, ["Paris"])
+            XCTAssertEqual(snap.bank.answers["role title"]?.uses, 2)
+            XCTAssertEqual(snap.bank.answers["note text"]?.uses, 3)
+            XCTAssertEqual(snap.bank.answers["note text"]?.fills, 0)
+            let onDisk = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertTrue(onDisk.contains(String(huge)), "reading does not rewrite the file")
+            let mirror = try XCTUnwrap(store.sqlite).read()
+            XCTAssertEqual(Array(mirror.bank.answers.keys), ["role title"])
+            XCTAssertEqual(mirror.bank.answers["role title"]?.uses, 2)
+
+            let next = try store.update { bank in
+                bank.answers["role title"]?.value = ["teacher"]
+            }
+            XCTAssertEqual(next.rev, 4)
+            XCTAssertEqual(next.bank.answers["role title"]?.value, ["teacher"])
+            XCTAssertEqual(next.bank.answers["city name"]?.fills, 0)
+            XCTAssertEqual(next.bank.answers["note text"]?.fills, 0)
+        }
+        XCTAssertEqual(err.components(separatedBy: sentence).count - 1, 2)
+        XCTAssertFalse(err.contains("Paris"))
+        XCTAssertFalse(err.contains("engineer"))
+        XCTAssertFalse(err.contains("hello"))
+        XCTAssertFalse(err.contains("teacher"))
+        XCTAssertFalse(err.contains("city name"))
+        XCTAssertFalse(err.contains("role title"))
+        XCTAssertFalse(err.contains("note text"))
+        XCTAssertFalse(err.contains(String(huge)))
+        let saved = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertFalse(saved.contains(String(huge)))
+        let mirror = try XCTUnwrap(store.sqlite).read()
+        XCTAssertEqual(mirror.bank.answers["role title"]?.value, ["teacher"])
+        XCTAssertEqual(mirror.bank.answers["city name"]?.uses, 1)
+        XCTAssertEqual(mirror.bank.answers["city name"]?.fills, 0)
+        XCTAssertEqual(mirror.bank.answers["note text"]?.uses, 3)
+        XCTAssertEqual(mirror.bank.answers["note text"]?.fills, 0)
+        XCTAssertEqual(mirror.rev, 4)
+    }
 }
