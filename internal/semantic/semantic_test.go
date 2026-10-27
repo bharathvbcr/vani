@@ -231,6 +231,81 @@ func TestProfileCleansURLsAndEmail(t *testing.T) {
 	}
 }
 
+// Phone-shaped runs and work-authorization phrases are contact data. A year
+// span and an organisation named in the same bullet are not.
+func TestCleanBulletTextDropsPhoneAndAuthorization(t *testing.T) {
+	phone := cleanBulletText("Shipped the API at 555 123 4567 for Acme")
+	for _, digit := range []string{"555", "123", "4567"} {
+		if strings.Contains(phone, digit) {
+			t.Errorf("phone run survived in %q", phone)
+		}
+	}
+	if !strings.Contains(phone, "Acme") {
+		t.Errorf("organisation dropped from %q", phone)
+	}
+
+	for _, keep := range []string{
+		"2019-2024",
+		"2019\u20132024",
+		"555 --- 4567",
+		"555 ---- 4567",
+		"100,000",
+		"3.12",
+		"Go 1.26",
+		"2019\u20142024",
+		"saw \u2460\u2461\u2462\u2463\u2464\u2465\u2466 at Acme",
+		"saw \u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077 at Acme",
+		"Reduced cloud sponsorship costs at Acme",
+		"",
+		"123456",
+	} {
+		if got := cleanBulletText(keep); got != keep {
+			t.Errorf("cleanBulletText(%q) = %q, want it unchanged", keep, got)
+		}
+	}
+
+	if got := cleanBulletText("2019 - 2024"); got != "" {
+		t.Errorf("spaced year run survived in %q", got)
+	}
+	keptYear := cleanBulletText("At Acme from 2019-2024 shipped 555 123 4567")
+	if !strings.Contains(keptYear, "Acme") || !strings.Contains(keptYear, "2019-2024") {
+		t.Errorf("year span or organisation dropped from %q", keptYear)
+	}
+	for _, digit := range []string{"555", "123", "4567"} {
+		if strings.Contains(keptYear, digit) {
+			t.Errorf("phone run survived beside a year span in %q", keptYear)
+		}
+	}
+
+	for _, in := range []string{
+		"555---4567",
+		"(555) 123-4567",
+		"555.123.4567",
+		"555-123-4567",
+		"1899-2024",
+		"2099-2100",
+		"2019-2024-2025",
+		"0123-2024",
+		"1234567",
+		"\uff15\uff15\uff15 \uff11\uff12\uff13 \uff14\uff15\uff16\uff17",
+		"\u0662\u0660\u0661\u0669-\u0662\u0660\u0662\u0664",
+	} {
+		got := cleanBulletText(in)
+		if strings.ContainsAny(got, "0123456789") || got == in {
+			t.Errorf("phone-shaped run survived: in %q got %q", in, got)
+		}
+	}
+
+	auth := cleanBulletText("Joined Acme and am authorized to work in the United States")
+	if strings.Contains(strings.ToLower(auth), "authorized to work") || !strings.Contains(auth, "Acme") {
+		t.Errorf("authorization phrase or organisation mishandled: %q", auth)
+	}
+	sponsor := cleanBulletText("Started at Acme without sponsorship last year")
+	if strings.Contains(strings.ToLower(sponsor), "without sponsorship") || !strings.Contains(sponsor, "Acme") {
+		t.Errorf("sponsorship phrase or organisation mishandled: %q", sponsor)
+	}
+}
+
 // Org, location and date strings, and any other field than titles, stacks and
 // bullets, must never reach the embedder.
 func TestPersonalFieldsNeverEmbedded(t *testing.T) {
