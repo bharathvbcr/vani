@@ -655,6 +655,82 @@ func TestStopsAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
+// gateEmbedder stays inside Embed until release is closed. It ignores ctx.
+type gateEmbedder struct {
+	Embedder
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gateEmbedder) Embed(context.Context, []string, Kind) ([][]float32, error) {
+	g.once.Do(func() { close(g.entered) })
+	<-g.release
+	return nil, context.Canceled
+}
+
+// callEmbed returns when ctx ends and does not wait for an embedder that
+// ignores it. The tracker's Wait stays false until Embed returns, and stays
+// false when the bound expires first.
+func TestCallEmbedAbandonsWhenEmbedIgnoresContext(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	rel := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(rel)
+	inner := &gateEmbedder{Embedder: NewFakeEmbedder(4, nil), entered: make(chan struct{}), release: release}
+	tr := TrackEmbedder(inner)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := callEmbed(ctx, tr, []string{"plain"}, KindDocument)
+	if time.Since(start) > time.Second {
+		t.Fatal("callEmbed waited for an embedder that ignores ctx")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err %v", err)
+	}
+	select {
+	case <-inner.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Embed had not been entered")
+	}
+	if tr.Wait(30 * time.Millisecond) {
+		t.Fatal("Wait returned while Embed was still inside")
+	}
+	rel()
+	if !tr.Wait(time.Second) {
+		t.Fatal("Wait did not return after Embed returned")
+	}
+}
+
+func TestEmbedTrackedWaitExpiresWhileInside(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	inner := &gateEmbedder{Embedder: NewFakeEmbedder(4, nil), entered: make(chan struct{}), release: release}
+	tr := TrackEmbedder(inner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = callEmbed(ctx, tr, []string{"plain"}, KindDocument)
+	}()
+	select {
+	case <-inner.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Embed was not entered")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("callEmbed held the caller after cancel")
+	}
+	if tr.Wait(20 * time.Millisecond) {
+		t.Fatal("Wait returned while Embed was still inside")
+	}
+}
+
 func TestBlockedEmbedderHonorsDeadline(t *testing.T) {
 	for name, ignoresCtx := range map[string]bool{"honors ctx": false, "ignores ctx": true} {
 		t.Run(name, func(t *testing.T) {

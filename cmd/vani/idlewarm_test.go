@@ -321,6 +321,51 @@ func TestIdleWarmNoProgressBacksOff(t *testing.T) {
 	}
 }
 
+// A chunk that scores nothing only because its own deadline fired (the profile
+// embed does not finish) is not a failed model: it does not count toward
+// idleBadChunks and does not schedule a backoff. Scores stay absent.
+func TestIdleWarmChunkDeadlineDoesNotBackOff(t *testing.T) {
+	f := newIdleFixture(t, 2*(idleBadChunks+1))
+	idleChunkDocs = 2
+	oldChunk := idleChunkTime
+	idleChunkTime = 200 * time.Millisecond
+	t.Cleanup(func() { idleChunkTime = oldChunk })
+	f.emb.hook = func(ctx context.Context, _ []string) ([][]float32, error, bool) {
+		<-ctx.Done()
+		return nil, ctx.Err(), true
+	}
+	wait := f.w.step(context.Background())
+	st := f.state_(t)
+	if st.Kind == idleBackoff || st.BackoffSec != 0 || !st.NextEligible.IsZero() || wait >= idleBackoffMin {
+		t.Fatalf("chunk deadline scheduled a backoff: wait %v, state %+v", wait, st)
+	}
+	if st.Last.Chunks <= idleBadChunks || st.Last.Scored != 0 || st.Last.Rescored != 0 {
+		t.Fatalf("state %+v", st)
+	}
+	if f.scored() != 0 {
+		t.Errorf("scores were written: %d", f.scored())
+	}
+	if strings.Contains(f.log.String(), "backing off") {
+		t.Errorf("log backed off:\n%s", f.log.String())
+	}
+}
+
+// ErrUnavailable still backs off when the same error also carries a deadline.
+// It stops on that chunk, rather than treating the deadline as the only failure.
+// Scores stay absent.
+func TestIdleWarmDeadlineAndUnavailableStillBacksOff(t *testing.T) {
+	f := newIdleFixture(t, 2*(idleBadChunks+1))
+	idleChunkDocs = 2
+	f.emb.hook = func(context.Context, []string) ([][]float32, error, bool) {
+		return nil, fmt.Errorf("%w: %w", semantic.ErrUnavailable, context.DeadlineExceeded), true
+	}
+	wait := f.w.step(context.Background())
+	st := f.state_(t)
+	if st.Kind != idleBackoff || st.BackoffSec != int64(idleBackoffMin/time.Second) || wait != idleBackoffMin || st.Last.Chunks != 1 || f.scored() != 0 {
+		t.Fatalf("wait %v, scored %d, state %+v", wait, f.scored(), st)
+	}
+}
+
 // The window warms in chunks of idleChunkDocs with one model load, best Score
 // first, and closes the model at the end; the next look finds nothing.
 func TestIdleWarmWindowWarmsInChunks(t *testing.T) {
@@ -442,6 +487,37 @@ func TestIdleWarmStartsAnUnreadableStateAgain(t *testing.T) {
 	}
 }
 
+// holdEmbedder stays inside Embed until release is closed. It does not return
+// on ctx so a closer can be observed while the call is still in flight.
+type holdEmbedder struct {
+	semantic.Embedder
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	events  []string
+}
+
+func (h *holdEmbedder) event(name string) {
+	h.mu.Lock()
+	h.events = append(h.events, name)
+	h.mu.Unlock()
+}
+
+func (h *holdEmbedder) Embed(context.Context, []string, semantic.Kind) ([][]float32, error) {
+	h.once.Do(func() { close(h.entered) })
+	h.event("embed-enter")
+	<-h.release
+	h.event("embed-return")
+	return nil, context.Canceled
+}
+
+func (h *holdEmbedder) seq() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.events...)
+}
+
 // blockingEmbedder blocks inside Embed until its context ends, as an embedding
 // call in flight does.
 type blockingEmbedder struct {
@@ -561,6 +637,144 @@ func TestIdleWarmYieldsToRun(t *testing.T) {
 	case <-f.w.gate.wake:
 	default:
 		t.Error("resume did not nudge the loop")
+	}
+}
+
+// Cancelling a warm does not Close the model while Embed is still inside.
+// Close runs only after Embed returns. If Embed is still inside when the join
+// bound expires, Close is not called and the window still ends.
+func TestIdleWarmCloseWaitsForEmbed(t *testing.T) {
+	f := newIdleFixture(t, 2)
+	oldJoin := idleEmbedJoin
+	idleEmbedJoin = 2 * time.Second
+	t.Cleanup(func() { idleEmbedJoin = oldJoin })
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFn)
+	h := &holdEmbedder{
+		Embedder: semantic.NewFakeEmbedder(256, semSynonyms),
+		entered:  make(chan struct{}),
+		release:  release,
+	}
+	var closed atomic.Bool
+	openEmbedder = func(context.Context, config.Config) (semantic.Embedder, func() error, error) {
+		return h, func() error {
+			h.event("close")
+			closed.Store(true)
+			return nil
+		}, nil
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); f.w.step(context.Background()) }()
+	select {
+	case <-h.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle chunk never reached the embedder")
+	}
+
+	type pauseResult struct{ yielded bool }
+	paused := make(chan pauseResult, 1)
+	go func() {
+		_, yielded := f.w.gate.Pause(context.Background(), 5*time.Second)
+		paused <- pauseResult{yielded}
+	}()
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if closed.Load() {
+			releaseFn()
+			t.Fatal("Close ran while Embed was still inside")
+		}
+		select {
+		case <-done:
+			releaseFn()
+			t.Fatal("the window ended while Embed was still inside")
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	releaseFn()
+	select {
+	case got := <-paused:
+		if !got.yielded {
+			t.Error("the window did not stop")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pause did not return after Embed returned")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle step did not return")
+	}
+	got := h.seq()
+	want := []string{"embed-enter", "embed-return", "close"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events %v, want %v", got, want)
+	}
+}
+
+func TestIdleWarmCloseSkippedWhenEmbedOutlastsJoin(t *testing.T) {
+	f := newIdleFixture(t, 2)
+	oldJoin := idleEmbedJoin
+	idleEmbedJoin = 150 * time.Millisecond
+	t.Cleanup(func() { idleEmbedJoin = oldJoin })
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFn)
+	h := &holdEmbedder{
+		Embedder: semantic.NewFakeEmbedder(256, semSynonyms),
+		entered:  make(chan struct{}),
+		release:  release,
+	}
+	var closed atomic.Bool
+	openEmbedder = func(context.Context, config.Config) (semantic.Embedder, func() error, error) {
+		return h, func() error {
+			h.event("close")
+			closed.Store(true)
+			return nil
+		}, nil
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); f.w.step(context.Background()) }()
+	select {
+	case <-h.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle chunk never reached the embedder")
+	}
+	_, yielded := f.w.gate.Pause(context.Background(), 5*time.Second)
+	if !yielded {
+		t.Fatal("the window did not stop")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle step did not return")
+	}
+	if closed.Load() || strings.Contains(strings.Join(h.seq(), ","), "close") {
+		t.Fatalf("Close ran while Embed was still inside: %v", h.seq())
+	}
+	if !strings.Contains(f.log.String(), "model close skipped") {
+		t.Errorf("close skip was not recorded:\n%s", f.log.String())
+	}
+	// Let Embed return after the window has ended. Close stays uncalled.
+	releaseFn()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && strings.Join(h.seq(), ",") != "embed-enter,embed-return" {
+		if closed.Load() {
+			t.Fatal("Close ran after the join bound expired")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if closed.Load() {
+		t.Fatal("Close ran after the join bound expired")
+	}
+	got := strings.Join(h.seq(), ",")
+	if got != "embed-enter,embed-return" {
+		t.Fatalf("events %s", got)
 	}
 }
 

@@ -26,6 +26,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
+	"time"
 )
 
 // Kind names the embedding prompt, with the strings Tessl's EmbedTexts takes.
@@ -215,9 +217,96 @@ func validRow(v []float32, dim int) ([]float32, bool) {
 	return out, true
 }
 
+// TrackedEmbedder wraps an Embedder so a closer can wait until Embed calls
+// that have started have returned. callEmbed pins one hold before its
+// goroutine and still returns on ctx.Done without waiting; Embed keeps that
+// hold until the inner Embed returns. The only added cost on that path is
+// the WaitGroup.
+type TrackedEmbedder struct {
+	Embedder
+	mu   sync.Mutex
+	pins int // reservations not yet inside Embed
+	wg   sync.WaitGroup
+}
+
+// TrackEmbedder returns a tracker around e. A tracker is returned as itself.
+func TrackEmbedder(e Embedder) *TrackedEmbedder {
+	if e == nil {
+		return nil
+	}
+	if t, ok := e.(*TrackedEmbedder); ok {
+		return t
+	}
+	return &TrackedEmbedder{Embedder: e}
+}
+
+// pin reserves one hold before callEmbed's goroutine enters Embed.
+func (t *TrackedEmbedder) pin() {
+	t.mu.Lock()
+	t.pins++
+	t.wg.Add(1)
+	t.mu.Unlock()
+}
+
+// unpin drops a pin whose goroutine ended without Embed.
+func (t *TrackedEmbedder) unpin() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pins == 0 {
+		return
+	}
+	t.pins--
+	t.wg.Done()
+}
+
+// begin turns a pin into Embed's hold, or adds one when Embed was not pinned.
+func (t *TrackedEmbedder) begin() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pins > 0 {
+		t.pins--
+		return
+	}
+	t.wg.Add(1)
+}
+
+// Embed holds the WaitGroup until the inner Embed returns.
+func (t *TrackedEmbedder) Embed(ctx context.Context, texts []string, kind Kind) ([][]float32, error) {
+	t.begin()
+	defer t.wg.Done()
+	return t.Embedder.Embed(ctx, texts, kind)
+}
+
+// Wait reports whether every pinned or in-flight Embed has returned within d.
+// The bound is the caller's; Wait does not call Close.
+func (t *TrackedEmbedder) Wait(d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+	if d < 0 {
+		d = 0
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
 // callEmbed calls e.Embed once and checks the row count. The call runs in its
 // own goroutine so an Embedder that ignores ctx cannot hold the caller past
-// ctx; its late answer is dropped.
+// ctx; its late answer is dropped. A TrackedEmbedder stays pinned until that
+// Embed returns, so a closer can wait without callEmbed waiting.
 func callEmbed(ctx context.Context, e Embedder, texts []string, kind Kind) ([][]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -227,12 +316,23 @@ func callEmbed(ctx context.Context, e Embedder, texts []string, kind Kind) ([][]
 		err  error
 	}
 	ch := make(chan result, 1)
+	tracked, _ := e.(*TrackedEmbedder)
+	if tracked != nil {
+		tracked.pin()
+	}
 	go func() {
+		entered := false
+		defer func() {
+			if tracked != nil && !entered {
+				tracked.unpin()
+			}
+		}()
 		defer func() {
 			if r := recover(); r != nil {
 				ch <- result{err: fmt.Errorf("%w: embedder panicked: %v", ErrEmbed, r)}
 			}
 		}()
+		entered = true
 		rows, err := e.Embed(ctx, texts, kind)
 		ch <- result{rows: rows, err: err}
 	}()
