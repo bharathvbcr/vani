@@ -103,6 +103,46 @@ final class AppModelTickTests: XCTestCase {
         XCTAssertNil(m.storeError)
     }
 
+    /// An edit and an activity refresh both take the bank lock. Held by someone else, they must
+    /// wait off the main actor: the actor keeps sleeping, and neither call finishes, until the
+    /// lock is released.
+    func testALockedBankDoesNotBlockAnEditOrActivityRefresh() async throws {
+        let dir = try folder()
+        let store = BankStore(directory: dir, lockWait: 5)
+        _ = try store.update { $0.settings.captureSelfId = true }
+        let m = model(store)
+        try store.log(ActivityEntry(source: .app, event: .settings))
+        XCTAssertEqual(m.snapshot.rev, 1)
+        XCTAssertTrue(m.activity.isEmpty, "the seeded log is not visible until a refresh")
+
+        let fd = open(dir.appendingPathComponent("bank.lock").path, O_RDWR | O_CREAT, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+
+        let edit = Task { await m.setCaptureSelfId(false) }
+        let refresh = Task { await m.reloadIfChanged() }
+        var last = Date(), worst: TimeInterval = 0
+        let until = Date().addingTimeInterval(0.8)
+        while Date() < until {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            worst = max(worst, Date().timeIntervalSince(last))
+            last = Date()
+        }
+        XCTAssertEqual(m.snapshot.rev, 1, "the edit finished while the bank lock was still held")
+        XCTAssertTrue(m.settings.captureSelfId, "the edit finished while the bank lock was still held")
+        XCTAssertTrue(m.activity.isEmpty, "the activity refresh finished while the bank lock was still held")
+        XCTAssertLessThan(worst, 0.25, "the main actor stalled for \(worst) s while an edit and an activity refresh waited for the lock")
+        print("MAC-2 edit/refresh worst gap \(worst) s")
+        flock(fd, LOCK_UN)
+        await edit.value
+        await refresh.value
+        XCTAssertEqual(m.snapshot.rev, 2)
+        XCTAssertFalse(m.settings.captureSelfId)
+        XCTAssertFalse(m.activity.isEmpty, "the refresh never applied the log")
+        XCTAssertNil(m.actionError)
+    }
+
     /// An edit made while a background read is in flight is not overwritten by that read's older result.
     func testAnEditWinsOverAnOlderTickRead() async throws {
         let dir = try folder()
@@ -116,20 +156,20 @@ final class AppModelTickTests: XCTestCase {
         let tick = Task { await m.reloadIfChanged() }
         try await Task.sleep(nanoseconds: 100_000_000)
         flock(fd, LOCK_UN)
-        m.setCaptureSelfId(true) // an edit here: its snapshot is the newest
+        await m.setCaptureSelfId(true) // an edit here: its snapshot is the newest
         await tick.value
         XCTAssertEqual(m.snapshot.rev, 3)
         XCTAssertTrue(m.settings.captureSelfId)
     }
 
     /// B2-3: bankBytes encodes once per snapshot, however many times a body asks.
-    func testBankBytesIsEncodedOncePerSnapshot() throws {
+    func testBankBytesIsEncodedOncePerSnapshot() async throws {
         let store = BankStore(directory: try folder())
         let encodes = Counter()
         let m = model(store, encodes: encodes)
         for _ in 0..<100 { _ = m.bankBytes }
         XCTAssertEqual(encodes.count, 1)
-        m.setCaptureSelfId(true)
+        await m.setCaptureSelfId(true)
         let size = m.bankBytes
         for _ in 0..<100 { XCTAssertEqual(m.bankBytes, size) }
         XCTAssertEqual(encodes.count, 2, "one more encode for the new snapshot")

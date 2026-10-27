@@ -19,7 +19,7 @@ final class ImportBankReadCapTests: XCTestCase {
         XCTAssertEqual(ftruncate(fd, off_t(bytes)), 0, String(cString: strerror(errno)))
     }
 
-    func testImportBankRefusesSparseFileOverCapWithoutReplacingStore() throws {
+    func testImportBankRefusesSparseFileOverCapWithoutReplacingStore() async throws {
         let dir = try folder()
         let store = BankStore(directory: dir)
         let kept = Answer(key: "kept", labels: ["kept"], kind: .text, value: ["stored"], sensitivity: .standard,
@@ -35,7 +35,7 @@ final class ImportBankReadCapTests: XCTestCase {
         let model = AppModel(store: store, autoRegisterAgent: false, autoStartTimer: false)
         XCTAssertEqual(model.snapshot.bank.answers["kept"]?.value, ["stored"])
         let start = Date()
-        model.importBank(from: huge)
+        await model.importBank(from: huge)
         XCTAssertLessThan(Date().timeIntervalSince(start), 2, "import must refuse before reading the body")
         XCTAssertEqual(model.actionError, "Import refused: bank file is larger than 50000000 bytes")
         XCTAssertNil(model.notice)
@@ -48,7 +48,7 @@ final class ImportBankReadCapTests: XCTestCase {
         XCTAssertEqual(after.st_ino, incoming)
     }
 
-    func testImportBankStillAcceptsASmallBank() throws {
+    func testImportBankStillAcceptsASmallBank() async throws {
         let dir = try folder()
         let store = BankStore(directory: dir)
         let old = Answer(key: "old", labels: ["old"], kind: .text, value: ["v"], sensitivity: .standard,
@@ -59,14 +59,14 @@ final class ImportBankReadCapTests: XCTestCase {
         let added = Answer(key: "aa", labels: ["aa"], kind: .text, value: ["Ada"], sensitivity: .standard,
                            signatures: [], uses: 1, fills: 0, updatedAt: "2026-10-18T00:00:00.000Z", review: false)
         try Editing.exportData(Bank(answers: ["aa": added])).write(to: incoming)
-        model.importBank(from: incoming)
+        await model.importBank(from: incoming)
         XCTAssertNil(model.actionError)
         XCTAssertEqual(model.snapshot.bank.answers["aa"]?.value, ["Ada"])
         XCTAssertNil(model.snapshot.bank.answers["old"])
         XCTAssertEqual(model.notice, "Imported 1 answers.")
     }
 
-    func testImportBankFollowsSymlinkToASmallBank() throws {
+    func testImportBankFollowsSymlinkToASmallBank() async throws {
         let (dir, model, _, _) = try keptBank()
         let target = dir.appendingPathComponent("incoming.json")
         let added = Answer(key: "aa", labels: ["aa"], kind: .text, value: ["v"], sensitivity: .standard,
@@ -80,14 +80,14 @@ final class ImportBankReadCapTests: XCTestCase {
         XCTAssertEqual(lstat(target.path, &targetSt), 0)
         XCTAssertGreaterThan(targetSt.st_size, linkSt.st_size)
         XCTAssertEqual(PathProbe.leaf(link), .regular(Int64(targetSt.st_size)))
-        model.importBank(from: link)
+        await model.importBank(from: link)
         XCTAssertNil(model.actionError)
         XCTAssertEqual(model.snapshot.bank.answers["aa"]?.value, ["v"])
         XCTAssertNil(model.snapshot.bank.answers["kept"])
         XCTAssertEqual(model.notice, "Imported 1 answers.")
     }
 
-    func testImportBankSymlinkToSparseOverCapDoesNotReplaceStore() throws {
+    func testImportBankSymlinkToSparseOverCapDoesNotReplaceStore() async throws {
         let (dir, model, bankURL, before) = try keptBank()
         let huge = dir.appendingPathComponent("huge.json")
         try sparse(huge, bytes: Limits.maxBankBytes + 1)
@@ -100,7 +100,7 @@ final class ImportBankReadCapTests: XCTestCase {
         XCTAssertEqual(lstat(huge.path, &target), 0)
         XCTAssertEqual(PathProbe.leaf(link), .regular(Int64(Limits.maxBankBytes + 1)))
         let start = Date()
-        model.importBank(from: link)
+        await model.importBank(from: link)
         XCTAssertLessThan(Date().timeIntervalSince(start), 2, "import must refuse the symlink before reading the body")
         XCTAssertEqual(model.actionError, "Import refused: bank file is larger than 50000000 bytes")
         XCTAssertNil(model.notice)
@@ -114,7 +114,7 @@ final class ImportBankReadCapTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), huge.lastPathComponent)
     }
 
-    func testImportBankSymlinkToFifoDoesNotOpenOrReplaceStore() throws {
+    func testImportBankSymlinkToFifoDoesNotOpenOrReplaceStore() async throws {
         let (dir, model, bankURL, before) = try keptBank()
         let fifo = dir.appendingPathComponent("pipe")
         XCTAssertEqual(mkfifo(fifo.path, 0o600), 0, String(cString: strerror(errno)))
@@ -122,7 +122,7 @@ final class ImportBankReadCapTests: XCTestCase {
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: fifo.lastPathComponent)
         XCTAssertEqual(PathProbe.leaf(link), .notRegular)
         let start = Date()
-        model.importBank(from: link)
+        await model.importBank(from: link)
         XCTAssertLessThan(Date().timeIntervalSince(start), 1, "import blocked on the symlink to the FIFO")
         XCTAssertEqual(model.actionError, "Import refused: bank file is unreadable")
         XCTAssertNil(model.notice)
@@ -138,7 +138,7 @@ final class ImportBankReadCapTests: XCTestCase {
         }
     }
 
-    func testImportBankSymlinkLoopDoesNotHangOrReplaceStore() throws {
+    func testImportBankSymlinkLoopDoesNotHangOrReplaceStore() async throws {
         let (dir, model, bankURL, before) = try keptBank()
         let link = dir.appendingPathComponent("link.json")
         let other = dir.appendingPathComponent("other.json")
@@ -149,7 +149,7 @@ final class ImportBankReadCapTests: XCTestCase {
         XCTAssertEqual(errno, ELOOP)
         XCTAssertEqual(PathProbe.leaf(link), .unavailable)
         let start = Date()
-        model.importBank(from: link)
+        await model.importBank(from: link)
         XCTAssertLessThan(Date().timeIntervalSince(start), 1, "import blocked on the symlink loop")
         XCTAssertNotNil(model.actionError)
         XCTAssertNil(model.notice)

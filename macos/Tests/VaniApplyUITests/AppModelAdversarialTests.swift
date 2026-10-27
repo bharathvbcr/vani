@@ -28,7 +28,7 @@ final class AppModelAdversarialTests: XCTestCase {
         let tick = Task { await m3.reloadIfChanged() }
         await held.waitEntered() // the tick has read rev 3's bank and is parked
         XCTAssertEqual(m3.snapshot.rev, 2, "launch read")
-        m3.setCaptureSelfId(true) // user edit: CAS on current disk rev (3) -> rev 4
+        await m3.setCaptureSelfId(true) // user edit: CAS on current disk rev (3) -> rev 4
         XCTAssertEqual(m3.snapshot.rev, 4)
         held.release()
         await tick.value
@@ -155,9 +155,9 @@ final class AppModelAdversarialTests: XCTestCase {
     func testBankBytesFollowsContentNotRev() async throws {
         let store = BankStore(directory: try folder())
         let m = AppModel(store: store, autoRegisterAgent: false, autoStartTimer: false)
-        m.setCaptureSelfId(true)
+        await m.setCaptureSelfId(true)
         let small = m.bankBytes
-        m.setCaptureSelfId(false)
+        await m.setCaptureSelfId(false)
         let other = m.bankBytes
         XCTAssertNotEqual(small, other, "true -> false changes the encoded size; the cache returned the old one")
         _ = try BankStore(directory: store.directory).update { $0.settings.captureSelfId = true }

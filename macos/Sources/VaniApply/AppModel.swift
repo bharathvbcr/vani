@@ -412,14 +412,16 @@ final class AppModel {
     func draft(_ request: DraftRequest) async -> DraftReply {
         let runner = draftRunner
         let reply = await BlockingWork.value { runner.run(request) }
-        try? store?.log(ActivityEntry(source: .app, event: .draft, counts: [reply.error == nil ? "drafted" : "failed": 1]))
-        if let store { refreshActivity(store) }
+        if let store {
+            let entry = ActivityEntry(source: .app, event: .draft, counts: [reply.error == nil ? "drafted" : "failed": 1])
+            await appendActivity(store, entry)
+        }
         return reply
     }
 
     @discardableResult
-    func saveDraft(question: String, text: String) -> Bool {
-        change(.edit, counts: ["drafted": 1]) { bank in
+    func saveDraft(question: String, text: String) async -> Bool {
+        await change(.edit, counts: ["drafted": 1]) { bank in
             let a = try Editing.savingDraft(question: question, text: text, in: bank)
             bank.answers[a.key] = a
         }
@@ -450,9 +452,9 @@ final class AppModel {
             bankStampSeen = stamp
             activityStamp = nil
             activity = []
-            refreshActivity(store)
             storeError = nil
             if let problem = draftSettingsProblem { actionError = problem }
+            Task { await self.refreshActivity(store) }
         } catch {
             storeError = String(describing: error)
         }
@@ -483,7 +485,7 @@ final class AppModel {
                 storeError = String(describing: error)
             }
         }
-        refreshActivity(store)
+        await refreshActivity(store)
     }
 
     /// The activity log as last read, by its files' stamp. Every tick used to
@@ -493,45 +495,75 @@ final class AppModel {
 
     /// Re-read the log only when its files changed. The stamp is taken before
     /// the read, so an append landing in between is read again next tick
-    /// rather than missed.
-    private func refreshActivity(_ store: BankStore) {
-        let stamp = store.activityStamp()
-        guard stamp != activityStamp else { return }
-        guard let entries = try? store.recentActivity() else { return }
-        activityStamp = stamp
+    /// rather than missed. The stat and the read wait off the main actor; a
+    /// read that throws leaves the previous activity in place.
+    private func refreshActivity(_ store: BankStore) async {
+        let generation = bankGeneration
+        let previous = activityStamp
+        let read = await BlockingWork.value { () -> (stamp: BankStore.ActivityStamp, entries: [ActivityEntry]?) in
+            let stamp = store.activityStamp()
+            guard stamp != previous else { return (stamp, nil) }
+            return (stamp, try? store.recentActivity())
+        }
+        guard generation == bankGeneration else { return }
+        guard read.stamp != activityStamp, let entries = read.entries else { return }
+        activityStamp = read.stamp
         activity = entries
+    }
+
+    /// Append one log line and refresh, both off the main actor. A log that throws is skipped,
+    /// the same as the edit path.
+    private func appendActivity(_ store: BankStore, _ entry: ActivityEntry) async {
+        await BlockingWork.value { try? store.log(entry) }
+        await refreshActivity(store)
     }
 
     // MARK: - Editing
 
-    private func change(_ event: ActivityEntry.Event, counts: [String: Int]? = nil, _ body: (inout Bank) throws -> Void) -> Bool {
+    /// The bank write, its log line and the activity re-read take the bank lock off the main
+    /// actor. The snapshot, activity, generation and action error are applied back here.
+    private func change(_ event: ActivityEntry.Event, counts: [String: Int]? = nil, _ body: @escaping @Sendable (inout Bank) throws -> Void) async -> Bool {
         guard let store, storeError == nil else {
             actionError = storeError ?? "The answer bank is unavailable."
             return false
         }
-        do {
-            bankGeneration += 1
-            snapshot = try store.update(body)
+        let previous = activityStamp
+        let result = await BlockingWork.run { () throws -> (Snapshot, BankStore.ActivityStamp, [ActivityEntry]?) in
+            let snap = try store.update(body)
             try? store.log(ActivityEntry(source: .app, event: event, counts: counts))
-            refreshActivity(store)
+            let stamp = store.activityStamp()
+            let entries: [ActivityEntry]? = stamp == previous ? nil : (try? store.recentActivity())
+            return (snap, stamp, entries)
+        }
+        switch result {
+        case let .success((snap, stamp, entries)):
+            bankGeneration += 1
+            if snap.rev >= snapshot.rev {
+                snapshot = snap
+                if stamp != activityStamp, let entries {
+                    activityStamp = stamp
+                    activity = entries
+                }
+            }
             return true
-        } catch {
+        case let .failure(error):
+            bankGeneration += 1
             actionError = String(describing: error)
             return false
         }
     }
 
     @discardableResult
-    func add(question: String, kind: FieldKind, text: String) -> Bool {
-        change(.edit, counts: ["added": 1]) { bank in
+    func add(question: String, kind: FieldKind, text: String) async -> Bool {
+        await change(.edit, counts: ["added": 1]) { bank in
             let a = try Editing.newAnswer(question: question, kind: kind, text: text, in: bank)
             bank.answers[a.key] = a
         }
     }
 
     @discardableResult
-    func edit(key: String, text: String) -> Bool {
-        change(.edit, counts: ["edited": 1]) { bank in
+    func edit(key: String, text: String) async -> Bool {
+        await change(.edit, counts: ["edited": 1]) { bank in
             guard let a = bank.answers[key] else { throw BankError("that answer was deleted elsewhere") }
             bank.answers[key] = try Editing.edited(a, text: text)
         }
@@ -539,8 +571,8 @@ final class AppModel {
 
     /// Add `label` as another wording of the answer `key` (the duplicate an add would have hit).
     @discardableResult
-    func addWording(_ label: String, to key: String) -> Bool {
-        change(.edit, counts: ["wordings": 1]) { bank in
+    func addWording(_ label: String, to key: String) async -> Bool {
+        await change(.edit, counts: ["wordings": 1]) { bank in
             bank.answers[key] = try Dedup.addingWording(label, to: key, in: bank)
         }
     }
@@ -571,39 +603,41 @@ final class AppModel {
 
     /// Merge the plans in one validated write (one revision). Counts only reach the log.
     @discardableResult
-    func merge(_ plans: [Dedup.MergePlan]) -> Bool {
+    func merge(_ plans: [Dedup.MergePlan]) async -> Bool {
         let removed = plans.reduce(0) { $0 + $1.merged.count }
-        return change(.edit, counts: ["merged": removed, "clusters": plans.count]) { bank in
+        return await change(.edit, counts: ["merged": removed, "clusters": plans.count]) { bank in
             try Dedup.merge(bank: &bank, plans: plans)
         }
     }
 
-    func delete(keys: Set<String>) {
-        _ = change(.delete, counts: ["deleted": keys.count]) { bank in
+    func delete(keys: Set<String>) async {
+        _ = await change(.delete, counts: ["deleted": keys.count]) { bank in
             for k in keys { bank.answers.removeValue(forKey: k) }
         }
     }
 
-    func setCaptureSelfId(_ on: Bool) {
-        _ = change(.settings) { $0.settings.captureSelfId = on }
+    func setCaptureSelfId(_ on: Bool) async {
+        _ = await change(.settings) { $0.settings.captureSelfId = on }
     }
 
     @discardableResult
-    func disable(host input: String) -> Bool {
+    func disable(host input: String) async -> Bool {
         guard let host = Editing.hostname(input) else {
             actionError = "“\(input)” is not a hostname (for example jobs.lever.co)."
             return false
         }
-        return change(.settings) { bank in
+        return await change(.settings) { bank in
             if !bank.settings.disabledHosts.contains(host) { bank.settings.disabledHosts.append(host) }
         }
     }
 
-    func enable(host: String) {
-        _ = change(.settings) { $0.settings.disabledHosts.removeAll { $0 == host } }
+    func enable(host: String) async {
+        _ = await change(.settings) { bank in
+            bank.settings.disabledHosts.removeAll { $0 == host }
+        }
     }
 
-    func importBank(from url: URL) {
+    func importBank(from url: URL) async {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -617,8 +651,10 @@ final class AppModel {
             }
             let data = try Data(contentsOf: url)
             let checked = try BankValidator.validate(json: data)
-            if change(.import, counts: ["answers": checked.bank.answers.count, "droppedSecret": checked.droppedSecret], { $0 = checked.bank }) {
-                notice = "Imported \(checked.bank.answers.count) answers" + (checked.droppedSecret > 0 ? "; dropped \(checked.droppedSecret) secret-looking answers." : ".")
+            let imported = checked.bank
+            let droppedSecret = checked.droppedSecret
+            if await change(.import, counts: ["answers": imported.answers.count, "droppedSecret": droppedSecret], { $0 = imported }) {
+                notice = "Imported \(imported.answers.count) answers" + (droppedSecret > 0 ? "; dropped \(droppedSecret) secret-looking answers." : ".")
             }
         } catch {
             actionError = "Import refused: \(error)"
@@ -628,7 +664,10 @@ final class AppModel {
     func exportData() -> Data? {
         do {
             let data = try Editing.exportData(snapshot.bank)
-            try? store?.log(ActivityEntry(source: .app, event: .export, counts: ["answers": snapshot.bank.answers.count]))
+            if let store {
+                let entry = ActivityEntry(source: .app, event: .export, counts: ["answers": snapshot.bank.answers.count])
+                Task { await self.appendActivity(store, entry) }
+            }
             return data
         } catch {
             actionError = "Export failed: \(error)"
