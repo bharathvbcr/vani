@@ -607,6 +607,14 @@ final class AppModel {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
+            switch PathProbe.leaf(url) {
+            case .regular(let bytes) where bytes > Int64(Limits.maxBankBytes):
+                throw BankError("bank file is larger than \(Limits.maxBankBytes) bytes")
+            case .notRegular:
+                throw BankError("bank file is unreadable")
+            case .regular, .absent, .danglingLink, .unavailable:
+                break
+            }
             let data = try Data(contentsOf: url)
             let checked = try BankValidator.validate(json: data)
             if change(.import, counts: ["answers": checked.bank.answers.count, "droppedSecret": checked.droppedSecret], { $0 = checked.bank }) {

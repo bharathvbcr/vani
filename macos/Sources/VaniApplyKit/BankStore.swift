@@ -51,12 +51,39 @@ public struct ActivityEntry: Codable, Equatable, Sendable {
 // A corrupt file is reported, never replaced: the next write would otherwise
 // erase every answer.
 
-enum PathProbe {
+public enum PathProbe {
+    /// A path classified without opening it. `stat` is used only to follow a symlink's target type
+    /// and size; a FIFO is never opened, so the check cannot block.
+    public enum Leaf: Equatable, Sendable {
+        case absent
+        case regular(Int64)
+        case danglingLink
+        case notRegular
+        case unavailable
+    }
+
     /// True only when lstat reports ENOENT: nothing at all, not even a symlink. A dangling symlink is
     /// present (lstat succeeds), and so is any path lstat cannot answer for (permissions, ELOOP).
     static func isAbsent(_ url: URL) -> Bool {
         var st = stat()
         return lstat(url.path, &st) != 0 && errno == ENOENT
+    }
+
+    public static func leaf(_ url: URL) -> Leaf {
+        var listed = stat()
+        if lstat(url.path, &listed) != 0 {
+            return errno == ENOENT ? .absent : .unavailable
+        }
+        if (listed.st_mode & S_IFMT) == S_IFLNK {
+            var followed = stat()
+            if stat(url.path, &followed) != 0 {
+                return errno == ENOENT ? .danglingLink : .unavailable
+            }
+            guard (followed.st_mode & S_IFMT) == S_IFREG else { return .notRegular }
+            return .regular(Int64(followed.st_size))
+        }
+        guard (listed.st_mode & S_IFMT) == S_IFREG else { return .notRegular }
+        return .regular(Int64(listed.st_size))
     }
 }
 
@@ -256,11 +283,20 @@ public final class BankStore: @unchecked Sendable {
     }
 
     /// The newest activity entries first, at most `limit`. Malformed lines are skipped.
+    /// A regular file over this store's cap is refused before it is read; a missing, dangling, or
+    /// other non-regular file is skipped. An oversized file is never a partial log.
     public func recentActivity(limit: Int = 500) throws -> [ActivityEntry] {
         try withLock(exclusive: false) {
+            let urls = [activityURL, directory.appendingPathComponent("activity.1.jsonl")]
+            for url in urls {
+                if case .regular(let bytes) = PathProbe.leaf(url), bytes > Int64(maxActivityBytes) {
+                    throw BankError("activity log is larger than \(maxActivityBytes) bytes")
+                }
+            }
             let dec = JSONDecoder()
             var out: [ActivityEntry] = []
-            for url in [activityURL, directory.appendingPathComponent("activity.1.jsonl")] {
+            for url in urls {
+                guard case .regular = PathProbe.leaf(url) else { continue }
                 guard let data = try? Data(contentsOf: url) else { continue }
                 let lines = data.split(separator: 0x0A)
                 for line in lines.reversed() {
@@ -275,6 +311,20 @@ public final class BankStore: @unchecked Sendable {
     // MARK: - Unlocked primitives (callers hold the lock)
 
     private func readUnlocked() throws -> Snapshot {
+        // Size and type come from lstat (stat only to follow a symlink). The body is not read until
+        // the file is a regular file within Limits.maxBankBytes, matching the validator's `>` check.
+        switch PathProbe.leaf(bankURL) {
+        case .absent:
+            return Snapshot(rev: 0, bank: .empty)
+        case .danglingLink:
+            throw BankError("the stored answer bank is unreadable (a link to a missing file); it was left untouched")
+        case .notRegular, .unavailable:
+            throw BankError("the stored answer bank is unreadable; it was left untouched")
+        case .regular(let bytes) where bytes > Int64(Limits.maxBankBytes):
+            throw BankError("the stored answer bank is larger than \(Limits.maxBankBytes) bytes; it was left untouched")
+        case .regular:
+            break
+        }
         let data: Data
         do { data = try Data(contentsOf: bankURL) } catch let e as NSError
             where (e.domain == NSCocoaErrorDomain && e.code == CocoaError.fileReadNoSuchFile.rawValue)

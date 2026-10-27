@@ -137,6 +137,14 @@ public final class SQLiteBankStore: @unchecked Sendable {
     }
 
     private func migrateFromJSON(url: URL, db: OpaquePointer) throws {
+        switch PathProbe.leaf(url) {
+        case .regular(let bytes) where bytes > Int64(Limits.maxBankBytes):
+            throw BankError("bank file is larger than \(Limits.maxBankBytes) bytes")
+        case .regular:
+            break
+        case .absent, .danglingLink, .notRegular, .unavailable:
+            return
+        }
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let validated = try? BankValidator.validate(obj["bank"] ?? obj) else {
