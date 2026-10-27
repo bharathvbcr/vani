@@ -108,7 +108,7 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		}
 		// The run's own reload can still see a change that landed after the
 		// check above. Snapshot the record first so that path can put it back.
-		priorRecord, priorErr := os.ReadFile(runRecordPath(e.stateDir))
+		priorRecord, priorErr := readBoundedFile(runRecordPath(e.stateDir), maxRunRecord)
 		e.saveRunRecord(rec)
 		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
 		if errors.Is(err, errConfigRestart) && !errors.Is(err, daemon.ErrFatal) {
