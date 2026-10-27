@@ -236,13 +236,22 @@ func panicLine(p any) string {
 
 func runJob(ctx context.Context, job Job) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			stack := debug.Stack()
-			if len(stack) > maxJobPanicStack {
-				stack = stack[:maxJobPanicStack]
-			}
-			Logf("daemon: job panicked: %s\n%s", panicLine(r), stack)
+		r := recover()
+		if r == nil {
+			return
 		}
+		stack := debug.Stack()
+		if len(stack) > maxJobPanicStack {
+			stack = stack[:maxJobPanicStack]
+		}
+		line := panicLine(r)
+		// Log the panic first, with its stack. The "job failed" log that
+		// follows job() does not run: the panic already skipped it. A nil
+		// return would look like a clean serve. The error is not ErrFatal,
+		// even when the panic value was, so the schedule continues.
+		Logf("daemon: job panicked: %s\n%s", line, stack)
+		err = fmt.Errorf("job panicked: %s", line)
+		Logf("daemon: job failed: %v", err)
 	}()
 	if err = job(ctx); err != nil {
 		if errors.Is(err, ErrFatal) {

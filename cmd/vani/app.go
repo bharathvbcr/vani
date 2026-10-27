@@ -74,12 +74,14 @@ var buildApp = wireApp
 // it (triggerSchedule, triggerManual) and opts are a manual run's overrides;
 // the daemon's runs take none.
 //
-// A panic in the run's own goroutine is recovered (guardedRun) and recorded as a
-// failed run, so the record never stays "running" and the failure is announced.
-// A panic in a goroutine the pipeline started cannot be recovered here and
-// ends the process, as any unrecovered goroutine panic does; launchd's
-// KeepAlive restarts the daemon, and the record stays "running" until the next
-// run replaces it.
+// A panic in the run's own goroutine is recovered (guardedRun, and the
+// bookkeeping after it) and recorded as a failed run, so the record never
+// stays "running" and the failure is announced. A panic while that finished
+// record is being saved is not recovered again; the daemon's job recover is
+// the backstop. A panic in a goroutine the pipeline started cannot be
+// recovered here and ends the process, as any unrecovered goroutine panic
+// does; launchd's KeepAlive restarts the daemon, and the record stays
+// "running" until the next run replaces it.
 func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOptions) daemon.Job {
 	return func(ctx context.Context) error {
 		// A process-lifetime change is not a run. Decide it before any record,
@@ -120,29 +122,57 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 			}
 			return err
 		}
-		rec.FinishedAt = now()
-		if app.RunReport != nil {
-			rec.runDetail = app.RunReport()
-		}
-		if app.Ledger != nil {
-			rec.CountsAfter = statusCounts(app.Ledger.All())
-		}
-		switch {
-		case err == nil:
-			rec.Outcome = outcomeOK
-		case errors.Is(err, context.Canceled) && !errors.Is(err, daemon.ErrFatal) && !errors.Is(err, errRunPanic):
-			// Someone stopped the run. A ledger that failed, or a panic, while it
-			// was being stopped is still a failure and says so below.
-			rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
-		default:
-			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
-			rec.Cause = runCause(err)
-		}
-		finishLog()
-		e.saveRunRecord(rec)
-		e.announceFailure(ctx, app, rec)
-		return err
+		return e.finishDailyRun(ctx, app, &rec, stage, err, finishLog)
 	}
+}
+
+// finishDailyRun writes the finished record for a run that is not a config
+// restart. One recover covers the tail: a panic in RunReport, the ledger
+// read, or the failure notice is still a finished failed run. The recover
+// saves and announces once; a panic in that save is left for the daemon.
+func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stage string, runErr error, finishLog func()) (err error) {
+	err = runErr
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		writePanic(e.stderr, "vani: the run panicked: ", p)
+		err = errors.Join(err, fmt.Errorf("%w: %s", errRunPanic, panicText(p)))
+		if berr := ledgerBroken(app.Ledger); berr != nil {
+			err = errors.Join(err, berr)
+		}
+		rec.FinishedAt = now()
+		rec.Outcome = outcomeFailed
+		rec.Stage = stage
+		rec.Error = runErrorText(err)
+		rec.Cause = runCause(err)
+		finishLog()
+		e.saveRunRecord(*rec)
+		e.announceFailure(ctx, app, *rec)
+	}()
+	rec.FinishedAt = now()
+	if app.RunReport != nil {
+		rec.runDetail = app.RunReport()
+	}
+	if app.Ledger != nil {
+		rec.CountsAfter = statusCounts(app.Ledger.All())
+	}
+	switch {
+	case err == nil:
+		rec.Outcome = outcomeOK
+	case errors.Is(err, context.Canceled) && !errors.Is(err, daemon.ErrFatal) && !errors.Is(err, errRunPanic):
+		// Someone stopped the run. A ledger that failed, or a panic, while it
+		// was being stopped is still a failure and says so below.
+		rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
+	default:
+		rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
+		rec.Cause = runCause(err)
+	}
+	finishLog()
+	e.saveRunRecord(*rec)
+	e.announceFailure(ctx, app, *rec)
+	return err
 }
 
 // captureRunLog tees this run's stderr into runs/history/<id>.log when the
