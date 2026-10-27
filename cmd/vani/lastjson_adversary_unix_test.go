@@ -740,3 +740,23 @@ func TestLastJSONAdversaryUnicodeStateDir(t *testing.T) {
 		t.Fatalf("unicode restore %q %v\n%s", after, err, stderr)
 	}
 }
+
+// TestLastJSONAdversaryDeviceNode reads a character device the process can
+// already stat. Creating one with mknod is not permitted in this environment,
+// and /dev/null takes the same non-regular branch as a device named last.json.
+func TestLastJSONAdversaryDeviceNode(t *testing.T) {
+	for _, path := range []string{"/dev/null", "/dev/zero"} {
+		t.Run(path, func(t *testing.T) {
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&os.ModeCharDevice == 0 || info.Mode().IsRegular() {
+				t.Fatalf("%s mode %v, want a character device", path, info.Mode())
+			}
+			before := fileIdentOf(t, path)
+			assertNotRegularRecord(t, path)
+			sameIdent(t, path, before)
+		})
+	}
+}
