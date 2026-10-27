@@ -197,31 +197,47 @@ func checkInstruction(s string) (string, *Error) {
 	return t, nil
 }
 
-// emailLike reports an "@" with text on both sides: an address, or enough like
-// one that a model should not be given it.
+// emailLike reports an "@" with a non-space, non-"@" rune on both sides once
+// Unicode spaces beside it are skipped. "ada@example.com" and "ada @ example.com"
+// match; a lone "@", "word @" and "@ word" do not. Neighbors are runes, so a
+// multibyte character is not judged by its last byte.
 func emailLike(s string) bool {
-	at := strings.IndexByte(s, '@')
-	for at >= 0 {
-		before := at > 0 && !unicode.IsSpace(rune(s[at-1])) && s[at-1] != '@'
-		after := at+1 < len(s) && !unicode.IsSpace(rune(s[at+1])) && s[at+1] != '@'
-		if before && after {
+	rs := []rune(s)
+	for i, r := range rs {
+		if r != '@' {
+			continue
+		}
+		if runeBeside(rs, i, -1) && runeBeside(rs, i, 1) {
 			return true
 		}
-		next := strings.IndexByte(s[at+1:], '@')
-		if next < 0 {
-			return false
-		}
-		at += 1 + next
 	}
 	return false
+}
+
+// runeBeside reports a non-space, non-'@' rune on one side of at (dir is -1 or
+// 1), after Unicode spaces. A space here is unicode.IsSpace or a Unicode space
+// separator: fullwidth space is a separator and not IsSpace.
+func runeBeside(rs []rune, at, dir int) bool {
+	j := at + dir
+	for j >= 0 && j < len(rs) && unicodeSpace(rs[j]) {
+		j += dir
+	}
+	if j < 0 || j >= len(rs) {
+		return false
+	}
+	return rs[j] != '@'
+}
+
+func unicodeSpace(r rune) bool {
+	return unicode.IsSpace(r) || unicode.Is(unicode.Zs, r)
 }
 
 const (
 	// phoneSeparators are what may join the digit groups of a number: a space, a dot,
 	// a hyphen, an en dash and the two parentheses, at most phoneMaxSeparator in a row
-	// (") " and " (" are two).
+	// (") " and " (" are two; " - " is three). Three is the cap, not an unbounded run.
 	phoneSeparators   = " -–.()"
-	phoneMaxSeparator = 2
+	phoneMaxSeparator = 3
 	// phoneWindow is how many characters, from the first digit of a group to the last
 	// digit of a later one, the digits of a number may be spread over.
 	phoneWindow = 20
@@ -230,7 +246,7 @@ const (
 )
 
 // phoneLike reports digit groups joined by spaces, dots, dashes or parentheses
-// (phoneSeparators, at most two in a row) that total seven digits or more within
+// (phoneSeparators, at most phoneMaxSeparator in a row) that total seven digits or more within
 // phoneWindow characters, or one group of seven or more. 5551234567, 555-123-4567,
 // (555) 123-4567, +1 555 123 4567, 555.123.4567, 1234 5678 and 555 1234 are all
 // refused; a version ("3.12", "Go 1.26"), a count ("100,000") and a year are not.
