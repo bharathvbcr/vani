@@ -122,4 +122,47 @@ describe("createBankMemo", () => {
     await m.fresh();
     expect(m.peek()).toEqual({ n: 2 });
   });
+
+  test("fresh drops the generation an in-flight get started, so the older answer cannot hold", async () => {
+    const pending: Array<(value: string) => void> = [];
+    let calls = 0;
+    const clock = { t: 1_000 };
+    const m = createBankMemo<string>({
+      fetch: () => new Promise<string>(resolve => {
+        calls++;
+        pending.push(resolve);
+      }),
+      now: () => clock.t,
+    });
+    const resolveAt = (i: number, value: string): void => {
+      const resolve = pending[i];
+      if (!resolve) throw new Error(`fetch ${i} was not started`);
+      resolve(value);
+    };
+
+    // get() starts A and leaves it pending. fresh() must not share that request.
+    const older = m.get();
+    expect(calls).toBe(1);
+    const newer = m.fresh();
+    expect(calls).toBe(2);
+
+    // A settles after B. That is the order in which the older answer can clobber the hold.
+    resolveAt(1, "new");
+    expect(await newer).toBe("new");
+    resolveAt(0, "old");
+    expect(await older).toBe("old");
+
+    expect(m.peek()).toBe("new");
+    expect(await m.get()).toBe("new");
+    expect(calls).toBe(2);
+
+    // Two concurrent gets, with nothing in flight, still share one fetch.
+    clock.t += BANK_FRESH_MS;
+    expect(m.peek()).toBeUndefined();
+    const before = calls;
+    const shared = Promise.all([m.get(), m.get()]);
+    expect(calls - before).toBe(1);
+    resolveAt(2, "shared");
+    expect(await shared).toEqual(["shared", "shared"]);
+  });
 });
