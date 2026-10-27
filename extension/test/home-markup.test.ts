@@ -88,6 +88,8 @@ describe("Home tab states", () => {
     const bound = new Set([...ts.matchAll(/\$\(\s*["']#([\w-]+)["']\s*\)\s*\.(?:onclick|onchange|oninput)\s*=/g)].map(m => m[1]!));
     expect(bound.size).toBeGreaterThan(5);
     for (const id of bound) expect(html).toContain(`id="${id}"`);
+    // The import button is opened from the script (MV3 drops inline handlers). #import stays the file input.
+    expect(bound.has("import-btn")).toBe(true);
     for (const id of ["home-title", "home-desc", "home-profile", "form-view", "form-extra", "job-area", "job-actions", "job-track", "missed-card"]) {
       expect(html).toContain(`id="${id}"`);
     }
@@ -108,5 +110,9 @@ describe("Home tab states", () => {
   test("focus is visible and colour tokens give readable text on the accent", () => {
     expect(html).toContain("button:focus-visible, summary:focus-visible");
     expect(html).toContain("--accent: #047857;"); // white text on it: 5.5:1
+  });
+
+  test("popup markup has no inline onclick (MV3 CSP drops it)", () => {
+    expect(html).not.toContain("onclick");
   });
 });
