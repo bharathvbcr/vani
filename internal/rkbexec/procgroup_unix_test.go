@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -133,6 +134,11 @@ func TestGroupThatIgnoresSigtermIsKilledWithinTheGrace(t *testing.T) {
 	if d := time.Since(start); d > waitDelay+groupGrace+3*time.Second {
 		t.Fatalf("stopping the group took %s, over its %s grace", d, waitDelay+groupGrace)
 	}
+}
+
+func TestReapGroupNilProcessDoesNothing(t *testing.T) {
+	reapGroup(nil)
+	reapGroup(&exec.Cmd{})
 }
 
 func TestFinishedRunDoesNotSignalAnyGroup(t *testing.T) {
