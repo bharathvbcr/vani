@@ -478,6 +478,38 @@ window onto recent jobs; a link at its path is replaced, never written through. 
 resume store ignore it. It holds posting data (company, title, key) and skills, nothing about the owner.
 The owner's career session reads it and works the terms into the bank through `rkb review`.
 
+## Exporting roles (`vani jobs export`)
+
+`vani jobs export` writes the first `--top N` roles (default 100, up to 5,000) or selected keys (`--keys-stdin`)
+to an `.xlsx` workbook using `internal/xlsx` (standard library `archive/zip` + XML, zero external dependencies).
+- Reads the ledger without holding the ledger lock, so it executes while the daemon is running.
+- Writes the workbook atomically via temporary file and rename.
+- Every text cell is written as an inline string (`<is><t>`), preventing spreadsheet formula execution if a posting starts with `=`.
+- Missing keys or filtered-out roles are tracked and reported in `--json` output (`missing`), without aborting the export.
+
+## Runtime state, cooldowns and locks
+
+State directory files and locks created during operations:
+
+| Path | Purpose & Lifecycle |
+|---|---|
+| `<state>/runs/last.json` | Latest run record; verified regular file via `readBoundedFile` (symlinks/devices refused). |
+| `<state>/runs/history/<id>.json` | Permanent finished/interrupted run records, pruned to newest 30 records and 4 MiB. |
+| `<state>/runs/request.json` | Run request waiting for daemon pickup (renamed to `request.claimed.json` upon claim). |
+| `<state>/hosts/cooldown.json` | Persistent rate-limit memory across runs (`srcutil.LoadCooldowns`/`SaveCooldowns`), tracking 429 backoff windows. |
+| `<state>/resumes/<sha256(key)>/` | Versioned resume directory per job posting: `vN.json`, `vN.pdf`, `current`, `used`, `attempts.jsonl`, `.lock`. |
+| `<state>/resumes/.tmp/` | Build work folders and `preview-N.html` rendering targets (swept on next build). |
+| `<state>/resumes/gaps.jsonl` | Atomic append-only handoff file under `gaps.jsonl.lock` (at most 500 lines, 256 KiB). |
+| `<state>/resume-build.lock` | Process try-lock serializing paid model builds and renders per state directory. |
+| `<state>/resume-chrome.lock` | Whole-file lock serializing headless Chrome PDF fitting passes. |
+
+## Runtime reliability & defensive checks
+
+- **Non-regular file rejection:** `readBoundedFile` inspects file mode via `Lstat` before reading. Symlinks, FIFOs, UNIX domain sockets, and character/block devices are refused for `last.json`, impressions logs, marks (`marks.jsonl`), and manual-triage readings (`readings.jsonl`).
+- **Binary identity monitor (`binarywatch`):** At daemon startup, the binary's volume serial and file index (Windows) or device, inode, mtime, and size (Unix) are captured. The binary watch polls during idle periods and exits 75 if the executable file changes on disk, enabling seamless supervisor restarts.
+- **Panic finalization:** Panics occurring after `guardedRun` are trapped, finalizing the run record with status `failed` so pipeline execution is not left dangling.
+- **Privacy scrubbing:** Spaced phone numbers, emails, and work-authorization boilerplate are purged from bullet text and instructions before embedding or LLM prompt construction.
+
 ## Running without a decision backend
 
 A run that advances and has no decision backend (no key anywhere, no llm) is refused at its

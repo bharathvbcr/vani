@@ -166,6 +166,16 @@ Quitting (⌘Q) asks once when any Studio window holds edits that were not fitte
 quit. Studio windows are not restored when the app is launched (`NSWindow.isRestorable = false`; the scene's
 `restorationBehavior` is macOS 15 and later, and this app targets macOS 14). A job's row menu has **Open Resume Studio**.
 
+**Export to Excel.** The Jobs toolbar features an **Export** menu, and selecting multiple rows enables **Export N to Excel…**
+in the context menu. This executes `vani jobs export --top N` or streams selected keys via `--keys-stdin` to build an `.xlsx`
+workbook (using `internal/xlsx`, zero third-party dependencies). Text cells are stored as inline strings to neutralize formula injection (`=`).
+
+**Audited Reliability & Safety.** The app and kit include verified defenses from the 2026-10-26 audit backlog:
+- `BankStore`: answer use/fill counters are checked against `Int32.max` before SQLite binding to avoid integer overflow traps.
+- Bank loading enforces a 50 MB file size limit before reading data into memory.
+- Bank mutations and activity log updates run off the main actor via `BlockingWork` to keep the UI smooth.
+- Schedule agent SIGTERM wait publishes PID files reliably after signal traps are installed.
+
 ```mermaid
 flowchart TD
     subgraph BrowserLayer["Browsers & Extensions"]

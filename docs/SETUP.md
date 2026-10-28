@@ -360,8 +360,9 @@ start DevPrism. `--dry-run` without `--replace` is the plan that needs no binary
 
 ### 8. Watchlist, summary, first run
 
-Add boards with `watchlist add`. The README's Use section has Greenhouse, Lever, Ashby, Workday
-and the search-site flags. One board:
+Add boards with `watchlist add`. The README's Use section has flags for all 20 supported board kinds
+(Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, SmartRecruiters, IBM,
+Avature, D. E. Shaw, Atlassian, Oracle HCM, Rippling, Workable, XML feeds, and custom Pages). One board:
 
 ```bash
 /Users/bharath/Code/apps/Vani/build/vani watchlist add --ats gh --token BOARD --company 'Name' --allow-host

@@ -1,5 +1,8 @@
 # Vani deep audit — 2026-10-26
 
+> **Remediated & Merged 2026-10-27:** All 18 confirmed findings (19 tasks) from this audit were implemented,
+> regression-tested with adversarial test suites, reviewed in `BUILD_REPORT.md`, and merged into `main` at `8ca5be6`.
+
 Repo `/Users/bharath/Code/apps/Vani`, `main` @ `70fc33e`. No source, config, or dependency was changed. The only writes are GitPulse board writes and this file. The 2026-10-20 audit that was at this path is committed at `9b4af91` (`git show 9b4af91:AUDIT_REPORT.md`).
 
 The board was re-read immediately before filing (35 open, `has_more` false) and again after (50 open, `has_more` false). Nothing was moved to done. The two in-progress cards were not edited.
