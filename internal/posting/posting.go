@@ -62,6 +62,9 @@ const (
 	// Personio is a Personio career site ({token}.jobs.personio.com). The
 	// token is the subdomain.
 	Personio ATS = "ps"
+	// TikTok is TikTok's careers site (lifeattiktok.com). The token is
+	// "tiktok", the one site the adapter knows.
+	TikTok ATS = "tt"
 	// Feed is one https XML job feed the owner names. The token is a short
 	// slug; the posting id is the feed's partner job id.
 	Feed ATS = "fd"

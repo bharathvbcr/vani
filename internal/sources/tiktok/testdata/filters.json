@@ -1,0 +1,124 @@
+{
+  "code": 0,
+  "message": "ok",
+  "error": null,
+  "data": {
+    "BaseResp": {
+      "StatusMessage": "Success",
+      "StatusCode": 0,
+      "Extra": null
+    },
+    "city_list": [
+      {
+        "code": "CT_223",
+        "location_type": 3,
+        "name": null,
+        "en_name": "Miami",
+        "i18n_name": "Miami",
+        "parent": {
+          "code": "ST_63",
+          "location_type": 2,
+          "name": null,
+          "en_name": "Florida",
+          "i18n_name": "Florida",
+          "parent": {
+            "code": "CN_6",
+            "location_type": 1,
+            "name": null,
+            "en_name": "United States of America",
+            "i18n_name": "United States of America",
+            "parent": null
+          }
+        }
+      },
+      {
+        "code": "CT_1100743",
+        "location_type": 3,
+        "name": null,
+        "en_name": "Hamburg",
+        "i18n_name": "Hamburg",
+        "parent": {
+          "code": "ST_100743",
+          "location_type": 2,
+          "name": null,
+          "en_name": "Hamburg",
+          "i18n_name": "Hamburg",
+          "parent": {
+            "code": "CN_4",
+            "location_type": 1,
+            "name": null,
+            "en_name": "Germany",
+            "i18n_name": "Germany",
+            "parent": null
+          }
+        }
+      },
+      {
+        "code": "CT_1103355",
+        "location_type": 3,
+        "name": null,
+        "en_name": "San Jose",
+        "i18n_name": "San Jose",
+        "parent": {
+          "code": "ST_31",
+          "location_type": 2,
+          "name": null,
+          "en_name": "California",
+          "i18n_name": "California",
+          "parent": {
+            "code": "CN_6",
+            "location_type": 1,
+            "name": null,
+            "en_name": "United States of America",
+            "i18n_name": "United States of America",
+            "parent": null
+          }
+        }
+      },
+      {
+        "code": "MDCY00039300",
+        "location_type": 3,
+        "name": null,
+        "en_name": "Carol Stream",
+        "i18n_name": "Carol Stream",
+        "parent": {
+          "code": "ST_62",
+          "location_type": 2,
+          "name": null,
+          "en_name": "Illinois",
+          "i18n_name": "Illinois",
+          "parent": {
+            "code": "CN_6",
+            "location_type": 1,
+            "name": null,
+            "en_name": "United States of America",
+            "i18n_name": "United States of America",
+            "parent": null
+          }
+        }
+      },
+      {
+        "code": "CT_163",
+        "location_type": 3,
+        "name": null,
+        "en_name": "Singapore",
+        "i18n_name": "Singapore",
+        "parent": {
+          "code": "ST_100785",
+          "location_type": 2,
+          "name": null,
+          "en_name": "Singapore",
+          "i18n_name": "Singapore",
+          "parent": {
+            "code": "CN_25",
+            "location_type": 1,
+            "name": null,
+            "en_name": "Singapore",
+            "i18n_name": "Singapore",
+            "parent": null
+          }
+        }
+      }
+    ]
+  }
+}

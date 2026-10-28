@@ -268,6 +268,10 @@ var FilterKeys = map[posting.ATS][]string{
 	// ServiceNow 732 -> 441 with country=us (2026-10-27). One lower-case ISO
 	// code per query: "US" and a second value both answer zero postings.
 	posting.SmartRecruiters: {"country"},
+	// TikTok: "country" is an English country name from the site's own city
+	// list, "location" a city code from it; both become location_code_list
+	// (US: 4,318 -> 1,847 rows, 2026-10-28).
+	posting.TikTok: {"country", "location"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then
