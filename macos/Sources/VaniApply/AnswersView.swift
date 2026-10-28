@@ -87,8 +87,11 @@ struct AnswersView: View {
         }
         .confirmationDialog("Delete \(selection.count) answer\(selection.count == 1 ? "" : "s")?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) {
-                model.delete(keys: selection)
-                selection.removeAll()
+                let keys = selection
+                Task {
+                    await model.delete(keys: keys)
+                    selection.removeAll()
+                }
             }
         } message: {
             Text("The next form will leave these questions blank until you answer them again.")
@@ -132,7 +135,11 @@ struct AnswerEditor: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { if model.edit(key: answer.key, text: text) { dismiss() } }
+                Button("Save") {
+                    let key = answer.key
+                    let saving = text
+                    Task { if await model.edit(key: key, text: saving) { dismiss() } }
+                }
                     .keyboardShortcut(.defaultAction)
                     .disabled(answer.sensitivity == .selfID && !revealed)
             }
@@ -196,14 +203,21 @@ struct AddAnswerSheet: View {
                         .font(.callout).foregroundStyle(.orange)
                     Spacer()
                     Button("Add as a wording of “\(existing.key)”") {
-                        if model.addWording(question, to: existing.key) { dismiss() }
+                        let label = question
+                        let key = existing.key
+                        Task { if await model.addWording(label, to: key) { dismiss() } }
                     }
                 }
             }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Add") { if model.add(question: question, kind: kind, text: text) { dismiss() } }
+                Button("Add") {
+                    let q = question
+                    let k = kind
+                    let body = text
+                    Task { if await model.add(question: q, kind: k, text: body) { dismiss() } }
+                }
                     .keyboardShortcut(.defaultAction)
                     .disabled(sensitivity == .secret || question.trimmingCharacters(in: .whitespaces).isEmpty)
             }

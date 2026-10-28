@@ -14,6 +14,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/daemon"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 )
 
 // The daemon holds the ledger's lock for its whole life, so while it runs a
@@ -24,8 +25,8 @@ import (
 //
 // The daemon announces itself in <state dir>/runs/daemon.json (pid and start
 // time) once it holds the ledger, and removes it when it exits. run-request
-// refuses when that file names no live process: nobody would pick the request
-// up. A pid can be reused after a crash; a request no daemon picks up is then
+// refuses when that file does not name this vani process. A pid can be reused
+// after a crash; a request no daemon picks up is then
 // stale after runRequestMaxAge, and the next daemon drops it.
 //
 // The daemon claims a request by renaming it to request.claimed.json under the
@@ -53,6 +54,11 @@ const (
 // requestPollInterval is how often the daemon looks for a run request. A
 // variable only so tests need not wait.
 var requestPollInterval = 3 * time.Second
+
+// requestWriteGate runs after a read has decided the request file will be
+// replaced (missing, stale, or corrupt) and before that write is locked.
+// Nil does nothing. Tests hold callers here so both pass the unlocked check.
+var requestWriteGate func()
 
 // runRequest is request.json: a manual run the daemon is asked to make.
 type runRequest struct {
@@ -204,8 +210,9 @@ func readDaemonRecord(stateDir string) (daemonRecord, error) {
 	return d, nil
 }
 
-// liveDaemon returns the daemon record when its process lives, else an error
-// wrapping errNoDaemon that says why none is known.
+// liveDaemon returns the daemon record when its pid is this vani process, else
+// an error wrapping errNoDaemon that says why none is known. Liveness uses the
+// record's own started_at, not the file's mtime.
 func liveDaemon(stateDir string) (daemonRecord, error) {
 	d, err := readDaemonRecord(stateDir)
 	switch {
@@ -213,7 +220,8 @@ func liveDaemon(stateDir string) (daemonRecord, error) {
 		return daemonRecord{}, fmt.Errorf("%w: no daemon has announced itself in %s", errNoDaemon, runsPath(stateDir, daemonRecordFile))
 	case err != nil:
 		return daemonRecord{}, fmt.Errorf("%w: %w", errNoDaemon, err)
-	case !pidAlive(d.PID):
+	}
+	if !daemonIsLive(d) {
 		return daemonRecord{}, fmt.Errorf("%w: the daemon recorded as pid %d is gone (it did not exit cleanly)", errNoDaemon, d.PID)
 	}
 	return d, nil
@@ -337,12 +345,12 @@ func (e *env) cmdRunRequest(args []string) error {
 	})
 }
 
-func (e *env) requestRun(opts runOptions) (runRequestReply, error) {
+func (e *env) requestRun(opts runOptions) (reply runRequestReply, err error) {
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return runRequestReply{}, err
 	}
-	if err := checkRunOptions(opts, cfg.Watchlist); err != nil {
+	if err = checkRunOptions(opts, cfg.Watchlist); err != nil {
 		return runRequestReply{}, err
 	}
 	d, err := liveDaemon(e.stateDir)
@@ -351,14 +359,33 @@ func (e *env) requestRun(opts runOptions) (runRequestReply, error) {
 	}
 	at := now()
 	path := runsPath(e.stateDir, runRequestFile)
-	switch old, err := readRunRequest(path, at); {
-	case err == nil:
+	switch old, rerr := readRunRequest(path, at); {
+	case rerr == nil:
 		return runRequestReply{}, fmt.Errorf("a run request from %s is already waiting for the daemon", old.RequestedAt.UTC().Format(time.RFC3339))
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(rerr, os.ErrNotExist):
 	default:
 		// Stale or unreadable: replaced below (a rename replaces a symlink
 		// itself, never its target), and the daemon would drop it anyway.
-		fmt.Fprintf(e.stderr, "vani: replacing the waiting run request: %v\n", err)
+		fmt.Fprintf(e.stderr, "vani: replacing the waiting run request: %v\n", rerr)
+	}
+	if requestWriteGate != nil {
+		requestWriteGate()
+	}
+	// Both callers can pass the read above. The lock and the re-read decide
+	// which one writes; the other finds the winner already waiting.
+	lockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lock, err := filelock.Acquire(lockCtx, path+".lock")
+	if err != nil {
+		return runRequestReply{}, err
+	}
+	defer func() {
+		if rerr := lock.Release(); rerr != nil && err == nil {
+			err = rerr
+		}
+	}()
+	if old, rerr := readRunRequest(path, at); rerr == nil {
+		return runRequestReply{}, fmt.Errorf("a run request from %s is already waiting for the daemon", old.RequestedAt.UTC().Format(time.RFC3339))
 	}
 	req := runRequest{V: runRequestVersion, RequestedAt: at, Options: opts}
 	raw, err := json.MarshalIndent(req, "", "  ")
@@ -368,7 +395,7 @@ func (e *env) requestRun(opts runOptions) (runRequestReply, error) {
 	if len(raw) > maxRunRequest {
 		return runRequestReply{}, fmt.Errorf("run request exceeds %d bytes", maxRunRequest)
 	}
-	if err := atomicfile.Write(path, raw); err != nil {
+	if err = atomicfile.Write(path, raw); err != nil {
 		return runRequestReply{}, err
 	}
 	return runRequestReply{RequestedAt: at, Options: opts, DaemonPID: d.PID}, nil

@@ -88,31 +88,71 @@ func TestInterruptedRunReachesTheHistoryAtTheNextRun(t *testing.T) {
 	}
 }
 
-// A pid is reused: after a reboot a dead run's pid belongs to another process,
-// and even this process's own pid can be in a stale record. The run that holds
-// the ledger proves nothing else is running, so a "live" pid does not keep the
-// record out of the history.
+// A reused pid is not the daemon that announced it. A different executable is
+// archived. This binary, whose start is not after the announcement, stays kept.
 func TestInterruptedRunWithAReusedPidIsStillKept(t *testing.T) {
-	for name, pid := range map[string]int{"own pid": os.Getpid(), "another live pid": os.Getppid()} {
-		t.Run(name, func(t *testing.T) {
-			_, stateDir := setup(t)
-			mustCode(t, 0, "init")
-			stubPidAlive(t, func(int) bool { return true })
-			stale := dyingRecord()
-			stale.PID = pid
-			if runState(stale, time.Now()) != outcomeRunning {
-				t.Fatal("setup: the record must read as running under the pid check")
-			}
-			writeLast(t, stateDir, stale)
-			wireTuned(t, fixture())
-
-			mustCode(t, 0, "run-once")
-
-			if got := historyRecord(t, stateDir, runID(stale)); got.Outcome != "interrupted" {
-				t.Errorf("outcome %q, want interrupted", got.Outcome)
-			}
-		})
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Run("different executable is archived", func(t *testing.T) {
+		_, stateDir := setup(t)
+		mustCode(t, 0, "init")
+		stubPidAlive(t, func(int) bool { return true })
+		stale := dyingRecord()
+		old := daemonIdentity
+		daemonIdentity = func(pid int) procIdentity {
+			if pid != stale.PID {
+				return procIdentity{}
+			}
+			return procIdentity{OK: true, Exe: exe + ".other", Started: stale.StartedAt.Add(-time.Hour)}
+		}
+		t.Cleanup(func() { daemonIdentity = old })
+		if err := writeDaemonRecord(stateDir, stale.PID, stale.StartedAt); err != nil {
+			t.Fatal(err)
+		}
+		if runState(stale, time.Now()) != outcomeRunning {
+			t.Fatal("setup: the record must read as running under the pid check")
+		}
+		writeLast(t, stateDir, stale)
+		wireTuned(t, fixture())
+
+		mustCode(t, 0, "run-once")
+
+		if got := historyRecord(t, stateDir, runID(stale)); got.Outcome != "interrupted" {
+			t.Errorf("outcome %q, want interrupted", got.Outcome)
+		}
+	})
+	t.Run("this binary started no later than the announcement stays kept", func(t *testing.T) {
+		_, stateDir := setup(t)
+		mustCode(t, 0, "init")
+		stubPidAlive(t, func(int) bool { return true })
+		stale := dyingRecord()
+		old := daemonIdentity
+		daemonIdentity = func(pid int) procIdentity {
+			if pid != stale.PID {
+				return procIdentity{}
+			}
+			return procIdentity{OK: true, Exe: exe, Started: stale.StartedAt}
+		}
+		t.Cleanup(func() { daemonIdentity = old })
+		if err := writeDaemonRecord(stateDir, stale.PID, stale.StartedAt); err != nil {
+			t.Fatal(err)
+		}
+		writeLast(t, stateDir, stale)
+		wireTuned(t, fixture())
+
+		_, stderr := mustCode(t, 0, "run-once")
+
+		for _, id := range historyIDs(t, stateDir) {
+			if id == runID(stale) {
+				t.Fatalf("the daemon's run was archived: %v", historyIDs(t, stateDir))
+			}
+		}
+		if strings.Contains(stderr, "never finished") {
+			t.Errorf("a kept run was reported as interrupted: %q", stderr)
+		}
+	})
 }
 
 // A finished run is already in the history (saveRunRecord wrote it), so the

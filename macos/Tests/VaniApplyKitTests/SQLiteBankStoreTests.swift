@@ -91,4 +91,71 @@ final class SQLiteBankStoreTests: XCTestCase {
         // Rev 7 is now the base for a patch.
         XCTAssertEqual(try store.patch(upsert: [], deleteKeys: [], baseRev: 7).rev, 8)
     }
+
+    func testResyncKeepsInt32Max() throws {
+        let store = try SQLiteBankStore(directory: try tempDir(self).appendingPathComponent("max"))
+        let max = Int(Int32.max)
+        let row = Answer(key: "role title", labels: ["role title"], kind: .text, value: ["engineer"], sensitivity: .standard,
+                         signatures: [], uses: max, fills: max, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        try store.resync(Snapshot(rev: 2, bank: Bank(answers: [row.key: row])))
+        let snap = try store.read()
+        XCTAssertEqual(snap.bank.answers["role title"]?.uses, max)
+        XCTAssertEqual(snap.bank.answers["role title"]?.fills, max)
+    }
+
+    /// A snapshot that bypasses count() must not trap in sqlite3_bind_int. The unfit row is skipped and logged.
+    func testResyncSkipsCounterPastInt32Max() throws {
+        let store = try SQLiteBankStore(directory: try tempDir(self).appendingPathComponent("skip"))
+        let huge = Int(Int32.max) + 1
+        let overflow = Answer(key: "overflow row", labels: ["overflow row"], kind: .text, value: ["skipped-row"], sensitivity: .standard,
+                              signatures: [], uses: huge, fills: 1, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        let kept = Answer(key: "kept row", labels: ["kept row"], kind: .text, value: ["kept-row"], sensitivity: .standard,
+                          signatures: [], uses: 4, fills: 2, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        let sentence = "vani: bank.sqlite mirror skipped a row whose counter does not fit; bank.json is unaffected\n"
+        let err = try captureStderr {
+            try store.resync(Snapshot(rev: 4, bank: Bank(answers: [overflow.key: overflow, kept.key: kept])))
+        }
+        XCTAssertEqual(err, sentence)
+        let snap = try store.read()
+        XCTAssertEqual(snap.rev, 4)
+        XCTAssertNil(snap.bank.answers["overflow row"])
+        XCTAssertEqual(snap.bank.answers["kept row"]?.value, ["kept-row"])
+        XCTAssertEqual(snap.bank.answers["kept row"]?.uses, 4)
+        XCTAssertEqual(snap.bank.answers["kept row"]?.fills, 2)
+
+        let fixed = Answer(key: "overflow row", labels: ["overflow row"], kind: .text, value: ["now-kept"], sensitivity: .standard,
+                           signatures: [], uses: 1, fills: 1, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        try store.resync(Snapshot(rev: 5, bank: Bank(answers: [fixed.key: fixed, kept.key: kept])))
+        let again = try store.read()
+        XCTAssertEqual(again.bank.answers["overflow row"]?.value, ["now-kept"])
+        XCTAssertEqual(again.bank.answers["overflow row"]?.uses, 1)
+        XCTAssertEqual(again.bank.answers["kept row"]?.uses, 4)
+    }
+
+    func testPatchSkipsCounterPastInt32MaxAndLaterPatchSaves() throws {
+        let store = try SQLiteBankStore(directory: try tempDir(self).appendingPathComponent("patch-skip"))
+        let huge = Int(Int32.max) + 1
+        let overflow = Answer(key: "overflow row", labels: ["overflow row"], kind: .text, value: ["skipped-row"], sensitivity: .standard,
+                              signatures: [], uses: 2, fills: huge, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        let kept = Answer(key: "kept row", labels: ["kept row"], kind: .text, value: ["kept-row"], sensitivity: .standard,
+                          signatures: [], uses: 1, fills: 0, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        let sentence = "vani: bank.sqlite mirror skipped a row whose counter does not fit; bank.json is unaffected\n"
+        let err = try captureStderr {
+            let res = try store.patch(upsert: [overflow, kept], deleteKeys: [])
+            XCTAssertEqual(res.rev, 1)
+            XCTAssertEqual(res.droppedSecret, 0)
+        }
+        XCTAssertEqual(err, sentence)
+        let snap = try store.read()
+        XCTAssertNil(snap.bank.answers["overflow row"])
+        XCTAssertEqual(snap.bank.answers["kept row"]?.value, ["kept-row"])
+
+        let fixed = Answer(key: "overflow row", labels: ["overflow row"], kind: .text, value: ["now-kept"], sensitivity: .standard,
+                           signatures: [], uses: 2, fills: 3, updatedAt: "2026-01-01T00:00:00.000Z", review: false)
+        XCTAssertEqual(try store.patch(upsert: [fixed], deleteKeys: []).rev, 2)
+        let again = try store.read()
+        XCTAssertEqual(again.bank.answers["overflow row"]?.value, ["now-kept"])
+        XCTAssertEqual(again.bank.answers["overflow row"]?.fills, 3)
+        XCTAssertEqual(again.bank.answers["kept row"]?.uses, 1)
+    }
 }

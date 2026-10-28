@@ -642,16 +642,32 @@ describe("store: native transport selection", () => {
   }
 
   test("without chrome.runtime.connectNative it sends one message per call", async () => {
-    const m = await load({ chrome: { runtime: { sendNativeMessage() {} } } });
-    expect(m.nativeTransport).toBe(m.spawnTransport);
+    const chromeStub = { runtime: { sendNativeMessage() {} } };
+    g.chrome = chromeStub;
+    g.browser = undefined;
+    const m = await load({ chrome: chromeStub });
+    try {
+      expect(m.nativeTransport).toBe(m.spawnTransport);
+      expect(m.currentNativeTransport()).toBe(m.spawnTransport);
+    } finally {
+      delete g.chrome;
+      delete g.browser;
+    }
   });
 
   test("Safari's promise API wins over connectNative", async () => {
-    const m = await load({
-      chrome: { runtime: { connectNative() { throw new Error("must not connect"); } } },
-      browser: { runtime: { sendNativeMessage: async () => ({ ok: true }) } },
-    });
-    expect(m.nativeTransport).toBe(m.spawnTransport);
+    const chromeStub = { runtime: { connectNative() { throw new Error("must not connect"); } } };
+    const browserStub = { runtime: { sendNativeMessage: async () => ({ ok: true }) } };
+    g.chrome = chromeStub;
+    g.browser = browserStub;
+    const m = await load({ chrome: chromeStub, browser: browserStub });
+    try {
+      expect(m.nativeTransport).toBe(m.spawnTransport);
+      expect(m.currentNativeTransport()).toBe(m.spawnTransport);
+    } finally {
+      delete g.chrome;
+      delete g.browser;
+    }
   });
 
   test("Chrome with connectNative keeps one port for bank ops and sends slow ops per message", async () => {
@@ -677,6 +693,7 @@ describe("store: native transport selection", () => {
     const m = await load({ chrome: chromeStub });
     try {
       expect(m.nativeTransport).not.toBe(m.spawnTransport);
+      expect(m.currentNativeTransport()).toBe(m.nativeTransport);
       expect(await m.nativeTransport({ op: "ping" })).toEqual({ ok: true, echo: "ping" });
       expect(await m.nativeTransport({ op: "get" })).toEqual({ ok: true, echo: "get" });
       expect(connected).toEqual(["dev.vbcr.vani_apply"]);
@@ -684,6 +701,52 @@ describe("store: native transport selection", () => {
       expect(sent).toEqual([{ op: "jobFind" }]);
     } finally {
       delete g.chrome;
+    }
+  });
+
+  test("a module loaded before connectNative exists uses one port once Chrome gains it, and a different connectNative does not reuse that port", async () => {
+    const plain = { runtime: { sendNativeMessage() {} } };
+    g.chrome = plain;
+    g.browser = undefined;
+    const m = await load({ chrome: plain });
+    expect(m.nativeTransport).toBe(m.spawnTransport);
+    expect(m.currentNativeTransport()).toBe(m.spawnTransport);
+
+    let onMsg: (msg: unknown) => void = () => {};
+    function install(tag: string) {
+      const connected: string[] = [];
+      const connectNative = (host: string) => {
+        connected.push(`${tag}:${host}`);
+        return {
+          postMessage: (msg: { op: string }) => queueMicrotask(() => onMsg({ ok: true, echo: msg.op })),
+          disconnect() {},
+          onMessage: { addListener: (cb: (msg: unknown) => void) => { onMsg = cb; } },
+          onDisconnect: { addListener() {} },
+        };
+      };
+      g.chrome = { runtime: { lastError: undefined, connectNative, sendNativeMessage() { throw new Error("slow op only"); } } };
+      return connected;
+    }
+    const firstHost = install("a");
+    try {
+      const first = m.currentNativeTransport();
+      expect(first).not.toBe(m.spawnTransport);
+      expect(m.currentNativeTransport()).toBe(first);
+      expect(m.nativeTransport).toBe(m.spawnTransport);
+      expect(await first({ op: "ping" })).toEqual({ ok: true, echo: "ping" });
+      expect(await first({ op: "get" })).toEqual({ ok: true, echo: "get" });
+      expect(firstHost).toEqual(["a:dev.vbcr.vani_apply"]);
+
+      const secondHost = install("b");
+      const second = m.currentNativeTransport();
+      expect(second).not.toBe(first);
+      expect(m.currentNativeTransport()).toBe(second);
+      expect(await second({ op: "ping" })).toEqual({ ok: true, echo: "ping" });
+      expect(secondHost).toEqual(["b:dev.vbcr.vani_apply"]);
+      expect(firstHost).toEqual(["a:dev.vbcr.vani_apply"]);
+    } finally {
+      delete g.chrome;
+      delete g.browser;
     }
   });
 });

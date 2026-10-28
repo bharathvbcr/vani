@@ -151,9 +151,10 @@ func (s *source) list(ctx context.Context, b sources.Board, listURL, docURL stri
 	return out, nil
 }
 
-// build turns one posting page into a Posting; keep is false for an expired
-// posting. A page with no JobPosting still yields a posting from its <title>
-// and body text, so it is listed rather than lost.
+// build turns one posting page into a Posting. keep is false when the
+// JobPosting chosen for this page is expired. A page with no chosen
+// JobPosting still yields a posting from its <title> and body text, so it is
+// listed rather than lost.
 func (s *source) build(b sources.Board, u target, doc string, seenAt time.Time) (posting.Posting, bool) {
 	sc := scanHTML(doc)
 	p := posting.Posting{
@@ -162,7 +163,7 @@ func (s *source) build(b sources.Board, u target, doc string, seenAt time.Time) 
 		URL:     u.canon,
 		SeenAt:  seenAt,
 	}
-	if jp, ok := findJobPosting(sc.ldJSON); ok {
+	if jp, ok := findJobPosting(u.canon, sc.ldJSON, seenAt); ok {
 		if jp.expired(seenAt) {
 			return p, false
 		}

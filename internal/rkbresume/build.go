@@ -853,7 +853,7 @@ func (b *builder) childEnv(needFit bool) ([]string, *Error) {
 			idx, path = i, v
 		}
 	}
-	if !needFit || onPath(path, "pdftotext") {
+	if !needFit || pdfToolOnPath(path) {
 		return env, nil
 	}
 	dirs := b.cfg.ToolDirs
@@ -861,7 +861,7 @@ func (b *builder) childEnv(needFit bool) ([]string, *Error) {
 		dirs = []string{"/opt/homebrew/bin", "/usr/local/bin"}
 	}
 	for _, d := range dirs {
-		if isExecutable(filepath.Join(d, "pdftotext")) {
+		if pdfToolInDir(d) {
 			np := d
 			if path != "" {
 				np = path + string(os.PathListSeparator) + d
@@ -900,6 +900,33 @@ next:
 	return out
 }
 
+// pdfToolNames are the file names of poppler's pdftotext. Windows installs it
+// as pdftotext.exe; the bare name is still accepted when it is executable.
+func pdfToolNames(goos string) []string {
+	if goos == "windows" {
+		return []string{"pdftotext.exe", "pdftotext"}
+	}
+	return []string{"pdftotext"}
+}
+
+func pdfToolOnPath(path string) bool {
+	for _, name := range pdfToolNames(runtime.GOOS) {
+		if onPath(path, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func pdfToolInDir(dir string) bool {
+	for _, name := range pdfToolNames(runtime.GOOS) {
+		if isExecutable(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	return false
+}
+
 func onPath(path, name string) bool {
 	for _, d := range filepath.SplitList(path) {
 		if d != "" && filepath.IsAbs(d) && isExecutable(filepath.Join(d, name)) {
@@ -911,5 +938,18 @@ func onPath(path, name string) bool {
 
 func isExecutable(p string) bool {
 	st, err := os.Stat(p)
-	return err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0
+	if err != nil || !st.Mode().IsRegular() {
+		return false
+	}
+	return modeExecutable(runtime.GOOS, filepath.Base(p), st.Mode())
+}
+
+// modeExecutable reports whether a regular file may be run. On Windows a
+// file whose name ends in .exe needs no Unix execute bit. Everywhere else
+// the execute bit is required, including for a file named pdftotext.exe.
+func modeExecutable(goos, base string, mode os.FileMode) bool {
+	if goos == "windows" && strings.HasSuffix(strings.ToLower(base), ".exe") {
+		return true
+	}
+	return mode.Perm()&0o111 != 0
 }

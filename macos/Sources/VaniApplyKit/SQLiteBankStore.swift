@@ -137,6 +137,14 @@ public final class SQLiteBankStore: @unchecked Sendable {
     }
 
     private func migrateFromJSON(url: URL, db: OpaquePointer) throws {
+        switch PathProbe.leaf(url) {
+        case .regular(let bytes) where bytes > Int64(Limits.maxBankBytes):
+            throw BankError("bank file is larger than \(Limits.maxBankBytes) bytes")
+        case .regular:
+            break
+        case .absent, .danglingLink, .notRegular, .unavailable:
+            return
+        }
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let validated = try? BankValidator.validate(obj["bank"] ?? obj) else {
@@ -154,7 +162,15 @@ public final class SQLiteBankStore: @unchecked Sendable {
         do {
             try execute("UPDATE meta SET value = '\(rev)' WHERE key = 'rev';", db: db)
             try writeSettings(validated.bank.settings, db: db)
-            for (_, answer) in validated.bank.answers {
+            // validate already stored 0 for a counter past Int32.max, but the file still has the raw
+            // number until the next save. Inserting that 0 would claim the mirror matches the file.
+            // Skip the row and say so; a later save writes the zeroed bank and mirrors it.
+            let rawAnswers = rawAnswerMap(obj)
+            for (key, answer) in validated.bank.answers {
+                if mirrorCounterOverflows(rawAnswers[key]) {
+                    noteMirrorCounterSkipped()
+                    continue
+                }
                 try insertOrReplaceAnswer(answer, db: db)
             }
             try execute("COMMIT;", db: db)
@@ -162,6 +178,21 @@ public final class SQLiteBankStore: @unchecked Sendable {
             try? execute("ROLLBACK;", db: db)
             throw error
         }
+    }
+
+    private func rawAnswerMap(_ obj: [String: Any]) -> [String: Any] {
+        let bank = (obj["bank"] as? [String: Any]) ?? obj
+        return bank["answers"] as? [String: Any] ?? [:]
+    }
+
+    private func mirrorCounterOverflows(_ raw: Any?) -> Bool {
+        guard let row = raw as? [String: Any] else { return false }
+        return BankValidator.exceedsMirrorCounter(row["uses"]) || BankValidator.exceedsMirrorCounter(row["fills"])
+    }
+
+    /// Fixed text only: no answer key, value, or counter. A trap cannot be caught after the JSON write.
+    private func noteMirrorCounterSkipped() {
+        FileHandle.standardError.write(Data("vani: bank.sqlite mirror skipped a row whose counter does not fit; bank.json is unaffected\n".utf8))
     }
 
     // MARK: - Revision Management
@@ -233,6 +264,13 @@ public final class SQLiteBankStore: @unchecked Sendable {
     // MARK: - Answer Operations
 
     private func insertOrReplaceAnswer(_ a: Answer, db: OpaquePointer) throws {
+        // Int32(_:) traps when the value does not fit, and a trap is not a thrown error.
+        // sqlite3_bind_int must not be called with a value outside Int32. Skip the row.
+        guard let uses = Int32(exactly: a.uses), let fills = Int32(exactly: a.fills) else {
+            noteMirrorCounterSkipped()
+            return
+        }
+
         let valData = try JSONSerialization.data(withJSONObject: a.value)
         let valStr = String(decoding: valData, as: UTF8.self)
 
@@ -250,8 +288,8 @@ public final class SQLiteBankStore: @unchecked Sendable {
         sqlite3_bind_text(stmt, 2, a.kind.rawValue, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 3, valStr, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 4, a.sensitivity.rawValue, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int(stmt, 5, Int32(a.uses))
-        sqlite3_bind_int(stmt, 6, Int32(a.fills))
+        sqlite3_bind_int(stmt, 5, uses)
+        sqlite3_bind_int(stmt, 6, fills)
         sqlite3_bind_text(stmt, 7, a.updatedAt, -1, SQLITE_TRANSIENT)
         sqlite3_bind_int(stmt, 8, a.review ? 1 : 0)
 

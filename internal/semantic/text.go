@@ -222,14 +222,105 @@ func splitSentences(line string) []string {
 	return append(out, strings.TrimSpace(line[last:]))
 }
 
+// phoneMaxSep is how many separator characters may sit in a row between digit
+// groups of one phone-shaped run. A fourth ends the run, so a space, four
+// dashes and a space ("555 ---- 4567") is not one number.
+const phoneMaxSep = 3
+
+// isPhoneSep reports a character that may join digit groups: a space, a dot,
+// a hyphen, an en dash, or a parenthesis.
+func isPhoneSep(r rune) bool {
+	switch r {
+	case '.', '-', '\u2013', '(', ')':
+		return true
+	default:
+		return unicode.Is(unicode.Zs, r)
+	}
+}
+
+// asciiYear reports four ASCII digits that read as a year from 1900 through 2099.
+func asciiYear(rs []rune) bool {
+	if len(rs) != 4 {
+		return false
+	}
+	n := 0
+	for _, r := range rs {
+		if r < '0' || r > '9' {
+			return false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n >= 1900 && n <= 2099
+}
+
+// phoneYearSpan is the one run that is not a phone: exactly two groups, joined
+// only by "-" or "–" with no spaces, both four-digit years from 1900 through 2099.
+func phoneYearSpan(groups [][]rune, seps []string) bool {
+	if len(groups) != 2 || len(seps) != 1 {
+		return false
+	}
+	if seps[0] != "-" && seps[0] != "\u2013" {
+		return false
+	}
+	return asciiYear(groups[0]) && asciiYear(groups[1])
+}
+
+// stripPhoneRuns replaces a phone-shaped run with a space. A run is seven or
+// more Unicode decimal digits in one group, or in groups joined by at most
+// phoneMaxSep separators. Circled digits and superscripts are not decimal
+// digits. The year span phoneYearSpan lets through is left as written.
+func stripPhoneRuns(s string) string {
+	rs := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(rs); {
+		if !unicode.IsDigit(rs[i]) {
+			b.WriteRune(rs[i])
+			i++
+			continue
+		}
+		start := i
+		var groups [][]rune
+		var seps []string
+		digits := 0
+		for {
+			j := i
+			for j < len(rs) && unicode.IsDigit(rs[j]) {
+				j++
+			}
+			groups = append(groups, rs[i:j])
+			digits += j - i
+			i = j
+			k := i
+			for k < len(rs) && k-i < phoneMaxSep && isPhoneSep(rs[k]) {
+				k++
+			}
+			if k == i || k >= len(rs) || !unicode.IsDigit(rs[k]) {
+				break
+			}
+			seps = append(seps, string(rs[i:k]))
+			i = k
+		}
+		if phoneYearSpan(groups, seps) || digits < 7 {
+			b.WriteString(string(rs[start:i]))
+			continue
+		}
+		b.WriteByte(' ')
+	}
+	return b.String()
+}
+
 // cleanBulletText makes bank text safe and meaningful to embed: markdown
 // removed, claim tokens ({{clmX}}, whose values live in rkb and are numbers
-// that carry no meaning to an embedder) dropped, URLs and e-mail addresses
-// removed, one line.
+// that carry no meaning to an embedder) dropped, URLs, e-mail addresses,
+// phone-shaped runs and work-authorization phrases removed, one line. It does
+// not scrub names, so an organisation named in the bullet stays.
 func cleanBulletText(s string) string {
 	s = claimRe.ReplaceAllString(s, " ")
 	s = kbsync.PlainText(s)
 	s = urlRe.ReplaceAllString(s, " ")
 	s = emailRe.ReplaceAllString(s, " ")
+	s = stripPhoneRuns(s)
+	s = authorizationRe.ReplaceAllString(s, " ")
 	return tidy(s)
 }

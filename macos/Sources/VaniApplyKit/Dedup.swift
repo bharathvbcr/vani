@@ -17,8 +17,8 @@ import Foundation
 public enum Dedup {
     /// An answer shorter than this (after normalizing) is too generic to group by ("yes", "no").
     static let minValueChars = 5
-    /// Counters in the bank are safe integers; the validator reads anything larger as 0.
-    static let maxCount = 9_007_199_254_740_991
+    /// Largest counter the validator keeps. A larger sum is read back as 0, and sqlite3_bind_int cannot store it.
+    static let maxCount = Int(Int32.max)
 
     public struct ValueChoice: Equatable, Sendable {
         /// The row whose value (and draft flag) this choice takes.

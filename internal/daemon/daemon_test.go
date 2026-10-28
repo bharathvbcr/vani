@@ -395,6 +395,46 @@ func TestJobErrorAndPanicKeepSchedule(t *testing.T) {
 	h.stop()
 }
 
+// A panic used to return nil from runJob, which RunWith treats as a clean
+// serve: no "job failed" line, and the slot looks served. The cursor still
+// advances, and the error is not ErrFatal, so the daemon does not exit.
+func TestPanickingJobIsAFailedServeThatAdvances(t *testing.T) {
+	logs := captureLogs(t)
+	err := runJob(context.Background(), func(context.Context) error { panic("kaboom") })
+	if err == nil || errors.Is(err, ErrFatal) || !strings.Contains(err.Error(), "kaboom") {
+		t.Fatalf("runJob returned %v, want a non-fatal error carrying the panic text", err)
+	}
+	fatal := runJob(context.Background(), func(context.Context) error { panic(ErrFatal) })
+	if fatal == nil || errors.Is(fatal, ErrFatal) {
+		t.Fatalf("panic(ErrFatal) returned %v, want a non-fatal error", fatal)
+	}
+	if !logs.has("job failed") || !logs.has("job panicked: kaboom") {
+		t.Fatalf("scheduler log: %v", logs.lines)
+	}
+
+	loc := la(t)
+	var n atomic.Int32
+	h := start(t, time.Date(2026, 10, 18, 7, 0, 0, 0, loc), func(context.Context, *harness) error {
+		if n.Add(1) == 1 {
+			panic("slot one")
+		}
+		return nil
+	})
+	h.clock.Advance(time.Date(2026, 10, 18, 8, 30, 0, 0, loc))
+	h.waitRan()
+	h.clock.waitReg(t)
+	h.clock.Advance(time.Date(2026, 10, 19, 8, 30, 0, 0, loc))
+	h.waitRan()
+	h.clock.waitReg(t)
+	if got := h.runs.Load(); got != 2 {
+		t.Fatalf("runs = %d, want 2 (cursor advanced after the panic)", got)
+	}
+	if !logs.has("job failed") || !logs.has("job panicked: slot one") {
+		t.Fatalf("second slot's log: %v", logs.lines)
+	}
+	h.stop()
+}
+
 func TestSkippedHookFiresOncePastTheWindow(t *testing.T) {
 	loc := la(t)
 	clock := newClock(time.Date(2026, 10, 18, 7, 0, 0, 0, loc))

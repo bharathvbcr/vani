@@ -85,6 +85,62 @@ func writeRunHistory(stateDir string, r runRecord) error {
 	return err
 }
 
+// writeFinishedHistory is writeRunHistory for the flush below. A test counts
+// the calls. Production stays at two: one try, and one retry if that fails.
+var writeFinishedHistory = writeRunHistory
+
+// historyFileKept reports whether path is the history record itself.
+// Lstat does not follow a symlink leaf, and anything that is not a regular
+// file (a link, a directory, a device) is not a keep.
+func historyFileKept(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
+}
+
+// flushFinishedLast copies a finished last.json into the history when that
+// file is not already a regular record, so the caller can replace last.json
+// without dropping the only copy. No record and a running record need nothing.
+// An unreadable last.json is not invented: the caller writes as it does today.
+// The leaf is classified with Lstat before any open. A missing file is no
+// record. A symlink, FIFO, directory, socket or device is not opened, and a
+// symlink is not followed, so the caller writes the new record. An empty
+// state dir is left to that write, which refuses it. writeRunHistory is
+// tried, and on failure tried once more, then stopped. A prune error after
+// the file is present does not block; a file that is still not regular does.
+func flushFinishedLast(stateDir string) error {
+	if stateDir == "" {
+		return nil
+	}
+	// os.Open would follow a symlink and block on a FIFO, so a leaf that is
+	// not shown to be a regular file is left for the caller to replace.
+	info, err := os.Lstat(runRecordPath(stateDir))
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	prev, err := readRunRecord(stateDir)
+	if err != nil || prev == nil || prev.Outcome == outcomeRunning {
+		return nil
+	}
+	path := runHistoryPath(stateDir, runID(*prev))
+	if historyFileKept(path) {
+		return nil
+	}
+	werr := writeFinishedHistory(stateDir, *prev)
+	if werr != nil {
+		werr = writeFinishedHistory(stateDir, *prev)
+	}
+	if historyFileKept(path) {
+		return nil
+	}
+	if werr == nil {
+		return fmt.Errorf("run history %s is not a regular file", filepath.Base(path))
+	}
+	return werr
+}
+
 // archiveInterruptedRun keeps, in the history as "interrupted", the run that
 // last.json says is still going when it is not: it is called by a run that has
 // just taken the ledger (dailyJob), before that run replaces last.json, so the
@@ -96,9 +152,9 @@ func writeRunHistory(stateDir string, r runRecord) error {
 // earlier run of this same process that never wrote its end. That is why the
 // record's pid is not asked whether it lives: a pid is reused (after a reboot
 // above all), and a live reader of it would hide the run for good. The one
-// check kept is the daemon's: if daemon.json names a live process other than
-// this one and it is the record's pid, the record is left alone, since a caller
-// that does not hold the ledger would otherwise archive a live run.
+// check kept is the daemon's: if daemon.json names this vani process and it
+// is the record's pid, the record is left alone. A pid that merely exists, or
+// whose executable is not this binary, is not that daemon.
 //
 // It returns the record it archived, or nil when it archived nothing: no
 // record, a finished one (already in the history), a live daemon's, or one the

@@ -56,14 +56,20 @@ var (
 	idleBackoffMax = 4 * time.Hour
 	// idleBusyRetry is the wait after another warm held the cache lock.
 	idleBusyRetry = 5 * time.Minute
-	// idleYieldWait bounds how long a run waits for a window to stop: one
-	// embedding call (Tessl may finish its batch on Metal after the context
-	// ends) and a margin.
+	// idleYieldWait bounds how long Pause waits for a window to stop. Pause can
+	// spend that wait on an embedding call finishing after cancel; Close runs
+	// only after that finish. The margin past DefaultTesslCallTimeout is so
+	// Pause is not still waiting when the window then ends.
 	idleYieldWait = semantic.DefaultTesslCallTimeout + 15*time.Second
+	// idleEmbedJoin is how long the window itself waits for that abandoned
+	// Embed before it gives up on Close. It is the Tessl call bound, so the
+	// wait fits inside idleYieldWait.
+	idleEmbedJoin = semantic.DefaultTesslCallTimeout
 	// idlePowerTimeout bounds the power probe.
 	idlePowerTimeout = 5 * time.Second
 	// idleBadChunks is how many chunks in a row may score nothing before the
-	// window stops and backs off.
+	// window stops and backs off. A chunk whose only failure is its own
+	// deadline does not count: that is the chunk stopping, not a failed model.
 	idleBadChunks = 3
 )
 
@@ -530,8 +536,11 @@ func (w *idleWarmer) backlog(ctx context.Context, cfg config.Config) (docs []sem
 
 // window loads the model once and warms docs in chunks until they are done, a
 // run pauses the gate, the Mac leaves AC power, the model is unavailable or the
-// window's time is up. It closes the embedder, and only then ends the window,
-// so a run that paused the gate finds the model and the lock both free.
+// window's time is up. It waits for an Embed that callEmbed has already
+// abandoned, then closes the embedder, and only then ends the window, so a run
+// that paused the gate finds the model and the lock both free. If that Embed
+// is still inside when the wait expires, Close is skipped and the window still
+// ends, so Pause cannot hang past idleYieldWait.
 func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semantic.Profile, docs []semantic.Doc, ranks map[string]float64, st *idleState) time.Duration {
 	wctx, end, ok := w.gate.open(ctx)
 	if !ok {
@@ -550,8 +559,17 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 	if err != nil {
 		return w.stopped(ctx, wctx, st, "the embedding model could not be loaded: "+oneLine(err.Error(), 200))
 	}
-	defer func() { _ = closeEmb() }()
-	m, _, err := openScoreCache(emb, prof, semanticDir(w.stateDir))
+	tracked := semantic.TrackEmbedder(emb)
+	// Wait out here, before Close. Close must not be entered while Embed is
+	// still running; skipping it is recorded and the window still ends.
+	defer func() {
+		if !tracked.Wait(idleEmbedJoin) {
+			fmt.Fprintf(w.stderr, "vani: idle warm: embedding still running after %s; model close skipped\n", idleEmbedJoin)
+			return
+		}
+		_ = closeEmb()
+	}()
+	m, _, err := openScoreCache(tracked, prof, semanticDir(w.stateDir))
 	if err != nil {
 		return w.stopped(ctx, wctx, st, "the score cache could not be opened: "+oneLine(err.Error(), 200))
 	}
@@ -561,6 +579,9 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 	var win idleCounts
 	rebuilt := false
 	bad := 0
+	// modelMiss is a zero-score chunk that was not the chunk's own deadline.
+	// Deadline-only windows are not a failed model and do not back off.
+	modelMiss := false
 	// commit folds the window's counts into the state, once, whichever way the
 	// window ends.
 	commit := func() {
@@ -585,6 +606,8 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 		chunk := docs[i:min(i+idleChunkDocs, len(docs))]
 		cctx, ccancel := context.WithTimeout(wctx, idleChunkTime)
 		r, werr := m.Warm(cctx, chunk, len(chunk))
+		// Read the chunk error before cancel: cancel would hide a clean return.
+		chunkDeadline := errors.Is(cctx.Err(), context.DeadlineExceeded) && errors.Is(werr, context.DeadlineExceeded)
 		ccancel()
 		win.Chunks++
 		win.Scored += r.Scored
@@ -607,15 +630,21 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 			w.record(st, idleBusy, "another warm holds the semantic cache; will retry")
 			return idleBusyRetry
 		case werr != nil && (r.Unavailable || errors.Is(werr, semantic.ErrUnavailable)):
+			// Unavailable wins even when the chunk deadline also fired.
 			commit()
 			return w.backoff(st, "the embedding model is unavailable: "+oneLine(werr.Error(), 160))
+		case r.Scored+r.Rescored == 0 && chunkDeadline:
+			// The chunk's own deadline, including one inside ensureProfile.
+			// Not a failed model, so it does not count toward idleBadChunks.
 		case r.Scored+r.Rescored == 0:
+			modelMiss = true
 			if bad++; bad >= idleBadChunks {
 				commit()
 				return w.backoff(st, fmt.Sprintf("%d chunks in a row scored nothing (%d failed)", bad, win.Failed))
 			}
 		default:
 			bad = 0
+			modelMiss = false
 			st.BackoffSec, st.NextEligible = 0, time.Time{} // progress ends a backoff
 		}
 	}
@@ -624,6 +653,10 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 		return w.stopped(ctx, wctx, st, "")
 	}
 	if win.Scored+win.Rescored == 0 {
+		if !modelMiss {
+			w.record(st, idleLimit, fmt.Sprintf("a chunk's %s limit ended scoring before a score was written; the next check continues", idleChunkTime))
+			return idleNudgeGap
+		}
 		return w.backoff(st, fmt.Sprintf("the window scored nothing (%d failed)", win.Failed))
 	}
 	w.record(st, idleDone, fmt.Sprintf("caught up for now: the last window scored %d, rescored %d, failed %d", win.Scored, win.Rescored, win.Failed))

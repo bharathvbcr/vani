@@ -1,7 +1,7 @@
 // Package rkbexec is the one place Vani runs the rkb binary (and the other
 // bounded helper processes the knowledge-bank code starts): a Runner seam that
 // tests fake, and an ExecRunner that bounds the run's time and captured output
-// and, on unix, stops the whole process group when it is cancelled or times out.
+// and stops the whole process tree when it is cancelled or times out.
 // Both internal/kbsync (rkb claims export) and internal/rkbresume (every rkb
 // step of a resume build) run through it.
 package rkbexec
@@ -78,9 +78,25 @@ func (ExecRunner) Run(ctx context.Context, c Command, timeout time.Duration) (Ou
 	cmd.Stdin = nil
 	var out, errw capWriter
 	cmd.Stdout, cmd.Stderr = &out, &errw
-	configureProcess(cmd)
+	if err := configureProcess(cmd); err != nil {
+		return Output{}, fmt.Errorf("%s: %w", c.Path, err)
+	}
+	defer dropGroup(cmd)
 	cmd.WaitDelay = waitDelay
-	err := cmd.Run()
+	// Start, then adopt, then Wait: Windows creates the child suspended and
+	// adopt assigns its job before the child can start a renderer.
+	err := cmd.Start()
+	if err == nil {
+		if aerr := adoptGroup(cmd); aerr != nil {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			err = aerr
+		} else {
+			err = cmd.Wait()
+		}
+	}
 	o := Output{Stdout: out.buf.String(), Stderr: errw.buf.String()}
 	if err == nil {
 		return o, nil

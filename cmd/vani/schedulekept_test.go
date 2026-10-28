@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -36,10 +37,11 @@ func keptSetup(t *testing.T, advance, live int) keptFix {
 	cfg.AdvancePerRun = advance
 	writeConfig(t, cfgPath, cfg)
 
-	oldNow, oldAlive := now, pidAlive
-	t.Cleanup(func() { now, pidAlive = oldNow, oldAlive })
+	oldNow, oldAlive, oldID := now, pidAlive, daemonIdentity
+	t.Cleanup(func() { now, pidAlive, daemonIdentity = oldNow, oldAlive, oldID })
 	now = func() time.Time { return keptNow }
 	pidAlive = func(int) bool { return false }
+	daemonIdentity = func(int) procIdentity { return procIdentity{} }
 
 	if live >= 0 {
 		m := &memLedger{recs: map[posting.Key]*ledger.Record{}}
@@ -141,10 +143,21 @@ func TestStatusStaleDaemonRecordIsNotAKeeper(t *testing.T) {
 
 func TestStatusRunningDaemonKeepsTheSchedule(t *testing.T) {
 	f := keptSetup(t, 750, 1600)
-	if err := writeDaemonRecord(f.stateDir, 4242, keptNow.Add(-time.Hour)); err != nil {
+	announced := keptNow.Add(-time.Hour)
+	if err := writeDaemonRecord(f.stateDir, 4242, announced); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
 	pidAlive = func(pid int) bool { return pid == 4242 }
+	daemonIdentity = func(pid int) procIdentity {
+		if pid != 4242 {
+			return procIdentity{}
+		}
+		return procIdentity{OK: true, Exe: exe, Started: announced}
+	}
 	s := statusOf(t)
 	if s.Schedule.Kept == nil || !*s.Schedule.Kept || s.Schedule.Unkept != nil {
 		t.Errorf("a live daemon keeps it, with nothing to report: %+v", s.Schedule)
@@ -152,6 +165,35 @@ func TestStatusRunningDaemonKeepsTheSchedule(t *testing.T) {
 	o, _ := mustCode(t, 0, "status")
 	if strings.Contains(o, "not kept") || strings.Contains(o, "awaiting triage") {
 		t.Errorf("a kept schedule adds no noise:\n%s", o)
+	}
+}
+
+// A pid this process can see is not the daemon when it is a different
+// executable, or when the kernel will not let us inspect it. pidAlive
+// alone must not keep the schedule.
+func TestScheduleKeepingForeignPidIsNotAKeeper(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   procIdentity
+	}{
+		{"wrong executable", procIdentity{OK: true, Exe: "/usr/bin/not-vani", Started: keptNow.Add(-2 * time.Hour)}},
+		{"uninspectable", procIdentity{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := keptSetup(t, 750, 3)
+			if err := writeDaemonRecord(f.stateDir, 4242, keptNow.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			pidAlive = func(int) bool { return true }
+			daemonIdentity = func(int) procIdentity { return tc.id }
+			s := statusOf(t)
+			if s.Daemon.Running || !s.Daemon.OK || s.Schedule.Kept == nil || *s.Schedule.Kept || s.Schedule.Unkept == nil {
+				t.Fatalf("daemon %+v schedule %+v", s.Daemon, s.Schedule)
+			}
+			if !strings.Contains(s.Schedule.Unkept.Why, "pid 4242") {
+				t.Errorf("why %q", s.Schedule.Unkept.Why)
+			}
+		})
 	}
 }
 
