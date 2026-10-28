@@ -613,6 +613,7 @@ flowchart LR
 go -C /Users/bharath/Code/apps/Vani build -o build/vani ./cmd/vani
 build/vani init
 build/vani watchlist add --ats gh --token <board> --company <Name> --allow-host
+build/vani watchlist discover --search "ml engineer" --country US --work-mode remote --allow-host   # boards to consider; prints the add command for each, edits nothing
 build/vani config check
 build/vani run-once
 build/vani run-once --board gh:<board> --advance 25 --no-digest
@@ -692,6 +693,30 @@ no `robots.txt` and no delay. lightpanda runs as `Vani/0.1 (+personal job-listin
 serves a whole board, so it reads the host's `robots.txt` once per board. The wait happens before
 each navigation, since lightpanda gives up on a first response after 5 s and the egress proxy's own
 per-host pacing must stay under that.
+
+Finding boards: `watchlist discover --search "ml engineer" [--country US] [--work-mode remote]
+[--seniority senior] [--pages N] [--json]` asks [freehire.me](https://freehire.me)'s public search
+API which companies have roles matching the search, and prints the distinct boards ranked by how
+many matched, each marked `new` or `watched` with the `vani watchlist add …` that adds it. It is
+board discovery only, never a posting source: Vani still reads every posting from the employer's
+own board, and the command never edits the watchlist. Results on a site Vani has no adapter for
+(job aggregators, ATSs without one) are listed by source name and count, as are results whose URL
+names no board, so nothing is dropped silently. It reads Greenhouse, Lever, Ashby, Workday, Gem,
+SmartRecruiters, Workable, Rippling and Oracle Recruiting Cloud boards (the table is
+`sourceATS` in `internal/discover/freehire`, boards read from the posting's URL by
+`sources.BoardFromURL`); a Workday or Oracle board's command carries the search as its `--search`,
+since a whole company's board is rarely what a discovery search was after. freehire.me is a
+third-party host, so it is opt-in the way a board's host is: without it in `allowed_hosts` the
+command refuses and names it, and `--allow-host` adds it. The client may reach that host and no
+other. Its terms allow keyless use for personal, non-commercial purposes and forbid scraping beyond
+its documented API, so a search is one request of 100 results by default, `--pages` reads at most 3
+(spaced 3 s apart), a 429 is given up on within 15 s, and the output says when it read fewer
+matches than freehire holds (`read 100 of 1340`). A printed `--allow-host` appears only when the
+board's own API host is not allowed yet. Company names come from that site: they are cleaned and
+shell-quoted in the printed commands, and the board a command names is worth a `run-once --board
+ATS:TOKEN --list-only` before it joins the daily run (Greenhouse boards hosted on
+`job-boards.eu.greenhouse.io` are named from the result's id and not checked against Vani's Greenhouse
+adapter).
 
 Company icons: a board's optional `domain` is the host of the company's own website
 (`watchlist add … --domain www.acme.com`, or `watchlist domain --ats gh --token acme --domain
