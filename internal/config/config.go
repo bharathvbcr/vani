@@ -808,7 +808,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.google.com", true
 	case posting.Apple:
 		return "jobs.apple.com", true
-	case posting.Workday, posting.Eightfold, posting.Jibe:
+	case posting.Workday, posting.Eightfold, posting.Jibe, posting.OracleHCM:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
@@ -863,14 +863,46 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe:
+	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe:
 		return true
 	}
 	return false
 }
 
-// optionalSearchATS list their whole board when given no search.
-func optionalSearchATS(a posting.ATS) bool { return a == posting.Workday || a == posting.Jibe }
+// optionalSearchATS list their whole board when given no search. An Oracle HCM
+// board over the adapter's cap (jpmc/CX_1001 counts 7,317) fails at the first
+// page with the way out; a small tenant needs no search.
+func optionalSearchATS(a posting.ATS) bool {
+	return a == posting.Workday || a == posting.Jibe || a == posting.OracleHCM
+}
+
+// oracleHCMName matches an Oracle HCM "tenant/site" token whose parts are the
+// safe path and finder names the adapter accepts (oraclehcm.parseToken).
+var oracleHCMName = regexp.MustCompile(`^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`)
+
+// validOracleHCM checks an oc board: the token is "tenant/site" and the host
+// "{tenant}.fa[.{region}].oraclecloud.com" whose first label is the tenant.
+func validOracleHCM(b sources.Board) error {
+	if !oracleHCMName.MatchString(b.Token) {
+		return fmt.Errorf("oc token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
+	}
+	tenant, _, _ := strings.Cut(strings.ToLower(b.Token), "/")
+	label, ok := sources.OracleHCMHostTenant(b.Host)
+	if !ok {
+		return fmt.Errorf("oc board %s needs host {tenant}.fa.oraclecloud.com or {tenant}.fa.{region}.oraclecloud.com, got %q", b.Token, b.Host)
+	}
+	if label != tenant {
+		return fmt.Errorf("oc host %q does not belong to tenant %q", b.Host, tenant)
+	}
+	// The adapter quotes a term into the finder, where a quote ends it and a
+	// backslash escapes the next character, so it refuses both.
+	for _, s := range b.SearchTerms() {
+		if strings.ContainsAny(s, `"\`) {
+			return fmt.Errorf("oc board %s: search %q must not contain a quote or a backslash", b.Token, s)
+		}
+	}
+	return nil
+}
 
 // jibeClient matches a Jibe client code, a Jibe board's token.
 var jibeClient = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
@@ -894,7 +926,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap, ef and jb only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef and jb only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -941,9 +973,9 @@ const ScrapeSuffix = "-scrape"
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.OracleHCM, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, oc, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -987,6 +1019,10 @@ func ValidBoard(b sources.Board) error {
 				return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
 			}
 		}
+	} else if b.ATS == posting.OracleHCM {
+		if err := validOracleHCM(b); err != nil {
+			return err
+		}
 	} else if strings.Contains(b.Token, "/") {
 		return fmt.Errorf("board (%s) token %q must not contain '/'", b.ATS, b.Token)
 	}
@@ -1006,15 +1042,15 @@ func ValidBoard(b sources.Board) error {
 		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
 			return fmt.Errorf("jibe board %s needs host, its careers site, e.g. careers.amd.com; got %q", b.Token, b.Host)
 		}
-	} else if b.ATS != posting.Workday && b.Host != "" {
-		return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
+	} else if b.ATS != posting.Workday && b.ATS != posting.OracleHCM && b.Host != "" {
+		return fmt.Errorf("board %s/%s: host applies to wd, oc, ef and jb only", b.ATS, b.Token)
 	}
 	if err := validSearches(b); err != nil {
 		return err
 	}
 	if b.MaxPostings != 0 {
-		if b.ATS != posting.Workday {
-			return fmt.Errorf("board %s/%s: max_postings applies to wd only", b.ATS, b.Token)
+		if b.ATS != posting.Workday && b.ATS != posting.OracleHCM {
+			return fmt.Errorf("board %s/%s: max_postings applies to wd and oc only", b.ATS, b.Token)
 		}
 		if b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling {
 			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means the default)", b.ATS, b.Token, b.MaxPostings, sources.MaxPostingsCeiling)

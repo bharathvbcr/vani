@@ -124,7 +124,6 @@ var (
 	// told from a posting except by its id. It is counted in the search's total
 	// but is not a posting.
 	tombstoneRE = regexp.MustCompile(`^[0-9]{1,20}_[0-9]{1,20}_ORA_DELETED$`)
-	regionRE    = regexp.MustCompile(`^[a-z]{2}[0-9]{1,2}$`)
 )
 
 // reqID is a requisition's id as the host writes it: a JSON string ("210791916")
@@ -579,31 +578,19 @@ func validName(s string) bool {
 }
 
 // checkHost requires a bare hostname "{tenant}.fa.oraclecloud.com" or
-// "{tenant}.fa.{region}.oraclecloud.com" (region "us2", "em2"...), whose first
-// label is the tenant, so a board cannot send its requests to a host its token
-// does not name.
+// "{tenant}.fa.{region}.oraclecloud.com" (sources.OracleHCMHostTenant, the one
+// definition config and the ingest read too) whose first label is the tenant,
+// so a board cannot send its requests to a host its token does not name.
 func checkHost(host, tenant string) (string, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return "", errors.New("board host is empty")
 	}
-	for _, r := range host {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.') {
-			return "", fmt.Errorf("board host %q is not a bare hostname", host)
-		}
-	}
-	rest, ok := strings.CutSuffix(host, ".oraclecloud.com")
+	label, ok := sources.OracleHCMHostTenant(host)
 	if !ok {
 		return "", fmt.Errorf("board host %q is not {tenant}.fa[.{region}].oraclecloud.com", host)
 	}
-	labels := strings.Split(rest, ".")
-	switch {
-	case len(labels) == 2 && labels[1] == "fa":
-	case len(labels) == 3 && labels[1] == "fa" && regionRE.MatchString(labels[2]):
-	default:
-		return "", fmt.Errorf("board host %q is not {tenant}.fa[.{region}].oraclecloud.com", host)
-	}
-	if labels[0] != strings.ToLower(tenant) {
+	if label != strings.ToLower(tenant) {
 		return "", fmt.Errorf("board host %q does not start with tenant %q", host, tenant)
 	}
 	return host, nil

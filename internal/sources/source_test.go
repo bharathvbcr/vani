@@ -43,9 +43,34 @@ func TestKeyPrefixForSearchSites(t *testing.T) {
 		{Board{ATS: posting.Eightfold, Token: "microsoft.com"}, "ef:microsoft.com:"},
 		{Board{ATS: posting.Jibe, Token: "AMD"}, "jb:amd:"},
 		{Board{ATS: posting.Workday, Token: "nvidia/Site"}, "wd:nvidia:site:"},
+		{Board{ATS: posting.OracleHCM, Token: "JPMC/CX_1001"}, "oc:jpmc:cx_1001:"},
 	} {
 		if got := tc.b.KeyPrefix(); got != tc.want {
 			t.Errorf("%+v: %q, want %q", tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestOracleHCMHostTenant(t *testing.T) {
+	for host, want := range map[string]string{
+		"jpmc.fa.oraclecloud.com":          "jpmc",
+		" JPMC.FA.ORACLECLOUD.COM ":        "jpmc",
+		"eeho.fa.us2.oraclecloud.com":      "eeho",
+		"acme-corp.fa.em2.oraclecloud.com": "acme-corp",
+	} {
+		if got, ok := OracleHCMHostTenant(host); !ok || got != want {
+			t.Errorf("%q: %q, %v; want %q", host, got, ok, want)
+		}
+	}
+	for _, host := range []string{
+		"", "oraclecloud.com", "jpmc.oraclecloud.com", "fa.jpmc.oraclecloud.com", "jpmc.fa.example.com",
+		"jpmc.fa.oraclecloud.com.evil.test", "evil.jpmc.fa.oraclecloud.com", "jpmc.fa.us-2.oraclecloud.com",
+		"jpmc.fa.us2.em2.oraclecloud.com", "jpmc.fa.oraclecloud.com:443", "x@jpmc.fa.oraclecloud.com",
+		"jpmc.fa.oraclecloud.com/x", "-jpmc.fa.oraclecloud.com", ".fa.oraclecloud.com", "jpmc.fa.oraclecloud.com.",
+		"jpmc.wd5.myworkdayjobs.com", "jpmc.fa.u2.oraclecloud.com", "jpmc.fa.usa2.oraclecloud.com",
+	} {
+		if got, ok := OracleHCMHostTenant(host); ok {
+			t.Errorf("%q accepted as tenant %q", host, got)
 		}
 	}
 }
