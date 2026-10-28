@@ -656,31 +656,35 @@ func TestDetailWithoutReqIDIsError(t *testing.T) {
 }
 
 // Visa's detail of ".../Data-Scientist---Visa-Consulting---Analytics_REF081808W"
-// answered jobReqId "" (2026-10-28) and failed the whole 860-posting board.
+// answered jobReqId "" and its listing row had no bulletFields (2026-10-28):
+// the whole 860-posting board failed on it.
 func TestEmptyReqIDFallsBackToThePostingIDTheListingAgreesWith(t *testing.T) {
+	const visaPath = "/job/IN---Remote---IND/Data-Scientist---Visa-Consulting---Analytics_REF081808W"
 	cases := map[string]struct {
-		req, postingID string
-		bullets        []string
-		want           string
+		req, postingID, path string
+		bullets              []string
+		want                 string
 	}{
-		"jobReqId wins":               {"JR1", "T_JR9", []string{"JR9"}, "JR1"},
-		"visa":                        {"", "Data-Scientist---Visa-Consulting---Analytics_REF081808W", []string{"REF081808W"}, "REF081808W"},
-		"repost suffix dropped":       {"", "Cybersecurity-Engineer_REF087764W-1", []string{"REF087764W"}, "REF087764W"},
-		"listing disagrees":           {"", "T_REF1", []string{"REF2"}, ""},
-		"no bullets":                  {"", "T_REF1", nil, ""},
-		"no underscore":               {"", "REF1", []string{"REF1"}, ""},
-		"empty suffix":                {"", "T_", []string{""}, ""},
-		"blank jobReqId is not an id": {"  ", "T_REF1", []string{"REF1"}, "REF1"},
+		"jobReqId wins":               {"JR1", "T_JR9", "/job/X/T_JR9", []string{"JR9"}, "JR1"},
+		"visa, no bullets":            {"", "Data-Scientist---Visa-Consulting---Analytics_REF081808W", visaPath, nil, "REF081808W"},
+		"bullets agree":               {"", "T_REF1", "/job/X/T_REF1", []string{"REF1"}, "REF1"},
+		"repost suffix dropped":       {"", "Cybersecurity-Engineer_REF087764W-1", "/job/X/Cybersecurity-Engineer_REF087764W-1", []string{"REF087764W"}, "REF087764W"},
+		"path disagrees":              {"", "T_REF1", "/job/X/T_REF2", nil, ""},
+		"bullets disagree":            {"", "T_REF1", "/job/X/T_REF1", []string{"REF2"}, ""},
+		"no underscore":               {"", "REF1", "/job/X/REF1", nil, ""},
+		"empty suffix":                {"", "T_", "/job/X/T_", nil, ""},
+		"empty path":                  {"", "T_REF1", "", nil, ""},
+		"blank jobReqId is not an id": {"  ", "T_REF1", "/job/X/T_REF1", nil, "REF1"},
 	}
 	for name, c := range cases {
-		if got := reqID(c.req, c.postingID, c.bullets); got != c.want {
+		if got := reqID(c.req, c.postingID, c.path, c.bullets); got != c.want {
 			t.Errorf("%s: reqID = %q, want %q", name, got, c.want)
 		}
 	}
 }
 
 func TestEmptyReqIDPostingIsListedUnderItsPathID(t *testing.T) {
-	for name, bullets := range map[string]string{"agrees": `["R1"]`, "disagrees": `["R2"]`} {
+	for name, bullets := range map[string]string{"agrees": `["R1"]`, "none": `[]`, "disagrees": `["R2"]`} {
 		s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
 			if r.Method == "GET" {
 				return ok(`{"jobPostingInfo":{"jobReqId":"","jobPostingId":"X_R1","title":"x","jobDescription":"<p>d</p>"}}`), true

@@ -352,24 +352,35 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 var repostSuffix = regexp.MustCompile(`-[0-9]{1,3}$`)
 
 // reqID is a posting's requisition id: the detail's jobReqId. Visa left it
-// empty on one posting of 860 (2026-10-28, "..._REF081808W"); its id is then
-// the trailing "_{id}" of the detail's jobPostingId, accepted only when the
-// listing row's bullet fields carry the same id, so two separate fields agree
-// on it and a reposting keeps the key it would have had. Otherwise it is "",
-// which WorkdayKey refuses.
-func reqID(jobReqID, jobPostingID string, bullets []string) string {
+// empty on one posting of 860 (2026-10-28, "..._REF081808W"), and that
+// posting's listing row had no bulletFields either. Its id is then the
+// trailing "_{id}" of the detail's jobPostingId, with Workday's repost suffix
+// dropped, accepted only when the listing's externalPath ends in the same id
+// and the row's bulletFields, when it has any, carry it too. The listing and
+// the detail are separate answers that agree on it, and on every other Visa
+// posting jobReqId equals that id, so a later jobReqId keeps the key.
+// Otherwise it is "", which WorkdayKey refuses.
+func reqID(jobReqID, jobPostingID, externalPath string, bullets []string) string {
 	if id := strings.TrimSpace(jobReqID); id != "" {
 		return id
 	}
-	i := strings.LastIndex(jobPostingID, "_")
-	if i < 0 {
+	id := trailingID(jobPostingID)
+	if id == "" || trailingID(externalPath[strings.LastIndex(externalPath, "/")+1:]) != id {
 		return ""
 	}
-	id := repostSuffix.ReplaceAllString(jobPostingID[i+1:], "")
-	if id == "" || !slices.Contains(bullets, id) {
+	if len(bullets) > 0 && !slices.Contains(bullets, id) {
 		return ""
 	}
 	return id
+}
+
+// trailingID is the "{id}" of "{title}_{id}" or "{title}_{id}-{n}", or "".
+func trailingID(seg string) string {
+	i := strings.LastIndex(seg, "_")
+	if i < 0 {
+		return ""
+	}
+	return repostSuffix.ReplaceAllString(seg[i+1:], "")
 }
 
 // pagePrefix is the leading path of a posting's public page on host: "{site}"
@@ -427,7 +438,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 		return posting.Posting{}, err
 	}
 	info := d.JobPostingInfo
-	key, err := posting.WorkdayKey(tenant, site, reqID(info.JobReqID, info.JobPostingID, row.BulletFields))
+	key, err := posting.WorkdayKey(tenant, site, reqID(info.JobReqID, info.JobPostingID, row.ExternalPath, row.BulletFields))
 	if err != nil {
 		return posting.Posting{}, err
 	}
