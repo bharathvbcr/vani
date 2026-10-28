@@ -790,18 +790,18 @@ func TestStoredPath(t *testing.T) {
 }
 
 // Every stored posting's turn to be re-read comes exactly once in
-// refreshDays days.
+// srcutil.RefreshDays days.
 func TestRefreshTurnCoversEveryPathOnce(t *testing.T) {
 	for i := range 500 {
 		p := fmt.Sprintf("/job/X/T_JR%d", i)
 		turns := 0
-		for day := 1000; day < 1000+refreshDays; day++ {
-			if refreshTurn(p, day) {
+		for day := 1000; day < 1000+srcutil.RefreshDays; day++ {
+			if srcutil.RefreshTurn(p, day) {
 				turns++
 			}
 		}
 		if turns != 1 {
-			t.Fatalf("%s re-read %d times in %d days", p, turns, refreshDays)
+			t.Fatalf("%s re-read %d times in %d days", p, turns, srcutil.RefreshDays)
 		}
 	}
 }

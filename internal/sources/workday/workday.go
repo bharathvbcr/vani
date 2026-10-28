@@ -15,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -40,11 +39,6 @@ var ErrBoardNotFound = srcutil.ErrBoardNotFound
 // 2026-10-26: HTTP 403 {"errorCode":"S22","message":"permission denied"}).
 var errDetailGone = errors.New("detail is gone (HTTP 404/403)")
 
-// maxGone is how many of n listed postings may come back gone before the board
-// fails: a tenth, at least one. A posting closing mid-run is ordinary; a
-// tenth of the board closing in the minutes a listing takes is not.
-func maxGone(n int) int { return max(1, n/10) }
-
 const (
 	// MaxPostings is the most postings one board may list (the union of its
 	// search terms) unless the board sets max_postings, which may go up to
@@ -56,11 +50,6 @@ const (
 	// A source from New fails a board that would need more; one from NewWith
 	// reuses stored postings and defers new ones past it to the next run.
 	MaxDetails = 300
-	// refreshDays is how many runs it takes to re-read every stored posting:
-	// each run re-reads the stored postings whose path falls in that day's
-	// share, so a description edited on the board is seen within this many
-	// days (budget permitting).
-	refreshDays = 30
 	// pageSize is Workday's largest page: a larger limit returns zero rows.
 	pageSize = 20
 )
@@ -240,18 +229,13 @@ func listedPosting(b sources.Board, tenant string, row listedJob) posting.Postin
 	return posting.Posting{ATS: posting.Workday, Company: boardCompany(b, tenant), Title: strings.TrimSpace(row.Title), Location: loc}
 }
 
-// fetch is one row that gets a detail request, and whether it was stored.
-type fetch struct {
-	row    listedJob
-	stored bool
-}
-
 // details turns listed rows into postings. Without Options every row is
-// fetched, and a board needing more than MaxDetails fails. With Options, a
-// row whose posting is stored is reused, except the stored rows whose turn it
-// is to be re-read; new rows dropped by title are skipped; new rows are
-// fetched first, then the re-reads, up to MaxDetails, and the new rows past
-// it are deferred. Results keep listing order.
+// fetched, and a board needing more than MaxDetails fails. With Options, the
+// rows are planned by srcutil.PlanDetails: a row whose posting is stored is
+// reused, except on its turn to be re-read (stored rows are matched by path);
+// new rows dropped by title are skipped; new rows are fetched first, then the
+// re-reads, up to MaxDetails, and the new rows past it are deferred. Results
+// keep listing order.
 func (s *source) details(ctx context.Context, b sources.Board, base, host, tenant, site string, rows []listedJob, st *Stats) ([]posting.Posting, error) {
 	seen := s.now()
 	stored := map[string]posting.Posting{}
@@ -271,82 +255,60 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			}
 		}
 	}
-	slot := make([]*posting.Posting, len(rows))
-	var fresh, refresh []int
-	day := int(seen.UTC().Unix() / 86400)
+	plan := make([]srcutil.DetailRow, len(rows))
 	for i, row := range rows {
-		p, ok := stored[row.ExternalPath]
-		switch {
-		case ok && refreshTurn(row.ExternalPath, day):
-			refresh = append(refresh, i)
-		case ok:
-			p.SeenAt = seen
-			slot[i] = &p
-			st.Reused++
-		case s.opt != nil && s.opt.DropListed != nil && s.opt.DropListed(listedPosting(b, tenant, row)):
-			st.Prefiltered++
-		default:
-			fresh = append(fresh, i)
+		_, ok := stored[row.ExternalPath]
+		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok}
+		if !ok && s.opt != nil && s.opt.DropListed != nil {
+			plan[i].Drop = s.opt.DropListed(listedPosting(b, tenant, row))
 		}
 	}
-	if s.opt == nil && len(fresh) > MaxDetails {
+	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), MaxDetails)
+	if s.opt == nil && pl.Deferred > 0 {
 		// Without stored postings a deferred row cannot be told from a stored
 		// one, and leaving out a stored one would age it as absent.
 		return nil, fmt.Errorf("%w: the board lists %d postings and each costs a detail request, over the %d limit; set the board's search to narrow it",
-			srcutil.ErrTooManyPostings, len(fresh), MaxDetails)
+			srcutil.ErrTooManyPostings, pl.New+pl.Deferred, MaxDetails)
 	}
-	if len(fresh) > MaxDetails {
+	if pl.Deferred > 0 && unmatched > 0 {
 		// Deferring is safe only for rows the ledger does not hold. A stored
 		// posting whose URL could not be matched to a path may be one of the
 		// rows about to be deferred, and leaving it out would age it.
-		if unmatched > 0 {
-			return nil, fmt.Errorf("%d stored postings have a URL that names no path on site %q, so the %d new rows past the %d-request cap cannot be deferred safely",
-				unmatched, site, len(fresh)-MaxDetails, MaxDetails)
-		}
-		st.Deferred = len(fresh) - MaxDetails
-		fresh = fresh[:MaxDetails]
+		return nil, fmt.Errorf("%d stored postings have a URL that names no path on site %q, so the %d new rows past the %d-request cap cannot be deferred safely",
+			unmatched, site, pl.Deferred, MaxDetails)
 	}
-	if room := MaxDetails - len(fresh); len(refresh) > room {
-		// A stored row whose re-read does not fit is reused as stored.
-		for _, i := range refresh[room:] {
-			p := stored[rows[i].ExternalPath]
-			p.SeenAt = seen
-			slot[i] = &p
-			st.Reused++
-		}
-		refresh = refresh[:room]
+	st.Deferred, st.Prefiltered = pl.Deferred, pl.Prefiltered
+	slot := make([]*posting.Posting, len(rows))
+	for _, i := range pl.Reuse {
+		p := stored[rows[i].ExternalPath]
+		p.SeenAt = seen
+		slot[i] = &p
+		st.Reused++
 	}
-	jobs := make([]fetch, 0, len(fresh)+len(refresh))
-	for _, i := range fresh {
-		jobs = append(jobs, fetch{row: rows[i]})
-	}
-	for _, i := range refresh {
-		jobs = append(jobs, fetch{row: rows[i], stored: true})
-	}
-	order := append(append([]int{}, fresh...), refresh...)
-	allowed := maxGone(len(jobs))
-	for n, j := range jobs {
+	allowed := srcutil.MaxGone(len(pl.Fetch))
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, err := s.detail(ctx, base, host, tenant, site, j.row, b, seen)
+		row := rows[i]
+		p, err := s.detail(ctx, base, host, tenant, site, row, b, seen)
 		if errors.Is(err, errDetailGone) {
 			// The posting closed between the listing and its detail; leaving it
 			// out is the truth. Many at once is the detail endpoint failing, not
 			// postings closing, and would empty a healthy board. With every
 			// other row reused, one new posting gone is only that posting.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(jobs) && st.Reused == 0) {
+			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
 				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404/403); the detail endpoint is not answering",
-					st.Gone, len(jobs))
+					st.Gone, len(pl.Fetch))
 			}
 			continue
 		}
 		if err != nil {
 			// A partial listing would make the reconciler age healthy postings
 			// as absent, so one bad posting fails the whole board.
-			return nil, fmt.Errorf("posting %q: %w", j.row.ExternalPath, err)
+			return nil, fmt.Errorf("posting %q: %w", row.ExternalPath, err)
 		}
-		if j.stored {
+		if n >= pl.New {
 			st.Refreshed++
 		} else {
 			st.Fetched++
@@ -355,10 +317,10 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			// deferred, so a deferring listing cannot be trusted.
 			if storedKeys[p.Key] && st.Deferred > 0 {
 				return nil, fmt.Errorf("posting %s is stored under a URL that does not match its listed path %q, so the %d deferred rows may hold stored postings",
-					p.Key, j.row.ExternalPath, st.Deferred)
+					p.Key, row.ExternalPath, st.Deferred)
 			}
 		}
-		slot[order[n]] = &p
+		slot[i] = &p
 	}
 	out := make([]posting.Posting, 0, len(rows))
 	keys := make(map[posting.Key]bool, len(rows))
@@ -370,14 +332,6 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 		out = append(out, *p)
 	}
 	return out, nil
-}
-
-// refreshTurn reports whether the stored posting at path is re-read on day:
-// each path's turn comes once every refreshDays days.
-func refreshTurn(path string, day int) bool {
-	h := fnv.New32a()
-	h.Write([]byte(path))
-	return int(h.Sum32()%refreshDays) == day%refreshDays
 }
 
 // pagePrefix is the leading path of a posting's public page on host: "{site}"

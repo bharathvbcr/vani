@@ -241,7 +241,7 @@ func storedPosting(id, released string) posting.Posting {
 func idOnTurn(want bool) string {
 	day := int(fixedNow.Unix() / 86400)
 	for i := 0; ; i++ {
-		if id := idOf(i); refreshTurn(id, day) == want {
+		if id := idOf(i); srcutil.RefreshTurn(id, day) == want {
 			return id
 		}
 	}
@@ -310,17 +310,17 @@ func TestStoredPostingIsReReadOnItsTurn(t *testing.T) {
 }
 
 func TestEveryStoredPostingIsReReadWithinRefreshDays(t *testing.T) {
-	// Over refreshDays consecutive days every id has exactly one turn.
+	// Over srcutil.RefreshDays consecutive days every id has exactly one turn.
 	ids := []string{idOf(0), idOf(1), idOf(2), idOf(77), "12345", "999999999999999"}
 	for _, id := range ids {
 		turns := 0
-		for day := 20000; day < 20000+refreshDays; day++ {
-			if refreshTurn(id, day) {
+		for day := 20000; day < 20000+srcutil.RefreshDays; day++ {
+			if srcutil.RefreshTurn(id, day) {
 				turns++
 			}
 		}
 		if turns != 1 {
-			t.Errorf("id %s has %d turns in %d days, want 1", id, turns, refreshDays)
+			t.Errorf("id %s has %d turns in %d days, want 1", id, turns, srcutil.RefreshDays)
 		}
 	}
 }
@@ -390,7 +390,7 @@ func TestStoredRowsPastTheCapAreStillReturned(t *testing.T) {
 	var ids []string
 	for i := 0; len(ids) < 350; i++ {
 		id := idOf(i)
-		if len(stored) < 200 && !refreshTurn(id, day) {
+		if len(stored) < 200 && !srcutil.RefreshTurn(id, day) {
 			stored = append(stored, storedPosting(id, stamp))
 		}
 		ids = append(ids, id)

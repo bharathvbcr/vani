@@ -9,6 +9,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 // Snap's board lives on the shared host wd1.myworkdaysite.com, whose name
@@ -149,8 +150,8 @@ func TestSiteHostStoredPostingIsReused(t *testing.T) {
 	}
 	// A day on which neither stored row's re-read turn comes up.
 	day := 0
-	for refreshTurn("/job/Paris-France/Machine-Learning-Engineer_R0047006-1", day) ||
-		refreshTurn("/job/Palo-Alto-California/Machine-Learning-Engineer--Level-5_Q426SWEML5-1", day) {
+	for srcutil.RefreshTurn("/job/Paris-France/Machine-Learning-Engineer_R0047006-1", day) ||
+		srcutil.RefreshTurn("/job/Palo-Alto-California/Machine-Learning-Engineer--Level-5_Q426SWEML5-1", day) {
 		day++
 	}
 	now := time.Unix(int64(day)*86400+3600, 0).UTC()

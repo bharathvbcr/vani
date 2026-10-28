@@ -23,7 +23,8 @@
 //   - The listing has no updated stamp. releasedDate is when the posting was
 //     published (it matched the detail's on every posting sampled), so a
 //     description edited in place moves nothing a listing shows. Stored
-//     postings are therefore re-read on a rolling schedule (refreshDays), and
+//     postings are therefore re-read on a rolling schedule
+//     (srcutil.RefreshDays), and
 //     at once when releasedDate no longer matches the stored posting's.
 //
 // The country filter (Board.Filters["country"]) is the one query narrowing the
@@ -51,7 +52,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"net/url"
 	"regexp"
 	"slices"
@@ -82,8 +82,6 @@ const (
 	pageSize = 100
 	// maxPages bounds one query's pages: every row of the cap, and slack.
 	maxPages = MaxPostings/pageSize + 3
-	// refreshDays is how many runs it takes to re-read every stored posting.
-	refreshDays = 30
 
 	// A listing page of 100 rows is about 230 KB (ServiceNow, custom fields
 	// included) and a detail about 9 KB: a few MiB bounds either far more
@@ -122,10 +120,6 @@ var errDetailGone = errors.New("detail is gone (HTTP 404)")
 // posting the board counts. It fails the board: a partial listing would make
 // the reconciler age healthy postings as absent.
 var errIncomplete = errors.New("smartrecruiters: listing is incomplete")
-
-// maxGone is how many of n fetched details may come back gone before the board
-// fails: a tenth, at least one (workday's bound).
-func maxGone(n int) int { return max(1, n/10) }
 
 // shortfall is how many rows of a counted query may be missing before the
 // listing is refused: a hundredth, at least one. A posting closing mid-walk
@@ -484,19 +478,13 @@ func listedPosting(b sources.Board, r listedRow) posting.Posting {
 	}
 }
 
-// fetch is one row that gets a detail request, and whether it was stored.
-type fetch struct {
-	row    listedRow
-	slot   int
-	stored bool
-}
-
 // details turns listed rows into postings. Without Options every row is
-// fetched, and a board needing more than MaxDetails fails. With Options, a
-// stored row is reused unless its turn has come or its releasedDate changed;
-// new rows DropListed rejects are skipped; new rows are fetched first, then the
-// changed ones, then the scheduled ones, up to MaxDetails, and the new rows
-// past it are deferred. Results keep listing order.
+// fetched, and a board needing more than MaxDetails fails. With Options, the
+// rows are planned by srcutil.PlanDetails: a stored row is reused unless its
+// turn has come or its releasedDate changed; new rows DropListed rejects are
+// skipped; new rows are fetched first, then the changed ones, then the
+// scheduled ones, up to MaxDetails, and the new rows past it are deferred.
+// Results keep listing order.
 func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Board, company string, rows []listedRow, st *Stats) ([]posting.Posting, error) {
 	seen := s.now()
 	stored := map[posting.Key]posting.Posting{}
@@ -507,108 +495,79 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 			stored[p.Key] = p
 		}
 	}
-	slot := make([]*posting.Posting, len(rows))
-	day := int(seen.UTC().Unix() / 86400)
-	var fresh, changed, scheduled []fetch
+	keys := make([]posting.Key, len(rows))
+	plan := make([]srcutil.DetailRow, len(rows))
 	for i, r := range rows {
 		key, err := posting.SmartRecruitersKey(b.Token, r.ID)
 		if err != nil {
 			return nil, err
 		}
+		keys[i] = key
 		p, ok := stored[key]
-		switch {
-		case ok:
+		plan[i] = srcutil.DetailRow{ID: r.ID, Stored: ok}
+		if ok {
 			stamp, _ := parseStamp(r.ReleasedDate) // read by list
-			switch {
-			case !p.PostedAt.Equal(stamp):
-				changed = append(changed, fetch{row: r, slot: i, stored: true})
-			case refreshTurn(r.ID, day):
-				scheduled = append(scheduled, fetch{row: r, slot: i, stored: true})
-			default:
-				p.SeenAt = seen
-				slot[i] = &p
-				st.Reused++
-			}
-		case s.opt != nil && s.opt.DropListed != nil && s.opt.DropListed(listedPosting(b, r)):
-			st.Prefiltered++
-		default:
-			fresh = append(fresh, fetch{row: r, slot: i})
+			plan[i].Changed = !p.PostedAt.Equal(stamp)
+		} else if s.opt != nil && s.opt.DropListed != nil {
+			plan[i].Drop = s.opt.DropListed(listedPosting(b, r))
 		}
 	}
-	if s.opt == nil && len(fresh) > MaxDetails {
+	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), MaxDetails)
+	if s.opt == nil && pl.Deferred > 0 {
 		// Without stored postings a deferred row cannot be told from a stored
 		// one, and leaving out a stored one would age it as absent.
 		return nil, fmt.Errorf("%w: the board lists %d postings and each costs a detail request, over the %d limit; narrow it with the country filter",
-			srcutil.ErrTooManyPostings, len(fresh), MaxDetails)
+			srcutil.ErrTooManyPostings, pl.New+pl.Deferred, MaxDetails)
 	}
-	if len(fresh) > MaxDetails {
-		st.Deferred = len(fresh) - MaxDetails
-		fresh = fresh[:MaxDetails]
-	}
-	jobs := fresh
-	for _, group := range [][]fetch{changed, scheduled} {
-		room := MaxDetails - len(jobs)
-		if len(group) > room {
-			// A stored row whose re-read does not fit is reused as stored.
-			for _, f := range group[room:] {
-				key, _ := posting.SmartRecruitersKey(b.Token, f.row.ID)
-				p := stored[key]
-				p.SeenAt = seen
-				slot[f.slot] = &p
-				st.Reused++
-			}
-			group = group[:room]
-		}
-		jobs = append(jobs, group...)
+	st.Deferred, st.Prefiltered = pl.Deferred, pl.Prefiltered
+	slot := make([]*posting.Posting, len(rows))
+	for _, i := range pl.Reuse {
+		p := stored[keys[i]]
+		p.SeenAt = seen
+		slot[i] = &p
+		st.Reused++
 	}
 
-	allowed := maxGone(len(jobs))
-	for _, j := range jobs {
+	allowed := srcutil.MaxGone(len(pl.Fetch))
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, err := s.detail(ctx, pace, company, b, j.row, seen)
+		r := rows[i]
+		p, err := s.detail(ctx, pace, company, b, r, seen)
 		if errors.Is(err, errDetailGone) {
 			// The posting closed between the listing and its detail; leaving it
 			// out is the truth. Many at once is the detail endpoint failing, not
 			// postings closing, and would empty a healthy board. With every
 			// other row reused, one new posting gone is only that posting.
 			// Deliberately not ErrBoardNotFound: the listing answered.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(jobs) && st.Reused == 0) {
-				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404); the detail endpoint is not answering", st.Gone, len(jobs))
+			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
+				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404); the detail endpoint is not answering", st.Gone, len(pl.Fetch))
 			}
 			continue
 		}
 		if err != nil {
 			// A partial listing would make the reconciler age healthy postings
 			// as absent, so one bad posting fails the whole board.
-			return nil, fmt.Errorf("posting %s: %w", j.row.ID, err)
+			return nil, fmt.Errorf("posting %s: %w", r.ID, err)
 		}
-		if j.stored {
+		if n >= pl.New {
 			st.Refreshed++
 		} else {
 			st.Fetched++
 		}
-		slot[j.slot] = &p
+		slot[i] = &p
 	}
 	out := make([]posting.Posting, 0, len(rows))
-	keys := make(map[posting.Key]bool, len(rows))
+	seenKeys := make(map[posting.Key]bool, len(rows))
 	for _, p := range slot {
-		if p == nil || keys[p.Key] {
+		if p == nil || seenKeys[p.Key] {
 			continue
 		}
-		keys[p.Key] = true
+		seenKeys[p.Key] = true
 		out = append(out, *p)
 	}
 	return out, nil
-}
-
-// refreshTurn reports whether the stored posting with this id is re-read on
-// day: each id's turn comes once every refreshDays days (workday's schedule).
-func refreshTurn(id string, day int) bool {
-	h := fnv.New32a()
-	h.Write([]byte(id))
-	return int(h.Sum32()%refreshDays) == day%refreshDays
 }
 
 // postingPage checks a posting URL taken from the (untrusted) detail: https on
