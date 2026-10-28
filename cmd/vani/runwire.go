@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/amazon"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
@@ -192,6 +193,12 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	srcs[posting.Workday] = wd
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+		},
+	})
+	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
+		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
 		},
@@ -457,5 +464,6 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Apple:      apple.New(d),
 		posting.Eightfold:  eightfold.New(d),
 		posting.Jibe:       jibe.New(d),
+		posting.Avature:    avature.New(d),
 	}
 }
