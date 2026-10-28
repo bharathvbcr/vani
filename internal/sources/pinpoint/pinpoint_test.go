@@ -58,7 +58,7 @@ func TestFixture(t *testing.T) {
 			Key: "pp:workwithus:559663", ATS: posting.Pinpoint, Company: "Pinpoint",
 			Title: "Founding Legal Counsel", Location: "London", Department: "Operations", Remote: true,
 			URL: "https://workwithus.pinpointhq.com/en/postings/ce6c9e5c-a2d3-42b0-a01e-9edeae315b04", SeenAt: fixedNow,
-		}, "Role: full-time, remote\n\nHi 👋 I'm Ellis, COO at Pinpoint."},
+		}, "Role: full-time, remote\n\nHi 👋 I'm the COO at Pinpoint."},
 		{posting.Posting{
 			Key: "pp:workwithus:567495", ATS: posting.Pinpoint, Company: "Pinpoint",
 			Title: "Enterprise Implementation Manager", Location: "London", Department: "Implementation", Remote: true,

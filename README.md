@@ -679,7 +679,7 @@ URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. More board kinds,
 its own adapter: Gem `--ats gm --token groq`; Recruitee `--ats rc --token syrve`, Pinpoint `--ats pp
 --token workwithus`, BambooHR `--ats bh --token sortitt` and Personio `--ats ps --token deskbird`
 (the token is the board's subdomain, `syrve.recruitee.com`, and that host is what `--allow-host`
-allows; BambooHR costs a detail request per posting, spaced half a second apart, so a board of
+allows; BambooHR costs a detail request per posting, spaced by the egress per-host interval (a second by default) on top of 500 ms, so a board of
 more than 300 postings fails rather than being cut, and a tenant BambooHR redirects away from
 `/careers` reads as not found; a Personio tenant that switched its XML feed off reads as not found
 too); SmartRecruiters `--ats sr --token servicenow` (optional

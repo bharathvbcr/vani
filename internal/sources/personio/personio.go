@@ -12,6 +12,11 @@
 // The feed has no remote flag: the offices' names ("Remote - Germany",
 // "Hybrid - London") are what says where the work is done.
 //
+// language=en changes the bodies, not the listing: on deskbird (3 positions)
+// and epa (1), /xml and /xml?language=en listed the same ids, and deskbird's
+// bare feed carried 2.4 KB against 20.8 KB with English bodies (GET 2026-10-27).
+// A site with positions in no English version was not checked.
+//
 // robots.txt of deskbird.jobs.personio.com (GET 2026-10-27) is "User-agent: *"
 // and "Allow: /". The document is read with encoding/xml, which loads no
 // external entity or DTD.

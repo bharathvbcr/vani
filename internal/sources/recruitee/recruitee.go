@@ -2,7 +2,7 @@
 // (GET https://{token}.recruitee.com/api/offers/).
 //
 // The tenant's own host is used, never api.recruitee.com, whose robots.txt
-// disallows every path. One request lists the whole board and carries each
+// disallows every path ("User-agent: *", "Disallow: /"; GET 2026-10-27). One request lists the whole board and carries each
 // offer's description and requirements HTML, so there is no detail request.
 // robots.txt of syrve.recruitee.com (GET 2026-10-27) disallows only /v/; the
 // offers path is allowed. Recruitee names pay as strings in a salary object,

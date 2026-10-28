@@ -8,7 +8,9 @@
 //
 // robots.txt of sortitt.bamboohr.com (GET 2026-10-27) disallows only
 // /jobs/embed.php and /jobs/embed2.php and sets no Crawl-delay; /careers is
-// allowed.
+// allowed. A list request sent as "Vani/0.1 (+personal job-listing reader)"
+// answered 200 JSON (the answer varies on User-Agent for a tenant that does
+// not exist).
 //
 // BambooHR does not answer 404 for a board it does not serve: it redirects the
 // list request away from /careers. A tenant that does not exist goes to
