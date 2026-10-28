@@ -7,8 +7,8 @@
 // seeker's own target-roles summary, and the knowledge base bullets most
 // relevant to the question, each with its role title, organisation and dates.
 // Only bullets the owner's current resumes list and kbsync.Eligible passes are
-// evidence (FromResolved); after the reply, a figure the model was not shown is
-// refused (ground.go).
+// evidence (FromResolved); after the reply, a figure, credential or acronym the
+// model was not shown is refused (ground.go).
 // For a motivation question ("Why <company>?") the bullets are the ones closest
 // to the role's work and the target summary, and the model is told to tie them
 // to this company's mission and this role; the seeker's own motivation notes,
@@ -68,8 +68,8 @@ const (
 	CodeTimeout    = "timeout"
 	CodeProvider   = "provider"
 	CodeEmpty      = "empty_reply"
-	// CodeUngrounded: the draft holds a figure that is in nothing the model was
-	// shown (ground.go).
+	// CodeUngrounded: the draft holds a figure, credential or acronym that is in
+	// nothing the model was shown (ground.go).
 	CodeUngrounded = "ungrounded"
 )
 
@@ -269,7 +269,7 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 		if n > 1 {
 			more = fmt.Sprintf(" (and %d more)", n-1)
 		}
-		return Result{}, fail(CodeUngrounded, "the draft says %q%s, which is not in the evidence, the posting, the question or the target text; refusing a figure the seeker's record does not support", fig, more)
+		return Result{}, fail(CodeUngrounded, "the draft says %q%s, which is not in the evidence, the posting, the question or the target text; refusing %s the seeker's record does not support", fig, more, f.what)
 	}
 	return Result{Draft: text, Model: d.cfg.Model, EvidenceItems: len(ev)}, nil
 }

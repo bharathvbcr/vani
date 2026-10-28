@@ -10,10 +10,10 @@ import (
 
 // The grounding guard: the system prompt tells the model never to invent a
 // metric, but an instruction is not a check. After the reply, every figure in
-// the draft (a number, a percentage, a multiple such as 3.1x, a version) must
-// occur in something the model was shown: the evidence, the posting excerpt, the
-// question, the company and title, the target summary and, for a motivation
-// question, the seeker's notes. A figure that occurs in none of them is a
+// the draft (a number, spelled or in digits, a percentage, a multiple such as
+// 3.1x, a version) must occur in something the model was shown: the evidence, the
+// posting excerpt, the question, the company and title, the target summary and,
+// for a motivation question, the seeker's notes. A figure that occurs in none of them is a
 // fabrication or a derived number ("5 years" from two dates), and the draft is
 // refused rather than handed to a person who may not check it.
 //
@@ -45,9 +45,18 @@ import (
 //     be re-drawn, a fabrication cannot be un-sent.
 //   - Vulgar fractions (½ ¼ ¾ ⅓ …) are figures, matched as the character.
 //
-// Numbers written as words ("three", "five years") are not read: the guard sees
-// digits and fraction characters only. Currency symbols are not part of a figure:
-// "$10 million" is the number 10 with the word "million".
+//   - Numbers written as words are the same figures as their digits ("five years"
+//     is "5 years", in the draft and in a source alike), read by spelledNumbers
+//     before anything else (ground_numwords.go lists what is and is not read).
+//
+// Currency symbols are not part of a figure: "$10 million" is the number 10 with
+// the word "million".
+//
+// Two more kinds of claim are held to the same rule, in ground_claims.go: a
+// credential (a degree, a licence, a certification, from a closed list) and an
+// acronym (2 to 6 capital letters, less a short generic allowlist). Each is
+// grounded only by the same credential or the same acronym in a source, and the
+// refusal says which kind it was.
 
 // figure is a number with its mark, tag and word (see above): "42%", "3.1x",
 // "2023", "1.2.3", "7 years", "k8s".
@@ -188,7 +197,7 @@ func foldPlural(w string) string {
 
 // figures reads every figure in s, in order.
 func figures(s string) []figure {
-	s = joinGroups(foldRE.Replace(strings.ToLower(s)))
+	s = spelledNumbers(joinGroups(foldRE.Replace(strings.ToLower(s))))
 	var out []figure
 	for _, loc := range numRE.FindAllStringIndex(s, -1) {
 		f := figure{num: s[loc[0]:loc[1]]}
@@ -218,11 +227,20 @@ type grounding struct {
 	marked map[string]bool // "42%", "3.1x"
 	words  map[string]bool // number + "\x00" + word: "7\x00year"
 	bare   map[string]bool // every untagged number, marked or not
+	creds  map[string]bool // credential keys (ground_claims.go): "phd", "cert:aws"
+	toks   map[string]bool // every lowercased word, for acronyms
 }
 
 func newGrounding(sources ...string) grounding {
-	g := grounding{tagged: map[string]bool{}, marked: map[string]bool{}, words: map[string]bool{}, bare: map[string]bool{}}
+	g := grounding{tagged: map[string]bool{}, marked: map[string]bool{}, words: map[string]bool{}, bare: map[string]bool{},
+		creds: map[string]bool{}, toks: map[string]bool{}}
 	for _, s := range sources {
+		for _, c := range credentialsIn(s) {
+			g.creds[c.key] = true
+		}
+		for _, w := range wordsIn(s) {
+			g.toks[w] = true
+		}
 		for _, f := range figures(s) {
 			switch {
 			case f.tag != "":
@@ -254,19 +272,44 @@ func (g grounding) has(f figure) bool {
 // maxFigureRunes bounds the figure quoted in the refusal message.
 const maxFigureRunes = 40
 
-// ungrounded returns the first figure of text that no source holds, and how many
-// distinct ones there are.
-func (g grounding) ungrounded(text string) (first figure, n int) {
-	seen := map[figure]bool{}
-	for _, f := range figures(text) {
-		if seen[f] || g.has(f) {
-			continue
-		}
-		seen[f] = true
+// claim is one thing a draft says that no source backs: a figure, a credential or
+// an acronym. text is what the refusal quotes; what is its kind with an article.
+type claim struct{ text, what string }
+
+func (c claim) String() string { return c.text }
+
+const (
+	whatFigure     = "a figure"
+	whatCredential = "a credential"
+	whatAcronym    = "an acronym"
+)
+
+// ungrounded returns the first claim of text that no source holds, and how many
+// distinct ones there are. Figures come first, then credentials, then acronyms,
+// each in the order the draft says them.
+func (g grounding) ungrounded(text string) (first claim, n int) {
+	note := func(c claim) {
 		if n == 0 {
-			first = f
+			first = c
 		}
 		n++
+	}
+	seen := map[figure]bool{}
+	for _, f := range figures(text) {
+		if !seen[f] && !g.has(f) {
+			seen[f] = true
+			note(claim{f.String(), whatFigure})
+		}
+	}
+	for _, c := range credentialsIn(text) {
+		if !g.creds[c.key] {
+			note(claim{c.surface, whatCredential})
+		}
+	}
+	for _, a := range acronymsIn(text) {
+		if !g.toks[strings.ToLower(a)] {
+			note(claim{a, whatAcronym})
+		}
 	}
 	return first, n
 }
