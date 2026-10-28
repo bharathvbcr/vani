@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -161,9 +160,7 @@ func (e *env) watchlistDiscover(args []string) error {
 		Unreadable: unreadable,
 	}
 	if *asJSON {
-		enc := json.NewEncoder(e.stdout)
-		enc.SetEscapeHTML(false)
-		return enc.Encode(doc)
+		return writeJSON(e.stdout, doc)
 	}
 	e.printDiscover(doc)
 	return nil

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -20,9 +19,7 @@ func (e *env) cmdLabels(args []string) error {
 	}
 	v := jobview.Vocabulary()
 	if *asJSON {
-		enc := json.NewEncoder(e.stdout)
-		enc.SetEscapeHTML(false)
-		return enc.Encode(v)
+		return writeJSON(e.stdout, v)
 	}
 	section := func(name string, es []jobview.LabelEntry) {
 		fmt.Fprintf(e.stdout, "%s:\n", name)

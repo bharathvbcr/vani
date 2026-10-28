@@ -57,15 +57,7 @@ func (e *env) cmdDraft(args []string) error {
 	if err != nil {
 		reply = draftReply{Error: err.Error(), Code: code, Kind: draft.KindOf(err)}
 	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if werr := enc.Encode(reply); werr != nil {
-		return werr
-	}
-	if err != nil {
-		return errAlreadyReported
-	}
-	return nil
+	return e.writeReply(reply, err)
 }
 
 // errAlreadyReported exits 1 without a second message: the JSON reply carried

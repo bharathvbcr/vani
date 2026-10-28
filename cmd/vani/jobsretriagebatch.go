@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -523,9 +522,7 @@ type batchOut struct {
 }
 
 func (o *batchOut) encode(v any) {
-	enc := json.NewEncoder(o.w)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil && o.err == nil {
+	if err := writeJSON(o.w, v); err != nil && o.err == nil {
 		o.err = err
 	}
 }

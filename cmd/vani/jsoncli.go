@@ -237,6 +237,13 @@ func (e *env) reply(asJSON bool, v any, err error, text func()) error {
 			v = errorReply{err.Error(), envelopeCode(err)}
 		}
 	}
+	return e.writeReply(v, err)
+}
+
+// writeReply writes v, a reply that already says how the command failed when
+// err is set (a command with codes of its own builds it), and returns the exit
+// error: errAlreadyReported for a failure, so runEnv adds nothing.
+func (e *env) writeReply(v any, err error) error {
 	if werr := writeJSON(e.stdout, v); werr != nil {
 		return werr
 	}

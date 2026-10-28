@@ -124,15 +124,7 @@ func (e *env) cmdResume(args []string) error {
 		}
 		reply = resumeReply{Error: err.Error(), Code: code}
 	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if werr := enc.Encode(reply); werr != nil {
-		return werr
-	}
-	if err != nil {
-		return errAlreadyReported
-	}
-	return nil
+	return e.writeReply(reply, err)
 }
 
 func (e *env) resumeOnce() (resumeReply, error) {

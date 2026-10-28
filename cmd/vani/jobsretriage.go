@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -314,15 +313,7 @@ func (e *env) jobsRetriage(args []string) error {
 			}
 			v = rep
 		}
-		enc := json.NewEncoder(e.stdout)
-		enc.SetEscapeHTML(false)
-		if werr := enc.Encode(v); werr != nil {
-			return werr
-		}
-		if err != nil {
-			return errAlreadyReported
-		}
-		return nil
+		return e.writeReply(v, err)
 	}
 	if err != nil {
 		return err

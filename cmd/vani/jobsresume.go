@@ -167,16 +167,9 @@ func (e *env) resumeEmit(asJSON bool, v any, err error, text func()) error {
 	}
 	if re != nil {
 		v = resumeErrorReply{Error: re.msg, Code: re.code, Cost: re.cost, AttemptRecorded: re.attempt, Eligibility: re.elig}
+		return e.writeReply(v, re)
 	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if werr := enc.Encode(v); werr != nil {
-		return werr
-	}
-	if re != nil {
-		return errAlreadyReported
-	}
-	return nil
+	return e.writeReply(v, nil)
 }
 
 func (e *env) jobsResume(args []string) error {
