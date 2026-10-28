@@ -28,6 +28,7 @@ import { contentListener } from "./frames";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
 import { type FindRow, applyVaniRow, withRowError } from "./jobrow";
+import { noticeOf } from "./formnote";
 import { type RepeatNotice, createRepeatNotice } from "./repeatapply";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
@@ -141,6 +142,12 @@ function vaniRepeatApply(): ScanReply["repeatApply"] {
   return vaniRow?.url === location.href && r && "repeatApply" in r ? r.repeatApply : undefined;
 }
 
+/** The form note of the same answer (formnote.ts); a note only. */
+function vaniFormNote(): ScanReply["formNote"] {
+  const r = vaniRow?.result;
+  return vaniRow?.url === location.href && r && "formNote" in r ? r.formNote : undefined;
+}
+
 /** `cached`: a scan the page's own activity triggered may use a bank read under 2 s ago; a scan someone asked for reads it afresh. */
 async function scan(cached = false): Promise<ScanReply> {
   const b = await (cached ? scanBank() : bank());
@@ -166,6 +173,7 @@ async function scan(cached = false): Promise<ScanReply> {
   const relevance = estimate ? await vaniRelevance(estimate) : undefined;
   lastRelevance = relevance;
   const repeatApply = relevance ? vaniRepeatApply() : undefined;
+  const formNote = relevance ? vaniFormNote() : undefined;
 
   return {
     fields: coverage.found,
@@ -176,6 +184,7 @@ async function scan(cached = false): Promise<ScanReply> {
     audit,
     relevance,
     ...(repeatApply ? { repeatApply } : {}),
+    ...(formNote ? { formNote } : {}),
     portal,
     job,
   };
@@ -1288,7 +1297,7 @@ async function scheduleScan(): Promise<void> {
   }
 
   showRelevance(s.relevance);
-  repeatNotice?.show(s.repeatApply, location.href);
+  repeatNotice?.show(noticeOf(s.repeatApply, s.formNote), location.href);
 
   // Update dynamic missed fillings pill
   const missedBadge = panel?.querySelector<HTMLElement>("#missed-badge");

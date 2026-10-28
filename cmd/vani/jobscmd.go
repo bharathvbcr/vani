@@ -152,7 +152,7 @@ func (e *env) jobsList(args []string) error {
 			if j.PrefilterDrop != "" {
 				flag = "  (the prefilter would drop it)"
 			}
-			fmt.Fprintf(e.stdout, "%s  %s  %s  %-9s  %s: %s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag+sameNote(j), j.Key)
+			fmt.Fprintf(e.stdout, "%s  %s  %s  %-9s  %s: %s%s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag+sameNote(j), formFlag(j), j.Key)
 		}
 		fmt.Fprintf(e.stdout, "%s: %d of %d shown\n", out.View, out.Shown, out.Total)
 		e.printPending(out.Pending, out.Query)
@@ -324,7 +324,13 @@ func (e *env) jobsShow(args []string) error {
 		return nil
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
-		fmt.Fprintf(e.stdout, "%s at %s\n%s\n\n%s\n", out.Title, out.Company, out.URL, out.Description)
+		fmt.Fprintf(e.stdout, "%s at %s\n%s\n", out.Title, out.Company, out.URL)
+		for _, line := range []string{out.ApplyFormNote, jobview.SponsorshipLine(out)} {
+			if line != "" {
+				fmt.Fprintln(e.stdout, line)
+			}
+		}
+		fmt.Fprintf(e.stdout, "\n%s\n", out.Description)
 	})
 }
 
@@ -348,6 +354,9 @@ func (e *env) showJob(k posting.Key) (j jobview.Job, r ledger.Record, ok bool, e
 	j = jobview.ToJob(r, m[k])
 	in.Enrich(&j, r, showKeywords)
 	j.Description = jobview.CleanText(r.Posting.Description, jobview.DescRunes, true)
+	if r.Posting.Form.Usable() {
+		j.ApplyForm = r.Posting.Form
+	}
 	return j, r, true, nil
 }
 

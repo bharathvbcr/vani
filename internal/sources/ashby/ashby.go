@@ -6,10 +6,14 @@
 // on jobs.ashbyhq.com (no session). List tries the posting API first and,
 // only when that answers 404, reads the job board the page uses: one list,
 // then one detail per posting, because the list carries no description.
+//
+// The same job-page GraphQL carries each posting's application form; form.go
+// reads it into the posting's Form summary (see there for the bounds).
 package ashby
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -35,6 +39,9 @@ const baseURL = "https://api.ashbyhq.com/posting-api/job-board/"
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	// forms is set by NewWithForms: the posting-API list then reads each new
+	// posting's application form. Nil reads none there.
+	forms *formReader
 }
 
 // New returns the Ashby source, sending requests through d.
@@ -123,6 +130,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(resp.Jobs))
+	ids := make([]string, 0, len(resp.Jobs))
 	for i, j := range resp.Jobs {
 		// An unlisted job is reachable by link but not published on the board.
 		if j.IsListed != nil && !*j.IsListed {
@@ -133,6 +141,12 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, err)
 		}
 		out = append(out, p)
+		ids = append(ids, strings.TrimSpace(j.ID))
+	}
+	if s.forms != nil {
+		if err := s.forms.read(ctx, s, b, out, ids); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -194,13 +208,23 @@ const (
     jobPostings { id title locationName workplaceType teamId }
   }
 }`
-	jobPostingQuery = `query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
+	jobPostingFields = `id title departmentName departmentExternalName locationName workplaceType
+    descriptionHtml isListed compensationTierSummary scrapeableCompensationSalarySummary`
+)
+
+// jobPostingQuery is the per-posting query: the posting's fields and, when
+// withForm, its application form (form.go).
+func jobPostingQuery(withForm bool) string {
+	fields := jobPostingFields
+	if withForm {
+		fields += "\n    " + formFields
+	}
+	return `query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
   jobPosting(organizationHostedJobsPageName: $organizationHostedJobsPageName, jobPostingId: $jobPostingId) {
-    id title departmentName departmentExternalName locationName workplaceType
-    descriptionHtml isListed compensationTierSummary scrapeableCompensationSalarySummary
+    ` + fields + `
   }
 }`
-)
+}
 
 func graphQLURL(op string) string {
 	return "https://jobs.ashbyhq.com/api/non-user-graphql?op=" + op
@@ -251,6 +275,9 @@ type postingPayload struct {
 			IsListed        *bool  `json:"isListed"`
 			TierSummary     string `json:"compensationTierSummary"`
 			SalarySummary   string `json:"scrapeableCompensationSalarySummary"`
+			// ApplicationForm stays raw so a form in a shape this reader does
+			// not know cannot fail the posting's own decode (parseForm).
+			ApplicationForm json.RawMessage `json:"applicationForm"`
 		} `json:"jobPosting"`
 	} `json:"data"`
 	Errors []gqlError `json:"errors"`
@@ -313,26 +340,9 @@ func (s *source) listJobBoard(ctx context.Context, b sources.Board) ([]posting.P
 			return nil, err
 		}
 		id := strings.TrimSpace(j.ID)
-		var detail postingPayload
-		dreq := gqlRequest{
-			OperationName: jobPostingOp,
-			Query:         jobPostingQuery,
-			Variables: map[string]any{
-				"organizationHostedJobsPageName": b.APIName(),
-				"jobPostingId":                   id,
-			},
-		}
-		if err := srcutil.PostJSONLimit(ctx, s.d, graphQLURL(jobPostingOp), dreq, nil, maxGraphQLBody, &detail); err != nil {
-			if errors.Is(err, srcutil.ErrBoardNotFound) {
-				err = fmt.Errorf("job %s is not on the board", id)
-			}
+		detail, err := s.readDetail(ctx, b, id)
+		if err != nil {
 			return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, err)
-		}
-		if msg := gqlMessage(detail.Errors); msg != "" && detail.Data.JobPosting == nil {
-			return nil, fmt.Errorf("ashby %q: job %d: %s", b.Token, i, msg)
-		}
-		if detail.Data.JobPosting == nil {
-			return nil, fmt.Errorf("ashby %q: job %d: job %s is not on the board", b.Token, i, id)
 		}
 		p, keep, err := detail.posting(b, j, teams, seen)
 		if err != nil {
@@ -343,6 +353,46 @@ func (s *source) listJobBoard(ctx context.Context, b sources.Board) ([]posting.P
 		}
 	}
 	return out, nil
+}
+
+// readDetail reads one posting's detail through the job-board GraphQL, with its
+// application form. A reply that errors with no posting at all may be the
+// form's doing, so it is asked once more without the form: the form is not
+// worth the posting. An answer that still has no posting is the real failure.
+func (s *source) readDetail(ctx context.Context, b sources.Board, id string) (postingPayload, error) {
+	post := func(withForm bool) (d postingPayload, err error) {
+		req := gqlRequest{
+			OperationName: jobPostingOp,
+			Query:         jobPostingQuery(withForm),
+			Variables: map[string]any{
+				"organizationHostedJobsPageName": b.APIName(),
+				"jobPostingId":                   id,
+			},
+		}
+		if err := srcutil.PostJSONLimit(ctx, s.d, graphQLURL(jobPostingOp), req, nil, maxGraphQLBody, &d); err != nil {
+			if errors.Is(err, srcutil.ErrBoardNotFound) {
+				err = fmt.Errorf("job %s is not on the board", id)
+			}
+			return postingPayload{}, err
+		}
+		return d, nil
+	}
+	detail, err := post(true)
+	if err != nil {
+		return detail, err
+	}
+	if gqlMessage(detail.Errors) != "" && detail.Data.JobPosting == nil {
+		if detail, err = post(false); err != nil {
+			return detail, err
+		}
+	}
+	if msg := gqlMessage(detail.Errors); msg != "" && detail.Data.JobPosting == nil {
+		return detail, errors.New(msg)
+	}
+	if detail.Data.JobPosting == nil {
+		return detail, fmt.Errorf("job %s is not on the board", id)
+	}
+	return detail, nil
 }
 
 func gqlMessage(errs []gqlError) string {
@@ -411,6 +461,7 @@ func (p postingPayload) posting(b sources.Board, list boardJob, teams map[string
 		ApplyURL:    apply,
 		Description: desc,
 		SeenAt:      seen,
+		Form:        parseForm(j.ApplicationForm),
 	}, true, nil
 }
 

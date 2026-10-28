@@ -189,6 +189,11 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Greenhouse] = gh
+	ab, err := w.ashbySource(d, policy)
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Ashby] = ab
 	// Workday costs a detail request per posting: stored postings are reused
 	// and new ones the title rule drops are never fetched, so a large board
 	// spends at most workday.MaxDetails requests a run.
@@ -479,6 +484,23 @@ func (w *wired) storedFor(b sources.Board) []posting.Posting {
 		}
 	}
 	return out
+}
+
+// ashbySource is the Ashby adapter with the application-form read. The posting
+// API has no form; the job page does, at a request per posting. A stored form is
+// reused while a posting's text is unchanged, a posting the policy drops is
+// never asked, and a board spends at most ashby.MaxFormsPerBoard requests a run.
+func (w *wired) ashbySource(d egress.Doer, policy pipeline.DropPolicy) (sources.Source, error) {
+	return ashby.NewWithForms(d, ashby.FormOptions{
+		Known: func(k posting.Key) (posting.Posting, bool) {
+			r, ok := w.led.Get(k)
+			return r.Posting, ok
+		},
+		Skip: policy.ListedDrops(),
+		Report: func(b sources.Board, st ashby.FormStats) {
+			w.warnf("board %s/%s: forms %+v", b.ATS, b.Token, st)
+		},
+	})
 }
 
 // titleRank orders triage by the configured title signals, or is nil (ledger

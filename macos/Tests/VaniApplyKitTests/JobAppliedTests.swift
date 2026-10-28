@@ -88,6 +88,26 @@ final class JobAppliedTests: XCTestCase {
         XCTAssertNil((quiet["job"] as? [String: Any])?["repeatApply"])
     }
 
+    func testFindPassesTheApplyFormNoteThroughAndDropsAnythingElse() throws {
+        let store = BankStore(directory: try tempDir(self))
+        func find(_ extra: String) throws -> [String: Any] {
+            let reply = """
+            {"url":"https://x.example/a","matches":1,"job":{"key":"ab:acme:3","company":"Acme","title":"T","status":"digested","matched_on":"url"\(extra)}}
+            """
+            let out = try call(["op": "jobFind", "url": "https://x.example/a"], store: store, jobs: JobsClient(vaniBinary: try fakeJobsVani(self, find: reply).vani))
+            return try XCTUnwrap(out["job"] as? [String: Any], "\(out)")
+        }
+        let job = try find(#","apply_form_note":"Application form: 4 of 6 questions required; sponsorship: only a yes/no on being authorized without it.""#)
+        XCTAssertEqual(job["applyFormNote"] as? String, "Application form: 4 of 6 questions required; sponsorship: only a yes/no on being authorized without it.")
+        XCTAssertEqual(job["key"] as? String, "ab:acme:3", "the note rides beside the job, never in place of it")
+        // Absent (an older vani, or a form with nothing flagged), empty or mistyped: no key, and the find still answers.
+        for extra in ["", #","apply_form_note":"""#, #","apply_form_note":7"#, #","apply_form_note":{"text":"x"}"#, #","apply_form_note":null"#] {
+            let quiet = try find(extra)
+            XCTAssertNil(quiet["applyFormNote"], extra)
+            XCTAssertEqual(quiet["key"] as? String, "ab:acme:3", extra)
+        }
+    }
+
     func testFindReportsTheMarkSoTheExtensionCanSkipAppliedJobs() throws {
         let store = BankStore(directory: try tempDir(self))
         let reply = """

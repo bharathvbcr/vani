@@ -47,6 +47,12 @@ type jobRef struct {
 	// other postings at this company lately (internal/samecompany). Additive: an
 	// older extension ignores it. A note only: nothing is blocked.
 	RepeatApply *jobview.RepeatApplyNote `json:"repeat_apply,omitempty"`
+	// ApplyFormNote is one line about the posting's application form
+	// (jobview.ApplyFormNote), sent only when the form has a flagged question
+	// (a form not read, or one with nothing flagged, says nothing on a page).
+	// Additive like RepeatApply: an older extension ignores it, and nothing is
+	// blocked.
+	ApplyFormNote string `json:"apply_form_note,omitempty"`
 }
 
 type jobFindJSON struct {
@@ -190,7 +196,11 @@ func matchPageURL(snap ledger.Snapshot, m map[posting.Key]marks.Entry, page stri
 
 // newJobRef is the reply's view of j, matched on the named link.
 func newJobRef(j jobview.Job, on string) *jobRef {
-	return &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: on}
+	ref := &jobRef{Key: j.Key, Company: j.Company, Title: j.Title, Status: j.Status, Closed: j.Closed, Mark: j.Mark, MatchedOn: on}
+	if len(j.ApplyFlags) > 0 {
+		ref.ApplyFormNote = j.ApplyFormNote
+	}
+	return ref
 }
 
 // exactLink says which of the posting's links is the page, or "". A link that

@@ -220,6 +220,8 @@ export interface ScanReply {
   relevance?: RelevanceResult;
   /** Other postings at this page's company were applied to lately (repeatapply.ts): a note for the panel, never a gate. */
   repeatApply?: RepeatApply;
+  /** The posting's application form has a flagged question (formnote.ts): a note for the panel, never a gate. */
+  formNote?: string;
   portal?: PortalInfo;
   job?: JobInfo;
 }
