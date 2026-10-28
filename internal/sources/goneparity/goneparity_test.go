@@ -1,5 +1,5 @@
-// Package goneparity holds one table that puts Workday, Eightfold and Apple
-// side by side on the same question: what does a detail that answers 404 (or
+// Package goneparity holds one table that puts Workday, Eightfold, Apple and
+// SmartRecruiters side by side on the same question: what does a detail that answers 404 (or
 // fails otherwise) do to a board of n listed postings.
 package goneparity
 
@@ -20,6 +20,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -194,7 +195,49 @@ func appleFake() fake {
 	}}
 }
 
-func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake()} }
+// ---- smartrecruiters ----
+
+func smartrecruitersFake() fake {
+	return fake{"smartrecruiters", func(t *testing.T, n int, bad map[int]srctest.Reply) (sources.Source, sources.Board, *reports) {
+		rep := &reports{}
+		const base, listPath = 744000000000, "/v1/companies/ServiceNow/postings"
+		d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+			u, _ := url.Parse(r.URL)
+			switch {
+			case u.Path == listPath:
+				offset := 0
+				fmt.Sscan(u.Query().Get("offset"), &offset)
+				var rows []string
+				for i := offset; i < n && i < offset+100; i++ {
+					rows = append(rows, fmt.Sprintf(`{"id":"%d","name":"R%d","releasedDate":"2026-10-01T10:00:00.000Z"}`, base+i, i))
+				}
+				return ok(fmt.Sprintf(`{"totalFound":%d,"content":[%s]}`, n, strings.Join(rows, ","))), true
+			case strings.HasPrefix(u.Path, listPath+"/"):
+				id := strings.TrimPrefix(u.Path, listPath+"/")
+				i := 0
+				fmt.Sscan(id, &i)
+				if rp, hit := bad[i-base]; hit {
+					return rp, true
+				}
+				return ok(fmt.Sprintf(`{"id":"%s","name":"R%s","releasedDate":"2026-10-01T10:00:00.000Z",`+
+					`"postingUrl":"https://jobs.smartrecruiters.com/ServiceNow/%s-r","company":{"identifier":"ServiceNow","name":"ServiceNow"},`+
+					`"jobAd":{"sections":{"jobDescription":{"title":"Job Description","text":"<p>d</p>"}}}}`, id, id, id)), true
+			}
+			return srctest.Reply{}, false
+		})
+		s, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
+			Stored: func(sources.Board) []posting.Posting { return nil },
+			Report: func(_ sources.Board, st smartrecruiters.Stats) { rep.add(st.Listed, st.Gone) },
+			Wait:   noWait,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, sources.Board{ATS: posting.SmartRecruiters, Token: "ServiceNow", Company: "ServiceNow"}, rep
+	}}
+}
+
+func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake()} }
 
 func notFound() srctest.Reply { return srctest.Reply{Status: http.StatusNotFound, Body: []byte("{}")} }
 
@@ -206,7 +249,7 @@ func goneSet(k int) map[int]srctest.Reply {
 	return m
 }
 
-// wantFail is the contract all three adapters share: more than max(1, n/10)
+// wantFail is the contract every adapter here shares: more than max(1, n/10)
 // gone, or every posting gone, fails the board.
 func wantFail(n, k int) bool { return k > max(1, n/10) || k == n }
 

@@ -201,6 +201,9 @@ var FilterKeys = map[posting.ATS][]string{
 	// The site reads only the first of repeated values, so the source runs
 	// one query per value.
 	posting.Jibe: {"location"},
+	// ServiceNow 732 -> 441 with country=us (2026-10-27). One lower-case ISO
+	// code per query: "US" and a second value both answer zero postings.
+	posting.SmartRecruiters: {"country"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then

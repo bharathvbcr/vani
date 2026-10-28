@@ -63,6 +63,10 @@ func EightfoldKey(domain, id string) (Key, error) { return build(Eightfold, doma
 // token.
 func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, reqID) }
 
+// SmartRecruitersKey is sr:{company_id}:{posting_id}; the company identifier
+// ("servicenow") is the board token and the posting id is the ATS's own.
+func SmartRecruitersKey(company, id string) (Key, error) { return build(SmartRecruiters, company, id) }
+
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
 // no trailing slash) so cosmetic link differences do not split one posting
@@ -119,7 +123,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, SmartRecruiters, Page, Other:
 		return a
 	}
 	return ""

@@ -1,0 +1,43 @@
+{
+  "id": "6000000001526540",
+  "name": "User Voice Program Manager (Spain)",
+  "company": {
+    "name": "Canva",
+    "identifier": "Canva"
+  },
+  "location": {
+    "city": "Madrid",
+    "country": "es",
+    "remote": false,
+    "hybrid": true,
+    "fullLocation": "Madrid, , Spain"
+  },
+  "releasedDate": "2026-10-27T17:03:00.863Z",
+  "postingUrl": "https://jobs.smartrecruiters.com/Canva/6000000001526540-user-voice-program-manager-spain-",
+  "applyUrl": "https://jobs.smartrecruiters.com/Canva/6000000001526540-user-voice-program-manager-spain-?oga=true",
+  "jobAd": {
+    "sections": {
+      "companyDescription": {
+        "title": "Company Description",
+        "text": ""
+      },
+      "jobDescription": {
+        "title": "Job Description",
+        "text": "<p><strong>Join the team redefining how the world experiences design.</strong></p><p>Hola, g'day, mabuhay, kia ora, 你好, hallo, bonjour, vítejte!</p><p>Thanks for stopping by. We know job hunting can be a little time consuming and you're probably keen to find out what's on offer, so we'll get straight to the point.</p>"
+      },
+      "qualifications": {
+        "title": "Qualifications",
+        "text": ""
+      },
+      "additionalInformation": {
+        "title": "Additional Information",
+        "text": ""
+      }
+    }
+  },
+  "active": true,
+  "typeOfEmployment": {
+    "id": "permanent",
+    "label": "Full-time"
+  }
+}
