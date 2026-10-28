@@ -66,14 +66,8 @@ func (e *env) watchlistList(args []string) error {
 
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem) or pg (careers page)")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), ib (IBM; tokens ibm and confluent) or pg (careers page)")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), ds (D. E. Shaw), at (Atlassian) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; pg: a short slug)")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), sr (SmartRecruiters) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; pg: a short slug)")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), av (Avature) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; av: a lower-case slug, e.g. twosigma; pg: a short slug)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem), sr (SmartRecruiters), ib (IBM; tokens ibm and confluent), av (Avature), ds (D. E. Shaw), at (Atlassian) or pg (careers page)")
+	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; av: a lower-case slug, e.g. twosigma; pg: a short slug)")
 	company := fs.String("company", "", "company display name")
 	boardName := fs.String("board-name", "", "the board's literal name on the ATS when it is not --token (ab only): --token hippocratic-ai --board-name \"Hippocratic AI\"")
 	region := fs.String("region", "", "regional host (eu, lever only)")
@@ -214,8 +208,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm or pg")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, ds, at or pg")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at or pg")
 	token := fs.String("token", "", "board token")
 	if err := parse(fs, args); err != nil {
 		return err

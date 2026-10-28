@@ -29,13 +29,14 @@ const (
 	Eightfold ATS = "ef"
 	// Jibe is an iCIMS Jibe careers site (AMD).
 	Jibe ATS = "jb"
-	Gem  ATS = "gm" // Gem (jobs.gem.com)
+	// Gem is a Gem job board (jobs.gem.com).
+	Gem ATS = "gm"
 	// SmartRecruiters is a SmartRecruiters company's public postings.
 	SmartRecruiters ATS = "sr"
 	// IBM is IBM's careers site (careers.ibm.com), which also lists Confluent.
 	IBM ATS = "ib"
-
-	Avature ATS = "av" // an Avature careers portal (Two Sigma)
+	// Avature is an Avature careers portal (Two Sigma).
+	Avature ATS = "av"
 	// DEShaw is D. E. Shaw's own careers page (deshaw.com/careers).
 	DEShaw ATS = "ds"
 	// Atlassian is Atlassian's own careers endpoint (atlassian.com/careers).

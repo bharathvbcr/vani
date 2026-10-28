@@ -68,15 +68,19 @@ func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, req
 // lowercases every part, so the gem adapter refuses a listing in which two
 // ids share a key.
 func GemKey(board, postID string) (Key, error) { return build(Gem, board, postID) }
+
 // SmartRecruitersKey is sr:{company_id}:{posting_id}; the company identifier
 // ("servicenow") is the board token and the posting id is the ATS's own.
 func SmartRecruitersKey(company, id string) (Key, error) { return build(SmartRecruiters, company, id) }
+
 // IBMKey is ib:{board}:{jobId}; the board is "ibm" or "confluent". The job id
 // is the number in the careers.ibm.com job link (JobDetail?jobId=135407).
 func IBMKey(board, jobID string) (Key, error) { return build(IBM, board, jobID) }
+
 // AvatureKey is av:{token}:{job_id}; the token is the board's own slug
 // ("twosigma"), the job id the number at the end of its JobDetail URL.
 func AvatureKey(token, jobID string) (Key, error) { return build(Avature, token, jobID) }
+
 // DEShawKey is ds:{board}:{id}, the id of deshaw.com's own job record.
 func DEShawKey(board, id string) (Key, error) { return build(DEShaw, board, id) }
 
@@ -140,11 +144,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, Page, Other:
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, SmartRecruiters, Page, Other:
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, IBM, Page, Other:
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Avature, Page, Other:
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, DEShaw, Atlassian, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Page, Other:
 		return a
 	}
 	return ""

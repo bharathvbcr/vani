@@ -17,8 +17,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/amazon"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
-	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/atlassian"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/gem"
@@ -475,21 +475,20 @@ func (w *wired) titleRank() func(posting.Posting) int {
 // need a per-run proxy and browser.
 func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 	return map[posting.ATS]sources.Source{
-		posting.Greenhouse: greenhouse.New(d),
-		posting.Lever:      lever.New(d),
-		posting.Ashby:      ashby.New(d),
-		posting.Workday:    workday.New(d),
-		posting.Amazon:     amazon.New(d),
-		posting.Google:     google.New(d),
-		posting.Apple:      apple.New(d),
-		posting.Eightfold:  eightfold.New(d),
-		posting.Jibe:       jibe.New(d),
-		posting.Gem:        gem.New(d),
-
+		posting.Greenhouse:      greenhouse.New(d),
+		posting.Lever:           lever.New(d),
+		posting.Ashby:           ashby.New(d),
+		posting.Workday:         workday.New(d),
+		posting.Amazon:          amazon.New(d),
+		posting.Google:          google.New(d),
+		posting.Apple:           apple.New(d),
+		posting.Eightfold:       eightfold.New(d),
+		posting.Jibe:            jibe.New(d),
+		posting.Gem:             gem.New(d),
 		posting.SmartRecruiters: smartrecruiters.New(d),
-		posting.IBM:        ibm.New(d),
-		posting.Avature:    avature.New(d),
-		posting.DEShaw:     deshaw.New(d),
-		posting.Atlassian:  atlassian.New(d),
+		posting.IBM:             ibm.New(d),
+		posting.Avature:         avature.New(d),
+		posting.DEShaw:          deshaw.New(d),
+		posting.Atlassian:       atlassian.New(d),
 	}
 }

@@ -27,8 +27,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
-	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 )
 
@@ -820,7 +820,6 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.deshaw.com", true
 	case posting.Atlassian:
 		return "www.atlassian.com", true
-	case posting.Workday, posting.Eightfold, posting.Jibe:
 	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
@@ -895,6 +894,7 @@ var (
 	smartRecruitersCompany = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`)
 	srCountry              = regexp.MustCompile(`^[A-Za-z]{2}$`)
 )
+
 // avatureToken matches an Avature board's token, the owner's slug for it.
 var avatureToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
@@ -964,21 +964,10 @@ const ScrapeSuffix = "-scrape"
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Gem, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
+		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, pg", b.ATS)
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.SmartRecruiters, posting.Page:
-	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, sr, pg", b.ATS)
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.Page:
-	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, ib, pg", b.ATS)
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Avature, posting.Page:
-	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, av, pg", b.ATS)
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.DEShaw, posting.Atlassian, posting.Page:
-	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, ds, at, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1053,12 +1042,13 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("smartrecruiters token %q must be the company identifier (letters, digits, '-' and '_'), e.g. servicenow", b.Token)
 		}
 		if b.Host != "" {
-			return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: host applies to wd, ef, jb and av only", b.ATS, b.Token)
 		}
 		for _, cc := range b.Filters["country"] {
 			if !srCountry.MatchString(cc) {
 				return fmt.Errorf("smartrecruiters board %s: country %q must be one two-letter ISO code such as us", b.Token, cc)
 			}
+		}
 	} else if b.ATS == posting.Avature {
 		// The token is the owner's slug, the host the portal's, and the url its
 		// listing page on that host: the portal path differs per customer.

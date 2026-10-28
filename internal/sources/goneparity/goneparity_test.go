@@ -1,6 +1,6 @@
-// Package goneparity holds one table that puts Workday, Eightfold, Apple and
-// SmartRecruiters side by side on the same question: what does a detail that answers 404 (or
-// Avature side by side on the same question: what does a detail that answers 404 (or
+// Package goneparity holds one table that puts Workday, Eightfold, Apple,
+// SmartRecruiters and Avature side by side on the same question: what does a
+// detail that answers 404 (or
 // fails otherwise) do to a board of n listed postings.
 package goneparity
 
@@ -239,7 +239,10 @@ func smartrecruitersFake() fake {
 	}}
 }
 
-func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake()} }
+func all() []fake {
+	return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake(), avatureFake()}
+}
+
 // ---- avature ----
 
 func avatureFake() fake {
@@ -281,8 +284,6 @@ func avatureFake() fake {
 		return s, sources.Board{ATS: posting.Avature, Token: "twosigma", Company: "Two Sigma", Host: host, URL: "https://" + host + "/careers/OpenRoles"}, rep
 	}}
 }
-
-func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake(), avatureFake()} }
 
 func notFound() srctest.Reply { return srctest.Reply{Status: http.StatusNotFound, Body: []byte("{}")} }
 
