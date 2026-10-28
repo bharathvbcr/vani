@@ -275,7 +275,7 @@ func addBoard(cfg *config.Config, b sources.Board, allow bool) error {
 	if !allow {
 		return nil
 	}
-	if host, ok := config.BoardHost(b); ok {
+	for _, host := range config.BoardHosts(b) {
 		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, host)
 	}
 	// The company icon is fetched from the board's own domain, and from its

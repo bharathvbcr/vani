@@ -25,7 +25,7 @@ func valid() Config {
 		{ATS: posting.Lever, Token: "globex", Company: "Globex", Region: "eu"},
 		{ATS: posting.Ashby, Token: "initech", Company: "Initech"},
 	}
-	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}
+	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}
 	return c
 }
 
@@ -200,8 +200,8 @@ func TestBoardDomain(t *testing.T) {
 	c := valid()
 	c.Watchlist[0].Domain = "www.acme.com"
 	c.Watchlist[1].Domain = "www.acme.com" // two boards may share one site
-	if got := c.RequiredHosts(); !slices.Contains(got, "www.acme.com") || len(got) != 5 {
-		t.Fatalf("RequiredHosts = %v, want the domain once", got)
+	if got := c.RequiredHosts(); !slices.Contains(got, "www.acme.com") || !slices.Contains(got, "jobs.ashbyhq.com") || len(got) != 6 {
+		t.Fatalf("RequiredHosts = %v, want the domain once and the Ashby job host", got)
 	}
 	err := c.Validate()
 	if err == nil || !strings.Contains(err.Error(), "allowed_hosts is missing: www.acme.com") {
@@ -277,7 +277,7 @@ func TestLeverUSHost(t *testing.T) {
 func TestNoOpenRouterModelNoOpenRouterRequirement(t *testing.T) {
 	c := valid()
 	c.Decide.OpenRouterModel = ""
-	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com"}
+	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com"}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("openrouter must not be required without an openrouter model: %v", err)
 	}

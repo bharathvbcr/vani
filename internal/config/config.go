@@ -820,6 +820,24 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 	return "", false
 }
 
+// ashbyJobHost is the public job page. The posting API is api.ashbyhq.com;
+// a board that has turned that API off is read from this host instead, so
+// every Ashby board needs it allowed.
+const ashbyJobHost = "jobs.ashbyhq.com"
+
+// BoardHosts is every host a board fetches: BoardHost, plus the job-page host
+// an Ashby board falls back to when the posting API answers 404.
+func BoardHosts(b sources.Board) []string {
+	var out []string
+	if h, ok := BoardHost(b); ok {
+		out = append(out, h)
+	}
+	if b.ATS == posting.Ashby {
+		out = append(out, ashbyJobHost)
+	}
+	return out
+}
+
 // workdayHost matches "{tenant}.wd{N}.myworkdayjobs.com".
 var workdayHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
 
@@ -834,7 +852,7 @@ const maxLinkPattern = 256
 func (c Config) RequiredHosts() []string {
 	set := map[string]bool{}
 	for _, b := range c.Watchlist {
-		if h, ok := BoardHost(b); ok {
+		for _, h := range BoardHosts(b) {
 			set[h] = true
 		}
 		if b.Domain != "" {
