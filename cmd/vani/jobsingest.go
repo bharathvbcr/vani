@@ -325,6 +325,10 @@ func isAggregator(host string) bool {
 	return false
 }
 
+// smartRecruitersAppPaths are first path segments on SmartRecruiters' hosts that
+// are not a company identifier (both seen in 2026-10-27 API and page links).
+var smartRecruitersAppPaths = map[string]bool{"oneclick-ui": true, "external-referrals": true}
+
 var (
 	workdayHostRE   = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
 	workdayLocaleRE = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
@@ -371,6 +375,15 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 			return fail(searchInvalid, "the page URL names no Gem board")
 		}
 		return sources.Board{ATS: posting.Gem, Token: first, Company: company}, ingestSearchJSON{}
+	case host == "jobs.smartrecruiters.com" || host == "careers.smartrecruiters.com":
+		// Both serve a company's page at /{companyIdentifier} (checked
+		// 2026-10-27: jobs. redirects to careers.). The first segment of these two
+		// is not a company: /oneclick-ui/... and /external-referrals/... are the
+		// site's own apps.
+		if first == "" || smartRecruitersAppPaths[strings.ToLower(first)] {
+			return fail(searchInvalid, "the page URL names no SmartRecruiters company")
+		}
+		return sources.Board{ATS: posting.SmartRecruiters, Token: first, Company: company}, ingestSearchJSON{}
 	case host == "jobs.ashbyhq.com":
 		if first == "" {
 			return fail(searchInvalid, "the page URL names no Ashby board")

@@ -68,6 +68,9 @@ func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, req
 // lowercases every part, so the gem adapter refuses a listing in which two
 // ids share a key.
 func GemKey(board, postID string) (Key, error) { return build(Gem, board, postID) }
+// SmartRecruitersKey is sr:{company_id}:{posting_id}; the company identifier
+// ("servicenow") is the board token and the posting id is the ATS's own.
+func SmartRecruitersKey(company, id string) (Key, error) { return build(SmartRecruiters, company, id) }
 
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
@@ -126,6 +129,7 @@ func (k Key) ATS() ATS {
 	}
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, SmartRecruiters, Page, Other:
 		return a
 	}
 	return ""

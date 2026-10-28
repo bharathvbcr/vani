@@ -47,6 +47,7 @@ commands:
                              no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
   watchlist add    --ats gh|lv|ab|wd|gm|pg --token T --company C [--region eu]
+  watchlist add    --ats gh|lv|ab|wd|sr|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
                    [--domain HOST [--icon URL]] [--allow-host]
   watchlist remove --ats A --token T

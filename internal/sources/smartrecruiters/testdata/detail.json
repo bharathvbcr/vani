@@ -1,0 +1,50 @@
+{
+  "id": "744000158170259",
+  "name": "Senior Reliability Engineer - Veza",
+  "company": {
+    "name": "ServiceNow",
+    "identifier": "ServiceNow"
+  },
+  "location": {
+    "city": "Minneapolis",
+    "region": "Minnesota",
+    "country": "us",
+    "address": "Remote",
+    "postalCode": "55401",
+    "remote": true,
+    "hybrid": false,
+    "fullLocation": "Minneapolis, Minnesota, United States"
+  },
+  "releasedDate": "2026-10-27T23:38:56.725Z",
+  "postingUrl": "https://jobs.smartrecruiters.com/ServiceNow/744000158170259-senior-reliability-engineer-veza",
+  "applyUrl": "https://jobs.smartrecruiters.com/ServiceNow/744000158170259-senior-reliability-engineer-veza?oga=true",
+  "jobAd": {
+    "sections": {
+      "companyDescription": {
+        "title": "Company Description",
+        "text": "<p>Veza is the pioneer in identity security, purpose-built to answer the fundamental question enterprises face: who can and should take what action on what data. Veza's Access Graph platform maps an organization's entire identity ecosystem across users, groups, roles, policies, permissions, and resources—providing deep visibility and control over human, non-human, and agentic identities across SaaS, cloud, on-prem, and custom applications. With over 30 billion access permissions under management, global enterprises including Blackstone, Expedia, and Wynn Resorts trust Veza to manage privileged access monitoring, non-human identity security, access entitlement management, and next-generation identity governance.</p><p>Founded in 2020 and headquartered in Redwood City, California, Veza is now part of the ServiceNow family, with the acquisition closing in March 2026. The combination brings together Veza's AI-native Access Graph with ServiceNow's AI Control Tower and agentic workflows, enabling organizations to enforce end-to-end identity security rooted in the principle of least privilege across applications, data, cloud environments, and AI agents. For engineers joining Veza today, this means the scale and resources of an enterprise platform company, with the product velocity and mission-driven focus of a security innovator at a pivotal moment in the industry.</p><p>&#xa0;</p>"
+      },
+      "jobDescription": {
+        "title": "Job Description",
+        "text": "<p>We are seeking an exceptional&#xa0; Site Reliability Engineer to lead critical infrastructure initiatives and drive innovation across our organization. You'll architect scalable solutions, navigate complex technical challenges independently, and deliver results under tight deadlines in a fast-paced environment. You'll work cross-functionally alongside builders who have helped shape the success of companies such as Google, Okta, AWS, and Snowflake.</p><p>We are building the next generation identity security platform for the multi-cloud era - will you join us?</p><p>You will:</p>"
+      },
+      "qualifications": {
+        "title": "Qualifications",
+        "text": "<p>Required Experience</p><ul><li>US Citizenship Required — role requires or may require federal security clearance</li><li>BS degree in Computer Science or related field (or equivalent practical experience)</li><li>7+ years in Site Reliability Engineering, DevOps, or Infrastructure Engineering</li><li>Proven track record leading large-scale, cross-team infrastructure projects from conception to production</li><li>Demonstrated ability to work autonomously on ambiguous projects with tight deadlines</li><li>Hands-on experience with major compliance frameworks (SOC 1/2, ISO 27001, FedRAMP Moderate/High) including infrastructure automation for control implementation and continuous audit evidence collection</li></ul><p>Technical Expertise</p><ul><li>5+ years with AWS (VPC, EC2, RDS, EKS, CloudFormation) and cloud automation</li><li>Expert-level experience with Kubernetes, Helm, Linux, and Terraform</li><li>Strong experience with GitOps model, distributed version control, and CI/CD pipelines</li><li>Proficiency with monitoring tools (Prometheus, Grafana, DataDog)</li><li>Strong programming/scripting skills (Python, Go, Bash) for automation and reading codes</li><li>Deep understanding of distributed systems, microservices, and reliability patterns</li><li>Experience with Bazel and CueLang a plus</li><li>Experience implementing compliance-as-code patterns and automated compliance scanning/remediation</li></ul><p>Leadership &amp; Communication</p>"
+      },
+      "additionalInformation": {
+        "title": "Additional Information",
+        "text": "<p><strong>Work Personas</strong></p><p>We approach our distributed world of work with flexibility and trust. Work personas (flexible, remote, or required in office) are categories that are assigned to ServiceNow employees depending on the nature of their work and their assigned work location. <a href=\"https://careers.servicenow.com/life-at-servicenow#workpersonas\" rel=\"noopener noreferrer\"><u>Learn more here</u></a>. To determine eligibility for a work persona, ServiceNow may confirm the distance between your primary residence and the closest ServiceNow office using a third-party service.</p><p><strong>Equal Opportunity Employer</strong></p>"
+      }
+    }
+  },
+  "active": true,
+  "department": {
+    "id": 2294038,
+    "label": "Engineering, Infrastructure and Operations"
+  },
+  "typeOfEmployment": {
+    "id": "permanent",
+    "label": "Full-time"
+  }
+}

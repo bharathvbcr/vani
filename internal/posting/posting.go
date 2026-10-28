@@ -30,6 +30,8 @@ const (
 	// Jibe is an iCIMS Jibe careers site (AMD).
 	Jibe ATS = "jb"
 	Gem  ATS = "gm" // Gem (jobs.gem.com)
+	// SmartRecruiters is a SmartRecruiters company's public postings.
+	SmartRecruiters ATS = "sr"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

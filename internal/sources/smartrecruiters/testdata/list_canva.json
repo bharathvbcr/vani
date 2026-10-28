@@ -1,0 +1,50 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 2,
+  "content": [
+    {
+      "id": "6000000001526540",
+      "name": "User Voice Program Manager (Spain)",
+      "company": {
+        "identifier": "Canva",
+        "name": "Canva"
+      },
+      "releasedDate": "2026-10-27T17:03:00.863Z",
+      "location": {
+        "city": "Madrid",
+        "country": "es",
+        "remote": false,
+        "hybrid": true,
+        "fullLocation": "Madrid, , Spain"
+      },
+      "department": {},
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      }
+    },
+    {
+      "id": "6000000001522401",
+      "name": "Account Executive, Mid-Market ",
+      "company": {
+        "identifier": "Canva",
+        "name": "Canva"
+      },
+      "releasedDate": "2026-10-26T16:13:10.360Z",
+      "location": {
+        "city": "London",
+        "region": "POST-LON",
+        "country": "gb",
+        "remote": false,
+        "hybrid": true,
+        "fullLocation": "London, POST-LON, United Kingdom"
+      },
+      "department": {},
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      }
+    }
+  ]
+}

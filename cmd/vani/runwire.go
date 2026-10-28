@@ -23,6 +23,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
+	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -191,6 +192,21 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Workday] = wd
+	// SmartRecruiters is the same shape: a detail request per posting, so the
+	// same bounds (stored postings reused, listed rows prefiltered, at most
+	// smartrecruiters.MaxDetails requests a board a run).
+	sr, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
+		Stored:     w.storedFor,
+		DropListed: policy.ListedDrops(),
+		Report: func(b sources.Board, st smartrecruiters.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.SmartRecruiters] = sr
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -459,5 +475,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Eightfold:  eightfold.New(d),
 		posting.Jibe:       jibe.New(d),
 		posting.Gem:        gem.New(d),
+
+		posting.SmartRecruiters: smartrecruiters.New(d),
 	}
 }
