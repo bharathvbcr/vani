@@ -121,7 +121,7 @@ func (e *env) cmdBench(args []string) error {
 		return usagef("bench: expected local")
 	}
 	fs := e.newFlags("bench local")
-	asJSON := fs.Bool("json", false, "one JSON report on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON report on stdout")
 	var models stringList
 	fs.Var(&models, "model", "an absolute GGUF path to measure (repeatable; default the configured local model)")
 	n := fs.Int("n", defaultBenchPostings, fmt.Sprintf("at most this many postings (1-%d)", maxBenchPostings))

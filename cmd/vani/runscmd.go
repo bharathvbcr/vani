@@ -56,7 +56,7 @@ func (e *env) cmdRuns(args []string) error {
 // runsArgs parses `[--json] [ID]`: the flag may come before or after the id.
 func (e *env) runsArgs(name string, args []string, wantID bool) (asJSON bool, id string, err error) {
 	flags := e.newFlags("runs " + name)
-	j := flags.Bool("json", false, "one JSON object on stdout")
+	j := e.jsonFlag(flags, "one JSON object on stdout")
 	var rest []string
 	for len(args) > 0 {
 		if err := flags.Parse(args); err != nil {

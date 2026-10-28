@@ -52,7 +52,7 @@ type resumeRendered struct {
 
 func (e *env) jobsResumeRender(args []string) error {
 	fs := e.newFlags("jobs resume render")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	fit := fs.Bool("fit", false, "also fit the page in Chrome and save it as a version (without it nothing is saved and the page is rkb's screen HTML, layout not measured)")
 	from := fs.String("from", "", "with --fit: the version the edit was made from (v3), default the current one")
 	if err := parseResumeArgs(fs, args, "render", 1); err != nil {
@@ -258,7 +258,7 @@ func (e *env) noteCurrent(st *resumestore.Store, key posting.Key, out *resumeSav
 
 func (e *env) jobsResumeRevalidate(args []string) error {
 	fs := e.newFlags("jobs resume revalidate")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	if err := parseResumeArgs(fs, args, "revalidate", 2); err != nil {
 		return err
 	}

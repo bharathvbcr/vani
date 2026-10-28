@@ -43,7 +43,7 @@ type resumeShown struct {
 
 func (e *env) jobsResumeShow(args []string) error {
 	fs := e.newFlags("jobs resume show")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	noCheck := fs.Bool("no-check", false, "read the stored versions only: no fresh staleness check and no pool (eligibility_checked is false)")
 	if err := parseResumeArgs(fs, args, "show", 1, 2); err != nil {
 		return err
@@ -216,7 +216,7 @@ type resumeUsed struct {
 
 func (e *env) jobsResumeUse(args []string) error {
 	fs := e.newFlags("jobs resume use")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	if err := parseResumeArgs(fs, args, "use", 2); err != nil {
 		return err
 	}

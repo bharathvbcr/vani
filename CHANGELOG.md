@@ -7,6 +7,18 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 
 ### Added
 
+- **CLI-Anything conventions for agents** (`cmd/vani/jsoncli.go`,
+  `skills/cli-anything-vani/SKILL.md`). The global `vani --json <command>` returns exactly one
+  JSON value on stdout for every outcome. A failure of any kind is `{"error","code"}`, with
+  `code` one of `usage`, `unsupported` or `runtime`, and exit codes are unchanged. It refuses
+  commands with no JSON form, and those do not run.
+
+  `vani --json help` lists every leaf command as `flag`, `always`, `text` or `none` (`none`
+  with a reason). Tests hold that table to the usage text and to each command's flags.
+
+  A command's own `--json` now also returns that envelope for a runtime failure it used to
+  report only on stderr. A usage error keeps exit 2 and empty stdout. `jobs` failures gain
+  `code`.
 - **Application stages after "applied"** (`internal/marks/stages.go`): `vani jobs mark KEY
   screening|interview|offer|rejected|withdrawn|unstage`, `jobs list --stage`, a furthest-stage that never
   falls, and the Mac app's Stage row. Stages live in `stages.jsonl` so an older vani reads every staged

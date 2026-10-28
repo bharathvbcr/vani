@@ -181,7 +181,7 @@ func (e *env) cmdAudit(args []string) error {
 	seed := fs.String("seed", "", "draw seed (default: this ISO week, so a batch stays the same all week)")
 	labels := fs.String("labels", "", "label directory (default: state dir; use the repo's eval/jd_triage to keep labels in git)")
 	list := fs.Bool("list", false, "print the draw (stratum, p_select, key) and ask nothing")
-	asJSON := fs.Bool("json", false, "print the draw as JSON (keys, strata, p_select; no posting text) and ask nothing")
+	asJSON := e.jsonFlag(fs, "print the draw as JSON (keys, strata, p_select; no posting text) and ask nothing")
 	blind := fs.Bool("blind", false, "hide the model's current readings (and the strata) while you answer")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -268,7 +268,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	scored := fs.Int("scored", eval.AuditScored, "scored quota of that draw")
 	dropped := fs.Int("dropped", eval.AuditDropped, "dropped quota of that draw")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
 	}

@@ -275,7 +275,7 @@ func (s *recordedStream) Response() (llm.Response, error) {
 
 func (e *env) jobsRetriage(args []string) error {
 	fs := e.newFlags("jobs retriage")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	dry := fs.Bool("dry-run", false, "say what asking would cost and ask nothing (no key is read)")
 	clr := fs.Bool("clear", false, "remove the manual reading of this posting instead of making one")
 	batch := fs.Bool("batch", false, fmt.Sprintf("read every KEY given (at most %d); with --json a run writes one JSON object per line as it goes", maxRetriageBatch))

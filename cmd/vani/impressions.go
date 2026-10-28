@@ -99,7 +99,7 @@ func (e *env) cmdImpressions(args []string) error {
 	surface := fs.String("surface", "", "jobs or audit (the digest records its own)")
 	slate := fs.String("slate", "", "the slate being shown (a view and refresh id, a draw seed); a key is logged once per slate")
 	section := fs.String("section", "", "the view or section shown (optional)")
-	asJSON := fs.Bool("json", false, `print {"logged":N} (or {"error"}) on stdout`)
+	asJSON := e.jsonFlag(fs, `print {"logged":N} (or {"error"}) on stdout`)
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}

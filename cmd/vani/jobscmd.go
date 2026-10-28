@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -65,7 +64,7 @@ func (e *env) cmdJobs(args []string) error {
 	return usagef("jobs: unknown subcommand %q", args[0])
 }
 
-// jobsReply writes v as JSON, or {"error"} when err is set, and returns the
+// jobsReply writes v as JSON, or {"error","code"} when err is set, and returns the
 // exit error. Usage errors stay usage errors.
 func (e *env) jobsReply(asJSON bool, v any, err error, text func()) error {
 	if !asJSON {
@@ -78,13 +77,9 @@ func (e *env) jobsReply(asJSON bool, v any, err error, text func()) error {
 		if errors.As(err, new(usageError)) || errors.Is(err, flag.ErrHelp) {
 			return err
 		}
-		v = struct {
-			Error string `json:"error"`
-		}{err.Error()}
+		v = errorReply{err.Error(), codeRuntime}
 	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if werr := enc.Encode(v); werr != nil {
+	if werr := writeJSON(e.stdout, v); werr != nil {
 		return werr
 	}
 	if err != nil {
@@ -95,7 +90,7 @@ func (e *env) jobsReply(asJSON bool, v any, err error, text func()) error {
 
 func (e *env) jobsList(args []string) error {
 	fs := e.newFlags("jobs list")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	var o jobsOpts
 	addSelectFlags(fs, &o)
 	fs.StringVar(&o.Sort, "sort", "default", "default, priority, relevance, fresh, company or salary (top of the stated range in --currency)")
@@ -167,7 +162,7 @@ func (e *env) jobsList(args []string) error {
 // every job to draw them.
 func (e *env) jobsStatsCmd(args []string) error {
 	fs := e.newFlags("jobs stats")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	var o jobsOpts
 	addSelectFlags(fs, &o)
 	if err := parse(fs, args); err != nil {
@@ -239,7 +234,7 @@ type jobsFoldersJSON struct {
 
 func (e *env) jobsFolders(args []string) error {
 	fs := e.newFlags("jobs folders")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	view := fs.String("view", "new", "view to count: "+strings.Join(jobview.Views, ", "))
 	if err := parse(fs, args); err != nil {
 		return err
@@ -300,7 +295,7 @@ func (e *env) jobsFolders(args []string) error {
 
 func (e *env) jobsShow(args []string) error {
 	fs := e.newFlags("jobs show")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -362,7 +357,7 @@ func (e *env) showJob(k posting.Key) (j jobview.Job, r ledger.Record, ok bool, e
 
 func (e *env) jobsMark(args []string) error {
 	fs := e.newFlags("jobs mark")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -399,7 +394,7 @@ func (e *env) jobsMark(args []string) error {
 
 func (e *env) jobsNote(args []string) error {
 	fs := e.newFlags("jobs note")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}

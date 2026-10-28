@@ -83,7 +83,7 @@ func scrapeToken(host string) string {
 
 func (e *env) jobsIngest(args []string) error {
 	fs := e.newFlags("jobs ingest")
-	asJSON := fs.Bool("json", false, "request JSON on stdin, one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "request JSON on stdin, one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
 	}

@@ -230,8 +230,8 @@ commands:
                              models; per-slot agreement, confusion, calibration and latency
                              (Metal only, no API key, never writes the ledger)
   semantic warm [--max N]    embed the freshest postings against the knowledge base (needs a
-                             -tags tessl build, semantic.snapshot and kb.bank); semantic status
-                             shows the build, config, profile size, cached scores and model
+                             -tags tessl build, semantic.snapshot and kb.bank)
+  semantic status            the semantic build, config, profile size, cached scores and model
   answers similar [--json]   which question wordings read alike, by embedding: {"texts":[...],
                              "min_cos"?} on stdin, {"available","pairs":[{a,b,cos,tier}]} on
                              stdout; wordings only, never answer values (-h lists the bounds)
@@ -281,6 +281,11 @@ type env struct {
 	stdout io.Writer
 	stderr io.Writer
 
+	// jsonAsked is the running command's --json flag (jsonFlag); nil when it
+	// has none. runEnv reads it to reply {"error","code"} for a failure the
+	// command did not report itself.
+	jsonAsked *bool
+
 	// runLog is the log file a manual run's output goes to, as its starter said
 	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it
 	// said was refused. dailyJob records it in the run record.
@@ -327,17 +332,80 @@ func run(args []string, stdout, stderr io.Writer) int {
 // from the process environment; tests that must run in parallel build their
 // own, since t.Setenv cannot be used under t.Parallel.
 func runEnv(e *env, args []string) int {
+	args, global := splitGlobalJSON(args)
 	stdout, stderr := e.stdout, e.stderr
 	if len(args) == 0 {
+		if global {
+			fmt.Fprintln(stderr, "vani: expected a command after --json")
+			_ = writeJSON(stdout, errorReply{"expected a command after --json (vani --json help lists them)", codeUsage})
+			return exitUsage
+		}
 		fmt.Fprint(stderr, usageText)
 		return exitUsage
 	}
-
-	var cmdErr error
-	switch args[0] {
-	case "-h", "--help", "help":
+	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		if global {
+			if err := writeJSON(stdout, jsonInventory{jsonLeaves}); err != nil {
+				fmt.Fprintf(stderr, "vani: %v\n", err)
+				return exitRuntime
+			}
+			return exitOK
+		}
 		fmt.Fprint(stdout, usageText)
 		return exitOK
+	}
+
+	// out counts the reply, so a failure asked for JSON that wrote none gets
+	// the {"error","code"} envelope below.
+	out := &countingWriter{w: stdout}
+	e.stdout, e.jsonAsked = out, nil
+	defer func() { e.stdout, e.jsonAsked = stdout, nil }()
+	leaf, n, known := leafOf(args)
+
+	var cmdErr error
+	switch {
+	case !global:
+	case !known:
+		cmdErr = usagef("%q names no command (vani --json help lists them)", strings.Join(args[:min(len(args), 3)], " "))
+	case leaf.Mode == jsonFlag:
+		args = append(append(args[:n:n], "--json"), args[n:]...)
+	case leaf.Mode == jsonText, leaf.Mode == jsonNone:
+		cmdErr = errNoJSON(leaf)
+	}
+	if cmdErr == nil {
+		cmdErr = e.dispatch(args)
+	}
+
+	// A usage error replies in JSON only under the global flag: a command's own
+	// --json has always exited 2 with nothing on stdout for one, and the Mac app
+	// reads that silence as an older vani (ResumeStudio.swift).
+	code := exitCode(cmdErr)
+	asked := global || code != exitUsage && (leaf.Mode == jsonAlways || e.jsonAsked != nil && *e.jsonAsked)
+	if code != exitOK && asked && out.n.Load() == 0 && !errors.Is(cmdErr, errAlreadyReported) {
+		if err := writeJSON(out, errorReply{cmdErr.Error(), envelopeCode(cmdErr)}); err != nil {
+			fmt.Fprintf(stderr, "vani: write error reply: %v\n", err)
+		}
+	}
+	switch code {
+	case exitOK:
+		return exitOK
+	case exitUsage:
+		if global {
+			fmt.Fprintf(stderr, "vani: %v\n", cmdErr)
+		} else {
+			fmt.Fprintf(stderr, "vani: %v\n\n%s", cmdErr, usageText)
+		}
+		return exitUsage
+	default:
+		fmt.Fprintf(stderr, "vani: %v\n", cmdErr)
+		return code
+	}
+}
+
+// dispatch runs the command args name.
+func (e *env) dispatch(args []string) error {
+	var cmdErr error
+	switch args[0] {
 	case "version", "--version":
 		cmdErr = e.cmdVersion(args[1:])
 	case "init":
@@ -417,17 +485,7 @@ func runEnv(e *env, args []string) int {
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}
-
-	switch code := exitCode(cmdErr); code {
-	case exitOK:
-		return exitOK
-	case exitUsage:
-		fmt.Fprintf(stderr, "vani: %v\n\n%s", cmdErr, usageText)
-		return exitUsage
-	default:
-		fmt.Fprintf(stderr, "vani: %v\n", cmdErr)
-		return code
-	}
+	return cmdErr
 }
 
 // exitCode is the process exit code for a command error. A wrapped
@@ -437,7 +495,7 @@ func exitCode(err error) int {
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return exitOK
-	case errors.As(err, new(usageError)):
+	case errors.As(err, new(usageError)), errors.As(err, new(unsupportedError)):
 		return exitUsage
 	case errors.Is(err, errConfigRestart):
 		return exitConfigRestart
@@ -818,7 +876,7 @@ func (e *env) cmdRunOnce(args []string) error {
 
 func (e *env) cmdStatus(args []string) error {
 	fs := e.newFlags("status")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout: last run, ledger, spend, configuration")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: last run, ledger, spend, configuration")
 	if err := parse(fs, args); err != nil {
 		return err
 	}

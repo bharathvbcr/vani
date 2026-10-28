@@ -53,7 +53,7 @@ type jobsExportJSON struct {
 
 func (e *env) jobsExport(args []string) error {
 	fs := e.newFlags("jobs export")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	var o jobsOpts
 	addSelectFlags(fs, &o)
 	fs.StringVar(&o.Sort, "sort", "default", "the list order the rows keep: "+strings.Join(jobview.Sorts, ", "))

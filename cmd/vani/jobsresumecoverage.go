@@ -57,7 +57,7 @@ type resumeCoverageReply struct {
 
 func (e *env) jobsResumeCoverage(args []string) error {
 	fs := e.newFlags("jobs resume coverage")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -233,7 +233,7 @@ type resumeGapsReply struct {
 
 func (e *env) jobsResumeGaps(args []string) error {
 	fs := e.newFlags("jobs resume gaps")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	dry := fs.Bool("dry-run", false, "say what would be handed over and write nothing")
 	if err := parsePositional(fs, args); err != nil {
 		return err

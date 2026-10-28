@@ -357,7 +357,7 @@ type runRequestReply struct {
 // ledger: the daemon makes the run, with its own keys and its own lock.
 func (e *env) cmdRunRequest(args []string) error {
 	fs := e.newFlags("run-request")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout: {requested_at, options, daemon_pid}, or {error}")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: {requested_at, options, daemon_pid}, or {error}")
 	opts, boards := runOptionFlags(fs)
 	if err := parse(fs, args); err != nil {
 		return err

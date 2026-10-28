@@ -1,0 +1,232 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"strings"
+	"sync/atomic"
+)
+
+// vani's JSON contract, the one an agent (or the Mac app) relies on. Under the
+// global flag (`vani --json <command> ...`, CLI-Anything's placement) every
+// outcome is exactly one JSON value on stdout, a failure of any kind being
+// {"error","code"}. Under a command's own --json, or for a command whose
+// output is JSON regardless, a runtime failure is that envelope too, and a
+// usage error keeps its old form: exit 2, nothing on stdout. Exit codes are
+// unchanged: 0 ok, 1 runtime, 2 usage. skills/cli-anything-vani/SKILL.md is
+// the agent-facing description of it.
+
+// jsonMode is how one leaf command answers in JSON.
+type jsonMode string
+
+const (
+	jsonFlag   jsonMode = "flag"   // takes --json
+	jsonAlways jsonMode = "always" // stdout is JSON whatever the flags
+	jsonText   jsonMode = "text"   // text only: no JSON form yet
+	jsonNone   jsonMode = "none"   // no JSON form by design; reason says why
+)
+
+// Codes the envelope carries when the command wrote no reply of its own. A
+// command's own codes (draft, rkbresume) are snake_case nouns too.
+const (
+	codeUsage       = "usage"
+	codeRuntime     = "runtime"
+	codeUnsupported = "unsupported" // the global --json on a command with no JSON form
+)
+
+// jsonLeaf is one leaf command: the words that name it, as usageTemplate
+// spells them.
+type jsonLeaf struct {
+	Command string   `json:"command"`
+	Mode    jsonMode `json:"json"`
+	Reason  string   `json:"reason,omitempty"`
+}
+
+// jsonLeaves is every leaf command vani dispatches. TestJSONLeavesMatchUsage
+// holds it to usageTemplate and TestJSONLeavesMatchFlags to the flags each
+// command declares, so it cannot drift from either.
+var jsonLeaves = []jsonLeaf{
+	{"version", jsonText, ""},
+	{"init", jsonText, ""},
+	{"config check", jsonText, ""},
+	{"config motivation", jsonAlways, ""},
+	{"config exclude", jsonAlways, ""},
+	{"watchlist list", jsonFlag, ""},
+	{"watchlist add", jsonText, ""},
+	{"watchlist remove", jsonText, ""},
+	{"watchlist domain", jsonText, ""},
+	{"watchlist icon", jsonText, ""},
+	{"watchlist discover", jsonFlag, ""},
+	{"logos refresh", jsonFlag, ""},
+	{"daemon", jsonNone, "runs the scheduler in the foreground until stopped; read it with status --json and runs show --json"},
+	{"run-once", jsonText, ""},
+	{"run-request", jsonFlag, ""},
+	{"digest", jsonText, ""},
+	{"status", jsonFlag, ""},
+	{"runs list", jsonFlag, ""},
+	{"runs show", jsonFlag, ""},
+	{"runs failures", jsonFlag, ""},
+	{"label", jsonNone, "asks the owner one posting at a time on the terminal"},
+	{"export heldout", jsonText, ""},
+	{"eval", jsonText, ""},
+	{"audit", jsonFlag, ""},
+	{"audit answer", jsonFlag, ""},
+	{"relevance", jsonText, ""},
+	{"rankfit", jsonText, ""},
+	{"lca import", jsonText, ""},
+	{"lca lookup", jsonText, ""},
+	{"employer import", jsonText, ""},
+	{"employer lookup", jsonText, ""},
+	{"track list", jsonText, ""},
+	{"track show", jsonText, ""},
+	{"track use", jsonText, ""},
+	{"kb sync", jsonText, ""},
+	{"reasons draft", jsonText, ""},
+	{"reasons import", jsonText, ""},
+	{"reasons check", jsonText, ""},
+	{"kbmatch run", jsonText, ""},
+	{"kbmatch status", jsonText, ""},
+	{"teacher", jsonText, ""},
+	{"impressions log", jsonFlag, ""},
+	{"labels", jsonFlag, ""},
+	{"jobs list", jsonFlag, ""},
+	{"jobs stats", jsonFlag, ""},
+	{"jobs export", jsonFlag, ""},
+	{"jobs folders", jsonFlag, ""},
+	{"jobs show", jsonFlag, ""},
+	{"jobs find", jsonFlag, ""},
+	{"jobs ingest", jsonFlag, ""},
+	{"jobs mark", jsonFlag, ""},
+	{"jobs note", jsonFlag, ""},
+	{"jobs retriage", jsonFlag, ""},
+	{"jobs resume build", jsonFlag, ""},
+	{"jobs resume render", jsonFlag, ""},
+	{"jobs resume show", jsonFlag, ""},
+	{"jobs resume use", jsonFlag, ""},
+	{"jobs resume revalidate", jsonFlag, ""},
+	{"jobs resume diff", jsonFlag, ""},
+	{"jobs resume current", jsonFlag, ""},
+	{"jobs resume coverage", jsonFlag, ""},
+	{"jobs resume gaps", jsonFlag, ""},
+	{"jobs gaps", jsonFlag, ""},
+	{"retriage", jsonText, ""},
+	{"rescore", jsonText, ""},
+	{"prefilter", jsonText, ""},
+	{"bench local", jsonFlag, ""},
+	{"semantic warm", jsonText, ""},
+	{"semantic status", jsonText, ""},
+	{"answers similar", jsonAlways, ""},
+	{"draft", jsonAlways, ""},
+	{"suggest", jsonAlways, ""},
+	{"resume", jsonAlways, ""},
+	{"migrate rekey-fallback", jsonText, ""},
+	{"launchd plist", jsonNone, "its output is a launchd plist (XML) to install"},
+}
+
+// commandAliases are the old or second names a dispatcher accepts for one
+// word of a command, keyed by the command words before it ("" at the top).
+var commandAliases = map[string]map[string]string{
+	"":     {"audit-sample": "audit", "--version": "version"},
+	"jobs": {"categories": "folders"},
+}
+
+// leafOf finds the leaf command args start with: the longest jsonLeaves entry
+// whose words lead args, aliases read as their canonical names. n is how many
+// of args it took; ok is false when args name no leaf (an unknown command, or
+// a command group with no subcommand), which the dispatcher reports.
+func leafOf(args []string) (leaf jsonLeaf, n int, ok bool) {
+	var words []string
+	for i := 0; i < len(args) && i < 3; i++ {
+		w := args[i]
+		if canon, alias := commandAliases[strings.Join(words, " ")][w]; alias {
+			w = canon
+		}
+		words = append(words, w)
+		name := strings.Join(words, " ")
+		for _, l := range jsonLeaves {
+			if l.Command == name {
+				leaf, n, ok = l, i+1, true
+			}
+		}
+	}
+	return leaf, n, ok
+}
+
+// splitGlobalJSON strips the leading --json flags `vani --json <command>`
+// carries and reports whether there were any.
+func splitGlobalJSON(args []string) (rest []string, global bool) {
+	for len(args) > 0 && (args[0] == "--json" || args[0] == "-json") {
+		args, global = args[1:], true
+	}
+	return args, global
+}
+
+// jsonFlag declares a command's --json flag and records it on e, so runEnv
+// knows the command was asked for JSON when it fails without replying.
+func (e *env) jsonFlag(fs *flag.FlagSet, usage string) *bool {
+	p := fs.Bool("json", false, usage)
+	e.jsonAsked = p
+	return p
+}
+
+// errorReply is the envelope every JSON failure has: the message and a code.
+type errorReply struct {
+	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+// writeJSON writes v as one line of JSON, HTML characters unescaped.
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
+}
+
+// jsonInventory is `vani --json help`: every leaf command and how it answers
+// in JSON, so an agent learns the surface without parsing the usage text.
+type jsonInventory struct {
+	Commands []jsonLeaf `json:"commands"`
+}
+
+// errNoJSON is the global --json on a command that has no JSON form.
+func errNoJSON(l jsonLeaf) error {
+	why := "it has no JSON output yet; run it without --json for text"
+	if l.Mode == jsonNone {
+		why = "it has no JSON output: " + l.Reason
+	}
+	return unsupportedError{fmt.Sprintf("vani %s: %s", l.Command, why)}
+}
+
+// unsupportedError exits 2 like a usage error, with its own code.
+type unsupportedError struct{ msg string }
+
+func (e unsupportedError) Error() string { return e.msg }
+
+// countingWriter counts what passes through to w, so runEnv can tell whether a
+// command wrote a reply before it failed. The daemon writes from more than one
+// goroutine, hence the atomic.
+type countingWriter struct {
+	w io.Writer
+	n atomic.Int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// envelopeCode is the code a failure's envelope carries.
+func envelopeCode(err error) string {
+	switch {
+	case errors.As(err, new(unsupportedError)):
+		return codeUnsupported
+	case errors.As(err, new(usageError)):
+		return codeUsage
+	default:
+		return codeRuntime
+	}
+}

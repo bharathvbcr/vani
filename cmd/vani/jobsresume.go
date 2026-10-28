@@ -455,7 +455,7 @@ type resumeBuildOpts struct {
 
 func (e *env) jobsResumeBuild(args []string) error {
 	fs := e.newFlags("jobs resume build")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	dry := fs.Bool("dry-run", false, "say whether Opus is usable and what a build would cost at most, and spend nothing")
 	allowBase := fs.Bool("allow-base", false, "when Opus cannot run, build and keep the owner's base selection instead of refusing (it never becomes the current version of a job that has one)")
 	opts := resumeBuildOpts{}

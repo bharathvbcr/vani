@@ -72,7 +72,7 @@ type jobFindJSON struct {
 
 func (e *env) jobsFind(args []string) error {
 	fs := e.newFlags("jobs find")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	rawURL := fs.String("url", "", "the page URL (http or https, at most 2048 bytes)")
 	if err := parse(fs, args); err != nil {
 		return err

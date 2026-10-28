@@ -120,7 +120,7 @@ func (e *env) cmdLogos(args []string) error {
 	}
 	fs := e.newFlags("logos refresh")
 	force := fs.Bool("force", false, "refetch cached icons and domains that failed recently")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}

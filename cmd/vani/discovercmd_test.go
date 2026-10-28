@@ -305,8 +305,12 @@ func TestDiscoverFailures(t *testing.T) {
 			if !strings.Contains(e, tc.want) {
 				t.Errorf("stderr %q lacks %q", e, tc.want)
 			}
-			if o != "" {
-				t.Errorf("stdout %q on a failed search", o)
+			// The failure is the error envelope and nothing else: no partial result.
+			var r errorReply
+			dec := json.NewDecoder(strings.NewReader(o))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&r); err != nil || r.Code != codeRuntime || !strings.Contains(r.Error, tc.want) || dec.More() {
+				t.Errorf("stdout %q on a failed search, want only {\"error\",\"code\":%q}", o, codeRuntime)
 			}
 			if len(watchlistOf(t, cfgPath).Watchlist) != 0 {
 				t.Error("a failed search changed the watchlist")

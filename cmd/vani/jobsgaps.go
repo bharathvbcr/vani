@@ -39,7 +39,7 @@ func plural(n int, noun string) string {
 
 func (e *env) jobsGapsCmd(args []string) error {
 	fs := e.newFlags("jobs gaps")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	var o jobsOpts
 	addSelectFlags(fs, &o)
 	limit := fs.Int("n", jobinsight.DefaultGapLimit, fmt.Sprintf("skills to show (1-%d)", jobinsight.MaxGapLimit))

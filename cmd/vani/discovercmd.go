@@ -93,7 +93,7 @@ func (e *env) watchlistDiscover(args []string) error {
 	workMode := fs.String("work-mode", "", "remote, hybrid or onsite")
 	seniority := fs.String("seniority", "", "intern, junior, middle, senior, lead, staff, principal or c_level")
 	pages := fs.Int("pages", freehire.DefaultPages, fmt.Sprintf("pages of %d results to read, 1..%d", freehire.PageSize, freehire.MaxPages))
-	asJSON := fs.Bool("json", false, "a JSON document on stdout")
+	asJSON := e.jsonFlag(fs, "a JSON document on stdout")
 	allow := fs.Bool("allow-host", false, "add "+freehire.Host+" to allowed_hosts first, when it is not there")
 	if err := parse(fs, args); err != nil {
 		return err

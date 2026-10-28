@@ -38,7 +38,7 @@ func (e *env) cmdWatchlist(args []string) error {
 
 func (e *env) watchlistList(args []string) error {
 	fs := e.newFlags("watchlist list")
-	asJSON := fs.Bool("json", false, "a JSON array of the boards on stdout (the Mac app's Saved searches)")
+	asJSON := e.jsonFlag(fs, "a JSON array of the boards on stdout (the Mac app's Saved searches)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}

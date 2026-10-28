@@ -14,7 +14,7 @@ import (
 // once at launch and never compute its own words.
 func (e *env) cmdLabels(args []string) error {
 	fs := e.newFlags("labels")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
 	}

@@ -287,7 +287,7 @@ func outOfOrder(a, b []string) []string {
 
 func (e *env) jobsResumeDiff(args []string) error {
 	fs := e.newFlags("jobs resume diff")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	if err := parseResumeArgs(fs, args, "diff", 3); err != nil {
 		return err
 	}
@@ -369,7 +369,7 @@ type resumeCurrentSet struct {
 
 func (e *env) jobsResumeCurrent(args []string) error {
 	fs := e.newFlags("jobs resume current")
-	asJSON := fs.Bool("json", false, "one JSON object on stdout ({error,code} on failure)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout ({error,code} on failure)")
 	if err := parseResumeArgs(fs, args, "current", 2); err != nil {
 		return err
 	}
