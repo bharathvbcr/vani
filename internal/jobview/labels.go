@@ -29,6 +29,10 @@ var triageLabels = map[string]map[string]string{
 	},
 }
 
+// TriageLabel is the display string for a seniority, work_mode or sponsorship
+// option, or "" for an unknown slot or option.
+func TriageLabel(slot, value string) string { return triageLabels[slot][value] }
+
 // LabelEntry is one option of a vocabulary: the wire value and its words.
 type LabelEntry struct {
 	Value string `json:"value"`

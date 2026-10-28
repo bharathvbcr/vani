@@ -45,6 +45,10 @@ func TestKeyPrefixForSearchSites(t *testing.T) {
 		{Board{ATS: posting.SmartRecruiters, Token: "ServiceNow"}, "sr:servicenow:"},
 		{Board{ATS: posting.IBM, Token: "Confluent"}, "ib:confluent:"},
 		{Board{ATS: posting.Avature, Token: "TwoSigma"}, "av:twosigma:"},
+		{Board{ATS: posting.Rippling, Token: "Aalo"}, "rp:aalo:"},
+		{Board{ATS: posting.Workable, Token: "HuggingFace"}, "wk:huggingface:"},
+		{Board{ATS: posting.Gem, Token: "Groq"}, "gm:groq:"},
+		{Board{ATS: posting.Feed, Token: "Shopify"}, "fd:shopify:"},
 		{Board{ATS: posting.Workday, Token: "nvidia/Site"}, "wd:nvidia:site:"},
 		{Board{ATS: posting.OracleHCM, Token: "JPMC/CX_1001"}, "oc:jpmc:cx_1001:"},
 	} {

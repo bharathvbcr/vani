@@ -1,5 +1,11 @@
 // Package ashby lists postings from an Ashby public job board
 // (https://developers.ashbyhq.com/docs/public-job-posting-api).
+//
+// A board that has turned that API off still publishes the same roles on its
+// job page. That page reads them from the public job-board GraphQL endpoint
+// on jobs.ashbyhq.com (no session). List tries the posting API first and,
+// only when that answers 404, reads the job board the page uses: one list,
+// then one detail per posting, because the list carries no description.
 package ashby
 
 import (
@@ -16,6 +22,10 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/htmltext"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
+
+// maxGraphQLBody caps one job-board response. A package variable so a test
+// can shrink it. The posting-API list keeps GetJSON's board cap.
+var maxGraphQLBody int64 = 2 << 20
 
 // ErrBoardNotFound is returned when Ashby has no such job board.
 var ErrBoardNotFound = srcutil.ErrBoardNotFound
@@ -91,12 +101,18 @@ func (c *compensation) payLine() string {
 }
 
 func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := srcutil.CheckBoard(b, posting.Ashby); err != nil {
 		return nil, err
 	}
 	var resp response
 	endpoint := baseURL + url.PathEscape(b.APIName()) + "?includeCompensation=true"
 	if err := srcutil.GetJSON(ctx, s.d, endpoint, &resp); err != nil {
+		if errors.Is(err, srcutil.ErrBoardNotFound) {
+			return s.listJobBoard(ctx, b)
+		}
 		return nil, fmt.Errorf("ashby %q: %w", b.Token, err)
 	}
 	if resp.Jobs == nil {
@@ -164,4 +180,255 @@ func (j job) posting(b sources.Board, seen time.Time) (posting.Posting, error) {
 		Description: desc,
 		SeenAt:      seen,
 	}, nil
+}
+
+// The job-board queries are the ones the public jobs page sends
+// (ApiJobBoardWithTeams, ApiJobPosting), cut down to the fields a posting
+// uses. The page's list has no description, so each posting is read again.
+const (
+	jobBoardOp    = "ApiJobBoardWithTeams"
+	jobPostingOp  = "ApiJobPosting"
+	jobBoardQuery = `query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) {
+  jobBoard: jobBoardWithTeams(organizationHostedJobsPageName: $organizationHostedJobsPageName) {
+    teams { id name externalName }
+    jobPostings { id title locationName workplaceType teamId }
+  }
+}`
+	jobPostingQuery = `query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
+  jobPosting(organizationHostedJobsPageName: $organizationHostedJobsPageName, jobPostingId: $jobPostingId) {
+    id title departmentName departmentExternalName locationName workplaceType
+    descriptionHtml isListed compensationTierSummary scrapeableCompensationSalarySummary
+  }
+}`
+)
+
+func graphQLURL(op string) string {
+	return "https://jobs.ashbyhq.com/api/non-user-graphql?op=" + op
+}
+
+type gqlRequest struct {
+	OperationName string         `json:"operationName"`
+	Query         string         `json:"query"`
+	Variables     map[string]any `json:"variables"`
+}
+
+type gqlError struct {
+	Message string `json:"message"`
+}
+
+type boardPayload struct {
+	Data struct {
+		JobBoard *struct {
+			Teams []struct {
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				ExternalName string `json:"externalName"`
+			} `json:"teams"`
+			JobPostings []boardJob `json:"jobPostings"`
+		} `json:"jobBoard"`
+	} `json:"data"`
+	Errors []gqlError `json:"errors"`
+}
+
+type boardJob struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	LocationName  string `json:"locationName"`
+	WorkplaceType string `json:"workplaceType"`
+	TeamID        string `json:"teamId"`
+}
+
+type postingPayload struct {
+	Data struct {
+		JobPosting *struct {
+			ID              string `json:"id"`
+			Title           string `json:"title"`
+			DepartmentName  string `json:"departmentName"`
+			DepartmentExt   string `json:"departmentExternalName"`
+			LocationName    string `json:"locationName"`
+			WorkplaceType   string `json:"workplaceType"`
+			DescriptionHTML string `json:"descriptionHtml"`
+			IsListed        *bool  `json:"isListed"`
+			TierSummary     string `json:"compensationTierSummary"`
+			SalarySummary   string `json:"scrapeableCompensationSalarySummary"`
+		} `json:"jobPosting"`
+	} `json:"data"`
+	Errors []gqlError `json:"errors"`
+}
+
+func (s *source) listJobBoard(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var resp boardPayload
+	req := gqlRequest{
+		OperationName: jobBoardOp,
+		Query:         jobBoardQuery,
+		Variables:     map[string]any{"organizationHostedJobsPageName": b.APIName()},
+	}
+	if err := srcutil.PostJSON(ctx, s.d, graphQLURL(jobBoardOp), req, nil, &resp); err != nil {
+		if errors.Is(err, srcutil.ErrBoardNotFound) {
+			return nil, fmt.Errorf("ashby %q: %w", b.Token, srcutil.ErrBoardNotFound)
+		}
+		return nil, fmt.Errorf("ashby %q: job board: %w", b.Token, err)
+	}
+	if msg := gqlMessage(resp.Errors); msg != "" && resp.Data.JobBoard == nil {
+		return nil, fmt.Errorf("ashby %q: job board: %s", b.Token, msg)
+	}
+	if resp.Data.JobBoard == nil {
+		return nil, fmt.Errorf("ashby %q: %w", b.Token, srcutil.ErrBoardNotFound)
+	}
+	jobs := resp.Data.JobBoard.JobPostings
+	if jobs == nil {
+		return nil, fmt.Errorf("ashby %q: job board has no jobPostings array", b.Token)
+	}
+	if err := srcutil.CheckCount(len(jobs)); err != nil {
+		return nil, fmt.Errorf("ashby %q: %w", b.Token, err)
+	}
+	teams := map[string]string{}
+	for _, t := range resp.Data.JobBoard.Teams {
+		name := strings.TrimSpace(t.ExternalName)
+		if name == "" {
+			name = strings.TrimSpace(t.Name)
+		}
+		if t.ID != "" && name != "" {
+			teams[t.ID] = name
+		}
+	}
+	seenID := map[string]bool{}
+	for i, j := range jobs {
+		id := strings.TrimSpace(j.ID)
+		if _, err := posting.AshbyKey(b.Token, id); err != nil {
+			return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, err)
+		}
+		if seenID[strings.ToLower(id)] {
+			return nil, fmt.Errorf("ashby %q: job %d: duplicate id %q", b.Token, i, id)
+		}
+		seenID[strings.ToLower(id)] = true
+	}
+	seen := s.now()
+	out := make([]posting.Posting, 0, len(jobs))
+	for i, j := range jobs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		id := strings.TrimSpace(j.ID)
+		var detail postingPayload
+		dreq := gqlRequest{
+			OperationName: jobPostingOp,
+			Query:         jobPostingQuery,
+			Variables: map[string]any{
+				"organizationHostedJobsPageName": b.APIName(),
+				"jobPostingId":                   id,
+			},
+		}
+		if err := srcutil.PostJSONLimit(ctx, s.d, graphQLURL(jobPostingOp), dreq, nil, maxGraphQLBody, &detail); err != nil {
+			if errors.Is(err, srcutil.ErrBoardNotFound) {
+				err = fmt.Errorf("job %s is not on the board", id)
+			}
+			return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, err)
+		}
+		if msg := gqlMessage(detail.Errors); msg != "" && detail.Data.JobPosting == nil {
+			return nil, fmt.Errorf("ashby %q: job %d: %s", b.Token, i, msg)
+		}
+		if detail.Data.JobPosting == nil {
+			return nil, fmt.Errorf("ashby %q: job %d: job %s is not on the board", b.Token, i, id)
+		}
+		p, keep, err := detail.posting(b, j, teams, seen)
+		if err != nil {
+			return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, err)
+		}
+		if keep {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func gqlMessage(errs []gqlError) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	msg := strings.TrimSpace(errs[0].Message)
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
+}
+
+func (p postingPayload) posting(b sources.Board, list boardJob, teams map[string]string, seen time.Time) (posting.Posting, bool, error) {
+	j := p.Data.JobPosting
+	if j.IsListed != nil && !*j.IsListed {
+		return posting.Posting{}, false, nil
+	}
+	id := strings.TrimSpace(list.ID)
+	if got := strings.TrimSpace(j.ID); got != "" && !strings.EqualFold(got, id) {
+		return posting.Posting{}, false, fmt.Errorf("detail id %q does not match %q", got, id)
+	}
+	key, err := posting.AshbyKey(b.Token, id)
+	if err != nil {
+		return posting.Posting{}, false, err
+	}
+	title := strings.TrimSpace(j.Title)
+	if title == "" {
+		title = strings.TrimSpace(list.Title)
+	}
+	if title == "" {
+		return posting.Posting{}, false, errors.New("empty title")
+	}
+	page, apply, err := jobPage(b.APIName(), id)
+	if err != nil {
+		return posting.Posting{}, false, err
+	}
+	loc := strings.TrimSpace(j.LocationName)
+	if loc == "" {
+		loc = strings.TrimSpace(list.LocationName)
+	}
+	dept := strings.TrimSpace(j.DepartmentExt)
+	if dept == "" {
+		dept = strings.TrimSpace(j.DepartmentName)
+	}
+	if dept == "" {
+		dept = teams[list.TeamID]
+	}
+	workplace := strings.TrimSpace(j.WorkplaceType)
+	if workplace == "" {
+		workplace = strings.TrimSpace(list.WorkplaceType)
+	}
+	desc := htmltext.Text(j.DescriptionHTML, srcutil.MaxDescription)
+	if line := paySummary(j.SalarySummary, j.TierSummary); line != "" {
+		desc = htmltext.Plain(line+"\n\n"+desc, srcutil.MaxDescription)
+	}
+	return posting.Posting{
+		Key:         key,
+		ATS:         posting.Ashby,
+		Company:     b.Company,
+		Title:       srcutil.Title(title),
+		Location:    loc,
+		Remote:      strings.EqualFold(workplace, "Remote"),
+		Department:  dept,
+		URL:         page,
+		ApplyURL:    apply,
+		Description: desc,
+		SeenAt:      seen,
+	}, true, nil
+}
+
+func paySummary(salary, tier string) string {
+	if line := srcutil.CompensationLine(salary); line != "" {
+		return line
+	}
+	return srcutil.CompensationLine(tier)
+}
+
+func jobPage(name, id string) (page, apply string, err error) {
+	page = "https://jobs.ashbyhq.com/" + url.PathEscape(name) + "/" + url.PathEscape(id)
+	apply = page + "/application"
+	if err := srcutil.CheckURL("jobUrl", page); err != nil {
+		return "", "", err
+	}
+	if err := srcutil.CheckURL("applyUrl", apply); err != nil {
+		return "", "", err
+	}
+	return page, apply, nil
 }

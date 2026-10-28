@@ -94,6 +94,18 @@ func DEShawKey(board, id string) (Key, error) { return build(DEShaw, board, id) 
 // iCIMS job id in its portal URL).
 func AtlassianKey(board, id string) (Key, error) { return build(Atlassian, board, id) }
 
+// RipplingKey is rp:{board_slug}:{job_uuid}.
+func RipplingKey(board, jobID string) (Key, error) { return build(Rippling, board, jobID) }
+
+// WorkableKey is wk:{account_slug}:{shortcode}.
+func WorkableKey(account, shortcode string) (Key, error) {
+	return build(Workable, account, shortcode)
+}
+
+// FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
+// cosmetic change to the apply URL does not split one role into two.
+func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
+
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
 // no trailing slash) so cosmetic link differences do not split one posting
@@ -150,7 +162,8 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
+		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable, Feed, Page, Other:
 		return a
 	}
 	return ""

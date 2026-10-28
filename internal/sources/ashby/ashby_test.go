@@ -129,17 +129,26 @@ func TestDescriptionFallsBackToHTML(t *testing.T) {
 }
 
 func TestNotFound(t *testing.T) {
-	s, _ := newSource(one(404, `{"error":"not found"}`))
+	s, d := newSource(map[string]srctest.Reply{
+		boardURL:               {Status: 404, Body: []byte(`{"error":"not found"}`)},
+		graphQLURL(jobBoardOp): {Status: 200, Body: []byte(`{"data":{"jobBoard":null}}`)},
+	})
 	if _, err := s.List(context.Background(), board); !errors.Is(err, ErrBoardNotFound) {
 		t.Fatalf("got %v, want ErrBoardNotFound", err)
+	}
+	if urls := d.URLs(); len(urls) != 2 || urls[1] != graphQLURL(jobBoardOp) {
+		t.Fatalf("urls %v, want the posting API and then the job board", urls)
 	}
 }
 
 func TestServerErrorIsAnError(t *testing.T) {
-	s, _ := newSource(one(500, `{"jobs":[]}`))
+	s, d := newSource(one(500, `{"jobs":[]}`))
 	got, err := s.List(context.Background(), board)
 	if err == nil || errors.Is(err, ErrBoardNotFound) || got != nil {
 		t.Fatalf("got %v, %v", got, err)
+	}
+	if urls := d.URLs(); len(urls) != 1 {
+		t.Fatalf("a posting-API error must not fall through to the job board, urls %v", urls)
 	}
 }
 

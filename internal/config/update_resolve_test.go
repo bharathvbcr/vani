@@ -16,12 +16,12 @@ func TestValidateRequiredHostAgreesWithEgress(t *testing.T) {
 		hosts   []string
 		missing bool
 	}{
-		"wildcard covers the board host":    {[]string{"*.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}, false},
-		"wildcard does not cover the bare":  {[]string{"*.boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}, true},
-		"upper case and trailing dot":       {[]string{"Boards-API.Greenhouse.IO.", "API.eu.lever.co", "api.ashbyhq.com", "OpenRouter.ai"}, false},
-		"wildcard with trailing dot":        {[]string{"*.GREENHOUSE.io.", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}, false},
-		"unrelated wildcard":                {[]string{"*.example.com", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}, true},
-		"invalid entry is not an allowance": {[]string{"https://boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}, true},
+		"wildcard covers the board host":    {[]string{"*.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}, false},
+		"wildcard does not cover the bare":  {[]string{"*.boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}, true},
+		"upper case and trailing dot":       {[]string{"Boards-API.Greenhouse.IO.", "API.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "OpenRouter.ai"}, false},
+		"wildcard with trailing dot":        {[]string{"*.GREENHOUSE.io.", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}, false},
+		"unrelated wildcard":                {[]string{"*.example.com", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}, true},
+		"invalid entry is not an allowance": {[]string{"https://boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}, true},
 	} {
 		c := valid()
 		c.AllowedHosts = tc.hosts

@@ -146,6 +146,12 @@ commands:
   jobs stats [--json] [same selection flags as list]
                              distributions over the selection: fit, age, scores, companies, keywords,
                              US states, areas and remote listings
+  jobs export [--json] [--out FILE.xlsx] [--top N | --keys-stdin] [same selection flags and --sort as list]
+                             write jobs to an Excel workbook: the first N (default 100, at most
+                             5000) of the list those flags show, in its order, or the jobs whose
+                             keys stdin lists one per line, in that order (keys the selection does
+                             not hold are reported as "missing"; text mode then exits 1). Default
+                             file: <state dir>/export/jobs/jobs-<view>-<time>.xlsx
   jobs folders [--json] [--view new|saved|applied|hidden|all|pending]
                              category folder counts for the selection (career tracks from drafts/deciders)
   jobs show [--json] KEY     one role with its description

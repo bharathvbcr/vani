@@ -142,8 +142,9 @@ type Board struct {
 	ATS posting.ATS `json:"ats"`
 	// Token is the board identifier: Greenhouse board token, Lever company
 	// slug, Ashby job-board name, Workday "tenant/site", Eightfold company
-	// domain, Jibe client code ("amd"), or a short slug you choose for a
-	// careers page.
+	// domain, Jibe client code ("amd"), Rippling board slug, Workable
+	// account slug, Gem vanity path, or a short slug you choose for a careers
+	// page or an XML feed.
 	Token string `json:"token"`
 	// BoardName is the board's literal name on the ATS where that cannot be
 	// the Token, Ashby only: Hippocratic AI's board is "Hippocratic AI", with
@@ -199,8 +200,10 @@ type Board struct {
 	// fails rather than being truncated.
 	MaxPostings int `json:"max_postings,omitempty"`
 
-	// URL is a careers listing page (https): a page board's, or an Avature
-	// board's listing page on its Host (avature.ParseListURL).
+	// URL is https: a page board's careers listing page, an Avature board's
+	// listing page on its Host (avature.ParseListURL), or the XML document of
+	// a feed board. A feed board has no link_pattern: the document is the
+	// listing, and nothing linked from it is fetched.
 	URL string `json:"url,omitempty"`
 	// LinkPattern is a Go regexp an absolute link on URL must match to count
 	// as a posting page. Page boards only.

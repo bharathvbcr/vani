@@ -804,6 +804,10 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "api.lever.co", true
 	case posting.Ashby:
 		return "api.ashbyhq.com", true
+	case posting.Rippling:
+		return "api.rippling.com", true
+	case posting.Workable:
+		return "apply.workable.com", true
 	case posting.Gem:
 		return "api.gem.com", true
 	case posting.Amazon:
@@ -824,12 +828,30 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
-	case posting.Page:
+	case posting.Page, posting.Feed:
 		if u, err := url.Parse(b.URL); err == nil && u.Hostname() != "" {
 			return strings.ToLower(u.Hostname()), true
 		}
 	}
 	return "", false
+}
+
+// ashbyJobHost is the public job page. The posting API is api.ashbyhq.com;
+// a board that has turned that API off is read from this host instead, so
+// every Ashby board needs it allowed.
+const ashbyJobHost = "jobs.ashbyhq.com"
+
+// BoardHosts is every host a board fetches: BoardHost, plus the job-page host
+// an Ashby board falls back to when the posting API answers 404.
+func BoardHosts(b sources.Board) []string {
+	var out []string
+	if h, ok := BoardHost(b); ok {
+		out = append(out, h)
+	}
+	if b.ATS == posting.Ashby {
+		out = append(out, ashbyJobHost)
+	}
+	return out
 }
 
 // workdayName matches a Workday "tenant/site" token whose parts are the safe
@@ -843,7 +865,7 @@ const maxLinkPattern = 256
 func (c Config) RequiredHosts() []string {
 	set := map[string]bool{}
 	for _, b := range c.Watchlist {
-		if h, ok := BoardHost(b); ok {
+		for _, h := range BoardHosts(b) {
 			set[h] = true
 		}
 		if b.Domain != "" {
@@ -989,14 +1011,24 @@ func validSearches(b sources.Board) error {
 // those records.
 const ScrapeSuffix = "-scrape"
 
+// httpsBoardURL requires the https URL a page or feed board is fetched from.
+func httpsBoardURL(kind string, b sources.Board) error {
+	u, err := url.Parse(b.URL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("%s board %s needs an https url, got %q", kind, b.Token, b.URL)
+	}
+	return nil
+}
+
 // ValidBoard checks a single watchlist entry.
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
-		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM, posting.Page:
+		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
+		posting.Rippling, posting.Workable, posting.Feed, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, fd, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1109,9 +1141,8 @@ func ValidBoard(b sources.Board) error {
 		}
 	}
 	if b.ATS == posting.Page {
-		u, err := url.Parse(b.URL)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
-			return fmt.Errorf("page board %s needs an https url, got %q", b.Token, b.URL)
+		if err := httpsBoardURL("page", b); err != nil {
+			return err
 		}
 		if b.LinkPattern == "" || len(b.LinkPattern) > maxLinkPattern {
 			return fmt.Errorf("page board %s needs a link_pattern of 1..%d bytes", b.Token, maxLinkPattern)
@@ -1119,8 +1150,15 @@ func ValidBoard(b sources.Board) error {
 		if _, err := regexp.Compile(b.LinkPattern); err != nil {
 			return fmt.Errorf("page board %s link_pattern: %v", b.Token, err)
 		}
+	} else if b.ATS == posting.Feed {
+		if err := httpsBoardURL("feed", b); err != nil {
+			return err
+		}
+		if b.LinkPattern != "" {
+			return fmt.Errorf("board %s/%s: link_pattern applies to page boards only", b.ATS, b.Token)
+		}
 	} else if (b.URL != "" && b.ATS != posting.Avature) || b.LinkPattern != "" {
-		return fmt.Errorf("board %s/%s: url applies to pg and av boards, link_pattern to page boards only", b.ATS, b.Token)
+		return fmt.Errorf("board %s/%s: url applies to pg, fd and av boards, link_pattern to page boards only", b.ATS, b.Token)
 	}
 	switch b.Region {
 	case "":

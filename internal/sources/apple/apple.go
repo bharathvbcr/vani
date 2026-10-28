@@ -7,8 +7,9 @@
 // details page per posting. jobs.apple.com has no robots.txt (2026-10-19).
 //
 // A term whose result count exceeds the board cap fails the board rather
-// than being truncated; quoting a phrase ("\"LLM inference\"") and the
-// location filter narrow Apple's otherwise loose search.
+// than being truncated. Apple's unquoted search is loose ("GPU kernel" and
+// "AI agent" match 600+ roles, checked 2026-10-27), so a multi-word term is
+// quoted once before it is sent. The location filter narrows further.
 package apple
 
 import (
@@ -49,9 +50,12 @@ var (
 
 var (
 	countRE = regexp.MustCompile(`id="search-result-count"[^>]*>\s*([0-9][0-9,]*)(\+?)\s*Result`)
-	// A row's link: /en-us/details/{positionId}-{suffix}/{slug}. The job
-	// number is positionId-suffix; the position id is the role.
-	rowRE        = regexp.MustCompile(`href="/en-us/details/([0-9]{1,15})-([0-9]{1,8})/([a-z0-9-]{1,300})`)
+	// A row's link is /en-us/details/{positionId}-{suffix}/{slug}. Apple also
+	// emits the same role with the team suffix omitted,
+	// /en-us/details/{positionId}/{slug} (checked on "MLX", 2026-10-28). The
+	// job number is positionId-suffix when the suffix is present. The position
+	// id is the role.
+	rowRE        = regexp.MustCompile(`href="/en-us/details/([0-9]{1,15})(?:-([0-9]{1,8}))?/([a-z0-9-]{1,300})`)
 	hydrationTag = []byte("window.__staticRouterHydrationData = JSON.parse(")
 )
 
@@ -157,9 +161,24 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	return out, nil
 }
 
+// quotePhrase wraps a multi-word term in one pair of double quotes. A term
+// the caller already quoted is returned unchanged, so the quotes are not
+// doubled. A single word is left alone: quoting it does not narrow Apple's
+// search (checked for "CUDA" on 2026-10-27).
+func quotePhrase(term string) string {
+	term = strings.TrimSpace(term)
+	if len(term) >= 2 && term[0] == '"' && term[len(term)-1] == '"' {
+		return term
+	}
+	if strings.Contains(term, " ") {
+		return `"` + term + `"`
+	}
+	return term
+}
+
 func pageURL(term string, filters map[string][]string, page int) string {
 	q := url.Values{}
-	q.Set("search", term)
+	q.Set("search", quotePhrase(term))
 	q.Set("sort", "relevance")
 	for k, vs := range filters {
 		for _, v := range vs {
@@ -173,12 +192,17 @@ func pageURL(term string, filters map[string][]string, page int) string {
 }
 
 // search reads every page of one term. The first page's count must be exact
-// (not "600+") and within the cap; the listing is complete when the distinct
-// job numbers read reach it.
+// (not "600+") and within the cap. The listing is complete when the distinct
+// job numbers reach that count. Apple also repeats a job on the next page and
+// counts the repeat (checked on "human factors", 2026-10-28): the per-page
+// row slots then cover the count while the distinct job numbers stay short by
+// those repeats. A page that adds nothing, or a shortfall larger than one
+// duplicate per page already read, is still a layout change.
 func (s *source) search(ctx context.Context, term string, filters map[string][]string) ([]row, error) {
 	var rows []row
 	jobNumbers := map[string]bool{}
 	count := -1
+	slots := 0
 	for page := 1; ; page++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -192,19 +216,23 @@ func (s *source) search(ctx context.Context, term string, filters map[string][]s
 				return nil, err
 			}
 		}
-		added := 0
+		onPage := map[string]bool{}
 		for _, r := range parseRows(body) {
+			if onPage[r.jobNumber] {
+				continue
+			}
+			onPage[r.jobNumber] = true
 			if jobNumbers[r.jobNumber] {
 				continue
 			}
 			jobNumbers[r.jobNumber] = true
 			rows = append(rows, r)
-			added++
 		}
-		if len(jobNumbers) >= count {
+		slots += len(onPage)
+		if len(jobNumbers) >= count || (slots >= count && slots-len(jobNumbers) <= page) {
 			return rows, nil
 		}
-		if added == 0 {
+		if len(onPage) == 0 {
 			return nil, fmt.Errorf("%w: page %d added no rows with %d of %d read; the listing shifted or changed layout",
 				ErrShape, page, len(jobNumbers), count)
 		}
@@ -235,7 +263,12 @@ func resultCount(body []byte) (int, error) {
 func parseRows(body []byte) []row {
 	var out []row
 	for _, m := range rowRE.FindAllSubmatch(body, -1) {
-		out = append(out, row{position: string(m[1]), jobNumber: string(m[1]) + "-" + string(m[2]), slug: string(m[3])})
+		position := string(m[1])
+		jobNumber := position
+		if len(m[2]) > 0 {
+			jobNumber = position + "-" + string(m[2])
+		}
+		out = append(out, row{position: position, jobNumber: jobNumber, slug: string(m[3])})
 	}
 	return out
 }

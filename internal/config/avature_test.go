@@ -88,7 +88,7 @@ func TestURLAndHostStayOffOtherBoardKinds(t *testing.T) {
 	withURL, withHost := gh, gh
 	withURL.URL = "https://careers.twosigma.com/careers/OpenRoles"
 	withHost.Host = "careers.twosigma.com"
-	if err := ValidBoard(withURL); err == nil || !strings.Contains(err.Error(), "url applies to pg and av boards") {
+	if err := ValidBoard(withURL); err == nil || !strings.Contains(err.Error(), "url applies to pg, fd and av boards") {
 		t.Errorf("url on greenhouse: %v", err)
 	}
 	if err := ValidBoard(withHost); err == nil || !strings.Contains(err.Error(), "host applies to wd, oc, ef, jb and av only") {

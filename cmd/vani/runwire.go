@@ -21,6 +21,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/feed"
 	"github.com/bharathvbcr/Vani/internal/sources/gem"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
@@ -28,7 +29,9 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
+	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -504,5 +507,8 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.DEShaw:          deshaw.New(d),
 		posting.Atlassian:       atlassian.New(d),
 		posting.OracleHCM:       oraclehcm.New(d),
+		posting.Rippling:        rippling.New(d),
+		posting.Workable:        workable.New(d),
+		posting.Feed:            feed.New(d),
 	}
 }

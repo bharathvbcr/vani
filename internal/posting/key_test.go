@@ -67,6 +67,9 @@ func TestSearchSiteKeys(t *testing.T) {
 		{AvatureKey, "TwoSigma", "14291", "av:twosigma:14291", Avature},
 		{DEShawKey, "DEShaw", "2646", "ds:deshaw:2646", DEShaw},
 		{AtlassianKey, "Atlassian", "25480", "at:atlassian:25480", Atlassian},
+		{RipplingKey, "Aalo", "8D4783FB-B22C-4CFD-AE34-81D4B2AD628F", "rp:aalo:8d4783fb-b22c-4cfd-ae34-81d4b2ad628f", Rippling},
+		{WorkableKey, "HuggingFace", "81B46579FE", "wk:huggingface:81b46579fe", Workable},
+		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
 		if err != nil || k != tc.want || k.ATS() != tc.ats {
