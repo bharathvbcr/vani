@@ -68,6 +68,7 @@ func (e *env) cmdLCA(args []string) error {
 
 func (e *env) lcaImport(args []string) error {
 	fs := e.newFlags("lca import")
+	asJSON := e.jsonFlag(fs, `{"file","employers","fiscal_years"} on stdout`)
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -97,8 +98,13 @@ func (e *env) lcaImport(args []string) error {
 	if err := x.Save(lcaIndexPath(e.stateDir)); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "imported %s: %d employers, fiscal years %v\n", filepath.Base(path), x.Employers(), x.Coverage())
-	return nil
+	return e.reply(*asJSON, struct {
+		File        string `json:"file"`
+		Employers   int    `json:"employers"`
+		FiscalYears []int  `json:"fiscal_years"`
+	}{filepath.Base(path), x.Employers(), nonNil(x.Coverage())}, nil, func() {
+		fmt.Fprintf(e.stdout, "imported %s: %d employers, fiscal years %v\n", filepath.Base(path), x.Employers(), x.Coverage())
+	})
 }
 
 // lcaLookupReply is `vani lca lookup --json`: the badge's parts and its text.
@@ -127,7 +133,7 @@ func (e *env) lcaLookup(args []string) error {
 		err = errors.New("no LCA data imported yet (vani lca import <file.csv>)")
 	}
 	if err != nil {
-		return e.reply(*asJSON, nil, err, nil)
+		return err
 	}
 	company := strings.Join(fs.Args(), " ")
 	b := x.Lookup(company)

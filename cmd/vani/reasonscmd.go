@@ -50,6 +50,7 @@ func (e *env) cmdReasons(args []string) error {
 func (e *env) reasonsDraft(args []string) error {
 	fs := e.newFlags("reasons draft")
 	force := fs.Bool("force", false, "replace an existing catalog (it may hold your edits)")
+	asJSON := e.jsonFlag(fs, `{"path","fit","gap","check"} on stdout`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -79,9 +80,10 @@ func (e *env) reasonsDraft(args []string) error {
 	if err := jdreasons.Write(path, c, *force); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "wrote %s: %d fit, %d gap, %d check reasons\nreview or edit it; the next run picks each posting's note from it\n",
-		path, len(c.Fit), len(c.Gap), len(c.Check))
-	return nil
+	return e.reply(*asJSON, reasonsReplyOf(path, &c), nil, func() {
+		fmt.Fprintf(e.stdout, "wrote %s: %d fit, %d gap, %d check reasons\nreview or edit it; the next run picks each posting's note from it\n",
+			path, len(c.Fit), len(c.Gap), len(c.Check))
+	})
 }
 
 // maxImportBytes caps a draft file read by `vani reasons import`.
@@ -93,6 +95,7 @@ const maxImportBytes = 256 << 10
 func (e *env) reasonsImport(args []string) error {
 	fs := e.newFlags("reasons import")
 	force := fs.Bool("force", false, "replace an existing catalog (it may hold your edits)")
+	asJSON := e.jsonFlag(fs, `{"path","fit","gap","check"} on stdout`)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return err
@@ -130,8 +133,9 @@ func (e *env) reasonsImport(args []string) error {
 	if err := jdreasons.Write(path, c, *force); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "wrote %s: %d fit, %d gap, %d check reasons for the current target summary\n", path, len(c.Fit), len(c.Gap), len(c.Check))
-	return nil
+	return e.reply(*asJSON, reasonsReplyOf(path, &c), nil, func() {
+		fmt.Fprintf(e.stdout, "wrote %s: %d fit, %d gap, %d check reasons for the current target summary\n", path, len(c.Fit), len(c.Gap), len(c.Check))
+	})
 }
 
 // reasonsCheck validates the catalog against the current target summary,
@@ -155,7 +159,7 @@ func (e *env) reasonsCheck(args []string) error {
 		err = fmt.Errorf("no reasons catalog at %s; run `vani reasons draft`", path)
 	}
 	if err != nil {
-		return e.reply(*asJSON, nil, err, nil)
+		return err
 	}
 	return e.reply(*asJSON, reasonsReplyOf(path, c), nil, func() {
 		fmt.Fprintf(e.stdout, "ok: %s: %d fit, %d gap, %d check reasons\n", path, len(c.Fit), len(c.Gap), len(c.Check))

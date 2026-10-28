@@ -54,6 +54,7 @@ func (e *env) cmdEmployer(args []string) error {
 
 func (e *env) employerImport(args []string) error {
 	fs := e.newFlags("employer import")
+	asJSON := e.jsonFlag(fs, `{"source","names","files"} on stdout`)
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -78,9 +79,14 @@ func (e *env) employerImport(args []string) error {
 		return fmt.Errorf("employer index: %w", err)
 	}
 	s := part.Source
-	fmt.Fprintf(e.stdout, "imported %s (%s): %d of %d rows counted, skipped %v; index now %d names from %d files\n",
-		s.Name, s.Kind, s.RowsCounted, s.RowsRead, s.Skipped, x.Names(), len(x.Sources()))
-	return nil
+	return e.reply(*asJSON, struct {
+		Source employer.SourceMeta `json:"source"`
+		Names  int                 `json:"names"`
+		Files  int                 `json:"files"`
+	}{s, x.Names(), len(x.Sources())}, nil, func() {
+		fmt.Fprintf(e.stdout, "imported %s (%s): %d of %d rows counted, skipped %v; index now %d names from %d files\n",
+			s.Name, s.Kind, s.RowsCounted, s.RowsRead, s.Skipped, x.Names(), len(x.Sources()))
+	})
 }
 
 // employerLookupReply is `vani employer lookup --json`: the badge's parts and
@@ -111,7 +117,7 @@ func (e *env) employerLookup(args []string) error {
 		err = errors.New("no employer lists imported yet (vani employer import <file.csv>; see docs/EMPLOYER.md)")
 	}
 	if err != nil {
-		return e.reply(*asJSON, nil, err, nil)
+		return err
 	}
 	company := strings.Join(fs.Args(), " ")
 	b := x.Lookup(company)

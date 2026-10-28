@@ -77,15 +77,15 @@ func (e *env) cmdSemanticWarm(args []string) error {
 // parts after it are absent, as the text stops there; the vector log and the
 // idle warm do not depend on the profile and are always read.
 type semanticStatus struct {
-	Tessl      bool             `json:"tessl"`
-	Configured bool             `json:"configured"`
-	Snapshot   string           `json:"snapshot,omitempty"`
-	WarmPerRun int              `json:"warm_per_run,omitempty"`
+	Tessl      bool                   `json:"tessl"`
+	Configured bool                   `json:"configured"`
+	Snapshot   string                 `json:"snapshot,omitempty"`
+	WarmPerRun int                    `json:"warm_per_run,omitempty"`
 	Profile    *semanticProfileStatus `json:"profile,omitempty"`
-	Scores     *semanticScores  `json:"scores,omitempty"`
-	Vectors    *semanticVectors `json:"vectors,omitempty"`
-	Idle       *idleState       `json:"idle,omitempty"`
-	IdleError  string           `json:"idle_error,omitempty"`
+	Scores     *semanticScores        `json:"scores,omitempty"`
+	Vectors    *semanticVectors       `json:"vectors,omitempty"`
+	Idle       *idleState             `json:"idle,omitempty"`
+	IdleError  string                 `json:"idle_error,omitempty"`
 }
 
 type semanticProfileStatus struct {

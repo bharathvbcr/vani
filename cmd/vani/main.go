@@ -46,7 +46,7 @@ const usageTemplate = `usage: vani <command> [flags]
 
 commands:
   version [--json]           print the product version ("dev" unless built by scripts/release.sh)
-  init                    write a default config (refuses to overwrite)
+  init [--json]              write a default config (refuses to overwrite)
   config check [--json]      validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
   config exclude [--set]     print the exclusions (titles, title_unless, companies, locations,
@@ -54,14 +54,14 @@ commands:
                              stdin. The next run drops what they match and reopens what they
                              no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
-  watchlist add    --ats gh|lv|ab|wd|gm|sr|ib|av|ds|at|oc|pg --token T --company C [--region eu]
+  watchlist add [--json] --ats gh|lv|ab|wd|gm|sr|ib|av|ds|at|oc|pg --token T --company C [--region eu]
                    [--host H --search S] (workday, oc) [--host H --url U] (av)
                    [--url U --link-pattern RE] (pg)
                    [--domain HOST [--icon URL]] [--allow-host]
-  watchlist remove --ats A --token T
-  watchlist domain --ats A --token T --domain HOST [--allow-host]
+  watchlist remove [--json] --ats A --token T
+  watchlist domain [--json] --ats A --token T --domain HOST [--allow-host]
                              the company's website host its icon is fetched from ("" clears it)
-  watchlist icon   --ats A --token T --url URL [--allow-host]
+  watchlist icon [--json] --ats A --token T --url URL [--allow-host]
                              an https icon URL for a site that serves none at the usual paths,
                              asked for first ("" clears it; the board needs a domain)
   watchlist discover --search TEXT [--country US] [--work-mode remote|hybrid|onsite]
@@ -96,7 +96,8 @@ commands:
                              the plain-text failure report for a run: its failed boards, backend
                              errors, error and the log files; the Mac app's "Copy failures"
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
-  export heldout [--out PATH] owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
+  export heldout [--json] [--out PATH]
+                             owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
   eval [--labels DIR]        per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N]
                              weekly stratified would-I-apply sample (deciles + drop classes);
@@ -114,24 +115,28 @@ commands:
                              from vani audit, plus marks and impressions) to a rank weights file;
                              refuses below the thresholds and writes nothing. Use it by setting
                              rank_weights_file
-  lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
+  lca import [--json] FILE.csv
+                             import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup [--json] COMPANY
                              show the sponsorship-history badge for a company
-  employer import FILE.csv   import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)
+  employer import [--json] FILE.csv
+                             import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)
   employer lookup [--json] COMPANY
                              show the employer-attribute badge for a company
   track list [--json]        list track deciders (tracks_dir, default <state dir>/tracks)
   track show [--json] ID     show and check one track (docs/TRACKS.md)
-  track use [--dry-run] ID   copy a track's target summary, drop rules and employer
+  track use [--json] [--dry-run] [--allow-unchecked] ID
+                             copy a track's target summary, drop rules and employer
                              preferences into the config; other rules are kept
   kb sync [--dry-run | --confirm] [--replace [--keep IDS] [--delete-all-kinds]
           [--max-delete N] [--career-db P]] [--bank P] [--rkb P] [--code-root D]
                              copy the bank bullets that kb.selections approve one way into
                              DevPrism; --replace also deletes the blocks outside that pool,
                              after copying career.db (see README, Knowledge base)
-  reasons draft [--force]    have the llm draft, once, the catalog notes are picked from
+  reasons draft [--json] [--force]
+                             have the llm draft, once, the catalog notes are picked from
                              (spends from the daily llm budget; never overwrites without --force)
-  reasons import [--force] FILE
+  reasons import [--json] [--force] FILE
                              check and install a catalog drafted elsewhere ({drafted_by?,fit,gap,check})
   reasons check [--json]     validate the catalog against the current target summary
   kbmatch run [--top N] [--dry-run]
@@ -243,7 +248,7 @@ commands:
                              essays: JSON request on stdin, JSON reply on stdout
   resume                     build a resume PDF for one job with rkb (the model picks the
                              bullets): JSON request on stdin, JSON reply with the PDF on stdout
-  migrate rekey-fallback [--dry-run]
+  migrate rekey-fallback [--json] [--dry-run]
                              one-time: move fallback-keyed (x:) postings, and their marks, to the
                              keys titles that keep C++/C#/.NET apart give them (backs up first;
                              refuses a second run; takes the ledger lock)
@@ -567,16 +572,21 @@ func (e *env) warnDeprecated(old []string) {
 }
 
 func (e *env) cmdInit(args []string) error {
-	if err := parse(e.newFlags("init"), args); err != nil {
+	fs := e.newFlags("init")
+	asJSON := e.jsonFlag(fs, `{"config","state_dir"} on stdout`)
+	if err := parse(fs, args); err != nil {
 		return err
 	}
-	if err := config.Create(e.configPath, config.Default()); errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("%s already exists; refusing to overwrite", e.configPath)
-	} else if err != nil {
-		return err
+	err := config.Create(e.configPath, config.Default())
+	if errors.Is(err, os.ErrExist) {
+		err = fmt.Errorf("%s already exists; refusing to overwrite", e.configPath)
 	}
-	fmt.Fprintf(e.stdout, "wrote %s\nstate dir: %s\n", e.configPath, e.stateDir)
-	return nil
+	return e.reply(*asJSON, struct {
+		Config   string `json:"config"`
+		StateDir string `json:"state_dir"`
+	}{e.configPath, e.stateDir}, err, func() {
+		fmt.Fprintf(e.stdout, "wrote %s\nstate dir: %s\n", e.configPath, e.stateDir)
+	})
 }
 
 func (e *env) cmdConfig(args []string) error {

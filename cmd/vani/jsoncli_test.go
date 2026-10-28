@@ -186,7 +186,7 @@ func TestGlobalJSONFailuresAreOneEnvelope(t *testing.T) {
 		{[]string{"--json", "jobs", "bogus", "x"}, exitUsage, codeUsage, "names no command"},
 		{[]string{"--json", "daemon"}, exitUsage, codeUnsupported, "foreground"},
 		{[]string{"--json", "launchd", "plist"}, exitUsage, codeUnsupported, "XML"},
-		{[]string{"--json", "init"}, exitUsage, codeUnsupported, "no JSON output yet"},
+		{[]string{"--json", "label"}, exitUsage, codeUnsupported, "on the terminal"},
 		{[]string{"--json", "jobs", "list", "--limit", "0"}, exitUsage, codeUsage, "--limit"},
 		{[]string{"--json", "jobs", "list", "--bogus"}, exitUsage, codeUsage, "bogus"},
 		{[]string{"--json", "watchlist", "list"}, exitRuntime, codeRuntime, "config"},
@@ -199,9 +199,6 @@ func TestGlobalJSONFailuresAreOneEnvelope(t *testing.T) {
 		if r.Code != tc.code || !strings.Contains(r.Error, tc.has) {
 			t.Errorf("vani %v: %+v, want code %q and %q in the message", tc.args, r, tc.code, tc.has)
 		}
-	}
-	if _, err := os.Stat(x.ev.configPath); !os.IsNotExist(err) {
-		t.Errorf("vani --json init ran: config stat %v", err)
 	}
 }
 

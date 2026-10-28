@@ -62,7 +62,6 @@ func (e *env) cmdJobs(args []string) error {
 	return usagef("jobs: unknown subcommand %q", args[0])
 }
 
-
 func (e *env) jobsList(args []string) error {
 	fs := e.newFlags("jobs list")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout")

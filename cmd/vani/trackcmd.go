@@ -240,10 +240,31 @@ func printRules(w io.Writer, rules []config.DropRule) {
 	}
 }
 
+// trackUseReply is `vani track use --json`: the check, the drop rules the track
+// replaced, kept and added, and whether the config was saved. A track refused
+// on its check carries the failure, with nothing applied.
+type trackUseReply struct {
+	Track   string            `json:"track"`
+	Label   string            `json:"label"`
+	Check   trackCheck        `json:"check"`
+	Removed []config.DropRule `json:"removed"`
+	Kept    []config.DropRule `json:"kept"`
+	Added   []config.DropRule `json:"added"`
+	// PreviousTargetSummary is the summary the track replaced, when it differs.
+	PreviousTargetSummary string              `json:"previous_target_summary,omitempty"`
+	EmployerPreferences   []string            `json:"employer_preferences"`
+	TitleSignals          config.TitleSignals `json:"title_signals"`
+	DryRun                bool                `json:"dry_run"`
+	Saved                 bool                `json:"saved"`
+	Config                string              `json:"config"`
+	failure
+}
+
 func (e *env) trackUse(args []string) error {
 	flags := e.newFlags("track use")
 	dryRun := flags.Bool("dry-run", false, "show the change without saving the config")
 	allowUnchecked := flags.Bool("allow-unchecked", false, "apply the track although a check could not run (its target_summary enters every triage prompt unchecked)")
+	asJSON := e.jsonFlag(flags, "one JSON object on stdout")
 	id, err := trackArg(flags, "use", args)
 	if err != nil {
 		return err
@@ -256,12 +277,19 @@ func (e *env) trackUse(args []string) error {
 	if err != nil {
 		return err
 	}
+	rep := &trackUseReply{Track: d.ID, Label: d.Label, Check: checkOf(probs, notRun), Removed: []config.DropRule{},
+		Kept: []config.DropRule{}, Added: []config.DropRule{}, EmployerPreferences: []string{}, DryRun: *dryRun, Config: e.configPath}
 	if len(probs) > 0 {
+		err := fmt.Errorf("track %s not applied: %d problem(s); the config is unchanged", id, len(probs))
+		if *asJSON {
+			return e.reply(true, rep, err, nil)
+		}
 		_ = problemsErr(e.stdout, probs, notRun)
-		return fmt.Errorf("track %s not applied: %d problem(s); the config is unchanged", id, len(probs))
+		return err
 	}
 	if len(notRun) > 0 && !*allowUnchecked {
-		return fmt.Errorf("track %s not applied: check did not run: %s; the config is unchanged (make the check runnable, or pass --allow-unchecked)", id, strings.Join(notRun, ", "))
+		err := fmt.Errorf("track %s not applied: check did not run: %s; the config is unchanged (make the check runnable, or pass --allow-unchecked)", id, strings.Join(notRun, ", "))
+		return e.reply(*asJSON, rep, err, nil)
 	}
 	// The track applied before, so its rules on slots this track does not
 	// cover can be removed too. Unreadable means those rules are kept.
@@ -277,7 +305,15 @@ func (e *env) trackUse(args []string) error {
 	if err != nil {
 		return fmt.Errorf("track %s not applied: %w", id, err)
 	}
+	rep.Removed, rep.Kept, rep.Added = nonNil(ch.Removed), nonNil(ch.Kept), nonNil(ch.Added)
+	if old := strings.Join(strings.Fields(cfg.TargetSummary), " "); old != strings.Join(strings.Fields(out.TargetSummary), " ") {
+		rep.PreviousTargetSummary = old
+	}
+	rep.EmployerPreferences, rep.TitleSignals = nonNil(out.EmployerPreferences), out.TitleSignals
 	w := e.stdout
+	if *asJSON {
+		w = io.Discard // the reply says it all, once the config is saved
+	}
 	fmt.Fprintf(w, "track %s: %s\nreplaced drop rules:\n", d.ID, d.Label)
 	printRules(w, ch.Removed)
 	fmt.Fprintln(w, "kept drop rules (track-independent):")
@@ -295,7 +331,7 @@ func (e *env) trackUse(args []string) error {
 	fmt.Fprintf(w, "title_signals (include/exclude order triage; read drops only through a drop rule) = %s\n", out.TitleSignals)
 	if *dryRun {
 		fmt.Fprintln(w, "dry run: config not saved")
-		return nil
+		return e.reply(*asJSON, rep, nil, func() {})
 	}
 	// The preview above came from the config as read before; the write applies
 	// the track to the config as it is under the lock, so an edit made in
@@ -311,14 +347,15 @@ func (e *env) trackUse(args []string) error {
 		return err
 	}
 	fmt.Fprintf(w, "saved %s\n", e.configPath)
+	rep.Saved = true
 	if len(out.EmployerPreferences) > 0 {
 		// Existence only: loading the index here would cost a full load for
 		// a warning. A corrupt index still fails loudly on the next run.
 		if _, err := os.Stat(employerIndexPath(e.stateDir)); errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintln(e.stderr, "vani: employer_preferences set but no employer lists are imported; no rank boost until `vani employer import` (docs/EMPLOYER.md)")
 		} else if err != nil {
-			return err
+			return e.reply(*asJSON, rep, err, nil)
 		}
 	}
-	return nil
+	return e.reply(*asJSON, rep, nil, func() {})
 }

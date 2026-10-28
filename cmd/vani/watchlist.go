@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -49,12 +48,9 @@ func (e *env) watchlistList(args []string) error {
 	if *asJSON {
 		out := make([]watchlistJSON, 0, len(cfg.Watchlist))
 		for _, b := range cfg.Watchlist {
-			out = append(out, watchlistJSON{ATS: b.ATS, Token: b.Token, Company: b.Company, Region: b.Region, Host: b.Host,
-				Search: b.Search, Searches: b.Searches, URL: b.URL, LinkPattern: b.LinkPattern, Domain: b.Domain, Icon: b.Icon})
+			out = append(out, boardJSON(b))
 		}
-		enc := json.NewEncoder(e.stdout)
-		enc.SetEscapeHTML(false)
-		return enc.Encode(out)
+		return writeJSON(e.stdout, out)
 	}
 	for _, b := range cfg.Watchlist {
 		region := b.Region
@@ -96,6 +92,7 @@ func (e *env) watchlistAdd(args []string) error {
 	domain := fs.String("domain", "", "the company's website host, for its icon (www.example.com)")
 	icon := fs.String("icon", "", "https URL of the company's icon, when --domain serves none at the usual paths")
 	allow := fs.Bool("allow-host", false, "also add the board's API host, --domain and the --icon host to allowed_hosts")
+	asJSON := e.jsonFlag(fs, `{"board"} on stdout: the board as watchlist list --json shows it`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -124,8 +121,7 @@ func (e *env) watchlistAdd(args []string) error {
 		}
 		return fmt.Errorf("%w\n(use --allow-host to add the board's API host to allowed_hosts)", err)
 	}
-	fmt.Fprintf(e.stdout, "added %s/%s (%s)\n", b.ATS, b.Token, b.Company)
-	return nil
+	return e.reply(*asJSON, boardReply{boardJSON(b)}, nil, func() { fmt.Fprintf(e.stdout, "added %s/%s (%s)\n", b.ATS, b.Token, b.Company) })
 }
 
 // allowHost adds host to allowed unless it is empty or already there.
@@ -168,6 +164,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 	token := fs.String("token", "", "board token")
 	value := fs.String(field, "", help)
 	allow := fs.Bool("allow-host", false, "also add the --"+field+" host to allowed_hosts")
+	asJSON := e.jsonFlag(fs, `{"board"} on stdout: the board as it now is`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -200,18 +197,20 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 		}
 		return fmt.Errorf("%w\n(use --allow-host to add the %s host to allowed_hosts)", err, field)
 	}
-	if *value == "" {
-		fmt.Fprintf(e.stdout, "cleared the %s of %s/%s\n", label, b.ATS, b.Token)
-	} else {
-		fmt.Fprintf(e.stdout, "%s/%s %s %s\n", b.ATS, b.Token, label, *value)
-	}
-	return nil
+	return e.reply(*asJSON, boardReply{boardJSON(b)}, nil, func() {
+		if *value == "" {
+			fmt.Fprintf(e.stdout, "cleared the %s of %s/%s\n", label, b.ATS, b.Token)
+		} else {
+			fmt.Fprintf(e.stdout, "%s/%s %s %s\n", b.ATS, b.Token, label, *value)
+		}
+	})
 }
 
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd or pg")
 	token := fs.String("token", "", "board token")
+	asJSON := e.jsonFlag(fs, `{"removed":{"ats","token"}} on stdout`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -229,8 +228,19 @@ func (e *env) watchlistRemove(args []string) error {
 	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "removed %s/%s\n", *ats, *token)
-	return nil
+	return e.reply(*asJSON, struct {
+		Removed watchlistJSON `json:"removed"`
+	}{watchlistJSON{ATS: target.ATS, Token: target.Token}}, nil, func() { fmt.Fprintf(e.stdout, "removed %s/%s\n", *ats, *token) })
+}
+
+// boardReply is what `watchlist add|domain|icon --json` say: the board as saved.
+type boardReply struct {
+	Board watchlistJSON `json:"board"`
+}
+
+func boardJSON(b sources.Board) watchlistJSON {
+	return watchlistJSON{ATS: b.ATS, Token: b.Token, Company: b.Company, Region: b.Region, Host: b.Host,
+		Search: b.Search, Searches: b.Searches, URL: b.URL, LinkPattern: b.LinkPattern, Domain: b.Domain, Icon: b.Icon}
 }
 
 // watchlistJSON is one board in `watchlist list --json`.

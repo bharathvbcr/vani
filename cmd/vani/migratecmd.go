@@ -3,8 +3,25 @@ package main
 import (
 	"fmt"
 
+	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/rekey"
 )
+
+// migrateReply is `vani migrate rekey-fallback --json`. The fields after
+// LeftAlone are set only by a real run.
+type migrateReply struct {
+	DryRun       bool           `json:"dry_run"`
+	Postings     int            `json:"postings"`
+	Fallback     int            `json:"fallback"`
+	Changes      []rekey.Change `json:"changes"`
+	Unchanged    int            `json:"unchanged"`
+	LeftAlone    []posting.Key  `json:"left_alone"`
+	Resumed      bool           `json:"resumed,omitempty"`
+	MarksMoved   int            `json:"marks_moved,omitempty"`
+	ResumesMoved int            `json:"resumes_moved,omitempty"`
+	Backup       string         `json:"backup,omitempty"`
+	Record       string         `json:"record,omitempty"`
+}
 
 // cmdMigrate runs a one-time state migration. The only one is rekey-fallback
 // (internal/rekey): fallback-keyed (x:) postings move to the keys titles that
@@ -16,12 +33,21 @@ func (e *env) cmdMigrate(args []string) error {
 	}
 	fs := e.newFlags("migrate rekey-fallback")
 	dry := fs.Bool("dry-run", false, "plan and check for collisions; write nothing")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}
 	rep, err := rekey.Run(e.stateDir, *dry, now())
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		out := migrateReply{DryRun: rep.DryRun, Postings: rep.Records, Fallback: rep.Fallback, Changes: nonNil(rep.Changes),
+			Unchanged: rep.Unchanged, LeftAlone: nonNil(rep.Foreign)}
+		if !rep.DryRun {
+			out.Resumed, out.MarksMoved, out.ResumesMoved, out.Backup, out.Record = rep.Resumed, rep.MarksMoved, rep.ResumesMoved, rep.Backup, rekey.MarkerName
+		}
+		return e.reply(true, out, nil, nil)
 	}
 	verb := "moved"
 	if rep.DryRun {

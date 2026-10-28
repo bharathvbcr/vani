@@ -23,6 +23,7 @@ func (e *env) cmdExport(args []string) error {
 	fs := e.newFlags("export heldout")
 	out := fs.String("out", "", "output file (default: <state dir>/export/heldout/owner_labels.jsonl)")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
+	asJSON := e.jsonFlag(fs, `{"path","exported","missing"} on stdout`)
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}
@@ -38,6 +39,13 @@ func (e *env) cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *asJSON {
+		var err error
+		if len(missing) > 0 {
+			err = fmt.Errorf("export heldout: %d labelled posting(s) have no text and are not in the export", len(missing))
+		}
+		return e.reply(true, &heldoutReply{Path: path, Exported: n, Missing: nonNil(missing)}, err, nil)
+	}
 	fmt.Fprintf(e.stdout, "exported %d owner-labelled posting(s) to %s\n", n, path)
 	if len(missing) > 0 {
 		for _, k := range missing {
@@ -46,6 +54,15 @@ func (e *env) cmdExport(args []string) error {
 		return fmt.Errorf("export heldout: %d labelled posting(s) have no text and are not in the export", len(missing))
 	}
 	return nil
+}
+
+// heldoutReply is `vani export heldout --json`. Missing are the labelled keys
+// with no text, left out of the export; any makes the reply a failure.
+type heldoutReply struct {
+	Path     string        `json:"path"`
+	Exported int           `json:"exported"`
+	Missing  []posting.Key `json:"missing"`
+	failure
 }
 
 // exportHeldout writes the held-out export for s to path (atomically) and

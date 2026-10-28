@@ -158,3 +158,159 @@ func TestKBMatchStatusJSONWithoutKB(t *testing.T) {
 	o, _ := mustCode(t, 1, "--json", "kbmatch", "status")
 	onlyError(t, nil, o)
 }
+
+func TestInitJSON(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	o, _ := mustCode(t, 0, "--json", "init")
+	var r struct {
+		Config   string `json:"config"`
+		StateDir string `json:"state_dir"`
+	}
+	if decodeOne(t, o, &r); r.Config != cfgPath || r.StateDir != stateDir {
+		t.Errorf("init %+v", r)
+	}
+	o, _ = mustCode(t, 1, "--json", "init")
+	if e := onlyError(t, nil, o); !strings.Contains(e.Error, "refusing to overwrite") {
+		t.Errorf("second init %+v", e)
+	}
+}
+
+func TestWatchlistWritesJSON(t *testing.T) {
+	cfgPath, _ := setup(t)
+	mustCode(t, 0, "init")
+	o, _ := mustCode(t, 0, "--json", "watchlist", "add", "--ats", "gh", "--token", "acme", "--company", "Acme", "--allow-host")
+	var b boardReply
+	if decodeOne(t, o, &b); b.Board.ATS != "gh" || b.Board.Token != "acme" || b.Board.Company != "Acme" {
+		t.Fatalf("add %+v", b)
+	}
+	o, _ = mustCode(t, 1, "--json", "watchlist", "add", "--ats", "gh", "--token", "acme", "--company", "Acme")
+	if e := onlyError(t, nil, o); !strings.Contains(e.Error, "already on the watchlist") {
+		t.Errorf("duplicate %+v", e)
+	}
+	o, _ = mustCode(t, 0, "--json", "watchlist", "domain", "--ats", "gh", "--token", "acme", "--domain", "www.acme.test", "--allow-host")
+	b = boardReply{}
+	if decodeOne(t, o, &b); b.Board.Domain != "www.acme.test" {
+		t.Fatalf("domain %+v", b)
+	}
+	o, _ = mustCode(t, 0, "--json", "watchlist", "domain", "--ats", "gh", "--token", "acme", "--domain", "")
+	b = boardReply{}
+	if decodeOne(t, o, &b); b.Board.Domain != "" || b.Board.Token != "acme" {
+		t.Fatalf("cleared domain %+v", b)
+	}
+	o, _ = mustCode(t, 0, "--json", "watchlist", "remove", "--ats", "gh", "--token", "acme")
+	var rm struct {
+		Removed watchlistJSON `json:"removed"`
+	}
+	if decodeOne(t, o, &rm); rm.Removed.ATS != "gh" || rm.Removed.Token != "acme" {
+		t.Fatalf("remove %+v", rm)
+	}
+	o, _ = mustCode(t, 1, "--json", "watchlist", "remove", "--ats", "gh", "--token", "acme")
+	if e := onlyError(t, nil, o); !strings.Contains(e.Error, "not on the watchlist") {
+		t.Errorf("remove again %+v", e)
+	}
+	if cfg, err := config.Load(cfgPath); err != nil || len(cfg.Watchlist) != 0 {
+		t.Fatalf("watchlist after remove: %v %v", cfg.Watchlist, err)
+	}
+	// A bad flag is still a usage error, in the envelope only under the global flag.
+	o, _ = mustCode(t, 2, "--json", "watchlist", "add", "--ats", "zz", "--token", "x", "--company", "X")
+	onlyError(t, nil, o)
+	if o, _ := mustCode(t, 2, "watchlist", "add", "--json", "--ats", "zz", "--token", "x", "--company", "X"); o != "" {
+		t.Errorf("usage error under the command's own --json: stdout %q", o)
+	}
+}
+
+func TestTrackUseJSON(t *testing.T) {
+	cfgPath, _ := trackSetup(t)
+	before, _ := os.ReadFile(cfgPath)
+	// The check cannot run here (no personal words, no bank): refused, with the
+	// check in the reply and the config unchanged.
+	o, _ := mustCode(t, 1, "--json", "track", "use", "ml-systems")
+	var r trackUseReply
+	decodeOne(t, o, &r)
+	if r.Saved || r.Check.OK || len(r.Check.NotRun) == 0 || !strings.Contains(r.Error, "not applied") {
+		t.Fatalf("refused use %+v", r)
+	}
+	o, _ = mustCode(t, 0, "--json", "track", "use", "--allow-unchecked", "--dry-run", "ml-systems")
+	r = trackUseReply{}
+	decodeOne(t, o, &r)
+	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) || r.Saved || !r.DryRun || len(r.Added) != 2 || len(r.Removed) == 0 {
+		t.Fatalf("dry run %+v", r)
+	}
+	o, _ = mustCode(t, 0, "--json", "track", "use", "--allow-unchecked", "ml-systems")
+	r = trackUseReply{}
+	decodeOne(t, o, &r)
+	cfg, err := config.Load(cfgPath)
+	if err != nil || !r.Saved || r.Error != "" || cfg.Track != "ml-systems" || r.Config != cfgPath {
+		t.Fatalf("use %+v (config track %q, %v)", r, cfg.Track, err)
+	}
+}
+
+func TestImportsJSON(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	csv := "CASE_NUMBER,CASE_STATUS,RECEIVED_DATE,DECISION_DATE,VISA_CLASS,EMPLOYER_NAME\n" +
+		"I-1,Certified,2024-01-02,2024-01-10,H-1B,\"Acme, Inc.\"\n"
+	path := filepath.Join(t.TempDir(), "lca.csv")
+	if err := os.WriteFile(path, []byte(csv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, _ := mustCode(t, 0, "--json", "lca", "import", path)
+	var l struct {
+		File        string `json:"file"`
+		Employers   int    `json:"employers"`
+		FiscalYears []int  `json:"fiscal_years"`
+	}
+	if decodeOne(t, o, &l); l.File != "lca.csv" || l.Employers != 1 || len(l.FiscalYears) == 0 {
+		t.Errorf("lca import %+v", l)
+	}
+	o, _ = mustCode(t, 0, "--json", "employer", "import", writeCSV(t, "hd2024.csv", testIPEDS))
+	var em struct {
+		Source struct {
+			Name        string         `json:"name"`
+			Kind        string         `json:"kind"`
+			SHA256      string         `json:"sha256"`
+			RowsRead    int            `json:"rows_read"`
+			RowsCounted int            `json:"rows_counted"`
+			Skipped     map[string]int `json:"skipped"`
+		} `json:"source"`
+		Names int `json:"names"`
+		Files int `json:"files"`
+	}
+	if decodeOne(t, o, &em); em.Source.Kind != "ipeds_hd" || em.Source.RowsCounted != 1 || em.Files != 1 {
+		t.Errorf("employer import %+v", em)
+	}
+	o, _ = mustCode(t, 1, "--json", "employer", "import", writeCSV(t, "bad.csv", "A,B\n1,2\n"))
+	onlyError(t, nil, o)
+}
+
+func TestReasonsImportJSON(t *testing.T) {
+	reasonsSetup(t, &draftLLM{})
+	src := filepath.Join(t.TempDir(), "draft.json")
+	if err := os.WriteFile(src, []byte(reasonsReply(2)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, _ := mustCode(t, 0, "--json", "reasons", "import", src)
+	var r reasonsCatalogReply
+	if decodeOne(t, o, &r); r.Fit != 2 || r.Gap != 2 || r.Check != 2 {
+		t.Errorf("import %+v", r)
+	}
+	o, _ = mustCode(t, 1, "--json", "reasons", "import", src) // exists, no --force
+	onlyError(t, nil, o)
+}
+
+func TestMigrateAndExportJSONOnAnEmptyLedger(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	emptyLedger(t, stateDir)
+	o, _ := mustCode(t, 0, "--json", "migrate", "rekey-fallback", "--dry-run")
+	var m migrateReply
+	if decodeOne(t, o, &m); !m.DryRun || m.Postings != 0 || m.Changes == nil || m.LeftAlone == nil || m.Backup != "" {
+		t.Errorf("migrate %+v", m)
+	}
+	out := filepath.Join(t.TempDir(), "heldout.jsonl")
+	o, _ = mustCode(t, 0, "--json", "export", "heldout", "--out", out)
+	var h heldoutReply
+	if decodeOne(t, o, &h); h.Path != out || h.Exported != 0 || h.Missing == nil || h.Error != "" {
+		t.Errorf("export %+v", h)
+	}
+}
