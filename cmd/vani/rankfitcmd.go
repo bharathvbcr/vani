@@ -40,6 +40,7 @@ func (e *env) cmdRankfit(args []string) error {
 	holdout := fs.Int("holdout", rankfit.DefaultHoldoutPct, "percent of audit judgments held out to evaluate the fit (1-90)")
 	maxPairs := fs.Int("max-pairs", rankfit.DefaultMaxPairs, "training pairs above which they are sampled")
 	dry := fs.Bool("dry-run", false, "print the label counts and what would run; fit and write nothing")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the counts, what ran or would, and the fit")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -99,7 +100,11 @@ func (e *env) cmdRankfit(args []string) error {
 	}
 	rep := rankfit.Report{Labels: len(lab), Targets: tc}
 	samples, missing := rankfit.PlattSamples(snap.Records, lab)
+	jr := &rankfitReply{DryRun: *dry, Part: *part, Path: path, SlotLabelsMissing: missing, PlattUsable: map[string]int{}, Report: &rep}
 	w := e.stdout
+	if *asJSON {
+		w = io.Discard // the reply carries what the text says
+	}
 	fmt.Fprintf(w, "slot labels: %d eval entries (%d not in the ledger)\n", rep.Labels, missing)
 	fmt.Fprintf(w, "audit judgments: %d yes, %d maybe, %d no (%d skipped); marks: %d saved, %d hidden; shown and left unmarked: %d\n",
 		tc.Yes, tc.Maybe, tc.No, tc.Skipped, tc.Saved, tc.Hidden, tc.Passed)
@@ -110,6 +115,7 @@ func (e *env) cmdRankfit(args []string) error {
 		usable := 0
 		for _, b := range slices.Sorted(maps.Keys(samples)) {
 			n := rankfit.PlattUsable(samples[b])
+			jr.PlattUsable[b] = n
 			usable = max(usable, n)
 			verdict := "would run"
 			if n < rankfit.MinPlattPostings {
@@ -133,12 +139,13 @@ func (e *env) cmdRankfit(args []string) error {
 				What: "usable audit judgments"}).Error())
 		}
 	}
+	jr.WeightJudged, jr.NotRun = tc.Judged(), nonNil(notRun)
 	if *dry {
 		fmt.Fprintln(w, "dry run: nothing fitted or written")
-		return nil
+		return e.reply(*asJSON, jr, nil, func() {})
 	}
 	if len(notRun) > 0 {
-		return fmt.Errorf("rankfit %s; nothing written", strings.Join(notRun, "; "))
+		return e.reply(*asJSON, jr, fmt.Errorf("rankfit %s; nothing written", strings.Join(notRun, "; ")), nil)
 	}
 
 	base := jobinsight.DefaultWeights()
@@ -173,7 +180,7 @@ func (e *env) cmdRankfit(args []string) error {
 		rep.Weights = &res
 		if !res.Beats() {
 			fmt.Fprintf(w, "no gain: %s\n", res.NoGainReason())
-			return errRankfitNoGain
+			return e.reply(*asJSON, jr, errRankfitNoGain, nil)
 		}
 		f.Shares = &res.Shares
 	}
@@ -181,7 +188,27 @@ func (e *env) cmdRankfit(args []string) error {
 		return err
 	}
 	fmt.Fprintf(w, "wrote %s\nto rank by it, set rank_weights_file to that path in the config\n", path)
-	return nil
+	jr.Written = true
+	return e.reply(*asJSON, jr, nil, func() {})
+}
+
+// rankfitReply is `vani rankfit --json`: the label counts, each part that would
+// run or was refused, and the fit as the weights file records it. A refusal
+// or a fit that does not beat the hand weights carries the failure, and
+// nothing is written. Report.Targets has the weights file's field names.
+type rankfitReply struct {
+	DryRun bool   `json:"dry_run"`
+	Part   string `json:"part"`
+	Path   string `json:"path"`
+	// SlotLabelsMissing counts eval entries with no ledger record.
+	SlotLabelsMissing int `json:"slot_labels_missing"`
+	// PlattUsable is each backend's judged postings, when platt is fitted.
+	PlattUsable  map[string]int  `json:"platt_usable"`
+	WeightJudged int             `json:"weight_judged"`
+	NotRun       []string        `json:"not_run"`
+	Report       *rankfit.Report `json:"report"`
+	Written      bool            `json:"written"`
+	failure
 }
 
 // rankfitWeights builds each labelled posting's Score parts: as feedback

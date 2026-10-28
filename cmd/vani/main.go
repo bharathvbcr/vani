@@ -85,7 +85,8 @@ commands:
                              seconds, between its scheduled run and inbox polls); refused when no
                              daemon is running or a request is already waiting. A request the
                              daemon has not picked up within an hour is dropped
-  digest [--date YYYY-MM-DD] write the digest for pending roles
+  digest [--json] [--date YYYY-MM-DD]
+                             write the digest for pending roles
   status [--json]            show ledger counts by status; --json adds the last run's outcome,
                              today's spend against each cap and the decision-model setup
                              (reads the ledger without its lock)
@@ -98,7 +99,8 @@ commands:
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   export heldout [--json] [--out PATH]
                              owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
-  eval [--labels DIR]        per-backend precision and coverage on the labelled set
+  eval [--json] [--labels DIR] [--held-out SPLIT] [--window]
+                             per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N]
                              weekly stratified would-I-apply sample (deciles + drop classes);
                              --json prints keys, strata and p_select only (no posting text),
@@ -107,8 +109,9 @@ commands:
   audit answer --key K --verdict yes|maybe|no|skip [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from
                              the flags (an Explore row's, or an audit --json pick's) or the draw
-  relevance [-k LIST]        precision@k, drop misses and backend reliability from would_apply labels
-  rankfit [--part all|platt|weights] [--dry-run] [--labels DIR] [--out FILE] [--seed N]
+  relevance [--json] [-k LIST]
+                             precision@k, drop misses and backend reliability from would_apply labels
+  rankfit [--json] [--part all|platt|weights] [--dry-run] [--labels DIR] [--out FILE] [--seed N]
           [--lambda X] [--holdout PCT] [--max-pairs N]
                              fit Score's per-backend calibration (eval slot labels, 100 judged
                              postings per backend) and shares (150 usable would_apply answers
@@ -226,7 +229,8 @@ commands:
                              through while devprism.binary was empty); status and explanation
                              are kept. DevPrism only, no model; at most N (default
                              advance_per_run). --dry-run counts without the ledger lock
-  prefilter [--list]        dry run of the prefilter (exclude, and title_signals.read with the
+  prefilter [--json] [--list]
+                             dry run of the prefilter (exclude, and title_signals.read with the
                              drop rules): how many live postings it would drop before triage,
                              which kept ones the next run's exclusions drop or return to live,
                              and how the decision model read the ones it already read (never

@@ -26,8 +26,8 @@ import (
 // criterion 6). Like Split, a window is chosen by registration name, never by
 // a free parameter.
 type Window struct {
-	Name string
-	Size int
+	Name string `json:"name"`
+	Size int    `json:"size"`
 }
 
 // Windows are the registered label windows in fill order: a label is filed in
@@ -365,43 +365,45 @@ func hasNonSkip(e Entry) bool {
 
 // WindowVerdict is one window's Promotion verdict for one slot row.
 type WindowVerdict struct {
-	Window  string
-	Members int
-	Size    int
-	Closed  bool
-	Present bool   // the window has a Promotion row for this slot, shadow and primary
-	Verdict string // Promotion.Verdict, or why there is none
+	Window  string `json:"window"`
+	Members int    `json:"members"`
+	Size    int    `json:"size"`
+	Closed  bool   `json:"closed"`
+	Present bool   `json:"present"` // the window has a Promotion row for this slot, shadow and primary
+	Verdict string `json:"verdict"` // Promotion.Verdict, or why there is none
 	// Final is true when the window is closed and its verdict is not
 	// promotable: a closed window never grows, so no later label changes it.
-	Final bool
+	Final bool `json:"final"`
 }
 
 // SlotVerdict is the per-slot promotion decision over the registered windows.
 type SlotVerdict struct {
-	Slot, Shadow, Primary string
-	Windows               []WindowVerdict
+	Slot    string          `json:"slot"`
+	Shadow  string          `json:"shadow"`
+	Primary string          `json:"primary"`
+	Windows []WindowVerdict `json:"windows"`
 	// Promotable is true only when every registered window is closed and says
 	// "promotable" for this row.
-	Promotable bool
+	Promotable bool `json:"promotable"`
 	// Final is true when some closed window already refuses this row: the slot
 	// cannot be promoted from these windows, however the others fill.
-	Final bool
-	Why   string
+	Final bool   `json:"final"`
+	Why   string `json:"why"`
 }
 
 // WindowReport is the per-window Promotion tables and the per-slot verdicts.
 type WindowReport struct {
-	Windows []Window
-	Members map[string]int
-	Tables  map[string][]Promotion
+	Windows []Window               `json:"windows"`
+	Members map[string]int         `json:"members"`
+	Tables  map[string][]Promotion `json:"tables"`
 	// Changed counts, per window, members whose live label no longer matches
 	// the label filed (edited, or gone from the label log). The tables and
 	// verdicts use the labels as filed.
-	Changed map[string]int
+	Changed map[string]int `json:"changed"`
 	// Late counts labelled, shadow-asked postings that were refused a window
 	// because they were labelled before a posting already filed.
-	Late         int
-	SlotVerdicts []SlotVerdict
+	Late         int           `json:"late"`
+	SlotVerdicts []SlotVerdict `json:"slot_verdicts"`
 }
 
 // BuildWindows computes each registered window's Promotion rows over its

@@ -314,3 +314,100 @@ func TestMigrateAndExportJSONOnAnEmptyLedger(t *testing.T) {
 		t.Errorf("export %+v", h)
 	}
 }
+
+func TestEvalAndRelevanceJSONOnAnEmptyLedger(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	o, _ := mustCode(t, 0, "--json", "eval")
+	var ev evalReply
+	if decodeOne(t, o, &ev); ev.Report.Records != 0 || ev.HeldOut != nil || ev.Windows != nil {
+		t.Errorf("eval %+v", ev)
+	}
+	o, _ = mustCode(t, 0, "--json", "relevance")
+	var rel relevanceReply
+	if decodeOne(t, o, &rel); rel.Relevance.Judged != 0 || rel.DropAgreement == nil && rel.DropAgreementError == "" {
+		t.Errorf("relevance %+v", rel)
+	}
+	mustCode(t, 2, "--json", "relevance", "-k", "0")
+}
+
+func TestPrefilterJSON(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	o, _ := mustCode(t, 0, "--json", "prefilter")
+	var r prefilterReply
+	if decodeOne(t, o, &r); !r.Off || r.Report != nil {
+		t.Fatalf("off %+v", r)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DropRules = []config.DropRule{{Slot: "seniority", Values: []string{"staff_plus", "manager"}, MinOpenRouterProb: 0.9},
+		{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.9}}
+	cfg.TitleSignals.Read = []config.TitleRead{
+		{Slot: "seniority", Value: "staff_plus", Match: []string{"Staff", "Principal"}, Unless: []string{"Member of Technical Staff"}},
+		{Slot: "seniority", Value: "manager", Match: []string{"Manager", "Director"}},
+		{Slot: "role_fit", Value: "mismatch_domain", Match: []string{"Recruiter", "Sales", "Account Executive"}, Unless: []string{"Engineer"}},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	seedPrefilter(t, stateDir)
+	// The counts the text form prints ("3 of 6 live ... 10 in the ledger"), and
+	// the lists only with --list.
+	o, _ = mustCode(t, 0, "--json", "prefilter")
+	r = prefilterReply{}
+	decodeOne(t, o, &r)
+	if r.Off || r.Total != 10 || r.Report.Live != 6 || r.Report.Dropped != 3 || r.Report.Rows != nil || r.Report.Fits == nil {
+		t.Fatalf("prefilter %+v / %+v", r, r.Report)
+	}
+	o, _ = mustCode(t, 0, "--json", "prefilter", "--list")
+	r = prefilterReply{}
+	if decodeOne(t, o, &r); len(r.Report.Rows) != 3 {
+		t.Fatalf("--list rows %+v", r.Report.Rows)
+	}
+}
+
+func TestRankfitJSON(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	seedEval(t, stateDir, 45)
+	o, _ := mustCode(t, 0, "--json", "rankfit", "--dry-run")
+	var r rankfitReply
+	decodeOne(t, o, &r)
+	if !r.DryRun || r.Written || r.PlattUsable["jev"] != 23 || r.WeightJudged != 0 || len(r.NotRun) != 2 || r.Error != "" {
+		t.Fatalf("dry run %+v", r)
+	}
+	// Below the thresholds: refused, with the counts, and nothing written.
+	o, _ = mustCode(t, 1, "--json", "rankfit")
+	r = rankfitReply{}
+	decodeOne(t, o, &r)
+	if r.Written || r.Code != codeRuntime || !strings.Contains(r.Error, "nothing written") || r.Report == nil || r.Report.Labels != 45 {
+		t.Fatalf("refused %+v", r)
+	}
+	if _, err := os.Stat(weightsPath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("a refused run left a weights file: %v", err)
+	}
+}
+
+func TestDigestJSON(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l := fixture()
+	wire(t, l, &fakeNotifier{}, nil)
+	seedLedger(t, stateDir, l)
+	o, e := mustCode(t, 0, "--json", "digest", "--date", "2026-10-01")
+	var r digestReply
+	decodeOne(t, o, &r)
+	if r.Date != "2026-10-01" || r.Path != filepath.Join(stateDir, "digests", "2026-10-01.md") || r.Error != "" {
+		t.Fatalf("digest %+v", r)
+	}
+	if _, err := os.Stat(r.Path); err != nil {
+		t.Errorf("digest file: %v", err)
+	}
+	if !strings.Contains(e, "digest: ") {
+		t.Errorf("the text line should move to stderr under --json: %q", e)
+	}
+	mustCode(t, 2, "--json", "digest", "--date", "yesterday")
+}

@@ -20,25 +20,29 @@ import (
 // decision model read the postings it would drop that a model has already
 // read.
 type prefilterReport struct {
-	Live, Dropped int
-	ByReason      map[string]int
-	Rows          []prefilterRow // the live postings it would drop, in ledger order
+	Live     int            `json:"live"`
+	Dropped  int            `json:"dropped"`
+	ByReason map[string]int `json:"by_reason"`
+	Rows     []prefilterRow `json:"rows,omitempty"` // the live postings it would drop, in ledger order
 	// Kept are the triaged, scored, explained or digested postings the
 	// exclusions would drop at the next run (marked ones never are); Reopen
 	// are the excluded postings they no longer match, which return to live.
-	Kept, Reopen []prefilterRow
+	Kept   []prefilterRow `json:"kept,omitempty"`
+	Reopen []prefilterRow `json:"reopen,omitempty"`
 	// Read counts the postings it would drop whose role_fit a decision
 	// backend (not the title) answered; RoleFit is how, and Fits lists the
 	// ones read strong_fit or partial_fit: the prefilter's false drops.
-	Read    int
-	RoleFit map[string]int
-	Fits    []prefilterRow
+	Read    int            `json:"read"`
+	RoleFit map[string]int `json:"role_fit"`
+	Fits    []prefilterRow `json:"fits"`
 }
 
 type prefilterRow struct {
-	Key            posting.Key
-	Title, Reason  string
-	RoleFit, Stage string
+	Key     posting.Key `json:"key"`
+	Title   string      `json:"title"`
+	Reason  string      `json:"reason"`
+	RoleFit string      `json:"role_fit,omitempty"`
+	Stage   string      `json:"stage"`
 }
 
 // prefilterOf applies p's exclusions and title reading to every record;
@@ -89,6 +93,7 @@ func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy, protect func(posti
 func (e *env) cmdPrefilter(args []string) error {
 	fs := e.newFlags("prefilter")
 	list := fs.Bool("list", false, "also list each posting it would drop or return to live")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout (the lists with --list)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -98,8 +103,9 @@ func (e *env) cmdPrefilter(args []string) error {
 	}
 	p := dropPolicy(cfg, cfg.Decide.OpenRouterName())
 	if !p.Prefilters() {
-		fmt.Fprintln(e.stdout, "prefilter is off: the config has no exclude entries and no title_signals.read entries; nothing was evaluated")
-		return nil
+		return e.reply(*asJSON, prefilterReply{Off: true}, nil, func() {
+			fmt.Fprintln(e.stdout, "prefilter is off: the config has no exclude entries and no title_signals.read entries; nothing was evaluated")
+		})
 	}
 	snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
 	if err != nil {
@@ -109,8 +115,25 @@ func (e *env) cmdPrefilter(args []string) error {
 		fmt.Fprintln(e.stderr, "vani: prefilter: the ledger ends in a torn line; it was left out")
 	}
 	protect := protectMarked(e.stateDir, func(f string, a ...any) { fmt.Fprintf(e.stderr, "vani: prefilter: "+f+"\n", a...) })
-	writePrefilter(e.stdout, prefilterOf(snap.Records, p, protect), len(snap.Records), *list)
-	return nil
+	rep := prefilterOf(snap.Records, p, protect)
+	jr := rep
+	jr.Fits = nonNil(jr.Fits)
+	if !*list {
+		jr.Rows, jr.Kept, jr.Reopen = nil, nil, nil
+	}
+	out := prefilterReply{Total: len(snap.Records), KeptCount: len(rep.Kept), ReopenCount: len(rep.Reopen), Report: &jr}
+	return e.reply(*asJSON, out, nil, func() { writePrefilter(e.stdout, rep, len(snap.Records), *list) })
+}
+
+// prefilterReply is `vani prefilter --json`. Off: no exclusion or title
+// reading is configured, and nothing was evaluated. The lists of postings are
+// in the report only with --list; the counts always are.
+type prefilterReply struct {
+	Off         bool             `json:"off"`
+	Total       int              `json:"total,omitempty"`
+	KeptCount   int              `json:"kept_count"`
+	ReopenCount int              `json:"reopen_count"`
+	Report      *prefilterReport `json:"report,omitempty"`
 }
 
 func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {

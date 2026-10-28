@@ -180,6 +180,7 @@ func (e *env) cmdEval(args []string) error {
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	heldOut := fs.String("held-out", "", "also report Promotion over a registered held-out split ("+strings.Join(eval.SplitNames(), ", ")+")")
 	windows := fs.Bool("window", false, "also report each label window's Promotion table and the per-slot verdict (promotable only if every window is closed and promotable)")
+	asJSON := e.jsonFlag(fs, `{"report","held_out"?,"windows"?} on stdout: the raw counts the tables are built from`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -203,8 +204,9 @@ func (e *env) cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Window tables are built before anything is printed, like the held-out one.
-	var winMD string
+	// Every table is built before anything is printed, so a label file one of
+	// them refuses yields an error and no figures at all.
+	var out evalReply
 	if *windows {
 		// BuildWindows files in memory only: `vani label --window` is the one
 		// writer of windows.json.
@@ -212,20 +214,35 @@ func (e *env) cmdEval(args []string) error {
 		if err != nil {
 			return err
 		}
-		winMD = wr.Markdown()
+		out.Windows = &wr
 	}
 	if *heldOut == "" {
-		fmt.Fprint(e.stdout, eval.BuildReport(recs, s, names).Markdown()+winMD)
-		return nil
+		out.Report = eval.BuildReport(recs, s, names)
+	} else {
+		all, h, err := eval.BuildHeldOut(recs, s, names, split)
+		if err != nil {
+			return err
+		}
+		out.Report, out.HeldOut = all, &h
 	}
-	// The held-out table is built before anything is printed, so a label file
-	// it refuses yields an error and no figures at all.
-	all, h, err := eval.BuildHeldOut(recs, s, names, split)
-	if err != nil {
-		return err
-	}
-	fmt.Fprint(e.stdout, all.Markdown()+h.Markdown()+winMD)
-	return nil
+	return e.reply(*asJSON, out, nil, func() {
+		md := out.Report.Markdown()
+		if out.HeldOut != nil {
+			md += out.HeldOut.Markdown()
+		}
+		if out.Windows != nil {
+			md += out.Windows.Markdown()
+		}
+		fmt.Fprint(e.stdout, md)
+	})
+}
+
+// evalReply is `vani eval --json`: the counts behind each table, with the
+// held-out split and the windows when asked for.
+type evalReply struct {
+	Report  eval.Report        `json:"report"`
+	HeldOut *eval.HeldOut      `json:"held_out,omitempty"`
+	Windows *eval.WindowReport `json:"windows,omitempty"`
 }
 
 // evalNames reads the configured OpenRouter backend's name, which the eval

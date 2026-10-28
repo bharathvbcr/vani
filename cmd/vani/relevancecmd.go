@@ -21,6 +21,7 @@ func (e *env) cmdRelevance(args []string) error {
 	fs := e.newFlags("relevance")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	ks := fs.String("k", "", "comma list of k for precision@k (default 5,10,20)")
+	asJSON := e.jsonFlag(fs, `{"relevance","drop_agreement"} on stdout: the raw counts the tables are built from`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -48,11 +49,21 @@ func (e *env) cmdRelevance(args []string) error {
 	// With nothing judged there is nothing to order or score: no ledger read.
 	if rep := eval.BuildRelevance(done, nil, nil, nil, eval.Names{}); rep.Judged == 0 {
 		rep.Malformed = bad
-		fmt.Fprint(e.stdout, rep.Markdown())
 		// The drop-candidate agreement needs no labels, only the ledger. If it
-		// cannot be read the section says so: that is not "no data".
-		fmt.Fprint(e.stdout, e.dropAgreementMarkdown(done))
-		return nil
+		// cannot be read the reply says so: that is not "no data".
+		agree, err := e.dropAgreement(done)
+		out := relevanceReply{Relevance: rep, DropAgreement: agree}
+		if err != nil {
+			out.DropAgreement, out.DropAgreementError = nil, err.Error()
+		}
+		return e.reply(*asJSON, out, nil, func() {
+			fmt.Fprint(e.stdout, rep.Markdown())
+			if err != nil {
+				fmt.Fprintf(e.stdout, "\n## Drop candidates\n\nnot computed: %v\n", err)
+			} else {
+				fmt.Fprint(e.stdout, agree.Markdown())
+			}
+		})
 	}
 	names, specs, err := e.namesAndDropRules()
 	if err != nil {
@@ -83,24 +94,35 @@ func (e *env) cmdRelevance(args []string) error {
 	}
 	rep := eval.BuildRelevance(done, b.snap.Records, orderings, kk, names)
 	rep.Malformed = bad
-	fmt.Fprint(e.stdout, rep.Markdown())
-	fmt.Fprint(e.stdout, eval.BuildDropAgreement(done, b.snap.Records, specs, names).Markdown())
-	return nil
+	agree := eval.BuildDropAgreement(done, b.snap.Records, specs, names)
+	return e.reply(*asJSON, relevanceReply{Relevance: rep, DropAgreement: &agree}, nil, func() {
+		fmt.Fprint(e.stdout, rep.Markdown())
+		fmt.Fprint(e.stdout, agree.Markdown())
+	})
 }
 
-// dropAgreementMarkdown is the drop-candidate agreement section for a run that
-// has not read the ledger yet; a ledger or config that cannot be read gives a
-// line saying so, never an empty table.
-func (e *env) dropAgreementMarkdown(done map[posting.Key]eval.Entry) string {
+// relevanceReply is `vani relevance --json`. DropAgreementError replaces
+// DropAgreement when the ledger or config could not be read for it.
+type relevanceReply struct {
+	Relevance          eval.Relevance      `json:"relevance"`
+	DropAgreement      *eval.DropAgreement `json:"drop_agreement,omitempty"`
+	DropAgreementError string              `json:"drop_agreement_error,omitempty"`
+}
+
+// dropAgreement is the drop-candidate agreement for a run that has not read
+// the ledger yet; a ledger or config that cannot be read is an error, never an
+// empty table.
+func (e *env) dropAgreement(done map[posting.Key]eval.Entry) (*eval.DropAgreement, error) {
 	names, specs, err := e.namesAndDropRules()
 	if err != nil {
-		return fmt.Sprintf("\n## Drop candidates\n\nnot computed: %v\n", err)
+		return nil, err
 	}
 	b, err := e.browse()
 	if err != nil {
-		return fmt.Sprintf("\n## Drop candidates\n\nnot computed: ledger unreadable: %v\n", err)
+		return nil, fmt.Errorf("ledger unreadable: %w", err)
 	}
-	return eval.BuildDropAgreement(done, b.snap.Records, specs, names).Markdown()
+	a := eval.BuildDropAgreement(done, b.snap.Records, specs, names)
+	return &a, nil
 }
 
 // namesAndDropRules loads the config once for the OpenRouter backend's name

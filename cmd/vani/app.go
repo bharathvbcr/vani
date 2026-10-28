@@ -599,15 +599,17 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 			fmt.Fprintf(e.stderr, "vani: notification failed: %v\n", err)
 		}
 	}
-	pub.roles = &n
+	pub.roles, pub.path = &n, path
 	return pub, markErr
 }
 
 // published is what publishDigest did: roles is how many new roles the digest
-// listed (nil when no digest was written), and impressionsError is set when
-// the digest was written but what it showed could not be recorded.
+// listed (nil when no digest was written) and path the file it wrote, and
+// impressionsError is set when the digest was written but what it showed
+// could not be recorded.
 type published struct {
 	roles            *int
+	path             string
 	impressionsError string
 }
 
@@ -644,6 +646,7 @@ func countsFor(recs []ledger.Record, date time.Time, loc *time.Location) digest.
 func (e *env) cmdDigest(args []string) error {
 	fs := e.newFlags("digest")
 	dateStr := fs.String("date", "", "digest date YYYY-MM-DD (default: today in the schedule zone)")
+	asJSON := e.jsonFlag(fs, `{"date","path","roles","impressions_error"?} on stdout`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -673,8 +676,29 @@ func (e *env) cmdDigest(args []string) error {
 	if warning != "" {
 		fmt.Fprintf(e.stderr, "vani: digest: %s\n", warning)
 	}
-	_, err = e.publishDigest(ctx, app, date, loc, opts)
-	return err
+	var pub published
+	err = e.textToStderr(*asJSON, func() error {
+		var err error
+		pub, err = e.publishDigest(ctx, app, date, loc, opts)
+		return err
+	})
+	if pub.roles == nil {
+		return err // no digest was written
+	}
+	// A digest written whose roles could not be marked digested is a failure
+	// that still names the file.
+	return e.reply(*asJSON, &digestReply{Date: date.Format("2006-01-02"), Path: pub.path, Roles: *pub.roles,
+		ImpressionsError: pub.impressionsError}, err, func() {})
+}
+
+// digestReply is `vani digest --json`: the file written and how many roles it
+// listed. ImpressionsError: what it showed could not be recorded.
+type digestReply struct {
+	Date             string `json:"date"`
+	Path             string `json:"path"`
+	Roles            int    `json:"roles"`
+	ImpressionsError string `json:"impressions_error,omitempty"`
+	failure
 }
 
 func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {

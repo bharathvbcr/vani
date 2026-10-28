@@ -49,8 +49,8 @@ type Ordering struct {
 
 // Count is a raw count of wanted postings among judged ones.
 type Count struct {
-	Wanted int // would_apply yes or maybe
-	N      int // would_apply yes, maybe or no (skip is not judged)
+	Wanted int `json:"wanted"` // would_apply yes or maybe
+	N      int `json:"n"`      // would_apply yes, maybe or no (skip is not judged)
 }
 
 // Interval returns the Wilson interval of c; ok is false when N is 0.
@@ -68,36 +68,39 @@ func (c Count) String() string {
 // top K. Shown is how many the ordering listed there; the rest of the top K is
 // unlabelled and says nothing.
 type PrecisionRow struct {
-	Ordering string
-	K        int
-	Shown    int
+	Ordering string `json:"ordering"`
+	K        int    `json:"k"`
+	Shown    int    `json:"shown"`
 	Count
 }
 
 // StratumRow is one sampling stratum's judged count.
 type StratumRow struct {
-	Source string
+	Source string `json:"source"`
 	Count
 }
 
 // ReliabilityBin is one p bin of a backend's reliability table.
 type ReliabilityBin struct {
-	Lo, Hi float64
+	Lo float64 `json:"lo"`
+	Hi float64 `json:"hi"`
 	Count
-	SumP float64
+	SumP float64 `json:"sum_p"`
 }
 
 // BackendRow is one backend's p against the owner's would_apply, over the
 // postings where its role_fit reading was a positive one with a recorded p.
 type BackendRow struct {
-	Backend string
+	Backend string `json:"backend"`
 	// Judged are the owner-judged postings this backend answered role_fit for;
 	// Positive of them read as PositiveReadings, and Scored of those carry a p.
-	Judged, Positive, Scored int
-	Count                    // would_apply among Scored
-	SumP                     float64
-	SumSq                    float64 // sum of (p - wanted)^2
-	Bins                     [reliabilityBins]ReliabilityBin
+	Judged   int                             `json:"judged"`
+	Positive int                             `json:"positive"`
+	Scored   int                             `json:"scored"`
+	Count                                    // would_apply among Scored
+	SumP     float64                         `json:"sum_p"`
+	SumSq    float64                         `json:"sum_sq"` // sum of (p - wanted)^2
+	Bins     [reliabilityBins]ReliabilityBin `json:"bins"`
 }
 
 // Brier is the mean squared error of p as a forecast of "wanted"; ok is false
@@ -111,15 +114,15 @@ func (b BackendRow) Brier() (float64, bool) {
 
 // Relevance is what the would_apply labels measure, as raw counts.
 type Relevance struct {
-	Labels    int // would_apply labels in the store
-	Judged    int // of those, yes/maybe/no
-	Skipped   int
-	Manual    int // judged outside a sample (no p_select): kept out of the strata
-	Malformed int // label lines the store could not read, set by the caller
-	Precision []PrecisionRow
-	Deciles   []StratumRow
-	Drops     []StratumRow
-	Backends  []BackendRow
+	Labels    int            `json:"labels"` // would_apply labels in the store
+	Judged    int            `json:"judged"` // of those, yes/maybe/no
+	Skipped   int            `json:"skipped"`
+	Manual    int            `json:"manual"`    // judged outside a sample (no p_select): kept out of the strata
+	Malformed int            `json:"malformed"` // label lines the store could not read, set by the caller
+	Precision []PrecisionRow `json:"precision"`
+	Deciles   []StratumRow   `json:"deciles"`
+	Drops     []StratumRow   `json:"drops"`
+	Backends  []BackendRow   `json:"backends"`
 }
 
 func wanted(v string) (hit, judged bool) {

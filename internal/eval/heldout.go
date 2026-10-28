@@ -17,9 +17,9 @@ import (
 // parameter: a split is chosen by its registration name from Splits, so the
 // held-out set cannot be re-drawn until a result reads well.
 type Split struct {
-	Name string
-	Salt string
-	Size int
+	Name string `json:"name"`
+	Salt string `json:"salt"`
+	Size int    `json:"size"`
 }
 
 // Splits are the registered held-out splits, by registration name.
@@ -103,13 +103,13 @@ func (sp Split) Assign(keys []posting.Key) (heldOut, fit []posting.Key) {
 
 // HeldOut is the Promotion table over a registered split's held-out postings.
 type HeldOut struct {
-	Split   Split
-	Ranked  int           // labelled postings ranked: every distinct key in the label file
-	HeldOut []posting.Key // in rank order
-	Fit     int
+	Split   Split         `json:"split"`
+	Ranked  int           `json:"ranked"`   // labelled postings ranked: every distinct key in the label file
+	HeldOut []posting.Key `json:"held_out"` // in rank order
+	Fit     int           `json:"fit"`
 	// Promotions is BuildReport's Promotion table computed over the held-out
 	// postings' labels only, with the same arithmetic and the same Names.
-	Promotions []Promotion
+	Promotions []Promotion `json:"promotions"`
 }
 
 // BuildHeldOut reads the label set in s once and returns both the all-labels

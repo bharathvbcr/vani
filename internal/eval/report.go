@@ -21,44 +21,44 @@ const UnknownBackend = "unknown"
 // Cell is one slot x backend measurement over labeled postings. "skip" labels
 // are not counted anywhere.
 type Cell struct {
-	Slot     string
-	Backend  string
-	Labeled  int // labeled postings this backend was responsible for
-	Answered int // of those, reading answered
-	Correct  int // of those, value equals the label
+	Slot     string `json:"slot"`
+	Backend  string `json:"backend"`
+	Labeled  int    `json:"labeled"`  // labeled postings this backend was responsible for
+	Answered int    `json:"answered"` // of those, reading answered
+	Correct  int    `json:"correct"`  // of those, value equals the label
 }
 
 // ThresholdRow is the OpenRouter model's precision among answers with p >= P for one slot.
 type ThresholdRow struct {
-	P        float64
-	Labeled  int // OpenRouter-owned labeled postings for the slot (the coverage denominator)
-	Answered int // answered with p >= P
-	Correct  int
+	P        float64 `json:"p"`
+	Labeled  int     `json:"labeled"`  // OpenRouter-owned labeled postings for the slot (the coverage denominator)
+	Answered int     `json:"answered"` // answered with p >= P
+	Correct  int     `json:"correct"`
 }
 
 // Threshold is one slot's OpenRouter precision-at-threshold table.
 type Threshold struct {
-	Slot string
-	Rows []ThresholdRow
+	Slot string         `json:"slot"`
+	Rows []ThresholdRow `json:"rows"`
 }
 
 // ShadowRow compares one shadow backend with the primary and the labels for
 // one slot. Labeled counts the labeled postings that backend was asked about,
 // including ones where it was unavailable.
 type ShadowRow struct {
-	Slot           string
-	Shadow         string // shadow backend name
-	Labeled        int    // labeled postings this shadow was asked about for the slot
-	ShadowAnswered int
-	ShadowCorrect  int
+	Slot           string `json:"slot"`
+	Shadow         string `json:"shadow"`  // shadow backend name
+	Labeled        int    `json:"labeled"` // labeled postings this shadow was asked about for the slot
+	ShadowAnswered int    `json:"shadow_answered"`
+	ShadowCorrect  int    `json:"shadow_correct"`
 	// ShadowUnavailable counts the asked postings whose shadow reading was
 	// recorded as unavailable. A row with no answers shows it.
-	ShadowUnavailable int
-	BothAnswered      int // primary and shadow both answered
-	Agree             int
-	Disagree          int
-	PrimaryRight      int // among Disagree, primary equals the label
-	ShadowRight       int // among Disagree, shadow equals the label
+	ShadowUnavailable int `json:"shadow_unavailable"`
+	BothAnswered      int `json:"both_answered"` // primary and shadow both answered
+	Agree             int `json:"agree"`
+	Disagree          int `json:"disagree"`
+	PrimaryRight      int `json:"primary_right"` // among Disagree, primary equals the label
+	ShadowRight       int `json:"shadow_right"`  // among Disagree, shadow equals the label
 }
 
 // MinPromotionLabels is the fewest labeled postings a shadow must have been
@@ -74,24 +74,24 @@ const MinPromotionLabels = 30
 // cap and the LLM answers the rest, "beats d1-ultra" and "beats the LLM" are separate rows,
 // each needing its own MinPromotionLabels.
 type Promotion struct {
-	Slot            string
-	Shadow          string // shadow backend name
-	Primary         string // the backend that held the slot ("d1-ultra", "llm", ...)
-	Asked           int    // labeled postings the shadow was asked about
-	ShadowAnswered  int
-	ShadowCorrect   int
-	PrimaryAnswered int // of the same postings, the primary answered
-	PrimaryCorrect  int
+	Slot            string `json:"slot"`
+	Shadow          string `json:"shadow"`  // shadow backend name
+	Primary         string `json:"primary"` // the backend that held the slot ("d1-ultra", "llm", ...)
+	Asked           int    `json:"asked"`   // labeled postings the shadow was asked about
+	ShadowAnswered  int    `json:"shadow_answered"`
+	ShadowCorrect   int    `json:"shadow_correct"`
+	PrimaryAnswered int    `json:"primary_answered"` // of the same postings, the primary answered
+	PrimaryCorrect  int    `json:"primary_correct"`
 	// ShadowUnavailable counts postings where the shadow was asked and recorded
 	// as unavailable (it errored or timed out). Rows recorded before the router
 	// wrote that reading cannot show their failures.
-	ShadowUnavailable int
+	ShadowUnavailable int `json:"shadow_unavailable"`
 	// Paired counts postings where both the primary and the shadow answered.
 	// PrimaryOnly and ShadowOnly split the paired postings where exactly one of
 	// them matched the label: the only postings that separate the two.
-	Paired      int
-	PrimaryOnly int // primary right, shadow wrong
-	ShadowOnly  int // shadow right, primary wrong
+	Paired      int `json:"paired"`
+	PrimaryOnly int `json:"primary_only"` // primary right, shadow wrong
+	ShadowOnly  int `json:"shadow_only"`  // shadow right, primary wrong
 }
 
 const (
@@ -180,28 +180,28 @@ func lowerBound(k, n int, alpha float64) float64 {
 
 // Report is the evaluation of ledger records against the label set.
 type Report struct {
-	Records      int // ledger records examined
-	WithTriage   int // of those, with any triage annotation
-	LabelEntries int // distinct keys in the label file
-	Matched      int // label entries that have a ledger record
-	NoTriage     int // matched labels whose record has no triage annotations
+	Records      int `json:"records"`       // ledger records examined
+	WithTriage   int `json:"with_triage"`   // of those, with any triage annotation
+	LabelEntries int `json:"label_entries"` // distinct keys in the label file
+	Matched      int `json:"matched"`       // label entries that have a ledger record
+	NoTriage     int `json:"no_triage"`     // matched labels whose record has no triage annotations
 	// Inherited counts records whose reading was copied from another posting
 	// (triage.inherited_from). They are left out of every other count: a copy
 	// is not a second observation, and counting it would inflate n.
-	Inherited      int
-	MalformedLines int // label-file lines skipped as unreadable
-	LoadError      string
+	Inherited      int    `json:"inherited"`
+	MalformedLines int    `json:"malformed_lines"` // label-file lines skipped as unreadable
+	LoadError      string `json:"load_error"`
 	// LegacyPrimary counts scored slot readings whose primary backend was
 	// recorded as LegacyOpenRouterName and is reported under the configured
 	// OpenRouter name.
-	LegacyPrimary int
+	LegacyPrimary int `json:"legacy_primary"`
 	// ProbabilityBackend is the backend the threshold tables are built from.
-	ProbabilityBackend string
+	ProbabilityBackend string `json:"probability_backend"`
 
-	Cells      []Cell
-	Thresholds []Threshold
-	Shadow     []ShadowRow
-	Promotions []Promotion
+	Cells      []Cell      `json:"cells"`
+	Thresholds []Threshold `json:"thresholds"`
+	Shadow     []ShadowRow `json:"shadow"`
+	Promotions []Promotion `json:"promotions"`
 }
 
 // triageLabels keeps the entries that label at least one triage slot. A

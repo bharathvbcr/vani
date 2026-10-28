@@ -32,21 +32,22 @@ type DropRuleSpec struct {
 // Answered. DisagreeJudged of the disagreements have an owner would_apply
 // label, DisagreeWanted of those say yes or maybe.
 type AgreementRow struct {
-	Slot, Shadow   string
-	NotAsked       int // candidates with no shadow reading at all
-	Asked          int
-	Answered       int
-	Unavailable    int
-	Agree          int
-	Disagree       int
-	DisagreeJudged int
-	DisagreeWanted int
+	Slot           string `json:"slot"`
+	Shadow         string `json:"shadow"`
+	NotAsked       int    `json:"not_asked"` // candidates with no shadow reading at all
+	Asked          int    `json:"asked"`
+	Answered       int    `json:"answered"`
+	Unavailable    int    `json:"unavailable"`
+	Agree          int    `json:"agree"`
+	Disagree       int    `json:"disagree"`
+	DisagreeJudged int    `json:"disagree_judged"`
+	DisagreeWanted int    `json:"disagree_wanted"`
 }
 
 // DropAgreement is the report: the primary's name and one row per slot and shadow.
 type DropAgreement struct {
-	Primary string
-	Rows    []AgreementRow
+	Primary string         `json:"primary"`
+	Rows    []AgreementRow `json:"rows"`
 
 	llmModel string // Names.LLMModel, shown beside the "llm" shadow
 }

@@ -64,18 +64,18 @@ var jsonLeaves = []jsonLeaf{
 	{"daemon", jsonNone, "runs the scheduler in the foreground until stopped; read it with status --json and runs show --json"},
 	{"run-once", jsonText, ""},
 	{"run-request", jsonFlag, ""},
-	{"digest", jsonText, ""},
+	{"digest", jsonFlag, ""},
 	{"status", jsonFlag, ""},
 	{"runs list", jsonFlag, ""},
 	{"runs show", jsonFlag, ""},
 	{"runs failures", jsonFlag, ""},
 	{"label", jsonNone, "asks the owner one posting at a time on the terminal"},
 	{"export heldout", jsonFlag, ""},
-	{"eval", jsonText, ""},
+	{"eval", jsonFlag, ""},
 	{"audit", jsonFlag, ""},
 	{"audit answer", jsonFlag, ""},
-	{"relevance", jsonText, ""},
-	{"rankfit", jsonText, ""},
+	{"relevance", jsonFlag, ""},
+	{"rankfit", jsonFlag, ""},
 	{"lca import", jsonFlag, ""},
 	{"lca lookup", jsonFlag, ""},
 	{"employer import", jsonFlag, ""},
@@ -114,7 +114,7 @@ var jsonLeaves = []jsonLeaf{
 	{"jobs gaps", jsonFlag, ""},
 	{"retriage", jsonText, ""},
 	{"rescore", jsonText, ""},
-	{"prefilter", jsonText, ""},
+	{"prefilter", jsonFlag, ""},
 	{"bench local", jsonFlag, ""},
 	{"semantic warm", jsonText, ""},
 	{"semantic status", jsonFlag, ""},
@@ -187,6 +187,19 @@ type failure struct {
 }
 
 func (f *failure) fail(err error) { f.Error, f.Code = err.Error(), codeRuntime }
+
+// textToStderr runs fn with the text a command prints as it goes sent to
+// stderr when asJSON, so stdout holds the JSON reply alone: a run's or a
+// digest's progress stays readable without breaking the reply.
+func (e *env) textToStderr(asJSON bool, fn func() error) error {
+	if !asJSON {
+		return fn()
+	}
+	out := e.stdout
+	e.stdout = e.stderr
+	defer func() { e.stdout = out }()
+	return fn()
+}
 
 // reply writes v as JSON and returns the exit error. When err is set it writes
 // v with its failure filled in if v embeds one, else {"error","code"} alone. A
