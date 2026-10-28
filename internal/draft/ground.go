@@ -327,6 +327,21 @@ type claim struct {
 
 func (c claim) String() string { return c.text }
 
+// kind is the claim's Kind for a refusal. The only figure only the seeker's own
+// text can back is a count of years (ungrounded), so that is what seekerOnly
+// marks on one.
+func (c claim) kind() string {
+	switch {
+	case c.what == whatCredential:
+		return KindCredential
+	case c.what == whatAcronym:
+		return KindAcronym
+	case c.seekerOnly:
+		return KindYears
+	}
+	return KindFigure
+}
+
 const (
 	whatFigure     = "a figure"
 	whatCredential = "a credential"

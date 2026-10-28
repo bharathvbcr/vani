@@ -177,7 +177,9 @@ stored `kbmatch` answers no longer match (`kbmatch.json` is keyed by the digest 
 `vani kbmatch run` asks again, which is the only thing that spends on them. `vani draft` also
 refuses a draft that cites a figure (digits or spelled out), a credential (PhD, MBA, "certified"
 and the other closed list in `ground_claims.go`) or an acronym that none of its sources contain
-(code `ungrounded`, `internal/draft/ground.go`); the refusal says which kind. A credential, and a
+(code `ungrounded`, `internal/draft/ground.go`); the refusal says which kind, in its message and
+as a `kind` field (`figure`, `years`, `credential` or `acronym`) on `vani draft`'s reply and on a
+failed `vani suggest` field, which the extension and the app word for the person. A credential, and a
 count of years ("5 years", "five-year"), count only when the seeker's own text says them (the
 evidence, the target summary, the motivation notes): the posting, the question, the company and
 the title do not ground them. "I do not have a PhD" is refused too, as negation is not parsed.

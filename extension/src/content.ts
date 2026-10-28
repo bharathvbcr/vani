@@ -16,7 +16,7 @@ import { type Coverage, type PageQuestion, bucketOf, coverageLine, coverageOf } 
 import { type FlushResult, MIN_FORM_FIELDS, type Tracker, createTracker } from "./tracker";
 import { UNDRAFTED_NOTE, type DraftOffer, currentText, draftEnabled, draftOffer, draftable, pickOrdinal, suggest } from "./suggest";
 import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
-import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, parseDraftReply } from "./draft";
+import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, parseDraftReply } from "./draft";
 import { classify } from "./classify";
 import { type AppliedFlow, type AppliedUi, createAppliedFlow, offerSubject } from "./applied";
 import {
@@ -883,7 +883,9 @@ async function draftJob(question: string, job: JobInfo, attempt = 0): Promise<Dr
     poll: id => send({ type: "jobPoll", job: id }),
   }, DRAFT_JOB_TIMEOUT_MS);
   if (!r.ok) return { ok: false, code: "unreachable", error: r.error };
-  return parseDraftReply(r.reply);
+  const reply = parseDraftReply(r.reply);
+  // Word what was unbacked the way the direct path does, not with the host's message.
+  return !reply.ok && reply.code === "ungrounded" ? { ...reply, error: draftHelp(reply) } : reply;
 }
 
 // --- suggest ----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_WORDS, DRAFT_FIELD_ABSENT, DRAFT_HELP, DRAFT_FIELD_BUSY, DRAFT_FIELD_NONE, MAX_DESCRIPTION_CHARS, MAX_QUESTION_CHARS, MAX_WORDS, MIN_WORDS,
-  buildDraftRequest, draftStartError, parseDraftReply, requestDraft,
+  buildDraftRequest, draftHelp, draftStartError, parseDraftReply, requestDraft,
 } from "../src/draft";
 
 const job = { company: "Acme", title: "ML Engineer", description: "We build inference systems on GPUs. ".repeat(5) };
@@ -66,6 +66,39 @@ describe("parseDraftReply", () => {
     expect(DRAFT_HELP.ungrounded).toMatch(/Try again, or write this answer yourself/);
     const r = parseDraftReply({ error: 'draft: the draft says "73%"', code: "ungrounded" });
     expect(r).toEqual({ ok: false, code: "ungrounded", error: 'draft: the draft says "73%"' });
+  });
+
+  test("an ungrounded refusal names what was unbacked, from vani's kind", () => {
+    const named = {
+      figure: /a figure.*knowledge base or the posting/,
+      years: /years of experience.*your own records/,
+      credential: /a credential.*your own records/,
+      acronym: /an acronym.*knowledge base or the posting/,
+    } as const;
+    for (const [kind, re] of Object.entries(named)) {
+      const r = parseDraftReply({ error: "draft: x", code: "ungrounded", kind });
+      expect(r).toEqual({ ok: false, code: "ungrounded", error: "draft: x", kind: kind as keyof typeof named });
+      if (r.ok) throw new Error("not a failure");
+      const help = draftHelp(r);
+      expect(help).toMatch(re);
+      expect(help).toMatch(/Try again, or write this answer yourself/);
+      expect(help).not.toMatch(/cited a figure/);
+    }
+  });
+
+  test("an ungrounded refusal with no kind, an unknown kind or a kind on another code is worded generally", () => {
+    for (const kind of [undefined, "", "mystery", 7, null, {}, "__proto__", "toString"]) {
+      const r = parseDraftReply({ error: "e", code: "ungrounded", kind });
+      expect(r).toEqual({ ok: false, code: "ungrounded", error: "e" });
+      if (r.ok) throw new Error("not a failure");
+      expect("kind" in r).toBe(false);
+      expect(draftHelp(r)).toBe(DRAFT_HELP.ungrounded);
+    }
+    const other = parseDraftReply({ error: "e", code: "timeout", kind: "figure" });
+    expect(other).toEqual({ ok: false, code: "timeout", error: "e" });
+    if (!other.ok) expect(draftHelp(other)).toBe(DRAFT_HELP.timeout);
+    expect(DRAFT_HELP.ungrounded).not.toMatch(/cited a figure/);
+    expect(DRAFT_HELP.ungrounded).toMatch(/credential/);
   });
 
   test("anything that is not a draft is a failure, never an empty or partial draft", () => {

@@ -83,13 +83,20 @@ final class BankStoreTests: XCTestCase {
 
     /// Writers in separate threads, each with its own lock descriptor (as separate
     /// processes have), retrying on conflict as the extension does: nobody's answer is lost.
+    ///
+    /// The advisory flock is not fair and every put fsyncs under it, so with sixteen writers on a
+    /// machine busy elsewhere (parallel `go test` runs reproduced it) one writer can go past the
+    /// production five-second wait and get "the answer bank is locked by another process", which
+    /// this loop reports as a failure. What the test asserts is that conflicts lose no update, not
+    /// how long a starved writer may wait (testLockWaitIsBoundedAndTakesAReleasedLock owns that), so its stores wait
+    /// long enough that starvation is not the thing measured.
     func testConcurrentWritersLoseNothing() throws {
         let dir = try tempDir(self)
         let writers = 16
         let errors = NSLock()
         nonisolated(unsafe) var failures: [String] = []
         DispatchQueue.concurrentPerform(iterations: writers) { i in
-            let store = BankStore(directory: dir)
+            let store = BankStore(directory: dir, lockWait: 120)
             for _ in 0..<200 {
                 do {
                     let snap = try store.read()

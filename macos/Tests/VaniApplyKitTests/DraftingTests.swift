@@ -152,6 +152,40 @@ final class DraftingTests: XCTestCase {
         XCTAssertEqual(object?["code"] as? String, "ungrounded")
     }
 
+    /// vani says what an ungrounded draft held unbacked (`kind`): it rides the reply to the page and the app
+    /// words it. A missing, unknown or misplaced kind reads as the general wording and never fails the reply.
+    func testAnUngroundedReplyNamesWhatWasUnbacked() throws {
+        let vani = try fakeVani(self, body: """
+        #!/bin/sh
+        cat >/dev/null
+        echo '{"error":"draft: the draft says \\"PhD\\"","code":"ungrounded","kind":"credential"}'
+        exit 1
+        """)
+        let reply = DraftRunner(vaniBinary: vani).run(DraftRequest(question: "q"))
+        XCTAssertEqual(reply.kind, "credential")
+        XCTAssertEqual(reply.asJSONObject["kind"] as? String, "credential")
+        XCTAssertTrue(try XCTUnwrap(reply.ungroundedText).contains("a credential"))
+        let job = DraftRunner(vaniBinary: vani).runJob(.draft, input: Data(#"{"question":"q"}"#.utf8))
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: job) as? [String: Any])?["kind"] as? String, "credential")
+    }
+
+    func testEachKindIsWordedAndNoneSaysItCitedAFigureWhenItDidNot() {
+        let named = ["figure": "a figure", "years": "years of experience", "credential": "a credential", "acronym": "an acronym"]
+        for (kind, words) in named {
+            let text = DraftReply(error: "e", code: "ungrounded", kind: kind).ungroundedText
+            XCTAssertTrue(text?.contains(words) == true, kind)
+            XCTAssertTrue(text?.hasSuffix("Try again, or write this answer yourself.") == true, kind)
+        }
+        XCTAssertFalse(DraftReply(error: "e", code: "ungrounded", kind: "credential").ungroundedText?.contains("figure") ?? true)
+        for kind in [nil, "", "mystery", "Figure"] as [String?] {
+            let text = DraftReply(error: "e", code: "ungrounded", kind: kind).ungroundedText
+            XCTAssertTrue(text?.contains("a credential or an acronym") == true, "\(kind ?? "nil")")
+        }
+        XCTAssertNil(DraftReply(error: "e", code: "timeout", kind: "figure").ungroundedText)
+        XCTAssertNil(DraftReply(draft: "d").ungroundedText)
+        XCTAssertNil(DraftReply(error: "e", code: "ungrounded").asJSONObject["kind"])
+    }
+
     func testNoKeyNeverUsesTheLauncherEvenForAnthropic() throws {
         let cfg = try vaniConfig(self, provider: "anthropic")
         XCTAssertEqual(DraftRunner(vaniBinary: try fakeVani(self), configPath: cfg, keys: .noKey, account: "org500")

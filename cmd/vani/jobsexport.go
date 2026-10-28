@@ -267,7 +267,31 @@ var exportColumns = []exportColumn{
 		return xlsx.Text(jobview.StatusLabel(string(j.Status)))
 	}},
 	{"Mark", 9, false, func(_ int, j jobview.Job, _ string) xlsx.Cell { return xlsx.Text(string(j.Mark)) }},
+	// What became of an application (marks stages): empty for an old mark with
+	// none, and for a role never applied to. Furthest outlives an unstage.
+	{"Stage", 12, false, func(_ int, j jobview.Job, _ string) xlsx.Cell { return xlsx.Text(string(j.Stage)) }},
+	{"Furthest stage", 14, false, func(_ int, j jobview.Job, _ string) xlsx.Cell { return xlsx.Text(string(j.FurthestStage)) }},
+	// MarkedAt is when a role was saved or hidden too; only an applied mark's is the date applied.
+	{"Applied", 12, false, func(_ int, j jobview.Job, _ string) xlsx.Cell {
+		if j.Mark != marks.Applied {
+			return xlsx.Cell{}
+		}
+		return exportDay(j.MarkedAt)
+	}},
 	{"Note", 40, false, func(_ int, j jobview.Job, _ string) xlsx.Cell { return xlsx.Text(j.Note) }},
+	// The company-history notes the list shows (internal/samecompany), as vani words them.
+	{"Repeat apply", 50, false, func(_ int, j jobview.Job, _ string) xlsx.Cell {
+		if j.RepeatApply == nil {
+			return xlsx.Cell{}
+		}
+		return xlsx.Text(j.RepeatApply.Text)
+	}},
+	{"Repost", 40, false, func(_ int, j jobview.Job, _ string) xlsx.Cell {
+		if j.Repost == nil {
+			return xlsx.Cell{}
+		}
+		return xlsx.Text(j.Repost.Text)
+	}},
 	{"Keywords", 36, false, func(_ int, j jobview.Job, _ string) xlsx.Cell {
 		terms := make([]string, 0, len(j.Keywords))
 		for _, k := range j.Keywords {

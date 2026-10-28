@@ -130,6 +130,20 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     }
     var resumeWire: Lenient<ResumeSummary>?
 
+    /// Other postings at this company were applied to lately, and this posting is likely an earlier
+    /// role relisted (internal/samecompany, `jobs list|show`). Notes only, never a filter. Lenient: a
+    /// note this app cannot read is nil and never fails the list; nil also from a vani that predates them.
+    public var repeatApply: RepeatApply? {
+        get { repeatApplyWire?.value }
+        set { repeatApplyWire = newValue.map { Lenient($0) } }
+    }
+    public var repost: RepostNote? {
+        get { repostWire?.value }
+        set { repostWire = newValue.map { Lenient($0) } }
+    }
+    var repeatApplyWire: Lenient<RepeatApply>?
+    var repostWire: Lenient<RepostNote>?
+
     // Display-only insight from `vani jobs` (cmd/vani/jobsinsight.go).
     /// The date the age is measured from: the board's posted date, or when
     /// Vani first saw the posting (`freshSource == .seen`, an upper bound).
@@ -223,6 +237,8 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         case untriagedWire = "untriaged"
         case manualTriageWire = "manual_triage"
         case resumeWire = "resume"
+        case repeatApplyWire = "repeat_apply"
+        case repostWire = "repost"
         case prefilterDropWire = "prefilter_drop"
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
@@ -547,6 +563,23 @@ public struct DuplicateBadge: Equatable, Sendable {
     public var help: String
 }
 
+/// A repeat-apply or repost note for the detail view (Job.sameCompanyNotes).
+public struct SameCompanyNote: Equatable, Sendable {
+    public enum Kind: Sendable { case repeatApply, repost }
+    public var kind: Kind
+    public var text: String
+
+    /// The most a note shows; vani's own sentences stay well under it.
+    static let maxRunes = 400
+
+    static func clean(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return nil }
+        return t.count > maxRunes ? String(t.prefix(maxRunes)) + "…" : t
+    }
+}
+
 extension Job {
     /// The target's "company — title" when it is among `loaded`, else the key text.
     static func duplicateTarget(_ key: String, in loaded: [String: Job]) -> String {
@@ -570,6 +603,15 @@ extension Job {
             out.append(DuplicateBadge(kind: .sibling, text: "Same role, other location",
                                       help: "The same role is also listed at \(Self.duplicateTarget(k, in: loaded))."))
         }
+        return out
+    }
+
+    /// The repeat-apply and repost sentences vani worded, repeat-apply first, for the detail view. Text is
+    /// untrusted posting content (a title is quoted in it): bounded, and a blank sentence is no note.
+    public var sameCompanyNotes: [SameCompanyNote] {
+        var out: [SameCompanyNote] = []
+        if let t = SameCompanyNote.clean(repeatApply?.text) { out.append(SameCompanyNote(kind: .repeatApply, text: t)) }
+        if let t = SameCompanyNote.clean(repost?.text) { out.append(SameCompanyNote(kind: .repost, text: t)) }
         return out
     }
 

@@ -70,13 +70,33 @@ public struct DraftReply: Codable, Equatable, Sendable {
     public var evidence_items: Int?
     public var error: String?
     public var code: String?
+    /// What an `ungrounded` refusal found unbacked: figure, years, credential or acronym (vani's draft.Kind*).
+    /// Nil from a vani that does not say.
+    public var kind: String?
 
-    public init(draft: String? = nil, model: String? = nil, evidence_items: Int? = nil, error: String? = nil, code: String? = nil) {
+    public init(draft: String? = nil, model: String? = nil, evidence_items: Int? = nil, error: String? = nil, code: String? = nil, kind: String? = nil) {
         self.draft = draft
         self.model = model
         self.evidence_items = evidence_items
         self.error = error
         self.code = code
+        self.kind = kind
+    }
+
+    /// What to tell the person about a draft vani refused for something its records do not back, naming
+    /// what that was; the general wording when `kind` is missing or one this app does not know. Nil for any
+    /// other reply.
+    public var ungroundedText: String? {
+        guard code == "ungrounded" else { return nil }
+        let tail = "so Vani threw it away. Try again, or write this answer yourself."
+        let own = "your own records (knowledge base, target summary or notes)"
+        switch kind {
+        case "figure": return "The draft named a figure (a number or a count) that isn't in your knowledge base or the posting, \(tail)"
+        case "years": return "The draft named a number of years of experience that isn't in \(own), \(tail)"
+        case "credential": return "The draft named a credential (a degree, a certification or a licence) that isn't in \(own), \(tail)"
+        case "acronym": return "The draft named an acronym that isn't in your knowledge base or the posting, \(tail)"
+        default: return "The draft said something your records don't back (a figure, years of experience, a credential or an acronym), \(tail)"
+        }
     }
 
     static func failure(_ code: String, _ message: String) -> DraftReply { DraftReply(error: message, code: code) }
@@ -88,6 +108,7 @@ public struct DraftReply: Codable, Equatable, Sendable {
         if let evidence_items { out["evidence_items"] = evidence_items }
         if let error { out["error"] = error }
         if let code { out["code"] = code }
+        if let kind { out["kind"] = kind }
         return out
     }
 }
