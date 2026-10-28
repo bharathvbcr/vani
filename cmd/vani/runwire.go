@@ -236,6 +236,21 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.OracleHCM] = oc
+	// Rippling's list has no description either: the same bounds as
+	// SmartRecruiters (stored postings reused, listed rows prefiltered, at most
+	// rippling.MaxDetails requests a board a run).
+	rp, err := rippling.NewWith(d, rippling.Options{
+		Stored:     w.storedFor,
+		DropListed: policy.ListedDrops(),
+		Report: func(b sources.Board, st rippling.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred})
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Rippling] = rp
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)

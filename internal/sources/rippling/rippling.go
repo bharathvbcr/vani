@@ -1,8 +1,18 @@
 // Package rippling lists postings from a public Rippling board
 // (GET https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs).
-// The list has no description. Each job's detail is fetched, and any detail
-// that cannot be read fails the board: a partial list would age the missing
-// jobs out.
+// The list has no description, so each job costs a detail request, and any
+// detail that cannot be read fails the board: a partial list would age the
+// missing jobs out.
+//
+// Detail volume is bounded as Workday's is (srcutil.PlanDetails): a source
+// from New fails a board that needs more than MaxDetails detail requests; one
+// from NewWith reuses the postings an earlier run stored (re-reading each on
+// its turn, once every srcutil.RefreshDays days), drops new jobs DropListed
+// rejects from their list row without a request, and defers new jobs past
+// MaxDetails to the next run. Stored postings are matched by key
+// (rp:{token}:{uuid}), which the list row carries, so a deferred row is never
+// a stored one. The list has no updated stamp, so an edited description is
+// seen on the job's next turn.
 package rippling
 
 import (
@@ -28,13 +38,66 @@ const baseURL = "https://api.rippling.com/platform/api/ats/v1/board/"
 // maxDetailBody caps one job detail. The list is capped by srcutil.MaxBody.
 var maxDetailBody int64 = 2 << 20
 
+// MaxDetails is the most detail requests one board spends in one run. At
+// egress's one-second per-host floor that is five minutes; before the bound,
+// Rippling's own board spent about six minutes on details every run
+// (2026-10-27).
+const MaxDetails = 300
+
+// Stats counts what one List did. Every distinct listed job is counted once,
+// in Reused, Fetched, Refreshed, Prefiltered, Deferred or Unlisted.
+type Stats struct {
+	Listed int `json:"listed"`
+	// Reused jobs were returned as stored, with no request.
+	Reused int `json:"reused"`
+	// Fetched jobs were new and got a detail request; Refreshed jobs were
+	// stored and were re-read on their turn.
+	Fetched   int `json:"fetched"`
+	Refreshed int `json:"refreshed,omitempty"`
+	// Prefiltered jobs were new and dropped by DropListed without a request.
+	Prefiltered int `json:"prefiltered,omitempty"`
+	// Deferred jobs were new but past MaxDetails: fetched on a later run. Not
+	// being stored, their absence ages nothing.
+	Deferred int `json:"deferred,omitempty"`
+	// Unlisted jobs' details said they are hidden from search: not returned.
+	Unlisted int `json:"unlisted,omitempty"`
+}
+
+// Options turn on the bounded detail step (NewWith).
+type Options struct {
+	// Stored returns the postings an earlier run stored for b: every record
+	// under b.KeyPrefix(), whatever its status. Required.
+	Stored func(b sources.Board) []posting.Posting
+	// DropListed reports whether the engine drops a posting before triage from
+	// what a list row says: its title, the board's company and its location
+	// labels (no description). A new job it drops is neither fetched nor
+	// returned. Nil drops nothing.
+	DropListed func(p posting.Posting) bool
+	// Report, when set, receives each listed board's counts, once, whether the
+	// board then succeeded or failed on a detail.
+	Report func(sources.Board, Stats)
+}
+
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	opt *Options
 }
 
-// New returns the Rippling source, sending requests through d.
+// New returns the Rippling source, sending requests through d. Every listed
+// job costs a detail request, and a board needing more than MaxDetails fails.
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+
+// NewWith returns the source with the bounded detail step: stored postings are
+// reused (a share of them re-read each run), new jobs DropListed rejects are
+// never fetched, and at most MaxDetails detail requests go out per board per
+// run.
+func NewWith(d egress.Doer, o Options) (sources.Source, error) {
+	if o.Stored == nil {
+		return nil, errors.New("rippling: the bounded detail step needs the stored postings (Options.Stored)")
+	}
+	return &source{d: d, now: time.Now, opt: &o}, nil
+}
 
 func (*source) ATS() posting.ATS { return posting.Rippling }
 
@@ -112,11 +175,49 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		places[k] = append(places[k], j.WorkLocation.Label)
 	}
 	seen := s.now()
-	out := make([]posting.Posting, 0, len(uniq))
+	stored := map[posting.Key]posting.Posting{}
+	if s.opt != nil {
+		// Looked up by the key a row builds, so another board's posting can
+		// never match one of this board's rows.
+		for _, p := range s.opt.Stored(b) {
+			stored[p.Key] = p
+		}
+	}
+	keys := make([]posting.Key, len(uniq))
+	plan := make([]srcutil.DetailRow, len(uniq))
 	for i, j := range uniq {
+		id := strings.TrimSpace(j.UUID)
+		key, _ := posting.RipplingKey(b.Token, id) // checked above
+		keys[i] = key
+		_, ok := stored[key]
+		plan[i] = srcutil.DetailRow{ID: strings.ToLower(id), Stored: ok}
+		if !ok && s.opt != nil && s.opt.DropListed != nil {
+			plan[i].Drop = s.opt.DropListed(listedPosting(b, j, places[strings.ToLower(id)]))
+		}
+	}
+	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), MaxDetails)
+	if s.opt == nil && pl.Deferred > 0 {
+		// Without stored postings a deferred job cannot be told from a stored
+		// one, and leaving out a stored one would age it as absent.
+		return nil, fmt.Errorf("rippling %q: %w: the board lists %d jobs and each costs a detail request, over the %d limit",
+			b.Token, srcutil.ErrTooManyPostings, pl.New+pl.Deferred, MaxDetails)
+	}
+	st := Stats{Listed: len(uniq), Deferred: pl.Deferred, Prefiltered: pl.Prefiltered}
+	if s.opt != nil && s.opt.Report != nil {
+		defer func() { s.opt.Report(b, st) }()
+	}
+	slot := make([]*posting.Posting, len(uniq))
+	for _, i := range pl.Reuse {
+		p := stored[keys[i]]
+		p.SeenAt = seen
+		slot[i] = &p
+		st.Reused++
+	}
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		j := uniq[i]
 		var d detail
 		endpoint := jobsURL(b.Token) + "/" + url.PathEscape(strings.TrimSpace(j.UUID))
 		if err := srcutil.GetJSONLimit(ctx, s.d, endpoint, maxDetailBody, &d); err != nil {
@@ -129,11 +230,33 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if err != nil {
 			return nil, fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
 		}
-		if keep {
-			out = append(out, p)
+		switch {
+		case !keep:
+			st.Unlisted++
+			continue
+		case n >= pl.New:
+			st.Refreshed++
+		default:
+			st.Fetched++
+		}
+		slot[i] = &p
+	}
+	out := make([]posting.Posting, 0, len(uniq))
+	for _, p := range slot {
+		if p != nil {
+			out = append(out, *p)
 		}
 	}
 	return out, nil
+}
+
+// listedPosting is what a list row says of its job before any detail: the
+// fields DropListed may judge.
+func listedPosting(b sources.Board, j listJob, places []string) posting.Posting {
+	return posting.Posting{
+		ATS: posting.Rippling, Company: b.Company,
+		Title: srcutil.Title(strings.TrimSpace(j.Name)), Location: joinParts("; ", places),
+	}
 }
 
 // sameJob reports whether two list rows with one uuid describe the same job:
