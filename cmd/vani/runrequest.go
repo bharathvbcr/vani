@@ -283,6 +283,14 @@ func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, run
 	if ctx.Err() != nil {
 		return nil // shutting down: the request waits for the next daemon
 	}
+	// A newer vani may have written options this binary does not know (a
+	// scope), which its strict decode would drop as corrupt. A replaced binary
+	// restarts first, as a run's reload does, and the request stays unclaimed.
+	if e.binary.replaced(e.stderr) {
+		e.requestConfigRestart()
+		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting onto the replaced binary; the request waits for the next daemon")
+		return nil
+	}
 	// Claimed under the mutex: a request waiting behind the scheduled run
 	// stays pending, as status shows it, until its own run starts.
 	if err := os.Rename(path, claimed); err != nil {
