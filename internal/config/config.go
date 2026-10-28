@@ -808,6 +808,10 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.google.com", true
 	case posting.Apple:
 		return "jobs.apple.com", true
+	case posting.DEShaw:
+		return "www.deshaw.com", true
+	case posting.Atlassian:
+		return "www.atlassian.com", true
 	case posting.Workday, posting.Eightfold, posting.Jibe:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
@@ -878,7 +882,7 @@ var jibeClient = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
 func SingleBoardATS(a posting.ATS) bool {
-	return a == posting.Amazon || a == posting.Google || a == posting.Apple
+	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian
 }
 
 func cleanText(s string) bool {
@@ -941,9 +945,9 @@ const ScrapeSuffix = "-scrape"
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.DEShaw, posting.Atlassian, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, ds, at, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)

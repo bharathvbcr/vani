@@ -17,6 +17,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/amazon"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
+	"github.com/bharathvbcr/Vani/internal/sources/atlassian"
+	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
@@ -457,5 +459,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Apple:      apple.New(d),
 		posting.Eightfold:  eightfold.New(d),
 		posting.Jibe:       jibe.New(d),
+		posting.DEShaw:     deshaw.New(d),
+		posting.Atlassian:  atlassian.New(d),
 	}
 }

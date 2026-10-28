@@ -41,7 +41,7 @@ public struct WatchlistEntry: Decodable, Equatable, Identifiable, Sendable {
     }
 
     /// Vani's ats codes by name. `pg` is a careers page the user saved from the extension.
-    static let kinds = ["gh": "Greenhouse", "lv": "Lever", "ab": "Ashby", "wd": "Workday", "pg": "Careers page"]
+    static let kinds = ["gh": "Greenhouse", "lv": "Lever", "ab": "Ashby", "wd": "Workday", "ds": "D. E. Shaw", "at": "Atlassian", "pg": "Careers page"]
 
     /// "Greenhouse", "Careers page", ...; an ats code this app does not know is shown as it came.
     public var kind: String { Self.kinds[ats] ?? ats }
