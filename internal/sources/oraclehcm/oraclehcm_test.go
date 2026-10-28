@@ -167,13 +167,31 @@ func storedAll(ids []string) func(sources.Board) []posting.Posting {
 	}
 }
 
+// storedNow is the clock of a source from withStored, so which stored
+// postings are due a re-read (srcutil.RefreshTurn) is the same on every run.
+var storedNow = time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+
 func withStored(t *testing.T, d egress.Doer, stored func(sources.Board) []posting.Posting, report func(sources.Board, Stats)) sources.Source {
 	t.Helper()
 	s, err := NewWith(d, Options{Stored: stored, Report: report})
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.(*source).now = func() time.Time { return storedNow }
 	return s
+}
+
+// dueIDs splits ids by whether their re-read turn is storedNow's day.
+func dueIDs(ids []string) (due, notDue []string) {
+	day := srcutil.Day(storedNow)
+	for _, id := range ids {
+		if srcutil.RefreshTurn(id, day) {
+			due = append(due, id)
+		} else {
+			notDue = append(notDue, id)
+		}
+	}
+	return due, notDue
 }
 
 // ---- real answers ----
@@ -304,13 +322,18 @@ func TestPagingReadsEveryPageToTheTotal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 450 || f.details != 0 {
-		t.Fatalf("%d postings and %d details, want 450 and 0 (all stored)", len(got), f.details)
+	// Every row is stored, so the only details are the day's re-reads.
+	due, _ := dueIDs(f.ids)
+	if len(due) == 0 || len(due) > 450/10 {
+		t.Fatalf("%d of 450 ids due on storedNow; pick a day with a few", len(due))
+	}
+	if len(got) != 450 || f.details != len(due) {
+		t.Fatalf("%d postings and %d details, want 450 and %d (all stored, the day's turn re-read)", len(got), f.details, len(due))
 	}
 	if fmt.Sprint(f.offsets) != "[0 200 400]" {
 		t.Errorf("offsets %v, want [0 200 400]", f.offsets)
 	}
-	if st.Listed != 450 || st.Requests != 3 || st.Reused != 450 {
+	if st.Listed != 450 || st.Requests != 3 || st.Reused != 450-len(due) || st.Refreshed != len(due) {
 		t.Errorf("stats %+v", st)
 	}
 	for i, p := range got {
@@ -905,7 +928,8 @@ func TestEmptyTitleEverywhereFailsTheBoard(t *testing.T) {
 // ---- the bounded detail step ----
 
 func TestNewWithReusesStoredAndSpendsNoRequestOnThem(t *testing.T) {
-	f := &fake{ids: ids(5)}
+	_, notDue := dueIDs(ids(400))
+	f := &fake{ids: notDue[:5]}
 	var st Stats
 	s := withStored(t, f.doer(), storedAll(f.ids[:3]), func(_ sources.Board, s Stats) { st = s })
 	got, err := list(t, s, jpmc())
@@ -920,6 +944,25 @@ func TestNewWithReusesStoredAndSpendsNoRequestOnThem(t *testing.T) {
 	}
 	if got[0].SeenAt.IsZero() {
 		t.Error("a reused posting must be marked seen")
+	}
+}
+
+// A stored posting is re-read on its turn, so an edited description is seen
+// within srcutil.RefreshDays; before, a stored posting kept its first text for
+// as long as it was listed.
+func TestStoredPostingOnItsTurnIsReread(t *testing.T) {
+	due, notDue := dueIDs(ids(400))
+	f := &fake{ids: []string{due[0], notDue[0]}}
+	var st Stats
+	got, err := list(t, withStored(t, f.doer(), storedAll(f.ids), func(_ sources.Board, s Stats) { st = s }), jpmc())
+	if err != nil || len(got) != 2 {
+		t.Fatalf("%d postings, err %v", len(got), err)
+	}
+	if f.details != 1 || st.Refreshed != 1 || st.Reused != 1 || st.Fetched != 0 {
+		t.Errorf("%d detail requests, stats %+v; want the due one re-read, the other reused", f.details, st)
+	}
+	if got[0].Title != "Role "+due[0] || got[1].Title != "stored "+notDue[0] {
+		t.Errorf("titles %q, %q: the re-read one takes the detail's text, the other keeps its stored text", got[0].Title, got[1].Title)
 	}
 }
 

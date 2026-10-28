@@ -46,8 +46,9 @@
 //
 // The listing carries one sentence of each job (ShortDescriptionStr), so a
 // posting costs one detail request. A source from NewWith reuses the postings
-// an earlier run stored and spends at most MaxDetails detail requests per board
-// per run; a source from New fails a board that needs more.
+// an earlier run stored (re-reading each on its turn, once every
+// srcutil.RefreshDays days) and spends at most MaxDetails detail requests per
+// board per run; a source from New fails a board that needs more.
 package oraclehcm
 
 import (
@@ -149,10 +150,6 @@ func (i *reqID) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// maxGone is how many of n listed postings may come back gone before the board
-// fails: a tenth, at least one (workday's bound).
-func maxGone(n int) int { return max(1, n/10) }
-
 // shortfall is how many rows of a counted query may be missing before the
 // listing is refused: a hundredth, at least one (workday's bound).
 func shortfall(count int) int { return max(1, count/100) }
@@ -183,14 +180,15 @@ func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
 type Options struct {
 	// Stored returns the postings an earlier run stored for b: every record
 	// under b.KeyPrefix(), whatever its status. A listed row whose key has a
-	// stored posting is returned as stored, with no detail request. Required.
+	// stored posting is returned as stored, with no detail request, except on
+	// its turn to be re-read. Required.
 	Stored func(b sources.Board) []posting.Posting
 	// Report, when set, receives each board's counts, a failed board's too.
 	Report func(sources.Board, Stats)
 }
 
 // Stats counts what one List did. Every listed row is counted once, in
-// Reused, Fetched, Deferred or Gone.
+// Reused, Fetched, Refreshed, Deferred or Gone.
 type Stats struct {
 	Listed   int `json:"listed"`
 	Requests int `json:"requests"` // listing requests, every term's
@@ -199,8 +197,10 @@ type Stats struct {
 	Deleted int `json:"deleted,omitempty"`
 	// Reused rows were returned as stored, with no request.
 	Reused int `json:"reused"`
-	// Fetched rows were new and got a detail request.
-	Fetched int `json:"fetched"`
+	// Fetched rows were new and got a detail request; Refreshed rows were
+	// stored and were re-read on their turn.
+	Fetched   int `json:"fetched"`
+	Refreshed int `json:"refreshed,omitempty"`
 	// Deferred rows were new but past MaxDetails: they are fetched on a later
 	// run. Not being stored, their absence ages nothing.
 	Deferred int `json:"deferred,omitempty"`
@@ -209,9 +209,8 @@ type Stats struct {
 }
 
 // NewWith returns the Oracle HCM source with the bounded detail step: stored
-// postings are reused and at most MaxDetails detail requests go out per board
-// per run. Unlike workday's, a stored posting is never re-read: its text is
-// as it was when first fetched (see docs/FOLLOWUPS.md).
+// postings are reused (a share of them re-read each run, as workday's are) and
+// at most MaxDetails detail requests go out per board per run.
 func NewWith(d egress.Doer, o Options) (sources.Source, error) {
 	if o.Stored == nil {
 		return nil, errors.New("oraclehcm: the bounded detail step needs the stored postings (Options.Stored)")
@@ -361,16 +360,12 @@ func boardCompany(b sources.Board, tenant string) string {
 	return tenant
 }
 
-// fetch is one row that gets a detail request.
-type fetch struct {
-	index int
-	row   row
-}
-
 // details turns listed rows into postings. Without Options every row is
-// fetched, and a board needing more than MaxDetails fails. With Options, a row
-// whose posting is stored is reused, new rows are fetched up to MaxDetails and
-// the rest are deferred. Results keep listing order.
+// fetched, and a board needing more than MaxDetails fails. With Options, the
+// rows are planned by srcutil.PlanDetails: a row whose posting is stored is
+// reused except on its turn to be re-read; new rows are fetched first, then the
+// re-reads, up to MaxDetails, and the new rows past it are deferred. Results
+// keep listing order.
 func (s *source) details(ctx context.Context, b sources.Board, t target, rows []row, st *Stats) ([]posting.Posting, error) {
 	seen := s.now()
 	stored := map[posting.Key]posting.Posting{}
@@ -379,54 +374,60 @@ func (s *source) details(ctx context.Context, b sources.Board, t target, rows []
 			stored[p.Key] = p
 		}
 	}
-	slot := make([]*posting.Posting, len(rows))
-	var fresh []fetch
+	keys := make([]posting.Key, len(rows))
+	plan := make([]srcutil.DetailRow, len(rows))
 	for i, r := range rows {
 		key, err := posting.OracleHCMKey(t.tenant, t.site, r.ID.String())
 		if err != nil {
 			return nil, err
 		}
-		if p, ok := stored[key]; ok {
-			p.SeenAt = seen
-			slot[i] = &p
-			st.Reused++
-			continue
-		}
-		fresh = append(fresh, fetch{i, r})
+		keys[i] = key
+		_, ok := stored[key]
+		plan[i] = srcutil.DetailRow{ID: r.ID.String(), Stored: ok}
 	}
-	if s.opt == nil && len(fresh) > MaxDetails {
+	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), MaxDetails)
+	if s.opt == nil && pl.Deferred > 0 {
 		// Without stored postings a deferred row cannot be told from a stored
 		// one, and leaving out a stored one would age it as absent.
 		return nil, fmt.Errorf("%w: the board lists %d postings and each costs a detail request, over the %d limit; set the board's search to narrow it",
-			srcutil.ErrTooManyPostings, len(fresh), MaxDetails)
+			srcutil.ErrTooManyPostings, pl.New+pl.Deferred, MaxDetails)
 	}
-	if len(fresh) > MaxDetails {
-		st.Deferred = len(fresh) - MaxDetails
-		fresh = fresh[:MaxDetails]
+	st.Deferred = pl.Deferred
+	slot := make([]*posting.Posting, len(rows))
+	for _, i := range pl.Reuse {
+		p := stored[keys[i]]
+		p.SeenAt = seen
+		slot[i] = &p
+		st.Reused++
 	}
-	allowed := maxGone(len(fresh))
-	for _, f := range fresh {
+	allowed := srcutil.MaxGone(len(pl.Fetch))
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, err := s.detail(ctx, b, t, f.row, seen)
+		r := rows[i]
+		p, err := s.detail(ctx, b, t, r, seen)
 		if errors.Is(err, errDetailGone) {
 			// The posting closed between the listing and its detail; leaving it
 			// out is the truth. Many at once is the detail endpoint failing, not
 			// postings closing, and would empty a healthy board. With every other
 			// row reused, one new posting gone is only that posting.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(fresh) && st.Reused == 0) {
-				return nil, fmt.Errorf("%d of %d posting details are gone; the detail endpoint is not answering", st.Gone, len(fresh))
+			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
+				return nil, fmt.Errorf("%d of %d posting details are gone; the detail endpoint is not answering", st.Gone, len(pl.Fetch))
 			}
 			continue
 		}
 		if err != nil {
 			// A partial listing would make the reconciler age healthy postings
 			// as absent, so one bad posting fails the whole board.
-			return nil, fmt.Errorf("posting %s: %w", f.row.ID, err)
+			return nil, fmt.Errorf("posting %s: %w", r.ID, err)
 		}
-		st.Fetched++
-		slot[f.index] = &p
+		if n >= pl.New {
+			st.Refreshed++
+		} else {
+			st.Fetched++
+		}
+		slot[i] = &p
 	}
 	out := make([]posting.Posting, 0, len(rows))
 	for _, p := range slot {
