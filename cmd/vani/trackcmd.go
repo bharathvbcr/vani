@@ -44,8 +44,26 @@ func trackArg(flags *flag.FlagSet, name string, args []string) (string, error) {
 	return id, nil
 }
 
+// trackListReply is `vani track list --json`. A track file that could not be
+// read is listed with its error, and the reply then carries the failure too.
+type trackListReply struct {
+	Dir     string           `json:"dir"`
+	Current string           `json:"current"`
+	Tracks  []trackListEntry `json:"tracks"`
+	failure
+}
+
+type trackListEntry struct {
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Current bool   `json:"current"`
+	Error   string `json:"error,omitempty"`
+}
+
 func (e *env) trackList(args []string) error {
-	if err := parse(e.newFlags("track list"), args); err != nil {
+	fs := e.newFlags("track list")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
+	if err := parse(fs, args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
@@ -56,6 +74,25 @@ func (e *env) trackList(args []string) error {
 	es, err := track.List(dir)
 	if err != nil {
 		return fmt.Errorf("%w (put track files in %s, or set tracks_dir; see docs/TRACKS.md)", err, dir)
+	}
+	if *asJSON {
+		out := &trackListReply{Dir: dir, Current: cfg.Track, Tracks: []trackListEntry{}}
+		bad := 0
+		for _, en := range es {
+			row := trackListEntry{ID: en.ID, Current: en.ID == cfg.Track}
+			if en.Err != nil {
+				bad++
+				row.Error = en.Err.Error()
+			} else {
+				row.Label = en.Decider.Label
+			}
+			out.Tracks = append(out.Tracks, row)
+		}
+		var err error
+		if bad > 0 {
+			err = fmt.Errorf("%d track file(s) in %s could not be read", bad, dir)
+		}
+		return e.reply(true, out, err, nil)
 	}
 	if len(es) == 0 {
 		fmt.Fprintf(e.stdout, "no tracks in %s\n", dir)
@@ -107,8 +144,43 @@ func (e *env) checked(cfg config.Config, id string) (d track.Decider, probs, not
 	return d, track.Check(d, words, bank), notRun, nil
 }
 
+// trackCheck is a track's check in JSON: ok only when every check ran and
+// found nothing, as problemsErr prints it.
+type trackCheck struct {
+	OK       bool     `json:"ok"`
+	Problems []string `json:"problems"`
+	NotRun   []string `json:"not_run"`
+}
+
+func checkOf(probs, notRun []string) trackCheck {
+	return trackCheck{OK: len(probs) == 0 && len(notRun) == 0, Problems: nonNil(probs), NotRun: nonNil(notRun)}
+}
+
+// checkErr is the error problemsErr returns, without the printing.
+func checkErr(probs, notRun []string) error {
+	return problemsErr(io.Discard, probs, notRun)
+}
+
+// nonNil is s, or an empty slice for nil, so JSON says [] rather than null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
+// trackShowReply is `vani track show --json`: the track and its check; a check
+// that failed or could not run carries the failure.
+type trackShowReply struct {
+	Track track.Decider `json:"track"`
+	Check trackCheck    `json:"check"`
+	failure
+}
+
 func (e *env) trackShow(args []string) error {
-	id, err := trackArg(e.newFlags("track show"), "show", args)
+	fs := e.newFlags("track show")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
+	id, err := trackArg(fs, "show", args)
 	if err != nil {
 		return err
 	}
@@ -119,6 +191,9 @@ func (e *env) trackShow(args []string) error {
 	d, probs, notRun, err := e.checked(cfg, id)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		return e.reply(true, &trackShowReply{Track: d, Check: checkOf(probs, notRun)}, checkErr(probs, notRun), nil)
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "%s: %s\n", d.ID, d.Label)

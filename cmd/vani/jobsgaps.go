@@ -90,7 +90,7 @@ func (e *env) jobsGapsCmd(args []string) error {
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		return nil
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %s, %d with a DevPrism gap analysis\n", oneLine(out.View, 40), plural(out.Roles, "role"), out.WithMissing)
 		switch {
 		case out.Roles > 0 && !out.TargetKnown && out.WithMissing == 0:

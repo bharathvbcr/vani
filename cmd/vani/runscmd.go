@@ -325,7 +325,7 @@ func (e *env) runsList(args []string) error {
 	}
 	// ids sort in time order; the newest first, as the history lists them.
 	sortRows(out.Runs)
-	return e.jobsReply(asJSON, out, nil, func() {
+	return e.reply(asJSON, out, nil, func() {
 		if len(out.Runs) == 0 && len(out.Problems) == 0 {
 			fmt.Fprintln(e.stdout, "no run has been recorded yet")
 			return
@@ -371,10 +371,10 @@ func (e *env) runsShow(args []string) error {
 	}
 	ref, err := e.findRun(id)
 	if err != nil {
-		return e.jobsReply(asJSON, nil, err, nil)
+		return e.reply(asJSON, nil, err, nil)
 	}
 	at := now()
-	return e.jobsReply(asJSON, runShowJSON{Version: runsVersion, ID: ref.ID, Source: ref.Source, Path: ref.Path, State: runState(ref.Rec, at), Record: ref.Rec}, nil, func() {
+	return e.reply(asJSON, runShowJSON{Version: runsVersion, ID: ref.ID, Source: ref.Source, Path: ref.Path, State: runState(ref.Rec, at), Record: ref.Rec}, nil, func() {
 		fmt.Fprint(e.stdout, e.runReportOf(ref, at, true).Text)
 	})
 }
@@ -400,10 +400,10 @@ func (e *env) runsFailures(args []string) error {
 	}
 	ref, err := e.findRun(id)
 	if err != nil {
-		return e.jobsReply(asJSON, nil, err, nil)
+		return e.reply(asJSON, nil, err, nil)
 	}
 	rep := e.runReportOf(ref, now(), false)
-	return e.jobsReply(asJSON, runFailuresJSON{Version: runsVersion, ID: ref.ID, Source: ref.Source, HasFailures: rep.HasFailures,
+	return e.reply(asJSON, runFailuresJSON{Version: runsVersion, ID: ref.ID, Source: ref.Source, HasFailures: rep.HasFailures,
 		Text: rep.Text, CutLines: rep.CutLines, ShortenedLines: rep.ShortenedLines}, nil, func() {
 		fmt.Fprint(e.stdout, rep.Text)
 	})

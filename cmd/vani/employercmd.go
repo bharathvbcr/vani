@@ -83,8 +83,21 @@ func (e *env) employerImport(args []string) error {
 	return nil
 }
 
+// employerLookupReply is `vani employer lookup --json`: the badge's parts and
+// its text. Confident is whether the match is strong enough to boost rank.
+type employerLookupReply struct {
+	Company     string   `json:"company"`
+	MatchedName string   `json:"matched_name"`
+	Confidence  string   `json:"confidence"`
+	Confident   bool     `json:"confident"`
+	Attributes  []string `json:"attributes"`
+	Kinds       []string `json:"kinds"`
+	Badge       string   `json:"badge"`
+}
+
 func (e *env) employerLookup(args []string) error {
 	fs := e.newFlags("employer lookup")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -94,14 +107,17 @@ func (e *env) employerLookup(args []string) error {
 	x, err := loadEmployerView(e.stateDir, func(format string, a ...any) {
 		fmt.Fprintf(e.stderr, "vani: "+format+"\n", a...)
 	})
+	if err == nil && x == nil {
+		err = errors.New("no employer lists imported yet (vani employer import <file.csv>; see docs/EMPLOYER.md)")
+	}
 	if err != nil {
-		return err
+		return e.reply(*asJSON, nil, err, nil)
 	}
-	if x == nil {
-		return errors.New("no employer lists imported yet (vani employer import <file.csv>; see docs/EMPLOYER.md)")
-	}
-	fmt.Fprintln(e.stdout, x.Lookup(strings.Join(fs.Args(), " ")).String())
-	return nil
+	company := strings.Join(fs.Args(), " ")
+	b := x.Lookup(company)
+	out := employerLookupReply{Company: company, MatchedName: b.MatchedName, Confidence: b.Confidence,
+		Confident: b.Confident(), Attributes: nonNil(b.Attributes), Kinds: nonNil(b.Kinds), Badge: b.String()}
+	return e.reply(*asJSON, out, nil, func() { fmt.Fprintln(e.stdout, b.String()) })
 }
 
 // employerLookup adapts the index to pipeline.EmployerLookup. Only a

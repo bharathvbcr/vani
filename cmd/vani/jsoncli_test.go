@@ -152,6 +152,10 @@ func TestGlobalJSONIsTheCommandsOwnFlag(t *testing.T) {
 	if alias, _ := x.mustCode(t, exitOK, "--json", "jobs", "categories"); alias != folders {
 		t.Errorf("jobs categories under --json:\n got %s\nwant %s", alias, folders)
 	}
+	v, _ := x.mustCode(t, exitOK, "--json", "version")
+	if alias, _ := x.mustCode(t, exitOK, "--json", "--version"); alias != v {
+		t.Errorf("--version under --json:\n got %s\nwant %s", alias, v)
+	}
 }
 
 // emptyLedger gives stateDir a ledger with no events.
@@ -183,7 +187,6 @@ func TestGlobalJSONFailuresAreOneEnvelope(t *testing.T) {
 		{[]string{"--json", "daemon"}, exitUsage, codeUnsupported, "foreground"},
 		{[]string{"--json", "launchd", "plist"}, exitUsage, codeUnsupported, "XML"},
 		{[]string{"--json", "init"}, exitUsage, codeUnsupported, "no JSON output yet"},
-		{[]string{"--json", "--version"}, exitUsage, codeUnsupported, "vani version"},
 		{[]string{"--json", "jobs", "list", "--limit", "0"}, exitUsage, codeUsage, "--limit"},
 		{[]string{"--json", "jobs", "list", "--bogus"}, exitUsage, codeUsage, "bogus"},
 		{[]string{"--json", "watchlist", "list"}, exitRuntime, codeRuntime, "config"},

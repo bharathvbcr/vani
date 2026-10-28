@@ -49,9 +49,9 @@ type jsonLeaf struct {
 // holds it to usageTemplate and TestJSONLeavesMatchFlags to the flags each
 // command declares, so it cannot drift from either.
 var jsonLeaves = []jsonLeaf{
-	{"version", jsonText, ""},
+	{"version", jsonFlag, ""},
 	{"init", jsonText, ""},
-	{"config check", jsonText, ""},
+	{"config check", jsonFlag, ""},
 	{"config motivation", jsonAlways, ""},
 	{"config exclude", jsonAlways, ""},
 	{"watchlist list", jsonFlag, ""},
@@ -77,18 +77,18 @@ var jsonLeaves = []jsonLeaf{
 	{"relevance", jsonText, ""},
 	{"rankfit", jsonText, ""},
 	{"lca import", jsonText, ""},
-	{"lca lookup", jsonText, ""},
+	{"lca lookup", jsonFlag, ""},
 	{"employer import", jsonText, ""},
-	{"employer lookup", jsonText, ""},
-	{"track list", jsonText, ""},
-	{"track show", jsonText, ""},
+	{"employer lookup", jsonFlag, ""},
+	{"track list", jsonFlag, ""},
+	{"track show", jsonFlag, ""},
 	{"track use", jsonText, ""},
 	{"kb sync", jsonText, ""},
 	{"reasons draft", jsonText, ""},
 	{"reasons import", jsonText, ""},
-	{"reasons check", jsonText, ""},
+	{"reasons check", jsonFlag, ""},
 	{"kbmatch run", jsonText, ""},
-	{"kbmatch status", jsonText, ""},
+	{"kbmatch status", jsonFlag, ""},
 	{"teacher", jsonText, ""},
 	{"impressions log", jsonFlag, ""},
 	{"labels", jsonFlag, ""},
@@ -117,7 +117,7 @@ var jsonLeaves = []jsonLeaf{
 	{"prefilter", jsonText, ""},
 	{"bench local", jsonFlag, ""},
 	{"semantic warm", jsonText, ""},
-	{"semantic status", jsonText, ""},
+	{"semantic status", jsonFlag, ""},
 	{"answers similar", jsonAlways, ""},
 	{"draft", jsonAlways, ""},
 	{"suggest", jsonAlways, ""},
@@ -176,6 +176,46 @@ func (e *env) jsonFlag(fs *flag.FlagSet, usage string) *bool {
 type errorReply struct {
 	Error string `json:"error"`
 	Code  string `json:"code"`
+}
+
+// failure is the envelope inside a reply that keeps its data when the command
+// fails: a list with unreadable entries, a check that found problems. A reply
+// struct embeds it and is passed to reply as a pointer.
+type failure struct {
+	Error string `json:"error,omitempty"`
+	Code  string `json:"code,omitempty"`
+}
+
+func (f *failure) fail(err error) { f.Error, f.Code = err.Error(), codeRuntime }
+
+// reply writes v as JSON and returns the exit error. When err is set it writes
+// v with its failure filled in if v embeds one, else {"error","code"} alone. A
+// usage error stays a usage error (runEnv decides whether it is JSON). Without
+// asJSON it calls text when err is nil and returns err.
+func (e *env) reply(asJSON bool, v any, err error, text func()) error {
+	if !asJSON {
+		if err == nil {
+			text()
+		}
+		return err
+	}
+	if err != nil {
+		if errors.As(err, new(usageError)) || errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		if f, ok := v.(interface{ fail(error) }); ok {
+			f.fail(err)
+		} else {
+			v = errorReply{err.Error(), codeRuntime}
+		}
+	}
+	if werr := writeJSON(e.stdout, v); werr != nil {
+		return werr
+	}
+	if err != nil {
+		return errAlreadyReported
+	}
+	return nil
 }
 
 // writeJSON writes v as one line of JSON, HTML characters unescaped.

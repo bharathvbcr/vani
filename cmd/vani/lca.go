@@ -101,8 +101,21 @@ func (e *env) lcaImport(args []string) error {
 	return nil
 }
 
+// lcaLookupReply is `vani lca lookup --json`: the badge's parts and its text.
+// Certified is keyed by fiscal year.
+type lcaLookupReply struct {
+	Company     string      `json:"company"`
+	MatchedName string      `json:"matched_name"`
+	Confidence  string      `json:"confidence"`
+	Certified   map[int]int `json:"certified"`
+	Total       int         `json:"total"`
+	FiscalYears []int       `json:"fiscal_years"`
+	Badge       string      `json:"badge"`
+}
+
 func (e *env) lcaLookup(args []string) error {
 	fs := e.newFlags("lca lookup")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -110,14 +123,20 @@ func (e *env) lcaLookup(args []string) error {
 		return usagef("lca lookup: expected a company name")
 	}
 	x, err := loadLCA(e.stateDir)
+	if err == nil && x == nil {
+		err = errors.New("no LCA data imported yet (vani lca import <file.csv>)")
+	}
 	if err != nil {
-		return err
+		return e.reply(*asJSON, nil, err, nil)
 	}
-	if x == nil {
-		return errors.New("no LCA data imported yet (vani lca import <file.csv>)")
+	company := strings.Join(fs.Args(), " ")
+	b := x.Lookup(company)
+	out := lcaLookupReply{Company: company, MatchedName: b.MatchedName, Confidence: b.Confidence,
+		Certified: b.Certified, Total: b.Total, FiscalYears: nonNil(b.FYs), Badge: b.String()}
+	if out.Certified == nil {
+		out.Certified = map[int]int{}
 	}
-	fmt.Fprintln(e.stdout, x.Lookup(strings.Join(fs.Args(), " ")).String())
-	return nil
+	return e.reply(*asJSON, out, nil, func() { fmt.Fprintln(e.stdout, b.String()) })
 }
 
 // lcaBadger adapts the LCA index to pipeline.Badger.

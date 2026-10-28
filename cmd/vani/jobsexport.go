@@ -120,7 +120,7 @@ func (e *env) jobsExport(args []string) error {
 			Ledger: filepath.Join(e.stateDir, "ledger"), Records: len(snap.Records)}
 		return nil
 	}()
-	err = e.jobsReply(*asJSON, reply, err, func() {
+	err = e.reply(*asJSON, reply, err, func() {
 		fmt.Fprintf(e.stdout, "exported %d of %d jobs (%s, %s order) to %s\n", reply.Rows, reply.Total, reply.View, reply.Sort, reply.Path)
 		for _, k := range reply.Missing {
 			fmt.Fprintf(e.stderr, "vani: %s is not in this selection; left out of the export\n", k)

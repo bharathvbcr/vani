@@ -137,7 +137,9 @@ func (e *env) reasonsImport(args []string) error {
 // reasonsCheck validates the catalog against the current target summary,
 // for after a hand edit.
 func (e *env) reasonsCheck(args []string) error {
-	if err := parse(e.newFlags("reasons check"), args); err != nil {
+	fs := e.newFlags("reasons check")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
+	if err := parse(fs, args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
@@ -146,20 +148,35 @@ func (e *env) reasonsCheck(args []string) error {
 	}
 	path := e.reasonsPath()
 	c, err := jdreasons.Load(path, cfg.TargetSummary)
-	if errors.Is(err, jdreasons.ErrStale) {
-		return fmt.Errorf("%s: %w; run `vani reasons draft --force`", path, err)
+	switch {
+	case errors.Is(err, jdreasons.ErrStale):
+		err = fmt.Errorf("%s: %w; run `vani reasons draft --force`", path, err)
+	case err == nil && c == nil:
+		err = fmt.Errorf("no reasons catalog at %s; run `vani reasons draft`", path)
 	}
 	if err != nil {
-		return err
+		return e.reply(*asJSON, nil, err, nil)
 	}
-	if c == nil {
-		return fmt.Errorf("no reasons catalog at %s; run `vani reasons draft`", path)
-	}
-	fmt.Fprintf(e.stdout, "ok: %s: %d fit, %d gap, %d check reasons\n", path, len(c.Fit), len(c.Gap), len(c.Check))
-	if c.DraftedBy != "" {
-		fmt.Fprintf(e.stdout, "drafted by %s\n", c.DraftedBy)
-	}
-	return nil
+	return e.reply(*asJSON, reasonsReplyOf(path, c), nil, func() {
+		fmt.Fprintf(e.stdout, "ok: %s: %d fit, %d gap, %d check reasons\n", path, len(c.Fit), len(c.Gap), len(c.Check))
+		if c.DraftedBy != "" {
+			fmt.Fprintf(e.stdout, "drafted by %s\n", c.DraftedBy)
+		}
+	})
+}
+
+// reasonsCatalogReply is what `vani reasons check|import|draft --json` say of the
+// catalog: where it is and how many reasons of each kind it holds.
+type reasonsCatalogReply struct {
+	Path      string `json:"path"`
+	Fit       int    `json:"fit"`
+	Gap       int    `json:"gap"`
+	Check     int    `json:"check"`
+	DraftedBy string `json:"drafted_by,omitempty"`
+}
+
+func reasonsReplyOf(path string, c *jdreasons.Catalog) reasonsCatalogReply {
+	return reasonsCatalogReply{Path: path, Fit: len(c.Fit), Gap: len(c.Gap), Check: len(c.Check), DraftedBy: c.DraftedBy}
 }
 
 // notes builds the digest's "why this role" picker: the OpenRouter decision

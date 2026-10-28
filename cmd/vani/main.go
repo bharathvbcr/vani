@@ -45,9 +45,9 @@ const stagesPlaceholder = "{{stages}}"
 const usageTemplate = `usage: vani <command> [flags]
 
 commands:
-  version                    print the product version ("dev" unless built by scripts/release.sh)
+  version [--json]           print the product version ("dev" unless built by scripts/release.sh)
   init                    write a default config (refuses to overwrite)
-  config check               validate the config
+  config check [--json]      validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
   config exclude [--set]     print the exclusions (titles, title_unless, companies, locations,
                              descriptions) as JSON; --set replaces them with the JSON object on
@@ -115,11 +115,13 @@ commands:
                              refuses below the thresholds and writes nothing. Use it by setting
                              rank_weights_file
   lca import FILE.csv        import a DOL LCA disclosure file (docs/LCA.md)
-  lca lookup COMPANY         show the sponsorship-history badge for a company
+  lca lookup [--json] COMPANY
+                             show the sponsorship-history badge for a company
   employer import FILE.csv   import an IRS EO BMF or IPEDS HD file (docs/EMPLOYER.md)
-  employer lookup COMPANY    show the employer-attribute badge for a company
-  track list                 list track deciders (tracks_dir, default <state dir>/tracks)
-  track show ID              show and check one track (docs/TRACKS.md)
+  employer lookup [--json] COMPANY
+                             show the employer-attribute badge for a company
+  track list [--json]        list track deciders (tracks_dir, default <state dir>/tracks)
+  track show [--json] ID     show and check one track (docs/TRACKS.md)
   track use [--dry-run] ID   copy a track's target summary, drop rules and employer
                              preferences into the config; other rules are kept
   kb sync [--dry-run | --confirm] [--replace [--keep IDS] [--delete-all-kinds]
@@ -131,13 +133,13 @@ commands:
                              (spends from the daily llm budget; never overwrites without --force)
   reasons import [--force] FILE
                              check and install a catalog drafted elsewhere ({drafted_by?,fit,gap,check})
-  reasons check              validate the catalog against the current target summary
+  reasons check [--json]     validate the catalog against the current target summary
   kbmatch run [--top N] [--dry-run]
                              ask the llm whether the top postings' work is the work in your
                              knowledge base (spends from the daily llm budget; sends each posting,
                              the target summary and a bounded digest of the bank to the provider;
                              the answers only order and explain)
-  kbmatch status             how many answers are kept and current
+  kbmatch status [--json]    how many answers are kept and current
   teacher [--dry-run] [--budget-usd N] [--model M] [--of BACKEND] [--concurrency N] [--max N]
                              have the llm tier re-read the postings the decision model triaged,
                              with the same question, and keep its readings (teacher_readings.jsonl)
@@ -231,7 +233,7 @@ commands:
                              (Metal only, no API key, never writes the ledger)
   semantic warm [--max N]    embed the freshest postings against the knowledge base (needs a
                              -tags tessl build, semantic.snapshot and kb.bank)
-  semantic status            the semantic build, config, profile size, cached scores and model
+  semantic status [--json]   the semantic build, config, profile size, cached scores and model
   answers similar [--json]   which question wordings read alike, by embedding: {"texts":[...],
                              "min_cos"?} on stdin, {"available","pairs":[{a,b,cos,tier}]} on
                              stdout; wordings only, never answer values (-h lists the bounds)
@@ -587,15 +589,22 @@ func (e *env) cmdConfig(args []string) error {
 	if len(args) == 0 || args[0] != "check" {
 		return usagef("config: expected subcommand \"check\", \"motivation\" or \"exclude\"")
 	}
-	if err := parse(e.newFlags("config check"), args[1:]); err != nil {
+	fs := e.newFlags("config check")
+	asJSON := e.jsonFlag(fs, `{"config","boards","allowed_hosts"} on stdout`)
+	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(e.stdout, "ok: %s (%d boards, %d allowed hosts)\n", e.configPath, len(cfg.Watchlist), len(cfg.AllowedHosts))
-	return nil
+	return e.reply(*asJSON, configCheckReply{e.configPath, len(cfg.Watchlist), len(cfg.AllowedHosts)}, err, func() {
+		fmt.Fprintf(e.stdout, "ok: %s (%d boards, %d allowed hosts)\n", e.configPath, len(cfg.Watchlist), len(cfg.AllowedHosts))
+	})
+}
+
+// configCheckReply is `vani config check --json`: the config is valid.
+type configCheckReply struct {
+	Config       string `json:"config"`
+	Boards       int    `json:"boards"`
+	AllowedHosts int    `json:"allowed_hosts"`
 }
 
 // daemonClock drives `vani daemon`'s schedule. Tests replace it.

@@ -123,7 +123,7 @@ func (e *env) jobsFind(args []string) error {
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		return nil
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		switch {
 		case out.Job != nil:
 			fmt.Fprintf(e.stdout, "%s: %s at %s (%s)\n", out.Job.Key, out.Job.Title, out.Job.Company, orDash(string(out.Job.Mark)))

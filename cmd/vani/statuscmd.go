@@ -235,7 +235,7 @@ type decideFacet struct {
 func (e *env) statusReport() error {
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancel()
-	return e.jobsReply(true, e.buildStatus(ctx), nil, nil)
+	return e.reply(true, e.buildStatus(ctx), nil, nil)
 }
 
 // buildStatus gathers every facet. It changes no state: the one lock it takes

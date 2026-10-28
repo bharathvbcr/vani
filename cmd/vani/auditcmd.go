@@ -204,7 +204,7 @@ func (e *env) cmdAudit(args []string) error {
 				out.Strata = append(out.Strata, auditStratumJSON{Stratum: st.Source, Pool: st.Pool, Taken: st.Taken})
 			}
 		}
-		return e.jobsReply(true, out, err, nil)
+		return e.reply(true, out, err, nil)
 	}
 	if err != nil {
 		return err
@@ -286,7 +286,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		return err
 	}
 	reply, err := e.answerAudit(posting.Key(*key), *verdict, *source, *p, given["source"], *seed, *scored, *dropped, *labels)
-	return e.jobsReply(*asJSON, reply, err, func() {
+	return e.reply(*asJSON, reply, err, func() {
 		fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
 	})
 }

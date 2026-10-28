@@ -113,7 +113,7 @@ func (e *env) cmdImpressions(args []string) error {
 		return usagef("impressions log: --slate is required (it is what makes a refresh count once)")
 	}
 	n, err := e.logImpressions(*surface, *slate, *section)
-	return e.jobsReply(*asJSON, struct {
+	return e.reply(*asJSON, struct {
 		Logged int `json:"logged"`
 	}{n}, err, func() { fmt.Fprintf(e.stdout, "logged %d impression(s)\n", n) })
 }

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"errors"
-	"flag"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -64,29 +62,6 @@ func (e *env) cmdJobs(args []string) error {
 	return usagef("jobs: unknown subcommand %q", args[0])
 }
 
-// jobsReply writes v as JSON, or {"error","code"} when err is set, and returns the
-// exit error. Usage errors stay usage errors.
-func (e *env) jobsReply(asJSON bool, v any, err error, text func()) error {
-	if !asJSON {
-		if err == nil {
-			text()
-		}
-		return err
-	}
-	if err != nil {
-		if errors.As(err, new(usageError)) || errors.Is(err, flag.ErrHelp) {
-			return err
-		}
-		v = errorReply{err.Error(), codeRuntime}
-	}
-	if werr := writeJSON(e.stdout, v); werr != nil {
-		return werr
-	}
-	if err != nil {
-		return errAlreadyReported
-	}
-	return nil
-}
 
 func (e *env) jobsList(args []string) error {
 	fs := e.newFlags("jobs list")
@@ -120,7 +95,7 @@ func (e *env) jobsList(args []string) error {
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
 		return nil
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		for _, j := range out.Jobs {
 			rank := "  -"
 			if j.Rank != nil {
@@ -189,7 +164,7 @@ func (e *env) jobsStatsCmd(args []string) error {
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
 		return nil
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %d jobs\n", out.View, out.Total)
 		e.printPending(out.Pending, out.Query)
 		fmt.Fprint(e.stdout, "role fit:")
@@ -285,7 +260,7 @@ func (e *env) jobsFolders(args []string) error {
 		}
 		return nil
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %d roles across category folders\n", out.View, out.Total)
 		for _, f := range out.Folders {
 			fmt.Fprintf(e.stdout, "  %-30s  %-28s  %d\n", f.Category, f.Label, f.Count)
@@ -318,7 +293,7 @@ func (e *env) jobsShow(args []string) error {
 		out = j
 		return nil
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s at %s\n%s\n", out.Title, out.Company, out.URL)
 		for _, line := range []string{out.ApplyFormNote, jobview.SponsorshipLine(out)} {
 			if line != "" {
@@ -387,7 +362,7 @@ func (e *env) jobsMark(args []string) error {
 			return marks.SetMark(dir, k, mark, now())
 		})
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %s\n", out.Key, orDash(markWord(out)))
 	})
 }
@@ -408,7 +383,7 @@ func (e *env) jobsNote(args []string) error {
 			return marks.SetNote(dir, k, note, now())
 		})
 	}()
-	return e.jobsReply(*asJSON, out, err, func() {
+	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: note %s\n", out.Key, map[bool]string{true: "saved", false: "cleared"}[out.Note != ""])
 	})
 }

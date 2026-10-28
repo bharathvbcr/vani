@@ -455,21 +455,47 @@ func (e *env) kbmatchAsk(ctx context.Context, j kbmatch.Judge, st *kbmatch.Store
 	return nil
 }
 
+// kbmatchStatusReply is `vani kbmatch status --json`. Current counts the
+// answers that still hold for a listed posting, by answer value; Stale is the
+// rest of what is kept.
+type kbmatchStatusReply struct {
+	Kept         int            `json:"kept"`
+	Current      int            `json:"current"`
+	ByValue      map[string]int `json:"by_value"`
+	Stale        int            `json:"stale"`
+	DigestSHA256 string         `json:"digest_sha256"`
+	DigestBytes  int            `json:"digest_bytes"`
+}
+
 func (e *env) kbmatchStatus(args []string) error {
-	if err := parse(e.newFlags("kbmatch status"), args); err != nil {
+	fs := e.newFlags("kbmatch status")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
+	if err := parse(fs, args); err != nil {
 		return err
 	}
+	out, err := e.kbmatchStatusOf()
+	return e.reply(*asJSON, out, err, func() {
+		var parts []string
+		for _, o := range jobinsight.KBMatchOrder {
+			parts = append(parts, fmt.Sprintf("%s %d", o, out.ByValue[o]))
+		}
+		fmt.Fprintf(e.stdout, "kbmatch: %d answers kept, %d current (%s), %d out of date or for postings no longer listed\n", out.Kept, out.Current, strings.Join(parts, ", "), out.Stale)
+		fmt.Fprintf(e.stdout, "knowledge-base digest %s (%d bytes)\n", out.DigestSHA256[:12], out.DigestBytes)
+	})
+}
+
+func (e *env) kbmatchStatusOf() (kbmatchStatusReply, error) {
 	_, _, digest, summary, err := e.kbmatchSetup()
 	if err != nil {
-		return err
+		return kbmatchStatusReply{}, err
 	}
 	st, err := kbmatch.OpenStore(e.kbmatchPath())
 	if err != nil {
-		return err
+		return kbmatchStatusReply{}, err
 	}
 	snap, m, err := e.jobsState()
 	if err != nil {
-		return err
+		return kbmatchStatusReply{}, err
 	}
 	var current int
 	byValue := map[string]int{}
@@ -482,14 +508,11 @@ func (e *env) kbmatchStatus(args []string) error {
 			byValue[en.Value]++
 		}
 	}
-	stale := st.Len() - current
-	var parts []string
 	for _, o := range jobinsight.KBMatchOrder {
-		parts = append(parts, fmt.Sprintf("%s %d", o, byValue[o]))
+		byValue[o] += 0 // every value appears, a zero included
 	}
-	fmt.Fprintf(e.stdout, "kbmatch: %d answers kept, %d current (%s), %d out of date or for postings no longer listed\n", st.Len(), current, strings.Join(parts, ", "), stale)
-	fmt.Fprintf(e.stdout, "knowledge-base digest %s (%d bytes)\n", digest.SHA256[:12], len(digest.Text))
-	return nil
+	return kbmatchStatusReply{Kept: st.Len(), Current: current, ByValue: byValue, Stale: st.Len() - current,
+		DigestSHA256: digest.SHA256, DigestBytes: len(digest.Text)}, nil
 }
 
 // kbmatchLookup is jobinsight.RankContext.KBMatch over the store; nil when no

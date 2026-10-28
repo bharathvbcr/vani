@@ -369,7 +369,7 @@ func (e *env) cmdRunRequest(args []string) error {
 		// usage error: exit 2 means "this vani is too old" to the app.
 		err = errors.New(err.Error())
 	}
-	return e.jobsReply(*asJSON, reply, err, func() {
+	return e.reply(*asJSON, reply, err, func() {
 		fmt.Fprintf(e.stdout, "asked the daemon (pid %d) for a manual run; `vani status` shows it once it starts\n", reply.DaemonPID)
 	})
 }
