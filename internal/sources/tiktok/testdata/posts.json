@@ -1,0 +1,154 @@
+{
+  "code": 0,
+  "message": "ok",
+  "error": null,
+  "data": {
+    "BaseResp": {
+      "StatusMessage": "Success",
+      "StatusCode": 0,
+      "Extra": null
+    },
+    "count": 2,
+    "job_post_list": [
+      {
+        "id": "7699309261691750661",
+        "code": "A98935",
+        "title": "Commercial Partnership Solutions Manager, Operations - Global Monetization Product and Technology",
+        "description": "The TikTok Ads Creative and Ecosystem team develops the technology behind ad creative production, interpretation, and optimization, so advertisers, creators, and partners can deliver experiences users actually want to watch.\n\nWe work on scaling creative production, understanding diverse content, and optimizing ad performance, while preserving the authentic sense of discovery that makes TikTok distinctive. The quality of those solutions directly influences user engagement, advertiser success, and the growth of the creative ecosystem.\n\nYou will shape the future of AI-powered advertising creativity, on work with impact at global scale.\n\nWe are strategic business partners who drive commercializa",
+        "requirement": "Minimum Qualifications: \n- 5+ years of experience in business strategy, publisher partner relationships, commercialization, business operations, digital advertising, management consulting, or a related field.\n- Proven ability to lead complex, cross-functional initiatives and influence stakeholders at all levels to drive strategic business outcomes without direct authority. \n- Strong business acumen and analytical skills, with experience developing go-to-market strategies, scalable business frame",
+        "recruit_type": {
+          "id": "101",
+          "name": null,
+          "en_name": "Regular",
+          "i18n_name": "Regular"
+        },
+        "job_category": {
+          "id": "6704216057269192973",
+          "name": null,
+          "en_name": "Product ops",
+          "i18n_name": "Product ops",
+          "parent": {
+            "id": "6704215882479962371",
+            "name": null,
+            "en_name": "Operations",
+            "i18n_name": "Operations",
+            "parent": null
+          }
+        },
+        "city_info": {
+          "code": "CT_94",
+          "location_type": 3,
+          "name": null,
+          "en_name": "Los Angeles",
+          "i18n_name": "Los Angeles",
+          "parent": {
+            "code": "ST_31",
+            "location_type": 2,
+            "name": null,
+            "en_name": "California",
+            "i18n_name": "California",
+            "parent": {
+              "code": "CN_6",
+              "location_type": 1,
+              "name": null,
+              "en_name": "United States of America",
+              "i18n_name": "United States of America",
+              "parent": null
+            }
+          }
+        },
+        "tag_list": null,
+        "job_subject": null,
+        "vacancies": null,
+        "department_info": null,
+        "job_post_info": {
+          "min_salary": null,
+          "max_salary": null,
+          "currency": null,
+          "required_degree": null,
+          "experience": null,
+          "sequence": null,
+          "min_level": null,
+          "max_level": null,
+          "highlight_list": null,
+          "job_post_object_value_list": null,
+          "expiry_time": null
+        },
+        "process_type": null,
+        "channel_online_status": null
+      },
+      {
+        "id": "7700932418329725237",
+        "code": "A15271A",
+        "title": "MCN Operations Project Intern (TikTok Shop VN Agency, CN Speaking) - 2027 Start - 2027 Start",
+        "description": "TikTok Shop SEA is redefining shopping by bringing discovery, entertainment, and commerce into one experience. Across Southeast Asia, we work at the intersection of technology, content, business, and operations to build a trusted, engaging e-commerce ecosystem where users, sellers, creators, and partners can connect and grow.\n\nAs the platform scales across SEA, we take on complex challenges across content, commerce, trust, and the differing needs of each local market, while driving sustainable growth in the ecosystem. You will shape the future of e-commerce in a region with sustained growth and strong long-term potential.\n\nThe Agency Support team plays a key role in enabling TikTok Shop’s ag",
+        "requirement": "Minimum Qualification(s)\n- Currently pursuing an undergraduate degree in Marketing or a related Business discipline.\n- Good understanding of user generated content.\n- Good interpersonal skills, strong logical thinking, and analytical abilities.\n- Proactive mindset with a willingness to learn and grow in the e-Commerce industry.\n\nPreferred Qualification(s)\n- Experience working in e-Commerce or social commerce is a plus.\n- Strong sense of responsibility and quick learning ability.\n\nBy submitting a",
+        "recruit_type": {
+          "id": "202",
+          "name": null,
+          "en_name": "Intern",
+          "i18n_name": "Intern"
+        },
+        "job_category": {
+          "id": "6704215882438019342",
+          "name": null,
+          "en_name": "Commerce ops",
+          "i18n_name": "Commerce ops",
+          "parent": {
+            "id": "6704215882479962371",
+            "name": null,
+            "en_name": "Operations",
+            "i18n_name": "Operations",
+            "parent": null
+          }
+        },
+        "city_info": {
+          "code": "CT_60",
+          "location_type": 3,
+          "name": null,
+          "en_name": "Ho Chi Minh City",
+          "i18n_name": "Ho Chi Minh City",
+          "parent": {
+            "code": "ST_33",
+            "location_type": 2,
+            "name": null,
+            "en_name": "Ho Chi Minh",
+            "i18n_name": "Ho Chi Minh",
+            "parent": {
+              "code": "CN_10",
+              "location_type": 1,
+              "name": null,
+              "en_name": "Vietnam",
+              "i18n_name": "Vietnam",
+              "parent": null
+            }
+          }
+        },
+        "tag_list": null,
+        "job_subject": {
+          "id": "7391494724038953254",
+          "name": null,
+          "en_name": "Project Intern",
+          "i18n_name": "Project Intern"
+        },
+        "vacancies": null,
+        "department_info": null,
+        "job_post_info": {
+          "min_salary": null,
+          "max_salary": null,
+          "currency": null,
+          "required_degree": null,
+          "experience": null,
+          "sequence": null,
+          "min_level": null,
+          "max_level": null,
+          "highlight_list": null,
+          "job_post_object_value_list": null,
+          "expiry_time": null
+        },
+        "process_type": null,
+        "channel_online_status": null
+      }
+    ]
+  }
+}

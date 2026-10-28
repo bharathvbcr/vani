@@ -35,6 +35,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/tiktok"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
@@ -554,6 +555,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Pinpoint:        pinpoint.New(d),
 		posting.BambooHR:        bamboohr.New(d),
 		posting.Personio:        personio.New(d),
+		posting.TikTok:          tiktok.New(d),
 		posting.Feed:            feed.New(d),
 	}
 }

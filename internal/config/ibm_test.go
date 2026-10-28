@@ -40,7 +40,7 @@ func TestIBMBoardHostAndTokens(t *testing.T) {
 	}
 	// Searching is allowed on ib, and the message says so.
 	b := sources.Board{ATS: posting.Greenhouse, Token: "acme", Search: "x"}
-	if err := ValidBoard(b); err == nil || !strings.Contains(err.Error(), "jb and ib only") {
+	if err := ValidBoard(b); err == nil || !strings.Contains(err.Error(), "ib and tt only") {
 		t.Errorf("search on greenhouse: %v", err)
 	}
 	if err := ValidBoard(sources.Board{ATS: "zz", Token: "x"}); err == nil || !strings.Contains(err.Error(), ", ib,") {

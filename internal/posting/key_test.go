@@ -73,6 +73,7 @@ func TestSearchSiteKeys(t *testing.T) {
 		{PinpointKey, "WorkWithUs", "559663", "pp:workwithus:559663", Pinpoint},
 		{BambooHRKey, "Sortitt", "76", "bh:sortitt:76", BambooHR},
 		{PersonioKey, "Deskbird", "2759612", "ps:deskbird:2759612", Personio},
+		{TikTokKey, "TikTok", "7680987768009754885", "tt:tiktok:7680987768009754885", TikTok},
 		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
 	} {
 		k, err := tc.mk(tc.a, tc.b)

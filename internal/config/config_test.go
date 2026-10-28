@@ -67,7 +67,7 @@ func TestValidateRules(t *testing.T) {
 		{"workday host missing from allowlist", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext", Host: "acme.wd5.myworkdayjobs.com"}}
 		}, "allowed_hosts is missing: acme.wd5.myworkdayjobs.com"},
-		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, oc, az, gg, ap, ef, jb and ib only"},
+		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, oc, az, gg, ap, ef, jb, ib and tt only"},
 		{"page http url", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Page, Token: "acme", URL: "http://acme.example/jobs", LinkPattern: "/jobs/"}}
 		}, "needs an https url"},

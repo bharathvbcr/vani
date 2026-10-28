@@ -817,6 +817,8 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 			return "", false
 		}
 		return b.Token + sources.TenantHostSuffix[b.ATS], true
+	case posting.TikTok:
+		return "api.lifeattiktok.com", true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -901,7 +903,7 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM:
+	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.TikTok:
 		return true
 	}
 	return false
@@ -911,7 +913,7 @@ func searchATS(a posting.ATS) bool {
 // board over the adapter's cap (jpmc/CX_1001 counts 7,317) fails at the first
 // page with the way out; a small tenant needs no search.
 func optionalSearchATS(a posting.ATS) bool {
-	return a == posting.Workday || a == posting.Jibe || a == posting.OracleHCM
+	return a == posting.Workday || a == posting.Jibe || a == posting.OracleHCM || a == posting.TikTok
 }
 
 // oracleHCMName matches an Oracle HCM "tenant/site" token whose parts are the
@@ -975,7 +977,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb and ib only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb, ib and tt only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -1034,9 +1036,9 @@ func ValidBoard(b sources.Board) error {
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
 		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
-		posting.Feed, posting.Page:
+		posting.TikTok, posting.Feed, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, fd, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, fd, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1142,6 +1144,10 @@ func ValidBoard(b sources.Board) error {
 		if why := sources.TenantLabelProblem(b.Token); why != "" {
 			return fmt.Errorf("board (%s) token %q %s", b.ATS, b.Token, why)
 		}
+	}
+	if b.ATS == posting.TikTok && !strings.EqualFold(b.Token, "tiktok") {
+		// The one site the adapter reads (tiktok.sites); its API host is fixed.
+		return fmt.Errorf("board (%s) token %q must be tiktok", b.ATS, b.Token)
 	}
 	if err := validSearches(b); err != nil {
 		return err
