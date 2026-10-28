@@ -12,6 +12,10 @@
 // every change keeps its time, a crashed write loses at most that one line,
 // and the history stays auditable. Writers take an exclusive flock for the
 // few milliseconds an append takes; readers take a shared one.
+//
+// What happened after applying (screening, interview, offer, rejected,
+// withdrawn) is kept in a second file under the same lock, so marks.jsonl is
+// unchanged and an Applied posting stays Applied to every reader (stages.go).
 package marks
 
 import (
@@ -126,6 +130,24 @@ type Entry struct {
 	ResumeVersion int       `json:"resume_version,omitempty"`
 	Note          string    `json:"note,omitempty"`
 	NoteAt        time.Time `json:"note_at,omitzero"`
+	// Stage, StageAt and Furthest are the post-apply stage (stages.go): set only
+	// on an Applied entry that has one, and only by Read and the writers, never
+	// by ReadMarks. MarkedAt stays the date first applied whatever the stage.
+	// StageAt is when the stage last changed; Furthest is the furthest of
+	// screening, interview and offer reached, which rejected and withdrawn leave
+	// as it was.
+	Stage    Stage     `json:"stage,omitempty"`
+	StageAt  time.Time `json:"stage_at,omitzero"`
+	Furthest Stage     `json:"furthest_stage,omitempty"`
+}
+
+// LastChange is when the owner last changed the posting's mark or stage (a
+// note does not count); zero when it has neither.
+func (e Entry) LastChange() time.Time {
+	if e.StageAt.After(e.MarkedAt) {
+		return e.StageAt
+	}
+	return e.MarkedAt
 }
 
 // MaxResumeVersion is the highest resume version a mark records
@@ -383,8 +405,29 @@ func flock(dir string, exclusive, create bool, deadline time.Time) (*os.File, er
 // land a first write in that moment.
 var afterNoLock = func() {}
 
-// Read returns every posting's marks. A store that was never written is empty.
-func Read(dir string) (map[posting.Key]Entry, error) {
+// Read returns every posting's marks, with the stage of each Applied posting
+// that has one. A store that was never written is empty. A stages.jsonl that
+// does not read cleanly fails the read, like marks.jsonl.
+func Read(dir string) (map[posting.Key]Entry, error) { return read(dir, true) }
+
+// ReadApplied returns every Applied posting's entry with its stage and no
+// note: what the digest's quiet section reads. Errors are Read's.
+func ReadApplied(dir string) (map[posting.Key]Entry, error) {
+	m, err := read(dir, true)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[posting.Key]Entry, len(m))
+	for k, e := range m {
+		if e.Mark == Applied {
+			e.Note, e.NoteAt = "", time.Time{}
+			out[k] = e
+		}
+	}
+	return out, nil
+}
+
+func read(dir string, withStages bool) (map[posting.Key]Entry, error) {
 	l, err := lock(dir, false, false)
 	if err != nil {
 		return nil, err
@@ -408,6 +451,20 @@ func Read(dir string) (map[posting.Key]Entry, error) {
 		}
 	}
 	defer l.Close()
+	m, err := loadMarks(dir)
+	if err != nil || !withStages {
+		return m, err
+	}
+	log, err := readStageLog(dir)
+	if err != nil {
+		return nil, err
+	}
+	log.join(m)
+	return m, nil
+}
+
+// loadMarks folds marks.jsonl. The caller holds the store's lock.
+func loadMarks(dir string) (map[posting.Key]Entry, error) {
 	f, err := os.Open(filepath.Join(dir, fileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return map[posting.Key]Entry{}, nil
@@ -426,10 +483,12 @@ func Read(dir string) (map[posting.Key]Entry, error) {
 }
 
 // ReadMarks returns every marked posting's mark and nothing else: notes are
-// dropped here, so a reader that must never see one (the digest) cannot. A
-// posting with only a note is absent. Errors are Read's.
+// dropped here, so a reader that must never see one (the digest) cannot, and
+// stages.jsonl is not opened, so a stage file that cannot be read does not
+// hold up a reader that needs only the marks. A posting with only a note is
+// absent. Errors are Read's.
 func ReadMarks(dir string) (map[posting.Key]Mark, error) {
-	m, err := Read(dir)
+	m, err := read(dir, false)
 	if err != nil {
 		return nil, err
 	}
@@ -501,6 +560,28 @@ func write(dir string, e event) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	// An Applied posting's stage is read before anything is written, so a
+	// stages.jsonl that cannot be read stops the write rather than failing it
+	// after the line is down. A posting with a stage history is not applied
+	// again (the date first applied stays, and an extension's "mark applied"
+	// after submit cannot undo the stage) and leaves Applied only once its stage
+	// is set back.
+	prior := r.m[e.Key]
+	if prior.Mark == Applied {
+		log, err := readStageLog(dir)
+		if err != nil {
+			return Entry{}, err
+		}
+		prior = log.stagesOf(prior)
+		if e.Mark != nil && (prior.Stage != StageNone || prior.Furthest != StageNone) {
+			switch {
+			case *e.Mark == Applied:
+				return prior, nil
+			case prior.Stage != StageNone:
+				return Entry{}, fmt.Errorf("%w: %s is at stage %s; set the stage back to applied first", ErrInvalid, truncate(string(e.Key), 80), prior.Stage)
+			}
+		}
+	}
 	good := r.good
 	if needsCompaction(r, int64(len(line))) {
 		// Closed first: Windows cannot rename over an open file.
@@ -540,6 +621,9 @@ func write(dir string, e event) (Entry, error) {
 	}
 	fold(r.m, e)
 	if out, ok := r.m[e.Key]; ok {
+		if e.Mark == nil { // a note leaves the mark, so the stage too
+			out.Stage, out.StageAt, out.Furthest = prior.Stage, prior.StageAt, prior.Furthest
+		}
 		return out, nil
 	}
 	return Entry{Key: e.Key}, nil
@@ -611,7 +695,17 @@ func Compact(dir string) error {
 	if err != nil {
 		return fmt.Errorf("marks: not compacted: %w", err)
 	}
-	return writeCompacted(path, r.m)
+	log, err := readStageLog(dir)
+	if err != nil {
+		return fmt.Errorf("marks: not compacted: %w", err)
+	}
+	if err := writeCompacted(path, r.m); err != nil {
+		return err
+	}
+	if log.lines == 0 && !log.torn {
+		return nil // no stage was ever recorded: there is no file to rewrite
+	}
+	return writeStagesCompacted(filepath.Join(dir, stagesName), log, r.m)
 }
 
 // writeCompacted replaces path with the lines that fold to m, through

@@ -413,9 +413,32 @@ func moveMarks(dir string, cs []Change, now time.Time) (int, error) {
 				return moved, fmt.Errorf("rekey: move mark %s: %w", c.Old, err)
 			}
 		}
+		// The new key had no marks (collisions refuses otherwise), so a stage
+		// there while the old key has none is the move already made, the old
+		// key's stage having been set back as the last step below.
+		if old.Mark == marks.Applied && (have.Stage != old.Stage || have.Furthest != old.Furthest) && !(old.Stage == marks.StageNone && have.Stage != marks.StageNone) {
+			// The stage history moves with the application: the furthest stage
+			// first, then the current one. A line for each is enough, and a
+			// crash between them is finished by the next run.
+			for _, s := range []marks.Stage{old.Furthest, old.Stage} {
+				if s == marks.StageNone && old.Stage != marks.StageNone {
+					continue
+				}
+				if _, err := marks.SetStage(dir, c.New, s, old.StageAt); err != nil {
+					return moved, fmt.Errorf("rekey: move stage %s: %w", c.Old, err)
+				}
+			}
+		}
 		if have.Note != old.Note && old.Note != "" {
 			if _, err := marks.SetNote(dir, c.New, old.Note, old.NoteAt); err != nil {
 				return moved, fmt.Errorf("rekey: move note %s: %w", c.Old, err)
+			}
+		}
+		if old.Stage != marks.StageNone {
+			// A posting at a stage leaves Applied only once the stage is set
+			// back, so the old key's stage is set back before its mark is cleared.
+			if _, err := marks.SetStage(dir, c.Old, marks.StageNone, now); err != nil {
+				return moved, fmt.Errorf("rekey: clear stage %s: %w", c.Old, err)
 			}
 		}
 		if old.Mark != marks.None {

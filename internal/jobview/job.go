@@ -206,6 +206,14 @@ type Job struct {
 	NoteAt      time.Time         `json:"note_at,omitzero"`
 	Description string            `json:"description,omitempty"` // `jobs show` only
 
+	// Stage, StageAt and FurthestStage are what happened after applying
+	// (internal/marks stages.go). Mark stays applied for every stage, so a
+	// reader that does not know them sees what it always saw; MarkedAt is the
+	// date first applied.
+	Stage         marks.Stage `json:"stage,omitempty"`
+	StageAt       time.Time   `json:"stage_at,omitzero"`
+	FurthestStage marks.Stage `json:"furthest_stage,omitempty"`
+
 	// Display-only insight (jobsinsight.go): freshness, scores, keywords and
 	// the note split into reasons. No engine rule reads them.
 	FreshAt        time.Time            `json:"fresh_at,omitzero"`
@@ -328,6 +336,7 @@ func ToJob(r ledger.Record, entry marks.Entry) Job {
 		Note:        entry.Note,
 		NoteAt:      entry.NoteAt,
 	}
+	j.Stage, j.StageAt, j.FurthestStage = entry.Stage, entry.StageAt, entry.Furthest
 	if j.Title == "" {
 		j.Title = "(untitled)"
 	}

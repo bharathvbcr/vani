@@ -370,6 +370,21 @@ final class JobsModel {
         }
     }
 
+    /// Set the stage of an applied job, or with nil set it back to plain applied. The job stays Applied, so
+    /// it stays in its view and selection does not move.
+    func setStage(_ key: String, _ stage: JobStage?) async {
+        let c = client()
+        let result = await BlockingWork.run { try c.stage(key, stage) }
+        switch result {
+        case let .success(j):
+            if detail?.key == key { detail = merged(j) }
+        case let .failure(err):
+            actionError = String(describing: err)
+            return
+        }
+        await refresh()
+    }
+
     /// Adds the job's company to the exclusions Settings edits, and saves them;
     /// the re-list then hides its unmarked roles, and the next run drops them.
     /// Selection moves on as it does when a mark takes a job out of the view.

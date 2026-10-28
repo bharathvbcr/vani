@@ -39,6 +39,17 @@ public enum JobMark: String, Codable, Sendable, CaseIterable {
     case saved, applied, hidden
 }
 
+/// What happened to an application after it was applied (vani's `stage`, internal/marks stages.go). The
+/// mark stays `applied` at every stage, so JobMark above never changes; the stage is beside it. Declared
+/// in the order a search moves through them, the two that end it last.
+public enum JobStage: String, Codable, Sendable, CaseIterable {
+    case screening, interview, offer, rejected, withdrawn
+
+    /// Rejected and withdrawn end the application.
+    public var isTerminal: Bool { self == .rejected || self == .withdrawn }
+    public var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+}
+
 public struct Job: Codable, Identifiable, Equatable, Sendable {
     public var key: String
     public var company: String
@@ -63,6 +74,21 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     public var postedAt: Date?
     public var mark: JobMark?
     public var markedAt: Date?
+    /// The stage of an applied job, its latest change and the furthest stage it reached (rejected and
+    /// withdrawn leave that as it was). Nil for a job with no stage, and from a vani that predates stages.
+    /// Lenient: a stage this app does not know reads as nil and never fails the list. `markedAt` stays the
+    /// date first applied.
+    public var stage: JobStage? {
+        get { stageWire?.value }
+        set { stageWire = newValue.map { Lenient($0) } }
+    }
+    public var furthestStage: JobStage? {
+        get { furthestStageWire?.value }
+        set { furthestStageWire = newValue.map { Lenient($0) } }
+    }
+    public var stageAt: Date?
+    var stageWire: Lenient<JobStage>?
+    var furthestStageWire: Lenient<JobStage>?
     public var note: String?
     public var noteAt: Date?
     public var description: String?
@@ -208,6 +234,9 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         case firstSeen = "first_seen"
         case postedAt = "posted_at"
         case markedAt = "marked_at"
+        case stageWire = "stage"
+        case furthestStageWire = "furthest_stage"
+        case stageAt = "stage_at"
         case noteAt = "note_at"
         case freshAt = "fresh_at"
         case freshSource = "fresh_src"
@@ -1249,6 +1278,11 @@ public struct JobsClient: Sendable {
     /// Set the mark, or clear it with nil.
     public func mark(_ key: String, _ mark: JobMark?) throws -> Job {
         try call(["jobs", "mark", "--json", key, mark?.rawValue ?? "clear"])
+    }
+
+    /// Set the stage of an applied job, or set it back to plain applied with nil. The mark stays applied.
+    public func stage(_ key: String, _ stage: JobStage?) throws -> Job {
+        try call(["jobs", "mark", "--json", key, stage?.rawValue ?? "unstage"])
     }
 
     /// Save the note; an empty note clears it.

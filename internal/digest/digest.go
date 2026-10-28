@@ -111,6 +111,10 @@ type Options struct {
 	// for the hand weights.
 	Weights *jobinsight.Weights
 
+	// Quiet is the marks history the "Quiet since applied" section reads; nil
+	// leaves the section out. It is not a ranking input.
+	Quiet *Quiet
+
 	// TopOpen lists this many of the best roles already digested and still
 	// open, by Relevance (fit alone, age left out), under "Top open": the
 	// "what is the best open role" answer beside the new roles' "what is new".
@@ -536,6 +540,9 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 			show(r, SectionSaved)
 		}
 		b.WriteString("\n")
+	}
+	if o.Quiet != nil {
+		writeQuiet(&b, recs, *o.Quiet, date)
 	}
 
 	b.WriteString("---\n\n")

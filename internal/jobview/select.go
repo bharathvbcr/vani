@@ -88,6 +88,10 @@ type Opts struct {
 	Open                      bool
 	HalfLife                  float64
 	More                      Filter
+
+	// Stages keeps only applied jobs at these stages (marks.StageNone is
+	// applied with no stage yet); nil takes every job.
+	Stages map[marks.Stage]bool
 }
 
 // PlaceOK applies the location options to a located job: --state and --area,
@@ -132,6 +136,9 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 			continue
 		}
 		if o.Open && j.Closed {
+			continue
+		}
+		if o.Stages != nil && (entry.Mark != marks.Applied || !o.Stages[entry.Stage]) {
 			continue
 		}
 		if o.Remote || o.States != nil || o.Areas != nil {

@@ -179,12 +179,19 @@ function readFind(r: unknown): Found {
   return { ok: true, found: true, posting: job.key, job };
 }
 
-/** The host's jobFind reply. A job already marked Applied, or a page two postings claim, is not offered. */
+/**
+ * The host's jobFind reply. A job already past applying, or a page two postings claim, is not offered. Past
+ * applying is: marked Applied, at a stage (the Jobs tab records screening to withdrawn after Applied; the host
+ * keeps the mark "applied" and adds `stage`), or carrying a mark this version does not know. Only no mark,
+ * saved and hidden are offered: Applied again would otherwise undo a later stage.
+ */
 export function parseFind(r: unknown): FindOutcome {
   const f = readFind(r);
   if (!f.ok) return f;
   if (!f.found) return { ok: true, offer: null, why: f.ambiguous ? "ambiguous" : "none" };
-  if (f.job.mark === "applied") return { ok: true, offer: null, why: "applied" };
+  const { mark, stage } = f.job;
+  const beforeApplying = mark === undefined || mark === null || mark === "" || mark === "saved" || mark === "hidden";
+  if (!beforeApplying || (stage !== undefined && stage !== null && stage !== "")) return { ok: true, offer: null, why: "applied" };
   return { ok: true, offer: { key: f.posting, company: clip(f.job.company), title: clip(f.job.title) }, why: "match" };
 }
 

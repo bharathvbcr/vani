@@ -534,6 +534,10 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	if adv != nil {
 		counts.CouldNotCheck = uncheckedCauses(adv.FailOpen)
 	}
+	// The quiet section needs the stages, which the marks above do not. A store
+	// that cannot be read holds nothing back: the section says it was not checked.
+	applied, appliedErr := marks.ReadApplied(dir)
+	opts.Quiet = &digest.Quiet{Applied: applied, Err: appliedErr}
 	path, keys, shown, err := digest.WriteShown(e.stateDir, date, recs, m, counts, opts)
 	if err != nil {
 		return published{}, err

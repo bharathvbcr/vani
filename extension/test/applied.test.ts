@@ -170,6 +170,25 @@ describe("parseFind", () => {
     expect(parseFind({ found: false, url: "x", matches: 2, ambiguous: true })).toEqual({ ok: true, why: "ambiguous", offer: null });
   });
 
+  // After submit the page offers "mark applied". A job already past applying
+  // (the Mac app's Jobs tab records screening, interview, offer, rejected and
+  // withdrawn) must never be offered it, whichever way the host says so: the
+  // current host keeps mark "applied" and adds a stage; a host that sent the
+  // stage as the mark itself must be read the same way.
+  test("a job at a later stage is never offered Applied again", () => {
+    for (const stage of ["screening", "interview", "offer", "rejected", "withdrawn"]) {
+      expect(parseFind({ ...job, job: { ...job.job, mark: "applied", stage } })).toEqual({ ok: true, why: "applied", offer: null });
+      expect(parseFind({ ...job, job: { ...job.job, stage } })).toEqual({ ok: true, why: "applied", offer: null });
+      expect(parseFind({ ...job, job: { ...job.job, mark: stage } })).toEqual({ ok: true, why: "applied", offer: null });
+    }
+    // A mark this version does not know is not "not applied": nothing is offered.
+    expect(parseFind({ ...job, job: { ...job.job, mark: "ghosted" } })).toEqual({ ok: true, why: "applied", offer: null });
+    expect(parseFind({ ...job, job: { ...job.job, mark: "hidden", stage: "" } })).toMatchObject({ ok: true, why: "match" });
+    expect(parseFind({ ...job, job: { ...job.job, mark: "" } })).toMatchObject({ ok: true, why: "match" });
+    // The resume build still finds the job, whatever its stage.
+    expect(parseFindKey({ ...job, job: { ...job.job, mark: "applied", stage: "interview" } })).toEqual({ ok: true, key: "gh:acme:1" });
+  });
+
   test("a coded error and a malformed reply are failures, not offers", () => {
     expect(parseFind({ error: "the Vani Apply Mac app isn't reachable", code: "unreachable" })).toEqual({ ok: false, error: "the Vani Apply Mac app isn't reachable", code: "unreachable" });
     for (const r of [undefined, null, "x", 3, {}, { found: "yes" }, { found: true }, { found: true, job: null },

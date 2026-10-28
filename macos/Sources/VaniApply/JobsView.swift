@@ -950,6 +950,7 @@ private struct JobMenu: View {
     var body: some View {
         Button(job.mark == .saved ? "Unsave" : "Save", systemImage: "bookmark") { act(.saved) }
         Button(job.mark == .applied ? "Unmark Applied" : "Mark Applied", systemImage: "checkmark.seal") { act(.applied) }
+        if job.mark == .applied { JobStageMenu(job: job) }
         Button(job.mark == .hidden ? "Unhide" : "Hide", systemImage: "eye.slash") { act(.hidden) }
         // Shows the cost first and spends only on confirmation; not offered for a posting no run has triaged.
         if jobs.retriage.isAvailable {
@@ -1180,6 +1181,7 @@ private struct JobDetailContent: View {
             }
             Divider()
             actions
+            if job.mark == .applied { JobStageRow(job: job) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardStyle(padding: 16)

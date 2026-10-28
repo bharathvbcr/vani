@@ -45,6 +45,7 @@ type jobsOpts struct {
 	jobview.Opts
 	fit, workMode, sponsor string     // comma lists of fixture option values, or "none"
 	state, area            string     // comma lists: USPS codes or state names; areas; "none"
+	stage                  string     // comma list of post-apply stages, or "applied" for none yet
 	more                   jobsFilter // pay, seniority, company, title, relevance (jobsfilter.go)
 	// pendingOK lets --view pending through check: only `jobs list` sets it.
 	pendingOK bool
@@ -62,6 +63,7 @@ func addSelectFlags(fs *flag.FlagSet, o *jobsOpts) {
 	fs.BoolVar(&o.OrRemote, "or-remote", false, "with --state or --area, also keep jobs the board lists as remote (remote, or in these places)")
 	fs.IntVar(&o.MaxAge, "max-age", 0, fmt.Sprintf("only jobs at most this many days old (0 = any, up to %d)", maxAgeDays))
 	fs.BoolVar(&o.Open, "open", false, "leave out roles the board no longer lists")
+	fs.StringVar(&o.stage, "stage", "", "only applied roles at these stages (comma list of "+stageNames()+"; applied = no stage yet); needs --view applied or all")
 	fs.Float64Var(&o.HalfLife, "half-life", jobinsight.DefaultScoreHalfLifeDays, "days of age that halve a job's freshness bonus in priority")
 	addFilterFlags(fs, &o.more)
 }
@@ -99,6 +101,9 @@ func (o *jobsOpts) check(cmd string, sortable bool) error {
 		return err
 	}
 	if o.Areas, err = areaSet(cmd, o.area); err != nil {
+		return err
+	}
+	if o.Stages, err = stageSet(cmd, o.stage, o.View); err != nil {
 		return err
 	}
 	switch {
@@ -218,6 +223,40 @@ func optionSet(cmd, flagName, slot, raw string) (map[string]bool, error) {
 			return nil, usagef("%s: --%s %q is not one of %s, none", cmd, flagName, v, strings.Join(opts, ", "))
 		}
 		out[v] = true
+	}
+	return out, nil
+}
+
+// stageNames lists the post-apply stages, as `jobs mark` and --stage name them.
+func stageNames() string {
+	names := make([]string, len(marks.Stages))
+	for i, s := range marks.Stages {
+		names[i] = string(s)
+	}
+	return strings.Join(names, ", ")
+}
+
+// stageSet parses --stage: "applied" is an applied role with no stage yet.
+// Stages are of applied roles, so it needs a view that lists them.
+func stageSet(cmd, raw, view string) (map[marks.Stage]bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if view != "applied" && view != "all" {
+		return nil, usagef("%s: --stage filters applied roles; use --view applied or --view all", cmd)
+	}
+	out := map[marks.Stage]bool{}
+	for _, v := range strings.Split(raw, ",") {
+		s := marks.Stage(strings.TrimSpace(v))
+		switch {
+		case s == "applied":
+			out[marks.StageNone] = true
+		case s != marks.StageNone && s.Valid():
+			out[s] = true
+		default:
+			return nil, usagef("%s: --stage %q is not one of applied, %s", cmd, v, stageNames())
+		}
 	}
 	return out, nil
 }

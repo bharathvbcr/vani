@@ -129,7 +129,7 @@ func (e *env) jobsList(args []string) error {
 			if j.Rank != nil {
 				rank = fmt.Sprintf("%3.0f", *j.Rank)
 			}
-			mark := string(j.Mark)
+			mark := markWord(j)
 			if mark == "" {
 				mark = "-"
 			}
@@ -150,7 +150,7 @@ func (e *env) jobsList(args []string) error {
 			if j.PrefilterDrop != "" {
 				flag = "  (the prefilter would drop it)"
 			}
-			fmt.Fprintf(e.stdout, "%s  %s  %s  %-7s  %s: %s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag, j.Key)
+			fmt.Fprintf(e.stdout, "%s  %s  %s  %-9s  %s: %s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag, j.Key)
 		}
 		fmt.Fprintf(e.stdout, "%s: %d of %d shown\n", out.View, out.Shown, out.Total)
 		e.printPending(out.Pending, out.Query)
@@ -358,15 +358,23 @@ func (e *env) jobsMark(args []string) error {
 	var out jobview.Job
 	err := func() error {
 		if fs.NArg() != 2 {
-			return usagef("jobs mark: expected a posting key and saved, applied, hidden or clear")
+			return usagef("jobs mark: expected a posting key and saved, applied, hidden, clear, %s or unstage", stageNames())
 		}
 		mark := marks.Mark(fs.Arg(1))
+		stage := marks.Stage(fs.Arg(1)) // a stage of an applied job; "unstage" sets it back to applied
+		isStage := stage != marks.StageNone && stage.Valid()
+		if fs.Arg(1) == "unstage" {
+			stage, isStage = marks.StageNone, true
+		}
 		if fs.Arg(1) == "clear" {
 			mark = marks.None
-		} else if mark == marks.None || !mark.Valid() {
-			return usagef("jobs mark: %q is not saved, applied, hidden or clear", fs.Arg(1))
+		} else if !isStage && (mark == marks.None || !mark.Valid()) {
+			return usagef("jobs mark: %q is not saved, applied, hidden, clear, %s or unstage", fs.Arg(1), stageNames())
 		}
 		return e.jobsWrite(fs.Arg(0), &out, func(dir string, k posting.Key) (marks.Entry, error) {
+			if isStage {
+				return marks.SetStage(dir, k, stage, now())
+			}
 			if mark == marks.Applied {
 				return e.markApplied(dir, k) // also records the resume version that was sent
 			}
@@ -374,7 +382,7 @@ func (e *env) jobsMark(args []string) error {
 		})
 	}()
 	return e.jobsReply(*asJSON, out, err, func() {
-		fmt.Fprintf(e.stdout, "%s: %s\n", out.Key, orDash(string(out.Mark)))
+		fmt.Fprintf(e.stdout, "%s: %s\n", out.Key, orDash(markWord(out)))
 	})
 }
 
@@ -537,6 +545,15 @@ func findRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool) {
 // display: unscored postings sort by how well triage said they fit. Display
 // order only; no engine rule reads it.
 var roleFitOrder = []string{"strong_fit", "partial_fit", "adjacent", "mismatch_seniority", "mismatch_domain"}
+
+// markWord is what a text listing shows for a job's mark: the stage of an
+// applied job that has one (the mark itself stays applied), else the mark.
+func markWord(j jobview.Job) string {
+	if j.Stage != marks.StageNone {
+		return string(j.Stage)
+	}
+	return string(j.Mark)
+}
 
 func orDash(s string) string {
 	if s == "" {
