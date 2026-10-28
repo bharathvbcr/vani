@@ -91,7 +91,7 @@ func TestURLAndHostStayOffOtherBoardKinds(t *testing.T) {
 	if err := ValidBoard(withURL); err == nil || !strings.Contains(err.Error(), "url applies to pg, fd and av boards") {
 		t.Errorf("url on greenhouse: %v", err)
 	}
-	if err := ValidBoard(withHost); err == nil || !strings.Contains(err.Error(), "host applies to wd, oc, ef, jb and av only") {
+	if err := ValidBoard(withHost); err == nil || !strings.Contains(err.Error(), "host applies to wd, oc, ef, jb, av and tb only") {
 		t.Errorf("host on greenhouse: %v", err)
 	}
 	if err := ValidBoard(sources.Board{ATS: "zz", Token: "x"}); err == nil || !strings.Contains(err.Error(), ", av,") {

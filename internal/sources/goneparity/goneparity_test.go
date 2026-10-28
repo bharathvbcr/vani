@@ -28,6 +28,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
+	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -287,7 +288,54 @@ func oracleFake() fake {
 }
 
 func all() []fake {
-	return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake(), avatureFake(), oracleFake()}
+	return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake(), avatureFake(), oracleFake(), talentbrewFake()}
+}
+
+// ---- talentbrew ----
+
+func talentbrewFake() fake {
+	return fake{"talentbrew", func(t *testing.T, n int, bad map[int]srctest.Reply) (sources.Source, sources.Board, *reports) {
+		rep := &reports{}
+		const host, base = "jobs.intuit.com", 102000000000
+		loc := func(i int) string {
+			return fmt.Sprintf("https://%s/job/mountain-view/role-%d/27595/%d", host, i, base+i)
+		}
+		var site strings.Builder
+		site.WriteString(`<?xml version="1.0" encoding="utf-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://` + host + `</loc></url>`)
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&site, "<url><loc>%s</loc></url>", loc(i))
+		}
+		site.WriteString("</urlset>")
+		d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+			u, _ := url.Parse(r.URL)
+			switch u.Path {
+			case "/robots.txt":
+				return ok("User-agent: *\nDisallow: /search-jobs/\n"), true
+			case "/sitemap.xml":
+				return ok(site.String()), true
+			}
+			i := 0
+			fmt.Sscan(u.Path[strings.LastIndex(u.Path, "/")+1:], &i)
+			i -= base
+			if i < 0 || i >= n {
+				return srctest.Reply{}, false
+			}
+			if rp, hit := bad[i]; hit {
+				return rp, true
+			}
+			return ok(fmt.Sprintf(`<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"R%d","datePosted":"2026-10-27",`+
+				`"description":"<p>d</p>","url":%q}</script></head></html>`, i, loc(i))), true
+		})
+		s, err := talentbrew.NewWith(d, talentbrew.Options{
+			Stored: func(sources.Board) []posting.Posting { return nil },
+			Report: func(_ sources.Board, st talentbrew.Stats) { rep.add(st.Listed, st.Gone) },
+			Wait:   noWait,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, sources.Board{ATS: posting.TalentBrew, Token: "intuit", Company: "Intuit", Host: host}, rep
+	}}
 }
 
 // ---- avature ----

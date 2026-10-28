@@ -53,6 +53,7 @@ func TestKeyPrefixForSearchSites(t *testing.T) {
 		{Board{ATS: posting.BambooHR, Token: "Sortitt"}, "bh:sortitt:"},
 		{Board{ATS: posting.Personio, Token: "Deskbird"}, "ps:deskbird:"},
 		{Board{ATS: posting.TikTok, Token: "TikTok"}, "tt:tiktok:"},
+		{Board{ATS: posting.TalentBrew, Token: "Intuit"}, "tb:intuit:"},
 		{Board{ATS: posting.Feed, Token: "Shopify"}, "fd:shopify:"},
 		{Board{ATS: posting.Workday, Token: "nvidia/Site"}, "wd:nvidia:site:"},
 		{Board{ATS: posting.OracleHCM, Token: "JPMC/CX_1001"}, "oc:jpmc:cx_1001:"},
