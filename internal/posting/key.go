@@ -63,6 +63,12 @@ func EightfoldKey(domain, id string) (Key, error) { return build(Eightfold, doma
 // token.
 func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, reqID) }
 
+// GemKey is gm:{board}:{post_id}. The post id is the last segment of the
+// post's jobs.gem.com link. Gem's ids are case-sensitive base64 and the key
+// lowercases every part, so the gem adapter refuses a listing in which two
+// ids share a key.
+func GemKey(board, postID string) (Key, error) { return build(Gem, board, postID) }
+
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
 // no trailing slash) so cosmetic link differences do not split one posting
@@ -119,7 +125,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, Page, Other:
 		return a
 	}
 	return ""
