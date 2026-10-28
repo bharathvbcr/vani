@@ -1,5 +1,10 @@
 # Vani build report — 2026-10-27
 
+> **Merged 2026-10-27 (later the same day):** the integrate clone's head `7dc8df5` was fetched as
+> branch `audit-fixes` and merged into `main` at `8ca5be6`, after the new board adapters and the
+> uncommitted Rippling/Workable/feed/export work. The text below is the run's record as written,
+> before that merge.
+
 Audit-bug backlog from `AUDIT_REPORT.md` (2026-10-26). Primary `main` is still `70fc33ec6603885f49020f7dc95504bfc23dc784`. The only dirty files there are unstaged `AUDIT_REPORT.md` and this report. No commit from this run is on primary `main`. Nothing was pushed, force-pushed, or merged.
 
 Done was not requested on any card. `gitpulse_complete_task` to `done` needs a Manvi verification record for the worktree head, and every review move in this run came back with `verification: null`. The cards below are in **review**.
