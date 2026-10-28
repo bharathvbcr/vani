@@ -214,4 +214,130 @@ describe("form audit & missed fillings", () => {
     expect(el.style.outline).toBe("3px solid #f59e0b");
     el.remove();
   });
+
+  test("characterization: a long value in a field with no limit is not a finding", () => {
+    const el = document.createElement("input");
+    el.value = "x".repeat(5000);
+    const report = auditForm([mockRef({ label: "About you" }, el)]);
+    expect(report.missedCount).toBe(0);
+    expect(report.isReadyToSubmit).toBe(true);
+  });
+});
+
+// The browser reports tooLong only for a value a person typed, so a value another tool (or this extension in an
+// earlier version) wrote past the limit passes the invalid check. The audit counts the value itself, in UTF-16 code
+// units as maxlength does, and only reads: it never changes a field.
+describe("form audit: a value over the field's character limit", () => {
+  const limited = (tag: string, limit: string | null, value: string): any => {
+    const el = document.createElement(tag);
+    if (limit !== null) el.setAttribute("maxlength", limit);
+    el.value = value;
+    return el;
+  };
+  const audit = (el: any, info: Partial<FieldInfo> = {}, widget: FieldRef["widget"] = "native") => {
+    const ref = mockRef({ label: "About you", ...info }, el);
+    ref.widget = widget;
+    return auditForm([ref]);
+  };
+
+  test("a value longer than the limit is reported, with the limit and the length", () => {
+    const el = limited("input", "5", "abcdefghij");
+    const report = audit(el);
+    expect(report.missedCount).toBe(1);
+    expect(report.isReadyToSubmit).toBe(false);
+    const m = report.missed[0]!;
+    expect(m).toMatchObject({ id: "missed-0", label: "About you", kind: "text", reason: "too_long", refIndex: 0 });
+    expect(m.description).toBe('Field "About you" holds 10 characters but allows 5. Shorten it by hand.');
+  });
+  test("it is read-only: value, attributes and style are as they were", () => {
+    const el = limited("input", "5", "abcdefghij");
+    el.style.outline = "2px solid red";
+    audit(el);
+    expect(el.value).toBe("abcdefghij");
+    expect(el.getAttribute("maxlength")).toBe("5");
+    expect(el.style).toEqual({ outline: "2px solid red" });
+  });
+  test("a value exactly at the limit, or under it, is not reported", () => {
+    expect(audit(limited("input", "5", "abcde")).missedCount).toBe(0);
+    expect(audit(limited("input", "5", "abcd")).missedCount).toBe(0);
+  });
+  test("limit 0 reports any value; an empty field is not over a limit of 0", () => {
+    expect(audit(limited("input", "0", "x")).missed[0]!.reason).toBe("too_long");
+    expect(audit(limited("input", "0", "")).missedCount).toBe(0);
+  });
+  test("no limit, a negative or a malformed one is no finding", () => {
+    for (const lim of [null, "-1", "abc", ""]) expect(audit(limited("input", lim, "x".repeat(9000))).missedCount).toBe(0);
+  });
+  test("a textarea is checked the same way", () => {
+    const over = audit(limited("textarea", "10", "x".repeat(11)), { kind: "textarea" });
+    expect(over.missed[0]).toMatchObject({ reason: "too_long", kind: "textarea" });
+    expect(audit(limited("textarea", "10", "x".repeat(10)), { kind: "textarea" }).missedCount).toBe(0);
+  });
+  test("a contenteditable has no maxlength concept and is never reported", () => {
+    const el = document.createElement("div");
+    el.setAttribute("maxlength", "3");
+    el.textContent = "a much longer answer";
+    expect(audit(el, {}, "contenteditable").missedCount).toBe(0);
+  });
+  test("a limit that changes after render is read at audit time", () => {
+    const el = limited("input", "100", "abcdef");
+    const ref = mockRef({ label: "About you" }, el);
+    expect(auditForm([ref]).missedCount).toBe(0);
+    el.setAttribute("maxlength", "3");
+    expect(auditForm([ref]).missed[0]!.reason).toBe("too_long");
+    el.setAttribute("maxlength", "6");
+    expect(auditForm([ref]).missedCount).toBe(0);
+  });
+  test("a control that exposes maxLength is read from the property", () => {
+    const el = limited("input", null, "abcdef");
+    Object.defineProperty(el, "maxLength", { value: 3, configurable: true });
+    expect(audit(el).missed[0]!.reason).toBe("too_long");
+    Object.defineProperty(el, "maxLength", { value: -1, configurable: true });
+    expect(audit(el).missedCount).toBe(0);
+  });
+  test("surrogate pairs and combining marks are counted as the browser counts them", () => {
+    const emoji = "\u{1F600}";
+    expect(audit(limited("input", "3", `a${emoji}`)).missedCount).toBe(0);
+    expect(audit(limited("input", "3", `ab${emoji}`)).missed[0]!.description).toContain("holds 4 characters but allows 3");
+    expect(audit(limited("input", "1", "é")).missed[0]!.reason).toBe("too_long");
+    expect(audit(limited("input", "1", "é")).missedCount).toBe(0);
+  });
+  test("types maxlength does not apply to are not reported", () => {
+    const num = limited("input", "2", "12345");
+    num.type = "number";
+    expect(audit(num).missedCount).toBe(0);
+    const email = limited("input", "4", "a@example.com");
+    email.type = "email";
+    expect(audit(email).missed[0]!.reason).toBe("too_long");
+  });
+  test("every field is reported alongside the audit's other findings, in the same format", () => {
+    const refs = [
+      mockRef({ label: "Full Name", required: true }, limited("input", null, "")),
+      mockRef({ label: "Bio" }, limited("textarea", "5", "abcdefghij")),
+      mockRef({ label: "Email" }, (() => { const e = limited("input", null, "x"); e.setAttribute("aria-invalid", "true"); return e; })()),
+      mockRef({ label: "Pitch" }, limited("textarea", "2", "abc")),
+    ];
+    const report = auditForm(refs);
+    expect(report.totalFields).toBe(4);
+    expect(report.missed.map(m => [m.refIndex, m.reason])).toEqual([[0, "empty_required"], [1, "too_long"], [2, "invalid"], [3, "too_long"]]);
+    expect(report.missed.map(m => m.id)).toEqual(["missed-0", "missed-1", "missed-2", "missed-3"]);
+  });
+  test("a field that is both over its limit and flagged invalid is reported once, as too long", () => {
+    const el = limited("input", "3", "abcdef");
+    el.setAttribute("aria-invalid", "true");
+    const report = audit(el);
+    expect(report.missedCount).toBe(1);
+    expect(report.missed[0]!.reason).toBe("too_long");
+  });
+  test("each control of a split field is checked", () => {
+    const area = limited("input", "3", "555");
+    const number = limited("input", "4", "0100123");
+    const ref = mockRef({ label: "Phone" }, area);
+    ref.els = [area, number];
+    ref.widget = "split-phone";
+    const report = auditForm([ref]);
+    expect(report.missed).toHaveLength(1);
+    expect(report.missed[0]!.reason).toBe("too_long");
+    expect(report.missed[0]!.description).toContain("holds 7 characters but allows 4");
+  });
 });

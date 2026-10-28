@@ -2,6 +2,7 @@
 // test/dom.html. Writes PASS/FAIL lines into #results and sets document.title.
 import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, scanForm } from "../src/extract";
 import { clearMarks, fillAll, fillRef, insertDraft } from "../src/fill";
+import { auditForm } from "../src/formaudit";
 import { currentText, draftOffer, draftable, suggest } from "../src/suggest";
 import { readJobInfo } from "../src/jobinfo";
 import { scrapePageJobs } from "../src/scraper";
@@ -977,6 +978,50 @@ async function greenhouseScraperFixture(): Promise<void> {
   frame.remove();
 }
 
+/**
+ * Character limits in a real browser: a script's `.value =` is not held to maxlength and the browser does not call it
+ * tooLong, so fill must refuse an over-long answer itself and the audit must count the value.
+ */
+async function fieldLimits(): Promise<void> {
+  type Ref = Parameters<typeof fillRef>[0];
+  const box = document.createElement("div");
+  box.innerHTML = `<input id="fl-in" maxlength="5"><textarea id="fl-ta" maxlength="4"></textarea><input id="fl-no"><div id="fl-ce" contenteditable="true" maxlength="2"></div>`;
+  document.body.appendChild(box);
+  const inp = q<HTMLInputElement>(box, "#fl-in"), ta = q<HTMLTextAreaElement>(box, "#fl-ta"), none = q<HTMLInputElement>(box, "#fl-no"), ce = q<HTMLElement>(box, "#fl-ce");
+  const fi = (label: string, kind: FieldInfo["kind"]): FieldInfo => ({ kind, label, name: "", autocomplete: "", automationId: "", options: [], required: false, value: [] });
+  const ref = (el: HTMLElement, label: string, kind: FieldInfo["kind"], widget: Ref["widget"] = "native"): Ref => ({ info: fi(label, kind), els: [el], widget, manual: "" });
+  const answer = (key: string, value: string[]) => ({ key, labels: [], kind: "text" as const, value, sensitivity: "standard" as const, signatures: [], uses: 1, fills: 0, updatedAt: "2025-01-01T00:00:00Z", review: false });
+  const m = (key: string, value: string[]) => ({ answer: answer(key, value), via: "label" as const, score: 0.9, value, review: false });
+  const emoji = "\u{1F600}";
+
+  const refs = [ref(inp, "fl in", "text"), ref(ta, "fl ta", "textarea"), ref(none, "fl none", "text"), ref(ce, "fl ce", "text", "contenteditable")];
+  check("limits: the real maxLength property is what the guard reads", (inp as HTMLInputElement).maxLength === 5 && (none as HTMLInputElement).maxLength === -1);
+  (inp as HTMLInputElement).value = "abcdefghij";
+  check("limits: the browser lets a script write past maxlength and does not call it tooLong (why fill and the audit check themselves)",
+    (inp as HTMLInputElement).value.length === 10 && !(inp as HTMLInputElement).validity.tooLong);
+  const before = auditForm([refs[0]!]);
+  check("limits: the audit reports a value written past its limit", before.missed.length === 1 && before.missed[0]!.reason === "too_long" && (inp as HTMLInputElement).value === "abcdefghij", JSON.stringify(before.missed));
+  (inp as HTMLInputElement).value = "";
+
+  const over = await fillRef(refs[0]!, m("a", ["abcdef"]));
+  check("limits: an answer over maxlength is not written and the field is outlined yellow with the reason",
+    !over.filled && over.reason === "too_long" && (inp as HTMLInputElement).value === "" && inp!.getAttribute("data-vani-fill") === "review" && (inp!.getAttribute("data-vani-why") ?? "").includes("allows 5"), JSON.stringify(over));
+  const at = await fillRef(refs[0]!, m("a", ["abcde"]));
+  check("limits: an answer exactly at maxlength is filled", at.filled && (inp as HTMLInputElement).value === "abcde");
+  const pair = await fillRef(refs[1]!, m("b", [`abc${emoji}`]));
+  check("limits: a surrogate pair counts as two, in a textarea", !pair.filled && pair.reason === "too_long" && (ta as HTMLTextAreaElement).value === "");
+  const fits = await fillRef(refs[1]!, m("b", ["abéc"]));
+  check("limits: a textarea at its limit is filled", fits.filled && (ta as HTMLTextAreaElement).value.length === 4);
+  const free = await fillRef(refs[2]!, m("c", ["x".repeat(3000)]));
+  check("limits: no maxlength, no limit", free.filled && (none as HTMLInputElement).value.length === 3000);
+  const editable = await fillRef(refs[3]!, m("d", ["a much longer answer"]));
+  check("limits: a contenteditable has no maxlength concept", editable.filled && ce!.textContent === "a much longer answer", JSON.stringify(editable));
+  const draft = insertDraft(ref(inp, "fl in", "text"), "a draft past the limit", { overwrite: true });
+  check("limits: a draft past the limit is not inserted", !draft.filled && draft.reason === "too_long" && (inp as HTMLInputElement).value === "abcde");
+  clearMarks();
+  box.remove();
+}
+
 /** Waits follow the page (MutationObserver), and plain fields are filled before widgets, in a real browser. */
 async function fillWaits(): Promise<void> {
   type Ref = Parameters<typeof fillRef>[0];
@@ -1178,6 +1223,7 @@ async function main(): Promise<void> {
     ["greenhouse fixture", greenhouseFixture],
     ["greenhouse resume", greenhouseResumeFixture],
     ["greenhouse scraper", greenhouseScraperFixture],
+    ["field limits", fieldLimits],
     ["fill waits", fillWaits],
     ["dependent fields", dependentFields],
     ["dependent fields in a shadow root", dependentFieldsInShadow],

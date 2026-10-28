@@ -213,10 +213,12 @@ async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
   const review = outcomes.filter(o => o.filled && o.review).length;
   const left = outcomes.filter(o => !o.filled && o.reason === "no_match").length;
   const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
+  const tooLong = outcomes.filter(o => !o.filled && o.reason === "too_long").length;
   const resumeNote = outcomes.find(o => o.reason === "no_resume" || o.reason === "resume_unavailable" || o.reason === "refused");
   // With no resume chosen for this job, the offer (bottom left) says so; otherwise the reason goes in the toast.
   const offered = resumeOffer.offerAfterFill(outcomes);
   toast(`Filled ${filled} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") +
+    (tooLong ? `, ${tooLong} too long for the field (left empty, yellow: shorten by hand)` : "") +
     (resumeNote?.detail && !offered ? `. Resume not attached: ${resumeNote.detail}` : "") + ". Check, then submit yourself.");
   return { outcomes };
 }
@@ -669,7 +671,13 @@ const REASON: Record<NonNullable<FillOutcome["reason"]>, string> = {
   no_resume: "no resume chosen for this job (choose one in the Vani Apply popup)",
   resume_unavailable: "the resume could not be had from the Vani Apply Mac app",
   refused: "this page did not take the file; attach it by hand",
+  too_long: "the answer is longer than the field allows; shorten it by hand",
 };
+
+/** Why a fill or insert did not happen, in words: the outcome's own sentence when it has one (a character limit names its numbers), else the reason's. */
+function whyNot(o: Pick<FillOutcome, "reason" | "detail">): string {
+  return o.detail ?? REASON[o.reason ?? "manual"];
+}
 
 function btn(cls: string, text: string): HTMLButtonElement {
   const b = document.createElement("button");
@@ -802,7 +810,7 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement, offer: D
       toast(`"${preview(labelOf(ref))}" already has text. Click again to replace it.`);
       return;
     }
-    toast(o.filled ? `Draft inserted into "${preview(labelOf(ref))}" (yellow). Read it before you submit.` : `Couldn't insert: ${REASON[o.reason ?? "manual"]}`);
+    toast(o.filled ? `Draft inserted into "${preview(labelOf(ref))}" (yellow). Read it before you submit.` : `Couldn't insert: ${whyNot(o)}`);
     if (o.filled) close();
   });
   discard.addEventListener("click", close);
@@ -1114,7 +1122,7 @@ function renderUnknown(c: Coverage): void {
             toast(`"${preview(label)}" already has text. Click again to replace it.`);
             return;
           }
-          toast(res.filled ? `Draft inserted into "${preview(label)}" (yellow). Read it before you submit.` : `Couldn't insert: ${REASON[res.reason ?? "manual"]}`);
+          toast(res.filled ? `Draft inserted into "${preview(label)}" (yellow). Read it before you submit.` : `Couldn't insert: ${whyNot(res)}`);
           if (res.filled) void scheduleScan();
         };
         go();
@@ -1127,7 +1135,7 @@ function renderUnknown(c: Coverage): void {
         b.title = `Your answer to: ${s.question}`;
         b.addEventListener("click", () => {
           void fillRef(ref, s.match).then(out => {
-            toast(out.filled ? `Filled "${preview(label)}" from a similar saved answer (yellow: check it).` : `Couldn't fill: ${REASON[out.reason ?? "manual"]}`);
+            toast(out.filled ? `Filled "${preview(label)}" from a similar saved answer (yellow: check it).` : `Couldn't fill: ${whyNot(out)}`);
           });
         });
         row.append(b);
@@ -1149,7 +1157,7 @@ function renderUnknown(c: Coverage): void {
             return;
           }
           if (!res.filled) {
-            toast(`Couldn't insert: ${REASON[res.reason ?? "manual"]}`);
+            toast(`Couldn't insert: ${whyNot(res)}`);
             return;
           }
           try {
@@ -1751,7 +1759,7 @@ if (!window.__vaniApply && !coveredByParent()) {
       if (!ref) return { ok: false, error: DRAFT_FIELD_ABSENT };
       const res = insertDraft(ref, text, { overwrite: overwrite === true });
       if (!res.filled && res.reason === "has_value") return { ok: false, reason: "has_value" };
-      if (!res.filled) return { ok: false, error: REASON[res.reason ?? "manual"] };
+      if (!res.filled) return { ok: false, error: whyNot(res) };
       void scheduleScan();
       return { ok: true };
     },

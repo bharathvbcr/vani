@@ -30,3 +30,50 @@ export function clean(s: string | null | undefined): string {
 export function clip(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) : s;
 }
+
+/** Input types the browser applies `maxlength` to (the HTML "maxlength applies" list). */
+const MAXLENGTH_TYPES: ReadonlySet<string> = new Set(["text", "search", "url", "tel", "email", "password"]);
+
+/**
+ * The character limit of a text control, in UTF-16 code units, or null when it has none: a plain
+ * `<input>` of a type `maxlength` applies to, or a `<textarea>`, whose `maxLength` is not negative
+ * (read from the `maxlength` attribute when the element has no such property). Read on every call,
+ * since a page may change it after render. Anything else (a contenteditable, a select, a number
+ * input) has no limit the browser knows.
+ */
+export function maxLengthOf(el: Element): number | null {
+  const tag = String((el as { localName?: string }).localName ?? el.tagName ?? "").toLowerCase();
+  if (tag === "input") {
+    const type = String((el as HTMLInputElement).type ?? el.getAttribute("type") ?? "text").toLowerCase();
+    if (!MAXLENGTH_TYPES.has(type)) return null;
+  } else if (tag !== "textarea") return null;
+  const prop = (el as HTMLInputElement).maxLength;
+  let n = typeof prop === "number" && Number.isFinite(prop) ? prop : NaN;
+  if (Number.isNaN(n)) {
+    const m = /^\s*\+?(\d+)/.exec(el.getAttribute("maxlength") ?? "");
+    n = m ? Number(m[1]) : -1;
+  }
+  return n >= 0 ? n : null;
+}
+
+/**
+ * What the control would hold after `text` is written to its `value`: a textarea keeps a line break
+ * as one character, a single-line input drops line breaks. This is the length the browser measures
+ * against `maxlength`.
+ */
+export function storedLength(el: Element, text: string): number {
+  const tag = String((el as { localName?: string }).localName ?? el.tagName ?? "").toLowerCase();
+  return (tag === "textarea" ? text.replace(/\r\n?/g, "\n") : text.replace(/[\r\n]/g, "")).length;
+}
+
+/**
+ * Whether writing `text` into `el` would pass its character limit. The browser enforces `maxlength`
+ * only for typing, so a script that sets `.value` can write past it, and a site may then drop or cut
+ * the answer on submit. Returns the limit and the length, or null when it fits or the control has no limit.
+ */
+export function overLimit(el: Element, text: string): { limit: number; length: number } | null {
+  const limit = maxLengthOf(el);
+  if (limit === null) return null;
+  const length = storedLength(el, text);
+  return length > limit ? { limit, length } : null;
+}

@@ -12,6 +12,7 @@ import { dialCodeOnly, normalizeLabel } from "./normalize";
 import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
 import { type ResumeFetch, isResumeField } from "./resume";
 import { observeRoots } from "./rounds";
+import { overLimit } from "./guards";
 
 export interface FillOutcome {
   label: string;
@@ -22,8 +23,10 @@ export interface FillOutcome {
   key?: string;
   reason?: "no_match" | "has_value" | "no_option" | "untouchable" | "manual" | "detached"
     /** A resume input: nothing chosen for this job, the file could not be had, or the page dropped it. */
-    | "no_resume" | "resume_unavailable" | "refused";
-  /** Why, in words, for a resume reason. */
+    | "no_resume" | "resume_unavailable" | "refused"
+    /** The answer is longer than the field's character limit; the field was left as it was. */
+    | "too_long";
+  /** Why, in words, for a resume or too_long reason. */
   detail?: string;
 }
 
@@ -75,6 +78,19 @@ export function waitFor(cond: () => boolean, timeout = 600, root?: Node | readon
     tick = setTimeout(again, FALLBACK_TICK_MS);
     ceiling = setTimeout(() => check(true), timeout);
   });
+}
+
+/**
+ * Why `text` was not written into `el`, or null when it fits. A script's `.value =` is not held to
+ * `maxlength` as typing is, and a site may drop or cut an over-long answer on submit without a word, so
+ * an answer past the limit is never written (not cut either: half a sentence, or half a surrogate pair,
+ * is worse than none). The person gets the numbers and what to do.
+ */
+function tooLong(el: Element, text: string, what: "answer" | "draft"): string | null {
+  const over = overLimit(el, text);
+  if (!over) return null;
+  return `The ${what} is ${over.length} characters and this field allows ${over.limit}. Vani left it empty rather than cut it: shorten it by hand here` +
+    (what === "answer" ? ", or edit the saved answer." : ".");
 }
 
 function fire(el: HTMLElement, type: string): void {
@@ -351,7 +367,7 @@ function fillSplitDate(ref: FieldRef, saved: string): { ok: boolean; partial: bo
   ref.els.forEach((el, k) => {
     const role = ref.parts?.[k] ?? "";
     const want = role === "year" ? p.y : role === "month" ? p.m : p.d;
-    if (!want) { partial = true; return; }
+    if (!want || overLimit(el, want)) { partial = true; return; } // a part that will not fit its box is left for review, not cut
     if (setPart(el, role, want)) any = true;
   });
   return { ok: any, partial };
@@ -366,6 +382,9 @@ async function fillSplitPhone(ref: FieldRef, saved: string): Promise<boolean> {
   const [codeEl, numEl] = ref.els as [HTMLElement, HTMLElement];
   const p = parsePhone(saved, codeDigitsOffered(codeEl));
   if (!p) return false;
+  // Nothing is written unless both parts fit their boxes: a number without its code would land under the wrong country.
+  const codeTyped = codeEl.localName !== "select" && codeEl.getAttribute("role") !== "combobox" && codeEl.getAttribute("aria-haspopup") !== "listbox";
+  if (overLimit(numEl, p.national) || (p.cc && codeTyped && overLimit(codeEl, `+${p.cc}`))) return false;
   if (p.cc) {
     let ok: boolean;
     if (codeEl.localName === "select") {
@@ -438,7 +457,7 @@ export function clearMarks(root: ParentNode = document): void {
   root.querySelectorAll<HTMLElement>("[data-vani-fill]").forEach(unmark);
 }
 
-type Result = { ok: boolean; review?: boolean; reason?: FillOutcome["reason"] };
+type Result = { ok: boolean; review?: boolean; reason?: FillOutcome["reason"]; detail?: string };
 
 async function fillOne(ref: FieldRef, m: Match, typeahead: boolean): Promise<Result> {
   const el = ref.els[0]!;
@@ -472,6 +491,8 @@ async function fillOne(ref: FieldRef, m: Match, typeahead: boolean): Promise<Res
     setText(el as HTMLInputElement, iso);
     return (el as HTMLInputElement).value === iso ? { ok: true } : { ok: false, reason: "no_option" };
   }
+  const long = tooLong(el, v, "answer");
+  if (long) return { ok: false, reason: "too_long", detail: long };
   setText(el as HTMLInputElement, v);
   return v === "" || (el as HTMLInputElement).value !== "" ? { ok: true } : { ok: false, reason: "no_option" };
 }
@@ -500,6 +521,11 @@ export async function fillRef(ref: FieldRef, m: Match, opts: FillOptions = {}): 
   try {
     if (!opts.overwrite && hasValue(ref)) return { label, filled: false, reason: "has_value", key };
     const r = await fillOne(ref, m, opts.typeahead === true);
+    if (r.reason === "too_long" && r.detail) {
+      // Left empty on purpose: outline it, so the person sees the field was not answered and why.
+      mark(ref, true, r.detail);
+      return { label, filled: false, reason: "too_long", detail: r.detail, key };
+    }
     if (!r.ok) return { label, filled: false, reason: r.reason ?? "no_option", key };
     const review = m.review || r.review === true;
     mark(ref, review, `${m.via} ${m.score.toFixed(2)}: ${key}`);
@@ -524,6 +550,8 @@ export function insertDraft(ref: FieldRef, text: string, opts: { overwrite?: boo
   if (ref.widget === "contenteditable") {
     if (!setEditable(el, text)) return { label, filled: false, reason: "manual" };
   } else {
+    const long = tooLong(el, text, "draft");
+    if (long) return { label, filled: false, reason: "too_long", detail: long };
     setText(el as HTMLInputElement, text);
   }
   el.setAttribute("data-vani-draft", "1");

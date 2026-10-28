@@ -1083,7 +1083,7 @@ function renderMissedChecklist(audit?: FormAuditReport): void {
     descWrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;overflow:hidden;";
 
     const icon = document.createElement("span");
-    icon.textContent = m.reason === "invalid" ? "❌" : "⚠️";
+    icon.textContent = m.reason === "invalid" || m.reason === "too_long" ? "❌" : "⚠️";
     icon.style.cssText = "font-size:12px;flex-shrink:0;";
 
     const desc = document.createElement("span");
@@ -1541,7 +1541,9 @@ $("#fill").onclick = async () => {
     const outcomes = mergeFill(r);
     const f = outcomes.filter(o => o.filled);
     const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
+    const tooLong = outcomes.filter(o => !o.filled && o.reason === "too_long").length;
     status(`Filled ${f.length} (${f.filter(o => o.review).length} to review)` + (manual ? `, ${manual} to do by hand` : "") +
+      (tooLong ? `, ${tooLong} too long for the field (left empty, yellow: shorten by hand)` : "") +
       (r.answered.length > 1 ? ` across ${r.answered.length} frames` : "") + ". Check the page, then submit yourself." + notAnswered(r), "ok");
     toast(`Filled ${f.length} fields!`);
     await refresh();

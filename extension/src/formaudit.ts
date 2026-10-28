@@ -1,8 +1,9 @@
 // Audit form fields for missed fillings, unattached required files, and invalid inputs.
 // Allows applicants to immediately spot what is missing before submitting and jump to it.
 import type { FieldRef } from "./extract";
+import { overLimit } from "./guards";
 
-export type MissedReason = "empty_required" | "invalid" | "unattached_file" | "manual_action";
+export type MissedReason = "empty_required" | "invalid" | "unattached_file" | "manual_action" | "too_long";
 
 export interface MissedFilling {
   id: string;
@@ -109,6 +110,20 @@ export function isInvalid(ref: FieldRef): boolean {
   return false;
 }
 
+/**
+ * The first control of the field whose current value is longer than its character limit (`maxlength`,
+ * counted in UTF-16 code units as the browser counts it), with the limit and the length; null when none is.
+ * Reads only. A contenteditable has no such limit.
+ */
+function overValue(ref: FieldRef): { limit: number; length: number } | null {
+  if (ref.widget === "contenteditable") return null;
+  for (const el of ref.els) {
+    const over = overLimit(el, (el as HTMLInputElement).value ?? "");
+    if (over) return over;
+  }
+  return null;
+}
+
 /** Audit all fields from a form scan and compile a missed fillings report. */
 export function auditForm(refs: FieldRef[]): FormAuditReport {
   const missed: MissedFilling[] = [];
@@ -152,6 +167,21 @@ export function auditForm(refs: FieldRef[]): FormAuditReport {
         kind: ref.info.kind,
         reason: "empty_required",
         description: `Required field "${label}" is empty.`,
+        refIndex: idx,
+      });
+      return;
+    }
+
+    // Before `invalid`: the browser's own tooLong is set only for typing, so a value written by a script is not
+    // flagged there, and a field that is both is better told its length.
+    const over = overValue(ref);
+    if (over) {
+      missed.push({
+        id: `missed-${idx}`,
+        label,
+        kind: ref.info.kind,
+        reason: "too_long",
+        description: `Field "${label}" holds ${over.length} characters but allows ${over.limit}. Shorten it by hand.`,
         refIndex: idx,
       });
       return;
