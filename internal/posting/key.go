@@ -114,6 +114,11 @@ func BambooHRKey(board, jobID string) (Key, error) { return build(BambooHR, boar
 // PersonioKey is ps:{subdomain}:{position_id}.
 func PersonioKey(board, positionID string) (Key, error) { return build(Personio, board, positionID) }
 
+// TalentBrewKey is tb:{slug}:{job_id}; the id is the last number in the job's
+// URL (/job/{city}/{title}/{company_id}/{job_id}), not the requisition number
+// in its JSON-LD identifier.
+func TalentBrewKey(board, jobID string) (Key, error) { return build(TalentBrew, board, jobID) }
+
 // FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
 // cosmetic change to the apply URL does not split one role into two.
 func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
@@ -176,7 +181,7 @@ func (k Key) ATS() ATS {
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
 		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable,
-		Recruitee, Pinpoint, BambooHR, Personio, Feed, Page, Other:
+		Recruitee, Pinpoint, BambooHR, Personio, TalentBrew, Feed, Page, Other:
 		return a
 	}
 	return ""

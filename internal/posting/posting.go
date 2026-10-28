@@ -62,6 +62,10 @@ const (
 	// Personio is a Personio career site ({token}.jobs.personio.com). The
 	// token is the subdomain.
 	Personio ATS = "ps"
+	// TalentBrew is a Radancy TalentBrew career site (jobs.intuit.com,
+	// jobs.citi.com). The token is the owner's slug for the company, the board
+	// names the site's host, and the posting id is the number in the job URL.
+	TalentBrew ATS = "tb"
 	// Feed is one https XML job feed the owner names. The token is a short
 	// slug; the posting id is the feed's partner job id.
 	Feed ATS = "fd"
