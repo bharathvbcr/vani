@@ -88,20 +88,32 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err := srcutil.CheckCount(len(jobs)); err != nil {
 		return nil, fmt.Errorf("rippling %q: %w", b.Token, err)
 	}
-	seenID := map[string]bool{}
+	// Rippling lists a job once per work location, each row with the same
+	// uuid (its own board, 2026-10-27: 134 of 654 rows). Rows sharing a uuid
+	// are one job only when they agree on all but the location; the labels
+	// are kept as the location's fallback.
+	var uniq []listJob
+	at := map[string]int{}
+	places := map[string][]string{}
 	for i, j := range jobs {
 		id := strings.TrimSpace(j.UUID)
 		if _, err := posting.RipplingKey(b.Token, id); err != nil {
 			return nil, fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
 		}
-		if seenID[strings.ToLower(id)] {
-			return nil, fmt.Errorf("rippling %q: job %d: duplicate uuid %q", b.Token, i, id)
+		k := strings.ToLower(id)
+		if n, ok := at[k]; ok {
+			if !sameJob(uniq[n], j) {
+				return nil, fmt.Errorf("rippling %q: job %d: uuid %q repeats with a different title, link or department", b.Token, i, id)
+			}
+		} else {
+			at[k] = len(uniq)
+			uniq = append(uniq, j)
 		}
-		seenID[strings.ToLower(id)] = true
+		places[k] = append(places[k], j.WorkLocation.Label)
 	}
 	seen := s.now()
-	out := make([]posting.Posting, 0, len(jobs))
-	for i, j := range jobs {
+	out := make([]posting.Posting, 0, len(uniq))
+	for i, j := range uniq {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -113,7 +125,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			}
 			return nil, fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
 		}
-		p, keep, err := d.posting(b, j, seen)
+		p, keep, err := d.posting(b, j, places[strings.ToLower(strings.TrimSpace(j.UUID))], seen)
 		if err != nil {
 			return nil, fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
 		}
@@ -124,7 +136,18 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	return out, nil
 }
 
-func (d detail) posting(b sources.Board, list listJob, seen time.Time) (posting.Posting, bool, error) {
+// sameJob reports whether two list rows with one uuid describe the same job:
+// the same uuid as written, title, link and department.
+func sameJob(a, b listJob) bool {
+	return strings.TrimSpace(a.UUID) == strings.TrimSpace(b.UUID) &&
+		strings.TrimSpace(a.Name) == strings.TrimSpace(b.Name) &&
+		strings.TrimSpace(a.URL) == strings.TrimSpace(b.URL) &&
+		strings.TrimSpace(a.Department.Label) == strings.TrimSpace(b.Department.Label)
+}
+
+// posting builds the job's posting from its detail, falling back to the list
+// row and listPlaces, the location labels of every row the job was listed in.
+func (d detail) posting(b sources.Board, list listJob, listPlaces []string, seen time.Time) (posting.Posting, bool, error) {
 	if d.Unlisted {
 		return posting.Posting{}, false, nil
 	}
@@ -162,7 +185,7 @@ func (d detail) posting(b sources.Board, list listJob, seen time.Time) (posting.
 	}
 	loc := joinParts("; ", d.Locations)
 	if loc == "" {
-		loc = strings.TrimSpace(list.WorkLocation.Label)
+		loc = joinParts("; ", listPlaces)
 	}
 	dept := strings.TrimSpace(d.Department.Name)
 	if dept == "" {
