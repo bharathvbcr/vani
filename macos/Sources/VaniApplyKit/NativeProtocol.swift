@@ -14,7 +14,7 @@ import Foundation
 //   {"op":"jobStart","kind":"draft"|"suggest","request":{...}}
 //                                         -> {"job":id} | {"error","code"}
 //   {"op":"jobResult","job":id}           -> {"pending":true} | {"done":true,"reply":{...}} | {"error","code"}
-//   {"op":"jobFind","url":"https://..."}  -> {"found":bool,"url","matches":N,"ambiguous"?,"job"?:{key,company,title,status,mark?,closed?,matchedOn}}
+//   {"op":"jobFind","url":"https://..."}  -> {"found":bool,"url","matches":N,"ambiguous"?,"job"?:{key,company,title,status,mark?,closed?,matchedOn,row?,repeatApply?}}
 //                                          | {"error","code"}
 //   {"op":"jobMark","key":"gh:acme:123"}  -> {"ok":true,"key","mark":"applied"} | {"error","code"}
 //   {"op":"jobsIngest","page":{"url","title"?},"save_search"?:bool,"jobs":[{title,url,company?,location?,snippet?,posted?}]}

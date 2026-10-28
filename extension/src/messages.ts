@@ -10,6 +10,7 @@ import { MAX_ATTEMPT, type DraftReply, type JobInfo } from "./draft";
 import type { ScrapeResult, ScrapedJob } from "./scraper";
 import type { RelevanceResult } from "./relevance";
 import type { PortalInfo } from "./portal";
+import type { RepeatApply } from "./repeatapply";
 import type { FormAuditReport } from "./formaudit";
 import { type IngestJob, type IngestPage, ingestJobsProblem } from "./ingest";
 
@@ -217,6 +218,8 @@ export interface ScanReply {
   coverage?: Coverage;
   audit?: FormAuditReport;
   relevance?: RelevanceResult;
+  /** Other postings at this page's company were applied to lately (repeatapply.ts): a note for the panel, never a gate. */
+  repeatApply?: RepeatApply;
   portal?: PortalInfo;
   job?: JobInfo;
 }

@@ -66,6 +66,28 @@ final class JobAppliedTests: XCTestCase {
         XCTAssertEqual(argv(fake.argv), ["jobs", "find", "--json", "--url", page], "find only finds: it never marks")
     }
 
+    func testFindPassesTheRepeatApplyNoteThroughAndOmitsItWhenAbsent() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let note = """
+        {"count":2,"window_days":60,"latest_key":"ab:acme:2","latest_title":"Staff Data Engineer","latest_at":"2026-10-13T12:00:00Z","text":"You applied to 2 other roles at Acme in the last 60 days."}
+        """
+        let warned = """
+        {"url":"https://x.example/a","matches":1,"job":{"key":"gh:acme:3","company":"Acme","title":"T","status":"digested","matched_on":"url","repeat_apply":\(note)}}
+        """
+        let out = try call(["op": "jobFind", "url": "https://x.example/a"], store: store, jobs: JobsClient(vaniBinary: try fakeJobsVani(self, find: warned).vani))
+        let job = try XCTUnwrap(out["job"] as? [String: Any])
+        let got = try XCTUnwrap(job["repeatApply"] as? [String: Any], "\(out)")
+        XCTAssertEqual(got["count"] as? Int, 2)
+        XCTAssertEqual(got["window_days"] as? Int, 60)
+        XCTAssertEqual(got["latest_title"] as? String, "Staff Data Engineer")
+        XCTAssertEqual(got["text"] as? String, "You applied to 2 other roles at Acme in the last 60 days.")
+        XCTAssertEqual(job["key"] as? String, "gh:acme:3", "the note rides beside the job, never in place of it")
+
+        // A vani that says nothing about it (an older build, or nothing to warn of) yields no key.
+        let quiet = try call(["op": "jobFind", "url": "https://x.example/a"], store: store, jobs: JobsClient(vaniBinary: try fakeJobsVani(self, find: foundReply).vani))
+        XCTAssertNil((quiet["job"] as? [String: Any])?["repeatApply"])
+    }
+
     func testFindReportsTheMarkSoTheExtensionCanSkipAppliedJobs() throws {
         let store = BankStore(directory: try tempDir(self))
         let reply = """

@@ -5,6 +5,7 @@
 // internal/jobview/testdata/rows.golden.json (test/jobrow.test.ts).
 
 import type { RelevanceResult } from "./relevance";
+import { type RepeatApply, parseFindRepeatApply } from "./repeatapply";
 
 /** The schema version this build reads (jobview.Version). */
 export const JOB_ROW_VERSION = 1;
@@ -75,15 +76,21 @@ export function parseJobRow(x: unknown): RowParse {
  * The row in a host jobFind reply: `row: null` when the page is not a tracked posting or this vani
  * predates the contract (the estimate stays); `error` when a row is there and cannot be trusted.
  */
-export function parseFindRow(reply: unknown): { row: JobRow | null } | { error: string } {
+export function parseFindRow(reply: unknown): FindRow | { error: string } {
   if (typeof reply !== "object" || reply === null) return { row: null };
   const r = reply as Record<string, unknown>;
   if (r.found !== true || typeof r.job !== "object" || r.job === null) return { row: null };
+  // The repeat-apply note rides beside the row (repeatapply.ts); a reply without it is the reply an older vani sends.
+  const note = parseFindRepeatApply(reply);
+  const extra = note ? { repeatApply: note } : {};
   const raw = (r.job as Record<string, unknown>).row;
-  if (raw === undefined || raw === null) return { row: null };
+  if (raw === undefined || raw === null) return { row: null, ...extra };
   const p = parseJobRow(raw);
-  return p.ok ? { row: p.row } : { error: p.error };
+  return p.ok ? { row: p.row, ...extra } : { error: p.error };
 }
+
+/** A jobFind reply read for the page's row, and the notice that rides with it when there is one. */
+export type FindRow = { row: JobRow | null; repeatApply?: RepeatApply };
 
 /** Vani's own numbers and label in place of the page-text estimate; the estimate's details (skills, salary) stay. */
 export function applyVaniRow(rel: RelevanceResult, row: JobRow): RelevanceResult {

@@ -235,6 +235,11 @@ type Job struct {
 	DupCandidateOf string  `json:"dup_candidate_of,omitempty"`
 	DupSiblingOf   string  `json:"dup_sibling_of,omitempty"`
 	DupScore       float64 `json:"dup_score,omitempty"`
+	// RepeatApply warns that other postings at this company were applied to
+	// lately and Repost that this is likely an earlier role relisted
+	// (internal/samecompany); notes for a person, never a filter.
+	RepeatApply *RepeatApplyNote `json:"repeat_apply,omitempty"`
+	Repost      *RepostNote      `json:"repost,omitempty"`
 	// Logo is the absolute path of the company's cached icon (internal/logo),
 	// set only when the file is there; the app shows the monogram otherwise.
 	Logo string `json:"logo,omitempty"`
