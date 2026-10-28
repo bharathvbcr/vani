@@ -330,10 +330,7 @@ func isAggregator(host string) bool {
 // are not a company identifier (both seen in 2026-10-27 API and page links).
 var smartRecruitersAppPaths = map[string]bool{"oneclick-ui": true, "external-referrals": true}
 
-var (
-	workdayHostRE   = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
-	workdayLocaleRE = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
-)
+var workdayLocaleRE = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
 
 // deriveBoard maps a listing page to the board that searches it. When the page
 // cannot be a board it returns a result whose Status is set (unsupported or
@@ -401,14 +398,14 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		}
 		return b, ingestSearchJSON{}
 	}
-	if m := workdayHostRE.FindStringSubmatch(host); m != nil {
+	if tenant, ok := sources.WorkdayTenantHost(host); ok {
 		if len(segs) > 0 && workdayLocaleRE.MatchString(segs[0]) {
 			segs = segs[1:]
 		}
 		if len(segs) == 0 {
 			return fail(searchInvalid, "the page URL names no Workday site")
 		}
-		return sources.Board{ATS: posting.Workday, Token: m[1] + "/" + segs[0], Company: company, Host: host,
+		return sources.Board{ATS: posting.Workday, Token: tenant + "/" + segs[0], Company: company, Host: host,
 			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
 	}
 

@@ -832,9 +832,6 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 	return "", false
 }
 
-// workdayHost matches "{tenant}.wd{N}.myworkdayjobs.com".
-var workdayHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
-
 // workdayName matches a Workday "tenant/site" token whose parts are the safe
 // path names the adapter accepts (workday.parseToken).
 var workdayName = regexp.MustCompile(`^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`)
@@ -1007,11 +1004,11 @@ func ValidBoard(b sources.Board) error {
 				return fmt.Errorf("workday token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
 			}
 		} else {
-			m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
-			if m == nil {
+			hostTenant, ok := sources.WorkdayTenantHost(b.Host)
+			if !ok {
 				return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com or wd{N}.myworkdaysite.com, got %q", b.Token, b.Host)
 			}
-			if m[1] != tenant {
+			if hostTenant != tenant {
 				return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
 			}
 		}

@@ -98,6 +98,21 @@ func (b Board) APIName() string {
 // /recruiting/{tenant}/{site}/ rather than /{site}/.
 var workdaySiteHost = regexp.MustCompile(`^wd[0-9]{1,3}\.myworkdaysite\.com$`)
 
+// workdayTenantHost is a tenant's own host, "{tenant}.wd{N}.myworkdayjobs.com".
+// N runs to three digits on both hosts: Postman's board is on wd108.
+var workdayTenantHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,3}\.myworkdayjobs\.com$`)
+
+// WorkdayTenantHost returns the tenant a host "{tenant}.wd{N}.myworkdayjobs.com"
+// names, read as written (a bare host name, any case), and whether host is one.
+// It is the one rule behind config.ValidBoard and the browser ingest's board.
+func WorkdayTenantHost(host string) (tenant string, ok bool) {
+	m := workdayTenantHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(host)))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // WorkdaySiteHost reports whether host, as written (a bare host name, any
 // case), is a shared Workday host "wd{N}.myworkdaysite.com". A port, path,
 // userinfo or extra label is not one.

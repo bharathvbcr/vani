@@ -95,3 +95,20 @@ func TestWorkdayJobsHostUnchanged(t *testing.T) {
 		t.Fatalf("tenant mismatch err = %v", err)
 	}
 }
+
+// A tenant host's pod number runs to three digits, as the shared host's does:
+// Postman's board is postman.wd108.myworkdayjobs.com (checked 2026-10-27).
+func TestWorkdayJobsHostThreeDigitPod(t *testing.T) {
+	if err := ValidBoard(sources.Board{ATS: posting.Workday, Token: "postman/careers", Host: "postman.wd108.myworkdayjobs.com"}); err != nil {
+		t.Fatalf("three-digit pod refused: %v", err)
+	}
+	for _, host := range []string{"postman.wd1080.myworkdayjobs.com", "postman.wd.myworkdayjobs.com", "x.postman.wd108.myworkdayjobs.com.evil.com"} {
+		if err := ValidBoard(sources.Board{ATS: posting.Workday, Token: "postman/careers", Host: host}); err == nil {
+			t.Errorf("host %q accepted", host)
+		}
+	}
+	err := ValidBoard(sources.Board{ATS: posting.Workday, Token: "postman/careers", Host: "globex.wd108.myworkdayjobs.com"})
+	if err == nil || !strings.Contains(err.Error(), "does not belong to tenant") {
+		t.Fatalf("three-digit tenant mismatch err = %v", err)
+	}
+}
