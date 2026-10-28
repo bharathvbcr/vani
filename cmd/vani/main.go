@@ -64,6 +64,14 @@ commands:
   watchlist icon   --ats A --token T --url URL [--allow-host]
                              an https icon URL for a site that serves none at the usual paths,
                              asked for first ("" clears it; the board needs a domain)
+  watchlist discover --search TEXT [--country US] [--work-mode remote|hybrid|onsite]
+                   [--seniority LEVEL] [--pages N] [--json] [--allow-host]
+                             ask freehire.me (a third-party site; it must be in allowed_hosts,
+                             or pass --allow-host) which boards have roles matching a search:
+                             the boards ranked by matches, marked watched or new, each with the
+                             watchlist add that adds it, and the results Vani has no board for.
+                             One request of 100 results by default, at most 3 pages. It never
+                             edits the watchlist
   logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
                              too); --force refetches cached and recently failed ones
   daemon                     run the scheduler in the foreground

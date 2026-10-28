@@ -350,12 +350,6 @@ func isAggregator(host string) bool {
 	return false
 }
 
-// smartRecruitersAppPaths are first path segments on SmartRecruiters' hosts that
-// are not a company identifier (both seen in 2026-10-27 API and page links).
-var smartRecruitersAppPaths = map[string]bool{"oneclick-ui": true, "external-referrals": true}
-
-var workdayLocaleRE = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
-
 // deriveBoard maps a listing page to the board that searches it. When the page
 // cannot be a board it returns a result whose Status is set (unsupported or
 // invalid); otherwise Status is "" and the caller adds the board. wl is the
@@ -375,87 +369,17 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 	if len(segs) > 0 {
 		first = segs[0]
 	}
-	switch {
-	case isAggregator(host):
+	if isAggregator(host) {
 		return fail(searchUnsupported, "%s needs a signed-in browser; Vani cannot search it on its own", host)
-	case host == "boards.greenhouse.io" || host == "job-boards.greenhouse.io":
-		if first == "" {
-			return fail(searchInvalid, "the page URL names no Greenhouse board")
+	}
+	// Workable and Rippling pages are left to the page board below: they were
+	// never saved-search boards, and a saved page keeps the filters in its URL.
+	if b, known, err := sources.BoardFromURL(u); known && b.ATS != posting.Workable && b.ATS != posting.Rippling {
+		if err != nil {
+			return fail(searchInvalid, "%v", err)
 		}
-		return sources.Board{ATS: posting.Greenhouse, Token: first, Company: company}, ingestSearchJSON{}
-	case host == "jobs.lever.co" || host == "jobs.eu.lever.co":
-		if first == "" {
-			return fail(searchInvalid, "the page URL names no Lever board")
-		}
-		b := sources.Board{ATS: posting.Lever, Token: first, Company: company}
-		if host == "jobs.eu.lever.co" {
-			b.Region = "eu"
-		}
+		b.Company = company
 		return b, ingestSearchJSON{}
-	case host == "jobs.gem.com":
-		if first == "" {
-			return fail(searchInvalid, "the page URL names no Gem board")
-		}
-		return sources.Board{ATS: posting.Gem, Token: first, Company: company}, ingestSearchJSON{}
-	case host == "jobs.smartrecruiters.com" || host == "careers.smartrecruiters.com":
-		// Both serve a company's page at /{companyIdentifier} (checked
-		// 2026-10-27: jobs. redirects to careers.). The first segment of these two
-		// is not a company: /oneclick-ui/... and /external-referrals/... are the
-		// site's own apps.
-		if first == "" || smartRecruitersAppPaths[strings.ToLower(first)] {
-			return fail(searchInvalid, "the page URL names no SmartRecruiters company")
-		}
-		return sources.Board{ATS: posting.SmartRecruiters, Token: first, Company: company}, ingestSearchJSON{}
-	case host == "jobs.ashbyhq.com":
-		if first == "" {
-			return fail(searchInvalid, "the page URL names no Ashby board")
-		}
-		b := sources.Board{ATS: posting.Ashby, Token: first, Company: company}
-		if strings.Contains(first, " ") {
-			// A name with a space ("Hippocratic AI") cannot be a token, which
-			// every posting key is built from: the token is its slug and the
-			// name stays what the API is asked for. A name the rule refuses
-			// (BoardNameProblem) keeps its token and is refused as before.
-			if sources.BoardNameProblem(first) == "" {
-				b.Token, b.BoardName = strings.ToLower(strings.ReplaceAll(first, " ", "-")), first
-			}
-		}
-		return b, ingestSearchJSON{}
-	}
-	if tenant, ok := sources.WorkdayTenantHost(host); ok {
-		if len(segs) > 0 && workdayLocaleRE.MatchString(segs[0]) {
-			segs = segs[1:]
-		}
-		if len(segs) == 0 {
-			return fail(searchInvalid, "the page URL names no Workday site")
-		}
-		return sources.Board{ATS: posting.Workday, Token: tenant + "/" + segs[0], Company: company, Host: host,
-			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
-	}
-
-	if sources.WorkdaySiteHost(host) {
-		// The shared host's pages are /recruiting/{tenant}/{site}[/...]: the
-		// host names no tenant, so the path does.
-		if len(segs) > 0 && workdayLocaleRE.MatchString(segs[0]) {
-			segs = segs[1:]
-		}
-		if len(segs) < 3 || segs[0] != "recruiting" {
-			return fail(searchInvalid, "the page URL names no Workday site")
-		}
-		return sources.Board{ATS: posting.Workday, Token: segs[1] + "/" + segs[2], Company: company, Host: host,
-			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
-	}
-
-	if tenant, ok := sources.OracleHCMHostTenant(host); ok {
-		// The candidate-experience pages are /hcmUI/CandidateExperience/{lang}/sites/{site}
-		// [/jobs | /job/{id}], and the search box's text is the "keyword" query
-		// (checked in the live UI, 2026-10-27).
-		if len(segs) < 5 || !strings.EqualFold(segs[0], "hcmUI") || !strings.EqualFold(segs[1], "CandidateExperience") ||
-			!workdayLocaleRE.MatchString(segs[2]) || !strings.EqualFold(segs[3], "sites") {
-			return fail(searchInvalid, "the page URL names no Oracle HCM site")
-		}
-		return sources.Board{ATS: posting.OracleHCM, Token: tenant + "/" + segs[4], Company: company, Host: host,
-			Search: strings.TrimSpace(u.Query().Get("keyword"))}, ingestSearchJSON{}
 	}
 
 	// A page of an Avature portal already on the watchlist is that board. An

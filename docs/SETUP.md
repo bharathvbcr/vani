@@ -373,6 +373,13 @@ is `boards-api.greenhouse.io`), and `--domain` and the `--icon` host when those 
 Without it, save fails with `allowed_hosts is missing: boards-api.greenhouse.io` and tells you to
 pass `--allow-host`. `config check` fails the same way while a board's host is missing.
 
+To find boards worth adding, `vani watchlist discover --search "ml engineer" --country US --allow-host`
+asks freehire.me which companies have matching roles and prints a `watchlist add` command for each
+new board; it edits nothing. freehire.me is a third-party site, so the command refuses until it is in
+`allowed_hosts` (`--allow-host` adds it, once). Terms: keyless personal use only, no scraping beyond
+its API, so one request of 100 results by default and at most 3 pages with a pause between them.
+Run the printed commands you want, then `run-once --board gh:BOARD --list-only` to see the board read.
+
 Put `target_summary` in the config (step 6). Then list without spending:
 
 ```bash

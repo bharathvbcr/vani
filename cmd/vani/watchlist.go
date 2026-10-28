@@ -17,7 +17,7 @@ import (
 
 func (e *env) cmdWatchlist(args []string) error {
 	if len(args) == 0 {
-		return usagef("watchlist: expected list, add, remove, domain or icon")
+		return usagef("watchlist: expected list, add, remove, domain, icon or discover")
 	}
 	switch args[0] {
 	case "list":
@@ -30,6 +30,8 @@ func (e *env) cmdWatchlist(args []string) error {
 		return e.watchlistDomain(args[1:])
 	case "icon":
 		return e.watchlistIcon(args[1:])
+	case "discover":
+		return e.watchlistDiscover(args[1:])
 	}
 	return usagef("watchlist: unknown subcommand %q", args[0])
 }
