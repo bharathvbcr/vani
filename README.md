@@ -663,7 +663,14 @@ its 2000-row window by splitting the board on its own facets (5,000 postings by 
 `max_postings` sets 1 to 10,000); stored
 postings are reused, so a run spends at most 300 detail requests per board and a new large board
 fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
-URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page load waits until
+URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. More board kinds, each read through
+its own adapter: Gem `--ats gm --token groq`; SmartRecruiters `--ats sr --token servicenow` (optional
+`--filter country=us`; each new posting costs a detail request, at most 300 a board a run); Oracle
+Recruiting Cloud `--ats oc --token jpmc/CX_1001 --host jpmc.fa.oraclecloud.com --search "..."`; IBM
+`--ats ib --token ibm --search "..."` (title words), or `--token confluent --search Confluent` for the
+roles IBM lists for Confluent; Avature `--ats av --token twosigma --host careers.twosigma.com --url
+https://careers.twosigma.com/careers/OpenRoles`; and the single-company `--ats ds --token deshaw`
+(D. E. Shaw) and `--ats at --token atlassian` (Atlassian). Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for
 `Vani` (or `*`), read once per host per run; that read counts as a visit, so the first load waits

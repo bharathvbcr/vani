@@ -183,7 +183,8 @@ type Board struct {
 	// fails rather than being truncated.
 	MaxPostings int `json:"max_postings,omitempty"`
 
-	// URL is a careers listing page (https). Page boards only.
+	// URL is a careers listing page (https): a page board's, or an Avature
+	// board's listing page on its Host (avature.ParseListURL).
 	URL string `json:"url,omitempty"`
 	// LinkPattern is a Go regexp an absolute link on URL must match to count
 	// as a posting page. Page boards only.
