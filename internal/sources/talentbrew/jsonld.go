@@ -109,11 +109,12 @@ type ldJob struct {
 // job id of the tenant's company on host: its url is https on host and ends
 // /{company}/{id}. A block that is not valid JSON, is not a JobPosting, or is
 // for another job (the url a hostile page text could copy is still checked
-// here) is passed over; ok is false when none is left.
+// here) is passed over; ok is false when none is left. Raw control characters
+// are read as spaces first (controlToSpace).
 func findJobPosting(page, host, company, id string) (ldJob, bool) {
 	for _, raw := range ldBlocks(page) {
 		var j ldJob
-		if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &j); err != nil {
+		if err := json.Unmarshal([]byte(controlToSpace(strings.TrimSpace(raw))), &j); err != nil {
 			continue
 		}
 		if !isJobPosting(j.Type) || !sameJob(j.URL, host, company, id) {
@@ -122,6 +123,21 @@ func findJobPosting(page, host, company, id string) (ldJob, bool) {
 		return j, true
 	}
 	return ldJob{}, false
+}
+
+// controlToSpace replaces the raw control characters (U+0000 to U+001F) of a
+// JSON-LD block with spaces. Citi's pages write a raw tab inside the
+// description string ("<p>●\tDesign and configure API proxies…", job
+// 102455422752, 2026-10-28), which is not JSON, so the block was passed over and
+// the board failed every run. Outside strings these characters are whitespace
+// or invalid, and inside them the text is HTML, where a space reads the same.
+func controlToSpace(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func isJobPosting(t stringList) bool {

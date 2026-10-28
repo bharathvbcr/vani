@@ -11,6 +11,27 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
 )
 
+// Citi's job 102455422752 (2026-10-28) wrote a raw tab inside its description
+// string, which encoding/json refuses, and the whole board failed every run.
+func TestRawControlCharactersInTheBlockAreSpaces(t *testing.T) {
+	page := string(fixture(t, "citi-job.html"))
+	const at = `"description": "<p>The Applications`
+	if !strings.Contains(page, at) {
+		t.Fatal("fixture changed: no description to put a tab in")
+	}
+	page = strings.Replace(page, at, `"description": "<p>●`+"\t"+`Design`+"\n"+`The Applications`, 1)
+	j, ok := findJobPosting(page, "jobs.citi.com", "287", "102161084880")
+	if !ok {
+		t.Fatal("a JobPosting with a raw tab in its description was passed over")
+	}
+	if !strings.Contains(j.Description, "● Design The Applications") {
+		t.Fatalf("description %.80q: the tab and newline should read as spaces", j.Description)
+	}
+	if got := controlToSpace("a\tb\nc\x00d\re"); got != "a b c d e" {
+		t.Fatalf("controlToSpace = %q", got)
+	}
+}
+
 func TestLDBlocks(t *testing.T) {
 	ld := func(body string) string { return `<script type="application/ld+json">` + body + `</script>` }
 	for name, tc := range map[string]struct {
