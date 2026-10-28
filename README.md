@@ -28,6 +28,7 @@ flowchart TD
         AB["Ashby API"]
         WD["Workday CXS API"]
         SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX), Jibe"]
+        AD["Dedicated Adapters: Gem, SmartRecruiters,\nOracle HCM, IBM, Avature, D. E. Shaw,\nAtlassian, Rippling, Workable, XML Feeds"]
         PG["Custom Pages (Lightpanda)"]
     end
 
@@ -67,7 +68,7 @@ flowchart TD
         end
     end
 
-    GH & LV & AB & WD & SS --> EP
+    GH & LV & AB & WD & SS & AD --> EP
     PG --> EP
     EP --> AL & PB --> RAW
     RAW --> DEDUP
@@ -123,18 +124,21 @@ stateDiagram-v2
     Explained --> Digested: Daily Markdown report & Mac UI
 ```
 
-- **Sources:** Greenhouse, Lever (US and EU), Ashby and Workday (cxs search, paged by 20)
-  public job-board APIs, and the big-employer search sites: amazon.jobs (`az`, its search.json),
-  Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`),
-  Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites
-  such as AMD's (`jb`, token the client code `amd`, host `careers.amd.com`; search optional, pages
-  of 100 spaced 5 s apart as its robots.txt asks). Eightfold requests are spaced 2 s apart; both
-  spacings run through one `srcutil.Pacer` with a 15-minute budget per board. A search site
-  fails a board that reports more postings than its cap, rather than list part of it: Eightfold
-  and Apple 200, Amazon 500, Google 20 per search term, Workday and the rest 5000. All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
-  block, pinned dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one
-  `lightpanda mcp` process per board, driven over stdio, whose traffic is forced through a per-run
-  authenticated loopback CONNECT proxy that applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
+- **Sources:** Greenhouse (`gh`), Lever (`lv`, US and EU), Ashby (`ab`) and Workday (`wd`, cxs
+  search, paged by 20) public job-board APIs; big-employer search sites: amazon.jobs (`az`, search.json),
+  Google Careers (`gg`, page 1 of results only, as robots.txt allows), jobs.apple.com (`ap`), Eightfold PCSX
+  sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites such as AMD's (`jb`, token the
+  client code `amd`, host `careers.amd.com`; search optional, pages of 100 spaced 5 s apart); dedicated
+  adapters for Gem (`gm`), SmartRecruiters (`sr`), Oracle HCM / Recruiting Cloud (`oc`), IBM careers (`ib`,
+  covering IBM and Confluent), Avature (`av`, e.g. Two Sigma), D. E. Shaw (`ds`), Atlassian (`at`), Rippling
+  (`rp`), Workable (`wk`), and XML job feeds (`fd`). Eightfold requests are spaced 2 s apart; both spacings
+  run through one `srcutil.Pacer` with a 15-minute budget per board. A search site fails a board that reports
+  more postings than its cap, rather than list part of it: Eightfold and Apple 200, Amazon 500, Google 20 per
+  search term, Workday and the rest 5000 (Workday and Oracle HCM configurable via `max_postings` 1..10,000). All
+  go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address block, pinned
+  dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one `lightpanda mcp` process per board,
+  driven over stdio, whose traffic is forced through a per-run authenticated loopback CONNECT proxy that
+  applies the same egress rules ([`docs/PHASE0-lightpanda.md`](docs/PHASE0-lightpanda.md)). JSON-LD `JobPosting`
   is read from each page's HTML. Weak keys (`pg`, `x`) dedupe onto the ATS posting they mirror.
 - **Triage:** `career.jd_triage` (role_fit, sponsorship, work_mode, seniority) through a router
   over the OpenRouter decision model (`decide.openrouter_model`, e.g. `liquid/d1-ultra`, asked
@@ -607,6 +611,14 @@ flowchart LR
     STORE --> LOG
 ```
 
+## Reliability & Hardening Guarantees
+
+- **Symlink & non-regular file defense:** `last.json`, impressions logs, marks, and manual-triage readings strictly enforce regular file semantics via `readBoundedFile` and `Lstat` verification. Symlinks, FIFOs, UNIX sockets, and device nodes are refused before opening, preventing bypasses or stalls.
+- **Daemon lifecycle & panic recovery:** A panic following `guardedRun` finalizes the run record as failed instead of leaving state indeterminate. Daemon PID liveness verifies exact binary identity and start time (with 1-second clock-skew tolerance) so stale, dead, or reused PIDs cannot spoof an active daemon.
+- **Binary replacement watch (`binarywatch`):** The daemon monitors its own executable using OS-level file identity (volume serial + file index on Windows; device, inode, mtime, and size on Unix), cleanly exiting with code 75 between runs when an updated binary is installed.
+- **Scrubbing & privacy boundaries:** Contact details (spaced telephone numbers, emails, handles) and work-authorization boilerplate are aggressively scrubbed from resume bullet text and redraft instructions before embedding or prompt delivery.
+- **macOS app robustness:** Answer counters in `BankStore` enforce `Int32.max` limits to prevent SQLite integer overflow traps; bank files over 50 MB are rejected before loading; and bank edits and activity log updates run asynchronously off the main actor on `BlockingWork`.
+
 ## Use
 
 ```bash
@@ -634,6 +646,14 @@ build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager 
 build/vani jobs stats --view all
 build/vani jobs export --top 250 --sort relevance --out ~/Downloads/vani-top-250.xlsx
 printf 'gh:acme:1\ngh:acme:2\n' | build/vani jobs export --keys-stdin --out ~/Downloads/picked.xlsx
+build/vani jobs resume show KEY                 # version history, current/used status, pool
+build/vani jobs resume build --dry-run KEY      # estimate Opus 5.5 cost and check validity
+build/vani jobs resume build --from v1 --instruction "Focus on distributed systems" KEY
+build/vani jobs resume diff KEY v1 v2           # compare two versions (bullets, overrides, sections)
+build/vani jobs resume current KEY v2           # set current version for Studio and review
+build/vani jobs resume coverage KEY             # hit vs missed keywords against job posting
+build/vani jobs resume gaps --dry-run KEY       # check uncovered skills to append to gaps.jsonl
+build/vani jobs resume revalidate KEY v1        # recheck against fresh bank pool and rebuild
 build/vani rescore --dry-run
 build/vani bench local --model /abs/candidate.gguf --model /abs/d1-3B-Q8_0.gguf
 build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code   # needs kb.selections
@@ -680,8 +700,11 @@ its own adapter: Gem `--ats gm --token groq`; SmartRecruiters `--ats sr --token 
 Recruiting Cloud `--ats oc --token jpmc/CX_1001 --host jpmc.fa.oraclecloud.com --search "..."`; IBM
 `--ats ib --token ibm --search "..."` (title words), or `--token confluent --search Confluent` for the
 roles IBM lists for Confluent; Avature `--ats av --token twosigma --host careers.twosigma.com --url
-https://careers.twosigma.com/careers/OpenRoles`; and the single-company `--ats ds --token deshaw`
-(D. E. Shaw) and `--ats at --token atlassian` (Atlassian). Each careers-page load waits until
+https://careers.twosigma.com/careers/OpenRoles`; single-company `--ats ds --token deshaw` (D. E. Shaw)
+and `--ats at --token atlassian` (Atlassian); Rippling `--ats rp --token <slug>`; Workable
+`--ats wk --token <slug>`; and XML job feeds `--ats fd --token <slug> --url https://...`.
+`config.ValidBoard` checks every entry against the 20 supported ATS kinds (`gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, fd, pg`).
+Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for
 `Vani` (or `*`), read once per host per run; that read counts as a visit, so the first load waits

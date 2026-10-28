@@ -529,6 +529,13 @@ Also under `bun test`:
   `pendingDiff`), the label cap, intent sync and lookup cost, replaying `test/vectors/concept.json`, which is shared with
   the Mac app's Swift `ConceptKeyTests`; do not edit that file by hand.
 
+### Native Messaging & Reliability Hardening
+
+- **Single-port native caching:** Native messaging caches a single port per runtime and dynamically detects when `chrome.runtime.connectNative` appears after initial import, preventing duplicate connections or fallback mismatches.
+- **Probe timeout isolation:** Frame probe timeouts are spliced out upon expiration, preventing an expired probe timer from poisoning subsequent native communications.
+- **Bank cache generation invalidation:** `fresh()` increments bank generation counters and invalidates in-flight fetches so stale memoized banks cannot be stored.
+- **Manifest V3 answer import:** Answer import file pickers are bound strictly from script listeners, avoiding inline `onclick` handlers that violate MV3 CSP.
+
 `test/dom.html` includes real open-shadow-root cases (`shadow+frames`, and a dependent field that
 appears inside a shadow root mid-fill). Its fill-waits check, run by `test/live.ts`, measures how
 soon the fill acts after the widget renders its options (under 150 ms), not the total time:

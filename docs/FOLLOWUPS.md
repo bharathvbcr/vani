@@ -1932,11 +1932,12 @@ Left open:
     installed `vani` together.
   - **The anthropic provider's Keychain prompt is the launcher's** (`anthropic-account exec`) and is not
     bounded by the helper; a daemon that waits on it has not announced itself yet.
-- **Unsupported job sites.** Meta, Uber, Arm (iCIMS), Synopsys (Radancy), Aurora (custom),
-  Two Sigma (Avature) and Citadel (custom). Groq and Modular are Gem boards (`gm`,
-  `api.gem.com/job_board/v0/{token}/job_posts/`). Hugging Face is Workable (`wk`, token
-  `huggingface`). None of the three is on the watchlist until the installed `vani` accepts
-  that ATS, and `api.gem.com` and `apply.workable.com` are allowed hosts.
+- **Job sites and new adapters (built 2026-10-27).** Gem (`gm`: Groq, Modular), Workable (`wk`:
+  Hugging Face), Avature (`av`: Two Sigma), SmartRecruiters (`sr`: ServiceNow), Oracle HCM (`oc`:
+  JPMorgan Chase), IBM careers (`ib`: IBM, Confluent), D. E. Shaw (`ds`), Atlassian (`at`),
+  Rippling (`rp`), and XML job feeds (`fd`: Shopify) are now implemented as dedicated adapters
+  and merged to `main`. Remaining unsupported: Meta, Uber, Arm (iCIMS), Synopsys (Radancy),
+  Aurora (custom), Citadel (custom).
 - **An unnamed Swift test failure under load.** It was seen twice on 2026-10-22/23. The first time,
   the logo-cap agent's `swift test` ran beside a full Go run. The second time, the final-main
   `swift test` (642 tests, "1 failure (0 unexpected)") ran beside `bun test`. Neither run kept the
@@ -2020,3 +2021,29 @@ Left open:
 - **Behaviour of an older binary.** It never opens `stages.jsonl`: an applied posting at any stage reads as applied. If it applies the posting again, the applied time moves and the stage line stops naming it, so the posting reads as applied with no stage until the stage is set again. Rekey by an older binary leaves the stage under the old key. No older binary loses or misreads a mark.
 - **Left: `cmd/vani/jobsexport.go`** (untracked in the main checkout, another session's) should carry `stage`, `furthest_stage` and `stage_at` once it lands; they are on every job reply (`jobview.Job`).
 - **Left: the row badge** in the Jobs list still shows only the mark (applied); the stage is in the detail pane's Stage row and the row's context menu.
+
+## Audit 2026-10-26 remediation and new adapters landing (2026-10-27)
+
+- **Landed 10 new ATS & careers adapters:** Gem (`gm`), SmartRecruiters (`sr`), Oracle HCM (`oc`), IBM (`ib`), Avature (`av`), D. E. Shaw (`ds`), Atlassian (`at`), Rippling (`rp`), Workable (`wk`), and XML job feeds (`fd`). All wired through `config.ValidBoard`, `BoardHost`, the CLI, and extension ingestion recognition.
+- **Native Excel Workbook Export:** `vani jobs export` via `internal/xlsx` (standard library only), with inline string encoding to prevent formula injection (`=`), supporting `--top N`, selection flags, and `--keys-stdin`.
+- **All 18 confirmed findings / 19 tasks from AUDIT_REPORT.md (2026-10-26) resolved:**
+  - `last.json` symlink, FIFO, socket, and character device refusal via `readBoundedFile` (`ft-f2cc5108`).
+  - Daemon PID identity verification against process visibility, binary identity, and start time (`ft-0f3ac31c`).
+  - Rejection of symlink leaves in marks, impressions, and manual-triage readings (`ft-22d7da5f`).
+  - Scrubbing of spaced phone numbers, mailboxes, and work-authorization boilerplate from instructions and bullet text (`ft-c6f80c88`, `ft-948c9eb6`).
+  - Panic recovery in `guardedRun` finalizing run records as failed (`ft-84d4fe25`).
+  - Binary replacement watch on Windows and Unix (`ft-b7dacb8fd`).
+  - Idle embedder joins before model close (`ft-9b6a727a`).
+  - Int32 overflow guard for BankStore answer counters (`ft-d07a7b65`).
+  - 50MB BankStore file read cap check (`ft-2a67d27f`).
+  - Off-main-actor async disk operations for bank edits and activity logging (`ft-bafd7500`).
+  - Extension single native messaging port caching and frame probe timeout splicing (`ft-10c5bf90`).
+  - Extension bank cache generation handling with `fresh()` (`ft-f2c48591`).
+  - Script-bound answer import picker avoiding inline `onclick` (`ft-94364021`).
+  - Schedule agent SIGTERM wait reliability (`ft-8f7be158`).
+  - Rekey metadata validation before rename (`ft-0c907f4e`).
+  - Concurrent `requestRun` race prevention (`ft-dcd139bf`).
+  - History flush regular file Lstat check (`ft-17728c6f`).
+  - JSON-LD typed node selection improvements (`ft-e97abbbf`).
+  - Workday 3-digit pod parsing and Ashby GraphQL fallback.
+- **Merged to `main`:** Integrated via `audit-fixes` and merge commits `8ca5be6` and `c9bae07`.
