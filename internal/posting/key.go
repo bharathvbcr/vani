@@ -77,6 +77,12 @@ func IBMKey(board, jobID string) (Key, error) { return build(IBM, board, jobID) 
 // AvatureKey is av:{token}:{job_id}; the token is the board's own slug
 // ("twosigma"), the job id the number at the end of its JobDetail URL.
 func AvatureKey(token, jobID string) (Key, error) { return build(Avature, token, jobID) }
+// DEShawKey is ds:{board}:{id}, the id of deshaw.com's own job record.
+func DEShawKey(board, id string) (Key, error) { return build(DEShaw, board, id) }
+
+// AtlassianKey is at:{board}:{id}, the id of Atlassian's own job record (the
+// iCIMS job id in its portal URL).
+func AtlassianKey(board, id string) (Key, error) { return build(Atlassian, board, id) }
 
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
@@ -138,6 +144,7 @@ func (k Key) ATS() ATS {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, SmartRecruiters, Page, Other:
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, IBM, Page, Other:
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Avature, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, DEShaw, Atlassian, Page, Other:
 		return a
 	}
 	return ""

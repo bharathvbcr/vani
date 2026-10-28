@@ -68,6 +68,7 @@ func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem) or pg (careers page)")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), ib (IBM; tokens ibm and confluent) or pg (careers page)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), ds (D. E. Shaw), at (Atlassian) or pg (careers page)")
 	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; pg: a short slug)")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), sr (SmartRecruiters) or pg (careers page)")
 	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; pg: a short slug)")
@@ -214,6 +215,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm or pg")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, ds, at or pg")
 	token := fs.String("token", "", "board token")
 	if err := parse(fs, args); err != nil {
 		return err

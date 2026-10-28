@@ -36,6 +36,10 @@ const (
 	IBM ATS = "ib"
 
 	Avature ATS = "av" // an Avature careers portal (Two Sigma)
+	// DEShaw is D. E. Shaw's own careers page (deshaw.com/careers).
+	DEShaw ATS = "ds"
+	// Atlassian is Atlassian's own careers endpoint (atlassian.com/careers).
+	Atlassian ATS = "at"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

@@ -49,6 +49,7 @@ commands:
   watchlist add    --ats gh|lv|ab|wd|gm|pg --token T --company C [--region eu]
   watchlist add    --ats gh|lv|ab|wd|sr|pg --token T --company C [--region eu]
   watchlist add    --ats gh|lv|ab|wd|ib|pg --token T --company C [--region eu]
+  watchlist add    --ats gh|lv|ab|wd|ds|at|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
   watchlist add    --ats gh|lv|ab|wd|av|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--host H --url U] (av)

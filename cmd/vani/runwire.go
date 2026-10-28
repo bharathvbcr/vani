@@ -18,6 +18,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/atlassian"
+	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/gem"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
@@ -487,5 +489,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.SmartRecruiters: smartrecruiters.New(d),
 		posting.IBM:        ibm.New(d),
 		posting.Avature:    avature.New(d),
+		posting.DEShaw:     deshaw.New(d),
+		posting.Atlassian:  atlassian.New(d),
 	}
 }
