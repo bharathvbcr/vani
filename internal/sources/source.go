@@ -120,6 +120,22 @@ func WorkdaySiteHost(host string) bool {
 	return workdaySiteHost.MatchString(strings.ToLower(strings.TrimSpace(host)))
 }
 
+// oracleHCMHost is an Oracle Recruiting Cloud host, "{tenant}.fa.oraclecloud.com"
+// or "{tenant}.fa.{region}.oraclecloud.com" ("jpmc.fa.oraclecloud.com" and
+// "eeho.fa.us2.oraclecloud.com" answered on 2026-10-27).
+var oracleHCMHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.fa(?:\.[a-z]{2}[0-9]{1,2})?\.oraclecloud\.com$`)
+
+// OracleHCMHostTenant is the tenant, the first label, of an Oracle Recruiting
+// Cloud host as written (a bare host name, any case). ok is false for a port,
+// path, userinfo, other domain, other label layout or an empty label.
+func OracleHCMHostTenant(host string) (tenant string, ok bool) {
+	m := oracleHCMHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(host)))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // Board is one watchlist entry: a company's job board on one ATS, or its own
 // careers page.
 type Board struct {
@@ -175,8 +191,8 @@ type Board struct {
 	// the systems that have verified ones (see FilterKeys). Each search term
 	// is run with every filter applied.
 	Filters map[string][]string `json:"filters,omitempty"`
-	// MaxPostings sets the most postings the board may list, Workday only:
-	// zero is the adapter's default (workday.MaxPostings, 5,000), at most
+	// MaxPostings sets the most postings the board may list, Workday and Oracle
+	// HCM only: zero is the adapter's default (workday.MaxPostings, 5,000), at most
 	// MaxPostingsCeiling. Listing costs a request per 20 postings at the
 	// per-host pace (about a second each); detail requests are bounded per
 	// run apart from it (workday.MaxDetails). A board over its cap still
@@ -248,9 +264,9 @@ func (b Board) SearchTerms() []string {
 func (b Board) KeyPrefix() string {
 	token := strings.ToLower(strings.TrimSpace(b.Token))
 	switch b.ATS {
-	case posting.Workday:
+	case posting.Workday, posting.OracleHCM:
 		tenant, site, _ := strings.Cut(token, "/")
-		return string(posting.Workday) + ":" + tenant + ":" + site + ":"
+		return string(b.ATS) + ":" + tenant + ":" + site + ":"
 	default:
 		return string(b.ATS) + ":" + token + ":"
 	}

@@ -80,6 +80,18 @@ func TestSearchSiteKeys(t *testing.T) {
 	}
 }
 
+func TestOracleHCMKey(t *testing.T) {
+	k, err := OracleHCMKey("JPMC", "CX_1001", "210791916")
+	if err != nil || k != "oc:jpmc:cx_1001:210791916" || k.ATS() != OracleHCM {
+		t.Fatalf("%q %v (ATS %q), want oc:jpmc:cx_1001:210791916", k, err, k.ATS())
+	}
+	for _, bad := range [][3]string{{"", "s", "1"}, {"t", "", "1"}, {"t", "s", ""}, {"a:b", "s", "1"}, {"t", "a:b", "1"}, {"t", "s", "1:2"}} {
+		if _, err := OracleHCMKey(bad[0], bad[1], bad[2]); !errors.Is(err, ErrKeyPart) {
+			t.Errorf("OracleHCMKey(%q,%q,%q) err = %v, want ErrKeyPart", bad[0], bad[1], bad[2], err)
+		}
+	}
+}
+
 func TestMalformedKeyHasNoATS(t *testing.T) {
 	for _, k := range []Key{"", "nocolon", "zz:a:b"} {
 		if k.ATS() != "" {

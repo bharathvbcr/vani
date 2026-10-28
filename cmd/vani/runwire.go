@@ -27,6 +27,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
+	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
@@ -211,6 +212,18 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.SmartRecruiters] = sr
+	// Oracle HCM costs a detail request per posting too, bounded the same way.
+	oc, err := oraclehcm.NewWith(d, oraclehcm.Options{
+		Stored: w.storedFor,
+		Report: func(b sources.Board, st oraclehcm.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.OracleHCM] = oc
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -490,5 +503,6 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Avature:         avature.New(d),
 		posting.DEShaw:          deshaw.New(d),
 		posting.Atlassian:       atlassian.New(d),
+		posting.OracleHCM:       oraclehcm.New(d),
 	}
 }

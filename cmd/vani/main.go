@@ -46,8 +46,8 @@ commands:
                              stdin. The next run drops what they match and reopens what they
                              no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
-  watchlist add    --ats gh|lv|ab|wd|gm|sr|ib|av|ds|at|pg --token T --company C [--region eu]
-                   [--host H --search S] (workday) [--host H --url U] (av)
+  watchlist add    --ats gh|lv|ab|wd|gm|sr|ib|av|ds|at|oc|pg --token T --company C [--region eu]
+                   [--host H --search S] (workday, oc) [--host H --url U] (av)
                    [--url U --link-pattern RE] (pg)
                    [--domain HOST [--icon URL]] [--allow-host]
   watchlist remove --ats A --token T

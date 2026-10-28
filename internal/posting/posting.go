@@ -41,6 +41,8 @@ const (
 	DEShaw ATS = "ds"
 	// Atlassian is Atlassian's own careers endpoint (atlassian.com/careers).
 	Atlassian ATS = "at"
+	// OracleHCM is an Oracle Recruiting Cloud candidate-experience site.
+	OracleHCM ATS = "oc"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"
