@@ -808,6 +808,8 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.google.com", true
 	case posting.Apple:
 		return "jobs.apple.com", true
+	case posting.SmartRecruiters:
+		return "api.smartrecruiters.com", true
 	case posting.Workday, posting.Eightfold, posting.Jibe:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
@@ -875,6 +877,14 @@ func optionalSearchATS(a posting.ATS) bool { return a == posting.Workday || a ==
 // jibeClient matches a Jibe client code, a Jibe board's token.
 var jibeClient = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
+// smartRecruitersCompany matches a SmartRecruiters company identifier, a
+// board's token (smartrecruiters.tokenRE); srCountry the one two-letter ISO
+// code its country filter takes (the adapter lower-cases it).
+var (
+	smartRecruitersCompany = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`)
+	srCountry              = regexp.MustCompile(`^[A-Za-z]{2}$`)
+)
+
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
 func SingleBoardATS(a posting.ATS) bool {
@@ -941,9 +951,9 @@ const ScrapeSuffix = "-scrape"
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.SmartRecruiters, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, sr, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1005,6 +1015,21 @@ func ValidBoard(b sources.Board) error {
 		}
 		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
 			return fmt.Errorf("jibe board %s needs host, its careers site, e.g. careers.amd.com; got %q", b.Token, b.Host)
+		}
+	} else if b.ATS == posting.SmartRecruiters {
+		// The token is the company identifier, sent in the request path. The
+		// API answers zero postings for any country but one lower-case
+		// two-letter code, so a malformed one is refused here, not listed empty.
+		if !smartRecruitersCompany.MatchString(b.Token) {
+			return fmt.Errorf("smartrecruiters token %q must be the company identifier (letters, digits, '-' and '_'), e.g. servicenow", b.Token)
+		}
+		if b.Host != "" {
+			return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
+		}
+		for _, cc := range b.Filters["country"] {
+			if !srCountry.MatchString(cc) {
+				return fmt.Errorf("smartrecruiters board %s: country %q must be one two-letter ISO code such as us", b.Token, cc)
+			}
 		}
 	} else if b.ATS != posting.Workday && b.Host != "" {
 		return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
