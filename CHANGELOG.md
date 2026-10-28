@@ -23,8 +23,21 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 - **Ashby application-form summary** (`posting.Form`, `internal/applyform`): knock-out questions
   (sponsorship options, location lists, required essays and uploads) shown beside triage; annotation only.
 - **Spreadsheet export columns**: Stage, Furthest stage, Applied, Repeat apply and Repost.
+- **TikTok (`tt`) adapter**: lifeattiktok.com's own search API, one POST a page with descriptions in the
+  list, search terms and a country or city filter resolved through the site's city list.
+- **Radancy TalentBrew (`tb`) adapter** (Intuit, Citi): the site's sitemap and each job page's JSON-LD,
+  at most 150 job pages a board a run.
 
 ### Changed
+
+- **One bounded detail step** (`srcutil.PlanDetails`): Workday, SmartRecruiters, Oracle HCM, Rippling,
+  Avature and TalentBrew reuse stored postings, re-read each once in 30 days, skip new rows the title
+  rule drops, and spend at most a fixed number of detail requests a board a run. Rippling (every
+  detail every run before) and Avature (Bloomberg: 19 min a day) are new to it; Oracle HCM now
+  re-reads stored postings.
+- **Eightfold** reads the host's robots.txt before its first request of either API. A robots.txt that
+  cannot be read now fails the board.
+- **Avature**: boards of up to 400 postings (was 200), and Bloomberg's list and detail layout.
 
 - **Draft grounding**: spelled numbers, credentials and acronyms must occur in what the model was shown,
   and credentials and years of experience only in the seeker's own evidence, target text or notes (a
@@ -37,6 +50,10 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
+- **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and
+  jobPostingId agree on (Visa), and a stub listing row with no path or title is left out up to the
+  listing's shortfall (Mastercard, HPE).
+- **TalentBrew**: a JSON-LD block with raw control characters in its strings is read (Citi).
 
 ## [0.2.0] - 2026-10-27
 
