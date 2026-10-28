@@ -50,6 +50,9 @@ commands:
   watchlist add    --ats gh|lv|ab|wd|sr|pg --token T --company C [--region eu]
   watchlist add    --ats gh|lv|ab|wd|ib|pg --token T --company C [--region eu]
                    [--host H --search S] (workday) [--url U --link-pattern RE] (pg)
+  watchlist add    --ats gh|lv|ab|wd|av|pg --token T --company C [--region eu]
+                   [--host H --search S] (workday) [--host H --url U] (av)
+                   [--url U --link-pattern RE] (pg)
                    [--domain HOST [--icon URL]] [--allow-host]
   watchlist remove --ats A --token T
   watchlist domain --ats A --token T --domain HOST [--allow-host]

@@ -25,6 +25,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -422,6 +423,18 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		}
 		return sources.Board{ATS: posting.Workday, Token: segs[1] + "/" + segs[2], Company: company, Host: host,
 			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
+	}
+
+	// A page of an Avature portal already on the watchlist is that board. An
+	// Avature portal has no host of its own to recognise, so a host the owner
+	// has not added is a careers page like any other.
+	for _, x := range wl {
+		if x.ATS != posting.Avature || !strings.EqualFold(strings.TrimSpace(x.Host), host) {
+			continue
+		}
+		if lp, err := avature.ParseListURL(x.URL, x.Host); err == nil && lp.Portal == first {
+			return x, ingestSearchJSON{}
+		}
 	}
 
 	// Any other https page is a careers page, read by the pg adapter.

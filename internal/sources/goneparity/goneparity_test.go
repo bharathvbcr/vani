@@ -1,5 +1,6 @@
 // Package goneparity holds one table that puts Workday, Eightfold, Apple and
 // SmartRecruiters side by side on the same question: what does a detail that answers 404 (or
+// Avature side by side on the same question: what does a detail that answers 404 (or
 // fails otherwise) do to a board of n listed postings.
 package goneparity
 
@@ -19,6 +20,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
@@ -238,6 +240,49 @@ func smartrecruitersFake() fake {
 }
 
 func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake()} }
+// ---- avature ----
+
+func avatureFake() fake {
+	return fake{"avature", func(t *testing.T, n int, bad map[int]srctest.Reply) (sources.Source, sources.Board, *reports) {
+		rep := &reports{}
+		const host = "careers.twosigma.com"
+		detail := string(read(t, "../avature/testdata/detail.html"))
+		empty := read(t, "../avature/testdata/list-empty.html")
+		idOf := func(i int) string { return fmt.Sprint(14000 + i) }
+		d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+			u, _ := url.Parse(r.URL)
+			switch {
+			case u.Path == "/robots.txt":
+				return ok("User-agent: *\nAllow: /\n"), true
+			case u.Path == "/careers/OpenRoles/":
+				off := 0
+				fmt.Sscan(u.Query().Get("jobOffset"), &off)
+				if off >= n {
+					return srctest.Reply{Status: 200, Body: empty}, true
+				}
+				var b strings.Builder
+				b.WriteString(`<div class="results__panel">`)
+				for i := off; i < n && i < off+10; i++ {
+					link := "https://" + host + "/careers/JobDetail/Role-" + idOf(i) + "/" + idOf(i)
+					fmt.Fprintf(&b, `<article class="article article--result"><h3><a class="link" href="%s">Role %d</a></h3><span class="paragraph_inner-span">United States - NY New York</span></article>`, link, i)
+				}
+				return ok(b.String() + `</div>`), true
+			}
+			parts := strings.Split(u.Path, "/")
+			i := 0
+			fmt.Sscan(parts[len(parts)-1], &i)
+			i -= 14000
+			if rp, hit := bad[i]; hit {
+				return rp, true
+			}
+			return ok(strings.Replace(detail, "/13045\"", "/"+idOf(i)+"\"", 1)), true
+		})
+		s := avature.NewWith(d, avature.Options{Report: func(_ sources.Board, st avature.Stats) { rep.add(st.Listed, st.Gone) }, Wait: noWait})
+		return s, sources.Board{ATS: posting.Avature, Token: "twosigma", Company: "Two Sigma", Host: host, URL: "https://" + host + "/careers/OpenRoles"}, rep
+	}}
+}
+
+func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake(), avatureFake()} }
 
 func notFound() srctest.Reply { return srctest.Reply{Status: http.StatusNotFound, Body: []byte("{}")} }
 
@@ -253,7 +298,7 @@ func goneSet(k int) map[int]srctest.Reply {
 // gone, or every posting gone, fails the board.
 func wantFail(n, k int) bool { return k > max(1, n/10) || k == n }
 
-// The bound table, run on all three adapters: n at every integer-division
+// The bound table, run on every adapter: n at every integer-division
 // edge, gone at the bound, one over, and all.
 func TestGoneBoundParity(t *testing.T) {
 	for _, f := range all() {

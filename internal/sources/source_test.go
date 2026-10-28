@@ -44,6 +44,7 @@ func TestKeyPrefixForSearchSites(t *testing.T) {
 		{Board{ATS: posting.Jibe, Token: "AMD"}, "jb:amd:"},
 		{Board{ATS: posting.SmartRecruiters, Token: "ServiceNow"}, "sr:servicenow:"},
 		{Board{ATS: posting.IBM, Token: "Confluent"}, "ib:confluent:"},
+		{Board{ATS: posting.Avature, Token: "TwoSigma"}, "av:twosigma:"},
 		{Board{ATS: posting.Workday, Token: "nvidia/Site"}, "wd:nvidia:site:"},
 	} {
 		if got := tc.b.KeyPrefix(); got != tc.want {

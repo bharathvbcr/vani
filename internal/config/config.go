@@ -28,6 +28,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 )
 
@@ -816,6 +817,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 	case posting.IBM:
 		return "www-api.ibm.com", true
 	case posting.Workday, posting.Eightfold, posting.Jibe:
+	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
@@ -889,6 +891,8 @@ var (
 	smartRecruitersCompany = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`)
 	srCountry              = regexp.MustCompile(`^[A-Za-z]{2}$`)
 )
+// avatureToken matches an Avature board's token, the owner's slug for it.
+var avatureToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
@@ -965,6 +969,9 @@ func ValidBoard(b sources.Board) error {
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.Page:
 	default:
 		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, ib, pg", b.ATS)
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Avature, posting.Page:
+	default:
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, av, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1045,9 +1052,20 @@ func ValidBoard(b sources.Board) error {
 			if !srCountry.MatchString(cc) {
 				return fmt.Errorf("smartrecruiters board %s: country %q must be one two-letter ISO code such as us", b.Token, cc)
 			}
+	} else if b.ATS == posting.Avature {
+		// The token is the owner's slug, the host the portal's, and the url its
+		// listing page on that host: the portal path differs per customer.
+		if !avatureToken.MatchString(b.Token) {
+			return fmt.Errorf("avature token %q must be a lower-case slug of letters, digits and '-', e.g. twosigma", b.Token)
+		}
+		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
+			return fmt.Errorf("avature board %s needs host, its careers portal, e.g. careers.twosigma.com; got %q", b.Token, b.Host)
+		}
+		if _, err := avature.ParseListURL(b.URL, b.Host); err != nil {
+			return fmt.Errorf("avature board %s: %w", b.Token, err)
 		}
 	} else if b.ATS != posting.Workday && b.Host != "" {
-		return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
+		return fmt.Errorf("board %s/%s: host applies to wd, ef, jb and av only", b.ATS, b.Token)
 	}
 	if err := validSearches(b); err != nil {
 		return err
@@ -1071,8 +1089,8 @@ func ValidBoard(b sources.Board) error {
 		if _, err := regexp.Compile(b.LinkPattern); err != nil {
 			return fmt.Errorf("page board %s link_pattern: %v", b.Token, err)
 		}
-	} else if b.URL != "" || b.LinkPattern != "" {
-		return fmt.Errorf("board %s/%s: url and link_pattern apply to page boards only", b.ATS, b.Token)
+	} else if (b.URL != "" && b.ATS != posting.Avature) || b.LinkPattern != "" {
+		return fmt.Errorf("board %s/%s: url applies to pg and av boards, link_pattern to page boards only", b.ATS, b.Token)
 	}
 	switch b.Region {
 	case "":
