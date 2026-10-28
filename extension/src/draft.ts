@@ -31,9 +31,37 @@ export type DraftCode =
   | "bad_request" | "budget_exhausted" | "timeout" | "provider" | "empty_reply" | "ungrounded"
   | "config" | "kb" | "account" | "unsupported" | "unreachable" | "bad_reply" | "busy";
 
+/** What an `ungrounded` refusal found unbacked (draft.Kind* in vani's internal/draft). */
+export type UngroundedKind = "figure" | "years" | "credential" | "acronym";
+
 export type DraftReply =
   | { ok: true; draft: string; model: string; evidenceItems: number }
-  | { ok: false; code: DraftCode; error: string };
+  | { ok: false; code: DraftCode; error: string; kind?: UngroundedKind };
+
+const UNGROUNDED_WHAT: Record<UngroundedKind, string> = {
+  figure: "a figure (a number or a count)",
+  years: "a number of years of experience",
+  credential: "a credential (a degree, a certification or a licence)",
+  acronym: "an acronym",
+};
+/** Years and credentials are checked against what you wrote; the rest also against the posting. */
+const UNGROUNDED_WHERE: Record<UngroundedKind, string> = {
+  figure: "your knowledge base or the posting",
+  years: "your own records (knowledge base, target summary or notes)",
+  credential: "your own records (knowledge base, target summary or notes)",
+  acronym: "your knowledge base or the posting",
+};
+
+export function ungroundedKind(x: unknown): UngroundedKind | undefined {
+  return typeof x === "string" && Object.hasOwn(UNGROUNDED_WHAT, x) ? (x as UngroundedKind) : undefined;
+}
+
+/** What to tell the user about a draft refused for something unbacked; the generic wording when vani did not say what. */
+export function ungroundedHelp(kind?: UngroundedKind): string {
+  const tail = "so Vani threw it away. Try again, or write this answer yourself.";
+  if (!kind) return `The draft said something your records don't back (a figure, years of experience, a credential or an acronym), ${tail}`;
+  return `The draft named ${UNGROUNDED_WHAT[kind]} that isn't in ${UNGROUNDED_WHERE[kind]}, ${tail}`;
+}
 
 const HOST_CODES: ReadonlySet<string> = new Set([
   "bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "ungrounded", "config", "kb", "account", "unsupported",
@@ -46,7 +74,7 @@ export const DRAFT_HELP: Record<DraftCode, string> = {
   timeout: "The draft took too long. Try again.",
   provider: "The model provider returned an error. Try again later.",
   empty_reply: "The model returned an empty draft. Try again.",
-  ungrounded: "The draft cited a figure that isn't in your knowledge base or the posting, so Vani threw it away. Try again, or write this answer yourself.",
+  ungrounded: ungroundedHelp(),
   config: "Drafting isn't set up: Vani has no model or no Anthropic key configured.",
   kb: "Vani couldn't read your knowledge base for evidence.",
   account: "anthropic-account couldn't start Vani with an Anthropic key. Pick an account in the Vani Apply app's Settings, or run anthropic-account doctor.",
@@ -55,6 +83,11 @@ export const DRAFT_HELP: Record<DraftCode, string> = {
   bad_reply: "The Mac app sent a reply that isn't a draft.",
   busy: "Another draft is still being written. Wait for it to finish.",
 };
+
+/** What to tell the user for a failed reply: DRAFT_HELP, naming what was unbacked for an `ungrounded` one. */
+export function draftHelp(r: Extract<DraftReply, { ok: false }>): string {
+  return r.code === "ungrounded" ? ungroundedHelp(r.kind) : DRAFT_HELP[r.code];
+}
 
 /** The frame that was asked does not hold this question. */
 export const DRAFT_FIELD_ABSENT = "That question is not on this page.";
@@ -155,7 +188,8 @@ export function parseDraftReply(x: unknown): DraftReply {
   const r = x as Record<string, unknown>;
   if (typeof r.error === "string") {
     const code = typeof r.code === "string" && HOST_CODES.has(r.code) ? (r.code as DraftCode) : "provider";
-    return { ok: false, code, error: clip(r.error, 500) };
+    const kind = code === "ungrounded" ? ungroundedKind(r.kind) : undefined;
+    return kind ? { ok: false, code, error: clip(r.error, 500), kind } : { ok: false, code, error: clip(r.error, 500) };
   }
   if (typeof r.draft !== "string" || r.draft.trim() === "" || r.draft.length > MAX_DRAFT_CHARS) {
     return { ok: false, code: "bad_reply", error: DRAFT_HELP.bad_reply };

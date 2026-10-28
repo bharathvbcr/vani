@@ -9,7 +9,7 @@
 // (Safari unloads an idle background page; Chrome an idle worker).
 import { clean, clip, isRecord } from "./guards";
 import type { JobInfo } from "./draft";
-import { MAX_COMPANY_CHARS, MAX_DESCRIPTION_CHARS, MAX_TITLE_CHARS } from "./draft";
+import { MAX_COMPANY_CHARS, MAX_DESCRIPTION_CHARS, MAX_TITLE_CHARS, ungroundedHelp, ungroundedKind } from "./draft";
 
 export const MAX_FIELDS = 60;
 export const MAX_LABEL_CHARS = 1000;
@@ -51,7 +51,7 @@ export const JOB_HELP: Record<string, string> = {
   config: "Vani has no model or no Anthropic key configured (Vani Apply > Settings).",
   keychain: "Keychain access was denied, so Vani couldn't read its API key.",
   budget_exhausted: "Today's Claude budget is spent. Try again tomorrow.",
-  ungrounded: "The draft cited a figure that isn't in your knowledge base or the posting, so Vani threw it away. Try again, or write this answer yourself.",
+  ungrounded: ungroundedHelp(),
   bad_reply: "Vani sent a reply that isn't a suggestion.",
   unsupported: "This version of the Vani Apply app can't run suggestions. Rebuild and reopen it.",
   // Resume Studio's codes. Where vani's own message says more (no_model names why, ineligible names the bullet),
@@ -88,14 +88,15 @@ function str(x: unknown, n: number): string {
   return typeof x === "string" ? clip(x, n) : "";
 }
 
-function failure(code: string, error?: string): JobFailure {
+function failure(code: string, error?: string, kind?: unknown): JobFailure {
+  if (code === "ungrounded") return { ok: false, code, error: ungroundedHelp(ungroundedKind(kind)) };
   return { ok: false, code, error: JOB_HELP[code] ?? clip(error ?? "Vani refused the request.", 500) };
 }
 
 /** A host or agent error object as a failure; null when x is not one. */
 export function jobError(x: unknown): JobFailure | null {
   if (!isRecord(x) || typeof x.error !== "string") return null;
-  return failure(typeof x.code === "string" ? x.code : "provider", x.error);
+  return failure(typeof x.code === "string" ? x.code : "provider", x.error, x.kind);
 }
 
 /**
@@ -117,9 +118,12 @@ export function parseSuggestReply(x: unknown, asked: ReadonlySet<string>): Sugge
     if (status === "drafted" && (draft === "" || draft.length > MAX_DRAFT_CHARS)) continue;
     seen.add(f.id);
     const ev = f.evidence_items;
+    const code = str(f.code, 40);
+    // A refused draft says what was unbacked in the page's words, not with the host's message.
+    const reason = status === "failed" && code === "ungrounded" ? ungroundedHelp(ungroundedKind(f.kind)) : str(f.reason, 300);
     fields.push({
       id: f.id, status, draft,
-      category: str(f.category, 40), reason: str(f.reason, 300), model: str(f.model, 100), code: str(f.code, 40),
+      category: str(f.category, 40), reason, model: str(f.model, 100), code,
       evidenceItems: typeof ev === "number" && Number.isSafeInteger(ev) && ev >= 0 ? ev : 0,
     });
   }

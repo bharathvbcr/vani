@@ -74,10 +74,30 @@ const (
 	CodeUngrounded = "ungrounded"
 )
 
-// Error is a failure with a code the caller can act on.
+// Kinds say what a CodeUngrounded refusal found unbacked, for a caller that
+// words it (the extension, the Mac app); the message names it in prose too.
+const (
+	KindFigure     = "figure"     // a number or count
+	KindYears      = "years"      // a count of years, which only the seeker's own text backs
+	KindCredential = "credential" // a degree, certification or licence
+	KindAcronym    = "acronym"
+)
+
+// Error is a failure with a code the caller can act on. Kind is set only on
+// CodeUngrounded.
 type Error struct {
 	Code string
+	Kind string
 	Err  error
+}
+
+// KindOf is the Kind of the *Error in err's chain, or "" when there is none.
+func KindOf(err error) string {
+	var de *Error
+	if errors.As(err, &de) {
+		return de.Kind
+	}
+	return ""
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
@@ -280,7 +300,7 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 		if f.seekerOnly {
 			where = "the evidence, the target text or the seeker's notes"
 		}
-		return Result{}, fail(CodeUngrounded, "the draft says %q%s, which is not in %s; refusing %s the seeker's record does not support", fig, more, where, f.what)
+		return Result{}, &Error{Code: CodeUngrounded, Kind: f.kind(), Err: fmt.Errorf("draft: the draft says %q%s, which is not in %s; refusing %s the seeker's record does not support", fig, more, where, f.what)}
 	}
 	return Result{Draft: text, Model: d.cfg.Model, EvidenceItems: len(ev)}, nil
 }

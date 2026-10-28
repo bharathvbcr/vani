@@ -58,6 +58,8 @@ type Suggestion struct {
 	Model         string `json:"model,omitempty"`
 	EvidenceItems int    `json:"evidence_items,omitempty"`
 	Code          string `json:"code,omitempty"`
+	// Kind says what a draft.CodeUngrounded refusal found unbacked (draft.Kind*).
+	Kind string `json:"kind,omitempty"`
 }
 
 // Drafter writes one draft (draft.Drafter in production).
@@ -175,7 +177,7 @@ func (e Engine) Run(ctx context.Context, req Request) ([]Suggestion, error) {
 				if errors.As(err, &de) {
 					code = de.Code
 				}
-				s.Status, s.Code, s.Reason = Failed, code, err.Error()
+				s.Status, s.Code, s.Kind, s.Reason = Failed, code, draft.KindOf(err), err.Error()
 				// A spent budget or a cancelled request will refuse every later draft too.
 				if code == draft.CodeBudget || ctx.Err() != nil {
 					stop = code

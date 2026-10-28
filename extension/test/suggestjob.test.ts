@@ -75,10 +75,39 @@ describe("parseSuggestReply", () => {
     expect(parseSuggestReply({ error: "spent", code: "budget_exhausted" }, asked)).toEqual({ ok: false, code: "budget_exhausted", error: JOB_HELP.budget_exhausted! });
     expect(parseSuggestReply({ error: "x".repeat(900), code: "weird" }, asked)).toMatchObject({ ok: false, code: "weird" });
     expect(parseSuggestReply({ error: "draft: the draft says \"73%\"", code: "ungrounded" }, asked)).toEqual({ ok: false, code: "ungrounded", error: JOB_HELP.ungrounded! });
+    // A refusal for something unbacked is worded by its kind, never as a figure when it was not one.
+    const credential = parseSuggestReply({ error: "draft: x", code: "ungrounded", kind: "credential" }, asked);
+    expect(!credential.ok && credential.error).toMatch(/a credential.*your own records/);
+    expect(!credential.ok && credential.error).not.toMatch(/cited a figure/);
+    expect(parseSuggestReply({ error: "draft: x", code: "ungrounded", kind: "nonsense" }, asked)).toEqual({ ok: false, code: "ungrounded", error: JOB_HELP.ungrounded! });
     // An unknown code keeps the host's own text, clipped, so nothing is lost.
     const weird = parseSuggestReply({ error: "x".repeat(900), code: "weird" }, asked);
     expect(!weird.ok && weird.error.length).toBe(500);
     for (const junk of [null, "text", [], { fields: "no" }, {}]) expect(parseSuggestReply(junk, asked).ok).toBe(false);
+  });
+});
+
+describe("a failed field refused for an unbacked claim", () => {
+  const asked = new Set(["f0", "f1", "f2"]);
+  const failed = (extra: object) => ({ id: "f0", status: "failed", code: "ungrounded", reason: "draft: the draft says \"PhD\", which is not in the evidence", ...extra });
+
+  test("says what was unbacked, by kind", () => {
+    for (const [kind, re] of [["figure", /a figure/], ["years", /years of experience/], ["credential", /a credential/], ["acronym", /an acronym/]] as const) {
+      const r = parseSuggestReply({ fields: [failed({ kind })] }, asked);
+      if (!r.ok) throw new Error("not a suggestion");
+      expect(r.fields[0]!.code).toBe("ungrounded");
+      expect(r.fields[0]!.reason).toMatch(re);
+      expect(r.fields[0]!.reason).not.toContain("draft says");
+    }
+  });
+
+  test("a missing or unknown kind is worded generally, and another failure keeps the host's reason", () => {
+    for (const kind of [undefined, "weird", 4]) {
+      const r = parseSuggestReply({ fields: [failed({ kind })] }, asked);
+      expect(r.ok && r.fields[0]!.reason).toBe(JOB_HELP.ungrounded!);
+    }
+    const t = parseSuggestReply({ fields: [{ id: "f1", status: "failed", code: "timeout", reason: "no reply within 90s", kind: "figure" }] }, asked);
+    expect(t.ok && t.fields[0]!.reason).toBe("no reply within 90s");
   });
 });
 

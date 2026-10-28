@@ -16,7 +16,7 @@ import {
 } from "./store";
 import { type FillReply, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
 import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
-import { DRAFT_HELP, createDrafter } from "./draft";
+import { createDrafter, draftHelp } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
 import { parseFindRow } from "./jobrow";
 import { checkResumeFile, checkResumeName, resumeKey, runResume } from "./resume";
@@ -427,7 +427,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
         typeof msg.maxWords === "number" ? msg.maxWords : undefined,
         typeof msg.attempt === "number" ? msg.attempt : 0);
       // The user sees our explanation; the host's own text is kept only where it adds detail.
-      if (!r.ok && r.code !== "provider" && r.code !== "bad_request") return { ...r, error: DRAFT_HELP[r.code] };
+      if (!r.ok && r.code !== "provider" && r.code !== "bad_request") return { ...r, error: draftHelp(r) };
       return r;
     }
     case "jobStart": {

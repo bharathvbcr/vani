@@ -33,6 +33,8 @@ type draftReply struct {
 	EvidenceItems int    `json:"evidence_items,omitempty"`
 	Error         string `json:"error,omitempty"`
 	Code          string `json:"code,omitempty"`
+	// Kind says what a draft.CodeUngrounded refusal found unbacked (draft.Kind*).
+	Kind string `json:"kind,omitempty"`
 }
 
 // Codes `vani draft` adds to draft's own.
@@ -53,7 +55,7 @@ func (e *env) cmdDraft(args []string) error {
 	res, code, err := e.draftOnce()
 	reply := draftReply{Draft: res.Draft, Model: res.Model, EvidenceItems: res.EvidenceItems}
 	if err != nil {
-		reply = draftReply{Error: err.Error(), Code: code}
+		reply = draftReply{Error: err.Error(), Code: code, Kind: draft.KindOf(err)}
 	}
 	enc := json.NewEncoder(e.stdout)
 	enc.SetEscapeHTML(false)
