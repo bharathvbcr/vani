@@ -436,6 +436,96 @@ func TestServeRunRequestLeavesItOnShutdown(t *testing.T) {
 	}
 }
 
+// restartingServe serves the waiting request with a run that does what
+// dailyJob does when its reload finds a replaced binary: in a daemon (bound)
+// it cancels with errConfigRestart and returns nil; unbound it returns the
+// error. before runs inside the run, while the request is claimed.
+func restartingServe(t *testing.T, stateDir string, bound bool, before func()) (string, error) {
+	t.Helper()
+	var stderr bytes.Buffer
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: &stderr}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	if bound {
+		e.bindRestart(cancel)
+	}
+	var mu sync.Mutex
+	err := e.serveRunRequest(ctx, func(context.Context, runOptions) error {
+		if before != nil {
+			before()
+		}
+		if bound {
+			e.requestConfigRestart()
+			return nil
+		}
+		return errConfigRestart
+	}, &mu)
+	return stderr.String(), err
+}
+
+// A run that stops because the daemon must restart (its binary was replaced, a
+// pinned setting changed) made no run, so the request goes back as it was and
+// the next daemon runs it; the log says so. Unbound (run-once wiring) the
+// returned errConfigRestart does the same.
+func TestServeRunRequestRequeuesOnRestart(t *testing.T) {
+	for _, bound := range []bool{true, false} {
+		t.Run(fmt.Sprintf("bound=%v", bound), func(t *testing.T) {
+			_, stateDir := setup(t)
+			raw := requestJSON(t, runRequest{V: 1, RequestedAt: time.Now().Add(-time.Second)})
+			writeRequestFile(t, stateDir, raw)
+			stderr, err := restartingServe(t, stateDir, bound, nil)
+			if err != nil {
+				t.Errorf("err %v", err)
+			}
+			got, rerr := os.ReadFile(runsPath(stateDir, runRequestFile))
+			if rerr != nil || !bytes.Equal(got, raw) {
+				t.Errorf("the request did not go back as it was: %v\n%s", rerr, got)
+			}
+			if requestExists(stateDir, runClaimedFile) {
+				t.Error("the claim outlived the restart")
+			}
+			if !strings.Contains(stderr, "waits for the next daemon") {
+				t.Errorf("stderr %q", stderr)
+			}
+		})
+	}
+}
+
+// A newer request written while the claimed one waited on the restart is the
+// owner's latest ask: it stays, and the claimed one is dropped, not run twice.
+func TestServeRunRequestRequeueKeepsANewerRequest(t *testing.T) {
+	_, stateDir := setup(t)
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now().Add(-time.Minute)}))
+	newer := requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()})
+	stderr, err := restartingServe(t, stateDir, true, func() { writeRequestFile(t, stateDir, newer) })
+	if err != nil {
+		t.Errorf("err %v", err)
+	}
+	if got, rerr := os.ReadFile(runsPath(stateDir, runRequestFile)); rerr != nil || !bytes.Equal(got, newer) {
+		t.Errorf("the newer request was not kept: %v\n%s", rerr, got)
+	}
+	if requestExists(stateDir, runClaimedFile) {
+		t.Error("the claim outlived the restart")
+	}
+	if !strings.Contains(stderr, "newer request") {
+		t.Errorf("stderr %q", stderr)
+	}
+}
+
+// A run that finished before a signal stopped the daemon was made: the request
+// is not put back, or the next daemon would make it a second time.
+func TestServeRunRequestDoesNotRequeueAFinishedRun(t *testing.T) {
+	_, stateDir := setup(t)
+	writeRequestFile(t, stateDir, requestJSON(t, runRequest{V: 1, RequestedAt: time.Now()}))
+	e := &env{stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	err := e.serveRunRequest(ctx, func(context.Context, runOptions) error { cancel(); return nil }, &mu)
+	if err != nil || requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
+		t.Errorf("err %v, pending %v, claimed %v", err, requestExists(stateDir, runRequestFile), requestExists(stateDir, runClaimedFile))
+	}
+}
+
 // daemonRun is a daemon test's view of the runs its app made.
 type daemonRun struct {
 	mu        sync.Mutex

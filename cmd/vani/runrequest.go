@@ -267,8 +267,9 @@ func (e *env) pollRequestLoop(ctx context.Context, run func(context.Context, run
 
 // serveRunRequest runs the pending request, if any, holding mu for the claim
 // and the run. A request that cannot be honoured (unreadable, stale, invalid)
-// is removed and reported, and no run is made. The error is the run's, or why
-// the request was dropped; nil when there was none.
+// is removed and reported, and no run is made. One the daemon claimed but must
+// restart before running is put back (requeueRequest). The error is the run's,
+// or why the request was dropped; nil when there was none.
 func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, runOptions) error, mu *sync.Mutex) (err error) {
 	path, claimed := runsPath(e.stateDir, runRequestFile), runsPath(e.stateDir, runClaimedFile)
 	if _, err := os.Lstat(path); err != nil {
@@ -314,7 +315,35 @@ func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, run
 			err = fmt.Errorf("manual run panicked: %s", panicText(p))
 		}
 	}()
-	return run(ctx, req.Options)
+	err = run(ctx, req.Options)
+	if errors.Is(err, daemon.ErrFatal) {
+		return err
+	}
+	// A restart is not a run: dailyJob's reload found a replaced binary or a
+	// pinned config change and stopped before the pipeline (returning nil when
+	// it cancelled the daemon). The cause can only be this run's own reload,
+	// because every other reloadConfig caller holds mu. The request goes back
+	// for the daemon that starts next, instead of vanishing with the claim.
+	if errors.Is(err, errConfigRestart) || errors.Is(context.Cause(ctx), errConfigRestart) {
+		return e.requeueRequest(claimed, path)
+	}
+	return err
+}
+
+// requeueRequest puts a claimed request back as the pending one; the caller's
+// deferred remove then drops the claimed name. A request written while this one
+// was claimed is the owner's latest ask and is kept, and the claimed one is
+// dropped rather than run as well. The link fails rather than replace it.
+func (e *env) requeueRequest(claimed, path string) error {
+	if err := os.Link(claimed, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			fmt.Fprintln(e.stderr, "vani: run request: not run, the daemon is restarting; a newer request waits for the next daemon")
+			return nil
+		}
+		return fmt.Errorf("dropped, no run made: the daemon is restarting and putting the request back failed: %w", err)
+	}
+	fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request waits for the next daemon")
+	return nil
 }
 
 // runRequestReply is `vani run-request --json`'s answer.
