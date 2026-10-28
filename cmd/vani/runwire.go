@@ -18,10 +18,14 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/feed"
+	"github.com/bharathvbcr/Vani/internal/sources/gem"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
+	"github.com/bharathvbcr/Vani/internal/sources/rippling"
+	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -457,5 +461,9 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Apple:      apple.New(d),
 		posting.Eightfold:  eightfold.New(d),
 		posting.Jibe:       jibe.New(d),
+		posting.Rippling:   rippling.New(d),
+		posting.Workable:   workable.New(d),
+		posting.Gem:        gem.New(d),
+		posting.Feed:       feed.New(d),
 	}
 }

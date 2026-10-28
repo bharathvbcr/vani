@@ -1932,8 +1932,11 @@ Left open:
     installed `vani` together.
   - **The anthropic provider's Keychain prompt is the launcher's** (`anthropic-account exec`) and is not
     bounded by the helper; a daemon that waits on it has not announced itself yet.
-- **Unsupported job sites.** Meta, Uber, Groq (Gem), Hugging Face (Workable), Modular (no board),
-  Arm (iCIMS), Synopsys (Radancy), Aurora (custom), Two Sigma (Avature) and Citadel (custom).
+- **Unsupported job sites.** Meta, Uber, Arm (iCIMS), Synopsys (Radancy), Aurora (custom),
+  Two Sigma (Avature) and Citadel (custom). Groq and Modular are Gem boards (`gm`,
+  `api.gem.com/job_board/v0/{token}/job_posts/`). Hugging Face is Workable (`wk`, token
+  `huggingface`). None of the three is on the watchlist until the installed `vani` accepts
+  that ATS, and `api.gem.com` and `apply.workable.com` are allowed hosts.
 - **An unnamed Swift test failure under load.** It was seen twice on 2026-10-22/23. The first time,
   the logo-cap agent's `swift test` ran beside a full Go run. The second time, the final-main
   `swift test` (642 tests, "1 failure (0 unexpected)") ran beside `bun test`. Neither run kept the

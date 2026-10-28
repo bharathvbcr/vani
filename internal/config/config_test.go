@@ -774,6 +774,56 @@ func TestBoardTokenCannotEndInTheScrapeSuffix(t *testing.T) {
 	}
 }
 
+func TestRipplingWorkableAndFeedBoards(t *testing.T) {
+	boards := []sources.Board{
+		{ATS: posting.Rippling, Token: "aalo-atomics", Company: "Aalo"},
+		{ATS: posting.Workable, Token: "huggingface", Company: "Hugging Face"},
+		{ATS: posting.Feed, Token: "shopify", Company: "Shopify", URL: "https://www.shopify.com/careers/feed.xml"},
+		{ATS: posting.Gem, Token: "groq", Company: "Groq"},
+	}
+	for _, b := range boards {
+		if err := ValidBoard(b); err != nil {
+			t.Errorf("%s/%s: %v", b.ATS, b.Token, err)
+		}
+	}
+	hosts := []string{"api.rippling.com", "apply.workable.com", "www.shopify.com", "api.gem.com"}
+	for i, want := range hosts {
+		if h, ok := BoardHost(boards[i]); !ok || h != want {
+			t.Errorf("%s host %q, %v", boards[i].ATS, h, ok)
+		}
+	}
+	c := valid()
+	c.Watchlist = append(c.Watchlist, boards...)
+	c.AllowedHosts = append(c.AllowedHosts, hosts...)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hosts {
+		if !slices.Contains(c.RequiredHosts(), h) {
+			t.Errorf("RequiredHosts lacks %s", h)
+		}
+	}
+	bad := []struct {
+		name, want string
+		b          sources.Board
+	}{
+		{"http feed", "needs an https url", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "http://www.shopify.com/feed.xml"}},
+		{"feed userinfo", "needs an https url", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://user@www.shopify.com/feed.xml"}},
+		{"feed without url", "needs an https url", sources.Board{ATS: posting.Feed, Token: "shopify"}},
+		{"feed link pattern", "link_pattern", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://www.shopify.com/feed.xml", LinkPattern: "job"}},
+		{"rippling url", "page boards only", sources.Board{ATS: posting.Rippling, Token: "acme", URL: "https://ats.rippling.com/acme"}},
+		{"workable search", "search applies", sources.Board{ATS: posting.Workable, Token: "acme", Search: "engineer"}},
+		{"gem search", "search applies", sources.Board{ATS: posting.Gem, Token: "groq", Search: "engineer"}},
+		{"gem url", "page boards only", sources.Board{ATS: posting.Gem, Token: "groq", URL: "https://jobs.gem.com/groq"}},
+		{"feed host field", "host applies", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://www.shopify.com/feed.xml", Host: "www.shopify.com"}},
+	}
+	for _, tc := range bad {
+		if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 func TestWorkdayAndPageBoardsValid(t *testing.T) {
 	c := valid()
 	c.Watchlist = append(c.Watchlist,

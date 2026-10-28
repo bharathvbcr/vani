@@ -313,6 +313,12 @@ func GetJSONLimit(ctx context.Context, d egress.Doer, rawURL string, limit int64
 // GetJSON's contract. It is for read-only search endpoints (a Workday
 // listing): a 429 or 503 resends the same body.
 func PostJSON(ctx context.Context, d egress.Doer, rawURL string, body any, header http.Header, v any) error {
+	return PostJSONLimit(ctx, d, rawURL, body, header, maxBody, v)
+}
+
+// PostJSONLimit is PostJSON with a body cap of limit bytes (at most MaxBody),
+// for one posting's document when a whole board's allowance is far too much.
+func PostJSONLimit(ctx context.Context, d egress.Doer, rawURL string, body any, header http.Header, limit int64, v any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("sources: encode request: %w", err)
@@ -322,7 +328,10 @@ func PostJSON(ctx context.Context, d egress.Doer, rawURL string, body any, heade
 		h = http.Header{}
 	}
 	h.Set("Content-Type", "application/json")
-	return DoJSON(ctx, d, http.MethodPost, rawURL, payload, h, v)
+	if limit <= 0 || limit > maxBody {
+		limit = maxBody
+	}
+	return doJSON(ctx, d, http.MethodPost, rawURL, payload, h, limit, v)
 }
 
 // DoJSON sends one request through d and decodes the JSON reply into v. It is
@@ -354,7 +363,20 @@ func doJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []by
 // GetBody GETs rawURL and returns the body under DoJSON's status, body-cap
 // and retry rules, for sources that read an HTML page rather than an API.
 func GetBody(ctx context.Context, d egress.Doer, rawURL string) ([]byte, error) {
-	return fetch(ctx, d, http.MethodGet, rawURL, nil, nil, "text/html,application/xhtml+xml", maxBody)
+	return GetBodyLimit(ctx, d, rawURL, "text/html,application/xhtml+xml", maxBody)
+}
+
+// GetBodyLimit is GetBody with an Accept header and a body cap of limit
+// bytes (at most MaxBody). A feed asks for XML and a cap well under MaxBody
+// so one document cannot take a whole board's allowance.
+func GetBodyLimit(ctx context.Context, d egress.Doer, rawURL, accept string, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > maxBody {
+		limit = maxBody
+	}
+	if accept == "" {
+		accept = "application/xml, text/xml"
+	}
+	return fetch(ctx, d, http.MethodGet, rawURL, nil, nil, accept, limit)
 }
 
 // fetch is DoJSON's request: it asks ctx's HostThrottle (WithHostThrottle)

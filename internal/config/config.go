@@ -802,6 +802,12 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "api.lever.co", true
 	case posting.Ashby:
 		return "api.ashbyhq.com", true
+	case posting.Rippling:
+		return "api.rippling.com", true
+	case posting.Workable:
+		return "apply.workable.com", true
+	case posting.Gem:
+		return "api.gem.com", true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -812,7 +818,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
-	case posting.Page:
+	case posting.Page, posting.Feed:
 		if u, err := url.Parse(b.URL); err == nil && u.Hostname() != "" {
 			return strings.ToLower(u.Hostname()), true
 		}
@@ -955,13 +961,23 @@ func validSearches(b sources.Board) error {
 // those records.
 const ScrapeSuffix = "-scrape"
 
+// httpsBoardURL requires the https URL a page or feed board is fetched from.
+func httpsBoardURL(kind string, b sources.Board) error {
+	u, err := url.Parse(b.URL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("%s board %s needs an https url, got %q", kind, b.Token, b.URL)
+	}
+	return nil
+}
+
 // ValidBoard checks a single watchlist entry.
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
+		posting.Rippling, posting.Workable, posting.Gem, posting.Feed, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, rp, wk, gm, fd, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1039,15 +1055,21 @@ func ValidBoard(b sources.Board) error {
 		}
 	}
 	if b.ATS == posting.Page {
-		u, err := url.Parse(b.URL)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
-			return fmt.Errorf("page board %s needs an https url, got %q", b.Token, b.URL)
+		if err := httpsBoardURL("page", b); err != nil {
+			return err
 		}
 		if b.LinkPattern == "" || len(b.LinkPattern) > maxLinkPattern {
 			return fmt.Errorf("page board %s needs a link_pattern of 1..%d bytes", b.Token, maxLinkPattern)
 		}
 		if _, err := regexp.Compile(b.LinkPattern); err != nil {
 			return fmt.Errorf("page board %s link_pattern: %v", b.Token, err)
+		}
+	} else if b.ATS == posting.Feed {
+		if err := httpsBoardURL("feed", b); err != nil {
+			return err
+		}
+		if b.LinkPattern != "" {
+			return fmt.Errorf("board %s/%s: link_pattern applies to page boards only", b.ATS, b.Token)
 		}
 	} else if b.URL != "" || b.LinkPattern != "" {
 		return fmt.Errorf("board %s/%s: url and link_pattern apply to page boards only", b.ATS, b.Token)

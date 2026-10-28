@@ -29,6 +29,18 @@ const (
 	Eightfold ATS = "ef"
 	// Jibe is an iCIMS Jibe careers site (AMD).
 	Jibe ATS = "jb"
+	// Rippling is a Rippling board (api.rippling.com). The token is the
+	// board slug.
+	Rippling ATS = "rp"
+	// Workable is a Workable account (apply.workable.com). The token is the
+	// account slug.
+	Workable ATS = "wk"
+	// Gem is a Gem job board (api.gem.com/job_board/v0). The token is the
+	// vanity path on jobs.gem.com, for example groq or modular.
+	Gem ATS = "gm"
+	// Feed is one https XML job feed the owner names. The token is a short
+	// slug; the posting id is the feed's partner job id.
+	Feed ATS = "fd"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"
