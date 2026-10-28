@@ -20,14 +20,30 @@ func RobotsAllows(ctx context.Context, d egress.Doer, host, path string) (bool, 
 }
 
 func robotsAllows(ctx context.Context, d egress.Doer, host, path string, timeout time.Duration) (bool, error) {
-	body, found, err := readRobots(ctx, d, host, timeout, "whether it permits this path is unknown")
+	got, err := robotsAllowsPaths(ctx, d, host, []string{path}, timeout)
 	if err != nil {
 		return false, err
 	}
-	if !found {
-		return true, nil
+	return got[0], nil
+}
+
+// RobotsAllowsPaths is RobotsAllows for several paths of one host from a
+// single read of its robots.txt: the answers are in the order of paths, and an
+// error answers none of them.
+func RobotsAllowsPaths(ctx context.Context, d egress.Doer, host string, paths ...string) ([]bool, error) {
+	return robotsAllowsPaths(ctx, d, host, paths, robotsTimeout)
+}
+
+func robotsAllowsPaths(ctx context.Context, d egress.Doer, host string, paths []string, timeout time.Duration) ([]bool, error) {
+	body, found, err := readRobots(ctx, d, host, timeout, "whether it permits this path is unknown")
+	if err != nil {
+		return nil, err
 	}
-	return parseAllowed(body, robotsAgent, path), nil
+	out := make([]bool, len(paths))
+	for i, p := range paths {
+		out[i] = !found || parseAllowed(body, robotsAgent, p)
+	}
+	return out, nil
 }
 
 // parseAllowed applies RFC 9309 §2.2 to the robots.txt groups that apply to

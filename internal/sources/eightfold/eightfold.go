@@ -10,17 +10,23 @@
 //	GET https://{host}/api/pcsx/search?domain={domain}&query={term}&start={n}&num=10
 //	GET https://{host}/api/pcsx/position_details?position_id={id}&domain={domain}&hl=en
 //
-// v2 (Netflix), used only when the first pcsx search of a board answers 403:
+// v2 (Netflix, Millennium), used when the first pcsx search of a board answers
+// 403, or when the host's robots.txt disallows pcsx:
 //
 //	GET https://{host}/api/apply/v2/jobs?domain={domain}&query={term}&start={n}&num=10
 //	GET https://{host}/api/apply/v2/jobs/{id}?domain={domain}
 //
-// The board token is the company's domain and Host its careers site. Both
-// APIs are Allow:ed in the robots.txt of all three sites, but a v2 request is
-// sent only after the host's own robots.txt is read and permits
-// /api/apply/v2/jobs. Search results carry no description (v2 rows have an
-// empty job_description), so each posting costs a details request; a term over
-// the board cap fails the board rather than being truncated.
+// The board token is the company's domain and Host its careers site. The
+// robots.txt of Microsoft, Qualcomm, Netflix and Millennium Allow both APIs
+// (read 2026-10-28), but the host's own robots.txt is read first anyway, once
+// per board and before any API request, and a request is sent only to an API
+// whose paths it permits: /api/pcsx/search and /api/pcsx/position_details for
+// pcsx, /api/apply/v2/jobs and /api/apply/v2/jobs/ for v2. A host that
+// disallows pcsx is read through v2 without a pcsx request; one that disallows
+// both, or whose robots.txt cannot be read, fails the board with nothing
+// requested. Search results carry no description (v2 rows have an empty
+// job_description), so each posting costs a details request; a term over the
+// board cap fails the board rather than being truncated.
 //
 // A board is read through one API end to end: ids of the two are never mixed,
 // and a 403 after the first pcsx search answered is an outage, not a reason to
@@ -62,8 +68,11 @@ const (
 	v2SearchMaxBody = 4 << 20
 	v2DetailMaxBody = 2 << 20
 
-	// v2Path is the robots.txt path the v2 requests fall under.
-	v2Path = "/api/apply/v2/jobs"
+	// pcsxRoot and v2Root are the robots.txt prefixes each API's requests fall
+	// under; v2Path is the v2 search path.
+	pcsxRoot = "/api/pcsx/"
+	v2Root   = "/api/apply/v2/"
+	v2Path   = v2Root + "jobs"
 
 	// paceEvery spaces a board's requests. Neither Microsoft's nor
 	// Qualcomm's robots.txt sets a Crawl-delay (2026-10-20); Qualcomm's
@@ -101,8 +110,8 @@ func maxGone(n int) int { return max(1, n/10) }
 type Stats struct {
 	Listed int `json:"listed"`
 	Gone   int `json:"gone,omitempty"`
-	// V2 is set when the board was read through /api/apply/v2 because its
-	// pcsx search answered 403.
+	// V2 is set when the board was read through /api/apply/v2: its pcsx search
+	// answered 403, or its host's robots.txt disallows pcsx.
 	V2 bool `json:"v2,omitempty"`
 }
 
@@ -248,7 +257,18 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("eightfold %q: %w", b.Token, err)
 	}
 	pace := &srcutil.Pacer{Every: paceEvery, Budget: paceBudget, Sleep: s.wait}
+	// The host's robots.txt comes first, before a request to either API.
+	acc, err := s.robots(ctx, pace, host)
+	if err != nil {
+		return nil, fmt.Errorf("eightfold %q: nothing was requested, robots.txt of %s could not be read: %w", b.Token, host, err)
+	}
 	a := pcsxAPI(host, pace)
+	switch {
+	case !acc.pcsx && !acc.v2:
+		return nil, fmt.Errorf("eightfold %q: robots.txt of %s disallows both %s and %s; nothing was requested", b.Token, host, pcsxRoot, v2Root)
+	case !acc.pcsx:
+		a = v2API(host, pace) // no pcsx request: it is not permitted
+	}
 	var ids []listing
 	have := map[string]bool{}
 	for i, term := range terms {
@@ -258,7 +278,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			// The site does not serve pcsx. Read the whole board through v2 from
 			// this term on; a v2 that fails too reports both.
 			a = v2API(host, pace)
-			got, err = s.searchV2(ctx, a, host, domain, term, b.Filters, denied)
+			got, err = s.searchV2(ctx, a, host, domain, term, b.Filters, denied, acc.v2)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("eightfold %q: search %q: %w", b.Token, term, err)
@@ -376,23 +396,39 @@ func (s *source) searchPage(ctx context.Context, a api, u string, sd *searchData
 	return s.get(ctx, a.pace, u, sd)
 }
 
+// access is what a host's robots.txt permits Vani to request: every path of
+// each API a board needs.
+type access struct{ pcsx, v2 bool }
+
+// robots reads host's robots.txt once, paced as a request of the board, and
+// answers for both APIs from that one read. An unreadable robots.txt is an
+// error (page.RobotsAllowsPaths), not permission.
+func (s *source) robots(ctx context.Context, pace *srcutil.Pacer, host string) (access, error) {
+	if err := pace.Wait(ctx); err != nil {
+		return access{}, err
+	}
+	paths := []string{pcsxRoot + "search", pcsxRoot + "position_details", v2Path, v2Path + "/"}
+	ok, err := page.RobotsAllowsPaths(ctx, s.d, host, paths...)
+	if err != nil {
+		return access{}, err
+	}
+	return access{pcsx: ok[0] && ok[1], v2: ok[2] && ok[3]}, nil
+}
+
 // searchV2 is the search of a board whose pcsx search answered 403 (denied):
-// the term read through v2, provided the host's robots.txt permits it. Every
-// way it can fail reports denied as well, and ErrBoardNotFound,
-// ErrTooManyPostings and the like stay reachable through errors.Is.
-func (s *source) searchV2(ctx context.Context, a api, host, domain, term string, filters map[string][]string, denied *pcsxForbidden) ([]listing, error) {
+// the term read through v2, provided the host's robots.txt permitted it
+// (v2Allowed, from the board's one read). Every way it can fail reports denied
+// as well, and ErrBoardNotFound, ErrTooManyPostings and the like stay reachable
+// through errors.Is.
+func (s *source) searchV2(ctx context.Context, a api, host, domain, term string, filters map[string][]string, denied *pcsxForbidden, v2Allowed bool) ([]listing, error) {
 	both := func(err error) ([]listing, error) {
 		return nil, fmt.Errorf("pcsx search: %w; v2 fallback: %w", denied.err, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	allowed, err := page.RobotsAllows(ctx, s.d, host, v2Path)
-	if err != nil {
-		return both(fmt.Errorf("not tried, robots.txt could not be read: %w", err))
-	}
-	if !allowed {
-		return both(fmt.Errorf("not tried, robots.txt of %s disallows %s", host, v2Path))
+	if !v2Allowed {
+		return both(fmt.Errorf("not tried, robots.txt of %s disallows %s", host, v2Root))
 	}
 	got, err := s.search(ctx, a, domain, term, filters, false)
 	if err != nil {

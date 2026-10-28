@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/egress"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 const (
@@ -81,6 +82,12 @@ func readRobots(ctx context.Context, d egress.Doer, host string, timeout time.Du
 			return nil, false, fmt.Errorf("page: robots.txt for %s: timed out after %s: %w", host, timeout, context.DeadlineExceeded)
 		}
 		return nil, false, fmt.Errorf("page: robots.txt for %s: %w", host, err)
+	}
+	// A host the run's throttle has blocked is asked for nothing more, this
+	// read included (srcutil.HostBlocked): a refused read is an error, never
+	// "no robots.txt".
+	if err := srcutil.HostBlocked(ctx, host, http.MethodGet, u); err != nil {
+		return fail(err)
 	}
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, u, nil)
 	if err != nil {

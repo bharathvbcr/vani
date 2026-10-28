@@ -198,9 +198,9 @@ func TestV2FallbackFixture(t *testing.T) {
 	if q := got[1]; q.Key != "ef:netflix.com:790317580317" || !q.Remote || q.Location != "Los Gatos,California,United States of America" {
 		t.Errorf("second posting: %+v", q)
 	}
-	// One pcsx probe, the robots.txt read, one v2 search, one v2 detail per
+	// The robots.txt read, one pcsx probe, one v2 search, one v2 detail per
 	// position; nothing else.
-	want := []string{"/api/pcsx/search?0", "/robots.txt?", "/api/apply/v2/jobs?0",
+	want := []string{"/robots.txt?", "/api/pcsx/search?0", "/api/apply/v2/jobs?0",
 		"/api/apply/v2/jobs/790316208720?", "/api/apply/v2/jobs/790317580317?"}
 	if strings.Join(f.reqs, " ") != strings.Join(want, " ") {
 		t.Errorf("requests %v, want %v", f.reqs, want)
@@ -244,8 +244,8 @@ func TestV2PagingUnionAndFilters(t *testing.T) {
 	}
 }
 
-// Microsoft and Qualcomm answer pcsx: a board that works must never touch v2
-// or robots.txt.
+// Microsoft and Qualcomm answer pcsx: a board that works reads robots.txt once
+// and then never touches v2.
 func TestPCSXBoardNeverUsesV2(t *testing.T) {
 	f := fixtureSite(t)
 	var mu sync.Mutex
@@ -262,10 +262,19 @@ func TestPCSXBoardNeverUsesV2(t *testing.T) {
 	if _, err := s.List(context.Background(), board("LLM inference")); err != nil {
 		t.Fatal(err)
 	}
+	if len(paths) == 0 || paths[0] != "/robots.txt" {
+		t.Errorf("requests %v, want the robots.txt read first", paths)
+	}
+	robots := 0
 	for _, p := range paths {
-		if !strings.HasPrefix(p, "/api/pcsx/") {
+		if p == "/robots.txt" {
+			robots++
+		} else if !strings.HasPrefix(p, "/api/pcsx/") {
 			t.Errorf("request to %s on a pcsx board", p)
 		}
+	}
+	if robots != 1 {
+		t.Errorf("%d robots.txt reads, want 1", robots)
 	}
 }
 
@@ -319,8 +328,9 @@ func TestPCSX403AfterFirstPageDoesNotSwitch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("err %v, want the pcsx 403", err)
 	}
-	if n := f.seen("/api/apply/"); n != 0 || f.seen("/robots.txt") != 0 {
-		t.Errorf("switched to v2 mid-board (%d v2 requests)", n)
+	// Only the board's up-front robots.txt read: none after the 403.
+	if n := f.seen("/api/apply/"); n != 0 || f.seen("/robots.txt") != 1 || f.reqs[0] != "/robots.txt?" {
+		t.Errorf("switched to v2 mid-board (%d v2 requests): %v", n, f.reqs)
 	}
 }
 
@@ -351,15 +361,16 @@ func TestPCSX403OnLaterTermDoesNotSwitch(t *testing.T) {
 	}
 }
 
-// robots.txt is the permission to read /api/apply. A host that disallows it,
-// or whose robots.txt cannot be read, is not read through v2.
+// robots.txt is the permission to read /api/apply. A host that allows pcsx but
+// disallows v2, and whose pcsx answers 403, reports both and sends no v2
+// request; a robots.txt that cannot be read stops the board before any request
+// (TestRobotsUnreadableFailsTheBoard).
 func TestV2RequiresRobotsPermission(t *testing.T) {
 	for name, rep := range map[string]srctest.Reply{
-		"disallowed":        {Status: 200, Body: []byte("User-agent: *\nDisallow: /\nAllow: /careers\n")},
-		"disallowed by api": {Status: 200, Body: []byte("User-agent: *\nDisallow: /api/\n")},
-		"vani disallowed":   {Status: 200, Body: []byte("User-agent: vani\nDisallow: /\n\nUser-agent: *\nAllow: /\n")},
-		"robots 500":        {Status: 500, Body: []byte("oops")},
-		"oversized robots":  {Status: 200, Body: []byte(strings.Repeat("#", 600<<10))},
+		"disallowed":        {Status: 200, Body: []byte("User-agent: *\nDisallow: /\nAllow: /api/pcsx\nAllow: /careers\n")},
+		"disallowed by api": {Status: 200, Body: []byte("User-agent: *\nDisallow: /api/apply/\n")},
+		"vani disallowed":   {Status: 200, Body: []byte("User-agent: vani\nDisallow: /api/apply\n\nUser-agent: *\nAllow: /\n")},
+		"disallowed detail": {Status: 200, Body: []byte("User-agent: *\nDisallow: /api/apply/v2/jobs/\n")},
 	} {
 		f := fixtureV2(t)
 		f.replies = map[string]srctest.Reply{"/robots.txt": rep}
@@ -369,6 +380,20 @@ func TestV2RequiresRobotsPermission(t *testing.T) {
 		}
 		if n := f.seen("/api/apply/"); n != 0 {
 			t.Errorf("%s: %d v2 requests despite robots.txt", name, n)
+		}
+	}
+	for name, rep := range map[string]srctest.Reply{
+		"robots 500":       {Status: 500, Body: []byte("oops")},
+		"oversized robots": {Status: 200, Body: []byte(strings.Repeat("#", 600<<10))},
+	} {
+		f := fixtureV2(t)
+		f.replies = map[string]srctest.Reply{"/robots.txt": rep}
+		_, err := f.source().List(context.Background(), nfBoard("x"))
+		if err == nil || !strings.Contains(err.Error(), "robots") {
+			t.Errorf("%s: err %v, want a robots error", name, err)
+		}
+		if n := f.seen("/api/"); n != 0 {
+			t.Errorf("%s: %d API requests with robots.txt unreadable", name, n)
 		}
 	}
 	// No robots.txt (404) and a more specific Allow are permission.
@@ -385,7 +410,8 @@ func TestV2RequiresRobotsPermission(t *testing.T) {
 	}
 }
 
-// Cancelling after the pcsx 403 stops before robots.txt and v2.
+// Cancelling after the pcsx 403 stops before v2, and robots.txt (read before
+// the pcsx probe) is not read again.
 func TestCancelBetweenPCSX403AndV2(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -403,7 +429,7 @@ func TestCancelBetweenPCSX403AndV2(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err %v, want context.Canceled", err)
 	}
-	if f.seen("/robots.txt") != 0 || f.seen("/api/apply/") != 0 {
+	if f.seen("/robots.txt") != 1 || f.seen("/api/apply/") != 0 {
 		t.Errorf("requests after the cancel: %v", f.reqs)
 	}
 }

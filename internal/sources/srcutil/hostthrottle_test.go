@@ -542,3 +542,58 @@ func TestNoHostThrottleLeavesRetriesAlone(t *testing.T) {
 		t.Errorf("%d requests, waits %v", f.count("ms.test"), *waits)
 	}
 }
+
+// HostBlocked is the throttle's answer for a request made outside DoJSON (a
+// robots.txt read): refused for a host that is blocked or inside its backoff
+// window, sent for one that is open or due its probe, and it reserves nothing.
+func TestHostBlocked(t *testing.T) {
+	noWait(t)
+	const url = "https://ms.test/robots.txt"
+	// No throttle on the context, and no memory of the host.
+	if err := HostBlocked(context.Background(), "ms.test", "GET", url); err != nil {
+		t.Errorf("no throttle: %v", err)
+	}
+	clk := &fakeClock{t: t0}
+	th := NewHostThrottle(nil, clk.now)
+	run := WithHostThrottle(context.Background(), th)
+	if err := HostBlocked(run, "ms.test", "GET", url); err != nil {
+		t.Errorf("open host: %v", err)
+	}
+
+	// Inside a cooldown's window: refused, with the window in the message, no
+	// request sent, and the host's memory untouched.
+	prior := map[string]HostCooldown{"ms.test": {Runs: 3, Last: t0.Add(-10 * time.Minute)}}
+	th = NewHostThrottle(prior, clk.now)
+	run = WithHostThrottle(context.Background(), th)
+	err := HostBlocked(run, "MS.test", "GET", url)
+	var rl *RateLimitedError
+	if !errors.Is(err, ErrRateLimited) || !errors.As(err, &rl) || !rl.noRequest || rl.Path != "/robots.txt" ||
+		!strings.Contains(rl.Why, "not probed until 2026-10-22 12:20 UTC") {
+		t.Errorf("inside the window: %v", err)
+	}
+	if got := th.Cooldowns()["ms.test"]; got != prior["ms.test"] {
+		t.Errorf("cooldown changed by a check: %+v", got)
+	}
+
+	// Past the window the host is due its probe: the check lets a request go and
+	// takes nothing from it, so the next request is still the probe.
+	late := &fakeClock{t: t0.Add(21 * time.Minute)}
+	th = NewHostThrottle(prior, late.now)
+	run = WithHostThrottle(context.Background(), th)
+	if err := HostBlocked(run, "ms.test", "GET", url); err != nil {
+		t.Errorf("due its probe: %v", err)
+	}
+	f := newFakeHosts(always429)
+	wantWhy(t, getFrom(run, f, "ms.test"), "probed once")
+	if f.count("ms.test") != 1 {
+		t.Errorf("%d requests after the check, want the one probe", f.count("ms.test"))
+	}
+	// The probe's 429 blocked the host: now the check refuses.
+	if err := HostBlocked(run, "ms.test", "GET", url); !errors.Is(err, ErrRateLimited) || !strings.Contains(err.Error(), "probed once") {
+		t.Errorf("blocked host: %v", err)
+	}
+	// Other hosts are unaffected.
+	if err := HostBlocked(run, "other.test", "GET", "https://other.test/robots.txt"); err != nil {
+		t.Errorf("other host: %v", err)
+	}
+}

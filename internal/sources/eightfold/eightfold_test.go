@@ -48,13 +48,25 @@ type site struct {
 	count     map[string]int      // term -> reported count (default len)
 	detail    map[string]any
 	override  map[string]func(map[string]any)
+	// robots replaces the robots.txt answer; nil is msRobots.
+	robots *srctest.Reply
 }
+
+// msRobots is the apply.careers.microsoft.com robots.txt as read 2026-10-28,
+// without the login, candidate and career-hub Allow lines.
+const msRobots = "User-agent: *\nDisallow: /\nAllow: /$\nAllow: /careers\nAllow: /api/apply\nAllow: /api/pcsx\nAllow: /api/events\nAllow: /static/gen\nAllow: /gen\n"
 
 func (f *site) handle(r srctest.Request) (srctest.Reply, bool) {
 	u, err := url.Parse(r.URL)
 	if err != nil || u.Host != host || r.Method != "GET" {
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL)
 		return srctest.Reply{}, false
+	}
+	if u.Path == "/robots.txt" {
+		if f.robots != nil {
+			return *f.robots, true
+		}
+		return srctest.Reply{Status: 200, Body: []byte(msRobots)}, true
 	}
 	q := u.Query()
 	if q.Get("domain") != "microsoft.com" {
@@ -186,7 +198,7 @@ func TestPagingUnionAndFilters(t *testing.T) {
 			if u.Query().Get("location") != "United States" || u.Query().Get("num") != "10" {
 				t.Errorf("search query %v", u.Query())
 			}
-		} else {
+		} else if u.Path == "/api/pcsx/position_details" {
 			details++
 		}
 		return inner(r)

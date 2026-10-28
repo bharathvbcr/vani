@@ -168,6 +168,47 @@ func (e *hostEntry) blockedWhy() string {
 	return "host rate limited earlier this run; probed once"
 }
 
+// coolingWhy is what a request says when a loaded cooldown's window has not
+// passed.
+func (e *hostEntry) coolingWhy() string {
+	return fmt.Sprintf("host in cooldown after %d rate-limited runs; not probed until %s", e.prior, e.until.UTC().Format("2006-01-02 15:04 UTC"))
+}
+
+// refusal is the error of a request the host's memory refused: none was sent.
+func refusal(host, method, path, why string) *RateLimitedError {
+	return &RateLimitedError{Host: host, Method: method, Path: path, Why: why, noRequest: true,
+		Status: &egress.StatusError{Code: http.StatusTooManyRequests, Method: method, Host: host}}
+}
+
+// HostBlocked returns the *RateLimitedError that a request to host would be
+// refused with by ctx's HostThrottle, and nil when it would be sent: the host is
+// open, a probe is due or out, or ctx carries no throttle. It sends and
+// reserves nothing, so a request made outside DoJSON (a robots.txt read) can
+// keep the rule that a blocked host is asked for nothing more this run.
+func HostBlocked(ctx context.Context, host, method, rawURL string) error {
+	t, _ := ctx.Value(throttleKey{}).(*HostThrottle)
+	if t == nil {
+		return nil
+	}
+	host = strings.ToLower(host)
+	path := rawURL
+	if u, err := url.Parse(rawURL); err == nil {
+		path = u.Path
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e := t.hosts[host]
+	switch {
+	case e == nil || e.phase == hostOpen:
+		return nil
+	case e.phase == hostBlocked:
+		return refusal(host, method, path, e.why)
+	case e.probing == nil && t.clock().Before(e.until):
+		return refusal(host, method, path, e.coolingWhy())
+	}
+	return nil
+}
+
 // admit decides whether a request to host may go out. A non-empty probeWhy
 // says it is the host's probe; an error is a *RateLimitedError for a request
 // that must not be sent. It waits for a probe already out, ending with ctx.
@@ -176,10 +217,7 @@ func (t *HostThrottle) admit(ctx context.Context, host, method, rawURL string) (
 	if u, perr := url.Parse(rawURL); perr == nil {
 		path = u.Path
 	}
-	refuse := func(why string) error {
-		return &RateLimitedError{Host: host, Method: method, Path: path, Why: why, noRequest: true,
-			Status: &egress.StatusError{Code: http.StatusTooManyRequests, Method: method, Host: host}}
-	}
+	refuse := func(why string) error { return refusal(host, method, path, why) }
 	for {
 		t.mu.Lock()
 		e := t.hosts[host]
@@ -203,7 +241,7 @@ func (t *HostThrottle) admit(ctx context.Context, host, method, rawURL string) (
 			}
 		case t.clock().Before(e.until):
 			e.phase = hostBlocked
-			e.why = fmt.Sprintf("host in cooldown after %d rate-limited runs; not probed until %s", e.prior, e.until.UTC().Format("2006-01-02 15:04 UTC"))
+			e.why = e.coolingWhy()
 			why := e.why
 			t.mu.Unlock()
 			return "", refuse(why)
