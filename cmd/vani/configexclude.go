@@ -26,7 +26,7 @@ type excludeReply struct {
 	MaxEntries      int          `json:"max_entries"`
 	MaxDescriptions int          `json:"max_descriptions"`
 	MaxEntryBytes   int          `json:"max_entry_bytes"`
-	Error           string       `json:"error,omitempty"`
+	failure
 }
 
 // excludeLists is config.Exclude with every list present, so a reader sees
@@ -68,17 +68,9 @@ func (e *env) cmdConfigExclude(args []string) error {
 	reply := excludeReply{Exclude: listsOf(x), MaxEntries: config.MaxExcludeEntries,
 		MaxDescriptions: config.MaxExcludeDescriptions, MaxEntryBytes: config.MaxExcludeEntryLen}
 	if err != nil {
-		reply.Exclude, reply.Error = listsOf(config.Exclude{}), err.Error()
+		reply.Exclude = listsOf(config.Exclude{})
 	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if werr := enc.Encode(reply); werr != nil {
-		return werr
-	}
-	if err != nil {
-		return errAlreadyReported
-	}
-	return nil
+	return e.reply(true, &reply, err, nil)
 }
 
 func (e *env) exclusions(set bool) (config.Exclude, error) {

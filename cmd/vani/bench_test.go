@@ -278,8 +278,10 @@ func TestBenchLocalMeasuresARunningEndpoint(t *testing.T) {
 
 	// A server that is not there measures nothing, and that fails the command.
 	srv.Close()
-	if o, _ := mustCode(t, 1, "bench", "local", "--json", "--endpoint", ep); !strings.Contains(o, `"name": "endpoint"`) {
-		t.Errorf("dead endpoint report %q", o)
+	o, _ = mustCode(t, 1, "bench", "local", "--json", "--endpoint", ep)
+	rep = benchReport{}
+	if err := json.Unmarshal([]byte(o), &rep); err != nil || len(rep.Models) != 1 || rep.Models[0].Name != "endpoint" || rep.Code != codeRuntime {
+		t.Errorf("dead endpoint report %q (%v)", o, err)
 	}
 }
 

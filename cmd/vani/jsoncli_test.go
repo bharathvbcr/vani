@@ -143,9 +143,19 @@ func TestGlobalJSONIsTheCommandsOwnFlag(t *testing.T) {
 		{"--json", "jobs", "list"},
 		{"-json", "jobs", "list"},
 		{"--json", "--json", "jobs", "list", "--json"},
+		{"--json=true", "jobs", "list"},
+		{"-json=1", "jobs", "list"},
+		{"--json=false", "--json", "jobs", "list"},
 	} {
 		if got, _ := x.mustCode(t, exitOK, args...); got != local {
 			t.Errorf("vani %v:\n got %s\nwant %s", args, got, local)
+		}
+	}
+	// --json=false is no JSON at all, as on a command's own flag.
+	text, _ := x.mustCode(t, exitOK, "jobs", "list")
+	for _, args := range [][]string{{"--json=false", "jobs", "list"}, {"--json", "--json=0", "jobs", "list"}} {
+		if got, _ := x.mustCode(t, exitOK, args...); got != text {
+			t.Errorf("vani %v:\n got %s\nwant the text %s", args, got, text)
 		}
 	}
 	folders, _ := x.mustCode(t, exitOK, "--json", "jobs", "folders")
@@ -181,6 +191,8 @@ func TestGlobalJSONFailuresAreOneEnvelope(t *testing.T) {
 		has  string
 	}{
 		{[]string{"--json"}, exitUsage, codeUsage, "expected a command"},
+		{[]string{"--json=maybe", "jobs", "list"}, exitUsage, codeUsage, `invalid value "maybe" for --json`},
+		{[]string{"--json", "-json=", "status"}, exitUsage, codeUsage, `invalid value "" for --json`},
 		{[]string{"--json", "bogus"}, exitUsage, codeUsage, `"bogus" names no command`},
 		{[]string{"--json", "jobs"}, exitUsage, codeUsage, "names no command"},
 		{[]string{"--json", "jobs", "bogus", "x"}, exitUsage, codeUsage, "names no command"},
@@ -328,7 +340,8 @@ func TestSkillCoversEveryCommand(t *testing.T) {
 			t.Errorf("SKILL.md does not say %q has no JSON form", l.Command)
 		}
 	}
-	for _, s := range []string{"VANI_NO_KEYCHAIN=1", "vani --json help", `{"error","code"}`, "exit"} {
+	// The one command whose JSON is a stream of lines, not one value, is named.
+	for _, s := range []string{"VANI_NO_KEYCHAIN=1", "vani --json help", `{"error","code"}`, "exit", "jobs retriage --batch --json"} {
 		if !strings.Contains(skill, s) {
 			t.Errorf("SKILL.md does not mention %q", s)
 		}

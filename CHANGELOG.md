@@ -25,7 +25,12 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 
   A command's own `--json` now also returns that envelope for a runtime failure it used to
   report only on stderr. A usage error keeps exit 2 and empty stdout. `jobs` failures gain
-  `code`.
+  `code`, and so do `config motivation`, `config exclude`, `answers similar` and
+  `jobs ingest`, which wrote `error` alone. `logos refresh` and `bench local` used to fail with
+  exit 1 and a success-shaped reply; they now keep their counts beside `{"error","code"}`, and
+  `bench local --json` is one line like every other reply. The global flag takes
+  `--json=true` and `--json=false`. `jobs retriage --batch --json` stays a stream of JSON
+  lines, and SKILL.md says so.
 - **Export warns before writing roles again** (`internal/exportlog`, `cmd/vani/jobsexport.go`). Every
   `vani jobs export` records the keys it wrote in `<state dir>/export/exported.json`: the first and last
   export per key, and the last 50 exports by file. A later export holding any of them asks in a

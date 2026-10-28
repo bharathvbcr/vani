@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +22,7 @@ var notesInput io.Reader = os.Stdin
 type motivationNotesReply struct {
 	Notes    string `json:"motivation_notes"`
 	MaxBytes int    `json:"max_bytes"`
-	Error    string `json:"error,omitempty"`
+	failure
 }
 
 // cmdConfigMotivation prints the config's motivation_notes, or with --set
@@ -40,17 +39,9 @@ func (e *env) cmdConfigMotivation(args []string) error {
 	notes, err := e.motivationNotes(*set)
 	reply := motivationNotesReply{Notes: notes, MaxBytes: draft.MaxMotivationNotesBytes}
 	if err != nil {
-		reply = motivationNotesReply{MaxBytes: draft.MaxMotivationNotesBytes, Error: err.Error()}
+		reply = motivationNotesReply{MaxBytes: draft.MaxMotivationNotesBytes}
 	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if werr := enc.Encode(reply); werr != nil {
-		return werr
-	}
-	if err != nil {
-		return errAlreadyReported
-	}
-	return nil
+	return e.reply(true, &reply, err, nil)
 }
 
 func (e *env) motivationNotes(set bool) (string, error) {

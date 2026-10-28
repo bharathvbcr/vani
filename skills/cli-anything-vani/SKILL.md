@@ -36,7 +36,12 @@ whether a binary has them.
 
 - **Global flag:** `vani --json <command> ...` (CLI-Anything's placement). Every outcome is
   exactly one JSON value on stdout, success or failure, except `-h`, which prints that
-  command's flags on stderr and nothing on stdout.
+  command's flags on stderr and nothing on stdout. `--json=true` and `--json=false` work as
+  on a command's own flag.
+- **One stream:** `jobs retriage --batch --json` without `--dry-run` writes one JSON object
+  per line as it goes: a `start`, an `item` per posting asked, then a `done` with the totals
+  and why it stopped early, if it did. A batch that fails before its `start` writes one
+  `{"error","code"}` object.
 - **Command flag:** `vani <command> --json` does the same for a successful reply and for a
   runtime failure. A usage error keeps its older form: exit 2 and nothing on stdout.
 - **Failure:** `{"error","code"}`. `code` is `usage` (bad flags or arguments), `unsupported`

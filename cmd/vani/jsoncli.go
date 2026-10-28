@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -158,12 +159,24 @@ func leafOf(args []string) (leaf jsonLeaf, n int, ok bool) {
 }
 
 // splitGlobalJSON strips the leading --json flags `vani --json <command>`
-// carries and reports whether there were any.
-func splitGlobalJSON(args []string) (rest []string, global bool) {
-	for len(args) > 0 && (args[0] == "--json" || args[0] == "-json") {
-		args, global = args[1:], true
+// carries and reports whether JSON was asked for. As with a command's own
+// flag, --json=V takes a boolean V (strconv.ParseBool) and the last one
+// decides; any other V is a usage error.
+func splitGlobalJSON(args []string) (rest []string, global bool, err error) {
+	for len(args) > 0 {
+		name, val, hasVal := strings.Cut(args[0], "=")
+		if name != "--json" && name != "-json" {
+			break
+		}
+		on := true
+		if hasVal {
+			if on, err = strconv.ParseBool(val); err != nil {
+				return nil, true, usagef("invalid value %q for --json: want true or false", val)
+			}
+		}
+		args, global = args[1:], on
 	}
-	return args, global
+	return args, global, nil
 }
 
 // jsonFlag declares a command's --json flag and records it on e, so runEnv

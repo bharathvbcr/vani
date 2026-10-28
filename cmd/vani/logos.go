@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -114,6 +113,14 @@ func (w *wired) warnLogos(res logo.Result, missing []string, err error) {
 	w.mu.Unlock()
 }
 
+// logosReply is `vani logos refresh --json`: the counts, kept beside a
+// failure.
+type logosReply struct {
+	logo.Result
+	NotAllowed []string `json:"not_allowed,omitempty"`
+	failure
+}
+
 func (e *env) cmdLogos(args []string) error {
 	if len(args) == 0 || args[0] != "refresh" {
 		return usagef("logos: expected refresh")
@@ -132,15 +139,7 @@ func (e *env) cmdLogos(args []string) error {
 	defer stop()
 	res, missing, err := refreshLogos(ctx, cfg, e.stateDir, time.Now(), *force)
 	if *asJSON {
-		out := struct {
-			logo.Result
-			NotAllowed []string `json:"not_allowed,omitempty"`
-		}{res, missing}
-		enc := json.NewEncoder(e.stdout)
-		if jerr := enc.Encode(out); jerr != nil {
-			return jerr
-		}
-		return err
+		return e.reply(true, &logosReply{Result: res, NotAllowed: missing}, err, nil)
 	}
 	w := &wired{warn: e.stdout}
 	w.warnLogos(res, missing, err)

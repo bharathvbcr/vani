@@ -547,3 +547,96 @@ func TestLedgerLockedIsBusy(t *testing.T) {
 		t.Errorf("text form: %q", e)
 	}
 }
+
+// The commands that write their own failure reply carry a code beside the
+// error like every other failure, and keep what they had beside both.
+func TestOwnFailureRepliesCarryACode(t *testing.T) {
+	setup(t) // no config yet
+	for _, args := range [][]string{
+		{"config", "motivation"},
+		{"config", "exclude"},
+		{"--json", "config", "exclude"},
+	} {
+		o, _ := mustCode(t, 1, args...)
+		if _, code := failureIn(t, args, o); code != codeRuntime {
+			t.Errorf("vani %v: code %q", args, code)
+		}
+	}
+	mustCode(t, 0, "init")
+
+	old := answersInput
+	t.Cleanup(func() { answersInput = old })
+	answersInput = strings.NewReader("not a request")
+	args := []string{"answers", "similar"}
+	o, _ := mustCode(t, 1, args...)
+	if _, code := failureIn(t, args, o); code != codeRuntime {
+		t.Errorf("answers similar: code %q", code)
+	}
+
+	// A batch with no valid job keeps its rejections and its exit 2, and
+	// its message is unchanged.
+	args = []string{"jobs", "ingest", "--json"}
+	_, o, _ = ingestCLI(t, 2, ingestPayload(t, "https://a.example/", false, []ij{{"title": "t", "url": "ftp://a.example/2"}}))
+	msg, code := failureIn(t, args, o)
+	if code != codeUsage || msg != "no job in the batch was valid: job 0: url is not http(s)" || !strings.Contains(o, `"rejected":[{`) {
+		t.Errorf("ingest with no valid job: %s", o)
+	}
+	_, o, _ = ingestCLI(t, 2, "not a request")
+	if _, code := failureIn(t, args, o); code != codeUsage {
+		t.Errorf("ingest of a malformed request: %s", o)
+	}
+}
+
+// A logo refresh that fails keeps its counts beside the failure, and the
+// failure is not a success-shaped reply with exit 1.
+func TestLogosRefreshFailureJSON(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "acme", "--company", "Acme", "--allow-host")
+	mustCode(t, 0, "watchlist", "domain", "--ats", "gh", "--token", "acme", "--domain", "www.acme.com", "--allow-host")
+	// A fresh cached icon is not fetched, so nothing goes out; a cache
+	// directory that cannot be written fails the state save.
+	dir := filepath.Join(stateDir, "logos")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "www.acme.com.png"), []byte("icon"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	for _, args := range [][]string{{"logos", "refresh", "--json"}, {"--json", "logos", "refresh"}} {
+		o, _ := mustCode(t, 1, args...)
+		failureIn(t, args, o)
+		var r logosReply
+		decodeOne(t, o, &r)
+		if r.Fresh != 1 || r.Fetched != 0 {
+			t.Errorf("vani %v: %+v", args, r)
+		}
+	}
+}
+
+// A bench whose model could not run fails with its report and a code.
+func TestBenchFailureJSON(t *testing.T) {
+	state, _, model := benchSetup(t)
+	seedBench(t, state, "gh:a:1", "Serve models.", "jev", nil, "", nil)
+	bad := filepath.Join(t.TempDir(), "llama-bad")
+	writeLlama(t, bad, false)
+	for _, args := range [][]string{
+		{"bench", "local", "--json", "--binary", bad, "--model", model},
+		{"--json", "bench", "local", "--binary", bad, "--model", model},
+	} {
+		o, _ := mustCode(t, 1, args...)
+		failureIn(t, args, o)
+		var rep benchReport
+		decodeOne(t, o, &rep)
+		if len(rep.Models) != 1 || rep.Models[0].Error == "" {
+			t.Errorf("vani %v: %+v", args, rep)
+		}
+	}
+}

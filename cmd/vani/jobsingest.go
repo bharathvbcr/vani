@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -69,9 +68,9 @@ type ingestJSON struct {
 	Rejected   []inbox.Rejection `json:"rejected"`
 	Search     ingestSearchJSON  `json:"search"`
 	Analysis   string            `json:"analysis"`
-	// Error is set on an exit-2 reply (the Swift host shows only "error" on a
-	// non-zero exit); the other fields then say why.
-	Error string `json:"error,omitempty"`
+	// The failure is set on an exit-2 reply (the Swift host shows only "error"
+	// on a non-zero exit); the other fields then say why.
+	failure
 }
 
 // scrapeToken is the token of a batch that is not a saved pg board's own page.
@@ -89,15 +88,16 @@ func (e *env) jobsIngest(args []string) error {
 	}
 	out, err := e.ingest()
 	if *asJSON {
+		// Unlike reply, a refused batch writes its reply on a usage error too:
+		// the caller needs every rejection.
 		var v any = out
-		if out == nil {
-			v = struct {
-				Error string `json:"error"`
-			}{err.Error()}
+		switch {
+		case out == nil:
+			v = errorReply{err.Error(), envelopeCode(err)}
+		case err != nil && out.Error == "":
+			out.fail(err)
 		}
-		enc := json.NewEncoder(e.stdout)
-		enc.SetEscapeHTML(false)
-		if werr := enc.Encode(v); werr != nil {
+		if werr := writeJSON(e.stdout, v); werr != nil {
 			return werr
 		}
 		if err != nil && !errors.As(err, new(usageError)) {
@@ -155,7 +155,7 @@ func (e *env) ingest() (*ingestJSON, error) {
 			if len(out.Rejected) > 0 {
 				reason = fmt.Sprintf("job %d: %s", out.Rejected[0].Index, out.Rejected[0].Reason)
 			}
-			out.Error = "no job in the batch was valid: " + reason
+			out.Error, out.Code = "no job in the batch was valid: "+reason, codeUsage
 			return out, usagef("jobs ingest: %s", out.Error)
 		}
 		return out, nil

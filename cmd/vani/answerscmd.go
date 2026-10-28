@@ -94,7 +94,7 @@ Bounds: at most %d texts; a text over %d bytes is cut there at a rune boundary
 (reply field "truncated"); at most %d pairs (raise min_cos past that); the run ends at
 --timeout, with available:false and its reason. available:false is never "no pairs":
 it covers a vani built without -tags tessl, no semantic.snapshot, a model that will not
-load or answers badly, and a run out of time. Malformed input is {"error":...} and exit 1.
+load or answers badly, and a run out of time. Malformed input is {"error":...,"code":"runtime"} and exit 1.
 `, semantic.LikelyCos, semantic.PossibleCos, semantic.MaxSimilarTexts, semantic.MaxSimilarTextBytes, semantic.MaxSimilarPairs)
 	}
 	if err := parse(fs, args); err != nil {
@@ -104,20 +104,7 @@ load or answers badly, and a run out of time. Malformed input is {"error":...} a
 		return usagef("answers similar: --timeout must be between 1s and %v", semantic.SimilarDeadline)
 	}
 	reply, err := e.similarOnce(*timeout)
-	if err != nil {
-		reply = similarReply{Pairs: []similarPairJSON{}}
-	}
-	enc := json.NewEncoder(e.stdout)
-	enc.SetEscapeHTML(false)
-	if err != nil {
-		if werr := enc.Encode(struct {
-			Error string `json:"error"`
-		}{err.Error()}); werr != nil {
-			return werr
-		}
-		return errAlreadyReported
-	}
-	return enc.Encode(reply)
+	return e.reply(true, reply, err, nil)
 }
 
 // similarOnce runs one request. A non-nil error is a malformed request; whatever

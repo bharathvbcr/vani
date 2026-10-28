@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -106,6 +105,7 @@ type benchReport struct {
 	Eligible int            `json:"eligible"`
 	Primary  map[string]int `json:"primary"` // primary backend -> postings
 	Models   []benchModel   `json:"models"`
+	failure
 }
 
 // benchCase is one posting with the primary's readings.
@@ -246,23 +246,19 @@ func (e *env) runBench(asJSON bool, n int, measure func(context.Context, []bench
 			failed = true
 		}
 	}
-	if asJSON {
-		enc := json.NewEncoder(e.stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			return err
-		}
-	} else {
-		writeBenchText(e, rep)
-	}
+	var runErr error
 	switch {
 	case ctx.Err() != nil:
-		return errors.New("bench local: interrupted; the report covers what ran")
+		runErr = errors.New("bench local: interrupted; the report covers what ran")
 	case failed:
 		// A model that could not run, or stopped early, must not read as a pass.
-		return errors.New("bench local: at least one model did not complete; see its error")
+		runErr = errors.New("bench local: at least one model did not complete; see its error")
 	}
-	return nil
+	if !asJSON {
+		writeBenchText(e, rep) // the report covers what ran, failed or not
+		return runErr
+	}
+	return e.reply(true, &rep, runErr, nil)
 }
 
 // benchCases picks up to n postings whose four triage slots a primary backend

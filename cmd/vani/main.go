@@ -346,8 +346,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 // from the process environment; tests that must run in parallel build their
 // own, since t.Setenv cannot be used under t.Parallel.
 func runEnv(e *env, args []string) int {
-	args, global := splitGlobalJSON(args)
+	args, global, err := splitGlobalJSON(args)
 	stdout, stderr := e.stdout, e.stderr
+	if err != nil {
+		fmt.Fprintf(stderr, "vani: %v\n", err)
+		_ = writeJSON(stdout, errorReply{err.Error(), codeUsage})
+		return exitUsage
+	}
 	if len(args) == 0 {
 		if global {
 			fmt.Fprintln(stderr, "vani: expected a command after --json")
