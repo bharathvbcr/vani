@@ -17,13 +17,13 @@ var (
 	narrow  = string(rune(0x202f)) // narrow no-break space
 	allGood = func(t *testing.T, source, reply string) {
 		t.Helper()
-		if f, n := newGrounding(source).ungrounded(reply); n != 0 {
+		if f, n := seekerOnly(source).ungrounded(reply); n != 0 {
 			t.Errorf("%q refused against %q: %q (%d)", reply, source, f.String(), n)
 		}
 	}
 	allBad = func(t *testing.T, source, reply string) {
 		t.Helper()
-		if _, n := newGrounding(source).ungrounded(reply); n == 0 {
+		if _, n := seekerOnly(source).ungrounded(reply); n == 0 {
 			t.Errorf("%q accepted against %q", reply, source)
 		}
 	}
@@ -32,14 +32,14 @@ var (
 // Characterization of the digit path the spelled path must match. These pass on
 // the code before the extension and after it.
 func TestCharacterizeBareDigitsAndEmptyDrafts(t *testing.T) {
-	if _, n := newGrounding().ungrounded("I managed 5."); n != 1 {
+	if _, n := seekerOnly().ungrounded("I managed 5."); n != 1 {
 		t.Errorf("a bare digit with no source: %d refusals, want 1", n)
 	}
 	allGood(t, "Led 5 reports.", "I led a team of 5.")
 	allGood(t, "Ranked 99 of them.", "Ranked 99th.")
 	allBad(t, "Led 5 reports.", "I led a team of 6.")
 	for _, empty := range []string{"", "   ", "\n"} {
-		if f, n := newGrounding("anything 5").ungrounded(empty); n != 0 {
+		if f, n := seekerOnly("anything 5").ungrounded(empty); n != 0 {
 			t.Errorf("an empty draft %q has nothing to refuse, got %q", empty, f.String())
 		}
 	}
@@ -98,7 +98,7 @@ func TestSpelledNumbersKeepTheirCount(t *testing.T) {
 
 // A spelled number with no counted noun is a bare figure, as a bare digit is.
 func TestSpelledBareNumberFollowsTheDigitPath(t *testing.T) {
-	if f, n := newGrounding().ungrounded("I led a team of five."); n != 1 || f.String() != "5" {
+	if f, n := seekerOnly().ungrounded("I led a team of five."); n != 1 || f.String() != "5" {
 		t.Errorf("a bare spelled number with no source: %q (%d), want the figure 5", f.String(), n)
 	}
 	allGood(t, "Led 5 reports.", "I led a team of five.")
@@ -162,7 +162,7 @@ func TestSpelledNumbersAndFullWidthDigitsStayApart(t *testing.T) {
 
 // Words that are not a count are not figures, against no source at all.
 func TestNonCountingNumberWordsAreNotFigures(t *testing.T) {
-	g := newGrounding()
+	g := seekerOnly()
 	for _, ok := range []string{
 		"One of the things I enjoyed was the team.",
 		"No one told me, and someone else did, anyone could, everyone knew.",
@@ -261,7 +261,7 @@ func TestCredentialsMatchAcrossSpellings(t *testing.T) {
 
 // Words that merely look like a credential are not one.
 func TestCredentialLookAlikesAreNotCredentials(t *testing.T) {
-	g := newGrounding()
+	g := seekerOnly()
 	for _, ok := range []string{
 		"Latency fell a lot, measured in ms.",
 		"I mastered Go and master the basics; the old masters knew.",
@@ -303,22 +303,108 @@ func TestAcronymsMustBeShown(t *testing.T) {
 	}
 	// The generic allowlist: no source needed.
 	for _, ok := range []string{"OK, I will.", "A US-based AI API with a UI.", "In the UK and the EU."} {
-		if f, n := newGrounding().ungrounded(ok); n != 0 {
+		if f, n := seekerOnly().ungrounded(ok); n != 0 {
 			t.Errorf("%q: %q is on the allowlist but was refused", ok, f.String())
 		}
 	}
-	// Not acronyms: plurals, mixed case, one letter, longer than six, lowercase.
-	for _, ok := range []string{"APIs and GPUs and SDKs.", "I use Rust and Go.", "I, A, B.", "I am VERYLOUD about it.", "aws gcp cuda"} {
-		if f, n := newGrounding().ungrounded(ok); n != 0 {
+	// Not acronyms: mixed case, one letter, longer than six, lowercase. A generic
+	// acronym stays generic in the plural.
+	for _, ok := range []string{"APIs and UIs.", "I use Rust and Go.", "I, A, B.", "I am VERYLOUD about it.", "aws gcp cuda", "Is it ok?"} {
+		if f, n := seekerOnly().ungrounded(ok); n != 0 {
 			t.Errorf("%q: %q is not an acronym", ok, f.String())
 		}
+	}
+}
+
+// A trailing lowercase "s" folds on both sides: the plural of an acronym is the
+// acronym, so "GPUs" is as unbacked as "GPU", and "LLM" is backed by "LLMs".
+func TestAcronymPluralsFoldBothWays(t *testing.T) {
+	for _, tc := range []struct{ source, reply string }{
+		{"Own AI/LLMs latency", "I built LLM serving."},
+		{"Own LLM latency", "I built LLMs."},
+		{"5000 GPUs", "I ran GPUs."},
+		{"5000 GPU nodes", "I ran GPUs."},
+		{"5000 GPUs", "I ran a GPU."},
+		{"SDKs and CLIs", "I wrote an SDK and a CLI."},
+	} {
+		allGood(t, tc.source, tc.reply)
+	}
+	for _, tc := range []struct{ source, reply string }{
+		{"I wrote compilers.", "I ran GPUs."},
+		{"I wrote compilers.", "I wrote SDKs."},
+		{"I wrote compilers.", "I ran a GPU."},
+		{"Own LLM latency", "I ran GPUs."},
+		{"I wrote compilers.", "I know LLMS."},
+		// An all-capitals plural is a longer acronym, not a plural: "AW" is not "AWS".
+		{"AW", "I built it on AWS."},
+	} {
+		allBad(t, tc.source, tc.reply)
+	}
+	if f, n := seekerOnly().ungrounded("I ran GPUs."); n != 1 || f.String() != "GPU" || f.what != whatAcronym {
+		t.Errorf("unbacked GPUs: %q (%d), want the acronym GPU", f.String(), n)
+	}
+}
+
+// "MS" and "BS" are a degree only as one: a product name or a verb phrase that
+// starts with them is not a master's.
+func TestMasterAbbreviationIsNotAProduct(t *testing.T) {
+	for _, source := range []string{
+		"Built reports in MS Excel and MS Word.",
+		"Administered MS SQL Server, MS Teams and MS Office.",
+		"Supported MS-Office, MS-SQL and MS Teams users.",
+		"Used MS Project and MS Access daily.",
+		"Ran MS Exchange and MS SharePoint.",
+	} {
+		if hits := credentialsIn(source); len(hits) != 0 {
+			t.Errorf("%q reads as the credential %+v", source, hits)
+		}
+		allBad(t, source, "I have a master's degree.")
+		allBad(t, source, "I have an MS.")
+	}
+	// A draft that names a product needs no master's behind it.
+	if f, n := seekerOnly().ungrounded("I support MS Teams and MS Office users."); n != 0 {
+		t.Errorf("a product name was read as a credential: %q", f.String())
+	}
+	// A master's written as MS still is one.
+	for _, source := range []string{"MS in CS", "MS Computer Science, 2019", "I have an MS.", "MS, physics", "M.S. in CS and MS Office"} {
+		allGood(t, source, "I have a master's degree.")
+	}
+	allGood(t, "BS in CS", "I have a BS.")
+}
+
+// A cloud certification is a provider and a certification word, not a provider
+// and the word "associate".
+func TestCloudCertificationNeedsCertificationContext(t *testing.T) {
+	for _, source := range []string{
+		"I joined AWS as an associate.",
+		"Sales associate at AWS.",
+		"Joined AWS as a developer associate.",
+		"AWS and Azure specialty retail partners.",
+		"I joined Google Cloud as a specialty account lead.",
+		"At AWS as a professional engineer.",
+	} {
+		if hits := credentialsIn(source); len(hits) != 0 {
+			t.Errorf("%q reads as the credential %+v", source, hits)
+		}
+		allBad(t, source, "I hold the AWS Solutions Architect Associate.")
+	}
+	for _, tc := range []struct{ source, reply string }{
+		{"AWS Solutions Architect Associate", "I hold the AWS Developer Associate."},
+		{"AWS Developer Associate", "I hold the AWS Machine Learning Specialty."},
+		{"AWS Machine Learning Specialty", "I hold the AWS Security Specialty."},
+		{"AWS Security Specialty", "I hold the AWS Database Specialty."},
+		{"AWS Certified Cloud Practitioner", "I hold the AWS Solutions Architect Associate."},
+		{"Google Cloud Professional Cloud Architect", "I hold the Google Cloud Professional Data Engineer."},
+		{"AWS Certified", "I hold the AWS Solutions Architect Associate."},
+	} {
+		allGood(t, tc.source, tc.reply)
 	}
 }
 
 // A token with a digit is a tagged figure, read once, by the figure reader.
 func TestDigitAcronymsAreReadOnce(t *testing.T) {
 	for _, reply := range []string{"I used S3.", "I hold SOC2.", "I ran H100 nodes.", "I used K8S."} {
-		if f, n := newGrounding("nothing relevant").ungrounded(reply); n != 1 {
+		if f, n := seekerOnly("nothing relevant").ungrounded(reply); n != 1 {
 			t.Errorf("%q: %d claims (first %q), want exactly 1", reply, n, f.String())
 		}
 	}
@@ -328,7 +414,7 @@ func TestDigitAcronymsAreReadOnce(t *testing.T) {
 
 // The first claim is named and the rest counted, across classes.
 func TestUngroundedCountsAcrossClasses(t *testing.T) {
-	f, n := newGrounding("nothing").ungrounded("I hold a PhD, know AWS, and led 12 engineers; AWS again, 12 engineers again.")
+	f, n := seekerOnly("nothing").ungrounded("I hold a PhD, know AWS, and led 12 engineers; AWS again, 12 engineers again.")
 	if n != 3 || f.String() != "12" {
 		t.Errorf("first %q of %d, want the figure 12 first of 3 (figures, credentials, acronyms in that order)", f.String(), n)
 	}
@@ -360,46 +446,25 @@ func TestDraftRefusesUnbackedCredentialsAcronymsAndSpelledNumbers(t *testing.T) 
 	}
 }
 
-func TestDraftAcceptsBackedSpelledCredentialAndAcronymClaims(t *testing.T) {
+// A question that mentions a credential does not ground it (ground_seeker_test.go),
+// and the figures and acronyms it does ground are unaffected.
+func TestDraftAcceptsBackedSpelledAndAcronymClaims(t *testing.T) {
 	req := latencyRequest()
 	req.Question = "Describe a project where you cut latency. Do you hold a PhD or any certification?"
 	for _, reply := range []string{
 		"I cut latency by 42 percent and served one thousand users on v2.1.",
 		"I shipped a 3.1x kernel for LLM inference.",
-		"I have no PhD, though I do hold a certification.",
 		"I served a thousand users.",
 	} {
 		if _, err := draftReply(t, reply, req, Config{}); err != nil {
 			t.Errorf("%q refused: %v", reply, err)
 		}
 	}
-}
-
-// What the untrusted posting says is shown material, so it grounds a credential
-// as it grounds a figure: "PhD preferred" in the posting backs an invented PhD.
-// This pins the known soft spot (see ground_claims.go) so a change to it is a
-// choice, not an accident.
-func TestPostingGroundsCredentialsAsItGroundsFigures(t *testing.T) {
-	req := latencyRequest()
-	req.Job.Description = "About the role\nOwn LLM inference latency. A PhD is preferred; five years of experience.\n"
-	for _, reply := range []string{"I hold a PhD.", "I have five years of experience."} {
-		if _, err := draftReply(t, reply, req, Config{}); err != nil {
-			t.Fatalf("%q: the posting is shown material and grounds it, got %v", reply, err)
-		}
-	}
-	// A posting section that is never sent grounds nothing.
-	req.Job.Description = "About the role\nOwn LLM inference latency.\n\nBenefits\nA PhD stipend and AWS credits\n"
-	for _, s := range sections(req.Job.Description) {
-		if s.heading == "Benefits" && s.kind != kindDrop {
-			t.Fatalf("test assumption: Benefits is %q, not dropped", s.kind)
-		}
-	}
-	for _, reply := range []string{"I hold a PhD.", "I used AWS."} {
-		if _, err := draftReply(t, reply, req, Config{}); err == nil {
-			t.Errorf("%q: text from a section never sent grounded it", reply)
-		} else {
-			ungroundedErr(t, err)
-		}
+	// "I do hold a certification" was grounded by the question that asked for it.
+	if _, err := draftReply(t, "I do hold a certification.", req, Config{}); err == nil {
+		t.Error("a question that asks about a certification grounded the claim of one")
+	} else {
+		ungroundedErr(t, err)
 	}
 }
 
@@ -442,7 +507,7 @@ func TestGuardAtTheReplyCap(t *testing.T) {
 // Adversarial inputs stay linear and bounded.
 func TestGuardIsBoundedOnAdversarialText(t *testing.T) {
 	start := time.Now()
-	g := newGrounding(strings.Repeat("five ", 20000), strings.Repeat("PhD AWS ", 5000))
+	g := seekerOnly(strings.Repeat("five ", 20000), strings.Repeat("PhD AWS ", 5000))
 	for _, in := range []string{
 		strings.Repeat("five ", 20000),
 		strings.Repeat("thousand ", 20000),
@@ -452,13 +517,18 @@ func TestGuardIsBoundedOnAdversarialText(t *testing.T) {
 		strings.Repeat("AWS ", 20000),
 		strings.Repeat("Ph.D. ", 20000),
 		strings.Repeat("aws ", 5000) + strings.Repeat("certified ", 5000),
+		strings.Repeat("AWS as a ", 20000) + "associate",
+		strings.Repeat("AWS as a developer associate. ", 5000),
+		strings.Repeat("MS ", 20000) + strings.Repeat("MS Teams ", 20000),
+		strings.Repeat("GPUs ", 20000),
+		strings.Repeat("5+ years ", 20000),
 	} {
 		g.ungrounded(in)
 	}
 	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("adversarial inputs took %s", d)
 	}
-	if f, n := newGrounding().ungrounded(strings.Repeat("five ", 5000)); n != 1 || f.String() != "5" {
+	if f, n := seekerOnly().ungrounded(strings.Repeat("five ", 5000)); n != 1 || f.String() != "5" {
 		t.Errorf("repeated number words: %q (%d), want the single bare figure 5", f.String(), n)
 	}
 }

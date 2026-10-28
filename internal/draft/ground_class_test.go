@@ -29,7 +29,7 @@ func TestGroundingAcceptsHonestCounts(t *testing.T) {
 		"thin space grouping":            {"1,000 users", "1 000 users"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if f, n := newGrounding(tc.source).ungrounded(tc.reply); n != 0 {
+			if f, n := seekerOnly(tc.source).ungrounded(tc.reply); n != 0 {
 				t.Errorf("%q refused against %q: first figure %v (%d)", tc.reply, tc.source, f, n)
 			}
 		})
@@ -51,7 +51,7 @@ func TestGroundingRefusesTheWrongCount(t *testing.T) {
 		"the other way: a count grounds no pct": {"I led 40 people.", "I cut it 40%."},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, n := newGrounding(tc.source).ungrounded(tc.reply); n == 0 {
+			if _, n := seekerOnly(tc.source).ungrounded(tc.reply); n == 0 {
 				t.Errorf("%q accepted against %q", tc.reply, tc.source)
 			}
 		})

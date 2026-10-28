@@ -9,13 +9,16 @@ import (
 
 // Credentials and acronyms, the two claims beside figures that the grounding
 // guard (ground.go) refuses when nothing the model was shown holds them. The
-// rule is the figures' rule: a draft is refused if it names one that occurs in
-// none of the question, the company and title, the posting excerpt, the target
-// summary, the seeker's notes (motivation questions) and the evidence sent. A
-// posting that says "PhD preferred" therefore grounds a draft's "PhD", as its
-// "5 years" grounds a draft's "5 years". That is a known soft spot (a posting
-// describes the job, not the seeker); excluding the excerpt for credentials only
-// would need a second source list through newGrounding, and is the owner's call.
+// rule differs by claim. An acronym is grounded by any source, like a figure: a
+// draft is asked to echo the tools the posting names, so an acronym that occurs
+// in the question, the company and title, the posting excerpt, the target summary,
+// the seeker's notes (motivation questions) or the evidence sent is grounded. A
+// credential is a claim about the seeker, so it is grounded only by text the
+// seeker owns: the evidence, the target summary and the notes. A posting that says
+// "PhD preferred", a question "Do you have a PhD?" or a title "PhD Research Intern"
+// describes the job or asks; none of them says the seeker holds one. The target
+// summary names roles the seeker wants, so "PhD-level roles" in it grounds a PhD:
+// a residual, kept because the text is the seeker's.
 //
 // Text is folded before either is read, on both sides: format characters (zero
 // width space, soft hyphen) are dropped, any Unicode space is a space, curly
@@ -34,29 +37,55 @@ import (
 //     The abbreviations are matched only as written in capitals: "ms" is a
 //     millisecond, "bs" a typo. "MA" and "BA" without dots are left out, as they
 //     are states and airlines; so are JD (a job description in this domain) and
-//     MD.
+//     MD. An undotted "MS" followed by a Microsoft product word ("MS SQL", "MS
+//     Teams", "MS-Office") is the company's name, not a degree.
 //   - "certified", "certification", "certificate" are one claim, and "licensed"
-//     and "licensure" another; neither says whose, so a source that uses the word
-//     of anything (a posting, a company) grounds it.
+//     and "licensure" another; neither says whose, so any seeker text that uses
+//     the word of anything grounds it.
 //   - A cloud certification is the provider and a certification word within three
 //     words ("AWS Certified", "AWS Solutions Architect Associate", "Google Cloud
-//     Professional Cloud Architect", "Certified in Azure", "AZ-900"). It needs
-//     that provider's phrase in a source, so an "AWS Certified" draft is not
-//     grounded by "Google Cloud Certified" nor by "AWS" and "certified" far apart.
+//     Professional Cloud Architect", "Certified in Azure", "AZ-900"). "Associate"
+//     and "specialty" count only after a track noun ("Developer Associate",
+//     "Security Specialty"), and a gap that holds a function word ("AWS as an
+//     associate", "Google Cloud as a professional engineer") is a job, not a
+//     certification. It needs that provider's phrase in a source, so an "AWS
+//     Certified" draft is not grounded by "Google Cloud Certified" nor by "AWS" and
+//     "certified" far apart.
 type credSpec struct {
 	key string
 	re  *regexp.Regexp
+	// unless, when set, drops a match that the text after it matches.
+	unless *regexp.Regexp
 }
 
 const cloudProviders = `aws|amazon web services|gcp|google cloud|azure`
 
+// cloudCertWords end a cloud certification: a certification word, a track noun
+// then "associate" or "specialty", or "professional" and a track.
+const cloudCertWords = `certified|certification|certificate|practitioner|fundamentals|` +
+	`(?:architect|developer|administrator|engineer|analyst|security|networking|database|learning|analytics) (?:associate|specialty)|` +
+	`professional (?:cloud|data|machine|devops|security|network|solutions|architect|engineer|developer)`
+
+// cloudGapStops are the words that, between a provider and a certification word,
+// make the phrase a sentence about a job or a place ("AWS as an associate").
+var cloudGapStops = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`a an the as at for in with of by to on from is was my our i`) {
+		cloudGapStops[w] = true
+	}
+}
+
 var (
 	credentialSpecs []credSpec
 	credentialNames = []string{"phd", "mba", "cpa", "pmp", "cfa", "cissp", "cism", "ccna", "cka", "ckad", "cks"}
-	cloudFwdRE      = regexp.MustCompile(`(?i)\b(` + cloudProviders + `)\b(?: [a-z0-9-]+){0,3} (?:certified|certification|certificate|practitioner|fundamentals|associate|specialty|professional (?:cloud|data|machine|devops|security|network|solutions|architect|engineer|developer))\b`)
-	cloudRevRE      = regexp.MustCompile(`(?i)\b(?:certified|certification|certificate) (?:in |for |on )?(` + cloudProviders + `)\b`)
-	azureExamRE     = regexp.MustCompile(`(?i)\baz-\d{3}\b`)
-	claimWordRE     = regexp.MustCompile(`[\p{L}\p{N}]+`)
+	// cloudFwdRE captures the provider (2:4) and the words between it and the certification word (4:6).
+	cloudFwdRE  = regexp.MustCompile(`(?i)\b(` + cloudProviders + `)\b((?: [a-z0-9-]+){0,3}) (?:` + cloudCertWords + `)\b`)
+	cloudRevRE  = regexp.MustCompile(`(?i)\b(?:certified|certification|certificate) (?:in |for |on )?(` + cloudProviders + `)\b`)
+	azureExamRE = regexp.MustCompile(`(?i)\baz-\d{3}\b`)
+	claimWordRE = regexp.MustCompile(`[\p{L}\p{N}]+`)
+	// microsoftProductRE follows an "MS" that names Microsoft, not a master's.
+	microsoftProductRE = regexp.MustCompile(`(?i)^[ -]+(?:sql|server|teams|office|excel|word|access|outlook|project|powerpoint|power|windows|dos|dynamics|exchange|sharepoint|onedrive|visio|azure|visual|365)\b`)
 )
 
 func init() {
@@ -65,19 +94,20 @@ func init() {
 		credentialSpecs = append(credentialSpecs, credSpec{key: n, re: regexp.MustCompile(`(?i)\b` + strings.Join(letters, `(?:\. ?)?`) + `\b`)})
 	}
 	// A cased pattern matches as written (capitals only); the rest ignore case.
-	add := func(key, pattern string, cased bool) {
+	add := func(key, pattern string, cased bool, unless *regexp.Regexp) {
 		if !cased {
 			pattern = "(?i)" + pattern
 		}
-		credentialSpecs = append(credentialSpecs, credSpec{key: key, re: regexp.MustCompile(pattern)})
+		credentialSpecs = append(credentialSpecs, credSpec{key: key, re: regexp.MustCompile(pattern), unless: unless})
 	}
-	add("phd", `\bdoctorate\b`, false)
-	add("masters", `\bmaster's\b|\bmasters? degree\b|\bmasters? of (?:science|arts|business|engineering|fine arts|education)\b`, false)
-	add("masters", `\b(?:MS|MSc|MEng)\b|\bM\.(?:S|Sc|Eng|A)\.`, true)
-	add("bachelors", `\bbachelor's\b|\bbachelors? degree\b|\bbachelors? of (?:science|arts|engineering|business|fine arts|technology)\b`, false)
-	add("bachelors", `\b(?:BS|BSc|BEng)\b|\bB\.(?:S|Sc|Eng|A)\.`, true)
-	add("certified", `\bcertif(?:ied|ication|ications|icate|icates)\b`, false)
-	add("licensed", `\blicensed\b|\blicensure\b`, false)
+	add("phd", `\bdoctorate\b`, false, nil)
+	add("masters", `\bmaster's\b|\bmasters? degree\b|\bmasters? of (?:science|arts|business|engineering|fine arts|education)\b`, false, nil)
+	add("masters", `\b(?:MS|MSc|MEng)\b`, true, microsoftProductRE)
+	add("masters", `\bM\.(?:S|Sc|Eng|A)\.`, true, nil)
+	add("bachelors", `\bbachelor's\b|\bbachelors? degree\b|\bbachelors? of (?:science|arts|engineering|business|fine arts|technology)\b`, false, nil)
+	add("bachelors", `\b(?:BS|BSc|BEng)\b|\bB\.(?:S|Sc|Eng|A)\.`, true, nil)
+	add("certified", `\bcertif(?:ied|ication|ications|icate|icates)\b`, false, nil)
+	add("licensed", `\blicensed\b|\blicensure\b`, false, nil)
 }
 
 // credentialAcronyms are the credential names that are also all-capitals words;
@@ -121,14 +151,18 @@ func credentialsIn(s string) []credentialHit {
 	}
 	for _, c := range credentialSpecs {
 		for _, loc := range c.re.FindAllStringIndex(folded, -1) {
+			if c.unless != nil && c.unless.MatchString(folded[loc[1]:]) {
+				continue
+			}
 			record(c.key, loc)
 		}
 	}
-	for _, re := range []*regexp.Regexp{cloudFwdRE, cloudRevRE} {
-		for _, m := range re.FindAllStringSubmatchIndex(folded, -1) {
-			record("cert:"+cloudProvider(strings.ToLower(folded[m[2]:m[3]])), m[:2])
-		}
+	for _, m := range cloudRevRE.FindAllStringSubmatchIndex(folded, -1) {
+		record("cert:"+cloudProvider(strings.ToLower(folded[m[2]:m[3]])), m[:2])
 	}
+	forEachCloudCert(folded, func(provider string, loc []int) {
+		record("cert:"+cloudProvider(provider), loc)
+	})
 	for _, loc := range azureExamRE.FindAllStringIndex(folded, -1) {
 		record("cert:azure", loc)
 	}
@@ -142,6 +176,36 @@ func credentialsIn(s string) []credentialHit {
 		}
 	}
 	return out
+}
+
+// forEachCloudCert calls fn for each provider-first cloud certification in s (a
+// lowercase provider and the span of the phrase). A phrase whose gap holds a
+// function word is not one; the scan then resumes after its provider, so a real
+// certification later in the same sentence ("AWS as a lead, Azure certified") is
+// still found.
+func forEachCloudCert(s string, fn func(provider string, loc []int)) {
+	for pos := 0; pos < len(s); {
+		m := cloudFwdRE.FindStringSubmatchIndex(s[pos:])
+		if m == nil {
+			return
+		}
+		for i := range m {
+			m[i] += pos
+		}
+		gapOK := true
+		for _, w := range strings.Fields(strings.ToLower(s[m[4]:m[5]])) {
+			if cloudGapStops[w] {
+				gapOK = false
+				break
+			}
+		}
+		if !gapOK {
+			pos = m[3]
+			continue
+		}
+		fn(strings.ToLower(s[m[2]:m[3]]), m[:2])
+		pos = m[1]
+	}
 }
 
 // cloudProvider names a provider the way the cloud rules key it.
@@ -158,8 +222,10 @@ func cloudProvider(p string) string {
 // An acronym is a run of 2 to 6 capital letters ("AWS", "SOC", "CUDA", "TPU"). A
 // token with a digit in it ("S3", "SOC2", "H100") is a tagged figure and is read
 // by the figure reader, which refuses it with the same strictness, so it is not
-// read twice. Only capitals count: "APIs" and "Rust" are words, and a plural or a
-// lowercase name is not an acronym.
+// read twice. Only capitals count: "Rust" is a word, and a lowercase name is not an
+// acronym. A trailing lowercase "s" is folded, on both sides: "GPUs" is the
+// acronym GPU, so an unbacked plural is as refused as the singular, and a source's
+// "LLMs" backs a draft's "LLM". An all-capitals "LLMS" is a longer acronym, not a plural.
 const (
 	minAcronymLen = 2
 	maxAcronymLen = 6
@@ -191,23 +257,43 @@ func isAcronym(tok string) bool {
 	return true
 }
 
+// acronymOf reads tok as an acronym or the plural of one ("GPUs" is GPU).
+func acronymOf(tok string) (string, bool) {
+	if isAcronym(tok) {
+		return tok, true
+	}
+	if n := len(tok); n > 0 && tok[n-1] == 's' && isAcronym(tok[:n-1]) {
+		return tok[:n-1], true
+	}
+	return "", false
+}
+
 // acronymsIn lists the acronyms s holds that are neither generic nor a
-// credential name, in text order, once each.
+// credential name, in text order, once each; a plural is listed as its singular.
 func acronymsIn(s string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, tok := range claimWordRE.FindAllString(foldClaim(s), -1) {
-		if !isAcronym(tok) || genericAcronyms[tok] || credentialAcronyms[tok] || seen[tok] {
+		a, ok := acronymOf(tok)
+		if !ok || genericAcronyms[a] || credentialAcronyms[a] || seen[a] {
 			continue
 		}
-		seen[tok] = true
-		out = append(out, tok)
+		seen[a] = true
+		out = append(out, a)
 	}
 	return out
 }
 
 // wordsIn is every letter-and-digit word of s, lowercased: what "occurs in" means
-// for an acronym ("AWS" occurs in "built on aws-lambda").
+// for an acronym ("AWS" occurs in "built on aws-lambda"). A plural acronym is also
+// its singular ("LLMs" holds "llm").
 func wordsIn(s string) []string {
-	return claimWordRE.FindAllString(strings.ToLower(foldClaim(s)), -1)
+	folded := foldClaim(s)
+	out := claimWordRE.FindAllString(strings.ToLower(folded), -1)
+	for _, tok := range claimWordRE.FindAllString(folded, -1) {
+		if a, ok := acronymOf(tok); ok && a != tok {
+			out = append(out, strings.ToLower(a))
+		}
+	}
+	return out
 }

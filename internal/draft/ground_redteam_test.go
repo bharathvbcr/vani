@@ -43,7 +43,7 @@ func TestRedteamGroundingIsBlindToWhatTheNumberCounts(t *testing.T) {
 		"currency grounded by an unrelated bare number": {"The role has 10 reports.", "I saved $10 million."},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, n := newGrounding(tc.sources).ungrounded(tc.reply); n == 0 {
+			if _, n := seekerOnly(tc.sources).ungrounded(tc.reply); n == 0 {
 				t.Fatalf("FAIL: %q was accepted against %q (its figure counts something the sources do not say)", tc.reply, tc.sources)
 			}
 		})
@@ -52,7 +52,7 @@ func TestRedteamGroundingIsBlindToWhatTheNumberCounts(t *testing.T) {
 
 // Probes that hold (the guard refuses): formatting tricks do not mint a figure.
 func TestRedteamGroundingHeldCases(t *testing.T) {
-	g := newGrounding("Cut latency 42% and shipped 3.1x on v2.1 in 2023 for 1,000 users, 0.94 to 0.81.")
+	g := seekerOnly("Cut latency 42% and shipped 3.1x on v2.1 in 2023 for 1,000 users, 0.94 to 0.81.")
 	for _, bad := range []string{
 		"I cut it 4 2%",             // split digits
 		"I cut it by 42.0%",         // a different decimal spelling
