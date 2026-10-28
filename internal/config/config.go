@@ -802,6 +802,8 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "api.lever.co", true
 	case posting.Ashby:
 		return "api.ashbyhq.com", true
+	case posting.Gem:
+		return "api.gem.com", true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -941,9 +943,9 @@ const ScrapeSuffix = "-scrape"
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Gem, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)

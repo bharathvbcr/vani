@@ -366,6 +366,11 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 			b.Region = "eu"
 		}
 		return b, ingestSearchJSON{}
+	case host == "jobs.gem.com":
+		if first == "" {
+			return fail(searchInvalid, "the page URL names no Gem board")
+		}
+		return sources.Board{ATS: posting.Gem, Token: first, Company: company}, ingestSearchJSON{}
 	case host == "jobs.ashbyhq.com":
 		if first == "" {
 			return fail(searchInvalid, "the page URL names no Ashby board")
