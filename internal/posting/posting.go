@@ -29,6 +29,8 @@ const (
 	Eightfold ATS = "ef"
 	// Jibe is an iCIMS Jibe careers site (AMD).
 	Jibe ATS = "jb"
+	// DEShaw is D. E. Shaw's own careers page (deshaw.com/careers).
+	DEShaw ATS = "ds"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

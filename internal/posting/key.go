@@ -63,6 +63,9 @@ func EightfoldKey(domain, id string) (Key, error) { return build(Eightfold, doma
 // token.
 func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, reqID) }
 
+// DEShawKey is ds:{board}:{id}, the id of deshaw.com's own job record.
+func DEShawKey(board, id string) (Key, error) { return build(DEShaw, board, id) }
+
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
 // no trailing slash) so cosmetic link differences do not split one posting
@@ -119,7 +122,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, DEShaw, Page, Other:
 		return a
 	}
 	return ""
