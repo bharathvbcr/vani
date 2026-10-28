@@ -274,10 +274,15 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
 		},
 	})
+	// Avature: a detail page per posting, bounded like Workday's (stored
+	// postings reused, listed rows prefiltered, at most avature.MaxDetails
+	// requests a board a run).
 	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
+		Stored:     w.storedFor,
+		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
 		},
 	})
 	srcs[posting.Apple] = apple.NewWith(d, apple.Options{

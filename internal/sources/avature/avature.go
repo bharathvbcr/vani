@@ -51,7 +51,11 @@
 //
 // Every posting costs a detail request (the list has no description), so a
 // board over MaxPostings fails rather than being truncated, and detail 404s
-// are bounded like eightfold's and apple's.
+// are bounded like eightfold's and apple's. Given the postings an earlier run
+// stored (Options.Stored), the details are planned as Workday's are
+// (srcutil.PlanDetails): stored postings are reused and re-read on their turn,
+// new ones DropListed rejects are never fetched, and at most MaxDetails detail
+// requests go out per board per run, the new ones past it deferred.
 package avature
 
 import (
@@ -84,6 +88,11 @@ const (
 	// maxPages is every page of a full board and the marker page after it,
 	// plus one spare.
 	maxPages = MaxPostings/pageSize + 2
+	// MaxDetails is the most detail requests one board spends in a run when its
+	// stored postings are known (Options.Stored). A detail took about 3 s on
+	// Bloomberg's board (2026-10-28), so a full read of its 341 was 19 min a day;
+	// 150 is under 8 min, and a board fills over its first few runs.
+	MaxDetails = 150
 
 	// A listing page is 110 KB and a detail 57 KB, mostly the site's chrome: a
 	// few MiB bounds either far more tightly than srcutil's 64 MiB default.
@@ -171,19 +180,36 @@ func ParseListURL(raw, host string) (ListPage, error) {
 // answered: the posting closed after it was listed.
 var errDetailGone = errors.New("detail is gone (HTTP 404)")
 
-// maxGone is how many of n listed postings may come back gone before the
-// board fails: a tenth, at least one (workday's bound).
-func maxGone(n int) int { return max(1, n/10) }
-
-// Stats counts what one List did: the postings listed and the ones whose
-// detail page answered 404 (closed since listing).
+// Stats counts what one List did. Every listed row is counted once, in
+// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
 type Stats struct {
 	Listed int `json:"listed"`
-	Gone   int `json:"gone,omitempty"`
+	// Reused rows were returned as stored, with no request.
+	Reused int `json:"reused,omitempty"`
+	// Fetched rows were new and got a detail request; Refreshed rows were
+	// stored and were re-read on their turn.
+	Fetched   int `json:"fetched"`
+	Refreshed int `json:"refreshed,omitempty"`
+	// Prefiltered rows were new and dropped by DropListed without a request.
+	Prefiltered int `json:"prefiltered,omitempty"`
+	// Deferred rows were new but past MaxDetails: fetched on a later run. Not
+	// being stored, their absence ages nothing.
+	Deferred int `json:"deferred,omitempty"`
+	// Gone rows answered their detail with 404: closed since listing.
+	Gone int `json:"gone,omitempty"`
 }
 
 // Options configures NewWith.
 type Options struct {
+	// Stored, when set, returns the postings an earlier run stored for b (every
+	// record under b.KeyPrefix(), whatever its status) and turns on the bounded
+	// detail step. Nil fetches every listed posting's detail.
+	Stored func(b sources.Board) []posting.Posting
+	// DropListed reports whether the engine drops a posting before triage from
+	// what a listing card says: its title, the board's company and its location
+	// (no description). A new row it drops is neither fetched nor returned. It
+	// applies only with Stored. Nil drops nothing.
+	DropListed func(p posting.Posting) bool
 	// Report, when set, receives each listed board's counts.
 	Report func(sources.Board, Stats)
 	// Wait spaces a board's requests (srcutil.Pacer.Sleep); nil is
@@ -266,24 +292,58 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("avature %q: %w", b.Token, err)
 	}
 	seen := s.now()
-	out := make([]posting.Posting, 0, len(rows))
 	stats := Stats{Listed: len(rows)}
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, stats) }()
 	}
-	allowed := maxGone(len(rows))
-	for _, r := range rows {
+	stored := map[posting.Key]posting.Posting{}
+	limit := len(rows) // without stored postings every row is fetched
+	if s.opt != nil && s.opt.Stored != nil {
+		limit = MaxDetails
+		// Looked up by the key a row builds, so another board's posting can
+		// never match one of this board's rows.
+		for _, p := range s.opt.Stored(b) {
+			stored[p.Key] = p
+		}
+	}
+	keys := make([]posting.Key, len(rows))
+	plan := make([]srcutil.DetailRow, len(rows))
+	for i, r := range rows {
+		key, err := posting.AvatureKey(token, r.id)
+		if err != nil {
+			return nil, fmt.Errorf("avature %q: posting %s: %w", b.Token, r.id, err)
+		}
+		keys[i] = key
+		_, ok := stored[key]
+		plan[i] = srcutil.DetailRow{ID: r.id, Stored: ok}
+		if !ok && limit == MaxDetails && s.opt.DropListed != nil {
+			plan[i].Drop = s.opt.DropListed(posting.Posting{ATS: posting.Avature, Company: b.Company, Title: r.title, Location: r.location})
+		}
+	}
+	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), limit)
+	stats.Deferred, stats.Prefiltered = pl.Deferred, pl.Prefiltered
+	slot := make([]*posting.Posting, len(rows))
+	for _, i := range pl.Reuse {
+		p := stored[keys[i]]
+		p.SeenAt = seen
+		slot[i] = &p
+		stats.Reused++
+	}
+	allowed := srcutil.MaxGone(len(pl.Fetch))
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		r := rows[i]
 		p, err := s.detail(ctx, st, b, token, r, seen)
 		if errors.Is(err, errDetailGone) {
 			// The posting closed between the listing and its page; leaving it out
 			// is the truth. Many at once is the detail page failing. The error is
-			// deliberately not ErrBoardNotFound: the listing answered.
-			if stats.Gone++; stats.Gone > allowed || stats.Gone == len(rows) {
+			// deliberately not ErrBoardNotFound: the listing answered. With every
+			// other row reused, one new posting gone is only that posting.
+			if stats.Gone++; stats.Gone > allowed || (stats.Gone == len(pl.Fetch) && stats.Reused == 0) {
 				return nil, fmt.Errorf("avature %q: %d of %d posting details are gone (HTTP 404); the detail pages are not answering",
-					b.Token, stats.Gone, len(rows))
+					b.Token, stats.Gone, len(pl.Fetch))
 			}
 			continue
 		}
@@ -291,7 +351,18 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			// A partial listing would age healthy postings as absent.
 			return nil, fmt.Errorf("avature %q: posting %s: %w", b.Token, r.id, err)
 		}
-		out = append(out, p)
+		if n >= pl.New {
+			stats.Refreshed++
+		} else {
+			stats.Fetched++
+		}
+		slot[i] = &p
+	}
+	out := make([]posting.Posting, 0, len(rows))
+	for _, p := range slot {
+		if p != nil {
+			out = append(out, *p)
+		}
 	}
 	return out, nil
 }
