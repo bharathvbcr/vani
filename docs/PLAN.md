@@ -214,7 +214,7 @@ discovered ─▶ canonicalized ─▶ live? ─▶ new? ─▶ triaged ─▶ s
 | P18 | Embedding Manvi transitively pins DevCouncil; Manvi changes bump Jarvis's pin | `go.mod`, cross-app rule | Engine pins Manvi like Jarvis does; every Manvi export (P9) is reported as a delta and asked before Jarvis bumps; engine reads no DevCouncil-owned schema |
 | P19 | Scraping aggregators (LinkedIn/Indeed/Glassdoor) risks account bans and ToS | JobSpy's board list [V] | ATS-direct and company career pages only; `--obey-robots`; per-host rate limits (`--http-nav-burst`, own token bucket) |
 | P20 | Workday listing endpoint is undocumented, caps `limit` at 20, `postedOn` is a phrase | community sources [U-ish] | Isolated adapter with paging by 20, `Accept: application/json` + `Accept-Language`, parse relative dates, contract test against a saved fixture; fails soft |
-| P21 | Lever/Ashby expose no question schema; Ashby no form definition | postings-api README, Ashby docs [V/U] | Irrelevant for listings v1; matters only for §9 |
+| P21 | Lever exposes no question schema. Ashby's posting API has no form, but its job page's public GraphQL (`jobPosting.applicationForm`) does, with no session (checked 2026-10-27) | postings-api README, Ashby docs [U]; live reads [V] | Ashby forms are read into a bounded summary of knock-out questions (`internal/sources/ashby/form.go`); matters for the fill only in §9 |
 | P22 | CAPTCHAs / bot walls | — | Never solved. Posting marked "needs browser", link goes in the digest for you |
 | P23 | Lappi 16-option cap | `schema-api.md:156-183` [V] | Callers prefilter and record the narrowing in `facts` |
 | P24 | DevPrism's installed binary may not expose `--mcp`; source build fails locally (tectonic) | DevPrism survey, memory [U] | Phase 0 smoke test; the resume engine is Typst (no tectonic needed on the MCP path) but the binary still links it |
@@ -329,8 +329,8 @@ Kept out of v1. When you want it, the design that avoids the audit's problems:
 
 - DevPrism `--mcp` on the installed binary (P24).
 - Lightpanda HTTPS/CONNECT and subresource behaviour through a proxy (P8).
-- Lever's lack of a question schema and Ashby's lack of a form endpoint come from README/docs
-  summaries.
+- Lever's lack of a question schema comes from README/docs summaries. Ashby's form is read live
+  (see P21).
 - Workday endpoint details come from community sources.
 - Jarvis driving web content in Chrome over AX (only matters for §9).
 - Coverage note: the code surveys used rg with default ignores (no `-uu`) and DevMap mostly for

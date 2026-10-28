@@ -260,6 +260,16 @@ type Job struct {
 	// Resume is the job's tailored resume (internal/resumestore): nil when it has
 	// none, Error set when the store could not be read. Display only.
 	Resume *ResumeSummary `json:"resume,omitempty"`
+	// ApplyFormNote is one line about the posting's application form (see
+	// ApplyFormNote): its flagged questions, or "not read" for an Ashby
+	// posting whose form was not. ApplyForm is the summary itself, `jobs show`
+	// only. Display only: no engine rule reads either, and nothing is dropped
+	// or blocked for them.
+	ApplyFormNote string             `json:"apply_form_note,omitempty"`
+	ApplyForm     *posting.ApplyForm `json:"apply_form,omitempty"`
+	// ApplyFlags are the flagged gates in a few words (ApplyFormFlags), for a
+	// list row.
+	ApplyFlags []string `json:"apply_flags,omitempty"`
 
 	// Untriaged marks a posting no run has triaged yet (status live): it has no
 	// fit, relevance, priority, keywords or row, and the reply carries none of
@@ -341,6 +351,7 @@ func ToJob(r ledger.Record, entry marks.Entry) Job {
 		Note:        entry.Note,
 		NoteAt:      entry.NoteAt,
 	}
+	j.ApplyFormNote, j.ApplyFlags = ApplyFormNote(p), ApplyFormFlags(p.Form)
 	j.Stage, j.StageAt, j.FurthestStage = entry.Stage, entry.StageAt, entry.Furthest
 	if j.Title == "" {
 		j.Title = "(untitled)"

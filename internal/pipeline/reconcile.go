@@ -129,6 +129,11 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 		seen[p.Key] = true
 		hash := p.DescriptionHash()
 		rec, known := l.Get(p.Key)
+		if known && p.Form == nil {
+			// A listing that did not read the form (a capped or failed read) says
+			// nothing about it: the stored summary, if any, stands.
+			p.Form = rec.Posting.Form
+		}
 		rendered := known && rec.Posting.DescriptionHash() != hash
 		// relist is what a same-content listing stores over a known record.
 		relist := relisted(rec.Posting, p, full)
@@ -366,13 +371,16 @@ func relisted(stored, listed posting.Posting, full bool) posting.Posting {
 // refreshFields reports whether relist, a same-content relisting, changes a
 // display field of stored: where the posting is (Location, Remote), how it is
 // filed and reached (Department, URL, ApplyURL) and whose it is (Company, a
-// board's configured name). Not compared: Title (triage and the title drop
-// rules read it), PostedAt (never moved), UpdatedAt and SeenAt (they move on
-// every re-save and run, and would write an event each time).
+// board's configured name), and what its application form asks (Form: a form
+// read for the first time, or one that changed). Not compared: Title (triage
+// and the title drop rules read it), PostedAt (never moved), UpdatedAt and
+// SeenAt (they move on every re-save and run, and would write an event each
+// time).
 func refreshFields(stored, relist posting.Posting) bool {
 	return stored.Location != relist.Location || stored.Remote != relist.Remote ||
 		stored.Department != relist.Department || stored.URL != relist.URL ||
-		stored.ApplyURL != relist.ApplyURL || stored.Company != relist.Company
+		stored.ApplyURL != relist.ApplyURL || stored.Company != relist.Company ||
+		!stored.Form.Equal(relist.Form)
 }
 
 // sourceHash identifies the board's own text in a stored or listed

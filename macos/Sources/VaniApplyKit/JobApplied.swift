@@ -53,11 +53,20 @@ public struct JobMatch: Codable, Equatable, Sendable {
         public var row: JobRow?
         /// Other postings at this company were applied to lately; nil from a vani that does not say.
         public var repeatApply: RepeatApply?
+        /// One line about the posting's application form, sent only when it has a flagged question
+        /// (`apply_form_note`, worded by vani). A note only. Nil from a vani that does not say, and
+        /// lenient: a value that is not a string reads as nil and never fails the find.
+        public var applyFormNote: String? {
+            get { applyFormNoteWire?.value }
+            set { applyFormNoteWire = newValue.map { Lenient($0) } }
+        }
+        var applyFormNoteWire: Lenient<String>?
 
         enum CodingKeys: String, CodingKey {
             case key, company, title, status, closed, mark, row
             case matchedOn = "matched_on"
             case repeatApply = "repeat_apply"
+            case applyFormNoteWire = "apply_form_note"
         }
     }
 
@@ -82,6 +91,7 @@ public struct JobMatch: Codable, Equatable, Sendable {
             if let mark = job.mark { j["mark"] = mark.rawValue }
             if let row = job.row?.jsonObject { j["row"] = row }
             if let repeatApply = job.repeatApply?.jsonObject { j["repeatApply"] = repeatApply }
+            if let note = job.applyFormNote, !note.isEmpty { j["applyFormNote"] = note }
             out["job"] = j
         }
         return out

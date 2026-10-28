@@ -5,6 +5,7 @@
 // internal/jobview/testdata/rows.golden.json (test/jobrow.test.ts).
 
 import type { RelevanceResult } from "./relevance";
+import { parseFindFormNote } from "./formnote";
 import { type RepeatApply, parseFindRepeatApply } from "./repeatapply";
 
 /** The schema version this build reads (jobview.Version). */
@@ -82,7 +83,8 @@ export function parseFindRow(reply: unknown): FindRow | { error: string } {
   if (r.found !== true || typeof r.job !== "object" || r.job === null) return { row: null };
   // The repeat-apply note rides beside the row (repeatapply.ts); a reply without it is the reply an older vani sends.
   const note = parseFindRepeatApply(reply);
-  const extra = note ? { repeatApply: note } : {};
+  const formNote = parseFindFormNote(reply); // likewise (formnote.ts)
+  const extra = { ...(note ? { repeatApply: note } : {}), ...(formNote ? { formNote } : {}) };
   const raw = (r.job as Record<string, unknown>).row;
   if (raw === undefined || raw === null) return { row: null, ...extra };
   const p = parseJobRow(raw);
@@ -90,7 +92,7 @@ export function parseFindRow(reply: unknown): FindRow | { error: string } {
 }
 
 /** A jobFind reply read for the page's row, and the notice that rides with it when there is one. */
-export type FindRow = { row: JobRow | null; repeatApply?: RepeatApply };
+export type FindRow = { row: JobRow | null; repeatApply?: RepeatApply; formNote?: string };
 
 /** Vani's own numbers and label in place of the page-text estimate; the estimate's details (skills, salary) stay. */
 export function applyVaniRow(rel: RelevanceResult, row: JobRow): RelevanceResult {

@@ -112,6 +112,16 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     var untriagedWire: Lenient<Bool>?
     var prefilterDropWire: Lenient<String>?
 
+    /// One line about the posting's application form (`apply_form_note`, worded by vani): its flagged
+    /// questions (sponsorship, work authorization, places you must be in), or that the form was not
+    /// read. A note for a person, never a filter. Nil from a vani that predates it, and for an ATS whose
+    /// form vani cannot read. Lenient: a value that is not a string reads as nil and never fails the list.
+    public var applyFormNote: String? {
+        get { applyFormNoteWire?.value }
+        set { applyFormNoteWire = newValue.map { Lenient($0) } }
+    }
+    var applyFormNoteWire: Lenient<String>?
+
     /// Sonnet's manual re-triage of this posting (`vani jobs retriage`), stored beside
     /// the ledger. Absent until one is made, and from an older vani. Lenient like the
     /// fields above: an object this app cannot read is nil and never fails the list.
@@ -224,6 +234,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         case manualTriageWire = "manual_triage"
         case resumeWire = "resume"
         case prefilterDropWire = "prefilter_drop"
+        case applyFormNoteWire = "apply_form_note"
         case dupOfWire = "dup_of"
         case dupCandidateOfWire = "dup_candidate_of"
         case dupSiblingOfWire = "dup_sibling_of"

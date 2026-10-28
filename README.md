@@ -493,6 +493,27 @@ flowchart TD
     closing text (`additionalPlain`, where Lever boards state pay), `salaryDescriptionPlain` and
     `salaryRange`; Ashby is fetched with `includeCompensation=true` and its salary component leads
     the description unless the company hides pay on its postings.
+  - Ashby application forms ([`internal/sources/ashby/form.go`](internal/sources/ashby/form.go),
+    [`internal/applyform`](internal/applyform)): the posting API carries no form, but the job page's
+    public GraphQL does, with no session, so Vani reads it and keeps a small summary on the posting
+    (`apply_form`): how many questions the form asks and how many are required, and which required
+    ones can knock you out, from the form's own structure rather than the description. A flagged
+    question is sponsorship with no offered answer that says you would need it, or only a yes/no on
+    being authorized without it; a yes/no on your right to work there; or a required pick from a short
+    list of places (you must be in one of them, listed). It also counts required essays (the form
+    publishes no length limit) and lists required uploads beyond the resume (a cover letter, a
+    transcript). `jobs show` prints it as a line, and a second line puts the form's sponsorship
+    question beside triage's `sponsorship` reading, which it never overrides; `jobs list` marks a
+    flagged row `(form: sponsorship, places)`; `--json` carries `apply_form_note` on every row and
+    `apply_form` on `jobs show`; the Mac app's job detail and the extension's notice drawer on the
+    application page show the note. Nothing is dropped or blocked for it (Rule 7). A form that could
+    not be read says "Application form not read." and is never taken for one with no knock-outs.
+    A board listed through the posting API costs one request per posting to read it, so only new
+    postings and ones whose text changed are asked, at most 60 a board and 400 a run, at the
+    egress pace; a stored form is kept when a later read fails or is skipped, and a form changed
+    without a change to the posting's text is seen when the text next changes. A board read through
+    the job-board GraphQL gets the form in the detail request it already sends. The question labels
+    are employer text; the summary holds no answers and none of your data.
   - Location ([`internal/location`](internal/location)): each job's board location is read into
     `places` (area plus US state code, or area plus the region as written) and `remote_listed` /
     `remote_scope` ("Remote (US)"). That is what the board says, not triage's `work_mode` reading.

@@ -58,7 +58,7 @@ export interface NoticeDoc<E> {
 
 export interface RepeatNotice {
   /** Show the note for `page`, or hide the drawer when there is none (or it was dismissed for this page). */
-  show(note: RepeatApply | undefined, page: string): void;
+  show(note: { text: string } | undefined, page: string): void;
 }
 
 /**

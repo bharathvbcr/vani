@@ -79,6 +79,9 @@ type Posting struct {
 	Description string `json:"description,omitempty"`
 	// SeenAt is when Vani observed this version of the posting.
 	SeenAt time.Time `json:"seen_at"`
+	// Form summarises the public application form (ApplyForm); nil means the
+	// form was not read. Additive: an older reader ignores the key.
+	Form *ApplyForm `json:"apply_form,omitempty"`
 }
 
 // DescriptionHash identifies the content of a posting's description after

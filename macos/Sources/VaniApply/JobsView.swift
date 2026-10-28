@@ -1596,6 +1596,9 @@ private struct JobDetailContent: View {
             if let unsure = job.unsure, !unsure.isEmpty { row("Unsure", unsure) }
             if let cov = job.coverage { row("Coverage", "\(Int(cov.rounded()))% of must-haves") }
             if let lca = job.lca, !lca.isEmpty { row("Sponsorship history", lca) }
+            if let form = job.applyFormNote, !form.isEmpty {
+                GridRow { Text(verbatim: form).textSelection(.enabled).gridCellColumns(2) }
+            }
             if let emp = job.employer, !emp.isEmpty, emp != "no employer-list match" { row("Employer", emp) }
             if let posted = job.postedAt { row("Posted", posted.formatted(date: .abbreviated, time: .omitted)) }
             if let first = job.firstSeen { row("First seen", first.formatted(date: .abbreviated, time: .shortened)) }
