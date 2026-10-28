@@ -69,7 +69,8 @@ const (
 	CodeProvider   = "provider"
 	CodeEmpty      = "empty_reply"
 	// CodeUngrounded: the draft holds a figure, credential or acronym that is in
-	// nothing the model was shown (ground.go).
+	// nothing the model was shown, or a credential or a count of years that is not
+	// in anything the seeker wrote (ground.go).
 	CodeUngrounded = "ungrounded"
 )
 
@@ -191,6 +192,7 @@ func (r *Request) Validate() error {
 const systemPrompt = `You draft one answer to a job-application question for a job seeker, written in the first person as the seeker.
 Use only the facts in the seeker's evidence and the posting. Never invent employers, projects, metrics, dates, degrees or skills; if the evidence does not support a point, leave it out.
 Every number you write (a figure, percentage, multiple, version or year) must appear in the evidence, the posting or the question exactly as given; do not add up, average or round them, and do not work out durations or totals.
+What the posting or the question asks for (a degree, a certification, years of experience) is not what the seeker has: state a degree, a certification or a number of years of experience only when the seeker's evidence says it.
 Do not include a name, email, phone number, address, location or immigration status.
 Write for this posting: where the question allows, tie the seeker's evidence to what the posting says about the company and the role, so the answer could not be sent to another company unchanged.
 Write plain prose: no markdown, no headings, no lists, no greeting or sign-off, no placeholders in brackets.
@@ -252,15 +254,18 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 		return Result{}, fail(CodeEmpty, "the model returned no text")
 	}
 	text = clip(text, MaxReplyRunes)
-	sources := []string{r.Question, r.Job.Company, r.Job.Title, post.text(), d.cfg.TargetSummary}
+	// The seeker's own text, apart from what the model was merely shown: a claim
+	// about the seeker is grounded only by the first list (ground.go).
+	seeker := []string{d.cfg.TargetSummary}
 	if motive {
-		sources = append(sources, d.cfg.MotivationNotes)
+		seeker = append(seeker, d.cfg.MotivationNotes)
 	}
 	for _, e := range ev {
-		sources = append(sources, e.Title, e.Org, e.Dates)
-		sources = append(sources, e.Bullets...)
+		seeker = append(seeker, e.Title, e.Org, e.Dates)
+		seeker = append(seeker, e.Bullets...)
 	}
-	if f, n := newGrounding(sources...).ungrounded(text); n > 0 {
+	shown := []string{r.Question, r.Job.Company, r.Job.Title, post.text()}
+	if f, n := newGrounding(seeker, shown).ungrounded(text); n > 0 {
 		fig := clip(f.String(), maxFigureRunes)
 		if runes(f.String()) > maxFigureRunes {
 			fig += "..."
@@ -269,7 +274,13 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 		if n > 1 {
 			more = fmt.Sprintf(" (and %d more)", n-1)
 		}
-		return Result{}, fail(CodeUngrounded, "the draft says %q%s, which is not in the evidence, the posting, the question or the target text; refusing %s the seeker's record does not support", fig, more, f.what)
+		// A claim about the seeker is checked against their own text only, so the
+		// posting and the question are not places it could have been found.
+		where := "the evidence, the posting, the question or the target text"
+		if f.seekerOnly {
+			where = "the evidence, the target text or the seeker's notes"
+		}
+		return Result{}, fail(CodeUngrounded, "the draft says %q%s, which is not in %s; refusing %s the seeker's record does not support", fig, more, where, f.what)
 	}
 	return Result{Draft: text, Model: d.cfg.Model, EvidenceItems: len(ev)}, nil
 }

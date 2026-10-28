@@ -58,7 +58,7 @@ func TestFiguresNormalizeFormatting(t *testing.T) {
 }
 
 func TestGroundingHasMarkedAndBareFigures(t *testing.T) {
-	g := newGrounding("cut latency 42% and 3.1x on v2.1 in 2023 for 1,000 users")
+	g := seekerOnly("cut latency 42% and 3.1x on v2.1 in 2023 for 1,000 users")
 	for _, ok := range []string{"42%", "42", "3.1x", "3.1", "3.1×", "2.1", "2023", "1000", "1,000"} {
 		if _, n := g.ungrounded("I did " + ok + "."); n != 0 {
 			t.Errorf("%q should be grounded", ok)
@@ -69,10 +69,10 @@ func TestGroundingHasMarkedAndBareFigures(t *testing.T) {
 			t.Errorf("%q should not be grounded", bad)
 		}
 	}
-	if _, n := newGrounding().ungrounded("no digits here"); n != 0 {
+	if _, n := seekerOnly().ungrounded("no digits here"); n != 0 {
 		t.Error("a draft without digits has nothing to ground")
 	}
-	if f, n := newGrounding().ungrounded("1 then 2 then 1"); n != 2 || f.String() != "1" {
+	if f, n := seekerOnly().ungrounded("1 then 2 then 1"); n != 2 || f.String() != "1" {
 		t.Errorf("first %v of %d distinct", f, n)
 	}
 }

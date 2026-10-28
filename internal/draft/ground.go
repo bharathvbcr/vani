@@ -13,7 +13,8 @@ import (
 // the draft (a number, spelled or in digits, a percentage, a multiple such as
 // 3.1x, a version) must occur in something the model was shown: the evidence, the
 // posting excerpt, the question, the company and title, the target summary and,
-// for a motivation question, the seeker's notes. A figure that occurs in none of them is a
+// for a motivation question, the seeker's notes (years of experience in the seeker's
+// own text only; see below). A figure that occurs in none of them is a
 // fabrication or a derived number ("5 years" from two dates), and the draft is
 // refused rather than handed to a person who may not check it.
 //
@@ -33,7 +34,8 @@ import (
 //     version ("v2.1") is no tag: it is the same figure as "2.1".
 //   - A word is the next word token of a plain, unmarked number ("7 years", "40ms",
 //     "3-year", "5000 GPUs"): the letters that follow it, after a space or one
-//     hyphen, lowercased, with a plural folded ("years" is "year", "ies" is "y"). It
+//     hyphen, past a "+" ("5+ years"), lowercased, with a plural folded ("years" is
+//     "year", "ies" is "y") and "yr" read as "year". It
 //     is not read from a closed set of function words ("and", "in", "I", "more",
 //     "x", the ordinal suffixes th st nd rd), which never say what is counted, nor
 //     from a year (1900 to 2099), which is a date. A plain figure that has a word is
@@ -57,6 +59,20 @@ import (
 // acronym (2 to 6 capital letters, less a short generic allowlist). Each is
 // grounded only by the same credential or the same acronym in a source, and the
 // refusal says which kind it was.
+//
+// Whose text it is matters for the claims that are about the seeker. The sources
+// are two lists (newGrounding): what the seeker owns (the evidence, the target
+// summary and, for a motivation question, their notes) and what the model was only
+// shown (the posting excerpt, the question, the company, the title). A credential,
+// and a figure whose word is "year" (years of experience, the dominant claim a
+// draft makes about the seeker), are grounded only by the seeker's own text: a
+// posting that says "PhD preferred" or "5 years of experience" describes the job,
+// and a question "Do you hold a PhD?" asks. Every other figure and every acronym is
+// grounded by both lists, since a draft is asked to echo the posting's own counts
+// and tools. Negation is not parsed, so "I do not have a PhD" is refused like "I
+// have a PhD" when the seeker's own text has none. The target summary is the
+// seeker's, though it names roles they want: "PhD-level roles" in it grounds a
+// draft's PhD, a residual that is kept.
 
 // figure is a number with its mark, tag and word (see above): "42%", "3.1x",
 // "2023", "1.2.3", "7 years", "k8s".
@@ -75,8 +91,9 @@ var (
 	// percentRE is what makes the number before it a percentage.
 	percentRE = regexp.MustCompile(`^[ \x{a0}\x{202f}]*(?:%|percent(?:age)?\b|per cent\b)`)
 	// wordAfterRE is the word token after a number: attached letters, or letters
-	// after spaces or one hyphen. A newline never joins a number to the next line.
-	wordAfterRE = regexp.MustCompile(`^(?:[ \x{a0}\x{202f}]+|-)?(\p{L}+)`)
+	// after spaces or one hyphen, past a "+" ("5+ years"). A newline never joins a
+	// number to the next line.
+	wordAfterRE = regexp.MustCompile(`^\+?(?:[ \x{a0}\x{202f}]+|-)?(\p{L}+)`)
 	// foldRE maps the look-alikes of % and x that are not worth distinguishing.
 	foldRE = strings.NewReplacer("×", "x", "✕", "x", "✖", "x", "％", "%", "﹪", "%")
 )
@@ -178,8 +195,16 @@ func wordOf(num, rest string) string {
 	if m == nil || functionWords[m[1]] {
 		return ""
 	}
-	return foldPlural(m[1])
+	w := foldPlural(m[1])
+	if w == "yr" {
+		return yearWord
+	}
+	return w
 }
+
+// yearWord is the word of "5 years", "5 yrs" and "5-year": the count that says how
+// long the seeker has done something, which only the seeker's own text can ground.
+const yearWord = "year"
 
 // foldPlural writes a plural noun as its singular, so "years" and "year" match.
 func foldPlural(w string) string {
@@ -221,40 +246,60 @@ func figures(s string) []figure {
 	return out
 }
 
-// grounding is the set of figures the model was shown.
+// grounding is the set of claims the model was shown, by whose text they came from.
 type grounding struct {
 	tagged map[string]bool // tag + "\x00" + number: "k\x008"
 	marked map[string]bool // "42%", "3.1x"
-	words  map[string]bool // number + "\x00" + word: "7\x00year"
+	words  map[string]bool // number + "\x00" + word: "7\x00year"; a year count only from the seeker
 	bare   map[string]bool // every untagged number, marked or not
-	creds  map[string]bool // credential keys (ground_claims.go): "phd", "cert:aws"
+	creds  map[string]bool // credential keys (ground_claims.go): "phd", "cert:aws"; only the seeker's
 	toks   map[string]bool // every lowercased word, for acronyms
 }
 
-func newGrounding(sources ...string) grounding {
+// newGrounding indexes the text behind a draft. seeker is text the seeker owns:
+// the evidence, their target summary and, for a motivation question, their notes.
+// shown is text the model saw that describes the job, not the seeker: the posting
+// excerpt, the question, the company and the title. A claim about the seeker (a
+// credential, a count of years) is grounded only by seeker text, because "PhD
+// preferred" and "5 years of experience" in a posting say what the employer wants.
+// Every other figure and every acronym is grounded by both, because a draft may
+// echo the posting's own numbers and tools ("a team of 40", "24/7", "SOC2", "AWS").
+func newGrounding(seeker, shown []string) grounding {
 	g := grounding{tagged: map[string]bool{}, marked: map[string]bool{}, words: map[string]bool{}, bare: map[string]bool{},
 		creds: map[string]bool{}, toks: map[string]bool{}}
-	for _, s := range sources {
+	for _, s := range seeker {
+		g.add(s, true)
+	}
+	for _, s := range shown {
+		g.add(s, false)
+	}
+	return g
+}
+
+// add indexes one source; own says the seeker wrote it.
+func (g grounding) add(s string, own bool) {
+	if own {
 		for _, c := range credentialsIn(s) {
 			g.creds[c.key] = true
 		}
-		for _, w := range wordsIn(s) {
-			g.toks[w] = true
-		}
-		for _, f := range figures(s) {
-			switch {
-			case f.tag != "":
-				g.tagged[f.tag+"\x00"+f.num] = true
-				continue
-			case f.mark != "":
-				g.marked[f.String()] = true
-			case f.word != "":
+	}
+	for _, w := range wordsIn(s) {
+		g.toks[w] = true
+	}
+	for _, f := range figures(s) {
+		switch {
+		case f.tag != "":
+			g.tagged[f.tag+"\x00"+f.num] = true
+			continue
+		case f.mark != "":
+			g.marked[f.String()] = true
+		case f.word != "":
+			if own || f.word != yearWord {
 				g.words[f.num+"\x00"+f.word] = true
 			}
-			g.bare[f.num] = true
 		}
+		g.bare[f.num] = true
 	}
-	return g
 }
 
 func (g grounding) has(f figure) bool {
@@ -273,8 +318,12 @@ func (g grounding) has(f figure) bool {
 const maxFigureRunes = 40
 
 // claim is one thing a draft says that no source backs: a figure, a credential or
-// an acronym. text is what the refusal quotes; what is its kind with an article.
-type claim struct{ text, what string }
+// an acronym. text is what the refusal quotes; what is its kind with an article;
+// seekerOnly marks a claim about the seeker, which only their own text could back.
+type claim struct {
+	text, what string
+	seekerOnly bool
+}
 
 func (c claim) String() string { return c.text }
 
@@ -298,17 +347,25 @@ func (g grounding) ungrounded(text string) (first claim, n int) {
 	for _, f := range figures(text) {
 		if !seen[f] && !g.has(f) {
 			seen[f] = true
-			note(claim{f.String(), whatFigure})
+			if f.word == yearWord {
+				quoted := f.num + " " + yearWord
+				if f.num != "1" {
+					quoted += "s"
+				}
+				note(claim{quoted, whatFigure, true})
+			} else {
+				note(claim{f.String(), whatFigure, false})
+			}
 		}
 	}
 	for _, c := range credentialsIn(text) {
 		if !g.creds[c.key] {
-			note(claim{c.surface, whatCredential})
+			note(claim{c.surface, whatCredential, true})
 		}
 	}
 	for _, a := range acronymsIn(text) {
 		if !g.toks[strings.ToLower(a)] {
-			note(claim{a, whatAcronym})
+			note(claim{a, whatAcronym, false})
 		}
 	}
 	return first, n
