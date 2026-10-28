@@ -218,6 +218,52 @@ func TestCompanyAndLocationFallBackToTheList(t *testing.T) {
 	}
 }
 
+// Rippling's own board lists a job once per work location, each row with the
+// same uuid (2026-10-27: 134 of 654 rows). Those rows are one job: one detail
+// request, one posting, and the list's location labels kept as its fallback.
+func TestRepeatedUUIDPerLocationIsOneJob(t *testing.T) {
+	row := `{"uuid":"job1","name":"AE","url":"https://jobs.example/job1","department":{"label":"Sales"},"workLocation":{"label":%q}}`
+	list := "[" + fmt.Sprintf(row, "Orlando, FL") + "," + fmt.Sprintf(row, "Jacksonville, FL") + "]"
+	r := map[string]srctest.Reply{
+		listURL:           {Status: 200, Body: []byte(list)},
+		detailURL("job1"): {Status: 200, Body: []byte(`{"uuid":"job1","name":"AE","workLocations":[]}`)},
+	}
+	s, d := newSource(r)
+	got, err := s.List(context.Background(), board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(d.URLs()) != 2 {
+		t.Fatalf("got %d postings, urls %v", len(got), d.URLs())
+	}
+	if got[0].Key != "rp:acme:job1" || got[0].Location != "Orlando, FL; Jacksonville, FL" {
+		t.Fatalf("%+v", got[0])
+	}
+}
+
+// A uuid that repeats with a different title, link or department is not the
+// same job listed twice, so the board fails rather than keep either row.
+func TestRepeatedUUIDThatDisagreesFails(t *testing.T) {
+	for name, second := range map[string]string{
+		"title":      `{"uuid":"job1","name":"Other","url":"https://jobs.example/job1","department":{"label":"Sales"}}`,
+		"url":        `{"uuid":"job1","name":"AE","url":"https://jobs.example/other","department":{"label":"Sales"}}`,
+		"department": `{"uuid":"job1","name":"AE","url":"https://jobs.example/job1","department":{"label":"Ops"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			first := `{"uuid":"job1","name":"AE","url":"https://jobs.example/job1","department":{"label":"Sales"}}`
+			r := replies("job1")
+			r[listURL] = srctest.Reply{Status: 200, Body: []byte("[" + first + "," + second + "]")}
+			s, d := newSource(r)
+			if got, err := s.List(context.Background(), board); err == nil || got != nil {
+				t.Fatalf("%v %v", got, err)
+			}
+			if len(d.URLs()) != 1 {
+				t.Fatalf("fetched details before refusing the list: %v", d.URLs())
+			}
+		})
+	}
+}
+
 func TestPostingCap(t *testing.T) {
 	over := listN(srcutil.MaxPostings + 1)
 	s, d := newSource(map[string]srctest.Reply{listURL: {Status: 200, Body: []byte(over)}})
