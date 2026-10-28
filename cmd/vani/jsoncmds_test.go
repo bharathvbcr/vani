@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
 // The JSON forms of the commands that had only text: each reply decodes into
@@ -519,4 +520,30 @@ func TestBatchCommandsJSONCannotStart(t *testing.T) {
 		failureIn(t, args, o)
 	}
 	mustCode(t, 2, "--json", "teacher") // a real run needs --budget-usd
+}
+
+// A command refused because another vani holds the ledger says busy, so an
+// agent waits rather than reading it as a fault; the text form is unchanged.
+func TestLedgerLockedIsBusy(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	l, err := ledger.Open(filepath.Join(stateDir, "ledger"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for _, args := range [][]string{
+		{"--json", "run-once", "--no-digest"},
+		{"--json", "retriage"},
+		{"--json", "rescore"},
+		{"retriage", "--json"},
+	} {
+		o, _ := mustCode(t, 1, args...)
+		if _, code := failureIn(t, args, o); code != codeBusy {
+			t.Errorf("vani %v: code %q, want %q", args, code, codeBusy)
+		}
+	}
+	if _, e := mustCode(t, 1, "retriage"); !strings.Contains(e, "locked") {
+		t.Errorf("text form: %q", e)
+	}
 }

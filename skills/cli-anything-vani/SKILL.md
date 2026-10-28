@@ -95,7 +95,9 @@ and work while a run holds the ledger.
 - `vani logos refresh` fetches board icons.
 - `vani lca import` and `vani employer import` load public datasets.
 
-**Run the pipeline:**
+**Run the pipeline.** A run triages postings through the decision model and spends from its
+daily cap (`decide.daily_usd`), so ask before starting one. `--list-only` lists the boards
+and calls no decision backend.
 
 - `vani run-request` asks the running daemon for a run. Prefer it when a daemon is running.
 - `vani run-once` runs here, and is refused while the daemon holds the ledger. With `--json`
@@ -140,9 +142,10 @@ vani --json jobs show gh:acme:123
 vani --json jobs mark gh:acme:123 saved
 vani --json runs failures                           # why the last run failed, if it did
 vani --json jobs retriage --dry-run gh:acme:123     # what a model read would cost
-vani --json run-once --no-digest                    # a run with no daemon; its record on stdout
+vani --json run-once --list-only                    # fetch the boards, no model; the record on stdout
 ```
 
 Check the exit code and decode stdout as one JSON value. On a non-zero exit, read `error` and
 `code`: `usage` means fix the arguments, `unsupported` means the command has no JSON form
-(`daemon`, `label`, `launchd plist`), and `busy` means another run holds the lock, so retry later rather than in a loop.
+(`daemon`, `label`, `launchd plist`), and `busy` means another vani holds the ledger or a lock,
+so retry when it is done rather than in a loop.

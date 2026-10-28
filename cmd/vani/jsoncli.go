@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"sync/atomic"
+
+	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
 // vani's JSON contract, the one an agent (or the Mac app) relies on. Under the
@@ -34,6 +36,7 @@ const (
 	codeUsage       = "usage"
 	codeRuntime     = "runtime"
 	codeUnsupported = "unsupported" // the global --json on a command with no JSON form
+	codeBusy        = "busy"        // another vani holds the ledger; retry when it is done
 )
 
 // jsonLeaf is one leaf command: the words that name it, as usageTemplate
@@ -185,7 +188,7 @@ type failure struct {
 	Code  string `json:"code,omitempty"`
 }
 
-func (f *failure) fail(err error) { f.Error, f.Code = err.Error(), codeRuntime }
+func (f *failure) fail(err error) { f.Error, f.Code = err.Error(), envelopeCode(err) }
 
 // textToStderr runs fn with the text a command prints as it goes sent to
 // stderr when asJSON, so stdout holds the JSON reply alone: a run's or a
@@ -218,7 +221,7 @@ func (e *env) reply(asJSON bool, v any, err error, text func()) error {
 		if f, ok := v.(interface{ fail(error) }); ok {
 			f.fail(err)
 		} else {
-			v = errorReply{err.Error(), codeRuntime}
+			v = errorReply{err.Error(), envelopeCode(err)}
 		}
 	}
 	if werr := writeJSON(e.stdout, v); werr != nil {
@@ -274,6 +277,8 @@ func envelopeCode(err error) string {
 		return codeUnsupported
 	case errors.As(err, new(usageError)):
 		return codeUsage
+	case errors.Is(err, ledger.ErrLocked):
+		return codeBusy
 	default:
 		return codeRuntime
 	}

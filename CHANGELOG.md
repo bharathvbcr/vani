@@ -10,7 +10,8 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 - **CLI-Anything conventions for agents** (`cmd/vani/jsoncli.go`,
   `skills/cli-anything-vani/SKILL.md`). The global `vani --json <command>` returns exactly one
   JSON value on stdout for every outcome. A failure of any kind is `{"error","code"}`, with
-  `code` one of `usage`, `unsupported` or `runtime`, and exit codes are unchanged. It refuses
+  `code` one of `usage`, `unsupported`, `busy` (another vani holds the ledger) or `runtime`,
+  and exit codes are unchanged. It refuses
   commands with no JSON form, and those do not run.
 
   `vani --json help` lists every leaf command as `flag`, `always` or `none` (`none` with a
