@@ -791,6 +791,14 @@ func (s Schedule) Parsed() (hour, minute int, loc *time.Location, err error) {
 // OpenRouterConfigured reports whether the OpenRouter decision model is set up.
 func (c Config) OpenRouterConfigured() bool { return c.Decide.OpenRouterModel != "" }
 
+// tenantHostSuffix is what follows the token in a per-tenant board host.
+var tenantHostSuffix = map[posting.ATS]string{
+	posting.Recruitee: ".recruitee.com",
+	posting.Pinpoint:  ".pinpointhq.com",
+	posting.BambooHR:  ".bamboohr.com",
+	posting.Personio:  ".jobs.personio.com",
+}
+
 // BoardHost returns the API host a board is fetched from. Workday hosts are
 // tenant-specific and not derivable from the token, so ok is false for them.
 func BoardHost(b sources.Board) (host string, ok bool) {
@@ -810,6 +818,13 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "apply.workable.com", true
 	case posting.Gem:
 		return "api.gem.com", true
+	case posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio:
+		// One host per tenant, built from the token, so the token must be a
+		// single host label (ValidBoard checks the same rule).
+		if sources.TenantLabelProblem(b.Token) != "" {
+			return "", false
+		}
+		return b.Token + tenantHostSuffix[b.ATS], true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -1026,9 +1041,10 @@ func ValidBoard(b sources.Board) error {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
-		posting.Rippling, posting.Workable, posting.Feed, posting.Page:
+		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
+		posting.Feed, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, fd, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, fd, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1128,6 +1144,12 @@ func ValidBoard(b sources.Board) error {
 		}
 	} else if b.ATS != posting.Workday && b.ATS != posting.OracleHCM && b.Host != "" {
 		return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb and av only", b.ATS, b.Token)
+	}
+	if _, perTenant := tenantHostSuffix[b.ATS]; perTenant {
+		// The token is the host's first label, which is what BoardHost allows.
+		if why := sources.TenantLabelProblem(b.Token); why != "" {
+			return fmt.Errorf("board (%s) token %q %s", b.ATS, b.Token, why)
+		}
 	}
 	if err := validSearches(b); err != nil {
 		return err

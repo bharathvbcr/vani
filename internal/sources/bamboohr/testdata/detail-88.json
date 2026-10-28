@@ -1,0 +1,33 @@
+{
+  "result": {
+    "jobOpening": {
+      "jobOpeningShareUrl": "https://sortitt.bamboohr.com/careers/88",
+      "jobOpeningName": "Technology Lead",
+      "jobOpeningStatus": "Open",
+      "jobCategoryId": null,
+      "departmentId": "18604",
+      "departmentLabel": "Development & Technology",
+      "employmentStatusLabel": "Full-Time",
+      "employmentType": null,
+      "location": {
+        "city": "Karachi",
+        "state": "Sindh",
+        "postalCode": null,
+        "addressCountry": "Pakistan"
+      },
+      "atsLocation": {
+        "country": null,
+        "countryId": null,
+        "state": null,
+        "city": null
+      },
+      "description": "<p><b>About the role:</b> lead the technology team &amp; ship.</p><ul><li>Hybrid, 3 days in office</li></ul>",
+      "compensation": null,
+      "datePosted": "2024-03-02",
+      "minimumExperience": null,
+      "locationType": "2",
+      "seekPromoted": false,
+      "aiProcessingDisclosureEnabled": false
+    }
+  }
+}

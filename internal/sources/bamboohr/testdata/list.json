@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "totalCount": 3
+  },
+  "result": [
+    {
+      "id": "76",
+      "jobOpeningName": "Software Developer (Freelance)",
+      "departmentId": "18604",
+      "departmentLabel": "Development & Technology",
+      "employmentStatusLabel": "Part-Time",
+      "employmentType": null,
+      "location": {
+        "city": null,
+        "state": null
+      },
+      "atsLocation": {
+        "country": null,
+        "state": null,
+        "province": null,
+        "city": null
+      },
+      "isRemote": null,
+      "locationType": "1"
+    },
+    {
+      "id": "88",
+      "jobOpeningName": "Technology Lead",
+      "departmentId": "18580",
+      "departmentLabel": "Technology",
+      "employmentStatusLabel": "Full-Time",
+      "employmentType": null,
+      "location": {
+        "city": "Karachi",
+        "state": "Sindh"
+      },
+      "atsLocation": {
+        "country": null,
+        "state": null,
+        "province": null,
+        "city": null
+      },
+      "isRemote": null,
+      "locationType": "2"
+    },
+    {
+      "id": "111",
+      "jobOpeningName": "Flutter Developer ",
+      "departmentId": null,
+      "departmentLabel": null,
+      "employmentStatusLabel": "Full-Time",
+      "employmentType": null,
+      "location": {
+        "city": "Karachi",
+        "state": "Sindh"
+      },
+      "atsLocation": {
+        "country": null,
+        "state": null,
+        "province": null,
+        "city": null
+      },
+      "isRemote": null,
+      "locationType": "0"
+    }
+  ]
+}

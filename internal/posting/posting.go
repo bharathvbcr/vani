@@ -50,6 +50,18 @@ const (
 	// Workable is a Workable account (apply.workable.com). The token is the
 	// account slug.
 	Workable ATS = "wk"
+	// Recruitee is a Recruitee board ({token}.recruitee.com). The token is
+	// the subdomain.
+	Recruitee ATS = "rc"
+	// Pinpoint is a Pinpoint board ({token}.pinpointhq.com). The token is
+	// the subdomain.
+	Pinpoint ATS = "pp"
+	// BambooHR is a BambooHR careers page ({token}.bamboohr.com/careers).
+	// The token is the subdomain.
+	BambooHR ATS = "bh"
+	// Personio is a Personio career site ({token}.jobs.personio.com). The
+	// token is the subdomain.
+	Personio ATS = "ps"
 	// Feed is one https XML job feed the owner names. The token is a short
 	// slug; the posting id is the feed's partner job id.
 	Feed ATS = "fd"

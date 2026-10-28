@@ -69,6 +69,21 @@ func CheckBoard(b sources.Board, want posting.ATS) error {
 	return nil
 }
 
+// CheckTenant is CheckBoard for the ATSes that serve each company from its
+// own host ({token}.recruitee.com and the like): the token must also be one
+// host label (sources.TenantLabelProblem), because the adapter writes it into
+// the host. config.ValidBoard refuses the same tokens; an adapter does not
+// rely on that.
+func CheckTenant(b sources.Board, want posting.ATS) error {
+	if err := CheckBoard(b, want); err != nil {
+		return err
+	}
+	if why := sources.TenantLabelProblem(b.Token); why != "" {
+		return fmt.Errorf("sources: board token %q %s", b.Token, why)
+	}
+	return nil
+}
+
 // CheckCount returns ErrTooManyPostings when n exceeds MaxPostings.
 func CheckCount(n int) error {
 	if n > MaxPostings {

@@ -19,6 +19,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
 	"github.com/bharathvbcr/Vani/internal/sources/atlassian"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/bamboohr"
 	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/feed"
@@ -29,6 +30,9 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
+	"github.com/bharathvbcr/Vani/internal/sources/personio"
+	"github.com/bharathvbcr/Vani/internal/sources/pinpoint"
+	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
@@ -509,6 +513,10 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.OracleHCM:       oraclehcm.New(d),
 		posting.Rippling:        rippling.New(d),
 		posting.Workable:        workable.New(d),
+		posting.Recruitee:       recruitee.New(d),
+		posting.Pinpoint:        pinpoint.New(d),
+		posting.BambooHR:        bamboohr.New(d),
+		posting.Personio:        personio.New(d),
 		posting.Feed:            feed.New(d),
 	}
 }

@@ -348,6 +348,12 @@ final class JobIngestTests: XCTestCase {
         XCTAssertEqual(Set(list.map(\.id)).count, 5)
     }
 
+    func testThePerTenantBoardsHaveNames() {
+        for (code, name) in ["rc": "Recruitee", "pp": "Pinpoint", "bh": "BambooHR", "ps": "Personio"] {
+            XCTAssertEqual(WatchlistEntry(ats: code, token: "acme", company: "Acme").kind, name)
+        }
+    }
+
     func testOnlyHTTPSPageURLsOpen() {
         func entry(_ url: String?) -> WatchlistEntry { WatchlistEntry(ats: "pg", token: "t", company: "C", url: url) }
         XCTAssertNotNil(entry("https://careers.acme.com/s").openURL)
