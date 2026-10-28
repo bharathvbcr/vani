@@ -62,6 +62,7 @@ func TestSearchSiteKeys(t *testing.T) {
 		{EightfoldKey, "Microsoft.com", "1970393556991825", "ef:microsoft.com:1970393556991825", Eightfold},
 		{JibeKey, "AMD", "93574", "jb:amd:93574", Jibe},
 		{DEShawKey, "DEShaw", "2646", "ds:deshaw:2646", DEShaw},
+		{AtlassianKey, "Atlassian", "25480", "at:atlassian:25480", Atlassian},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
 		if err != nil || k != tc.want || k.ATS() != tc.ats {
