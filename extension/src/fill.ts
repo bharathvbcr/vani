@@ -360,17 +360,20 @@ function setPart(el: HTMLElement, role: string, want: string): boolean {
 }
 
 /** Write one ISO date into its month/day/year controls; a missing day leaves the day control alone (review). */
-function fillSplitDate(ref: FieldRef, saved: string): { ok: boolean; partial: boolean } {
+function fillSplitDate(ref: FieldRef, saved: string): { ok: boolean; partial: boolean; long?: string } {
   const p = parseDate(saved);
   if (!p) return { ok: false, partial: false };
   let any = false, partial = false;
+  let long: string | undefined;
   ref.els.forEach((el, k) => {
     const role = ref.parts?.[k] ?? "";
     const want = role === "year" ? p.y : role === "month" ? p.m : p.d;
-    if (!want || overLimit(el, want)) { partial = true; return; } // a part that will not fit its box is left for review, not cut
+    if (!want) { partial = true; return; }
+    const tooBig = tooLong(el, want, "answer");
+    if (tooBig) { partial = true; long ??= tooBig; return; } // a part that will not fit its box is left for review, not cut
     if (setPart(el, role, want)) any = true;
   });
-  return { ok: any, partial };
+  return long === undefined ? { ok: any, partial } : { ok: any, partial, long };
 }
 
 function codeDigitsOffered(el: HTMLElement): string[] {
@@ -378,13 +381,15 @@ function codeDigitsOffered(el: HTMLElement): string[] {
   return texts.map(codeDigits).filter(Boolean);
 }
 
-async function fillSplitPhone(ref: FieldRef, saved: string): Promise<boolean> {
+async function fillSplitPhone(ref: FieldRef, saved: string): Promise<Result> {
   const [codeEl, numEl] = ref.els as [HTMLElement, HTMLElement];
   const p = parsePhone(saved, codeDigitsOffered(codeEl));
-  if (!p) return false;
+  const none: Result = { ok: false, reason: "no_option" };
+  if (!p) return none;
   // Nothing is written unless both parts fit their boxes: a number without its code would land under the wrong country.
   const codeTyped = codeEl.localName !== "select" && codeEl.getAttribute("role") !== "combobox" && codeEl.getAttribute("aria-haspopup") !== "listbox";
-  if (overLimit(numEl, p.national) || (p.cc && codeTyped && overLimit(codeEl, `+${p.cc}`))) return false;
+  const long = tooLong(numEl, p.national, "answer") ?? (p.cc && codeTyped ? tooLong(codeEl, `+${p.cc}`, "answer") : null);
+  if (long) return { ok: false, reason: "too_long", detail: long };
   if (p.cc) {
     let ok: boolean;
     if (codeEl.localName === "select") {
@@ -398,10 +403,10 @@ async function fillSplitPhone(ref: FieldRef, saved: string): Promise<boolean> {
       setText(codeEl as HTMLInputElement, `+${p.cc}`);
       ok = true;
     }
-    if (!ok) return false; // a number without its code would land under the wrong country
+    if (!ok) return none; // a number without its code would land under the wrong country
   }
   setText(numEl as HTMLInputElement, p.national);
-  return (numEl as HTMLInputElement).value !== "";
+  return (numEl as HTMLInputElement).value !== "" ? { ok: true } : none;
 }
 
 // --- the fill loop ------------------------------------------------------------------------------
@@ -471,8 +476,12 @@ async function fillOne(ref: FieldRef, m: Match, typeahead: boolean): Promise<Res
     case "aria-radio": return (await fillAriaRadio(ref, m.value)) ? { ok: true } : { ok: false, reason: "no_option" };
     case "aria-checkbox": return (await fillAriaCheckbox(el, m.value)) ? { ok: true } : { ok: false, reason: "manual" };
     case "contenteditable": return setEditable(el, m.value[0] ?? "") ? { ok: true } : { ok: false, reason: "manual" };
-    case "split-date": { const r = fillSplitDate(ref, m.value[0] ?? ""); return r.ok ? { ok: true, review: r.partial } : { ok: false, reason: "no_option" }; }
-    case "split-phone": return (await fillSplitPhone(ref, m.value[0] ?? "")) ? { ok: true } : { ok: false, reason: "no_option" };
+    case "split-date": {
+      const r = fillSplitDate(ref, m.value[0] ?? "");
+      if (r.ok) return { ok: true, review: r.partial, ...(r.long ? { detail: r.long } : {}) };
+      return r.long ? { ok: false, reason: "too_long", detail: r.long } : { ok: false, reason: "no_option" };
+    }
+    case "split-phone": return fillSplitPhone(ref, m.value[0] ?? "");
     default: break;
   }
   if (el.localName === "select") {
@@ -528,7 +537,7 @@ export async function fillRef(ref: FieldRef, m: Match, opts: FillOptions = {}): 
     }
     if (!r.ok) return { label, filled: false, reason: r.reason ?? "no_option", key };
     const review = m.review || r.review === true;
-    mark(ref, review, `${m.via} ${m.score.toFixed(2)}: ${key}`);
+    mark(ref, review, r.detail ?? `${m.via} ${m.score.toFixed(2)}: ${key}`); // a part left out for its limit says so on the page
     return { label, filled: true, via: m.via, score: m.score, review, key };
   } catch {
     return { label, filled: false, reason: "manual", key };

@@ -714,10 +714,12 @@ describe("a field's character limit (maxlength)", () => {
     };
     const saved = match("phone", ["+1 5550100"]);
     const tight = split("3", "4");
-    expect(await fillRef(tight.r, saved)).toMatchObject({ filled: false });
+    expect(await fillRef(tight.r, saved)).toMatchObject({ filled: false, reason: "too_long" });
+    expect(tight.code.attrs["data-vani-fill"]).toBe("review");
+    expect(tight.code.attrs["data-vani-why"]).toMatch(/allows 4/);
     expect([tight.code.value, tight.num.value]).toEqual(["", ""]);
     const tightCode = split("1", null);
-    expect(await fillRef(tightCode.r, saved)).toMatchObject({ filled: false });
+    expect(await fillRef(tightCode.r, saved)).toMatchObject({ filled: false, reason: "too_long" });
     expect([tightCode.code.value, tightCode.num.value]).toEqual(["", ""]);
     const roomy = split("3", "7");
     expect(await fillRef(roomy.r, saved)).toMatchObject({ filled: true });
@@ -731,6 +733,20 @@ describe("a field's character limit (maxlength)", () => {
     const r: FieldRef = { info: info("Start date", "text"), els: [mm, dd, yy] as unknown as HTMLElement[], widget: "split-date", manual: "", parts: ["month", "day", "year"] };
     expect(await fillRef(r, match("start", ["2026-10-05"]))).toMatchObject({ filled: true, review: true });
     expect([mm.value, dd.value, yy.value]).toEqual(["10", "05", ""]);
+    expect(mm.attrs["data-vani-fill"]).toBe("review");
+    expect(mm.attrs["data-vani-why"]).toMatch(/allows 2/);
+  });
+  test("a split date whose every part is too long is reported too_long, not as a missing option", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const [mm, dd] = [new FakeInput(doc, () => {}), new FakeInput(doc, () => {})];
+    mm.attrs["maxlength"] = "1";
+    dd.attrs["maxlength"] = "1";
+    const r: FieldRef = { info: info("Start date", "text"), els: [mm, dd] as unknown as HTMLElement[], widget: "split-date", manual: "", parts: ["month", "day"] };
+    const out = await fillRef(r, match("start", ["2026-10-05"]));
+    expect(out).toMatchObject({ filled: false, reason: "too_long" });
+    expect(out.detail).toMatch(/shorten/i);
+    expect([mm.value, dd.value]).toEqual(["", ""]);
   });
 
   test("fillAll leaves the too-long field to the person and fills the others", async () => {
