@@ -655,6 +655,51 @@ func TestDetailWithoutReqIDIsError(t *testing.T) {
 	}
 }
 
+// Visa's detail of ".../Data-Scientist---Visa-Consulting---Analytics_REF081808W"
+// answered jobReqId "" (2026-10-28) and failed the whole 860-posting board.
+func TestEmptyReqIDFallsBackToThePostingIDTheListingAgreesWith(t *testing.T) {
+	cases := map[string]struct {
+		req, postingID string
+		bullets        []string
+		want           string
+	}{
+		"jobReqId wins":               {"JR1", "T_JR9", []string{"JR9"}, "JR1"},
+		"visa":                        {"", "Data-Scientist---Visa-Consulting---Analytics_REF081808W", []string{"REF081808W"}, "REF081808W"},
+		"repost suffix dropped":       {"", "Cybersecurity-Engineer_REF087764W-1", []string{"REF087764W"}, "REF087764W"},
+		"listing disagrees":           {"", "T_REF1", []string{"REF2"}, ""},
+		"no bullets":                  {"", "T_REF1", nil, ""},
+		"no underscore":               {"", "REF1", []string{"REF1"}, ""},
+		"empty suffix":                {"", "T_", []string{""}, ""},
+		"blank jobReqId is not an id": {"  ", "T_REF1", []string{"REF1"}, "REF1"},
+	}
+	for name, c := range cases {
+		if got := reqID(c.req, c.postingID, c.bullets); got != c.want {
+			t.Errorf("%s: reqID = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+func TestEmptyReqIDPostingIsListedUnderItsPathID(t *testing.T) {
+	for name, bullets := range map[string]string{"agrees": `["R1"]`, "disagrees": `["R2"]`} {
+		s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+			if r.Method == "GET" {
+				return ok(`{"jobPostingInfo":{"jobReqId":"","jobPostingId":"X_R1","title":"x","jobDescription":"<p>d</p>"}}`), true
+			}
+			return ok(`{"total":1,"jobPostings":[{"title":"x","externalPath":"/job/Here/X_R1","locationsText":"Here","postedOn":"Posted Today","bulletFields":` + bullets + `}]}`), true
+		})
+		got, err := s.List(context.Background(), board)
+		if name == "disagrees" {
+			if !errors.Is(err, posting.ErrKeyPart) {
+				t.Fatalf("%s: err = %v, want ErrKeyPart", name, err)
+			}
+			continue
+		}
+		if err != nil || len(got) != 1 || !strings.HasSuffix(strings.ToLower(string(got[0].Key)), ":r1") {
+			t.Fatalf("%s: got %+v, err %v", name, got, err)
+		}
+	}
+}
+
 func TestBoardValidation(t *testing.T) {
 	never := func(srctest.Request) (srctest.Reply, bool) {
 		t.Error("request made for an invalid board")

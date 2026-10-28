@@ -112,6 +112,9 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with 404 or 403: closed or restricted since listing.
 	Gone int `json:"gone,omitempty"`
+	// Stubs are listing rows with no path and no title, not counted in
+	// Listed (see isStub).
+	Stubs int `json:"stubs,omitempty"`
 }
 
 // NewWith returns the Workday source with the bounded detail step: stored
@@ -139,11 +142,17 @@ type listedJob struct {
 	ExternalPath  string `json:"externalPath"`
 	LocationsText string `json:"locationsText"`
 	PostedOn      string `json:"postedOn"`
+	// BulletFields hold the requisition id first on every board seen
+	// (["REF088499W"], Visa 2026-10-28); read only by reqID's fallback.
+	BulletFields []string `json:"bulletFields"`
 }
 
 type detailResponse struct {
 	JobPostingInfo struct {
-		JobReqID       string `json:"jobReqId"`
+		JobReqID string `json:"jobReqId"`
+		// JobPostingID is the last path segment, "{Title}_{reqId}" with an
+		// optional "-{n}" repost suffix; read only by reqID's fallback.
+		JobPostingID   string `json:"jobPostingId"`
 		Title          string `json:"title"`
 		Location       string `json:"location"`
 		JobDescription string `json:"jobDescription"`
@@ -195,7 +204,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("workday %q: search %q: %w", b.Token, term, err)
 		}
 	}
-	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests}
+	if n := len(w.rows) + w.stubs; w.stubs > shortfall(n) {
+		return nil, fmt.Errorf("workday %q: %w: %d of %d listing rows are stubs with no path or title",
+			b.Token, errIncomplete, w.stubs, n)
+	}
+	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests, Stubs: w.stubs}
 	out, err := s.details(ctx, b, base, host, tenant, site, w.rows, &st)
 	if err != nil {
 		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
@@ -334,6 +347,31 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	return out, nil
 }
 
+// repostSuffix is the "-{n}" Workday appends to a reposted posting's path
+// ("Cybersecurity-Engineer_REF087764W-1", whose jobReqId is "REF087764W").
+var repostSuffix = regexp.MustCompile(`-[0-9]{1,3}$`)
+
+// reqID is a posting's requisition id: the detail's jobReqId. Visa left it
+// empty on one posting of 860 (2026-10-28, "..._REF081808W"); its id is then
+// the trailing "_{id}" of the detail's jobPostingId, accepted only when the
+// listing row's bullet fields carry the same id, so two separate fields agree
+// on it and a reposting keeps the key it would have had. Otherwise it is "",
+// which WorkdayKey refuses.
+func reqID(jobReqID, jobPostingID string, bullets []string) string {
+	if id := strings.TrimSpace(jobReqID); id != "" {
+		return id
+	}
+	i := strings.LastIndex(jobPostingID, "_")
+	if i < 0 {
+		return ""
+	}
+	id := repostSuffix.ReplaceAllString(jobPostingID[i+1:], "")
+	if id == "" || !slices.Contains(bullets, id) {
+		return ""
+	}
+	return id
+}
+
 // pagePrefix is the leading path of a posting's public page on host: "{site}"
 // on a tenant host "{tenant}.wd{N}.myworkdayjobs.com", and
 // "recruiting/{tenant}/{site}" on the shared host "wd{N}.myworkdaysite.com",
@@ -389,7 +427,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 		return posting.Posting{}, err
 	}
 	info := d.JobPostingInfo
-	key, err := posting.WorkdayKey(tenant, site, info.JobReqID)
+	key, err := posting.WorkdayKey(tenant, site, reqID(info.JobReqID, info.JobPostingID, row.BulletFields))
 	if err != nil {
 		return posting.Posting{}, err
 	}

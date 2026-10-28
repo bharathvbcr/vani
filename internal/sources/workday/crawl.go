@@ -281,6 +281,17 @@ type walker struct {
 	rows     []listedJob
 	requests int // listing requests, every term's
 	queries  int // queries walked, a split query's buckets each counted
+	stubs    int // stub rows met (isStub), every query's
+}
+
+// isStub is a listing row with no path and no title: Mastercard's listing
+// answered {"bulletFields":["R-290227"]} at offset 1000 (2026-10-28), and HPE's
+// failed the same way in a run that day. It names no page to fetch and carries
+// nothing a stored posting could be matched by, so it is left out and counted;
+// more than a listing's shortfall of them fails the board. A row with a title
+// but no path, or a malformed path, is still an error.
+func isStub(r listedJob) bool {
+	return r.ExternalPath == "" && strings.TrimSpace(r.Title) == ""
 }
 
 func newWalker(s *source, endpoint string, limit int) *walker {
@@ -312,7 +323,11 @@ func (w *walker) page(ctx context.Context, applied map[string][]string, offset i
 	}
 	for _, j := range resp.JobPostings {
 		// A row that cannot be fetched or matched cannot be accounted for, and
-		// leaving it out would age its posting as absent.
+		// leaving it out would age its posting as absent. A stub is counted
+		// against the listing's shortfall instead (isStub).
+		if isStub(j) {
+			continue
+		}
 		if _, err := escapePath(j.ExternalPath); err != nil {
 			return listPage{}, fmt.Errorf("listing at offset %d: %w", offset, err)
 		}
@@ -325,6 +340,10 @@ func (w *walker) page(ctx context.Context, applied map[string][]string, offset i
 func (w *walker) add(rows []listedJob, here map[string]bool) (int, error) {
 	n := 0
 	for _, r := range rows {
+		if isStub(r) {
+			w.stubs++
+			continue
+		}
 		if here[r.ExternalPath] {
 			continue
 		}
