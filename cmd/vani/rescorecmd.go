@@ -18,20 +18,20 @@ import (
 type rescorePlan struct {
 	// Eligible are the Scored and Explained postings with no score and a
 	// description to score (pipeline.Unscored and pipeline.Described).
-	Eligible int
+	Eligible int `json:"eligible"`
 	// NoDescription are unscored postings with nothing to score; they keep
 	// the ranker's unknown-coverage prior rather than a coverage near zero.
-	NoDescription int
+	NoDescription int `json:"no_description"`
 	// Digested are digested postings without a score. They are left alone
 	// (already shown to the owner) and only counted.
-	Digested int
+	Digested int `json:"digested"`
 	// ZeroOfZero are scored postings whose stored coverage is DevPrism's 0 of 0
 	// (pipeline.ZeroOfZero); the repair marks them unknown without a DevPrism call.
-	ZeroOfZero int
+	ZeroOfZero int `json:"zero_of_zero"`
 	// Unknown are live postings marked gap.coverage_unknown (DevPrism found no
 	// must-haves). Disjoint from Digested, which counts only postings with
 	// neither a rank nor that marker, and from Eligible and NoDescription.
-	Unknown int
+	Unknown int `json:"unknown"`
 }
 
 // repairUnknownCoverage marks every ZeroOfZero record in l as unknown coverage
@@ -154,6 +154,7 @@ func (e *env) cmdRescore(args []string) error {
 	flags := e.newFlags("rescore")
 	dry := flags.Bool("dry-run", false, "count what would be scored; read the ledger only, change nothing")
 	limit := flags.Int("limit", 0, "score at most N postings this time (default advance_per_run)")
+	asJSON := e.jsonFlag(flags, "one JSON object on stdout")
 	if err := parse(flags, args); err != nil {
 		return err
 	}
@@ -177,6 +178,9 @@ func (e *env) cmdRescore(args []string) error {
 			fmt.Fprintln(e.stderr, "vani: rescore: the ledger ends in a torn line; it was left out")
 		}
 		p := planRescore(snap.Records)
+		if *asJSON {
+			return e.reply(true, rescoreReply{DryRun: true, Limit: n, Plan: p, ScoringOff: cfg.DevPrism.Binary == ""}, nil, nil)
+		}
 		fmt.Fprintf(e.stdout, "%d posting(s) would be rescored (at most %d this time)\n", p.Eligible, n)
 		fmt.Fprintf(e.stdout, "%d posting(s) with a 0-of-0 coverage would be marked unknown (no DevPrism call)\n", p.ZeroOfZero)
 		e.printRescoreLeftAlone(p)
@@ -196,12 +200,29 @@ func (e *env) cmdRescore(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	rep, err := app.Rescore(ctx, n)
+	if *asJSON {
+		return e.reply(true, &rescoreReply{Limit: n, Plan: rep.Plan, Rescored: rep.Rescored, StillUnscored: rep.Plan.Eligible - rep.Rescored,
+			Repaired: rep.Repaired, ScoringOff: cfg.DevPrism.Binary == ""}, err, nil)
+	}
 	if rep.Repaired > 0 {
 		fmt.Fprintf(e.stdout, "%d posting(s) with a 0-of-0 coverage marked unknown (no DevPrism call)\n", rep.Repaired)
 	}
 	fmt.Fprintf(e.stdout, "%d posting(s) rescored, %d still unscored\n", rep.Rescored, rep.Plan.Eligible-rep.Rescored)
 	e.printRescoreLeftAlone(rep.Plan)
 	return err
+}
+
+// rescoreReply is `vani rescore --json`. A dry run fills Plan alone; a real one
+// also what it scored and repaired, and a failure part way keeps those.
+type rescoreReply struct {
+	DryRun        bool        `json:"dry_run"`
+	Limit         int         `json:"limit"`
+	Plan          rescorePlan `json:"plan"`
+	ScoringOff    bool        `json:"scoring_off"`
+	Rescored      int         `json:"rescored"`
+	StillUnscored int         `json:"still_unscored"`
+	Repaired      int         `json:"repaired"`
+	failure
 }
 
 func (e *env) printRescoreLeftAlone(p rescorePlan) {

@@ -41,16 +41,19 @@ whether a binary has them.
   runtime failure. A usage error keeps its older form: exit 2 and nothing on stdout.
 - **Failure:** `{"error","code"}`. `code` is `usage` (bad flags or arguments), `unsupported`
   (the command has no JSON form), `runtime`, or a command's own code (`busy`, `timeout`,
-  `budget_exhausted`, `ineligible`, ...).
+  `budget_exhausted`, `ineligible`, ...). A command that fails after producing something
+  useful keeps it beside `error` and `code`: a refused `track use` keeps its check, a failed
+  `run-once` keeps the run's record, a stopped `kbmatch run` keeps what it asked.
 - **Exit codes:** 0 ok, 1 runtime failure, 2 usage error or unsupported. 75 comes only from
   `vani daemon` (restart for a config change).
 - **Discovery:** `vani --json help` lists every command with how it answers. `json` is one of:
   - `flag`: takes `--json`
   - `always`: JSON whatever the flags
-  - `text`: no JSON form yet; run it without `--json`
   - `none`: no JSON form by design, with a `reason`
 
   `vani help` is the full usage text, and `vani <command> -h` lists one command's flags.
+- **Progress text:** a command that prints as it goes (`run-once`, `digest`, `kb sync`,
+  `kbmatch run`, `teacher`) sends that text to stderr under `--json`.
 - **No JSON form by design:** `daemon` (it runs in the foreground until stopped), `label` (it
   asks the owner on the terminal) and `launchd plist` (its output is a plist to install).
   Under the global flag they are refused with `unsupported` and do not run.
@@ -71,9 +74,9 @@ and work while a run holds the ledger.
 - `vani labels` prints the label vocabularies (fit, status, category, triage).
 - `vani watchlist list` lists the boards. `vani prefilter`, `vani eval` and `vani relevance`
   report on the filter and the label set.
-- `vani version` prints the build. `vani config check` validates the config. `vani track list|show`, `vani lca lookup`,
-  `vani employer lookup`, `vani kbmatch status` and `vani semantic status` print smaller
-  reports.
+- `vani version` prints the build and `vani config check` validates the config.
+- `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
+  and `vani semantic status` print smaller reports.
 
 **Record what the owner did.** These write the state dir, never the ledger:
 
@@ -95,7 +98,8 @@ and work while a run holds the ledger.
 **Run the pipeline:**
 
 - `vani run-request` asks the running daemon for a run. Prefer it when a daemon is running.
-- `vani run-once` runs here, and is refused while the daemon holds the ledger.
+- `vani run-once` runs here, and is refused while the daemon holds the ledger. With `--json`
+  it answers with the record the run wrote, as `vani runs show --json` gives it.
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
 - Maintenance commands: `vani retriage`, `vani rescore`, `vani migrate`.
@@ -136,8 +140,9 @@ vani --json jobs show gh:acme:123
 vani --json jobs mark gh:acme:123 saved
 vani --json runs failures                           # why the last run failed, if it did
 vani --json jobs retriage --dry-run gh:acme:123     # what a model read would cost
+vani --json run-once --no-digest                    # a run with no daemon; its record on stdout
 ```
 
 Check the exit code and decode stdout as one JSON value. On a non-zero exit, read `error` and
-`code`: `usage` means fix the arguments, `unsupported` means run that command without `--json`,
-and `busy` means another run holds the lock, so retry later rather than in a loop.
+`code`: `usage` means fix the arguments, `unsupported` means the command has no JSON form
+(`daemon`, `label`, `launchd plist`), and `busy` means another run holds the lock, so retry later rather than in a loop.

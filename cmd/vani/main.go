@@ -75,11 +75,13 @@ commands:
   logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
                              too); --force refetches cached and recently failed ones
   daemon                     run the scheduler in the foreground
-  run-once [--advance N] [--board ATS:TOKEN]... [--list-only] [--no-digest]
+  run-once [--json] [--advance N] [--board ATS:TOKEN]... [--list-only] [--no-digest]
                              run the pipeline once and write the digest; the flags change this
                              run only: cap the advance phase at N postings, list only the named
                              watchlist boards, skip the advance phase, or skip the digest.
-                             Refused while the daemon (or another run) holds the ledger
+                             Refused while the daemon (or another run) holds the ledger.
+                             --json prints the run's record (as runs show --json) on stdout
+                             and sends the run's own output to stderr
   run-request [--json] [same flags as run-once]
                              ask the running daemon to make that run itself (it polls every few
                              seconds, between its scheduled run and inbox polls); refused when no
@@ -131,7 +133,7 @@ commands:
   track use [--json] [--dry-run] [--allow-unchecked] ID
                              copy a track's target summary, drop rules and employer
                              preferences into the config; other rules are kept
-  kb sync [--dry-run | --confirm] [--replace [--keep IDS] [--delete-all-kinds]
+  kb sync [--json] [--dry-run | --confirm] [--replace [--keep IDS] [--delete-all-kinds]
           [--max-delete N] [--career-db P]] [--bank P] [--rkb P] [--code-root D]
                              copy the bank bullets that kb.selections approve one way into
                              DevPrism; --replace also deletes the blocks outside that pool,
@@ -142,13 +144,13 @@ commands:
   reasons import [--json] [--force] FILE
                              check and install a catalog drafted elsewhere ({drafted_by?,fit,gap,check})
   reasons check [--json]     validate the catalog against the current target summary
-  kbmatch run [--top N] [--dry-run]
+  kbmatch run [--json] [--top N] [--dry-run]
                              ask the llm whether the top postings' work is the work in your
                              knowledge base (spends from the daily llm budget; sends each posting,
                              the target summary and a bounded digest of the bank to the provider;
                              the answers only order and explain)
   kbmatch status [--json]    how many answers are kept and current
-  teacher [--dry-run] [--budget-usd N] [--model M] [--of BACKEND] [--concurrency N] [--max N]
+  teacher [--json] [--dry-run] [--budget-usd N] [--model M] [--of BACKEND] [--concurrency N] [--max N]
                              have the llm tier re-read the postings the decision model triaged,
                              with the same question, and keep its readings (teacher_readings.jsonl)
                              for Lappi's agreement filter; --dry-run prices it and asks nothing;
@@ -220,11 +222,11 @@ commands:
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the
                              priority of the roles each blocks; display-only
-  retriage [--dry-run] [--title-drops]
+  retriage [--json] [--dry-run] [--title-drops]
                              return postings triaged with no backend reading to live; with
                              --title-drops, postings dropped on a title the current
                              title_signals.read and drop rules no longer drop
-  rescore [--dry-run] [--limit N]
+  rescore [--json] [--dry-run] [--limit N]
                              score scored and explained postings that have no score (they went
                              through while devprism.binary was empty); status and explanation
                              are kept. DevPrism only, no model; at most N (default
@@ -240,7 +242,8 @@ commands:
                              replay postings the primary already read through local decision
                              models; per-slot agreement, confusion, calibration and latency
                              (Metal only, no API key, never writes the ledger)
-  semantic warm [--max N]    embed the freshest postings against the knowledge base (needs a
+  semantic warm [--json] [--max N]
+                             embed the freshest postings against the knowledge base (needs a
                              -tags tessl build, semantic.snapshot and kb.bank)
   semantic status [--json]   the semantic build, config, profile size, cached scores and model
   answers similar [--json]   which question wordings read alike, by embedding: {"texts":[...],
@@ -380,7 +383,7 @@ func runEnv(e *env, args []string) int {
 		cmdErr = usagef("%q names no command (vani --json help lists them)", strings.Join(args[:min(len(args), 3)], " "))
 	case leaf.Mode == jsonFlag:
 		args = append(append(args[:n:n], "--json"), args[n:]...)
-	case leaf.Mode == jsonText, leaf.Mode == jsonNone:
+	case leaf.Mode == jsonNone:
 		cmdErr = errNoJSON(leaf)
 	}
 	if cmdErr == nil {
@@ -866,6 +869,7 @@ func (e *env) installRunTee() {
 func (e *env) cmdRunOnce(args []string) error {
 	fs := e.newFlags("run-once")
 	optsp, boards := runOptionFlags(fs)
+	asJSON := e.jsonFlag(fs, "the run's record on stdout, as runs show --json gives it; the run's own output goes to stderr")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -894,7 +898,30 @@ func (e *env) cmdRunOnce(args []string) error {
 	defer app.close()
 	ctx, stop := signalContext()
 	defer stop()
-	return e.dailyJob(app, cfg, triggerManual, opts)(ctx)
+	start := now()
+	err = e.textToStderr(*asJSON, func() error { return e.dailyJob(app, cfg, triggerManual, opts)(ctx) })
+	if !*asJSON {
+		return err
+	}
+	// The latest record is this run's only if this process wrote it since it
+	// started: a run that stopped before its record (a config change) must not
+	// answer with the previous run's.
+	ref, ferr := e.findRun("")
+	if ferr != nil || ref.Rec.PID != os.Getpid() || ref.Rec.StartedAt.Before(start) {
+		if err == nil {
+			err = fmt.Errorf("the run left no record of its own (latest record: %v)", ferr)
+		}
+		return err
+	}
+	return e.reply(true, &runOnceReply{runShowJSON: runShowJSON{Version: runsVersion, ID: ref.ID, Source: ref.Source,
+		Path: ref.Path, State: runState(ref.Rec, now()), Record: ref.Rec}}, err, nil)
+}
+
+// runOnceReply is `vani run-once --json`: the record the run wrote, as
+// `runs show --json` gives it, and the failure when the run failed.
+type runOnceReply struct {
+	runShowJSON
+	failure
 }
 
 func (e *env) cmdStatus(args []string) error {

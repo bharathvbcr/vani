@@ -96,6 +96,7 @@ func (e *env) kbSync(args []string) error {
 	allKinds := fs.Bool("delete-all-kinds", false, "with --replace: also delete orphans of kinds the sync does not write (publication, certification, ...)")
 	maxDelete := fs.Int("max-delete", kbsync.DefaultMaxDeletes, fmt.Sprintf("with --replace: refuse to delete more than this many blocks (1..%d)", kbsync.MaxDeletesCeiling))
 	careerDB := fs.String("career-db", "", "with --replace: DevPrism's career.db to copy first (default: DevPrism's data dir under HOME)")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the pool, the plan and what was done (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -123,6 +124,141 @@ func (e *env) kbSync(args []string) error {
 	if *careerDB != "" && !filepath.IsAbs(*careerDB) {
 		return usagef("kb sync: --career-db %q must be an absolute path", *careerDB)
 	}
+	o := kbSyncOpts{dry: *dry, bank: *bank, rkb: *rkb, codeRoot: *codeRoot, confirm: *confirm, replace: *replace,
+		keep: keepIDs, allKinds: *allKinds, maxDelete: *maxDelete, careerDB: *careerDB}
+	jr := &kbSyncReply{DryRun: *dry, Replace: *replace}
+	err := e.textToStderr(*asJSON, func() error { return e.kbSyncRun(o, jr) })
+	if !*asJSON {
+		return err
+	}
+	return e.reply(true, jr, err, nil)
+}
+
+// kbSyncOpts are kb sync's checked flags.
+type kbSyncOpts struct {
+	dry, confirm, replace, allKinds bool
+	bank, rkb, codeRoot, careerDB   string
+	keep                            map[string]bool
+	maxDelete                       int
+}
+
+// kbSyncReply is `vani kb sync --json`: ids, counts and reasons, never bullet
+// text. Each part is set once the run reached it, so a run that stopped says
+// how far it got beside the failure.
+type kbSyncReply struct {
+	DryRun  bool `json:"dry_run"`
+	Replace bool `json:"replace"`
+	// PlannedEmpty: a plain dry run plans against an empty DevPrism, without
+	// reading the live one.
+	PlannedEmpty bool           `json:"planned_empty,omitempty"`
+	Pool         *kbPoolJSON    `json:"pool,omitempty"`
+	Plan         *kbPlanJSON    `json:"plan,omitempty"`
+	Backup       *kbBackupJSON  `json:"backup,omitempty"`
+	Result       *kbResultJSON  `json:"result,omitempty"`
+	Deletes      *kbReplaceJSON `json:"deletes,omitempty"`
+	Deleted      *kbDeleteJSON  `json:"deleted,omitempty"`
+	BlocksBefore *int           `json:"blocks_before,omitempty"`
+	BlocksAfter  *int           `json:"blocks_after,omitempty"`
+	failure
+}
+
+type kbPoolJSON struct {
+	Summary     string     `json:"summary"`
+	BankEntries int        `json:"bank_entries"`
+	BankBullets int        `json:"bank_bullets"`
+	Withheld    []kbReason `json:"withheld"`
+	Ineligible  []kbReason `json:"ineligible"`
+}
+
+type kbReason struct {
+	ID  string `json:"id"`
+	Why string `json:"why"`
+}
+
+// kbPlanJSON counts the plan's items by action and names the blocks it would
+// leave alone or could not plan.
+type kbPlanJSON struct {
+	Actions     map[string]int `json:"actions"`
+	Blocked     []kbReason     `json:"blocked"`
+	Orphaned    []string       `json:"orphaned"`
+	Unattached  int            `json:"unattached"`
+	Unresolved  int            `json:"unresolved"`
+	Cautioned   []string       `json:"cautioned"`
+	VariantOnly int            `json:"variant_only"`
+}
+
+type kbBackupJSON struct {
+	Path       string `json:"path"`
+	Blocks     int    `json:"blocks"`
+	Bytes      int64  `json:"bytes"`
+	PruneError string `json:"prune_error,omitempty"`
+}
+
+type kbResultJSON struct {
+	Summary  string      `json:"summary"`
+	Outcomes []kbOutcome `json:"outcomes"`
+}
+
+type kbOutcome struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type kbReplaceJSON struct {
+	Delete []kbBlockJSON `json:"delete"`
+	Keep   []kbBlockJSON `json:"keep"`
+}
+
+type kbBlockJSON struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Title   string `json:"title"`
+	Bullets int    `json:"bullets,omitempty"`
+	Facts   int    `json:"facts,omitempty"`
+	Why     string `json:"why,omitempty"`
+}
+
+type kbDeleteJSON struct {
+	Summary  string      `json:"summary"`
+	Outcomes []kbOutcome `json:"outcomes"`
+}
+
+func kbPoolOf(p kbsync.Pool) *kbPoolJSON {
+	out := &kbPoolJSON{Summary: p.Summary(), BankEntries: p.BankEntries, BankBullets: p.BankBullets, Withheld: []kbReason{}, Ineligible: []kbReason{}}
+	for _, w := range p.Withheld {
+		out.Withheld = append(out.Withheld, kbReason{w.Entry, w.Why})
+	}
+	for _, id := range p.Eligible.Ineligible() {
+		out.Ineligible = append(out.Ineligible, kbReason{id, p.Eligible.Why[id]})
+	}
+	return out
+}
+
+func kbPlanOf(p kbsync.SyncPlan) *kbPlanJSON {
+	out := &kbPlanJSON{Actions: map[string]int{}, Blocked: []kbReason{}, Orphaned: nonNil(p.Orphaned), Unattached: p.Unattached,
+		Unresolved: p.Unresolved, Cautioned: nonNil(p.Cautioned), VariantOnly: p.VariantOnly}
+	for _, it := range p.Items {
+		out.Actions[it.Action]++
+		if it.Action == kbsync.ActionBlocked {
+			out.Blocked = append(out.Blocked, kbReason{it.ID, it.Reason})
+		}
+	}
+	return out
+}
+
+func kbReplaceOf(rp kbsync.ReplacePlan) *kbReplaceJSON {
+	out := &kbReplaceJSON{Delete: []kbBlockJSON{}, Keep: []kbBlockJSON{}}
+	for _, d := range rp.Delete {
+		out.Delete = append(out.Delete, kbBlockJSON{ID: d.ID, Kind: d.Kind, Title: d.Title, Bullets: d.Bullets, Facts: d.Facts})
+	}
+	for _, k := range rp.Keep {
+		out.Keep = append(out.Keep, kbBlockJSON{ID: k.ID, Kind: k.Kind, Title: k.Title, Why: k.Why})
+	}
+	return out
+}
+
+func (e *env) kbSyncRun(o kbSyncOpts, jr *kbSyncReply) error {
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
@@ -136,8 +272,8 @@ func (e *env) kbSync(args []string) error {
 		}
 		return cfgVal
 	}
-	bankPath, rkbPath := pick(*bank, cfg.KB.Bank), pick(*rkb, cfg.KB.RKB)
-	root := pick(*codeRoot, cfg.KB.CodeRoot)
+	bankPath, rkbPath := pick(o.bank, cfg.KB.Bank), pick(o.rkb, cfg.KB.RKB)
+	root := pick(o.codeRoot, cfg.KB.CodeRoot)
 	if bankPath == "" || rkbPath == "" {
 		return usagef("kb sync: needs --bank and --rkb (or kb.bank and kb.rkb in the config)")
 	}
@@ -146,9 +282,9 @@ func (e *env) kbSync(args []string) error {
 			return usagef("kb sync: %s %q must be an absolute path", name, p)
 		}
 	}
-	livePlan := !*dry || *replace // reads DevPrism's blocks
+	livePlan := !o.dry || o.replace // reads DevPrism's blocks
 	if livePlan && cfg.DevPrism.Binary == "" {
-		if *dry {
+		if o.dry {
 			return errors.New("kb sync: --replace --dry-run reads DevPrism's block list, so devprism.binary must be configured")
 		}
 		return errors.New("kb sync: devprism.binary is not configured (use --dry-run to plan without DevPrism)")
@@ -186,19 +322,21 @@ func (e *env) kbSync(args []string) error {
 		return err
 	}
 
-	if *dry && !*replace {
+	jr.Pool = kbPoolOf(pool)
+	if o.dry && !o.replace {
 		plan := kbsync.Plan(res, kbsync.DevPrismState{Blocks: map[string]json.RawMessage{}}, *state, time.Now())
+		jr.PlannedEmpty, jr.Plan = true, kbPlanOf(plan)
 		fmt.Fprintln(e.stdout, "note: planned against an empty DevPrism; live DevPrism state was not read")
 		e.reportPool(pool, true)
 		return kbsync.DryRun(e.stdout, plan)
 	}
-	e.reportPool(pool, *dry)
+	e.reportPool(pool, o.dry)
 
 	// The copy comes before DevPrism is started, so nothing of ours is writing
 	// while it is taken, and before anything is sent.
 	var backup kbsync.BackupInfo
-	if *replace && !*dry {
-		db := *careerDB
+	if o.replace && !o.dry {
+		db := o.careerDB
 		if db == "" {
 			if db, err = defaultCareerDB(); err != nil {
 				return err
@@ -206,6 +344,10 @@ func (e *env) kbSync(args []string) error {
 		}
 		if backup, err = careerBackup(ctx, db, kbBackupDir(e.stateDir), now()); err != nil {
 			return fmt.Errorf("kb sync: no career.db backup, so nothing was changed: %w", err)
+		}
+		jr.Backup = &kbBackupJSON{Path: backup.Path, Blocks: len(backup.BlockIDs), Bytes: backup.Bytes}
+		if backup.PruneErr != nil {
+			jr.Backup.PruneError = backup.PruneErr.Error()
 		}
 		fmt.Fprintf(e.stdout, "backup: %s (%d blocks, %d bytes)\n", backup.Path, len(backup.BlockIDs), backup.Bytes)
 		if backup.PruneErr != nil {
@@ -222,21 +364,25 @@ func (e *env) kbSync(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *replace && !*dry {
+	before := len(current.Blocks)
+	jr.BlocksBefore = &before
+	if o.replace && !o.dry {
 		if err := kbsync.CheckBackupMatches(backup, current); err != nil {
 			return fmt.Errorf("kb sync: %w", err)
 		}
 	}
 	plan := kbsync.Plan(res, current, *state, time.Now())
+	jr.Plan = kbPlanOf(plan)
 	var rp kbsync.ReplacePlan
 	var guard error
-	if *replace {
-		if rp, err = kbsync.PlanReplace(plan, current, kbsync.ReplaceOptions{Keep: keepIDs, AllKinds: *allKinds}); err != nil {
+	if o.replace {
+		if rp, err = kbsync.PlanReplace(plan, current, kbsync.ReplaceOptions{Keep: o.keep, AllKinds: o.allKinds}); err != nil {
 			return err
 		}
-		guard = rp.Check(plan, *maxDelete)
+		jr.Deletes = kbReplaceOf(rp)
+		guard = rp.Check(plan, o.maxDelete)
 	}
-	if *dry {
+	if o.dry {
 		if err := kbsync.DryRunReplace(e.stdout, plan, rp); err != nil {
 			return err
 		}
@@ -247,10 +393,14 @@ func (e *env) kbSync(args []string) error {
 	}
 
 	var confirmer kbsync.Confirmer
-	if *confirm {
+	if o.confirm {
 		confirmer = e.showLoss
 	}
 	out, err := kbsync.Apply(ctx, c, plan, state, confirmer)
+	jr.Result = &kbResultJSON{Summary: out.Summary(), Outcomes: []kbOutcome{}}
+	for _, oc := range out.Outcomes {
+		jr.Result.Outcomes = append(jr.Result.Outcomes, kbOutcome{oc.ID, oc.Status, oc.Reason})
+	}
 	if err != nil {
 		// The run stopped early: the counts are only what was done before it.
 		fmt.Fprintln(e.stdout, "kb sync: stopped early; partial result so far: "+out.Summary())
@@ -263,19 +413,19 @@ func (e *env) kbSync(args []string) error {
 			fmt.Fprintf(e.stdout, "  %-18s %s: %s\n", o.Status, o.ID, o.Reason)
 		}
 	}
-	if err != nil || !*replace {
+	if err != nil || !o.replace {
 		return err
 	}
 	if err := out.Landed(); err != nil {
 		return err
 	}
-	return e.kbDelete(ctx, c, rp, state, current)
+	return e.kbDelete(ctx, c, rp, state, current, jr)
 }
 
 // kbDelete deletes a replace run's orphans. --replace is the consent for the
 // list printed here and no other: each block named is confirmed with DevPrism
 // when it asks, a block it did not name never is.
-func (e *env) kbDelete(ctx context.Context, c kbClient, rp kbsync.ReplacePlan, state *kbsync.SyncState, before kbsync.DevPrismState) error {
+func (e *env) kbDelete(ctx context.Context, c kbClient, rp kbsync.ReplacePlan, state *kbsync.SyncState, before kbsync.DevPrismState, jr *kbSyncReply) error {
 	fmt.Fprintf(e.stdout, "kb sync --replace: deleting %d blocks, sparing %d\n", len(rp.Delete), len(rp.Keep))
 	for _, d := range rp.Delete {
 		fmt.Fprintf(e.stdout, "  delete  %s [%s] %q (%d bullets, %d facts)\n", d.ID, d.Kind, d.Title, d.Bullets, d.Facts)
@@ -284,6 +434,10 @@ func (e *env) kbDelete(ctx context.Context, c kbClient, rp kbsync.ReplacePlan, s
 		fmt.Fprintf(e.stdout, "  spared  %s [%s] %q: %s\n", k.ID, k.Kind, k.Title, k.Why)
 	}
 	out, err := kbsync.ApplyDeletes(ctx, c, rp, state, func(string, kbsync.Loss) bool { return true })
+	jr.Deleted = &kbDeleteJSON{Summary: out.Summary(), Outcomes: []kbOutcome{}}
+	for _, oc := range out.Outcomes {
+		jr.Deleted.Outcomes = append(jr.Deleted.Outcomes, kbOutcome{oc.ID, oc.Status, oc.Reason})
+	}
 	if err != nil {
 		fmt.Fprintln(e.stdout, "kb sync --replace: stopped early; partial result so far: "+out.Summary())
 	} else {
@@ -302,6 +456,8 @@ func (e *env) kbDelete(ctx context.Context, c kbClient, rp kbsync.ReplacePlan, s
 	if ferr != nil {
 		return fmt.Errorf("kb sync --replace: could not read DevPrism back: %w", ferr)
 	}
+	afterN := len(after.Blocks)
+	jr.BlocksAfter = &afterN
 	fmt.Fprintf(e.stdout, "DevPrism now holds %d blocks (it held %d)\n", len(after.Blocks), len(before.Blocks))
 	// A block left in place is not the outcome asked for, so the run does not
 	// exit as a success.

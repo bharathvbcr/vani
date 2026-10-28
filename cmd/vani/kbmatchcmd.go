@@ -255,26 +255,75 @@ func (e *env) kbmatchRun(args []string) error {
 	backendFlag := fs.String("backend", "", "llm, or openrouter for the decision model (default kbmatch.backend, else llm)")
 	modelFlag := fs.String("model", "", "the llm model that answers (default kbmatch.model, else llm.triage_model, else llm.model)")
 	noRetrieve := fs.Bool("no-retrieve", false, "do not have the embedding model pick the closest knowledge-base lines; send the full digest")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what was asked (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if *top < 1 || *top > maxKBMatchTop {
 		return usagef("kbmatch run: --top must be 1-%d", maxKBMatchTop)
 	}
+	jr := &kbmatchRunReply{DryRun: *dry}
+	err := e.textToStderr(*asJSON, func() error { return e.kbmatchRunBody(jr, *top, *dry, *backendFlag, *modelFlag, *noRetrieve) })
+	if !*asJSON {
+		return err
+	}
+	return e.reply(true, jr, err, nil)
+}
+
+// kbmatchRunReply is `vani kbmatch run --json`. Plan is set once the
+// candidates are chosen; Result once questions were asked (a dry run never
+// has one). A run that stopped carries the failure beside them.
+type kbmatchRunReply struct {
+	DryRun bool              `json:"dry_run"`
+	Plan   *kbmatchPlanJSON  `json:"plan,omitempty"`
+	Result *kbmatchAskResult `json:"result,omitempty"`
+	failure
+}
+
+type kbmatchPlanJSON struct {
+	Candidates int    `json:"candidates"`
+	Mismatch   int    `json:"left_out_mismatch"`
+	Thin       int    `json:"left_out_thin"`
+	Current    int    `json:"left_out_answered"`
+	Backend    string `json:"backend"`
+	Model      string `json:"model"`
+	Retrieve   bool   `json:"retrieve"`
+	// InputTokens is the most the questions carry; a focused one is shorter.
+	InputTokens int64 `json:"input_tokens"`
+	// The llm backend's estimate, when its prices are known: TypicalUSD at a
+	// typical reply, MaxUSD at every reply's full budget. PriceSource names
+	// where the prices came from.
+	TypicalUSD  *float64 `json:"typical_usd,omitempty"`
+	MaxUSD      *float64 `json:"max_usd,omitempty"`
+	PriceSource string   `json:"price_source,omitempty"`
+	DailyCapUSD float64  `json:"daily_cap_usd"`
+}
+
+// kbmatchAskResult is what kbmatchAsk did.
+type kbmatchAskResult struct {
+	Asked    int            `json:"asked"`
+	Answered int            `json:"answered"`
+	ByValue  map[string]int `json:"by_value"`
+	NotRead  int            `json:"not_read"`
+	Focused  int            `json:"focused"`
+	Stopped  string         `json:"stopped,omitempty"`
+}
+
+func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag, modelFlag string, noRetrieve bool) error {
 	cfg, prof, digest, summary, err := e.kbmatchSetup()
 	if err != nil {
 		return err
 	}
-	if *backendFlag != "" {
+	if backendFlag != "" {
 		// EffectiveBackend reads the old name "jev" as openrouter.
-		b := config.KBMatch{Backend: *backendFlag}.EffectiveBackend()
+		b := config.KBMatch{Backend: backendFlag}.EffectiveBackend()
 		if b != config.KBMatchLLM && b != config.KBMatchOpenRouter {
 			return usagef("kbmatch run: --backend must be %q or %q", config.KBMatchLLM, config.KBMatchOpenRouter)
 		}
 		cfg.KBMatch.Backend = b
 	}
-	if *modelFlag != "" {
-		cfg.KBMatch.Model = *modelFlag
+	if modelFlag != "" {
+		cfg.KBMatch.Model = modelFlag
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("kbmatch: %w", err)
@@ -302,7 +351,7 @@ func (e *env) kbmatchRun(args []string) error {
 	defer cancel()
 	var store *kbmatch.Store
 	var recovered error
-	if *dry {
+	if dry {
 		store, err = kbmatch.OpenStore(e.kbmatchPath())
 		if errors.Is(err, kbmatch.ErrCorrupt) {
 			recovered = err
@@ -326,7 +375,7 @@ func (e *env) kbmatchRun(args []string) error {
 	}
 	if recovered != nil {
 		// Nothing in it is irreplaceable: the model can be asked again.
-		if *dry {
+		if dry {
 			fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); a real run would start it again\n", recovered)
 		} else {
 			fmt.Fprintf(e.stderr, "vani: kbmatch store unreadable (%v); starting it again\n", recovered)
@@ -337,7 +386,7 @@ func (e *env) kbmatchRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	cands, mismatch, thin, current := kbmatchCandidates(snap, m, in, store, digest, summary, *top)
+	cands, mismatch, thin, current := kbmatchCandidates(snap, m, in, store, digest, summary, top)
 
 	var inBytes int
 	for _, c := range cands {
@@ -345,7 +394,12 @@ func (e *env) kbmatchRun(args []string) error {
 		inBytes += len(q.Context) + len(q.Prompt) + kbMatchOverhead
 	}
 	inTok := int64(inBytes / kbMatchBytesPerTok)
-	retrieve := !*noRetrieve && cfg.SemanticOn()
+	retrieve := !noRetrieve && cfg.SemanticOn()
+	jr.Plan = &kbmatchPlanJSON{Candidates: len(cands), Mismatch: mismatch, Thin: thin, Current: current, Backend: backend, Model: model,
+		Retrieve: retrieve, InputTokens: inTok, DailyCapUSD: cfg.Decide.DailyUSD.LLM}
+	if backend == config.KBMatchOpenRouter {
+		jr.Plan.DailyCapUSD = cfg.Decide.DailyUSD.OpenRouter
+	}
 	fmt.Fprintf(e.stdout, "kbmatch: %d postings to ask about (left out: %d mismatch readings, %d too thin, %d already answered)\n", len(cands), mismatch, thin, current)
 	where := cfg.LLM.Provider + " model " + model
 	if backend == config.KBMatchOpenRouter {
@@ -364,10 +418,11 @@ func (e *env) kbmatchRun(args []string) error {
 		if perr == nil {
 			capUSD := float64(inTok*pin+int64(len(cands))*int64(llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom)*pout) / 1e9
 			typical := float64(inTok*pin+int64(len(cands))*kbMatchTypicalOut*pout) / 1e9
+			jr.Plan.TypicalUSD, jr.Plan.MaxUSD, jr.Plan.PriceSource = &typical, &capUSD, source
 			fmt.Fprintf(e.stdout, "kbmatch: about %d input tokens at most (focused questions are shorter); %s: typically about $%.3f, at most $%.3f counting every reply at its full budget (daily cap $%.2f)\n", inTok, source, typical, capUSD, cfg.Decide.DailyUSD.LLM)
 		}
 	}
-	if *dry || len(cands) == 0 {
+	if dry || len(cands) == 0 {
 		return nil
 	}
 
@@ -386,7 +441,8 @@ func (e *env) kbmatchRun(args []string) error {
 			j.Focus = focus
 		}
 	}
-	return e.kbmatchAsk(ctx, j, store, cands, digest, backend, model)
+	jr.Result = &kbmatchAskResult{}
+	return e.kbmatchAsk(ctx, j, store, cands, digest, backend, model, jr.Result)
 }
 
 // kbmatchAsk asks about each candidate in turn, keeps what was answered and
@@ -394,7 +450,7 @@ func (e *env) kbmatchRun(args []string) error {
 // answers in a row went unread because the backend was unreachable or gave
 // nothing usable (a spent budget, a revoked key): the rest would fail the same
 // way. A model that abstained on one thin posting is not such a failure.
-func (e *env) kbmatchAsk(ctx context.Context, j kbmatch.Judge, st *kbmatch.Store, cands []kbmatchCandidate, d kbmatch.Digest, backend, model string) error {
+func (e *env) kbmatchAsk(ctx context.Context, j kbmatch.Judge, st *kbmatch.Store, cands []kbmatchCandidate, d kbmatch.Digest, backend, model string, res *kbmatchAskResult) error {
 	counts := map[string]int{}
 	var asked, unread, streak, sinceSave, focused int
 	var stopped string
@@ -447,6 +503,7 @@ func (e *env) kbmatchAsk(ctx context.Context, j kbmatch.Judge, st *kbmatch.Store
 	for _, o := range jobinsight.KBMatchOrder {
 		parts = append(parts, fmt.Sprintf("%s %d", o, counts[o]))
 	}
+	*res = kbmatchAskResult{Asked: asked, Answered: asked - unread, ByValue: counts, NotRead: unread, Focused: focused, Stopped: stopped}
 	fmt.Fprintf(e.stdout, "kbmatch: asked %d, answered %d (%s), not read %d; %d of the questions carried embedding-picked evidence\n", asked, asked-unread, strings.Join(parts, ", "), unread, focused)
 	if stopped != "" {
 		fmt.Fprintf(e.stdout, "kbmatch: stopped: %s\n", stopped)

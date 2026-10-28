@@ -13,12 +13,28 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
   `code` one of `usage`, `unsupported` or `runtime`, and exit codes are unchanged. It refuses
   commands with no JSON form, and those do not run.
 
-  `vani --json help` lists every leaf command as `flag`, `always`, `text` or `none` (`none`
-  with a reason). Tests hold that table to the usage text and to each command's flags.
+  `vani --json help` lists every leaf command as `flag`, `always` or `none` (`none` with a
+  reason). Tests hold that table to the usage text and to each command's flags.
+
+  Every command has a JSON form except `daemon`, `label` and `launchd plist`. That includes
+  `run-once`, which answers with the record the run wrote, as `runs show --json` gives it.
+  A command that fails after producing data keeps the data beside `{"error","code"}`, and
+  progress text goes to stderr under `--json`. `internal/eval`'s report types gained
+  snake_case JSON tags for `eval --json` and `relevance --json`.
 
   A command's own `--json` now also returns that envelope for a runtime failure it used to
   report only on stderr. A usage error keeps exit 2 and empty stdout. `jobs` failures gain
   `code`.
+- **Export warns before writing roles again** (`internal/exportlog`, `cmd/vani/jobsexport.go`). Every
+  `vani jobs export` records the keys it wrote in `<state dir>/export/exported.json`: the first and last
+  export per key, and the last 50 exports by file. A later export holding any of them asks in a
+  terminal. Anywhere else it refuses with code `already_exported` and writes nothing. To go ahead,
+  pass `--already-exported skip`, which leaves them out (`--top N` then takes the next N not yet
+  exported), or `include`. `--dry-run` writes nothing and reports `already_exported`,
+  `last_exported_at` and `last_file`. The Mac app runs that dry run first, then asks "Skip Exported
+  Roles", "Export Them Again" or "Cancel". A record that cannot be read stops the export before the
+  workbook is written. If the record cannot be written afterwards, the export exits 1 and names the
+  file it wrote. Scripts that export the same roles repeatedly now need `--already-exported include`.
 - **Application stages after "applied"** (`internal/marks/stages.go`): `vani jobs mark KEY
   screening|interview|offer|rejected|withdrawn|unstage`, `jobs list --stage`, a furthest-stage that never
   falls, and the Mac app's Stage row. Stages live in `stages.jsonl` so an older vani reads every staged

@@ -73,7 +73,7 @@ func TestJSONLeavesMatchUsage(t *testing.T) {
 			if l.Reason == "" {
 				t.Errorf("%q has no JSON form and no reason", l.Command)
 			}
-		case jsonFlag, jsonAlways, jsonText:
+		case jsonFlag, jsonAlways:
 			if l.Reason != "" {
 				t.Errorf("%q: only a none entry carries a reason", l.Command)
 			}
@@ -86,7 +86,7 @@ func TestJSONLeavesMatchUsage(t *testing.T) {
 // flagListed matches the -json line a FlagSet prints for -h.
 var flagListed = regexp.MustCompile(`(?m)^\s+-json\b`)
 
-// A flag leaf declares --json, and a text or none leaf does not: a command that
+// A flag leaf declares --json, and a none leaf does not: a command that
 // gains the flag must move to flag, or the global --json would refuse it.
 // Every flag leaf also takes the flag where the global --json puts it.
 func TestJSONLeavesMatchFlags(t *testing.T) {
@@ -101,7 +101,7 @@ func TestJSONLeavesMatchFlags(t *testing.T) {
 				t.Errorf("%q is classified flag but -h lists no -json:\n%s", l.Command, stderr)
 			}
 			x.mustCode(t, exitOK, append(append([]string{"--json"}, words...), "-h")...)
-		case jsonText, jsonNone:
+		case jsonNone:
 			if has {
 				t.Errorf("%q declares -json but is classified %s", l.Command, l.Mode)
 			}

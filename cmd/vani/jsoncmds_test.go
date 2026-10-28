@@ -24,6 +24,23 @@ func decodeOne(t *testing.T, stdout string, v any) {
 	}
 }
 
+// failureIn decodes stdout as one JSON object that is a failure: it has a
+// non-empty error and code, and whatever data the command kept beside them.
+func failureIn(t *testing.T, args []string, stdout string) (msg, code string) {
+	t.Helper()
+	var m map[string]any
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	if err := dec.Decode(&m); err != nil || dec.More() {
+		t.Fatalf("vani %v: stdout %q is not one JSON object (%v)", args, stdout, err)
+	}
+	msg, _ = m["error"].(string)
+	code, _ = m["code"].(string)
+	if msg == "" || code == "" {
+		t.Fatalf("vani %v: %q has no error and code", args, stdout)
+	}
+	return msg, code
+}
+
 func TestVersionAndConfigCheckJSON(t *testing.T) {
 	setup(t)
 	o, _ := mustCode(t, 0, "--json", "version")
@@ -410,4 +427,96 @@ func TestDigestJSON(t *testing.T) {
 		t.Errorf("the text line should move to stderr under --json: %q", e)
 	}
 	mustCode(t, 2, "--json", "digest", "--date", "yesterday")
+}
+
+// run-once --json answers with the record the run wrote, its own output on
+// stderr, and a failed run's record beside the failure.
+func TestRunOnceJSON(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	wire(t, fixture(), &fakeNotifier{}, nil)
+	o, e := mustCode(t, 0, "--json", "run-once")
+	var r runOnceReply
+	decodeOne(t, o, &r)
+	if r.ID == "" || r.Source != "last" || r.Record.Outcome != outcomeOK || r.Record.PID != os.Getpid() || r.Error != "" {
+		t.Fatalf("run-once %+v", r)
+	}
+	if !strings.Contains(e, "digest: ") {
+		t.Errorf("the run's digest line should be on stderr: %q", e)
+	}
+	// The record is the one runs show --json reads.
+	s, _ := mustCode(t, 0, "runs", "show", "--json", r.ID)
+	var shown runShowJSON
+	if decodeOne(t, s, &shown); shown.ID != r.ID || shown.Record.StartedAt != r.Record.StartedAt {
+		t.Errorf("runs show %+v, run-once %+v", shown, r.runShowJSON)
+	}
+
+	setup(t)
+	mustCode(t, 0, "init")
+	l := fixture()
+	l.fail = true
+	wire(t, l, &fakeNotifier{}, nil)
+	o, _ = mustCode(t, 1, "--json", "run-once")
+	r = runOnceReply{}
+	decodeOne(t, o, &r)
+	if r.Code != codeRuntime || !strings.Contains(r.Error, "disk full") || r.Record.Outcome == outcomeOK || r.ID == "" {
+		t.Fatalf("failed run-once %+v", r)
+	}
+}
+
+func TestRetriageAndRescoreDryRunJSON(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	o, _ := mustCode(t, 0, "--json", "retriage", "--dry-run")
+	var rt retriageRunReply
+	if decodeOne(t, o, &rt); !rt.DryRun || rt.Returned != 0 || rt.Keys == nil {
+		t.Errorf("retriage %+v", rt)
+	}
+	o, _ = mustCode(t, 0, "--json", "retriage", "--dry-run", "--title-drops")
+	rt = retriageRunReply{}
+	if decodeOne(t, o, &rt); !rt.TitleDrops {
+		t.Errorf("retriage --title-drops %+v", rt)
+	}
+	o, _ = mustCode(t, 0, "--json", "rescore", "--dry-run")
+	var rs rescoreReply
+	if decodeOne(t, o, &rs); !rs.DryRun || !rs.ScoringOff || rs.Limit == 0 || rs.Plan.Eligible != 0 {
+		t.Errorf("rescore %+v", rs)
+	}
+	mustCode(t, 2, "--json", "rescore", "--limit", "-1")
+}
+
+func TestKBSyncDryRunJSON(t *testing.T) {
+	bank, rkb, _ := kbApprovedSimple(t, "")
+	starts := fakeStart(t, &fakeDevPrism{})
+	o, e := mustCode(t, 0, "--json", "kb", "sync", "--dry-run", "--bank", bank, "--rkb", rkb)
+	var r kbSyncReply
+	decodeOne(t, o, &r)
+	if !r.DryRun || !r.PlannedEmpty || r.Pool == nil || r.Plan == nil || r.Plan.Actions["add"] != 2 || r.Result != nil {
+		t.Fatalf("kb sync %+v", r)
+	}
+	if *starts != 0 {
+		t.Fatal("a dry run must not start DevPrism")
+	}
+	if !strings.Contains(e, "live DevPrism state was not read") {
+		t.Errorf("the dry run's text should be on stderr: %q", e)
+	}
+	if strings.Contains(o, "person@example.invalid") || strings.Contains(o, "Synthetic Person") {
+		t.Fatal("the reply carries header personal data")
+	}
+}
+
+// Each spending or model-backed command fails in the envelope when it cannot
+// start, before it asks anything.
+func TestBatchCommandsJSONCannotStart(t *testing.T) {
+	setup(t)
+	mustCode(t, 0, "init")
+	for _, args := range [][]string{
+		{"--json", "kbmatch", "run", "--dry-run"},
+		{"--json", "teacher", "--dry-run"},
+		{"--json", "semantic", "warm"},
+	} {
+		o, _ := mustCode(t, 1, args...)
+		failureIn(t, args, o)
+	}
+	mustCode(t, 2, "--json", "teacher") // a real run needs --budget-usd
 }

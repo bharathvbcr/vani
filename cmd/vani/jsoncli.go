@@ -25,7 +25,6 @@ type jsonMode string
 const (
 	jsonFlag   jsonMode = "flag"   // takes --json
 	jsonAlways jsonMode = "always" // stdout is JSON whatever the flags
-	jsonText   jsonMode = "text"   // text only: no JSON form yet
 	jsonNone   jsonMode = "none"   // no JSON form by design; reason says why
 )
 
@@ -62,7 +61,7 @@ var jsonLeaves = []jsonLeaf{
 	{"watchlist discover", jsonFlag, ""},
 	{"logos refresh", jsonFlag, ""},
 	{"daemon", jsonNone, "runs the scheduler in the foreground until stopped; read it with status --json and runs show --json"},
-	{"run-once", jsonText, ""},
+	{"run-once", jsonFlag, ""},
 	{"run-request", jsonFlag, ""},
 	{"digest", jsonFlag, ""},
 	{"status", jsonFlag, ""},
@@ -83,13 +82,13 @@ var jsonLeaves = []jsonLeaf{
 	{"track list", jsonFlag, ""},
 	{"track show", jsonFlag, ""},
 	{"track use", jsonFlag, ""},
-	{"kb sync", jsonText, ""},
+	{"kb sync", jsonFlag, ""},
 	{"reasons draft", jsonFlag, ""},
 	{"reasons import", jsonFlag, ""},
 	{"reasons check", jsonFlag, ""},
-	{"kbmatch run", jsonText, ""},
+	{"kbmatch run", jsonFlag, ""},
 	{"kbmatch status", jsonFlag, ""},
-	{"teacher", jsonText, ""},
+	{"teacher", jsonFlag, ""},
 	{"impressions log", jsonFlag, ""},
 	{"labels", jsonFlag, ""},
 	{"jobs list", jsonFlag, ""},
@@ -112,11 +111,11 @@ var jsonLeaves = []jsonLeaf{
 	{"jobs resume coverage", jsonFlag, ""},
 	{"jobs resume gaps", jsonFlag, ""},
 	{"jobs gaps", jsonFlag, ""},
-	{"retriage", jsonText, ""},
-	{"rescore", jsonText, ""},
+	{"retriage", jsonFlag, ""},
+	{"rescore", jsonFlag, ""},
 	{"prefilter", jsonFlag, ""},
 	{"bench local", jsonFlag, ""},
-	{"semantic warm", jsonText, ""},
+	{"semantic warm", jsonFlag, ""},
 	{"semantic status", jsonFlag, ""},
 	{"answers similar", jsonAlways, ""},
 	{"draft", jsonAlways, ""},
@@ -246,11 +245,7 @@ type jsonInventory struct {
 
 // errNoJSON is the global --json on a command that has no JSON form.
 func errNoJSON(l jsonLeaf) error {
-	why := "it has no JSON output yet; run it without --json for text"
-	if l.Mode == jsonNone {
-		why = "it has no JSON output: " + l.Reason
-	}
-	return unsupportedError{fmt.Sprintf("vani %s: %s", l.Command, why)}
+	return unsupportedError{fmt.Sprintf("vani %s: it has no JSON output: %s", l.Command, l.Reason)}
 }
 
 // unsupportedError exits 2 like a usage error, with its own code.

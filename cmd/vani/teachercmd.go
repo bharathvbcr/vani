@@ -113,6 +113,7 @@ func (e *env) cmdTeacher(args []string) error {
 	sampleN := fs.Int("sample", 0, "ask about a uniform random sample of this many of the postings (0: no sampling); drawn before --max, deterministic for --seed")
 	seed := fs.Uint64("seed", 0, "the seed of --sample's draw (only with --sample)")
 	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a stored reading by this model (this fixture and prompt), applied before --sample")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -147,18 +148,94 @@ func (e *env) cmdTeacher(args []string) error {
 	if *maxN < 0 {
 		return usagef("teacher: --max must not be negative")
 	}
+	o := teacherOpts{dry: *dry, budgetUSD: *budgetUSD, model: *modelFlag, of: *of, conc: *conc, maxN: *maxN,
+		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf}
+	jr := &teacherReply{DryRun: *dry}
+	err := e.textToStderr(*asJSON, func() error { return e.teacherRun(o, jr) })
+	if !*asJSON {
+		return err
+	}
+	return e.reply(true, jr, err, nil)
+}
+
+// teacherOpts are teacher's checked flags.
+type teacherOpts struct {
+	dry                   bool
+	budgetUSD             float64
+	model, of, readingsOf string
+	conc, maxN, sampleN   int
+	sample                bool
+	seed                  uint64
+}
+
+// teacherReply is `vani teacher --json`. Plan is what would be asked and what
+// it could cost; Run is what a real run did. A run that stopped carries the
+// failure beside them.
+type teacherReply struct {
+	DryRun bool             `json:"dry_run"`
+	Plan   *teacherPlanJSON `json:"plan,omitempty"`
+	Run    *teacherRunJSON  `json:"run,omitempty"`
+	failure
+}
+
+type teacherPlanJSON struct {
+	First    string `json:"first"`
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+	// KeptWithReadings and Sampled are set by --with-readings-of and --sample.
+	KeptWithReadings *int `json:"kept_with_readings,omitempty"`
+	Sampled          *int `json:"sampled,omitempty"`
+	Candidates       int  `json:"candidates"`
+	NoText           int  `json:"left_out_no_text"`
+	Inherited        int  `json:"left_out_copied"`
+	Already          int  `json:"already_stored"`
+	ToAsk            int  `json:"to_ask"`
+	// The estimate, present when there is something to ask.
+	InputTokens *teacherTokens `json:"input_tokens,omitempty"`
+	PriceSource string         `json:"price_source,omitempty"`
+	TypicalUSD  float64        `json:"typical_usd"`
+	MaxUSD      float64        `json:"max_usd"`
+	DailyCapUSD float64        `json:"daily_cap_usd"`
+}
+
+type teacherTokens struct {
+	Mean  int `json:"mean"`
+	Min   int `json:"min"`
+	Max   int `json:"max"`
+	Total int `json:"total"`
+}
+
+type teacherRunJSON struct {
+	LimitUSD  float64 `json:"limit_usd"`
+	Asked     int     `json:"asked"`
+	Stored    int     `json:"stored"`
+	Unusable  int     `json:"unusable"`
+	NoReading int     `json:"no_reading"`
+	Already   int     `json:"already_stored"`
+	// SettledUSD is the budget ledger's own delta; when it could not be read
+	// back, MeteredUSD is the gate's count instead and LedgerError says why.
+	SettledUSD        *float64 `json:"settled_usd,omitempty"`
+	RetainedUSD       *float64 `json:"retained_usd,omitempty"`
+	RemainingTodayUSD *float64 `json:"remaining_today_usd,omitempty"`
+	MeteredUSD        *float64 `json:"metered_usd,omitempty"`
+	LedgerError       string   `json:"ledger_error,omitempty"`
+	NotAsked          int      `json:"not_asked"`
+	Stopped           string   `json:"stopped,omitempty"`
+}
+
+func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
 	}
-	model := *modelFlag
+	model := o.model
 	if model == "" {
 		model = cfg.LLM.EffectiveTriageModel()
 	}
 	if cfg.LLM.Provider == "" || model == "" {
 		return errors.New("teacher: no llm provider and model are configured")
 	}
-	first := *of
+	first := o.of
 	if first == "" {
 		if !cfg.OpenRouterConfigured() {
 			return errors.New("teacher: no OpenRouter decision model is configured; name the first teacher with --of")
@@ -186,7 +263,7 @@ func (e *env) cmdTeacher(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	path := filepath.Join(e.stateDir, eval.TeacherFile)
-	if !*dry {
+	if !o.dry {
 		unlock, lerr := eval.LockTeacher(ctx, path, teacherLockWait)
 		if lerr != nil {
 			return lerr
@@ -204,18 +281,23 @@ func (e *env) cmdTeacher(args []string) error {
 	// named model already read (so a sample can be compared against it), then to
 	// a uniform sample of what is left; --max and the already-stored check apply
 	// to the sample, in the order it was drawn.
-	if *readingsOf != "" {
+	var kept, sampled *int
+	if o.readingsOf != "" {
 		before := len(sel.Candidates)
-		sel.Candidates = eval.WithCurrentReading(sel.Candidates, store.Current(*readingsOf, summary))
-		fmt.Fprintf(e.stdout, "teacher: kept %d of %d postings that have a current reading by %s\n", len(sel.Candidates), before, *readingsOf)
+		sel.Candidates = eval.WithCurrentReading(sel.Candidates, store.Current(o.readingsOf, summary))
+		n := len(sel.Candidates)
+		kept = &n
+		fmt.Fprintf(e.stdout, "teacher: kept %d of %d postings that have a current reading by %s\n", len(sel.Candidates), before, o.readingsOf)
 	}
-	if sampleSet {
-		drawn, err := eval.SampleCandidates(sel.Candidates, *sampleN, *seed)
+	if o.sample {
+		drawn, err := eval.SampleCandidates(sel.Candidates, o.sampleN, o.seed)
 		if err != nil {
 			return usagef("teacher: %v", err)
 		}
-		fmt.Fprintf(e.stdout, "teacher: sampled %d of %d postings (seed %d)\n", len(drawn), len(sel.Candidates), *seed)
+		fmt.Fprintf(e.stdout, "teacher: sampled %d of %d postings (seed %d)\n", len(drawn), len(sel.Candidates), o.seed)
 		sel.Candidates = drawn
+		n := len(drawn)
+		sampled = &n
 	}
 	var pending []eval.TeacherCandidate
 	fixture, ph := eval.FixtureSHA(), eval.PromptHash(summary)
@@ -225,8 +307,8 @@ func (e *env) cmdTeacher(args []string) error {
 		}
 	}
 	already := len(sel.Candidates) - len(pending)
-	if *maxN > 0 && len(pending) > *maxN {
-		pending = pending[:*maxN]
+	if o.maxN > 0 && len(pending) > o.maxN {
+		pending = pending[:o.maxN]
 	}
 
 	// Measure what each question would send: the Triager builds it exactly as a
@@ -236,8 +318,9 @@ func (e *env) cmdTeacher(args []string) error {
 		toks[i] = teacherMeasure(c, summary)
 	}
 	capNano := int64(cfg.Decide.DailyUSD.LLM * 1e9)
-	e.teacherReport(cfg, model, first, source, prices, sel, already, toks, capNano)
-	if *dry || len(pending) == 0 {
+	jr.Plan = e.teacherReport(cfg, model, first, source, prices, sel, already, toks, capNano)
+	jr.Plan.KeptWithReadings, jr.Plan.Sampled = kept, sampled
+	if o.dry || len(pending) == 0 {
 		return nil
 	}
 
@@ -256,19 +339,20 @@ func (e *env) cmdTeacher(args []string) error {
 		return fmt.Errorf("teacher: reading today's llm spend: %w", err)
 	}
 	before, beforeErr := teacherSettled(ctx, ledgerPath)
-	limit := min(int64(*budgetUSD*1e9), capNano-committed)
+	limit := min(int64(o.budgetUSD*1e9), capNano-committed)
 	if limit <= 0 {
 		return fmt.Errorf("teacher: today's llm cap ($%.2f) is already spent; nothing was asked", cfg.Decide.DailyUSD.LLM)
 	}
 	fmt.Fprintf(e.stdout, "teacher: spending at most %s (the lesser of --budget-usd and the $%.2f daily cap's headroom)\n", usd(limit), cfg.Decide.DailyUSD.LLM)
 	run := eval.TeacherRun{
-		D: d, Model: model, Summary: summary, Store: store, Concurrency: *conc,
+		D: d, Model: model, Summary: summary, Store: store, Concurrency: o.conc,
 		LimitNano: limit, Spent: spent, Now: now,
 		Worst: func(q decide.Question) int64 { return teacherWorstNano(prices, q) },
 	}
 	res, err := run.Run(ctx, pending)
 	after, afterErr := teacherSettled(context.WithoutCancel(ctx), ledgerPath)
-	e.teacherSummary(res, already, len(pending), before, beforeErr, after, afterErr, capNano)
+	jr.Run = e.teacherSummary(res, already, len(pending), before, beforeErr, after, afterErr, capNano)
+	jr.Run.LimitUSD = float64(limit) / 1e9
 	if err != nil {
 		return fmt.Errorf("teacher: %w", err)
 	}
@@ -283,17 +367,23 @@ func (e *env) cmdTeacher(args []string) error {
 // because a charge could not be proven are reported beside it, and the budget
 // remaining is the day's cap less everything the ledger counts against it.
 // "Run again" is said only when something remains to ask.
-func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, before budget.Snapshot, beforeErr error, after budget.Snapshot, afterErr error, capNano int64) {
+func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, before budget.Snapshot, beforeErr error, after budget.Snapshot, afterErr error, capNano int64) *teacherRunJSON {
+	remaining := planned - res.Stored // an unread question stored nothing and is asked again
+	out := &teacherRunJSON{Asked: res.Asked, Stored: res.Stored, Unusable: res.Unusable, NoReading: res.Unread, Already: res.Skipped + already,
+		NotAsked: max(remaining, 0), Stopped: res.Stopped}
+	dollars := func(nano int64) *float64 { v := float64(nano) / 1e9; return &v }
 	fmt.Fprintf(e.stdout, "teacher: asked %d, stored %d (%d with an unusable slot), no reading %d, already stored %d\n",
 		res.Asked, res.Stored, res.Unusable, res.Unread, res.Skipped+already)
 	if err := cmp.Or(beforeErr, afterErr); err != nil {
+		out.MeteredUSD, out.LedgerError = dollars(res.SpentNano), err.Error()
 		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (committed delta, not settled) %s\n", err, usd(res.SpentNano))
 	} else {
+		out.SettledUSD, out.RetainedUSD = dollars(after.SpentNanoUSD-before.SpentNanoUSD), dollars(after.RetainedNanoUSD-before.RetainedNanoUSD)
+		out.RemainingTodayUSD = dollars(max(capNano-after.CommittedNanoUSD(), 0))
 		fmt.Fprintf(e.stdout, "teacher: settled spend %s (ledger delta, provider-reported usage), plus %s of reservations kept unproven; budget remaining today %s of %s\n",
 			usd(after.SpentNanoUSD-before.SpentNanoUSD), usd(after.RetainedNanoUSD-before.RetainedNanoUSD),
 			usd(max(capNano-after.CommittedNanoUSD(), 0)), usd(capNano))
 	}
-	remaining := planned - res.Stored // an unread question stored nothing and is asked again
 	switch {
 	case res.Stopped != "":
 		fmt.Fprintf(e.stdout, "teacher: stopped: %s; %d of the %d planned postings were not asked", res.Stopped, max(remaining, 0), planned)
@@ -304,6 +394,7 @@ func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, befor
 	case remaining > 0:
 		fmt.Fprintf(e.stdout, "teacher: %d planned postings were not asked; run again to resume\n", remaining)
 	}
+	return out
 }
 
 // teacherPrompt measures one question's prompt: Estimate is the typical input
@@ -346,11 +437,13 @@ func teacherPrices(cfg config.Config, model string) (budget.Prices, string, erro
 // usd formats nano-USD with the four decimals a per-posting price needs.
 func usd(nano int64) string { return fmt.Sprintf("$%.4f", float64(nano)/1e9) }
 
-func (e *env) teacherReport(cfg config.Config, model, first, source string, p budget.Prices, sel eval.TeacherSelection, already int, toks []teacherPrompt, capNano int64) {
+func (e *env) teacherReport(cfg config.Config, model, first, source string, p budget.Prices, sel eval.TeacherSelection, already int, toks []teacherPrompt, capNano int64) *teacherPlanJSON {
+	plan := &teacherPlanJSON{First: first, Model: model, Provider: cfg.LLM.Provider, Candidates: len(sel.Candidates), NoText: sel.NoText,
+		Inherited: sel.Inherited, Already: already, ToAsk: len(toks), DailyCapUSD: cfg.Decide.DailyUSD.LLM}
 	fmt.Fprintf(e.stdout, "teacher: %d postings read by %s (left out: %d with no text, %d copied readings); %d already stored for this model, fixture and prompt; %d to ask\n",
 		len(sel.Candidates), first, sel.NoText, sel.Inherited, already, len(toks))
 	if len(toks) == 0 {
-		return
+		return plan
 	}
 	var sum, lo, hi, long int
 	lo = math.MaxInt
@@ -369,6 +462,8 @@ func (e *env) teacherReport(cfg config.Config, model, first, source string, p bu
 			worst += w
 		}
 	}
+	plan.InputTokens = &teacherTokens{Mean: sum / len(toks), Min: lo, Max: hi, Total: sum}
+	plan.PriceSource, plan.TypicalUSD, plan.MaxUSD = source, float64(typical)/1e9, float64(worst)/1e9
 	fmt.Fprintf(e.stdout, "teacher: each question carries the triage prompt, your target summary and one posting framed as untrusted content, sent to %s %s\n", cfg.LLM.Provider, model)
 	fmt.Fprintf(e.stdout, "teacher: input tokens per posting (estimated with Manvi's prompt.EstimateTokens over the exact messages): mean %d, min %d, max %d, total %d\n", sum/len(toks), lo, hi, sum)
 	fmt.Fprintf(e.stdout, "teacher: price from %s: input $%.4f and output $%.4f per million tokens", source, float64(p.Input)/1000, float64(p.Output)/1000)
@@ -382,4 +477,5 @@ func (e *env) teacherReport(cfg config.Config, model, first, source string, p bu
 		days := (worst + capNano - 1) / capNano
 		fmt.Fprintf(e.stdout, "teacher: the daily llm cap is $%.2f: at most %d day(s) at the worst case if nothing else spends from it\n", cfg.Decide.DailyUSD.LLM, days)
 	}
+	return plan
 }

@@ -29,6 +29,7 @@ func (e *env) cmdSemantic(args []string) error {
 func (e *env) cmdSemanticWarm(args []string) error {
 	fs := e.newFlags("semantic warm")
 	max := fs.Int("max", 0, fmt.Sprintf("most postings to embed (default semantic.warm_per_run; at most %d)", semantic.MaxWarmDocs))
+	asJSON := e.jsonFlag(fs, `{"limit","report"} on stdout: the warm's counts, as a run records them`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -59,6 +60,13 @@ func (e *env) cmdSemanticWarm(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	rep := warmSemantic(ctx, cfg, e.stateDir, recs, mk, limit)
+	if *asJSON {
+		var err error
+		if rep.Note != "" {
+			err = errors.New(rep.Note)
+		}
+		return e.reply(true, &semanticWarmReply{Limit: limit, Report: rep}, err, nil)
+	}
 	fmt.Fprintln(e.stdout, rep.countsLine())
 	if rep.Rebuilt {
 		fmt.Fprintln(e.stdout, "the score cache was unreadable and was started again")
@@ -70,6 +78,14 @@ func (e *env) cmdSemanticWarm(args []string) error {
 		return errors.New(rep.Note)
 	}
 	return nil
+}
+
+// semanticWarmReply is `vani semantic warm --json`: the counts a run records
+// for its warm; a warm that could not finish carries the failure (its note).
+type semanticWarmReply struct {
+	Limit  int            `json:"limit"`
+	Report semanticReport `json:"report"`
+	failure
 }
 
 // semanticStatus is `vani semantic status`, gathered once and then printed as

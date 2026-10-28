@@ -45,6 +45,7 @@ func (e *env) cmdRetriage(args []string) error {
 	flags := e.newFlags("retriage")
 	dry := flags.Bool("dry-run", false, "list what would be returned to live; read the ledger only, change nothing")
 	titles := flags.Bool("title-drops", false, "return postings dropped on their title that title_signals.read and the drop rules no longer drop")
+	asJSON := e.jsonFlag(flags, `{"dry_run","title_drops","returned","keys"} on stdout`)
 	if err := parse(flags, args); err != nil {
 		return err
 	}
@@ -76,12 +77,27 @@ func (e *env) cmdRetriage(args []string) error {
 	if *dry {
 		verb = "would return to live"
 	}
+	var keys []posting.Key
+	why := "triaged with no backend reading"
 	if *titles {
-		keys, err := pipeline.RetriageTitleDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.OpenRouterName()), *dry)
-		fmt.Fprintf(e.stdout, "%d posting(s) %s (dropped on a title the current rules no longer drop)\n", len(keys), verb)
-		return err
+		keys, err = pipeline.RetriageTitleDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.OpenRouterName()), *dry)
+		why = "dropped on a title the current rules no longer drop"
+	} else {
+		keys, err = pipeline.RetriageUnread(ctx, l, now(), *dry)
 	}
-	keys, err := pipeline.RetriageUnread(ctx, l, now(), *dry)
-	fmt.Fprintf(e.stdout, "%d posting(s) %s (triaged with no backend reading)\n", len(keys), verb)
+	if *asJSON {
+		return e.reply(true, &retriageRunReply{DryRun: *dry, TitleDrops: *titles, Returned: len(keys), Keys: nonNil(keys)}, err, nil)
+	}
+	fmt.Fprintf(e.stdout, "%d posting(s) %s (%s)\n", len(keys), verb, why)
 	return err
+}
+
+// retriageRunReply is `vani retriage --json`: the postings returned to live (or
+// that would be, in a dry run). A failure part way keeps the ones it returned.
+type retriageRunReply struct {
+	DryRun     bool          `json:"dry_run"`
+	TitleDrops bool          `json:"title_drops"`
+	Returned   int           `json:"returned"`
+	Keys       []posting.Key `json:"keys"`
+	failure
 }
