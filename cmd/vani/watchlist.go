@@ -67,6 +67,7 @@ func (e *env) watchlistList(args []string) error {
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem) or pg (careers page)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), ib (IBM; tokens ibm and confluent) or pg (careers page)")
 	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; pg: a short slug)")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), sr (SmartRecruiters) or pg (careers page)")
 	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; pg: a short slug)")
@@ -75,7 +76,7 @@ func (e *env) watchlistAdd(args []string) error {
 	region := fs.String("region", "", "regional host (eu, lever only)")
 	host := fs.String("host", "", "workday host (acme.wd5.myworkdayjobs.com, or wd1.myworkdaysite.com whose tenant is the token's), or eightfold or jibe careers host (careers.amd.com)")
 	var searches []string
-	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef, jb); the board lists their union", func(s string) error {
+	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef, jb, ib); the board lists their union", func(s string) error {
 		searches = append(searches, s)
 		return nil
 	})

@@ -27,6 +27,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 )
 
@@ -812,6 +813,8 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "jobs.apple.com", true
 	case posting.SmartRecruiters:
 		return "api.smartrecruiters.com", true
+	case posting.IBM:
+		return "www-api.ibm.com", true
 	case posting.Workday, posting.Eightfold, posting.Jibe:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
@@ -867,7 +870,7 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe:
+	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM:
 		return true
 	}
 	return false
@@ -906,7 +909,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap, ef and jb only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap, ef, jb and ib only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -959,6 +962,9 @@ func ValidBoard(b sources.Board) error {
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.SmartRecruiters, posting.Page:
 	default:
 		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, sr, pg", b.ATS)
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.Page:
+	default:
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, ib, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -978,6 +984,10 @@ func ValidBoard(b sources.Board) error {
 		if why := sources.BoardNameProblem(b.BoardName); why != "" {
 			return fmt.Errorf("board (%s) %s board_name %q %s", b.ATS, b.Token, b.BoardName, why)
 		}
+	}
+	if t := strings.ToLower(b.Token); b.ATS == posting.IBM && t != ibm.TokenIBM && t != ibm.TokenConfluent {
+		// The token picks which of IBM's two disjoint listings the board reads.
+		return fmt.Errorf("board (ib) token %q must be %s or %s", b.Token, ibm.TokenIBM, ibm.TokenConfluent)
 	}
 	if strings.HasSuffix(strings.ToLower(b.Token), ScrapeSuffix) {
 		return fmt.Errorf("board token %q ends in %q, which is reserved for jobs scraped in the browser", b.Token, ScrapeSuffix)

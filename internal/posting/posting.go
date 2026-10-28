@@ -32,6 +32,8 @@ const (
 	Gem  ATS = "gm" // Gem (jobs.gem.com)
 	// SmartRecruiters is a SmartRecruiters company's public postings.
 	SmartRecruiters ATS = "sr"
+	// IBM is IBM's careers site (careers.ibm.com), which also lists Confluent.
+	IBM ATS = "ib"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

@@ -21,6 +21,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/gem"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
@@ -477,5 +478,6 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Gem:        gem.New(d),
 
 		posting.SmartRecruiters: smartrecruiters.New(d),
+		posting.IBM:        ibm.New(d),
 	}
 }

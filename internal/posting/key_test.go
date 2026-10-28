@@ -63,6 +63,7 @@ func TestSearchSiteKeys(t *testing.T) {
 		{JibeKey, "AMD", "93574", "jb:amd:93574", Jibe},
 		{GemKey, "Groq", "am9icG9zdDqAUz7G7JlGLHQawWv7Sec2", "gm:groq:am9icg9zddqauz7g7jlglhqawwv7sec2", Gem},
 		{SmartRecruitersKey, "ServiceNow", "744000158170259", "sr:servicenow:744000158170259", SmartRecruiters},
+		{IBMKey, "Confluent", "135407", "ib:confluent:135407", IBM},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
 		if err != nil || k != tc.want || k.ATS() != tc.ats {

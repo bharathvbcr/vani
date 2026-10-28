@@ -1,0 +1,105 @@
+{
+  "took": 12,
+  "timed_out": false,
+  "hits": {
+    "total": {
+      "value": 3,
+      "relation": "eq"
+    },
+    "hits": [
+      {
+        "_id": "d0032776c7f3c4d18a7d1319d98a9e47eae9756db8db5b769ad7082da4bef33b",
+        "_source": {
+          "url": "https://careers.ibm.com/careers/JobDetail?jobId=135407",
+          "dcdate": "2026-10-13",
+          "effectivedate": "2026-10-13",
+          "title": "Director, Engineering - Confluent",
+          "body": "At IBM Software, we transform client challenges into solutions. Building the worldâ€™s leading AI-powered, cloud-native products that shape the future of business and society. Our legacy of innovation creates endless opportunities for IBMers to learn, grow, and make an impact on a global scale. Working in Software means joining a team fueled by curiosity and collaboration. Youâ€™ll work with diverse technologies, partners, and industries to design, develop, and deliver solutions that power digital transformation. With a culture that values innovation, growth, and continuous learning, IBM Software places you at the heart of IBMâ€™s product and technology landscape. Here, youâ€™ll have the tools and opportunities to advance your career while creating software that changes the world. We are building a massively scalable stream processing infrastructure that enables low-latency operations like filters, joins and aggregations on real-time data. This will enable our customers to easily build stateful stream-processing applications that are scalable, elastic, and fully fault-tolerant.  We are looking for an engineering leader to lead the strategic vision, engineering, and operations of core engineering teams that build Confluent's industry-leading Kafka platform. The Confluent Cloud Brokers, Networking and Security will be your primary focus. As a key leader, you will play a significant role in the ongoing transformation of the Kafka platform, driving innovation and outpacing compet",
+          "field_keyword_05": "United States",
+          "field_keyword_08": "Software Engineering",
+          "field_keyword_17": "Remote",
+          "field_keyword_18": "Professional",
+          "field_keyword_19": "Multiple Cities",
+          "field_keyword_21": [
+            "POUGHKEEPSIE",
+            "LOWELL",
+            "ROCHESTER",
+            "TUCSON",
+            "RESEARCH TRIANGLE PARK",
+            "Armonk",
+            "Boston",
+            "Bellevue",
+            "Atlanta",
+            "San Jose",
+            "Dallas",
+            "Austin",
+            "San Francisco",
+            "Seattle"
+          ],
+          "field_text_01": 135407
+        }
+      },
+      {
+        "_id": "bfae38e8a2e6f6d7ad8875d485a90f309b154a54ff4cac170c1c12bf950aad1d",
+        "_source": {
+          "url": "https://careers.ibm.com/careers/JobDetail?jobId=137793",
+          "dcdate": "2026-10-22",
+          "effectivedate": "2026-10-22",
+          "title": "Solution Engineer - Confluent",
+          "body": "At IBM Global Sales, we bring together innovation, collaboration, and expertise to help clients solve their most complex business challenges. Working across industries and geographies, you'll partner with colleagues, clients, and partners to co-create solutions that drive digital transformation and lasting impact.Success in Global Sales is built on curiosity, empathy, and collaboration. You'll connect technical understanding with strong people skills, building trusted relationships and shaping solutions that improve business and society. With world-class onboarding, continuous learning, and a supportive culture, IBM offers the tools and opportunities to grow your career. Join us and be part of a global team that's passionate about driving innovation and making a difference. Solutions Engineers at Confluent drive not only the early-stage evaluation within the sales process, but also play a crucial role in enabling ongoing value-realization for customers, all while helping them move up the adoption maturity curve. In this role you’ll partner with Account Executives to be the key technical advisor in service of the customers. You’ll be instrumental in surfacing the customers’ stated or implicit Business Needs, and coming up with Technical Designs to best meet these needs. You may find yourself at times facilitating art of the possible discussions and storytelling to inspire customers in adopting new patterns with confidence, and at other times driving creative solutioning to hel",
+          "field_keyword_05": "United States",
+          "field_keyword_08": "Sales",
+          "field_keyword_17": "Remote",
+          "field_keyword_18": "Professional",
+          "field_keyword_19": "Multiple Cities",
+          "field_keyword_21": [
+            "Lisle",
+            "CORAL GABLES",
+            "RESEARCH TRIANGLE PARK",
+            "Armonk",
+            "DURHAM",
+            "Denver",
+            "No City",
+            "Raleigh",
+            "Boston",
+            "Irvine",
+            "Bellevue",
+            "Atlanta",
+            "Philadelphia",
+            "San Jose",
+            "Santa Clara",
+            "Dallas",
+            "Austin",
+            "San Francisco",
+            "Seattle",
+            "WASHINGTON",
+            "Herndon",
+            "Chicago",
+            "New York",
+            "Columbus"
+          ],
+          "field_text_01": 137793
+        }
+      },
+      {
+        "_id": "533f9f8357d3a61cb23f14ba96d9e01c0fe0621c25be238e5a4659e24db35d02",
+        "_source": {
+          "url": "https://careers.ibm.com/careers/JobDetail?jobId=135532",
+          "dcdate": "2026-10-05",
+          "effectivedate": "2026-10-05",
+          "title": "Senior Security Engineer",
+          "body": "Senior Security Engineer, IBM Corporation, Armonk, NY and various unanticipated client sites throughout the US (Up to 100% telecommuting permitted):  Define metrics and implement security best practices to guide the organization’s security posture across multicloud environments.  Collaborate with engineering and stakeholders to design and support secure by default enterprise and product environments.  Develop security tooling and automation, including Nonhuman Identity (NHI) frameworks, graphbased authorization models, and contextual access control policies.  Automate and monitor compliance pipelines to meet internal security policies and regulatory requirements.  Apply reliability engineering to maintain availability, performance, and stability of identity services.  Implement and support federated identity brokerage, dynamic credential management, and internal identity governance pipelines using Terraform and GitHub Actions.  Design and maintain centralized access policies and scale identity services across internal systems and cloud environments.  Create selfservice identity provider workflows and automate access controls to reduce auditing needs.  Develop security tools and cloud native applications using Go and/or Python and support production deployments.  Participate in on call rotations for infrastructure incidents and contribute to industry knowledge through conference participation and publications.  Utilize: Identity and Access Management (IAM) - Active Directory (",
+          "field_keyword_05": "United States",
+          "field_keyword_08": null,
+          "field_keyword_17": "Hybrid",
+          "field_keyword_18": "Professional",
+          "field_keyword_19": "Armonk, US",
+          "field_keyword_21": [
+            "Armonk"
+          ],
+          "field_text_01": 135532
+        }
+      }
+    ]
+  }
+}

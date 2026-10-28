@@ -71,6 +71,9 @@ func GemKey(board, postID string) (Key, error) { return build(Gem, board, postID
 // SmartRecruitersKey is sr:{company_id}:{posting_id}; the company identifier
 // ("servicenow") is the board token and the posting id is the ATS's own.
 func SmartRecruitersKey(company, id string) (Key, error) { return build(SmartRecruiters, company, id) }
+// IBMKey is ib:{board}:{jobId}; the board is "ibm" or "confluent". The job id
+// is the number in the careers.ibm.com job link (JobDetail?jobId=135407).
+func IBMKey(board, jobID string) (Key, error) { return build(IBM, board, jobID) }
 
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
@@ -130,6 +133,7 @@ func (k Key) ATS() ATS {
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, Page, Other:
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, SmartRecruiters, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, IBM, Page, Other:
 		return a
 	}
 	return ""
