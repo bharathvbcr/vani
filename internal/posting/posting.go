@@ -29,6 +29,8 @@ const (
 	Eightfold ATS = "ef"
 	// Jibe is an iCIMS Jibe careers site (AMD).
 	Jibe ATS = "jb"
+	// IBM is IBM's careers site (careers.ibm.com), which also lists Confluent.
+	IBM ATS = "ib"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"
