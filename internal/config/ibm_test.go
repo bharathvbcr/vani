@@ -32,7 +32,7 @@ func TestIBMBoardHostAndTokens(t *testing.T) {
 		"blank search":      {sources.Board{ATS: posting.IBM, Token: "ibm", Search: " "}, "needs at least one search"},
 		"unverified filter": {sources.Board{ATS: posting.IBM, Token: "ibm", Search: "x", Filters: map[string][]string{"country": {"India"}}}, "not supported"},
 		"host":              {sources.Board{ATS: posting.IBM, Token: "ibm", Search: "x", Host: "www-api.ibm.com"}, "host applies"},
-		"max_postings":      {sources.Board{ATS: posting.IBM, Token: "ibm", Search: "x", MaxPostings: 10}, "applies to wd only"},
+		"max_postings":      {sources.Board{ATS: posting.IBM, Token: "ibm", Search: "x", MaxPostings: 10}, "applies to wd and oc only"},
 	} {
 		if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)

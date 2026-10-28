@@ -69,7 +69,7 @@ func TestAvatureBoardRefusals(t *testing.T) {
 		"link pattern":      {func(b *sources.Board) { b.LinkPattern = "^x" }, "link_pattern"},
 		"search":            {func(b *sources.Board) { b.Search = "ml" }, "search applies"},
 		"filter":            {func(b *sources.Board) { b.Filters = map[string][]string{"location": {"x"}} }, "not supported"},
-		"max_postings":      {func(b *sources.Board) { b.MaxPostings = 10 }, "applies to wd only"},
+		"max_postings":      {func(b *sources.Board) { b.MaxPostings = 10 }, "applies to wd and oc only"},
 		"region":            {func(b *sources.Board) { b.Region = "eu" }, "lever only"},
 		"board_name":        {func(b *sources.Board) { b.BoardName = "x" }, "board_name applies to ab only"},
 	} {

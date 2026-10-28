@@ -59,7 +59,7 @@ func TestSmartRecruitersBoardsThatCannotWorkAreRefused(t *testing.T) {
 		"search":               {mod(func(b *sources.Board) { b.Search = "engineer" }), "search applies"},
 		"searches":             {mod(func(b *sources.Board) { b.Searches = []string{"a"} }), "search applies"},
 		"region":               {mod(func(b *sources.Board) { b.Region = "eu" }), "region"},
-		"max_postings":         {mod(func(b *sources.Board) { b.MaxPostings = 100 }), "applies to wd only"},
+		"max_postings":         {mod(func(b *sources.Board) { b.MaxPostings = 100 }), "applies to wd and oc only"},
 		"url":                  {mod(func(b *sources.Board) { b.URL = "https://jobs.smartrecruiters.com/x" }), "page boards only"},
 		"unverified filter":    {mod(func(b *sources.Board) { b.Filters = map[string][]string{"location": {"x"}} }), "is not one of country"},
 		"country three letter": {mod(func(b *sources.Board) { b.Filters = map[string][]string{"country": {"usa"}} }), "two-letter"},
