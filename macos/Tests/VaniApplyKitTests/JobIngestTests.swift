@@ -354,6 +354,10 @@ final class JobIngestTests: XCTestCase {
         }
     }
 
+    func testTalentBrewBoardHasAName() {
+        XCTAssertEqual(WatchlistEntry(ats: "tb", token: "intuit", company: "Intuit").kind, "TalentBrew")
+    }
+
     func testOnlyHTTPSPageURLsOpen() {
         func entry(_ url: String?) -> WatchlistEntry { WatchlistEntry(ats: "pg", token: "t", company: "C", url: url) }
         XCTAssertNotNil(entry("https://careers.acme.com/s").openURL)

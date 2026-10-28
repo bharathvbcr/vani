@@ -26,6 +26,10 @@ func TestBoardFromURL(t *testing.T) {
 		"greenhouse mixed case":  {raw: "https://Boards.Greenhouse.io/Acme/jobs/1", known: true, ats: posting.Greenhouse, token: "Acme"},
 		"greenhouse EU host":     {raw: "https://job-boards.eu.greenhouse.io/acme/jobs/1"},
 		"greenhouse custom page": {raw: "https://careers.acme.com/?gh_jid=1"},
+		// A TalentBrew site is on the customer's own host and its token is the
+		// owner's choice, so, like Eightfold's, Jibe's and Avature's, its job
+		// page names no board.
+		"talentbrew job page":    {raw: "https://jobs.intuit.com/job/san-diego/staff-software-engineer/27595/102521439872"},
 		"lever":                  {raw: "https://jobs.lever.co/acme/uuid", known: true, ats: posting.Lever, token: "acme"},
 		"lever eu":               {raw: "https://jobs.eu.lever.co/acme", known: true, ats: posting.Lever, token: "acme", region: "eu"},
 		"lever no board":         {raw: "https://jobs.lever.co", known: true, err: "names no Lever board"},

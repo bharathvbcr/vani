@@ -35,6 +35,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
@@ -251,6 +252,21 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Rippling] = rp
+	// A TalentBrew job page is up to 700 KB and the sitemap names nothing else,
+	// so every posting costs one: bounded as Rippling's is, at
+	// talentbrew.MaxDetails pages a board a run.
+	tb, err := talentbrew.NewWith(d, talentbrew.Options{
+		Stored:     w.storedFor,
+		DropListed: policy.ListedDrops(),
+		Report: func(b sources.Board, st talentbrew.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.TalentBrew] = tb
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -554,6 +570,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Pinpoint:        pinpoint.New(d),
 		posting.BambooHR:        bamboohr.New(d),
 		posting.Personio:        personio.New(d),
+		posting.TalentBrew:      talentbrew.New(d),
 		posting.Feed:            feed.New(d),
 	}
 }

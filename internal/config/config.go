@@ -831,7 +831,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.deshaw.com", true
 	case posting.Atlassian:
 		return "www.atlassian.com", true
-	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature, posting.OracleHCM:
+	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature, posting.OracleHCM, posting.TalentBrew:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
@@ -953,8 +953,10 @@ var (
 	srCountry              = regexp.MustCompile(`^[A-Za-z]{2}$`)
 )
 
-// avatureToken matches an Avature board's token, the owner's slug for it.
+// avatureToken matches an Avature board's token, the owner's slug for it;
+// talentBrewToken a TalentBrew board's (talentbrew.tokenRE).
 var avatureToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+var talentBrewToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
@@ -1033,10 +1035,10 @@ func ValidBoard(b sources.Board) error {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
-		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
+		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio, posting.TalentBrew,
 		posting.Feed, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, fd, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tb, fd, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1107,6 +1109,15 @@ func ValidBoard(b sources.Board) error {
 		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
 			return fmt.Errorf("jibe board %s needs host, its careers site, e.g. careers.amd.com; got %q", b.Token, b.Host)
 		}
+	} else if b.ATS == posting.TalentBrew {
+		// The token is the owner's slug, the host the site's own: a TalentBrew
+		// site is on the customer's domain, so its host is not derivable.
+		if !talentBrewToken.MatchString(b.Token) {
+			return fmt.Errorf("talentbrew token %q must be a lower-case slug of letters, digits and '-', e.g. intuit", b.Token)
+		}
+		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
+			return fmt.Errorf("talentbrew board %s needs host, its careers site, e.g. jobs.intuit.com; got %q", b.Token, b.Host)
+		}
 	} else if b.ATS == posting.SmartRecruiters {
 		// The token is the company identifier, sent in the request path. The
 		// API answers zero postings for any country but one lower-case
@@ -1115,7 +1126,7 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("smartrecruiters token %q must be the company identifier (letters, digits, '-' and '_'), e.g. servicenow", b.Token)
 		}
 		if b.Host != "" {
-			return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb and av only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb, av and tb only", b.ATS, b.Token)
 		}
 		for _, cc := range b.Filters["country"] {
 			if !srCountry.MatchString(cc) {
@@ -1135,7 +1146,7 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("avature board %s: %w", b.Token, err)
 		}
 	} else if b.ATS != posting.Workday && b.ATS != posting.OracleHCM && b.Host != "" {
-		return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb and av only", b.ATS, b.Token)
+		return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb, av and tb only", b.ATS, b.Token)
 	}
 	if _, perTenant := sources.TenantHostSuffix[b.ATS]; perTenant {
 		// The token is the host's first label, which is what BoardHost allows.
