@@ -22,7 +22,11 @@ func TestGroundingAcceptsHonestCounts(t *testing.T) {
 		"a vulgar fraction matches itself":     {"Cut cost by " + vulgar + ".", "I cut cost by " + vulgar + "."},
 		"percentage points":                    {"Up 42%.", "Up 42 percentage points."},
 		"ordinal suffix is not a counted noun": {"Ranked 99th.", "My rank was 99th."},
-		"thin space grouping":                  {"1,000 users", "1 000 users"},
+		// Was in TestGroundingRefusesTheWrongCount ("words not read, so digits are
+		// new"), which held while spelled numbers were not read at all. They are the
+		// same figure as their digits now (ground_numwords.go).
+		"a spelled number is its digits": {"Worked five years at Acme.", "I worked 5 years at Acme."},
+		"thin space grouping":            {"1,000 users", "1 000 users"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if f, n := newGrounding(tc.source).ungrounded(tc.reply); n != 0 {
@@ -34,7 +38,6 @@ func TestGroundingAcceptsHonestCounts(t *testing.T) {
 
 func TestGroundingRefusesTheWrongCount(t *testing.T) {
 	for name, tc := range map[string]struct{ source, reply string }{
-		"words not read, so digits are new":     {"Worked five years at Acme.", "I worked 5 years at Acme."},
 		"another unit for the same number":      {"Led 12 reports.", "I led 12 engineers."},
 		"a version number as a count":           {"Ran on v2.1", "I ran 2.1 million jobs."},
 		"a code name is not a plain figure":     {"We run H100 nodes.", "I run 100 nodes."},

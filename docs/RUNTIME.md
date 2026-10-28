@@ -175,8 +175,9 @@ Changing which bullets are eligible changes the profile hash: the semantic score
 discarded and re-scored locally (Tessl, no spend, bounded by `semantic.warm_per_run`), and
 stored `kbmatch` answers no longer match (`kbmatch.json` is keyed by the digest hash) until
 `vani kbmatch run` asks again, which is the only thing that spends on them. `vani draft` also
-refuses a draft that cites a figure none of its sources contain (code `ungrounded`,
-`internal/draft/ground.go`).
+refuses a draft that cites a figure (digits or spelled out), a credential (PhD, MBA, "certified"
+and the other closed list in `ground_claims.go`) or an acronym that none of its sources contain
+(code `ungrounded`, `internal/draft/ground.go`); the refusal says which kind.
 
 ## Building a resume
 

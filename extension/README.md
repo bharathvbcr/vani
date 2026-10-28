@@ -30,6 +30,9 @@ native-messaging manifest allows. `dist-safari/` is the same code with a Safari-
      same question);
    - **yellow**: a reworded question matched fuzzily, or a long free-text answer kept as a draft.
      Check these.
+   A saved answer longer than the field's character limit (`maxlength`) is never written, cut or
+   otherwise: the field stays empty, outlined **yellow**, and its tooltip says how long the answer
+   is and what the field allows (see Limits).
    Fields you have already typed into are left alone, unless you tick "overwrite typed values".
    Search-as-you-type fields are left alone unless you tick "type into search fields".
    Questions it hasn't seen are left blank. Answer them, and they're saved for next time.
@@ -393,6 +396,21 @@ flowchart LR
     Greenhouse iframe the manifest runs in (checked in Chrome 155, `test/live.ts`). A frame that
     errors or gives no answer within 20 s is reported as not answering and its fields are not
     counted; a listed frame that has since gone away is skipped.
+- Character limits: a browser holds `maxlength` against typing only, so a script's `.value =` can
+  write past it, and some ATSs (Greenhouse noted) then drop or cut the answer on submit without a
+  word. Fill therefore compares the answer with the field's limit when it fills (an `<input>` of a
+  type `maxlength` applies to, or a `<textarea>`; read live, so a limit the page changes after
+  render counts) and, when the answer is longer, writes nothing: the outcome is `too_long`, the field
+  is outlined yellow, and its tooltip and the Fill message say "The answer is N characters and this
+  field allows M. Vani left it empty rather than cut it: shorten it by hand here, or edit the saved
+  answer." The saved answer is never changed. Length is counted in UTF-16 code units as the browser
+  counts it (an emoji is 2, a letter plus a combining mark is 2), with a textarea's line break as 1 and
+  a single-line input's dropped. The same rule covers an inserted draft and the pieces of a split
+  date or phone (those are left for review or unfilled, not cut). A contenteditable has no limit.
+  Text you already typed is still left alone. The pre-submit audit also lists every field whose
+  current value is over its limit ("holds N characters but allows M"), whoever wrote it, and changes
+  nothing. Not covered: the query Fill types into a search-as-you-type box when you tick "type into
+  search fields" (it is cleared again), and a limit the site enforces only on its server.
 - Repeated sections (work history, education): the 2nd, 3rd... occurrence of a question is saved as
   "<question> (vani section n)" and filled from the same entry number; entry 1 keeps its plain key.
   The marker is namespaced so a genuine label ending in "section 2" is not read as entry 2. Keys

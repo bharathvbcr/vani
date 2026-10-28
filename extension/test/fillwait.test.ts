@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Answer, FieldInfo, Match } from "../src/types";
 import { emptyBank } from "../src/types";
 import type { FieldRef } from "../src/extract";
-import { fillAll, fillRef, waitFor, widgetRoots } from "../src/fill";
+import { fillAll, fillRef, insertDraft, waitFor, widgetRoots } from "../src/fill";
 import { coverageOf } from "../src/coverage";
 
 // bun test has no DOM. These tests drive fill.ts against a small fake just big enough for it: elements
@@ -74,6 +74,7 @@ class FakeEl {
   getClientRects(): unknown[] { return this.rendered ? [{}] : []; }
   focus(): void {}
   matches(): boolean { return false; }
+  closest(): FakeEl | null { return null; }
   querySelector(sel: string): FakeEl | null { return this.querySelectorAll(sel)[0] ?? null; }
   querySelectorAll(sel: string): FakeEl[] {
     if (this.boom) throw new Error("page script threw");
@@ -95,10 +96,12 @@ class FakeEl {
 
 class FakeInput extends FakeEl {
   private v = "";
-  constructor(doc: FakeDoc, public onWrite: () => void) { super(doc, "input"); this.attrs["type"] = "text"; }
+  constructor(doc: FakeDoc, public onWrite: () => void, tag = "input") { super(doc, tag); if (tag === "input") this.attrs["type"] = "text"; }
   get value(): string { return this.v; }
   set value(x: string) { this.v = x; this.onWrite(); }
-  get type(): string { return "text"; }
+  get type(): string { return this.localName === "textarea" ? "textarea" : this.attrs["type"] ?? "text"; }
+  /** The browser's reflection of the attribute: its leading digits, else -1 (absent or not a number). */
+  get maxLength(): number { const m = /^\s*\+?(\d+)/.exec(this.attrs["maxlength"] ?? ""); return m ? Number(m[1]) : -1; }
 }
 
 const later = (ms: number, fn: () => void): void => { if (ms <= 0) fn(); else setTimeout(fn, ms); };
@@ -502,6 +505,277 @@ describe("coverageOf exposes its matches", () => {
     const out = await fillAll(refs, emptyBank(), "x.example", { matches });
     expect(out.map(o => o.filled)).toEqual([true, false]);
     expect((known.els[0] as unknown as FakeInput).value).toBe("green");
+  });
+});
+
+/** A contenteditable editor: text is its textContent, and it has no maxlength concept. */
+class FakeEditable extends FakeEl {
+  constructor(doc: FakeDoc) { super(doc, "div"); this.attrs["contenteditable"] = "true"; }
+  get textContent(): string { return this.text; }
+  set textContent(t: string) { this.text = t; }
+}
+
+// The browser enforces maxlength only for typing; a script's `.value =` is not cut. A saved answer longer than the
+// field's limit is therefore left out of the field (never truncated, never written past the limit, the saved answer
+// untouched) and the field is outlined yellow with the reason, so nobody believes it was answered.
+describe("a field's character limit (maxlength)", () => {
+  const YELLOW = "#d4a017", GREEN = "#2e8b57";
+  const mkInput = (attrs: Record<string, string> = {}, tag = "input"): FakeInput => {
+    const el = new FakeInput(new FakeDoc(), () => {}, tag);
+    Object.assign(el.attrs, attrs);
+    return el;
+  };
+  const kindOf = (el: FakeInput): FieldInfo["kind"] => (el.localName === "textarea" ? "textarea" : "text");
+  const fillWith = (el: FakeInput, value: string, opts: { overwrite?: boolean } = {}) =>
+    fillRef(ref(el, "About you", "native", kindOf(el)), match("about", [value]), opts);
+
+  // Characterization: these held before the limit check existed and must keep holding.
+  test("a field with no maxlength takes a long answer verbatim", async () => {
+    fresh();
+    const el = mkInput();
+    const long = "x".repeat(5000);
+    expect(await fillWith(el, long)).toMatchObject({ filled: true, review: false });
+    expect(el.value).toBe(long);
+    expect(el.style["outline"]).toContain(GREEN);
+  });
+  test("a malformed or negative maxlength is no limit", async () => {
+    fresh();
+    for (const bad of ["abc", "-1", "", "-5"]) {
+      const el = mkInput({ maxlength: bad });
+      expect(await fillWith(el, "twelve chars")).toMatchObject({ filled: true });
+      expect(el.value).toBe("twelve chars");
+    }
+  });
+
+  test("an answer longer than the limit is left out: not written, not cut, outlined yellow with the limit and the length", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" });
+    const m = match("about", ["abcdefghij"]);
+    const out = await fillRef(ref(el, "About you", "native", "text"), m);
+    expect(out).toMatchObject({ filled: false, reason: "too_long", key: "about" });
+    expect(out.detail).toContain("10");
+    expect(out.detail).toContain("5");
+    expect(el.value).toBe("");
+    expect(el.style["outline"]).toContain(YELLOW);
+    expect(el.attrs["data-vani-fill"]).toBe("review");
+    expect(el.attrs["data-vani-why"]).toBe(out.detail!);
+    expect(m.value).toEqual(["abcdefghij"]);
+    expect(m.answer.value).toEqual(["abcdefghij"]);
+  });
+  test("the on-page reason says what to do", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" });
+    const out = await fillWith(el, "abcdefghij");
+    expect(out.detail).toMatch(/shorten/i);
+    expect(out.detail).toMatch(/by hand/i);
+  });
+  test("an answer exactly at the limit is filled, green", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" });
+    expect(await fillWith(el, "abcde")).toMatchObject({ filled: true, review: false });
+    expect(el.value).toBe("abcde");
+    expect(el.style["outline"]).toContain(GREEN);
+  });
+  test("one over the limit is refused", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" });
+    expect(await fillWith(el, "abcdef")).toMatchObject({ filled: false, reason: "too_long" });
+    expect(el.value).toBe("");
+  });
+  test("maxlength 0 refuses any answer", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "0" });
+    expect(await fillWith(el, "x")).toMatchObject({ filled: false, reason: "too_long" });
+    expect(el.value).toBe("");
+  });
+  test("maxlength -1 (the property's value for no limit) is no limit", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "-1" });
+    expect(el.maxLength).toBe(-1);
+    expect(await fillWith(el, "any length at all")).toMatchObject({ filled: true });
+  });
+  test("a textarea is held to its limit the same way", async () => {
+    fresh();
+    const over = mkInput({ maxlength: "10" }, "textarea");
+    expect(await fillWith(over, "x".repeat(11))).toMatchObject({ filled: false, reason: "too_long" });
+    expect(over.value).toBe("");
+    const at = mkInput({ maxlength: "10" }, "textarea");
+    expect(await fillWith(at, "x".repeat(10))).toMatchObject({ filled: true });
+    expect(at.value).toHaveLength(10);
+  });
+  test("a textarea counts a line break as the browser stores it, one character", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "3" }, "textarea");
+    expect(await fillWith(el, "a\r\nb")).toMatchObject({ filled: true });
+    const over = mkInput({ maxlength: "3" }, "textarea");
+    expect(await fillWith(over, "a\r\nbc")).toMatchObject({ filled: false, reason: "too_long" });
+  });
+  test("a single-line input counts the answer without the line breaks it would drop", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "3" });
+    expect(await fillWith(el, "a\nb\r\nc")).toMatchObject({ filled: true });
+  });
+  test("types the browser does not apply maxlength to are not limited", async () => {
+    fresh();
+    const num = mkInput({ type: "number", maxlength: "2" });
+    expect(await fillWith(num, "12345")).toMatchObject({ filled: true });
+    const email = mkInput({ type: "email", maxlength: "4" });
+    expect(await fillWith(email, "a@example.com")).toMatchObject({ filled: false, reason: "too_long" });
+    const tel = mkInput({ type: "tel", maxlength: "4" });
+    expect(await fillWith(tel, "12345")).toMatchObject({ filled: false, reason: "too_long" });
+  });
+
+  test("the limit is read when the field is filled: a maxlength that changes after render is honoured", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "100" });
+    const r = ref(el, "About you", "native", "text");
+    el.attrs["maxlength"] = "3";
+    expect(await fillRef(r, match("about", ["abcd"]))).toMatchObject({ filled: false, reason: "too_long" });
+    expect(el.value).toBe("");
+    el.attrs["maxlength"] = "4";
+    expect(await fillRef(r, match("about", ["abcd"]))).toMatchObject({ filled: true });
+    expect(el.value).toBe("abcd");
+    const gone = mkInput({ maxlength: "3" });
+    delete gone.attrs["maxlength"];
+    expect(await fillWith(gone, "abcdefgh")).toMatchObject({ filled: true });
+  });
+  test("a control with no maxLength property is read from the attribute", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "3" });
+    Object.defineProperty(el, "maxLength", { value: undefined });
+    expect(await fillWith(el, "abcd")).toMatchObject({ filled: false, reason: "too_long" });
+    expect(await fillWith(el, "abc")).toMatchObject({ filled: true });
+  });
+
+  test("length is counted in UTF-16 code units, so a surrogate pair is two", async () => {
+    fresh();
+    const emoji = "\u{1F600}";
+    expect(emoji).toHaveLength(2);
+    const fits = mkInput({ maxlength: "3" });
+    expect(await fillWith(fits, `a${emoji}`)).toMatchObject({ filled: true });
+    expect(fits.value).toBe(`a${emoji}`);
+    const over = mkInput({ maxlength: "3" });
+    expect(await fillWith(over, `ab${emoji}`)).toMatchObject({ filled: false, reason: "too_long" });
+    expect(over.value).toBe(""); // not cut to "ab" + half a pair
+    const lone = mkInput({ maxlength: "1" });
+    expect(await fillWith(lone, emoji)).toMatchObject({ filled: false, reason: "too_long" });
+    expect(lone.value).toBe("");
+  });
+  test("a combining mark is its own code unit; the precomposed letter is one", async () => {
+    fresh();
+    const decomposed = "é", precomposed = "é";
+    const one = mkInput({ maxlength: "1" });
+    expect(await fillWith(one, decomposed)).toMatchObject({ filled: false, reason: "too_long" });
+    const pre = mkInput({ maxlength: "1" });
+    expect(await fillWith(pre, precomposed)).toMatchObject({ filled: true });
+    const two = mkInput({ maxlength: "2" });
+    expect(await fillWith(two, decomposed)).toMatchObject({ filled: true });
+    expect(two.value).toBe(decomposed);
+  });
+
+  test("text already typed is kept: has_value wins, with or without a limit it would break", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" });
+    el.value = "mine";
+    expect(await fillWith(el, "abcdefghij")).toMatchObject({ filled: false, reason: "has_value" });
+    expect(el.value).toBe("mine");
+    expect(el.attrs["data-vani-fill"]).toBeUndefined();
+  });
+  test("overwrite with an answer that is too long leaves what was typed in place", async () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" });
+    el.value = "mine";
+    expect(await fillWith(el, "abcdefghij", { overwrite: true })).toMatchObject({ filled: false, reason: "too_long" });
+    expect(el.value).toBe("mine");
+    expect(await fillWith(el, "abcde", { overwrite: true })).toMatchObject({ filled: true });
+    expect(el.value).toBe("abcde");
+  });
+
+  test("a contenteditable has no maxlength concept: a long answer fills it as before", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const ed = new FakeEditable(doc);
+    ed.attrs["maxlength"] = "3";
+    const out = await fillRef(ref(ed, "About you", "contenteditable", "text"), match("about", ["a much longer answer"]));
+    expect(out).toMatchObject({ filled: true });
+    expect(ed.textContent).toBe("a much longer answer");
+    expect(ed.style["outline"]).toContain(GREEN);
+  });
+
+  test("a split phone writes neither box when either part will not fit", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const split = (codeMax: string | null, numMax: string | null): { r: FieldRef; code: FakeInput; num: FakeInput } => {
+      const code = new FakeInput(doc, () => {}), num = new FakeInput(doc, () => {});
+      if (codeMax !== null) code.attrs["maxlength"] = codeMax;
+      if (numMax !== null) num.attrs["maxlength"] = numMax;
+      const r: FieldRef = { info: info("Phone", "tel"), els: [code as unknown as HTMLElement, num as unknown as HTMLElement], widget: "split-phone", manual: "", parts: ["code", "number"] };
+      return { r, code, num };
+    };
+    const saved = match("phone", ["+1 5550100"]);
+    const tight = split("3", "4");
+    expect(await fillRef(tight.r, saved)).toMatchObject({ filled: false, reason: "too_long" });
+    expect(tight.code.attrs["data-vani-fill"]).toBe("review");
+    expect(tight.code.attrs["data-vani-why"]).toMatch(/allows 4/);
+    expect([tight.code.value, tight.num.value]).toEqual(["", ""]);
+    const tightCode = split("1", null);
+    expect(await fillRef(tightCode.r, saved)).toMatchObject({ filled: false, reason: "too_long" });
+    expect([tightCode.code.value, tightCode.num.value]).toEqual(["", ""]);
+    const roomy = split("3", "7");
+    expect(await fillRef(roomy.r, saved)).toMatchObject({ filled: true });
+    expect([roomy.code.value, roomy.num.value]).toEqual(["+1", "5550100"]);
+  });
+  test("a split date part that will not fit its box is left empty and the fill is flagged for review", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const [mm, dd, yy] = [new FakeInput(doc, () => {}), new FakeInput(doc, () => {}), new FakeInput(doc, () => {})];
+    yy.attrs["maxlength"] = "2";
+    const r: FieldRef = { info: info("Start date", "text"), els: [mm, dd, yy] as unknown as HTMLElement[], widget: "split-date", manual: "", parts: ["month", "day", "year"] };
+    expect(await fillRef(r, match("start", ["2026-10-05"]))).toMatchObject({ filled: true, review: true });
+    expect([mm.value, dd.value, yy.value]).toEqual(["10", "05", ""]);
+    expect(mm.attrs["data-vani-fill"]).toBe("review");
+    expect(mm.attrs["data-vani-why"]).toMatch(/allows 2/);
+  });
+  test("a split date whose every part is too long is reported too_long, not as a missing option", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const [mm, dd] = [new FakeInput(doc, () => {}), new FakeInput(doc, () => {})];
+    mm.attrs["maxlength"] = "1";
+    dd.attrs["maxlength"] = "1";
+    const r: FieldRef = { info: info("Start date", "text"), els: [mm, dd] as unknown as HTMLElement[], widget: "split-date", manual: "", parts: ["month", "day"] };
+    const out = await fillRef(r, match("start", ["2026-10-05"]));
+    expect(out).toMatchObject({ filled: false, reason: "too_long" });
+    expect(out.detail).toMatch(/shorten/i);
+    expect([mm.value, dd.value]).toEqual(["", ""]);
+  });
+
+  test("fillAll leaves the too-long field to the person and fills the others", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const short = new FakeInput(doc, () => {}), tight = new FakeInput(doc, () => {});
+    tight.attrs["maxlength"] = "4";
+    const matches = new Map<FieldRef, Match | null>();
+    const a = ref(short, "Colour", "native", "text"), b = ref(tight, "Pet", "native", "text");
+    matches.set(a, match("colour", ["green"]));
+    matches.set(b, match("pet", ["elephant"]));
+    const out = await fillAll([a, b], emptyBank(), "x.example", { matches });
+    expect(out.map(o => o.reason ?? "filled")).toEqual(["filled", "too_long"]);
+    expect(short.value).toBe("green");
+    expect(tight.value).toBe("");
+  });
+
+  test("a draft longer than the field allows is not inserted, and the field is not marked", () => {
+    fresh();
+    const el = mkInput({ maxlength: "5" }, "textarea");
+    const r = ref(el, "Why us", "native", "textarea");
+    const out = insertDraft(r, "a draft well past the limit");
+    expect(out).toMatchObject({ filled: false, reason: "too_long" });
+    expect(out.detail).toMatch(/shorten/i);
+    expect(el.value).toBe("");
+    expect(el.attrs["data-vani-draft"]).toBeUndefined();
+    expect(el.attrs["data-vani-fill"]).toBeUndefined();
+    expect(insertDraft(r, "fits")).toMatchObject({ filled: true, review: true });
+    expect(el.value).toBe("fits");
   });
 });
 
