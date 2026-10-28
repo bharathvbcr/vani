@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 func TestParseAllowed(t *testing.T) {
@@ -85,6 +87,55 @@ func TestRobotsAllowsRequest(t *testing.T) {
 	}
 	if len(d.uas) != 1 || d.uas[0] != UserAgent {
 		t.Errorf("user agents %v", d.uas)
+	}
+}
+
+// Several paths are answered from one read of robots.txt, each by its own
+// rules; an unreadable robots.txt answers none of them.
+func TestRobotsAllowsPathsOneRead(t *testing.T) {
+	d := robotsReply(200, "User-agent: *\nDisallow: /\nAllow: /api/apply\n")
+	got, err := RobotsAllowsPaths(context.Background(), d, "x.example.com", "/api/pcsx/search", "/api/apply/v2/jobs", "/api/apply/v2/jobs/")
+	if err != nil || len(got) != 3 || got[0] || !got[1] || !got[2] {
+		t.Errorf("got %v, %v; want [false true true]", got, err)
+	}
+	if reqs := d.requests(); len(reqs) != 1 {
+		t.Errorf("%d robots.txt reads for three paths: %v", len(reqs), reqs)
+	}
+	got, err = RobotsAllowsPaths(context.Background(), robotsReply(404, ""), "x.example.com", "/a", "/b")
+	if err != nil || len(got) != 2 || !got[0] || !got[1] {
+		t.Errorf("404: got %v, %v; want both allowed", got, err)
+	}
+	got, err = RobotsAllowsPaths(context.Background(), robotsReply(503, ""), "x.example.com", "/a", "/b")
+	if err == nil || got != nil {
+		t.Errorf("503: got %v, %v; want an error and no answers", got, err)
+	}
+}
+
+// A host the run's throttle has blocked is asked for nothing, robots.txt
+// included, and the refusal is an error, never "no robots.txt, so allowed".
+func TestRobotsReadHonoursTheHostThrottle(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	th := srcutil.NewHostThrottle(map[string]srcutil.HostCooldown{
+		"x.example.com": {Runs: 3, Last: now.Add(-time.Minute)}, // inside its backoff window
+	}, func() time.Time { return now })
+	ctx := srcutil.WithHostThrottle(context.Background(), th)
+	d := robotsReply(200, "")
+	got, err := RobotsAllows(ctx, d, "x.example.com", "/p")
+	if got || !errors.Is(err, srcutil.ErrRateLimited) {
+		t.Errorf("got %v, %v; want a rate-limit refusal", got, err)
+	}
+	if _, err := RobotsAllowsPaths(ctx, d, "x.example.com", "/p", "/q"); !errors.Is(err, srcutil.ErrRateLimited) {
+		t.Errorf("paths: %v", err)
+	}
+	if _, err := crawlDelay(ctx, d, "x.example.com", robotsTimeout); !errors.Is(err, srcutil.ErrRateLimited) {
+		t.Errorf("crawl-delay: %v", err)
+	}
+	if reqs := d.requests(); len(reqs) != 0 {
+		t.Errorf("requests to a blocked host: %v", reqs)
+	}
+	// Another host is read as usual.
+	if got, err := RobotsAllows(ctx, d, "y.example.com", "/p"); err != nil || !got {
+		t.Errorf("other host: %v, %v", got, err)
 	}
 }
 

@@ -35,6 +35,20 @@
 //     checked against the host's robots.txt (page.RobotsAllows) before the first
 //     page is read.
 //
+// Bloomberg (bloomberg.avature.net, /careers/SearchJobs, read 2026-10-28) is
+// the same system with other markup, and what differs is read by one rule each:
+//
+//   - A card's location is a <span class="list-item-location"> where Two Sigma's
+//     is a paragraph_inner-span; the first span with either class is it.
+//   - A page holds 12 cards whatever jobRecordsPerPage says, 341 postings in
+//     all, and the end marker is the same "No jobs found" article (offsets 341
+//     and 1000).
+//   - The main section holds the title, then an article of Location, Business
+//     Area and Ref # fields, then the description: the fields are read as
+//     sidebar fields (Business Area is the department) and the title repeat and
+//     the fields are left out of the description (splitFields).
+//   - robots.txt ends with "Disallow: /", with "Allow: /careers" the longer rule.
+//
 // Every posting costs a detail request (the list has no description), so a
 // board over MaxPostings fails rather than being truncated, and detail 404s
 // are bounded like eightfold's and apple's.
@@ -61,9 +75,11 @@ import (
 
 const (
 	// MaxPostings bounds one board: each posting costs a detail request.
-	MaxPostings = 200
-	// pageSize is the cards a listing page held on 2026-10-27. It only bounds
-	// the page loop; the end marker decides when a listing is complete.
+	// Bloomberg lists 341 (2026-10-28), Two Sigma 62.
+	MaxPostings = 400
+	// pageSize is the fewest cards a listing page held on 2026-10-27 (Two Sigma
+	// serves 10, Bloomberg 12). It only bounds the page loop; the end marker
+	// decides when a listing is complete.
 	pageSize = 10
 	// maxPages is every page of a full board and the marker page after it,
 	// plus one spare.
@@ -77,10 +93,11 @@ const (
 	// paceEvery spaces a board's requests. The robots.txt sets no Crawl-delay
 	// (2026-10-27); 2 s is the sibling sources' spacing (eightfold), above
 	// egress's one-second per-host floor, so the two never add. A full board
-	// (22 pages and 200 details) waits 7.4 min.
+	// (42 pages and 400 details) waits 14.7 min; Bloomberg's, 30 pages and 341
+	// details, 12.4 min.
 	paceEvery = 2 * time.Second
-	// paceBudget bounds a board's waiting: 450 requests at paceEvery, twice a
-	// full board.
+	// paceBudget bounds a board's waiting: 450 requests at paceEvery, a full
+	// board and a little over (TestPaceBudgetHoldsAFullBoard).
 	paceBudget = 15 * time.Minute
 
 	// noJobs is the text of the one article an empty results page holds.
@@ -107,7 +124,10 @@ var (
 	anchorRE  = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
 	hrefRE    = regexp.MustCompile(`(?is)\bhref\s*=\s*"([^"]*)"`)
 	classRE   = regexp.MustCompile(`(?is)\bclass\s*=\s*"([^"]*)"`)
-	spanRE    = regexp.MustCompile(`(?is)<span\b[^>]*\bclass\s*=\s*"[^"]*\bparagraph_inner-span\b[^"]*"[^>]*>(.*?)</span>`)
+	// spanRE is a card's location: the first span carrying the class one of the
+	// portals writes it with (Two Sigma's paragraph_inner-span, Bloomberg's
+	// list-item-location).
+	spanRE    = regexp.MustCompile(`(?is)<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:paragraph_inner-span|list-item-location)\b[^"]*"[^>]*>(.*?)</span>`)
 	tagRE     = regexp.MustCompile(`(?s)<[^>]*>`)
 	linkTagRE = regexp.MustCompile(`(?is)<link\b[^>]*>`)
 	relRE     = regexp.MustCompile(`(?is)\brel\s*=\s*"([^"]*)"`)
@@ -488,7 +508,8 @@ func (s *source) detail(ctx context.Context, st *site, b sources.Board, token st
 	if err != nil {
 		return posting.Posting{}, err
 	}
-	fields := sidebar(side)
+	main, inline := splitFields(main, r.title)
+	fields := sidebar(side + inline)
 	location := firstNonEmpty(r.location, fields["location"])
 	key, err := posting.AvatureKey(token, r.id)
 	if err != nil {
@@ -511,7 +532,7 @@ func (s *source) detail(ctx context.Context, st *site, b sources.Board, token st
 		Company:     company,
 		Title:       r.title,
 		Location:    location,
-		Department:  fields["function"],
+		Department:  firstNonEmpty(fields["function"], fields["business area"]),
 		URL:         u,
 		Description: lead + text,
 		SeenAt:      seen,
@@ -566,6 +587,29 @@ func splitDetail(body string) (side, main string, err error) {
 		return "", "", fmt.Errorf("%w: unterminated description section", ErrShape)
 	}
 	return body[:at], rest[start : start+end], nil
+}
+
+// splitFields takes the field articles out of the main section. Two Sigma's
+// label/value fields sit in an aside before the main column, so its section is
+// all description; Bloomberg's Location, Business Area and Ref # sit in the
+// section itself, in an article of their own, after an article that only
+// repeats the posting's title. Both go: text is the section without them and
+// fields their HTML, to read as sidebar fields. A section with no articles is
+// left as it is.
+func splitFields(main, title string) (text, fields string) {
+	var fb strings.Builder
+	text = articleRE.ReplaceAllStringFunc(main, func(article string) string {
+		inner := articleRE.FindStringSubmatch(article)[2]
+		switch {
+		case fieldRE.MatchString(inner):
+			fb.WriteString(inner)
+			return ""
+		case title != "" && strings.EqualFold(srcutil.Title(tagRE.ReplaceAllString(inner, " ")), title):
+			return ""
+		}
+		return article
+	})
+	return text, fb.String()
 }
 
 // sidebar reads the label/value fields before the main column, keyed by the

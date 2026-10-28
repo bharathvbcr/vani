@@ -121,6 +121,8 @@ func eightfoldFake() fake {
 			q := u.Query()
 			var data any
 			switch u.Path {
+			case "/robots.txt": // read once per board, before the first pcsx request
+				return srctest.Reply{Status: 200, Body: []byte("User-agent: *\nDisallow: /\nAllow: /api/pcsx\n")}, true
 			case "/api/pcsx/search":
 				start := 0
 				fmt.Sscan(q.Get("start"), &start)

@@ -72,7 +72,7 @@ func TestRateLimitedSecondSearchPage(t *testing.T) {
 	if !strings.Contains(err.Error(), `search "LLM inference"`) {
 		t.Errorf("error does not say what was being read: %v", err)
 	}
-	if want := []string{"/api/pcsx/search?0", "/api/pcsx/search?10"}; strings.Join(*seen, " ") != strings.Join(want, " ") {
+	if want := []string{"/robots.txt?", "/api/pcsx/search?0", "/api/pcsx/search?10"}; strings.Join(*seen, " ") != strings.Join(want, " ") {
 		t.Errorf("requests %v, want %v: nothing more is asked of a throttling host", *seen, want)
 	}
 }
@@ -100,13 +100,14 @@ func TestRateLimitedDetailMidFanOut(t *testing.T) {
 }
 
 // A 429 on the very first search is a throttle, not "this site has no pcsx":
-// the v2 fallback (a 403 signal only) must not be tried, and robots.txt not read.
+// the v2 fallback (a 403 signal only) must not be tried: after the board's one
+// robots.txt read there is the one pcsx search and nothing else.
 func TestRateLimitedFirstSearchDoesNotTryV2(t *testing.T) {
 	s, seen := throttled(t, func(path string, q url.Values) bool { return true })
 	_, err := s.List(noRetry(), board("LLM inference"))
 	wantRateLimited(t, err)
-	if len(*seen) != 1 || !strings.HasPrefix((*seen)[0], "/api/pcsx/search") {
-		t.Errorf("requests %v, want the one pcsx search", *seen)
+	if len(*seen) != 2 || !strings.HasPrefix((*seen)[0], "/robots.txt") || !strings.HasPrefix((*seen)[1], "/api/pcsx/search") {
+		t.Errorf("requests %v, want the robots.txt read and the one pcsx search", *seen)
 	}
 }
 
