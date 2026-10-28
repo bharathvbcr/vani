@@ -1223,6 +1223,21 @@ private struct JobDetailContent: View {
                     }
                 }
             }
+            if !job.sameCompanyNotes.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(job.sameCompanyNotes, id: \.kind) { note in
+                        Label {
+                            Text(verbatim: note.text).textSelection(.enabled)
+                        } icon: {
+                            Image(systemName: note.kind == .repeatApply ? "exclamationmark.triangle" : "arrow.2.squarepath")
+                        }
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
             if job.relevance != nil || job.ageDays != nil {
                 Divider()
                 scores

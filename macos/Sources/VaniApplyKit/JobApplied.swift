@@ -38,6 +38,22 @@ public struct RepeatApply: Codable, Equatable, Sendable {
     }
 }
 
+/// The note `vani jobs list|show --json` attaches when a posting is likely an earlier role at the same
+/// company relisted under a new key (internal/jobview.RepostNote). A note only; nothing is dropped.
+public struct RepostNote: Codable, Equatable, Sendable {
+    public var ofKey: String
+    public var title: String
+    public var firstSeen: String
+    /// The display sentence, worded by vani.
+    public var text: String
+
+    enum CodingKeys: String, CodingKey {
+        case title, text
+        case ofKey = "of_key"
+        case firstSeen = "first_seen"
+    }
+}
+
 /// `vani jobs find --json` (cmd/vani/jobsfind.go).
 public struct JobMatch: Codable, Equatable, Sendable {
     public struct Ref: Codable, Equatable, Sendable {
