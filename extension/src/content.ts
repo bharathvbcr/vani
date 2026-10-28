@@ -27,7 +27,8 @@ import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } 
 import { contentListener } from "./frames";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
-import { type JobRow, applyVaniRow, withRowError } from "./jobrow";
+import { type FindRow, applyVaniRow, withRowError } from "./jobrow";
+import { type RepeatNotice, createRepeatNotice } from "./repeatapply";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
 import { templateTailoring, generateTailoredDraft } from "./tailor";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
@@ -111,7 +112,7 @@ let lastPortal: PortalInfo | undefined;
 let lastScan: { refs: FieldRef[]; matches: Map<FieldRef, Match | null>; bank: Bank | null } | undefined;
 
 const VANI_ROW_TTL_MS = 60_000;
-let vaniRow: { url: string; at: number; result: { row: JobRow | null } | { error: string } } | undefined;
+let vaniRow: { url: string; at: number; result: FindRow | { error: string } } | undefined;
 
 /**
  * Vani's own row for this page's posting in place of the page-text estimate. Only the top frame
@@ -123,7 +124,7 @@ async function vaniRelevance(estimate: RelevanceResult): Promise<RelevanceResult
   const url = location.href;
   if (!vaniRow || vaniRow.url !== url || Date.now() - vaniRow.at > VANI_ROW_TTL_MS) {
     try {
-      const r = await send<{ row: JobRow | null } | { error: string }>({ type: "jobRow", url });
+      const r = await send<FindRow | { error: string }>({ type: "jobRow", url });
       vaniRow = { url, at: Date.now(), result: r && typeof r === "object" ? r : { row: null } };
     } catch {
       return estimate; // the worker is not there: not cached, so the next scan asks again
@@ -132,6 +133,12 @@ async function vaniRelevance(estimate: RelevanceResult): Promise<RelevanceResult
   const r = vaniRow.result;
   if ("error" in r) return withRowError(estimate, r.error);
   return r.row ? applyVaniRow(estimate, r.row) : estimate;
+}
+
+/** The repeat-apply note of the answer vaniRelevance just read for this page (repeatapply.ts); a note only. */
+function vaniRepeatApply(): ScanReply["repeatApply"] {
+  const r = vaniRow?.result;
+  return vaniRow?.url === location.href && r && "repeatApply" in r ? r.repeatApply : undefined;
 }
 
 /** `cached`: a scan the page's own activity triggered may use a bank read under 2 s ago; a scan someone asked for reads it afresh. */
@@ -158,6 +165,7 @@ async function scan(cached = false): Promise<ScanReply> {
     : undefined;
   const relevance = estimate ? await vaniRelevance(estimate) : undefined;
   lastRelevance = relevance;
+  const repeatApply = relevance ? vaniRepeatApply() : undefined;
 
   return {
     fields: coverage.found,
@@ -167,6 +175,7 @@ async function scan(cached = false): Promise<ScanReply> {
     coverage,
     audit,
     relevance,
+    ...(repeatApply ? { repeatApply } : {}),
     portal,
     job,
   };
@@ -229,6 +238,7 @@ let panel: ShadowRoot | null = null;
 let statusEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
 let panelHost: HTMLElement | null = null;
+let repeatNotice: RepeatNotice | null = null;
 
 function makeDraggable(host: HTMLElement, handle: HTMLElement): void {
   let isDragging = false;
@@ -276,6 +286,7 @@ function ensurePanel(): void {
     panelHost = null;
     listEl = null;
     statusEl = null;
+    repeatNotice = null;
   }
   if (panel) return; // one panel in this frame; a same-origin child never gets here (coveredByParent)
   const host = document.createElement("div");
@@ -360,6 +371,7 @@ function ensurePanel(): void {
           <button class="ctrl x" title="Hide panel">×</button>
         </div>
         <div class="drawer" id="rel-drawer" style="display:none;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.3);color:#6ee7b7;"></div>
+        <div class="drawer" id="repeat-drawer" style="display:none;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;user-select:text;"></div>
         <div class="drawer" id="missed-drawer" style="display:none;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;"></div>
         <div class="drawer" id="scrape-drawer" style="display:none;background:rgba(2,132,199,0.12);border:1px solid rgba(2,132,199,0.3);color:#7dd3fc;"></div>
         <ul class="u" hidden></ul>
@@ -384,6 +396,7 @@ function ensurePanel(): void {
   });
 
   const relBadge = panel.querySelector<HTMLElement>("#rel-badge")!;
+  repeatNotice = createRepeatNotice(document, panel.querySelector<HTMLElement>("#repeat-drawer")!);
   const relDrawer = panel.querySelector<HTMLElement>("#rel-drawer")!;
   relBadge.addEventListener("click", () => {
     relDrawer.style.display = relDrawer.style.display === "none" ? "block" : "none";
@@ -1255,6 +1268,7 @@ async function scheduleScan(): Promise<void> {
   if (s.disabled || (!isJobPage && (!c || c.found < MIN_FORM_FIELDS))) {
     // An in-app navigation away from a posting: its score must not stay on a panel left open.
     showRelevance(undefined);
+    repeatNotice?.show(undefined, location.href);
     return;
   }
   ensurePanel();
@@ -1272,6 +1286,7 @@ async function scheduleScan(): Promise<void> {
   }
 
   showRelevance(s.relevance);
+  repeatNotice?.show(s.repeatApply, location.href);
 
   // Update dynamic missed fillings pill
   const missedBadge = panel?.querySelector<HTMLElement>("#missed-badge");

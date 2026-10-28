@@ -43,6 +43,10 @@ type jobRef struct {
 	// Row is the versioned contract (internal/jobview): Vani's own relevance,
 	// priority and fit label for this posting, for the extension to show.
 	Row *jobview.Row `json:"row,omitempty"`
+	// RepeatApply warns, before the person applies, that they already applied to
+	// other postings at this company lately (internal/samecompany). Additive: an
+	// older extension ignores it. A note only: nothing is blocked.
+	RepeatApply *jobview.RepeatApplyNote `json:"repeat_apply,omitempty"`
 }
 
 type jobFindJSON struct {
@@ -106,6 +110,7 @@ func (e *env) jobsFind(args []string) error {
 				in.Enrich(&j, r, 0)
 				ref := newJobRef(j, out.Job.MatchedOn)
 				ref.Row = j.Row
+				ref.RepeatApply = j.RepeatApply
 				out.Job = ref
 			}
 		}

@@ -150,7 +150,7 @@ func (e *env) jobsList(args []string) error {
 			if j.PrefilterDrop != "" {
 				flag = "  (the prefilter would drop it)"
 			}
-			fmt.Fprintf(e.stdout, "%s  %s  %s  %-9s  %s: %s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag, j.Key)
+			fmt.Fprintf(e.stdout, "%s  %s  %s  %-9s  %s: %s%s%s%s  [%s]\n", rank, priority, age, mark, j.Company, j.Title, pay, whereText(j), flag+sameNote(j), j.Key)
 		}
 		fmt.Fprintf(e.stdout, "%s: %d of %d shown\n", out.View, out.Shown, out.Total)
 		e.printPending(out.Pending, out.Query)

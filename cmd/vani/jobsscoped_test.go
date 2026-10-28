@@ -114,6 +114,7 @@ func TestScopedReadRowsAreByteIdenticalToTheFullPath(t *testing.T) {
 		j := jobview.ToJob(fr, m[fr.Key])
 		in.Enrich(&j, fr, 0)
 		wantFind.Job.Row = j.Row
+		wantFind.Job.RepeatApply = j.RepeatApply
 		wantFind.Ledger, wantFind.Records = filepath.Join(e.stateDir, "ledger"), len(full.Records)
 		var gotFind jobFindJSON
 		if err := json.Unmarshal(runJSON(t, e, e.jobsFind, "--url", r.Posting.URL), &gotFind); err != nil {

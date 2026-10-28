@@ -11,6 +11,33 @@ import Foundation
 // argument (no shell is involved), and vani parses it again. It is never
 // fetched.
 
+/// The note `vani jobs find` attaches when other postings at the page's company were
+/// applied to lately (internal/jobview.RepeatApplyNote). A note only: the extension
+/// shows it beside the page and never blocks anything on it.
+public struct RepeatApply: Codable, Equatable, Sendable {
+    public var count: Int
+    public var windowDays: Int
+    public var latestKey: String
+    public var latestTitle: String
+    public var latestAt: String
+    /// The display sentence, worded by vani.
+    public var text: String
+
+    enum CodingKeys: String, CodingKey {
+        case count, text
+        case windowDays = "window_days"
+        case latestKey = "latest_key"
+        case latestTitle = "latest_title"
+        case latestAt = "latest_at"
+    }
+
+    /// The note as a JSON object, for the native host to hand the extension unchanged.
+    public var jsonObject: [String: Any]? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+}
+
 /// `vani jobs find --json` (cmd/vani/jobsfind.go).
 public struct JobMatch: Codable, Equatable, Sendable {
     public struct Ref: Codable, Equatable, Sendable {
@@ -24,10 +51,13 @@ public struct JobMatch: Codable, Equatable, Sendable {
         public var matchedOn: String
         /// Vani's versioned row (JobRow); nil from a vani older than the contract.
         public var row: JobRow?
+        /// Other postings at this company were applied to lately; nil from a vani that does not say.
+        public var repeatApply: RepeatApply?
 
         enum CodingKeys: String, CodingKey {
             case key, company, title, status, closed, mark, row
             case matchedOn = "matched_on"
+            case repeatApply = "repeat_apply"
         }
     }
 
@@ -51,6 +81,7 @@ public struct JobMatch: Codable, Equatable, Sendable {
             if job.closed == true { j["closed"] = true }
             if let mark = job.mark { j["mark"] = mark.rawValue }
             if let row = job.row?.jsonObject { j["row"] = row }
+            if let repeatApply = job.repeatApply?.jsonObject { j["repeatApply"] = repeatApply }
             out["job"] = j
         }
         return out

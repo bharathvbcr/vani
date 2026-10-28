@@ -293,6 +293,8 @@ type insight struct {
 	// looks a job up in it. A store that could not be read answers every job
 	// with an error, never as no resume.
 	resumes *resumestore.Summaries
+	// same answers the company-history notes (jobssame.go); nil answers none.
+	same *sameCompany
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -378,6 +380,7 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	for k, e := range m {
 		marked[k] = e.Mark
 	}
+	in.same = newSameCompany(cfg, err, snap, m, in.now)
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	in.info.Weights = rankWeightsHand
@@ -460,6 +463,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 		age := jobinsight.AgeDays(at, in.now)
 		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
 	}
+	in.annotateSame(j, r)
 	if j.Untriaged {
 		in.enrichUntriaged(j, r)
 		return nil
