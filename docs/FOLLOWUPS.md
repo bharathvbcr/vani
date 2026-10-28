@@ -45,6 +45,36 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Source wave 2 (2026-10-28): what is left
+
+- **Owner decisions:**
+  - SmartRecruiters' robots.txt disallows every agent but LinkedInBot. The adapter reads its
+    documented public API anyway, and it is live on ServiceNow and Canva. No new `sr` boards were
+    added in wave 2.
+  - `joburl.IDParams` is matched case-sensitively on both sides (Go and `extension/src/applied.ts`).
+    `extension/test/vectors/joburl.json` pins `GH_JID=1` as dropped, so IBM's `jobId` is not
+    kept. Changing that means changing the shared vector.
+- **Bounded detail step:** `srcutil.PlanDetails` now plans Workday, SmartRecruiters, Oracle HCM,
+  Rippling, Avature and TalentBrew. Not yet on it:
+  - Eightfold and Apple (bounded by board cap and search terms only).
+  - IBM, D. E. Shaw and Atlassian (one-request lists).
+- **Duplicate `maxGone`:** `apple`, `eightfold` and `avature`'s `maxGone` copies were not touched
+  beyond Avature; `srcutil.MaxGone` is the shared form.
+- **Robots reads:** `talentbrew` and `avature.checkRobots` each read robots.txt twice per board.
+  `page.RobotsAllowsPaths` answers several paths from one read.
+- **Eightfold:** robots.txt is now read before the first pcsx request, so a robots.txt outage
+  fails Microsoft's, Qualcomm's and Netflix's boards. Before, pcsx boards never read it.
+- **TikTok:** the unfiltered board (4,318 rows on 2026-10-28) is near `srcutil.MaxPostings`
+  (5,000), and `max_postings` applies to `wd` and `oc` only. The live board uses searches and a
+  country filter.
+- **Bloomberg (av):** its "Salary Range = 110,000 - 190,000 USD Annual" line does not match
+  `basePayRE`, so no pay line is read.
+- **TalentBrew:** `baseSalary` was an empty template on all 25 pages sampled, so the pay path is
+  tested against schema.org's shape only.
+- **Workday:** a stub listing row (no path or title; Mastercard and HPE, 2026-10-28) is left out up
+  to the listing's shortfall. A stored posting whose row becomes a stub ages out like any absent
+  one.
+
 ## Career pipeline on rkb (2026-10-24): what is left
 
 Resumes, answer drafts, the semantic profile and DevPrism now take only `kbsync.Eligible` bullets
