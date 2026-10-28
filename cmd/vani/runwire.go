@@ -17,11 +17,21 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/amazon"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
+	"github.com/bharathvbcr/Vani/internal/sources/atlassian"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/feed"
+	"github.com/bharathvbcr/Vani/internal/sources/gem"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
+	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
+	"github.com/bharathvbcr/Vani/internal/sources/rippling"
+	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -190,8 +200,41 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Workday] = wd
+	// SmartRecruiters is the same shape: a detail request per posting, so the
+	// same bounds (stored postings reused, listed rows prefiltered, at most
+	// smartrecruiters.MaxDetails requests a board a run).
+	sr, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
+		Stored:     w.storedFor,
+		DropListed: policy.ListedDrops(),
+		Report: func(b sources.Board, st smartrecruiters.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.SmartRecruiters] = sr
+	// Oracle HCM costs a detail request per posting too, bounded the same way.
+	oc, err := oraclehcm.NewWith(d, oraclehcm.Options{
+		Stored: w.storedFor,
+		Report: func(b sources.Board, st oraclehcm.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.OracleHCM] = oc
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Report: func(b sources.Board, st eightfold.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+		},
+	})
+	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
+		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
 		},
@@ -448,14 +491,24 @@ func (w *wired) titleRank() func(posting.Posting) int {
 // need a per-run proxy and browser.
 func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 	return map[posting.ATS]sources.Source{
-		posting.Greenhouse: greenhouse.New(d),
-		posting.Lever:      lever.New(d),
-		posting.Ashby:      ashby.New(d),
-		posting.Workday:    workday.New(d),
-		posting.Amazon:     amazon.New(d),
-		posting.Google:     google.New(d),
-		posting.Apple:      apple.New(d),
-		posting.Eightfold:  eightfold.New(d),
-		posting.Jibe:       jibe.New(d),
+		posting.Greenhouse:      greenhouse.New(d),
+		posting.Lever:           lever.New(d),
+		posting.Ashby:           ashby.New(d),
+		posting.Workday:         workday.New(d),
+		posting.Amazon:          amazon.New(d),
+		posting.Google:          google.New(d),
+		posting.Apple:           apple.New(d),
+		posting.Eightfold:       eightfold.New(d),
+		posting.Jibe:            jibe.New(d),
+		posting.Gem:             gem.New(d),
+		posting.SmartRecruiters: smartrecruiters.New(d),
+		posting.IBM:             ibm.New(d),
+		posting.Avature:         avature.New(d),
+		posting.DEShaw:          deshaw.New(d),
+		posting.Atlassian:       atlassian.New(d),
+		posting.OracleHCM:       oraclehcm.New(d),
+		posting.Rippling:        rippling.New(d),
+		posting.Workable:        workable.New(d),
+		posting.Feed:            feed.New(d),
 	}
 }

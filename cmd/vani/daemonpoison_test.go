@@ -45,11 +45,33 @@ func wireDaemon(t *testing.T, l *brokenLedger, run func(context.Context) error) 
 	t.Helper()
 	old, oldNow, oldClock := buildApp, now, daemonClock
 	t.Cleanup(func() { buildApp, now, daemonClock = old, oldNow, oldClock })
-	clock := &jumpClock{t: time.Date(2026, 10, 18, 6, 0, 0, 0, time.UTC)}
+	frozen := time.Date(2026, 10, 18, 6, 0, 0, 0, time.UTC)
+	clock := &jumpClock{t: frozen}
 	daemonClock, now = clock, clock.Now
+	// Captured once, before After moves the clock. A check-time skew would
+	// put this process's kernel start after the announcement.
+	shiftDaemonIdentity(t, frozen)
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
 		return &App{Ledger: l, Notifier: &fakeNotifier{}, RunOnce: run}, nil
 	}
+}
+
+// shiftDaemonIdentity rewrites kernel start times into frozen's frame.
+// skew is wall time minus frozen, taken once: jumpClock.After moves forward,
+// and recomputing it at the check makes a live daemon look reused.
+// A zero start is not a kernel time; shifting it would invent one.
+func shiftDaemonIdentity(t *testing.T, frozen time.Time) {
+	t.Helper()
+	prev := daemonIdentity
+	skew := time.Now().Sub(frozen)
+	daemonIdentity = func(pid int) procIdentity {
+		id := prev(pid)
+		if !id.Started.IsZero() {
+			id.Started = id.Started.Add(-skew)
+		}
+		return id
+	}
+	t.Cleanup(func() { daemonIdentity = prev })
 }
 
 // A run that leaves the ledger poisoned ends the daemon: exit status 1 with

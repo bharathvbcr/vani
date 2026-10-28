@@ -877,6 +877,63 @@ public struct JobsPage: Codable, Equatable, Sendable {
     public func count(_ v: JobView) -> Int { counts[v.rawValue] ?? 0 }
 }
 
+/// Which roles an export writes: the first N of the list, or the selected ones.
+public enum JobsExportScope: Equatable, Sendable {
+    case top(Int)
+    case keys([String])
+}
+
+/// What `vani jobs export --json` wrote.
+public struct JobsExport: Codable, Equatable, Sendable {
+    public var path: String
+    public var rows: Int
+    /// Roles that matched before the size limit, or roles asked for by key.
+    public var total: Int
+    public var view: String
+    public var sort: String
+    /// Asked-for keys the list no longer holds (a run closed or dropped them); not in the file.
+    public var missing: [String]
+
+    public init(path: String, rows: Int, total: Int, view: String, sort: String, missing: [String] = []) {
+        self.path = path
+        self.rows = rows
+        self.total = total
+        self.view = view
+        self.sort = sort
+        self.missing = missing
+    }
+
+    /// The one line the app shows once the file is written.
+    public func summary(_ scope: JobsExportScope) -> String {
+        let file = URL(fileURLWithPath: path).lastPathComponent
+        let noun = rows == 1 ? "role" : "roles"
+        switch scope {
+        case .top:
+            if rows < total {
+                return "Saved the first \(rows.formatted()) of \(total.formatted()) roles to \(file)."
+            }
+            return "Saved \(rows.formatted()) \(noun) to \(file)."
+        case .keys:
+            var line = "Saved \(rows.formatted()) selected \(noun) to \(file)."
+            if !missing.isEmpty {
+                line += " \(missing.count.formatted()) \(missing.count == 1 ? "is" : "are") no longer in this list and \(missing.count == 1 ? "was" : "were") left out."
+            }
+            return line
+        }
+    }
+
+    /// The name the save panel suggests: view, size and day, e.g. "Vani jobs (new, top 100) 2026-10-27.xlsx".
+    public static func suggestedName(view: JobView, _ scope: JobsExportScope, on day: Date, in zone: TimeZone = .current) -> String {
+        let size: String
+        switch scope {
+        case let .top(n): size = "top \(n)"
+        case let .keys(keys): size = "\(keys.count) selected"
+        }
+        let date = day.formatted(Date.ISO8601FormatStyle(timeZone: zone).year().month().day())
+        return "Vani jobs (\(view.rawValue), \(size)) \(date).xlsx"
+    }
+}
+
 /// Postings vani has read from a board but not triaged (status live). The
 /// Jobs views list only triaged roles, so without this a company whose
 /// postings all wait for triage looks like a company with no jobs.
@@ -1291,6 +1348,42 @@ public struct JobsClient: Sendable {
             throw BankError("A note can be at most \(Self.maxNoteBytes) bytes.")
         }
         return try call(["jobs", "note", "--json", key, text])
+    }
+
+    /// The Export menu's sizes; the largest is the most `vani jobs export --top` takes.
+    public static let exportSizes = [100, 250, 500, 1000, 5000]
+    public static var maxExportRows: Int { exportSizes.last! }
+
+    /// Write roles to `url` as an Excel workbook (`vani jobs export`): the first N of the list these
+    /// arguments show, in its order, or the roles `keys` names, in their order.
+    public func export(_ view: JobView, query: String = "", sort: JobSort = .standard, filter: JobFilter = JobFilter(),
+                       _ scope: JobsExportScope, to url: URL) throws -> JobsExport {
+        var input: Data?
+        if case let .keys(keys) = scope {
+            guard !keys.isEmpty else { throw BankError("Select at least one role to export.") }
+            guard keys.count <= Self.maxExportRows else {
+                throw BankError("At most \(Self.maxExportRows.formatted()) roles can be exported at once.")
+            }
+            input = Data((keys.joined(separator: "\n") + "\n").utf8)
+        }
+        return try VaniProcess.call(vaniBinary, Self.exportArguments(view, query: query, sort: sort, filter: filter, scope,
+                                                                     out: url.path, halfLifeDays: halfLifeDays),
+                                    configPath: configPath, stateDir: stateDir, input: input,
+                                    // "missing" can name every asked-for key: the list's bound, not a small one.
+                                    timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: JSONDecoder(),
+                                    tooOld: "this vani is too old to export jobs; rebuild the app")
+    }
+
+    static func exportArguments(_ view: JobView, query: String, sort: JobSort, filter: JobFilter, _ scope: JobsExportScope,
+                                out: String, halfLifeDays: Double? = nil) -> [String] {
+        // "--out=": a path is never read as a flag.
+        var args = ["jobs", "export", "--json", "--view", view.rawValue, "--out=" + out]
+        switch scope {
+        case let .top(n): args += ["--top", String(n)]
+        case .keys: args.append("--keys-stdin")
+        }
+        if sort != .standard { args += ["--sort", sort.rawValue] }
+        return args + halfLifeArguments(halfLifeDays) + selection(query, filter)
     }
 
     func call<T: Decodable>(_ args: [String]) throws -> T {

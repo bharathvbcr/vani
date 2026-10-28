@@ -124,6 +124,10 @@ struct SelectionMenu: View {
         if !links.isEmpty {
             Button("Copy \(links.count) Links", systemImage: "link") { copy(links) }
         }
+        Button("Export \(picked.count) to Excel…", systemImage: "tablecells") {
+            exportJobs(jobs, .keys(picked.map(\.key)))
+        }
+        .disabled(jobs.exporting)
     }
 
     private func copy(_ lines: [String]) {

@@ -93,6 +93,47 @@ func TestRunRequestRefusedWithoutADaemon(t *testing.T) {
 	}
 }
 
+// Seeing a pid is not enough for run-request to treat it as the daemon.
+func TestRunRequestRefusedWhenThePidIsNotThisVani(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	if err := writeDaemonRecord(stateDir, 4242, at); err != nil {
+		t.Fatal(err)
+	}
+	oldAlive, oldID := pidAlive, daemonIdentity
+	t.Cleanup(func() { pidAlive, daemonIdentity = oldAlive, oldID })
+	pidAlive = func(int) bool { return true }
+	for _, tc := range []struct {
+		name string
+		id   procIdentity
+	}{
+		{"wrong executable", procIdentity{OK: true, Exe: "/usr/bin/not-vani", Started: at.Add(-time.Hour)}},
+		{"uninspectable", procIdentity{}},
+		{"reused pid", procIdentity{OK: true, Exe: mustExe(t), Started: at.Add(5 * time.Second)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonIdentity = func(int) procIdentity { return tc.id }
+			_, e := mustCode(t, exitRuntime, "run-request")
+			if !strings.Contains(e, "no running vani daemon") {
+				t.Errorf("stderr %q", e)
+			}
+			if requestExists(stateDir, runRequestFile) {
+				t.Error("a refused request was written")
+			}
+		})
+	}
+}
+
+func mustExe(t *testing.T) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
 // A request is written once with its options and time, status reports it as
 // pending, and a second request while it waits is refused.
 func TestRunRequestIsWrittenOnce(t *testing.T) {
@@ -626,3 +667,187 @@ var (
 	daemonFatal      = errors.Join(daemon.ErrFatal, errors.New("ledger poisoned"))
 	errLockedForTest = ledger.ErrLocked
 )
+
+// requestBody is the bytes requestRun writes for at and opts.
+func requestBody(t *testing.T, at time.Time, opts runOptions) []byte {
+	t.Helper()
+	raw, err := json.MarshalIndent(runRequest{V: runRequestVersion, RequestedAt: at, Options: opts}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// Two callers that both see a missing request must not both succeed: the
+// later file would be the one the daemon runs, and the first caller would
+// have been told its request is waiting.
+func TestRequestRunRaceExactlyOneSucceeds(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	at := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	oldNow := now
+	now = func() time.Time { return at }
+	t.Cleanup(func() { now = oldNow })
+
+	optsA := runOptions{Advance: 1}
+	optsB := runOptions{}
+	bodyA := requestBody(t, at, optsA)
+	bodyB := requestBody(t, at, optsB)
+
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var once sync.Once
+	letGo := func() { once.Do(func() { close(release) }) }
+	oldGate := requestWriteGate
+	requestWriteGate = func() {
+		entered <- struct{}{}
+		<-release
+	}
+	type outcome struct {
+		err error
+	}
+	results := make(chan outcome, 2)
+	var wg sync.WaitGroup
+	start := func(opts runOptions) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e := &env{configPath: cfgPath, stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
+			_, err := e.requestRun(opts)
+			results <- outcome{err}
+		}()
+	}
+	start(optsA)
+	start(optsB)
+	// Release first, then wait, then drop the gate. Cleanup runs last-added first.
+	t.Cleanup(func() { requestWriteGate = oldGate })
+	t.Cleanup(func() { wg.Wait() })
+	t.Cleanup(letGo)
+
+	timeout := time.After(3 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-timeout:
+			t.Fatal("the check did not run")
+		}
+	}
+	letGo()
+
+	var errs [2]error
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-results:
+			errs[i] = r.err
+		case <-time.After(3 * time.Second):
+			t.Fatal("requestRun did not return")
+		}
+	}
+	success, waiting := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			success++
+		case strings.Contains(err.Error(), "already waiting"):
+			waiting++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if success != 1 || waiting != 1 {
+		t.Fatalf("want one success and one already-waiting error, got %d success and %d already-waiting: %v", success, waiting, errs)
+	}
+	path := runsPath(stateDir, runRequestFile)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, bodyA) && !bytes.Equal(got, bodyB) {
+		t.Fatalf("request file is neither caller:\n%s", got)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("request file mode %v, want a 0600 regular file", fi.Mode())
+	}
+}
+
+// A corrupt request is still replaced by the one caller, with the warning.
+func TestRequestRunReplacesACorruptFile(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	writeRequestFile(t, stateDir, []byte("{broken"))
+	var stderr bytes.Buffer
+	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: io.Discard, stderr: &stderr}
+	opts := runOptions{Advance: 4}
+	reply, err := e.requestRun(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "replacing the waiting run request") {
+		t.Errorf("stderr %q", stderr.String())
+	}
+	raw, err := os.ReadFile(runsPath(stateDir, runRequestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got runRequest
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.V != runRequestVersion || !got.RequestedAt.Equal(reply.RequestedAt) || got.Options.Advance != opts.Advance || got.Options.ListOnly || len(got.Options.Boards) != 0 {
+		t.Fatalf("file %+v, reply %+v", got, reply)
+	}
+}
+
+// A symlink at the request path is replaced by the request file. The write
+// does not follow the link, so the outside target is unchanged.
+func TestRequestRunReplacesASymlinkWithoutFollowingIt(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	announceDaemon(t, stateDir)
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	outsideBody := []byte("outside-bytes-not-a-request")
+	if err := os.WriteFile(outside, outsideBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := runsPath(stateDir, runRequestFile)
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	e := &env{configPath: cfgPath, stateDir: stateDir, stdout: io.Discard, stderr: io.Discard}
+	opts := runOptions{ListOnly: true}
+	reply, err := e.requestRun(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		t.Fatalf("request path mode %v, want a regular file", fi.Mode())
+	}
+	after, err := os.ReadFile(outside)
+	if err != nil || !bytes.Equal(after, outsideBody) {
+		t.Fatalf("outside file changed: %q %v", after, err)
+	}
+	var got runRequest
+	raw, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Options.ListOnly || got.Options.Advance != 0 || !got.RequestedAt.Equal(reply.RequestedAt) {
+		t.Fatalf("file %+v, reply %+v", got, reply)
+	}
+}

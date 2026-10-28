@@ -1,3 +1,158 @@
+# Vani build report — 2026-10-27
+
+> **Merged 2026-10-27 (later the same day):** the integrate clone's head `7dc8df5` was fetched as
+> branch `audit-fixes` and merged into `main` at `8ca5be6`, after the new board adapters and the
+> uncommitted Rippling/Workable/feed/export work. The text below is the run's record as written,
+> before that merge.
+
+Audit-bug backlog from `AUDIT_REPORT.md` (2026-10-26). Primary `main` is still `70fc33ec6603885f49020f7dc95504bfc23dc784`. The only dirty files there are unstaged `AUDIT_REPORT.md` and this report. No commit from this run is on primary `main`. Nothing was pushed, force-pushed, or merged.
+
+Done was not requested on any card. `gitpulse_complete_task` to `done` needs a Manvi verification record for the worktree head, and every review move in this run came back with `verification: null`. The cards below are in **review**.
+
+The fixes were stacked on one clone, `/private/tmp/vani-integrate`, which is not a linked worktree of primary `main`. Its head is `7dc8df50b322ab96fd451373566640e90836418a`. `go.mod` and `go.work` are unchanged from `70fc33e`. That clone is where the suites below ran. It was not merged.
+
+## How the work ran
+
+The spawn tool has no model argument. `grok-4.7` `code-editor` stood in for the implementer and for a separate adversarial pass. This orchestrator wrote each implementation brief and reviewed each diff.
+
+Isolated clones are their own `main`, not linked worktrees of the primary checkout. GitPulse insights and collision scans of `/Users/bharath/Code/apps/Vani` see one worktree. They do not see `~/.grok/worktrees` or `/private/tmp` clones. DevMap and GitPulse return `REPOSITORY_TRUST_REQUIRED` on those clones. Caller questions were asked on the primary index. The latest status is generation 2614, fresh, not degraded, 86600 edges. A truncated or `walk_incomplete` answer was treated as unknown. The ledger facet was stale (no catch-up newer than 600 seconds). Collisions were ok: 0 overlapping files, 1 worktree scanned.
+
+Isolated Go builds used a temporary `go.work` outside the repo (`use` of the clone plus the local Manvi and `decide` checkouts, with the existing Tessl replace). The repo `go.mod` and `go.work` were not edited. `/tmp` is a symlink to `/private/tmp`; a `go.work` `use` line has to name the real path. `VANI_NO_KEYCHAIN=1` was set on `vani` test runs.
+
+## Tasks in review from this run
+
+Board status below was read with `gitpulse_list_tasks` on 2026-10-27. Revisions are the board revisions after the review move. Heads live only on the isolated clone named in the card log.
+
+| Id | Rev | What landed |
+| --- | --- | --- |
+| `ft-e97abbbf30ed5b366274a269a2b658ed` | 13 | JSON-LD: only the new SE-1 criteria, plus a 2026-10-27 re-read of criterion 7. Eightfold and Apple still bound a detail 404 by `max(1, n/10)`. |
+| `ft-9b6a727a79db1269ffdb98722f6c0c36` | 3 | Idle embed: the window waits out an abandoned Embed, bounded by the Tessl call timeout, before Close. A chunk that only misses its own ensureProfile deadline does not count as a bad chunk. |
+| `ft-d07a7b653eaab4c8e2d490e3a4b6d6ab` | 3 | Int32: oversized counters are refused. `count()` keeps `0..Int32.max` and returns 0 above that. `Dedup.maxCount` is `Int(Int32.max)` so a saturated merge stays a value `count()` keeps. |
+| `ft-0f3ac31c525eeb33741f407caf0bb11c` | 4 | Pid identity: EPERM and ERROR_ACCESS_DENIED mean the process is not visible. A live daemon also has to be this binary, with a start at or before `StartedAt` plus one second. The frozen-clock skew is captured once in the test. |
+| `ft-94364021c96bc6f7427b6c0af5cce7ec` | 3 | Popup: the import control no longer depends on an inline `onclick`. |
+| `ft-c6f80c883e69566801e309d55d20b351` | 4 | Contact gate: a spaced handset and a spaced mailbox are refused. A year span is two 1900–2099 groups joined only by `-` or `–`. |
+| `ft-22d7da5f2735997b8bbdb7934bc1345c` | 7 | Symlink leaf: directory components still resolve. Program-named leaves are not written through. Criteria 1–5 were restated to that contract. The card stays in review. |
+| `ft-f2cc510849955a5c723c438dc3967775` | 4 | last.json: `readRunRecordFile` and the daily snapshot use `readBoundedFile`. A missing file is still no record. A symlink, FIFO, directory, socket, or character device is not opened. |
+| `ft-0c907f4e66a33511458a7833c560a47a` | 3 | Rekey: `loadRecord` reads meta before any rename. Damage leaves the old directory in place. |
+| `ft-dcd139bfca29862ce97d8ade909d3b79` | 3 | requestRun: the lock is taken after the first read says a write is needed, then the file is read again. A lock failure is an error. |
+| `ft-b1d3e1badb3eab6c80ed6cf04e92e043` | 3 | Win32: a Windows job object via `syscall.NewLazyDLL("kernel32.dll")`. `.exe` is executable without a Unix mode bit. A directory is not. |
+| `ft-17728c6f60b7012ddc69531f679e98f0` | 3 | History: `flushFinishedLast` Lstats `last.json` before opening it. A non-regular leaf is not kept and does not block the bookkeeping write. |
+| `ft-2a67d27fa725e7fdf0321ddb0717c4fc` | 3 | Read cap: stat before `Data(contentsOf:)`. The 50_000_000 byte cap is unchanged. A non-regular leaf is never opened. |
+| `ft-f2c485911ee04f3e4f6b8ff03710cd57` | 3 | Bank cache: `fresh()` bumps the generation and drops the inflight fetch before requesting again. An older get must not `hold`. |
+| `ft-948c9eb6753acd2a05c29175ad1e8b41` | 3 | Bullets: phone and work-authorization prose is stripped in `internal/semantic`. `redraft.go` was not edited. |
+| `ft-b7dacb8fdc271946432973e83c24bf49` | 3 | Binary watch: Windows file identity is the volume serial and the file index, read only after `os.Stat` says the file is regular. The handle is closed on every path that opened one. |
+| `ft-bafd750094720ac26a73280954b5c717` | 7 | MAC-2 only: activity refresh and `change` do their disk work on `BlockingWork`, then publish on the main actor. `reload()` still reads the bank on the main actor, on purpose. |
+| `ft-10c5bf90ab4e6ee33fbacd36d430baea` | 4 | Frame probe: one timer. A queued timeout is spliced out and does not poison. A written timeout poisons that connection. `jobsIngest` stays at 40000 ms. A module imported before `connectNative` exists still uses one port once Chrome gains it. |
+| `ft-84d4fe2545e64bdaa9678e18b45a5e6d` | 9 | PS-4 only: a panic after `guardedRun` still finalises the run as failed. A panic whose ledger is intact is not `ErrFatal`, so the daemon keeps scheduling. The 2026-10-21 lifecycle criteria were already merged and were not reopened. |
+| `ft-8f7be1583ae5e08890b97a5b4f4acab7` | 3 | SIGTERM test only. The pid file is published by rename after the trap is installed. An empty file does not satisfy the wait. `ScheduleAgent.swift` was not edited. |
+
+No task from this run is in `done`.
+
+## Verified this continuation
+
+These two were still open when this continuation started. Both are now in review.
+
+**SIGTERM** `ft-8f7be1583ae5e08890b97a5b4f4acab7`, revision 3, sequence 27322. Head `0a02af04bd0bda7708c66637160b1e399aaf1215` on the schedule-agent worktree. The diff from the parent of `e47a734` is only `macos/Tests/VaniApplyKitTests/ScheduleAgentTests.swift` (+22/−2). Parent re-run: `testStopEndsTheDaemonWithSigtermAndWaitsForIt` passed in 0.407 seconds; `testThePidWaitRejectsEmptyPartialAndNonPositiveText` passed in 0.000 seconds. The 0.25 second cleanup assertion is still there. The full Swift suite on the integrate clone later passed; see below. DevMap impact of `ScheduleAgent.swift` was truncated (60 of 312 shown, `walk_incomplete`), which is why production `stop()` stayed out of scope.
+
+**last.json** `ft-f2cc510849955a5c723c438dc3967775`, now revision 4, sequence 27479. The earlier review move was revision 3, sequence 27324. Production `e59931cb7994f82f67cc2b7b89f0730f768780cd`. Adversary tests only `47febfa12b9e1eaefb34abd6f53961c49d954efe` (`cmd/vani/lastjson_adversary_unix_test.go`, +742). Parent filter `TestLastJSON|TestRunRecord|TestHistory|TestPanicAfter|TestConfig` passed in 1.535 seconds. Parent `go test ./cmd/vani/` with no `-run` passed in 119.383 seconds (`GOWORK=/tmp/vani-lastjson-go.work`, `VANI_NO_KEYCHAIN=1`). A missing file is still `(nil, nil)`. Any other read error is returned. `restoreRecordAfterRestart` is unchanged: a nil error writes the prior bytes back, `os.ErrNotExist` removes the record this job wrote, and any other error logs and does not write or remove. `flushFinishedLast` and `finishDailyRun` were not edited. The check-then-open window inside `readBoundedFile` is the existing one and was accepted. `mknod` is not permitted here. `TestLastJSONAdversaryDeviceNode` on integrate commit `ba1cbe2328f5622e8b351c2ee6dac4ea76f25799` stats `/dev/null` and `/dev/zero`, requires a character device, and refuses them through `readBoundedFile` before `os.Open`. The filter passed in 0.171 seconds. The error string is the proof the node was not opened; a time bound would not be, because reading `/dev/null` returns EOF at once.
+
+## Evidence recorded earlier in this same run
+
+These timings were parent runs before this continuation. They were not repeated just now.
+
+- JSON-LD full `go test ./...` exited 0 in 649.24 seconds.
+- Idle full `go test ./...` exited 0 in 640.85 seconds.
+- Pid: full `./...` failed five frozen-clock tests; after `c460940` only `./cmd/vani/` was re-run, and it passed in 133.800 seconds. Those commits are in the integrate clone, whose full `./...` is below.
+- Frame probe, isolated: `bun test` of `nativeport.test.ts` and `frameprobe.test.ts` — 38 pass, 0 fail, 485 expect(), 6.46 seconds. Typecheck passed. The full extension suite then failed four frameprobe tests. That failure is fixed below.
+- PS-4: filter passed (`cmd/vani` 0.962 seconds, `daemon` 0.172 seconds). Full packages with no `-run` passed (`cmd/vani` 132.718 seconds, `daemon` 0.230 seconds).
+- MAC-2: Swift filter `AppModelTickTests|BankStoreReadCapTests|ImportBankReadCapTests|AppModelAdversarialTests` — 30 UI tests and 25 BankStoreReadCap tests, 0 failures. The 11 unhandled `runnotice` fixture warnings are pre-existing. Measured main-actor gaps, all under 0.25 seconds: edit/refresh 0.015160 seconds, two-edit 0.015122 seconds, unicode path 0.015144 seconds.
+
+## Integrate clone
+
+`/private/tmp/vani-integrate` was cloned from the last.json worktree and every other fix was cherry-picked with no conflicts. Head `7dc8df50b322ab96fd451373566640e90836418a` (`extension: use one native port when connectNative appears after import`), on `ba1cbe2328f5622e8b351c2ee6dac4ea76f25799`. The working tree was clean. `git diff 70fc33e..HEAD -- go.mod go.work` is empty. `go vet ./...` exited 0 in 4.57 seconds (`GOWORK=/tmp/vani-integrate-go.work`, `VANI_NO_KEYCHAIN=1`).
+
+`go test -count=1 -timeout 20m ./...` exited 0 in 350.71 seconds. No package printed `FAIL`. `cmd/vani` took 348.152 seconds. `internal/sources/eightfold` took 0.228 seconds and `internal/sources/apple` took 0.344 seconds. Two packages have no test files (`internal/sources/srctest`, `internal/testutil/symlinktest`). This run is at `ba1cbe2`, the device-node commit. The later commit is TypeScript only.
+
+`swift test --package-path /private/tmp/vani-integrate/macos` exited 0 in 416.14 seconds. VaniApplyUITests executed 173 tests, 12 skipped, 0 failures, in 75.307 seconds. VaniApplyKitTests executed 942 tests, 12 skipped, 0 failures, in 204.753 seconds. The 11 unhandled `runnotice` fixture warnings are the pre-existing ones. The skipped tests are what Swift reported; this log does not say why each one skipped.
+
+`bun test /private/tmp/vani-integrate/extension/test` first exited 1: four tests in `frameprobe.test.ts` expected a port and saw none. `nativeTransport` is chosen when `store.ts` is first evaluated. Another file imports it before frameprobe's `beforeAll` installs `chrome.runtime.connectNative`, so the shared module stayed on `spawnTransport`. DevMap impact of `nativeTransport` on the primary index (root `/Users/bharath/Code/apps/Vani`, generation 2614) named direct callers `background.ts::native` and `store.ts::createStore`. The walk stopped at depth 3 (`walk_incomplete`), so that list is a lower bound. Six `m.nativeTransport` sites in `store.test.ts` are unresolved namesakes, not edges. `frameprobe.test.ts` was not in the affected-test list because it imports through a query string.
+
+The fix keeps `nativeTransport === spawnTransport` when the module loads with no `connectNative`, and when Safari's `sendNativeMessage` wins. `background.native` calls `currentNativeTransport()` on each call. One port is cached per `connectNative` function. A different function does not reuse that port. `createStore` still captures the load-time binding. After that commit, `bun test` of `extension/test` was 1384 pass, 0 fail, 16694 expect(), 23.03 seconds, and `sh extension/scripts/typecheck.sh` printed `typecheck: ok`. An isolated `background.test.ts` run before the edit, with `connectNative` present at import, was 59 pass, 0 fail, 315 expect(), 2.42 seconds. A throwing `connectNative` falls through to `sendNativeMessage` during backoff, and `resumeOpen` is not a port op, so those stubs stayed.
+
+## Benchmarks
+
+No touched path in this run had a committed benchmark that was re-run, so there is no before/after number to report and no invented delta.
+
+These are not hot paths, and no bench was added: pid, JSON-LD, Int32, idle, popup, contact, symlink, rekey, requestRun, Win32, history, read-cap, bank cache, bullets, binary watch, frame probe, last.json, SIGTERM.
+
+MAC-2 has no Swift bench. The number for that card is the main-actor gap above. The 2026-10-21 daemon A2-2 bench was not re-claimed for the PS-4 residual.
+
+## Deferred, blocked, or left alone
+
+- `ft-7099bd3ba7e0b8f2f9622204b98f2c85` (Lappi v2, revision 5) is `in_progress`. It was not touched. `internal/decide/jdtriage/fixture.json` was not edited.
+- `ft-8d8ca2ea609144eb5240c2b743487d58` (clean clone cannot build, revision 2) is `in_progress`. Owner decision stands: published versions, no vendoring, do not edit `go.mod`.
+- Inbox, backlog, and ready were empty when listed this turn (0 tasks each).
+- The review column also holds the 2026-10-19 and 2026-10-20 cards from the earlier build. This run did not reopen them.
+- Windows tests were not executed. On the integrate tree, `GOOS=windows GOARCH=amd64 go test -c` succeeded for `./internal/rkbexec` and `./internal/rkbresume` (compile only, 79.87 seconds for that chain, together with the Linux compile below). `GOOS=windows GOARCH=amd64 go test -c ./cmd/vani` exited 1. The linker errors are `syscall.Mkfifo` in `adv_reload_pins_test.go:27` and `exportattack_test.go:163`, and `syscall.Kill` in `kbmatchlockadv_test.go:83`, `kbmatchlockadv_test.go:140`, and `pidalive_adversary_test.go:362`. Those tests were not changed. This is not a pass.
+- Linux `GOOS=linux GOARCH=amd64 go test -c ./cmd/vani` exited 0 on the same chain. The tests were not run. Real Tessl/Metal tests were not run. Lightpanda integration tests were not run. Darwin `kill(1, 0)` returned EPERM, which the pid card treats as "not visible."
+- `dev verify ft-f2cc510849955a5c723c438dc3967775 --json --mode off` returned `ok: false`, `gate_mode: off`, `processed_tasks: 0`, `verified_tasks: 0`, and `error: task ft-f2cc510849955a5c723c438dc3967775 not found`. Gate mode is off (`verification_origin` default, no `.devcouncil/config.yaml`). That is not a pass. Changes are not on primary `main`.
+
+## New tasks
+
+- Filed and now in review: `ft-8f7be1583ae5e08890b97a5b4f4acab7`, the schedule-agent SIGTERM test race. It was not folded into the Int32 card.
+- A windows/386 job-struct mismatch was not filed. `procgroup_windows.go` returns early unless `unsafe.Sizeof(uintptr(0)) == 8`, and the struct uses `uintptr`, so it tracks pointer width. The repo does not ship windows/386. That is a skipped check, not a proven ABI bug.
+
+## Fable decisions
+
+- JSON-LD scope is the three new SE-1 criteria. Prefix URL is not a match. An empty page URL matches nothing. Depth cap stays `maxJSONLDDepth` (6). `@context` is skipped.
+- Int32 refuses; it does not clamp to `Int32.max`. The log line is fixed and contains no answer value, key, or counter. JSON stays the source of truth until a later ordinary save. `Dedup.maxCount` moving to `Int(Int32.max)` was accepted.
+- Pid slack stays 1 second. File mtime is not the baseline. A start far before `StartedAt` is still live. The frozen clock captures skew once and does not change production `daemonIsLive`.
+- Idle `callEmbed` stays non-join. No Metal. If the join bound expires inside Embed, Close is skipped, the fixed log line is written, and the window still ends.
+- The 2026-10-21 symlink design stays: leaves are not written through. Criteria 1–5 were overwritten on 2026-10-27 (revision 7) to that contract. The old write-through sentences are not what the card requires.
+- Contact `phoneMaxSeparator` stays 3 on that worktree. `555 --- 4567` stays allowed. Seven or more Unicode decimal digits are refused. Circled digits and superscripts are not a phone.
+- Bullets are separate from the contact gate. `555---4567` is a phone. `555 --- 4567` is not. A following year span joined by one space is removed with the phone. `redraft.go` stays untouched.
+- Rekey does not change its signature. Windows rekey refusal stays on `ft-b6b00b08e8b50cd9613fd149c17698ec`.
+- requestRun still replaces a symlink leaf. The TOCTOU fix is the lock and the re-read.
+- History and last.json share `readBoundedFile` for the read. A stable FIFO or symlink must not block. A race that swaps a regular file for a FIFO after `Lstat` was not given a new lock.
+- Frame probe: deadline is never a field of the host message. `0` is a real shorter deadline. `resumeInfo` is a port op, so 2000 ms is its only timer. `bankcache.ts` was not edited. The load-time export stays `spawnTransport` itself when there is no `connectNative`. `background.native` looks again so a late `connectNative` still uses one port.
+- MAC-2 does not add a semaphore. `reload()` stays on the main actor. A cancelled task may still finish disk work already inside `BlockingWork`.
+- PS-4 does not recover a panic inside the recover's own `saveRunRecord`. `runJob` is that backstop, and the error it records is non-fatal even if the panic value is `ErrFatal`. The cursor still advances.
+- SIGTERM is test-only. Production `ScheduleAgent.swift` stays as it is while DevMap impact is truncated.
+- Wave E daemon work is the PS-4 residual only. The 2026-10-21 decision that process-lifetime fields stay fixed for the life of the process was not reopened.
+
+## Owner decisions still pending
+
+These were not built.
+
+1. XPC peer check (MAC-4 / declined D18): any binary signed by team HAUHVD8M37 can connect.
+2. `OPENROUTER_API_KEY` in the daemon child (MAC-5). The current path is tested.
+3. `ft-c9ff73806ffa9c5ed8e80b913c135b31` criterion 3, the `pmset` sleep check. The Mac was not put to sleep.
+4. `ft-52b6e7d3f0950c24195d9c20c0a20351`, v0.1.0 signing, publish, and rollback.
+5. `ft-8d8ca2ea609144eb5240c2b743487d58`, clean clone: published versions, no vendoring, do not edit `go.mod`. The card is `in_progress`.
+6. `ft-6dc4d776b2b04ffbdf04e58c4a315bf6`: do not install over `/Applications/Vani Apply.app`, and do not read the live bank unless asked.
+7. `ft-7099bd3ba7e0b8f2f9622204b98f2c85`: Lappi MinHash, `shadow_every`, decide identity pin, fixture bump, and the label set. The card is `in_progress`. `fixture.json` was not changed.
+8. D17 and D18 on `ft-1045267a269b4250341c5d5d69acf653` stay declined.
+9. Daemon reload-per-run was already decided on 2026-10-21: process-lifetime fields stay fixed. That question was not asked again.
+
+## Definition of Done, still open
+
+Every acceptance criterion that this run took on has a regression test, and each fix went through a separate adversarial pass before it was moved to review. The symlink card's criteria 1–5 now say what the code does. The integrate clone's Go suite, Swift suite, and extension suite passed, as recorded above. `go vet ./...` passed. That is the combined tree, not primary `main`.
+
+These are still open, and they are why no card was moved to done:
+
+- Manvi's verification is `null` on every review move. `dev verify` does not know GitPulse `ft-` ids, and gate mode is off.
+- Primary `main` was not merged. The user did not say merge.
+- Windows and Linux tests were compiled, not executed. `./cmd/vani` does not link for Windows because existing tests call `syscall.Mkfifo` and `syscall.Kill`.
+- Real Tessl/Metal tests and Lightpanda integration tests were not run.
+- The owner decisions in the list above were not built.
+- `ft-7099bd3ba7e0b8f2f9622204b98f2c85` and `ft-8d8ca2ea609144eb5240c2b743487d58` stay `in_progress` and were not touched.
+
+Opus-stand-in review approved the diffs that are in review above. `grok-4.7` `code-editor` stood in for the implementer and the adversary, because the spawn tool has no model argument.
+
+## History — 2026-10-21
+
+The report below is the 2026-10-21 session log, unchanged.
+
 # Vani build report — 2026-10-21
 
 ## Current status (end of session, main @ 7e9ce14, local, not pushed)

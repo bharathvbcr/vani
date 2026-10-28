@@ -242,6 +242,12 @@ final class ScheduleAgentTests: XCTestCase {
         return (s, done)
     }
 
+    /// One positive integer, with at most one trailing newline. Anything else is not a published pid.
+    private func isPublishedPid(_ raw: String) -> Bool {
+        let body = raw.hasSuffix("\n") ? raw.dropLast() : Substring(raw)
+        return !body.isEmpty && !body.contains("\n") && body.allSatisfy { $0 >= "0" && $0 <= "9" } && (Int32(body) ?? 0) > 0
+    }
+
     private func waitUntil(_ timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
         let end = Date().addingTimeInterval(timeout)
         while Date() < end { if condition() { return true }; Thread.sleep(forTimeInterval: 0.02) }
@@ -298,10 +304,16 @@ final class ScheduleAgentTests: XCTestCase {
     func testStopEndsTheDaemonWithSigtermAndWaitsForIt() throws {
         let r = try rig()
         let pidFile = r.dir.appendingPathComponent("pid"), cleaned = r.dir.appendingPathComponent("cleaned")
+        let pidPart = r.dir.appendingPathComponent("pid.part")
         // A daemon that cleans up on SIGTERM (it removes daemon.json) takes a moment to do so.
-        let program = try r.script("echo $$ > '\(pidFile.path)'; trap 'sleep 0.3; echo done > \"\(cleaned.path)\"; exit 0' TERM; while :; do sleep 0.05; done")
+        // The redirect would create the pid file empty before the trap is installed. Publish
+        // it by rename only after the trap is in place and the pid line is complete.
+        let program = try r.script("trap 'sleep 0.3; echo done > \"\(cleaned.path)\"; exit 0' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; while :; do sleep 0.05; done")
         let (s, done) = supervise(r, attempt: { r.start(program) })
-        XCTAssertTrue(waitUntil { FileManager.default.fileExists(atPath: pidFile.path) })
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        })
         let started = Date()
         s.stop()
         XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
@@ -310,6 +322,14 @@ final class ScheduleAgentTests: XCTestCase {
         let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
         XCTAssertTrue(kill(pid, 0) != 0 && errno == ESRCH, "no daemon is left behind")
         XCTAssertEqual(s.starts, 1, "a stop is not followed by a restart")
+    }
+
+    func testThePidWaitRejectsEmptyPartialAndNonPositiveText() {
+        for raw in ["", "\n", "0", "-1", "12abc", "12\n\n", " 12"] {
+            XCTAssertFalse(isPublishedPid(raw), raw.debugDescription)
+        }
+        XCTAssertTrue(isPublishedPid("12"))
+        XCTAssertTrue(isPublishedPid("12\n"))
     }
 
     func testADaemonThatIgnoresSigtermIsKilledAfterTheGrace() throws {

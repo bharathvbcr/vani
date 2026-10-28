@@ -50,7 +50,11 @@ struct DraftSheet: View {
                 Text("Saved drafts fill yellow, for you to review on each form.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Close", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save as Answer") { if model.saveDraft(question: question, text: draft) { dismiss() } }
+                Button("Save as Answer") {
+                    let q = question
+                    let text = draft
+                    Task { if await model.saveDraft(question: q, text: text) { dismiss() } }
+                }
                     .keyboardShortcut(.defaultAction)
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.storeError != nil)
             }

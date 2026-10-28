@@ -18,25 +18,41 @@ import (
 
 // binIdentity names one file on disk: the device and inode where the platform
 // has them, plus size and modification time so an overwrite in place (same
-// inode, new bytes) differs too.
+// inode, new bytes) differs too. On Windows, dev is the volume serial and ino
+// is the file index (nFileIndexHigh<<32|nFileIndexLow); os.Stat does not
+// carry either.
 type binIdentity struct {
 	dev, ino uint64
 	size     int64
 	mtime    int64 // UnixNano
 }
 
+// packWindowsFileID packs BY_HANDLE_FILE_INFORMATION's volume serial and file
+// index into a binIdentity's dev and ino. The index halves are DWORD fields,
+// so the high half is shifted, not added as a second low half.
+func packWindowsFileID(volumeSerial, indexHigh, indexLow uint32) (dev, ino uint64) {
+	return uint64(volumeSerial), uint64(indexHigh)<<32 | uint64(indexLow)
+}
+
+// statFileID on Windows is the caller. Builds that omit that file still
+// compile this layout; the test checks it is not a zero pack.
+var _ = packWindowsFileID
+
 // executablePath and statExecutable are the daemon's two reads of the file
 // system for this check; tests replace them.
 //
 // The path is os.Executable's, kept as given and never resolved through
-// symlinks, and statExecutable follows symlinks (os.Stat, not Lstat). So the
-// identity is that of whatever the path runs now: a reinstall that deletes and
-// rewrites a regular file (the app bundle's copy, put there by ditto) and one
-// that repoints a symlink (a Homebrew-style link) both change it. Resolving
-// the link once at start would pin the old target and miss a repoint. On Linux
-// os.Executable reads /proc/self/exe and reports a deleted binary as
-// "<path> (deleted)", which does not stat: the check then stays quiet, never
-// wrongly restarting. The daemon is supervised on macOS.
+// symlinks, and statExecutable follows symlinks (os.Stat, not Lstat). On
+// Windows that stat has no file index, so a regular file is then opened
+// (statFileID) for its volume serial and file index. A missing path or a
+// non-regular file is returned before that open. The identity is that of
+// whatever the path runs now: a reinstall that deletes and rewrites a regular
+// file (the app bundle's copy, put there by ditto) and one that repoints a
+// symlink (a Homebrew-style link) both change it. Resolving the link once at
+// start would pin the old target and miss a repoint. On Linux os.Executable
+// reads /proc/self/exe and reports a deleted binary as "<path> (deleted)",
+// which does not stat: the check then stays quiet, never wrongly restarting.
+// The daemon is supervised on macOS.
 var (
 	executablePath = os.Executable
 	statExecutable = func(path string) (binIdentity, error) {
@@ -47,9 +63,11 @@ var (
 		if !fi.Mode().IsRegular() {
 			return binIdentity{}, fmt.Errorf("%s is not a regular file", path)
 		}
-		id := binIdentity{size: fi.Size(), mtime: fi.ModTime().UnixNano()}
-		id.dev, id.ino = devIno(fi)
-		return id, nil
+		dev, ino, err := statFileID(path, fi)
+		if err != nil {
+			return binIdentity{}, err
+		}
+		return binIdentity{dev: dev, ino: ino, size: fi.Size(), mtime: fi.ModTime().UnixNano()}, nil
 	}
 )
 
@@ -83,7 +101,9 @@ func watchOwnBinary(stderr io.Writer) *binWatch {
 // replaced reports whether the file at the daemon's path is now a different
 // file from the one it started from, and says so once on stderr. A path that
 // is missing or cannot be read is not a replacement: an install in progress
-// deletes the old copy first, so the next check decides. It costs one stat.
+// deletes the old copy first, so the next check decides. On Windows a regular
+// file is also opened for its file index; that open failing is an unreadable
+// path, not a replacement.
 func (w *binWatch) replaced(stderr io.Writer) bool {
 	if w == nil {
 		return false

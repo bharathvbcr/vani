@@ -54,12 +54,25 @@ public struct DraftSettings: Codable, Equatable, Sendable {
     }
 
     static let fileName = "draft-settings.json"
+    static let maxFileBytes = 256 * 1024
 
     /// A missing file is the defaults (nothing was ever saved). A file that is present but cannot
-    /// be read or decoded throws `LoadError`.
+    /// be read or decoded throws `LoadError`. A regular file over `maxFileBytes` is refused before it is read.
     public static func load(from directory: URL) throws -> DraftSettings {
-        let data: Data
         let file = url(in: directory)
+        switch PathProbe.leaf(file) {
+        case .absent:
+            return DraftSettings()
+        case .danglingLink:
+            throw LoadError(reason: "cannot be read (a link to a missing file)")
+        case .notRegular, .unavailable:
+            throw LoadError(reason: "cannot be read")
+        case .regular(let bytes) where bytes > Int64(maxFileBytes):
+            throw LoadError(reason: "larger than \(maxFileBytes) bytes")
+        case .regular:
+            break
+        }
+        let data: Data
         do { data = try Data(contentsOf: file) } catch let e as CocoaError where e.code == .fileReadNoSuchFile && PathProbe.isAbsent(file) {
             // Only a path lstat reports as absent is "never saved"; a dangling symlink is present but unreadable.
             return DraftSettings()

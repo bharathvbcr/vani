@@ -36,7 +36,7 @@ func TestAdvLockSharedWithFileSymlink(t *testing.T) {
 // trims it); Validate compares without trimming and calls it missing.
 func TestAdvRequiredHostTrailingDot(t *testing.T) {
 	c := valid()
-	c.AllowedHosts = []string{"boards-api.greenhouse.io.", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}
+	c.AllowedHosts = []string{"boards-api.greenhouse.io.", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}
 	if _, err := egress.New(egress.Config{AllowedHosts: c.AllowedHosts}); err != nil {
 		t.Fatal(err)
 	}

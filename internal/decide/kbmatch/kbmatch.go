@@ -15,10 +15,11 @@
 // the knowledge base built from semantic.Profile, which holds only role titles,
 // stack terms and bullet text. semantic.ProfileFromBank never reads an entry's
 // organisation, dates, location or contact fields, and its cleanBulletText
-// removes markdown, claim tokens, URLs and e-mail addresses from bullets; it does
-// not scrub names, so an organisation named inside a bullet's own words stays
-// (organisation names are not personal data here, and the drafter sends them on
-// purpose). The digest is bounded and its hash is part
+// removes markdown, claim tokens, URLs, e-mail addresses, phone-shaped runs and
+// work-authorization phrases from bullets; it does not scrub names, so an
+// organisation named inside a bullet's own words stays (organisation names are
+// not personal data here, and the drafter sends them on purpose). The digest
+// is bounded and its hash is part
 // of each stored answer, so an edit to the knowledge base re-asks. Nothing in the
 // question names the owner. Both sections and the posting sit inside the
 // backend's untrusted-content frame: none carries instructions to the model, and

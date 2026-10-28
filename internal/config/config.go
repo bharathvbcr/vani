@@ -27,6 +27,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 )
 
@@ -802,17 +804,31 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "api.lever.co", true
 	case posting.Ashby:
 		return "api.ashbyhq.com", true
+	case posting.Rippling:
+		return "api.rippling.com", true
+	case posting.Workable:
+		return "apply.workable.com", true
+	case posting.Gem:
+		return "api.gem.com", true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
 		return "www.google.com", true
 	case posting.Apple:
 		return "jobs.apple.com", true
-	case posting.Workday, posting.Eightfold, posting.Jibe:
+	case posting.SmartRecruiters:
+		return "api.smartrecruiters.com", true
+	case posting.IBM:
+		return "www-api.ibm.com", true
+	case posting.DEShaw:
+		return "www.deshaw.com", true
+	case posting.Atlassian:
+		return "www.atlassian.com", true
+	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature, posting.OracleHCM:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
 		}
-	case posting.Page:
+	case posting.Page, posting.Feed:
 		if u, err := url.Parse(b.URL); err == nil && u.Hostname() != "" {
 			return strings.ToLower(u.Hostname()), true
 		}
@@ -820,8 +836,23 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 	return "", false
 }
 
-// workdayHost matches "{tenant}.wd{N}.myworkdayjobs.com".
-var workdayHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
+// ashbyJobHost is the public job page. The posting API is api.ashbyhq.com;
+// a board that has turned that API off is read from this host instead, so
+// every Ashby board needs it allowed.
+const ashbyJobHost = "jobs.ashbyhq.com"
+
+// BoardHosts is every host a board fetches: BoardHost, plus the job-page host
+// an Ashby board falls back to when the posting API answers 404.
+func BoardHosts(b sources.Board) []string {
+	var out []string
+	if h, ok := BoardHost(b); ok {
+		out = append(out, h)
+	}
+	if b.ATS == posting.Ashby {
+		out = append(out, ashbyJobHost)
+	}
+	return out
+}
 
 // workdayName matches a Workday "tenant/site" token whose parts are the safe
 // path names the adapter accepts (workday.parseToken).
@@ -834,7 +865,7 @@ const maxLinkPattern = 256
 func (c Config) RequiredHosts() []string {
 	set := map[string]bool{}
 	for _, b := range c.Watchlist {
-		if h, ok := BoardHost(b); ok {
+		for _, h := range BoardHosts(b) {
 			set[h] = true
 		}
 		if b.Domain != "" {
@@ -863,22 +894,65 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe:
+	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM:
 		return true
 	}
 	return false
 }
 
-// optionalSearchATS list their whole board when given no search.
-func optionalSearchATS(a posting.ATS) bool { return a == posting.Workday || a == posting.Jibe }
+// optionalSearchATS list their whole board when given no search. An Oracle HCM
+// board over the adapter's cap (jpmc/CX_1001 counts 7,317) fails at the first
+// page with the way out; a small tenant needs no search.
+func optionalSearchATS(a posting.ATS) bool {
+	return a == posting.Workday || a == posting.Jibe || a == posting.OracleHCM
+}
+
+// oracleHCMName matches an Oracle HCM "tenant/site" token whose parts are the
+// safe path and finder names the adapter accepts (oraclehcm.parseToken).
+var oracleHCMName = regexp.MustCompile(`^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`)
+
+// validOracleHCM checks an oc board: the token is "tenant/site" and the host
+// "{tenant}.fa[.{region}].oraclecloud.com" whose first label is the tenant.
+func validOracleHCM(b sources.Board) error {
+	if !oracleHCMName.MatchString(b.Token) {
+		return fmt.Errorf("oc token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
+	}
+	tenant, _, _ := strings.Cut(strings.ToLower(b.Token), "/")
+	label, ok := sources.OracleHCMHostTenant(b.Host)
+	if !ok {
+		return fmt.Errorf("oc board %s needs host {tenant}.fa.oraclecloud.com or {tenant}.fa.{region}.oraclecloud.com, got %q", b.Token, b.Host)
+	}
+	if label != tenant {
+		return fmt.Errorf("oc host %q does not belong to tenant %q", b.Host, tenant)
+	}
+	// The adapter quotes a term into the finder, where a quote ends it and a
+	// backslash escapes the next character, so it refuses both.
+	for _, s := range b.SearchTerms() {
+		if strings.ContainsAny(s, `"\`) {
+			return fmt.Errorf("oc board %s: search %q must not contain a quote or a backslash", b.Token, s)
+		}
+	}
+	return nil
+}
 
 // jibeClient matches a Jibe client code, a Jibe board's token.
 var jibeClient = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
+// smartRecruitersCompany matches a SmartRecruiters company identifier, a
+// board's token (smartrecruiters.tokenRE); srCountry the one two-letter ISO
+// code its country filter takes (the adapter lower-cases it).
+var (
+	smartRecruitersCompany = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`)
+	srCountry              = regexp.MustCompile(`^[A-Za-z]{2}$`)
+)
+
+// avatureToken matches an Avature board's token, the owner's slug for it.
+var avatureToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
 func SingleBoardATS(a posting.ATS) bool {
-	return a == posting.Amazon || a == posting.Google || a == posting.Apple
+	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian
 }
 
 func cleanText(s string) bool {
@@ -894,7 +968,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, az, gg, ap, ef and jb only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb and ib only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -937,13 +1011,24 @@ func validSearches(b sources.Board) error {
 // those records.
 const ScrapeSuffix = "-scrape"
 
+// httpsBoardURL requires the https URL a page or feed board is fetched from.
+func httpsBoardURL(kind string, b sources.Board) error {
+	u, err := url.Parse(b.URL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("%s board %s needs an https url, got %q", kind, b.Token, b.URL)
+	}
+	return nil
+}
+
 // ValidBoard checks a single watchlist entry.
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
-		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.Page:
+		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
+		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
+		posting.Rippling, posting.Workable, posting.Feed, posting.Page:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, fd, pg", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -964,6 +1049,10 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("board (%s) %s board_name %q %s", b.ATS, b.Token, b.BoardName, why)
 		}
 	}
+	if t := strings.ToLower(b.Token); b.ATS == posting.IBM && t != ibm.TokenIBM && t != ibm.TokenConfluent {
+		// The token picks which of IBM's two disjoint listings the board reads.
+		return fmt.Errorf("board (ib) token %q must be %s or %s", b.Token, ibm.TokenIBM, ibm.TokenConfluent)
+	}
 	if strings.HasSuffix(strings.ToLower(b.Token), ScrapeSuffix) {
 		return fmt.Errorf("board token %q ends in %q, which is reserved for jobs scraped in the browser", b.Token, ScrapeSuffix)
 	}
@@ -979,13 +1068,17 @@ func ValidBoard(b sources.Board) error {
 				return fmt.Errorf("workday token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
 			}
 		} else {
-			m := workdayHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(b.Host)))
-			if m == nil {
+			hostTenant, ok := sources.WorkdayTenantHost(b.Host)
+			if !ok {
 				return fmt.Errorf("workday board %s needs host {tenant}.wd{N}.myworkdayjobs.com or wd{N}.myworkdaysite.com, got %q", b.Token, b.Host)
 			}
-			if m[1] != tenant {
+			if hostTenant != tenant {
 				return fmt.Errorf("workday host %q does not belong to tenant %q", b.Host, tenant)
 			}
+		}
+	} else if b.ATS == posting.OracleHCM {
+		if err := validOracleHCM(b); err != nil {
+			return err
 		}
 	} else if strings.Contains(b.Token, "/") {
 		return fmt.Errorf("board (%s) token %q must not contain '/'", b.ATS, b.Token)
@@ -1006,24 +1099,50 @@ func ValidBoard(b sources.Board) error {
 		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
 			return fmt.Errorf("jibe board %s needs host, its careers site, e.g. careers.amd.com; got %q", b.Token, b.Host)
 		}
-	} else if b.ATS != posting.Workday && b.Host != "" {
-		return fmt.Errorf("board %s/%s: host applies to wd, ef and jb only", b.ATS, b.Token)
+	} else if b.ATS == posting.SmartRecruiters {
+		// The token is the company identifier, sent in the request path. The
+		// API answers zero postings for any country but one lower-case
+		// two-letter code, so a malformed one is refused here, not listed empty.
+		if !smartRecruitersCompany.MatchString(b.Token) {
+			return fmt.Errorf("smartrecruiters token %q must be the company identifier (letters, digits, '-' and '_'), e.g. servicenow", b.Token)
+		}
+		if b.Host != "" {
+			return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb and av only", b.ATS, b.Token)
+		}
+		for _, cc := range b.Filters["country"] {
+			if !srCountry.MatchString(cc) {
+				return fmt.Errorf("smartrecruiters board %s: country %q must be one two-letter ISO code such as us", b.Token, cc)
+			}
+		}
+	} else if b.ATS == posting.Avature {
+		// The token is the owner's slug, the host the portal's, and the url its
+		// listing page on that host: the portal path differs per customer.
+		if !avatureToken.MatchString(b.Token) {
+			return fmt.Errorf("avature token %q must be a lower-case slug of letters, digits and '-', e.g. twosigma", b.Token)
+		}
+		if !hostname.MatchString(strings.ToLower(strings.TrimSpace(b.Host))) {
+			return fmt.Errorf("avature board %s needs host, its careers portal, e.g. careers.twosigma.com; got %q", b.Token, b.Host)
+		}
+		if _, err := avature.ParseListURL(b.URL, b.Host); err != nil {
+			return fmt.Errorf("avature board %s: %w", b.Token, err)
+		}
+	} else if b.ATS != posting.Workday && b.ATS != posting.OracleHCM && b.Host != "" {
+		return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb and av only", b.ATS, b.Token)
 	}
 	if err := validSearches(b); err != nil {
 		return err
 	}
 	if b.MaxPostings != 0 {
-		if b.ATS != posting.Workday {
-			return fmt.Errorf("board %s/%s: max_postings applies to wd only", b.ATS, b.Token)
+		if b.ATS != posting.Workday && b.ATS != posting.OracleHCM {
+			return fmt.Errorf("board %s/%s: max_postings applies to wd and oc only", b.ATS, b.Token)
 		}
 		if b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling {
 			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means the default)", b.ATS, b.Token, b.MaxPostings, sources.MaxPostingsCeiling)
 		}
 	}
 	if b.ATS == posting.Page {
-		u, err := url.Parse(b.URL)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
-			return fmt.Errorf("page board %s needs an https url, got %q", b.Token, b.URL)
+		if err := httpsBoardURL("page", b); err != nil {
+			return err
 		}
 		if b.LinkPattern == "" || len(b.LinkPattern) > maxLinkPattern {
 			return fmt.Errorf("page board %s needs a link_pattern of 1..%d bytes", b.Token, maxLinkPattern)
@@ -1031,8 +1150,15 @@ func ValidBoard(b sources.Board) error {
 		if _, err := regexp.Compile(b.LinkPattern); err != nil {
 			return fmt.Errorf("page board %s link_pattern: %v", b.Token, err)
 		}
-	} else if b.URL != "" || b.LinkPattern != "" {
-		return fmt.Errorf("board %s/%s: url and link_pattern apply to page boards only", b.ATS, b.Token)
+	} else if b.ATS == posting.Feed {
+		if err := httpsBoardURL("feed", b); err != nil {
+			return err
+		}
+		if b.LinkPattern != "" {
+			return fmt.Errorf("board %s/%s: link_pattern applies to page boards only", b.ATS, b.Token)
+		}
+	} else if (b.URL != "" && b.ATS != posting.Avature) || b.LinkPattern != "" {
+		return fmt.Errorf("board %s/%s: url applies to pg, fd and av boards, link_pattern to page boards only", b.ATS, b.Token)
 	}
 	switch b.Region {
 	case "":

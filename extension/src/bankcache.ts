@@ -38,7 +38,7 @@ export function createBankMemo<T>(opts: BankMemoOptions<T>): BankMemo<T> {
   const freshMs = opts.freshMs ?? BANK_FRESH_MS;
   let held: { value: T; at: number } | undefined;
   let inflight: Promise<T> | undefined;
-  // Bumped by set() and invalidate(): a request started before one must not store its answer.
+  // Bumped by fresh(), set() and invalidate(): a request started before one must not store its answer.
   let generation = 0;
 
   function hold(value: T): T {
@@ -71,7 +71,7 @@ export function createBankMemo<T>(opts: BankMemoOptions<T>): BankMemo<T> {
       if (v !== undefined) return Promise.resolve(v);
       return inflight ?? request();
     },
-    fresh() { return request(); },
+    fresh() { generation++; inflight = undefined; return request(); },
     set(value) { generation++; inflight = undefined; hold(value); },
     invalidate() { generation++; inflight = undefined; held = undefined; },
     peek,

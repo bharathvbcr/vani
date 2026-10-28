@@ -66,19 +66,19 @@ func (e *env) watchlistList(args []string) error {
 
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday: tenant/site; ef: the company domain; jb: the client code, e.g. amd; pg: a short slug)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem), sr (SmartRecruiters), ib (IBM; tokens ibm and confluent), av (Avature), ds (D. E. Shaw), at (Atlassian), oc (Oracle HCM), rp (Rippling), wk (Workable), fd (XML feed) or pg (careers page)")
+	token := fs.String("token", "", "board token (workday and oc: tenant/site, e.g. jpmc/CX_1001; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; av: a lower-case slug, e.g. twosigma; rp: the board slug; wk: the account slug; gm: the Gem vanity path; pg and fd: a short slug)")
 	company := fs.String("company", "", "company display name")
 	boardName := fs.String("board-name", "", "the board's literal name on the ATS when it is not --token (ab only): --token hippocratic-ai --board-name \"Hippocratic AI\"")
 	region := fs.String("region", "", "regional host (eu, lever only)")
-	host := fs.String("host", "", "workday host (acme.wd5.myworkdayjobs.com, or wd1.myworkdaysite.com whose tenant is the token's), or eightfold or jibe careers host (careers.amd.com)")
+	host := fs.String("host", "", "workday host (acme.wd5.myworkdayjobs.com, or wd1.myworkdaysite.com whose tenant is the token's), oc host (jpmc.fa.oraclecloud.com, or eeho.fa.us2.oraclecloud.com), or eightfold, jibe or avature careers host (careers.amd.com)")
 	var searches []string
-	fs.Func("search", "search term (repeatable; wd, az, gg, ap, ef, jb); the board lists their union", func(s string) error {
+	fs.Func("search", "search term (repeatable; wd, oc, az, gg, ap, ef, jb, ib); the board lists their union", func(s string) error {
 		searches = append(searches, s)
 		return nil
 	})
 	var filters map[string][]string
-	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap, ef, jb)", func(s string) error {
+	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap, ef, jb, sr: country=us)", func(s string) error {
 		k, v, ok := strings.Cut(s, "=")
 		if !ok || k == "" {
 			return fmt.Errorf("filter %q is not name=value", s)
@@ -89,7 +89,7 @@ func (e *env) watchlistAdd(args []string) error {
 		filters[k] = append(filters[k], v)
 		return nil
 	})
-	pageURL := fs.String("url", "", "careers listing page (pg only, https)")
+	pageURL := fs.String("url", "", "https URL (pg: the careers listing page; av: the portal's listing page, e.g. https://careers.twosigma.com/careers/OpenRoles; fd: the XML job feed)")
 	linkPattern := fs.String("link-pattern", "", "regexp a posting link must match (pg only)")
 	domain := fs.String("domain", "", "the company's website host, for its icon (www.example.com)")
 	icon := fs.String("icon", "", "https URL of the company's icon, when --domain serves none at the usual paths")
@@ -208,7 +208,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef or pg")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, fd or pg")
 	token := fs.String("token", "", "board token")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -275,7 +275,7 @@ func addBoard(cfg *config.Config, b sources.Board, allow bool) error {
 	if !allow {
 		return nil
 	}
-	if host, ok := config.BoardHost(b); ok {
+	for _, host := range config.BoardHosts(b) {
 		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, host)
 	}
 	// The company icon is fetched from the board's own domain, and from its

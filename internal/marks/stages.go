@@ -235,7 +235,7 @@ func replayStages(src io.Reader) (stageLog, error) {
 // readStageLog reads dir's stages.jsonl; one that was never written is empty.
 // The caller holds the store's lock.
 func readStageLog(dir string) (stageLog, error) {
-	f, err := os.Open(filepath.Join(dir, stagesName))
+	f, err := atomicfile.OpenRead(filepath.Join(dir, stagesName))
 	if errors.Is(err, os.ErrNotExist) {
 		return stageLog{apps: map[appKey]*application{}}, nil
 	}
@@ -356,7 +356,8 @@ func appendStage(dir string, line []byte, m map[posting.Key]Entry) error {
 		if err := writeStagesCompacted(path, log, m); err != nil {
 			return err
 		}
-		if f, err = os.OpenFile(path, os.O_RDWR, 0o600); err != nil {
+		afterCompact(path)
+		if f, err = reopenCompacted(path); err != nil {
 			return fmt.Errorf("marks: reopen after compaction: %w", err)
 		}
 		st, err := f.Stat()

@@ -25,7 +25,7 @@ func valid() Config {
 		{ATS: posting.Lever, Token: "globex", Company: "Globex", Region: "eu"},
 		{ATS: posting.Ashby, Token: "initech", Company: "Initech"},
 	}
-	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "openrouter.ai"}
+	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com", "openrouter.ai"}
 	return c
 }
 
@@ -67,7 +67,7 @@ func TestValidateRules(t *testing.T) {
 		{"workday host missing from allowlist", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext", Host: "acme.wd5.myworkdayjobs.com"}}
 		}, "allowed_hosts is missing: acme.wd5.myworkdayjobs.com"},
-		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, az, gg, ap, ef and jb only"},
+		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, oc, az, gg, ap, ef, jb and ib only"},
 		{"page http url", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Page, Token: "acme", URL: "http://acme.example/jobs", LinkPattern: "/jobs/"}}
 		}, "needs an https url"},
@@ -200,8 +200,8 @@ func TestBoardDomain(t *testing.T) {
 	c := valid()
 	c.Watchlist[0].Domain = "www.acme.com"
 	c.Watchlist[1].Domain = "www.acme.com" // two boards may share one site
-	if got := c.RequiredHosts(); !slices.Contains(got, "www.acme.com") || len(got) != 5 {
-		t.Fatalf("RequiredHosts = %v, want the domain once", got)
+	if got := c.RequiredHosts(); !slices.Contains(got, "www.acme.com") || !slices.Contains(got, "jobs.ashbyhq.com") || len(got) != 6 {
+		t.Fatalf("RequiredHosts = %v, want the domain once and the Ashby job host", got)
 	}
 	err := c.Validate()
 	if err == nil || !strings.Contains(err.Error(), "allowed_hosts is missing: www.acme.com") {
@@ -277,7 +277,7 @@ func TestLeverUSHost(t *testing.T) {
 func TestNoOpenRouterModelNoOpenRouterRequirement(t *testing.T) {
 	c := valid()
 	c.Decide.OpenRouterModel = ""
-	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com"}
+	c.AllowedHosts = []string{"boards-api.greenhouse.io", "api.eu.lever.co", "api.ashbyhq.com", "jobs.ashbyhq.com"}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("openrouter must not be required without an openrouter model: %v", err)
 	}
@@ -685,15 +685,20 @@ func TestSearchSiteBoards(t *testing.T) {
 		{ATS: posting.Jibe, Token: "acme", Company: "Acme", Host: "careers.acme.example"},
 		{ATS: posting.Workday, Token: "intel/External", Company: "Intel", Host: "intel.wd1.myworkdayjobs.com",
 			Search: "LLM", MaxPostings: sources.MaxPostingsCeiling},
+		// Oracle HCM (8, 9): tenant/site, a host whose first label is the tenant,
+		// with or without a region label; a search is optional, like Workday's.
+		{ATS: posting.OracleHCM, Token: "jpmc/CX_1001", Company: "JPMorgan Chase", Host: "jpmc.fa.oraclecloud.com",
+			Searches: []string{"software engineer", "data scientist"}, MaxPostings: 2000},
+		{ATS: posting.OracleHCM, Token: "eeho/CX_45001", Company: "Oracle", Host: "EEHO.fa.us2.oraclecloud.com"},
 	}
 	c := valid()
 	c.Watchlist = append(c.Watchlist, good...)
 	c.AllowedHosts = append(c.AllowedHosts, "www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "nvidia.wd5.myworkdayjobs.com",
-		"careers.amd.com", "careers.acme.example", "intel.wd1.myworkdayjobs.com")
+		"careers.amd.com", "careers.acme.example", "intel.wd1.myworkdayjobs.com", "jpmc.fa.oraclecloud.com", "eeho.fa.us2.oraclecloud.com")
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, h := range []string{"www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "careers.amd.com"} {
+	for _, h := range []string{"www.amazon.jobs", "www.google.com", "jobs.apple.com", "careers.qualcomm.com", "careers.amd.com", "jpmc.fa.oraclecloud.com", "eeho.fa.us2.oraclecloud.com"} {
 		if !slices.Contains(c.RequiredHosts(), h) {
 			t.Errorf("RequiredHosts lacks %s", h)
 		}
@@ -731,11 +736,30 @@ func TestSearchSiteBoards(t *testing.T) {
 		"unverified jibe filter":    {mod(5, func(b *sources.Board) { b.Filters = map[string][]string{"country": {"Canada"}} }), "is not one of"},
 		"url on jibe":               {mod(5, func(b *sources.Board) { b.URL = "https://careers.amd.com/careers-home/jobs" }), "page boards only"},
 		"unknown ats":               {sources.Board{ATS: "zz", Token: "x"}, "is not one of"},
-		"max_postings on amazon":    {mod(0, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
-		"max_postings on eightfold": {mod(3, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
-		"max_postings on jibe":      {mod(5, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd only"},
+		"max_postings on amazon":    {mod(0, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd and oc only"},
+		"max_postings on eightfold": {mod(3, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd and oc only"},
+		"max_postings on jibe":      {mod(5, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd and oc only"},
 		"max_postings negative":     {mod(4, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
 		"max_postings over ceiling": {mod(4, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
+
+		"oc max_postings negative":     {mod(8, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
+		"oc max_postings over ceiling": {mod(8, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
+		"oc without host":              {mod(8, func(b *sources.Board) { b.Host = "" }), "needs host"},
+		"oc host of another tenant":    {mod(8, func(b *sources.Board) { b.Host = "chase.fa.oraclecloud.com" }), "does not belong to tenant"},
+		"oc host not oracle":           {mod(8, func(b *sources.Board) { b.Host = "jpmc.fa.example.com" }), "needs host"},
+		"oc host with suffix trick":    {mod(8, func(b *sources.Board) { b.Host = "jpmc.fa.oraclecloud.com.evil.test" }), "needs host"},
+		"oc host with port":            {mod(8, func(b *sources.Board) { b.Host = "jpmc.fa.oraclecloud.com:443" }), "needs host"},
+		"oc workday host":              {mod(8, func(b *sources.Board) { b.Host = "jpmc.wd5.myworkdayjobs.com" }), "needs host"},
+		"oc token without site":        {mod(8, func(b *sources.Board) { b.Token = "jpmc" }), "must be tenant/site"},
+		"oc token with two slashes":    {mod(8, func(b *sources.Board) { b.Token = "jpmc/CX_1001/x" }), "must be tenant/site"},
+		"oc token finder syntax":       {mod(8, func(b *sources.Board) { b.Token = "jpmc/CX_1001,limit=1" }), "must be tenant/site"},
+		"oc token dotdot":              {mod(8, func(b *sources.Board) { b.Token = "jpmc/.." }), "unsafe"},
+		"oc token colon":               {mod(8, func(b *sources.Board) { b.Token = "jpmc/CX:1" }), "':'"},
+		"oc filters":                   {mod(8, func(b *sources.Board) { b.Filters = map[string][]string{"location": {"US"}} }), "not supported"},
+		"oc search too long":           {mod(8, func(b *sources.Board) { b.Search = long }), "at most"},
+		"oc search with a quote":       {mod(8, func(b *sources.Board) { b.Searches = []string{"ok", `x",limit=5`} }), "quote or a backslash"},
+		"oc search with a backslash":   {mod(8, func(b *sources.Board) { b.Search = `a\b` }), "quote or a backslash"},
+		"oc url":                       {mod(8, func(b *sources.Board) { b.URL = "https://jpmc.fa.oraclecloud.com/x" }), "page boards only"},
 	} {
 		if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
@@ -770,6 +794,56 @@ func TestBoardTokenCannotEndInTheScrapeSuffix(t *testing.T) {
 		b := sources.Board{ATS: posting.Greenhouse, Token: tok}
 		if err := ValidBoard(b); err != nil {
 			t.Errorf("ValidBoard(%q) = %v", tok, err)
+		}
+	}
+}
+
+func TestRipplingWorkableAndFeedBoards(t *testing.T) {
+	boards := []sources.Board{
+		{ATS: posting.Rippling, Token: "aalo-atomics", Company: "Aalo"},
+		{ATS: posting.Workable, Token: "huggingface", Company: "Hugging Face"},
+		{ATS: posting.Feed, Token: "shopify", Company: "Shopify", URL: "https://www.shopify.com/careers/feed.xml"},
+		{ATS: posting.Gem, Token: "groq", Company: "Groq"},
+	}
+	for _, b := range boards {
+		if err := ValidBoard(b); err != nil {
+			t.Errorf("%s/%s: %v", b.ATS, b.Token, err)
+		}
+	}
+	hosts := []string{"api.rippling.com", "apply.workable.com", "www.shopify.com", "api.gem.com"}
+	for i, want := range hosts {
+		if h, ok := BoardHost(boards[i]); !ok || h != want {
+			t.Errorf("%s host %q, %v", boards[i].ATS, h, ok)
+		}
+	}
+	c := valid()
+	c.Watchlist = append(c.Watchlist, boards...)
+	c.AllowedHosts = append(c.AllowedHosts, hosts...)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hosts {
+		if !slices.Contains(c.RequiredHosts(), h) {
+			t.Errorf("RequiredHosts lacks %s", h)
+		}
+	}
+	bad := []struct {
+		name, want string
+		b          sources.Board
+	}{
+		{"http feed", "needs an https url", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "http://www.shopify.com/feed.xml"}},
+		{"feed userinfo", "needs an https url", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://user@www.shopify.com/feed.xml"}},
+		{"feed without url", "needs an https url", sources.Board{ATS: posting.Feed, Token: "shopify"}},
+		{"feed link pattern", "link_pattern", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://www.shopify.com/feed.xml", LinkPattern: "job"}},
+		{"rippling url", "page boards only", sources.Board{ATS: posting.Rippling, Token: "acme", URL: "https://ats.rippling.com/acme"}},
+		{"workable search", "search applies", sources.Board{ATS: posting.Workable, Token: "acme", Search: "engineer"}},
+		{"gem search", "search applies", sources.Board{ATS: posting.Gem, Token: "groq", Search: "engineer"}},
+		{"gem url", "page boards only", sources.Board{ATS: posting.Gem, Token: "groq", URL: "https://jobs.gem.com/groq"}},
+		{"feed host field", "host applies", sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://www.shopify.com/feed.xml", Host: "www.shopify.com"}},
+	}
+	for _, tc := range bad {
+		if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
 		}
 	}
 }

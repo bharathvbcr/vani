@@ -418,22 +418,15 @@ func readRunRecord(stateDir string) (*runRecord, error) {
 }
 
 // readRunRecordFile is readRunRecord for any record file: last.json or a
-// history entry.
+// history entry. Bytes come from readBoundedFile, which refuses a symlink or
+// any other non-regular file without opening it. A missing file is no record.
 func readRunRecordFile(path string) (*runRecord, error) {
-	f, err := os.Open(path)
+	raw, err := readBoundedFile(path, maxRunRecord)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(f, maxRunRecord+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > maxRunRecord {
-		return nil, fmt.Errorf("run record exceeds %d bytes", maxRunRecord)
 	}
 	var r runRecord
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -457,8 +450,9 @@ func readRunRecordFile(path string) (*runRecord, error) {
 	return &r, nil
 }
 
-// pidAlive reports whether a process with this pid exists (processExists, per
-// platform). Tests replace it.
+// pidAlive reports whether this process can see pid (processExists, per
+// platform). A pid the kernel will not let us inspect is not alive. Tests
+// replace it. Whether the pid is this vani daemon is daemonIsLive, not this.
 var pidAlive = processExists
 
 // runState is the record's state as the user should read it: the written

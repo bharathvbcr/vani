@@ -1608,6 +1608,7 @@ $("#export").onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   toast("Answers exported to JSON.");
 };
+$("#import-btn").onclick = () => { $("#import").click(); };
 $("#import").onchange = async ev => {
   const input = ev.target as HTMLInputElement;
   const file = input.files?.[0];

@@ -44,6 +44,12 @@ func WorkdayKey(tenant, site, reqID string) (Key, error) {
 	return build(Workday, tenant, site, reqID)
 }
 
+// OracleHCMKey is oc:{tenant}:{site}:{requisition_id}; the id is the public
+// requisition number ("210791916"), not the internal RequisitionId.
+func OracleHCMKey(tenant, site, reqID string) (Key, error) {
+	return build(OracleHCM, tenant, site, reqID)
+}
+
 // AmazonKey is az:{board}:{id_icims}.
 func AmazonKey(board, id string) (Key, error) { return build(Amazon, board, id) }
 
@@ -62,6 +68,43 @@ func EightfoldKey(domain, id string) (Key, error) { return build(Eightfold, doma
 // JibeKey is jb:{client_code}:{req_id}; the client code ("amd") is the board
 // token.
 func JibeKey(client, reqID string) (Key, error) { return build(Jibe, client, reqID) }
+
+// GemKey is gm:{board}:{post_id}. The post id is the last segment of the
+// post's jobs.gem.com link. Gem's ids are case-sensitive base64 and the key
+// lowercases every part, so the gem adapter refuses a listing in which two
+// ids share a key.
+func GemKey(board, postID string) (Key, error) { return build(Gem, board, postID) }
+
+// SmartRecruitersKey is sr:{company_id}:{posting_id}; the company identifier
+// ("servicenow") is the board token and the posting id is the ATS's own.
+func SmartRecruitersKey(company, id string) (Key, error) { return build(SmartRecruiters, company, id) }
+
+// IBMKey is ib:{board}:{jobId}; the board is "ibm" or "confluent". The job id
+// is the number in the careers.ibm.com job link (JobDetail?jobId=135407).
+func IBMKey(board, jobID string) (Key, error) { return build(IBM, board, jobID) }
+
+// AvatureKey is av:{token}:{job_id}; the token is the board's own slug
+// ("twosigma"), the job id the number at the end of its JobDetail URL.
+func AvatureKey(token, jobID string) (Key, error) { return build(Avature, token, jobID) }
+
+// DEShawKey is ds:{board}:{id}, the id of deshaw.com's own job record.
+func DEShawKey(board, id string) (Key, error) { return build(DEShaw, board, id) }
+
+// AtlassianKey is at:{board}:{id}, the id of Atlassian's own job record (the
+// iCIMS job id in its portal URL).
+func AtlassianKey(board, id string) (Key, error) { return build(Atlassian, board, id) }
+
+// RipplingKey is rp:{board_slug}:{job_uuid}.
+func RipplingKey(board, jobID string) (Key, error) { return build(Rippling, board, jobID) }
+
+// WorkableKey is wk:{account_slug}:{shortcode}.
+func WorkableKey(account, shortcode string) (Key, error) {
+	return build(Workable, account, shortcode)
+}
+
+// FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
+// cosmetic change to the apply URL does not split one role into two.
+func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
 
 // PageKey is pg:{board}:{sha256(canonical posting URL)[:24]}. The URL is
 // canonicalised (lowercase scheme and host, no fragment, no utm_* parameters,
@@ -119,7 +162,8 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
+		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable, Feed, Page, Other:
 		return a
 	}
 	return ""

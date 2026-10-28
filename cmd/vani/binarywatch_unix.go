@@ -15,3 +15,10 @@ func devIno(fi fs.FileInfo) (dev, ino uint64) {
 	}
 	return 0, 0
 }
+
+// statFileID is the device and inode from the stat. Unix does not open the
+// file; a directory or a FIFO stays a stat.
+func statFileID(_ string, fi fs.FileInfo) (dev, ino uint64, err error) {
+	dev, ino = devIno(fi)
+	return dev, ino, nil
+}

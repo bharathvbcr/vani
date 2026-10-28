@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import VaniApplyKit
 
 /// Browse the roles Vani retrieved, and keep the ones that matter: Save,
@@ -67,6 +68,8 @@ struct JobsView: View {
                 .labelStyle(.titleAndIcon)
                 FilterMenu()
                     .labelStyle(.titleAndIcon)
+                ExportMenu()
+                    .labelStyle(.titleAndIcon)
                 Toggle(isOn: $jobs.showInsights) {
                     Label("Insights", systemImage: "chart.dots.scatter")
                 }
@@ -84,6 +87,14 @@ struct JobsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(verbatim: jobs.actionError ?? "")
+        }
+        .alert("Exported to Excel", isPresented: Binding(get: { jobs.exported != nil }, set: { if !$0 { jobs.exported = nil } })) {
+            if let url = jobs.exported?.url {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(verbatim: jobs.exported?.summary ?? "")
         }
         // The cost of a Sonnet re-triage, asked about before anything is spent. Closing it any
         // other way than Ask Sonnet cancels; a dismissal after Ask Sonnet must not stop the run.
@@ -225,6 +236,43 @@ private struct ViewSwitcher: View {
 
 /// Filters on triage readings, age and closed roles. Each is a `vani jobs`
 /// flag; the view counts above ignore them, the list and Insights do not.
+/// Save roles to an Excel workbook: the first 100, 250, … of the list as it is sorted and filtered,
+/// all of it when it is no longer than the largest size, or the selected roles.
+private struct ExportMenu: View {
+    @Environment(JobsModel.self) private var jobs
+
+    var body: some View {
+        let total = jobs.page?.total ?? 0
+        let selected = jobs.selectedJobs.map(\.key)
+        Menu {
+            ForEach(JobsClient.exportSizes.filter { $0 < total }, id: \.self) { n in
+                Button("Top \(n.formatted())") { exportJobs(jobs, .top(n)) }
+            }
+            if total <= JobsClient.maxExportRows {
+                Button("All \(total.formatted()) Roles") { exportJobs(jobs, .top(JobsClient.maxExportRows)) }
+                    .disabled(total == 0)
+            }
+            Divider()
+            Button("Selected Roles (\(selected.count.formatted()))") { exportJobs(jobs, .keys(selected)) }
+                .disabled(selected.isEmpty)
+        } label: {
+            Label("Export", systemImage: "tablecells")
+        }
+        .disabled(jobs.exporting || jobs.page == nil)
+        .help("Save roles from this list, in its order and with its filters, to an Excel workbook")
+    }
+}
+
+/// Ask where to save, then export. The name suggested says the view, the size and the day.
+@MainActor
+func exportJobs(_ jobs: JobsModel, _ scope: JobsExportScope) {
+    let panel = NSSavePanel()
+    if let xlsx = UTType(filenameExtension: "xlsx") { panel.allowedContentTypes = [xlsx] }
+    panel.nameFieldStringValue = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    Task { await jobs.export(scope, to: url) }
+}
+
 private struct FilterMenu: View {
     @Environment(JobsModel.self) private var jobs
     @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false

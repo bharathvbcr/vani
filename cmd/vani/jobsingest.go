@@ -25,6 +25,8 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -217,6 +219,10 @@ func (e *env) saveSearch(page inbox.Page, jobs []inbox.Job, company string) (ing
 		if reason := workdayRefusal(board); reason != "" {
 			return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: reason}, sources.Board{}, nil
 		}
+	case posting.OracleHCM:
+		if reason := oracleHCMRefusal(board); reason != "" {
+			return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: reason}, sources.Board{}, nil
+		}
 	case posting.Page:
 		if reason := pageRefusal(board); reason != "" {
 			return ingestSearchJSON{Status: searchInvalid, URL: res.URL, Reason: reason}, sources.Board{}, nil
@@ -260,20 +266,39 @@ var checkWorkdaySize = func(ctx context.Context, b sources.Board) error {
 	return workday.CheckSize(ctx, c, b)
 }
 
-// workdayRefusal is why a Workday search cannot be saved, or "" when it can. A
+// checkOracleHCMSize asks the board's Oracle HCM host how big the search is,
+// as checkWorkdaySize does for Workday. Tests replace it too.
+var checkOracleHCMSize = func(ctx context.Context, b sources.Board) error {
+	c, err := egress.New(egress.Config{AllowedHosts: []string{b.Host}})
+	if err != nil {
+		return err
+	}
+	return oraclehcm.CheckSize(ctx, c, b)
+}
+
+// workdayRefusal is why a Workday search cannot be saved, or "" when it can.
+func workdayRefusal(b sources.Board) string { return sizeRefusal("Workday", checkWorkdaySize, b) }
+
+// oracleHCMRefusal is why an Oracle HCM search cannot be saved, or "" when it
+// can: JPMorgan's unfiltered board counts 7,317 postings.
+func oracleHCMRefusal(b sources.Board) string {
+	return sizeRefusal("Oracle HCM", checkOracleHCMSize, b)
+}
+
+// sizeRefusal is why a name board search cannot be saved, or "" when it can. A
 // search over the adapter's posting cap is refused with the way out; a check
 // that could not run is refused too, as unchecked, never as fine.
-func workdayRefusal(b sources.Board) string {
+func sizeRefusal(name string, check func(context.Context, sources.Board) error, b sources.Board) string {
 	ctx, cancel := context.WithTimeout(context.Background(), workdayCheckTimeout)
 	defer cancel()
-	err := checkWorkdaySize(ctx, b)
+	err := check(ctx, b)
 	switch {
 	case err == nil:
 		return ""
 	case errors.Is(err, srcutil.ErrTooManyPostings):
-		return fmt.Sprintf("this Workday search lists more postings than Vani can follow (%v); narrow it with search terms and save it again", err)
+		return fmt.Sprintf("this %s search lists more postings than Vani can follow (%v); narrow it with search terms and save it again", name, err)
 	}
-	return fmt.Sprintf("could not check how many postings this Workday search lists, so it was not saved; try again: %v", err)
+	return fmt.Sprintf("could not check how many postings this %s search lists, so it was not saved; try again: %v", name, err)
 }
 
 // checkPageRobots asks the board's host whether its robots.txt allows Vani to
@@ -325,10 +350,11 @@ func isAggregator(host string) bool {
 	return false
 }
 
-var (
-	workdayHostRE   = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,2}\.myworkdayjobs\.com$`)
-	workdayLocaleRE = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
-)
+// smartRecruitersAppPaths are first path segments on SmartRecruiters' hosts that
+// are not a company identifier (both seen in 2026-10-27 API and page links).
+var smartRecruitersAppPaths = map[string]bool{"oneclick-ui": true, "external-referrals": true}
+
+var workdayLocaleRE = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
 
 // deriveBoard maps a listing page to the board that searches it. When the page
 // cannot be a board it returns a result whose Status is set (unsupported or
@@ -366,6 +392,20 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 			b.Region = "eu"
 		}
 		return b, ingestSearchJSON{}
+	case host == "jobs.gem.com":
+		if first == "" {
+			return fail(searchInvalid, "the page URL names no Gem board")
+		}
+		return sources.Board{ATS: posting.Gem, Token: first, Company: company}, ingestSearchJSON{}
+	case host == "jobs.smartrecruiters.com" || host == "careers.smartrecruiters.com":
+		// Both serve a company's page at /{companyIdentifier} (checked
+		// 2026-10-27: jobs. redirects to careers.). The first segment of these two
+		// is not a company: /oneclick-ui/... and /external-referrals/... are the
+		// site's own apps.
+		if first == "" || smartRecruitersAppPaths[strings.ToLower(first)] {
+			return fail(searchInvalid, "the page URL names no SmartRecruiters company")
+		}
+		return sources.Board{ATS: posting.SmartRecruiters, Token: first, Company: company}, ingestSearchJSON{}
 	case host == "jobs.ashbyhq.com":
 		if first == "" {
 			return fail(searchInvalid, "the page URL names no Ashby board")
@@ -382,14 +422,14 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		}
 		return b, ingestSearchJSON{}
 	}
-	if m := workdayHostRE.FindStringSubmatch(host); m != nil {
+	if tenant, ok := sources.WorkdayTenantHost(host); ok {
 		if len(segs) > 0 && workdayLocaleRE.MatchString(segs[0]) {
 			segs = segs[1:]
 		}
 		if len(segs) == 0 {
 			return fail(searchInvalid, "the page URL names no Workday site")
 		}
-		return sources.Board{ATS: posting.Workday, Token: m[1] + "/" + segs[0], Company: company, Host: host,
+		return sources.Board{ATS: posting.Workday, Token: tenant + "/" + segs[0], Company: company, Host: host,
 			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
 	}
 
@@ -404,6 +444,30 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		}
 		return sources.Board{ATS: posting.Workday, Token: segs[1] + "/" + segs[2], Company: company, Host: host,
 			Search: strings.TrimSpace(u.Query().Get("q"))}, ingestSearchJSON{}
+	}
+
+	if tenant, ok := sources.OracleHCMHostTenant(host); ok {
+		// The candidate-experience pages are /hcmUI/CandidateExperience/{lang}/sites/{site}
+		// [/jobs | /job/{id}], and the search box's text is the "keyword" query
+		// (checked in the live UI, 2026-10-27).
+		if len(segs) < 5 || !strings.EqualFold(segs[0], "hcmUI") || !strings.EqualFold(segs[1], "CandidateExperience") ||
+			!workdayLocaleRE.MatchString(segs[2]) || !strings.EqualFold(segs[3], "sites") {
+			return fail(searchInvalid, "the page URL names no Oracle HCM site")
+		}
+		return sources.Board{ATS: posting.OracleHCM, Token: tenant + "/" + segs[4], Company: company, Host: host,
+			Search: strings.TrimSpace(u.Query().Get("keyword"))}, ingestSearchJSON{}
+	}
+
+	// A page of an Avature portal already on the watchlist is that board. An
+	// Avature portal has no host of its own to recognise, so a host the owner
+	// has not added is a careers page like any other.
+	for _, x := range wl {
+		if x.ATS != posting.Avature || !strings.EqualFold(strings.TrimSpace(x.Host), host) {
+			continue
+		}
+		if lp, err := avature.ParseListURL(x.URL, x.Host); err == nil && lp.Portal == first {
+			return x, ingestSearchJSON{}
+		}
 	}
 
 	// Any other https page is a careers page, read by the pg adapter.

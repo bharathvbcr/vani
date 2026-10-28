@@ -609,6 +609,64 @@ func TestStageWriteCompactsAFullFile(t *testing.T) {
 	}
 }
 
+// A stages.jsonl that is a symlink is not read through: its target's lines
+// would otherwise become this store's stages.
+func TestReadRefusesSymlinkedStagesFile(t *testing.T) {
+	dir := appliedStore(t, t0)
+	mustStage(t, dir, k1, StageScreening, t0.Add(time.Hour))
+	path := filepath.Join(dir, stagesName)
+	body, _ := os.ReadFile(path)
+	target := filepath.Join(t.TempDir(), "elsewhere.jsonl")
+	if err := os.WriteFile(target, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(dir); !errors.Is(err, atomicfile.ErrLinkedLeaf) {
+		t.Fatalf("Read = %v, want ErrLinkedLeaf", err)
+	}
+}
+
+// A symlink planted after a stage compaction and before reopen is not
+// written through.
+func TestStageReopenAfterCompactRefusesSwappedSymlink(t *testing.T) {
+	dir := appliedStore(t, t0)
+	mustStage(t, dir, k1, StageScreening, t0.Add(time.Hour))
+	path := filepath.Join(dir, stagesName)
+	one, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, []byte(strings.Repeat(string(one), MaxStageFileBytes/len(one))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.jsonl")
+	const keep = "keep-target\n"
+	if err := os.WriteFile(target, []byte(keep), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := afterCompact
+	t.Cleanup(func() { afterCompact = old })
+	afterCompact = func(p string) {
+		if p != path {
+			return
+		}
+		if err := os.Remove(p); err != nil {
+			t.Errorf("remove compacted file: %v", err)
+		}
+		if err := os.Symlink(target, p); err != nil {
+			t.Errorf("symlink: %v", err)
+		}
+	}
+	if _, err := SetStage(dir, k1, StageInterview, t0.Add(2*time.Hour)); !errors.Is(err, atomicfile.ErrLinkedLeaf) {
+		t.Fatalf("SetStage = %v, want ErrLinkedLeaf", err)
+	}
+	if b, err := os.ReadFile(target); err != nil || string(b) != keep {
+		t.Fatalf("target = %q, %v", b, err)
+	}
+}
+
 // Live stages that alone fill the file are refused, never trimmed.
 func TestStageWriteRefusedWhenLiveStagesFillTheFile(t *testing.T) {
 	dir := Dir(t.TempDir())

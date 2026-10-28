@@ -212,6 +212,103 @@ func TestPageURL(t *testing.T) {
 	}
 }
 
+// An unquoted multi-word phrase is Apple's loose search ("GPU kernel" and
+// "AI agent" match 600+ roles). List must ask for the quoted phrase once,
+// including when the board already stored the quotes.
+func TestListQuotesALoosePhrase(t *testing.T) {
+	jd := fixture(t)
+	slug := jd["transformedPostingTitle"].(string)
+	const (
+		quoted = "https://jobs.apple.com/en-us/search?location=united-states-USA&search=%22GPU+kernel%22&sort=relevance"
+		loose  = "https://jobs.apple.com/en-us/search?location=united-states-USA&search=GPU+kernel&sort=relevance"
+	)
+	pages := map[string]string{
+		quoted:                               searchPage("1", [3]string{"200677962", "3760", slug}),
+		detailURL("200677962", "3760", slug): detailsPage(t, jd),
+	}
+	for _, term := range []string{"GPU kernel", `"GPU kernel"`, "  GPU kernel  "} {
+		s, d := newSource(pages)
+		b := board(term)
+		b.Filters = map[string][]string{"location": {"united-states-USA"}}
+		got, err := s.List(context.Background(), b)
+		if err != nil || len(got) != 1 || got[0].Key != "ap:apple:200677962" {
+			t.Errorf("%q: got %d err %v", term, len(got), err)
+		}
+		if urls := d.URLs(); len(urls) == 0 || urls[0] != quoted {
+			t.Errorf("%q: first request %v, want %s (loose is %s)", term, urls, quoted, loose)
+		}
+	}
+	if got := pageURL("CUDA", nil, 1); strings.Contains(got, "%22") {
+		t.Errorf("a single word was quoted: %s", got)
+	}
+	if got := pageURL(`"CUDA"`, nil, 1); !strings.Contains(got, "search=%22CUDA%22") {
+		t.Errorf("quotes already on a single word were dropped or doubled: %s", got)
+	}
+}
+
+// Live "human factors" (2026-10-28) displays 30 results and repeats one job
+// number on the next page, so the distinct job numbers stay at 29. That
+// repeat is the whole gap. List keeps both roles.
+func TestRepeatedJobOnTheNextPage(t *testing.T) {
+	jd := fixture(t)
+	mk := func(id, title string) string {
+		return detailsPage(t, with(jd, "positionId", id, "jobNumber", id+"-0001", "postingTitle", title))
+	}
+	a := [3]string{"200000001", "0001", "role-a"}
+	b := [3]string{"200000002", "0001", "role-b"}
+	pages := map[string]string{
+		pageURL("human factors", nil, 1): searchPage("3", a, b),
+		pageURL("human factors", nil, 2): searchPage("3", b),
+		detailURL(a[0], a[1], a[2]):      mk(a[0], "Role A"),
+		detailURL(b[0], b[1], b[2]):      mk(b[0], "Role B"),
+	}
+	s, _ := newSource(pages)
+	got, err := s.List(context.Background(), board("human factors"))
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %d postings, err %v; want both roles", len(got), err)
+	}
+}
+
+// Live "MLX" (2026-10-28) counts a details link with no team suffix
+// (/en-us/details/{position}/{slug}) beside the suffixed link for the same
+// role. The count includes it. One position is fetched once, at the suffixed URL.
+func TestUnsuffixedDetailLink(t *testing.T) {
+	jd := fixture(t)
+	const pos, bare = "200667449", "200650849"
+	slugS, slugB := "senior-role", "bare-role"
+	link := func(href string) string {
+		return fmt.Sprintf(`<li><a href="%s">t</a><a href="%s">m</a></li>`, href, href)
+	}
+	suffixed := fmt.Sprintf(`/en-us/details/%s-3401/%s?team=MLAI`, pos, slugS)
+	bareHref := fmt.Sprintf(`/en-us/details/%s/%s?team=MLAI`, bare, slugB)
+	aliasHref := fmt.Sprintf(`/en-us/details/%s/%s?team=MLAI`, pos, slugS)
+	page := func(rows string, n string) string {
+		return `<html><body><p id="search-result-count">` + n + ` Result(s)</p><ul>` + rows + `</ul></body></html>`
+	}
+	s, d := newSource(map[string]string{
+		pageURL("MLX", nil, 1):                                       page(link(suffixed)+link(bareHref), "2"),
+		detailURL(pos, "3401", slugS):                                detailsPage(t, with(jd, "positionId", pos, "jobNumber", pos+"-3401", "postingTitle", "Suffixed")),
+		"https://jobs.apple.com/en-us/details/" + bare + "/" + slugB: detailsPage(t, with(jd, "positionId", bare, "jobNumber", bare, "postingTitle", "Bare")),
+	})
+	got, err := s.List(context.Background(), board("MLX"))
+	if err != nil || len(got) != 2 {
+		t.Fatalf("two positions: got %d err %v", len(got), err)
+	}
+	s, d = newSource(map[string]string{
+		pageURL("MLX", nil, 1):        page(link(suffixed)+link(aliasHref), "2"),
+		detailURL(pos, "3401", slugS): detailsPage(t, with(jd, "positionId", pos, "jobNumber", pos+"-3401", "postingTitle", "Suffixed")),
+	})
+	got, err = s.List(context.Background(), board("MLX"))
+	if err != nil || len(got) != 1 || got[0].Key != "ap:apple:"+pos {
+		t.Fatalf("alias: got %d err %v", len(got), err)
+	}
+	for _, u := range d.URLs() {
+		if strings.Contains(u, "/details/"+pos+"/") && !strings.Contains(u, pos+"-3401") {
+			t.Errorf("fetched the unsuffixed alias %s", u)
+		}
+	}
+}
+
 func TestLevelLine(t *testing.T) {
 	for _, tc := range [][3]string{
 		{"", "", ""}, {"ICT4", "ICT4", "Level: ICT4"}, {"", "ICT5", "Level: ICT5"}, {"ICT3", "", "Level: ICT3"}, {"ICT3", "ICT4", "Level: ICT3 to ICT4"},

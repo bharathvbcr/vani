@@ -4,8 +4,10 @@
 // The protocol has no request ids, but the host (vani-apply-host/main.swift) is one synchronous loop,
 // so replies come back strictly in request order and a reply is matched to its call by FIFO position.
 // That only holds while no frame is lost, so anything that could desynchronise the two sides
-// (a timeout, a disconnect, a stray frame) poisons the port: it is closed, every pending call is
-// rejected, and the next call opens a fresh one.
+// (a timeout of a call already written, a disconnect, a stray frame) poisons the port: it is closed,
+// every pending call is rejected, and the next call opens a fresh one. A call that times out while
+// still queued was never written, so it is dropped and the port stays up. A caller's shorter deadline
+// is that call's only timer; it is not sent to the host, and it does not outlive the call.
 import type { Transport } from "./store";
 
 /** The slice of chrome.runtime.Port this transport uses. */
@@ -79,6 +81,15 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
   const backoff = opts.backoff ?? [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
   const now = opts.now ?? Date.now;
 
+  /** A passed deadline shorter than the port's own bound. Anything else (omitted, longer, or not a
+   *  finite non-negative number) stays at callTimeoutMs: a longer wait would still desync a late reply. */
+  function callDeadline(timeoutMs: number | undefined): number {
+    if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs >= callTimeoutMs) {
+      return callTimeoutMs;
+    }
+    return timeoutMs;
+  }
+
   let conn: Connection | null = null;
   const queue: Pending[] = [];
   let failures = 0;
@@ -147,45 +158,46 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
     }
   }
 
-  function enqueue(msg: object): Promise<unknown> {
+  function enqueue(msg: object, timeoutMs?: number): Promise<unknown> {
     if (closed) return Promise.reject(new PortError("native port closed", "closed"));
     if (queue.length + (conn?.inFlight.length ?? 0) >= maxQueued) {
       return Promise.reject(new PortError("too many pending native calls", "overflow"));
     }
+    const limit = callDeadline(timeoutMs);
     return new Promise((resolve, reject) => {
       const p: Pending = {
         msg, resolve, reject,
         timer: setTimeout(() => {
           const c = conn;
           if (c && c.inFlight.includes(p)) {
-            // Its reply may still arrive and would be taken for the next call's: start over.
-            poison(c, "timeout", `native call timed out after ${callTimeoutMs} ms`);
+            // Written: its reply may still arrive and would be taken for the next call's. Start over.
+            poison(c, "timeout", `native call timed out after ${limit} ms`);
             return;
           }
           const i = queue.indexOf(p);
           if (i >= 0) queue.splice(i, 1); // never written, so nothing can come back for it
-          p.reject(new PortError(`native call timed out after ${callTimeoutMs} ms`, "timeout"));
-        }, callTimeoutMs),
+          p.reject(new PortError(`native call timed out after ${limit} ms`, "timeout"));
+        }, limit),
       };
       queue.push(p);
       pump();
     });
   }
 
-  function attempt(msg: object, op: string, retried: boolean): Promise<unknown> {
-    if (failures > 0 && now() < retryAt) return opts.spawn(msg);
-    return enqueue(msg).catch(e => {
+  function attempt(msg: object, op: string, retried: boolean, timeoutMs?: number): Promise<unknown> {
+    if (failures > 0 && now() < retryAt) return opts.spawn(msg, timeoutMs);
+    return enqueue(msg, timeoutMs).catch(e => {
       if (!retried && e instanceof PortError && e.kind === "disconnect" && READ_ONLY_OPS.has(op)) {
-        return attempt(msg, op, true);
+        return attempt(msg, op, true, timeoutMs);
       }
       throw e;
     });
   }
 
-  const transport = ((msg: object) => {
+  const transport = ((msg: object, timeoutMs?: number) => {
     const op = (msg as { op?: unknown }).op;
-    if (typeof op !== "string" || !PORT_OPS.has(op)) return opts.spawn(msg);
-    return attempt(msg, op, false);
+    if (typeof op !== "string" || !PORT_OPS.has(op)) return opts.spawn(msg, timeoutMs);
+    return attempt(msg, op, false, timeoutMs);
   }) as Transport & { close(): void };
 
   transport.close = () => {

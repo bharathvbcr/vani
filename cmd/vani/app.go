@@ -74,12 +74,14 @@ var buildApp = wireApp
 // it (triggerSchedule, triggerManual) and opts are a manual run's overrides;
 // the daemon's runs take none.
 //
-// A panic in the run's own goroutine is recovered (guardedRun) and recorded as a
-// failed run, so the record never stays "running" and the failure is announced.
-// A panic in a goroutine the pipeline started cannot be recovered here and
-// ends the process, as any unrecovered goroutine panic does; launchd's
-// KeepAlive restarts the daemon, and the record stays "running" until the next
-// run replaces it.
+// A panic in the run's own goroutine is recovered (guardedRun, and the
+// bookkeeping after it) and recorded as a failed run, so the record never
+// stays "running" and the failure is announced. A panic while that finished
+// record is being saved is not recovered again; the daemon's job recover is
+// the backstop. A panic in a goroutine the pipeline started cannot be
+// recovered here and ends the process, as any unrecovered goroutine panic
+// does; launchd's KeepAlive restarts the daemon, and the record stays
+// "running" until the next run replaces it.
 func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOptions) daemon.Job {
 	return func(ctx context.Context) error {
 		// A process-lifetime change is not a run. Decide it before any record,
@@ -106,7 +108,7 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		}
 		// The run's own reload can still see a change that landed after the
 		// check above. Snapshot the record first so that path can put it back.
-		priorRecord, priorErr := os.ReadFile(runRecordPath(e.stateDir))
+		priorRecord, priorErr := readBoundedFile(runRecordPath(e.stateDir), maxRunRecord)
 		e.saveRunRecord(rec)
 		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
 		if errors.Is(err, errConfigRestart) && !errors.Is(err, daemon.ErrFatal) {
@@ -120,29 +122,57 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 			}
 			return err
 		}
-		rec.FinishedAt = now()
-		if app.RunReport != nil {
-			rec.runDetail = app.RunReport()
-		}
-		if app.Ledger != nil {
-			rec.CountsAfter = statusCounts(app.Ledger.All())
-		}
-		switch {
-		case err == nil:
-			rec.Outcome = outcomeOK
-		case errors.Is(err, context.Canceled) && !errors.Is(err, daemon.ErrFatal) && !errors.Is(err, errRunPanic):
-			// Someone stopped the run. A ledger that failed, or a panic, while it
-			// was being stopped is still a failure and says so below.
-			rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
-		default:
-			rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
-			rec.Cause = runCause(err)
-		}
-		finishLog()
-		e.saveRunRecord(rec)
-		e.announceFailure(ctx, app, rec)
-		return err
+		return e.finishDailyRun(ctx, app, &rec, stage, err, finishLog)
 	}
+}
+
+// finishDailyRun writes the finished record for a run that is not a config
+// restart. One recover covers the tail: a panic in RunReport, the ledger
+// read, or the failure notice is still a finished failed run. The recover
+// saves and announces once; a panic in that save is left for the daemon.
+func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stage string, runErr error, finishLog func()) (err error) {
+	err = runErr
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		writePanic(e.stderr, "vani: the run panicked: ", p)
+		err = errors.Join(err, fmt.Errorf("%w: %s", errRunPanic, panicText(p)))
+		if berr := ledgerBroken(app.Ledger); berr != nil {
+			err = errors.Join(err, berr)
+		}
+		rec.FinishedAt = now()
+		rec.Outcome = outcomeFailed
+		rec.Stage = stage
+		rec.Error = runErrorText(err)
+		rec.Cause = runCause(err)
+		finishLog()
+		e.saveRunRecord(*rec)
+		e.announceFailure(ctx, app, *rec)
+	}()
+	rec.FinishedAt = now()
+	if app.RunReport != nil {
+		rec.runDetail = app.RunReport()
+	}
+	if app.Ledger != nil {
+		rec.CountsAfter = statusCounts(app.Ledger.All())
+	}
+	switch {
+	case err == nil:
+		rec.Outcome = outcomeOK
+	case errors.Is(err, context.Canceled) && !errors.Is(err, daemon.ErrFatal) && !errors.Is(err, errRunPanic):
+		// Someone stopped the run. A ledger that failed, or a panic, while it
+		// was being stopped is still a failure and says so below.
+		rec.Outcome, rec.Stage, rec.Error = outcomeCancelled, stage, runErrorText(err)
+	default:
+		rec.Outcome, rec.Stage, rec.Error = outcomeFailed, stage, runErrorText(err)
+		rec.Cause = runCause(err)
+	}
+	finishLog()
+	e.saveRunRecord(*rec)
+	e.announceFailure(ctx, app, *rec)
+	return err
 }
 
 // captureRunLog tees this run's stderr into runs/history/<id>.log when the
@@ -480,9 +510,17 @@ func (e *env) keepInterruptedRun() {
 
 // saveRunRecord writes the record, and a finished one to the run history too;
 // a failure is a warning, never a failed run: the run's work is in the ledger
-// either way. last.json is written first, so a history failure never costs the
-// record status reads.
+// either way. A finished record that history does not already hold is written
+// there first, once and on failure once more. If that file is still missing,
+// last.json stays and the warning is the history error. An unreadable
+// last.json is not invented. The new record is then written to last.json
+// before its own history entry, so a history failure of this run never costs
+// the record status reads; the next save flushes it.
 func (e *env) saveRunRecord(r runRecord) {
+	if err := flushFinishedLast(e.stateDir); err != nil {
+		fmt.Fprintf(e.stderr, "vani: could not keep the run in the history: %v\n", err)
+		return
+	}
 	if err := writeRunRecord(e.stateDir, r); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not record the run: %v\n", err)
 		return

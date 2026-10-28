@@ -28,8 +28,9 @@ export interface LogEntry {
   counts?: Record<string, number>;
 }
 
-/** Sends one JSON request to the native host and resolves with its JSON reply; rejects when the host cannot be reached. */
-export type Transport = (msg: object) => Promise<unknown>;
+/** Sends one JSON request to the native host and resolves with its JSON reply; rejects when the host cannot be reached.
+ *  `timeoutMs`, when a caller passes it, is that call's deadline only. It is never a field of `msg`. */
+export type Transport = (msg: object, timeoutMs?: number) => Promise<unknown>;
 
 /** The slice of chrome.storage.local the store uses. */
 export interface LocalArea {
@@ -47,25 +48,61 @@ export class ChunkIntegrityError extends NativeError {
   override name = "ChunkIntegrityError";
 }
 
-/** One host process per message: Safari's promise API when present, else Chrome's callback API. */
-export const spawnTransport: Transport = msg =>
+/** One host process per message: Safari's promise API when present, else Chrome's callback API.
+ *  A passed deadline is this call's only timer. A late reply after it fires is ignored. */
+export const spawnTransport: Transport = (msg, timeoutMs) =>
   new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      fn();
+    };
+    if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs >= 0) {
+      timer = setTimeout(() => finish(() => reject(new Error("timed out"))), timeoutMs);
+    }
     if (globalThis.browser?.runtime?.sendNativeMessage) {
-      globalThis.browser.runtime.sendNativeMessage(NATIVE_HOST, msg).then(resolve, reject);
+      globalThis.browser.runtime.sendNativeMessage(NATIVE_HOST, msg).then(
+        v => finish(() => resolve(v)),
+        e => finish(() => reject(e instanceof Error ? e : new Error(String(e)))),
+      );
       return;
     }
     chrome.runtime.sendNativeMessage(NATIVE_HOST, msg, response => {
       const err = chrome.runtime.lastError;
-      if (err) reject(new Error(err.message ?? "native messaging failed"));
-      else resolve(response);
+      if (err) finish(() => reject(new Error(err.message ?? "native messaging failed")));
+      else finish(() => resolve(response));
     });
   });
 
-/** Production transport: Safari and a Chrome without connectNative go per message; Chrome keeps one port for the bank ops. */
-export const nativeTransport: Transport =
-  globalThis.browser?.runtime?.sendNativeMessage || typeof chrome === "undefined" || !chrome.runtime?.connectNative
-    ? spawnTransport
-    : createPortTransport({ connect: () => chrome.runtime.connectNative(NATIVE_HOST), spawn: spawnTransport });
+/** Safari, or a Chrome that has no connectNative, is one host process per message. */
+function hostIsPerMessage(): boolean {
+  return Boolean(globalThis.browser?.runtime?.sendNativeMessage || typeof chrome === "undefined" || !chrome.runtime?.connectNative);
+}
+
+let portTransport: Transport | undefined;
+let portConnect: unknown;
+
+/** One port per connectNative. A later, different connectNative must not inherit the previous port's queue or backoff. */
+function chromePortTransport(): Transport {
+  const connect = chrome.runtime.connectNative;
+  if (portTransport === undefined || portConnect !== connect) {
+    portConnect = connect;
+    portTransport = createPortTransport({ connect: () => chrome.runtime.connectNative(NATIVE_HOST), spawn: spawnTransport });
+  }
+  return portTransport;
+}
+
+/** Transport for this call. Callers that captured `nativeTransport` at load keep that binding;
+ *  this reads the host again, so a Chrome that gains connectNative after the module was imported still uses one port. */
+export function currentNativeTransport(): Transport {
+  return hostIsPerMessage() ? spawnTransport : chromePortTransport();
+}
+
+/** Chosen when this module is first evaluated. Safari and a Chrome without connectNative are `spawnTransport` itself. */
+export const nativeTransport: Transport = hostIsPerMessage() ? spawnTransport : chromePortTransport();
 
 const chromeLocal: LocalArea = {
   get: k => chrome.storage.local.get(k),

@@ -61,6 +61,15 @@ func TestSearchSiteKeys(t *testing.T) {
 		{AppleKey, "apple", "200677962", "ap:apple:200677962", Apple},
 		{EightfoldKey, "Microsoft.com", "1970393556991825", "ef:microsoft.com:1970393556991825", Eightfold},
 		{JibeKey, "AMD", "93574", "jb:amd:93574", Jibe},
+		{GemKey, "Groq", "am9icG9zdDqAUz7G7JlGLHQawWv7Sec2", "gm:groq:am9icg9zddqauz7g7jlglhqawwv7sec2", Gem},
+		{SmartRecruitersKey, "ServiceNow", "744000158170259", "sr:servicenow:744000158170259", SmartRecruiters},
+		{IBMKey, "Confluent", "135407", "ib:confluent:135407", IBM},
+		{AvatureKey, "TwoSigma", "14291", "av:twosigma:14291", Avature},
+		{DEShawKey, "DEShaw", "2646", "ds:deshaw:2646", DEShaw},
+		{AtlassianKey, "Atlassian", "25480", "at:atlassian:25480", Atlassian},
+		{RipplingKey, "Aalo", "8D4783FB-B22C-4CFD-AE34-81D4B2AD628F", "rp:aalo:8d4783fb-b22c-4cfd-ae34-81d4b2ad628f", Rippling},
+		{WorkableKey, "HuggingFace", "81B46579FE", "wk:huggingface:81b46579fe", Workable},
+		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
 		if err != nil || k != tc.want || k.ATS() != tc.ats {
@@ -70,6 +79,18 @@ func TestSearchSiteKeys(t *testing.T) {
 			if _, err := tc.mk(bad[0], bad[1]); !errors.Is(err, ErrKeyPart) {
 				t.Errorf("%s(%q,%q) err = %v, want ErrKeyPart", tc.ats, bad[0], bad[1], err)
 			}
+		}
+	}
+}
+
+func TestOracleHCMKey(t *testing.T) {
+	k, err := OracleHCMKey("JPMC", "CX_1001", "210791916")
+	if err != nil || k != "oc:jpmc:cx_1001:210791916" || k.ATS() != OracleHCM {
+		t.Fatalf("%q %v (ATS %q), want oc:jpmc:cx_1001:210791916", k, err, k.ATS())
+	}
+	for _, bad := range [][3]string{{"", "s", "1"}, {"t", "", "1"}, {"t", "s", ""}, {"a:b", "s", "1"}, {"t", "a:b", "1"}, {"t", "s", "1:2"}} {
+		if _, err := OracleHCMKey(bad[0], bad[1], bad[2]); !errors.Is(err, ErrKeyPart) {
+			t.Errorf("OracleHCMKey(%q,%q,%q) err = %v, want ErrKeyPart", bad[0], bad[1], bad[2], err)
 		}
 	}
 }

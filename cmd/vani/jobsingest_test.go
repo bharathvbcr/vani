@@ -509,7 +509,8 @@ func TestAddBoard(t *testing.T) {
 	if err := addBoard(&cfg, sources.Board{ATS: posting.Greenhouse, Token: "ACME", Company: "again"}, true); err == nil || len(cfg.Watchlist) != 1 {
 		t.Fatalf("a duplicate was added: %v", err)
 	}
-	if err := addBoard(&cfg, sources.Board{ATS: posting.Ashby, Token: "x", Company: "X"}, true); err != nil || !slices.Contains(cfg.AllowedHosts, "api.ashbyhq.com") {
+	if err := addBoard(&cfg, sources.Board{ATS: posting.Ashby, Token: "x", Company: "X"}, true); err != nil ||
+		!slices.Contains(cfg.AllowedHosts, "api.ashbyhq.com") || !slices.Contains(cfg.AllowedHosts, "jobs.ashbyhq.com") {
 		t.Fatalf("with allowHost: %v, hosts %v", err, cfg.AllowedHosts)
 	}
 }

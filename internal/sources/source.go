@@ -98,11 +98,42 @@ func (b Board) APIName() string {
 // /recruiting/{tenant}/{site}/ rather than /{site}/.
 var workdaySiteHost = regexp.MustCompile(`^wd[0-9]{1,3}\.myworkdaysite\.com$`)
 
+// workdayTenantHost is a tenant's own host, "{tenant}.wd{N}.myworkdayjobs.com".
+// N runs to three digits on both hosts: Postman's board is on wd108.
+var workdayTenantHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.wd[0-9]{1,3}\.myworkdayjobs\.com$`)
+
+// WorkdayTenantHost returns the tenant a host "{tenant}.wd{N}.myworkdayjobs.com"
+// names, read as written (a bare host name, any case), and whether host is one.
+// It is the one rule behind config.ValidBoard and the browser ingest's board.
+func WorkdayTenantHost(host string) (tenant string, ok bool) {
+	m := workdayTenantHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(host)))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // WorkdaySiteHost reports whether host, as written (a bare host name, any
 // case), is a shared Workday host "wd{N}.myworkdaysite.com". A port, path,
 // userinfo or extra label is not one.
 func WorkdaySiteHost(host string) bool {
 	return workdaySiteHost.MatchString(strings.ToLower(strings.TrimSpace(host)))
+}
+
+// oracleHCMHost is an Oracle Recruiting Cloud host, "{tenant}.fa.oraclecloud.com"
+// or "{tenant}.fa.{region}.oraclecloud.com" ("jpmc.fa.oraclecloud.com" and
+// "eeho.fa.us2.oraclecloud.com" answered on 2026-10-27).
+var oracleHCMHost = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)\.fa(?:\.[a-z]{2}[0-9]{1,2})?\.oraclecloud\.com$`)
+
+// OracleHCMHostTenant is the tenant, the first label, of an Oracle Recruiting
+// Cloud host as written (a bare host name, any case). ok is false for a port,
+// path, userinfo, other domain, other label layout or an empty label.
+func OracleHCMHostTenant(host string) (tenant string, ok bool) {
+	m := oracleHCMHost.FindStringSubmatch(strings.ToLower(strings.TrimSpace(host)))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // Board is one watchlist entry: a company's job board on one ATS, or its own
@@ -111,8 +142,9 @@ type Board struct {
 	ATS posting.ATS `json:"ats"`
 	// Token is the board identifier: Greenhouse board token, Lever company
 	// slug, Ashby job-board name, Workday "tenant/site", Eightfold company
-	// domain, Jibe client code ("amd"), or a short slug you choose for a
-	// careers page.
+	// domain, Jibe client code ("amd"), Rippling board slug, Workable
+	// account slug, Gem vanity path, or a short slug you choose for a careers
+	// page or an XML feed.
 	Token string `json:"token"`
 	// BoardName is the board's literal name on the ATS where that cannot be
 	// the Token, Ashby only: Hippocratic AI's board is "Hippocratic AI", with
@@ -160,15 +192,18 @@ type Board struct {
 	// the systems that have verified ones (see FilterKeys). Each search term
 	// is run with every filter applied.
 	Filters map[string][]string `json:"filters,omitempty"`
-	// MaxPostings sets the most postings the board may list, Workday only:
-	// zero is the adapter's default (workday.MaxPostings, 5,000), at most
+	// MaxPostings sets the most postings the board may list, Workday and Oracle
+	// HCM only: zero is the adapter's default (workday.MaxPostings, 5,000), at most
 	// MaxPostingsCeiling. Listing costs a request per 20 postings at the
 	// per-host pace (about a second each); detail requests are bounded per
 	// run apart from it (workday.MaxDetails). A board over its cap still
 	// fails rather than being truncated.
 	MaxPostings int `json:"max_postings,omitempty"`
 
-	// URL is a careers listing page (https). Page boards only.
+	// URL is https: a page board's careers listing page, an Avature board's
+	// listing page on its Host (avature.ParseListURL), or the XML document of
+	// a feed board. A feed board has no link_pattern: the document is the
+	// listing, and nothing linked from it is fetched.
 	URL string `json:"url,omitempty"`
 	// LinkPattern is a Go regexp an absolute link on URL must match to count
 	// as a posting page. Page boards only.
@@ -201,6 +236,9 @@ var FilterKeys = map[posting.ATS][]string{
 	// The site reads only the first of repeated values, so the source runs
 	// one query per value.
 	posting.Jibe: {"location"},
+	// ServiceNow 732 -> 441 with country=us (2026-10-27). One lower-case ISO
+	// code per query: "US" and a second value both answer zero postings.
+	posting.SmartRecruiters: {"country"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then
@@ -229,9 +267,9 @@ func (b Board) SearchTerms() []string {
 func (b Board) KeyPrefix() string {
 	token := strings.ToLower(strings.TrimSpace(b.Token))
 	switch b.ATS {
-	case posting.Workday:
+	case posting.Workday, posting.OracleHCM:
 		tenant, site, _ := strings.Cut(token, "/")
-		return string(posting.Workday) + ":" + tenant + ":" + site + ":"
+		return string(b.ATS) + ":" + tenant + ":" + site + ":"
 	default:
 		return string(b.ATS) + ":" + token + ":"
 	}

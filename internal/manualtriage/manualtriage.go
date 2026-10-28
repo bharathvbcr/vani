@@ -297,7 +297,7 @@ func replay(src io.Reader) (replayed, error) {
 // Read returns every posting's current manual reading. A store that was never
 // written is empty. It takes no lock (see the package doc).
 func Read(dir string) (map[posting.Key]Reading, error) {
-	f, err := os.Open(filepath.Join(dir, fileName))
+	f, err := atomicfile.OpenRead(filepath.Join(dir, fileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return map[posting.Key]Reading{}, nil
 	}
@@ -394,6 +394,10 @@ func TryAskLock(dir string) (unlock func(), err error) {
 // syncDir is atomicfile.SyncDir; a variable only so a test can count its calls.
 var syncDir = atomicfile.SyncDir
 
+// afterCompact runs after a compacted replace and before the file is reopened.
+// Production passes the path through. A test plants a symlink in that window.
+var afterCompact = func(string) {}
+
 // writeWith appends e under the lock. needed, when set, is asked once the store
 // has been read and says whether e changes anything; false writes nothing.
 func writeWith(dir string, e event, needed func(replayed) bool) error {
@@ -452,9 +456,12 @@ func writeWith(dir string, e event, needed func(replayed) bool) error {
 		if err != nil {
 			return err
 		}
-		if f, err = os.OpenFile(path, os.O_RDWR, 0o600); err != nil {
+		afterCompact(path)
+		nf, err := reopenCompacted(path)
+		if err != nil {
 			return fmt.Errorf("manualtriage: reopen after compaction: %w", err)
 		}
+		f = nf
 		defer func() { _ = f.Close() }()
 		good = size
 		if good+int64(len(line)) > MaxFileBytes {
@@ -482,6 +489,23 @@ func cutBack(f *os.File, good int64, cause error) error {
 		return errors.Join(cause, fmt.Errorf("manualtriage: the line could not be cut back and may still take effect: %w", err))
 	}
 	return cause
+}
+
+// reopenCompacted opens the file compact just replaced. OpenAppend refuses a
+// symlink planted at the leaf in that window, so WriteAt cannot follow it. A
+// file this call had to create is synced before it is trusted.
+func reopenCompacted(path string) (*os.File, error) {
+	f, created, err := atomicfile.OpenAppend(path, 0)
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		if err := atomicfile.SyncNew(path, syncDir); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+	return f, nil
 }
 
 // compact replaces the file with one set line per live reading, sorted by key,

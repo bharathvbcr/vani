@@ -122,9 +122,19 @@ public enum BankValidator {
         return out
     }
 
-    /// `Number.isSafeInteger(x) && x >= 0 ? x : 0`.
+    /// Non-negative integers through `Int32.max`. Anything else is 0, including `Int32.max + 1`
+    /// and an integer past `Number.MAX_SAFE_INTEGER`. Not clamped: a larger counter is not stored as `Int32.max`.
     static func count(_ x: Any?) -> Int {
-        guard let n = strictInt(x), n >= 0, n <= 9_007_199_254_740_991 else { return 0 }
+        guard let n = strictInt(x), n >= 0, n <= Int(Int32.max) else { return 0 }
         return n
+    }
+
+    /// A non-negative integer JSON number that does not fit in Int32. `count` turns it into 0.
+    /// Negatives, fractions and bools are false: those already become 0, which does fit.
+    static func exceedsMirrorCounter(_ x: Any?) -> Bool {
+        guard isNumber(x), let n = x as? NSNumber else { return false }
+        if let exact = Int(exactly: n) { return exact > Int(Int32.max) }
+        let d = n.doubleValue
+        return d.isFinite && d > Double(Int32.max) && d == d.rounded(.towardZero)
     }
 }

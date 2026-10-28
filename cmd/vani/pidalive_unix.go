@@ -2,17 +2,14 @@
 
 package main
 
-import (
-	"errors"
-	"syscall"
-)
+import "syscall"
 
-// processExists signals pid with 0. A pid it cannot signal for lack of
-// permission still exists.
+// processExists reports whether this process can see pid. kill(pid, 0)
+// returns EPERM when the pid exists but this process may not signal it;
+// that is not visibility.
 func processExists(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return syscall.Kill(pid, 0) == nil
 }

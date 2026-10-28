@@ -469,6 +469,15 @@ flowchart TD
     mode, sponsorship, seniority, age and closed roles, plus `--company` / `--exclude-company`
     (exact names), `--exclude` (title words) and `--min-relevance`. `jobs stats` returns the
     distributions the app's Insights charts draw.
+  - `jobs export` writes an Excel workbook ([`internal/xlsx`](internal/xlsx), standard library
+    only): the first `--top N` (default 100, at most 5000) of the list the same selection flags
+    and `--sort` show, in its order, or with `--keys-stdin` the roles whose keys stdin lists, in
+    that order; a key the selection no longer holds is reported in `missing`, never dropped
+    silently. One row per role: company, title, location, scores, triage readings, category, pay,
+    dates, status, mark, note, keywords, links and key; no description. Every text cell is an
+    inline string, so posting text that starts with `=` stays text. The app's Jobs toolbar has
+    an Export menu (Top 100 / 250 / 500 / 1,000, All, Selected Roles) and the multi-row menu has
+    "Export N to Excel…".
   - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): `jobinsight.PostingPay`,
     the one reader the digest and `vani jobs` share, reads each job's description for stated pay
     by fixed rules (currency, range, period, a pay word, plausible yearly bounds; "$100/month
@@ -623,6 +632,8 @@ build/vani impressions log --surface jobs --slate new-20261020 < rows.json   # {
 build/vani jobs list --sort priority --fit strong_fit,partial_fit --max-age 14
 build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager --sort salary
 build/vani jobs stats --view all
+build/vani jobs export --top 250 --sort relevance --out ~/Downloads/vani-top-250.xlsx
+printf 'gh:acme:1\ngh:acme:2\n' | build/vani jobs export --keys-stdin --out ~/Downloads/picked.xlsx
 build/vani rescore --dry-run
 build/vani bench local --model /abs/candidate.gguf --model /abs/d1-3B-Q8_0.gguf
 build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code   # needs kb.selections
@@ -663,7 +674,14 @@ its 2000-row window by splitting the board on its own facets (5,000 postings by 
 `max_postings` sets 1 to 10,000); stored
 postings are reused, so a run spends at most 300 detail requests per board and a new large board
 fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
-URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. Each careers-page load waits until
+URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. More board kinds, each read through
+its own adapter: Gem `--ats gm --token groq`; SmartRecruiters `--ats sr --token servicenow` (optional
+`--filter country=us`; each new posting costs a detail request, at most 300 a board a run); Oracle
+Recruiting Cloud `--ats oc --token jpmc/CX_1001 --host jpmc.fa.oraclecloud.com --search "..."`; IBM
+`--ats ib --token ibm --search "..."` (title words), or `--token confluent --search Confluent` for the
+roles IBM lists for Confluent; Avature `--ats av --token twosigma --host careers.twosigma.com --url
+https://careers.twosigma.com/careers/OpenRoles`; and the single-company `--ats ds --token deshaw`
+(D. E. Shaw) and `--ats at --token atlassian` (Atlassian). Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for
 `Vani` (or `*`), read once per host per run; that read counts as a visit, so the first load waits

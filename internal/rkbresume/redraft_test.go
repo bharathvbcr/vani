@@ -227,8 +227,6 @@ func TestInstructionsThatAreNotContactDetailsAreKept(t *testing.T) {
 		"favour 2019-2024 work over older work",
 		"Python 3.12 and CUDA 12.4 matter here",
 		"about 100,000 users and 1,000,000 requests",
-		"emphasise GPU kernels @ scale",
-		"a 4 digit year range 2019 - 2024",
 		"an en dash range 2019–2024 only",
 		"Go 1.26 and Go 1.25 services",
 		strings.Repeat("é", MaxInstructionRunes), // the bound is runes, not bytes
@@ -734,6 +732,7 @@ func TestPhoneAndEmailRules(t *testing.T) {
 		"555.123.4567": true, "call 1234 5678 now": true, "12345678901234567890123": true, "2019 2024": true, "2019-2024-2025": true,
 		"2019-2024 2": true, "2019-2024 5555": true, "0123-2024": true, "2019—2024": false, // an em dash joins nothing: two separate years
 		"2019-2024": false, "2019–2024": false, "1999-2005": false, "2000-2099": false, "from 2019-2024 on": false,
+		"555 - 123 - 4567": true, "555 - 4567": true, "2019 - 2024": true, "555 --- 4567": false,
 		"2019-2024 and 2015-2018": false, "Go 1.26": false, "3.12": false, "12.4.1": false, "100,000": false, "123456": false,
 		"version 12 of 34": false, "1.2.3": false, "12 34 56": false, "": false, "no digits": false,
 		"٢٠١٩-٢٠٢٤": true, // Arabic-Indic digits are digits, and not a year range
@@ -743,10 +742,86 @@ func TestPhoneAndEmailRules(t *testing.T) {
 		}
 	}
 	for in, want := range map[string]bool{
-		"a@b": true, "me@example.com": true, "x @y": false, "x@ y": false, "@handle": false, "end@": false, "@@": false, "a@@b": false, "go @ scale": false,
+		"a@b": true, "me@example.com": true, "ada@example.com": true, "ada @ example.com": true, "ada  @  example.com": true,
+		"ada\u00a0@\u00a0example.com": true, "ada\u3000@\u3000example.com": true, "à@example.com": true,
+		"x @y": true, "x@ y": true, "go @ scale": true,
+		"@handle": false, "end@": false, "@@": false, "a@@b": false, "@": false, "word @": false, "@ word": false, "cost is high": false,
 	} {
 		if got := emailLike(in); got != want {
 			t.Errorf("emailLike(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A space-hyphen-space handset and a mailbox with spaces around @ are contact
+// details. The message names the rule and does not repeat the instruction.
+func TestCheckInstructionRefusesSpacedHandsetAndMailbox(t *testing.T) {
+	refused := []struct{ in, rule string }{
+		{"555 - 123 - 4567", "phone number"},
+		{"555–123–4567", "phone number"},
+		{"(555) 123-4567", "phone number"},
+		{"2019 - 2024", "phone number"},
+		{"2019 2024", "phone number"},
+		{"ada @ example.com", "email address"},
+		{"ada@example.com", "email address"},
+		{"ada  @  example.com", "email address"},
+		{"à@example.com", "email address"},
+		{"emphasise GPU kernels @ scale", "email address"},
+	}
+	for _, c := range refused {
+		_, err := checkInstruction(c.in)
+		if err == nil {
+			t.Errorf("%q: accepted, want a refusal naming %q", c.in, c.rule)
+			continue
+		}
+		e := wantCode(t, err, CodeBadInstruction)
+		if !strings.Contains(e.Msg, c.rule) {
+			t.Errorf("%q: message %q does not name %q", c.in, e.Msg, c.rule)
+		}
+		if strings.Contains(e.Msg, c.in) {
+			t.Errorf("%q: message echoes the instruction: %s", c.in, e.Msg)
+		}
+	}
+	for _, in := range []string{
+		"",
+		"2019-2024",
+		"2019–2024",
+		"3.12",
+		"Go 1.26",
+		"100,000",
+		"cost is high",
+		"@",
+		"word @",
+		"@ word",
+		"555 --- 4567",
+	} {
+		got, err := checkInstruction(in)
+		if err != nil || got != in {
+			t.Errorf("%q: got %q, %v", in, got, err)
+		}
+	}
+	nl := "keep\nlines"
+	_, err := checkInstruction(nl)
+	e := wantCode(t, err, CodeBadInstruction)
+	if strings.Contains(e.Msg, nl) {
+		t.Errorf("newline: message echoes the instruction: %s", e.Msg)
+	}
+	long := strings.Repeat("é", MaxInstructionRunes+1)
+	_, err = checkInstruction(long)
+	e = wantCode(t, err, CodeBadInstruction)
+	if strings.Contains(e.Msg, long) || strings.Contains(e.Msg, "é") {
+		t.Errorf("over-long: message echoes the instruction: %s", e.Msg)
+	}
+	// A fullwidth space and a non-breaking space are not printable, so the line
+	// rule refuses them first. emailLike still has to see the mailbox.
+	for _, in := range []string{"ada\u00a0@\u00a0example.com", "ada\u3000@\u3000example.com"} {
+		if !emailLike(in) {
+			t.Errorf("emailLike(%q) = false, want true", in)
+		}
+		_, err := checkInstruction(in)
+		e := wantCode(t, err, CodeBadInstruction)
+		if strings.Contains(e.Msg, in) || strings.Contains(e.Msg, "example.com") {
+			t.Errorf("%q: message echoes the instruction: %s", in, e.Msg)
 		}
 	}
 }

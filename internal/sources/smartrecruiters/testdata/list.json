@@ -1,0 +1,61 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 2,
+  "content": [
+    {
+      "id": "744000158170259",
+      "name": "Senior Reliability Engineer - Veza",
+      "company": {
+        "identifier": "ServiceNow",
+        "name": "ServiceNow"
+      },
+      "releasedDate": "2026-10-27T23:38:56.725Z",
+      "location": {
+        "city": "Minneapolis",
+        "region": "Minnesota",
+        "country": "us",
+        "address": "Remote",
+        "postalCode": "55401",
+        "remote": true,
+        "hybrid": false,
+        "fullLocation": "Minneapolis, Minnesota, United States"
+      },
+      "department": {
+        "id": "2294038",
+        "label": "Engineering, Infrastructure and Operations"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      }
+    },
+    {
+      "id": "744000158164159",
+      "name": "Senior Manager, StratOps - Office of the COO/CPO ",
+      "company": {
+        "identifier": "ServiceNow",
+        "name": "ServiceNow"
+      },
+      "releasedDate": "2026-10-27T22:48:06.448Z",
+      "location": {
+        "city": "Santa Clara",
+        "region": "California",
+        "country": "us",
+        "address": "Building A,B,C 2225 Lawson Lane",
+        "postalCode": "95054",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Santa Clara, California, United States"
+      },
+      "department": {
+        "id": "2294174",
+        "label": "Product"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      }
+    }
+  ]
+}

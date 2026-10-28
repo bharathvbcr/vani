@@ -36,7 +36,7 @@ struct SettingsView: View {
             Section("Self-identification") {
                 Toggle("Save and fill voluntary self-identification answers", isOn: Binding(
                     get: { model.settings.captureSelfId },
-                    set: { model.setCaptureSelfId($0) }
+                    set: { on in Task { await model.setCaptureSelfId(on) } }
                 ))
                 .disabled(model.storeError != nil)
                 Text("Gender, race and ethnicity, veteran, disability and orientation questions. Off by default; shown masked in the list.")
@@ -48,7 +48,7 @@ struct SettingsView: View {
                     HStack {
                         Text(host)
                         Spacer()
-                        Button("Remove") { model.enable(host: host) }
+                        Button("Remove") { Task { await model.enable(host: host) } }
                     }
                 }
                 HStack {
@@ -182,7 +182,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             switch result {
-            case let .success(url): model.importBank(from: url)
+            case let .success(url): Task { await model.importBank(from: url) }
             case let .failure(err): model.actionError = err.localizedDescription
             }
         }
@@ -331,7 +331,8 @@ struct SettingsView: View {
     }
 
     private func addHost() {
-        if model.disable(host: newHost) { newHost = "" }
+        let host = newHost
+        Task { if await model.disable(host: host) { newHost = "" } }
     }
 
     private func export() {

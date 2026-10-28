@@ -29,6 +29,30 @@ const (
 	Eightfold ATS = "ef"
 	// Jibe is an iCIMS Jibe careers site (AMD).
 	Jibe ATS = "jb"
+	// Gem is a Gem job board (api.gem.com/job_board/v0). The token is the
+	// vanity path on jobs.gem.com, for example groq or modular.
+	Gem ATS = "gm"
+	// SmartRecruiters is a SmartRecruiters company's public postings.
+	SmartRecruiters ATS = "sr"
+	// IBM is IBM's careers site (careers.ibm.com), which also lists Confluent.
+	IBM ATS = "ib"
+	// Avature is an Avature careers portal (Two Sigma).
+	Avature ATS = "av"
+	// DEShaw is D. E. Shaw's own careers page (deshaw.com/careers).
+	DEShaw ATS = "ds"
+	// Atlassian is Atlassian's own careers endpoint (atlassian.com/careers).
+	Atlassian ATS = "at"
+	// OracleHCM is an Oracle Recruiting Cloud candidate-experience site.
+	OracleHCM ATS = "oc"
+	// Rippling is a Rippling board (api.rippling.com). The token is the
+	// board slug.
+	Rippling ATS = "rp"
+	// Workable is a Workable account (apply.workable.com). The token is the
+	// account slug.
+	Workable ATS = "wk"
+	// Feed is one https XML job feed the owner names. The token is a short
+	// slug; the posting id is the feed's partner job id.
+	Feed ATS = "fd"
 	// Page marks a posting read from a company's own careers page (no ATS
 	// API), keyed by board and posting URL.
 	Page ATS = "pg"

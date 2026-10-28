@@ -81,7 +81,8 @@ struct DuplicatesSheet: View {
         .frame(width: 680, height: 560)
         .confirmationDialog("Merge \(chosen.count) group\(chosen.count == 1 ? "" : "s")?", isPresented: $confirming) {
             Button("Merge", role: .destructive) {
-                if model.merge(chosen.map(plan)) { load(keeping: false) }
+                let plans = chosen.map(plan)
+                Task { if await model.merge(plans) { load(keeping: false) } }
             }
         } message: {
             let rows = chosen.reduce(0) { $0 + $1.keys.count - 1 }
