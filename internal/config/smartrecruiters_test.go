@@ -78,7 +78,7 @@ func TestSmartRecruitersBoardsThatCannotWorkAreRefused(t *testing.T) {
 
 func TestBoardATSMessageNamesSmartRecruiters(t *testing.T) {
 	err := ValidBoard(sources.Board{ATS: "zz", Token: "x"})
-	if err == nil || !strings.Contains(err.Error(), "jb, sr, pg") {
+	if err == nil || !strings.Contains(err.Error(), ", sr,") {
 		t.Fatalf("err = %v, want the list to name sr", err)
 	}
 }

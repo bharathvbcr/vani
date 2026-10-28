@@ -94,7 +94,7 @@ func TestURLAndHostStayOffOtherBoardKinds(t *testing.T) {
 	if err := ValidBoard(withHost); err == nil || !strings.Contains(err.Error(), "host applies to wd, ef, jb and av only") {
 		t.Errorf("host on greenhouse: %v", err)
 	}
-	if err := ValidBoard(sources.Board{ATS: "zz", Token: "x"}); err == nil || !strings.Contains(err.Error(), "gh, lv, ab, wd, az, gg, ap, ef, jb, av, pg") {
+	if err := ValidBoard(sources.Board{ATS: "zz", Token: "x"}); err == nil || !strings.Contains(err.Error(), ", av,") {
 		t.Errorf("unknown ats: %v", err)
 	}
 }

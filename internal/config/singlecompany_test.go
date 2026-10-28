@@ -75,7 +75,7 @@ func TestSingleCompanyBoards(t *testing.T) {
 	}
 	// The unknown-ATS message names both codes.
 	err := ValidBoard(sources.Board{ATS: "zz", Token: "x"})
-	if err == nil || !strings.Contains(err.Error(), "jb, ds, at, pg") {
+	if err == nil || !strings.Contains(err.Error(), ", ds, ") || !strings.Contains(err.Error(), ", at,") {
 		t.Errorf("unknown ats: %v", err)
 	}
 }

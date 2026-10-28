@@ -50,7 +50,7 @@ func TestGemBoard(t *testing.T) {
 		"url":             {func(b *sources.Board) { b.URL = "https://jobs.gem.com/groq" }, "page boards only"},
 		"filter":          {func(b *sources.Board) { b.Filters = map[string][]string{"location": {"x"}} }, "not supported"},
 		"max postings":    {func(b *sources.Board) { b.MaxPostings = 300 }, "applies to wd only"},
-		"wrong code (gn)": {func(b *sources.Board) { b.ATS = "gn" }, "is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, pg"},
+		"wrong code (gn)": {func(b *sources.Board) { b.ATS = "gn" }, "is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm,"},
 	} {
 		b := good
 		tc.mod(&b)

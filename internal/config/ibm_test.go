@@ -43,7 +43,7 @@ func TestIBMBoardHostAndTokens(t *testing.T) {
 	if err := ValidBoard(b); err == nil || !strings.Contains(err.Error(), "jb and ib only") {
 		t.Errorf("search on greenhouse: %v", err)
 	}
-	if err := ValidBoard(sources.Board{ATS: "zz", Token: "x"}); err == nil || !strings.Contains(err.Error(), "ef, jb, ib, pg") {
+	if err := ValidBoard(sources.Board{ATS: "zz", Token: "x"}); err == nil || !strings.Contains(err.Error(), ", ib,") {
 		t.Errorf("unknown ats: %v", err)
 	}
 }
