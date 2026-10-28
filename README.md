@@ -688,6 +688,12 @@ build/vani kb sync --replace --dry-run     # reads DevPrism's block list; prints
 build/vani launchd plist --binary /absolute/path/to/vani
 ```
 
+For scripts and agents, `vani --json <command> ...` answers with one JSON value on stdout
+(`jobs retriage --batch` streams one per line) and a failure of any kind as `{"error","code"}`;
+`vani --json help` lists every command and how it answers.
+[`skills/cli-anything-vani/SKILL.md`](skills/cli-anything-vani/SKILL.md) is the agent guide to
+that contract, the commands and which of them spend.
+
 `launchd plist` prints an agent definition and installs nothing. It runs `vani daemon` at load and
 restarts it only after a failed exit, at most once every 5 minutes (`KeepAlive` with
 `SuccessfulExit` false, `ThrottleInterval` 300). A ledger that can no longer be written safely (a
