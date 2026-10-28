@@ -1,0 +1,33 @@
+{
+  "result": {
+    "jobOpening": {
+      "jobOpeningShareUrl": "https://sortitt.bamboohr.com/careers/111",
+      "jobOpeningName": "Flutter Developer",
+      "jobOpeningStatus": "Open",
+      "jobCategoryId": null,
+      "departmentId": "18604",
+      "departmentLabel": "Development & Technology",
+      "employmentStatusLabel": "Full-Time",
+      "employmentType": null,
+      "location": {
+        "city": "Karachi",
+        "state": "Sindh",
+        "postalCode": null,
+        "addressCountry": "Pakistan"
+      },
+      "atsLocation": {
+        "country": null,
+        "countryId": null,
+        "state": null,
+        "city": null
+      },
+      "description": "<p>Build Flutter apps.</p>",
+      "compensation": "PKR 400,000 - 600,000 per month",
+      "datePosted": "2024-05-20",
+      "minimumExperience": null,
+      "locationType": "0",
+      "seekPromoted": false,
+      "aiProcessingDisclosureEnabled": false
+    }
+  }
+}

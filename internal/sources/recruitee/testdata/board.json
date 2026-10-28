@@ -1,0 +1,66 @@
+{
+  "offers": [
+    {
+      "id": 2778249,
+      "title": "Senior Sales Executive",
+      "slug": "senior-sales-executive",
+      "guid": "ds19l",
+      "status": "published",
+      "department": "Sales",
+      "careers_url": "https://syrve.recruitee.com/o/senior-sales-executive",
+      "careers_apply_url": "https://syrve.recruitee.com/o/senior-sales-executive/c/new",
+      "location": "Dubai, Dubai, United Arab Emirates",
+      "city": "Dubai",
+      "country": "United Arab Emirates",
+      "country_code": "AE",
+      "remote": false,
+      "hybrid": true,
+      "on_site": false,
+      "employment_type_code": "fulltime_permanent",
+      "published_at": "2026-10-14 12:31:53 UTC",
+      "created_at": "2026-10-09 11:55:27 UTC",
+      "updated_at": "2026-10-14 12:31:53 UTC",
+      "close_at": null,
+      "company_name": "Syrve",
+      "description": "<p>Welcome to Syrve, a leading provider of comprehensive software solutions for cash registers and restaurant management. With a strong foothold in the international market, we are proud to serve over 10000 customers worldwide and counting.</p><h3><strong>About</strong></h3><p>As a Senior <strong>Sales Executive</strong>, you will play a pivotal role in identifying and nurturing business opportunities, closing deals, and building long-lasting client relationships. With a strong focus on B2B sales, this role combines strategic outreach, in-depth product knowledge, and collaboration with internal teams to drive success in the competitive SaaS and hospitality sectors.</p><p>This position is perfect for sales professionals who thrive in dynamic environments and are motivated to exceed targets while delivering value to clients.</p>",
+      "requirements": "<ul><li><p>Bachelor's degree in business or related field.</p></li><li><p>2-4 years of B2B sales, preferably in SaaS/hospitality.</p></li><li><p>Strong communication and negotiation skills.</p></li><li><p>Proven track record in lead generation and deal closure.</p></li><li><p>Analytical mindset with the ability to use data for decision-making.</p></li><li><p>UAE driver's license is a <strong>MUST</strong>.</p></li></ul><h3><strong>Responsibilities</strong></h3><ul><li><p>Identify potential clients through in-person, phone, and email outreach, introducing our software.</p></li><li><p>Conduct software demos, provide quotes, and address objections to successfully close deals.</p></li><li><p>Nurture existing leads and seek new prospects, guiding them towards a purchase decision.</p></li><li><p>Use deep product knowledge to understand customer needs and identify new business opportunities.</p></li><li><p>Work closely with the Sales Team, Marketing, and Customer Success teams for mutual success.</p></li><li><p>Meet and exceed weekly and monthly targets through effective sales strategies.</p></li></ul><h3><strong>We Offer</strong></h3><ul><li><p>Opportunity to work in an international company.</p></li><li><p>Health insurance.</p></li><li><p>Visa support for eligible candidates.</p></li></ul>",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": "AED"
+      }
+    },
+    {
+      "id": 2748387,
+      "title": "Customer Support Specialist (L1)",
+      "slug": "customer-support-specialist-l1-1",
+      "guid": "m52a6",
+      "status": "published",
+      "department": "Support",
+      "careers_url": "https://syrve.recruitee.com/o/customer-support-specialist-l1-1",
+      "careers_apply_url": "https://syrve.recruitee.com/o/customer-support-specialist-l1-1/c/new",
+      "location": "Remote job",
+      "city": "Almaty",
+      "country": "Kazakhstan",
+      "country_code": "KZ",
+      "remote": true,
+      "hybrid": false,
+      "on_site": false,
+      "employment_type_code": "fulltime_permanent",
+      "published_at": "2026-09-16 14:12:54 UTC",
+      "created_at": "2026-09-16 13:55:36 UTC",
+      "updated_at": "2026-09-17 19:51:31 UTC",
+      "close_at": null,
+      "company_name": "Syrve",
+      "description": "<p style=\"min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Welcome to Syrve</strong> — a leading provider of software for cash registers and restaurant management, trusted by more than 10,000 customers worldwide and growing.</p><p style=\"text-align:start;\"><strong>Our Mission</strong><br>At Syrve, we believe technology should make running a restaurant simpler, not harder. Our mission is to empower restaurants of every size to thrive in a fast-moving, competitive industry — simplifying operations, boosting efficiency, and driving profitability through solutions built for how restaurants actually work.</p><p style=\"text-align:start;\"><strong>Our Product</strong><br>Our flagship platform brings everything a restaurant needs into one place: order management, inventory tracking, staff scheduling, and customer analytics. It's a complete solution built to meet the real-world demands of modern restaurant operations, whatever their size or setup.</p><p style=\"text-align:start;\"><br>We're presently expanding our multinational team and seeking a <strong>Customer Support Specialis</strong>t.</p><p><strong><br>Responsibilities</strong></p><ul><li><p>Registration of all client requests in the task management service</p></li><li><p>Ask customers targeted questions to quickly understand the root of the problem</p></li><li><p>Provide prompt and accurate feedback to clients</p></li><li><p>Properly escalate unresolved issues to appropriate internal teams</p></li><li><p>Providing advice to clients on using the software</p></li><li><p>Prioritize and manage several open issues at one time</p></li><li><p>Receiving and resolving requests via email</p></li><li><p>Acting as the first line of support for all external delivery integrations</p></li><li><p>Creating new instructions in the knowledge base</p></li><li><p>Maintain jovial relationships with clients</p></li></ul>",
+      "requirements": "<ul><li><p>Proficient in written and verbal communication in English and Russian</p></li><li><p>Basic computer and printer skills</p></li><li><p>Introduction to local and global computer networks</p></li><li><p>Hands-on experience with Windows/Mac OS environments</p></li><li><p>Good understanding of computer systems, mobile devices and other tech products</p></li><li><p>Ability to diagnose and troubleshoot basic technical issues</p></li><li><p>Experienced in using CRM systems, clear understanding of the workflows</p></li><li><p>Familiarity with Iiko or Syrve  platform is mandatoy</p></li></ul><p style=\"min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>We offer</strong></p><ul><li><p>Work at a truly international company with a global footprint</p></li><li><p>Fully remote — work from anywhere</p></li><li><p>Comprehensive health insurance</p></li><li><p>2-2 work schedule (2 days on, 2 days off)</p></li></ul>",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": "KZT"
+      }
+    }
+  ]
+}

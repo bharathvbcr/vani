@@ -128,7 +128,8 @@ stateDiagram-v2
   Google Careers (`gg`, page 1 of results only, as its robots.txt allows), jobs.apple.com (`ap`),
   Eightfold PCSX sites such as Microsoft's and Qualcomm's (`ef`), and iCIMS Jibe careers sites
   such as AMD's (`jb`, token the client code `amd`, host `careers.amd.com`; search optional, pages
-  of 100 spaced 5 s apart as its robots.txt asks). Eightfold requests are spaced 2 s apart; both
+  of 100 spaced 5 s apart as its robots.txt asks), and the per-tenant ATS boards Recruitee (`rc`),
+  Pinpoint (`pp`), BambooHR (`bh`) and Personio (`ps`), each on its own `{token}.` host. Eightfold requests are spaced 2 s apart; both
   spacings run through one `srcutil.Pacer` with a 15-minute budget per board. A search site
   fails a board that reports more postings than its cap, rather than list part of it: Eightfold
   and Apple 200, Amazon 500, Google 20 per search term, Workday and the rest 5000. All go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address
@@ -675,7 +676,13 @@ its 2000-row window by splitting the board on its own facets (5,000 postings by 
 postings are reused, so a run spends at most 300 detail requests per board and a new large board
 fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. More board kinds, each read through
-its own adapter: Gem `--ats gm --token groq`; SmartRecruiters `--ats sr --token servicenow` (optional
+its own adapter: Gem `--ats gm --token groq`; Recruitee `--ats rc --token syrve`, Pinpoint `--ats pp
+--token workwithus`, BambooHR `--ats bh --token sortitt` and Personio `--ats ps --token deskbird`
+(the token is the board's subdomain, `syrve.recruitee.com`, and that host is what `--allow-host`
+allows; BambooHR costs a detail request per posting, spaced half a second apart, so a board of
+more than 300 postings fails rather than being cut, and a tenant BambooHR redirects away from
+`/careers` reads as not found; a Personio tenant that switched its XML feed off reads as not found
+too); SmartRecruiters `--ats sr --token servicenow` (optional
 `--filter country=us`; each new posting costs a detail request, at most 300 a board a run); Oracle
 Recruiting Cloud `--ats oc --token jpmc/CX_1001 --host jpmc.fa.oraclecloud.com --search "..."`; IBM
 `--ats ib --token ibm --search "..."` (title words), or `--token confluent --search Confluent` for the

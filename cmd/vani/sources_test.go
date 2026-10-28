@@ -17,7 +17,8 @@ func TestEveryAcceptedBoardKindHasAnAdapter(t *testing.T) {
 	for _, a := range []posting.ATS{posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
-		posting.Rippling, posting.Workable, posting.Feed, posting.Page, posting.Other, "zz"} {
+		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
+		posting.Feed, posting.Page, posting.Other, "zz"} {
 		err := config.ValidBoard(sources.Board{ATS: a})
 		accepted := err == nil || !strings.Contains(err.Error(), "is not one of")
 		_, has := srcs[a]

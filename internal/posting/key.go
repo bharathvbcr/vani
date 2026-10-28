@@ -102,6 +102,18 @@ func WorkableKey(account, shortcode string) (Key, error) {
 	return build(Workable, account, shortcode)
 }
 
+// RecruiteeKey is rc:{subdomain}:{offer_id}.
+func RecruiteeKey(board, offerID string) (Key, error) { return build(Recruitee, board, offerID) }
+
+// PinpointKey is pp:{subdomain}:{posting_id}.
+func PinpointKey(board, postingID string) (Key, error) { return build(Pinpoint, board, postingID) }
+
+// BambooHRKey is bh:{subdomain}:{job_opening_id}.
+func BambooHRKey(board, jobID string) (Key, error) { return build(BambooHR, board, jobID) }
+
+// PersonioKey is ps:{subdomain}:{position_id}.
+func PersonioKey(board, positionID string) (Key, error) { return build(Personio, board, positionID) }
+
 // FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
 // cosmetic change to the apply URL does not split one role into two.
 func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
@@ -163,7 +175,8 @@ func (k Key) ATS() ATS {
 	}
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
-		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable, Feed, Page, Other:
+		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable,
+		Recruitee, Pinpoint, BambooHR, Personio, Feed, Page, Other:
 		return a
 	}
 	return ""

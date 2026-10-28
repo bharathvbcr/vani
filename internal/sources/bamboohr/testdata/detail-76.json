@@ -1,0 +1,33 @@
+{
+  "result": {
+    "jobOpening": {
+      "jobOpeningShareUrl": "https://sortitt.bamboohr.com/careers/76",
+      "jobOpeningName": "Software Developer (Freelance)",
+      "jobOpeningStatus": "Open",
+      "jobCategoryId": null,
+      "departmentId": "18604",
+      "departmentLabel": "Development & Technology",
+      "employmentStatusLabel": "Part-Time",
+      "employmentType": null,
+      "location": {
+        "city": null,
+        "state": null,
+        "postalCode": null,
+        "addressCountry": null
+      },
+      "atsLocation": {
+        "country": null,
+        "countryId": null,
+        "state": null,
+        "city": null
+      },
+      "description": "<p><span style=\"font-weight: bold;\"><span style=\"font-size: 15px; font-family: Arial, sans-serif;\">Position Title:</span></span><span style=\"font-size: 15px; font-family: Arial, sans-serif;\"> Software Developer (Freelance)</span></p>\n<p><br></p>\n<p><span style=\"font-weight: bold;\"><span style=\"font-size: 15px; font-family: Arial, sans-serif;\">Location:</span></span><span style=\"font-size: 15px; font-family: Arial, sans-serif;\"> Remote </span></p>\n<p><br></p>\n<p><span style=\"font-weight: bold;\"><span style=\"font-size: 15px; font-family: Arial, sans-serif;\">About Us: </span></span><span style=\"font-size: 15px; font-family: Arial, sans-serif;\">Welcome to Sortitt, the revolutionary marketplace that is reshaping the future of resource acquisition. As a dynamic platform, Sortitt connects business with top-tier resources across the globe, transcending traditional constraints. Our cutting edge approach delivers tailored solutions that precisely match client demands, creating opportunities for professionals seeking remote engagements. At Sortitt, resources are available on demand and clients are empowered with diverse choices to ensure the best talent with matching skills. Join us in revolutionizing talent sourcing where innovation, flexibility and growth converge to redefine success in the modern workforce. </span></p>\n<p><br><span style=\"font-weight: bold;\"><span style=\"font-size: 15px; font-family: Arial, sans-serif;\">Job Summary:</span></span><span style=\"font-size: 15px; font-family: Arial, sans-serif;\"> We are seeking a talented and experienced Software Developer to join our platform as a freelancer. The ideal candidate will be responsible for designing, developing, testing, and maintaining high-performance software applications. The Software Developer will work closely with cross-functional teams to deliver innovative solutions that meet the needs of our clients and contribute to the overall success of the company.</span></p>",
+      "compensation": null,
+      "datePosted": "2024-01-16",
+      "minimumExperience": null,
+      "locationType": "1",
+      "seekPromoted": false,
+      "aiProcessingDisclosureEnabled": false
+    }
+  }
+}

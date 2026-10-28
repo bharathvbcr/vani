@@ -29,6 +29,24 @@ func TokenProblem(token string) string {
 	return ""
 }
 
+// tenantLabel is one lower-case DNS label, 1..63 bytes, with no leading or
+// trailing '-'.
+var tenantLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// TenantLabelProblem is why token cannot be the subdomain of a per-tenant ATS
+// host ({token}.recruitee.com, .pinpointhq.com, .bamboohr.com,
+// .jobs.personio.com), or "" when it can. The token becomes a host name, so
+// it is exactly one lower-case DNS label as written: a '.', '/', '@', ':' or
+// '%' would move the request to another host or path. It is the one rule
+// behind config.ValidBoard (and so the host config.BoardHost allows) and the
+// four adapters that build the host from it.
+func TenantLabelProblem(token string) string {
+	if !tenantLabel.MatchString(token) {
+		return "must be one lower-case host label of letters, digits and '-' (at most 63), as in acme.recruitee.com"
+	}
+	return ""
+}
+
 // MaxBoardNameLen bounds Board.BoardName in runes; MaxBoardNameBytes bounds it
 // in bytes. 64 BMP runes (CJK, 3 bytes each) fit both; 64 supplementary-plane
 // runes do not, which is the byte bound doing its own work.
@@ -143,7 +161,8 @@ type Board struct {
 	// Token is the board identifier: Greenhouse board token, Lever company
 	// slug, Ashby job-board name, Workday "tenant/site", Eightfold company
 	// domain, Jibe client code ("amd"), Rippling board slug, Workable
-	// account slug, Gem vanity path, or a short slug you choose for a careers
+	// account slug, Gem vanity path, the subdomain of a Recruitee, Pinpoint,
+	// BambooHR or Personio board, or a short slug you choose for a careers
 	// page or an XML feed.
 	Token string `json:"token"`
 	// BoardName is the board's literal name on the ATS where that cannot be
