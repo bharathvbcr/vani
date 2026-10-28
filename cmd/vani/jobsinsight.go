@@ -228,12 +228,15 @@ func optionSet(cmd, flagName, slot, raw string) (map[string]bool, error) {
 }
 
 // stageNames lists the post-apply stages, as `jobs mark` and --stage name them.
-func stageNames() string {
+func stageNames() string { return stageList(", ") }
+
+// stageList joins the stage words with sep, in marks.Stages' order.
+func stageList(sep string) string {
 	names := make([]string, len(marks.Stages))
 	for i, s := range marks.Stages {
 		names[i] = string(s)
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, sep)
 }
 
 // stageSet parses --stage: "applied" is an applied role with no stage yet.

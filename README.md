@@ -474,7 +474,8 @@ flowchart TD
     and `--sort` show, in its order, or with `--keys-stdin` the roles whose keys stdin lists, in
     that order; a key the selection no longer holds is reported in `missing`, never dropped
     silently. One row per role: company, title, location, scores, triage readings, category, pay,
-    dates, status, mark, note, keywords, links and key; no description. Every text cell is an
+    dates, status, mark, stage, furthest stage, date applied, note, repeat-apply and repost
+    notes, keywords, links and key; no description. Every text cell is an
     inline string, so posting text that starts with `=` stays text. The app's Jobs toolbar has
     an Export menu (Top 100 / 250 / 500 / 1,000, All, Selected Roles) and the multi-row menu has
     "Export N to Excel…".

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -34,7 +35,14 @@ const (
 	exitConfigRestart = 75
 )
 
-const usageText = `usage: vani <command> [flags]
+// usageText is the help: usageTemplate with the post-apply stage words filled in
+// from marks.Stages (stagesPlaceholder), so `jobs mark`'s help and its usage
+// error cannot drift from what marks accepts.
+var usageText = strings.ReplaceAll(usageTemplate, stagesPlaceholder, stageList("|"))
+
+const stagesPlaceholder = "{{stages}}"
+
+const usageTemplate = `usage: vani <command> [flags]
 
 commands:
   version                    print the product version ("dev" unless built by scripts/release.sh)
@@ -162,8 +170,10 @@ commands:
                              {queued,duplicates,rejected,search,analysis} on stdout. Queues them in
                              <state dir>/inbox (the ledger's owner folds them) and, with
                              save_search, adds the page to the watchlist (docs/EXTENSION_INGEST.md)
-  jobs mark [--json] KEY saved|applied|hidden|clear
-                             record what you did with a role (state dir marks/, never the ledger)
+  jobs mark [--json] KEY saved|applied|hidden|clear|{{stages}}|unstage
+                             record what you did with a role (state dir marks/, never the ledger).
+                             A stage word records what became of an applied role, which stays
+                             applied; unstage sets it back to plain applied
   jobs note [--json] KEY TEXT
                              a private note on a role ("" clears it); never sent to a model
   jobs retriage [--json] [--dry-run | --clear] KEY
