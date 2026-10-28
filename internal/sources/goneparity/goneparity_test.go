@@ -1,4 +1,4 @@
-// Package goneparity holds one table that puts Workday, Eightfold and Apple
+// Package goneparity holds one table that puts Workday, Eightfold, Apple and Oracle HCM
 // side by side on the same question: what does a detail that answers 404 (or
 // fails otherwise) do to a board of n listed postings.
 package goneparity
@@ -20,6 +20,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
+	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -194,7 +195,49 @@ func appleFake() fake {
 	}}
 }
 
-func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake()} }
+// ---- oracle hcm ----
+
+func oracleFake() fake {
+	return fake{"oraclehcm", func(t *testing.T, n int, bad map[int]srctest.Reply) (sources.Source, sources.Board, *reports) {
+		rep := &reports{}
+		const host = "jpmc.fa.oraclecloud.com"
+		idOf := func(i int) string { return fmt.Sprint(210000000 + i) }
+		d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+			u, _ := url.Parse(r.URL)
+			finder := u.Query().Get("finder")
+			switch {
+			case strings.HasSuffix(u.Path, "/recruitingCEJobRequisitions"):
+				var offset int
+				fmt.Sscan(finder[strings.Index(finder, "offset=")+len("offset="):], &offset)
+				var rows []string
+				for i := offset; i < n && i < offset+200; i++ {
+					rows = append(rows, fmt.Sprintf(`{"Id":"%s","Title":"T%d","PrimaryLocation":"L"}`, idOf(i), i))
+				}
+				return ok(fmt.Sprintf(`{"items":[{"TotalJobsCount":%d,"requisitionList":[%s]}]}`, n, strings.Join(rows, ","))), true
+			case strings.HasSuffix(u.Path, "/recruitingCEJobRequisitionDetails"):
+				id := strings.Split(finder, `"`)[1]
+				var i int
+				fmt.Sscan(id, &i)
+				i -= 210000000
+				if rp, hit := bad[i]; hit {
+					return rp, true
+				}
+				return ok(fmt.Sprintf(`{"items":[{"Id":"%s","Title":"T%d","ExternalDescriptionStr":"<p>d</p>"}]}`, id, i)), true
+			}
+			return srctest.Reply{}, false
+		})
+		s, err := oraclehcm.NewWith(d, oraclehcm.Options{
+			Stored: func(sources.Board) []posting.Posting { return nil },
+			Report: func(_ sources.Board, st oraclehcm.Stats) { rep.add(st.Listed, st.Gone) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, sources.Board{ATS: posting.OracleHCM, Token: "jpmc/CX_1001", Company: "JPMorgan Chase", Host: host}, rep
+	}}
+}
+
+func all() []fake { return []fake{workdayFake(), eightfoldFake(), appleFake(), oracleFake()} }
 
 func notFound() srctest.Reply { return srctest.Reply{Status: http.StatusNotFound, Body: []byte("{}")} }
 

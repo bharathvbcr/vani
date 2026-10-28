@@ -44,6 +44,12 @@ func WorkdayKey(tenant, site, reqID string) (Key, error) {
 	return build(Workday, tenant, site, reqID)
 }
 
+// OracleHCMKey is oc:{tenant}:{site}:{requisition_id}; the id is the public
+// requisition number ("210791916"), not the internal RequisitionId.
+func OracleHCMKey(tenant, site, reqID string) (Key, error) {
+	return build(OracleHCM, tenant, site, reqID)
+}
+
 // AmazonKey is az:{board}:{id_icims}.
 func AmazonKey(board, id string) (Key, error) { return build(Amazon, board, id) }
 
@@ -119,7 +125,7 @@ func (k Key) ATS() ATS {
 		return ""
 	}
 	switch a := ATS(head); a {
-	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Page, Other:
+	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, OracleHCM, Page, Other:
 		return a
 	}
 	return ""
