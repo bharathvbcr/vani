@@ -80,6 +80,10 @@ final class JobsModel {
     private(set) var detailError: String?
     /// The last failed mark or note, shown as an alert.
     var actionError: String?
+    /// An export is being written.
+    private(set) var exporting = false
+    /// The workbook the last export wrote and what it holds, shown as an alert.
+    var exported: (url: URL, summary: String)?
 
     /// The "Saved searches" section is open. It reads the watchlist when opened.
     var showSearches = false {
@@ -382,6 +386,20 @@ final class JobsModel {
         await refresh()
         if selection == job.key, !jobs.contains(where: { $0.key == job.key }) {
             selection = index.flatMap { jobs.isEmpty ? nil : jobs[min($0, jobs.count - 1)].key }
+        }
+    }
+
+    /// Write the list as it is viewed, sorted and filtered (its first N roles, or the roles `scope`
+    /// names) to `url` as an Excel workbook.
+    func export(_ scope: JobsExportScope, to url: URL) async {
+        guard !exporting else { return }
+        exporting = true
+        defer { exporting = false }
+        let c = client(), v = view, q = query, s = sort, f = filter
+        let result = await BlockingWork.run { try c.export(v, query: q, sort: s, filter: f, scope, to: url) }
+        switch result {
+        case let .success(reply): exported = (URL(fileURLWithPath: reply.path), reply.summary(scope))
+        case let .failure(err): actionError = "Export failed: \(err)"
         }
     }
 

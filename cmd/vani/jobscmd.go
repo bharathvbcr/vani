@@ -34,11 +34,13 @@ const (
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, gaps, folders, show, find, ingest, mark, note, retriage or resume")
+		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage or resume")
 	}
 	switch args[0] {
 	case "list":
 		return e.jobsList(args[1:])
+	case "export":
+		return e.jobsExport(args[1:])
 	case "stats":
 		return e.jobsStatsCmd(args[1:])
 	case "folders", "categories":
