@@ -121,6 +121,13 @@ func BoardFromURL(u *url.URL) (b Board, known bool, err error) {
 			return none("Rippling board")
 		}
 		return Board{ATS: posting.Rippling, Token: segs[0]}, true, nil
+	case host == "lifeattiktok.com" || host == "www.lifeattiktok.com":
+		// The site's job pages are /search/{id}; its other pages (blog,
+		// locations) are not postings.
+		if first != "search" {
+			return none("TikTok job page")
+		}
+		return Board{ATS: posting.TikTok, Token: "tiktok"}, true, nil
 	}
 	if tenant, ok := WorkdayTenantHost(host); ok {
 		if len(segs) > 0 && localeSegment.MatchString(segs[0]) {

@@ -132,7 +132,7 @@ stateDiagram-v2
   adapters for Gem (`gm`), SmartRecruiters (`sr`), Oracle HCM / Recruiting Cloud (`oc`), IBM careers (`ib`,
   covering IBM and Confluent), Avature (`av`, e.g. Two Sigma), D. E. Shaw (`ds`), Atlassian (`at`), Rippling
   (`rp`), Workable (`wk`), and XML job feeds (`fd`); and the per-tenant ATS boards Recruitee (`rc`), Pinpoint
-  (`pp`), BambooHR (`bh`) and Personio (`ps`), each on its own `{token}.` host. Eightfold requests are spaced 2 s apart; both spacings
+  (`pp`), BambooHR (`bh`) and Personio (`ps`), each on its own `{token}.` host, and TikTok's careers site (`tt`). Eightfold requests are spaced 2 s apart; both spacings
   run through one `srcutil.Pacer` with a 15-minute budget per board. A search site fails a board that reports
   more postings than its cap, rather than list part of it: Eightfold and Apple 200, Amazon 500, Google 20 per
   search term, Workday and the rest 5000 (Workday and Oracle HCM configurable via `max_postings` 1..10,000). All
@@ -725,7 +725,9 @@ its own adapter: Gem `--ats gm --token groq`; Recruitee `--ats rc --token syrve`
 allows; BambooHR costs a detail request per posting, spaced by the egress per-host interval (a second by default) on top of 500 ms, so a board of
 more than 300 postings fails rather than being cut, and a tenant BambooHR redirects away from
 `/careers` reads as not found; a Personio tenant that switched its XML feed off reads as not found
-too); SmartRecruiters `--ats sr --token servicenow` (optional
+too); TikTok `--ats tt --token tiktok` (the whole site is 4,318 postings, so narrow it with
+`--search "software engineer"` and `--filter country="United States of America"`; no posted date or
+pay, the API gives none); SmartRecruiters `--ats sr --token servicenow` (optional
 `--filter country=us`; each new posting costs a detail request, at most 300 a board a run); Oracle
 Recruiting Cloud `--ats oc --token jpmc/CX_1001 --host jpmc.fa.oraclecloud.com --search "..."`; IBM
 `--ats ib --token ibm --search "..."` (title words), or `--token confluent --search Confluent` for the
