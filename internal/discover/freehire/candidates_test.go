@@ -195,6 +195,10 @@ func TestBoardsReasons(t *testing.T) {
 		"workable shortlink, no id":     {job("workable", "", "https://apply.workable.com/j/ABC", "X"), ReasonBadBoardID, "", ""},
 		"oracle":                        {job("oracle", "x:1", "https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/42", "X"), "", posting.OracleHCM, "eeho/CX_1"},
 		"workday on the shared host":    {job("workday", "x:1", "https://wd3.myworkdaysite.com/en-US/recruiting/acme/Careers/job/1", "X"), "", posting.Workday, "acme/Careers"},
+		"recruitee tenant host":         {job("recruitee", "2412345", "https://syrve.recruitee.com/o/backend-engineer", "X"), "", posting.Recruitee, "syrve"},
+		"pinpoint tenant host":          {job("pinpoint", "123", "https://workwithus.pinpointhq.com/postings/abc", "X"), "", posting.Pinpoint, "workwithus"},
+		"bamboohr tenant host":          {job("bamboohr", "76", "https://sortitt.bamboohr.com/careers/76", "X"), "", posting.BambooHR, "sortitt"},
+		"personio tenant host":          {job("personio", "2759612", "https://deskbird.jobs.personio.com/job/2759612", "X"), "", posting.Personio, "deskbird"},
 		"greenhouse custom domain":      {job("greenhouse", "nebius:4864833101", "https://careers.nebius.com/?gh_jid=4864833101", "X"), "", posting.Greenhouse, "nebius"},
 		"greenhouse, empty board path":  {job("greenhouse", "acme:1", "https://boards.greenhouse.io/", "X"), "", posting.Greenhouse, "acme"},
 		"greenhouse custom, no id":      {job("greenhouse", "", "https://careers.acme.com/?gh_jid=1", "X"), ReasonBadBoardID, "", ""},
@@ -300,13 +304,14 @@ func TestSourceTable(t *testing.T) {
 		"greenhouse": posting.Greenhouse, "lever": posting.Lever, "ashby": posting.Ashby, "workday": posting.Workday,
 		"gem": posting.Gem, "smartrecruiters": posting.SmartRecruiters, "workable": posting.Workable,
 		"rippling": posting.Rippling, "oracle": posting.OracleHCM,
+		"recruitee": posting.Recruitee, "pinpoint": posting.Pinpoint, "bamboohr": posting.BambooHR, "personio": posting.Personio,
 	} {
 		i := slices.IndexFunc(sourceATS, func(r sourceRow) bool { return r.Source == source })
 		if i < 0 || sourceATS[i].ATS != ats {
 			t.Errorf("source %q does not map to %s", source, ats)
 		}
 	}
-	if len(sourceATS) != 9 {
+	if len(sourceATS) != 13 {
 		t.Errorf("%d rows: a new row needs a case here and a host in sources.BoardFromURL", len(sourceATS))
 	}
 }

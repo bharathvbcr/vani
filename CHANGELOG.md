@@ -1,5 +1,43 @@
 # Changelog
 
+## [Unreleased]
+
+Ideas taken from Dossier, career-ops, Seekter, ApplyPilot, Simplify Copilot, JobSpy, freehire and
+ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters were ported with notice.
+
+### Added
+
+- **Application stages after "applied"** (`internal/marks/stages.go`): `vani jobs mark KEY
+  screening|interview|offer|rejected|withdrawn|unstage`, `jobs list --stage`, a furthest-stage that never
+  falls, and the Mac app's Stage row. Stages live in `stages.jsonl` so an older vani reads every staged
+  posting as applied; rank labels are unchanged.
+- **"Quiet since applied" digest section**: applied, screening and interview postings with no change for
+  10 days, longest first, capped with "and K more".
+- **Repeat-application warning** (`internal/samecompany`): an application to the same company within 60
+  days shows in the extension panel, `jobs list`/`show` and the Mac app; never blocks a fill.
+- **Likely-repost note**: the same company and title relisted under a new posting 14-90 days later.
+- **Recruitee (`rc`), Pinpoint (`pp`), BambooHR (`bh`) and Personio (`ps`) adapters**, each on its own
+  `{token}.` host.
+- **`vani watchlist discover`**: suggests boards from the freehire.me public API (opt-in host, at most 3
+  paced pages) and prints the `watchlist add` lines; it never edits the watchlist.
+- **Ashby application-form summary** (`posting.Form`, `internal/applyform`): knock-out questions
+  (sponsorship options, location lists, required essays and uploads) shown beside triage; annotation only.
+- **Spreadsheet export columns**: Stage, Furthest stage, Applied, Repeat apply and Repost.
+
+### Changed
+
+- **Draft grounding**: spelled numbers, credentials and acronyms must occur in what the model was shown,
+  and credentials and years of experience only in the seeker's own evidence, target text or notes (a
+  posting, question, title or company no longer backs them). Refusals carry a `kind` that the extension
+  and the Mac app word.
+- **Extension**: an answer longer than a field's `maxlength` is left for the person rather than cut, and
+  the pre-submit audit reports values over a limit.
+
+### Fixed
+
+- `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
+- `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
+
 ## [0.2.0] - 2026-10-27
 
 Prepared on 2026-10-27. Race-tested code is `8ca5be682f45ec41b9d4c7b275bf8fae08f51dfb` (main at HEAD).

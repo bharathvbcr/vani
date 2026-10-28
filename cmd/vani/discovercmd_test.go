@@ -425,11 +425,15 @@ func TestDiscoverQuotesHostileCompanyNames(t *testing.T) {
 	}
 }
 
-// jobs ingest shares BoardFromURL with discover, but a saved Workable or
-// Rippling page has always been a page board (its filters live in the URL), and
-// still is.
+// jobs ingest shares BoardFromURL with discover, but a saved Workable,
+// Rippling or per-tenant (Recruitee, Pinpoint, BambooHR, Personio) page has
+// always been a page board (its filters live in the URL), and still is.
 func TestDeriveBoardLeavesWorkableAndRipplingPagesAsPageBoards(t *testing.T) {
-	for _, page := range []string{"https://apply.workable.com/acme/", "https://ats.rippling.com/acme/jobs"} {
+	for _, page := range []string{
+		"https://apply.workable.com/acme/", "https://ats.rippling.com/acme/jobs",
+		"https://acme.recruitee.com/", "https://acme.pinpointhq.com/", "https://acme.bamboohr.com/careers",
+		"https://acme.jobs.personio.com/",
+	} {
 		host := strings.Split(strings.TrimPrefix(page, "https://"), "/")[0]
 		jobs := []inbox.Job{
 			{Title: "Engineer", URL: "https://" + host + "/jobs/1"},

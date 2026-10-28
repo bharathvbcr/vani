@@ -13,6 +13,10 @@ import (
 // are not a company identifier (both seen in 2026-10-27 API and page links).
 var smartRecruitersAppPaths = map[string]bool{"oneclick-ui": true, "external-referrals": true}
 
+// tenantHostReserved are first labels of the per-tenant ATS domains that are
+// the vendor's own site, app or API, not a company's board.
+var tenantHostReserved = map[string]bool{"www": true, "api": true, "app": true}
+
 // localeSegment is a leading language segment of a page path: "en", "en-US",
 // "fr_CA". Workday and Oracle HCM put one before the site.
 var localeSegment = regexp.MustCompile(`^[a-z]{2}([-_][A-Za-z]{2,4})?$`)
@@ -139,6 +143,22 @@ func BoardFromURL(u *url.URL) (b Board, known bool, err error) {
 		}
 		return Board{ATS: posting.Workday, Token: segs[1] + "/" + segs[2], Host: host,
 			Search: strings.TrimSpace(u.Query().Get("q"))}, true, nil
+	}
+	for ats, suffix := range TenantHostSuffix {
+		// {token}.recruitee.com and the like: the host's first label is the
+		// board, whatever the path.
+		label, ok := strings.CutSuffix(host, suffix)
+		if !ok {
+			continue
+		}
+		if tenantHostReserved[label] {
+			// The vendor's own site or API (api.recruitee.com, www.bamboohr.com).
+			return Board{}, false, nil
+		}
+		if TenantLabelProblem(label) != "" {
+			return Board{}, true, fmt.Errorf("the host %q names no %s board", host, ats)
+		}
+		return Board{ATS: ats, Token: label}, true, nil
 	}
 	if tenant, ok := OracleHCMHostTenant(host); ok {
 		// The candidate-experience pages are /hcmUI/CandidateExperience/{lang}/sites/{site}

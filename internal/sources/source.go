@@ -47,6 +47,16 @@ func TenantLabelProblem(token string) string {
 	return ""
 }
 
+// TenantHostSuffix is what follows the token in a per-tenant board host. It is
+// the one table config.BoardHost builds the host from and BoardFromURL reads a
+// tenant back out of.
+var TenantHostSuffix = map[posting.ATS]string{
+	posting.Recruitee: ".recruitee.com",
+	posting.Pinpoint:  ".pinpointhq.com",
+	posting.BambooHR:  ".bamboohr.com",
+	posting.Personio:  ".jobs.personio.com",
+}
+
 // MaxBoardNameLen bounds Board.BoardName in runes; MaxBoardNameBytes bounds it
 // in bytes. 64 BMP runes (CJK, 3 bytes each) fit both; 64 supplementary-plane
 // runes do not, which is the byte bound doing its own work.

@@ -791,14 +791,6 @@ func (s Schedule) Parsed() (hour, minute int, loc *time.Location, err error) {
 // OpenRouterConfigured reports whether the OpenRouter decision model is set up.
 func (c Config) OpenRouterConfigured() bool { return c.Decide.OpenRouterModel != "" }
 
-// tenantHostSuffix is what follows the token in a per-tenant board host.
-var tenantHostSuffix = map[posting.ATS]string{
-	posting.Recruitee: ".recruitee.com",
-	posting.Pinpoint:  ".pinpointhq.com",
-	posting.BambooHR:  ".bamboohr.com",
-	posting.Personio:  ".jobs.personio.com",
-}
-
 // BoardHost returns the API host a board is fetched from. Workday hosts are
 // tenant-specific and not derivable from the token, so ok is false for them.
 func BoardHost(b sources.Board) (host string, ok bool) {
@@ -824,7 +816,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		if sources.TenantLabelProblem(b.Token) != "" {
 			return "", false
 		}
-		return b.Token + tenantHostSuffix[b.ATS], true
+		return b.Token + sources.TenantHostSuffix[b.ATS], true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -1145,7 +1137,7 @@ func ValidBoard(b sources.Board) error {
 	} else if b.ATS != posting.Workday && b.ATS != posting.OracleHCM && b.Host != "" {
 		return fmt.Errorf("board %s/%s: host applies to wd, oc, ef, jb and av only", b.ATS, b.Token)
 	}
-	if _, perTenant := tenantHostSuffix[b.ATS]; perTenant {
+	if _, perTenant := sources.TenantHostSuffix[b.ATS]; perTenant {
 		// The token is the host's first label, which is what BoardHost allows.
 		if why := sources.TenantLabelProblem(b.Token); why != "" {
 			return fmt.Errorf("board (%s) token %q %s", b.ATS, b.Token, why)
