@@ -138,6 +138,46 @@ final class ManualRunTests: XCTestCase {
         XCTAssertEqual(listOnly.summary, "list only")
     }
 
+    /// A scope-only run is not the default run: status's `last_run.options` as
+    /// vani writes them (runscope_test.go) decode, read as an override, and are
+    /// worded as `vani runs show` words them.
+    func testAScopedRunDecodesAndIsWordedAsVaniDoes() throws {
+        let raw = #"{"companies":["acme","initech"],"states":["TX"],"areas":["el paso"],"or_remote":true,"no_digest":true}"#
+        let o = try JSONDecoder().decode(ManualRunOptions.self, from: Data(raw.utf8))
+        XCTAssertEqual(o, ManualRunOptions(noDigest: true, companies: ["acme", "initech"], states: ["TX"], areas: ["el paso"], orRemote: true))
+        XCTAssertTrue(o.scoped)
+        XCTAssertFalse(o.isDefault)
+        XCTAssertEqual(o.summary, "advancing only postings at acme, initech in TX, el paso or remote; no digest")
+        XCTAssertEqual(try o.arguments(), ["run-once", "--company", "acme,initech", "--state", "TX", "--area", "el paso", "--or-remote", "--no-digest"])
+        let alone = try JSONDecoder().decode(ManualRunOptions.self, from: Data(#"{"remote":true}"#.utf8))
+        XCTAssertFalse(alone.isDefault)
+        XCTAssertEqual(alone.summary, "advancing only remote postings")
+        XCTAssertEqual(try alone.arguments(command: "run-request"), ["run-request", "--remote"])
+        // The same words as Go's TestScopeWords.
+        XCTAssertEqual(ManualRunOptions(companies: ["a", "b", "c", "d", "e", "f", "g"]).scopeWords, "postings at a, b, c, d, e and 2 more companies")
+        XCTAssertEqual(ManualRunOptions(companies: ["acme"], states: ["CA"], remote: true).scopeWords, "remote postings at acme in CA")
+        XCTAssertEqual(ManualRunOptions(advance: 20, noDigest: true, companies: ["acme"]).summary, "advance cap 20; advancing only postings at acme; no digest")
+        XCTAssertEqual(ManualRunOptions(advance: 20, noDigest: true, usFirst: true, companies: ["acme"]).summary,
+                       "advance cap 20; US first; advancing only postings at acme; no digest")
+        XCTAssertEqual(try ManualRunOptions(usFirst: true, companies: ["acme"]).arguments(),
+                       ["run-once", "--company", "acme", "--us-first"])
+        XCTAssertFalse(ManualRunOptions(usFirst: true, companies: ["acme"]).isDefault)
+        XCTAssertNil(ManualRunOptions().scopeWords)
+    }
+
+    /// A scope vani would refuse is refused before vani starts.
+    func testAScopeVaniWouldRefuseIsRefusedFirst() {
+        for bad in [
+            ManualRunOptions(listOnly: true, companies: ["acme"]),
+            ManualRunOptions(remote: true, orRemote: true),
+            ManualRunOptions(orRemote: true),
+            ManualRunOptions(companies: ["acme, inc"]),
+            ManualRunOptions(areas: [" "]),
+        ] {
+            XCTAssertThrowsError(try bad.arguments(), "\(bad)")
+        }
+    }
+
     /// The bounds vani's checkRunOptions applies are refused before vani starts.
     func testOptionsVaniWouldRefuseAreRefusedFirst() {
         let bad: [ManualRunOptions] = [

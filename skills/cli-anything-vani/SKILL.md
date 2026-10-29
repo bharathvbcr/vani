@@ -127,6 +127,14 @@ and calls no decision backend.
   province makes a place foreign. The config key `advance_us_first` does the same for every run,
   scheduled runs and the extension inbox poll included. Setting it is a config change, so ask
   the owner first.
+- **Triage chosen companies and places:** `--company`, `--state`, `--area`, `--remote` and
+  `--or-remote` on `run-once` or `run-request` limit triage, scoring and explaining to
+  postings there, and the rest wait for a later run. They read the same as on `jobs list`,
+  so first run `vani --json jobs list --view pending` with those flags to see what is waiting
+  there (and the company names as Vani has them). `--advance N` caps the run within the
+  scope. The record's `options` keep the scope, and a name with nothing waiting is a warning
+  in the run's output. To have Sonnet read again roles already triaged there, take the keys
+  from `jobs list --json` with the same flags and pass them to `jobs retriage --batch`.
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
 - Maintenance commands: `vani retriage`, `vani rescore`, `vani migrate`.
@@ -168,6 +176,8 @@ vani --json jobs mark gh:acme:123 saved
 vani --json runs failures                           # why the last run failed, if it did
 vani --json jobs retriage --dry-run gh:acme:123     # what a model read would cost
 vani --json run-once --list-only                    # fetch the boards, no model; the record on stdout
+vani --json jobs list --view pending --company acme --state TX,CA   # what awaits triage there
+vani --json run-request --company acme --state TX,CA --advance 50   # triage only those (spends)
 ```
 
 Check the exit code and decode stdout as one JSON value. On a non-zero exit, read `error` and

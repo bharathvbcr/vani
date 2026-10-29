@@ -83,7 +83,12 @@ commands:
                              only orders, drops nothing, and is refused with --list-only).
                              Refused while the daemon (or another run) holds the ledger.
                              --json prints the run's record (as runs show --json) on stdout
-                             and sends the run's own output to stderr
+                             and sends the run's own output to stderr.
+                             --company LIST, --state LIST, --area LIST, --remote and --or-remote
+                             triage, score and explain only the postings at those companies and
+                             places, read as jobs list reads the same flags (jobs list --view
+                             pending with them lists what awaits triage there); the cap applies
+                             within them and the rest wait for a later run
   run-request [--json] [same flags as run-once]
                              ask the running daemon to make that run itself (it polls every few
                              seconds, between its scheduled run and inbox polls); refused when no

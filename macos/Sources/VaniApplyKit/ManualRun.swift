@@ -34,14 +34,29 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     /// (`--us-first`). It only orders; nothing is dropped. A list-only run has
     /// no advance phase to order, so vani refuses the pair.
     public var usFirst: Bool
+    /// The run's scope (cmd/vani/runscope.go): triage, score and explain only
+    /// the postings at these companies and places, read as `vani jobs list`
+    /// reads its flags of the same names. Vani reports them folded (company
+    /// keys, USPS codes, areas); empty and false take every posting.
+    public var companies: [String]
+    public var states: [String]
+    public var areas: [String]
+    public var remote: Bool
+    public var orRemote: Bool
 
     public init(advance: Int = 0, boards: [String] = [], listOnly: Bool = false, noDigest: Bool = false,
-                usFirst: Bool = false) {
+                usFirst: Bool = false,
+                companies: [String] = [], states: [String] = [], areas: [String] = [], remote: Bool = false, orRemote: Bool = false) {
         self.advance = advance
         self.boards = boards
         self.listOnly = listOnly
         self.noDigest = noDigest
         self.usFirst = usFirst
+        self.companies = companies
+        self.states = states
+        self.areas = areas
+        self.remote = remote
+        self.orRemote = orRemote
     }
 
     enum CodingKeys: String, CodingKey {
@@ -49,6 +64,8 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         case listOnly = "list_only"
         case noDigest = "no_digest"
         case usFirst = "us_first"
+        case companies, states, areas, remote
+        case orRemote = "or_remote"
     }
 
     /// Lenient: Go omits each field at its zero value.
@@ -59,13 +76,21 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         listOnly = try c.decodeIfPresent(Bool.self, forKey: .listOnly) ?? false
         noDigest = try c.decodeIfPresent(Bool.self, forKey: .noDigest) ?? false
         usFirst = try c.decodeIfPresent(Bool.self, forKey: .usFirst) ?? false
+        companies = try c.decodeIfPresent([String].self, forKey: .companies) ?? []
+        states = try c.decodeIfPresent([String].self, forKey: .states) ?? []
+        areas = try c.decodeIfPresent([String].self, forKey: .areas) ?? []
+        remote = try c.decodeIfPresent(Bool.self, forKey: .remote) ?? false
+        orRemote = try c.decodeIfPresent(Bool.self, forKey: .orRemote) ?? false
     }
 
     /// "gh:acme": how run-once names a watchlist board.
     public static func ref(ats: String, token: String) -> String { "\(ats):\(token)" }
 
     /// The run as the config describes it, which is what the daemon runs.
-    public var isDefault: Bool { advance == 0 && boards.isEmpty && !listOnly && !noDigest && !usFirst }
+    public var isDefault: Bool { advance == 0 && boards.isEmpty && !listOnly && !noDigest && !usFirst && !scoped }
+
+    /// Whether the run triages only some companies or places.
+    public var scoped: Bool { !companies.isEmpty || !states.isEmpty || !areas.isEmpty || remote || orRemote }
 
     /// `vani run-once`'s argv after the command, or the reason vani would
     /// refuse it (the bounds checkRunOptions applies), so a bad choice is
@@ -85,6 +110,20 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
                 throw BankError("board \(PipelineStatus.bounded(b, max: 80)) is not ats:token")
             }
             args += ["--board", b]
+        }
+        if scoped {
+            if listOnly { throw BankError("a list-only run has no advance phase to limit to companies or places") }
+            if remote && orRemote { throw BankError("only remote and remote-or-these-places exclude each other") }
+            if orRemote && states.isEmpty && areas.isEmpty { throw BankError("remote-or-these-places needs a state or an area") }
+            for (flag, items) in [("--company", companies), ("--state", states), ("--area", areas)] where !items.isEmpty {
+                // vani splits each list on commas, so an item holding one would become two.
+                guard items.allSatisfy({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.contains(",") }) else {
+                    throw BankError("\(flag) needs names without commas")
+                }
+                args += [flag, items.joined(separator: ",")]
+            }
+            if remote { args.append("--remote") }
+            if orRemote { args.append("--or-remote") }
         }
         if listOnly { args.append("--list-only") }
         if usFirst { args.append("--us-first") }
@@ -149,15 +188,36 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         return backlogHelp(waiting: waiting, advancePerRun: quoted)
     }
 
-    /// "3 boards; advance cap 50; US first; no digest". Nil for a run with no overrides.
+    /// "3 boards; advance cap 50; US first; advancing only postings at acme in
+    /// TX; no digest", as `vani runs show` words it (optionsSummary). Nil for a
+    /// run with no overrides.
     public var summary: String? {
         guard !isDefault else { return nil }
         var parts: [String] = []
         if !boards.isEmpty { parts.append(boards.count == 1 ? "1 board" : "\(boards.count) boards") }
         if listOnly { parts.append("list only") } else if advance > 0 { parts.append("advance cap \(advance)") }
         if usFirst { parts.append("US first") }
+        if let s = scopeWords { parts.append("advancing only \(s)") }
         if noDigest { parts.append("no digest") }
         return parts.joined(separator: "; ")
+    }
+
+    /// The scope as vani's scopeWords says it: "postings at acme, initech in
+    /// TX or remote", "remote postings". Nil for no scope.
+    public var scopeWords: String? {
+        guard scoped else { return nil }
+        var s = remote ? "remote postings" : "postings"
+        if !companies.isEmpty {
+            let shown = companies.prefix(5)
+            s += " at " + shown.joined(separator: ", ")
+            if companies.count > shown.count { s += " and \(companies.count - shown.count) more companies" }
+        }
+        let places = (states + areas).joined(separator: ", ")
+        if !places.isEmpty {
+            s += " in " + places
+            if orRemote { s += " or remote" }
+        }
+        return s
     }
 }
 

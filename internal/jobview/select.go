@@ -50,7 +50,7 @@ func (f *Filter) Keep(j *Job) bool {
 	if !InSet(f.Categories, cat) {
 		return false
 	}
-	company := strings.ToLower(strings.Join(strings.Fields(j.Company), " "))
+	company := CompanyKey(j.Company)
 	if (f.Companies != nil && !f.Companies[company]) || f.NotCompanies[company] {
 		return false
 	}

@@ -33,6 +33,16 @@ type runOptions struct {
 	// Boards limits the listing phase to these watchlist boards, as "ats:token";
 	// empty lists every board. Postings of the boards left out are untouched.
 	Boards []string `json:"boards,omitempty"`
+	// Companies, States, Areas, Remote and OrRemote limit the advance phase
+	// to the postings in that scope (jobview.Scope, read as `jobs list` reads
+	// the flags of the same names), already folded: company keys, USPS codes
+	// and areas, sorted. The postings outside it are untouched and wait for a
+	// later run. None set advances every posting waiting for a stage.
+	Companies []string `json:"companies,omitempty"`
+	States    []string `json:"states,omitempty"`
+	Areas     []string `json:"areas,omitempty"`
+	Remote    bool     `json:"remote,omitempty"`
+	OrRemote  bool     `json:"or_remote,omitempty"`
 	// ListOnly lists and reconciles boards and skips the advance phase: nothing
 	// is triaged, scored or explained, and no decision model is called, so none
 	// needs to be configured (the runner is built without a backend, wire.go
@@ -47,7 +57,7 @@ type runOptions struct {
 }
 
 func (o runOptions) isZero() bool {
-	return o.Advance == 0 && len(o.Boards) == 0 && !o.ListOnly && !o.NoDigest && !o.USFirst
+	return o.Advance == 0 && len(o.Boards) == 0 && !o.ListOnly && !o.NoDigest && !o.USFirst && !o.scoped()
 }
 
 // recorded is the options as the run record keeps them: nil for none.
@@ -59,7 +69,7 @@ func (o runOptions) recorded() *runOptions {
 }
 
 // tunes reports whether the options change the pipeline itself (App.Tune).
-func (o runOptions) tunes() bool { return o.Advance != 0 || o.ListOnly || o.USFirst }
+func (o runOptions) tunes() bool { return o.Advance != 0 || o.ListOnly || o.USFirst || o.scoped() }
 
 // runOptionFlags registers a manual run's flags on fs (run-once and
 // run-request take the same ones). The boards land in the second value; the
@@ -69,6 +79,15 @@ func runOptionFlags(fs *flag.FlagSet) (*runOptions, *boardRefs) {
 	var boards boardRefs
 	fs.IntVar(&opts.Advance, "advance", 0, fmt.Sprintf("triage, score and explain at most N postings this run (1..%d; default advance_per_run)", config.MaxAdvancePerRun))
 	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
+	cmd := fs.Name()
+	fs.Var(scopeFlag{&opts.Companies, func(raw string) (map[string]bool, error) { return companySet(cmd, raw) }}, "company",
+		"triage, score and explain only these companies' postings (comma list of exact names, any case, as jobs list --company takes them; repeatable)")
+	fs.Var(scopeFlag{&opts.States, func(raw string) (map[string]bool, error) { return stateSet(cmd, raw) }}, "state",
+		"triage, score and explain only postings in these US states (comma list of codes or names; none = no state listed; as jobs list --state)")
+	fs.Var(scopeFlag{&opts.Areas, func(raw string) (map[string]bool, error) { return areaSet(cmd, raw) }}, "area",
+		"triage, score and explain only postings in these areas, as the location names them (comma list; none = no area listed; as jobs list --area)")
+	fs.BoolVar(&opts.Remote, "remote", false, "triage, score and explain only postings the board lists as remote (as jobs list --remote)")
+	fs.BoolVar(&opts.OrRemote, "or-remote", false, "with --state or --area, also advance postings the board lists as remote")
 	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (no decision backend is called, and none needs to be configured)")
 	fs.BoolVar(&opts.NoDigest, "no-digest", false, "write no digest: the run's roles wait for the next one")
 	fs.BoolVar(&opts.USFirst, "us-first", false, "advance postings in the United States before the rest (as advance_us_first does); it only orders")
@@ -151,6 +170,9 @@ func checkRunOptions(o runOptions, watchlist []sources.Board) error {
 	}
 	if o.ListOnly && o.USFirst {
 		return usagef("--list-only skips the advance phase; --us-first has nothing to order")
+	}
+	if err := checkScope(o); err != nil {
+		return err
 	}
 	if len(o.Boards) > 0 {
 		if _, err := selectBoards(watchlist, o.Boards); err != nil {

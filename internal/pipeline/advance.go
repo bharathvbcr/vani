@@ -88,7 +88,7 @@ type AdvancePlan struct {
 	// Skip is a run's --list-only: Run does not start the phase at all.
 	Skip bool
 	// Select says which records the phase advances, in place of the
-	// pipeline-status rule (Live, Triaged, Unsure, Scored). Nil keeps it.
+	// pipeline-status rule (Advanceable). Nil keeps it.
 	Select func(ledger.Record) bool
 	// Order sorts the selected records in the order they advance, given every
 	// ledger record (it says when each board was first crawled). Nil keeps
@@ -121,6 +121,16 @@ type AdvanceDeps struct {
 	Records []ledger.Record
 	Advance func(context.Context, posting.Key) error
 	Runner  *Runner
+}
+
+// Advanceable is the pipeline-status rule: a posting waiting for a stage
+// (triage, score or explain). A plan's Select that narrows the phase keeps it.
+func Advanceable(r ledger.Record) bool {
+	switch r.Status {
+	case posting.Live, posting.Triaged, posting.Unsure, posting.Scored:
+		return true
+	}
+	return false
 }
 
 // Advance advances up to plan.Limit postings. They go in plan.Order (the
@@ -194,8 +204,7 @@ func advance(ctx context.Context, plan AdvancePlan, deps AdvanceDeps) (AdvanceRe
 			}
 			continue
 		}
-		switch r.Status {
-		case posting.Live, posting.Triaged, posting.Unsure, posting.Scored:
+		if Advanceable(r) {
 			todo = append(todo, r)
 		}
 	}

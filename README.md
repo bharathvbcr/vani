@@ -354,7 +354,12 @@ flowchart TD
   called, and none needs to be configured; a run that advances still needs one), `--no-digest`
   leaves the run's roles for the next digest, and `--us-first` advances postings located in the
   United States before the rest (it only orders, and is refused with `--list-only`; see
-  `advance_us_first` below). A digest from a manual run marks its roles digested,
+  `advance_us_first` below). `--company`, `--state`, `--area`, `--remote` and
+  `--or-remote` limit triage, scoring and explaining to the postings at those companies and places;
+  the others stay where they are for a later run, and the cap applies within the scope. They read
+  as `jobs list` reads the same flags (one rule, `jobview.Scope`), so `vani jobs list --view pending`
+  with them lists exactly what awaits triage there. The record's `options` keep the scope, `runs
+  show` says it, and a scope or a company with nothing waiting is a warning in the run's output. A digest from a manual run marks its roles digested,
   so the next daily digest does not list them again. `run-once` is refused at once while the daemon
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
   writes its output to `<state dir>/runs/manual.log` (before each run it moves the previous log to

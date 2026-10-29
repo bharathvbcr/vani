@@ -435,7 +435,7 @@ func (e *env) setApplied(cfg config.Config) {
 func tuneRun(app *App, opts runOptions) error {
 	if app.Tune == nil {
 		if opts.tunes() {
-			return errors.New("this app cannot change a run's advance phase (--advance, --list-only, --us-first)")
+			return errors.New("this app cannot change a run's advance phase (--advance, --list-only, --us-first, --company, --state, --area, --remote)")
 		}
 		return nil
 	}

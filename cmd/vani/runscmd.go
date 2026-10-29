@@ -817,6 +817,12 @@ func optionsSummary(o runOptions) string {
 	} else if o.Advance > 0 {
 		parts = append(parts, fmt.Sprintf("advance cap %d", o.Advance))
 	}
+	if o.USFirst {
+		parts = append(parts, "US first")
+	}
+	if s := scopeWords(o); s != "" {
+		parts = append(parts, "advancing only "+s)
+	}
 	if o.NoDigest {
 		parts = append(parts, "no digest")
 	}

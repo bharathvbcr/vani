@@ -24,6 +24,16 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
   or anywhere. "Remote" alone and an empty location are not in the US, and another country or a
   Canadian province code makes a place foreign ("Mississauga, ON, CA"). An advance run still
   spends from `decide.daily_usd`.
+- **Triage chosen companies and places** (`cmd/vani/runscope.go`, `internal/jobview/scope.go`).
+  `vani run-once` and `vani run-request` take `--company`, `--state`, `--area`, `--remote` and
+  `--or-remote`, which limit the run's advance phase (triage, score, explain) to the postings at
+  those companies and places. The rest are untouched and wait for a later run. The flags read
+  as `jobs list` reads them, through the one rule both apply (`jobview.Scope`), so
+  `jobs list --view pending` with the same flags previews the run exactly. A test holds the two
+  in agreement over a grid of postings and scopes. The run record's `options`, `status --json`
+  and `runs show` carry the scope. The daemon refuses a request whose scope is not in the
+  flags' folded form. A scope, or a named company, with nothing waiting is a warning in the
+  run's output. The inbox poll never reads the scope.
 - **CLI-Anything conventions for agents** (`cmd/vani/jsoncli.go`,
   `skills/cli-anything-vani/SKILL.md`). The global `vani --json <command>` returns exactly one
   JSON value on stdout for every outcome. A failure of any kind is `{"error","code"}`, with

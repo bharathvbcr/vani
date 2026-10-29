@@ -91,6 +91,7 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 	capOverride, listOnly := w.tuned.Advance, w.tuned.ListOnly
 	usFirst := withUSFirst(w.tuned.USFirst || w.cfg.AdvanceUSFirst)
 	inboxUSFirst := withUSFirst(w.cfg.AdvanceUSFirst)
+	tuned := w.tuned
 	w.mu.Unlock()
 	rank := w.titleRank()
 	p := baseAdvancePlan(kind, limit, workers, w.warnf)
@@ -104,6 +105,7 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 		// The semantic order reads the cache the warm before the advance phase
 		// fills, so it is resolved when the phase orders, not when it is planned.
 		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder(), usFirst) }
+		scopeAdvance(&p, tuned, w.warnf)
 	case kindInbox:
 		// An inbox poll is not a run and takes no run options; the config's
 		// advance_us_first orders it all the same.
