@@ -432,8 +432,9 @@ flowchart TD
     `cap_reached`, `provider`, `refused`, `unsure`, `unreadable`, `busy`, `cancelled`, `store`,
     `config`, `ledger`, `bad_request`). It is not `vani retriage`, which asks no model. The Mac app's
     Jobs detail has the button (macos/README.md).
-    `--batch [--skip-read] [--parallel N] KEY...` reads up to 500 roles in one command (the ledger read
-    once, the ask lock held throughout, N at a time, default 3, at most 8). `--batch --dry-run` answers
+    `--batch [--skip-read] [--parallel N] KEY...` reads up to 1000 roles in one command, the most the Jobs
+    list loads (the ledger read once, the ask lock held throughout, N at a time, default 3, at most 8).
+    `--batch --dry-run` answers
     one object: each key's state (`skip`: `unknown_key`, `text_gone`, `untriaged`; `read`: `current`
     or `stale`) and the summed estimate for every eligible role and for those with no current reading,
     with how many fit in what is left of the cap at their most (`fit_at_max`). A real batch writes one

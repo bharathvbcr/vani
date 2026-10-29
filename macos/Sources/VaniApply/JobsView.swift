@@ -8,6 +8,9 @@ import VaniApplyKit
 /// it is shown verbatim (never as Markdown) and only http(s) links open.
 struct JobsView: View {
     @Environment(JobsModel.self) private var jobs
+    /// ⌘A asks which slice of the top of the list to re-triage. It is not the system's Select All.
+    @State private var askTopTriage = false
+    @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false
 
     var body: some View {
         @Bindable var jobs = jobs
@@ -70,6 +73,8 @@ struct JobsView: View {
                     .labelStyle(.titleAndIcon)
                 ExportMenu()
                     .labelStyle(.titleAndIcon)
+                TriageTopMenu()
+                    .labelStyle(.titleAndIcon)
                 Toggle(isOn: $jobs.showInsights) {
                     Label("Insights", systemImage: "chart.dots.scatter")
                 }
@@ -112,6 +117,30 @@ struct JobsView: View {
                                     set: { if !$0 { jobs.batch.dismissConfirmation() } })) {
             RetriageBatchConfirmSheet()
         }
+        .background {
+            TopTriageKeyMonitor(canAsk: !topTriagePrompt.choices.isEmpty && !askTopTriage) {
+                askTopTriage = true
+            }
+            .frame(width: 0, height: 0)
+        }
+        .confirmationDialog(topTriagePrompt.title, isPresented: $askTopTriage, titleVisibility: .visible) {
+            let shown = jobsOnScreen
+            ForEach(topTriagePrompt.choices, id: \.count) { choice in
+                Button(choice.label) { jobs.selectTopForTriage(choice.count, in: shown) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(verbatim: topTriagePrompt.message)
+        }
+    }
+
+    /// The rows ⌘A and the Triage menu act on: the list as it is drawn, duplicates hidden when that is on.
+    private var jobsOnScreen: [Job] {
+        hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
+    }
+
+    private var topTriagePrompt: RetriageBatchPresentation.TopPrompt {
+        RetriageBatchPresentation.topPrompt(shown: jobsOnScreen.count)
     }
 }
 
@@ -260,6 +289,130 @@ private struct ExportMenu: View {
         }
         .disabled(jobs.exporting || jobs.page == nil)
         .help("Save roles from this list, in its order and with its filters, to an Excel workbook")
+    }
+}
+
+/// Re-triage the first 100, 250, 500 or 1000 roles of the list. ⌘A asks the same question.
+private struct TriageTopMenu: View {
+    @Environment(JobsModel.self) private var jobs
+    @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false
+
+    var body: some View {
+        let shown = hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
+        let choices = RetriageBatchPresentation.topPrompt(shown: shown.count).choices
+        Menu {
+            ForEach(choices, id: \.count) { choice in
+                Button(choice.label) { jobs.selectTopForTriage(choice.count, in: shown) }
+                    .accessibilityIdentifier("triage.top.\(choice.count)")
+            }
+        } label: {
+            Label("Triage", systemImage: "sparkles")
+        }
+        .disabled(choices.isEmpty)
+        .help("Re-triage the first of these many roles in this list, in its current order (⌘A)")
+        .accessibilityIdentifier("triage.top")
+    }
+}
+
+/// ⌘A while the Jobs list is key, and a text field is not. Select All stays in the search field,
+/// the note and any other editor; a sheet (the cost confirmation) keeps the key too.
+enum TopTriageKey {
+    static func shouldOffer(flags: NSEvent.ModifierFlags, characters: String?, isRepeat: Bool, textEditing: Bool, sheet: Bool) -> Bool {
+        guard !isRepeat, !textEditing, !sheet else { return false }
+        guard flags.intersection(.deviceIndependentFlagsMask) == .command else { return false }
+        return characters?.lowercased() == "a"
+    }
+
+    /// A local event monitor runs on the main thread. The focus properties are main-actor
+    /// state, and the event is still used out here, so it cannot be captured by that closure.
+    static func shouldOffer(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+        let characters = event.charactersIgnoringModifiers
+        let isRepeat = event.isARepeat
+        let (text, sheet) = focus(of: event.window)
+        return shouldOffer(flags: flags, characters: characters, isRepeat: isRepeat, textEditing: text, sheet: sheet)
+    }
+
+    /// `NSWindow` is not `Sendable`. The pointer is read only inside the synchronous main-actor
+    /// hop, and only the two Bools come back. The event keeps the window alive for that hop.
+    private static func focus(of window: NSWindow?) -> (Bool, Bool) {
+        let bits = window.map { Int(bitPattern: Unmanaged.passUnretained($0).toOpaque()) } ?? 0
+        return MainActor.assumeIsolated {
+            guard bits != 0, let raw = UnsafeMutableRawPointer(bitPattern: bits) else { return (false, false) }
+            let window = Unmanaged<NSWindow>.fromOpaque(raw).takeUnretainedValue()
+            let responder = window.firstResponder
+            return (responder is NSTextView || responder is NSTextField, window.attachedSheet != nil)
+        }
+    }
+}
+
+/// Installed only while Jobs is on screen. The monitor is app-wide, so it acts only for this window.
+private struct TopTriageKeyMonitor: NSViewRepresentable {
+    var canAsk: Bool
+    var onAsk: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = Hook()
+        view.onWindow = { context.coordinator.sync(window: $0) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.box.canAsk = canAsk
+        context.coordinator.box.onAsk = onAsk
+        context.coordinator.sync(window: nsView.window)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.remove()
+    }
+
+    final class Hook: NSView {
+        var onWindow: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindow?(window)
+        }
+    }
+
+    final class Coordinator {
+        let box = Box()
+        var monitor: Any?
+
+        func sync(window: NSWindow?) {
+            box.window = window
+            guard window != nil, monitor == nil else {
+                if window == nil { remove() }
+                return
+            }
+            let box = box
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                box.handle(event)
+            }
+        }
+
+        func remove() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            box.window = nil
+        }
+    }
+
+    /// Main-thread only: a local event monitor runs on the main thread, and SwiftUI updates the box there.
+    final class Box: @unchecked Sendable {
+        nonisolated(unsafe) weak var window: NSWindow?
+        var canAsk = false
+        var onAsk: () -> Void = {}
+
+        func handle(_ event: NSEvent) -> NSEvent? {
+            guard event.window === window, TopTriageKey.shouldOffer(event) else { return event }
+            // Consume ⌘A either way, so the list does not select every row behind the question.
+            // The monitor is already on the main thread.
+            if canAsk { MainActor.assumeIsolated { onAsk() } }
+            return nil
+        }
     }
 }
 

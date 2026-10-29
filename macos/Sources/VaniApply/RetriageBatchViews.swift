@@ -17,7 +17,7 @@ struct SelectionPane: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(verbatim: RetriageBatchPresentation.selectionLine(s)).font(.title3.weight(.semibold))
-                    Text("⌘-click or ⇧-click rows in the list to change the selection.")
+                    Text("⌘A asks how many of the top roles to re-triage. ⌘-click or ⇧-click rows to change the selection.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Clear Selection") { jobs.selectedKeys = [] }
                         .accessibilityIdentifier("selection.clear")

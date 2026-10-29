@@ -250,8 +250,10 @@ public struct LineSplitter: Sendable {
 public struct RetriageBatchClient: Sendable {
     /// Postings asked at once (vani's default).
     public static let parallel = 3
-    /// The most keys one batch takes (vani's maxRetriageBatch).
-    public static let maxKeys = 500
+    /// The most keys one batch takes (vani's maxRetriageBatch, which is the Jobs
+    /// list's default of 1000 rows). ⌘A offers `RetriageBatchPresentation.topSizes`
+    /// up to this, rather than selecting every row.
+    public static let maxKeys = 1000
     static let maxLineBytes = 256 * 1024
     static let maxReplyBytes = 64 * 1024
 
@@ -427,6 +429,53 @@ public struct RetriageBatchConfirmation: Equatable, Sendable {
 
 /// The words of the batch, as pure functions.
 public enum RetriageBatchPresentation {
+    /// ⌘A offers these, the first that many roles of the list in its current order.
+    /// Each is at most one batch (`RetriageBatchClient.maxKeys`).
+    public static let topSizes = [100, 250, 500, 1000]
+
+    /// One size ⌘A can offer.
+    public struct TopChoice: Equatable, Sendable {
+        public var count: Int
+        /// "Top 100", "Top 1,000", or "All 40" when the list is shorter than every standard size
+        /// (or shorter than the next one, so the rest of the list is its own choice).
+        public var label: String
+    }
+
+    /// What ⌘A asks. `choices` is empty when the list is empty: nothing to offer.
+    public struct TopPrompt: Equatable, Sendable {
+        public var title: String
+        public var message: String
+        public var choices: [TopChoice]
+    }
+
+    /// The sizes the list can fill, and the whole list when it is not one of those sizes.
+    /// Never a size past one batch, so a longer list still stops at `maxKeys`.
+    public static func topPrompt(shown: Int, locale: Locale = .current) -> TopPrompt {
+        TopPrompt(
+            title: "Re-triage the top roles",
+            message: "The first this many roles in the list, in its current order. The cost is shown next; nothing is spent until you confirm.",
+            choices: topChoices(shown: shown, locale: locale))
+    }
+
+    /// The first `limit` roles of `jobs`, in that order. Never more than one batch.
+    /// `limit` below 1, or an empty list, yields nothing.
+    public static func topJobs(_ jobs: [Job], limit: Int) -> [Job] {
+        guard limit > 0 else { return [] }
+        return Array(jobs.prefix(min(limit, RetriageBatchClient.maxKeys)))
+    }
+
+    static func topChoices(shown: Int, locale: Locale) -> [TopChoice] {
+        guard shown > 0 else { return [] }
+        let cap = min(shown, RetriageBatchClient.maxKeys)
+        var counts = topSizes.filter { $0 <= cap }
+        if counts.last != cap { counts.append(cap) }
+        return counts.map { n in
+            let wholeList = n == shown && !topSizes.contains(n)
+            let title = wholeList ? "All" : "Top"
+            return TopChoice(count: n, label: "\(title) \(n.formatted(.number.locale(locale)))")
+        }
+    }
+
     /// The roles of a selection, and how many of them could be read.
     public struct Selection: Equatable, Sendable {
         public var total: Int

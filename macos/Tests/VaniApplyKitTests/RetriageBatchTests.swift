@@ -403,6 +403,43 @@ final class RetriageBatchPresentationTests: XCTestCase {
         XCTAssertNotNil(RetriageBatchPresentation.blockedReason(s, busy: true))
         XCTAssertNotNil(RetriageBatchPresentation.blockedReason(RetriageBatchPresentation.selection([waiting, waiting]), busy: false))
         XCTAssertNotNil(RetriageBatchPresentation.blockedReason(RetriageBatchPresentation.selection([]), busy: false))
+        let over = RetriageBatchPresentation.selection((0..<1001).map { Job(key: "k:\($0)", company: "C", title: "T") })
+        XCTAssertEqual(RetriageBatchPresentation.blockedReason(over, busy: false),
+                       "Select at most 1000 roles; 1001 are selected.")
+    }
+
+    func testCommandAOffersTheTopOfTheListUpToOneBatch() {
+        XCTAssertEqual(RetriageBatchClient.maxKeys, 1000)
+        XCTAssertEqual(RetriageBatchPresentation.topSizes, [100, 250, 500, 1000])
+        XCTAssertTrue(RetriageBatchPresentation.topSizes.allSatisfy { $0 <= RetriageBatchClient.maxKeys })
+
+        let full = RetriageBatchPresentation.topPrompt(shown: 1000, locale: en)
+        XCTAssertEqual(full.title, "Re-triage the top roles")
+        XCTAssertEqual(full.choices.map(\.count), [100, 250, 500, 1000])
+        XCTAssertEqual(full.choices.map(\.label), ["Top 100", "Top 250", "Top 500", "Top 1,000"])
+        XCTAssertTrue(full.message.contains("nothing is spent"))
+
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: 600, locale: en).choices.map(\.label),
+                       ["Top 100", "Top 250", "Top 500", "All 600"])
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: 100, locale: en).choices.map(\.label), ["Top 100"])
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: 40, locale: en).choices.map(\.label), ["All 40"])
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: 1, locale: en).choices.map(\.label), ["All 1"])
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: 0, locale: en).choices, [])
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: -3, locale: en).choices, [])
+        // A list longer than one batch still stops at the cap: there is no "All 2,500".
+        XCTAssertEqual(RetriageBatchPresentation.topPrompt(shown: 2500, locale: en).choices.map(\.count),
+                       [100, 250, 500, 1000])
+
+        let jobs = (0..<1200).map { Job(key: "k:\($0)", company: "C", title: "T") }
+        XCTAssertEqual(RetriageBatchPresentation.topJobs(jobs, limit: 100).map(\.key), (0..<100).map { "k:\($0)" })
+        XCTAssertEqual(RetriageBatchPresentation.topJobs(jobs, limit: 1000).count, 1000)
+        XCTAssertEqual(RetriageBatchPresentation.topJobs(jobs, limit: 5000).count, 1000, "a batch never takes more than the cap")
+        XCTAssertEqual(RetriageBatchPresentation.topJobs(jobs, limit: 0), [])
+        XCTAssertEqual(RetriageBatchPresentation.topJobs(jobs, limit: -1), [])
+        XCTAssertEqual(RetriageBatchPresentation.topJobs([], limit: 100), [])
+        let capped = RetriageBatchPresentation.selection(RetriageBatchPresentation.topJobs(jobs, limit: 1001))
+        XCTAssertEqual(capped.total, 1000)
+        XCTAssertNil(RetriageBatchPresentation.blockedReason(capped, busy: false))
     }
 
     func testTheSummarySaysWhatChangedFailedAndWhyItStopped() {

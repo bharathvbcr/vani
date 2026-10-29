@@ -178,6 +178,17 @@ final class JobsModel {
         batch.start(selectedJobs)
     }
 
+    /// Select the first `n` of `shown` (the rows on screen, in their order) and ask what
+    /// re-triaging them would cost. One role just opens. A blocked selection stays selected
+    /// and is not asked. Nothing is spent here: the batch still confirms the cost first.
+    func selectTopForTriage(_ n: Int, in shown: [Job]) {
+        let picked = RetriageBatchPresentation.topJobs(shown, limit: n)
+        guard !picked.isEmpty else { return }
+        selectedKeys = Set(picked.map(\.key))
+        guard picked.count > 1, batch.isAvailable, batch.blockedReason(for: picked) == nil else { return }
+        batch.start(picked)
+    }
+
     /// Select the roles whose fit Sonnet changed in the last batch, to look them over.
     func selectChanged() {
         let keys = Set(batch.changedKeys).intersection(jobs.map(\.key))

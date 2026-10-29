@@ -350,6 +350,14 @@ func TestJobsRetriageBatchBusy(t *testing.T) {
 	}
 }
 
+// One batch is the Jobs list: the list loads defaultJobsLimit rows, and a batch
+// takes that many, so selecting the whole list is not refused for its length.
+func TestJobsRetriageBatchCapIsTheList(t *testing.T) {
+	if maxRetriageBatch != defaultJobsLimit {
+		t.Fatalf("maxRetriageBatch = %d, jobs list default = %d", maxRetriageBatch, defaultJobsLimit)
+	}
+}
+
 // Bad input is refused in the JSON reply (or as usage) before anything is read.
 func TestJobsRetriageBatchRefusesBadInput(t *testing.T) {
 	p := &retriageLLM{text: rtAnswer}

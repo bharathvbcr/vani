@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import VaniApply
@@ -188,5 +189,54 @@ final class RetriageBatchModelTests: XCTestCase {
         XCTAssertFalse(bare.batch.isAvailable)
         bare.batch.start(m.jobs)
         XCTAssertEqual(bare.batch.phase, .idle)
+    }
+
+    /// ⌘A's choice: the first N rows, in the order given, then the cost question. One row only opens.
+    func testSelectingTheTopAsksForTheCostInThatOrder() async throws {
+        let jobs = try JobsFixture(self)
+        let f = try fake(run: [])
+        let m = model(jobs, f)
+        await m.refresh()
+        let byKey = Dictionary(uniqueKeysWithValues: m.jobs.map { ($0.key, $0) })
+        let shown = ["fx:beta:2", "fx:alpha:1", "fx:gamma:3"].compactMap { byKey[$0] }
+
+        m.selectTopForTriage(1, in: shown)
+        XCTAssertEqual(m.selectedKeys, ["fx:beta:2"])
+        XCTAssertEqual(m.selection, "fx:beta:2", "one role opens, it is not a batch")
+        XCTAssertEqual(m.batch.phase, .idle)
+        XCTAssertTrue(f.calls().filter { $0.contains("retriage") }.isEmpty)
+
+        m.selectTopForTriage(2, in: shown)
+        XCTAssertEqual(m.selectedKeys, ["fx:beta:2", "fx:alpha:1"])
+        try await eventually("the confirmation") { m.batch.confirming != nil }
+        XCTAssertEqual(f.calls().last, "jobs retriage --json --batch --dry-run fx:beta:2 fx:alpha:1")
+
+        m.batch.cancel()
+        var waiting = shown
+        for i in waiting.indices { waiting[i].untriaged = true }
+        m.selectTopForTriage(100, in: waiting)
+        XCTAssertEqual(m.selectedKeys, Set(waiting.map(\.key)))
+        XCTAssertEqual(m.batch.phase, .idle, "a selection vani cannot read is selected and not asked")
+        XCTAssertEqual(f.calls().filter { $0.contains("retriage") }.count, 1)
+
+        let quiet = model(jobs, nil)
+        await quiet.refresh()
+        quiet.selectTopForTriage(100, in: quiet.jobs)
+        XCTAssertEqual(quiet.selectedKeys, Set(quiet.jobs.map(\.key)))
+        XCTAssertEqual(quiet.batch.phase, .idle)
+    }
+
+    func testCommandAIsTheTopTriageAskUnlessTextOrASheetHasTheKey() {
+        XCTAssertTrue(TopTriageKey.shouldOffer(flags: .command, characters: "a", isRepeat: false, textEditing: false, sheet: false))
+        XCTAssertTrue(TopTriageKey.shouldOffer(flags: .command, characters: "A", isRepeat: false, textEditing: false, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: [.command, .shift], characters: "a", isRepeat: false, textEditing: false, sheet: false), "⇧⌘A is Mark Applied")
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: [.command, .option], characters: "a", isRepeat: false, textEditing: false, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: .command, characters: "a", isRepeat: true, textEditing: false, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: .command, characters: "a", isRepeat: false, textEditing: true, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: .command, characters: "a", isRepeat: false, textEditing: false, sheet: true))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: .command, characters: "b", isRepeat: false, textEditing: false, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: [], characters: "a", isRepeat: false, textEditing: false, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: .command, characters: nil, isRepeat: false, textEditing: false, sheet: false))
+        XCTAssertFalse(TopTriageKey.shouldOffer(flags: .command, characters: "", isRepeat: false, textEditing: false, sheet: false))
     }
 }

@@ -36,9 +36,11 @@ import (
 // row. Readings already kept stay kept, whatever stops it.
 
 const (
-	// maxRetriageBatch bounds one batch: the Jobs list shows at most this many
-	// rows, and it bounds the argv, the fan-out and the reply.
-	maxRetriageBatch = 500
+	// maxRetriageBatch bounds one batch. It is defaultJobsLimit, the most rows
+	// the Jobs list loads, so the whole list is one batch; it also bounds the
+	// argv, the fan-out and the reply. The app's ⌘A asks for the first 100,
+	// 250, 500 or 1000 of that list instead of selecting every row.
+	maxRetriageBatch = 1000
 	// defaultRetriageParallel and maxRetriageParallel bound how many postings
 	// are asked at once.
 	defaultRetriageParallel = 3

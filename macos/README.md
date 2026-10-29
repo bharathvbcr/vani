@@ -95,7 +95,12 @@ changes the order: it never drops a posting or brings a dropped one back (Rule 7
 in plain words; Retry goes back through the cost confirmation. The reading's `manual_triage` on each job and a fit
 factor's `backend` (`manual`, `escalate`) decode leniently, so an older `vani` or a malformed value never fails the list.
 
-**Re-triage several roles at once.** The Jobs list takes several rows (⌘-click, ⇧-click). With more than one
+**Re-triage several roles at once.** The Jobs list takes several rows (⌘-click, ⇧-click). **⌘A** asks which
+slice of the top of the list to re-triage — the first 100, 250, 500 or 1000, in the list's current order —
+instead of selecting every row. A list shorter than one of those sizes also offers the whole list, and a
+size past 1000 is not offered: one batch takes at most 1000 roles, which is as many as the list loads.
+The same sizes are in the toolbar's **Triage** menu. Choosing one selects those rows and asks what Sonnet
+would cost; nothing is spent until that confirmation. With more than one
 selected, the detail pane becomes the selection pane: what is selected (how many are not triaged, how many Sonnet
 already read), **Re-triage N with Sonnet…** (⌥⌘R, or the right-click menu over the selection, which also copies the
 titles or links), and the roles, each of which opens alone on click. It runs `vani jobs retriage --batch --dry-run`
