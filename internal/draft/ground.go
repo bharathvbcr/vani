@@ -352,36 +352,66 @@ const (
 // distinct ones there are. Figures come first, then credentials, then acronyms,
 // each in the order the draft says them.
 func (g grounding) ungrounded(text string) (first claim, n int) {
-	note := func(c claim) {
-		if n == 0 {
-			first = c
-		}
-		n++
+	cs := g.claims(text)
+	if len(cs) == 0 {
+		return claim{}, 0
 	}
+	return cs[0], len(cs)
+}
+
+// claims is every distinct unbacked claim of text, in the order ungrounded
+// reports them. Each is quoted as the draft wrote it: a tagged figure is the
+// whole token ("B2B", not the "2" inside it).
+func (g grounding) claims(text string) []claim {
+	var out []claim
 	seen := map[figure]bool{}
 	for _, f := range figures(text) {
 		if !seen[f] && !g.has(f) {
 			seen[f] = true
-			if f.word == yearWord {
+			switch {
+			case f.word == yearWord:
 				quoted := f.num + " " + yearWord
 				if f.num != "1" {
 					quoted += "s"
 				}
-				note(claim{quoted, whatFigure, true})
-			} else {
-				note(claim{f.String(), whatFigure, false})
+				out = append(out, claim{quoted, whatFigure, true})
+			case f.tag != "":
+				out = append(out, claim{surface(text, f), whatFigure, false})
+			default:
+				out = append(out, claim{f.String(), whatFigure, false})
 			}
 		}
 	}
 	for _, c := range credentialsIn(text) {
 		if !g.creds[c.key] {
-			note(claim{c.surface, whatCredential, true})
+			out = append(out, claim{c.surface, whatCredential, true})
 		}
 	}
 	for _, a := range acronymsIn(text) {
 		if !g.toks[strings.ToLower(a)] {
-			note(claim{a, whatAcronym, false})
+			out = append(out, claim{a, whatAcronym, false})
 		}
 	}
-	return first, n
+	return out
+}
+
+// surface is the whole word of text that holds the tagged figure f ("B2B" for
+// the 2 tagged "b", "24/7" for the 7 tagged "/"), or the tag and number when
+// the word cannot be found (the figure was read after spelled numbers or
+// thousands groups were rewritten).
+func surface(text string, f figure) string {
+	needles := []string{f.tag + f.num}
+	if f.tag == "/" {
+		needles = []string{"/" + f.num, f.num + "/"}
+	}
+	for _, w := range strings.Fields(text) {
+		w = strings.Trim(w, ".,;:!?()[]{}\"'“”‘’")
+		lw := foldRE.Replace(strings.ToLower(w))
+		for _, n := range needles {
+			if strings.Contains(lw, n) {
+				return w
+			}
+		}
+	}
+	return needles[0]
 }

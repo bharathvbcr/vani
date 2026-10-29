@@ -40,7 +40,8 @@ const MaxBackendName = 32
 // already use; an OpenRouter model must not answer under one of them, or its
 // readings would be filed as theirs.
 // "title" is the deterministic title reader (title_signals.read).
-var reservedBackendNames = []string{"llm", "lappi", "local", "unknown", "title"}
+// "apple_fm" is the on-device Apple model (decide/fmbackend).
+var reservedBackendNames = []string{"llm", "lappi", "local", "unknown", "title", "apple_fm"}
 
 // OpenRouterName is the name the OpenRouter decision model answers under in
 // routing, ledger annotations, drop reasons and the eval: see BackendName.

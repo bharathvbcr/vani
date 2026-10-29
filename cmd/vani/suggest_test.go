@@ -81,6 +81,10 @@ func TestSuggestTriagesWithTheDecisionModelAndDraftsEssaysOnly(t *testing.T) {
 	for _, f := range r.Fields {
 		got[f.ID] = f.Status + "/" + f.Category
 	}
+	// No knowledge base is configured here, so the fact has nothing to be answered from.
+	if q2 := r.Fields[1]; q2.Code != "no_evidence" || q2.Reason != "Your knowledge base does not answer this." {
+		t.Errorf("q2 = %+v", q2)
+	}
 	want := map[string]string{"q1": "drafted/essay", "q2": "manual/applicant_fact", "q3": "manual/work_authorization", "q4": "manual/legal_consent"}
 	for id, w := range want {
 		if got[id] != w {

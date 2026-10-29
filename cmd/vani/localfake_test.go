@@ -36,6 +36,9 @@ func TestMain(m *testing.M) {
 	// the already-exported prompt sets it with withPrompt.
 	exportPromptTTY = func() bool { return false }
 	exportPromptInput = strings.NewReader("")
+	// No test asks the on-device model: a named helper that is not there is the
+	// only candidate (fmbackend), so it answers unavailable and the chain moves on.
+	_ = os.Setenv("VANI_FM_BINARY", "/nonexistent/vani-fm")
 	os.Exit(m.Run())
 }
 

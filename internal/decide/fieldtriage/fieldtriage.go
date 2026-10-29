@@ -29,15 +29,18 @@ const (
 
 // The options. Only Essay leads to a draft.
 const (
-	Essay     = "essay"
-	Fact      = "applicant_fact"
-	WorkAuth  = "work_authorization"
-	Consent   = "legal_consent"
-	SelfID    = "self_identification"
-	Other     = "other"
-	KindText  = "text"
-	KindLong  = "textarea"
-	contextFm = "Field type: %s\nQuestion label (untrusted text copied from a job site):\n%s"
+	Essay    = "essay"
+	Fact     = "applicant_fact"
+	WorkAuth = "work_authorization"
+	Consent  = "legal_consent"
+	SelfID   = "self_identification"
+	Other    = "other"
+	KindText = "text"
+	KindLong = "textarea"
+	// KindChoice is a field whose answer is one of its Options (a select, a
+	// radio group). The options never go to a decision model.
+	KindChoice = "choice"
+	contextFm  = "Field type: %s\nQuestion label (untrusted text copied from a job site):\n%s"
 )
 
 // Option is one legal answer with the description a decision model judges it by.
@@ -65,7 +68,26 @@ type Field struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	Kind  string `json:"kind"`
+	// MaxChars is the control's maxlength in characters, when the form sets one.
+	// Zero means none. It is a number the extension reads off the control, never
+	// page text, and it is not sent to the decision model.
+	MaxChars int `json:"max_chars,omitempty"`
+	// Options are the answers a KindChoice field offers, exactly as the page
+	// shows them (an answer is one of these strings, byte for byte). They are page
+	// text: framed as untrusted in a prompt, and never sent to a triage model.
+	Options []string `json:"options,omitempty"`
 }
+
+// MaxMaxChars bounds Field.MaxChars: a maxlength above it is a placeholder for
+// "unlimited" that the extension should send as none.
+const MaxMaxChars = 100_000
+
+// Bounds on a choice field's options.
+const (
+	MinOptions     = 2
+	MaxOptions     = 50
+	MaxOptionRunes = 200
+)
 
 // Validate checks f's bounds. It trims the label in place.
 func (f *Field) Validate() error {
@@ -79,8 +101,34 @@ func (f *Field) Validate() error {
 		return fmt.Errorf("fieldtriage: field %s label is not UTF-8", f.ID)
 	case utf8.RuneCountInString(f.Label) > MaxLabelRunes:
 		return fmt.Errorf("fieldtriage: field %s label is over %d characters", f.ID, MaxLabelRunes)
-	case f.Kind != KindText && f.Kind != KindLong:
-		return fmt.Errorf("fieldtriage: field %s kind %q is not text or textarea", f.ID, f.Kind)
+	case f.Kind != KindText && f.Kind != KindLong && f.Kind != KindChoice:
+		return fmt.Errorf("fieldtriage: field %s kind %q is not text, textarea or choice", f.ID, f.Kind)
+	case f.MaxChars < 0 || f.MaxChars > MaxMaxChars:
+		return fmt.Errorf("fieldtriage: field %s max_chars %d outside [0, %d]", f.ID, f.MaxChars, MaxMaxChars)
+	}
+	if f.Kind != KindChoice {
+		if len(f.Options) != 0 {
+			return fmt.Errorf("fieldtriage: field %s kind %q takes no options", f.ID, f.Kind)
+		}
+		return nil
+	}
+	if f.MaxChars != 0 {
+		return fmt.Errorf("fieldtriage: choice field %s takes no max_chars", f.ID)
+	}
+	if n := len(f.Options); n < MinOptions || n > MaxOptions {
+		return fmt.Errorf("fieldtriage: choice field %s has %d options, want %d to %d", f.ID, n, MinOptions, MaxOptions)
+	}
+	seen := make(map[string]bool, len(f.Options))
+	for _, o := range f.Options {
+		switch {
+		case !utf8.ValidString(o):
+			return fmt.Errorf("fieldtriage: choice field %s has an option that is not UTF-8", f.ID)
+		case strings.TrimSpace(o) == "" || utf8.RuneCountInString(o) > MaxOptionRunes:
+			return fmt.Errorf("fieldtriage: choice field %s has an option that is empty or over %d characters", f.ID, MaxOptionRunes)
+		case seen[o]:
+			return fmt.Errorf("fieldtriage: choice field %s repeats an option", f.ID)
+		}
+		seen[o] = true
 	}
 	return nil
 }

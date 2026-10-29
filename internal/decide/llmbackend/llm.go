@@ -53,7 +53,7 @@ const MaxNameBytes = 32
 
 // reservedNames are the names other backends answer under (config's
 // reservedBackendNames, less DefaultName, which this backend owns).
-var reservedNames = []string{"lappi", "local", "unknown", "title"}
+var reservedNames = []string{"lappi", "local", "unknown", "title", "apple_fm"}
 
 // ReservedNames is a copy of reservedNames, for the test in cmd/vani that holds
 // it equal to config's (the two packages cannot import each other).
@@ -287,9 +287,31 @@ func ShapeHigh(p llm.Provider, req *llm.Request) {
 // with other single-turn callers (the explainer) so stream handling has one
 // owner.
 func Turn(ctx context.Context, p llm.Provider, req llm.Request) (string, error) {
+	r, err := TurnReply(ctx, p, req)
+	return r.Text, err
+}
+
+// Reply is a settled turn: the visible text and why generation stopped. Stop is
+// empty when the provider reported none.
+type Reply struct {
+	Text string
+	Stop llm.StopReason
+}
+
+// Truncated reports that the reply ran into max_tokens, so Text is cut off (or
+// empty because thinking spent the budget).
+func (r Reply) Truncated() bool { return r.Stop == llm.StopMaxTokens }
+
+// Refused reports that the model declined to answer.
+func (r Reply) Refused() bool { return r.Stop == llm.StopRefusal }
+
+// TurnReply is Turn that also returns the stop reason, for a caller whose
+// output must not be accepted cut off (an answer draft). Turn keeps ignoring it
+// so the decision and resume callers behave as before.
+func TurnReply(ctx context.Context, p llm.Provider, req llm.Request) (Reply, error) {
 	st, err := p.Stream(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("llmbackend: %w", err)
+		return Reply{}, fmt.Errorf("llmbackend: %w", err)
 	}
 	defer func() { _ = st.Close() }()
 	for {
@@ -297,18 +319,23 @@ func Turn(ctx context.Context, p llm.Provider, req llm.Request) (string, error) 
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			return "", fmt.Errorf("llmbackend: %w", err)
+			return Reply{}, fmt.Errorf("llmbackend: %w", err)
 		}
 		if ctx.Err() != nil {
-			return "", fmt.Errorf("llmbackend: %w", ctx.Err())
+			return Reply{}, fmt.Errorf("llmbackend: %w", ctx.Err())
 		}
 	}
 	resp, err := st.Response()
 	if err != nil {
-		return "", fmt.Errorf("llmbackend: %w", err)
+		return Reply{}, fmt.Errorf("llmbackend: %w", err)
 	}
-	return resp.Message.Text(), nil
+	return Reply{Text: resp.Message.Text(), Stop: resp.StopReason}, nil
 }
+
+// StripFence is s with one surrounding Markdown code fence (and its "json" tag)
+// removed: the one reading of a JSON reply that models wrap, for every caller
+// that decodes one.
+func StripFence(s string) string { return stripFence(s) }
 
 func stripFence(s string) string {
 	s = strings.TrimSpace(s)

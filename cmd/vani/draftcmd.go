@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/draft"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
+	"github.com/bharathvbcr/Vani/internal/suggest"
 )
 
 // maxDraftInput caps the request read from stdin. It carries a posting of
@@ -35,12 +37,15 @@ type draftReply struct {
 	Code          string `json:"code,omitempty"`
 	// Kind says what a draft.CodeUngrounded refusal found unbacked (draft.Kind*).
 	Kind string `json:"kind,omitempty"`
+	// Category is what a not_drafted refusal read the question as
+	// (fieldtriage's work_authorization, self_identification, legal_consent).
+	Category string `json:"category,omitempty"`
 }
 
 // Codes `vani draft` adds to draft's own.
 const (
 	codeConfig = "config"
-	codeKB     = "kb"
+	codeKB     = draft.CodeKB
 )
 
 // cmdDraft reads one draft request (JSON) on stdin and writes one reply (JSON)
@@ -52,12 +57,23 @@ func (e *env) cmdDraft(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	start := time.Now()
 	res, code, err := e.draftOnce()
 	reply := draftReply{Draft: res.Draft, Model: res.Model, EvidenceItems: res.EvidenceItems}
 	if err != nil {
-		reply = draftReply{Error: err.Error(), Code: code, Kind: draft.KindOf(err)}
+		reply = draftReply{Error: err.Error(), Code: code, Kind: draft.KindOf(err), Category: draft.CategoryOf(err)}
 	}
+	e.recordOutcome(suggest.DraftOutcome(start, res, err, code))
 	return e.writeReply(reply, err)
+}
+
+// recordOutcome appends one counts-only outcome to the state dir's
+// suggest/outcomes.jsonl. It never fails a command: a log that cannot be
+// written is a warning on stderr.
+func (e *env) recordOutcome(o suggest.Outcome) {
+	if err := suggest.AppendOutcome(e.stateDir, o); err != nil {
+		fmt.Fprintf(e.stderr, "vani: outcome not recorded: %v\n", err)
+	}
 }
 
 // errAlreadyReported exits 1 without a second message: the JSON reply carried
@@ -79,7 +95,14 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 		return draft.Result{}, draft.CodeBadRequest, fmt.Errorf("draft: request is not a draft request: %w", err)
 	}
 	if err := req.Validate(); err != nil {
-		return draft.Result{}, draft.CodeBadRequest, err
+		// bad_request, or not_drafted for a question Vani never drafts: refused
+		// here, before the config is read or a provider is built.
+		code := draft.CodeBadRequest
+		var de *draft.Error
+		if errors.As(err, &de) {
+			code = de.Code
+		}
+		return draft.Result{}, code, err
 	}
 
 	cfg, err := e.loadConfig()

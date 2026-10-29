@@ -48,9 +48,23 @@ func TestValidateRefuses(t *testing.T) {
 		"huge label":   {ID: "a", Label: strings.Repeat("é", MaxLabelRunes+1), Kind: KindText},
 		"bad utf8":     {ID: "a", Label: "ok\xff", Kind: KindText},
 		"choice field": {ID: "a", Label: "Yes or no?", Kind: "select"},
+		"negative max": {ID: "a", Label: "x", Kind: KindText, MaxChars: -1},
+		"huge max":     {ID: "a", Label: "x", Kind: KindText, MaxChars: MaxMaxChars + 1},
 	} {
 		if err := f.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestMaxCharsIsAnOptionalBoundedNumberAndNeverReachesTheModel(t *testing.T) {
+	for _, n := range []int{0, 1, 260, 1300, MaxMaxChars} {
+		f := Field{ID: "a", Label: "Why us?", Kind: KindLong, MaxChars: n}
+		if err := f.Validate(); err != nil {
+			t.Errorf("max_chars %d refused: %v", n, err)
+		}
+		if got, want := string(Question(f).Context), "Field type: textarea\nQuestion label (untrusted text copied from a job site):\nWhy us?"; got != want {
+			t.Errorf("max_chars %d changed what the model sees: %q", n, got)
 		}
 	}
 }

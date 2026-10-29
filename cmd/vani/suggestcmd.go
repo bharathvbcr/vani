@@ -2,15 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/decide/fieldtriage"
+	"github.com/bharathvbcr/Vani/internal/decide/fmbackend"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/draft"
 	"github.com/bharathvbcr/Vani/internal/egress"
@@ -44,10 +47,12 @@ func (e *env) cmdSuggest(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	start := time.Now()
 	out, code, err := e.suggestOnce()
 	reply := suggestReply{Fields: out}
 	if err != nil {
 		reply = suggestReply{Error: err.Error(), Code: code}
+		e.recordOutcome(suggest.FailureOutcome(suggest.OpSuggest, start, code))
 	}
 	return e.writeReply(reply, err)
 }
@@ -86,15 +91,25 @@ func (e *env) suggestOnce() ([]suggest.Suggestion, string, error) {
 	if err != nil {
 		return nil, codeConfig, err
 	}
-	d, code, err := e.newDrafter(ctx, cfg, p)
-	if err != nil {
+	var d pageDrafter
+	dr, code, err := e.newDrafter(ctx, cfg, p)
+	switch {
+	case err == nil:
+		d = dr
+	case code == codeKB:
+		// An unreadable knowledge base costs the drafts and the answers, not the
+		// triage: every field is still sorted, and the essays, facts and choices come
+		// back failed with code kb.
+		fmt.Fprintf(e.stderr, "vani: suggest: %v; nothing will be drafted or answered\n", err)
+		d = kbFailedDrafter{err: &draft.Error{Code: draft.CodeKB, Err: err}}
+	default:
 		return nil, code, err
 	}
 	router, err := suggestDecider(w, p)
 	if err != nil {
 		return nil, codeConfig, err
 	}
-	out, err := suggest.Engine{D: router, Drafter: d}.Run(ctx, req)
+	out, err := suggest.Engine{D: router, Drafter: d, Answerer: d, Record: e.recordOutcome}.Run(ctx, req)
 	if err != nil {
 		code := draft.CodeProvider
 		if errors.Is(err, suggest.ErrBadRequest) {
@@ -105,11 +120,34 @@ func (e *env) suggestOnce() ([]suggest.Suggestion, string, error) {
 	return out, "", nil
 }
 
-// fieldRouter is the decision chain for career.form_field: the OpenRouter
-// decision model when configured, then the LLM. Lappi is not trained on this
+// pageDrafter is what a suggest page needs of the drafter: essay drafts and the
+// batched fact and choice answers (draft.Drafter does both).
+type pageDrafter interface {
+	suggest.Drafter
+	suggest.Answerer
+}
+
+// kbFailedDrafter stands in for the drafter when the knowledge base did not
+// load: every draft and answer fails with the same code, so suggest can still
+// triage.
+type kbFailedDrafter struct{ err error }
+
+func (k kbFailedDrafter) Draft(context.Context, draft.Request) (draft.Result, error) {
+	return draft.Result{}, k.err
+}
+
+func (k kbFailedDrafter) Answer(context.Context, draft.AnswerRequest) (draft.AnswerResult, error) {
+	return draft.AnswerResult{}, k.err
+}
+
+// fieldRouter is the decision chain for career.form_field: the on-device Apple
+// model (labels only; free, and absent or refusing on a Mac without Apple
+// Intelligence, so the next backend answers), the OpenRouter decision model
+// when configured, then the LLM. Lappi is not trained on this
 // task and the local model is only ever a shadow, so neither is asked.
 func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 	var backends []decide.Backend
+	backends = append(backends, logErrors(fmbackend.New(fmbackend.Config{Descriptions: fieldtriage.Descriptions()}), w.warnf, nil))
 	if w.cfg.OpenRouterConfigured() {
 		spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
@@ -134,7 +172,7 @@ func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 			backends = append(backends, logErrors(jb, w.warnf, nil))
 		}
 	}
-	lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.Model})
+	lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.EffectiveTriageModel()})
 	if err != nil {
 		return nil, fmt.Errorf("llm backend: %w", err)
 	}

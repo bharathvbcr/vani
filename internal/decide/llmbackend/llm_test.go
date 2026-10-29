@@ -23,6 +23,7 @@ type fakeStream struct {
 	block     bool
 	ctx       context.Context
 	delivered bool
+	stop      llm.StopReason
 }
 
 func (s *fakeStream) Next() (llm.Chunk, error) {
@@ -46,8 +47,14 @@ func (s *fakeStream) Response() (llm.Response, error) {
 	}
 	return llm.Response{
 		Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: s.text}}},
-		StopReason: llm.StopEndTurn,
+		StopReason: s.stopReason(),
 	}, nil
+}
+func (s *fakeStream) stopReason() llm.StopReason {
+	if s.stop != "" {
+		return s.stop
+	}
+	return llm.StopEndTurn
 }
 func (s *fakeStream) Close() error { s.closed = true; return nil }
 
@@ -60,6 +67,7 @@ type fakeProvider struct {
 	reqs      []llm.Request
 	block     bool
 	unknown   bool
+	stop      llm.StopReason
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
@@ -71,7 +79,7 @@ func (p *fakeProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream,
 	if p.streamErr != nil {
 		return nil, p.streamErr
 	}
-	p.stream = &fakeStream{text: p.text, block: p.block, ctx: ctx, nextErr: p.nextErr, respErr: p.respErr}
+	p.stream = &fakeStream{text: p.text, block: p.block, ctx: ctx, nextErr: p.nextErr, respErr: p.respErr, stop: p.stop}
 	return p.stream, nil
 }
 
@@ -435,5 +443,35 @@ func TestNameIsValidated(t *testing.T) {
 		if _, err := New(&fakeProvider{}, Config{Model: "m", Name: n}); err != nil {
 			t.Errorf("name %q refused: %v", n, err)
 		}
+	}
+}
+
+func TestTurnReplyReportsTheStopReasonAndTurnIgnoresIt(t *testing.T) {
+	for _, c := range []struct {
+		stop               llm.StopReason
+		truncated, refused bool
+	}{
+		{llm.StopEndTurn, false, false},
+		{"", false, false},
+		{llm.StopOther, false, false},
+		{llm.StopMaxTokens, true, false},
+		{llm.StopRefusal, false, true},
+	} {
+		p := &fakeProvider{text: "cut off mid", stop: c.stop}
+		r, err := TurnReply(context.Background(), p, llm.Request{Model: "m"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Text != "cut off mid" || r.Truncated() != c.truncated || r.Refused() != c.refused {
+			t.Errorf("stop %q: %+v truncated=%v refused=%v", c.stop, r, r.Truncated(), r.Refused())
+		}
+		// Turn is the thin wrapper the decision and resume callers use: unchanged.
+		if text, err := Turn(context.Background(), p, llm.Request{Model: "m"}); err != nil || text != "cut off mid" {
+			t.Errorf("stop %q: Turn = %q, %v", c.stop, text, err)
+		}
+	}
+	// A failed stream is an error, never an empty reply.
+	if _, err := TurnReply(context.Background(), &fakeProvider{respErr: errors.New("boom")}, llm.Request{Model: "m"}); err == nil {
+		t.Error("a response error was swallowed")
 	}
 }
