@@ -123,6 +123,7 @@ private struct RunNowSheet: View {
     @State private var capOn: Bool
     @State private var cap: Int
     @State private var digest: Bool
+    @State private var usFirst: Bool
     @State private var boards: [WatchlistEntry] = []
     @State private var boardsError: String?
     @State private var loadingBoards = true
@@ -138,6 +139,7 @@ private struct RunNowSheet: View {
         _capOn = State(initialValue: initial.advance > 0)
         _cap = State(initialValue: initial.advance > 0 ? initial.advance : 50)
         _digest = State(initialValue: !initial.noDigest)
+        _usFirst = State(initialValue: initial.usFirst && !initial.listOnly)
     }
 
     var body: some View {
@@ -174,6 +176,9 @@ private struct RunNowSheet: View {
                                 }
                             }
                         }
+                        Toggle("Triage US postings first", isOn: $usFirst)
+                        Text("Advance postings located in the United States before the rest. It only changes the order; nothing is dropped.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Section("Digest") {
@@ -211,7 +216,8 @@ private struct RunNowSheet: View {
         ManualRunOptions(advance: advance && capOn ? cap : 0,
                          boards: allBoards ? [] : boards.map(ref).filter(chosen.contains),
                          listOnly: !advance,
-                         noDigest: !digest)
+                         noDigest: !digest,
+                         usFirst: advance && usFirst)
     }
 
     /// Why Start Run is off: what run-once would refuse.

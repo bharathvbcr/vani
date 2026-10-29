@@ -34,7 +34,7 @@ func charConfig(t *testing.T) config.Config {
 func TestCharRunOnceStageOrderListOnly(t *testing.T) {
 	w, warn := openWired(t, charConfig(t))
 	spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer")
-	w.tune(0, true)
+	w.tune(runOptions{ListOnly: true})
 	if err := w.runOnce(context.Background()); err != nil {
 		t.Fatalf("%v\n%s", err, warn.String())
 	}

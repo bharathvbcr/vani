@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -34,6 +35,9 @@ type orderSettings struct {
 	titleRank func(string) int
 	// escalateBelowP is jobinsight.RankContext.EscalateBelowP.
 	escalateBelowP float64
+	// usFirst puts postings in the US (jobview.InUS) before the rest
+	// (withUSFirst).
+	usFirst bool
 }
 
 func settingsOf(opts []orderOption) orderSettings {
@@ -84,6 +88,15 @@ func withEscalation(belowP float64) orderOption {
 	return func(s *orderSettings) { s.escalateBelowP = belowP }
 }
 
+// withUSFirst puts postings whose location is in the United States
+// (jobview.InUS) ahead of the rest when on (advance_us_first, --us-first). A
+// title the title signals exclude (rank below 0) still goes after every other
+// posting, US or not, and each group keeps the order below. Off changes
+// nothing.
+func withUSFirst(on bool) orderOption {
+	return func(s *orderSettings) { s.usFirst = s.usFirst || on }
+}
+
 // orderAdvance sorts todo in the order a run advances it: highest title rank
 // first (rank nil ranks every posting alike), then the freshest posting first,
 // then ledger order. all is every ledger record, eligible or not; it says when
@@ -132,6 +145,7 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 		score float64
 		known bool
 		fresh time.Time
+		us    bool
 	}
 	keys := make(map[posting.Key]order, len(todo))
 	var scores map[posting.Key]float64
@@ -151,10 +165,21 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 			o.score = jobinsight.Score(jobinsight.InputsFor(r, rc)).Score
 			scores[r.Key] = o.score
 		}
+		if set.usFirst {
+			o.us = jobview.InUS(r.Posting)
+		}
 		keys[r.Key] = o
 	}
 	slices.SortStableFunc(todo, func(a, b ledger.Record) int {
 		x, y := keys[a.Key], keys[b.Key]
+		if set.usFirst {
+			if c := cmp.Compare(boolInt(x.rank < 0), boolInt(y.rank < 0)); c != 0 {
+				return c
+			}
+			if c := cmp.Compare(boolInt(!x.us), boolInt(!y.us)); c != 0 {
+				return c
+			}
+		}
 		if c := cmp.Compare(y.rank, x.rank); c != 0 {
 			return c
 		}

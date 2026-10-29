@@ -49,7 +49,7 @@ func TestListOnlyRunDoesNotStartTheLocalServer(t *testing.T) {
 	cfg, argsFile := localServerConfig(t)
 	w, warn := openWired(t, cfg)
 	spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer")
-	w.tune(0, true)
+	w.tune(runOptions{ListOnly: true})
 	if err := w.runOnce(context.Background()); err != nil {
 		t.Fatalf("list-only run: %v\n%s", err, warn.String())
 	}
@@ -76,7 +76,7 @@ func TestFullRunAfterListOnlyStartsTheLocalServer(t *testing.T) {
 	w, warn := openWired(t, cfg)
 	spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer")
 
-	w.tune(0, true)
+	w.tune(runOptions{ListOnly: true})
 	if err := w.runOnce(context.Background()); err != nil {
 		t.Fatalf("list-only run: %v\n%s", err, warn.String())
 	}
@@ -84,7 +84,7 @@ func TestFullRunAfterListOnlyStartsTheLocalServer(t *testing.T) {
 		t.Fatal("the list-only run started llama-server")
 	}
 
-	w.tune(0, false)
+	w.tune(runOptions{})
 	_ = w.runOnce(context.Background())
 	if _, err := os.Stat(argsFile); err != nil {
 		t.Fatalf("the full run did not start llama-server: %v\n%s", err, warn.String())

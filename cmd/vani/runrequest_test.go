@@ -550,7 +550,7 @@ func wireRequestDaemon(t *testing.T, l *brokenLedger, onRun func(manual bool, d 
 	d := &daemonRun{}
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
 		return &App{Ledger: l, Notifier: &fakeNotifier{},
-			Tune: func(advance int, _ bool) { d.mu.Lock(); d.lastTune = advance; d.mu.Unlock() },
+			Tune: func(o runOptions) { d.mu.Lock(); d.lastTune = o.Advance; d.mu.Unlock() },
 			RunOnce: func(context.Context) error {
 				if d.busy.Add(1) > 1 {
 					d.overlap.Add(1)

@@ -82,11 +82,15 @@ func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...
 //	Skip        the tuned --list-only            never
 //	Order       title rank, then the semantic    title rank only
 //	            knowledge-base order when on
+//	            US first: the tuned --us-first   US first: advance_us_first
+//	            or advance_us_first
 //	FillFunnel  yes (the run record + warnings)    yes (warnings; it keeps no record)
 func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeline.AdvancePlan {
 	w.mu.Lock()
 	limit, workers := w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers()
-	capOverride, listOnly := w.advanceCap, w.listOnly
+	capOverride, listOnly := w.tuned.Advance, w.tuned.ListOnly
+	usFirst := withUSFirst(w.tuned.USFirst || w.cfg.AdvanceUSFirst)
+	inboxUSFirst := withUSFirst(w.cfg.AdvanceUSFirst)
 	w.mu.Unlock()
 	rank := w.titleRank()
 	p := baseAdvancePlan(kind, limit, workers, w.warnf)
@@ -99,9 +103,11 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 		p.Skip = listOnly
 		// The semantic order reads the cache the warm before the advance phase
 		// fills, so it is resolved when the phase orders, not when it is planned.
-		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder()) }
+		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder(), usFirst) }
 	case kindInbox:
-		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank) }
+		// An inbox poll is not a run and takes no run options; the config's
+		// advance_us_first orders it all the same.
+		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, inboxUSFirst) }
 	}
 	return p
 }
@@ -111,7 +117,7 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 func (w *wired) skipsAdvance() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.listOnly
+	return w.tuned.ListOnly
 }
 
 // runOnce lists every board, reconciles it, then advances postings. It fails

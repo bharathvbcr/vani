@@ -7,6 +7,23 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 
 ### Added
 
+- **US postings first** (`cmd/vani/advanceorder.go`, `cmd/vani/runoptions.go`,
+  `internal/location/us.go`, `internal/config/config.go`). `vani run-once --us-first` and
+  `vani run-request --us-first` advance (triage, score, explain) postings located in the United
+  States before the rest for that run, and the config key `advance_us_first` (default false)
+  does the same for every run, scheduled runs and the extension inbox poll included. It only
+  orders: nothing is dropped or skipped, and a posting outside the US waits for a later run when
+  the cap (`--advance N` or `advance_per_run`) is reached first. A title the title signals exclude
+  still goes last, each group keeps the usual order (title rank, the knowledge-base order,
+  freshness), and `--us-first` is refused with `--list-only`. The run record's `options` and a
+  run request carry `"us_first": true`.
+
+  `location.InUS` decides what is in the US: a state the location parser reads, a part naming the
+  US anywhere, a state that is not last ("California - San Francisco"), a short list of US cities
+  boards write bare ("San Francisco", "NYC"), or a remote scope of US, North America, the Americas
+  or anywhere. "Remote" alone and an empty location are not in the US, and another country or a
+  Canadian province code makes a place foreign ("Mississauga, ON, CA"). An advance run still
+  spends from `decide.daily_usd`.
 - **CLI-Anything conventions for agents** (`cmd/vani/jsoncli.go`,
   `skills/cli-anything-vani/SKILL.md`). The global `vani --json <command>` returns exactly one
   JSON value on stdout for every outcome. A failure of any kind is `{"error","code"}`, with

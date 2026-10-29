@@ -116,7 +116,7 @@ func TestStatusTextNoDaemonSaysTheScheduleIsNotKept(t *testing.T) {
 		"schedule: 08:30 America/Los_Angeles\n",
 		"schedule not kept: nothing fires it (no daemon has announced itself)",
 		"last run: 2026-10-21 05:05 PDT (30 h ago); overdue: the 08:30 run was due 3 h ago",
-		"awaiting triage: 1600 postings, 3 runs at advance_per_run 750",
+		"awaiting triage: 1600 postings (0 in the US), 3 runs at advance_per_run 750",
 		"fix: turn on Run on schedule in Vani Apply's Pipeline tab",
 		"postings: 1601",
 	} {

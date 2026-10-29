@@ -20,7 +20,8 @@ import (
 
 // tunedRun is what one fake run saw of the app's run hooks.
 type tunedRun struct {
-	tunes   [][2]any // (advance, listOnly) per Tune call
+	tunes   [][2]any     // (advance, listOnly) per Tune call
+	opts    []runOptions // every Tune call's options, whole
 	reloads [][]sources.Board
 	runs    int
 }
@@ -35,8 +36,10 @@ func wireTuned(t *testing.T, l *memLedger) *tunedRun {
 		return &App{
 			Ledger: l, Notifier: &fakeNotifier{},
 			RunOnce: func(context.Context) error { got.runs++; return nil },
-			Tune:    func(advance int, listOnly bool) { got.tunes = append(got.tunes, [2]any{advance, listOnly}) },
-			Reload:  func(c config.Config) { got.reloads = append(got.reloads, c.Watchlist) },
+			Tune: func(o runOptions) {
+				got.tunes, got.opts = append(got.tunes, [2]any{o.Advance, o.ListOnly}), append(got.opts, o)
+			},
+			Reload: func(c config.Config) { got.reloads = append(got.reloads, c.Watchlist) },
 		}, nil
 	}
 	return got
@@ -62,6 +65,8 @@ func TestRunOnceRefusesBadOptions(t *testing.T) {
 		{"run-once", "--advance", "abc"},
 		{"run-once", "--advance", "99999999999999999999"},
 		{"run-once", "--list-only", "--advance", "5"},
+		{"run-once", "--list-only", "--us-first"},
+		{"run-once", "--us-first=maybe"},
 		{"run-once", "--board", "acme"},
 		{"run-once", "--board", ":acme"},
 		{"run-once", "--board", "gh:"},
@@ -255,7 +260,7 @@ func TestScheduledRunIsRecordedAsSuch(t *testing.T) {
 	l := fixture()
 	got := &tunedRun{}
 	app := &App{Ledger: l, Notifier: &fakeNotifier{}, RunOnce: func(context.Context) error { got.runs++; return nil },
-		Tune: func(a int, lo bool) { got.tunes = append(got.tunes, [2]any{a, lo}) }}
+		Tune: func(o runOptions) { got.tunes = append(got.tunes, [2]any{o.Advance, o.ListOnly}) }}
 	cfg, err := config.Load(os.Getenv("VANI_CONFIG"))
 	if err != nil {
 		t.Fatal(err)
@@ -339,15 +344,15 @@ func TestWiredAdvancePlan(t *testing.T) {
 	if l, s := runPlan(w); l != 40 || s {
 		t.Errorf("untuned: %d %v", l, s)
 	}
-	w.tune(5, false)
+	w.tune(runOptions{Advance: 5})
 	if l, s := runPlan(w); l != 5 || s {
 		t.Errorf("--advance 5: %d %v", l, s)
 	}
-	w.tune(0, true)
+	w.tune(runOptions{ListOnly: true})
 	if l, s := runPlan(w); l != 40 || !s {
 		t.Errorf("--list-only: %d %v", l, s)
 	}
-	w.tune(0, false)
+	w.tune(runOptions{})
 	if l, s := runPlan(w); l != 40 || s {
 		t.Errorf("reset: %d %v", l, s)
 	}

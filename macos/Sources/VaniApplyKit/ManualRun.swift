@@ -30,18 +30,25 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     public var listOnly: Bool
     /// Write no digest: the run's roles wait for the next one.
     public var noDigest: Bool
+    /// Triage postings located in the United States before the rest
+    /// (`--us-first`). It only orders; nothing is dropped. A list-only run has
+    /// no advance phase to order, so vani refuses the pair.
+    public var usFirst: Bool
 
-    public init(advance: Int = 0, boards: [String] = [], listOnly: Bool = false, noDigest: Bool = false) {
+    public init(advance: Int = 0, boards: [String] = [], listOnly: Bool = false, noDigest: Bool = false,
+                usFirst: Bool = false) {
         self.advance = advance
         self.boards = boards
         self.listOnly = listOnly
         self.noDigest = noDigest
+        self.usFirst = usFirst
     }
 
     enum CodingKeys: String, CodingKey {
         case advance, boards
         case listOnly = "list_only"
         case noDigest = "no_digest"
+        case usFirst = "us_first"
     }
 
     /// Lenient: Go omits each field at its zero value.
@@ -51,13 +58,14 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         boards = try c.decodeIfPresent([String].self, forKey: .boards) ?? []
         listOnly = try c.decodeIfPresent(Bool.self, forKey: .listOnly) ?? false
         noDigest = try c.decodeIfPresent(Bool.self, forKey: .noDigest) ?? false
+        usFirst = try c.decodeIfPresent(Bool.self, forKey: .usFirst) ?? false
     }
 
     /// "gh:acme": how run-once names a watchlist board.
     public static func ref(ats: String, token: String) -> String { "\(ats):\(token)" }
 
     /// The run as the config describes it, which is what the daemon runs.
-    public var isDefault: Bool { advance == 0 && boards.isEmpty && !listOnly && !noDigest }
+    public var isDefault: Bool { advance == 0 && boards.isEmpty && !listOnly && !noDigest && !usFirst }
 
     /// `vani run-once`'s argv after the command, or the reason vani would
     /// refuse it (the bounds checkRunOptions applies), so a bad choice is
@@ -67,6 +75,7 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
             throw BankError("the advance cap must be within 1…\(Self.maxAdvance), or 0 for advance_per_run")
         }
         if listOnly && advance != 0 { throw BankError("a list-only run has no advance phase to cap") }
+        if listOnly && usFirst { throw BankError("a list-only run has no advance phase for US first to order") }
         guard boards.count <= Self.maxBoards else { throw BankError("choose at most \(Self.maxBoards) boards, or all of them") }
         var args = [command]
         if advance > 0 { args += ["--advance", String(advance)] }
@@ -78,6 +87,7 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
             args += ["--board", b]
         }
         if listOnly { args.append("--list-only") }
+        if usFirst { args.append("--us-first") }
         if noDigest { args.append("--no-digest") }
         return args
     }
@@ -139,12 +149,13 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         return backlogHelp(waiting: waiting, advancePerRun: quoted)
     }
 
-    /// "3 boards; advance cap 50; no digest". Nil for a run with no overrides.
+    /// "3 boards; advance cap 50; US first; no digest". Nil for a run with no overrides.
     public var summary: String? {
         guard !isDefault else { return nil }
         var parts: [String] = []
         if !boards.isEmpty { parts.append(boards.count == 1 ? "1 board" : "\(boards.count) boards") }
         if listOnly { parts.append("list only") } else if advance > 0 { parts.append("advance cap \(advance)") }
+        if usFirst { parts.append("US first") }
         if noDigest { parts.append("no digest") }
         return parts.joined(separator: "; ")
     }

@@ -41,10 +41,13 @@ type runOptions struct {
 	// NoDigest skips the digest and the knowledge-base warm made for it. The
 	// run's roles stay pending and the next digest lists them.
 	NoDigest bool `json:"no_digest,omitempty"`
+	// USFirst advances postings in the United States before the rest this run,
+	// as the config's advance_us_first does for every run. It only orders.
+	USFirst bool `json:"us_first,omitempty"`
 }
 
 func (o runOptions) isZero() bool {
-	return o.Advance == 0 && len(o.Boards) == 0 && !o.ListOnly && !o.NoDigest
+	return o.Advance == 0 && len(o.Boards) == 0 && !o.ListOnly && !o.NoDigest && !o.USFirst
 }
 
 // recorded is the options as the run record keeps them: nil for none.
@@ -56,7 +59,7 @@ func (o runOptions) recorded() *runOptions {
 }
 
 // tunes reports whether the options change the pipeline itself (App.Tune).
-func (o runOptions) tunes() bool { return o.Advance != 0 || o.ListOnly }
+func (o runOptions) tunes() bool { return o.Advance != 0 || o.ListOnly || o.USFirst }
 
 // runOptionFlags registers a manual run's flags on fs (run-once and
 // run-request take the same ones). The boards land in the second value; the
@@ -68,6 +71,7 @@ func runOptionFlags(fs *flag.FlagSet) (*runOptions, *boardRefs) {
 	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
 	fs.BoolVar(&opts.ListOnly, "list-only", false, "list and reconcile boards only: no triage, scoring or explaining (no decision backend is called, and none needs to be configured)")
 	fs.BoolVar(&opts.NoDigest, "no-digest", false, "write no digest: the run's roles wait for the next one")
+	fs.BoolVar(&opts.USFirst, "us-first", false, "advance postings in the United States before the rest (as advance_us_first does); it only orders")
 	return &opts, &boards
 }
 
@@ -144,6 +148,9 @@ func checkRunOptions(o runOptions, watchlist []sources.Board) error {
 	}
 	if o.ListOnly && o.Advance != 0 {
 		return usagef("--list-only skips the advance phase; --advance has nothing to cap")
+	}
+	if o.ListOnly && o.USFirst {
+		return usagef("--list-only skips the advance phase; --us-first has nothing to order")
 	}
 	if len(o.Boards) > 0 {
 		if _, err := selectBoards(watchlist, o.Boards); err != nil {

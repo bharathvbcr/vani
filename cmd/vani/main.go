@@ -75,10 +75,12 @@ commands:
   logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
                              too); --force refetches cached and recently failed ones
   daemon                     run the scheduler in the foreground
-  run-once [--json] [--advance N] [--board ATS:TOKEN]... [--list-only] [--no-digest]
+  run-once [--json] [--advance N] [--board ATS:TOKEN]... [--list-only] [--no-digest] [--us-first]
                              run the pipeline once and write the digest; the flags change this
                              run only: cap the advance phase at N postings, list only the named
-                             watchlist boards, skip the advance phase, or skip the digest.
+                             watchlist boards, skip the advance phase, skip the digest, or
+                             advance postings in the United States before the rest (--us-first
+                             only orders, drops nothing, and is refused with --list-only).
                              Refused while the daemon (or another run) holds the ledger.
                              --json prints the run's record (as runs show --json) on stdout
                              and sends the run's own output to stderr

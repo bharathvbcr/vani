@@ -128,6 +128,10 @@ type ledgerFacet struct {
 	ByStatus map[string]int `json:"by_status"`
 	// Torn means a writer was mid-append: the counts are complete up to it.
 	Torn bool `json:"torn,omitempty"`
+	// liveUS is how many live postings are in the US, counted from the same
+	// snapshot as ByStatus; nil when the ledger was not read. It is not part of
+	// the ledger facet's wire shape: the schedule facet reports it.
+	liveUS *int
 }
 
 type lastRunFacet struct {
@@ -273,7 +277,7 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 		if out.Ledger.OK && out.Ledger.Exists {
 			live = new(out.Ledger.ByStatus[string(posting.Live)])
 		}
-		out.Schedule = scheduleKeeping(cfg, out.Schedule, out.Daemon, out.LastRun, live, at)
+		out.Schedule = withAwaitingUS(scheduleKeeping(cfg, out.Schedule, out.Daemon, out.LastRun, live, at), out.Ledger.liveUS)
 	}
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
@@ -335,6 +339,7 @@ func (e *env) ledgerFacet() ledgerFacet {
 	default:
 		f.facet, f.Exists, f.Total, f.Torn = facet{OK: true}, true, len(snap.Records), snap.Torn
 		f.ByStatus = statusCounts(snap.Records)
+		f.liveUS = new(liveInUS(snap.Records))
 	}
 	return f
 }

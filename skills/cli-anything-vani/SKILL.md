@@ -109,6 +109,24 @@ and calls no decision backend.
 - `vani run-request` asks the running daemon for a run. Prefer it when a daemon is running.
 - `vani run-once` runs here, and is refused while the daemon holds the ledger. With `--json`
   it answers with the record the run wrote, as `vani runs show --json` gives it.
+- `--advance N` caps how many postings the run advances (triages, scores and explains), 1 to
+  5000, in place of the config's `advance_per_run`. Postings past the cap stay awaiting triage
+  for a later run.
+- `--us-first` (on `run-once` and `run-request`) advances postings located in the United States
+  before the rest, for that run only. It only orders:
+  - nothing is dropped or skipped, and a posting outside the US waits for a later run when the
+    cap is reached first;
+  - a title the title signals exclude still goes last, and each group keeps the usual order
+    (title rank, the knowledge-base order, freshness);
+  - it is refused together with `--list-only`, which has no advance phase;
+  - the run record's `options` and the run request carry `"us_first": true`.
+
+  A location is in the US when it names a US state or the US, is a US city boards write bare
+  ("San Francisco", "NYC"), or is remote work scoped to the US, North America, the Americas or
+  anywhere. A bare "Remote" or an empty location is not, and another country or a Canadian
+  province makes a place foreign. The config key `advance_us_first` does the same for every run,
+  scheduled runs and the extension inbox poll included. Setting it is a config change, so ask
+  the owner first.
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
 - Maintenance commands: `vani retriage`, `vani rescore`, `vani migrate`.
@@ -156,3 +174,28 @@ Check the exit code and decode stdout as one JSON value. On a non-zero exit, rea
 `code`: `usage` means fix the arguments, `unsupported` means the command has no JSON form
 (`daemon`, `label`, `launchd plist`), and `busy` means another vani holds the ledger or a lock,
 so retry when it is done rather than in a loop.
+
+## Triage a backlog
+
+Postings a run has listed but not yet triaged wait (status `live`, the `pending` view). Each run
+advances at most `advance_per_run`, so a large backlog takes several runs. To work it down with the
+United States first, and to pick N:
+
+1. `vani --json status` reads the ledger counts (the `live` count is what awaits triage), today's spend
+   against each cap, and `daemon`, which says whether a daemon is running.
+2. `vani --json jobs list --view pending --limit 1` reads the `pending` summary in the reply: `total`
+   awaiting triage, and `companies`, the 20 companies with the most (a bounded list, not the whole
+   backlog). When the build has them, the summary also carries `us`, how many of `total` are located
+   in the United States, and each company entry its own `us`. Size N from `pending.us` then, and from
+   `total` otherwise. A reply without `us` is from an older build: do not read it as zero.
+3. Ask the owner. The run spends from `decide.daily_usd`, so give N and what it may cost. Then
+   `vani --json run-request --us-first --advance N` when the daemon runs, or
+   `vani --json run-once --us-first --advance N` when it does not (`run-once` is refused while the
+   daemon holds the ledger, with code `busy`).
+4. `vani --json runs show` reads the finished run: `options` (the flags it ran with), the `advance`
+   report (eligible, attempted, deferred, why it stopped) and its outcome. A `run-request` returns
+   once the daemon has the request, not when the run ends, so repeat `vani --json status` until the
+   run is no longer `running`, then read it.
+
+A run that stops early, or reaches its cap, leaves the rest awaiting triage (`deferred` counts
+them). Repeat from step 2 and ask again; do not raise N past what the owner agreed to.

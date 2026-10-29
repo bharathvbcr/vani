@@ -36,7 +36,7 @@ func TestListOnlyRunWithoutBackendLists(t *testing.T) {
 			clearKeys(t)
 			w, warn := openWired(t, cfg)
 			spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer", "Platform Engineer")
-			w.tune(0, true)
+			w.tune(runOptions{ListOnly: true})
 			if err := w.runOnce(context.Background()); err != nil {
 				t.Fatalf("list-only run with no backend failed: %v\n%s", err, warn.String())
 			}
@@ -69,7 +69,7 @@ func TestListOnlyRunWithBackendConfiguredStillCallsNone(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "test-not-a-real-key")
 	w, warn := openWired(t, config.Default())
 	spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer")
-	w.tune(0, true)
+	w.tune(runOptions{ListOnly: true})
 	if err := w.runOnce(context.Background()); err != nil {
 		t.Fatalf("%v\n%s", err, warn.String())
 	}
@@ -91,14 +91,14 @@ func TestFullRunWithoutBackendStillRefusedAfterListOnly(t *testing.T) {
 			w, warn := openWired(t, cfg)
 			spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer")
 
-			w.tune(0, true)
+			w.tune(runOptions{ListOnly: true})
 			if err := w.runOnce(context.Background()); err != nil {
 				t.Fatalf("list-only: %v\n%s", err, warn.String())
 			}
 			before := len(w.led.All())
 
 			spoolBatch(t, w.stateDir, "careers-beta-com", "ML Engineer")
-			w.tune(0, false)
+			w.tune(runOptions{})
 			err := w.runOnce(context.Background())
 			if err == nil || !strings.Contains(err.Error(), "no decision backend is available (configure decide.openrouter_model or llm)") {
 				t.Fatalf("full run err = %v, want the no-backend refusal", err)
@@ -119,7 +119,7 @@ func TestPollInboxIgnoresListOnlyTune(t *testing.T) {
 	cfg.LLM = config.LLM{}
 	w, warn := openWired(t, cfg)
 	spoolBatch(t, w.stateDir, "careers-acme-com", "Data Engineer")
-	w.tune(0, true)
+	w.tune(runOptions{ListOnly: true})
 	if err := w.pollInbox(context.Background()); err != nil {
 		t.Fatalf("%v\n%s", err, warn.String())
 	}

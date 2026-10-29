@@ -940,7 +940,7 @@ func startIdleDaemonOn(t *testing.T, f *idleFixture, clock daemon.Clock, runOnce
 		return semantic.NewFakeEmbedder(256, semSynonyms), func() error { return nil }, nil
 	}
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
-		return &App{Ledger: f.led, Notifier: &fakeNotifier{}, Tune: func(int, bool) {}, RunOnce: runOnce}, nil
+		return &App{Ledger: f.led, Notifier: &fakeNotifier{}, Tune: func(runOptions) {}, RunOnce: runOnce}, nil
 	}
 	go func() {
 		code, _, stderr := do(t, "daemon")

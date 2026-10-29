@@ -23,6 +23,7 @@ type seedJob struct {
 	status                     posting.Status
 	age                        time.Duration
 	company                    string // "" is Acme
+	location                   string // the board's location text; "" leaves it empty
 }
 
 // seedJobs writes a ledger and returns it still open, so every command under
@@ -39,7 +40,7 @@ func seedJobs(t *testing.T, stateDir string, jobs ...seedJob) *ledger.File {
 		if company == "" {
 			company = "Acme"
 		}
-		p := posting.Posting{Key: posting.Key(j.key), ATS: "gh", Company: company, Title: j.title, URL: j.url,
+		p := posting.Posting{Key: posting.Key(j.key), ATS: "gh", Company: company, Title: j.title, URL: j.url, Location: j.location,
 			Description: "Build things.\n\nWith people.\x1b[31m"}
 		ann := map[string]string{ledger.AnnExplanation: "Fits: Inference serving and runtimes (88%)."}
 		if j.fit != "" {
@@ -118,7 +119,7 @@ func TestJobsPendingEmpty(t *testing.T) {
 	_, state := setup(t)
 	seedJobs(t, state, seedJob{key: "gh:a:1", title: "Engineer", fit: "strong_fit", status: posting.Digested})
 	o, _ := mustCode(t, 0, "jobs", "list", "--json")
-	if !strings.Contains(o, `"pending":{"total":0,"matching":0,"companies":[]}`) {
+	if !strings.Contains(o, `"pending":{"total":0,"matching":0,"companies":[],"us":0}`) {
 		t.Fatalf("reply %s", o)
 	}
 	if text, _ := mustCode(t, 0, "jobs", "list"); strings.Contains(text, "awaiting triage") {

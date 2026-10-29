@@ -104,12 +104,12 @@ func (w *wired) reload(cfg config.Config) {
 	w.cfg = cfg
 }
 
-// tune sets the next run's advance cap (0 keeps advance_per_run) and whether
-// it skips the advance phase (App.Tune; dailyJob calls it before every run).
-func (w *wired) tune(advance int, listOnly bool) {
+// tune keeps the next run's options for its advance phase (App.Tune; dailyJob
+// calls it before every run).
+func (w *wired) tune(opts runOptions) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.advanceCap, w.listOnly = advance, listOnly
+	w.tuned = opts
 }
 
 type wired struct {
@@ -126,10 +126,10 @@ type wired struct {
 	dayOnce sync.Once
 	day     string
 
-	// advanceCap and listOnly are the run's overrides (tune): a cap other
-	// than advance_per_run when above 0, and skipping the advance phase.
-	advanceCap int
-	listOnly   bool
+	// tuned is the run's options (tune). The advance phase reads Advance (a
+	// cap other than advance_per_run when above 0), ListOnly (skip it) and
+	// USFirst (US postings first, as advance_us_first).
+	tuned runOptions
 
 	// localEndpoint is the address of the local decision model's server when
 	// runOnce started one; empty otherwise.

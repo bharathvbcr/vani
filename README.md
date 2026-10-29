@@ -351,8 +351,10 @@ flowchart TD
   `--board ats:token` (repeatable) lists only those watchlist boards (the others' postings are
   untouched; a board no longer on the watchlist stops the run before it lists anything),
   `--list-only` lists and reconciles without triage, scoring or explaining (no decision model is
-  called, and none needs to be configured; a run that advances still needs one), and `--no-digest`
-  leaves the run's roles for the next digest. A digest from a manual run marks its roles digested,
+  called, and none needs to be configured; a run that advances still needs one), `--no-digest`
+  leaves the run's roles for the next digest, and `--us-first` advances postings located in the
+  United States before the rest (it only orders, and is refused with `--list-only`; see
+  `advance_us_first` below). A digest from a manual run marks its roles digested,
   so the next daily digest does not list them again. `run-once` is refused at once while the daemon
   (or another run, rescore or retriage) holds the ledger. The app starts it with drafting's keys,
   writes its output to `<state dir>/runs/manual.log` (before each run it moves the previous log to
@@ -839,7 +841,12 @@ by cause) and `notes`.
 Each run triages, scores and explains at most `advance_per_run` postings (default 300, at most
 5000), which bounds its spend and duration. They go highest title rank first, then the freshest:
 the posted date when the board gives one, else when Vani first saw a posting that appeared after
-its board's first crawl; undated postings from a board's first crawl go last. `advance_concurrency`
+its board's first crawl; undated postings from a board's first crawl go last. With
+`advance_us_first` (default false; `--us-first` on `run-once` and `run-request` for one run) the
+postings located in the United States go first, in that same order, and the rest follow. It only
+orders: nothing is dropped, and a posting outside the US waits for a later run when the cap is
+reached first. A title the title signals exclude still goes last (docs/RUNTIME.md says what counts
+as the US). `advance_concurrency`
 postings advance at a time (default 4, at most 16; 1 is strictly one by one). With a shadow
 configured, `decide.shadow_every` asks it about one posting in that many (default 12, picked by a
 hash of the posting key; 1 asks it about every posting), and a local shadow takes at most its

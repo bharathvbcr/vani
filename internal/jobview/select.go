@@ -8,6 +8,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/location"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -317,33 +318,59 @@ type Pending struct {
 	// query), so "no Acme jobs" can read "N Acme jobs await triage".
 	Matching int `json:"matching"`
 	// Companies are the companies with the most postings awaiting triage,
-	// most first, at most MaxPendingCompanies of them.
+	// most first, at most MaxPendingCompanies of them. It is a bounded list:
+	// ranked by N, so a company with few postings, all of them in the US, can
+	// fall off it while US still counts it. Sum the entries only to compare
+	// them, never to size the backlog; Total and US are the sizes.
 	Companies []PendingCompany `json:"companies"`
+	// US is how many of Total are located in the United States (InUS): the
+	// count a "triage US postings first" run is sized by. It counts every
+	// posting awaiting triage, not only those the query names.
+	US int `json:"us"`
 }
 
 type PendingCompany struct {
 	Company string `json:"company"`
 	N       int    `json:"n"`
+	// US is how many of N are located in the United States (InUS).
+	US int `json:"us"`
 }
 
-// PendingOf counts the postings awaiting triage, and those the query
-// (MatchesQuery's rule, q lowered and trimmed) names.
+// InUS reports whether a posting's board location is in the United States, or
+// remote work whose scope takes in the US (location.InUS). A location the
+// board left empty or that names no place or scope is not: the count is a
+// lower bound, and it only orders a run, never drops a posting.
+func InUS(p posting.Posting) bool {
+	return location.InUS(location.Parse(p.Location, p.Remote))
+}
+
+// PendingOf counts the postings awaiting triage, those in the US, and those
+// the query (MatchesQuery's rule, q lowered and trimmed) names.
 func PendingOf(snap ledger.Snapshot, m map[posting.Key]marks.Entry, q string) Pending {
 	out := Pending{Companies: []PendingCompany{}}
-	by := map[string]int{}
+	by := map[string]*PendingCompany{}
 	for _, r := range snap.Records {
 		if !InView(ViewPending, r, m[r.Key].Mark) {
 			continue
 		}
 		out.Total++
 		j := ToJob(r, m[r.Key])
-		by[j.Company]++
+		c := by[j.Company]
+		if c == nil {
+			c = &PendingCompany{Company: j.Company}
+			by[j.Company] = c
+		}
+		c.N++
+		if InUS(r.Posting) {
+			out.US++
+			c.US++
+		}
 		if MatchesQuery(j, q) {
 			out.Matching++
 		}
 	}
-	for c, n := range by {
-		out.Companies = append(out.Companies, PendingCompany{Company: c, N: n})
+	for _, c := range by {
+		out.Companies = append(out.Companies, *c)
 	}
 	slices.SortFunc(out.Companies, func(a, b PendingCompany) int {
 		if c := cmp.Compare(b.N, a.N); c != 0 {

@@ -531,6 +531,37 @@ The inbox poll (advance only) still refuses without a backend. (A 2026-10-20 cha
 full run list its boards first and then fail with advance stop `no_backend` was not kept when
 the later list-only behaviour and its tests landed: see FOLLOWUPS.)
 
+## Advance order: `advance_us_first`
+
+`advance_us_first` (bool, default false, in the config next to `advance_per_run`) makes every run
+that advances put postings located in the United States ahead of the rest. It is the config form of
+`vani run-once --us-first` and `vani run-request --us-first`, which turn it on for one run and never
+write the config. It covers the daily run, a manual run and the extension inbox poll; the flag
+covers only the run it is given to, because an inbox poll takes no run options.
+
+It only orders (`withUSFirst` in `cmd/vani/advanceorder.go`). Nothing is dropped or skipped: a
+posting outside the US waits for a later run when `advance_per_run` (or `--advance N`, at most 5000)
+is reached first. A title the title signals exclude still goes after every other posting, US or not.
+Within the US group and within the rest, the usual order holds: title rank, the knowledge-base order
+when it is on, then freshness. `--us-first` is refused together with `--list-only`, which has no
+advance phase to order. The run record's `options` (`vani runs show --json`) and a run request carry
+`"us_first": true` when the flag was given; the config key is not recorded there.
+
+A location is in the US (`location.InUS`, `internal/location/us.go`) when:
+
+- the location parser reads a US state from it;
+- a part of it names the US anywhere ("US, CA, Santa Clara", "Sunnyvale, California USA");
+- a state, by name or code, is in it but not last ("California - San Francisco", "Burlingame, CA (HQ)");
+- it is a short list of US cities that boards write without a state ("San Francisco", "Mountain
+  View", "NYC"); or
+- it is remote work whose scope is the US, North America, the Americas or anywhere.
+
+A location that cannot be read, or has no scope ("Remote", an empty location), is not in the US.
+Another country, or a Canadian province code, makes a place foreign ("Mississauga, ON, CA", "Pune,
+MH, IN"). A miss therefore leaves a posting in the ordinary order; it never hides one.
+
+An advance run calls the decision model and spends from `decide.daily_usd`, whatever the order.
+
 ## Model ids
 
 Neither `liquid/d1-ultra` nor `typesafe/jev-1.13` appears in OpenRouter's public

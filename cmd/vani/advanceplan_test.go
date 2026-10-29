@@ -24,7 +24,7 @@ import (
 func TestAdvancePlanDifferencesBetweenCallers(t *testing.T) {
 	cfg := config.Config{AdvancePerRun: 40, TitleSignals: config.TitleSignals{Include: []string{"Inference"}}}
 	w := &wired{cfg: cfg}
-	w.tune(7, true)
+	w.tune(runOptions{Advance: 7, ListOnly: true})
 	policy := pipeline.DropPolicy{}
 
 	run := w.advancePlan(kindRun, policy)

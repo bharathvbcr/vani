@@ -169,6 +169,79 @@ final class ManualRunTests: XCTestCase {
                        ManualRunOptions(listOnly: true))
     }
 
+    // MARK: US first
+
+    func testUSFirstBecomesItsFlagOnlyWhenSet() throws {
+        XCTAssertEqual(try ManualRunOptions(usFirst: true).arguments(), ["run-once", "--us-first"])
+        XCTAssertEqual(try ManualRunOptions(usFirst: true).arguments(command: "run-request"), ["run-request", "--us-first"])
+        XCTAssertFalse(try ManualRunOptions().arguments().contains("--us-first"))
+        XCTAssertFalse(try ManualRunOptions(advance: 5, noDigest: true).arguments().contains("--us-first"))
+        // It combines with the other overrides, in a fixed order.
+        let all = ManualRunOptions(advance: 40, boards: ["gh:acme"], noDigest: true, usFirst: true)
+        XCTAssertEqual(try all.arguments(), ["run-once", "--advance", "40", "--board", "gh:acme", "--us-first", "--no-digest"])
+    }
+
+    /// vani refuses --list-only with --us-first (nothing to order); the app says so first.
+    func testUSFirstWithListOnlyIsRefusedFirst() {
+        let o = ManualRunOptions(listOnly: true, usFirst: true)
+        XCTAssertThrowsError(try o.arguments()) { err in
+            XCTAssertTrue(String(describing: err).contains("US first"), "\(err)")
+        }
+        XCTAssertThrowsError(try o.arguments(command: "run-request"))
+        XCTAssertThrowsError(try ManualRunOptions(advance: 5, listOnly: true, usFirst: true).arguments())
+        XCTAssertNoThrow(try ManualRunOptions(listOnly: true).arguments())
+        XCTAssertNoThrow(try ManualRunOptions(advance: 5, usFirst: true).arguments())
+    }
+
+    func testUSFirstIsAnOverrideAndInTheSummary() {
+        let o = ManualRunOptions(usFirst: true)
+        XCTAssertFalse(o.isDefault)
+        XCTAssertEqual(o.summary, "US first")
+        XCTAssertNotEqual(o, ManualRunOptions())
+        XCTAssertEqual(ManualRunOptions(advance: 40, boards: ["gh:a", "gh:b"], noDigest: true, usFirst: true).summary,
+                       "2 boards; advance cap 40; US first; no digest")
+        XCTAssertNil(ManualRunOptions().summary)
+        XCTAssertFalse(ManualRunOptions.backlog.usFirst, "Triage now stays in the config's order")
+    }
+
+    func testUSFirstRoundTripsThroughGoName() throws {
+        let o = ManualRunOptions(advance: 7, usFirst: true)
+        let data = try JSONEncoder().encode(o)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["us_first"] as? Bool, true)
+        XCTAssertNil(obj["usFirst"], "Go's key is us_first")
+        XCTAssertEqual(try JSONDecoder().decode(ManualRunOptions.self, from: data), o)
+        // Go omits it when false, and an older saved or recorded options object has no such key.
+        for old in [#"{}"#, #"{"advance":3,"no_digest":true}"#, #"{"us_first":false}"#] {
+            XCTAssertFalse(try JSONDecoder().decode(ManualRunOptions.self, from: Data(old.utf8)).usFirst, old)
+        }
+        XCTAssertEqual(try JSONDecoder().decode(ManualRunOptions.self, from: Data(#"{"us_first":true}"#.utf8)),
+                       ManualRunOptions(usFirst: true))
+        // A wrongly typed value is malformed, not silently false.
+        XCTAssertThrowsError(try JSONDecoder().decode(ManualRunOptions.self, from: Data(#"{"us_first":"yes"}"#.utf8)))
+    }
+
+    func testRunRecordCarriesUSFirst() throws {
+        let r = try lastRun(#"{"ok":true,"state":"ok","trigger":"manual","options":{"advance":7,"us_first":true}}"#)
+        XCTAssertEqual(r.options, ManualRunOptions(advance: 7, usFirst: true))
+        XCTAssertEqual(r.options?.summary, "advance cap 7; US first")
+        // A malformed options object is dropped, never failing the status read.
+        let bad = try lastRun(#"{"ok":true,"state":"ok","trigger":"manual","options":{"us_first":"yes"}}"#)
+        XCTAssertNil(bad.options)
+    }
+
+    func testLaunchPassesUSFirstToVani() throws {
+        let vani = try fakeRunVani(self, body: "exit 0")
+        let state = try tempDir(self).path
+        let runner = DraftRunner(vaniBinary: vani, stateDir: state, keys: .noKey, decisionKey: { nil })
+        let box = ExitBox()
+        let job = try ManualRunLauncher(runner: runner).start(ManualRunOptions(usFirst: true), stateDir: state) { box.set($0) }
+        XCTAssertEqual(waitForExit(box), 0)
+        let log = try String(contentsOf: job.log, encoding: .utf8)
+        XCTAssertTrue(log.contains("args: run-once --us-first"), log)
+        XCTAssertThrowsError(try ManualRunLauncher(runner: runner).start(ManualRunOptions(listOnly: true, usFirst: true), stateDir: state) { _ in })
+    }
+
     // MARK: Status
 
     private func lastRun(_ json: String) throws -> PipelineStatus.LastRun {

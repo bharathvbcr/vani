@@ -3,6 +3,7 @@ package jobview
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,143 @@ func TestPendingOfAgreesWithTheView(t *testing.T) {
 	}
 	if empty := PendingOf(ledger.Snapshot{}, nil, ""); empty.Total != 0 || empty.Companies == nil {
 		t.Fatalf("empty ledger: %+v", empty)
+	}
+}
+
+func recAt(key, company, loc string, st posting.Status) ledger.Record {
+	k := posting.Key(key)
+	return ledger.Record{Key: k, Status: st, Posting: posting.Posting{Key: k, Company: company, Title: "Engineer", Location: loc}}
+}
+
+// Pending.US counts the pending postings whose board location is in the US,
+// read from the formats boards write; Companies carry their own US share.
+func TestPendingOfCountsUS(t *testing.T) {
+	snap := ledger.Snapshot{Records: []ledger.Record{
+		recAt("gh:acme:1", "Acme", "San Francisco", posting.Live),
+		recAt("gh:acme:2", "Acme", "US, CA, Santa Clara", posting.Live),
+		recAt("gh:acme:3", "Acme", "Toronto, ON", posting.Live),
+		recAt("gh:acme:4", "Acme", "", posting.Live),
+		recAt("gh:beta:1", "Beta", "Remote - US", posting.Live),
+		recAt("gh:beta:2", "Beta", "Remote", posting.Live),
+		recAt("gh:beta:3", "Beta", "London, United Kingdom", posting.Live),
+		// Not pending: triaged, marked, dead or dropped postings are not counted
+		// whatever their location.
+		recAt("gh:acme:5", "Acme", "Austin, TX", posting.Digested),
+		recAt("gh:acme:6", "Acme", "Austin, TX", posting.Live),
+		recAt("gh:acme:7", "Acme", "Austin, TX", posting.Dead),
+		recAt("gh:acme:8", "Acme", "Austin, TX", posting.Dropped),
+	}}
+	m := map[posting.Key]marks.Entry{"gh:acme:6": {Mark: marks.Saved}}
+	p := PendingOf(snap, m, "")
+	want := Pending{Total: 7, Matching: 7, US: 3, Companies: []PendingCompany{{Company: "Acme", N: 4, US: 2}, {Company: "Beta", N: 3, US: 1}}}
+	if !reflect.DeepEqual(p, want) {
+		t.Fatalf("pending %+v, want %+v", p, want)
+	}
+	for _, c := range p.Companies {
+		if c.US > c.N {
+			t.Errorf("%s: %d in the US of %d", c.Company, c.US, c.N)
+		}
+	}
+}
+
+// A query narrows Matching and leaves Total, US and the company counts alone:
+// US sizes the whole backlog a run would triage.
+func TestPendingOfUSIgnoresTheQuery(t *testing.T) {
+	snap := ledger.Snapshot{Records: []ledger.Record{
+		recAt("gh:acme:1", "Acme", "Seattle, WA", posting.Live),
+		recAt("gh:beta:1", "Beta", "New York, NY", posting.Live),
+		recAt("gh:beta:2", "Beta", "Paris, France", posting.Live),
+	}}
+	all, q := PendingOf(snap, nil, ""), PendingOf(snap, nil, "beta")
+	if q.Matching != 2 || all.Matching != 3 {
+		t.Fatalf("matching: %d with the query, %d without", q.Matching, all.Matching)
+	}
+	q.Matching, all.Matching = 0, 0
+	if !reflect.DeepEqual(q, all) || q.US != 2 || q.Total != 3 {
+		t.Fatalf("query changed the counts: %+v vs %+v", q, all)
+	}
+	if none := PendingOf(snap, nil, "nosuchcompany"); none.Matching != 0 || none.US != 2 {
+		t.Fatalf("a query that names nothing: %+v", none)
+	}
+}
+
+// Nothing in the US, or nothing pending: 0, rendered as 0 and not left out.
+func TestPendingOfUSZero(t *testing.T) {
+	for name, snap := range map[string]ledger.Snapshot{
+		"empty":              {},
+		"no records pending": {Records: []ledger.Record{recAt("gh:a:1", "Acme", "Austin, TX", posting.Digested)}},
+		"no US":              {Records: []ledger.Record{recAt("gh:a:1", "Acme", "Berlin, Germany", posting.Live), recAt("gh:a:2", "Acme", "Toronto, ON", posting.Live), recAt("gh:a:3", "Acme", "", posting.Live)}},
+	} {
+		p := PendingOf(snap, nil, "")
+		if p.US != 0 {
+			t.Errorf("%s: US %d", name, p.US)
+		}
+		for _, c := range p.Companies {
+			if c.US != 0 {
+				t.Errorf("%s: %s US %d", name, c.Company, c.US)
+			}
+		}
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `"us":0`) {
+			t.Errorf("%s: zero US left out of %s", name, b)
+		}
+	}
+}
+
+// The wire shape: the old keys in their old order, then us, on the summary and
+// on every company entry.
+func TestPendingJSONShapeCarriesUS(t *testing.T) {
+	snap := ledger.Snapshot{Records: []ledger.Record{
+		recAt("gh:acme:1", "Acme", "Austin, TX", posting.Live), recAt("gh:acme:2", "Acme", "Pune, India", posting.Live),
+	}}
+	b, err := json.Marshal(PendingOf(snap, nil, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"total":2,"matching":2,"companies":[{"company":"Acme","n":2,"us":1}],"us":1}`; string(b) != want {
+		t.Fatalf("shape %s, want %s", b, want)
+	}
+}
+
+// The company list stays bounded at MaxPendingCompanies, and US still counts
+// the postings of the companies it cut: the list is a sample, US is the size.
+func TestPendingOfUSCountsPastTheCompanyBound(t *testing.T) {
+	var recs []ledger.Record
+	us := 0
+	for i := 0; i < MaxPendingCompanies+5; i++ {
+		for j := 0; j <= i; j++ {
+			recs = append(recs, recAt(fmt.Sprintf("gh:c%02d:%d", i, j), fmt.Sprintf("C%02d", i), "Boston, MA", posting.Live))
+			us++
+		}
+	}
+	p := PendingOf(ledger.Snapshot{Records: recs}, nil, "")
+	if len(p.Companies) != MaxPendingCompanies || p.Total != len(recs) || p.US != us {
+		t.Fatalf("%d companies, total %d, US %d of %d", len(p.Companies), p.Total, p.US, us)
+	}
+	sum := 0
+	for _, c := range p.Companies {
+		sum += c.US
+	}
+	if sum >= p.US {
+		t.Fatalf("the bounded list sums to %d of %d: nothing was cut", sum, p.US)
+	}
+}
+
+// 20,000 pending postings, oversized and malformed locations among them: US is
+// counted without a panic, and stays within [0, Total].
+func TestPendingOfUSAdversarialLocations(t *testing.T) {
+	long := strings.Repeat("San Francisco, ", 5000)
+	locs := []string{"", ",", ",,,", "   ", "\x00", "Remote -", "us", "USA", long, strings.Repeat("x", 1<<16), "💥, 💥", "Remote - US" + strings.Repeat(", Canada", 1000)}
+	var recs []ledger.Record
+	for i := 0; i < 20000; i++ {
+		recs = append(recs, recAt(fmt.Sprintf("gh:c%d:%d", i%7, i), fmt.Sprintf("C%d", i%7), locs[i%len(locs)], posting.Live))
+	}
+	p := PendingOf(ledger.Snapshot{Records: recs}, nil, "")
+	if p.Total != 20000 || p.US < 0 || p.US > p.Total {
+		t.Fatalf("total %d US %d", p.Total, p.US)
 	}
 }
 

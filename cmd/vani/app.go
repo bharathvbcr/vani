@@ -42,11 +42,12 @@ type App struct {
 	// Rescore scores up to limit postings that went past the scoring stage
 	// without a score (vani rescore). Nil means not available.
 	Rescore func(ctx context.Context, limit int) (rescoreReport, error)
-	// Tune sets what the next RunOnce does in its advance phase: advance caps
-	// it (0 keeps advance_per_run) and listOnly skips it. Every run sets it,
-	// so a manual run's overrides never reach the next scheduled one. Nil means
-	// the app cannot be tuned, and a run that asks for it fails.
-	Tune func(advance int, listOnly bool)
+	// Tune sets what the next RunOnce does in its advance phase from the run's
+	// options: Advance caps it (0 keeps advance_per_run), ListOnly skips it and
+	// USFirst orders US postings first. Every run sets it, so a manual run's
+	// overrides never reach the next scheduled one. Nil means the app cannot
+	// be tuned, and a run that asks for it fails.
+	Tune func(opts runOptions)
 	// ModelKey looks the decision model's key up the way every OpenRouter
 	// client of this app does (environment, then the login Keychain unless
 	// VANI_NO_KEYCHAIN is set), so the daemon can say whether it has one. Nil
@@ -434,11 +435,11 @@ func (e *env) setApplied(cfg config.Config) {
 func tuneRun(app *App, opts runOptions) error {
 	if app.Tune == nil {
 		if opts.tunes() {
-			return errors.New("this app cannot change a run's advance phase (--advance, --list-only)")
+			return errors.New("this app cannot change a run's advance phase (--advance, --list-only, --us-first)")
 		}
 		return nil
 	}
-	app.Tune(opts.Advance, opts.ListOnly)
+	app.Tune(opts)
 	return nil
 }
 
@@ -717,7 +718,8 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	at := now()
 	live := by[string(posting.Live)]
 	dfacet := e.daemonFacet()
-	sched := scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, e.lastRunFacet(at), &live, at)
+	us := liveInUS(recs)
+	sched := withAwaitingUS(scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, e.lastRunFacet(at), &live, at), &us)
 	for _, l := range unkeptLines(sched, at) {
 		fmt.Fprintln(e.stdout, l)
 	}

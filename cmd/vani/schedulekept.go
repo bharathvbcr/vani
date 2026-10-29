@@ -7,6 +7,9 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
+	"github.com/bharathvbcr/Vani/internal/jobview"
+	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // The schedule in the config (schedule.daily_at) is only a promise: something
@@ -42,6 +45,11 @@ type unkeptSchedule struct {
 	AwaitingTriage *int `json:"awaiting_triage,omitempty"`
 	AdvancePerRun  *int `json:"advance_per_run,omitempty"`
 	RunsNeeded     *int `json:"runs_needed,omitempty"`
+	// AwaitingTriageUS is how many of AwaitingTriage are located in the US
+	// (jobview.InUS), read from the same ledger snapshot: what `run-once
+	// --us-first` would triage first. Absent when AwaitingTriage is, or when
+	// the count was not made, never 0.
+	AwaitingTriageUS *int `json:"awaiting_triage_us,omitempty"`
 	// Hint is how to get the schedule kept, and what that needs.
 	Hint string `json:"hint"`
 }
@@ -82,6 +90,29 @@ func scheduleKeeping(cfg config.Config, s scheduleFacet, d daemonFacet, last las
 		u.AwaitingTriage, u.AdvancePerRun, u.RunsNeeded = &n, &limit, &runs
 	}
 	s.Unkept = u
+	return s
+}
+
+// liveInUS counts the live postings (the ones awaiting triage, as status counts
+// them: marked or not) whose location is in the US. It reads the records the
+// caller already holds, so it is the same snapshot as the count beside it.
+func liveInUS(recs []ledger.Record) int {
+	n := 0
+	for _, r := range recs {
+		if r.Status == posting.Live && jobview.InUS(r.Posting) {
+			n++
+		}
+	}
+	return n
+}
+
+// withAwaitingUS adds the US part of the awaiting-triage count to an unkept
+// schedule. It does nothing when the schedule is kept, the backlog was not
+// counted, or us is nil.
+func withAwaitingUS(s scheduleFacet, us *int) scheduleFacet {
+	if s.Unkept != nil && s.Unkept.AwaitingTriage != nil && us != nil {
+		s.Unkept.AwaitingTriageUS = us
+	}
 	return s
 }
 
@@ -147,8 +178,12 @@ func unkeptLines(s scheduleFacet, at time.Time) []string {
 	case u.AwaitingTriage == nil:
 		lines = append(lines, "  awaiting triage: unknown (the ledger could not be counted)")
 	case *u.AwaitingTriage > 0:
-		lines = append(lines, fmt.Sprintf("  awaiting triage: %s, %s at advance_per_run %d",
-			plural(*u.AwaitingTriage, "posting"), plural(*u.RunsNeeded, "run"), *u.AdvancePerRun))
+		inUS := ""
+		if u.AwaitingTriageUS != nil {
+			inUS = fmt.Sprintf(" (%d in the US)", *u.AwaitingTriageUS)
+		}
+		lines = append(lines, fmt.Sprintf("  awaiting triage: %s%s, %s at advance_per_run %d",
+			plural(*u.AwaitingTriage, "posting"), inUS, plural(*u.RunsNeeded, "run"), *u.AdvancePerRun))
 	}
 	return append(lines, "  fix: "+u.Hint)
 }

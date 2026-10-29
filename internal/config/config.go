@@ -122,6 +122,13 @@ type Config struct {
 	// unchanged. Zero means DefaultAdvanceConcurrency; 1 is strictly one at a
 	// time; at most MaxAdvanceConcurrency.
 	AdvanceConcurrency int `json:"advance_concurrency,omitempty"`
+	// AdvanceUSFirst advances postings in the United States
+	// (location.InUS) before the rest, in the usual order within each group;
+	// a title the title signals exclude still goes last. It only orders: a
+	// non-US posting is never dropped or skipped, it waits for a later run when
+	// the cap is reached first. `vani run-once --us-first` turns it on for
+	// one run.
+	AdvanceUSFirst bool `json:"advance_us_first,omitempty"`
 	// Semantic matches postings against the knowledge base (kb.bank) with
 	// EmbeddingGemma 2 on Tessl. It only orders and explains postings, never
 	// drops one. Off when snapshot or kb.bank is empty.
