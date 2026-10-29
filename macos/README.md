@@ -228,6 +228,8 @@ Vani Apply.app (SwiftUI) ──────────────────�
 - **[`VaniApplyExtension`](Sources/VaniApplyExtension)**: the Safari web extension's native app extension (sandboxed appex, entry
   point `NSExtensionMain`), in `Contents/PlugIns`. Its resources are `extension/dist-safari`.
 - **[`VaniApply`](Sources/VaniApply)**: the control app.
+- **[`vani-fm`](Sources/vani-fm)**: the on-device (Apple Intelligence) decision helper, in `Contents/MacOS` (see
+  [On-device decisions](#on-device-decisions-vani-fm)).
 
 There is no Xcode project. SwiftPM builds the binaries and [`scripts/bundle.sh`](scripts/bundle.sh) assembles and signs the
 bundle.
@@ -271,6 +273,7 @@ them identically:
 | `{"op":"get"}` | `{"rev":N,"bank":{…}}` |
 | `{"op":"put","baseRev":N,"bank":{…}}` | `{"rev":N+1,"droppedSecret":K}`, or `{"conflict":true,"rev":M,"bank":{…}}` |
 | `{"op":"log","entry":{"event":…,"host"?:…,"counts"?:{…}}}` | `{"ok":true}` |
+| `{"op":"sameQuestion","a":"<label>","b":"<label>"}` (each 1 to 300 characters after trimming) | `{"reading":"answered","value":"same"\|"different"}`, or `{"reading":"abstained"\|"refused"\|"unavailable"\|"failed","detail":"<closed code>"}`, or `{"error":"…","code":"bad_request"}` ([details](#same-question-the-samequestion-op)) |
 | anything refused | `{"error":"…"}` |
 
 Merging stays in the extension, so there is one implementation. On a conflict it re-applies its change
@@ -280,6 +283,79 @@ to the returned bank, up to 3 times.
 - **Classifier parity:** `normalizeLabel` and `classify` exist in TypeScript and Swift. Both are held
   to `extension/test/vectors/classify.json`, which is generated from the TS code by
   `build/macos-gen/gen-vectors.ts`.
+
+## On-device decisions (`vani-fm`)
+
+`vani-fm` lets Vani sort a job-application form field (`career.form_field`) with Apple's on-device Foundation
+Models instead of a paid decision model. Vani's Go daemon runs it once per question (`internal/decide/fmbackend`),
+ahead of the OpenRouter decision model; the reading only annotates (Rule 7). It is Swift because the API is, and a
+separate process so a hung or crashed model cannot take the daemon with it. The pure logic (request checks, reply and
+error mapping) is [`OnDeviceDecider`](Sources/VaniApplyKit/OnDeviceDecider.swift), tested without the model;
+`Sources/vani-fm/main.swift` is the only code that imports FoundationModels. Building it needs the macOS 27 SDK
+(`LanguageModelError`); at run time it needs macOS 26 with Apple Intelligence on, and on macOS 14 or 15 the weakly linked
+framework is absent and the helper answers `unavailable`. It needs no entitlement.
+
+**Contract (v1).** One JSON object on stdin, one JSON line on stdout, exit 0 (anything else is `failed` to Go):
+
+```
+request {"v":1, "task":"career.form_field", "question":"…", "options":["a","b",…], "instructions":"…"}
+reply   {"v":1, "reading":"answered|abstained|refused|unavailable|failed", "value":"<an option>", "detail":"<code>"}
+```
+
+- **Sent:** the field's label and type, the option names and their one-line descriptions. Never a value, a saved answer,
+  anything about the applicant or a job description. The label is untrusted site text and goes in the prompt, not in the
+  instructions.
+- **Bounds:** request 16 KiB, question 8 KiB, instructions 4 KiB, 1 to 16 distinct options of at most 64 bytes (no
+  newline, no leading or trailing space, not `none`), greedy sampling, at most 48 response tokens, and an 8 s watchdog that
+  answers `unavailable/timeout` and exits without waiting for the model. The Go side kills the process at 12 s.
+- **`value` is always one of the options** (generation is constrained to them plus `none`, then checked again): `none`
+  is `abstained/declined`, anything else is `failed/invalid_value`. A reply never carries model text.
+- **`detail` is a closed code:** `refusal`, `guardrail`, `context_size`, `unsupported_locale` (`refused`); `rate_limited`,
+  `timeout`, `model_not_ready`, `device_not_eligible`, `apple_intelligence_not_enabled`, `os_too_old`, `unavailable`
+  (`unavailable`); `decode`, `invalid_value`, `error`, `bad_request_*` (`failed`). Work-authorization and visa wording
+  intermittently makes the model refuse ("May contain sensitive content"); `fieldtriage.Guard` pins those labels before
+  any model is asked, and a refusal falls through to the next backend.
+- **Slow models.** `fmbackend` also keeps a budget (`Config.Budget`, default 15 s, at most 30 s) of helper wall time per
+  process run. A model that answers slowly but inside its watchdog would otherwise use up suggest's 45 s triage bound one
+  question at a time; once the budget is spent the backend answers `unavailable/slow` to every later question without
+  starting a helper, and the router asks the next backend. The question that crossed the budget keeps its own reading.
+  `slow` is a Go-side code, like `no_binary` and `timeout`.
+
+### Same question (the `sameQuestion` op)
+
+A second task, `career.same_question`, serves the browser extension's `sameQuestion` op ([`SameQuestion.swift`](Sources/VaniApplyKit/SameQuestion.swift)):
+do two form labels ask for the same answer. The extension asks when its own label matching is unsure; the reading only
+annotates, the extension decides what to fill.
+
+```
+request {"op":"sameQuestion","a":"LinkedIn profile","b":"LinkedIn URL"}
+reply   {"reading":"answered","value":"same"}                       // or "different"
+        {"reading":"abstained|refused|unavailable|failed","detail":"<closed code>"}
+        {"error":"…","code":"bad_request"}                            // a or b missing, not a string, empty or over 300 characters
+```
+
+- **Sent to the model:** the two labels, nothing else: fixed instructions (two job-application form labels; `same` means one
+  answer would correctly fill both fields; judge only the wording) and the labels in the prompt, marked untrusted. Each
+  label is trimmed, then flattened to one line (whitespace runs become one space, control characters go). The helper takes
+  this task only with the options `["same","different"]`, in that order.
+- **`detail`** is the helper's closed set above, plus where the helper could not be asked: `no_binary` (helper missing or not
+  executable, answered at once, nothing started), `start_failed`, `timeout`, `output_too_large`, `helper_exit`, `bad_output`,
+  `invalid_value`, `agent` (Safari only: the agent is not running or predates the op), `unsupported` (no route here), and
+  `unknown` (a code outside the set; the helper's text never passes through). A reading is never an error, so a caller falls
+  back to its own matching.
+- **Bounds:** the whole op is under 6 s in both browsers. The helper is stopped at 4 s from the Chrome host and 3.5 s from the
+  agent (SIGTERM, then SIGKILL one second later), the Safari side waits 6 s for the XPC reply, and the helper's own 8 s
+  watchdog is never reached. Helper output is capped at 4 KiB, its environment is `HOME` only, and at most one process runs
+  per question.
+- **Routing.** The Chrome host is not sandboxed and starts `vani-fm` itself (`FMHelper`), from the sibling `Contents/MacOS`
+  of the `Contents/Helpers` it runs from (`--fm <path>` overrides it in tests). The Safari appex is sandboxed
+  (`Extension.entitlements`: `app-sandbox` and the App Group, no inherit entitlement), starts no process, and `vani-fm` is in
+  the app's `Contents/MacOS`, not in the appex. So Safari goes through the Vani Apply agent over XPC like drafts, suggestions
+  and the Jobs ops: `AgentXPC.sameQuestion`, which re-checks the labels (the agent trusts no caller) and runs the same
+  `FMHelper`. It is not a job: it answers at once and is never queued behind a draft. An agent from before this op answers
+  `unavailable/agent`.
+- **Logging.** Nothing: not the labels, and no count either. A count per question would write the activity log once per label
+  pair during a fill, as `jobFind` and `jobMark` do not.
 
 ## Build
 

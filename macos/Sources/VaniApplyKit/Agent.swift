@@ -255,6 +255,9 @@ public enum AgentConstants {
     func markApplied(key: String, reply: @escaping (String?) -> Void)
     /// `vani jobs ingest --json`: queue scraped jobs. Takes the request JSON, replies (vani's JSON, error).
     func ingest(payload: Data, reply: @escaping (Data?, String?) -> Void)
+    /// `vani-fm` on two form labels (SameQuestion.swift): Safari's sandboxed appex cannot start the helper.
+    /// Not a job: it answers at once, bounded by SameQuestion.agentSeconds. Replies (the op's reply JSON, error).
+    func sameQuestion(a: String, b: String, reply: @escaping (Data?, String?) -> Void)
     /// The app bundle this agent runs from (AgentIdentity.bundlePath), whose `vani` it starts.
     func identity(reply: @escaping (String) -> Void)
 }

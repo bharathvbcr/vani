@@ -67,6 +67,14 @@ let drafter = DraftSettings.runner(loadingFrom: store.directory, vaniBinary: van
 // error there instead of a host that never answers.
 let jobs = DraftSettings.jobsBackend(loadingFrom: store.directory, vaniBinary: vaniBinary, timeout: 8)
 
+// The on-device model helper for the sameQuestion op sits in the app's Contents/MacOS, beside the Helpers
+// folder this host runs from. `--fm <absolute path>` overrides it (the process tests use it); Chrome never passes it.
+var fmHelper = FMHelper.bundled()
+if let i = args.firstIndex(of: "--fm"), i + 1 < args.count {
+    guard args[i + 1].hasPrefix("/") else { fail("--fm needs an absolute path") }
+    fmHelper = FMHelper(binary: URL(fileURLWithPath: args[i + 1]))
+}
+
 // Exit after 60 s with no request, but never while one is being answered: a
 // draft can take up to DraftRunner.timeout.
 let idleSeconds = 60.0
@@ -108,7 +116,7 @@ while true {
     let reply: [String: Any]
     if let obj = try? JSONSerialization.jsonObject(with: request) {
         reply = NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter, agent: XPCAgentClient(), jobs: jobs,
-                                      openResume: { NSWorkspace.shared.open($0) })
+                                      openResume: { NSWorkspace.shared.open($0) }, sameQuestion: fmHelper)
     } else {
         reply = ["error": "request is not JSON"]
     }

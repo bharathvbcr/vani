@@ -13,6 +13,7 @@ let package = Package(
         .executable(name: "vani-apply-host", targets: ["vani-apply-host"]),
         .executable(name: "vani-apply-agent", targets: ["vani-apply-agent"]),
         .executable(name: "vani-schedule-agent", targets: ["vani-schedule-agent"]),
+        .executable(name: "vani-fm", targets: ["vani-fm"]),
         .executable(name: "VaniApplyExtension", targets: ["VaniApplyExtension"]),
     ],
     targets: [
@@ -23,6 +24,13 @@ let package = Package(
         .executableTarget(name: "vani-apply-agent", dependencies: ["VaniApplyKit"]),
         // The opt-in login item that keeps `vani daemon` running, so the daily schedule is kept.
         .executableTarget(name: "vani-schedule-agent", dependencies: ["VaniApplyKit"]),
+        // The on-device (Apple Intelligence) decision helper, one JSON request in and one reply out. It
+        // imports FoundationModels (macOS 26+), which the macOS 14 deployment target links weakly (checked with
+        // otool -L), so the helper still starts on macOS 14 and answers "unavailable".
+        .executableTarget(
+            name: "vani-fm",
+            dependencies: ["VaniApplyKit"]
+        ),
         // The Safari appex: its entry point is Foundation's NSExtensionMain,
         // which loads the principal class named in the bundle's Info.plist.
         .executableTarget(

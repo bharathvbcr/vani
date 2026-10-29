@@ -93,6 +93,15 @@ final class Service: NSObject, AgentXPC, NSXPCListenerDelegate, @unchecked Senda
         reply(r.reply, r.error)
     }
 
+    // Safari's route to the on-device model: the helper is in Contents/MacOS, beside Helpers where `vani` is.
+    // It spends nothing and runs at once beside a draft; its deadline is under the client's wait.
+    func sameQuestion(a: String, b: String, reply: @escaping (Data?, String?) -> Void) {
+        touch()
+        let r = SameQuestion.agentReply(a: a, b: b, helper: FMHelper.bundled(helpers: vaniBinary.deletingLastPathComponent(),
+                                                                              seconds: SameQuestion.agentSeconds))
+        reply(r.reply, r.error)
+    }
+
     // Lets the app see whose copy of `vani` this agent runs, and take the job back.
     func identity(reply: @escaping (String) -> Void) {
         touch()

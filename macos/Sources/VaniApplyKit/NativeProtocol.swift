@@ -31,6 +31,11 @@ import Foundation
 //                                          the PDF is opened in Preview; the reply has no "pdf" and nothing is logged
 //   {"op":"resumeOpenData","name","pdf"}  -> {"ok":true,"name","bytes"} | {"error","code"}
 //                                          a PDF the page already holds (just built); not stored, not logged
+//   {"op":"sameQuestion","a":"<label>","b":"<label>"}   (each 1..300 characters after trimming)
+//                                         -> {"reading":"answered","value":"same"|"different"}
+//                                          | {"reading":"abstained"|"refused"|"unavailable"|"failed","detail":"<closed code>"}
+//                                          | {"error","code":"bad_request"}   (SameQuestion.swift; on-device model, labels only, ≤ 6 s,
+//                                            nothing logged; Safari reaches it through the agent, Chrome starts vani-fm itself)
 //   anything refused                      -> {"error":"..."}
 //
 // Merging stays in the extension (one implementation); this side is a
@@ -60,16 +65,19 @@ public enum NativeProtocol {
 
     public static func handle(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner? = nil,
                               agent: AgentClient? = nil, jobs: JobsBackend? = nil,
-                              openResume: (@Sendable (URL) -> Bool)? = nil) -> [String: Any] {
+                              openResume: (@Sendable (URL) -> Bool)? = nil,
+                              sameQuestion: SameQuestionBackend? = nil) -> [String: Any] {
         do {
-            return try dispatch(request, store: store, source: source, drafter: drafter, agent: agent, jobs: jobs, openResume: openResume)
+            return try dispatch(request, store: store, source: source, drafter: drafter, agent: agent, jobs: jobs,
+                                openResume: openResume, sameQuestion: sameQuestion)
         } catch {
             return ["error": String(describing: error)]
         }
     }
 
     private static func dispatch(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner?,
-                                 agent: AgentClient?, jobs: JobsBackend?, openResume: (@Sendable (URL) -> Bool)?) throws -> [String: Any] {
+                                 agent: AgentClient?, jobs: JobsBackend?, openResume: (@Sendable (URL) -> Bool)?,
+                                 sameQuestion: SameQuestionBackend?) throws -> [String: Any] {
         guard let req = request as? [String: Any], let op = req["op"] as? String else {
             throw BankError("request is not an object with an op")
         }
@@ -208,6 +216,17 @@ public enum NativeProtocol {
             } catch {
                 return ["error": String(describing: error), "code": "jobs"]
             }
+        case "sameQuestion":
+            guard let labels = SameQuestion.labels(a: req["a"], b: req["b"]) else {
+                return ["error": "sameQuestion needs two labels of 1 to \(SameQuestion.maxLabelScalars) characters", "code": "bad_request"]
+            }
+            // No backend is a reading, not an error: the extension falls back to its own matching.
+            // Nothing is logged: not the labels, and not a count per question, which would churn the
+            // activity log once per label pair during a fill.
+            guard let backend = sameQuestion ?? (agent as? SameQuestionBackend) else {
+                return SameQuestion.unavailable("unsupported")
+            }
+            return backend.compare(labels)
         case "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "resumeOpen":
             return resumeOp(op, req, store: store, source: source, openResume: openResume)
         case "resumeOpenData":

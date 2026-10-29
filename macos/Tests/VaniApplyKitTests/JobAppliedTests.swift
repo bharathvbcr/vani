@@ -315,7 +315,8 @@ final class JobAppliedTests: XCTestCase {
     /// The XPC interface itself: both calls cross a real in-process connection with their replies intact.
     final class Service: NSObject, AgentXPC, NSXPCListenerDelegate {
         let ops: AgentJobsOps
-        init(ops: AgentJobsOps) { self.ops = ops }
+        let fm: FMHelper?
+        init(ops: AgentJobsOps, fm: FMHelper? = nil) { self.ops = ops; self.fm = fm }
         func listener(_ listener: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
             c.exportedInterface = NSXPCInterface(with: AgentXPC.self)
             c.exportedObject = self
@@ -327,7 +328,42 @@ final class JobAppliedTests: XCTestCase {
         func find(url: String, reply: @escaping (Data?, String?) -> Void) { let r = ops.find(url: url); reply(r.match, r.error) }
         func markApplied(key: String, reply: @escaping (String?) -> Void) { reply(ops.markApplied(key: key)) }
         func ingest(payload: Data, reply: @escaping (Data?, String?) -> Void) { let r = ops.ingest(payload: payload); reply(r.reply, r.error) }
+        func sameQuestion(a: String, b: String, reply: @escaping (Data?, String?) -> Void) {
+            guard let fm else { return reply(nil, "unused") }
+            let r = SameQuestion.agentReply(a: a, b: b, helper: fm)
+            reply(r.reply, r.error)
+        }
         func identity(reply: @escaping (String) -> Void) { reply("/Applications/Vani Apply.app") }
+    }
+
+    /// Safari's sameQuestion route across a real in-process XPC connection: the agent side re-checks the
+    /// labels and runs the helper, and the reply that comes back is the op's closed reply.
+    func testSameQuestionCrossesAnXPCConnection() throws {
+        let dir = try tempDir(self)
+        let helper = dir.appendingPathComponent("vani-fm")
+        try Data("#!/bin/sh\ncat > /dev/null\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"different\"}'\n".utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        let service = Service(ops: AgentJobsOps(jobs: JobsClient(vaniBinary: try fakeJobsVani(self, find: foundReply, mark: markedReply).vani)),
+                              fm: FMHelper(binary: helper, seconds: SameQuestion.agentSeconds))
+        let listener = NSXPCListener.anonymous()
+        listener.delegate = service
+        listener.resume()
+        let conn = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        conn.remoteObjectInterface = NSXPCInterface(with: AgentXPC.self)
+        conn.resume()
+        defer { conn.invalidate(); listener.invalidate() }
+        let proxy = try XCTUnwrap(conn.synchronousRemoteObjectProxyWithErrorHandler { XCTFail("\($0)") } as? AgentXPC)
+
+        var data: Data?, error: String?
+        proxy.sameQuestion(a: "Years of experience", b: "Favorite color") { data = $0; error = $1 }
+        XCTAssertNil(error)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(data)) as? [String: Any])
+        XCTAssertEqual(SameQuestion.checked(object) as NSDictionary, ["reading": "answered", "value": "different"])
+
+        data = nil
+        proxy.sameQuestion(a: "", b: "x") { data = $0; error = $1 }
+        XCTAssertNil(data)
+        XCTAssertNotNil(error)
     }
 
     func testTheJobsCallsCrossAnXPCConnection() throws {

@@ -8,7 +8,9 @@ import VaniApplyKit
 // reach it). Same protocol and store as the Chrome host. The sandbox cannot
 // start `vani`, so the synchronous draft op answers "unsupported"; drafts and
 // suggestions go to the Vani Apply agent as jobs over XPC instead, and so do the
-// Jobs ops (jobFind/jobMark), which XPCAgentClient answers as a JobsBackend.
+// Jobs ops (jobFind/jobMark), which XPCAgentClient answers as a JobsBackend. The sameQuestion op
+// (on-device model, SameQuestion.swift) goes the same way: the helper lives in the app's Contents/MacOS
+// and this sandbox starts no process, so XPCAgentClient answers it as a SameQuestionBackend.
 
 @objc(SafariWebExtensionHandler)
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
