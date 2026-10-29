@@ -4,6 +4,10 @@
 **Date**: 2026-10-19  
 **Status**: Consolidations Complete, Green, Installed  
 
+The `tmp/vani-branches-*.bundle` backups named below were deleted on 2026-10-29, after a check that
+every head in them is an ancestor of `main` (the one exception, the wave 5 worktree snapshot
+`bbfa430`, is the same content as `c929797`, which is on `main`).
+
 ---
 
 # Wave 6 (2026-10-20)

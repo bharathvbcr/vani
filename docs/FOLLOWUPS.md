@@ -606,14 +606,9 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     instead. The startup log went from 2 warnings to 0, which checks `safariState` only.
     `showSafariSettings`'s handler is not main-actor in the SDK, so its change is precautionary
     and was not exercised at runtime. There is no unit test; the evidence is the relaunch log.
-- **Leftovers to remove by hand** (deleting needed a confirmation this session could not show).
-  All are under the gitignored `tmp/`:
-  - `tmp/neardupbench/` and `tmp/batchbench/` (Go programs marked `//go:build ignore`).
-  - `tmp/neardupbench-scratch*/`, `tmp/batchbench-scratch/`, `tmp/benchstore/` and
-    `tmp/ui-store/`.
-  - `tmp/uitest/`, `tmp/nmping.ts`, `tmp/dupaudit.ts`, `tmp/siblingmeasure.ts`,
-    `tmp/portbench.ts` and `tmp/mutate.sh`.
-  - Branch `embed-similar`, which has no unique commits; it is an ancestor of rank-relevance.
+- **Leftovers removed (2026-10-29).** The scratch benches, stores and scripts under `tmp/`
+  (including `tmp/ui-store/`) were deleted with the rest of `tmp/`, and branch `embed-similar` is
+  gone.
 
 ## Triage backlog and Workday coverage (2026-10-19, branch no-gaps)
 
@@ -2133,7 +2128,7 @@ Left open:
 ## US postings first (`--us-first`, `advance_us_first`, 2026-10-28)
 
 - **Built (a2479b6).** The advance phase can order US postings first (`location.InUS`, adapter `jobview.InUS`); the pending summary and `status --json` carry US counts. It only orders.
-- **Left: a replaced binary and a new run-request field.** `serveRunRequest` strict-decodes `request.json` before it checks whether its own binary was replaced, so a daemon still running an older vani drops a request carrying a field it does not know (`us_first`) as corrupt instead of restarting onto the new one. The 2026-10-28 install restarted the daemon first (`tmp/install-vani.sh` kickstarts it), so it did not bite. A fix exists on the unmerged branch `triage-select` (bbba175, "daemon: a replaced binary restarts before reading a run request").
+- **Fixed: a replaced binary and a new run-request field** (0f51295). `serveRunRequest` used to strict-decode `request.json` before checking whether its own binary was replaced, so an older daemon dropped a request carrying a field it did not know (`us_first`) as corrupt. It now checks first: the daemon restarts and the request waits, unclaimed, for the new one.
 - **Left: `status` from another build of vani.** `vani status` run from a binary other than the daemon's (a scratch `go build`) reports a live daemon as "gone (it did not exit cleanly)", because the pid check compares executables. Read daemon state with the installed binary (`/Applications/Vani Apply.app/Contents/Helpers/vani`).
-- **Left: company/location selection for a run** (`--company`, `--state`, `--area`, `--remote` through `AdvancePlan.Select`) is WIP on branch `triage-select` (worktree `tmp/wt-triagesel`, its session ended). It predates `App.Tune(runOptions)` landing and needs a rebase; its first commit is a placeholder to drop.
+- **Built: company/location selection for a run** (abc24a1). `--company`, `--state`, `--area`, `--remote` and `--or-remote` select through `AdvancePlan.Select`, and `--us-first` orders within that selection.
 - **Left: the escalation tier's spend is missing from the run record.** Run 20261029T003622.085Z-56538 (5,000 postings, `--us-first`) recorded `backend_stats.escalate.cost_usd: 0` for 1,648 calls, while the `anthropic` daily cap in `status --json` went from $0 to $12.18 over that run (d1-ultra: $0.28). An agent sizing a run from `runs show` underestimates its cost about 40 times. Price from the `backends` spend delta in `status --json` until the record carries the escalation cost.
