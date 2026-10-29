@@ -48,6 +48,9 @@ const (
 	// dateLayout is posted_date's form ("2026-10-20T01:55:00+0000"), which is
 	// not RFC 3339: the offset has no colon.
 	dateLayout = "2006-01-02T15:04:05-0700"
+	// jibeHostSuffix follows a client code in the domain Jibe hosts every
+	// client's site on (amd.jibeapply.com, githubinc.jibeapply.com).
+	jibeHostSuffix = ".jibeapply.com"
 )
 
 // ErrShape is a response whose layout is not the one this source knows.
@@ -286,8 +289,13 @@ func (l *lister) posting(j job, id string) (posting.Posting, error) {
 	}
 	u := "https://" + l.host + "/jobs/" + id
 	if c := j.MetaData.CanonicalURL; c != "" {
+		// The canonical may name the board's host or Jibe's hosted copy of
+		// the same site, {client}.jibeapply.com: GitHub's rows all did on
+		// 2026-10-28 while www.github.careers served each job. The posting
+		// keeps the board's host either way.
 		cu, err := url.Parse(c)
-		if err != nil || cu.Scheme != "https" || !strings.EqualFold(cu.Host, l.host) || cu.Path != "/jobs/"+id || cu.User != nil {
+		ownHost := err == nil && (strings.EqualFold(cu.Host, l.host) || strings.EqualFold(cu.Host, l.client+jibeHostSuffix))
+		if err != nil || cu.Scheme != "https" || !ownHost || cu.Path != "/jobs/"+id || cu.User != nil {
 			return posting.Posting{}, fmt.Errorf("%w: canonical_url %q is not %s", ErrShape, c, u)
 		}
 	}

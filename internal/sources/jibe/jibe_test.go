@@ -310,6 +310,12 @@ func TestRefusals(t *testing.T) {
 		"canonical other id":    {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://careers.amd.com/jobs/6"})}, want: ErrShape},
 		"canonical http":        {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "http://careers.amd.com/jobs/5"})}, want: ErrShape},
 		"canonical userinfo":    {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://careers.amd.com@evil.example/jobs/5"})}, want: ErrShape},
+		// Only the board's own client is accepted on Jibe's hosted domain.
+		"canonical other client's jibeapply": {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://intel.jibeapply.com/jobs/5"})}, want: ErrShape},
+		"canonical jibeapply apex":           {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://jibeapply.com/jobs/5"})}, want: ErrShape},
+		"canonical jibeapply suffix":         {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://amd.jibeapply.com.evil.example/jobs/5"})}, want: ErrShape},
+		"canonical jibeapply http":           {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "http://amd.jibeapply.com/jobs/5"})}, want: ErrShape},
+		"canonical jibeapply other id":       {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://amd.jibeapply.com/jobs/6"})}, want: ErrShape},
 		"empty title":           {rows: []map[string]any{bad("title", " ")}, want: ErrShape},
 		"bad posted_date":       {rows: []map[string]any{bad("posted_date", "yesterday")}, want: ErrShape},
 		"script apply url":      {rows: []map[string]any{bad("apply_url", "javascript:alert(1)")}, want: nil},
@@ -334,6 +340,18 @@ func TestRefusals(t *testing.T) {
 		s, _ := newSource(f)
 		if got, err := s.List(context.Background(), board()); err != nil || len(got) != 1 || got[0].Key != "jb:amd:5" {
 			t.Errorf("client_code %q: %v %v", code, got, err)
+		}
+	}
+	// A site on its own domain may name Jibe's hosted copy of itself,
+	// {client}.jibeapply.com, as canonical (GitHub's every row on 2026-10-28,
+	// on www.github.careers). The posting keeps the board's host, which serves
+	// the same job page.
+	for _, c := range []string{"https://amd.jibeapply.com/jobs/5?lang=en-us", "https://AMD.jibeapply.com/jobs/5"} {
+		f := &site{t: t, rows: map[query][]map[string]any{{term: "x"}: {bad("meta_data", map[string]any{"canonical_url": c})}}}
+		s, _ := newSource(f)
+		got, err := s.List(context.Background(), board("x"))
+		if err != nil || len(got) != 1 || got[0].URL != "https://"+host+"/jobs/5" {
+			t.Errorf("canonical %q: %v %v", c, got, err)
 		}
 	}
 	// Response shape failures.
