@@ -936,7 +936,16 @@ public enum JobsExportScope: Equatable, Sendable {
     case keys([String])
 }
 
-/// What `vani jobs export --json` wrote.
+/// What an export does with roles an earlier export wrote (`--already-exported`). Without one,
+/// vani refuses an export that holds any, writing nothing.
+public enum JobsAlreadyExported: String, Equatable, Sendable {
+    /// Leave them out; a "Top N" export takes the next roles of the list not yet exported.
+    case skip
+    /// Write them again.
+    case include
+}
+
+/// What `vani jobs export --json` wrote, or with `--dry-run` would write.
 public struct JobsExport: Codable, Equatable, Sendable {
     public var path: String
     public var rows: Int
@@ -946,33 +955,92 @@ public struct JobsExport: Codable, Equatable, Sendable {
     public var sort: String
     /// Asked-for keys the list no longer holds (a run closed or dropped them); not in the file.
     public var missing: [String]
+    /// Of the roles the export holds, or would hold if they were included, how many an earlier
+    /// export wrote; the latest of those exports was at `lastExportedAt`, to `lastFile` (nil when
+    /// vani no longer names that file). 0 from a vani that keeps no record.
+    public var alreadyExported: Int
+    public var lastExportedAt: Date?
+    public var lastFile: String?
+    /// Roles exported before that a `skip` export left out.
+    public var skipped: Int
 
-    public init(path: String, rows: Int, total: Int, view: String, sort: String, missing: [String] = []) {
+    private enum CodingKeys: String, CodingKey {
+        case path, rows, total, view, sort, missing, skipped
+        case alreadyExported = "already_exported", lastExportedAt = "last_exported_at", lastFile = "last_file"
+    }
+
+    public init(path: String, rows: Int, total: Int, view: String, sort: String, missing: [String] = [],
+                alreadyExported: Int = 0, lastExportedAt: Date? = nil, lastFile: String? = nil, skipped: Int = 0) {
         self.path = path
         self.rows = rows
         self.total = total
         self.view = view
         self.sort = sort
         self.missing = missing
+        self.alreadyExported = alreadyExported
+        self.lastExportedAt = lastExportedAt
+        self.lastFile = lastFile
+        self.skipped = skipped
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        rows = try c.decode(Int.self, forKey: .rows)
+        total = try c.decode(Int.self, forKey: .total)
+        view = try c.decode(String.self, forKey: .view)
+        sort = try c.decode(String.self, forKey: .sort)
+        missing = try c.decode([String].self, forKey: .missing)
+        alreadyExported = try c.decodeIfPresent(Int.self, forKey: .alreadyExported) ?? 0
+        lastExportedAt = try c.decodeIfPresent(Date.self, forKey: .lastExportedAt)
+        lastFile = try c.decodeIfPresent(String.self, forKey: .lastFile).flatMap { $0.isEmpty ? nil : $0 }
+        skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
     }
 
     /// The one line the app shows once the file is written.
     public func summary(_ scope: JobsExportScope) -> String {
         let file = URL(fileURLWithPath: path).lastPathComponent
         let noun = rows == 1 ? "role" : "roles"
+        var line: String
         switch scope {
         case .top:
-            if rows < total {
-                return "Saved the first \(rows.formatted()) of \(total.formatted()) roles to \(file)."
-            }
-            return "Saved \(rows.formatted()) \(noun) to \(file)."
+            line = rows < total && skipped == 0
+                ? "Saved the first \(rows.formatted()) of \(total.formatted()) roles to \(file)."
+                : "Saved \(rows.formatted()) \(noun) to \(file)."
         case .keys:
-            var line = "Saved \(rows.formatted()) selected \(noun) to \(file)."
+            line = "Saved \(rows.formatted()) selected \(noun) to \(file)."
             if !missing.isEmpty {
                 line += " \(missing.count.formatted()) \(missing.count == 1 ? "is" : "are") no longer in this list and \(missing.count == 1 ? "was" : "were") left out."
             }
-            return line
         }
+        if skipped > 0 {
+            line += " Left out \(skipped.formatted()) \(skipped == 1 ? "role" : "roles") exported before."
+        }
+        return line
+    }
+
+    /// What to ask before exporting roles an earlier export wrote, read from a dry run's reply;
+    /// nil when there are none.
+    public func repeatPrompt(_ scope: JobsExportScope, in zone: TimeZone = .current) -> JobsExportRepeatPrompt? {
+        guard alreadyExported > 0 else { return nil }
+        let title = alreadyExported == rows
+            ? (rows == 1 ? "This role was exported before" : "All \(rows.formatted()) of these roles were exported before")
+            : "\(alreadyExported.formatted()) of these \(rows.formatted()) roles \(alreadyExported == 1 ? "was" : "were") exported before"
+        var message = ""
+        if let at = lastExportedAt {
+            var style = Date.FormatStyle(date: .abbreviated, time: .shortened)
+            style.timeZone = zone
+            message = "Last exported \(at.formatted(style))"
+            if let lastFile { message += " to \(URL(fileURLWithPath: lastFile).lastPathComponent)" }
+            message += ". "
+        }
+        switch scope {
+        case .top:
+            message += "Skip them to export only roles not yet exported; the next roles in the list take their place."
+        case .keys:
+            message += "Skip them to export only the selected roles not yet exported."
+        }
+        return JobsExportRepeatPrompt(title: title, message: message)
     }
 
     /// The name the save panel suggests: view, size and day, e.g. "Vani jobs (new, top 100) 2026-10-27.xlsx".
@@ -985,6 +1053,16 @@ public struct JobsExport: Codable, Equatable, Sendable {
         let date = day.formatted(Date.ISO8601FormatStyle(timeZone: zone).year().month().day())
         return "Vani jobs (\(view.rawValue), \(size)) \(date).xlsx"
     }
+}
+
+/// The question an export asks before writing roles again. The answers: skip them (the default),
+/// export them again, or cancel.
+public struct JobsExportRepeatPrompt: Equatable, Sendable {
+    public var title: String
+    public var message: String
+    public let skip = "Skip Exported Roles"
+    public let include = "Export Them Again"
+    public let cancel = "Cancel"
 }
 
 /// Postings vani has read from a board but not triaged (status live). The
@@ -1408,9 +1486,24 @@ public struct JobsClient: Sendable {
     public static var maxExportRows: Int { exportSizes.last! }
 
     /// Write roles to `url` as an Excel workbook (`vani jobs export`): the first N of the list these
-    /// arguments show, in its order, or the roles `keys` names, in their order.
+    /// arguments show, in its order, or the roles `keys` names, in their order. `already` says what
+    /// to do with roles an earlier export wrote; nil refuses to write when there are any (the
+    /// error says how many), so pass what the owner chose after `exportCheck`.
     public func export(_ view: JobView, query: String = "", sort: JobSort = .standard, filter: JobFilter = JobFilter(),
-                       _ scope: JobsExportScope, to url: URL) throws -> JobsExport {
+                       _ scope: JobsExportScope, to url: URL, already: JobsAlreadyExported? = nil) throws -> JobsExport {
+        try runExport(Self.exportArguments(view, query: query, sort: sort, filter: filter, scope, out: url.path,
+                                           already: already, halfLifeDays: halfLifeDays), scope)
+    }
+
+    /// What `export` would write, without writing anything (`--dry-run`): above all, how many of
+    /// those roles an earlier export wrote, to ask the owner about before saving.
+    public func exportCheck(_ view: JobView, query: String = "", sort: JobSort = .standard, filter: JobFilter = JobFilter(),
+                            _ scope: JobsExportScope) throws -> JobsExport {
+        try runExport(Self.exportArguments(view, query: query, sort: sort, filter: filter, scope, out: nil,
+                                           halfLifeDays: halfLifeDays, dryRun: true), scope)
+    }
+
+    private func runExport(_ args: [String], _ scope: JobsExportScope) throws -> JobsExport {
         var input: Data?
         if case let .keys(keys) = scope {
             guard !keys.isEmpty else { throw BankError("Select at least one role to export.") }
@@ -1419,22 +1512,25 @@ public struct JobsClient: Sendable {
             }
             input = Data((keys.joined(separator: "\n") + "\n").utf8)
         }
-        return try VaniProcess.call(vaniBinary, Self.exportArguments(view, query: query, sort: sort, filter: filter, scope,
-                                                                     out: url.path, halfLifeDays: halfLifeDays),
-                                    configPath: configPath, stateDir: stateDir, input: input,
+        return try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir, input: input,
                                     // "missing" can name every asked-for key: the list's bound, not a small one.
-                                    timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: JSONDecoder(),
+                                    timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: Self.decoder,
                                     tooOld: "this vani is too old to export jobs; rebuild the app")
     }
 
+    /// `out` nil is vani's default file, for a dry run that writes none.
     static func exportArguments(_ view: JobView, query: String, sort: JobSort, filter: JobFilter, _ scope: JobsExportScope,
-                                out: String, halfLifeDays: Double? = nil) -> [String] {
+                                out: String?, already: JobsAlreadyExported? = nil, halfLifeDays: Double? = nil,
+                                dryRun: Bool = false) -> [String] {
+        var args = ["jobs", "export", "--json", "--view", view.rawValue]
         // "--out=": a path is never read as a flag.
-        var args = ["jobs", "export", "--json", "--view", view.rawValue, "--out=" + out]
+        if let out { args.append("--out=" + out) }
         switch scope {
         case let .top(n): args += ["--top", String(n)]
         case .keys: args.append("--keys-stdin")
         }
+        if let already { args += ["--already-exported", already.rawValue] }
+        if dryRun { args.append("--dry-run") }
         if sort != .standard { args += ["--sort", sort.rawValue] }
         return args + halfLifeArguments(halfLifeDays) + selection(query, filter)
     }

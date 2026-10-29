@@ -152,9 +152,11 @@ func TestJobsExportDefaults(t *testing.T) {
 	if len(exportRows(t, r.Path)) != 3 {
 		t.Fatal("wrong row count")
 	}
-	text, _ := mustCode(t, 0, "jobs", "export", "--out", filepath.Join(t.TempDir(), "x.XLSX"))
-	if !strings.HasPrefix(text, "exported 2 of 2 jobs (new, default order) to ") {
-		t.Fatalf("text %q", text)
+	// The same two jobs again: include says to write them anyway, and the
+	// export still warns that they were exported before.
+	text, stderr := mustCode(t, 0, "jobs", "export", "--already-exported", "include", "--out", filepath.Join(t.TempDir(), "x.XLSX"))
+	if !strings.HasPrefix(text, "exported 2 of 2 jobs (new, default order) to ") || !strings.Contains(stderr, "2 of these 2 jobs were exported before") {
+		t.Fatalf("text %q, stderr %q", text, stderr)
 	}
 }
 

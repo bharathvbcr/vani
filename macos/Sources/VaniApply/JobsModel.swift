@@ -404,14 +404,30 @@ final class JobsModel {
         }
     }
 
+    /// What exporting `scope` of the list as it is viewed would write, written nowhere: how many of
+    /// those roles an earlier export wrote. Nil when the check failed (`actionError` says why).
+    func checkExport(_ scope: JobsExportScope) async -> JobsExport? {
+        guard !exporting else { return nil }
+        exporting = true
+        defer { exporting = false }
+        let c = client(), v = view, q = query, s = sort, f = filter
+        switch await BlockingWork.run({ try c.exportCheck(v, query: q, sort: s, filter: f, scope) }) {
+        case let .success(reply): return reply
+        case let .failure(err):
+            actionError = "Export failed: \(err)"
+            return nil
+        }
+    }
+
     /// Write the list as it is viewed, sorted and filtered (its first N roles, or the roles `scope`
-    /// names) to `url` as an Excel workbook.
-    func export(_ scope: JobsExportScope, to url: URL) async {
+    /// names) to `url` as an Excel workbook. `already` is the owner's answer about roles exported
+    /// before; nil when the check found none, so vani refuses if one was exported meanwhile.
+    func export(_ scope: JobsExportScope, to url: URL, already: JobsAlreadyExported?) async {
         guard !exporting else { return }
         exporting = true
         defer { exporting = false }
         let c = client(), v = view, q = query, s = sort, f = filter
-        let result = await BlockingWork.run { try c.export(v, query: q, sort: s, filter: f, scope, to: url) }
+        let result = await BlockingWork.run { try c.export(v, query: q, sort: s, filter: f, scope, to: url, already: already) }
         switch result {
         case let .success(reply): exported = (URL(fileURLWithPath: reply.path), reply.summary(scope))
         case let .failure(err): actionError = "Export failed: \(err)"

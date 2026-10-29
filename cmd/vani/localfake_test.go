@@ -32,6 +32,10 @@ func TestMain(m *testing.M) {
 	keychainRead = func(context.Context, string) (string, error) {
 		panic("a test reached the real Keychain read; set keychainRead")
 	}
+	// No test asks at the terminal it may have been run from: a test that wants
+	// the already-exported prompt sets it with withPrompt.
+	exportPromptTTY = func() bool { return false }
+	exportPromptInput = strings.NewReader("")
 	os.Exit(m.Run())
 }
 

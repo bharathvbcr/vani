@@ -169,6 +169,9 @@ quit. Studio windows are not restored when the app is launched (`NSWindow.isRest
 **Export to Excel.** The Jobs toolbar features an **Export** menu, and selecting multiple rows enables **Export N to Excel…**
 in the context menu. This executes `vani jobs export --top N` or streams selected keys via `--keys-stdin` to build an `.xlsx`
 workbook (using `internal/xlsx`, zero third-party dependencies). Text cells are stored as inline strings to neutralize formula injection (`=`).
+Before the save panel, the app runs the same export with `--dry-run`. When some of those roles were exported before, it says
+how many, when and to which file, and asks **Skip Exported Roles** (the default; a Top N export then takes the next N not yet
+exported), **Export Them Again** or **Cancel**. The answer is passed as `--already-exported skip|include`.
 
 **Audited Reliability & Safety.** The app and kit include verified defenses from the 2026-10-26 audit backlog:
 - `BankStore`: answer use/fill counters are checked against `Int32.max` before SQLite binding to avoid integer overflow traps.

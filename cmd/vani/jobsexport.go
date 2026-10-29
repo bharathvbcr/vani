@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/exportlog"
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
@@ -25,16 +28,52 @@ import (
 // `vani jobs export` writes jobs to an Excel workbook (internal/xlsx): the
 // first --top of the list `jobs list` would show with the same flags, in the
 // same order, or, with --keys-stdin, the roles the app has selected. Like
-// list it reads the ledger without its lock; it writes only the workbook.
-// Description text is left out, as the list leaves it out.
+// list it reads the ledger without its lock; it writes the workbook and the
+// record of what was exported (internal/exportlog). Description text is left
+// out, as the list leaves it out.
+//
+// A job an earlier export wrote is not written again unasked: by default the
+// export asks in a terminal, and elsewhere (--json, --keys-stdin, a pipe)
+// refuses with code already_exported and writes nothing. --already-exported
+// skip leaves those jobs out (--top then fills from the rest of the list, so
+// "the next 100" is the next 100 not yet exported); include writes them again.
+// --dry-run writes nothing and reports what the export would hold.
 
 const (
 	defaultExportTop = 100
 	maxOutPathBytes  = 4096
+
+	exportedAsk     = "ask"
+	exportedSkip    = "skip"
+	exportedInclude = "include"
+	// codeAlreadyExported is the refusal of an export holding jobs exported
+	// before, when it cannot ask.
+	codeAlreadyExported = "already_exported"
+	// maxPromptAnswerBytes bounds the answer read at the terminal prompt.
+	maxPromptAnswerBytes = 256
 )
 
 // exportKeysInput is where --keys-stdin reads its keys. Tests replace it.
 var exportKeysInput io.Reader = os.Stdin
+
+// exportPromptInput and exportPromptTTY are where the already-exported prompt
+// reads its answer and whether it may ask at all. Tests replace them.
+var (
+	exportPromptInput io.Reader = os.Stdin
+	exportPromptTTY             = stdinIsTerminal
+)
+
+// stdinIsTerminal reports whether stdin is a character device other than
+// /dev/null (which is one too, and is what a launchd job or a test is given):
+// a terminal, in practice. Asking anything else would read no answer and cancel.
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	null, err := os.Stat(os.DevNull)
+	return err == nil && !os.SameFile(fi, null)
+}
 
 type jobsExportJSON struct {
 	Path string `json:"path"`
@@ -49,6 +88,48 @@ type jobsExportJSON struct {
 	Missing []posting.Key `json:"missing"`
 	Ledger  string        `json:"ledger"`
 	Records int           `json:"records"`
+	// AlreadyExported is how many of the jobs the export holds, or would hold
+	// with --already-exported include, an earlier export wrote. LastExportedAt
+	// and LastFile name the latest of those exports; LastFile is "" when that
+	// export is too old for the record to name its file.
+	AlreadyExported int        `json:"already_exported"`
+	LastExportedAt  *time.Time `json:"last_exported_at,omitempty"`
+	LastFile        string     `json:"last_file,omitempty"`
+	// Skipped is how many jobs exported before --already-exported skip left out.
+	Skipped int `json:"skipped"`
+	// Forgotten is how many of the oldest exported keys the record dropped to
+	// stay bounded (exportlog.MaxJobs); they read as never exported from now on.
+	Forgotten int  `json:"forgotten,omitempty"`
+	DryRun    bool `json:"dry_run"`
+	failure
+}
+
+func (r *jobsExportJSON) fail(err error) {
+	r.failure.fail(err)
+	if errors.As(err, new(alreadyExportedError)) {
+		r.Code = codeAlreadyExported
+	}
+}
+
+// alreadyExportedError is the refusal of an export that would write jobs an
+// earlier export wrote, made when the export cannot ask.
+type alreadyExportedError struct {
+	prior exportlog.Prior
+	rows  int
+}
+
+func (a alreadyExportedError) Error() string {
+	return fmt.Sprintf("jobs export: %s; nothing written. Pass --already-exported skip to leave them out, or --already-exported include to export them again",
+		priorLine(a.prior, a.rows))
+}
+
+// priorLine says how many of rows jobs were exported before, and when and where last.
+func priorLine(p exportlog.Prior, rows int) string {
+	line := fmt.Sprintf("%d of these %d jobs were exported before (last on %s", p.N, rows, p.Last.At.Local().Format("2006-01-02 15:04"))
+	if p.Last.File != "" {
+		line += " to " + p.Last.File
+	}
+	return line + ")"
 }
 
 func (e *env) jobsExport(args []string) error {
@@ -60,10 +141,13 @@ func (e *env) jobsExport(args []string) error {
 	top := fs.Int("top", defaultExportTop, fmt.Sprintf("export the first this many jobs of the list (1-%d)", maxJobsLimit))
 	out := fs.String("out", "", "the .xlsx file to write (default: <state dir>/export/jobs/jobs-<view>-<time>.xlsx)")
 	keysStdin := fs.Bool("keys-stdin", false, fmt.Sprintf("export the jobs whose keys stdin lists, one per line, in that order (at most %d); the selection flags still apply", maxJobsLimit))
+	already := fs.String("already-exported", exportedAsk, "jobs an earlier export wrote: ask (in a terminal; elsewhere refuse and write nothing), "+
+		"skip (leave them out; --top fills from the rest of the list) or include (write them again)")
+	dryRun := fs.Bool("dry-run", false, "write nothing: report what the export would hold and how many of its jobs were exported before")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	var reply jobsExportJSON
+	reply := jobsExportJSON{Missing: []posting.Key{}}
 	err := func() error {
 		topSet := false
 		fs.Visit(func(f *flag.Flag) { topSet = topSet || f.Name == "top" })
@@ -72,6 +156,8 @@ func (e *env) jobsExport(args []string) error {
 			return usagef("jobs export: --top must be 1-%d", maxJobsLimit)
 		case *keysStdin && topSet:
 			return usagef("jobs export: --top and --keys-stdin both say which jobs to export; give one")
+		case *already != exportedAsk && *already != exportedSkip && *already != exportedInclude:
+			return usagef("jobs export: --already-exported must be ask, skip or include")
 		}
 		o.pendingOK = true
 		if err := o.check("jobs export", true); err != nil {
@@ -95,16 +181,52 @@ func (e *env) jobsExport(args []string) error {
 		if err != nil {
 			return err
 		}
+		logPath := exportlog.Path(e.stateDir)
+		rec, err := exportlog.Read(logPath)
+		if err != nil {
+			return fmt.Errorf("jobs export: %w", err)
+		}
+		// Skipping fills --top from past the cut, so it needs the whole list.
 		limit := *top
-		if keys != nil {
+		if keys != nil || (*already != exportedInclude && len(rec.Jobs) > 0) {
 			limit = math.MaxInt
 		}
 		l := jobview.BuildList(snap, m, &o.Opts, in, in.info, listKeywords, limit)
-		jobs, total := l.Jobs, l.Total
-		var missing []posting.Key
+		jobs, total := l.Jobs[:min(*top, len(l.Jobs))], l.Total
 		if keys != nil {
-			jobs, missing = pickJobs(l.Jobs, keys)
+			jobs, reply.Missing = pickJobs(l.Jobs, keys)
 			total = len(keys)
+			if reply.Missing == nil {
+				reply.Missing = []posting.Key{}
+			}
+		}
+		prior := rec.Prior(jobKeys(jobs))
+		reply.Path, reply.Total, reply.View, reply.Sort = path, total, l.View, l.Sort
+		reply.Ledger, reply.Records, reply.DryRun = filepath.Join(e.stateDir, "ledger"), len(snap.Records), *dryRun
+		reply.Rows, reply.AlreadyExported = len(jobs), prior.N
+		if prior.N > 0 {
+			at := prior.Last.At
+			reply.LastExportedAt, reply.LastFile = &at, prior.Last.File
+		}
+		choice := *already
+		if prior.N > 0 && choice == exportedAsk && !*dryRun {
+			if *asJSON || *keysStdin || !exportPromptTTY() {
+				return alreadyExportedError{prior, len(jobs)}
+			}
+			if choice, err = e.askAlreadyExported(prior, len(jobs), keys == nil); err != nil {
+				return err
+			}
+		}
+		if choice == exportedSkip && prior.N > 0 {
+			if keys != nil {
+				jobs, reply.Skipped = unexported(jobs, rec, len(jobs))
+			} else {
+				jobs, reply.Skipped = unexported(l.Jobs, rec, *top)
+			}
+			reply.Rows = len(jobs)
+		}
+		if *dryRun {
+			return nil
 		}
 		var buf bytes.Buffer
 		if err := xlsx.Write(&buf, exportSheet(jobs, o.more.Currency)); err != nil {
@@ -113,17 +235,34 @@ func (e *env) jobsExport(args []string) error {
 		if err := atomicfile.Write(path, buf.Bytes()); err != nil {
 			return fmt.Errorf("jobs export: %w", err)
 		}
-		if missing == nil {
-			missing = []posting.Key{}
+		if len(jobs) == 0 {
+			return nil
 		}
-		reply = jobsExportJSON{Path: path, Rows: len(jobs), Total: total, View: l.View, Sort: l.Sort, Missing: missing,
-			Ledger: filepath.Join(e.stateDir, "ledger"), Records: len(snap.Records)}
+		// The workbook is written: a record that cannot be kept is a failure that
+		// says so, never a quiet success that lets these jobs read as new.
+		if reply.Forgotten, err = exportlog.Record(context.Background(), logPath, jobKeys(jobs), path, now()); err != nil {
+			return fmt.Errorf("jobs export: wrote %s, but could not record its jobs as exported: %w", path, err)
+		}
 		return nil
 	}()
-	err = e.reply(*asJSON, reply, err, func() {
-		fmt.Fprintf(e.stdout, "exported %d of %d jobs (%s, %s order) to %s\n", reply.Rows, reply.Total, reply.View, reply.Sort, reply.Path)
+	err = e.reply(*asJSON, &reply, err, func() {
+		verb := "exported"
+		if reply.DryRun {
+			verb = "would export"
+		}
+		fmt.Fprintf(e.stdout, "%s %d of %d jobs (%s, %s order) to %s\n", verb, reply.Rows, reply.Total, reply.View, reply.Sort, reply.Path)
+		switch {
+		case reply.Skipped > 0:
+			fmt.Fprintf(e.stdout, "left out %d jobs exported before\n", reply.Skipped)
+		case reply.AlreadyExported > 0:
+			last := exportlog.Prior{N: reply.AlreadyExported, Last: exportlog.Export{At: *reply.LastExportedAt, File: reply.LastFile}}
+			fmt.Fprintf(e.stderr, "vani: %s\n", priorLine(last, reply.Rows))
+		}
 		for _, k := range reply.Missing {
 			fmt.Fprintf(e.stderr, "vani: %s is not in this selection; left out of the export\n", k)
+		}
+		if reply.Forgotten > 0 {
+			fmt.Fprintf(e.stderr, "vani: the export record keeps at most %d jobs; the %d exported longest ago now read as never exported\n", exportlog.MaxJobs, reply.Forgotten)
 		}
 	})
 	// Text mode fails on a short export so a script sees it; a --json client
@@ -191,6 +330,53 @@ func readExportKeys(r io.Reader) ([]posting.Key, error) {
 		return nil, usagef("jobs export: --keys-stdin read no keys")
 	}
 	return keys, nil
+}
+
+// askAlreadyExported asks at the terminal what to do with jobs exported
+// before: skip or include; anything else, or no answer, cancels.
+func (e *env) askAlreadyExported(p exportlog.Prior, rows int, fills bool) (string, error) {
+	skip := "skip them"
+	if fills {
+		skip = "skip them (the next jobs not yet exported take their place)"
+	}
+	fmt.Fprintf(e.stderr, "vani: %s.\n%s, include them again, or cancel? [s/i/C] ", priorLine(p, rows), strings.ToUpper(skip[:1])+skip[1:])
+	line, err := bufio.NewReader(io.LimitReader(exportPromptInput, maxPromptAnswerBytes)).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("jobs export: read the answer: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "s", "skip":
+		return exportedSkip, nil
+	case "i", "include":
+		return exportedInclude, nil
+	}
+	return "", errors.New("jobs export: cancelled; nothing written")
+}
+
+func jobKeys(jobs []jobview.Job) []posting.Key {
+	out := make([]posting.Key, len(jobs))
+	for i, j := range jobs {
+		out[i] = j.Key
+	}
+	return out
+}
+
+// unexported returns the first n of jobs the record does not hold, in order,
+// and how many it passed over to find them.
+func unexported(jobs []jobview.Job, rec exportlog.Log, n int) ([]jobview.Job, int) {
+	out := make([]jobview.Job, 0, min(n, len(jobs)))
+	passed := 0
+	for _, j := range jobs {
+		if len(out) == n {
+			break
+		}
+		if rec.Exported(j.Key) {
+			passed++
+			continue
+		}
+		out = append(out, j)
+	}
+	return out, passed
 }
 
 // pickJobs returns the jobs keys name, in keys' order, and the keys jobs lacks.

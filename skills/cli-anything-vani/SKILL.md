@@ -48,7 +48,9 @@ whether a binary has them.
   (the command has no JSON form), `runtime`, or a command's own code (`busy`, `timeout`,
   `budget_exhausted`, `ineligible`, ...). A command that fails after producing something
   useful keeps it beside `error` and `code`: a refused `track use` keeps its check, a failed
-  `run-once` keeps the run's record, a stopped `kbmatch run` keeps what it asked.
+  `run-once` keeps the run's record, a stopped `kbmatch run` keeps what it asked, and a
+  `jobs export` refused with `already_exported` keeps the count of roles exported before. Re-run
+  it with `--already-exported skip` or `include` only after asking the owner.
 - **Exit codes:** 0 ok, 1 runtime failure, 2 usage error or unsupported. 75 comes only from
   `vani daemon` (restart for a config change).
 - **Discovery:** `vani --json help` lists every command with how it answers. `json` is one of:

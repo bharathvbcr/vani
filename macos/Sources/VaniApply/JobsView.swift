@@ -263,14 +263,41 @@ private struct ExportMenu: View {
     }
 }
 
-/// Ask where to save, then export. The name suggested says the view, the size and the day.
+/// Check what the export would hold; when an earlier export wrote some of those roles, ask whether
+/// to skip them or write them again; then ask where to save, and export. The name suggested says
+/// the view, the size and the day.
 @MainActor
 func exportJobs(_ jobs: JobsModel, _ scope: JobsExportScope) {
-    let panel = NSSavePanel()
-    if let xlsx = UTType(filenameExtension: "xlsx") { panel.allowedContentTypes = [xlsx] }
-    panel.nameFieldStringValue = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
-    guard panel.runModal() == .OK, let url = panel.url else { return }
-    Task { await jobs.export(scope, to: url) }
+    Task { @MainActor in
+        guard let check = await jobs.checkExport(scope) else { return }
+        var already: JobsAlreadyExported?
+        if let prompt = check.repeatPrompt(scope) {
+            guard let answer = askAboutExported(prompt) else { return }
+            already = answer
+        }
+        let panel = NSSavePanel()
+        if let xlsx = UTType(filenameExtension: "xlsx") { panel.allowedContentTypes = [xlsx] }
+        panel.nameFieldStringValue = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        await jobs.export(scope, to: url, already: already)
+    }
+}
+
+/// Skip (the default button), include, or nil for Cancel.
+@MainActor
+private func askAboutExported(_ prompt: JobsExportRepeatPrompt) -> JobsAlreadyExported? {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = prompt.title
+    alert.informativeText = prompt.message
+    alert.addButton(withTitle: prompt.skip)
+    alert.addButton(withTitle: prompt.include)
+    alert.addButton(withTitle: prompt.cancel)
+    switch alert.runModal() {
+    case .alertFirstButtonReturn: return .skip
+    case .alertSecondButtonReturn: return .include
+    default: return nil
+    }
 }
 
 private struct FilterMenu: View {

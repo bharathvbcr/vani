@@ -493,6 +493,9 @@ to an `.xlsx` workbook using `internal/xlsx` (standard library `archive/zip` + X
 - Writes the workbook atomically via temporary file and rename.
 - Every text cell is written as an inline string (`<is><t>`), preventing spreadsheet formula execution if a posting starts with `=`.
 - Missing keys or filtered-out roles are tracked and reported in `--json` output (`missing`), without aborting the export.
+- Records the keys each export wrote in `<state dir>/export/exported.json` (`internal/exportlog`). The file holds keys, times, counts and workbook paths only, under its own flock with an atomic replace. It keeps at most 50,000 keys; past that it forgets the ones exported longest ago and reports `forgotten`.
+- An export holding roles an earlier one wrote asks in a terminal. Elsewhere it refuses with `code: already_exported` and writes nothing. `--already-exported skip` leaves those roles out, so `--top N` takes the next N not yet exported; `include` writes them again. `--dry-run` writes nothing and reports `already_exported`, `last_exported_at` and `last_file`.
+- A record that cannot be read stops the export before the workbook is written. If the record cannot be written afterwards, the export exits 1 and names the workbook it wrote.
 
 ## Runtime state, cooldowns and locks
 

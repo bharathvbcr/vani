@@ -484,9 +484,14 @@ flowchart TD
     silently. One row per role: company, title, location, scores, triage readings, category, pay,
     dates, status, mark, stage, furthest stage, date applied, note, repeat-apply and repost
     notes, keywords, links and key; no description. Every text cell is an
-    inline string, so posting text that starts with `=` stays text. The app's Jobs toolbar has
-    an Export menu (Top 100 / 250 / 500 / 1,000, All, Selected Roles) and the multi-row menu has
-    "Export N to Excel…".
+    inline string, so posting text that starts with `=` stays text. Each export records the keys
+    it wrote ([`internal/exportlog`](internal/exportlog), `<state dir>/export/exported.json`).
+    An export that holds roles an earlier one wrote asks in a terminal. Anywhere else it refuses
+    (code `already_exported`, nothing written) unless given `--already-exported skip`, which
+    leaves them out so that `--top N` takes the next N not yet exported, or `include`.
+    `--dry-run` reports the count and writes nothing. The app's Jobs toolbar has an Export menu
+    (Top 100 / 250 / 500 / 1,000, All, Selected Roles) and the multi-row menu has "Export N to
+    Excel…". Both ask "Skip Exported Roles / Export Them Again / Cancel" when it applies.
   - Pay ([`internal/jobinsight/pay.go`](internal/jobinsight/pay.go)): `jobinsight.PostingPay`,
     the one reader the digest and `vani jobs` share, reads each job's description for stated pay
     by fixed rules (currency, range, period, a pay word, plausible yearly bounds; "$100/month
@@ -673,6 +678,7 @@ build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager 
 build/vani jobs stats --view all
 build/vani jobs export --top 250 --sort relevance --out ~/Downloads/vani-top-250.xlsx
 printf 'gh:acme:1\ngh:acme:2\n' | build/vani jobs export --keys-stdin --out ~/Downloads/picked.xlsx
+build/vani jobs export --top 100 --already-exported skip   # the next 100 roles not yet exported
 build/vani jobs resume show KEY                 # version history, current/used status, pool
 build/vani jobs resume build --dry-run KEY      # estimate Opus 5.5 cost and check validity
 build/vani jobs resume build --from v1 --instruction "Focus on distributed systems" KEY
