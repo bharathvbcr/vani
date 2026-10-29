@@ -54,7 +54,7 @@
   {
    "label": "Github handle",
    "autocomplete": "",
-   "want": "github"
+   "want": "github handle"
   },
   {
    "label": "Portfolio",
@@ -520,6 +520,126 @@
    "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
    "autocomplete": "",
    "want": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "label": "Are you legally authorized to work in the United States?",
+   "autocomplete": "",
+   "want": "authorized to work"
+  },
+  {
+   "label": "Do you require visa sponsorship to work in the US?",
+   "autocomplete": "",
+   "want": "visa sponsorship"
+  },
+  {
+   "label": "Will you now or in the future require sponsorship?",
+   "autocomplete": "",
+   "want": "visa sponsorship"
+  },
+  {
+   "label": "Are you willing to relocate to San Francisco?",
+   "autocomplete": "",
+   "want": "open to relocation"
+  },
+  {
+   "label": "Are you authorized to work in the UK?",
+   "autocomplete": "",
+   "want": "authoriz uk work"
+  },
+  {
+   "label": "Are you legally authorized to work in Canada?",
+   "autocomplete": "",
+   "want": "authoriz canada legally work"
+  },
+  {
+   "label": "Do you have the right to work in the EU?",
+   "autocomplete": "",
+   "want": "eu right work"
+  },
+  {
+   "label": "Will you require visa sponsorship to work in India?",
+   "autocomplete": "",
+   "want": "india require sponsor visa work"
+  },
+  {
+   "label": "Are you willing to relocate to Germany?",
+   "autocomplete": "",
+   "want": "germany relocate will"
+  },
+  {
+   "label": "Are you open to relocation to the U.K.?",
+   "autocomplete": "",
+   "want": "k open reloc u"
+  },
+  {
+   "label": "Can you work for us without needing sponsorship?",
+   "autocomplete": "",
+   "want": "need sponsor without work"
+  },
+  {
+   "label": "Do you not require sponsorship now or in the future?",
+   "autocomplete": "",
+   "want": "future not now require sponsor"
+  },
+  {
+   "label": "I will no longer need sponsorship",
+   "autocomplete": "",
+   "want": "i longer need no sponsor"
+  },
+  {
+   "label": "No sponsorship required",
+   "autocomplete": "",
+   "want": "no requir sponsor"
+  },
+  {
+   "label": "Are you not legally authorized to work in the United States?",
+   "autocomplete": "",
+   "want": "authoriz legally not usa work"
+  },
+  {
+   "label": "Twitter handle",
+   "autocomplete": "",
+   "want": "handle twitter"
+  },
+  {
+   "label": "Your Twitter handle (optional)",
+   "autocomplete": "",
+   "want": "handle twitter"
+  },
+  {
+   "label": "Twitter URL",
+   "autocomplete": "",
+   "want": "twitter"
+  },
+  {
+   "label": "Twitter profile",
+   "autocomplete": "",
+   "want": "twitter"
+  },
+  {
+   "label": "GitHub handle",
+   "autocomplete": "",
+   "want": "github handle"
+  },
+  {
+   "label": "GitHub username",
+   "autocomplete": "",
+   "want": "github username"
+  },
+  {
+   "label": "GitHub",
+   "autocomplete": "",
+   "want": "github"
+  },
+  {
+   "label": "LinkedIn handle",
+   "autocomplete": "",
+   "want": "handle linkedin"
+  },
+  {
+   "label": "Handle",
+   "autocomplete": "",
+   "want": "handle"
   }
  ]
 }

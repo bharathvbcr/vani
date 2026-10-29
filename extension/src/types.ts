@@ -30,6 +30,14 @@ export interface FieldInfo {
   /** The wording insertDraft wrote, so a later edit is not treated as that draft. Never sent to a model. */
   draftText?: string;
   multi?: boolean;      // a multi-select widget: it takes every saved value, not the first
+  /**
+   * Set when the value is still exactly what Fill wrote: a capture of it is Vani's own fill coming
+   * back, not the user answering, so it must not entrench (bump uses, gain a wording or signature)
+   * or turn a review fill confident.
+   */
+  filledBy?: { key: string; review: boolean };
+  /** The field's live character limit (maxlength) when it has one; drafts are sized to it. */
+  maxChars?: number;
 }
 
 /** One remembered answer. */
@@ -65,6 +73,13 @@ export interface Match {
   score: number;     // 0..1
   value: string[];   // the value to set, mapped onto this field's options for choice kinds
   review: boolean;   // fill, but mark for review (yellow)
+  note?: string;     // why it needs a look beyond the score: an answer that ages, saved this long ago
+  /**
+   * Set when this site's id for the field names answer X but another answer (this Match's) holds the field's exact
+   * wording: X's value as this field takes it, and X's newest wording, so a caller can ask whether the two
+   * wordings are one question. Only when X's value fits this field and is not stale.
+   */
+  alternative?: { answer: Answer; value: string[]; wording: string };
 }
 
 export function emptyBank(): Bank {

@@ -82,6 +82,22 @@ final class ConceptKeyTests: XCTestCase {
         XCTAssertEqual(Editing.owner(of: "LinkedIn profile", kind: .text, in: bank(a, b, c))?.key, "a1")
     }
 
+    /// "url", "link" and "profile" fold into the question they decorate; a handle is the account name, a different value.
+    func testAHandleIsNotAURL() throws {
+        XCTAssertNotEqual(Classifier.conceptKey(label: "Twitter handle", autocomplete: ""), Classifier.conceptKey(label: "Twitter URL", autocomplete: ""))
+        XCTAssertNotEqual(Classifier.conceptKey(label: "GitHub handle", autocomplete: ""), Classifier.conceptKey(label: "GitHub", autocomplete: ""))
+        XCTAssertEqual(Classifier.conceptKey(label: "Twitter handle", autocomplete: ""), Classifier.conceptKey(label: "Your Twitter handle (optional)", autocomplete: ""))
+        for w in ["LinkedIn URL", "LinkedIn profile", "LinkedIn link", "LinkedIn page"] {
+            XCTAssertEqual(Classifier.conceptKey(label: w, autocomplete: ""), Classifier.conceptKey(label: "LinkedIn", autocomplete: ""), w)
+        }
+        // A handle row is no owner of the URL question (and the reverse): typing one in the Mac app makes its own row.
+        let held = bank(answer("twitter url"))
+        XCTAssertNil(Editing.owner(of: "Twitter handle", kind: .text, in: held))
+        XCTAssertEqual(try Editing.newAnswer(question: "Twitter handle", kind: .text, text: "@ada", in: held).key, "twitter handle")
+        // A row saved under the old concept still answers its own wording.
+        XCTAssertEqual(Editing.owner(of: "LinkedIn handle", kind: .text, in: bank(answer("linkedin handle")))?.key, "linkedin handle")
+    }
+
     func testSavingADraftUpdatesTheSiblingOwner() throws {
         var held = answer("linkedin", "old")
         held.labels = ["linkedin"]

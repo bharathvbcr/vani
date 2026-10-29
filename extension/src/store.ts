@@ -9,6 +9,8 @@ import { createPortTransport } from "./nativeport";
 
 export const NATIVE_HOST = "dev.vbcr.vani_apply";
 const KEY = "vaniBank";
+/** The digest of the browser bank last merged into the Mac app ("" or absent: none). See migrate(). */
+const MERGED_KEY = "vaniBankMerged";
 const CALL_TIMEOUT_MS = 5_000;
 const MODE_TTL_MS = 30_000;
 const MAX_ATTEMPTS = 3;
@@ -153,6 +155,12 @@ function msgOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** SHA-256 (hex) of a stored bank's JSON: what "the same content" means for the migration marker. A short hash could collide and skip a real merge. */
+async function digestOf(raw: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(raw));
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+}
+
 export interface StoreOptions {
   transport?: Transport;
   local?: LocalArea;
@@ -176,6 +184,7 @@ export function createStore(opts: StoreOptions = {}) {
 
   let nativeUntil = 0; // native confirmed reachable until this time
   let migrated = false;
+  let mergedHere = ""; // digest of the browser bank this worker merged into the Mac app (see migrate)
   let note: string | null = null;
   let pingPromise: Promise<boolean> | null = null;
   let migratePromise: Promise<void> | null = null;
@@ -291,7 +300,29 @@ export function createStore(opts: StoreOptions = {}) {
     throw new Error("answer bank changed concurrently; try again");
   }
 
-  /** Move a bank left in chrome.storage.local into the Mac app, once per worker lifetime. */
+  /** The digests of browser banks already merged into the Mac app: the one in storage and the one this worker holds. */
+  async function mergedDigests(): Promise<string[]> {
+    const stored = (await local.get(MERGED_KEY))[MERGED_KEY];
+    return [mergedHere, typeof stored === "string" ? stored : ""].filter(d => d !== "");
+  }
+
+  /**
+   * Move a bank left in chrome.storage.local into the Mac app, once per worker lifetime.
+   *
+   * Invariant: a browser bank is merged into the Mac app at most once per content, and never dropped before it is
+   * merged. The merge is the only step that must not repeat (the Mac app's bank has moved on since: an answer deleted
+   * there would be re-added from a stale browser copy), and removing the copy is the step that can fail. So the order
+   * is: merge (put) -> record the merged content's digest (MERGED_KEY) -> remove the copy.
+   *  - The put fails: nothing is recorded, the copy stays, the next call merges it.
+   *  - The put lands and the worker dies before the digest is written: the copy is merged again next time, which loses
+   *    nothing (the per-key newest wins) and can only re-add a key deleted in that instant.
+   *  - The digest is recorded and the removal fails (or the worker dies): the next call sees the copy's digest in
+   *    MERGED_KEY, skips the merge and only retries the removal. This worker also keeps the digest in memory, so a
+   *    failed digest write does not re-merge within its lifetime.
+   * A copy with other content (an answer saved while the Mac app was unreachable) has another digest and is merged.
+   * localWrite clears MERGED_KEY in the write that changes the browser bank, and localLoad reads a bank whose digest
+   * is recorded as empty, so a leftover copy is neither built on nor merged later.
+   */
   async function migrate(): Promise<void> {
     if (migrated) return;
     if (migratePromise) return migratePromise;
@@ -308,10 +339,24 @@ export function createStore(opts: StoreOptions = {}) {
           console.error(note);
           return;
         }
-        await commit(b => mergeBanks(b, localBank));
-        await local.remove(KEY); // only after the put succeeded
+        const digest = await digestOf(raw);
+        if (!(await mergedDigests()).includes(digest)) {
+          await commit(b => mergeBanks(b, localBank));
+          mergedHere = digest;
+          try {
+            await local.set({ [MERGED_KEY]: digest });
+          } catch (e) {
+            console.error(`Vani: could not record that the browser answers were moved: ${msgOf(e)}`);
+          }
+        }
+        mergedHere = digest;
         migrated = true;
         note = null;
+        try {
+          await local.remove(KEY); // only after the put succeeded; a failure leaves a copy that is never merged again
+        } catch (e) {
+          console.error(`Vani: answers saved in this browser were moved to the Mac app, but the browser copy could not be removed: ${msgOf(e)}`);
+        }
       } catch (e) {
         note = `Answers saved in this browser were not moved to the Mac app (left in place): ${msgOf(e)}`;
         console.error(note);
@@ -349,6 +394,9 @@ export function createStore(opts: StoreOptions = {}) {
   async function localLoad(): Promise<Bank> {
     const raw = (await local.get(KEY))[KEY];
     if (raw === undefined) return emptyBank();
+    // A copy the Mac app already has (its removal failed): its rows may have been deleted there since, so it is not built on.
+    const merged = await mergedDigests();
+    if (merged.length > 0 && merged.includes(await digestOf(raw))) return emptyBank();
     try {
       return parseBank(JSON.stringify(raw)).bank;
     } catch (e) {
@@ -361,7 +409,9 @@ export function createStore(opts: StoreOptions = {}) {
   async function localWrite(bank: Bank): Promise<void> {
     const bytes = bankBytes(bank);
     if (bytes > MAX_BANK_BYTES) throw tooBig(bytes);
-    await local.set({ [KEY]: bank });
+    // New content, so no earlier merge covers it: the marker is cleared in the same write.
+    await local.set({ [KEY]: bank, [MERGED_KEY]: "" });
+    mergedHere = "";
     // Written while the Mac app was unreachable: move it over at the next
     // native contact, even if an earlier migration already ran.
     migrated = false;

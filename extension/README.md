@@ -33,6 +33,15 @@ native-messaging manifest allows. `dist-safari/` is the same code with a Safari-
    A saved answer longer than the field's character limit (`maxlength`) is never written, cut or
    otherwise: the field stays empty, outlined **yellow**, and its tooltip says how long the answer
    is and what the field allows (see Limits).
+   Every write is read back after the page settles. A controlled field (React, Angular) that throws
+   the value away is written once more, the way typing does, and if it still does not keep it the
+   field is reported "manual" ("the page did not keep the value"), never "filled".
+   **Undo fill** in the panel puts back what the last Fill changed, but only in fields that still
+   hold what Fill wrote: anything you edited since stays as you left it.
+   Answers that go out of date are not trusted for ever: a start date or timeline saved more than
+   21 days ago, a salary expectation more than 90 days ago and a work location more than 180 days
+   ago fill yellow, with the age in the tooltip; a start date, deadline or "today's date" that has
+   already gone by is not filled at all.
    Fields you have already typed into are left alone, unless you tick "overwrite typed values".
    Search-as-you-type fields are left alone unless you tick "type into search fields".
    Questions it hasn't seen are left blank. Answer them, and they're saved for next time.
@@ -122,17 +131,40 @@ each one:
 - **Suggest** (panel button, with the Vani Apply Mac app and its agent running) handles the whole
   page in one click. It sends the new free-text questions (labels and field type only, never a
   value or a saved answer) and the posting to `vani suggest`:
-  - The decision model (the configured OpenRouter model, then Claude) sorts each question as an
-    essay, a fact about you, work authorization, an agreement, self-identification or other.
-  - Claude, through Manvi, drafts the essays, at most three per page. Each draft is inserted
-    yellow, for review, into a field that is still empty.
+  - A decision model sorts each question as an essay, a fact about you, work authorization, an
+    agreement, self-identification or other: first Apple's on-device model (`vani-fm`, the
+    question label and field type only, free; skipped on a Mac without Apple Intelligence or when
+    it declines), then the configured OpenRouter model, then Claude.
+  - Claude, through Manvi, drafts the essays: three that succeed per page, with at most two more
+    attempts for failures. A draft is sized to the field's character limit (`max_chars`); a field
+    under 260 characters is a short answer and is left to you. A draft that names a figure,
+    credential or acronym nothing backs gets one rewrite naming it, then is refused if it still
+    does. Each draft is inserted yellow, for review, into a field that is still empty.
+  - Suggest is not started when the page has no job description (under 40 characters).
+  - Each run appends counts only (category, status, code, backend, timings; never a question, a
+    draft or the posting) to `state/suggest/outcomes.jsonl`, so the success rate can be read.
   - Every other question is listed with the reason it is left to you.
   - Visa/sponsorship, consent and self-identification labels are pinned by a fixed rule, so no
-    model is ever asked about them.
-  - Choice questions (selects, radios) are never sent. They come from your saved answers only.
+    model is ever asked about them. The one exception is a plain essay prompt that only the broad
+    consent rule flags ("Describe a time a teammate didn't agree with you"): it is read and drafted
+    like any essay, by Suggest and by Draft alike (`draft.NeverDrafted`).
+  - Short factual questions ("Years of experience with Kubernetes", "Current title") and
+    single-choice questions (a select or radio group, 2 to 50 options, that your saved answers do not
+    cover) are answered from your knowledge base in one Claude turn per page, at most 15: the turn
+    sees the posting, your eligible knowledge-base bullets and the questions with their options,
+    never your saved answers, contact details or work authorization. Each answer must cite a bullet
+    and pass the same grounding check as a draft; a chosen option must be one the field offers. A
+    factual answer is inserted and a choice is selected **yellow**, and both are saved for review,
+    never as confident answers. A question your knowledge base does not answer says so. Multi-selects,
+    checkboxes and search-as-you-type pickers are never sent; nor are work authorization,
+    self-identification and agreements.
+  - With a Vani older than the extension (it refuses the newer request), Suggest sends the older
+    request once and says to reinstall Vani.
   - It runs as a job in the Vani Apply agent: the extension starts it, then polls every 2 s for up
-    to about 6 minutes. This works the same in Safari and Chrome.
-- **Draft** (free-text fields, with the Vani Apply Mac app installed) asks the Mac app to
+    to about 6 minutes. This works the same in Safari and Chrome. A poll the host could not answer
+    is tried again (backing off to 16 s) within that bound, and a job the agent no longer knows says
+    so, rather than "the agent isn't running".
+- **Draft** (free-text fields of 260 characters or more, with the Vani Apply Mac app installed) asks the Mac app to
   draft an answer from the job description on the page. The request carries only the question
   label and the posting (company, title, description), never your saved answers or what you
   typed. The draft appears in the panel to edit. **Insert for review** puts it in the field,
@@ -286,8 +318,42 @@ stable ATS field names (e.g. `first_name`) are remembered per site. Matching tri
 4. a fuzzy token match that folds required markers, plurals, "LinkedIn URL"/"LinkedIn profile",
    "the US"/"United States" and "mobile"/"phone".
 
+Several saved answers can claim one field: its id on this site, its exact wording, its declared
+meaning, the intent it reads as, or (for name, email, phone, city, state, country, postal code,
+LinkedIn, GitHub and website) the contact basic it asks for, however it was saved. Among those
+direct claims **the latest answer wins**, then the more used: how often an old answer was
+confirmed never outweighs a correction. A fuzzy resemblance only fills when no direct claim does.
+A field id that pages generate (`:r3:`, `react-select-3-input`, `mui-12`, `input-4`, `answer`,
+`textInput`…) is never remembered as the field's identity, and one id belongs to one question: a
+newer answer captured under it takes it from the old one.
+
+A site can reword a question and keep its id, or give its id to a different question; when the
+field's id and its exact wording name two different saved answers, Fill asks Apple's on-device
+model (the two question labels only, never an answer; at most 10 per Fill, 8 s in all) whether
+they are the same question. "Same": the id's newer answer fills, green. "Different": the
+exact wording's answer fills, green. No answer (no Apple Intelligence, an older Mac app, a
+timeout): the exact wording's answer fills yellow, saying why. An alternative whose own answer has
+gone stale is never offered, and a legal or sensitive question (work authorization, sponsorship,
+agreements, attestations, self-identification) is never asked about: it stays yellow, for you to
+read. A choice is only ever written as the option with exactly its text, or the one option it
+matches once punctuation is set aside; where that would be several ("C", "C++", "C#"), nothing is
+chosen.
+
+A question left empty says why in the panel when there is a reason: your saved start date has
+passed, or your saved answer is not one of this form's options. A handle is not a URL: "GitHub
+handle" and "GitHub username" are their own questions, while "LinkedIn", "LinkedIn URL" and
+"LinkedIn profile" stay one.
+
+When Vani filled a field and you submit it untouched, that is Vani's own fill coming back, not
+your answer: it does not count as another use, add a wording or id, or turn a yellow fill green.
+Edit it, however slightly, and it is saved as yours.
+
+A question that names another country ("authorized to work in the UK") or asks the opposite way
+round ("can you work without sponsorship?") reads as no intent, so it is neither filled from nor
+saved over your general answer.
+
 Choices map across option wordings ("No" → "No, I will not"). A choice with no matching option is
-left alone. Free-text answers over 280 characters are filled only as drafts, because they're usually
+left alone, and an older answer to the same question is never used instead. Free-text answers over 280 characters are filled only as drafts, because they're usually
 job-specific.
 
 ## Privacy and security (impact statement)

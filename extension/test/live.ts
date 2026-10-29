@@ -268,12 +268,23 @@ async function main(): Promise<void> {
     })()`);
     await cdp.event(isVani(pg), STEP_MS, "content script injected into the top frame");
     await cdp.eval(fr, setValues(EMPTY));
+    // The earlier Fill's outlines are still there: take them off, so the four the wait below counts are the new fill's.
+    await cdp.eval(fr, `document.querySelectorAll("[data-vani-fill]").forEach(e => e.removeAttribute("data-vani-fill")); true`);
     const broadcast = await cdp.eval<Json>(sw, `(async () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       return chrome.tabs.sendMessage(tab.id, { type: "fill" });
     })()`);
     const firstReply = (broadcast.outcomes as unknown[]).length;
     console.log(`info whole-tab message (the old popup): first reply has ${firstReply} outcomes (the top frame has no fields)`);
+    // The message went to every frame, so the iframe is filling too and its reply is not the one awaited above. Fill checks each
+    // write a frame after it is made, so it takes a moment: clear the fields only once that fill has finished, or it writes into
+    // the cleared ones and the second Fill below finds them already filled. Fill's own completion signal is the outline it puts on
+    // a field once it has confirmed the write (data-vani-fill, the last thing it does to a field before the pass records it),
+    // so wait for all four values and all four outlines, not for a time.
+    await until(async () => {
+      const v = await cdp.eval<Json>(fr, `({ ...${readValues}, marked: document.querySelectorAll("[data-vani-fill]").length })`);
+      return v.fn === VALUES.fn && v.ln === VALUES.ln && v.em === VALUES.em && v.ph === VALUES.ph && v.marked === 4;
+    }, 20_000, "the whole-tab Fill's writes and outlines in the iframe");
     await cdp.eval(fr, setValues(EMPTY));
     const both = await cdp.eval<Json>(sw, `vaniLive.toFrames({ type: "fill" }).then(r => ({ r, outcomes: vaniLive.mergeFill(r) }))`);
     const bothFan = both.r as { asked: number; answered: Array<{ frameId: number }>; failed: unknown[] };

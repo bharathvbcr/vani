@@ -330,6 +330,7 @@ describe("sender policy", () => {
     getBank: {}, capture: { host: "vani-basics", fields: [] }, filled: { keys: [] },
     setSettings: { settings: { captureSelfId: true } }, deleteAnswer: { key: "k" }, editAnswer: { key: "k", value: ["v"] },
     replaceBank: { json: bankJson }, draft: { question: "Why?" }, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" },
+    sameQuestion: { a: "Notice period", b: "When can you start?" },
     appliedSignal: { url: own }, appliedPending: {}, jobRow: { url: own }, jobKey: { url: own }, appliedMark: {}, appliedDismiss: {},
     frameReady: {}, frames: {}, ingestJobs: { page: { url: own, title: "Jobs at Acme" }, saveSearch: false, jobs: [{ title: "Staff Engineer", company: "Acme", location: "Remote", url: "https://careers.acme.com/jobs/1", snippet: "Build things" }] },
     resumeGet: { url: own }, resumeInfo: { url: own }, resumePut: { url: own, name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
@@ -384,6 +385,40 @@ describe("sender policy", () => {
       expect(await ask({ type: t, query: {}, upsert: [] }, {})).toEqual({ async: false, replies: [{ error: "unknown message type" }] });
       expect(await ask({ type: t, query: {}, upsert: [] }, page)).toEqual({ async: false, replies: [{ error: "unknown message type" }] });
     }
+  });
+});
+
+describe("sameQuestion", () => {
+  const last = () => nativeSent.at(-1) as Record<string, unknown> | undefined;
+
+  test("a page's two labels reach the host as exactly {op, a, b}, and the reply is passed back", async () => {
+    nativeReply = () => ({ reading: "answered", value: "same" });
+    try {
+      const r = await ask({ type: "sameQuestion", a: "Notice period", b: "When can you start?", value: ["30 days"], bank: {} }, content);
+      expect(last()).toEqual({ op: "sameQuestion", a: "Notice period", b: "When can you start?" });
+      expect(r.replies).toEqual([{ reading: "answered", value: "same" }]);
+    } finally {
+      nativeReply = undefined;
+    }
+  });
+
+  test("an old host's error reply and an unreachable host come back as coded replies, never a throw", async () => {
+    nativeReply = () => ({ error: "unknown op", code: "bad_request" });
+    try {
+      expect((await ask({ type: "sameQuestion", a: "A", b: "B" }, content)).replies).toEqual([{ error: "unknown op", code: "bad_request" }]);
+    } finally {
+      nativeReply = undefined;
+    }
+    expect((await ask({ type: "sameQuestion", a: "A", b: "B" }, content)).replies).toEqual([{ error: "the Vani Apply Mac app isn't reachable", code: "unreachable" }]);
+  });
+
+  test("an empty, oversized or non-string label is refused before the host is asked", async () => {
+    const natives = nativeSent.length;
+    for (const m of [{ a: "", b: "B" }, { a: "A", b: "" }, { a: "x".repeat(301), b: "B" }, { a: "A", b: "x".repeat(301) }, { a: 1, b: "B" }, { a: "A" }]) {
+      expect((await ask({ type: "sameQuestion", ...m }, content)).replies).toEqual([{ error: "malformed sameQuestion message" }]);
+    }
+    expect(nativeSent.length).toBe(natives);
+    expect(checkToBackground({ type: "sameQuestion", a: "x".repeat(300), b: "y" })).toMatchObject({ msg: { type: "sameQuestion" } });
   });
 });
 
@@ -826,6 +861,21 @@ describe("Mac app bank round trips", () => {
     await sleep(2_050);
     await ask({ type: "getBank" });
     expect(ops().filter(o => o === "get").length).toBe(2);
+  });
+
+  test("getBank with fresh asks the Mac app again inside the window and hands back what changed behind the memo", async () => {
+    await reset();
+    await ask({ type: "getBank" });
+    host.answers.city = { ...row("city", 9), value: ["Munich"] }; // the Mac app edited it; nothing here saw that
+    const stale = (await ask({ type: "getBank" })).replies[0] as { bank: { answers: Record<string, Row> } };
+    expect(stale.bank.answers.city!.value).toEqual(["v"]); // the default is still the memo
+    const fresh = (await ask({ type: "getBank", fresh: true })).replies[0] as { bank: { answers: Record<string, Row> } };
+    expect(fresh.bank.answers.city!.value).toEqual(["Munich"]);
+    expect(ops().filter(o => o === "get").length).toBe(2);
+  });
+
+  test("getBank fresh must be a boolean", async () => {
+    expect(await ask({ type: "getBank", fresh: "yes" })).toEqual({ async: false, replies: [{ error: "malformed getBank message" }] });
   });
 
   test("concurrent getBank calls make one native get", async () => {

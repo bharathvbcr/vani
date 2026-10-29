@@ -2,8 +2,11 @@
 // "collects all the fields". Pure, shared by the scan reply, the panel and the popup.
 import type { Bank, FieldInfo, Match } from "./types";
 import { classify, untouchable } from "./classify";
-import { matchField } from "./match";
-import { DRAFT_EMPTY_NOTE, UNDRAFTED_NOTE, type DraftOffer, draftOffer } from "./suggest";
+import { matchField, whyNoMatch } from "./match";
+import { DRAFT_EMPTY_NOTE, UNDRAFTED_NOTE, type DraftOffer, draftEnabled, draftOffer } from "./suggest";
+
+/** match.whyNoMatch: why a field with no match is not simply new (a saved answer that has gone by, say), or null. */
+type WhyNoMatch = typeof whyNoMatch;
 
 export const MAX_LISTED = 50;
 
@@ -41,6 +44,11 @@ export interface PageQuestion {
   label: string;
   offer: DraftOffer;
   note: string;
+  /**
+   * Why a saved answer was not used, when there is one and it is not plain absence (match.whyNoMatch): shown in
+   * place of "new question". Absent for a question the bank has never seen.
+   */
+  why?: string;
   /** Index of this field in the frame's scan. Absent on a legacy row that only has a label. */
   ordinal?: number;
   /** Frame that reported the field. Set when per-frame reports are added together. */
@@ -61,6 +69,31 @@ export function bucketOf(f: FieldInfo, manual: string, bank: Bank | null, host: 
   return { bucket: known ? "fillable" : "unknown", known };
 }
 
+/** The longest reason a row carries (a sentence; the panel shows it as text). */
+export const MAX_WHY_CHARS = 300;
+
+/** whyNoMatch for one unknown field; null with no bank, when match.ts has no such reason, or when it throws. */
+function unusedReason(f: FieldInfo, bank: Bank | null, host: string, reason: WhyNoMatch | undefined): string | null {
+  if (!bank || !reason) return null;
+  try {
+    const why = reason(f, bank, host);
+    return typeof why === "string" && why.trim() !== "" ? why.trim().slice(0, MAX_WHY_CHARS) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The lines a question row shows under its label, in order. A reason a saved answer was not used leads, and
+ * replaces the offer's note unless that note explains a button the row has (Draft and its kin).
+ */
+export function noteLines(q: Pick<PageQuestion, "offer" | "note" | "why">): string[] {
+  const why = typeof q.why === "string" ? q.why.trim().slice(0, MAX_WHY_CHARS) : "";
+  if (why === "") return q.note ? [q.note] : [];
+  const button = draftEnabled(q.offer) || q.offer === "needs-posting";
+  return button && q.note ? [why, q.note] : [why];
+}
+
 /**
  * `matches`, when given, is filled with the match computed for each ref (null: none) so the
  * caller can hand the same map to fillAll (FillOptions.matches) and the page is matched once.
@@ -73,6 +106,8 @@ export function coverageOf<R extends { info: FieldInfo; manual: string }>(
   matches?: Map<R, Match | null>,
   /** Trimmed posting length. Under 40 characters, a free-text question is `needs-posting` rather than `draft`. */
   postingChars = 0,
+  /** Where an unknown row's reason comes from; a parameter so a test can supply one. */
+  reason: WhyNoMatch | undefined = whyNoMatch,
 ): Coverage {
   const c: Coverage = {
     found: refs.length, known: 0, fillable: 0, unknown: 0, manual: 0, skipped: 0,
@@ -88,7 +123,8 @@ export function coverageOf<R extends { info: FieldInfo; manual: string }>(
     if (bucket === "unknown" && c.unknownLabels.length < MAX_LISTED) {
       c.unknownLabels.push(label);
       const o = draftOffer(r.info, r.manual, postingChars);
-      c.questions.push({ label, offer: o.offer, note: o.note, ordinal: i });
+      const why = unusedReason(r.info, bank, host, reason);
+      c.questions.push({ label, offer: o.offer, note: o.note, ...(why ? { why } : {}), ordinal: i });
     }
     if (bucket === "manual" && c.manualLabels.length < MAX_LISTED) {
       c.manualLabels.push(label);

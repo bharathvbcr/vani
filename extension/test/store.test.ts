@@ -510,6 +510,160 @@ describe("store: migration from chrome.storage.local", () => {
   });
 });
 
+// A browser bank is merged into the Mac app at most once per content: a copy whose removal failed must never be merged
+// again, or an answer deleted in the Mac app since would come back from it.
+describe("store: migration is idempotent", () => {
+  class FlakyLocal extends FakeLocal {
+    failRemove = false;
+    failSet = false;
+    override async remove(k: string) { if (this.failRemove) throw new Error("storage busy"); await super.remove(k); }
+    override async set(i: Record<string, unknown>) { if (this.failSet) throw new Error("quota exceeded"); await super.set(i); }
+  }
+  function boot() {
+    const host = new FakeHost();
+    const local = new FlakyLocal();
+    const clock = { t: 1_000 };
+    // A fresh store over the same host and storage is a worker restart.
+    const store = () => createStore({ transport: host.transport, local, timeoutMs: 50, now: () => clock.t });
+    return { host, local, clock, store };
+  }
+  const keys = (b: Bank) => Object.keys(b.answers).sort();
+  /** What the Mac app's user does: delete `key` there. */
+  function deleteInApp(host: FakeHost, key: string) {
+    const { [key]: _gone, ...rest } = host.bank.answers;
+    host.bank = { ...host.bank, answers: rest };
+    host.rev++;
+  }
+
+  test("a failed removal leaves the copy alone and never re-merges it: a key deleted in the Mac app stays deleted", async () => {
+    const { host, local, clock, store } = boot();
+    local.data.vaniBank = bankOf(answer("keep", "k", "2026-01-01T00:00:00Z"), answer("gone", "g", "2026-01-01T00:00:00Z"));
+    local.failRemove = true;
+    const first = store();
+    expect(keys(await first.loadBank())).toEqual(["gone", "keep"]);
+    expect(host.puts()).toBe(1);
+    expect(local.data.vaniBank).toBeDefined(); // the removal failed
+    expect(first.migrationNote()).toBeNull(); // the move itself succeeded
+    deleteInApp(host, "gone");
+    // Same worker, later: not merged again.
+    clock.t += 60_000;
+    expect(keys(await first.loadBank({ fresh: true }))).toEqual(["keep"]);
+    // A restarted worker, removal still failing: the copy's digest was recorded, so it is skipped, not merged.
+    const second = store();
+    expect(keys(await second.loadBank())).toEqual(["keep"]);
+    expect(host.puts()).toBe(1);
+    // Storage recovers: the next worker only retries the removal.
+    local.failRemove = false;
+    const third = store();
+    expect(keys(await third.loadBank())).toEqual(["keep"]);
+    expect(host.puts()).toBe(1);
+    expect(local.data.vaniBank).toBeUndefined();
+    expect(keys(host.bank)).toEqual(["keep"]);
+  });
+
+  test("a crash between the put and the removal (digest recorded, copy left) never re-merges either", async () => {
+    const { host, local, store } = boot();
+    local.data.vaniBank = bankOf(answer("keep", "k", "2026-01-01T00:00:00Z"), answer("gone", "g", "2026-01-01T00:00:00Z"));
+    // The worker dies once the digest is written: the removal never runs.
+    local.failRemove = true;
+    await store().loadBank();
+    expect(typeof local.data.vaniBankMerged).toBe("string");
+    deleteInApp(host, "gone");
+    local.failRemove = false;
+    expect(keys(await store().loadBank())).toEqual(["keep"]);
+    expect(host.puts()).toBe(1);
+  });
+
+  test("a crash between the put and the digest write merges the copy again, losing nothing and never overwriting newer app rows", async () => {
+    const { host, local, clock, store } = boot();
+    local.data.vaniBank = bankOf(answer("city", "Local", "2026-01-01T00:00:00Z"), answer("onlylocal", "l", "2026-01-01T00:00:00Z"));
+    local.failSet = true;
+    local.failRemove = true;
+    const first = store();
+    await first.loadBank();
+    expect(local.data.vaniBankMerged).toBeUndefined(); // nothing was recorded
+    expect(host.puts()).toBe(1);
+    // Within this worker the digest is remembered, so the failed write does not re-merge.
+    clock.t += 60_000;
+    await first.loadBank({ fresh: true });
+    expect(host.puts()).toBe(1);
+    // The app's user edits "city" since; a new worker with healthy storage merges the copy once more (the only repeat).
+    host.bank = { ...host.bank, answers: { ...host.bank.answers, city: answer("city", "App", "2026-03-01T00:00:00Z") } };
+    host.rev++;
+    local.failSet = false;
+    local.failRemove = false;
+    const b = await store().loadBank();
+    expect(host.puts()).toBe(2);
+    expect(b.answers.city!.value).toEqual(["App"]); // the newer edit won
+    expect(b.answers.onlylocal).toBeDefined(); // the copy's rows were never lost
+    expect(local.data.vaniBank).toBeUndefined();
+  });
+
+  test("a put that fails records nothing, so the copy is merged when the host recovers", async () => {
+    const { host, local, store } = boot();
+    local.data.vaniBank = bankOf(answer("onlylocal", "l", "2026-01-01T00:00:00Z"));
+    host.failPut = true;
+    const s = store();
+    await s.loadBank();
+    expect(local.data.vaniBankMerged).toBeUndefined();
+    expect(local.events).toEqual([]);
+    host.failPut = false;
+    expect(keys(await store().loadBank())).toEqual(["onlylocal"]);
+    expect(local.data.vaniBank).toBeUndefined();
+  });
+
+  test("the normal path: merged, digest recorded, then removed, with the digest of the copy's content", async () => {
+    const { host, local, store } = boot();
+    local.data.vaniBank = bankOf(answer("onlylocal", "l", "2026-01-01T00:00:00Z"));
+    const expected = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(local.data.vaniBank)))), b => b.toString(16).padStart(2, "0")).join("");
+    await store().loadBank();
+    expect(local.events).toEqual(["set", "remove"]);
+    expect(local.data.vaniBankMerged).toBe(expected);
+    expect(local.data.vaniBank).toBeUndefined();
+    expect(keys(host.bank)).toEqual(["onlylocal"]);
+  });
+
+  test("answers saved in the browser after a failed removal do not carry the already-merged rows back", async () => {
+    const { host, local, clock, store } = boot();
+    local.data.vaniBank = bankOf(answer("keep", "k", "2026-01-01T00:00:00Z"), answer("gone", "g", "2026-01-01T00:00:00Z"));
+    local.failRemove = true;
+    const s = store();
+    await s.loadBank();
+    deleteInApp(host, "gone");
+    // The Mac app goes away; the user saves a new answer, which is built on an empty bank, not on the merged copy.
+    host.down = true;
+    clock.t += 31_000;
+    const saved = await s.updateBank(b => ({ ...b, answers: { ...b.answers, late: answer("late", "x", "2026-05-01T00:00:00Z") } }));
+    expect(keys(saved)).toEqual(["late"]);
+    expect(local.data.vaniBankMerged).toBe(""); // cleared in the write that changed the browser bank
+    // It comes back: only what is new is merged, and the deleted row stays deleted.
+    host.down = false;
+    local.failRemove = false;
+    clock.t += 31_000;
+    expect(keys(await s.loadBank())).toEqual(["keep", "late"]);
+    expect(local.data.vaniBank).toBeUndefined();
+  });
+
+  test("a bank imported into the browser that happens to equal an old merged copy is merged, not skipped", async () => {
+    const { host, local, clock, store } = boot();
+    const copy = bankOf(answer("keep", "k", "2026-01-01T00:00:00Z"));
+    local.data.vaniBank = copy;
+    local.failRemove = true;
+    const s = store();
+    await s.loadBank();
+    expect(host.puts()).toBe(1);
+    deleteInApp(host, "keep");
+    host.down = true;
+    clock.t += 31_000;
+    await s.replaceBank(copy); // the user imports the very same answers while the Mac app is away
+    host.down = false;
+    local.failRemove = false;
+    clock.t += 31_000;
+    expect(keys(await s.loadBank())).toEqual(["keep"]); // an explicit import is new content
+    expect(host.puts()).toBe(2);
+  });
+});
+
 describe("shared classifier vectors", () => {
   test("normalizeLabel reproduces every vector", () => {
     expect(vectors.normalize.length).toBeGreaterThan(0);

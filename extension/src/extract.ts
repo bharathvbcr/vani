@@ -6,6 +6,7 @@
 // another window's constructors.
 import type { FieldInfo, FieldKind } from "./types";
 import { normalizeLabel } from "./normalize";
+import { maxLengthOf } from "./guards";
 import {
   type DatePart, assignSections, composeDate, composePhone, datePartRole, isPhoneCode, isPhoneNumber,
 } from "./sections";
@@ -235,6 +236,7 @@ function optionLabel(el: HTMLElement): string {
 
 function base(el: HTMLElement, kind: FieldKind, label: string): FieldInfo {
   const i = el as HTMLInputElement;
+  const max = maxLengthOf(el); // the live limit, read where fill reads it (guards.maxLengthOf)
   return {
     kind,
     label,
@@ -246,6 +248,7 @@ function base(el: HTMLElement, kind: FieldKind, label: string): FieldInfo {
     value: [],
     drafted: el.getAttribute("data-vani-draft") === "1",
     ...draftTextOf(el),
+    ...(max !== null ? { maxChars: max } : {}),
   };
 }
 
@@ -558,6 +561,10 @@ export function scanForm(root: ParentNode = document): FormScan {
 
   const refs = mergeSplits(out);
   assignSections(refs.map(r => r.info));
+  for (const r of refs) {
+    const by = filledBy(r.els[0], r.info.value);
+    if (by) r.info.filledBy = by;
+  }
   return { refs, roots: w.roots, capped: w.capped || unread > 0, unread, nodesCapped: w.capped };
 }
 
@@ -639,6 +646,7 @@ function dateRef(run: FieldRef[], roles: DatePart[]): FieldRef {
   const container = els[0]!.closest("[data-automation-id]");
   const label = groupLabel([els[0]!], avoid) || "Date";
   const info = base(els[0]!, "date", label);
+  delete info.maxChars; // the month box's limit says nothing about the date
   info.name = "";
   info.autocomplete = "";
   info.automationId = container?.getAttribute("data-automation-id") ?? "";
@@ -661,6 +669,7 @@ function phonePair(a: FieldRef, b: FieldRef): FieldRef | null {
     if (isPhoneCode({ label: ownHints(num).join(" "), autocomplete: num.info.autocomplete, ids: ids(num) })) continue;
     if (!isPhoneNumber(num.info) || !together(ce, ne)) continue;
     const info = { ...num.info, options: [], value: [] as string[] };
+    delete info.maxChars; // the number box's limit does not bound the joined answer
     const codeVal = code.widget === "combobox" ? (readWidgetValue(ce)[0] ?? "") : partValue(ce);
     const joined = composePhone(codeVal, partValue(ne));
     info.value = joined ? [joined] : [];
@@ -669,4 +678,86 @@ function phonePair(a: FieldRef, b: FieldRef): FieldRef | null {
     return { info, els: [ce, ne], widget: "split-phone", manual: code.manual, parts: ["code", "number"] };
   }
   return null;
+}
+
+// --- what a field holds now, and what Fill wrote into it ---------------------------------------
+
+/**
+ * What a field holds right now, read the way scanForm reads `info.value` (test/dom-runner.ts holds the
+ * two equal on a page of every widget). Fill uses it to record what it wrote, and to tell, later,
+ * whether the field still holds that.
+ */
+export function readRefValue(ref: FieldRef): string[] {
+  const els = ref.els;
+  const first = els[0]!;
+  switch (ref.widget) {
+    case "split-date": {
+      const v: { y?: string; m?: string; d?: string } = {};
+      els.forEach((el, k) => { const p = ref.parts?.[k]; if (p === "year" || p === "month" || p === "day") v[p === "year" ? "y" : p === "month" ? "m" : "d"] = partValue(el); });
+      const iso = composeDate(v);
+      return iso ? [iso] : [];
+    }
+    case "split-phone": {
+      const [ce, ne] = els as [HTMLElement, HTMLElement];
+      const code = isCombo(ce) && ce.localName !== "select" ? (readWidgetValue(ce)[0] ?? "") : partValue(ce);
+      const joined = composePhone(code, partValue(ne));
+      return joined ? [joined] : [];
+    }
+    case "combobox": return readWidgetValue(first);
+    case "aria-radio": return els.filter(m => m.getAttribute("aria-checked") === "true").map(optionLabel);
+    case "aria-checkbox": return [first.getAttribute("aria-checked") === "true" ? "yes" : "no"];
+    case "contenteditable": {
+      const text = (first.innerText || first.textContent || "").trim();
+      return text ? [text] : [];
+    }
+    default: break;
+  }
+  if (first.localName === "select") {
+    const s = first as HTMLSelectElement;
+    if (s.multiple) return Array.from(s.selectedOptions).map(o => clean(o.text));
+    return s.value !== "" && s.selectedIndex >= 0 ? [clean(s.options[s.selectedIndex]!.text)] : [];
+  }
+  const kind = ref.info.kind;
+  if (kind === "radio" || (kind === "checkbox" && els.length > 1)) return (els as HTMLInputElement[]).filter(m => m.checked).map(optionLabel);
+  if (kind === "checkbox") return [(first as HTMLInputElement).checked ? "yes" : "no"];
+  if (kind === "file" || kind === "password") return [];
+  const v = (first as HTMLInputElement).value;
+  return v ? [v] : [];
+}
+
+export function sameValues(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+interface FillRecord { key: string; review: boolean; value: string[] }
+
+/**
+ * What Fill last wrote into each control: the answer's key, whether it was a review fill, and the
+ * value the field held right after. A WeakMap, so a removed control takes its record with it.
+ * scanForm marks a field `filledBy` only while its value still equals the record: any edit, however
+ * small, ends the claim that the value is Vani's own fill coming back.
+ */
+let fills = new WeakMap<Element, FillRecord>();
+
+/** Remember that Fill wrote `ref`'s current value for answer `key`; returns that value. */
+export function recordFill(ref: FieldRef, key: string, review: boolean): string[] {
+  const value = readRefValue(ref);
+  fills.set(ref.els[0]!, { key, review, value });
+  return value;
+}
+
+/** Forget what Fill wrote into `ref` (its fill was undone). */
+export function forgetFill(ref: FieldRef): void {
+  fills.delete(ref.els[0]!);
+}
+
+/** Forget every record (the person cleared the marks). */
+export function forgetFills(): void {
+  fills = new WeakMap();
+}
+
+/** `{key, review}` when `el` was filled by Fill and `value` is still exactly what Fill left in it. */
+export function filledBy(el: Element | undefined, value: readonly string[]): FieldInfo["filledBy"] {
+  const rec = el ? fills.get(el) : undefined;
+  return rec && sameValues(rec.value, value) ? { key: rec.key, review: rec.review } : undefined;
 }

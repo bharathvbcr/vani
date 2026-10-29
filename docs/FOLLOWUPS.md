@@ -45,6 +45,37 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Autofill rework (2026-10-28): what is left
+
+Stale answers, write-verify, undo, drafting, the on-device decider, and fact and choice answers
+from the knowledge base (extension README "Use", "How a second form gets faster", "Live help";
+RUNTIME suggest/draft; macos/README "On-device decisions"). The first round's gaps were closed in
+the second: the id/wording conflict is settled by the on-device "same question?" op; a past date
+or an option the form lacks says why in the panel (`whyNoMatch`); a handle is not a URL; the
+local-to-app migration merges a copy at most once (`vaniBankMerged`); masked inputs, focus and
+hidden tabs in write-verify; a run-wide time budget for the on-device model; the outcome log is
+locked across processes; an older `vani` gets the old request shape; `bundle.sh` was run into a
+scratch folder and the bundle verified. What remains, by design or unmeasured:
+
+- **"Same question?" fills green.** When the model says two labels are the same question, the id's
+  newer answer fills confidently. Its readings were checked on 12 pairs only, not measured.
+  Only the first Fill round asks; a field that appears in a later round gets the plain yellow fill.
+- **Safari's `sameQuestion`** goes through the agent over XPC; it has unit and in-process XPC tests
+  but was not run in Safari itself.
+- **An edited draft or chosen option is still saved for review** (yellow next time), as drafts
+  always were: the edit does not make it confident.
+- **Migration crash window.** A crash after the app took the merge and before the digest was
+  written merges the same copy once more on restart; the app's newer rows win, nothing is lost.
+- **A hidden tab** pays one extra settle per Fill (the browser can stretch it to about 1 s).
+- **The retry as typing** (only after a page threw a written value away) focuses that field for the
+  moment of the write, so the field you were in sees a blur; focus is given back to it.
+- **An older `vani` and a page of only choice questions**: nothing to send in the old shape, so
+  Suggest says Vani is older than the extension.
+- **Fact and choice answers** come from one Claude turn per page (at most 15 fields), each grounded
+  and cited; a question the knowledge base does not answer is left with that reason. The success
+  rate is now in `state/suggest/outcomes.jsonl` (`answer_asked`, `answer_answered`) and has not been
+  read yet: no live run was made.
+
 ## Source wave 2 (2026-10-28): what is left
 
 - **Owner decisions:**

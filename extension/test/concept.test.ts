@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { type Answer, type Bank, type FieldInfo, emptyBank } from "../src/types";
 import { MAX_ANSWERS, MAX_LABELS, conceptKey, findOwner, mergeCapture, ownerIndex } from "../src/bank";
 import { pendingDiff } from "../src/capture";
+import { matchField } from "../src/match";
 import vectors from "./vectors/concept.json";
 
 const T0 = new Date("2026-01-01T00:00:00Z");
@@ -139,7 +140,7 @@ describe("one concept, one row", () => {
   test("the label cap holds when wordings keep arriving", () => {
     let b = capture(emptyBank(), [field("LinkedIn", "v")]);
     // Distinct wordings of one concept: stopword-only variations normalize apart.
-    const words = ["Your LinkedIn", "LinkedIn URL", "LinkedIn Link", "LinkedIn Page", "LinkedIn Handle", "Please enter your LinkedIn"];
+    const words = ["Your LinkedIn", "LinkedIn URL", "LinkedIn Link", "LinkedIn Page", "LinkedIn Profile", "Please enter your LinkedIn"];
     for (const w of words) b = capture(b, [field(w, "v")]);
     expect(Object.keys(b.answers)).toEqual(["linkedin"]);
     expect(b.answers["linkedin"]!.labels.length).toBeLessThanOrEqual(MAX_LABELS);
@@ -164,6 +165,58 @@ describe("one concept, one row", () => {
     expect(r.updated).toBe(1);
     expect(r.skippedEmpty).toBe(0);
     expect(r.bank.answers["linkedin"]!.value).toEqual(["https://l/new"]);
+  });
+});
+
+// "url", "link" and "profile" are words a form adds around the same value; a handle is a different value (the account
+// name, "@ada"), so a handle question never shares a concept, an owner row or a fill with the URL question.
+describe("a handle is not a URL", () => {
+  const matchOf = (bank: Bank, f: FieldInfo, host = "boards.example.com") => matchField(f, bank, host, Date.parse("2026-10-28T12:00:00Z"));
+
+  test("the concept keys differ ('GitHub handle' vs 'GitHub' is decided: different), while URL, link and profile still fold", () => {
+    expect(conceptKey("Twitter handle", "")).not.toBe(conceptKey("Twitter URL", ""));
+    expect(conceptKey("GitHub handle", "")).not.toBe(conceptKey("GitHub", ""));
+    expect(conceptKey("GitHub username", "")).not.toBe(conceptKey("GitHub URL", ""));
+    expect(conceptKey("Your Twitter handle (optional)", "")).toBe(conceptKey("Twitter handle", ""));
+    for (const w of ["LinkedIn URL", "LinkedIn profile", "LinkedIn link", "LinkedIn page", "Your LinkedIn"]) expect(conceptKey(w, "")).toBe(conceptKey("LinkedIn", ""));
+  });
+
+  test("capturing a handle never overwrites the URL answer it used to share a row with", () => {
+    let b = capture(emptyBank(), [field("LinkedIn", "https://linkedin.com/in/ada")], "vani-basics");
+    b = capture(b, [field("LinkedIn handle", "ada")], "boards.example.com", T1);
+    expect(Object.keys(b.answers).sort()).toEqual(["linkedin", "linkedin handle"]);
+    expect(b.answers["linkedin"]!.value).toEqual(["https://linkedin.com/in/ada"]);
+    expect(b.answers["linkedin handle"]!.value).toEqual(["ada"]);
+    let t = capture(emptyBank(), [field("Twitter URL", "https://x.com/ada")]);
+    t = capture(t, [field("Twitter handle", "@ada")], "boards.example.com", T1);
+    expect(Object.keys(t.answers).sort()).toEqual(["twitter handle", "twitter url"]);
+  });
+
+  test("the URL answer does not fill a handle field, and the handle answer does not fill the URL field", () => {
+    let b = capture(emptyBank(), [field("GitHub", "https://github.com/ada")], "vani-basics");
+    for (const label of ["GitHub handle", "GitHub username", "Github Handle (optional)"]) expect([label, matchOf(b, field(label, ""))]).toEqual([label, null]);
+    b = capture(b, [field("GitHub handle", "ada")], "boards.example.com", T1);
+    expect(matchOf(b, field("GitHub handle", ""))?.value).toEqual(["ada"]);
+    expect(matchOf(b, field("GitHub", ""))?.value).toEqual(["https://github.com/ada"]);
+    expect(matchOf(b, field("GitHub profile", ""))?.value).toEqual(["https://github.com/ada"]);
+    expect(matchOf(emptyBank(), field("LinkedIn handle", ""))).toBeNull();
+    const li = capture(emptyBank(), [field("LinkedIn URL", "https://linkedin.com/in/ada")]);
+    expect(matchOf(li, field("LinkedIn handle", ""))).toBeNull();
+    expect(matchOf(li, field("LinkedIn profile", ""))?.value).toEqual(["https://linkedin.com/in/ada"]);
+  });
+
+  test("answers saved before the split are still found by the wording they were saved under", () => {
+    // Saved as its own row, as the old concept would have kept a handle typed before any "linkedin" row existed.
+    const own: Bank = { ...emptyBank(), answers: { "linkedin handle": row("linkedin handle", { value: ["ada"] }) } };
+    const m = matchField(field("LinkedIn handle", ""), own, "boards.example.com");
+    expect(m?.value).toEqual(["ada"]);
+    expect(m?.via).toBe("label");
+    expect(m?.review).toBe(false);
+    // Folded into the "linkedin" row, as the old concept did: the handle is one of that row's wordings.
+    const folded: Bank = { ...emptyBank(), answers: { linkedin: row("linkedin", { labels: ["linkedin", "linkedin handle"], value: ["ada"] }) } };
+    const f = matchField(field("LinkedIn handle", ""), folded, "boards.example.com");
+    expect(f?.value).toEqual(["ada"]);
+    expect(f?.via).toBe("label");
   });
 });
 

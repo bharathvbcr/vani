@@ -9,7 +9,7 @@
 // order and rebuilds if not. An edit inside one answer (its labels or signatures) is not detectable
 // without re-reading everything; callers that do that must pass a new Bank object.
 import type { Answer, Bank } from "./types";
-import { tokens } from "./normalize";
+import { AUTOCOMPLETE_MEANINGS, contactOf, tokens } from "./normalize";
 import { entryReadings } from "./sections";
 import { intentOf } from "./intents";
 
@@ -42,6 +42,10 @@ export interface BankIndex {
   readonly byIntent: ReadonlyMap<string, readonly number[]>;
   /** The intents of an answer's wordings, for "is this answer for the field's intent". */
   readonly intentsOf: ReadonlyMap<Answer, ReadonlySet<string>>;
+  /** Answer positions by the contact basic (or autocomplete meaning) any of its wordings is: "email", "postal code". */
+  readonly byContact: ReadonlyMap<string, readonly number[]>;
+  /** The contact meanings of an answer's wordings. */
+  readonly contactsOf: ReadonlyMap<Answer, ReadonlySet<string>>;
   /** Entry readings of every wording of each answer ([key, ...labels]), by position. */
   readonly readings: ReadonlyArray<readonly Reading[]>;
   /** Answer positions with at least one wording token, by token. */
@@ -64,26 +68,32 @@ function build(answers: Answer[]): BankIndex {
   const byKeyOrLabel = new Map<string, number[]>();
   const byIntent = new Map<string, number[]>();
   const byToken = new Map<string, number[]>();
+  const byContact = new Map<string, number[]>();
   const intentsOf = new Map<Answer, Set<string>>();
+  const contactsOf = new Map<Answer, Set<string>>();
   const rd: Reading[][] = [];
   answers.forEach((a, i) => {
     for (const s of a.signatures ?? []) push(bySignature, s, i);
     const words = [a.key, ...(a.labels ?? [])];
     const intents = intentsOf.get(a) ?? new Set<string>();
+    const contacts = contactsOf.get(a) ?? new Set<string>();
     const mine: Reading[] = [];
     for (const w of words) {
       push(byKeyOrLabel, w, i);
       const it = intentOf(w);
       if (it) { intents.add(it); push(byIntent, it, i); }
+      const ct = contactOf(w) || (AUTOCOMPLETE_MEANINGS.has(w) ? w : "");
+      if (ct) { contacts.add(ct); push(byContact, ct, i); }
       for (const r of savedReadings(w)) {
         mine.push(r);
         for (const t of r.tokens) push(byToken, t, i);
       }
     }
     intentsOf.set(a, intents);
+    contactsOf.set(a, contacts);
     rd.push(mine);
   });
-  return { answers, bySignature, byKeyOrLabel, byIntent, intentsOf, readings: rd, byToken };
+  return { answers, bySignature, byKeyOrLabel, byIntent, intentsOf, byContact, contactsOf, readings: rd, byToken };
 }
 
 const cache = new WeakMap<Bank, BankIndex>();

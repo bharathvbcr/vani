@@ -25,7 +25,6 @@ const POSITIVE: Array<[string, string]> = [
   ["Will you now or will you in the future require employment visa sponsorship to work in the country in which the job you're applying for is located?", "visa sponsorship"],
   ["Will you now, or in the future, require sponsorship for employment visa status (e.g. H-1B visa status)?", "visa sponsorship"],
   ["Are you legally authorized to work in the United States?", "authorized to work"],
-  ["Are you eligible to work in the UK?", "authorized to work"],
   ["Are you open to relocation for this role? *", "open to relocation"],
   ["Would you be willing to relocate to New York?", "open to relocation"],
   ["Have you ever interviewed at Anthropic before?*", "interviewed here before"],
@@ -64,6 +63,8 @@ const NEGATIVE = [
   "Additional Information",
   // Two intents with opposite answers: ambiguous, so neither.
   "Are you legally authorized to work in the US without the need for visa sponsorship?",
+  // The answer saved for the US says nothing about another country (this was a positive case before that was understood).
+  "Are you eligible to work in the UK?",
   // A repeated section's later entry keeps its own key.
   "What is your notice period? (vani section 2)",
 ];

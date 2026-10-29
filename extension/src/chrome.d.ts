@@ -6,6 +6,8 @@ declare namespace chrome {
     interface MessageSender { tab?: { id?: number; url?: string }; frameId?: number; url?: string; origin?: string }
     const lastError: { message?: string } | undefined;
     function sendMessage<T = unknown>(message: unknown): Promise<T>;
+    /** The absolute URL of a file in this extension ("" gives its root, chrome-extension://<id>/). */
+    function getURL(path: string): string;
     /** Callback form only: Chrome does not return a promise from this call. The reply is whatever JSON the host sent: check it before use. */
     function sendNativeMessage(application: string, message: object, cb: (response: unknown) => void): void;
     /** A long-lived native port. While it is open Chrome keeps the service worker alive (Chrome 105+). */

@@ -14,6 +14,20 @@ export const MAX_TITLE_CHARS = 300;
 export const MIN_WORDS = 40;
 export const MAX_WORDS = 400;
 export const DEFAULT_WORDS = 180;
+/** What one drafted word costs in characters, its space included (English prose runs near 5.5; this leaves room). */
+export const CHARS_PER_WORD = 6.5;
+/** A field allowing fewer characters than this cannot hold the shortest draft (MIN_WORDS words): it is a short-answer field. */
+export const MIN_DRAFT_CHARS = Math.ceil(MIN_WORDS * CHARS_PER_WORD);
+
+/**
+ * The most words a draft may have to fit a field that allows `maxChars` characters, or undefined for
+ * a field with no limit (the request then keeps its default length). A roomy field does not make the
+ * draft longer than the default: the limit only ever shortens it. Never below MIN_WORDS, never above MAX_WORDS.
+ */
+export function maxWordsFor(maxChars: number | undefined): number | undefined {
+  if (maxChars === undefined || !Number.isFinite(maxChars)) return undefined;
+  return Math.min(MAX_WORDS, Math.max(MIN_WORDS, Math.min(DEFAULT_WORDS, Math.floor(maxChars / CHARS_PER_WORD))));
+}
 /** How many distinct wordings one question can ask for. 0 is the first draft. */
 export const MAX_ATTEMPT = 8;
 /** The host allows a draft up to 150 s; leave room for process start and the reply. */
@@ -29,7 +43,8 @@ export interface JobInfo {
 
 export type DraftCode =
   | "bad_request" | "budget_exhausted" | "timeout" | "provider" | "empty_reply" | "ungrounded"
-  | "config" | "kb" | "account" | "unsupported" | "unreachable" | "bad_reply" | "busy";
+  | "config" | "kb" | "account" | "unsupported" | "unreachable" | "bad_reply" | "busy"
+  | "truncated" | "refused" | "not_drafted";
 
 /** What an `ungrounded` refusal found unbacked (draft.Kind* in vani's internal/draft). */
 export type UngroundedKind = "figure" | "years" | "credential" | "acronym";
@@ -65,6 +80,7 @@ export function ungroundedHelp(kind?: UngroundedKind): string {
 
 const HOST_CODES: ReadonlySet<string> = new Set([
   "bad_request", "budget_exhausted", "timeout", "provider", "empty_reply", "ungrounded", "config", "kb", "account", "unsupported",
+  "truncated", "refused", "not_drafted",
 ]);
 
 /** What to tell the user for each failure. */
@@ -82,6 +98,9 @@ export const DRAFT_HELP: Record<DraftCode, string> = {
   unreachable: "The Vani Apply Mac app isn't reachable, so drafting is unavailable.",
   bad_reply: "The Mac app sent a reply that isn't a draft.",
   busy: "Another draft is still being written. Wait for it to finish.",
+  truncated: "The model ran out of room before the draft was finished, so it was not used. Try again.",
+  refused: "The model declined to write this answer. Write it yourself.",
+  not_drafted: "Vani does not draft this question (work authorization or self-identification). Answer it yourself.",
 };
 
 /** What to tell the user for a failed reply: DRAFT_HELP, naming what was unbacked for an `ungrounded` one. */

@@ -3,7 +3,7 @@ import type { Answer, Bank, FieldInfo } from "./types";
 import { MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
 import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
-import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, coverageLine, questionRows, tabCoverage } from "./coverage";
+import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, coverageLine, noteLines, questionRows, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
@@ -714,10 +714,14 @@ function questionItem(q: PageQuestion): HTMLElement {
     actions.append(save);
   }
   top.append(text, actions);
-  const note = document.createElement("p");
-  note.className = "q-note";
-  note.textContent = q.note;
-  li.append(top, note);
+  li.append(top);
+  // A reason a saved answer was not used (match.whyNoMatch) leads, in place of the offer's generic note.
+  for (const line of noteLines(q)) {
+    const note = document.createElement("p");
+    note.className = "q-note";
+    note.textContent = line;
+    li.append(note);
+  }
   return li;
 }
 

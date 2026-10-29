@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Answer, FieldInfo, Match } from "../src/types";
 import { emptyBank } from "../src/types";
-import type { FieldRef } from "../src/extract";
-import { fillAll, fillRef, insertDraft, waitFor, widgetRoots } from "../src/fill";
+import { type FieldRef, filledBy, readRefValue } from "../src/extract";
+import { KEPT_NOT, beginFill, clearMarks, fillAll, fillRef, insertDraft, undoCount, undoFill, waitFor, widgetRoots } from "../src/fill";
 import { coverageOf } from "../src/coverage";
 
 // bun test has no DOM. These tests drive fill.ts against a small fake just big enough for it: elements
@@ -14,7 +14,9 @@ import { coverageOf } from "../src/coverage";
 type Handler = (e: FEvent) => void;
 class FEvent {
   type: string;
-  constructor(type: string, _init?: unknown) { this.type = type; }
+  /** Set on the `input` event the typed-in retry sends, as a browser's InputEvent carries it. */
+  inputType?: string;
+  constructor(type: string, init?: { inputType?: string }) { this.type = type; this.inputType = init?.inputType; }
 }
 
 class FakeMO {
@@ -35,10 +37,13 @@ class FakeDoc {
   nodeType = 9;
   body = new FakeEl(this, "body");
   defaultView = {
-    Event: FEvent, PointerEvent: FEvent, MouseEvent: FEvent, KeyboardEvent: FEvent, MutationObserver: FakeMO,
+    Event: FEvent, InputEvent: FEvent, PointerEvent: FEvent, MouseEvent: FEvent, KeyboardEvent: FEvent, MutationObserver: FakeMO,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
   };
   ids = new Map<string, FakeEl>();
+  /** A hidden tab paints no frames: Fill's settle takes one event-loop turn there instead. */
+  hidden = false;
+  activeElement: FakeEl | null = null;
   getElementById(id: string): FakeEl | null { return this.ids.get(id) ?? null; }
   querySelectorAll(sel: string): FakeEl[] { return this.body.querySelectorAll(sel); }
   createTreeWalker(root: FakeEl, _show: number, filter: { acceptNode(n: unknown): number }) {
@@ -72,7 +77,11 @@ class FakeEl {
   removeAttribute(n: string): void { delete this.attrs[n]; }
   getRootNode(): FakeDoc { return this.ownerDocument; }
   getClientRects(): unknown[] { return this.rendered ? [{}] : []; }
-  focus(): void {}
+  /** Every focus() and blur() call, with the options focus() was given: what the page could feel of them. */
+  focusCalls: Array<{ options?: { preventScroll?: boolean } }> = [];
+  blurCalls = 0;
+  focus(options?: { preventScroll?: boolean }): void { this.focusCalls.push({ options }); this.ownerDocument.activeElement = this; }
+  blur(): void { this.blurCalls++; if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = null; }
   matches(): boolean { return false; }
   closest(): FakeEl | null { return null; }
   querySelector(sel: string): FakeEl | null { return this.querySelectorAll(sel)[0] ?? null; }
@@ -776,6 +785,501 @@ describe("a field's character limit (maxlength)", () => {
     expect(el.attrs["data-vani-fill"]).toBeUndefined();
     expect(insertDraft(r, "fits")).toMatchObject({ filled: true, review: true });
     expect(el.value).toBe("fits");
+  });
+});
+
+// A React or Angular controlled input can take a write and put its own state back a moment later, so the field looks
+// empty while Fill reports it filled. Fill waits a frame after a plain write, confirms the page kept it, tries once the
+// other way, and otherwise says "manual", never "filled".
+describe("a write the page does not keep", () => {
+  type Controlled = { el: FakeInput; writes: Array<string | undefined> };
+  /**
+   * A controlled input: on `input` it puts back what it held. `when` is how: now (inside the handler), at a microtask, or
+   * after 5 ms. `until`: how many input events it reverts (Infinity: always). `onlyUntyped`: it takes a write that
+   * arrives as typing (`inputType: insertText`) and puts back any other.
+   */
+  function controlled(opts: { when: "sync" | "micro" | "later"; until: number; onlyUntyped?: boolean; attrs?: Record<string, string> }): Controlled {
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    Object.assign(el.attrs, opts.attrs ?? {});
+    doc.body.append(el);
+    const writes: Array<string | undefined> = [];
+    let seen = 0;
+    el.on("input", e => {
+      writes.push(e.inputType);
+      seen++;
+      if (seen > opts.until) return;
+      if (opts.onlyUntyped && e.inputType === "insertText") return;
+      const back = (): void => { el.value = ""; };
+      if (opts.when === "sync") back();
+      else if (opts.when === "micro") queueMicrotask(back);
+      else setTimeout(back, 5);
+    });
+    return { el, writes };
+  }
+  const fillText = (el: FakeInput, v = "Ada Lovelace", opts: { overwrite?: boolean } = {}) =>
+    fillRef(ref(el, "Full name", "native", "text"), match("full name", [v]), opts);
+
+  test("a page that reverts the first write a moment later (not typed) keeps the retry: filled, value in place, retried once as typing", async () => {
+    fresh();
+    const c = controlled({ when: "later", until: Infinity, onlyUntyped: true });
+    const out = await fillText(c.el);
+    expect(out).toMatchObject({ filled: true, key: "full name" });
+    expect(c.el.value).toBe("Ada Lovelace");
+    expect(c.writes).toEqual([undefined, "insertText"]); // first the plain events, then once as typing
+    expect(c.el.attrs["data-vani-fill"]).toBe("ok");
+    nothingLeft();
+  });
+
+  test("a revert in a microtask is caught too", async () => {
+    fresh();
+    const c = controlled({ when: "micro", until: 1 });
+    expect(await fillText(c.el)).toMatchObject({ filled: true });
+    expect(c.el.value).toBe("Ada Lovelace");
+    expect(c.writes.length).toBe(2);
+  });
+
+  test("a page that always reverts is never reported filled: manual, with the reason, no outline, two attempts and no more", async () => {
+    fresh();
+    const c = controlled({ when: "later", until: Infinity });
+    const out = await fillText(c.el);
+    expect(out).toMatchObject({ filled: false, reason: "manual", detail: "the page did not keep the value" });
+    expect(KEPT_NOT).toBe("the page did not keep the value");
+    expect(c.el.value).toBe("");
+    expect(c.el.attrs["data-vani-fill"]).toBeUndefined();
+    expect(c.writes.length).toBe(2);
+    nothingLeft();
+  });
+
+  test("a write that is reverted inside the handler is the same: retried once, then manual", async () => {
+    fresh();
+    const c = controlled({ when: "sync", until: Infinity });
+    expect(await fillText(c.el)).toMatchObject({ filled: false, reason: "manual", detail: KEPT_NOT });
+    expect(c.writes.length).toBe(2);
+  });
+
+  test("a write the page keeps is written once, with no retry and no typed-in event", async () => {
+    fresh();
+    const c = controlled({ when: "later", until: 0 });
+    expect(await fillText(c.el)).toMatchObject({ filled: true });
+    expect(c.writes).toEqual([undefined]);
+    nothingLeft();
+  });
+
+  test("a mask that reformats what it was given counts as kept", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    doc.body.append(el);
+    el.on("input", () => { setTimeout(() => { el.value = "(555) 0100"; }, 5); });
+    expect(await fillText(el, "5550100")).toMatchObject({ filled: true });
+    expect(el.value).toBe("(555) 0100");
+  });
+
+  /** A field that already holds `prior`, whose page (after 5 ms) sets its value to `shown(typed)` on every input. */
+  function masked(prior: string, shown: (typed: string) => string): { el: FakeInput; inputs: number } {
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    doc.body.append(el);
+    el.value = prior;
+    const m = { el, inputs: 0 };
+    el.on("input", () => { m.inputs++; const typed = el.value; setTimeout(() => { el.value = shown(typed); }, 5); });
+    return m;
+  }
+
+  test("a mask that formats the written text into exactly what the field held before is kept, written once", async () => {
+    fresh();
+    const m = masked("(555) 010-0", () => "(555) 010-0");
+    expect(await fillText(m.el, "5550100", { overwrite: true })).toMatchObject({ filled: true, key: "full name" });
+    expect(m.el.value).toBe("(555) 010-0");
+    expect(m.inputs).toBe(1); // read as kept the first time: no retry as typing
+    nothingLeft();
+  });
+
+  test("a mask that changes case counts as the same text", async () => {
+    fresh();
+    const m = masked("ADA LOVELACE", t => t.toUpperCase());
+    expect(await fillText(m.el, "Ada Lovelace", { overwrite: true })).toMatchObject({ filled: true });
+    expect(m.inputs).toBe(1);
+  });
+
+  test("a page that puts the old, differently written value back is still a revert", async () => {
+    fresh();
+    const m = masked("(555) 010-0", () => "(555) 010-0");
+    expect(await fillText(m.el, "Ada Lovelace", { overwrite: true })).toMatchObject({ filled: false, reason: "manual", detail: KEPT_NOT });
+    expect(m.inputs).toBe(2); // the plain write, then once as typing
+  });
+
+  test("a masked draft that formats into the previous text is kept too", () => {
+    fresh();
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {}, "textarea");
+    doc.body.append(el);
+    el.value = "A  draft";
+    el.on("input", () => { el.value = "A  draft"; }); // a normaliser that puts back its own spacing
+    expect(insertDraft(ref(el, "Why us", "native", "textarea"), "A draft.", { overwrite: true })).toMatchObject({ filled: true });
+  });
+
+  test("the retry as typing never scrolls, and gives focus back to the field that had it", async () => {
+    fresh();
+    const c = controlled({ when: "later", until: 1 });
+    const doc = c.el.ownerDocument;
+    const other = doc.body.append(new FakeEl(doc, "button"));
+    other.focus();
+    other.focusCalls.length = 0;
+    expect(await fillText(c.el)).toMatchObject({ filled: true });
+    expect(c.writes).toEqual([undefined, "insertText"]);
+    expect(c.el.focusCalls).toEqual([{ options: { preventScroll: true } }]);
+    expect(c.el.blurCalls).toBe(1); // it was not focused: typing ends with a blur
+    expect(other.focusCalls).toEqual([{ options: { preventScroll: true } }]);
+    expect(doc.activeElement).toBe(other);
+  });
+
+  test("the retry as typing does not blur a field the person is in", async () => {
+    fresh();
+    const c = controlled({ when: "later", until: 1 });
+    c.el.focus();
+    c.el.focusCalls.length = 0;
+    expect(await fillText(c.el)).toMatchObject({ filled: true });
+    expect(c.writes).toEqual([undefined, "insertText"]);
+    expect(c.el.blurCalls).toBe(0);
+    expect(c.el.focusCalls.every(f => f.options?.preventScroll === true)).toBe(true);
+    expect(c.el.ownerDocument.activeElement).toBe(c.el);
+  });
+
+  describe("in a hidden tab (no frames: the check after a write is one event-loop turn)", () => {
+    const hide = (el: FakeInput): void => { el.ownerDocument.hidden = true; };
+
+    test("a revert that lands after that turn is reported not kept, never filled", async () => {
+      fresh();
+      const c = controlled({ when: "later", until: Infinity });
+      hide(c.el);
+      beginFill();
+      const out = await fillText(c.el);
+      expect(out).toMatchObject({ filled: false, reason: "manual", detail: KEPT_NOT, key: "full name" });
+      expect(c.el.value).toBe("");
+      expect(c.el.attrs["data-vani-fill"]).toBeUndefined();
+      expect(undoCount()).toBe(0);
+      nothingLeft();
+    });
+
+    test("a write the page keeps is filled and outlined, and costs one bounded wait", async () => {
+      fresh();
+      const c = controlled({ when: "later", until: 0 });
+      hide(c.el);
+      const t0 = performance.now();
+      expect(await fillText(c.el)).toMatchObject({ filled: true });
+      expect(performance.now() - t0).toBeLessThan(250);
+      expect(c.el.value).toBe("Ada Lovelace");
+      expect(c.el.attrs["data-vani-fill"]).toBe("ok");
+      nothingLeft();
+    });
+
+    test("a whole pass waits once for all its fields, and only the reverted one is lost", async () => {
+      fresh();
+      const doc = new FakeDoc();
+      doc.hidden = true;
+      const mk = (label: string, revert: boolean): FieldRef => {
+        const el = new FakeInput(doc, () => {});
+        doc.body.append(el);
+        if (revert) el.on("input", () => { setTimeout(() => { el.value = ""; }, 5); });
+        return ref(el, label, "native", "text");
+      };
+      const refs = [mk("One", false), mk("Two", true), mk("Three", false)];
+      const matches = new Map<FieldRef, Match | null>(refs.map((r, i) => [r, match(`k${i}`, [`v${i}`])]));
+      const lateWaits: number[] = [];
+      const wrapped = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: () => void, ms?: number) => { if (ms === 50) lateWaits.push(ms); return wrapped(fn, ms); }) as typeof setTimeout;
+      beginFill();
+      let out: Awaited<ReturnType<typeof fillAll>>;
+      try { out = await fillAll(refs, emptyBank(), "x.example", { matches }); } finally { globalThis.setTimeout = wrapped; }
+      expect(out.map(o => [o.label, o.filled, o.reason])).toEqual([["One", true, undefined], ["Two", false, "manual"], ["Three", true, undefined]]);
+      expect(lateWaits.length).toBe(1);
+      expect(undoCount()).toBe(2); // the reverted field is not claimed as Vani's
+      expect((refs[1]!.els[0] as unknown as FakeInput).attrs["data-vani-fill"]).toBeUndefined();
+      expect((refs[0]!.els[0] as unknown as FakeInput).attrs["data-vani-fill"]).toBe("ok");
+      nothingLeft();
+    });
+
+    test("a visible tab pays no such wait", async () => {
+      fresh();
+      const c = controlled({ when: "later", until: 0 });
+      let waits50 = 0;
+      const wrapped = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: () => void, ms?: number) => { if (ms === 50) waits50++; return wrapped(fn, ms); }) as typeof setTimeout;
+      try { expect(await fillText(c.el)).toMatchObject({ filled: true }); } finally { globalThis.setTimeout = wrapped; }
+      expect(waits50).toBe(0);
+    });
+  });
+
+  test("a date input is held to its ISO value, read back after the same wait", async () => {
+    fresh();
+    const kept = controlled({ when: "later", until: 0, attrs: { type: "date" } });
+    expect(await fillRef(ref(kept.el, "Start date", "native", "date"), match("start", ["2026-11-02"]))).toMatchObject({ filled: true });
+    expect(kept.el.value).toBe("2026-11-02");
+    const lost = controlled({ when: "later", until: Infinity, attrs: { type: "date" } });
+    const out = await fillRef(ref(lost.el, "Start date", "native", "date"), match("start", ["2026-11-02"]));
+    expect(out).toMatchObject({ filled: false, reason: "manual", detail: KEPT_NOT });
+    expect(lost.el.value).toBe("");
+  });
+
+  test("a control that blanks the text itself (nothing ever shown) stays no_option, as before", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    Object.defineProperty(el, "value", { get: () => "", set: () => {} });
+    doc.body.append(el);
+    expect(await fillText(el)).toMatchObject({ filled: false, reason: "no_option" });
+  });
+
+  test("an empty saved value is written without waiting", async () => {
+    fresh();
+    const c = controlled({ when: "later", until: Infinity });
+    expect(await fillText(c.el, "")).toMatchObject({ filled: true });
+    expect(c.writes).toEqual([undefined]);
+  });
+
+  test("overwrite: a page that puts the typed value back is a revert, not a keep", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    doc.body.append(el);
+    el.value = "typed";
+    el.on("input", () => { setTimeout(() => { el.value = "typed"; }, 5); });
+    const out = await fillText(el, "Ada", { overwrite: true });
+    expect(out).toMatchObject({ filled: false, reason: "manual", detail: KEPT_NOT });
+  });
+
+  test("a draft the page reverts inside the write is not inserted, and not marked", () => {
+    fresh();
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {}, "textarea");
+    doc.body.append(el);
+    el.on("input", () => { el.value = ""; });
+    const out = insertDraft(ref(el, "Why us", "native", "textarea"), "A draft.");
+    expect(out).toMatchObject({ filled: false, reason: "manual", detail: KEPT_NOT });
+    expect(el.attrs["data-vani-draft"]).toBeUndefined();
+    expect(el.attrs["data-vani-fill"]).toBeUndefined();
+  });
+});
+
+// A yellow fuzzy fill that is submitted untouched must not come back as the person's own, confident answer. Fill records
+// what it wrote; a capture of the field is marked `filledBy` only while the field still holds exactly that.
+describe("what Fill wrote is remembered, until the person changes it", () => {
+  const textRef = (label = "Full name"): { el: FakeInput; r: FieldRef } => {
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    doc.body.append(el);
+    return { el, r: ref(el, label, "native", "text") };
+  };
+  const held = (r: FieldRef) => filledBy(r.els[0], readRefValue(r));
+
+  test("a fill records its answer key and the review flag, for a confident and for a review fill", async () => {
+    fresh();
+    const a = textRef(), b = textRef("Cover note");
+    await fillRef(a.r, match("full name", ["Ada"]));
+    await fillRef(b.r, { ...match("note", ["Hello"]), via: "fuzzy", review: true });
+    expect(held(a.r)).toEqual({ key: "full name", review: false });
+    expect(held(b.r)).toEqual({ key: "note", review: true });
+  });
+
+  test("any edit ends it, however small, and typing the same value back does not need to", async () => {
+    fresh();
+    const { el, r } = textRef();
+    await fillRef(r, match("full name", ["Ada"]));
+    expect(held(r)).toBeDefined();
+    el.value = "Ada ";
+    expect(held(r)).toBeUndefined();
+    el.value = "Ada";
+    expect(held(r)).toEqual({ key: "full name", review: false });
+  });
+
+  test("a field Fill did not write has no record: has_value, no match, too long", async () => {
+    fresh();
+    const typed = textRef();
+    typed.el.value = "mine";
+    await fillRef(typed.r, match("full name", ["Ada"]));
+    expect(held(typed.r)).toBeUndefined();
+    const tight = textRef();
+    tight.el.attrs["maxlength"] = "2";
+    await fillRef(tight.r, match("full name", ["Ada"]));
+    expect(held(tight.r)).toBeUndefined();
+  });
+
+  test("an overwritten value is recorded as Fill's, not the person's", async () => {
+    fresh();
+    const { el, r } = textRef();
+    el.value = "typed";
+    await fillRef(r, match("full name", ["Ada"]), { overwrite: true });
+    expect(held(r)).toEqual({ key: "full name", review: false });
+  });
+
+  test("clearing the marks is the person having looked: the record goes", async () => {
+    fresh();
+    const { r } = textRef();
+    await fillRef(r, match("full name", ["Ada"]));
+    expect(r.els[0]!.getAttribute("data-vani-fill")).toBe("ok");
+    clearMarks({ querySelectorAll: () => [] } as unknown as ParentNode);
+    expect(r.els[0]!.getAttribute("data-vani-fill")).toBeNull();
+    expect(held(r)).toBeUndefined();
+  });
+
+  test("a second Fill clears the outlines only: the first fill's fields, skipped as filled, still read as Vani's", async () => {
+    fresh();
+    const { r } = textRef();
+    await fillRef(r, match("full name", ["Ada"]));
+    clearMarks({ querySelectorAll: () => [] } as unknown as ParentNode, { forget: false });
+    beginFill();
+    const again = await fillRef(r, match("full name", ["Ada"]));
+    expect(again.reason).toBe("has_value");
+    expect(held(r)).toEqual({ key: "full name", review: false });
+  });
+
+  test("fillAll records every field it filled, as the pass ended", async () => {
+    fresh();
+    const a = textRef(), b = textRef("Colour");
+    const matches = new Map<FieldRef, Match | null>([[a.r, match("a", ["one"])], [b.r, null]]);
+    await fillAll([a.r, b.r], emptyBank(), "x.example", { matches });
+    expect(held(a.r)).toEqual({ key: "a", review: false });
+    expect(held(b.r)).toBeUndefined();
+  });
+
+  test("a field with no record, or a record for another control, is never claimed", () => {
+    expect(filledBy(undefined, ["x"])).toBeUndefined();
+    expect(filledBy(new FakeEl(new FakeDoc(), "input") as unknown as Element, ["x"])).toBeUndefined();
+  });
+});
+
+// "Undo fill" puts back what the last Fill wrote, in the fields that still hold exactly that, and never a user's edit.
+describe("undo the last fill", () => {
+  const mk = (label: string, prior = ""): { el: FakeInput; r: FieldRef } => {
+    const doc = new FakeDoc();
+    const el = new FakeInput(doc, () => {});
+    doc.body.append(el);
+    el.value = prior;
+    return { el, r: ref(el, label, "native", "text") };
+  };
+  const fillBoth = async (...rs: FieldRef[]): Promise<void> => {
+    beginFill();
+    const matches = new Map<FieldRef, Match | null>(rs.map((r, i) => [r, match(`k${i}`, [`v${i}`])]));
+    await fillAll(rs, emptyBank(), "x.example", { matches, overwrite: true });
+  };
+  const holds = (r: FieldRef) => filledBy(r.els[0], readRefValue(r));
+
+  test("restores what Fill wrote, takes the outline and the record off, and is spent afterwards", async () => {
+    fresh();
+    const a = mk("A"), b = mk("B");
+    await fillBoth(a.r, b.r);
+    expect([a.el.value, b.el.value]).toEqual(["v0", "v1"]);
+    expect(undoCount()).toBe(2);
+    const rep = await undoFill();
+    expect(rep).toEqual({ restored: 2, edited: 0, manual: 0, gone: 0 });
+    expect([a.el.value, b.el.value]).toEqual(["", ""]);
+    expect(a.el.attrs["data-vani-fill"]).toBeUndefined();
+    expect(a.el.style["outline"]).toBe("");
+    expect(holds(a.r)).toBeUndefined();
+    expect(undoCount()).toBe(0);
+    expect(await undoFill()).toEqual({ restored: 0, edited: 0, manual: 0, gone: 0 });
+    nothingLeft();
+  });
+
+  test("an undone field tagged a Suggest draft loses the tag: what the person writes next is theirs", async () => {
+    fresh();
+    const a = mk("A");
+    await fillBoth(a.r);
+    a.el.setAttribute("data-vani-draft", "1");
+    a.el.setAttribute("data-vani-draft-text", "v0");
+    expect((await undoFill()).restored).toBe(1);
+    expect(a.el.attrs["data-vani-draft"]).toBeUndefined();
+    expect(a.el.attrs["data-vani-draft-text"]).toBeUndefined();
+  });
+
+  test("a field the person has edited since is never clobbered, and keeps its outline", async () => {
+    fresh();
+    const a = mk("A"), b = mk("B");
+    await fillBoth(a.r, b.r);
+    b.el.value = "my own words";
+    const rep = await undoFill();
+    expect(rep).toMatchObject({ restored: 1, edited: 1 });
+    expect(a.el.value).toBe("");
+    expect(b.el.value).toBe("my own words");
+    expect(b.el.attrs["data-vani-fill"]).toBe("ok");
+  });
+
+  test("a field that held text before an overwrite gets that text back", async () => {
+    fresh();
+    const a = mk("A", "what was there");
+    await fillBoth(a.r);
+    expect(a.el.value).toBe("v0");
+    expect(await undoFill()).toMatchObject({ restored: 1 });
+    expect(a.el.value).toBe("what was there");
+  });
+
+  test("it is bounded to the last fill: a new fill replaces the one before it", async () => {
+    fresh();
+    const a = mk("A"), b = mk("B");
+    await fillBoth(a.r);
+    await fillBoth(b.r);
+    expect(undoCount()).toBe(1);
+    expect(await undoFill()).toMatchObject({ restored: 1 });
+    expect(a.el.value).toBe("v0"); // the earlier fill was not undone
+    expect(b.el.value).toBe("");
+  });
+
+  test("a field that left the page is reported, not guessed at", async () => {
+    fresh();
+    const a = mk("A");
+    await fillBoth(a.r);
+    a.el.isConnected = false;
+    expect(await undoFill()).toEqual({ restored: 0, edited: 0, manual: 0, gone: 1 });
+  });
+
+  test("a dropdown Fill drove cannot be put back safely: it says so and stays as Fill left it", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const c = combo(doc, "o1", ["Yes", "No"], { openAfter: 0, pick: { shows: 0 } });
+    const r = ref(c.trigger, "Sponsor", "combobox");
+    beginFill();
+    await fillRef(r, match("sponsor", ["Yes"]));
+    expect(shownValue(c)).toEqual(["Yes"]);
+    expect(await undoFill()).toEqual({ restored: 0, edited: 0, manual: 1, gone: 0 });
+    expect(shownValue(c)).toEqual(["Yes"]);
+  });
+
+  test("an aria checkbox is clicked back, and a value that does not come back is reported by hand", async () => {
+    fresh();
+    const doc = new FakeDoc();
+    const box = doc.body.append(new FakeEl(doc, "div"));
+    box.attrs["role"] = "checkbox";
+    box.attrs["aria-checked"] = "false";
+    box.on("click", () => { box.attrs["aria-checked"] = box.attrs["aria-checked"] === "true" ? "false" : "true"; });
+    const r = ref(box, "Agree", "aria-checkbox", "checkbox");
+    beginFill();
+    await fillRef(r, match("agree", ["yes"]));
+    expect(box.attrs["aria-checked"]).toBe("true");
+    expect(await undoFill()).toMatchObject({ restored: 1, manual: 0 });
+    expect(box.attrs["aria-checked"]).toBe("false");
+
+    // A page that ignores the click-back: not reported as restored.
+    const stuck = doc.body.append(new FakeEl(doc, "div"));
+    stuck.attrs["role"] = "checkbox";
+    stuck.attrs["aria-checked"] = "false";
+    let clicks = 0;
+    stuck.on("click", () => { if (clicks++ === 0) stuck.attrs["aria-checked"] = "true"; });
+    beginFill();
+    await fillRef(ref(stuck, "Agree too", "aria-checkbox", "checkbox"), match("agree2", ["yes"]));
+    expect(await undoFill()).toMatchObject({ restored: 0, manual: 1 });
+  });
+
+  test("a field filled one at a time (a 'Use' button) joins the last fill, and a field Fill refused is not in it", async () => {
+    fresh();
+    const a = mk("A"), tight = mk("B");
+    tight.el.attrs["maxlength"] = "1";
+    beginFill();
+    await fillRef(a.r, match("a", ["one"]));
+    await fillRef(tight.r, match("b", ["too long for it"]));
+    expect(undoCount()).toBe(1);
+    expect(await undoFill()).toMatchObject({ restored: 1 });
   });
 });
 

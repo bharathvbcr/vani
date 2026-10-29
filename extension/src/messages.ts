@@ -15,7 +15,7 @@ import type { FormAuditReport } from "./formaudit";
 import { type IngestJob, type IngestPage, ingestJobsProblem } from "./ingest";
 
 export type ToBackground =
-  | { type: "getBank" }
+  | { type: "getBank"; fresh?: boolean } // fresh: skip the background's 2 s memo (Fill: the Mac app may have changed behind it)
   | { type: "capture"; host: string; fields: FieldInfo[] }
   | { type: "filled"; keys: string[] }
   | { type: "setSettings"; settings: Partial<Settings> }
@@ -27,6 +27,8 @@ export type ToBackground =
   /** A job in the Vani Apply agent: a request built by buildSuggestRequest or buildDraftRequest (labels and the posting only). */
   | { type: "jobStart"; kind: "suggest" | "draft" | "resume" | "resumeJob"; request: object }
   | { type: "jobPoll"; job: string }
+  /** Whether two wordings ask the same question, answered by the Mac app's on-device model. Two question labels, never a field value or a saved answer. */
+  | { type: "sameQuestion"; a: string; b: string }
   // Offering to mark a job Applied (applied.ts). The page sends its URL without the query or fragment;
   // the background asks the Mac app which tracked job it is, keeps the offer for the sender's tab, and marks only on appliedMark.
   // A content script is always acting for its own tab. The popup is not in a tab, so it names the active one in `tabId`
@@ -104,11 +106,14 @@ const optTab = (m: Record<string, unknown>) => m.tabId === undefined || typeof m
 /** A tab id the background will pass to chrome.tabs.get. A float or a negative is not one. */
 const optTabId = (m: Record<string, unknown>) => m.tabId === undefined || (typeof m.tabId === "number" && Number.isInteger(m.tabId) && m.tabId >= 0 && m.tabId <= Number.MAX_SAFE_INTEGER);
 const optOrdinal = (x: unknown) => x === undefined || (typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= 10000);
+/** The longest question label sameQuestion carries (the host's own bound). */
+export const MAX_SAME_LABEL = 300;
+const label = (x: unknown) => typeof x === "string" && x.length > 0 && x.length <= MAX_SAME_LABEL;
 const optAttempt = (x: unknown) => x === undefined || (typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= MAX_ATTEMPT);
 
 /** One check per message type; the mapped type makes a new message type fail to compile until it has one. */
 export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>) => boolean } = {
-  getBank: () => true,
+  getBank: m => m.fresh === undefined || typeof m.fresh === "boolean",
   capture: m => Array.isArray(m.fields) && typeof m.host === "string",
   filled: m => Array.isArray(m.keys) && m.keys.every(k => typeof k === "string"),
   setSettings: m => isRecord(m.settings),
@@ -118,6 +123,7 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
   draft: m => typeof m.question === "string" && optAttempt(m.attempt),
   jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume" || m.kind === "resumeJob",
   jobPoll: m => typeof m.job === "string",
+  sameQuestion: m => label(m.a) && label(m.b),
   appliedSignal: m => optTab(m),
   appliedPending: optTab,
   jobRow: m => typeof m.url === "string" && m.url.length <= 2048,
@@ -155,6 +161,7 @@ export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
   draft: "content",
   jobStart: "content",
   jobPoll: "content",
+  sameQuestion: "content",
   appliedSignal: "either",
   appliedPending: "either",
   jobRow: "content",
@@ -173,10 +180,16 @@ export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
   attachResume: "content",
 };
 
-/** Null when `sender` may send `type`; otherwise the refusal to reply with. */
-export function checkSender(type: ToBackground["type"], sender: { tab?: unknown }): { error: string; code: "bad_request" } | null {
+/**
+ * Null when `sender` may send `type`; otherwise the refusal to reply with. A sender in a tab is a page's content
+ * script, unless the browser says its URL is one of this extension's own pages (`ownURL`, chrome.runtime.getURL("")):
+ * the popup opened in a tab of its own is still the popup. A content script's sender URL is the web page's, set by
+ * the browser, never the extension's.
+ */
+export function checkSender(type: ToBackground["type"], sender: { tab?: unknown; url?: string }, ownURL = ""): { error: string; code: "bad_request" } | null {
   const policy = SENDER_POLICY[type];
-  const fromContent = sender.tab !== undefined && sender.tab !== null;
+  const ownPage = ownURL !== "" && typeof sender.url === "string" && sender.url.startsWith(ownURL);
+  const fromContent = sender.tab !== undefined && sender.tab !== null && !ownPage;
   if (policy === "either" || (policy === "content") === fromContent) return null;
   return { error: `${type} is not accepted from ${fromContent ? "a page" : "the popup"}`, code: "bad_request" };
 }

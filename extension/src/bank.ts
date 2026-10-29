@@ -253,6 +253,16 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     // wording's ("LinkedIn" / "LinkedIn Profile URL"): stored into, never renamed.
     const prev = owners.find(f, sens);
     const target = prev?.key ?? key;
+    // The value is still what Fill wrote: Vani's own fill coming back, not the user answering. It entrenches
+    // nothing (no use, wording, signature, timestamp or propagation), lands only on the answer that filled
+    // it, and a fill that was for review leaves that answer marked for review.
+    if (f.filledBy) {
+      if (prev && prev.key === f.filledBy.key && f.filledBy.review && !prev.review) {
+        out.answers[prev.key] = { ...prev, review: true };
+        res.updated++;
+      }
+      continue;
+    }
     if (prev && keepsSaved(prev.value, value)) continue;
     if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedEmpty++; continue; }
     const label = normalizeLabel(f.label);
@@ -275,6 +285,13 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     out.answers[target] = next;
     owners.add(next);
     if (prev) res.updated++; else res.added++;
+
+    // One host|id names one question: the answer that just took the signature is its only holder.
+    if (sig) {
+      for (const [k, a] of Object.entries(out.answers)) {
+        if (k !== target && a.signatures.includes(sig)) out.answers[k] = { ...a, signatures: a.signatures.filter(s => s !== sig) };
+      }
+    }
 
     // Every other answer that shares this intent (a basic or a captured wording) takes the new value.
     const want = intentOf(f.label);

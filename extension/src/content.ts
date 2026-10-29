@@ -10,18 +10,21 @@
 // match, the extension cannot enter a cross-origin frame at all. The popup asks
 // each frame that runs a copy on its own and adds the answers up (frames.ts).
 import type { Bank, FieldInfo } from "./types";
-import { type FieldRef, scanForm } from "./extract";
-import { type FillOutcome, clearMarks, fillAll, fillRef, insertDraft } from "./fill";
-import { type Coverage, type PageQuestion, bucketOf, coverageLine, coverageOf } from "./coverage";
+import { type FieldRef, filledBy, forgetFill, readRefValue, scanForm } from "./extract";
+import { type FillOutcome, beginFill, clearMarks, fillAll, fillRef, insertDraft, undoCount, undoFill } from "./fill";
+import { type Coverage, type PageQuestion, bucketOf, coverageLine, coverageOf, noteLines } from "./coverage";
 import { type FlushResult, MIN_FORM_FIELDS, type Tracker, createTracker } from "./tracker";
-import { UNDRAFTED_NOTE, type DraftOffer, currentText, draftEnabled, draftOffer, draftable, pickOrdinal, suggest } from "./suggest";
+import {
+  UNDRAFTED_NOTE, type DraftOffer, askableChoice, choiceMatch, currentText, draftEnabled, draftOffer, newTally, pickOrdinal, postingTooShort, splitUnknown, suggest,
+  suggestMessage, tallyChoice, tallyInsert,
+} from "./suggest";
 import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
-import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, parseDraftReply } from "./draft";
+import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, maxWordsFor, parseDraftReply } from "./draft";
 import { classify } from "./classify";
 import { type AppliedFlow, type AppliedUi, createAppliedFlow, offerSubject } from "./applied";
 import {
-  DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, SUGGEST_TIMEOUT_MS, type SuggestField,
-  buildSuggestRequest, parseSuggestReply, runJob,
+  DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, OLDER_VANI, SUGGEST_TIMEOUT_MS, type SuggestField, type SuggestRequest,
+  buildSuggestRequest, runJob, runSuggest,
 } from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
 import { contentListener } from "./frames";
@@ -42,6 +45,7 @@ import { createBankMemo } from "./bankcache";
 import { buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
 import { crawlRow } from "./crawlrun";
 import { QUIET_MS, carryMatches, observeRoots, runRounds, waitForQuiet } from "./rounds";
+import { matchAll, settleAmbiguous } from "./samequestion";
 
 const PANEL_LIST = 8;
 
@@ -51,8 +55,9 @@ function send<T>(msg: ToBackground): Promise<T> {
 
 interface BankRead { bank: Bank; rev?: number }
 
-async function readBank(): Promise<BankRead> {
-  const r = await send<{ bank?: Bank; rev?: number; error?: string }>({ type: "getBank" });
+/** `fresh`: the background must read the bank again rather than serve the copy it memoised in the last 2 s. */
+async function readBank(fresh = false): Promise<BankRead> {
+  const r = await send<{ bank?: Bank; rev?: number; error?: string }>(fresh ? { type: "getBank", fresh: true } : { type: "getBank" });
   if (!r?.bank) throw new Error(r?.error ?? "no bank");
   return { bank: r.bank, rev: typeof r.rev === "number" ? r.rev : undefined };
 }
@@ -60,13 +65,21 @@ async function readBank(): Promise<BankRead> {
 // The last bank read, kept for the 2 s a scan may reuse it (bankcache.ts). A read with the same revision
 // keeps the held object, so "the same bank" can be asked with ===. A failed read is never kept.
 const bankMemo = createBankMemo<BankRead>({
-  fetch: readBank,
+  fetch: () => readBank(),
   reuse: (held, next) => (held.rev !== undefined && held.rev === next.rev ? held : next),
 });
 
-/** The bank as the background has it now (it may serve its own memo): fill, save and the popup's scan use this. */
+/**
+ * The bank as it is now, not as the background memoised it a moment ago: fill, save and the popup's
+ * scan use this, since a fill from a bank an edit in the Mac app has just changed would write stale
+ * answers. The memo holds the result (keeping the object when the revision is the same, so `===` works).
+ */
 async function bank(): Promise<Bank | null> {
-  try { return (await bankMemo.fresh()).bank; } catch { return null; }
+  try {
+    const read = await readBank(true);
+    bankMemo.set(read);
+    return (bankMemo.peek() ?? read).bank;
+  } catch { return null; }
 }
 
 /** The bank for a scan the page triggered itself, which fires on every input: a copy under 2 s old will do. */
@@ -204,12 +217,24 @@ async function resumeForThisJob(): Promise<ResumeFetch> {
   }
 }
 
+/** One sameQuestion ask, through the background. A throw (no worker) is read as "down" by settleAmbiguous. */
+function askSameQuestion(a: string, b: string): Promise<unknown> {
+  return send<unknown>({ type: "sameQuestion", a, b });
+}
+
 async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
   const b = await bank();
   if (!b || disabledHere(b)) return { outcomes: [] };
-  clearMarks();
+  clearMarks(document, { forget: false }); // an earlier fill the user has not touched is still Vani's on save
+  beginFill(); // the fill before this one can no longer be undone
   // Taken now: filling fires input events, whose scans replace lastScan while this runs.
   const prior = lastScan?.bank === b ? lastScan : undefined;
+  // Before round 1, so the ask phase does not spend the rounds' budget: fields whose id and exact wording belong to
+  // different saved answers are settled by the Mac app's on-device model (samequestion.ts). Labels only. Anything it
+  // cannot settle keeps its yellow match, and a host that does not know the op is not an error.
+  const first = scanForm(document);
+  const settled = matchAll(first.refs, b, location.hostname, prior ? carryMatches(first.refs, prior) : undefined);
+  const same = await settleAmbiguous(first.refs, settled, askSameQuestion, { overwrite, bank: b, host: location.hostname });
   // Round 1 fills the page; later rounds fill what the first made appear (rounds.ts). Only round 1 may overwrite.
   let roots: readonly Node[] = [document]; // the roots the latest scan walked: the settle watches all of them
   const outcomes = await runRounds<FieldRef, FillOutcome>({
@@ -219,7 +244,8 @@ async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
       typeahead,
       resume: resumeForThisJob,
       // The scan made new field objects: the earlier scan's matches carry over only to fields provably unchanged (same bank, same elements).
-      ...(round === 1 && prior ? { matches: carryMatches(refs, prior) } : {}),
+      // The pre-fill pass matched every field of the page, so it is the one carried, with the model's answers in it.
+      ...(round === 1 ? { matches: carryMatches(refs, { refs: first.refs, matches: settled }) } : {}),
     }),
     settle: ms => waitForQuiet(observeDom(roots), QUIET_MS, ms),
     now: Date.now,
@@ -237,8 +263,29 @@ async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
   const offered = resumeOffer.offerAfterFill(outcomes);
   toast(`Filled ${filled} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") +
     (tooLong ? `, ${tooLong} too long for the field (left empty, yellow: shorten by hand)` : "") +
+    // Said only when the model settled something or ran out of time; a host that cannot answer (an older app) says nothing here,
+    // and the yellow outline's own note explains the fill.
+    (same.same + same.different > 0 || same.timedOut ? `. Reworded questions: ${same.same + same.different} of ${same.asked} settled on this Mac, the rest left yellow` : "") +
     (resumeNote?.detail && !offered ? `. Resume not attached: ${resumeNote.detail}` : "") + ". Check, then submit yourself.");
+  syncUndo();
   return { outcomes };
+}
+
+/** The panel's Undo fill button is there while the last fill has something to put back. */
+function syncUndo(): void {
+  const b = panel?.querySelector<HTMLButtonElement>("button.undo");
+  if (b) b.hidden = undoCount() === 0;
+}
+
+/** Put back what the last fill wrote, keeping anything the person has changed since, and say what happened. */
+async function undoLastFill(): Promise<void> {
+  const r = await undoFill();
+  syncUndo();
+  const parts = [`Undid ${r.restored} filled field${r.restored === 1 ? "" : "s"}`];
+  if (r.edited) parts.push(`${r.edited} you have changed since were kept`);
+  if (r.manual) parts.push(`${r.manual} could not be put back (clear ${r.manual === 1 ? "it" : "them"} by hand)`);
+  if (r.gone) parts.push(`${r.gone} no longer on the page`);
+  toast(parts.join(", ") + ".");
 }
 
 // --- floating panel -----------------------------------------------------------
@@ -376,6 +423,7 @@ function ensurePanel(): void {
           <button class="s" title="Save answers on this page">Save</button>
           <button class="b-scrape" id="scrape-btn" style="display:none;" title="Scrape job listings on this page">Scrape</button>
           <button class="c" title="Clear highlights from page">Clear</button>
+          <button class="c undo" hidden title="Put back the fields the last Fill wrote. Anything you changed since is kept.">Undo fill</button>
           <button class="ctrl min-btn" title="Minimize to small badge">—</button>
           <button class="ctrl x" title="Hide panel">×</button>
         </div>
@@ -403,6 +451,8 @@ function ensurePanel(): void {
     clearMarks(document);
     toast("Highlights cleared.");
   });
+  panel.querySelector("button.undo")!.addEventListener("click", () => { void undoLastFill(); });
+  syncUndo();
 
   const relBadge = panel.querySelector<HTMLElement>("#rel-badge")!;
   repeatNotice = createRepeatNotice(document, panel.querySelector<HTMLElement>("#repeat-drawer")!);
@@ -737,16 +787,16 @@ function jobInfo(): JobInfo {
 }
 
 /** One draft. The request is the question and the posting; the field's text never leaves the page. */
-async function askDraft(question: string, job: JobInfo, attempt = 0): Promise<DraftReply> {
+async function askDraft(question: string, job: JobInfo, attempt = 0, maxWords?: number): Promise<DraftReply> {
   let r: DraftResponse;
   try {
-    r = await send<DraftResponse>({ type: "draft", question, job, attempt });
+    r = await send<DraftResponse>({ type: "draft", question, job, attempt, ...(maxWords !== undefined ? { maxWords } : {}) });
   } catch (e) {
     r = { ok: false, code: "unreachable", error: e instanceof Error ? e.message : String(e) };
   }
   if (!r || typeof r !== "object" || !("ok" in r)) r = { ok: false, code: "bad_reply", error: "No reply from the extension." };
   // Safari's extension cannot start vani: the same draft runs as a job in the agent.
-  if (!r.ok && r.code === "unsupported") r = await draftJob(question, job, attempt);
+  if (!r.ok && r.code === "unsupported") r = await draftJob(question, job, attempt, maxWords);
   return r;
 }
 
@@ -852,7 +902,8 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement, offer: D
     meta.textContent = writing(again);
     showActions("busy");
     setBusy(true);
-    const r = await askDraft(ref.info.label, job, attempt);
+    // A field with a limit gets a draft sized to it (draft.maxWordsFor); one without keeps the default length.
+    const r = await askDraft(ref.info.label, job, attempt, maxWordsFor(ref.info.maxChars));
     if (dead()) return;
     setBusy(false);
     if (!r.ok) {
@@ -880,10 +931,10 @@ async function startDraft(ref: FieldRef, job: JobInfo, li: HTMLElement, offer: D
 }
 
 /** One draft through the agent (Safari's path). Never throws. */
-async function draftJob(question: string, job: JobInfo, attempt = 0): Promise<DraftReply> {
+async function draftJob(question: string, job: JobInfo, attempt = 0, maxWords?: number): Promise<DraftReply> {
   let request: object;
   try {
-    request = buildDraftRequest(question, job, undefined, attempt).request;
+    request = buildDraftRequest(question, job, maxWords, attempt).request;
   } catch (e) {
     return { ok: false, code: "bad_request", error: e instanceof Error ? e.message : String(e) };
   }
@@ -914,60 +965,97 @@ async function suggestAll(): Promise<void> {
   if (suggesting) { toast("Suggest is already running on this page."); return; }
   if (helpBusy) { toast("Finish or close the open draft in the list first, then Suggest."); return; }
   const job = jobInfo();
-  // Only empty free-text fields that are neither secret nor self-identification.
-  const refs = lastUnknown.filter(r => draftable(r) && classify(r.info) === "standard");
-  const fields: SuggestField[] = refs.map((r, i) => ({ id: `f${i}`, label: labelOf(r), kind: r.info.kind === "text" ? "text" : "textarea" }));
-  let request: object;
+  // Only empty free-text fields and single-choice selects and radio groups that are neither secret nor self-identification;
+  // the rest are counted by kind (suggest.splitUnknown). A field the bank already matches is not in lastUnknown at all.
+  const split = splitUnknown(lastUnknown);
+  const refs = split.eligible;
+  const asks = split.choiceAsk;
+  // Nothing is started for a posting too short to draft from: the model would be asked, and paid, for a draft that has nothing to stand on.
+  const tooShort = refs.length + asks.length > 0 ? postingTooShort(job.description.trim().length) : null;
+  if (tooShort) { toast(tooShort); return; }
+  // `max_chars` goes with a field only when the page gives it a limit, so an essay is written to fit. A choice question
+  // goes with its option labels and nothing else (never the field's current value, which is empty).
+  const fields: SuggestField[] = [
+    ...refs.map((r, i): SuggestField => ({
+      id: `f${i}`, label: labelOf(r), kind: r.info.kind === "text" ? "text" : "textarea",
+      ...(r.info.maxChars !== undefined ? { maxChars: r.info.maxChars } : {}),
+    })),
+    ...asks.map((r, i): SuggestField => ({ id: `c${i}`, label: labelOf(r), kind: "choice", options: askableChoice(r) ?? [] })),
+  ];
+  let request: SuggestRequest;
   try {
     request = buildSuggestRequest(fields, job);
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
     // Counts only, never labels or values: enough to tell which filter emptied the list.
     console.warn("Vani Suggest:", why, { unknown: lastUnknown.length, eligible: refs.length, posting: job.description.length });
-    toast(`Suggest: ${why} (${lastUnknown.length} new questions, ${refs.length} empty free-text).`);
+    toast(`Suggest: ${why} (${lastUnknown.length} new questions: ${split.choice} choice, ${split.prefilled} already have text, ${split.byHand} self-identification or by hand, ${split.other} other).`);
     return;
   }
-  const byId = new Map(refs.map((r, i) => [`f${i}`, r]));
+  const byId = new Map<string, FieldRef>([...refs.map((r, i): [string, FieldRef] => [`f${i}`, r]), ...asks.map((r, i): [string, FieldRef] => [`c${i}`, r])]);
   suggesting = true;
   helpBusy = true;
   const b = suggestButton();
   if (b) b.disabled = true;
-  toast(`Asking Vani about ${fields.length} questions…`);
+  const count = request.fields.length;
+  toast(`Asking Vani about ${count} questions…`);
   try {
-    const r = await runJob({
-      start: () => send({ type: "jobStart", kind: "suggest", request }),
+    // An older vani refuses the newer request shape whole; runSuggest resends it once in the old one (suggestjob.ts).
+    const run = await runSuggest(request, req => ({
+      start: () => send({ type: "jobStart", kind: "suggest", request: req }),
       poll: id => send({ type: "jobPoll", job: id }),
-      onTick: ms => toast(`Vani is reading ${fields.length} questions and drafting the essays… ${Math.round(ms / 1000)} s`),
-    }, SUGGEST_TIMEOUT_MS);
-    const parsed = r.ok ? parseSuggestReply(r.reply, new Set(byId.keys())) : r;
+      onTick: ms => toast(`Vani is reading ${count} questions and drafting the answers… ${Math.round(ms / 1000)} s`),
+    }), SUGGEST_TIMEOUT_MS);
+    const parsed = run.result;
     if (!parsed.ok) {
-      toast(parsed.error);
+      toast(parsed.code === "older" || !run.older ? parsed.error : `${parsed.error} ${OLDER_VANI}`);
       return;
     }
-    let inserted = 0, review = 0, left = 0;
+    const tally = newTally();
     for (const s of parsed.fields) {
       const ref = byId.get(s.id);
       if (!ref) continue;
       suggestNotes.set(labelOf(ref), s);
-      if (s.status === "drafted") {
-        // Never over text typed while Suggest ran.
+      if (s.status === "drafted" && s.answerKind === "choice" && s.choice !== undefined) {
+        // The option goes through Fill's own machinery (mapped onto this field's options, checked after the write), yellow,
+        // never over an answer already there. It is saved for review like a draft, not as a confident answer.
+        const o = await fillChoice(ref, s.choice);
+        tallyChoice(tally, o, whyNot(o));
+      } else if (s.status === "drafted") {
+        // Never over text typed while Suggest ran. A draft that did not go in says why, each reason as itself.
         const o = insertDraft(ref, s.draft, { overwrite: false });
-        if (o.filled) inserted++;
-        else review++;
+        tallyInsert(tally, o, whyNot(o));
+      } else if (s.status === "failed") {
+        tally.failed++;
       } else {
-        left++;
+        tally.left++;
       }
     }
-    const choices = lastUnknown.length - refs.length;
-    toast(`Suggest: ${inserted} drafted for review (yellow)` + (review ? `, ${review} drafts not inserted (the field has text)` : "") +
-      (left ? `, ${left} for you to answer` : "") + (choices > 0 ? `, ${choices} choice questions for you` : "") +
-      ". Click for why. Read every draft before you submit.");
+    // A choice question that was not sent (an older vani, or a field the request left out) is still the person's.
+    const sent = new Set(run.sent.fields.map(f => f.id));
+    const unsent = asks.filter((_, i) => !sent.has(`c${i}`)).length;
+    toast(suggestMessage(tally, { ...split, choice: split.choice + unsent }) + (run.older ? ` ${OLDER_VANI}` : ""));
   } finally {
     suggesting = false;
     helpBusy = false;
     if (b) b.disabled = false;
     void scheduleScan();
   }
+}
+
+/**
+ * Fill the option Suggest picked into a select or radio group, yellow. The match is a synthetic review answer ("fuzzy",
+ * suggest.choiceMatch), so fillRef maps it onto the field's options with mapChoice and refuses a field that already has an
+ * answer. A filled field is then tagged a draft and its fill record dropped: capture saves it for review, never as a
+ * confident answer (a fill record would make capture skip it as Vani's own fill coming back).
+ */
+async function fillChoice(ref: FieldRef, choice: string): Promise<FillOutcome> {
+  const o = await fillRef(ref, choiceMatch(labelOf(ref), ref.info.kind, choice));
+  if (o.filled) {
+    forgetFill(ref);
+    ref.els[0]?.setAttribute("data-vani-draft", "1");
+  }
+  return o;
 }
 
 function chipClass(offer: DraftOffer): string {
@@ -1002,6 +1090,9 @@ async function saveOne(ref: FieldRef): Promise<void> {
   }
   const field: FieldInfo = { ...ref.info };
   delete field.draftText;
+  // Whether this is still Vani's own fill is read from the field now, not from the last scan: an edit since then ends the claim.
+  const by = filledBy(ref.els[0], readRefValue(ref));
+  if (by) field.filledBy = by; else delete field.filledBy;
   if (ref.info.kind === "text" || ref.info.kind === "textarea" || ref.widget === "contenteditable") {
     const live = currentText(ref);
     field.value = live === "" ? [] : [live];
@@ -1104,12 +1195,32 @@ function renderUnknown(c: Coverage): void {
       snip.textContent = held;
       li.append(snip);
     }
+    // Why a saved answer was not used, when there is one (match.whyNoMatch), leads in place of a bare "new question".
+    const why = c.questions?.find(q => q.ordinal === lastRefs.indexOf(ref))?.why;
+    const lines = noteLines({ offer: o.offer, note: o.note, why });
+    if (why) {
+      const w = document.createElement("div");
+      w.className = "why";
+      w.textContent = lines[0]!;
+      li.append(w);
+    }
+    const rest = lines[why ? 1 : 0];
     const note = suggestNotes.get(label);
     if (note && note.status !== "drafted") {
       const m = document.createElement("div");
       m.className = "why";
       m.textContent = note.reason || "Left for you to answer.";
       li.append(m);
+    } else if (note?.status === "drafted" && note.answerKind === "choice") {
+      const snip = document.createElement("div");
+      snip.className = "snip";
+      snip.textContent = note.choice ?? "";
+      const m = document.createElement("div");
+      m.className = "why";
+      m.textContent = ref.info.value.some(v => v.trim() === note.choice)
+        ? "Suggest picked this option (yellow). Check it before you submit."
+        : "Suggest picked this option from the question alone; it is not in the field yet.";
+      li.append(snip, m);
     } else if (note?.status === "drafted" && o.offer !== "regenerate") {
       const snip = document.createElement("div");
       snip.className = "snip";
@@ -1118,10 +1229,10 @@ function renderUnknown(c: Coverage): void {
       m.className = "why";
       m.textContent = "Suggest wrote a draft that is not in the field yet.";
       li.append(snip, m);
-    } else if (o.note) {
+    } else if (rest) {
       const m = document.createElement("div");
       m.className = "why";
-      m.textContent = o.note;
+      m.textContent = rest;
       li.append(m);
     }
     const row = document.createElement("div");
@@ -1133,7 +1244,17 @@ function renderUnknown(c: Coverage): void {
       if (draftEnabled(o.offer)) d.addEventListener("click", () => { void startDraft(ref, job, li, o.offer); });
       row.append(d);
     }
-    if (note?.status === "drafted" && o.offer !== "regenerate" && note.draft.trim()) {
+    if (note?.status === "drafted" && note.answerKind === "choice" && note.choice !== undefined && !ref.info.value.some(v => v.trim() === note.choice)) {
+      const pick = btn("f", `Use: ${preview(note.choice)}`);
+      pick.title = "Fill the option Suggest picked, yellow. An answer already in the field stays.";
+      pick.addEventListener("click", () => {
+        void fillChoice(ref, note.choice!).then(out => {
+          toast(out.filled ? `Filled "${preview(label)}" with the option Suggest picked (yellow). Check it.` : `Couldn't fill: ${whyNot(out)}`);
+          if (out.filled) void scheduleScan();
+        });
+      });
+      row.append(pick);
+    } else if (note?.status === "drafted" && note.answerKind !== "choice" && o.offer !== "regenerate" && note.draft.trim()) {
       const use = btn("f", "Insert draft");
       use.title = "Insert the draft Suggest wrote. Your text stays until you confirm a replace.";
       use.addEventListener("click", () => {

@@ -184,6 +184,98 @@ failed `vani suggest` field, which the extension and the app word for the person
 count of years ("5 years", "five-year"), count only when the seeker's own text says them (the
 evidence, the target summary, the motivation notes): the posting, the question, the company and
 the title do not ground them. "I do not have a PhD" is refused too, as negation is not parsed.
+The refusal quotes the whole token ("B2B", not the 2 in it), and the system prompt states the
+same rule the guard enforces (a number with its unit, years and credentials only from the seeker's
+evidence, acronyms from the shown text). An ungrounded draft gets exactly one repair turn: the same
+evidence, the draft as the assistant's turn, and a trusted instruction naming the unbacked tokens
+(at most 8, each cut, unquoted and unmarked) to rewrite without; the guard runs again and a draft
+still ungrounded fails as before. Both turns share `Timeout` and the daily budget (a budget or
+timeout failure in the repair is reported as such; any other failure of it leaves the first
+refusal). A reply that stopped at `max_tokens` is refused with code `truncated` and one the model
+declined with `refused` (never accepted, never retried); `empty_reply` is now only an end of turn
+with no text. `vani draft` refuses a question `fieldtriage.Sensitive` flags (work authorization,
+self-identification, an agreement) with code `not_drafted` and a `category` field, before the
+config is read or a provider built. One exception, applied by `vani suggest` too
+(`draft.NeverDrafted`): a plain essay prompt that only the broad consent pattern flags ("Describe a
+time a teammate didn't agree with you") is drafted; in Suggest it is read by the decision chain
+instead of being pinned.
+
+Field triage (`career.form_field`) asks, in order: Apple's on-device model through the `vani-fm`
+helper (backend `apple_fm`, `internal/decide/fmbackend`; the label and field type only, free, at
+most 2 helpers at once, 12 s each), then the OpenRouter decision model when configured, then the
+LLM. The helper is found at `$VANI_FM_BINARY` when set (the only candidate then), else next to the
+running `vani` (`../MacOS/vani-fm`), else `/Applications/Vani Apply.app/Contents/MacOS/vani-fm`. A
+missing helper, Apple Intelligence off or not ready, a helper timeout, or 15 s of helper time spent
+in the run (`unavailable/slow`) answers `unavailable`, and then every later question of that run
+does too without starting the helper, so the next backend answers. A refusal or abstention is per
+question. The helper's contract is in macos/README.md, "On-device decisions". The same helper also
+answers the browser extension's `sameQuestion` native op (two question labels, "same" or
+"different"), started by the Chrome host itself and, for Safari, by the Vani Apply agent over XPC.
+
+`vani suggest` fields may carry `max_chars` (the control's maxlength, an integer 0 to 100000, 0 or
+absent for none; a negative or larger value is `bad_request`). It is never sent to a model. A field
+whose `max_chars` is under 260 (MinWords at 6.5 characters a word) is `manual` with reason
+"short-answer field"; otherwise the draft is asked for `max_chars / 6.5` words clamped to 40..180
+(the default length: a limit only ever shortens a draft; the extension's Draft button agrees),
+and a draft longer than `max_chars` loses whole trailing sentences, or fails with code `too_long`
+when no sentence fits. The page's draft cap (`max_drafts`) counts drafts that came back, not tries;
+at most `max_drafts + 2` are tried, and an essay left untried after that is `skipped` with code
+`attempts_exhausted`. An unreadable knowledge base no longer fails the page: every field is still
+triaged and essays, facts and choices come back `failed` with code `kb` (the cause is on stderr).
+The fallback decision LLM runs on `llm.triage_model` when set, else `llm.model`.
+
+Fact and choice answers (`internal/draft/answer.go`, `draft.Drafter.Answer`). A `vani suggest` field
+may be `{"id","label","kind":"choice","options":["Yes","No",...]}`: 2 to 50 options, each 1 to 200
+runes, valid UTF-8, not blank, no two byte-identical, and no `max_chars`; `text` and `textarea`
+fields take no `options` (all `bad_request`). Options are returned byte for byte, never normalised.
+Triage is unchanged: the decision model sees the label and the kind only (`choice` is the kind it
+is told), never an option. Routing, after triage: a label `fieldtriage.Sensitive` flags (work
+authorization, self-identification, consent, and the broader date of birth / SSN / passport
+pattern) stays `manual` and is never sent to any model, whatever the model read; an `essay` text
+field is drafted as before; every other field is answered from the knowledge base in ONE batched,
+tool-less turn per page (same provider, daily budget, `Timeout` and stop-reason handling as a
+draft; the draft model, at high effort), when it is a `text` or `textarea` field read as
+`applicant_fact`, or a `choice` field read as `applicant_fact`, `essay` or `other`. A choice read
+as work authorization, self-identification or consent is `manual`. At most 15 such fields per page
+are asked (page order); the rest are `skipped` with code `answer_cap`. Essays are drafted first, so
+a spent budget or an unreadable knowledge base that stopped them fails the batch's fields with the
+same code without spending. The prompt holds the posting excerpt, the labels and options (all
+untrusted, inside the frame, with question ids `q1`.. made up here, never the page's field ids),
+the target summary and the eligible evidence bullets, each with an id `e1`..; never contact
+details, a name, a location, work authorization or a saved answer (the request has nowhere to carry
+one). If evidence selection picks no bullet, every question is `no_evidence` and no turn is spent.
+The reply is strict JSON: `{"q1":{"answer":"<=30 words","evidence":["e1"]},"q2":{"choice":"<an
+option>","evidence":["e1"]},"q3":{"none":true}}` (a code fence is tolerated). A reply that is not
+one object, has trailing data or a key that is not a question id fails every field `bad_reply`; a
+missing or repeated id, an extra key, a repeated key, an entry that is not exactly one of
+answer/choice/none of the kind the question asks, an answer over 30 words or 400 runes, a choice
+that is not exactly one of the field's options, or a cited evidence id that was not shown fails
+only that field, `failed` with code `bad_reply`. `none` is `manual`, code `no_evidence`, reason
+"Your knowledge base does not answer this.". An answer or chosen option goes through the grounding
+guard (a figure, credential or acronym the evidence and the question do not back; a count of years
+or a credential only the seeker's own text backs) and must cite evidence: otherwise `manual`, code
+`ungrounded` (with `kind` when a claim was found), and there is no repair turn. A text answer over
+the field's `max_chars` is `failed`, `too_long`. Questions whose options do not fit the turn's
+24,000-rune bound are not sent and come back `failed`, code `too_large`. Reply rows gain
+`answer_kind` (`essay`, `fact` or `choice`; omitted when nothing was drafted) and `choice` (only
+on a drafted choice row; its `draft` is empty). A drafted fact or choice row's `reason` says it is
+filled yellow, from the knowledge base and not saved.
+
+Outcome log: every `vani suggest` and `vani draft` appends one line to
+`<state dir>/suggest/outcomes.jsonl` (bounded at 1 MiB; the next line past it moves the file to
+`outcomes.jsonl.1`, replacing the older one; torn tails and symlinked leaves handled). The size
+check, the rotation and the write are one step under an exclusive `filelock` on
+`outcomes.jsonl.lock` beside it, so two `vani` processes (or goroutines) that both see a full log
+cannot rotate it twice and lose a generation. The wait for that lock is at most 2 s; past it the
+record is skipped with a stderr warning, never a failed or held-up command (as is any unwritable
+log). It is counts only: no field id, label, question, draft, answer, posting, company, title or
+error text, and every string in it is cut to a short `[a-z0-9_.:/-]` token (`invalid` otherwise).
+Shape:
+`{"v":1,"time":"RFC3339 UTC","op":"suggest"|"draft","code":"<whole-run failure>","fields":[{"category","status","code","kind","answer_kind","backend","model","turns","repaired","draft_ms"}],"attempts":N,"drafted":N,"cap":N,"answer_asked":N,"answer_answered":N,"answer_turns":N,"answer_ms":N,"triage_ms":N,"draft_ms":N,"total_ms":N}`
+(empty or zero members omitted; `attempts` is drafts asked for, `turns` is provider turns, 2 when
+a repair turn ran; a field's `answer_kind` is what it was drafted as, or sent to the batched turn
+as when that did not come back drafted; `answer_*` are the page's one batched turn: fields asked,
+answered, provider turns (0 when none was spent) and milliseconds).
 
 ## Building a resume
 

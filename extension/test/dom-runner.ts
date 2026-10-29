@@ -1,7 +1,7 @@
 // In-browser DOM tests for extract, fill and the capture tracker, run by opening
 // test/dom.html. Writes PASS/FAIL lines into #results and sets document.title.
-import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, scanForm } from "../src/extract";
-import { clearMarks, fillAll, fillRef, insertDraft } from "../src/fill";
+import { MAX_LABEL, OWN_TEXT_SKIP, collectFields, ownText, readRefValue, sameValues, scanForm } from "../src/extract";
+import { beginFill, clearMarks, fillAll, fillRef, insertDraft, undoFill } from "../src/fill";
 import { auditForm } from "../src/formaudit";
 import { currentText, draftOffer, draftable, suggest } from "../src/suggest";
 import { readJobInfo } from "../src/jobinfo";
@@ -501,7 +501,8 @@ async function dates(): Promise<void> {
   dt1.addEventListener("input", () => inputs++);
   dt1.addEventListener("change", () => changes++);
   // Saved in other shapes than the control accepts: US-order text for a date, a full date for a month.
-  const bank = bankOf(info("Available from", "text", ["05/01/2024"]), info("Graduation month", "text", ["2024-05-01"]), info("Week of arrival", "text", ["2024-W20"]), info("Preferred start", "text", ["05/01/2024"]));
+  // "Preferred start" is a start date: a past one is never filled (match.ts ageOf), so it is in the future here.
+  const bank = bankOf(info("Available from", "text", ["05/01/2024"]), info("Graduation month", "text", ["2024-05-01"]), info("Week of arrival", "text", ["2024-W20"]), info("Preferred start", "text", ["05/01/2099"]));
   const out = await fillAll(scanForm(dstRoot).refs, bank, "x.example");
   const o = (l: string) => out.find(x => x.label === l);
   check("date input: a saved US-order date is written as ISO through the native setter, with input and change events", dt1.value === "2024-05-01" && o("Available from")?.filled === true && direct === 0 && inputs === 1 && changes === 1, `value ${dt1.value} direct ${direct} input ${inputs} change ${changes} ${JSON.stringify(o("Available from"))}`);
@@ -1029,11 +1030,11 @@ async function fillWaits(): Promise<void> {
   box.innerHTML = `<input id="fw-t" type="text"><button id="fw-b" role="combobox" aria-haspopup="listbox" aria-controls="fw-l">Select</button><div id="fw-l" role="listbox"></div>`;
   document.body.appendChild(box);
   const btn = q<HTMLButtonElement>(box, "#fw-b"), list = q<HTMLElement>(box, "#fw-l"), txt = q<HTMLInputElement>(box, "#fw-t");
-  let renderedAt = 0;
+  let renderedAt = 0, chosenAt = 0;
   btn.addEventListener("click", () => setTimeout(() => {
     renderedAt = performance.now();
     list.innerHTML = `<div role="option">Yes</div><div role="option">No</div>`;
-    for (const o of Array.from(list.children)) o.addEventListener("click", () => { btn.textContent = o.textContent; });
+    for (const o of Array.from(list.children)) o.addEventListener("click", () => { chosenAt = performance.now(); btn.textContent = o.textContent; });
   }, 30));
   const fi = (label: string, kind: FieldInfo["kind"]): FieldInfo => ({ kind, label, name: "", autocomplete: "", automationId: "", options: [], required: false, value: [] });
   const refs: Ref[] = [
@@ -1051,8 +1052,10 @@ async function fillWaits(): Promise<void> {
   const took = done - t0;
   // Headless Chrome throttles page timers by hundreds of ms, and by different amounts per timer, so
   // total time says little. What the fill controls is how soon it acts once the options exist: the
-  // old code polled every 25 ms behind a 500 ms open wait and a 600 ms verdict wait.
-  const afterRender = renderedAt > 0 ? done - renderedAt : Infinity;
+  // old code polled every 25 ms behind a 500 ms open wait and a 600 ms verdict wait. It is read at the click on the
+  // option, not at the end of fillAll: in a hidden tab (headless Chrome's page is one) a pass ends with one bounded
+  // wait that its writes are confirmed in (fill.ts confirmLate), which is not the fill being slow to act.
+  const afterRender = renderedAt > 0 && chosenAt > 0 ? chosenAt - renderedAt : Infinity;
   check("fill waits: outcomes come back in the original field order", out[0]?.label === "Relocate fw" && out[1]?.label === "City fw", JSON.stringify(out));
   check("fill waits: a list that renders 30 ms after the click is chosen, and the plain field is filled first", out.every(o => o.filled) && btn.textContent === "Yes" && txt.value === "Oslo" && btnSeenWhenTextFilled === "Select", `${JSON.stringify(out)} btn ${btn.textContent} seen ${btnSeenWhenTextFilled}`);
   check("fill waits: the fill acts on the options as soon as they render", afterRender < 150, `${Math.round(afterRender)} ms after render (${Math.round(took)} ms in all)`);
@@ -1200,6 +1203,91 @@ async function oneFieldSave(): Promise<void> {
   }
 }
 
+/**
+ * What Fill wrote, undo, the write check and the live maxlength, on real controls: a field Fill filled reads `filledBy` until the
+ * person edits it, a capture carries it, `readRefValue` is exactly what the scan reads on every widget of this page, a controlled
+ * input that reverts a write is not reported filled, and Undo puts back only what Fill wrote.
+ */
+async function provenanceAndUndo(): Promise<void> {
+  const box = document.createElement("form");
+  box.innerHTML = `
+    <div class="field"><label for="pv-n">Pv nickname</label><input id="pv-n" name="pv-name"></div>
+    <div class="field"><label for="pv-c">Years of Rust</label><input id="pv-c" name="pv-yrs" maxlength="3"></div>
+    <div class="field"><label for="pv-t">About you</label><textarea id="pv-t" name="pv-about" maxlength="300"></textarea></div>
+    <div class="field"><label for="pv-num">Shoe size</label><input id="pv-num" type="number" maxlength="2"></div>
+    <div class="field"><label for="pv-s">Pv tone</label><select id="pv-s" name="pv-sel"><option value="">Select</option><option>Formal</option><option>Casual</option></select></div>
+    <fieldset><legend>Remote only</legend><label><input type="radio" name="pv-r" value="1"> Yes</label><label><input type="radio" name="pv-r" value="0"> No</label></fieldset>
+    <div class="field"><label><input type="checkbox" name="pv-cb"> I accept the pv terms</label></div>`;
+  document.body.append(box);
+  const input = (id: string) => box.querySelector(`#${id}`) as HTMLInputElement;
+  const bank = (rows: Array<[string, string[]]>): Bank => {
+    const b = emptyBank();
+    for (const [key, value] of rows) b.answers[key] = { key, labels: [key], kind: "text", value, sensitivity: "standard", signatures: [], uses: 1, fills: 0, updatedAt: "2025-01-01T00:00:00Z", review: false };
+    return b;
+  };
+  const saved = bank([["pv nickname", ["Sam"]], ["years of rust", ["7"]], ["about you", ["I build things."]], ["pv tone", ["Casual"]], ["remote only", ["No"]], ["i accept the pv terms", ["yes"]]]);
+  const refs = () => scanForm(box).refs;
+  const by = (label: string) => refs().find(r => r.info.label === label);
+  try {
+    const before = refs();
+    const limit = (label: string) => before.find(r => r.info.label === label)?.info.maxChars;
+    check("maxChars: the live maxlength of a text input and a textarea, none for a number input or no limit", limit("Years of Rust") === 3 && limit("About you") === 300 && limit("Shoe size") === undefined && limit("Pv nickname") === undefined, before.map(r => `${r.info.label}:${r.info.maxChars}`).join(" "));
+    input("pv-c").setAttribute("maxlength", "9");
+    check("maxChars: a limit the page changes after render is read again", by("Years of Rust")?.info.maxChars === 9);
+    input("pv-c").setAttribute("maxlength", "3");
+
+    const parity = scanForm(document).refs.filter(r => !sameValues(readRefValue(r), r.info.value));
+    check("readRefValue equals the scan's value on every field of the whole test page", parity.length === 0, parity.map(r => `${r.info.label}: ${JSON.stringify(readRefValue(r))} vs ${JSON.stringify(r.info.value)}`).join(" | "));
+
+    beginFill();
+    const out = await fillAll(refs(), saved, "x.example", { overwrite: true });
+    check("provenance: Fill filled the page's fields", out.filter(o => o.filled).length === 6, JSON.stringify(out.map(o => [o.label, o.filled, o.reason])));
+    check("provenance: every field Fill wrote reads filledBy with its answer key", ["Pv nickname", "Years of Rust", "About you", "Pv tone", "Remote only", "I accept the pv terms"].every(l => by(l)?.info.filledBy?.key === l.toLowerCase()), refs().map(r => `${r.info.label}:${JSON.stringify(r.info.filledBy)}`).join(" "));
+    check("provenance: a field Fill did not write has none", by("Shoe size")?.info.filledBy === undefined);
+    check("parity still holds on filled widgets (radio group, select, checkbox)", scanForm(box).refs.every(r => sameValues(readRefValue(r), r.info.value)));
+
+    const sent: FieldInfo[] = [];
+    const t = createTracker({ doc: document, host: "x.example", getBank: async () => emptyBank(), send: async f => { sent.push(...f); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; } });
+    try {
+      await t.flush("saved", true);
+      const name = sent.find(f => f.label === "Pv nickname");
+      check("provenance: a capture of an untouched fill carries filledBy", name?.filledBy?.key === "pv nickname" && name.filledBy.review === false, JSON.stringify(name));
+      sent.length = 0;
+      input("pv-n").value = "Sammy";
+      await t.flush("saved", true);
+      const edited = sent.find(f => f.label === "Pv nickname");
+      check("provenance: an edit removes it, however small, and the edited value is what is sent", edited !== undefined && edited.filledBy === undefined && edited.value.join() === "Sammy", JSON.stringify(edited));
+    } finally {
+      t.dispose();
+    }
+
+    const rep = await undoFill();
+    check("undo: puts the fields back, and not the one the person edited", rep.restored === 5 && rep.edited === 1 && input("pv-c").value === "" && (box.querySelector("#pv-t") as HTMLTextAreaElement).value === "" && (box.querySelector("#pv-s") as HTMLSelectElement).value === "" && input("pv-n").value === "Sammy", JSON.stringify(rep));
+    check("undo: radio and checkbox are back to unchecked", !(box.querySelector("input[name=pv-r][value='0']") as HTMLInputElement).checked && !(box.querySelector("input[name=pv-cb]") as HTMLInputElement).checked);
+    check("undo: outlines and records are gone for the restored, the edited keeps its outline", by("Years of Rust")?.info.filledBy === undefined && input("pv-c").getAttribute("data-vani-fill") === null && input("pv-n").getAttribute("data-vani-fill") !== null);
+    clearMarks(box);
+
+    // A controlled input: takes the write, and puts its own (empty) state back a moment later.
+    const ctl = input("pv-n");
+    ctl.value = "";
+    let writes = 0;
+    const revert = () => { writes++; queueMicrotask(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(ctl, ""); }); };
+    ctl.addEventListener("input", revert);
+    const lost = await fillRef(by("Pv nickname")!, { answer: saved.answers["pv nickname"]!, via: "label", score: 1, value: ["Sam"], review: false });
+    check("write-verify: a control that reverts every write is never reported filled", lost.filled === false && lost.reason === "manual" && lost.detail === "the page did not keep the value" && ctl.value === "" && writes === 2, JSON.stringify({ lost, writes }));
+    ctl.removeEventListener("input", revert);
+    let first = true;
+    const revertOnce = (e: Event) => { if (first && (e as InputEvent).inputType !== "insertText") { first = false; queueMicrotask(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(ctl, ""); }); } };
+    ctl.addEventListener("input", revertOnce);
+    const kept = await fillRef(by("Pv nickname")!, { answer: saved.answers["pv nickname"]!, via: "label", score: 1, value: ["Sam"], review: false });
+    check("write-verify: a revert of the first write is retried once, as typing, and kept", kept.filled === true && ctl.value === "Sam", JSON.stringify({ kept, value: ctl.value }));
+    ctl.removeEventListener("input", revertOnce);
+  } finally {
+    box.remove();
+    clearMarks(document);
+  }
+}
+
 async function main(): Promise<void> {
   for (const [name, fn] of [
     ["resume attach", resumeAttach],
@@ -1225,6 +1313,7 @@ async function main(): Promise<void> {
     ["greenhouse scraper", greenhouseScraperFixture],
     ["field limits", fieldLimits],
     ["fill waits", fillWaits],
+    ["provenance and undo", provenanceAndUndo],
     ["dependent fields", dependentFields],
     ["dependent fields in a shadow root", dependentFieldsInShadow],
   ] as const) {

@@ -44,7 +44,9 @@ export interface PortTransportOptions {
 /** Ops answered from the bank file or the agent at once. Anything else (draft, jobFind, jobMark, jobsIngest,
  *  resumeOpen, resumeOpenData, unknown) runs per message so it cannot hold up the serial host's bank ops.
  *  resumeOpen is excluded on purpose: the host then calls NSWorkspace.open, which can stall until the
- *  port's own timeout and would block every bank call queued behind it. */
+ *  port's own timeout and would block every bank call queued behind it. sameQuestion is excluded for the
+ *  same reason (it runs the on-device model, seconds not milliseconds) and because the port clamps a
+ *  call's deadline to callTimeoutMs, where the per-message spawn keeps the caller's 8 s. */
 const PORT_OPS = new Set([
   "ping", "get", "getChunk", "put", "patch", "log",
   "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "jobStart", "jobResult",

@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_BANK_BYTES } from "../src/bank";
-import { SENDER_POLICY, type ToBackground, TO_BACKGROUND, checkToBackground } from "../src/messages";
+import { SENDER_POLICY, type ToBackground, TO_BACKGROUND, checkSender, checkToBackground } from "../src/messages";
 import { MAX_RESUME_BYTES, toBase64 } from "../src/resume";
 
 type Listener = (msg: unknown, sender: object, sendResponse: (r?: unknown) => void) => boolean;
@@ -83,7 +83,7 @@ describe("adversarial: sender shapes", () => {
   const valid: Record<string, Record<string, unknown>> = {
     setSettings: { settings: { captureSelfId: true } }, deleteAnswer: { key: "zz" }, editAnswer: { key: "zz", value: ["v"] },
     replaceBank: { json: bankJson }, resumeInfo: { url: own }, resumeDelete: { url: own },
-    filled: { keys: [] }, draft: { question: "Why?" }, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" },
+    filled: { keys: [] }, draft: { question: "Why?" }, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" }, sameQuestion: { a: "Notice period", b: "When can you start?" },
     jobRow: { url: own }, jobKey: { url: own }, frameReady: {}, resumeGet: { url: own }, resumePreview: {},
     resumeShow: { name: "R.pdf", pdf: pdfOf(32) }, attachResume: { name: "R.pdf", pdf: pdfOf(32), pickedAt: "" },
   };
@@ -302,5 +302,24 @@ describe("adversarial: replaceBank bound", () => {
     expect(r.replies[0]).not.toEqual({ error: "malformed replaceBank message" });
     expect(r.replies[0]).not.toMatchObject({ error: expect.stringContaining("larger than") });
     expect(await ask({ type: "replaceBank", json: withUnits(MAX_BANK_BYTES + 1) }, {})).toEqual({ async: false, replies: [{ error: "malformed replaceBank message" }] });
+  });
+});
+
+describe("the popup in a tab of its own is still the popup; a page never is", () => {
+  const own = "chrome-extension://clhaobdmkmapebgnmpcfmakbfakmgfip/";
+  test("an extension page in a tab may send popup messages and not content ones", () => {
+    const popupTab = { tab: { id: 4 }, url: own + "popup.html" };
+    expect(checkSender("replaceBank", popupTab, own)).toBeNull();
+    expect(checkSender("sameQuestion", popupTab, own)).toEqual({ error: "sameQuestion is not accepted from the popup", code: "bad_request" });
+  });
+  test("a page, or another extension's page, in a tab is content", () => {
+    for (const url of ["https://job-boards.greenhouse.io/acme/jobs/1", "chrome-extension://otherextensionidxxxxxxxxxxxxxxxxx/popup.html", own.slice(0, -1) + "x/popup.html", ""]) {
+      expect(checkSender("replaceBank", { tab: { id: 4 }, url }, own)).toEqual({ error: "replaceBank is not accepted from a page", code: "bad_request" });
+    }
+    expect(checkSender("replaceBank", { tab: { id: 4 } }, own)).not.toBeNull();
+  });
+  test("without the extension's own URL a tab is content, as before", () => {
+    expect(checkSender("replaceBank", { tab: { id: 4 }, url: own + "popup.html" })).not.toBeNull();
+    expect(checkSender("replaceBank", {}, own)).toBeNull();
   });
 });

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Answer, Bank, FieldInfo, Match } from "../src/types";
-import { CONFIDENT, MIN_FUZZY, matchField, valueFor } from "../src/match";
+import { CONFIDENT, MIN_FUZZY, ageOf, matchField, valueFor, whyNoMatch } from "../src/match";
 import { bankIndexBuilds, bankIndexFor, fuzzyCandidates } from "../src/bankindex";
-import { autocompleteKey, jaccard, normalizeLabel, signature, tokens } from "../src/normalize";
+import { AUTOCOMPLETE_MEANINGS, autocompleteKey, contactOf, jaccard, normalizeLabel, signature, tokens } from "../src/normalize";
 import { classify, untouchable } from "../src/classify";
 import { entryReadings, legacyEntryKey } from "../src/sections";
 import { intentByKey, intentOf, motivationEssay } from "../src/intents";
@@ -10,9 +10,11 @@ import { emptyBank } from "../src/types";
 
 /**
  * The oracle: matchField exactly as it was before the bank index, scanning every answer for every
- * field. Kept here only, so the indexed matchField is held to the old behaviour answer for answer.
+ * field. Kept here only, so the indexed matchField is held to the same ranking answer for answer (the
+ * ranking itself is held by stale-answers.test.ts; this holds the index to a scan of it).
  */
-function naiveMatchField(field: FieldInfo, bank: Bank, host: string): Match | null {
+const NOW = Date.parse("2026-10-28T12:00:00Z");
+function naiveMatchField(field: FieldInfo, bank: Bank, host: string, now: number = NOW): Match | null {
   if (untouchable(field.kind)) return null;
   const sens = classify(field);
   if (sens === "secret") return null;
@@ -23,16 +25,31 @@ function naiveMatchField(field: FieldInfo, bank: Bank, host: string): Match | nu
   const usable = (a: Answer) => a.sensitivity !== "secret" && (a.sensitivity !== "self_id" || bank.settings.captureSelfId);
   const candidates: Array<{ a: Answer; via: Match["via"]; score: number }> = [];
 
-  const sig = signature(host, field);
-  if (sig) {
-    for (const a of answers) if (usable(a) && a.signatures.includes(sig)) candidates.push({ a, via: "signature", score: 1 });
-  }
-  const ak = autocompleteKey(field.autocomplete);
-  if (ak && bank.answers[ak] && usable(bank.answers[ak]!)) candidates.push({ a: bank.answers[ak]!, via: "autocomplete", score: 0.95 });
-
   const label = normalizeLabel(field.label);
   const legacy = legacyEntryKey(label);
   const [page] = entryReadings(label, false);
+
+  const stamp = (a: Answer) => Date.parse(a.updatedAt) || 0;
+  let ambiguous = false;
+  let held: Answer | undefined; // the newest answer the id named and the wording overruled (the Match's alternative)
+  const sig = signature(host, field);
+  if (sig) {
+    const ft = page ? tokens(page.base) : new Set<string>();
+    const worded = label ? answers.filter(a => usable(a) && (a.key === label || a.labels.includes(label))) : [];
+    const readsAsThis = (a: Answer) => worded.includes(a) || ft.size === 0 ||
+      [a.key, ...a.labels].some(l => entryReadings(l, true).some(e => jaccard(ft, tokens(e.base)) >= MIN_FUZZY));
+    for (const a of answers) {
+      if (!usable(a) || !a.signatures.includes(sig)) continue;
+      if (worded.length > 0 && !readsAsThis(a)) {
+        ambiguous = true;
+        if (!held || stamp(a) > stamp(held)) held = a;
+        continue;
+      }
+      candidates.push({ a, via: "signature", score: 1 });
+    }
+  }
+  const ak = autocompleteKey(field.autocomplete);
+  if (ak && bank.answers[ak] && usable(bank.answers[ak]!)) candidates.push({ a: bank.answers[ak]!, via: "autocomplete", score: 0.95 });
   if (label && page) {
     const ft = tokens(page.base);
     for (const a of answers) {
@@ -61,21 +78,37 @@ function naiveMatchField(field: FieldInfo, bank: Bank, host: string): Match | nu
     }
   }
 
-  const isWant = (a: Answer) => Boolean(want && [a.key, ...a.labels].some(l => intentOf(l) === want));
+  const contact = want ? "" : ak || contactOf(field.label);
+  const contactsOf = (a: Answer) => new Set([a.key, ...a.labels].map(w => contactOf(w) || (AUTOCOMPLETE_MEANINGS.has(w) ? w : "")).filter(Boolean));
+  const intentsOf = (a: Answer) => new Set([a.key, ...a.labels].map(l => intentOf(l)).filter(Boolean));
+  if (contact) {
+    for (const a of answers) if (usable(a) && contactsOf(a).has(contact)) candidates.push({ a, via: "autocomplete", score: 0.9 });
+  }
 
+  const member = (a: Answer) => want ? intentsOf(a).has(want) : contact !== "" && contactsOf(a).has(contact);
+  const direct = (c: { a: Answer; score: number }) => c.score >= 0.9 || member(c.a);
   candidates.sort((x, y) => {
-    if (want && isWant(x.a) && isWant(y.a)) {
-      const timeCmp = (y.a.updatedAt ?? "").localeCompare(x.a.updatedAt ?? "");
-      if (timeCmp !== 0) return timeCmp;
-    }
-    return y.score - x.score ||
-      (x.via === "intent" && y.via === "intent" ? (y.a.updatedAt ?? "").localeCompare(x.a.updatedAt ?? "") : y.a.uses - x.a.uses);
+    const dx = direct(x), dy = direct(y);
+    if (dx !== dy) return dx ? -1 : 1;
+    if (!dx && x.score !== y.score) return y.score - x.score;
+    return stamp(y.a) - stamp(x.a) || y.a.uses - x.a.uses || (x.a.key < y.a.key ? -1 : x.a.key > y.a.key ? 1 : 0) || y.score - x.score;
   });
   for (const c of candidates) {
     const value = valueFor(field, c.a);
-    if (!value) continue;
+    if (!value) {
+      if (c.score >= CONFIDENT) return null;
+      continue;
+    }
+    const age = ageOf(field, want, intentsOf(c.a), c.a, value, now);
+    if (age === "past") return null;
     const partial = (field.multi === true || (field.kind === "checkbox" && field.options.length > 1)) && value.length < c.a.value.length;
-    return { answer: c.a, via: c.via, score: c.score, value, review: c.score < CONFIDENT || c.a.review || partial || intent?.review === true };
+    const m: Match = { answer: c.a, via: c.via, score: c.score, value, review: c.score < CONFIDENT || c.a.review || partial || intent?.review === true || age !== null || ambiguous };
+    if (age) m.note = age.note;
+    if (held) {
+      const xv = held === c.a ? null : valueFor(field, held);
+      if (xv && ageOf(field, want, intentsOf(held), held, xv, now) === null) m.alternative = { answer: held, value: xv, wording: held.labels.at(-1) ?? held.key };
+    }
+    return m;
   }
   return null;
 }
@@ -177,26 +210,37 @@ function gen(seed: number, size: number): { bank: Bank; fields: FieldInfo[] } {
   return { bank, fields };
 }
 
-const summary = (m: Match | null) => m && { key: m.answer.key, via: m.via, score: m.score, review: m.review, value: m.value };
+const summary = (m: Match | null) => m && {
+  key: m.answer.key, via: m.via, score: m.score, review: m.review, value: m.value,
+  alternative: m.alternative && { key: m.alternative.answer.key, value: m.alternative.value, wording: m.alternative.wording },
+};
 
 describe("indexed matchField equals the full scan", () => {
   test("randomized banks and fields (seeded), 2000-answer bank included", () => {
-    let cases = 0, hits = 0;
+    let cases = 0, hits = 0, alternatives = 0, refusals = 0;
     const vias = new Set<string>();
     for (let seed = 1; seed <= 24; seed++) {
       const size = seed === 24 ? 2000 : seed % 6 === 0 ? 0 : 5 + seed * 17;
       const { bank, fields } = gen(seed, size);
       for (const f of fields) {
-        const got = matchField(f, bank, HOST);
+        const got = matchField(f, bank, HOST, NOW);
         const want = naiveMatchField(f, bank, HOST);
         expect(summary(got)).toEqual(summary(want));
         expect(got?.answer).toBe(want?.answer); // the same object, not just an equal one
+        expect(got?.alternative?.answer).toBe(want?.alternative?.answer);
+        // whyNoMatch rides the same walk: a filled field has nothing to explain, and it never changes what is filled.
+        const why = whyNoMatch(f, bank, HOST, NOW);
+        if (want) expect(why).toBeNull();
+        if (why !== null) refusals++;
         cases++;
         if (want) { hits++; vias.add(want.via); }
+        if (want?.alternative) alternatives++;
       }
     }
     expect(cases).toBeGreaterThanOrEqual(500);
     expect(hits).toBeGreaterThan(100); // the generator reaches real matches, not just misses
+    expect(alternatives).toBeGreaterThan(0); // and real id-versus-wording disagreements
+    expect(refusals).toBeGreaterThan(0); // and refused candidates
     for (const via of ["signature", "autocomplete", "label", "fuzzy", "intent"]) expect(vias.has(via)).toBe(true);
     // The naive oracle scans every answer per field: about 2 s alone, 7 s on a loaded machine.
   }, 60_000);
@@ -204,8 +248,8 @@ describe("indexed matchField equals the full scan", () => {
   test("the bank changing under the same settings does not matter: a second bank is indexed on its own", () => {
     const a = gen(101, 80), b = gen(102, 80);
     for (const f of a.fields) {
-      expect(summary(matchField(f, a.bank, HOST))).toEqual(summary(naiveMatchField(f, a.bank, HOST)));
-      expect(summary(matchField(f, b.bank, HOST))).toEqual(summary(naiveMatchField(f, b.bank, HOST)));
+      expect(summary(matchField(f, a.bank, HOST, NOW))).toEqual(summary(naiveMatchField(f, a.bank, HOST)));
+      expect(summary(matchField(f, b.bank, HOST, NOW))).toEqual(summary(naiveMatchField(f, b.bank, HOST)));
     }
   });
 
@@ -213,7 +257,7 @@ describe("indexed matchField equals the full scan", () => {
     const { bank, fields } = gen(7, 300);
     for (const on of [false, true, false]) {
       bank.settings.captureSelfId = on;
-      for (const f of fields) expect(summary(matchField(f, bank, HOST))).toEqual(summary(naiveMatchField(f, bank, HOST)));
+      for (const f of fields) expect(summary(matchField(f, bank, HOST, NOW))).toEqual(summary(naiveMatchField(f, bank, HOST)));
     }
   });
 });
@@ -275,6 +319,6 @@ describe("one index per bank", () => {
   test("an empty bank and an empty label match nothing", () => {
     const f: FieldInfo = { kind: "text", label: "", name: "", autocomplete: "", automationId: "", options: [], required: false, value: [] };
     expect(matchField(f, emptyBank(), HOST)).toBeNull();
-    expect(matchField(f, gen(3, 40).bank, HOST)).toEqual(naiveMatchField(f, gen(3, 40).bank, HOST));
+    expect(matchField(f, gen(3, 40).bank, HOST, NOW)).toEqual(naiveMatchField(f, gen(3, 40).bank, HOST));
   });
 });

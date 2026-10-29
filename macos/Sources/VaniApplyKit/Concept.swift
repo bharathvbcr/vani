@@ -25,75 +25,102 @@ extension Classifier {
 
     // MARK: intents (extension/src/intents.ts; only the label and the patterns matter here)
 
-    private static let intents: [(key: String, patterns: [NSRegularExpression])] = [
-        ("Authorized to work", [
+    private struct IntentRule {
+        let key: String
+        let patterns: [NSRegularExpression]
+        /// An answer about the US: a question naming another country is no intent.
+        let usOnly: Bool
+        /// A question phrased as the opposite of the intent is no intent.
+        let unless: [NSRegularExpression]
+    }
+
+    private static func rule(_ label: String, _ patterns: [String], usOnly: Bool = false, unless: [String] = []) -> IntentRule {
+        IntentRule(key: normalizeLabel(label), patterns: patterns.map(js), usOnly: usOnly, unless: unless.map(js))
+    }
+
+    /// Countries and blocs other than the US, on normalized text (intents.ts FOREIGN).
+    private static let foreign = js(#"\b(uk|u k|united kingdom|great britain|britain|england|scotland|wales|northern ireland|ireland|eu|e u|european union|europe|eea|canada|mexico|india|germany|france|spain|italy|netherlands|holland|belgium|switzerland|austria|sweden|norway|denmark|finland|poland|portugal|australia|new zealand|singapore|japan|china|hong kong|korea|israel|brazil|argentina|uae|united arab emirates|south africa|nigeria|kenya|philippines|pakistan|bangladesh|vietnam|indonesia|malaysia|thailand|taiwan|turkey|czechia|romania|ukraine|greece|hungary)\b"#)
+
+    private static let intents: [IntentRule] = [
+        rule("Authorized to work", [
             #"\b(authori[sz]ed|eligible|permitted|legally able|entitled) to work\b"#,
             #"\bwork authori[sz]ation\b"#,
             #"\bright to work\b"#,
+        ], usOnly: true, unless: [
+            #"\b(not|unable to|cannot|cant) (be )?(legally )?(authori[sz]ed|eligible|permitted|entitled)\b"#,
+            #"\bwithout (work )?authori[sz]ation\b"#,
         ]),
-        ("Visa sponsorship", [#"\bsponsor(ship|ed|ing)?\b"#]),
-        ("Open to relocation", [
+        rule("Visa sponsorship", [#"\bsponsor(ship|ed|ing)?\b"#], usOnly: true, unless: [
+            #"\bwithout\b.*\bsponsor"#,
+            #"\b(not|no longer|never|dont|wont|cannot|cant)\b.{0,30}\b(requir\w*|need\w*)\b.{0,30}\bsponsor"#,
+            #"\bno (visa )?sponsorship\b"#,
+            #"\bsponsorship\b.{0,20}\bnot (required|needed|necessary)\b"#,
+        ]),
+        rule("Open to relocation", [
             #"\b(open|willing|able|consider|considering|happy)\b.*\breloca(te|tion|ting)\b"#,
-        ]),
-        ("Open to working in person", [
+        ], usOnly: true),
+        rule("Open to working in person", [
             #"\b(open|willing|able|comfortable|happy|commit|agree)\b.*\b(in person|onsite|on site|in office|in the office|in (one of )?(our|the|an|a) offices?|from (our|the) [a-z ]*office|hybrid)\b"#,
             #"\b(in person|onsite|on site|hybrid)\b.*\b(open|willing|able|comfortable)\b"#,
         ]),
-        ("Where you'll work from", [
+        rule("Where you'll work from", [
             #"\baddress from which you\b"#,
             #"\bwhere (youll|you will|will you) (be )?(work|working|based)( from)?\b"#,
             #"\bwhere (are|do) you (currently )?(located|based|live|living)\b"#,
             #"\b(your|current) (current )?location\b"#,
         ]),
-        ("Interviewed here before", [
+        rule("Interviewed here before", [
             #"\b(ever|previously|before|past)\b.*\binterviewed (at|with|for|here)\b"#,
             #"\binterviewed (at|with|for|here)\b.*\b(before|previously|in the past)\b"#,
         ]),
-        ("Applied here before", [
+        rule("Applied here before", [
             #"\b(ever|previously|before|past)\b.*\bapplied (to|at|with|here)\b"#,
             #"\bapplied (to|at|with|here)\b.*\b(before|previously|in the past)\b"#,
         ]),
-        ("Earliest start date", [
+        rule("Earliest start date", [
             #"\b(earliest|soonest)\b.*\bstart\b"#,
             #"\b(when|how soon)\b.*\b(can|could|would|able to)\b.*\bstart\b"#,
             #"\b(desired|preferred|expected|available|availability|potential) start\b"#,
             #"\bavailab\w*\b.*\bto start\b"#,
             #"\bnotice period\b"#,
         ]),
-        ("Deadlines or timeline considerations", [
+        rule("Deadlines or timeline considerations", [
             #"\bdeadlines?\b"#,
             #"\btimeline\b"#,
             #"\b(other|competing|pending|outstanding) offers?\b"#,
         ]),
-        ("How did you hear about us", [
+        rule("How did you hear about us", [
             #"\bhow did you (hear|learn|find out|come across|discover)\b"#,
             #"\bwhere did you (hear|learn|find|see)\b"#,
         ]),
-        ("Salary expectations", [
+        rule("Salary expectations", [
             #"\b(salary|compensation|pay)\b.*\b(expectations?|requirements?|range|desired|expected)\b"#,
             #"\b(expected|desired|target) (salary|compensation|pay|base)\b"#,
         ]),
-        ("AI policy for applications", [
+        rule("AI policy for applications", [
             #"\bai\b.*\bpolic(y|ies)\b"#,
             #"\bpolic(y|ies)\b.*\bai\b"#,
             #"\b(use of|using) (ai|artificial intelligence)\b"#,
         ]),
-        ("Arbitration agreement", [#"\barbitrat(e|ion|or)\b"#]),
-        ("Gender", [#"\bgender\b"#]),
-        ("Hispanic or Latino", [#"\bhispanic\b"#, #"\blatin[oax]\b"#]),
-        ("Race", [#"\brace\b"#, #"\bracial\b"#]),
-        ("Veteran status", [#"\bveteran\b"#]),
-        ("Disability status", [#"\bdisabilit(y|ies)\b"#, #"\bdisabled\b"#]),
-    ].map { (normalizeLabel($0.0), $0.1.map(js)) }
+        rule("Arbitration agreement", [#"\barbitrat(e|ion|or)\b"#]),
+        rule("Gender", [#"\bgender\b"#]),
+        rule("Hispanic or Latino", [#"\bhispanic\b"#, #"\blatin[oax]\b"#]),
+        rule("Race", [#"\brace\b"#, #"\bracial\b"#]),
+        rule("Veteran status", [#"\bveteran\b"#]),
+        rule("Disability status", [#"\bdisabilit(y|ies)\b"#, #"\bdisabled\b"#]),
+    ]
 
     private static let sectionEntry = js(#"\bvani section \d+$"#)
 
-    /// The intent a question asks, or "" when it asks none, or reads as more than one.
+    /// The intent a question asks, or "" when it asks none, reads as more than one, names another
+    /// country, or asks the opposite ("without needing sponsorship").
     static func intentOf(_ question: String) -> String {
         let q = normalizeLabel(question)
         if q.isEmpty || hit(sectionEntry, q) { return "" }
         var found = ""
         for i in intents where i.patterns.contains(where: { hit($0, q) }) {
+            if i.usOnly && hit(foreign, q) { return "" }
+            if i.unless.contains(where: { hit($0, q) }) { return "" }
             if !found.isEmpty { return "" }
             found = i.key
         }
@@ -106,7 +133,8 @@ extension Classifier {
         "a", "an", "the", "your", "you", "yours", "do", "does", "are", "is", "be", "of", "to", "in", "on",
         "for", "and", "or", "please", "enter", "provide", "what", "which", "if", "any", "this", "that",
         "with", "at", "by", "as", "me", "my", "we", "our", "us", "will", "would", "can", "have", "has",
-        "url", "link", "profile", "page", "number", "handle", "here",
+        // "handle" is not one: a handle is the account name, a different value from the URL that holds it.
+        "url", "link", "profile", "page", "number", "here",
     ]
 
     private static let phrases: [(NSRegularExpression, String)] = [

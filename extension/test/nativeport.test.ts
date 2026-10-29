@@ -264,10 +264,11 @@ describe("port transport: backoff and the per-message fallback", () => {
 
   test("ops that can take seconds go per message and never touch the port", async () => {
     const { t, ports, spawned } = rig();
-    for (const op of ["draft", "jobFind", "jobMark", "jobsIngest", "resumeOpen", "somethingNew"]) {
+    // sameQuestion runs the on-device model: on the port it would block bank calls and be clamped to the port's 5 s.
+    for (const op of ["draft", "jobFind", "jobMark", "jobsIngest", "resumeOpen", "sameQuestion", "somethingNew"]) {
       expect(((await t({ op })) as { via: string }).via).toBe("spawn");
     }
-    expect(spawned.map(m => m.op)).toEqual(["draft", "jobFind", "jobMark", "jobsIngest", "resumeOpen", "somethingNew"]);
+    expect(spawned.map(m => m.op)).toEqual(["draft", "jobFind", "jobMark", "jobsIngest", "resumeOpen", "sameQuestion", "somethingNew"]);
     expect(ports.length).toBe(0);
   });
 
@@ -483,6 +484,19 @@ describe("port transport: a shorter per-call deadline", () => {
       expect(ingest.box.ok).toBe(false);
       expect(String((ingest.box.e as Error).message)).toBe("spawn 40000");
     });
+  });
+
+  test("sameQuestion keeps the 8 s the background gives it, past the port's 5 s", async () => {
+    const spawned: { msg: object; ms: number | undefined }[] = [];
+    const ports: FakePort[] = [];
+    const t = createPortTransport({
+      connect: () => { const p = new FakePort(); ports.push(p); return p; },
+      spawn: async (msg, ms) => { spawned.push({ msg, ms }); return { reading: "answered", value: "same" }; },
+      callTimeoutMs: 5_000,
+    });
+    await t({ op: "sameQuestion", a: "A", b: "B" }, 8_000);
+    expect(ports.length).toBe(0);
+    expect(spawned).toEqual([{ msg: { op: "sameQuestion", a: "A", b: "B" }, ms: 8_000 }]);
   });
 });
 

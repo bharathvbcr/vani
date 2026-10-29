@@ -14,7 +14,8 @@ import (
 // is merged. The veto only ever lowers a tier.
 //
 // The tokens are the Mac app's and extension's own (extension/src/normalize.ts
-// tokens()): the same stopwords (which drop url, link, profile, number, handle),
+// tokens()): the same stopwords (which drop url, link, profile, number; a handle
+// is not a URL, so "handle" is kept),
 // phrase folding and light stemmer, so a pair this code calls one-word-apart is
 // one-word-apart to the concept key too. extension/test/vectors/tokens.json is
 // generated from the TypeScript and replayed here and by bun test
@@ -32,7 +33,7 @@ var lexStopwords = func() map[string]bool {
 	for _, w := range strings.Fields(`a an the your you yours do does are is be of to in on
 		for and or please enter provide what which if any this that
 		with at by as me my we our us will would can have has
-		url link profile page number handle here`) {
+		url link profile page number here`) {
 		m[w] = true
 	}
 	return m

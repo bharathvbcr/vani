@@ -6,7 +6,9 @@
 // text maps to the saved answer, and check the widget now shows it. A widget
 // that cannot be driven is reported "manual", never "filled".
 import type { Bank, Match } from "./types";
-import { type FieldRef, comboOptions, iconSignature, ownedListbox, readWidgetValue, widgetValueIcon } from "./extract";
+import {
+  type FieldRef, comboOptions, forgetFill, forgetFills, iconSignature, ownedListbox, readRefValue, readWidgetValue, recordFill, sameValues, widgetValueIcon,
+} from "./extract";
 import { mapChoice, matchField } from "./match";
 import { dialCodeOnly, normalizeLabel } from "./normalize";
 import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
@@ -112,15 +114,130 @@ function key(el: HTMLElement, k: string): void {
   for (const type of ["keydown", "keyup"]) el.dispatchEvent(new w.KeyboardEvent(type, { key: k, bubbles: true, cancelable: true, composed: true }));
 }
 
-/** Set a text value the way a user would, so React/Vue-controlled inputs see it. */
-function setText(el: HTMLInputElement | HTMLTextAreaElement, v: string): void {
+/** The page's own `value` setter, so a framework that wraps the property still hears the write. */
+function assign(el: HTMLInputElement | HTMLTextAreaElement, v: string): string {
   const w = winOf(el);
   const proto = el.localName === "textarea" ? w.HTMLTextAreaElement.prototype : w.HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
   if (setter) setter.call(el, v); else el.value = v;
+  return el.value; // what the control took, before any page handler has run
+}
+
+/**
+ * Set a text value the way a user would, so React/Vue-controlled inputs see it. Returns what the
+ * control held right after the write (the browser's own sanitising applied, no handler run yet).
+ */
+function setText(el: HTMLInputElement | HTMLTextAreaElement, v: string): string {
+  const held = assign(el, v);
   fire(el, "input");
   fire(el, "change");
+  return held;
 }
+
+/**
+ * The second way to write: focus, the native setter, an `input` event the way typing makes it
+ * (`inputType: insertText`), `change`, blur. Some frameworks only accept a value that arrives so.
+ */
+function setTextAsTyped(el: HTMLInputElement | HTMLTextAreaElement, v: string): string {
+  const w = winOf(el);
+  // The retry must not move the page under the person: no scroll to the field, and no blur (with the validation a
+  // blur can trigger) on a field they were already in. A field that was not focused is blurred as typing would end,
+  // and focus goes back to whatever had it.
+  const prev = activeIn(el);
+  const wasActive = prev === el;
+  el.focus({ preventScroll: true });
+  const held = assign(el, v);
+  const Ctor = (w as { InputEvent?: typeof InputEvent }).InputEvent ?? w.Event;
+  el.dispatchEvent(new Ctor("input", { bubbles: true, inputType: "insertText", data: v } as InputEventInit));
+  fire(el, "change");
+  if (!wasActive) {
+    el.blur();
+    if (prev && prev !== el.ownerDocument.body && prev.isConnected && typeof (prev as HTMLElement).focus === "function") (prev as HTMLElement).focus({ preventScroll: true });
+  }
+  return held;
+}
+
+/** The element that has focus in `el`'s own tree (its shadow root, else its document). */
+function activeIn(el: Element): Element | null {
+  return (el.getRootNode() as Partial<DocumentOrShadowRoot>).activeElement ?? el.ownerDocument.activeElement ?? null;
+}
+
+/** How long a write is given to be reverted by the page before it is judged: one frame, never more than this. */
+const SETTLE_MS = 50;
+const FRAME_MS = 16;
+export const KEPT_NOT = "the page did not keep the value";
+
+/**
+ * Resolve after the page has had a turn to react to a write: a microtask (a handler that reverts
+ * in a promise), then one animation frame, or at most SETTLE_MS when no frame comes (a hidden tab).
+ * The timer is released however it ends.
+ */
+function settle(el: Element): Promise<void> {
+  const w = winOf(el);
+  const raf = typeof w.requestAnimationFrame === "function" ? w.requestAnimationFrame.bind(w) : null;
+  return new Promise<void>(resolve => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (): void => { clearTimeout(timer); resolve(); };
+    queueMicrotask(() => {
+      // A hidden tab paints no frames and the browser holds its timers to about one a second, so a plain
+      // write there would cost a second each: it gets one turn of the event loop instead, and what it
+      // keeps is only provisional (writeKept's recheck, confirmLate).
+      if (el.ownerDocument.hidden === true && typeof MessageChannel === "function") {
+        const c = new MessageChannel();
+        c.port1.onmessage = () => { c.port1.close(); done(); };
+        c.port2.postMessage(0);
+        return;
+      }
+      timer = setTimeout(done, raf ? SETTLE_MS : FRAME_MS);
+      raf?.(done);
+    });
+  });
+}
+
+/**
+ * Write `v` into a text control and confirm the page kept it. A controlled input (React, Angular)
+ * can take the write and put its own state back a moment later, and the field then looks empty
+ * while Fill reports it filled. `kept` says whether what the field holds now is a value the page
+ * accepted. A reverted write is retried once the other way (setTextAsTyped); a second revert is
+ * "lost", never "kept". "empty": the control itself refused the text (a number box given letters).
+ *
+ * In a hidden tab the check after a write is one turn of the event loop (see settle), too short for a page that
+ * reverts in a timer or a frame. A "kept" there is only provisional: `recheck` reads the field again, and the
+ * caller calls it once the whole pass is done (confirmLate), after one bounded wait shared by every field, so a
+ * revert that lands later is reported "manual", never "filled".
+ */
+interface WriteResult { verdict: "kept" | "empty" | "lost"; recheck?: () => boolean }
+
+async function writeKept(
+  el: HTMLInputElement | HTMLTextAreaElement, v: string, kept: (now: string, wrote: string, before: string) => boolean,
+): Promise<WriteResult> {
+  const before = el.value;
+  let wrote = setText(el, v);
+  if (wrote === "") return { verdict: "empty" };
+  await settle(el);
+  let ok = kept(el.value, wrote, before);
+  if (!ok) {
+    wrote = setTextAsTyped(el, v);
+    if (wrote === "") return { verdict: "empty" };
+    await settle(el);
+    ok = kept(el.value, wrote, before);
+  }
+  if (!ok) return { verdict: "lost" };
+  const held = wrote;
+  return el.ownerDocument.hidden === true ? { verdict: "kept", recheck: () => kept(el.value, held, before) } : { verdict: "kept" };
+}
+
+/**
+ * A text write the page kept: the field is not empty and not back to what it held before. A mask that
+ * reformats the text ("5550100" to "(555) 0100") still counts: the page took it and made it its own, and
+ * when it formats the text into exactly what the field held before ("5550100" over "(555) 010-0") the
+ * letters and digits give it away: the same ones that were written are there.
+ */
+const textKept = (now: string, wrote: string, before: string): boolean => now !== "" && (now !== before || fold(now) === fold(wrote));
+/** A text with its case, spacing and punctuation taken out: what a mask leaves alone. */
+const fold = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+/** A date control's value is its ISO text exactly, or it was not taken. */
+const sameKept = (now: string, wrote: string): boolean => now === wrote;
 
 /**
  * A single select takes the option whose text is the saved value. A multiple
@@ -433,15 +550,19 @@ function hasValue(ref: FieldRef): boolean {
   return ((first as HTMLInputElement).value ?? "") !== "";
 }
 
-function mark(ref: FieldRef, review: boolean, title: string): void {
+/** The element a field's outline goes on. */
+function markTarget(ref: FieldRef): HTMLElement {
   const first = ref.els[0]!;
-  let target: HTMLElement;
-  if (ref.els.length > 1 && ref.widget !== "split-phone") target = (first.closest("fieldset, [role=radiogroup], [role=group]") as HTMLElement | null) ?? first.parentElement ?? first;
-  else if (ref.widget === "split-phone" || ref.widget === "split-date") target = first.parentElement ?? first;
-  else if (first.localName === "input" && ref.widget === "combobox") target = first.parentElement ?? first;
+  if (ref.els.length > 1 && ref.widget !== "split-phone") return (first.closest("fieldset, [role=radiogroup], [role=group]") as HTMLElement | null) ?? first.parentElement ?? first;
+  if (ref.widget === "split-phone" || ref.widget === "split-date") return first.parentElement ?? first;
+  if (first.localName === "input" && ref.widget === "combobox") return first.parentElement ?? first;
   // An upload input is usually hidden behind its button: outline the widget around it.
-  else if (ref.info.kind === "file") target = (first.closest("[role=group], fieldset") as HTMLElement | null) ?? first.parentElement ?? first;
-  else target = first;
+  if (ref.info.kind === "file") return (first.closest("[role=group], fieldset") as HTMLElement | null) ?? first.parentElement ?? first;
+  return first;
+}
+
+function mark(ref: FieldRef, review: boolean, title: string): void {
+  const target = markTarget(ref);
   target.style.outline = `2px solid ${review ? COLORS.review : COLORS.ok}`;
   target.style.outlineOffset = "2px";
   target.setAttribute("data-vani-fill", review ? "review" : "ok");
@@ -456,13 +577,51 @@ function unmark(el: HTMLElement): void {
   el.removeAttribute("data-vani-why");
 }
 
-export function clearMarks(root: ParentNode = document): void {
+/**
+ * Take the outlines off. When the person clears them (the default) they have looked at what Fill wrote, so it is
+ * no longer "still exactly what Fill wrote": the record of that goes too (extract.recordFill). A new Fill clears
+ * the outlines only (`forget: false`): the fields it then skips as already filled still hold the earlier fill,
+ * and must still read as Vani's when the form is saved.
+ */
+export function clearMarks(root: ParentNode = document, opts: { forget?: boolean } = {}): void {
   for (const el of marked) unmark(el);
   marked.clear();
   root.querySelectorAll<HTMLElement>("[data-vani-fill]").forEach(unmark);
+  if (opts.forget !== false) forgetFills();
 }
 
-type Result = { ok: boolean; review?: boolean; reason?: FillOutcome["reason"]; detail?: string };
+type Result = { ok: boolean; review?: boolean; reason?: FillOutcome["reason"]; detail?: string; recheck?: () => boolean };
+
+/** A write that was not kept is "manual" (never filled); one the control itself refused has no option for it. */
+function keptResult(w: WriteResult): Result {
+  if (w.verdict === "kept") return { ok: true, ...(w.recheck ? { recheck: w.recheck } : {}) };
+  return w.verdict === "lost" ? { ok: false, reason: "manual", detail: KEPT_NOT } : { ok: false, reason: "no_option" };
+}
+
+/**
+ * Settle the provisional writes of a hidden tab (WriteResult.recheck): one wait of at most SETTLE_MS for the lot
+ * (a hidden tab's browser may stretch it, once per fill, not once per field), then each is read again. Returns
+ * the ones the page took back; their outline comes off here, and the caller reports them not kept.
+ */
+async function confirmLate(ws: Written[]): Promise<Set<Written>> {
+  const lost = new Set<Written>();
+  const pending = ws.filter(w => w.recheck);
+  if (pending.length === 0) return lost;
+  await new Promise<void>(resolve => { setTimeout(resolve, SETTLE_MS); });
+  for (const w of pending) {
+    let held = false;
+    try { held = w.recheck!(); } catch { /* an unreadable field is not claimed as kept */ }
+    if (held) continue;
+    const target = markTarget(w.ref);
+    unmark(target);
+    marked.delete(target);
+    lost.add(w);
+  }
+  return lost;
+}
+
+/** A filled outcome the page then reverted. */
+const revertedOutcome = (o: FillOutcome): FillOutcome => ({ label: o.label, filled: false, reason: "manual", detail: KEPT_NOT, ...(o.key ? { key: o.key } : {}) });
 
 async function fillOne(ref: FieldRef, m: Match, typeahead: boolean): Promise<Result> {
   const el = ref.els[0]!;
@@ -497,13 +656,12 @@ async function fillOne(ref: FieldRef, m: Match, typeahead: boolean): Promise<Res
     // The control only accepts its own ISO form and blanks anything else: write that, and read it back.
     const iso = isoFor(type, v);
     if (iso === null) return { ok: false, reason: "no_option" };
-    setText(el as HTMLInputElement, iso);
-    return (el as HTMLInputElement).value === iso ? { ok: true } : { ok: false, reason: "no_option" };
+    return keptResult(await writeKept(el as HTMLInputElement, iso, sameKept));
   }
   const long = tooLong(el, v, "answer");
   if (long) return { ok: false, reason: "too_long", detail: long };
-  setText(el as HTMLInputElement, v);
-  return v === "" || (el as HTMLInputElement).value !== "" ? { ok: true } : { ok: false, reason: "no_option" };
+  if (v === "") { setText(el as HTMLInputElement, v); return { ok: true }; }
+  return keptResult(await writeKept(el as HTMLInputElement, v, textKept));
 }
 
 /** Fill one field with a chosen match (from matchField, or a suggestion the user picked). */
@@ -521,27 +679,175 @@ export interface FillOptions {
   matches?: Map<FieldRef, Match | null>;
 }
 
-export async function fillRef(ref: FieldRef, m: Match, opts: FillOptions = {}): Promise<FillOutcome> {
+// --- undo ---------------------------------------------------------------------------------------
+
+/** What it takes to put a field back as it was before Fill wrote it, or null when it cannot be done safely. */
+function restoreFor(ref: FieldRef): (() => void) | null {
+  const els = ref.els;
+  const el = els[0]!;
+  switch (ref.widget) {
+    // A widget Fill drove by clicking its options has no safe way back: clicking again chooses, it does not clear.
+    case "combobox": case "aria-radio": return null;
+    case "aria-checkbox": {
+      const was = el.getAttribute("aria-checked") === "true";
+      return () => { if ((el.getAttribute("aria-checked") === "true") !== was) realClick(el); };
+    }
+    case "contenteditable": {
+      const was = el.textContent ?? "";
+      return () => { if (was === "") { el.textContent = ""; fire(el, "input"); } else setEditable(el, was); };
+    }
+    case "split-date": case "split-phone": {
+      if (els.some(p => p.getAttribute("role") === "combobox" || p.getAttribute("aria-haspopup") === "listbox")) return null;
+      const was = els.map(p => (p as HTMLInputElement).value);
+      return () => els.forEach((p, i) => {
+        if (p.localName === "select") { (p as HTMLSelectElement).value = was[i]!; fire(p, "input"); fire(p, "change"); }
+        else setText(p as HTMLInputElement, was[i]!);
+      });
+    }
+    default: break;
+  }
+  if (el.localName === "select") {
+    const s = el as HTMLSelectElement;
+    const was = Array.from(s.options).map(o => o.selected);
+    return () => {
+      if (s.multiple) Array.from(s.options).forEach((o, i) => { o.selected = was[i] ?? false; });
+      else s.selectedIndex = was.indexOf(true);
+      fire(s, "input"); fire(s, "change");
+    };
+  }
+  if (ref.info.kind === "radio" || ref.info.kind === "checkbox") {
+    const members = els as HTMLInputElement[];
+    const was = members.map(m => m.checked);
+    return () => members.forEach((m, i) => {
+      if (m.checked === was[i]) return;
+      if (m.type === "checkbox" || was[i]) m.click(); // a click is how sites listen; a radio cannot be clicked off
+      else { m.checked = false; fire(m, "input"); fire(m, "change"); }
+    });
+  }
+  const was = (el as HTMLInputElement).value;
+  return () => { setText(el as HTMLInputElement, was); };
+}
+
+/** One field Fill wrote: enough to record it and, if asked, to put it back. */
+interface Written {
+  ref: FieldRef;
+  key: string;
+  review: boolean;
+  /** The field's value before Fill wrote it. */
+  before: string[];
+  restore: (() => void) | null;
+  /** What the field held right after Fill wrote it (set by remember). */
+  after: string[];
+  /** Set for a write made in a hidden tab, whose "kept" is provisional until confirmLate has read it again. */
+  recheck?: () => boolean;
+}
+
+/** The last fill's writes, so "Undo fill" can put them back. Bounded to one fill (beginFill) and to the scan's field cap. */
+let lastFill: Written[] = [];
+const MAX_UNDO = 500;
+
+/** A new fill starts: the one before it can no longer be undone. */
+export function beginFill(): void {
+  lastFill = [];
+}
+
+/** How many fields the last fill wrote and has not yet been undone. */
+export function undoCount(): number {
+  return lastFill.length;
+}
+
+/** Record each field Fill wrote (extract.recordFill) and keep it for undo. */
+function remember(ws: Written[]): void {
+  for (const w of ws) {
+    try {
+      w.after = recordFill(w.ref, w.key, w.review);
+    } catch { continue; } // an unreadable field is a field never claimed as Vani's own
+    lastFill.push(w);
+  }
+  if (lastFill.length > MAX_UNDO) lastFill = lastFill.slice(lastFill.length - MAX_UNDO);
+}
+
+export interface UndoReport {
+  /** Fields put back as they were, outline and record removed. */
+  restored: number;
+  /** Fields the person has changed since: left exactly as they are. */
+  edited: number;
+  /** Fields Fill wrote that cannot be put back (a dropdown it drove) or did not go back; they still hold Vani's value. */
+  manual: number;
+  /** Fields no longer on the page. */
+  gone: number;
+}
+
+/**
+ * Put back what the last fill wrote, in the fields that still hold exactly that. A field the person
+ * has edited since is never touched, whatever it holds. Each restored field loses its outline and its
+ * record. The last fill is spent afterwards: a second call undoes nothing.
+ */
+export async function undoFill(): Promise<UndoReport> {
+  const todo = lastFill;
+  lastFill = [];
+  const report: UndoReport = { restored: 0, edited: 0, manual: 0, gone: 0 };
+  const attempted: Written[] = [];
+  for (const w of todo) {
+    try {
+      if (w.ref.els.some(e => !e.isConnected)) { report.gone++; continue; }
+      if (!sameValues(readRefValue(w.ref), w.after)) { report.edited++; continue; }
+      if (!w.restore) { report.manual++; continue; }
+      w.restore();
+      attempted.push(w);
+    } catch { report.manual++; }
+  }
+  if (attempted.length > 0) await settle(attempted[0]!.ref.els[0]!); // a widget answers a click a moment later
+  for (const w of attempted) {
+    let back = false;
+    try { back = sameValues(readRefValue(w.ref), w.before); } catch { /* counted below */ }
+    if (!back) { report.manual++; continue; }
+    const target = markTarget(w.ref);
+    unmark(target);
+    marked.delete(target);
+    forgetFill(w.ref);
+    // A Suggest answer filled here was tagged a draft; with it undone, what the person writes next is their own.
+    for (const e of w.ref.els) { e.removeAttribute("data-vani-draft"); e.removeAttribute("data-vani-draft-text"); }
+    report.restored++;
+  }
+  return report;
+}
+
+// --- the fill of one field -------------------------------------------------------------------------
+
+async function fillTracked(ref: FieldRef, m: Match, opts: FillOptions): Promise<{ outcome: FillOutcome; written?: Written }> {
   const label = ref.info.label;
   const key = m.answer.key;
-  if (ref.info.kind === "file" || ref.info.kind === "password") return { label, filled: false, reason: "untouchable" };
-  if (ref.manual) return { label, filled: false, reason: "manual", key };
-  if (ref.els.some(e => !e.isConnected)) return { label, filled: false, reason: "detached", key };
+  const no = (outcome: FillOutcome) => ({ outcome });
+  if (ref.info.kind === "file" || ref.info.kind === "password") return no({ label, filled: false, reason: "untouchable" });
+  if (ref.manual) return no({ label, filled: false, reason: "manual", key });
+  if (ref.els.some(e => !e.isConnected)) return no({ label, filled: false, reason: "detached", key });
   try {
-    if (!opts.overwrite && hasValue(ref)) return { label, filled: false, reason: "has_value", key };
+    if (!opts.overwrite && hasValue(ref)) return no({ label, filled: false, reason: "has_value", key });
+    let before: string[] = [];
+    let restore: (() => void) | null = null;
+    try { before = readRefValue(ref); restore = restoreFor(ref); } catch { /* nothing to put back: undo reports it by hand */ }
     const r = await fillOne(ref, m, opts.typeahead === true);
     if (r.reason === "too_long" && r.detail) {
       // Left empty on purpose: outline it, so the person sees the field was not answered and why.
       mark(ref, true, r.detail);
-      return { label, filled: false, reason: "too_long", detail: r.detail, key };
+      return no({ label, filled: false, reason: "too_long", detail: r.detail, key });
     }
-    if (!r.ok) return { label, filled: false, reason: r.reason ?? "no_option", key };
+    if (!r.ok) return no({ label, filled: false, reason: r.reason ?? "no_option", ...(r.detail ? { detail: r.detail } : {}), key });
     const review = m.review || r.review === true;
-    mark(ref, review, r.detail ?? `${m.via} ${m.score.toFixed(2)}: ${key}`); // a part left out for its limit says so on the page
-    return { label, filled: true, via: m.via, score: m.score, review, key };
+    mark(ref, review, r.detail ?? `${m.via} ${m.score.toFixed(2)}: ${key}` + (m.note ? `. ${m.note}` : "")); // a part left out for its limit, or why an answer needs a look, says so on the page
+    return { outcome: { label, filled: true, via: m.via, score: m.score, review, key }, written: { ref, key, review, before, restore, after: [], ...(r.recheck ? { recheck: r.recheck } : {}) } };
   } catch {
-    return { label, filled: false, reason: "manual", key };
+    return no({ label, filled: false, reason: "manual", key });
   }
+}
+
+export async function fillRef(ref: FieldRef, m: Match, opts: FillOptions = {}): Promise<FillOutcome> {
+  const { outcome, written } = await fillTracked(ref, m, opts);
+  if (!written) return outcome;
+  if ((await confirmLate([written])).size > 0) return revertedOutcome(outcome);
+  remember([written]);
+  return outcome;
 }
 
 /**
@@ -561,7 +867,15 @@ export function insertDraft(ref: FieldRef, text: string, opts: { overwrite?: boo
   } else {
     const long = tooLong(el, text, "draft");
     if (long) return { label, filled: false, reason: "too_long", detail: long };
-    setText(el as HTMLInputElement, text);
+    // Not awaited (callers take the outcome at once), so only a page that puts its own value back inside the
+    // write is caught here; one that reverts a frame later is not (Fill's own writes wait for that).
+    const input = el as HTMLInputElement;
+    const before = input.value;
+    const wrote = setText(input, text);
+    if (!textKept(input.value, wrote, before)) {
+      const again = setTextAsTyped(input, text);
+      if (!textKept(input.value, again, before)) return { label, filled: false, reason: "manual", detail: KEPT_NOT };
+    }
   }
   el.setAttribute("data-vani-draft", "1");
   el.setAttribute("data-vani-draft-text", text);
@@ -616,17 +930,30 @@ export async function fillAll(refs: FieldRef[], bank: Bank, host: string, opts: 
   // One request for the resume per fill, made only if a resume input is there.
   let resume: Promise<ResumeFetch> | undefined;
   const getResume = opts.resume ? () => (resume ??= opts.resume!()) : undefined;
+  const written: Written[] = [];
+  const at = new Map<Written, number>();
   const one = async (ref: FieldRef): Promise<FillOutcome> => {
     if (ref.info.kind === "file" && getResume && isResumeField(ref.info)) return attachResume(ref, getResume, opts);
     if (ref.info.kind === "file" || ref.info.kind === "password") return { label: ref.info.label, filled: false, reason: "untouchable" };
     const m = opts.matches?.has(ref) ? opts.matches.get(ref) ?? null : matchField(ref.info, bank, host);
     if (!m) return { label: ref.info.label, filled: false, reason: "no_match" };
-    return fillRef(ref, m, opts);
+    const t = await fillTracked(ref, m, opts);
+    if (t.written) written.push(t.written);
+    return t.outcome;
   };
   for (const wave of [false, true]) {
     for (let i = 0; i < refs.length; i++) {
-      if (driven(refs[i]!) === wave) out[i] = await one(refs[i]!);
+      if (driven(refs[i]!) === wave) {
+        out[i] = await one(refs[i]!);
+        const w = written.at(-1);
+        if (w && !at.has(w)) at.set(w, i);
+      }
     }
   }
+  // A hidden tab's writes are only provisionally kept: the ones the page took back after all are reported so, and not remembered.
+  const lost = await confirmLate(written);
+  for (const w of lost) out[at.get(w)!] = revertedOutcome(out[at.get(w)!]!);
+  // Read once the whole pass is done, so a field a later one changed (a country resetting its state) is recorded as it ended up.
+  remember(written.filter(w => !lost.has(w)));
   return out;
 }

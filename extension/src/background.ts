@@ -14,7 +14,7 @@ import {
   storageMode,
   updateBank,
 } from "./store";
-import { type FillReply, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
+import { type FillReply, MAX_SAME_LABEL, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
 import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { createDrafter, draftHelp } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
@@ -41,6 +41,9 @@ const JOB_CALL_MS = 10_000;
 /** jobsIngest runs `vani jobs ingest`, which the host bounds at 30 s (35 s over the agent's XPC); this
  *  outlasts both, so the host's own timeout answer arrives instead of a false "unreachable". */
 const INGEST_CALL_MS = 40_000;
+
+/** sameQuestion runs Apple's on-device model (3 s typical); an answer later than this is not waited for. */
+export const SAME_QUESTION_MS = 8_000;
 
 /** One bounded native call. `ms` is the transport's only timer for this call; an unreachable host is a coded reply, never a throw. */
 export async function native(msg: object, ms = JOB_CALL_MS): Promise<unknown> {
@@ -267,6 +270,11 @@ export function toTabFrames<T>(msg: ToContent, timeoutMs?: number): Promise<FanO
   return toFrames<T>(msg, { registered: tabId => frameRegistry.list(tabId), timeoutMs });
 }
 
+/** This extension's own URL root ("chrome-extension://<id>/"), or "" where the runtime cannot say (a test's fake chrome). */
+function ownURL(): string {
+  try { return typeof chrome.runtime.getURL === "function" ? chrome.runtime.getURL("") : ""; } catch { return ""; }
+}
+
 /** The origin a content script's message comes from: the browser's own `sender.origin`, else the sender URL's; null when neither is an origin. */
 function senderOrigin(sender: chrome.runtime.MessageSender): string | null {
   const ok = (o: string): boolean => o !== "" && o !== "null";
@@ -354,7 +362,7 @@ function refusedByApp(counts: Omit<CaptureResult, "bank">, dropped: number): Omi
 async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.type) {
     case "getBank": {
-      const { bank, rev } = await loadSnapshot();
+      const { bank, rev } = await loadSnapshot(msg.fresh === true ? { fresh: true } : {});
       return { bank, mode: rev === null ? "browser" : "mac-app", note: migrationNote(), ...(rev === null ? {} : { rev }) };
     }
     case "capture": {
@@ -438,6 +446,13 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "jobPoll":
       if (typeof msg.job !== "string" || msg.job.length === 0 || msg.job.length > 64) return { error: "bad job id", code: "bad_request" };
       return native({ op: "jobResult", job: msg.job });
+    case "sameQuestion": {
+      // Two question labels go to the on-device model and nothing else, whatever else the message carried.
+      if (typeof msg.a !== "string" || typeof msg.b !== "string" || msg.a === "" || msg.b === "" || msg.a.length > MAX_SAME_LABEL || msg.b.length > MAX_SAME_LABEL) {
+        return { error: "bad sameQuestion labels", code: "bad_request" };
+      }
+      return native({ op: "sameQuestion", a: msg.a, b: msg.b }, SAME_QUESTION_MS);
+    }
     case "appliedSignal": {
       const tabId = actingTab(sender, msg.tabId);
       const frame = sender.tab ? sender.frameId ?? 0 : 0;
@@ -582,7 +597,7 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     return false;
   }
   // Who may send this type (messages.ts SENDER_POLICY): a refused sender gets an error and nothing runs.
-  const refused = checkSender(c.msg.type, sender);
+  const refused = checkSender(c.msg.type, sender, ownURL());
   if (refused) {
     sendResponse(refused);
     return false;
