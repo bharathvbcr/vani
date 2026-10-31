@@ -88,6 +88,25 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
   list, search terms and a country or city filter resolved through the site's city list.
 - **Radancy TalentBrew (`tb`) adapter** (Intuit, Citi): the site's sitemap and each job page's JSON-LD,
   at most 150 job pages a board a run.
+- **On-device field triage and `sameQuestion`** (`macos/Sources/vani-fm`, `internal/decide/fmbackend`,
+  `macos/Sources/VaniApplyKit/SameQuestion.swift`, `0e094d8`, `c45f7fc`). Form field triage (`career.form_field`)
+  queries Apple's on-device Foundation Models (`apple_fm` via `vani-fm`) first before falling back to OpenRouter
+  and Claude. Free, fast, bounded at 2 helpers and 15 s per run budget. The helper also powers the extension's
+  `sameQuestion` native op to determine if two question labels represent the same question on-device.
+- **Knowledge-base fact and choice answering in Suggest** (`internal/draft/answer.go`, `cmd/vani/suggestcmd.go`,
+  `c45f7fc`). Answers fact and single-choice questions from the career knowledge base in a single batched Claude
+  turn per page (up to 15 fields). Strictly validated, cited, and grounded against seeker-owned evidence. Pinned
+  sensitive categories (`draft.Pinned`: work authorization, self-identification, consent) never reach a model.
+  Unbacked drafts get one repair turn naming unbacked tokens. Outcomes logged to `<state>/suggest/outcomes.jsonl`
+  under cross-process filelock.
+- **Extension fill accuracy, write verification, and undo** (`extension/src/`, `d7e3b5a`). Selects latest answers
+  among direct claims rather than most-used; uses on-device `sameQuestion` when field ID and label conflict;
+  unambiguous choice matching; reads back writes to verify DOM values against reactive frameworks with a typing
+  retry; panel Undo Fill restores untouched fields; dated answers fill yellow past threshold.
+- **Batch re-triage shortcut (⌘A)** (`macos/Sources/VaniApply/JobsView.swift`, `cmd/vani/jobsretriagebatch.go`,
+  `899236b`). ⌘A in the Jobs list prompts to re-triage the top 100, 250, 500, or 1000 postings (or the whole list
+  if shorter) in current list order; maximum batch size raised to 1000 in `maxRetriageBatch` and
+  `RetriageBatchClient.maxKeys`.
 
 ### Changed
 
@@ -115,6 +134,11 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
   jobPostingId agree on (Visa), and a stub listing row with no path or title is left out up to the
   listing's shortfall (Mastercard, HPE).
 - **TalentBrew**: a JSON-LD block with raw control characters in its strings is read (Citi).
+- **Daemon binary watch on run requests** (`cmd/vani/runrequest.go`, `0f51295`): `serveRunRequest` inspects
+  binary replacement via `binarywatch` before claiming or strictly decoding run requests, restarting cleanly
+  so newer options (such as run scopes) are not dropped as corrupt.
+- **Jibe canonical URL client domain** (`internal/sources/jibe/jibe.go`, `5351d15`): accepts client's own
+  `{client}.jibeapply.com` as canonical while retaining the board's host (e.g. GitHub `www.github.careers`).
 
 ## [0.2.0] - 2026-10-27
 

@@ -12,8 +12,10 @@ resume tools, and writes a Markdown digest.
 Models, one role each: the **decision model** is Liquid (`liquid/d1-ultra` over OpenRouter;
 optionally Liquid d1-3B on this Mac through llama.cpp as a shadow); **embeddings** run in-process
 on Metal through Tessl (EmbeddingGemma, a `-tags tessl` build); **Claude** is reached through
-Manvi, which Vani imports as its LLM orchestrator. Jarvis is a sibling Manvi client with no code
-link to Vani. Config, state and keys per entry point: [`docs/RUNTIME.md`](docs/RUNTIME.md).
+Manvi, which Vani imports as its LLM orchestrator; **on-device models** on macOS run Apple Foundation
+Models via `vani-fm` for form-field triage (`career.form_field`) and question equivalence (`sameQuestion`).
+Jarvis is a sibling Manvi client with no code link to Vani. Config, state and keys per entry point:
+[`docs/RUNTIME.md`](docs/RUNTIME.md).
 First-time setup (workspace, OpenRouter, knowledge base, embeddings): [`docs/SETUP.md`](docs/SETUP.md).
 
 Plan: [`docs/PLAN.md`](docs/PLAN.md). Follow-ups: [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
@@ -28,7 +30,7 @@ flowchart TD
         AB["Ashby API"]
         WD["Workday CXS API"]
         SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX), Jibe"]
-        AD["Dedicated Adapters: Gem, SmartRecruiters,\nOracle HCM, IBM, Avature, D. E. Shaw,\nAtlassian, Rippling, Workable, XML Feeds"]
+        AD["Dedicated Adapters: Gem, SmartRecruiters,\nOracle HCM, IBM, Avature, D. E. Shaw,\nAtlassian, Rippling, Workable, Recruitee,\nPinpoint, BambooHR, Personio, TikTok,\nRadancy TalentBrew, XML Feeds"]
         PG["Custom Pages (Lightpanda)"]
     end
 
@@ -375,9 +377,12 @@ flowchart TD
   waiting. The daemon looks for a request every 3 seconds; under the same lock as its scheduled
   run and inbox poll, so never beside them, it claims it (renames it to `request.claimed.json`,
   removed when the run ends) and makes the run as a `manual` run with those options, its own keys
-  and its own run record. A request it has not picked up within an hour is dropped unrun, as is one
-  that is corrupt, oversized, not a regular file (a symlink is never followed) or from a newer vani;
-  each drop is a line in the daemon's log (`vani.err.log` under launchd). A board removed from the
+  and its own run record. Before claiming or strictly decoding a request, the daemon checks for binary replacement
+  via `binarywatch`: if an updated binary is installed on disk, the daemon exits 75 to restart so the newer binary picks
+  up the request with its full options (such as run scopes), rather than dropping an unknown field as corrupt. A request
+  it has not picked up within an hour is dropped unrun, as is one that is corrupt, oversized, not a regular file (a
+  symlink is never followed) or from an incompatible vani; each drop is a line in the daemon's log (`vani.err.log`
+  under launchd). A board removed from the
   watchlist since the request is a recorded, failed run. A claim left by a daemon that died is
   removed at the next start and never re-run, and a manual run that leaves the ledger unusable ends
   the daemon as a scheduled one does. `status --json` adds `daemon` (`running`, `pid`, `since`) and
@@ -668,6 +673,8 @@ build/vani watchlist discover --search "ml engineer" --country US --work-mode re
 build/vani config check
 build/vani run-once
 build/vani run-once --board gh:<board> --advance 25 --no-digest
+build/vani run-once --us-first --advance 50
+build/vani run-once --company "Google" --state CA --remote
 build/vani run-request --board gh:<board> --advance 25   # the same, made by the running daemon
 build/vani status
 build/vani lca import /absolute/path/LCA_FY2025.csv
@@ -683,6 +690,8 @@ build/vani labels --json                   # the label vocabularies the screens 
 build/vani impressions log --surface jobs --slate new-20261020 < rows.json   # {"rows":[{"key","position"}]}
 build/vani jobs list --sort priority --fit strong_fit,partial_fit --max-age 14
 build/vani jobs list --min-salary 150k --seniority mid,senior --exclude manager --sort salary
+build/vani jobs mark gh:acme:1 screening       # track stage: screening, interview, offer, rejected, withdrawn, unstage
+build/vani jobs retriage --batch --dry-run gh:acme:1 gh:acme:2   # Sonnet reads each key given (at most 1000)
 build/vani jobs stats --view all
 build/vani jobs export --top 250 --sort relevance --out ~/Downloads/vani-top-250.xlsx
 printf 'gh:acme:1\ngh:acme:2\n' | build/vani jobs export --keys-stdin --out ~/Downloads/picked.xlsx
@@ -700,6 +709,7 @@ build/vani bench local --model /abs/candidate.gguf --model /abs/d1-3B-Q8_0.gguf
 build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/Code   # needs kb.selections
 build/vani kb sync --replace --dry-run     # reads DevPrism's block list; prints what a --replace run would delete
 build/vani launchd plist --binary /absolute/path/to/vani
+build/vani --json help                         # global CLI envelope schema and command list
 ```
 
 For scripts and agents, `vani --json <command> ...` answers with one JSON value on stdout
@@ -758,7 +768,7 @@ roles IBM lists for Confluent; Avature `--ats av --token twosigma --host careers
 https://careers.twosigma.com/careers/OpenRoles`; single-company `--ats ds --token deshaw` (D. E. Shaw)
 and `--ats at --token atlassian` (Atlassian); Rippling `--ats rp --token <slug>`; Workable
 `--ats wk --token <slug>`; TalentBrew `--ats tb --token intuit --host jobs.intuit.com`; and XML job feeds `--ats fd --token <slug> --url https://...`.
-`config.ValidBoard` checks every entry against the 20 supported ATS kinds (`gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, fd, pg`).
+`config.ValidBoard` checks every entry against the 26 supported ATS kinds (`gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg`).
 Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for

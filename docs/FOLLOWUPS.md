@@ -1199,6 +1199,7 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     the digits-only id check refused, failing the whole board; ids are now any
     `[A-Za-z0-9_-]` segment up to 64 characters, de-duplicated case-insensitively as keys are.
     Its `tags1` holds recruiter names: personal data, never to be read.
+  - Jibe client-canonical URL handling (2026-10-28; commit 5351d15). GitHub's rows named `{client}.jibeapply.com` as `canonical_url` while `www.github.careers` served each job, causing rows to fail shape validation. `internal/sources/jibe` now accepts the board's own client code on `{client}.jibeapply.com` as canonical while preserving the configured board host on the stored posting.
 
 - **Live audit of the search-site sources (2026-10-20).** Fixed on branch `sources-live-audit`:
   - Workday: `jobPostingInfo.additionalLocations` was not read, so multi-location postings

@@ -13,6 +13,9 @@ it before relying on it after the code changes.
   Liquid d1-3B can run beside it through llama.cpp (`decide.local`, shadow only).
 - **Embeddings:** Tessl, in-process on Metal (EmbeddingGemma; `internal/semantic`, a
   `-tags tessl` darwin/arm64 build; `vani semantic status` says whether the binary has it).
+- **Field triage (on-device):** Apple Foundation Models (`vani-fm`, macOS Apple Intelligence;
+  Swift / `SystemLanguageModel`). Classifies novel application form fields into semantic slot/question
+  kinds and choice option mappings on-device with zero API cost and strict JSON schema output.
 - **Claude:** through Manvi, which Vani imports as its LLM orchestrator (`llm.provider`
   `anthropic`; the live config uses `claude-opus-5-5`). Jarvis also runs on Manvi; it has no
   code link to Vani (no reference either way, checked 2026-10-20).
@@ -602,6 +605,10 @@ State directory files and locks created during operations:
 | `<state>/resumes/<sha256(key)>/` | Versioned resume directory per job posting: `vN.json`, `vN.pdf`, `current`, `used`, `attempts.jsonl`, `.lock`. |
 | `<state>/resumes/.tmp/` | Build work folders and `preview-N.html` rendering targets (swept on next build). |
 | `<state>/resumes/gaps.jsonl` | Atomic append-only handoff file under `gaps.jsonl.lock` (at most 500 lines, 256 KiB). |
+| `<state>/suggest/outcomes.jsonl` | Autocomplete and fill suggestion outcomes logged by the browser extension under flock. |
+| `<state>/export/exported.json` | Record of keys written by `jobs export`, tracking at most 50,000 keys across runs under its own flock. |
+| `<state>/marks/stages.jsonl` | Post-apply stage history tracking (`screening`, `interview`, `offer`, `rejected`, `withdrawn`, `unstage`), append-only. |
+| `<state>/retriage/readings.jsonl` | Manual triage readings from `vani jobs retriage` (and `--batch`), append-only, written without holding the ledger lock. |
 | `<state>/resume-build.lock` | Process try-lock serializing paid model builds and renders per state directory. |
 | `<state>/resume-chrome.lock` | Whole-file lock serializing headless Chrome PDF fitting passes. |
 
@@ -611,6 +618,7 @@ State directory files and locks created during operations:
 - **Binary identity monitor (`binarywatch`):** At daemon startup, the binary's volume serial and file index (Windows) or device, inode, mtime, and size (Unix) are captured. The binary watch polls during idle periods and exits 75 if the executable file changes on disk, enabling seamless supervisor restarts.
 - **Panic finalization:** Panics occurring after `guardedRun` are trapped, finalizing the run record with status `failed` so pipeline execution is not left dangling.
 - **Privacy scrubbing:** Spaced phone numbers, emails, and work-authorization boilerplate are purged from bullet text and instructions before embedding or LLM prompt construction.
+- **Canonical URL host pinning:** Ingestion sources strictly validate `canonical_url` against the configured board host; Jibe (`internal/sources/jibe`) accepts either the board host or the tenant's canonical `{client}.jibeapply.com` host (e.g. GitHub on `www.github.careers`) while maintaining the board's public host on the stored posting.
 
 ## Running without a decision backend
 
@@ -653,6 +661,17 @@ Another country, or a Canadian province code, makes a place foreign ("Mississaug
 MH, IN"). A miss therefore leaves a posting in the ordinary order; it never hides one.
 
 An advance run calls the decision model and spends from `decide.daily_usd`, whatever the order.
+
+## Run scoping: `--company`, `--state`, `--area`, `--remote`, `--or-remote`
+
+Manual runs (`vani run-once` and `vani run-request`) can scope triage, scoring and explaining to a subset of postings without altering the watchlist or dropping unscoped roles:
+- `--company <name>`: Limits execution to postings from specific companies (exact match, case-insensitive).
+- `--state <codes>`: Limits execution to postings in specified US states (e.g. `CA,NY,TX`).
+- `--area <name>`: Limits execution to postings matching written areas.
+- `--remote`: Limits execution to postings listed as remote.
+- `--or-remote`: When combined with `--state` or `--area`, includes remote roles alongside geographic matches ("remote, or in Texas").
+
+Postings outside the specified scope remain intact in the ledger and wait for subsequent runs. The run cap (`advance_per_run` or `--advance N`) applies strictly within the filtered scope. The scope filters share the exact matching engine (`jobview.Scope`) with `vani jobs list`, guaranteeing consistency between previewing pending roles and executing scoped runs.
 
 ## Model ids
 

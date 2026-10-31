@@ -104,9 +104,11 @@ The listing URL becomes one board. It is checked with `config.ValidBoard`, dedup
 | `jobs.gem.com/{t}` | `gm/{t}` |
 | `jobs.smartrecruiters.com/{c}`, `careers.smartrecruiters.com/{c}` | `sr/{c}` |
 | `jobs.ashbyhq.com/{n}` | `ab/{n}`. A name with a space (`Hippocratic%20AI`) cannot be a token, which every posting key is built from, so the token is its lower-case slug (`hippocratic-ai`) and `board_name` holds the literal name the API is asked for. |
+| `lifeattiktok.com/search[/{id}]` | `tt/tiktok` |
 | `wd{N}.myworkdaysite.com/[locale/]recruiting/{tenant}/{site}` | `wd/{tenant}/{site}` on that host (it names no tenant, so the path does), with the search taken from `q` as below. |
 | `{tenant}.wd{N}.myworkdayjobs.com/[locale/]{site}` | `wd/{tenant}/{site}`, with host set and the search taken from `q` when present. Only `q` is kept: the adapter applies no facets, so other URL parameters do not narrow the board. Before saving, Vani makes one limit-1 request to the board host (`workday.CheckSize`, through `egress`) for the search's total. A search over the board's cap (`workday.MaxPostings`, 5000, or the board's `max_postings`), which would fail every daily run, is not saved: status `invalid`, with a reason that says to narrow it with search terms. If the request fails, the search is not saved either: status `invalid`, with a reason that says it could not be checked and to try again. In both cases the jobs are still queued. |
 | `{tenant}.fa.oraclecloud.com/hcmUI/CandidateExperience/{lang}/sites/{site}` | `oc/{tenant}/{site}` on that host, with search terms parsed from query parameters (`k` or `keyword`) when present. |
+| Workable (`apply.workable.com`), Rippling (`ats.rippling.com`), and per-tenant ATS hosts (Recruitee, Pinpoint, BambooHR, Personio) | Saved as a `pg` board (below) rather than an ATS board, so specific URL search paths, department facets, and query filters are preserved for future Lightpanda scrapes. |
 | A known aggregator: linkedin, indeed, glassdoor, ziprecruiter, wellfound, dice, monster, simplyhired, plus their subdomains | No board. Status is `unsupported`, with reason "{host} needs a signed-in browser; Vani cannot search it on its own". The jobs are still queued. |
 | Any other https page | A `pg` board, described below |
 

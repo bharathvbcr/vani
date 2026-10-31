@@ -12,7 +12,11 @@ Its **Jobs** tab browses the roles Vani retrieved (New, Saved, Applied, Hidden, 
 triage (N)**: postings read from the boards that no run has triaged yet, shown with no fit or score,
 newest first, and charted nowhere; `vani jobs list --view pending`), with the picked
 "Fits / Gap / Check" note, triage readings and the job description, and lets you Save (⌘S), mark
-Applied (⇧⌘A), Hide (⌘⌫) and keep a private note per role. It is a client of `vani jobs … --json`
+Applied (⇧⌘A), Hide (⌘⌫) and keep a private note per role. For applied roles, track post-apply pipeline
+stages (`screening`, `interview`, `offer`, `rejected`, `withdrawn`, or unstage; `vani jobs mark KEY <stage>`),
+with timestamped transitions recorded in `<state>/marks/stages.jsonl`. A role displays a 60-day repeat-application
+warning when you applied to the same employer within two months, and a likely-repost badge when a role re-lists
+a previously seen vacancy. It is a client of `vani jobs … --json`
 (cmd/vani/jobscmd.go) run from `Contents/Helpers/vani` with the Vani config and state folder set in
 Settings › Vani. Vani reads its ledger without taking the run's lock, so Jobs works while a run is
 going. A role's detail shows **Why it ranks here**: the components of the priority `vani jobs` reports
@@ -21,13 +25,14 @@ résumé roles best (`semantic.evidence`). Both are display only, decoded lenien
 `vani`. Settings › Vani sets the freshness half-life (`--half-life`, sent only when it is not Vani's 10 days).
 Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R), which starts
 `vani run-once` with options for that run only: every board or the ones you pick from the watchlist,
-whether to triage, score and explain (and a cap in place of `advance_per_run`), and whether to write a
-digest. The last choices are remembered. **Triage now**, on Jobs while postings are awaiting
-triage, opens this same sheet prefilled for one advance at `advance_per_run`, every board, and no digest.
-Start Run is what spends. That confirmation is not kept for the next Run Now. The awaiting-triage count
-is separate from the cap, because the same pass also scores and explains postings already triaged, and a
-kept schedule does not report the number. While the daemon is running, the sheet says the daemon will make
-the run.
+whether to triage, score and explain (and a cap in place of `advance_per_run`), optional US-first ordering
+(`--us-first`), run scoping by company, state, area, or remote (`--company`, `--state`, `--area`, `--remote`,
+`--or-remote`), and whether to write a digest. The last choices are remembered. **Triage now**, on Jobs
+while postings are awaiting triage, opens this same sheet prefilled for one advance at `advance_per_run`,
+every board, and no digest. Start Run is what spends. That confirmation is not kept for the next Run Now.
+The awaiting-triage count is separate from the cap, because the same pass also scores and explains postings
+already triaged, and a kept schedule does not report the number. While the daemon is running, the sheet says
+the daemon will make the run.
 The run gets the keys drafting gets, writes its output to
 `<state>/runs/manual.log` (Show Log), and the tab re-reads the status every 3 s while it goes. Before each run
 the app moves the previous `manual.log` to `<state>/runs/history/manual-<run id>.log` when `last.json` records that run
