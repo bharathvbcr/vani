@@ -61,7 +61,19 @@ export type ToBackground =
   | { type: "resumeDelete"; url: string }
   | { type: "resumePreview"; key?: string; tabId?: number }
   | { type: "resumeShow"; name: string; pdf: string }
-  | { type: "attachResume"; name: string; pdf: string; pickedAt: string };
+  | { type: "attachResume"; name: string; pdf: string; pickedAt: string }
+  /**
+   * The in-page panel is about to fill its own frame. One claim per tab; a second claim is refused.
+   * Cleared by fillSettled from that frame, or when the tab is removed. A frame reply timing out does not clear it.
+   */
+  | { type: "fillClaim" }
+  /** The content fill() returned or threw. The sender's frame only. */
+  | { type: "fillSettled" }
+  /**
+   * Fill the active tab (or `tabId`) from the popup. The background claims the tab's fill gate, then asks each frame.
+   * Refused, with no frames asked, when that tab already has a fill in flight.
+   */
+  | { type: "fillRun"; overwrite?: boolean; typeahead?: boolean; tabId?: number };
 
 export type DraftResponse = DraftReply;
 
@@ -140,6 +152,9 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
   resumePreview: m => (m.key === undefined || (typeof m.key === "string" && m.key.length <= 2048)) && optTabId(m),
   resumeShow: m => typeof m.name === "string" && typeof m.pdf === "string",
   attachResume: m => typeof m.name === "string" && typeof m.pdf === "string" && typeof m.pickedAt === "string",
+  fillClaim: () => true,
+  fillSettled: () => true,
+  fillRun: m => optBool(m.overwrite) && optBool(m.typeahead) && optTabId(m),
 };
 
 /**
@@ -178,6 +193,9 @@ export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
   resumePreview: "either",
   resumeShow: "content",
   attachResume: "content",
+  fillClaim: "content",
+  fillSettled: "content",
+  fillRun: "popup",
 };
 
 /**

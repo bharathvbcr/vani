@@ -336,6 +336,7 @@ describe("sender policy", () => {
     resumeGet: { url: own }, resumeInfo: { url: own }, resumePut: { url: own, name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
     resumeDelete: { url: own }, resumePreview: {}, resumeShow: { name: "Resume_Synthetic.pdf", pdf: pdfOf(32) },
     attachResume: { name: "Resume_Synthetic.pdf", pdf: pdfOf(32), pickedAt: "" },
+    fillClaim: {}, fillSettled: {}, fillRun: {},
   };
 
   test("the policy table and the shape table name exactly the same message types, each with a valid policy", () => {

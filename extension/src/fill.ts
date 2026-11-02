@@ -15,6 +15,7 @@ import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
 import { type ResumeFetch, isResumeField } from "./resume";
 import { observeRoots } from "./rounds";
 import { overLimit } from "./guards";
+import { fillAlreadyRecording, noteFillRecording } from "./frames";
 
 export interface FillOutcome {
   label: string;
@@ -780,8 +781,13 @@ interface Written {
 let lastFill: Written[] = [];
 const MAX_UNDO = 500;
 
-/** A new fill starts: the one before it can no longer be undone. */
+/**
+ * A new fill starts: the one before it can no longer be undone.
+ * A fill that is already recording keeps its undo; the caller rejects the second fill instead of starting it.
+ */
 export function beginFill(): void {
+  if (fillAlreadyRecording()) return;
+  noteFillRecording();
   lastFill = [];
 }
 

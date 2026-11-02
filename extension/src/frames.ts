@@ -24,6 +24,60 @@ import {
 import type { FillOutcome } from "./fill";
 import { checkResumeFile, checkResumeName } from "./resume";
 
+/** Reply when a fill is already writing. Not an empty outcome list: that would look like a successful fill of nothing. */
+export const FILL_BUSY = "a fill is already running";
+
+let fillClaimed = false;
+let fillRecording = false;
+
+/**
+ * Per-realm fill lock. Taken synchronously, before any await on the fill path.
+ * The frame reply budget does not release it; releaseFillClaim does, when the fill returns or throws.
+ */
+export function tryClaimFill(): boolean {
+  if (fillClaimed) return false;
+  fillClaimed = true;
+  return true;
+}
+
+export function releaseFillClaim(): void {
+  fillClaimed = false;
+  fillRecording = false;
+}
+
+/** A claimed fill has already called beginFill and is still recording writes. */
+export function fillAlreadyRecording(): boolean {
+  return fillClaimed && fillRecording;
+}
+
+export function noteFillRecording(): void {
+  if (fillClaimed) fillRecording = true;
+}
+
+/** True while this realm's lock is held. A panel click uses it to refuse a second fill before any await. */
+export function fillClaimHeld(): boolean {
+  return fillClaimed;
+}
+
+/**
+ * True only through the synchronous start of the fill the lock holder just called.
+ * Cleared before that fill's first await resumes, so a later click is not treated as the holder.
+ */
+let fillCaller = false;
+
+export function fillInvokedByHolder(): boolean {
+  return fillCaller;
+}
+
+function callHeldFill<T>(fn: () => T): T {
+  fillCaller = true;
+  try {
+    return fn();
+  } finally {
+    fillCaller = false;
+  }
+}
+
 declare global {
   interface Window {
     /** Set by the content script in the frame that owns a page (a same-origin child frame leaves it to its parent). */
@@ -118,6 +172,11 @@ export interface ToFramesOptions {
   /** The tab to ask. Absent, the active tab (the popup's and the shortcut's own); a content script's request names its own tab, never the active one. */
   tabId?: number;
   /**
+   * Called synchronously with the frame ids about to be asked, before any frame is sent a message.
+   * A fill gate records those frames here. A reply timeout is not this callback and does not clear the gate.
+   */
+  beforeAsk?(frameIds: readonly number[]): void;
+  /**
    * Ask only this frame. A field action must not run in every frame that
    * happens to show the same question: that would start two paid drafts.
    */
@@ -146,13 +205,18 @@ export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promis
   }
   const target = tabId;
   const accept = ACCEPT[msg.type] as (r: unknown) => r is T;
+  const askIds = (ids: readonly number[]): number[] => {
+    const uniq = [...new Set(ids)];
+    opts.beforeAsk?.(uniq);
+    return uniq;
+  };
   if (opts.frameId !== undefined) {
     const only = pinnedFrame(opts.frameId);
-    return fanOut([only], frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
+    return fanOut(askIds([only]), frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
   }
   if (opts.origin !== undefined) {
     const ids = await bounded(opts.registered(target, opts.origin), timeoutMs, "the background's frame list");
-    const pinned = await fanOut(ids, frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
+    const pinned = await fanOut(askIds(ids), frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
     if (pinned.asked === 0) throw new Error("the page that offered this is no longer open in the tab");
     return pinned;
   }
@@ -161,7 +225,7 @@ export async function toFrames<T>(msg: ToContent, opts: ToFramesOptions): Promis
       probeFrames(target, timeoutMs).catch((): number[] => []),
       bounded(opts.registered(target), timeoutMs, "the background's frame list").catch((): number[] => []),
     ]);
-    return fanOut([...probed, ...registered], frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
+    return fanOut(askIds([...probed, ...registered]), frameId => chrome.tabs.sendMessage(target, msg, { frameId }), accept, timeoutMs);
   };
   const first = await ask();
   if (first.asked > 0) return first;
@@ -337,6 +401,8 @@ export interface ContentHandlers {
   attachResume?(name: string, pdf: string, pickedAt: string): Promise<unknown> | unknown;
   /** The Mac app opened this file in Preview. The name is already checked. */
   resumeNoted?(name: string): void;
+  /** The fill that held the lock has returned or thrown. Not called when a second fill is rejected. */
+  fillSettled?(): void;
 }
 
 type Listener = (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean;
@@ -406,7 +472,27 @@ export function contentListener(h: ContentHandlers): Listener {
       sendResponse({ shown: true });
       return false;
     }
-    const run = (): Promise<unknown> => msg.type === "scan" ? h.scan() : msg.type === "fill" ? h.fill(msg.overwrite, msg.typeahead) : h.capture();
+    if (msg.type === "fill") {
+      // Synchronous: a second message in this realm is rejected before h.fill, including before its first await.
+      // Released when that fill returns or throws, not when the sender's frame budget expires.
+      if (!tryClaimFill()) {
+        sendResponse({ error: FILL_BUSY });
+        return false;
+      }
+      const finish = (send: () => void): void => {
+        releaseFillClaim();
+        try { h.fillSettled?.(); } catch { /* the fill result is still delivered */ }
+        send();
+      };
+      void Promise.resolve()
+        .then(() => callHeldFill(() => h.fill(msg.overwrite, msg.typeahead)))
+        .then(
+          res => finish(() => sendResponse(res)),
+          (e: unknown) => finish(() => sendResponse({ error: e instanceof Error ? e.message : String(e) })),
+        );
+      return true;
+    }
+    const run = (): Promise<unknown> => msg.type === "scan" ? h.scan() : h.capture();
     void Promise.resolve().then(run).then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
     return true;
   };
