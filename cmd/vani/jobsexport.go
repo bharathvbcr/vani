@@ -20,6 +20,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
+	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/xlsx"
@@ -35,8 +36,9 @@ import (
 // A job an earlier export wrote is not written again unasked: by default the
 // export asks in a terminal, and elsewhere (--json, --keys-stdin, a pipe)
 // refuses with code already_exported and writes nothing. --already-exported
-// skip leaves those jobs out (--top then fills from the rest of the list, so
-// "the next 100" is the next 100 not yet exported); include writes them again.
+// skip leaves those jobs out and fills --top from later rows inside the page
+// bound (defaultJobsLimit, or --top when that is larger, never past
+// maxJobsLimit), not from past that page; include writes them again.
 // --dry-run writes nothing and reports what the export would hold.
 
 const (
@@ -62,6 +64,11 @@ var (
 	exportPromptInput io.Reader = os.Stdin
 	exportPromptTTY             = stdinIsTerminal
 )
+
+// jobsExportList replaces jobview.BuildList when a test sets it, so the test
+// can record the limit. Nil in production, which calls jobview.BuildList.
+// env cannot carry the seam: its struct is declared in main.go.
+var jobsExportList func(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobview.Opts, rk jobview.Ranker, info jobview.InsightInfo, kwLimit, limit int) jobview.List
 
 // stdinIsTerminal reports whether stdin is a character device other than
 // /dev/null (which is one too, and is what a launchd job or a test is given):
@@ -186,12 +193,24 @@ func (e *env) jobsExport(args []string) error {
 		if err != nil {
 			return fmt.Errorf("jobs export: %w", err)
 		}
-		// Skipping fills --top from past the cut, so it needs the whole list.
+		// Keys need every selected job, or one past the first page reads as missing.
+		// ask and skip, once the record holds a job, stay inside the Jobs page
+		// (defaultJobsLimit, or --top when it is larger, never past maxJobsLimit)
+		// instead of copying the whole ledger. Skip fills --top from past the cut
+		// inside that bound. include, and an empty record, keep --top.
 		limit := *top
-		if keys != nil || (*already != exportedInclude && len(rec.Jobs) > 0) {
+		switch {
+		case keys != nil:
 			limit = math.MaxInt
+		case *already != exportedInclude && len(rec.Jobs) > 0:
+			limit = min(maxJobsLimit, max(defaultJobsLimit, *top))
 		}
-		l := jobview.BuildList(snap, m, &o.Opts, in, in.info, listKeywords, limit)
+		var l jobview.List
+		if jobsExportList != nil {
+			l = jobsExportList(snap, m, &o.Opts, in, in.info, listKeywords, limit)
+		} else {
+			l = jobview.BuildList(snap, m, &o.Opts, in, in.info, listKeywords, limit)
+		}
 		jobs, total := l.Jobs[:min(*top, len(l.Jobs))], l.Total
 		if keys != nil {
 			jobs, reply.Missing = pickJobs(l.Jobs, keys)
