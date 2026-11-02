@@ -399,6 +399,12 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	w.recordGaps = advance
 	// A new run retries a Keychain read that failed in the last one (keychain.go).
 	w.keychainRun++
+	// This run's llm budget file is today's UTC day. The daemon keeps one
+	// wired across days; leaving the day where the first run pinned it bills
+	// every later run against that file. budgetLedgerPath will not move it
+	// again until the next run, so a pass that crosses UTC midnight stays on
+	// one ledger.
+	w.day = budgetClock().UTC().Format("2006-01-02")
 	w.mu.Unlock()
 	stop := func() {}
 	if l := w.cfg.Decide.Local; advance && l != nil && l.Server != nil {

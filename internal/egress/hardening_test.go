@@ -99,8 +99,9 @@ func TestDialAcceptsTheRootDot(t *testing.T) {
 	}
 }
 
-// RFC 8215 local-use NAT64 (64:ff9b:1::/48) embeds a v4 address like the
-// well-known prefix and is refused the same way.
+// RFC 8215 local-use NAT64 (64:ff9b:1::/48) is judged by the v4 it embeds.
+// These three embed a private, loopback or unspecified address. An address
+// just outside the prefix is ordinary global space.
 func TestBlockedAddrLocalUseNAT64(t *testing.T) {
 	for _, s := range []string{"64:ff9b:1::a00:1", "64:ff9b:1:ffff::7f00:1", "64:ff9b:1::"} {
 		if _, ok := blockedAddr(netip.MustParseAddr(s)); !ok {

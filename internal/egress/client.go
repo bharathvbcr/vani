@@ -462,7 +462,18 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 func (b *limitedBody) Close() error { return b.rc.Close() }
 
 // blockedAddr reports whether an address must not be reached, and why.
+//
+// DNS64 publishes a public IPv4 host as 64:ff9b::/96 (and, on a private
+// translator, 64:ff9b:1::/48). Those prefixes are judged by the IPv4 they
+// embed (RFC 6052): a public embedding is that public host, and an embedding
+// of an address this function would refuse is refused with it. An embedding
+// whose u octet is not zero is not an embedding and is refused. The check
+// does not unwrap twice, and it does not unwrap 6to4 or Teredo.
 func blockedAddr(addr netip.Addr) (string, bool) {
+	return classifyAddr(addr, true)
+}
+
+func classifyAddr(addr netip.Addr, unwrapNAT64 bool) (string, bool) {
 	addr = addr.WithZone("").Unmap()
 	switch {
 	case !addr.IsValid():
@@ -478,6 +489,17 @@ func blockedAddr(addr netip.Addr) (string, bool) {
 	case addr.IsInterfaceLocalMulticast(), addr.IsMulticast():
 		return "multicast", true
 	}
+	if unwrapNAT64 {
+		if v4, bad, ok := embeddedNAT64(addr); ok || bad != "" {
+			if bad != "" {
+				return bad, true
+			}
+			if why, blocked := classifyAddr(v4, false); blocked {
+				return "NAT64 translation of " + why, true
+			}
+			return "", false
+		}
+	}
 	for _, r := range reservedPrefixes {
 		if r.prefix.Contains(addr) {
 			return r.reason, true
@@ -485,6 +507,36 @@ func blockedAddr(addr netip.Addr) (string, bool) {
 	}
 	return "", false
 }
+
+// embeddedNAT64 extracts the IPv4 address RFC 6052 places in the well-known
+// NAT64 prefix (64:ff9b::/96) or the local-use prefix (64:ff9b:1::/48).
+// bad is set when the address is in the local-use prefix but its u octet is
+// not zero. ok is false for every other address.
+func embeddedNAT64(addr netip.Addr) (v4 netip.Addr, bad string, ok bool) {
+	if !addr.Is6() {
+		return netip.Addr{}, "", false
+	}
+	b := addr.As16()
+	switch {
+	case wellKnownNAT64.Contains(addr):
+		return netip.AddrFrom4([4]byte(b[12:16])), "", true
+	case localUseNAT64.Contains(addr):
+		if b[8] != 0 {
+			return netip.Addr{}, "NAT64 translation with a non-zero u octet", false
+		}
+		return netip.AddrFrom4([4]byte{b[6], b[7], b[9], b[10]}), "", true
+	default:
+		return netip.Addr{}, "", false
+	}
+}
+
+// wellKnownNAT64 and localUseNAT64 are unwrapped by embeddedNAT64 before
+// reservedPrefixes is consulted. An address in either prefix that the unwrap
+// did not recognize stays refused by that list.
+var (
+	wellKnownNAT64 = netip.MustParsePrefix("64:ff9b::/96")
+	localUseNAT64  = netip.MustParsePrefix("64:ff9b:1::/48")
+)
 
 // reservedPrefixes are the ranges netip has no predicate for.
 var reservedPrefixes = []struct {
@@ -500,8 +552,8 @@ var reservedPrefixes = []struct {
 	{netip.MustParsePrefix("203.0.113.0/24"), "documentation range"},
 	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
 	{netip.MustParsePrefix("::/96"), "IPv4-compatible / unspecified range"},
-	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64 translation of the v4 space"},
-	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64 translation (RFC 8215)"},
+	{wellKnownNAT64, "NAT64 translation of the v4 space"},
+	{localUseNAT64, "local-use NAT64 translation (RFC 8215)"},
 	{netip.MustParsePrefix("2001::/32"), "Teredo tunnel"},
 	{netip.MustParsePrefix("2001:db8::/32"), "documentation range"},
 	{netip.MustParsePrefix("2002::/16"), "6to4 tunnel (embeds a v4 address)"},

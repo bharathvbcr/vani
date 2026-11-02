@@ -122,9 +122,9 @@ type wired struct {
 	mu     sync.Mutex
 	scorer *lazyScorer
 
-	// day is the llm budget day (budgetLedgerPath), fixed on first use.
-	dayOnce sync.Once
-	day     string
+	// day is the llm budget day (budgetLedgerPath). Empty until the first
+	// read, then fixed until the next startRun sets it to that run's UTC day.
+	day string
 
 	// tuned is the run's options (tune). The advance phase reads Advance (a
 	// cap other than advance_per_run when above 0), ListOnly (skip it) and

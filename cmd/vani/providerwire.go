@@ -18,12 +18,17 @@ import (
 // budgetClock is the one clock the llm budget day comes from (a seam for tests).
 var budgetClock = time.Now
 
-// budgetLedgerPath is the llm budget ledger file for this run's UTC day. The day
-// is read from budgetClock once and kept, so the provider that meters into the
-// ledger and anything that reads the day's spend or cap (vani teacher) name the
-// same file even when the run crosses UTC midnight.
+// budgetLedgerPath is the llm budget ledger file for this run's UTC day. The
+// day is fixed on the first read and again by startRun, so the provider that
+// meters into the ledger and anything that reads the day's spend or cap (vani
+// teacher) name the same file even when one run crosses UTC midnight. The next
+// run of this process takes the UTC day it starts on.
 func (w *wired) budgetLedgerPath() string {
-	w.dayOnce.Do(func() { w.day = budgetClock().UTC().Format("2006-01-02") })
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.day == "" {
+		w.day = budgetClock().UTC().Format("2006-01-02")
+	}
 	return filepath.Join(w.stateDir, "budget", "llm-"+w.day+".json")
 }
 

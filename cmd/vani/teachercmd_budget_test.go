@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/eval"
@@ -150,5 +151,44 @@ func TestTeacherRunAcrossUTCMidnightUsesOneBudgetDay(t *testing.T) {
 	ticks.Store(5)
 	if again := w.budgetLedgerPath(); again != first {
 		t.Errorf("one run named two ledgers: %s then %s", first, again)
+	}
+}
+
+// The llm budget day is fixed for one run, including a run that crosses UTC
+// midnight, and moves when the same process starts another run. Pinning it
+// for the life of the process bills a later day against the file the daemon
+// opened on its first run.
+func TestBudgetDayFollowsTheRunNotTheProcess(t *testing.T) {
+	now := time.Date(2026, 10, 29, 15, 0, 0, 0, time.UTC)
+	old := budgetClock
+	t.Cleanup(func() { budgetClock = old })
+	budgetClock = func() time.Time { return now }
+
+	cfg := config.Default()
+	cfg.Decide.OpenRouterModel = ""
+	cfg.LLM.Provider = ""
+	w, warn := openWired(t, cfg)
+
+	first := w.budgetLedgerPath()
+	if !strings.HasSuffix(first, "llm-2026-10-29.json") {
+		t.Fatalf("first use pinned %s", first)
+	}
+	now = now.Add(72 * time.Hour)
+	if again := w.budgetLedgerPath(); again != first {
+		t.Fatalf("inside one run the ledger moved from %s to %s", first, again)
+	}
+
+	_, _, stop, err := w.startRun(context.Background(), false)
+	if err != nil {
+		t.Fatalf("startRun: %v\n%s", err, warn.String())
+	}
+	stop()
+	got := w.budgetLedgerPath()
+	if !strings.HasSuffix(got, "llm-2026-11-01.json") {
+		t.Fatalf("the next run stayed on %s, want the UTC day that run started", got)
+	}
+	now = now.Add(24 * time.Hour)
+	if again := w.budgetLedgerPath(); again != got {
+		t.Fatalf("midnight inside the new run moved the ledger from %s to %s", got, again)
 	}
 }
