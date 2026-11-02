@@ -166,6 +166,10 @@ type lastRunFacet struct {
 	// ImpressionsError is the run record's field: the digest was written but
 	// what it showed was not recorded. Empty when there is nothing to say.
 	ImpressionsError string `json:"impressions_error,omitempty"`
+	// Progress is the live snapshot (runprogress.go) while State is running.
+	// Nil when the file is absent. ok false means it was present and could
+	// not be trusted; that is not the same as a run with nothing to show yet.
+	Progress *progressFacet `json:"progress,omitempty"`
 }
 
 // skipFacet is one skipped daily slot (a history row, not last.json).
@@ -368,6 +372,9 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 	if r.CountsAfter != nil {
 		n := sumCounts(r.CountsAfter)
 		f.PostingsAfter = &n
+	}
+	if f.State == outcomeRunning {
+		f.Progress = e.attachProgress(*r, at)
 	}
 	return f
 }

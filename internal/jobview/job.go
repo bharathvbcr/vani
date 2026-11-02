@@ -99,6 +99,33 @@ func InPlaces(states, areas map[string]bool, places []Place) bool {
 	return true
 }
 
+// InCountries applies --country. A nil set takes every job. "none" takes a
+// job that names no country. A job in more than one country matches any of
+// them. countries is what location.Countries read from the job.
+func InCountries(set map[string]bool, countries []string) bool {
+	if set == nil {
+		return true
+	}
+	if len(countries) == 0 {
+		return set["none"]
+	}
+	for _, c := range countries {
+		if set[c] {
+			return true
+		}
+	}
+	return false
+}
+
+// countriesOf is the countries a located job names.
+func countriesOf(j Job) []string {
+	loc := location.Location{RemoteScope: j.RemoteScope}
+	for _, p := range j.Places {
+		loc.Places = append(loc.Places, location.Place(p))
+	}
+	return location.Countries(loc)
+}
+
 // reasonPct is the " (91%)" a picked reason ends with (jdreasons.Note).
 var reasonPct = regexp.MustCompile(`(?:^| )\((\d{1,3})%\)$`)
 

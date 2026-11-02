@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -135,6 +136,11 @@ func TestJobsLocationStats(t *testing.T) {
 	if s.State["TX"] != 3 || s.State["NM"] != 1 || s.State["none"] != 3 {
 		t.Errorf("state %+v", s.State)
 	}
+	// El Paso, Las Cruces, Remote - US and the flagged Austin role are the
+	// United States; London is the United Kingdom; "2 Locations" names none.
+	if s.Country["United States"] != 4 || s.Country["United Kingdom"] != 1 || s.Country["none"] != 1 {
+		t.Errorf("country %+v", s.Country)
+	}
 	if s.RemoteListed != 2 || s.RemoteScope["US"] != 1 || s.RemoteScope["unstated"] != 1 {
 		t.Errorf("remote %d %+v", s.RemoteListed, s.RemoteScope)
 	}
@@ -146,8 +152,95 @@ func TestJobsLocationStats(t *testing.T) {
 		t.Errorf("filtered stats %q", o)
 	}
 	o, _ = mustCode(t, 0, "jobs", "stats", "--view", "all")
-	if !strings.Contains(o, "where: remote 2, TX 3, NM 1, none 3") {
+	if !strings.Contains(o, "where: remote 2, TX 3, NM 1, none 3") || !strings.Contains(o, "country: United States 4, United Kingdom 1, none 1") {
 		t.Errorf("text stats %q", o)
+	}
+}
+
+func TestJobsCountryFilter(t *testing.T) {
+	_, state := setup(t)
+	fixedNow(t)
+	seedJobs(t, state,
+		seedJob{key: "gh:a:tx", title: "TX", status: posting.Explained, location: "Austin, TX"},
+		seedJob{key: "gh:a:de", title: "DE", status: posting.Explained, location: "Berlin, Germany"},
+		seedJob{key: "gh:a:in", title: "IN", status: posting.Explained, location: "Bengaluru, IN"},
+		seedJob{key: "gh:a:uk", title: "UK", status: posting.Explained, location: "London, United Kingdom"},
+		seedJob{key: "gh:a:rus", title: "RUS", status: posting.Explained, location: "Remote - US"},
+		seedJob{key: "gh:a:eu", title: "EU", status: posting.Explained, location: "Remote - Europe"},
+		seedJob{key: "gh:a:none", title: "NONE", status: posting.Explained, location: "2 Locations"},
+		seedJob{key: "gh:a:both", title: "BOTH", status: posting.Explained, location: "Berlin, DE; Austin, TX"},
+	)
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--country", "Germany"}, "gh:a:both gh:a:de"},
+		{[]string{"--country", "germany,DE"}, "gh:a:both gh:a:de"},
+		{[]string{"--country", "US"}, "gh:a:both gh:a:rus gh:a:tx"},
+		{[]string{"--country", "United States,United Kingdom"}, "gh:a:both gh:a:rus gh:a:tx gh:a:uk"},
+		{[]string{"--country", "India"}, "gh:a:in"},
+		{[]string{"--country", "none"}, "gh:a:eu gh:a:none"},
+		{[]string{"--country", "Germany", "--or-remote"}, "gh:a:both gh:a:de gh:a:eu gh:a:rus"},
+		{[]string{"--country", "Germany", "--remote"}, ""},
+		{[]string{"--country", "US", "--remote"}, "gh:a:rus"},
+		{[]string{"--country", "Germany", "--state", "TX"}, "gh:a:both"},
+		{[]string{"--country", "France"}, ""},
+	} {
+		got := keys(listJSON(t, append([]string{"--view", "all"}, c.args...)...))
+		if !sameKeys(got, c.want) {
+			t.Errorf("%q: %q, want %q", c.args, got, c.want)
+		}
+	}
+	for _, args := range [][]string{
+		{"jobs", "list", "--country", "Texas"},
+		{"jobs", "list", "--country", "XX"},
+		{"jobs", "list", "--country", "Germany,"},
+		{"jobs", "list", "--country", "Europe"},
+		{"jobs", "export", "--country", "Notaland"},
+		{"jobs", "list", "--country", strings.Join(tooManyCountries(), ",")},
+	} {
+		mustCode(t, 2, args...)
+	}
+	mustCode(t, 0, "jobs", "list", "--view", "all", "--country", strings.Join(tooManyCountries()[:maxCountries], ","))
+	out := filepath.Join(t.TempDir(), "jobs.xlsx")
+	o, _ := mustCode(t, 0, "jobs", "export", "--json", "--dry-run", "--view", "all", "--country", "Germany", "--top", "10", "--out", out)
+	var reply struct {
+		Total  int  `json:"total"`
+		Rows   int  `json:"rows"`
+		DryRun bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal([]byte(o), &reply); err != nil || !reply.DryRun || reply.Total != 2 || reply.Rows != 2 {
+		t.Fatalf("export %q: %+v %v", o, reply, err)
+	}
+	// The place menu counts the search before --country, --state and --remote,
+	// so ticking Germany still offers the United States.
+	wantCountries := map[string]int{"United States": 3, "Germany": 2, "India": 1, "United Kingdom": 1, "none": 2}
+	all := listJSON(t, "--view", "all")
+	if all.Where == nil || !maps.Equal(all.Where.Country, wantCountries) {
+		t.Fatalf("where %+v, want %+v", all.Where, wantCountries)
+	}
+	for _, args := range [][]string{
+		{"--country", "Germany"},
+		{"--state", "TX"},
+		{"--remote"},
+	} {
+		got := listJSON(t, append([]string{"--view", "all"}, args...)...)
+		if got.Where == nil || !maps.Equal(got.Where.Country, wantCountries) {
+			t.Errorf("%q where %+v, want the unfiltered countries", args, got.Where)
+		}
+	}
+	if de := listJSON(t, "--view", "all", "--country", "Germany"); de.Total != 2 {
+		t.Errorf("Germany still filters the list: total %d", de.Total)
+	}
+}
+
+// tooManyCountries is one more distinct country than --country allows.
+func tooManyCountries() []string {
+	return []string{
+		"US", "UK", "CA", "MX", "DE", "FR", "IN", "IE", "NL", "BE", "ES", "IT", "PT", "CH", "AT",
+		"SE", "NO", "DK", "FI", "PL", "CZ", "RO", "HU", "GR", "UA", "TR", "AE", "SG", "JP", "KR",
+		"CN", "TW", "HK", "AU", "NZ", "BR", "CL", "PH", "VN", "TH", "MY", "ZA", "NG", "KE", "EG",
+		"CR", "LU", "IS", "SK", "SI", "HR",
 	}
 }
 

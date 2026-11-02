@@ -84,6 +84,9 @@ var (
 
 func runsPath(stateDir, name string) string { return filepath.Join(stateDir, runRecordDir, name) }
 
+// errChangedWhileOpen is a file replaced between the inspection and the read.
+var errChangedWhileOpen = errors.New("changed while it was opened")
+
 // readBoundedFile reads a regular file of at most max bytes. A symlink, a
 // directory or another special file is refused without being opened, and the
 // file opened must be the one inspected. A missing file is os.ErrNotExist.
@@ -105,7 +108,10 @@ func readBoundedFile(path string, max int) ([]byte, error) {
 		return nil, err
 	}
 	if !os.SameFile(before, after) {
-		return nil, fmt.Errorf("%s changed while it was opened", filepath.Base(path))
+		// The leaf was replaced between the inspection and this read. Callers
+		// that expect a quiet file treat it as a failure; the live snapshot
+		// retries, because its writer renames a new file into place often.
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), errChangedWhileOpen)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
 	if err != nil {

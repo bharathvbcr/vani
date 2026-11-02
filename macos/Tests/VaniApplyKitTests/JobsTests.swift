@@ -181,6 +181,49 @@ final class JobsTests: XCTestCase {
         XCTAssertEqual([ex.remoteOnly, ex.orRemote], [false, true])
         ex.setRemoteOnly(false)
         XCTAssertEqual([ex.remoteOnly, ex.orRemote], [false, true], "turning one off leaves the other")
+
+        var countries = JobFilter()
+        countries.countries = ["United States", "Germany"]
+        XCTAssertEqual(countries.activeCount, 1)
+        XCTAssertEqual(JobsClient.selection("", countries), ["--country", "Germany,United States"])
+        countries.setOrRemote(true)
+        XCTAssertTrue(countries.widensToRemote)
+        XCTAssertEqual(countries.activeCount, 2)
+        XCTAssertEqual(JobsClient.selection("", countries), ["--country", "Germany,United States", "--or-remote"])
+        countries.countries = ["Bad, Name"]
+        XCTAssertFalse(countries.widensToRemote, "a comma would split the flag, so it widens nothing")
+        XCTAssertEqual(JobsClient.selection("", countries), [])
+        XCTAssertEqual(countries.exportCountryNames, [], "a comma would split the flag, so export names nothing")
+        countries.countries = ["none", "Germany", "United States"]
+        XCTAssertEqual(countries.exportCountryNames, ["Germany", "United States", "no country listed"])
+    }
+
+    /// The location picker searches the census in memory. A chosen country stays
+    /// visible when the query would otherwise hide it, and choosing one country
+    /// does not drop the others from the list.
+    func testPlacePickerKeepsAChosenCountry() {
+        let ranked = [(token: "United States", count: 4), (token: "Germany", count: 2), (token: "United States", count: 9), (token: "", count: 1), (token: "none", count: 3)]
+        let all = PlacePicker.rows(ranked: ranked, selected: ["France"], query: "  ", noneTitle: "No country listed", noneCount: 1)
+        XCTAssertEqual(all.map(\.token), ["United States", "Germany", "France", "none"])
+        XCTAssertEqual(all.map(\.count), [4, 2, nil, 1])
+        XCTAssertEqual(all.map(\.title), ["United States", "Germany", "France", "No country listed"])
+
+        let searched = PlacePicker.rows(ranked: ranked, selected: ["United States", "France"], query: "ger", noneTitle: "No country listed", noneCount: 1)
+        XCTAssertEqual(searched.map(\.token), ["United States", "France", "Germany"], "a chosen country stays while the search hides the rest")
+        XCTAssertEqual(
+            PlacePicker.rows(ranked: ranked, selected: [], query: "united", noneTitle: "No country listed").map(\.token),
+            ["United States"]
+        )
+        XCTAssertEqual(
+            PlacePicker.rows(ranked: ranked, selected: ["none"], query: "zzz", noneTitle: "No country listed").map(\.token),
+            ["none"],
+            "the selected no-country row stays when nothing else matches"
+        )
+        XCTAssertEqual(PlacePicker.rows(ranked: [], selected: [], query: "zzz").map(\.token), [])
+        XCTAssertEqual(
+            PlacePicker.rows(ranked: ranked, selected: [], query: "NO COUNTRY", noneTitle: "No country listed").map(\.token),
+            ["none"]
+        )
     }
 
     func testDecodesPlaces() throws {
@@ -205,6 +248,13 @@ final class JobsTests: XCTestCase {
         XCTAssertEqual(page.jobs[2].whereLabel, "Austin, TX · Remote")
         XCTAssertEqual(page.jobs[3].whereLabel, "2 Locations", "nothing recognised: the board's own text")
         XCTAssertEqual(page.jobs[4].whereLabel, "London, United Kingdom")
+        XCTAssertNil(page.placeChoices, "an older vani sends no place menu")
+        let withWhere = reply.replacingOccurrences(
+            of: #""counts":{"all":5}"#,
+            with: #""counts":{"all":5},"where":{"state":{"TX":2,"NM":1,"none":2},"country":{"United States":3,"United Kingdom":1,"Germany":2,"none":1},"area":[{"area":"El Paso","state":"TX","n":2}]}"#)
+        let located = try JobsClient.decoder.decode(JobsPage.self, from: Data(withWhere.utf8))
+        XCTAssertEqual(located.placeChoices?.countriesByCount.map(\.name), ["United States", "Germany", "United Kingdom"])
+        XCTAssertEqual(located.placeChoices?.statesByCount.map(\.code), ["TX", "NM"])
         // An older vani sends no places: the board's text and flag, as before.
         var old = Job(key: "k", company: "C", title: "T")
         old.location = "Berlin"
@@ -242,18 +292,22 @@ final class JobsTests: XCTestCase {
         XCTAssertEqual(s.keywords.first?.target, true)
         XCTAssertEqual(s.insight?.targetTerms, 4)
         XCTAssertNil(s.state, "a vani from before location parsing still decodes")
+        XCTAssertNil(s.country)
         XCTAssertTrue(s.statesByCount.isEmpty)
+        XCTAssertTrue(s.countriesByCount.isEmpty)
     }
 
     func testDecodesLocationStats() throws {
         let reply = """
         {"view":"all","total":4,"fit":{},"work_mode":{},"sponsorship":{},"seniority":{},"basis":{},"fresh_source":{},\
         "age":[],"relevance":[],"priority":[],"companies":[],"keywords":[],\
-        "state":{"TX":3,"NM":1,"CA":1,"none":2},"area":[{"area":"El Paso","state":"TX","n":2},{"area":"London","n":1}],\
+        "state":{"TX":3,"NM":1,"CA":1,"none":2},"country":{"United States":3,"Germany":2,"United Kingdom":1,"none":1},\
+        "area":[{"area":"El Paso","state":"TX","n":2},{"area":"London","n":1}],\
         "remote_listed":2,"remote_scope":{"US":1,"unstated":1}}
         """
         let s = try JobsClient.decoder.decode(JobsStats.self, from: Data(reply.utf8))
         XCTAssertEqual(s.statesByCount.map(\.code), ["TX", "CA", "NM"], "most first, ties by code, none left out")
+        XCTAssertEqual(s.countriesByCount.map(\.name), ["United States", "Germany", "United Kingdom"])
         XCTAssertEqual(s.area?.map(\.label), ["El Paso, TX", "London"])
         XCTAssertEqual(s.remoteListed, 2)
         XCTAssertEqual(s.remoteScope?["unstated"], 1)

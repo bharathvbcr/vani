@@ -599,6 +599,7 @@ State directory files and locks created during operations:
 | Path | Purpose & Lifecycle |
 |---|---|
 | `<state>/runs/last.json` | Latest run record; verified regular file via `readBoundedFile` (symlinks/devices refused). |
+| `<state>/runs/progress.json` | Live snapshot of the run that is going: stage, the board being read, and counts. When a board has just finished, `outcome` is `read`, `failed`, `rate_limited`, or `skipped`. Replaced as the run moves and removed when the run ends. Not history. Read with `readBoundedFile`, at most 4 KiB. A replace that lands during the read is tried again and is not a failed check. A missing file means there is nothing to show, not that the check failed. |
 | `<state>/runs/history/<id>.json` | Permanent finished/interrupted run records, pruned to newest 30 records and 4 MiB. |
 | `<state>/runs/request.json` | Run request waiting for daemon pickup (renamed to `request.claimed.json` upon claim). |
 | `<state>/hosts/cooldown.json` | Persistent rate-limit memory across runs (`srcutil.LoadCooldowns`/`SaveCooldowns`), tracking 429 backoff windows. |
@@ -614,7 +615,7 @@ State directory files and locks created during operations:
 
 ## Runtime reliability & defensive checks
 
-- **Non-regular file rejection:** `readBoundedFile` inspects file mode via `Lstat` before reading. Symlinks, FIFOs, UNIX domain sockets, and character/block devices are refused for `last.json`, impressions logs, marks (`marks.jsonl`), and manual-triage readings (`readings.jsonl`).
+- **Non-regular file rejection:** `readBoundedFile` inspects file mode via `Lstat` before reading. Symlinks, FIFOs, UNIX domain sockets, and character/block devices are refused for `last.json`, `runs/progress.json`, impressions logs, marks (`marks.jsonl`), and manual-triage readings (`readings.jsonl`).
 - **Binary identity monitor (`binarywatch`):** At daemon startup, the binary's volume serial and file index (Windows) or device, inode, mtime, and size (Unix) are captured. The binary watch polls during idle periods and exits 75 if the executable file changes on disk, enabling seamless supervisor restarts.
 - **Panic finalization:** Panics occurring after `guardedRun` are trapped, finalizing the run record with status `failed` so pipeline execution is not left dangling.
 - **Privacy scrubbing:** Spaced phone numbers, emails, and work-authorization boilerplate are purged from bullet text and instructions before embedding or LLM prompt construction.

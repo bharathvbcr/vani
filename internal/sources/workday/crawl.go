@@ -282,16 +282,39 @@ type walker struct {
 	requests int // listing requests, every term's
 	queries  int // queries walked, a split query's buckets each counted
 	stubs    int // stub rows met (isStub), every query's
+	// stubRefetches counts extra reads of a page that came back with stubs.
+	stubRefetches int
 }
+
+// A page that contains a stub is read again before the stub is accepted.
+// CrowdStrike's three searches on 2026-11-02 listed 3 stub rows among 57; the
+// same searches an hour later listed none, so the rows were a bad page rather
+// than jobs. stubRefetch is the rereads of one page, maxStubRefetches the extra
+// listing requests one board may spend on them.
+const (
+	stubRefetch      = 2
+	maxStubRefetches = 8
+)
 
 // isStub is a listing row with no path and no title: Mastercard's listing
 // answered {"bulletFields":["R-290227"]} at offset 1000 (2026-10-28), and HPE's
 // failed the same way in a run that day. It names no page to fetch and carries
-// nothing a stored posting could be matched by, so it is left out and counted;
-// more than a listing's shortfall of them fails the board. A row with a title
-// but no path, or a malformed path, is still an error.
+// nothing a stored posting could be matched by, so it is left out and counted.
+// More than that query's shortfall of them, after the page is reread, fails
+// the query. A row with a title but no path, or a malformed path, is still an
+// error.
 func isStub(r listedJob) bool {
 	return r.ExternalPath == "" && strings.TrimSpace(r.Title) == ""
+}
+
+func stubCount(rows []listedJob) int {
+	n := 0
+	for _, r := range rows {
+		if isStub(r) {
+			n++
+		}
+	}
+	return n
 }
 
 func newWalker(s *source, endpoint string, limit int) *walker {
@@ -302,7 +325,38 @@ func newWalker(s *source, endpoint string, limit int) *walker {
 // row of its limit twice over, plus room for the split queries.
 func listRequests(limit int) int { return 2*limit/pageSize + splitRequests }
 
+// page reads one listing page. A page that contains stubs is reread, and the
+// read with the fewest stubs is the one kept: a stub that fills in on the
+// reread is a job, and one that does not is counted by the query's shortfall.
+// A reread that fails for a reason other than the context is dropped and the
+// page already in hand is kept, so a second failure cannot lose a page the
+// first read accounted for.
 func (w *walker) page(ctx context.Context, applied map[string][]string, offset int) (listPage, error) {
+	p, err := w.fetchPage(ctx, applied, offset)
+	if err != nil || stubCount(p.rows) == 0 {
+		return p, err
+	}
+	best := p
+	for range stubRefetch {
+		if w.stubRefetches >= maxStubRefetches || stubCount(best.rows) == 0 {
+			break
+		}
+		w.stubRefetches++
+		nxt, err := w.fetchPage(ctx, applied, offset)
+		if err != nil {
+			if ctx.Err() != nil {
+				return listPage{}, err
+			}
+			break
+		}
+		if stubCount(nxt.rows) <= stubCount(best.rows) {
+			best = nxt
+		}
+	}
+	return best, nil
+}
+
+func (w *walker) fetchPage(ctx context.Context, applied map[string][]string, offset int) (listPage, error) {
 	if err := ctx.Err(); err != nil {
 		return listPage{}, err
 	}
@@ -362,9 +416,10 @@ func (w *walker) add(rows []listedJob, here map[string]bool) (int, error) {
 	return n, nil
 }
 
-// shortfall is how many rows of a counted query may be missing before the
-// listing is refused: a hundredth, at least one. A posting closing mid-walk
-// shifts later rows up a page, so one is skipped; more is the listing failing.
+// shortfall is how many rows of one query may be missing before that query is
+// refused: a hundredth, at least one. A posting closing mid-walk shifts later
+// rows up a page, so one is skipped; more is the listing failing. Each search
+// term is its own query and has its own allowance.
 func shortfall(count int) int { return max(1, count/100) }
 
 // errIncomplete is a listing that ended before it could account for every
@@ -389,6 +444,7 @@ func pagedTotal(first listPage) (stop int, ok bool) {
 // externalPaths it found, its buckets' included. Over the window the query is
 // split by a facet.
 func (w *walker) walk(ctx context.Context, applied map[string][]string, depth int) (map[string]bool, error) {
+	stubsBefore := w.stubs
 	first, err := w.page(ctx, applied, 0)
 	if err != nil {
 		return nil, err
@@ -497,6 +553,13 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 	}
 	if !ended {
 		return nil, fmt.Errorf("%w: a part of the board gave no usable count and listed past Workday's %d-row window", errIncomplete, window)
+	}
+	// The allowance is this query's, not the board's. One stub in each of
+	// CrowdStrike's three searches is one per query; summing them and comparing
+	// with the union's shortfall failed the board on 2026-11-02 (3 of 57).
+	if q := w.stubs - stubsBefore; q > shortfall(len(here)+q) {
+		return nil, fmt.Errorf("%w: %d of %d listing rows are stubs with no path or title",
+			errIncomplete, q, len(here)+q)
 	}
 	// A query under the window that ends short of its total is kept, as before
 	// (docs/FOLLOWUPS.md, "Absence ages every open posting"): a live total that

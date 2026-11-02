@@ -297,8 +297,10 @@ func TestRetryOnRateLimit(t *testing.T) {
 		t.Errorf("waited %v for a Retry-After over the cap", *waits)
 	}
 
-	// Other statuses are not retried; a 404 stays ErrBoardNotFound.
-	for _, code := range []int{400, 401, 403, 404, 500, 502} {
+	// Other statuses are not retried; a 404 stays ErrBoardNotFound. A 500 is the
+	// request's own failure. A 502 and a 504 are gateway failures and are
+	// retried below, the same way as a 503.
+	for _, code := range []int{400, 401, 403, 404, 500} {
 		waits = noWait(t)
 		d = seq(t, srctest.Reply{Status: code})
 		err := GetJSON(context.Background(), d, u, &v)
@@ -308,6 +310,85 @@ func TestRetryOnRateLimit(t *testing.T) {
 		if (code == 404) != errors.Is(err, ErrBoardNotFound) {
 			t.Errorf("status %d: ErrBoardNotFound mismatch: %v", code, err)
 		}
+	}
+
+	// A gateway 502 or 504 is retried like a 503: one success after the first
+	// failure is the board, and maxAttempts failures give up with the status.
+	for _, code := range []int{502, 504} {
+		waits = noWait(t)
+		noJitter(t)
+		d = seq(t, srctest.Reply{Status: code}, okReply)
+		if err := GetJSON(context.Background(), d, u, &v); err != nil || v.A != 7 {
+			t.Errorf("status %d then 200: v=%+v err=%v", code, v, err)
+		}
+		if len(d.Requests()) != 2 || len(*waits) != 1 || (*waits)[0] != backoffBase {
+			t.Errorf("status %d: %d requests, waits %v", code, len(d.Requests()), *waits)
+		}
+		waits = noWait(t)
+		replies := make([]srctest.Reply, maxAttempts)
+		for i := range replies {
+			replies[i] = srctest.Reply{Status: code}
+		}
+		d = seq(t, replies...)
+		err := GetJSON(context.Background(), d, u, &v)
+		if !errors.As(err, &se) || se.Code != code || !strings.Contains(err.Error(), "gave up after 5 attempts") || errors.Is(err, ErrRateLimited) {
+			t.Errorf("%d %ds: %v", maxAttempts, code, err)
+		}
+		if len(d.Requests()) != maxAttempts {
+			t.Errorf("status %d: %d requests, want %d", code, len(d.Requests()), maxAttempts)
+		}
+	}
+}
+
+// A board whose retry budget can pay takes one maxRetryWait wait after the
+// short attempts, and that try is the one that can still succeed. A budget
+// that cannot pay the longer wait keeps the short schedule.
+func TestRateLimitBudgetPaysForOneLongerAttempt(t *testing.T) {
+	var v struct{ A int }
+	noJitter(t)
+	okReply := srctest.Reply{Status: 200, Body: []byte(`{"A":7}`)}
+	short := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+
+	waits := noWait(t)
+	d := seq(t, append(tooMany(maxAttempts, nil), okReply)...)
+	if err := GetJSON(WithRetryBudget(context.Background(), BoardRetryBudget), d, u, &v); err != nil || v.A != 7 {
+		t.Fatalf("recovered on the longer attempt: v=%+v err=%v", v, err)
+	}
+	if want := append(append([]time.Duration{}, short...), maxRetryWait); len(d.Requests()) != maxAttempts+1 || !slices.Equal(*waits, want) {
+		t.Errorf("%d requests, waits %v, want %v", len(d.Requests()), *waits, want)
+	}
+
+	waits = noWait(t)
+	d = seq(t, tooMany(maxAttempts+1, nil)...)
+	rl := rateLimited(t, GetJSON(WithRetryBudget(context.Background(), BoardRetryBudget), d, u, &v))
+	if rl.Attempts != maxAttempts+1 || !strings.Contains(rl.Why, "gave up after 6 attempts") {
+		t.Fatalf("attempts %d, why %q", rl.Attempts, rl.Why)
+	}
+	if want := append(append([]time.Duration{}, short...), maxRetryWait); !slices.Equal(*waits, want) {
+		t.Errorf("waits %v, want %v", *waits, want)
+	}
+
+	// 40s pays the 30s of short waits and not another 30s.
+	waits = noWait(t)
+	d = seq(t, tooMany(maxAttempts, nil)...)
+	rl = rateLimited(t, GetJSON(WithRetryBudget(context.Background(), 40*time.Second), d, u, &v))
+	if rl.Attempts != maxAttempts || !strings.Contains(rl.Why, "gave up after 5 attempts") || !slices.Equal(*waits, short) {
+		t.Errorf("tight budget: attempts %d, why %q, waits %v", rl.Attempts, rl.Why, *waits)
+	}
+}
+
+// Retry-After: 0 is one immediate retry on the first refusal. The next
+// refusal uses the backoff for that attempt (attempt 1 is 4s with jitter
+// off), so five answers of zero are not five immediate requests.
+func TestRetryAfterZeroDoesNotSpin(t *testing.T) {
+	var v struct{ A int }
+	noJitter(t)
+	waits := noWait(t)
+	d := seq(t, tooMany(maxAttempts, retryAfterHdr("0"))...)
+	rl := rateLimited(t, GetJSON(context.Background(), d, u, &v))
+	want := []time.Duration{0, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	if rl.Attempts != maxAttempts || !slices.Equal(*waits, want) {
+		t.Errorf("attempts %d, waits %v, want %v", rl.Attempts, *waits, want)
 	}
 }
 

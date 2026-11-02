@@ -54,7 +54,9 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 	ctx = srcutil.WithHostThrottle(srcutil.WithRunRetryBudget(ctx, srcutil.RunRetryBudget), throttle)
 	tried := make([]boardReport, 0, len(watchlist))
 	report := func() boardsReport { return boardsReportOf(len(watchlist), tried) }
-	for _, b := range watchlist {
+	total := len(watchlist)
+	for i, b := range watchlist {
+		index := i + 1
 		e := boardReport{ATS: string(b.ATS), Token: oneLine(b.Token, maxBoardNameRunes), Company: oneLine(b.Company, maxBoardNameRunes)}
 		src, ok := srcs[b.ATS]
 		if !ok {
@@ -68,8 +70,12 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 			warnf("board %s/%s: %s; skipped", b.ATS, b.Token, why)
 			e.Outcome, e.Error = boardSkipped, oneLine(why, maxBoardErrorRunes)
 			tried = append(tried, e)
+			emitListing(ctx, progressPhaseDone, index, total, b, tried)
 			continue
 		}
+		// Said before the fetch: a slow board is otherwise silent until it ends.
+		warnf("board %s/%s: reading (%d of %d)", b.ATS, b.Token, index, total)
+		emitListing(ctx, progressPhaseListing, index, total, b, tried)
 		// One retry budget per board: waiting out a host's 429s is bounded for
 		// the board as a whole, not only for each of its requests.
 		listed, err := src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
@@ -83,6 +89,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 				next = "left unchanged, will retry next run"
 			}
 			tried = append(tried, e)
+			emitListing(ctx, progressPhaseDone, index, total, b, tried)
 			if ctx.Err() != nil {
 				return report(), ctx.Err()
 			}
@@ -91,17 +98,90 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		}
 		n := len(listed)
 		e.Listed = &n
+		emitListing(ctx, progressPhaseReconciling, index, total, b, tried)
 		sum, err := reconcile(ctx, b, listed, time.Now())
 		if err != nil {
 			e.Outcome, e.Error = boardFailed, oneLine("reconcile: "+err.Error(), maxBoardErrorRunes)
 			tried = append(tried, e)
+			emitListing(ctx, progressPhaseDone, index, total, b, tried)
 			return report(), fmt.Errorf("reconcile %s/%s: %w", b.ATS, b.Token, err)
 		}
 		e.Outcome, e.Reconcile = boardRead, reconcileCountsOf(sum)
 		tried = append(tried, e)
+		emitListing(ctx, progressPhaseDone, index, total, b, tried)
 		warnf("board %s/%s: %+v", b.ATS, b.Token, sum)
 	}
 	return report(), nil
+}
+
+// listingTick is one moment of listBoards, carried on the context so the
+// existing callers keep their signature. Counts exclude the board still in
+// flight: they are tallied from the boards already appended.
+type listingTick struct {
+	Phase                                            string
+	Index, Total                                     int
+	Board                                            sources.Board
+	Done, Read, Failed, RateLimited, Skipped, Listed int
+	// Outcome is set only for phase done, and only when the last appended
+	// report is this board. Empty while the board is still in flight.
+	Outcome string
+}
+
+type listingTickFunc func(listingTick)
+
+type listingTickKey struct{}
+
+func withListingTick(ctx context.Context, fn listingTickFunc) context.Context {
+	if fn == nil || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, listingTickKey{}, fn)
+}
+
+func noteListing(ctx context.Context, tk listingTick) {
+	if ctx == nil {
+		return
+	}
+	fn, _ := ctx.Value(listingTickKey{}).(listingTickFunc)
+	if fn != nil {
+		fn(tk)
+	}
+}
+
+func tallyTried(tried []boardReport) (done, read, failed, limited, skipped, listed int) {
+	for _, e := range tried {
+		done++
+		switch e.Outcome {
+		case boardRead:
+			read++
+			if e.Listed != nil {
+				listed += *e.Listed
+			}
+		case boardFailed:
+			failed++
+		case boardRateLimited:
+			failed++
+			limited++
+		case boardSkipped:
+			skipped++
+		}
+	}
+	return
+}
+
+func emitListing(ctx context.Context, phase string, index, total int, b sources.Board, tried []boardReport) {
+	done, read, failed, limited, skipped, listed := tallyTried(tried)
+	tk := listingTick{
+		Phase: phase, Index: index, Total: total, Board: b,
+		Done: done, Read: read, Failed: failed, RateLimited: limited, Skipped: skipped, Listed: listed,
+	}
+	if phase == progressPhaseDone && len(tried) > 0 {
+		last := tried[len(tried)-1]
+		if last.ATS == string(b.ATS) && last.Token == oneLine(b.Token, maxBoardNameRunes) {
+			tk.Outcome = last.Outcome
+		}
+	}
+	noteListing(ctx, tk)
 }
 
 // boardsClock is the time the host cooldowns are read and stamped by; a

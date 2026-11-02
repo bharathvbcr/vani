@@ -549,10 +549,13 @@ func TestRunRecordIsWrittenBeforeTheRunEnds(t *testing.T) {
 	l := fixture()
 	wire(t, l, &fakeNotifier{}, nil)
 	var during *runRecord
+	var duringProg runProgress
+	var duringProgErr error
 	old := buildApp // wire's cleanup restores the original after ours runs
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
 		return &App{Ledger: l, Notifier: &fakeNotifier{}, RunOnce: func(context.Context) error {
 			during, _ = readRunRecord(stateDir)
+			duringProg, duringProgErr = readRunProgress(stateDir)
 			return nil
 		}}, nil
 	}
@@ -563,6 +566,12 @@ func TestRunRecordIsWrittenBeforeTheRunEnds(t *testing.T) {
 	}
 	if during.CountsBefore["explained"] != 1 {
 		t.Errorf("counts before: %v", during.CountsBefore)
+	}
+	if duringProgErr != nil || duringProg.Stage != progressStarting || duringProg.ID != runID(*during) || duringProg.PID != during.PID {
+		t.Fatalf("progress during the run: %v %+v", duringProgErr, duringProg)
+	}
+	if _, err := readRunProgress(stateDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("progress file after the run: %v", err)
 	}
 }
 
@@ -595,6 +604,132 @@ func TestStatusJSONRunningInterruptedAndStale(t *testing.T) {
 	}
 	if st := statusOf(t).LastRun; st.State != "interrupted" {
 		t.Errorf("stale record: %+v", st)
+	}
+}
+
+func TestStatusJSONLiveProgress(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	started := now().Add(-time.Minute)
+	rec := runRecord{PID: os.Getpid(), StartedAt: started, Outcome: outcomeRunning}
+	if err := writeRunRecord(stateDir, rec); err != nil {
+		t.Fatal(err)
+	}
+	if st := statusOf(t).LastRun; st.State != "running" || st.Progress != nil {
+		t.Fatalf("missing file: state %s progress %+v", st.State, st.Progress)
+	}
+	snap := runProgress{
+		V: runProgressVersion, PID: rec.PID, ID: runID(rec), At: now(),
+		Stage: progressListing, Phase: progressPhaseListing,
+		Index: 2, Total: 5, Done: 1, Read: 1, Listed: 10,
+		ATS: "gh", Token: "acme", Company: "Acme",
+	}
+	if err := writeRunProgress(stateDir, snap); err != nil {
+		t.Fatal(err)
+	}
+	st := statusOf(t).LastRun
+	if st.Progress == nil || !st.Progress.OK || st.Progress.Company != "Acme" || st.Progress.Index != 2 || st.Progress.Listed != 10 {
+		t.Fatalf("live %+v", st.Progress)
+	}
+	text, _ := mustCode(t, 0, "status")
+	if !strings.Contains(text, "run: reading Acme (2 of 5); 1 read, 10 listed") {
+		t.Fatalf("status text:\n%s", text)
+	}
+
+	other := snap
+	other.ID = "20260101T000000.000Z-1"
+	other.Company = "OtherCo"
+	other.At = now()
+	if err := writeRunProgress(stateDir, other); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t).LastRun
+	raw, err := json.Marshal(st.Progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Progress == nil || st.Progress.OK || st.Progress.Company != "" || !strings.Contains(st.Progress.Reason, "another run") || strings.Contains(string(raw), "OtherCo") {
+		t.Fatalf("other run: %s", raw)
+	}
+	text, _ = mustCode(t, 0, "status")
+	if !strings.Contains(text, "run: live progress could not be read: live progress is from another run") || strings.Contains(text, "OtherCo") {
+		t.Fatalf("text:\n%s", text)
+	}
+
+	stale := snap
+	stale.At = started.Add(-2 * time.Minute)
+	stale.Company = "StaleCo"
+	if err := writeRunProgress(stateDir, stale); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t).LastRun
+	raw, _ = json.Marshal(st.Progress)
+	if st.Progress == nil || st.Progress.OK || strings.Contains(string(raw), "StaleCo") {
+		t.Fatalf("stale time: %s", raw)
+	}
+
+	outside := filepath.Join(t.TempDir(), "secret.json")
+	if err := os.WriteFile(outside, []byte(`{"company":"SecretPortal"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := runsPath(stateDir, runProgressFile)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t).LastRun
+	raw, _ = json.Marshal(st)
+	if st.State != "running" || st.Progress == nil || st.Progress.OK || st.Progress.Reason == "" || strings.Contains(string(raw), "SecretPortal") {
+		t.Fatalf("symlink: %s", raw)
+	}
+	if secret, err := os.ReadFile(outside); err != nil || string(secret) != `{"company":"SecretPortal"}` {
+		t.Fatalf("symlink target changed: %v %q", err, secret)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	writeStateFile(t, stateDir, "runs/progress.json", "{nope")
+	st = statusOf(t).LastRun
+	if st.State != "running" || st.Progress == nil || st.Progress.OK || st.Progress.Reason == "" {
+		t.Fatalf("garbage %+v", st.Progress)
+	}
+
+	rec.Outcome = outcomeOK
+	rec.FinishedAt = now()
+	if err := writeRunRecord(stateDir, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRunProgress(stateDir, snap); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t).LastRun
+	text, _ = mustCode(t, 0, "status")
+	if st.State != outcomeOK || st.Progress != nil || strings.Contains(text, "run: reading") {
+		t.Fatalf("finished state %s progress %+v\n%s", st.State, st.Progress, text)
+	}
+
+	rec.Outcome = outcomeRunning
+	rec.FinishedAt = time.Time{}
+	rec.PID = 4242
+	if err := writeRunRecord(stateDir, rec); err != nil {
+		t.Fatal(err)
+	}
+	snap.PID = 4242
+	snap.ID = runID(rec)
+	snap.At = now()
+	snap.Company = "Hidden"
+	if err := writeRunProgress(stateDir, snap); err != nil {
+		t.Fatal(err)
+	}
+	old := pidAlive
+	t.Cleanup(func() { pidAlive = old })
+	pidAlive = func(int) bool { return false }
+	st = statusOf(t).LastRun
+	text, _ = mustCode(t, 0, "status")
+	if st.State != outcomeInterrupted || st.Progress != nil || strings.Contains(text, "Hidden") || strings.Contains(text, "run: reading") {
+		t.Fatalf("interrupted state %s progress %+v\n%s", st.State, st.Progress, text)
 	}
 }
 

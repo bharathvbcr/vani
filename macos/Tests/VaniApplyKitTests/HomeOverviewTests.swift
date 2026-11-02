@@ -68,6 +68,9 @@ final class HomeOverviewTests: XCTestCase {
         XCTAssertTrue(HomeOverview.statusLine(jobs: .pending, pipeline: .ready(never), now: now, timeText: clock).hasSuffix("no run recorded"))
         let bad = try status(lastRun: #"{"ok":false,"state":"unknown","reason":"torn"}"#)
         XCTAssertTrue(HomeOverview.statusLine(jobs: .pending, pipeline: .ready(bad), now: now, timeText: clock).hasSuffix("last run unreadable"))
+        let progress = #"{"ok":true,"stage":"listing","phase":"listing","index":2,"total":5,"company":"Acme","ats":"gh","token":"acme"}"#
+        let going = try status(lastRun: #"{"ok":true,"state":"running","progress":\#(progress)}"#)
+        XCTAssertTrue(HomeOverview.statusLine(jobs: .pending, pipeline: .ready(going), now: now, timeText: clock).hasSuffix("Reading Acme · 2 of 5"))
     }
 
     func testHugeCountsAreGroupedAndNegativesClamp() {
@@ -212,6 +215,9 @@ final class HomeOverviewTests: XCTestCase {
         XCTAssertEqual(HomeOverview.runHeadline(.init(state: .failed, finishedAt: now, stage: "digest"), now: now), "Failed under 2 min ago (digest)")
         XCTAssertEqual(HomeOverview.runHeadline(.init(state: .never), now: now), "No run recorded yet")
         XCTAssertEqual(HomeOverview.runHeadline(.init(state: .running), now: now), "Running now")
+        let reading = PipelineStatus.LastRun(state: .running, progress: .init(
+            ok: true, stage: "listing", phase: "listing", index: 2, total: 5, ats: "gh", token: "acme", company: "Acme"))
+        XCTAssertEqual(HomeOverview.runHeadline(reading, now: now), "Reading Acme · 2 of 5")
         XCTAssertEqual(HomeOverview.runHeadline(.init(state: .ok), now: now), "Succeeded", "no timestamp: no invented age")
         XCTAssertTrue(HomeOverview.runHeadline(.init(ok: false, reason: "torn\nfile", state: .unknown), now: now).hasPrefix("Last run unreadable: torn file"))
         let future = PipelineStatus.LastRun(state: .ok, finishedAt: now.addingTimeInterval(9999))

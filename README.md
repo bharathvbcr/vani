@@ -544,10 +544,12 @@ flowchart TD
   - Location ([`internal/location`](internal/location)): each job's board location is read into
     `places` (area plus US state code, or area plus the region as written) and `remote_listed` /
     `remote_scope` ("Remote (US)"). That is what the board says, not triage's `work_mode` reading.
-    `--state TX,new mexico|none`, `--area "El Paso"|none` and `--remote` filter on it
-    (`--or-remote` with a state or area keeps remote roles too: "remote, or in Texas"), `jobs stats`
-    counts states, areas and remote listings, and the digest's "Where:" line uses it, falling back
-    to the board's text. There is no home area or city table: an area is the place as written.
+    `--state TX,new mexico|none`, `--area "El Paso"|none`, `--country Germany,US|none` and `--remote`
+    filter on it (`--or-remote` with a state, area or country keeps remote roles too: "remote, or in
+    Texas"), `jobs stats` counts states, countries, areas and remote listings, and the digest's
+    "Where:" line uses it, falling back to the board's text. There is no home area or city table:
+    an area is the place as written. A country is a name Vani reads (a US state is the United States;
+    "Remote - US" is too; "Remote - Europe" is not a country).
   - `jobs gaps` ("what to learn next") counts, across the selected roles, the skills DevPrism
     found missing or weak, plus (with a target summary) skills a role names that the summary does
     not, weighted by role priority. DevPrism's gaps rank first (by the priority of the roles it

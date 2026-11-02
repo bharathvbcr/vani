@@ -917,6 +917,15 @@ public struct JobsPage: Codable, Equatable, Sendable {
     /// Postings read from a board but not triaged yet, which no view lists.
     /// Optional so a vani from before it still decodes.
     public var pending: PendingTriage?
+    /// Places in this selection before the location filters. The location picker
+    /// reads it, so choosing a country does not hide the others. Optional so a
+    /// vani from before it still decodes; Insights stats stay the fallback.
+    public var placeChoices: PlaceChoices?
+
+    enum CodingKeys: String, CodingKey {
+        case view, query, jobs, total, shown, counts, torn, ledger, records, sort, insight, pending
+        case placeChoices = "where"
+    }
 
     public init(view: String, jobs: [Job], total: Int, shown: Int, counts: [String: Int], torn: Bool? = nil) {
         self.view = view
@@ -928,6 +937,76 @@ public struct JobsPage: Codable, Equatable, Sendable {
     }
 
     public func count(_ v: JobView) -> Int { counts[v.rawValue] ?? 0 }
+}
+
+/// Places a `jobs list` selection names before `--state`, `--area`, `--country`
+/// and `--remote`. "none" is a job that names no state, or no country.
+public struct PlaceChoices: Codable, Equatable, Sendable {
+    public var state: [String: Int]?
+    public var country: [String: Int]?
+    public var area: [JobsStats.AreaCount]?
+
+    /// States by how many jobs name them, most first; "none" left out.
+    public var statesByCount: [(code: String, n: Int)] {
+        (state ?? [:]).filter { $0.key != "none" }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .map { ($0.key, $0.value) }
+    }
+
+    /// Countries by how many jobs name them, most first; "none" left out.
+    public var countriesByCount: [(name: String, n: Int)] {
+        (country ?? [:]).filter { $0.key != "none" }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .map { ($0.key, $0.value) }
+    }
+}
+
+/// One checkbox in the Jobs location picker. `count` is how many roles in the
+/// current search name the place, before the location filter. It is nil when
+/// the place is selected but this search does not count it.
+public struct PlacePickerRow: Equatable, Sendable, Identifiable {
+    public var token: String
+    public var title: String
+    public var count: Int?
+    public var id: String { token }
+}
+
+/// Which place checkboxes the location picker shows.
+public enum PlacePicker {
+    /// `ranked` is most-named first and does not include "none". A selected
+    /// token the census omitted stays, so a chosen country never disappears.
+    /// A search hides titles that do not contain it, except a selected row,
+    /// which stays at the top. An empty or blank query shows the whole list.
+    /// "none" is last when `noneTitle` is set.
+    public static func rows(
+        ranked: [(token: String, count: Int)],
+        selected: Set<String>,
+        query: String,
+        noneTitle: String? = nil,
+        noneCount: Int? = nil
+    ) -> [PlacePickerRow] {
+        var seen = Set<String>()
+        var all: [PlacePickerRow] = []
+        for item in ranked {
+            let token = item.token
+            guard !token.isEmpty, token != "none", seen.insert(token).inserted else { continue }
+            all.append(PlacePickerRow(token: token, title: token, count: item.count))
+        }
+        for token in selected.sorted() where !token.isEmpty && token != "none" && seen.insert(token).inserted {
+            all.append(PlacePickerRow(token: token, title: token, count: nil))
+        }
+        if let noneTitle {
+            all.append(PlacePickerRow(token: "none", title: noneTitle, count: noneCount))
+        }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return all }
+        let pinned = all.filter { selected.contains($0.token) && !matches($0, q) }
+        return pinned + all.filter { matches($0, q) }
+    }
+
+    private static func matches(_ row: PlacePickerRow, _ query: String) -> Bool {
+        row.title.localizedStandardContains(query) || row.token.localizedStandardContains(query)
+    }
 }
 
 /// Which roles an export writes: the first N of the list, or the selected ones.
@@ -1187,13 +1266,16 @@ public struct JobFilter: Equatable, Sendable {
     public var maxAgeDays: Int?
     public var openOnly = false
     /// US state codes ("none": no state listed), areas as the location names
-    /// them, and remote as the board lists it (not triage's work mode).
+    /// them, countries as Vani names them ("United States", "Germany"; "none":
+    /// no country listed), and remote as the board lists it (not triage's work mode).
     public var states: Set<String> = []
     public var areas: Set<String> = []
+    public var countries: Set<String> = []
     public var remoteOnly = false
-    /// Widens `states`/`areas` to roles listed as remote too ("remote, or in
-    /// Texas"). It filters nothing without a state or area, and `remoteOnly`
-    /// overrides it, so it is sent to Vani only when it changes the selection.
+    /// Widens `states`/`areas`/`countries` to roles listed as remote too
+    /// ("remote, or in Texas"). It filters nothing without a state, area or
+    /// country, and `remoteOnly` overrides it, so it is sent to Vani only when
+    /// it changes the selection.
     public var orRemote = false
     /// At least this much a year in `currency`, by the top of the stated
     /// range. A job stating no pay stays unless `salaryListed`; one stating
@@ -1220,14 +1302,27 @@ public struct JobFilter: Equatable, Sendable {
     /// How many filter groups are on, for a badge.
     public var activeCount: Int {
         [!categories.isEmpty, !fits.isEmpty, !workModes.isEmpty, !sponsorships.isEmpty, maxAgeDays != nil, openOnly,
-         !states.isEmpty, !areas.isEmpty, remoteOnly, widensToRemote,
+         !states.isEmpty, !areas.isEmpty, !countries.isEmpty, remoteOnly, widensToRemote,
          minSalary != nil, salaryListed, !seniorities.isEmpty, minRelevance != nil].filter { $0 }.count
     }
 
-    /// `orRemote` with a state or area to widen and no `remoteOnly`: the only
-    /// case Vani accepts --or-remote, and the only one where it does anything.
+    /// `orRemote` with a state, area or country to widen and no `remoteOnly`:
+    /// the only case Vani accepts --or-remote, and the only one where it does anything.
     public var widensToRemote: Bool {
-        orRemote && !remoteOnly && (!states.isEmpty || areas.contains { !$0.contains(",") && !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        orRemote && !remoteOnly && (!states.isEmpty || !sendableCountries.isEmpty || areas.contains { !$0.contains(",") && !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+    }
+
+    /// Country names Vani can take on one `--country` flag. A comma would split
+    /// into two countries, so it is left out instead.
+    var sendableCountries: [String] {
+        countries.filter { !$0.contains(",") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }.sorted()
+    }
+
+    /// Countries export will write, in the order `--country` sends them.
+    /// "none" is spoken as "no country listed". A name with a comma is left
+    /// out, because the flag would split it into two countries.
+    public var exportCountryNames: [String] {
+        sendableCountries.map { $0 == "none" ? "no country listed" : $0 }
     }
 
     /// "Only remote" and "or remote" exclude each other: turning one on turns
@@ -1262,6 +1357,7 @@ public struct JobFilter: Equatable, Sendable {
         // that did would split into two filters, so it is left out instead.
         let areaList = areas.filter { !$0.contains(",") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         if !areaList.isEmpty { a += ["--area", areaList.sorted().joined(separator: ",")] }
+        if !sendableCountries.isEmpty { a += ["--country", sendableCountries.joined(separator: ",")] }
         if remoteOnly { a.append("--remote") }
         if widensToRemote { a.append("--or-remote") }
         if let s = minSalary, s > 0 { a += ["--min-salary", String(s)] }
@@ -1341,10 +1437,11 @@ public struct JobsStats: Codable, Equatable, Sendable {
     public var keywords: [KeywordCount]
     public var insight: JobsInsight?
     public var torn: Bool?
-    /// Jobs per US state ("none": names no state), the most-named areas, and
-    /// how many the board lists as remote, by where. Optional so a vani from
-    /// before location parsing still decodes.
+    /// Jobs per US state ("none": names no state), per country ("none": names
+    /// no country), the most-named areas, and how many the board lists as
+    /// remote, by where. Optional so a vani from before location parsing still decodes.
     public var state: [String: Int]?
+    public var country: [String: Int]?
     public var area: [AreaCount]?
     public var remoteListed: Int?
     public var remoteScope: [String: Int]?
@@ -1383,7 +1480,7 @@ public struct JobsStats: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case view, total, fit, category, sponsorship, seniority, basis, age, relevance, priority, companies, keywords, insight, torn
-        case state, area, salary
+        case state, country, area, salary
         case workMode = "work_mode"
         case freshSource = "fresh_source"
         case remoteListed = "remote_listed"
@@ -1393,6 +1490,13 @@ public struct JobsStats: Codable, Equatable, Sendable {
     /// States by how many jobs name them, most first; "none" left out.
     public var statesByCount: [(code: String, n: Int)] {
         (state ?? [:]).filter { $0.key != "none" }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .map { ($0.key, $0.value) }
+    }
+
+    /// Countries by how many jobs name them, most first; "none" left out.
+    public var countriesByCount: [(name: String, n: Int)] {
+        (country ?? [:]).filter { $0.key != "none" }
             .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
             .map { ($0.key, $0.value) }
     }

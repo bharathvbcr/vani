@@ -84,6 +84,7 @@ type Opts struct {
 	View, Query, Sort         string
 	Fits, WorkModes, Sponsors map[string]bool // role_fit, work_mode, sponsorship; "none" is no reading
 	States, Areas             map[string]bool // "none" is none listed
+	Countries                 map[string]bool // canonical names (location.Countries); "none" is none listed
 	Remote, OrRemote          bool
 	MaxAge                    int
 	Open                      bool
@@ -93,13 +94,17 @@ type Opts struct {
 	// Stages keeps only applied jobs at these stages (marks.StageNone is
 	// applied with no stage yet); nil takes every job.
 	Stages map[marks.Stage]bool
+
+	// where, when set, receives place counts for jobs that pass every filter
+	// except the place ones. Nil keeps the place filter ahead of ranking.
+	where *WhereChoices
 }
 
-// PlaceOK applies the location options to a located job: --state and --area,
-// widened by --or-remote to roles the board lists as remote, or narrowed by
-// --remote to them.
+// PlaceOK applies the location options to a located job: --state, --area and
+// --country, widened by --or-remote to roles the board lists as remote, or
+// narrowed by --remote to them.
 func (o *Opts) PlaceOK(j Job) bool {
-	in := InPlaces(o.States, o.Areas, j.Places)
+	in := InPlaces(o.States, o.Areas, j.Places) && InCountries(o.Countries, countriesOf(j))
 	if o.OrRemote {
 		return in || j.RemoteListed
 	}
@@ -119,6 +124,17 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 	counts := map[string]int{}
 	q := strings.ToLower(strings.TrimSpace(o.Query))
 	var sel []Selected
+	var areas map[string]*AreaStat
+	if o.where != nil {
+		if o.where.State == nil {
+			o.where.State = map[string]int{}
+		}
+		if o.where.Country == nil {
+			o.where.Country = map[string]int{}
+		}
+		areas = map[string]*AreaStat{}
+	}
+	placeOn := o.Remote || o.States != nil || o.Areas != nil || o.Countries != nil
 	for _, r := range snap.Records {
 		entry := m[r.Key]
 		for _, v := range Views {
@@ -142,7 +158,9 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 		if o.Stages != nil && (entry.Mark != marks.Applied || !o.Stages[entry.Stage]) {
 			continue
 		}
-		if o.Remote || o.States != nil || o.Areas != nil {
+		// Without a menu census, drop other places before ranking them.
+		// With one, rank them too and count them, then drop them from the list.
+		if placeOn && o.where == nil {
 			Locate(&j, r.Posting)
 			if !o.PlaceOK(j) {
 				continue
@@ -155,7 +173,17 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 		if !o.More.Keep(&j) {
 			continue
 		}
+		if o.where != nil {
+			st := Stats{State: o.where.State, Country: o.where.Country, RemoteScope: map[string]int{}}
+			countPlaces(&st, areas, j)
+			if placeOn && !o.PlaceOK(j) {
+				continue
+			}
+		}
 		sel = append(sel, Selected{Job: j, Hits: hits, Pay: PayKey(j, o.More.Currency)})
+	}
+	if o.where != nil {
+		o.where.Area = rankedAreas(areas)
 	}
 	return sel, counts
 }
@@ -178,12 +206,28 @@ type List struct {
 	Insight InsightInfo `json:"insight"`
 	// Pending is what no view lists yet: postings awaiting triage.
 	Pending Pending `json:"pending"`
+	// Where counts places in this selection before --state, --area, --country
+	// and --remote, so a menu can offer them after one is chosen. Stats stay
+	// on the filtered selection.
+	Where *WhereChoices `json:"where,omitempty"`
+}
+
+// WhereChoices is the place menu for a list: each job once per state and
+// once per country, and the most-named areas. "none" names no state or no country.
+type WhereChoices struct {
+	State   map[string]int `json:"state"`
+	Country map[string]int `json:"country"`
+	Area    []AreaStat     `json:"area"`
 }
 
 // BuildList selects, sorts, folds and limits the jobs o names.
 func BuildList(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ranker, info InsightInfo, kwLimit, limit int) List {
 	out := List{View: o.View, Query: o.Query, Sort: EffectiveSort(o.View, o.Sort), Torn: snap.Torn, Jobs: []Job{}, Insight: info}
-	sel, counts := Select(snap, m, o, rk, kwLimit)
+	opts := *o
+	where := &WhereChoices{State: map[string]int{}, Country: map[string]int{}}
+	opts.where = where
+	sel, counts := Select(snap, m, &opts, rk, kwLimit)
+	out.Where = where
 	out.Counts = counts
 	Sort(sel, o.View, o.Sort)
 	sel = Diversify(sel, o.View, o.Sort)

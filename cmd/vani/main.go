@@ -333,6 +333,13 @@ type env struct {
 	// reloadConfig asks it whether the file was replaced. Nil outside
 	// `vani daemon`, or when the identity could not be recorded: no check.
 	binary *binWatch
+
+	// liveRun is the id of the run whose progress file this process may write.
+	// The daemon's pid does not change between runs, so the id is what tells
+	// this run's snapshot from the last one's. liveWarned is one warning per run.
+	liveMu     sync.Mutex
+	liveRun    string
+	liveWarned bool
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
@@ -660,6 +667,7 @@ func (e *env) cmdDaemon(args []string) error {
 		return err
 	}
 	defer app.close()
+	e.bindLive(app)
 	// The ledger is held from here on, so this process is the daemon: run
 	// requests (runrequest.go) find it through daemon.json.
 	pid := os.Getpid()
@@ -913,6 +921,7 @@ func (e *env) cmdRunOnce(args []string) error {
 		return err
 	}
 	defer app.close()
+	e.bindLive(app)
 	ctx, stop := signalContext()
 	defer stop()
 	start := now()

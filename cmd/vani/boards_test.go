@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 // fakeSource lists through a function, so a test decides per board what a
@@ -340,5 +341,113 @@ func TestWorstCaseRunRecordIsReadable(t *testing.T) {
 	}
 	if got.Boards == nil || got.Boards.Failed != 5000 || len(got.Boards.Items)+got.Boards.Unrecorded != 5000 {
 		t.Errorf("boards: %+v", got.Boards)
+	}
+}
+
+func tickSame(a, b listingTick) bool {
+	return a.Phase == b.Phase && a.Index == b.Index && a.Total == b.Total &&
+		a.Board.ATS == b.Board.ATS && a.Board.Token == b.Board.Token && a.Board.Company == b.Board.Company &&
+		a.Done == b.Done && a.Read == b.Read && a.Failed == b.Failed && a.RateLimited == b.RateLimited &&
+		a.Skipped == b.Skipped && a.Listed == b.Listed && a.Outcome == b.Outcome
+}
+
+func TestListBoardsTicksTheBoardItIsReading(t *testing.T) {
+	gh := sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}
+	lv := sources.Board{ATS: posting.Lever, Token: "initech", Company: "Initech"}
+	wd := sources.Board{ATS: posting.Workday, Token: "intel", Company: "Intel"}
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
+			return boardPostings(b, 2), nil
+		}},
+		posting.Workday: fakeSource{posting.Workday, func(context.Context, sources.Board) ([]posting.Posting, error) {
+			return nil, errors.New("http 500")
+		}},
+	}
+	var ticks []listingTick
+	ctx := withListingTick(context.Background(), func(tk listingTick) { ticks = append(ticks, tk) })
+	var warn warnLog
+	if _, err := listBoards(ctx, []sources.Board{gh, lv, wd}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []listingTick{
+		{Phase: progressPhaseListing, Index: 1, Total: 3, Board: gh},
+		{Phase: progressPhaseReconciling, Index: 1, Total: 3, Board: gh},
+		{Phase: progressPhaseDone, Index: 1, Total: 3, Board: gh, Done: 1, Read: 1, Listed: 2, Outcome: boardRead},
+		{Phase: progressPhaseDone, Index: 2, Total: 3, Board: lv, Done: 2, Read: 1, Skipped: 1, Listed: 2, Outcome: boardSkipped},
+		{Phase: progressPhaseListing, Index: 3, Total: 3, Board: wd, Done: 2, Read: 1, Skipped: 1, Listed: 2},
+		{Phase: progressPhaseDone, Index: 3, Total: 3, Board: wd, Done: 3, Read: 1, Failed: 1, Skipped: 1, Listed: 2, Outcome: boardFailed},
+	}
+	if len(ticks) != len(want) {
+		t.Fatalf("ticks %d: %+v", len(ticks), ticks)
+	}
+	for i := range want {
+		if !tickSame(ticks[i], want[i]) {
+			t.Errorf("tick %d:\n got %+v\nwant %+v", i, ticks[i], want[i])
+		}
+	}
+	if !strings.Contains(warn.String(), "board gh/acme: reading (1 of 3)") {
+		t.Errorf("warnings:\n%s", warn.String())
+	}
+}
+
+func TestListBoardsTickCountsARateLimit(t *testing.T) {
+	b := sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, func(context.Context, sources.Board) ([]posting.Posting, error) {
+			return nil, srcutil.ErrRateLimited
+		}},
+	}
+	var ticks []listingTick
+	ctx := withListingTick(context.Background(), func(tk listingTick) { ticks = append(ticks, tk) })
+	if _, err := listBoards(ctx, []sources.Board{b}, srcs, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(ticks) != 2 || ticks[1].Phase != progressPhaseDone || ticks[1].Outcome != boardRateLimited ||
+		ticks[1].Failed != 1 || ticks[1].RateLimited != 1 || ticks[1].Read != 0 || ticks[0].Outcome != "" {
+		t.Fatalf("%+v", ticks)
+	}
+}
+
+func TestListBoardsCancelLeavesTheBoardItWasReading(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}
+	second := sources.Board{ATS: posting.Lever, Token: "later", Company: "Later"}
+	var ticks []listingTick
+	ctx = withListingTick(ctx, func(tk listingTick) {
+		ticks = append(ticks, tk)
+		if tk.Phase == progressPhaseListing {
+			cancel()
+		}
+	})
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}},
+		posting.Lever: fakeSource{posting.Lever, func(context.Context, sources.Board) ([]posting.Posting, error) {
+			t.Error("listed the next board")
+			return nil, nil
+		}},
+	}
+	_, err := listBoards(ctx, []sources.Board{first, second}, srcs, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if len(ticks) == 0 || ticks[len(ticks)-1].Board.Token != "acme" {
+		t.Fatalf("ticks %+v", ticks)
+	}
+	for _, tk := range ticks {
+		if tk.Board.Token == "later" {
+			t.Fatalf("ticked the next board: %+v", ticks)
+		}
+	}
+}
+
+func TestListBoardsEmptyWatchlistNamesNoPortal(t *testing.T) {
+	var ticks []listingTick
+	ctx := withListingTick(context.Background(), func(tk listingTick) { ticks = append(ticks, tk) })
+	if _, err := listBoards(ctx, nil, nil, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, ""); err != nil || len(ticks) != 0 {
+		t.Fatalf("err %v ticks %+v", err, ticks)
 	}
 }

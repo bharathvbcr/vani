@@ -110,6 +110,28 @@ final class PipelineModelTests: XCTestCase {
         }
     }
 
+    /// A daily run this app did not start is still re-read every few seconds.
+    /// The minute poll is only for a quiet app.
+    func testADaemonRunIsRereadWithinAFewSeconds() async throws {
+        XCTAssertEqual(PipelineModel.statusPollInterval(runInProgress: false, waitingForDaemon: false, startingRun: false),
+                       PipelineModel.pollInterval)
+        XCTAssertEqual(PipelineModel.statusPollInterval(runInProgress: true, waitingForDaemon: false, startingRun: false),
+                       PipelineModel.runningPollInterval)
+        XCTAssertEqual(PipelineModel.statusPollInterval(runInProgress: false, waitingForDaemon: true, startingRun: false),
+                       PipelineModel.runningPollInterval)
+        XCTAssertEqual(PipelineModel.statusPollInterval(runInProgress: false, waitingForDaemon: false, startingRun: true),
+                       PipelineModel.runningPollInterval)
+
+        let running = #"{"ok":true,"state":"running","trigger":"schedule","started_at":"2026-10-20T00:00:00Z"}"#
+        let f = try PipelineFixture(self, mode: "refused", lastRun: running)
+        let m = try model(f)
+        let task = Task { await m.poll() }
+        defer { task.cancel() }
+        try await eventually("a second status read", within: 8) {
+            f.calls().filter { $0.hasPrefix("status") }.count >= 2
+        }
+    }
+
     /// vani refuses the run before it records anything (the daemon holds the
     /// ledger): the tab says why, from the log, and the old record stays.
     func testARunRefusedBeforeItStartsSaysWhy() async throws {

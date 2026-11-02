@@ -26,6 +26,11 @@ import (
 //
 // A record with no finished_at is either a run in progress or one whose process
 // died; the pid and the age tell them apart (runState).
+//
+// Which board a run is reading, and the stage it is in, is not this file. That
+// is the sibling runs/progress.json (runprogress.go): replaced as the run moves
+// and removed when the run ends, and not part of the history. Rewriting
+// last.json per board would flush history and change this record's contract.
 
 const (
 	runRecordVersion = 1

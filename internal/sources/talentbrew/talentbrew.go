@@ -110,8 +110,9 @@ const (
 	// maxDetailBody caps one job page: Intuit's largest sampled was 695 KB.
 	maxDetailBody = 2 << 20
 
-	// maxLocLen bounds one job <loc>: Citi's longest, percent-encoded, is 326.
-	maxLocLen = 512
+	// maxLocLen bounds one job <loc>. The sitemap protocol's own limit is 2048.
+	// Citi's longest on 2026-11-02 was 392: a percent-encoded Japanese title.
+	maxLocLen = 2048
 	// maxLDBlocks bounds the JSON-LD blocks read from one page, maxTagLen the
 	// opening tag of a script, maxPlaces the places joined into a location.
 	maxLDBlocks = 8
@@ -130,8 +131,11 @@ var (
 	// no port, no userinfo.
 	hostRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 	// jobPath is the path of a job page: /job/{city}/{title}/{company}/{id}.
-	// The city and title are percent-encoded UTF-8 on Citi.
-	jobPath = regexp.MustCompile(`^/job/([A-Za-z0-9%._~-]{1,300})/([A-Za-z0-9%._~-]{1,300})/([0-9]{1,10})/([0-9]{1,20})$`)
+	// The city and title are percent-encoded UTF-8 on Citi. One Japanese title
+	// encodes to 341 bytes (jobs.citi.com, 2026-11-02), past a 300-byte segment.
+	// Go's RE2 rejects a repeat count over 1000, so each of those segments stops
+	// there. A loc over maxLocLen is rejected on its length, before this pattern.
+	jobPath = regexp.MustCompile(`^/job/([A-Za-z0-9%._~-]{1,1000})/([A-Za-z0-9%._~-]{1,1000})/([0-9]{1,10})/([0-9]{1,20})$`)
 )
 
 // errDetailGone is a job page answering 404 under a sitemap that listed it:

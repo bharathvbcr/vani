@@ -57,6 +57,9 @@ type App struct {
 	Notifier notify.Notifier
 	// Closer releases resources (the ledger file, child processes). May be nil.
 	Closer func() error
+	// live is the box a run's stages call (runprogress.go). Nil on an App a
+	// test built by hand; BindLive is then a no-op.
+	live *liveNote
 }
 
 func (a *App) close() {
@@ -111,6 +114,8 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		// check above. Snapshot the record first so that path can put it back.
 		priorRecord, priorErr := readBoundedFile(runRecordPath(e.stateDir), maxRunRecord)
 		e.saveRunRecord(rec)
+		e.beginLive(runID(rec))
+		defer e.endLive()
 		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
 		if errors.Is(err, errConfigRestart) && !errors.Is(err, daemon.ErrFatal) {
 			finishLog()
@@ -465,6 +470,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		return stageDigest, err
 	}
 	if cfg.SemanticOn() && app.Ledger != nil && ctx.Err() == nil {
+		e.noteProgress(runProgress{Stage: progressWarm})
 		mk, marksErr := marks.ReadMarks(marks.Dir(e.stateDir)) // unreadable marks: the kept postings only
 		// semantic.warm_per_run is one budget for the run: what the warm before
 		// the advance phase embedded is not spent twice (preAdvanceBudget).
@@ -489,6 +495,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		rec.DigestWarning = warning
 		fmt.Fprintf(e.stderr, "vani: digest: %s\n", warning)
 	}
+	e.noteProgress(runProgress{Stage: progressDigest})
 	var pub published
 	pub, err = e.publishDigest(ctx, app, now().In(loc), loc, dopts)
 	rec.DigestRoles, rec.ImpressionsError = pub.roles, pub.impressionsError
@@ -719,7 +726,11 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	live := by[string(posting.Live)]
 	dfacet := e.daemonFacet()
 	us := liveInUS(recs)
-	sched := withAwaitingUS(scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, e.lastRunFacet(at), &live, at), &us)
+	last := e.lastRunFacet(at)
+	if line := progressLine(last); line != "" {
+		fmt.Fprintln(e.stdout, line)
+	}
+	sched := withAwaitingUS(scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, last, &live, at), &us)
 	for _, l := range unkeptLines(sched, at) {
 		fmt.Fprintln(e.stdout, l)
 	}

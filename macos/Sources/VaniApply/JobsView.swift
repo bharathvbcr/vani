@@ -71,6 +71,8 @@ struct JobsView: View {
                 .labelStyle(.titleAndIcon)
                 FilterMenu()
                     .labelStyle(.titleAndIcon)
+                LocationMenu()
+                    .labelStyle(.titleAndIcon)
                 ExportMenu()
                     .labelStyle(.titleAndIcon)
                 TriageTopMenu()
@@ -288,7 +290,15 @@ private struct ExportMenu: View {
             Label("Export", systemImage: "tablecells")
         }
         .disabled(jobs.exporting || jobs.page == nil)
-        .help("Save roles from this list, in its order and with its filters, to an Excel workbook")
+        .help(exportHelp)
+    }
+
+    /// Names the countries this export will write, so the menu says what the file holds.
+    private var exportHelp: String {
+        let base = "Save roles from this list, in its order and with its filters, to an Excel workbook"
+        let names = jobs.filter.exportCountryNames
+        guard !names.isEmpty else { return base }
+        return base + ". Includes \(listedPlaces(names))."
     }
 }
 
@@ -471,23 +481,6 @@ private struct FilterMenu: View {
             Section("Sponsorship") {
                 ForEach(Job.sponsorshipOptions + ["none"], id: \.self) { toggle(\.sponsorships, $0) }
             }
-            Section("Location (as the board lists it)") {
-                Toggle("Listed as remote", isOn: Binding(get: { jobs.filter.remoteOnly }, set: { jobs.filter.setRemoteOnly($0) }))
-                // Widens the chosen states and areas: remote, or in these places.
-                Toggle("Or remote anywhere", isOn: Binding(get: { jobs.filter.orRemote && !jobs.filter.remoteOnly }, set: { jobs.filter.setOrRemote($0) }))
-                .disabled(jobs.filter.states.isEmpty && jobs.filter.areas.isEmpty)
-                Menu("State") {
-                    ForEach(stateOptions, id: \.self) { code in
-                        placeToggle(\.states, code, label: code == "none" ? "No state listed" : code)
-                    }
-                }
-                Menu("Area") {
-                    ForEach(areaOptions, id: \.self) { area in
-                        placeToggle(\.areas, area, label: area)
-                    }
-                }
-                .disabled(areaOptions.isEmpty)
-            }
             Section("Pay (as the posting states it)") {
                 Menu(jobs.filter.minSalary.map { "At least \(Job.Pay.short(Double($0))) a year" } ?? "Any salary") {
                     ForEach([nil, 50_000, 75_000, 100_000, 125_000, 150_000, 175_000, 200_000, 250_000, 300_000] as [Int?], id: \.self) { s in
@@ -549,32 +542,7 @@ private struct FilterMenu: View {
             Label(jobs.filter.isEmpty ? "Filter" : "Filter (\(jobs.filter.activeCount))",
                   systemImage: jobs.filter.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
-        .help(jobs.filter.isEmpty ? "Filter by fit, work mode, sponsorship, location, pay, seniority, relevance or age" : "\(jobs.filter.activeCount) filters on")
-    }
-
-    /// The states the current selection names, most first, plus any already
-    /// chosen (so a chosen state never vanishes from the menu), then "none".
-    private var stateOptions: [String] {
-        var codes = (jobs.stats?.statesByCount ?? []).prefix(15).map(\.code)
-        for c in jobs.filter.states.sorted() where c != "none" && !codes.contains(c) { codes.append(c) }
-        return codes + ["none"]
-    }
-
-    /// The most-named areas in the current selection, plus any already chosen.
-    private var areaOptions: [String] {
-        var out: [String] = []
-        for a in jobs.stats?.area ?? [] where !out.contains(a.area) && !a.area.contains(",") { out.append(a.area) }
-        for a in jobs.filter.areas.sorted() where !out.contains(a) { out.append(a) }
-        return out
-    }
-
-    private func placeToggle(_ path: WritableKeyPath<JobFilter, Set<String>>, _ value: String, label: String) -> some View {
-        Toggle(label, isOn: Binding(
-            get: { jobs.filter[keyPath: path].contains(value) },
-            set: { on in
-                if on { jobs.filter[keyPath: path].insert(value) } else { jobs.filter[keyPath: path].remove(value) }
-            }
-        ))
+        .help(jobs.filter.isEmpty ? "Filter by fit, work mode, sponsorship, pay, seniority, relevance or age" : "\(jobs.filter.activeCount) filters on")
     }
 
     private func toggle(_ path: WritableKeyPath<JobFilter, Set<String>>, _ code: String) -> some View {
@@ -584,6 +552,212 @@ private struct FilterMenu: View {
                 if on { jobs.filter[keyPath: path].insert(code) } else { jobs.filter[keyPath: path].remove(code) }
             }
         ))
+    }
+}
+
+/// The first few place names, then how many more, for a tooltip.
+private func listedPlaces(_ names: [String]) -> String {
+    let limit = 6
+    if names.count <= limit { return names.joined(separator: ", ") }
+    let more = names.count - limit
+    return names.prefix(limit).joined(separator: ", ") + ", and \(more) more"
+}
+
+/// Country, state, area and remote, in one searchable popover. Export writes
+/// the countries ticked here. The search filters this list only; it does not
+/// ask vani again.
+private struct LocationMenu: View {
+    @Environment(JobsModel.self) private var jobs
+    @State private var open = false
+    @State private var search = ""
+
+    var body: some View {
+        Button {
+            open = true
+        } label: {
+            Label(locationCount == 0 ? "Location" : "Location (\(locationCount))", systemImage: "mappin.and.ellipse")
+        }
+        .help(locationHelp)
+        .accessibilityIdentifier("jobs.location")
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            LocationPopover(search: $search)
+        }
+        .onChange(of: open) { _, isOpen in
+            if !isOpen { search = "" }
+        }
+    }
+
+    /// Selected places, plus remote when it narrows the list. An or-remote
+    /// with nothing to widen counts as nothing.
+    private var locationCount: Int {
+        let f = jobs.filter
+        return f.countries.count + f.states.count + f.areas.count + (f.remoteOnly ? 1 : 0) + (f.widensToRemote ? 1 : 0)
+    }
+
+    private var locationHelp: String {
+        let names = jobs.filter.exportCountryNames
+        var parts = [names.isEmpty
+            ? "Tick countries to include them when you export."
+            : "Export includes \(listedPlaces(names))."]
+        if jobs.filter.remoteOnly {
+            parts.append("Remote roles only.")
+        } else if jobs.filter.widensToRemote {
+            parts.append("Remote roles anywhere are included too.")
+        }
+        return parts.joined(separator: " ")
+    }
+}
+
+private struct LocationPopover: View {
+    @Environment(JobsModel.self) private var jobs
+    @Binding var search: String
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Location").font(.headline)
+            Text(jobs.filter.exportCountryNames.isEmpty
+                 ? "Tick the countries export should write. Counts are this search, before the location filter, so choosing one country keeps the others."
+                 : "Export includes \(listedPlaces(jobs.filter.exportCountryNames)). Counts ignore the location filter, so the other countries stay listed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Search countries, states, areas", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .focused($searchFocused)
+            Toggle("Listed as remote", isOn: Binding(get: { jobs.filter.remoteOnly }, set: { jobs.filter.setRemoteOnly($0) }))
+                .toggleStyle(.checkbox)
+            // Widens the chosen countries, states and areas: remote, or in these places.
+            Toggle("Or remote anywhere", isOn: Binding(get: { jobs.filter.orRemote && !jobs.filter.remoteOnly }, set: { jobs.filter.setOrRemote($0) }))
+                .toggleStyle(.checkbox)
+                .disabled(jobs.filter.states.isEmpty && jobs.filter.areas.isEmpty && jobs.filter.countries.isEmpty)
+                .help("Also include roles listed as remote, wherever they are. Choose a country, state or area first.")
+            Text("A remote role counts when its scope names a country. A region such as Europe does not.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            // The short list is shown whole. A long census scrolls, so the popover stays on screen.
+            ViewThatFits(in: .vertical) {
+                placeLists
+                ScrollView { placeLists }
+                    .frame(height: 360)
+            }
+            HStack {
+                Spacer()
+                Button("Clear Location") { clearLocation() }
+                    .buttonStyle(.borderless)
+                    .disabled(locationIsClear)
+            }
+        }
+        .padding(14)
+        .frame(width: 340)
+        .frame(maxHeight: 640)
+        .onAppear { searchFocused = true }
+    }
+
+    private var placeLists: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            placeSection("Countries", kind: .country)
+            placeSection("States", kind: .state)
+            placeSection("Areas", kind: .area)
+        }
+    }
+
+    private enum Kind { case country, state, area }
+
+    /// The list's places before the location filters. Insights stats are the
+    /// fallback when this vani does not send them.
+    private var placeChoices: PlaceChoices? { jobs.page?.placeChoices }
+
+    private var locationIsClear: Bool {
+        let f = jobs.filter
+        return f.countries.isEmpty && f.states.isEmpty && f.areas.isEmpty && !f.remoteOnly && !f.orRemote
+    }
+
+    private func clearLocation() {
+        var next = jobs.filter
+        next.countries = []
+        next.states = []
+        next.areas = []
+        next.remoteOnly = false
+        next.orRemote = false
+        jobs.filter = next
+        search = ""
+    }
+
+    @ViewBuilder
+    private func placeSection(_ title: String, kind: Kind) -> some View {
+        let all = rows(kind, query: "")
+        if !all.isEmpty {
+            let shown = rows(kind, query: search)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                if shown.isEmpty {
+                    Text("No matches")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(shown) { row in
+                        Toggle(isOn: member(kind, row.token)) {
+                            HStack(spacing: 8) {
+                                Text(verbatim: row.title).lineLimit(1)
+                                Spacer(minLength: 8)
+                                if let n = row.count {
+                                    Text(n.formatted())
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .accessibilityLabel(row.count.map { "\(row.title), \($0)" } ?? row.title)
+                    }
+                }
+            }
+        }
+    }
+
+    private func rows(_ kind: Kind, query: String) -> [PlacePickerRow] {
+        switch kind {
+        case .country:
+            let counts = placeChoices?.country ?? jobs.stats?.country ?? [:]
+            let ranked = (placeChoices?.countriesByCount ?? jobs.stats?.countriesByCount ?? [])
+                .map { (token: $0.name, count: $0.n) }
+            return PlacePicker.rows(ranked: ranked, selected: jobs.filter.countries, query: query, noneTitle: "No country listed", noneCount: counts["none"])
+        case .state:
+            let counts = placeChoices?.state ?? jobs.stats?.state ?? [:]
+            let ranked = (placeChoices?.statesByCount ?? jobs.stats?.statesByCount ?? [])
+                .map { (token: $0.code, count: $0.n) }
+            return PlacePicker.rows(ranked: ranked, selected: jobs.filter.states, query: query, noneTitle: "No state listed", noneCount: counts["none"])
+        case .area:
+            // A comma would split `--area` into two filters, so those names are not offered.
+            var ranked: [(token: String, count: Int)] = []
+            var seen = Set<String>()
+            for a in placeChoices?.area ?? jobs.stats?.area ?? [] where !a.area.contains(",") && seen.insert(a.area).inserted {
+                ranked.append((token: a.area, count: a.n))
+            }
+            return PlacePicker.rows(ranked: ranked, selected: jobs.filter.areas, query: query)
+        }
+    }
+
+    private func member(_ kind: Kind, _ token: String) -> Binding<Bool> {
+        let path: WritableKeyPath<JobFilter, Set<String>> = switch kind {
+        case .country: \.countries
+        case .state: \.states
+        case .area: \.areas
+        }
+        return Binding(
+            get: { jobs.filter[keyPath: path].contains(token) },
+            set: { on in
+                if on { jobs.filter[keyPath: path].insert(token) } else { jobs.filter[keyPath: path].remove(token) }
+            }
+        )
     }
 }
 
@@ -661,6 +835,11 @@ private struct ActiveFiltersBar: View {
         for code in f.seniorities.sorted() {
             chips.append(ChipItem(id: "seniority:\(code)", label: Job.label(for: code)) {
                 jobs.filter.seniorities.remove(code)
+            })
+        }
+        for name in f.countries.sorted() {
+            chips.append(ChipItem(id: "country:\(name)", label: name == "none" ? "No country" : name) {
+                jobs.filter.countries.remove(name)
             })
         }
         for code in f.states.sorted() {

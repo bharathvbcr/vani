@@ -113,6 +113,13 @@ type AdvancePlan struct {
 	// each finished posting is counted, with whether the phase has decided to
 	// stop. A test uses it to finish postings in an exact order.
 	OnCounted func(key posting.Key, stopped bool)
+	// Progress is called on the goroutine that dispatches, with counts only:
+	// how many postings have been started, the cap, and how many were eligible.
+	// It is called once before any posting starts, including when none are
+	// eligible, and again after each one is started. Nil does nothing. It is
+	// not called when the plan is refused before the loop. It never receives
+	// a posting key.
+	Progress func(attempted, limit, eligible int)
 }
 
 // AdvanceDeps is what an advance runs against: the records it may advance,
@@ -212,6 +219,9 @@ func advance(ctx context.Context, plan AdvancePlan, deps AdvanceDeps) (AdvanceRe
 		plan.Order(todo, recs)
 	}
 	rep := AdvanceReport{Eligible: len(todo), Limit: limit}
+	if plan.Progress != nil {
+		plan.Progress(0, limit, rep.Eligible)
+	}
 	done := func(stopped string) AdvanceReport {
 		rep.Deferred = rep.Eligible - rep.Attempted
 		rep.Stopped = stopped
@@ -357,6 +367,9 @@ func advance(ctx context.Context, plan AdvancePlan, deps AdvanceDeps) (AdvanceRe
 			next++
 			inflight++
 			rep.Attempted++
+			if plan.Progress != nil {
+				plan.Progress(rep.Attempted, limit, rep.Eligible)
+			}
 			go func() {
 				// A panic is carried back and re-raised on the caller's
 				// goroutine, where the daemon contains it as it did before

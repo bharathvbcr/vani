@@ -2,7 +2,7 @@
 /build/
 build/
 /vani
-vani
+cmd/vani/vani
 /dist/
 dist/
 /macos/.build/

@@ -122,12 +122,16 @@ func ParseTime(field, s string) (time.Time, error) {
 	return t, nil
 }
 
-// Retry bounds for a board that asks the caller to slow down. A 429 (or a 503)
-// part-way through a large listing would otherwise fail the whole board; a
-// Retry-After longer than maxRetryWait is honoured by giving up, not by
-// waiting, so one board cannot stall a run. Three things bound the waiting:
-// maxRetryWait for any one wait, maxRequestWait for all the waits of one
-// request, and the board's budget (WithRetryBudget) for all of its requests.
+// Retry bounds for a board that asks the caller to slow down. A 429, or a
+// gateway 502, 503 or 504, part-way through a large listing would otherwise
+// fail the whole board. A Retry-After longer than maxRetryWait is honoured by
+// giving up, not by waiting, so one board cannot stall a run. Three things
+// bound the waiting: maxRetryWait for any one wait, maxRequestWait for all the
+// waits of one request, and the board's budget (WithRetryBudget) for all of
+// its requests. A 429 that has used maxAttempts while the board and the run
+// can still pay for maxRetryWait takes that one longer wait (see canStretch):
+// Microsoft's pcsx search on 2026-11-02 gave up after the short backoff with
+// most of the board's budget left.
 const (
 	maxAttempts    = 5
 	maxRetryWait   = 30 * time.Second
@@ -350,12 +354,15 @@ func PostJSONLimit(ctx context.Context, d egress.Doer, rawURL string, body any, 
 }
 
 // DoJSON sends one request through d and decodes the JSON reply into v. It is
-// the one place adapters' HTTP status, body-cap and retry rules live. A 429 or
-// 503 is retried up to maxAttempts in all, after the response's Retry-After
-// (seconds or an HTTP date) or an exponential, jittered backoff; a
-// Retry-After over maxRetryWait, the last attempt, or a wait the per-request
-// or the board's budget (WithRetryBudget) cannot cover, returns the status
-// error, for a 429 as a *RateLimitedError. The wait ends with ctx.
+// the one place adapters' HTTP status, body-cap and retry rules live. A 429,
+// 502, 503 or 504 is retried up to maxAttempts in all, after the response's
+// Retry-After (seconds or an HTTP date) or an exponential, jittered backoff. A
+// Retry-After of zero is one immediate retry; further answers of zero use the
+// backoff, so a board cannot spin. A Retry-After over maxRetryWait, the last
+// attempt, or a wait the per-request or the board's budget (WithRetryBudget)
+// cannot cover, returns the status error, for a 429 as a *RateLimitedError. A
+// 429 that reaches the last attempt with budget left for maxRetryWait takes
+// that one longer wait first. The wait ends with ctx.
 func DoJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, v any) error {
 	return doJSON(ctx, d, method, rawURL, body, header, maxBody, v)
 }
@@ -426,12 +433,44 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 	return out, err
 }
 
+// retryableStatus is a response worth asking for again: rate limited, or a
+// gateway that failed in front of the origin (NVIDIA's listing POST returned
+// 502 once on 2026-11-02 and 200 for the same body an hour later). A 500 stays
+// final: it may be the request, and retrying it would not change the answer.
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// canStretch reports whether a 429 that has used its short attempts may take
+// one maxRetryWait wait. The per-request cap and every retry budget ctx carries
+// must be able to pay; a context with no board budget cannot, so a caller that
+// did not opt into a budget keeps the short schedule.
+func canStretch(ctx context.Context, waited time.Duration) bool {
+	if waited+maxRetryWait > maxRequestWait {
+		return false
+	}
+	left, ok := RetryBudgetLeft(ctx)
+	if !ok || left < maxRetryWait {
+		return false
+	}
+	if run, ok := RunRetryBudgetLeft(ctx); ok && run < maxRetryWait {
+		return false
+	}
+	return true
+}
+
 // fetchLoop is fetch's retry loop. probeWhy is non-empty for the one probe of a
 // throttled host: a single attempt, whose 429 ends it with probeWhy as the
 // reason.
 func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64, probeWhy string) ([]byte, error) {
 	verb := strings.ToLower(method)
 	var waited time.Duration // spent waiting to retry this request
+	stretched := false
 	for attempt := 0; ; attempt++ {
 		var rd io.Reader
 		if body != nil {
@@ -463,11 +502,11 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 			return nil, fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
 		}
 		se := &egress.StatusError{Code: code, Method: method, Host: req.URL.Hostname()}
-		if code != http.StatusTooManyRequests && code != http.StatusServiceUnavailable {
+		if !retryableStatus(code) {
 			return nil, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), se)
 		}
 		// giveUp ends the retrying: a 429 as a *RateLimitedError, so the board is
-		// told apart from one that is broken, a 503 as the plain status.
+		// told apart from one that is broken, a gateway status as the plain status.
 		giveUp := func(why string) error {
 			if code == http.StatusTooManyRequests {
 				return &RateLimitedError{Host: se.Host, Method: method, Path: req.URL.Path, Attempts: attempt + 1, Why: why, Status: se}
@@ -480,8 +519,17 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 			}
 			return nil, giveUp("probe of a throttled host: one attempt, no retries")
 		}
+		// stretch is the one longer wait a 429 may take after its short attempts,
+		// and only when the budgets can pay. It is decided before the host-limited
+		// check so a host already known limited is still not waited on.
+		stretch := false
 		if attempt+1 >= maxAttempts {
-			return nil, giveUp(fmt.Sprintf("gave up after %d attempts", maxAttempts))
+			if !stretched && code == http.StatusTooManyRequests && canStretch(ctx, waited) {
+				stretch = true
+				stretched = true
+			} else {
+				return nil, giveUp(fmt.Sprintf("gave up after %d attempts", attempt+1))
+			}
 		}
 		// Another request has since found the host throttled: waiting on it for
 		// this one would spend the budget the host's memory exists to save.
@@ -489,11 +537,19 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 			return nil, giveUp(why)
 		}
 		wait := backoff(attempt)
-		if ra, ok := retryAfter(hdr, now()); ok {
-			if ra > maxRetryWait {
-				return nil, giveUp(fmt.Sprintf("asked to retry after %s, over the %s limit", ra, maxRetryWait))
-			}
+		ra, hasRA := retryAfter(hdr, now())
+		switch {
+		case stretch:
+			wait = maxRetryWait
+		case hasRA && ra > maxRetryWait:
+			return nil, giveUp(fmt.Sprintf("asked to retry after %s, over the %s limit", ra, maxRetryWait))
+		case hasRA && ra > 0:
 			wait = ra
+		case hasRA && attempt == 0:
+			// Retry-After: 0, or a date already past, means the server allows one
+			// immediate retry. A later answer of the same is the backoff: five
+			// immediate retries would hammer the host that just refused.
+			wait = 0
 		}
 		if waited+wait > maxRequestWait {
 			return nil, giveUp(fmt.Sprintf("gave up after %d attempts: waiting %s more would pass the %s limit for one request", attempt+1, wait, maxRequestWait))

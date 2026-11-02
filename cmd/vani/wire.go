@@ -76,7 +76,8 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 	if warn == nil {
 		warn = io.Discard
 	}
-	w := &wired{cfg: cfg, stateDir: stateDir, led: led, warn: warn}
+	live := &liveNote{}
+	w := &wired{cfg: cfg, stateDir: stateDir, led: led, warn: warn, live: live}
 	appLock := notify.AppLockPath(stateDir)
 	return &App{
 		Ledger:    led,
@@ -92,6 +93,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		// through osascript only if the app cannot take over.
 		Notifier: notify.UnlessHeld(appLock, notify.ViaApp(appLock, nil, notify.New(nil), warn)),
 		Closer:   w.close,
+		live:     live,
 	}, nil
 }
 
@@ -170,6 +172,8 @@ type wired struct {
 	// once per run; keychain caches the OpenRouter key (keychain.go).
 	keychainRun int
 	keychain    keychainCache
+	// live is shared with App. Nil on a wired value a test built by hand.
+	live *liveNote
 }
 
 // runReport is what the last runOnce left for the run record.
@@ -193,6 +197,14 @@ func (w *wired) close() error {
 	}
 	errs = append(errs, w.led.Close())
 	return errors.Join(errs...)
+}
+
+// noteLive reports one stage of the run that is going. It does not hold w.mu.
+func (w *wired) noteLive(p runProgress) {
+	if w == nil {
+		return
+	}
+	w.live.call(p)
 }
 
 // warnf prints one warning line. Postings advance concurrently and their

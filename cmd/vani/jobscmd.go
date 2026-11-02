@@ -176,6 +176,7 @@ func (e *env) jobsStatsCmd(args []string) error {
 		}
 		fmt.Fprintf(e.stdout, " (board-dated %d, first-seen %d)\n", out.FreshSource["posted"], out.FreshSource["seen"])
 		fmt.Fprintf(e.stdout, "where: remote %d,%s\n", out.RemoteListed, stateLine(out.State))
+		fmt.Fprintf(e.stdout, "country:%s\n", stateLine(out.Country))
 		s := out.Salary
 		fmt.Fprintf(e.stdout, "pay (%s, middle of range):", s.Currency)
 		for _, b := range s.Buckets {

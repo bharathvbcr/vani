@@ -188,18 +188,20 @@ func TestHostThrottleSecondBoardProbesOnceThenBlocks(t *testing.T) {
 	th := NewHostThrottle(nil, nil)
 	run := WithHostThrottle(WithRunRetryBudget(context.Background(), RunRetryBudget), th)
 
-	wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "gave up after 5 attempts")
-	if f.count("ms.test") != 5 || len(*waits) != 4 {
+	// The board's budget pays for one longer wait after the five short attempts,
+	// so the host is remembered limited only once that try has also failed.
+	wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "gave up after 6 attempts")
+	if f.count("ms.test") != 6 || len(*waits) != 5 || (*waits)[4] != maxRetryWait {
 		t.Fatalf("first board: %d requests, waits %v", f.count("ms.test"), *waits)
 	}
 	spentBefore := len(*waits)
 
 	wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "host rate limited earlier this run; probed once")
-	if f.count("ms.test") != 6 || len(*waits) != spentBefore {
+	if f.count("ms.test") != 7 || len(*waits) != spentBefore {
 		t.Errorf("second board: %d requests in all, waits %v; want one probe and no waiting", f.count("ms.test"), *waits)
 	}
 	rl := wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "host rate limited earlier this run; probed once")
-	if f.count("ms.test") != 6 || len(*waits) != spentBefore || !rl.noRequest {
+	if f.count("ms.test") != 7 || len(*waits) != spentBefore || !rl.noRequest {
 		t.Errorf("third board: %d requests in all; want none sent", f.count("ms.test"))
 	}
 	// Other hosts are unaffected.

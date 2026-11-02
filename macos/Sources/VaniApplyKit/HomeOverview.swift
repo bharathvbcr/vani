@@ -77,7 +77,7 @@ public enum HomeOverview {
         guard run.ok else { return "last run unreadable" }
         switch run.state {
         case .never: return "no run recorded"
-        case .running: return "run in progress"
+        case .running: return liveHeadline(run) ?? "run in progress"
         case .unknown: return "last run unreadable"
         case .ok, .failed, .cancelled, .interrupted:
             guard let at = run.finishedAt ?? run.startedAt else { return nil }
@@ -121,6 +121,14 @@ public enum HomeOverview {
         }
     }
 
+    /// The portal and place while a run is going. Nil when there is nothing
+    /// trustworthy to name, so the card stays "Running now".
+    private static func liveHeadline(_ run: PipelineStatus.LastRun) -> String? {
+        guard let progress = run.progress, progress.ok, !progress.headline.isEmpty else { return nil }
+        if progress.placeText.isEmpty { return progress.headline }
+        return "\(progress.headline) · \(progress.placeText)"
+    }
+
     /// "Succeeded 3 h ago · +12 postings", "Failed 5 min ago (digest)": the
     /// one line the Pipeline card leads with.
     public static func runHeadline(_ run: PipelineStatus.LastRun, now: Date) -> String {
@@ -128,7 +136,7 @@ public enum HomeOverview {
         func ago(_ d: Date?) -> String { d.map { " " + PipelineStatus.age(now.timeIntervalSince($0)) + " ago" } ?? "" }
         switch run.state {
         case .never: return "No run recorded yet"
-        case .running: return "Running now"
+        case .running: return liveHeadline(run) ?? "Running now"
         case .unknown: return "Last run unreadable"
         case .ok:
             var s = "Succeeded" + ago(run.finishedAt)

@@ -69,32 +69,83 @@ private struct RunningBanner: View {
     @Environment(PipelineModel.self) private var pipeline
 
     var body: some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).fontWeight(.semibold)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                if liveProgress?.meter == nil {
+                    ProgressView().controlSize(.small).padding(.top, 2)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).fontWeight(.semibold)
+                    if let id = liveProgress?.portalID, !id.isEmpty {
+                        Text(verbatim: id)
+                            .font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: 0)
+                if let log = pipeline.lastLog, pipeline.manualRun != nil {
+                    Button("Show Log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
+                        .help(log.path)
+                }
+                if pipeline.manualRun?.isRunning == true {
+                    Button("Stop", role: .destructive) { pipeline.stopRun() }
+                        .help("Cancel this run; what it already wrote to the ledger stays")
+                }
+            }
+            if let live = liveProgress, live.ok, let meter = live.meter {
+                ProgressView(value: Double(meter.done), total: Double(max(meter.total, 1)))
+                    .tint(tint(live.attention))
+                    .accessibilityLabel("Progress")
+                    .accessibilityValue(live.placeText)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(live.placeText).monospacedDigit()
+                        if !live.phaseNote.isEmpty {
+                            Text(verbatim: live.phaseNote)
+                        }
+                    }
+                    if !live.countsText.isEmpty {
+                        Text(verbatim: live.countsText)
+                            .monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            } else if !detail.isEmpty {
                 Text(detail).font(.callout).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-            if let log = pipeline.lastLog, pipeline.manualRun != nil {
-                Button("Show Log") { NSWorkspace.shared.activateFileViewerSelecting([log]) }
-                    .help(log.path)
-            }
-            if pipeline.manualRun?.isRunning == true {
-                Button("Stop", role: .destructive) { pipeline.stopRun() }
-                    .help("Cancel this run; what it already wrote to the ledger stays")
+            if !pipeline.startingRun, !pipeline.waitingForDaemon {
+                Text(footnote)
+                    .font(footnoteIsQuiet ? .caption : .callout)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(10)
-        .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(wash, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("pipeline.running")
+    }
+
+    /// The snapshot of a run that is already going. Hidden while this app is
+    /// still starting one or waiting for the daemon to pick it up.
+    private var liveProgress: PipelineStatus.LastRun.Progress? {
+        guard !pipeline.startingRun, !pipeline.waitingForDaemon else { return nil }
+        guard pipeline.status?.lastRun.state == .running else { return nil }
+        return pipeline.status?.lastRun.progress
     }
 
     private var title: String {
         if pipeline.startingRun { return "Starting a run…" }
         if pipeline.waitingForDaemon { return "Waiting for the daemon to pick up your run" }
+        if let live = liveProgress, live.ok, !live.headline.isEmpty { return live.headline }
         return pipeline.manualRun != nil ? "Your run is going" : "A run is going"
     }
 
+    /// The sentence under the title when there is no bar: starting, waiting,
+    /// a snapshot that could not be read, or a stage with no fraction.
     private var detail: String {
         if pipeline.startingRun {
             return pipeline.daemonRunning ? "Asking the daemon, which holds the ledger, to make this run." : "Reading the model keys and starting vani."
@@ -102,10 +153,45 @@ private struct RunningBanner: View {
         if pipeline.waitingForDaemon {
             return "The daemon checks for it every few seconds, after any run it is making now. It runs with the daemon's own keys and can be stopped only by stopping the daemon."
         }
+        guard let live = liveProgress else { return "" }
+        if !live.ok {
+            let why = PipelineStatus.bounded(live.reason ?? "unreadable", max: 300)
+            return "Live progress could not be read: \(why)."
+        }
+        return live.line
+    }
+
+    /// Quiet once the bar or the progress line is already on screen.
+    private var footnoteIsQuiet: Bool {
+        guard let live = liveProgress, live.ok else { return false }
+        return live.meter != nil || !live.line.isEmpty
+    }
+
+    /// How long the run has been going, and that a run started outside this
+    /// app cannot be stopped from the button.
+    private var footnote: String {
         let run = pipeline.status?.lastRun
         let started = run?.state == .running ? run?.startedAt.map { "Started \(PipelineStatus.age(Date().timeIntervalSince($0))) ago. " } ?? "" : ""
         let elsewhere = pipeline.manualRun == nil ? "It was started by the daemon or a shell, so it can be stopped only there. " : ""
-        return started + elsewhere + "This page updates every few seconds."
+        let fresh = liveProgress?.updatedText(at: Date()) ?? ""
+        let tail = fresh.isEmpty ? "This page updates every few seconds." : fresh
+        return started + elsewhere + tail
+    }
+
+    private var wash: Color {
+        switch liveProgress?.attention {
+        case .caution: Color.orange.opacity(0.12)
+        case .problem: Color.red.opacity(0.10)
+        default: Color.blue.opacity(0.08)
+        }
+    }
+
+    private func tint(_ attention: PipelineStatus.LastRun.Progress.Attention) -> Color {
+        switch attention {
+        case .calm: .accentColor
+        case .caution: .orange
+        case .problem: .red
+        }
     }
 }
 
@@ -455,6 +541,9 @@ private struct LastRunSection: View {
                 Row(label: "State", value: "No run recorded yet")
             } else {
                 Row(label: "State", value: stateText(run))
+                if run.state == .running, let progress = run.progress {
+                    Row(label: "Now", value: progress.nowText, verbatim: true)
+                }
                 if let trigger = run.trigger {
                     Row(label: "Started by", value: triggerText(trigger) + (run.options?.summary.map { ": \($0)" } ?? ""))
                 }

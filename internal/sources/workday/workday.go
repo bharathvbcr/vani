@@ -204,10 +204,6 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("workday %q: search %q: %w", b.Token, term, err)
 		}
 	}
-	if n := len(w.rows) + w.stubs; w.stubs > shortfall(n) {
-		return nil, fmt.Errorf("workday %q: %w: %d of %d listing rows are stubs with no path or title",
-			b.Token, errIncomplete, w.stubs, n)
-	}
 	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests, Stubs: w.stubs}
 	out, err := s.details(ctx, b, base, host, tenant, site, w.rows, &st)
 	if err != nil {

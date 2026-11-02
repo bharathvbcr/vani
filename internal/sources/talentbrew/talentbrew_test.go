@@ -429,6 +429,48 @@ func TestRobotsThatCannotBeReadFailsTheBoard(t *testing.T) {
 	})
 }
 
+// Citi's sitemap on 2026-11-02 had one job whose percent-encoded title is 341
+// bytes. The whole address is 392 bytes, under the sitemap protocol's limit,
+// and it is a job page: city, title, company, id.
+func TestCitiJapaneseTitlePast300EncodedBytes(t *testing.T) {
+	const loc = "https://jobs.citi.com/job/chiyoda/%e5%9b%bd%e5%86%85%e6%96%b0%e5%8d%92%e6%8e%a1%e7%94%a8%e6%9c%ac%e9%81%b8%e8%80%83-%e3%82%aa%e3%83%98%e3%83%ac%e3%83%bc%e3%82%b7%e3%83%a7%e3%83%b3%e9%83%a8%e9%96%80-%e6%9d%b1%e4%ba%ac-%e3%83%95%e3%83%ab%e3%82%bf%e3%82%a4%e3%83%a0-%e3%82%a2%e3%83%8a%e3%83%aa%e3%82%b9%e3%83%88-28%e5%8d%92-operations-full-time-analyst-tokyo-japan-class-of-2028/287/102713775456"
+	r, company, isJob, err := jobRow(loc, "jobs.citi.com")
+	if err != nil || !isJob || company != "287" || r.id != "102713775456" || r.city != "chiyoda" {
+		t.Fatalf("row %+v company %s job %v err %v", r, company, isJob, err)
+	}
+	if title := slugText(r.slug); !strings.Contains(title, "Operations") || !strings.Contains(title, "国内新卒採用本選考") {
+		t.Errorf("title from the slug: %q", title)
+	}
+	if len(loc) > maxLocLen {
+		t.Errorf("the live address is %d bytes, over the %d cap", len(loc), maxLocLen)
+	}
+}
+
+// A segment of 1000 encoded bytes is the longest the pattern can name. One
+// more must fail the pattern while the address is still under maxLocLen, so
+// the two caps stay independent.
+func TestJobPathSegmentBoundIs1000(t *testing.T) {
+	host := "jobs.citi.com"
+	at := func(n int) string {
+		return "https://" + host + "/job/" + strings.Repeat("a", n) + "/role/287/1"
+	}
+	okLoc := at(1000)
+	if len(okLoc) > maxLocLen {
+		t.Fatalf("a 1000-byte segment is %d bytes, over maxLocLen", len(okLoc))
+	}
+	r, company, isJob, err := jobRow(okLoc, host)
+	if err != nil || !isJob || company != "287" || r.city != strings.Repeat("a", 1000) || r.slug != "role" {
+		t.Fatalf("row %+v company %s job %v err %v", r, company, isJob, err)
+	}
+	over := at(1001)
+	if len(over) > maxLocLen {
+		t.Fatalf("a 1001-byte segment is %d bytes; this case must fail the pattern, not the length cap", len(over))
+	}
+	if _, _, _, err := jobRow(over, host); !errors.Is(err, ErrShape) {
+		t.Fatalf("err %v, want ErrShape", err)
+	}
+}
+
 func TestJobLocsThisSourceCannotReadFailTheBoard(t *testing.T) {
 	good := jobAt("jobs.intuit.com", "27595", 1)
 	for name, bad := range map[string]string{
@@ -444,7 +486,7 @@ func TestJobLocsThisSourceCannotReadFailTheBoard(t *testing.T) {
 		"extra segment":   "https://jobs.intuit.com/job/mountain-view/x/role/27595/102000000009",
 		"dot dot":         "https://jobs.intuit.com/job/../role/27595/102000000009",
 		"dot title":       "https://jobs.intuit.com/job/mountain-view/./27595/102000000009",
-		"too long":        "https://jobs.intuit.com/job/" + strings.Repeat("a", 300) + "/" + strings.Repeat("b", 300) + "/27595/102000000009",
+		"too long":        "https://jobs.intuit.com/job/" + strings.Repeat("a", 1800) + "/" + strings.Repeat("b", 300) + "/27595/102000000009",
 		"id too long":     "https://jobs.intuit.com/job/mountain-view/role/27595/" + strings.Repeat("9", 21),
 	} {
 		t.Run(name, func(t *testing.T) {

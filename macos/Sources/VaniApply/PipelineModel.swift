@@ -7,18 +7,26 @@ import VaniApplyKit
 /// announcer, which posts a finished run's notification once. A read is local files only (no
 /// network, no key), so polling it costs nothing.
 ///
-/// It also starts a run by hand (`vani run-once` with the chosen overrides) and
-/// follows it through the same status read, faster while it is going. While the
-/// daemon runs (it holds the ledger, so run-once would be refused) the run is
-/// asked of the daemon instead (`vani run-request`), and followed the same way
-/// once the daemon picks it up.
+/// Any run the status shows as going, including the daemon's daily run, is
+/// re-read every few seconds so the live portal moves. A run this app just
+/// started is followed the same way without waiting out the rest of a minute
+/// sleep. While the daemon holds the ledger, Run Now asks it (`vani run-request`)
+/// instead of starting `vani run-once`.
 @MainActor
 @Observable
 final class PipelineModel {
-    /// How often the app re-reads while it is open.
+    /// How often the app re-reads while it is open and nothing is running.
     static let pollInterval: Duration = .seconds(60)
-    /// How often it re-reads while a run is going.
+    /// How often it re-reads while a run is going or a request is waiting.
     static let runningPollInterval: Duration = .seconds(3)
+
+    /// The gap before the next status read. A run that is already going, one
+    /// this app is starting, or a request waiting on the daemon, is short.
+    /// The minute wait is only for a quiet app.
+    static func statusPollInterval(runInProgress: Bool, waitingForDaemon: Bool, startingRun: Bool) -> Duration {
+        (runInProgress || waitingForDaemon || startingRun) ? runningPollInterval : pollInterval
+    }
+
     /// Where the last run's options are kept between launches.
     static let optionsKey = "pipeline.manualRunOptions"
 
@@ -60,6 +68,11 @@ final class PipelineModel {
     private let defaults: UserDefaults
     private var generation = 0
     private var watchTask: Task<Void, Never>?
+    /// Bumped each time `follow` starts, so a cancelled follower does not clear the new one.
+    private var followGeneration = 0
+    /// True while `follow` is the fast reader. `poll` skips its own read then, so a
+    /// run this app started is not asked of vani twice.
+    private var following = false
     /// The job whose exit is being handled (runExited).
     private var exitingRun: LaunchedJob?
 
@@ -105,10 +118,13 @@ final class PipelineModel {
         return o
     }
 
-    func refresh() async {
+    /// `interactive` is a Refresh the user asked for: it shows the spinner.
+    /// The timer passes false, so a run that is re-read every few seconds
+    /// does not flash the button.
+    func refresh(interactive: Bool = true) async {
         generation += 1
         let gen = generation
-        loading = true
+        if interactive { loading = true }
         let c = client()
         let result = await BlockingWork.run { try c.status() }
         guard gen == generation else { return } // a newer read superseded this one
@@ -151,11 +167,18 @@ final class PipelineModel {
     }
 
     /// Re-read until the task is cancelled (AppDelegate owns it, so the poll
-    /// runs with the window closed).
+    /// runs with the window closed). A run the status already shows as going
+    /// is read on the short interval; `follow` covers the minute of sleep
+    /// still left when this app itself starts one.
     func poll() async {
         while !Task.isCancelled {
-            await refresh()
-            try? await Task.sleep(for: Self.pollInterval)
+            if !following {
+                await refresh(interactive: false)
+            }
+            let wait = Self.statusPollInterval(runInProgress: runInProgress,
+                                               waitingForDaemon: waitingForDaemon,
+                                               startingRun: startingRun)
+            try? await Task.sleep(for: wait)
         }
     }
 
@@ -287,17 +310,24 @@ final class PipelineModel {
     }
 
     /// Re-read every few seconds while a run is going or a request waits,
-    /// then once more.
+    /// then once more. Started when this app asks for a run, so the read
+    /// does not wait out whatever is left of `poll`'s minute.
     private func follow() {
         watchTask?.cancel()
+        followGeneration += 1
+        let generation = followGeneration
+        following = true
         watchTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
-                if !self.runInProgress && !self.waitingForDaemon { return }
+                await self.refresh(interactive: false)
+                if !self.runInProgress && !self.waitingForDaemon { break }
                 try? await Task.sleep(for: Self.runningPollInterval)
             }
+            guard let self, self.followGeneration == generation else { return }
+            self.following = false
+            self.watchTask = nil
         }
     }
 

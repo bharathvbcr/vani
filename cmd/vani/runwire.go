@@ -111,6 +111,11 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 		// advance_us_first orders it all the same.
 		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, inboxUSFirst) }
 	}
+	// Counts only. The callback has no posting key; an inbox or rescore with
+	// no live run id is a no-op inside noteLive's writer.
+	p.Progress = func(attempted, limit, eligible int) {
+		w.noteLive(runProgress{Stage: progressAdvance, Attempted: attempted, Limit: limit, Eligible: eligible})
+	}
 	return p
 }
 
@@ -136,26 +141,36 @@ func (w *wired) runOnce(ctx context.Context) error {
 	)
 	return pipeline.Run(ctx, pipeline.RunStages{
 		Start: func(ctx context.Context) (func(), error) {
+			w.noteLive(runProgress{Stage: progressPreparing})
 			var stop func()
 			var err error
 			d, runner, stop, err = w.startRun(ctx, !w.skipsAdvance())
 			return stop, err
 		},
-		Drain: func(ctx context.Context) { _, _ = w.drainSpool(ctx) },
+		Drain: func(ctx context.Context) {
+			w.noteLive(runProgress{Stage: progressInbox})
+			_, _ = w.drainSpool(ctx)
+		},
 		Boards: func(ctx context.Context) (pipeline.BoardCounts, error) {
 			protect = w.markProtector()
 			return w.readBoards(ctx, d, runner.Policy, protect)
 		},
 		NearDups: func(ctx context.Context) error {
+			w.noteLive(runProgress{Stage: progressNearDup})
 			_, err := w.annotateNearDups(ctx, protect, time.Now())
 			return err
 		},
 		Exclusions: func(ctx context.Context) error {
+			w.noteLive(runProgress{Stage: progressExclusions})
 			return w.applyExclusions(ctx, runner.Policy, protect, time.Now(), runner.FailOpen)
 		},
-		Logos: w.refreshLogos,
-		Plan:  func() pipeline.AdvancePlan { return w.advancePlan(kindRun, runner.Policy) },
+		Logos: func(ctx context.Context) {
+			w.noteLive(runProgress{Stage: progressLogos})
+			w.refreshLogos(ctx)
+		},
+		Plan: func() pipeline.AdvancePlan { return w.advancePlan(kindRun, runner.Policy) },
 		Warm: func(ctx context.Context) {
+			w.noteLive(runProgress{Stage: progressWarm})
 			w.warmBeforeAdvance(ctx, w.led.All(), runner.Policy.PrefilterDropper())
 		},
 		Deps: func() pipeline.AdvanceDeps {
@@ -167,7 +182,10 @@ func (w *wired) runOnce(ctx context.Context) error {
 			w.mu.Unlock()
 			w.warnShadowNotes(runner)
 		},
-		Backfill: func(ctx context.Context) { w.escalateBackfill(ctx, runner) },
+		Backfill: func(ctx context.Context) {
+			w.noteLive(runProgress{Stage: progressBackfill})
+			w.escalateBackfill(ctx, runner)
+		},
 	})
 }
 
@@ -316,6 +334,16 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// ledger here (the adapters read it), as Reconciler requires.
 	rec := pipeline.NewReconciler(w.led)
 	rec.Protect(protect)
+	w.noteLive(runProgress{Stage: progressListing, Total: len(w.cfg.Watchlist)})
+	ctx = withListingTick(ctx, func(tk listingTick) {
+		w.noteLive(runProgress{
+			Stage: progressListing, Phase: tk.Phase, Index: tk.Index, Total: tk.Total,
+			Done: tk.Done, Read: tk.Read, Failed: tk.Failed, RateLimited: tk.RateLimited,
+			Skipped: tk.Skipped, Listed: tk.Listed,
+			ATS: string(tk.Board.ATS), Token: tk.Board.Token, Company: tk.Board.Company,
+			Outcome: tk.Outcome,
+		})
+	})
 	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, rec.Reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)

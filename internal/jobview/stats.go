@@ -65,10 +65,12 @@ type Stats struct {
 	Companies   []CompanyStat  `json:"companies"`
 	Keywords    []KeywordStat  `json:"keywords"`
 	// State counts each job once per US state it names; "none" is a job that
-	// names no state. Area is the most-named areas. RemoteListed counts jobs
-	// the board lists as remote, and RemoteScope splits them by where
-	// ("unstated" when the board does not say).
+	// names no state. Country counts each job once per country it names
+	// (location.Countries); "none" names no country. Area is the most-named
+	// areas. RemoteListed counts jobs the board lists as remote, and
+	// RemoteScope splits them by where ("unstated" when the board does not say).
 	State        map[string]int `json:"state"`
+	Country      map[string]int `json:"country"`
 	Area         []AreaStat     `json:"area"`
 	RemoteListed int            `json:"remote_listed"`
 	RemoteScope  map[string]int `json:"remote_scope"`
@@ -100,7 +102,7 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 		Total: len(sel), Fit: map[string]int{}, WorkMode: map[string]int{}, Sponsorship: map[string]int{},
 		Seniority: map[string]int{}, Category: map[string]int{}, Basis: map[string]int{}, FreshSource: map[string]int{},
 		Relevance: make([]int, 10), Priority: make([]int, 10), Companies: []CompanyStat{}, Keywords: []KeywordStat{},
-		State: map[string]int{}, Area: []AreaStat{}, RemoteScope: map[string]int{},
+		State: map[string]int{}, Country: map[string]int{}, Area: []AreaStat{}, RemoteScope: map[string]int{},
 		Insight: info,
 	}
 	areas := map[string]*AreaStat{}
@@ -197,11 +199,18 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 	if len(out.Keywords) > statKeywords {
 		out.Keywords = out.Keywords[:statKeywords]
 	}
+	out.Area = rankedAreas(areas)
+	return out
+}
+
+// rankedAreas is the most-named areas, most first, then by name.
+func rankedAreas(areas map[string]*AreaStat) []AreaStat {
+	out := make([]AreaStat, 0, len(areas))
 	for _, a := range areas {
-		out.Area = append(out.Area, *a)
+		out = append(out, *a)
 	}
-	sort.Slice(out.Area, func(i, j int) bool {
-		a, b := out.Area[i], out.Area[j]
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
 		if a.N != b.N {
 			return a.N > b.N
 		}
@@ -210,8 +219,8 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 		}
 		return a.State < b.State
 	})
-	if len(out.Area) > statAreas {
-		out.Area = out.Area[:statAreas]
+	if len(out) > statAreas {
+		out = out[:statAreas]
 	}
 	return out
 }
@@ -249,6 +258,14 @@ func countPlaces(out *Stats, areas map[string]*AreaStat, j Job) {
 			scope = "unstated"
 		}
 		out.RemoteScope[scope]++
+	}
+	cs := countriesOf(j)
+	if len(cs) == 0 {
+		out.Country["none"]++
+		return
+	}
+	for _, c := range cs {
+		out.Country[c]++
 	}
 }
 

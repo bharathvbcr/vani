@@ -79,6 +79,99 @@ func TestStubsPastTheShortfallFailTheBoard(t *testing.T) {
 	}
 }
 
+// One stub in each search is that search's allowance. Summing the three and
+// judging them against the union is what failed CrowdStrike on 2026-11-02
+// (3 of 57, three searches).
+func TestOneStubPerSearchStaysWithinThatSearch(t *testing.T) {
+	var st Stats
+	s, _ := newSource(stubHandler(45, map[int]string{21: mastercardStub}))
+	s.opt = &Options{
+		Stored: func(sources.Board) []posting.Posting { return nil },
+		Report: func(_ sources.Board, got Stats) { st = got },
+	}
+	b := board
+	b.Searches = []string{"machine learning", "LLM", "inference"}
+	got, err := s.List(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 44 || st.Listed != 44 || st.Stubs != 3 || st.Queries != 3 {
+		t.Fatalf("%d postings, stats %+v; want 44 listed, one stub in each of 3 searches", len(got), st)
+	}
+}
+
+// A stub that is a real row on the next read of the same page is listed, and
+// the page is not read again once it has no stub.
+func TestAStubThatFillsInOnRereadIsListed(t *testing.T) {
+	var reads []int
+	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if r.Method != "POST" || r.URL != jobsURL {
+			return stubHandler(2, nil)(r)
+		}
+		var req struct{ Offset int }
+		if err := json.Unmarshal(r.Body, &req); err != nil {
+			return srctest.Reply{}, false
+		}
+		reads = append(reads, req.Offset)
+		if req.Offset == 0 && len(reads) == 1 {
+			return stubHandler(2, map[int]string{0: mastercardStub})(r)
+		}
+		return stubHandler(2, nil)(r)
+	})
+	var st Stats
+	s.opt = &Options{
+		Stored: func(sources.Board) []posting.Posting { return nil },
+		Report: func(_ sources.Board, got Stats) { st = got },
+	}
+	got, err := s.List(context.Background(), board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || st.Stubs != 0 {
+		t.Fatalf("%d postings, stubs %d; want both rows and no stub", len(got), st.Stubs)
+	}
+	zeros := 0
+	for _, o := range reads {
+		if o == 0 {
+			zeros++
+		}
+	}
+	if zeros != 2 {
+		t.Errorf("offset 0 was read %d times (%v), want the stub page and one reread", zeros, reads)
+	}
+}
+
+// A stub that is still a stub after the rereads is left out, and the page is
+// not read past the bound.
+func TestAStableStubIsRereadThenLeftOut(t *testing.T) {
+	var offset0 int
+	inner := stubHandler(45, map[int]string{0: mastercardStub})
+	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
+		if r.Method == "POST" && r.URL == jobsURL {
+			var req struct{ Offset int }
+			if json.Unmarshal(r.Body, &req) == nil && req.Offset == 0 {
+				offset0++
+			}
+		}
+		return inner(r)
+	})
+	var st Stats
+	s.opt = &Options{
+		Stored: func(sources.Board) []posting.Posting { return nil },
+		Report: func(_ sources.Board, got Stats) { st = got },
+	}
+	got, err := s.List(context.Background(), board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 44 || st.Stubs != 1 {
+		t.Fatalf("%d postings, stubs %d; want the stub left out", len(got), st.Stubs)
+	}
+	if offset0 != 1+stubRefetch {
+		t.Errorf("offset 0 was read %d times, want %d", offset0, 1+stubRefetch)
+	}
+}
+
 func TestATitledRowWithoutAPathIsStillAnError(t *testing.T) {
 	s, _ := newSource(stubHandler(45, map[int]string{5: `{"title":"Engineer","bulletFields":["R-9"]}`}))
 	got, err := s.List(context.Background(), board)

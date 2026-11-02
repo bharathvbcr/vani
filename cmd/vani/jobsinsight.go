@@ -35,8 +35,9 @@ const (
 	showKeywords = 30 // keywords in `jobs show`
 	maxAgeDays   = 3650
 	maxAreas     = 50 // areas one --area may name
-	// maxPlaceFlagBytes bounds --state and --area, which carry lists, not a
-	// search box (maxQueryBytes).
+	maxCountries = 50 // countries one --country may name
+	// maxPlaceFlagBytes bounds --state, --area and --country, which carry
+	// lists, not a search box (maxQueryBytes).
 	maxPlaceFlagBytes = 2000
 )
 
@@ -44,7 +45,7 @@ const (
 type jobsOpts struct {
 	jobview.Opts
 	fit, workMode, sponsor string     // comma lists of fixture option values, or "none"
-	state, area            string     // comma lists: USPS codes or state names; areas; "none"
+	state, area, country   string     // comma lists: USPS codes or state names; areas; country names; "none"
 	stage                  string     // comma list of post-apply stages, or "applied" for none yet
 	more                   jobsFilter // pay, seniority, company, title, relevance (jobsfilter.go)
 	// pendingOK lets --view pending through check: only `jobs list` sets it.
@@ -59,8 +60,10 @@ func addSelectFlags(fs *flag.FlagSet, o *jobsOpts) {
 	fs.StringVar(&o.sponsor, "sponsorship", "", "only these sponsorship readings (comma list; none = no reading)")
 	fs.StringVar(&o.state, "state", "", "only jobs in these US states (comma list of codes or names; none = no state listed)")
 	fs.StringVar(&o.area, "area", "", "only jobs in these areas, as the location names them (comma list; none = no area listed)")
+	fs.StringVar(&o.country, "country", "", "only jobs in these countries (comma list of names or codes, such as Germany or US; none = no country listed). "+
+		"A job in more than one country matches any of them. Remote work counts when its scope names a country (\"Remote - US\"), not a region (\"Remote - Europe\")")
 	fs.BoolVar(&o.Remote, "remote", false, "only jobs the board lists as remote (its remote flag or location text; not triage's work_mode)")
-	fs.BoolVar(&o.OrRemote, "or-remote", false, "with --state or --area, also keep jobs the board lists as remote (remote, or in these places)")
+	fs.BoolVar(&o.OrRemote, "or-remote", false, "with --state, --area or --country, also keep jobs the board lists as remote (remote, or in these places)")
 	fs.IntVar(&o.MaxAge, "max-age", 0, fmt.Sprintf("only jobs at most this many days old (0 = any, up to %d)", maxAgeDays))
 	fs.BoolVar(&o.Open, "open", false, "leave out roles the board no longer lists")
 	fs.StringVar(&o.stage, "stage", "", "only applied roles at these stages (comma list of "+stageNames()+"; applied = no stage yet); needs --view applied or all")
@@ -103,14 +106,17 @@ func (o *jobsOpts) check(cmd string, sortable bool) error {
 	if o.Areas, err = areaSet(cmd, o.area); err != nil {
 		return err
 	}
+	if o.Countries, err = countrySet(cmd, o.country); err != nil {
+		return err
+	}
 	if o.Stages, err = stageSet(cmd, o.stage, o.View); err != nil {
 		return err
 	}
 	switch {
 	case o.OrRemote && o.Remote:
-		return usagef("%s: --or-remote widens --state/--area to remote roles; --remote narrows to them; use one", cmd)
-	case o.OrRemote && o.States == nil && o.Areas == nil:
-		return usagef("%s: --or-remote needs --state or --area (alone it is --remote)", cmd)
+		return usagef("%s: --or-remote widens --state/--area/--country to remote roles; --remote narrows to them; use one", cmd)
+	case o.OrRemote && o.States == nil && o.Areas == nil && o.Countries == nil:
+		return usagef("%s: --or-remote needs --state, --area or --country (alone it is --remote)", cmd)
 	}
 	if err := o.more.check(cmd); err != nil {
 		return err
@@ -163,6 +169,37 @@ func areaSet(cmd, raw string) (map[string]bool, error) {
 	}
 	if len(out) > maxAreas {
 		return nil, usagef("%s: --area names more than %d areas", cmd, maxAreas)
+	}
+	return out, nil
+}
+
+// countrySet parses --country: a canonical name or a code location.CanonicalCountry
+// reads ("Germany", "DE", "US"), or "none". Empty means no filter (nil).
+func countrySet(cmd, raw string) (map[string]bool, error) {
+	if raw = strings.TrimSpace(raw); raw == "" {
+		return nil, nil
+	}
+	if len(raw) > maxPlaceFlagBytes || !utf8.ValidString(raw) {
+		return nil, usagef("%s: --country must be UTF-8 and at most %d bytes", cmd, maxPlaceFlagBytes)
+	}
+	out := map[string]bool{}
+	for _, v := range strings.Split(raw, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil, usagef("%s: --country has an empty entry", cmd)
+		}
+		if strings.EqualFold(v, "none") {
+			out["none"] = true
+			continue
+		}
+		name, ok := location.CanonicalCountry(v)
+		if !ok {
+			return nil, usagef("%s: --country %q is not a country name or code (or none)", cmd, v)
+		}
+		out[name] = true
+	}
+	if len(out) > maxCountries {
+		return nil, usagef("%s: --country names more than %d countries", cmd, maxCountries)
 	}
 	return out, nil
 }

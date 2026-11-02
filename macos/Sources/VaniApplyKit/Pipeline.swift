@@ -256,6 +256,287 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         /// Set when the digest's notes were off or paused. Nil when they ran,
         /// or the run was not going to ask a backend.
         public var explain: Explain?
+        /// The run that is going, as `runs/progress.json` reported it. Nil when
+        /// vani sent none: the file is absent, or this run is not going. A value
+        /// with `ok` false was present and could not be trusted.
+        public var progress: Progress?
+
+        /// Live progress of one run (cmd/vani/runprogress.go). Counts and bounded
+        /// names only. `headline` and `line` are what the Pipeline banner shows.
+        public struct Progress: Decodable, Equatable, Sendable {
+            public var ok: Bool
+            public var reason: String?
+            public var stage: String
+            public var phase: String
+            public var index: Int
+            public var total: Int
+            public var done: Int
+            public var read: Int
+            public var failed: Int
+            public var rateLimited: Int
+            public var skipped: Int
+            public var listed: Int
+            public var ats: String
+            public var token: String
+            public var company: String
+            /// How the board just finished: read, failed, rate_limited, skipped.
+            /// Empty while it is still being read.
+            public var outcome: String
+            public var attempted: Int
+            public var limit: Int
+            public var eligible: Int
+            public var updatedAt: Date?
+
+            enum CodingKeys: String, CodingKey {
+                case ok, reason, stage, phase, index, total, done, read, failed, skipped, listed
+                case ats, token, company, outcome, attempted, limit, eligible
+                case rateLimited = "rate_limited"
+                case updatedAt = "updated_at"
+            }
+
+            public init(ok: Bool, reason: String? = nil, stage: String = "", phase: String = "",
+                        index: Int = 0, total: Int = 0, done: Int = 0, read: Int = 0, failed: Int = 0,
+                        rateLimited: Int = 0, skipped: Int = 0, listed: Int = 0,
+                        ats: String = "", token: String = "", company: String = "", outcome: String = "",
+                        attempted: Int = 0, limit: Int = 0, eligible: Int = 0, updatedAt: Date? = nil) {
+                self.ok = ok
+                self.reason = reason
+                self.stage = stage
+                self.phase = phase
+                self.index = index
+                self.total = total
+                self.done = done
+                self.read = read
+                self.failed = failed
+                self.rateLimited = rateLimited
+                self.skipped = skipped
+                self.listed = listed
+                self.ats = ats
+                self.token = token
+                self.company = company
+                self.outcome = outcome
+                self.attempted = attempted
+                self.limit = limit
+                self.eligible = eligible
+                self.updatedAt = updatedAt
+            }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? false
+                reason = try c.decodeIfPresent(String.self, forKey: .reason)
+                stage = try c.decodeIfPresent(String.self, forKey: .stage) ?? ""
+                phase = try c.decodeIfPresent(String.self, forKey: .phase) ?? ""
+                index = try c.decodeIfPresent(Int.self, forKey: .index) ?? 0
+                total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
+                done = try c.decodeIfPresent(Int.self, forKey: .done) ?? 0
+                read = try c.decodeIfPresent(Int.self, forKey: .read) ?? 0
+                failed = try c.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+                rateLimited = try c.decodeIfPresent(Int.self, forKey: .rateLimited) ?? 0
+                skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
+                listed = try c.decodeIfPresent(Int.self, forKey: .listed) ?? 0
+                ats = try c.decodeIfPresent(String.self, forKey: .ats) ?? ""
+                token = try c.decodeIfPresent(String.self, forKey: .token) ?? ""
+                company = try c.decodeIfPresent(String.self, forKey: .company) ?? ""
+                outcome = try c.decodeIfPresent(String.self, forKey: .outcome) ?? ""
+                attempted = try c.decodeIfPresent(Int.self, forKey: .attempted) ?? 0
+                limit = try c.decodeIfPresent(Int.self, forKey: .limit) ?? 0
+                eligible = try c.decodeIfPresent(Int.self, forKey: .eligible) ?? 0
+                updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+            }
+
+            /// The banner title while this snapshot can be trusted. Empty when it
+            /// cannot, so the banner keeps "A run is going".
+            public var headline: String {
+                guard ok else { return "" }
+                switch stage {
+                case "listing":
+                    return listingHeadline
+                case "advance":
+                    return "Triaging postings"
+                case "starting":
+                    return "Starting"
+                case "preparing":
+                    return "Preparing the run"
+                case "inbox":
+                    return "Reading saved listings"
+                case "near_dup":
+                    return "Checking near-duplicates"
+                case "exclusions":
+                    return "Applying exclusions"
+                case "logos":
+                    return "Fetching company icons"
+                case "warm":
+                    return "Warming the knowledge base"
+                case "backfill":
+                    return "Filling in earlier readings"
+                case "digest":
+                    return "Writing the digest"
+                default:
+                    return PipelineStatus.bounded(stage, max: 80)
+                }
+            }
+
+            /// The banner's second line: place and counts. Empty when there is
+            /// nothing to add under the title.
+            public var line: String {
+                guard ok else { return "" }
+                switch stage {
+                case "listing":
+                    return listingLine
+                case "advance":
+                    return advanceLine
+                default:
+                    return ""
+                }
+            }
+
+            /// One row for the last-run panel.
+            public var nowText: String {
+                if !ok {
+                    return "Live progress could not be read: " + PipelineStatus.bounded(reason ?? "unreadable", max: 300)
+                }
+                return [headline, portalID, line].filter { !$0.isEmpty }.joined(separator: " · ")
+            }
+
+            /// How far this stage has got, when the snapshot names a fraction.
+            /// Nil for a stage with no count, and when the snapshot cannot be trusted.
+            public struct Meter: Equatable, Sendable {
+                public var done: Int
+                public var total: Int
+            }
+
+            /// Whether the current step needs a calmer or a louder tint.
+            public enum Attention: Equatable, Sendable {
+                /// The run is moving, and the board in hand was read or is still being read.
+                case calm
+                /// The board in hand was rate-limited.
+                case caution
+                /// The board in hand failed, or the snapshot could not be read.
+                case problem
+            }
+
+            public var meter: Meter? {
+                guard ok else { return nil }
+                switch stage {
+                case "listing":
+                    guard total > 0 else { return nil }
+                    return Meter(done: min(max(index, 0), total), total: total)
+                case "advance":
+                    guard limit > 0 else { return nil }
+                    return Meter(done: min(max(attempted, 0), limit), total: limit)
+                default:
+                    return nil
+                }
+            }
+
+            /// "2 of 5", "5 boards", or the triage fraction. Empty when this stage has no place.
+            public var placeText: String {
+                guard ok else { return "" }
+                switch stage {
+                case "listing":
+                    if index > 0, total > 0 { return "\(index) of \(total)" }
+                    if total > 0 { return "\(total) boards" }
+                    return ""
+                case "advance":
+                    return advanceLine
+                default:
+                    return ""
+                }
+            }
+
+            /// Counts only, so a bar can carry the fraction beside them.
+            public var countsText: String {
+                guard ok, stage == "listing" else { return "" }
+                return countParts.joined(separator: " · ")
+            }
+
+            /// The board id under a company title. Empty when the title already is that id.
+            public var portalID: String {
+                guard ok, !company.isEmpty, !ats.isEmpty else { return "" }
+                return token.isEmpty ? ats : "\(ats):\(token)"
+            }
+
+            /// Set while a board's listings are being saved, which can sit there a while.
+            public var phaseNote: String {
+                guard ok, stage == "listing", phase == "reconciling" else { return "" }
+                return "saving the listing"
+            }
+
+            public var attention: Attention {
+                guard ok else { return .problem }
+                switch outcome {
+                case "failed": return .problem
+                case "rate_limited": return .caution
+                default: return .calm
+                }
+            }
+
+            /// How long this snapshot has been the current one. Empty when it
+            /// cannot be trusted or names no time. Under five seconds is "just
+            /// now", so a clock that is a little ahead does not print a negative age.
+            public func updatedText(at now: Date) -> String {
+                guard ok, let updatedAt else { return "" }
+                let s = now.timeIntervalSince(updatedAt)
+                if !s.isFinite || s < 5 { return "Updated just now." }
+                if s < 90 { return "Updated \(Int(s)) s ago." }
+                return "Updated \(PipelineStatus.age(s)) ago."
+            }
+
+            private var countParts: [String] {
+                var parts: [String] = []
+                func add(_ n: Int, _ word: String) {
+                    if n > 0 { parts.append("\(n) \(word)") }
+                }
+                add(read, "read")
+                add(failed, "failed")
+                add(rateLimited, "rate-limited")
+                add(skipped, "skipped")
+                add(listed, "listed")
+                return parts
+            }
+
+            private var portalName: String {
+                if !company.isEmpty { return company }
+                if ats.isEmpty { return "" }
+                return token.isEmpty ? ats : "\(ats):\(token)"
+            }
+
+            private var listingHeadline: String {
+                let verb: String
+                switch phase {
+                case "reconciling": verb = "Saving"
+                case "done":
+                    switch outcome {
+                    case "failed": verb = "Could not read"
+                    case "rate_limited": verb = "Rate-limited"
+                    case "skipped": verb = "Skipped"
+                    default: verb = "Read"
+                    }
+                default: verb = "Reading"
+                }
+                let name = portalName
+                if name.isEmpty {
+                    return index == 0 ? "Reading boards" : "Reading a board"
+                }
+                return "\(verb) \(name)"
+            }
+
+            private var listingLine: String {
+                var parts: [String] = []
+                if phase == "reconciling" { parts.append("saving the listing") }
+                if !placeText.isEmpty { parts.append(placeText) }
+                parts.append(contentsOf: countParts)
+                return parts.joined(separator: " · ")
+            }
+
+            private var advanceLine: String {
+                guard limit > 0 else { return "" }
+                var s = "\(attempted) of \(limit)"
+                if eligible > limit { s += " · \(eligible) eligible" }
+                return s
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
             case ok, reason, state, stage, error, cause, boards, advance, trigger, options, notice
@@ -274,6 +555,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             case impressionsError = "impressions_error"
             case logDropped = "log_dropped"
             case nearDup = "near_dup"
+            case progress
         }
 
         public init(from decoder: Decoder) throws {
@@ -309,6 +591,14 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             semantic = try c.decodeIfPresent(SemanticReport.self, forKey: .semantic)
             digestWarning = try c.decodeIfPresent(String.self, forKey: .digestWarning)
             explain = try c.decodeIfPresent(Explain.self, forKey: .explain)
+            // Present but unreadable is a failed check, not an absent snapshot,
+            // and it must not fail the rest of the status. Null is absent.
+            if c.contains(.progress), try c.decodeNil(forKey: .progress) == false {
+                progress = (try? c.decode(Progress.self, forKey: .progress))
+                    ?? Progress(ok: false, reason: "Live progress could not be read")
+            } else {
+                progress = nil
+            }
         }
 
         public init(ok: Bool = true, reason: String? = nil, state: State, startedAt: Date? = nil, finishedAt: Date? = nil,
@@ -321,7 +611,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     impressionsError: String? = nil, logDropped: Int = 0,
                     nearDup: NearDup? = nil, exclusions: Exclusions? = nil, logos: Logos? = nil, shadow: Shadow? = nil,
                     semanticPre: SemanticReport? = nil, semantic: SemanticReport? = nil,
-                    digestWarning: String? = nil, explain: Explain? = nil) {
+                    digestWarning: String? = nil, explain: Explain? = nil, progress: Progress? = nil) {
             self.notice = notice
             self.trigger = trigger
             self.options = options
@@ -352,6 +642,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             self.semantic = semantic
             self.digestWarning = digestWarning
             self.explain = explain
+            self.progress = progress
         }
 
         /// Why a failed run failed, when vani names it (cmd/vani/runrecord.go

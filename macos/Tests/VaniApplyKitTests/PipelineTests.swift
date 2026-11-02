@@ -644,4 +644,94 @@ final class PipelineTests: XCTestCase {
             XCTAssertNil(s.daemon?.model, model)
         }
     }
+
+    func testLiveProgressDecodesAndWordsTheBoard() throws {
+        let progress = #"{"ok":true,"stage":"listing","phase":"listing","index":2,"total":5,"done":1,"read":1,"listed":10,"ats":"gh","token":"acme","company":"Acme","updated_at":"2026-11-02T15:04:05Z"}"#
+        let run = #"{"ok":true,"state":"running","started_at":"2026-11-02T15:00:00Z","progress":\#(progress)}"#
+        let live = try XCTUnwrap(decode(statusReply(lastRun: run)).lastRun.progress)
+        XCTAssertTrue(live.ok)
+        XCTAssertEqual(live.headline, "Reading Acme")
+        XCTAssertEqual(live.line, "2 of 5 · 1 read · 10 listed")
+        XCTAssertEqual(live.company, "Acme")
+        XCTAssertEqual(live.portalID, "gh:acme")
+        XCTAssertEqual(live.placeText, "2 of 5")
+        XCTAssertEqual(live.countsText, "1 read · 10 listed")
+        XCTAssertEqual(live.meter?.done, 2)
+        XCTAssertEqual(live.meter?.total, 5)
+        XCTAssertEqual(live.attention, .calm)
+        XCTAssertEqual(live.nowText, "Reading Acme · gh:acme · 2 of 5 · 1 read · 10 listed")
+        XCTAssertNotNil(live.updatedAt)
+    }
+
+    func testLiveProgressSaysHowLongTheSnapshotHasSat() {
+        let at = Date(timeIntervalSince1970: 1_700_000_000)
+        let live = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", updatedAt: at)
+        XCTAssertEqual(live.updatedText(at: at.addingTimeInterval(1)), "Updated just now.")
+        XCTAssertEqual(live.updatedText(at: at.addingTimeInterval(-30)), "Updated just now.", "a clock a little ahead is not a negative age")
+        XCTAssertEqual(live.updatedText(at: at.addingTimeInterval(12)), "Updated 12 s ago.")
+        XCTAssertEqual(live.updatedText(at: at.addingTimeInterval(89)), "Updated 89 s ago.")
+        XCTAssertEqual(live.updatedText(at: at.addingTimeInterval(4 * 60)), "Updated 4 min ago.")
+        XCTAssertEqual(live.updatedText(at: at.addingTimeInterval(3 * 3600)), "Updated 3 h ago.")
+        XCTAssertEqual(PipelineStatus.LastRun.Progress(ok: false, reason: "nope", updatedAt: at).updatedText(at: at), "")
+        XCTAssertEqual(PipelineStatus.LastRun.Progress(ok: true, stage: "listing").updatedText(at: at), "")
+    }
+
+    func testLiveProgressWordsSavingTriageAndAFailedRead() throws {
+        let saving = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", phase: "reconciling", index: 2, total: 5, done: 1, read: 1, listed: 10, company: "Acme")
+        XCTAssertEqual(saving.headline, "Saving Acme")
+        XCTAssertEqual(saving.line, "saving the listing · 2 of 5 · 1 read · 10 listed")
+        let done = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", phase: "done", index: 2, total: 5, done: 1, read: 1, listed: 10, ats: "gh", token: "acme")
+        XCTAssertEqual(done.headline, "Read gh:acme")
+        let missed = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", phase: "done", index: 3, total: 5, done: 2, read: 1, failed: 1, company: "Intel", outcome: "failed")
+        XCTAssertEqual(missed.headline, "Could not read Intel")
+        XCTAssertEqual(missed.attention, .problem)
+        let limited = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", phase: "done", index: 3, total: 5, company: "Acme", outcome: "rate_limited")
+        XCTAssertEqual(limited.headline, "Rate-limited Acme")
+        XCTAssertEqual(limited.attention, .caution)
+        let skipped = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", phase: "done", index: 2, total: 5, company: "Initech", outcome: "skipped")
+        XCTAssertEqual(skipped.headline, "Skipped Initech")
+        XCTAssertEqual(done.line, "2 of 5 · 1 read · 10 listed")
+        let unnamed = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", phase: "listing", index: 2, total: 5)
+        XCTAssertEqual(unnamed.headline, "Reading a board")
+        let boards = PipelineStatus.LastRun.Progress(ok: true, stage: "listing", total: 5)
+        XCTAssertEqual(boards.headline, "Reading boards")
+        XCTAssertEqual(boards.line, "5 boards")
+        let triage = PipelineStatus.LastRun.Progress(ok: true, stage: "advance", attempted: 40, limit: 300, eligible: 900)
+        XCTAssertEqual(triage.headline, "Triaging postings")
+        XCTAssertEqual(triage.line, "40 of 300 · 900 eligible")
+        XCTAssertEqual(triage.placeText, "40 of 300 · 900 eligible")
+        XCTAssertEqual(triage.meter?.done, 40)
+        XCTAssertEqual(triage.meter?.total, 300)
+        XCTAssertNil(PipelineStatus.LastRun.Progress(ok: true, stage: "preparing").meter)
+        XCTAssertNil(PipelineStatus.LastRun.Progress(ok: false, reason: "nope", stage: "listing", total: 5).meter)
+        let failed = PipelineStatus.LastRun.Progress(ok: false, reason: "live progress is from another run")
+        XCTAssertEqual(failed.headline, "")
+        XCTAssertEqual(failed.nowText, "Live progress could not be read: live progress is from another run")
+        XCTAssertEqual(PipelineStatus.LastRun.Progress(ok: true, stage: "teleporting").headline, "teleporting")
+        XCTAssertEqual(PipelineStatus.LastRun.Progress(ok: true, stage: "preparing").headline, "Preparing the run")
+    }
+
+    func testAMissingProgressLeavesTheRunAlone() throws {
+        let run = #"{"ok":true,"state":"running","started_at":"2026-11-02T15:00:00Z"}"#
+        let last = try decode(statusReply(lastRun: run)).lastRun
+        XCTAssertEqual(last.state, .running)
+        XCTAssertNil(last.progress)
+        let older = try decode(statusReply())
+        XCTAssertNil(older.lastRun.progress)
+        XCTAssertEqual(older.lastRun.state, .ok)
+    }
+
+    func testACorruptProgressDoesNotFailTheStatus() throws {
+        for bad in [#""nope""#, "[]", #"{"ok":true,"index":"two"}"#] {
+            let run = #"{"ok":true,"state":"running","progress":\#(bad)}"#
+            let s = try decode(statusReply(lastRun: run))
+            XCTAssertEqual(s.lastRun.state, .running, bad)
+            let live = try XCTUnwrap(s.lastRun.progress, bad)
+            XCTAssertFalse(live.ok, bad)
+            XCTAssertEqual(live.reason, "Live progress could not be read", bad)
+            XCTAssertEqual(live.headline, "", bad)
+        }
+        let nullRun = #"{"ok":true,"state":"running","progress":null}"#
+        XCTAssertNil(try decode(statusReply(lastRun: nullRun)).lastRun.progress)
+    }
 }
