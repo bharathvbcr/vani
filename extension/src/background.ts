@@ -273,8 +273,13 @@ export function toTabFrames<T>(msg: ToContent, timeoutMs?: number): Promise<FanO
 
 /**
  * One fill per tab, shared by the shortcut and the popup. Check-and-set is synchronous.
- * A frame reply, including the reply budget elapsing, does not clear it. fillSettled does, and so does the tab closing.
+ * A frame reply, including the reply budget elapsing, does not clear it. A frame whose message
+ * port has closed is not writing, so that frame is settled the same way a gone frame is.
+ * fillSettled clears a frame that did write, and closing the tab clears the gate.
  */
+
+/** Chrome's error when the receiving document is gone. The reply-budget error ("no answer in") is not this. */
+const PORT_CLOSED = /The message port closed before a response was received/;
 const fillGates = new Map<number, { pending: Set<number>; sealed: boolean }>();
 
 function claimFillGate(tabId: number): boolean {
@@ -318,6 +323,7 @@ async function dispatchFill(tabId: number, msg: { type: "fill"; overwrite?: bool
       beforeAsk: ids => armFillFrames(tabId, ids),
     });
     for (const id of r.gone) settleFillFrame(tabId, id);
+    for (const f of r.failed) if (PORT_CLOSED.test(f.error)) settleFillFrame(tabId, f.frameId);
     return r;
   } catch (e) {
     // Nothing was left filling: a throw here is "could not start" or no tab, not a frame that timed out.
