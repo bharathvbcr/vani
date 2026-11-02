@@ -27,7 +27,7 @@ import {
   buildSuggestRequest, runJob, runSuggest,
 } from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
-import { contentListener } from "./frames";
+import { FILL_BUSY, contentListener, fillClaimHeld, fillInvokedByHolder, releaseFillClaim, tryClaimFill } from "./frames";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
 import { type FindRow, applyVaniRow, withRowError } from "./jobrow";
@@ -222,7 +222,49 @@ function askSameQuestion(a: string, b: string): Promise<unknown> {
   return send<unknown>({ type: "sameQuestion", a, b });
 }
 
+/**
+ * Fill the page. A message handler calls this while it already holds the content lock
+ * (fillInvokedByHolder): it must not take the background gate, or a second fillSettled would drop that gate early.
+ * The panel button calls it directly. That path claims the same background gate as the shortcut and the popup,
+ * then the content lock, both before bank() is awaited.
+ */
 async function fill(overwrite = false, typeahead = false): Promise<FillReply> {
+  if (fillInvokedByHolder()) return performFill(overwrite, typeahead);
+  return fillFromPanel(overwrite, typeahead);
+}
+
+async function fillFromPanel(overwrite = false, typeahead = false): Promise<FillReply> {
+  let gate = false;
+  try {
+    // Synchronous refuse: a message fill is already writing. Do not fillSettled; that gate belongs to the holder.
+    if (fillClaimHeld()) {
+      toast(FILL_BUSY);
+      return { outcomes: [] };
+    }
+    const claimed = await send<{ ok?: boolean; error?: string }>({ type: "fillClaim" });
+    if (!claimed || claimed.ok !== true) {
+      toast(typeof claimed?.error === "string" && claimed.error !== "" ? claimed.error : FILL_BUSY);
+      return { outcomes: [] };
+    }
+    gate = true;
+    if (!tryClaimFill()) {
+      toast(FILL_BUSY);
+      return { outcomes: [] };
+    }
+    try {
+      return await performFill(overwrite, typeahead);
+    } finally {
+      releaseFillClaim();
+    }
+  } catch {
+    toast("Fill failed.");
+    return { outcomes: [] };
+  } finally {
+    if (gate) void send({ type: "fillSettled" }).catch(() => undefined);
+  }
+}
+
+async function performFill(overwrite = false, typeahead = false): Promise<FillReply> {
   const b = await bank();
   if (!b || disabledHere(b)) return { outcomes: [] };
   clearMarks(document, { forget: false }); // an earlier fill the user has not touched is still Vani's on save
@@ -1884,6 +1926,7 @@ if (!window.__vaniApply && !coveredByParent()) {
   chrome.runtime.onMessage.addListener(contentListener({
     scan,
     fill,
+    fillSettled: () => { void send({ type: "fillSettled" }).catch(() => undefined); },
     capture: () => capture("saved"),
     clearMarks: () => clearMarks(document),
     appliedShow: window.top === window ? () => flow.resume() : null,

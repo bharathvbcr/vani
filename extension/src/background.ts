@@ -15,7 +15,7 @@ import {
   updateBank,
 } from "./store";
 import { type FillReply, MAX_SAME_LABEL, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
-import { type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
+import { FILL_BUSY, type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { createDrafter, draftHelp } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
 import { parseFindRow } from "./jobrow";
@@ -271,6 +271,85 @@ export function toTabFrames<T>(msg: ToContent, timeoutMs?: number): Promise<FanO
   return toFrames<T>(msg, { registered: tabId => frameRegistry.list(tabId), timeoutMs });
 }
 
+/**
+ * One fill per tab, shared by the shortcut and the popup. Check-and-set is synchronous.
+ * A frame reply, including the reply budget elapsing, does not clear it. fillSettled does, and so does the tab closing.
+ */
+const fillGates = new Map<number, { pending: Set<number>; sealed: boolean }>();
+
+function claimFillGate(tabId: number): boolean {
+  if (!Number.isInteger(tabId) || tabId < 0 || fillGates.has(tabId)) return false;
+  fillGates.set(tabId, { pending: new Set(), sealed: false });
+  return true;
+}
+
+function armFillFrames(tabId: number, frameIds: readonly number[]): void {
+  const g = fillGates.get(tabId);
+  if (!g) return;
+  const next = new Set<number>();
+  for (const id of frameIds) if (Number.isInteger(id) && id >= 0) next.add(id);
+  g.pending = next;
+}
+
+function settleFillFrame(tabId: number, frameId: number): void {
+  const g = fillGates.get(tabId);
+  if (!g || !Number.isInteger(frameId)) return;
+  g.pending.delete(frameId);
+  if (g.sealed && g.pending.size === 0) fillGates.delete(tabId);
+}
+
+function sealFillGate(tabId: number): void {
+  const g = fillGates.get(tabId);
+  if (!g) return;
+  g.sealed = true;
+  if (g.pending.size === 0) fillGates.delete(tabId);
+}
+
+function clearFillGate(tabId: number): void {
+  fillGates.delete(tabId);
+}
+
+async function dispatchFill(tabId: number, msg: { type: "fill"; overwrite?: boolean; typeahead?: boolean }, timeoutMs?: number): Promise<FanOut<FillReply>> {
+  try {
+    const r = await toFrames<FillReply>(msg, {
+      registered: id => frameRegistry.list(id),
+      tabId,
+      timeoutMs,
+      beforeAsk: ids => armFillFrames(tabId, ids),
+    });
+    for (const id of r.gone) settleFillFrame(tabId, id);
+    return r;
+  } catch (e) {
+    // Nothing was left filling: a throw here is "could not start" or no tab, not a frame that timed out.
+    clearFillGate(tabId);
+    throw e;
+  } finally {
+    sealFillGate(tabId);
+  }
+}
+
+async function runTabFill(tabId: number, msg: { type: "fill"; overwrite?: boolean; typeahead?: boolean }, timeoutMs?: number): Promise<FanOut<FillReply> | { error: string }> {
+  if (!claimFillGate(tabId)) return { error: FILL_BUSY };
+  try {
+    return await dispatchFill(tabId, msg, timeoutMs);
+  } catch (e) {
+    clearFillGate(tabId);
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function fillActiveTab(): Promise<void> {
+  let tabId: number | undefined;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tabId = tab?.id;
+  } catch {
+    return;
+  }
+  if (tabId === undefined) return;
+  await runTabFill(tabId, { type: "fill" });
+}
+
 /** This extension's own URL root ("chrome-extension://<id>/"), or "" where the runtime cannot say (a test's fake chrome). */
 function ownURL(): string {
   try { return typeof chrome.runtime.getURL === "function" ? chrome.runtime.getURL("") : ""; } catch { return ""; }
@@ -319,7 +398,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === "loading") void frameRegistry.forget(tabId);
   if (info.status === "complete") void applied.pending(tabId).then(o => { if (o) return badge(tabId, true); }, () => undefined);
 });
-chrome.tabs.onRemoved.addListener(tabId => { void applied.dismiss(tabId); void frameRegistry.forget(tabId); });
+chrome.tabs.onRemoved.addListener(tabId => { clearFillGate(tabId); void applied.dismiss(tabId); void frameRegistry.forget(tabId); });
 
 /**
  * Count one more fill on each answer used (once per occurrence in `keys`). With the Mac app that is a
@@ -565,6 +644,32 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       if ("error" in file) return file;
       return withoutResumeBytes(await native({ op: "resumeOpenData", name: file.name, pdf: msg.pdf }));
     }
+    case "fillClaim": {
+      const tabId = sender.tab?.id;
+      const frameId = sender.frameId;
+      if (tabId === undefined || !Number.isInteger(tabId) || tabId < 0) return { error: "no tab" };
+      if (frameId === undefined || !Number.isInteger(frameId) || frameId < 0) return { error: "not from a frame", code: "bad_request" };
+      if (!claimFillGate(tabId)) return { error: FILL_BUSY };
+      armFillFrames(tabId, [frameId]);
+      sealFillGate(tabId);
+      return { ok: true };
+    }
+    case "fillSettled": {
+      const tabId = sender.tab?.id;
+      const frameId = sender.frameId;
+      if (tabId === undefined || frameId === undefined) return { error: "not from a frame", code: "bad_request" };
+      settleFillFrame(tabId, frameId);
+      return { ok: true };
+    }
+    case "fillRun": {
+      let tabId = actingTab(sender, msg.tabId);
+      if (tabId === undefined) {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        tabId = tab?.id;
+      }
+      if (tabId === undefined) return { error: "no active tab" };
+      return runTabFill(tabId, { type: "fill", overwrite: msg.overwrite, typeahead: msg.typeahead });
+    }
     case "attachResume": {
       // Only a content script sends this (sender policy), and it acts for its own tab: never the active one,
       // which may be a different page by the time this runs.
@@ -611,6 +716,7 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
 });
 
 // The keyboard shortcut fills every frame of the active tab, like the popup's Fill button.
+// Both claim the same per-tab gate first. A second shortcut while the fill is in flight sends nothing.
 chrome.commands.onCommand.addListener(command => {
-  if (command === "fill-form") void toTabFrames({ type: "fill" }).catch(() => undefined);
+  if (command === "fill-form") void fillActiveTab().catch(() => undefined);
 });

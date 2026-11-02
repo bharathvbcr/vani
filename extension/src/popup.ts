@@ -2,7 +2,7 @@
 import type { Answer, Bank, FieldInfo } from "./types";
 import { MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
-import { sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
+import { type FanOut, sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, coverageLine, noteLines, questionRows, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
@@ -1541,7 +1541,19 @@ async function rescanTab(notify = false): Promise<void> {
 $("#fill").onclick = async () => {
   const done = busy($("#fill") as HTMLButtonElement | null, "Filling…");
   try {
-    const r = await toFrames<FillReply>({ type: "fill", overwrite: ($("#overwrite") as HTMLInputElement).checked, typeahead: ($("#typeahead") as HTMLInputElement).checked }, { registered });
+    // busy() only covers this click. The background gate is what stops a second fill, including after a frame timeout.
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const r = await bg<FanOut<FillReply> | { error?: string }>({
+      type: "fillRun",
+      overwrite: ($("#overwrite") as HTMLInputElement).checked,
+      typeahead: ($("#typeahead") as HTMLInputElement).checked,
+      ...(typeof tab?.id === "number" ? { tabId: tab.id } : {}),
+    });
+    if (!r || !("answered" in r) || !Array.isArray(r.answered)) {
+      const failed = r !== null && r !== undefined && "error" in r && typeof r.error === "string" ? r.error : "Fill failed";
+      status(failed, "error");
+      return;
+    }
     const outcomes = mergeFill(r);
     const f = outcomes.filter(o => o.filled);
     const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
