@@ -239,6 +239,13 @@ const fold = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "
 /** A date control's value is its ISO text exactly, or it was not taken. */
 const sameKept = (now: string, wrote: string): boolean => now === wrote;
 
+/** The option a single select is showing, or "" when nothing is selected. */
+function selectedText(el: HTMLSelectElement): string {
+  const i = el.selectedIndex;
+  if (i < 0) return "";
+  return el.options[i]?.text ?? "";
+}
+
 /**
  * A single select takes the option whose text is the saved value. A multiple
  * select takes every saved value that maps (mapChoice) onto one of its options,
@@ -248,18 +255,29 @@ const sameKept = (now: string, wrote: string): boolean => now === wrote;
  */
 function setSelect(el: HTMLSelectElement, values: string[]): { ok: boolean; partial: boolean } {
   if (!el.multiple) {
-    const want = new Set(values.map(normalizeLabel));
+    const wanted = values.map(normalizeLabel).filter(v => v !== "");
+    if (wanted.length === 0) return { ok: false, partial: false };
+    const want = new Set(wanted);
     const o = Array.from(el.options).find(x => want.has(normalizeLabel(x.text)));
     if (!o) return { ok: false, partial: false };
-    el.value = o.value;
-    fire(el, "input"); fire(el, "change");
-    return { ok: true, partial: false };
+    // Captured before the events: a handler can rewrite the option's text and still leave its value.
+    const label = normalizeLabel(o.text);
+    const value = o.value;
+    try {
+      el.value = value;
+      fire(el, "input"); fire(el, "change");
+    } catch {
+      return { ok: false, partial: false };
+    }
+    const kept = el.value === value && normalizeLabel(selectedText(el)) === label;
+    return { ok: kept, partial: false };
   }
   const options = Array.from(el.options);
   const texts = options.map(o => o.text);
   const chosen = new Set<number>();
   let missing = 0;
   for (const v of values) {
+    if (normalizeLabel(v) === "") continue;
     const t = mapChoice(v, texts);
     const i = t === null ? -1 : texts.indexOf(t);
     if (i >= 0) chosen.add(i); else missing++;
@@ -277,21 +295,34 @@ function optionText(el: HTMLInputElement): string {
   return normalizeLabel(t);
 }
 
-/** Click radio/checkbox members to reach the wanted state; a click is how sites listen. */
+/**
+ * Click radio/checkbox members to reach the wanted state; a click is how sites listen.
+ * Success is the checked state afterwards. A click that does not stick, or an empty wanted
+ * value, is not a fill.
+ */
 function setGroup(els: HTMLInputElement[], values: string[], single: boolean): boolean {
+  const labels = values.map(normalizeLabel).filter(v => v !== "");
+  if (labels.length === 0) return false;
   if (single) {
+    const box = els[0];
+    if (!box) return false;
     const want = values[0] === "yes";
-    if (els[0]!.checked !== want) els[0]!.click();
-    return true;
+    if (box.checked !== want) box.click();
+    return box.checked === want;
   }
-  const want = new Set(values.map(normalizeLabel));
-  let any = false;
+  const want = new Set(labels);
   for (const el of els) {
     const on = want.has(optionText(el));
-    if (el.type === "radio") { if (on && !el.checked) { el.click(); any = true; } else if (on) any = true; }
-    else if (el.checked !== on) { el.click(); any = true; } else if (on) any = true;
+    if (el.type === "radio") { if (on && !el.checked) el.click(); }
+    else if (el.checked !== on) el.click();
   }
-  return any;
+  let matched = 0;
+  for (const el of els) {
+    const on = want.has(optionText(el));
+    if (on) matched++;
+    if (el.checked !== on) return false;
+  }
+  return matched > 0;
 }
 
 // --- ARIA drivers ---------------------------------------------------------------------
@@ -360,22 +391,25 @@ async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => str
     await waitFor(() => (target = choose()) !== null, 900, root);
   }
   if (!target) return giveUp();
-  const want = normalizeLabel(txt(target));
+  const chosenText = txt(target);
+  const want = normalizeLabel(chosenText);
+  const wantDigits = codeDigits(chosenText);
   const icon = iconSignature(target);
   realClick(target);
   let verdict: "ok" | "check" | null = null;
-  // What the widget shows must be what was chosen. A box that shows only a dialling code ("+1") could
-  // be any of the countries that share it: the flag beside it must be the chosen option's flag, and
-  // with no flag to compare the fill is only one to review.
+  // What the widget shows must be the chosen option. A longer or shorter label that merely
+  // overlaps it is a different option. A box that shows only a dialling code ("+9", "(+9)") can
+  // stand for the option only when those digits are the option's own, read before the click.
+  // The flag beside it must then be the chosen option's flag; with no flag the fill is a review.
+  // A different code, or a code on an option that has none, is not that option.
   const judge = (): "ok" | "check" | null => {
     for (const v of readWidgetValue(trigger)) {
       const n = normalizeLabel(v);
       if (n === "") continue;
-      if (n === want || n.includes(want)) return "ok";
-      if (!want.includes(n)) continue;
-      if (!dialCodeOnly(v)) return "ok";
-      const shown = widgetValueIcon(trigger);
-      if (icon && shown) return icon === shown ? "ok" : null;
+      if (n === want) return "ok";
+      if (!dialCodeOnly(v) || wantDigits === "" || codeDigits(v) !== wantDigits) continue;
+      const shownIcon = widgetValueIcon(trigger);
+      if (icon && shownIcon) return icon === shownIcon ? "ok" : null;
       return "check";
     }
     return null;

@@ -36,7 +36,8 @@ async function update(fn: (b: Bank) => Bank): Promise<Bank> {
   return locked(() => updateBank(fn));
 }
 
-/** Job calls answer at once (the agent runs the job), so each is bounded short. */
+/** jobStart and jobResult are one hop: the agent queues the job and returns. A cold host can answer
+ *  after the port's 5s short-op clamp, so these go per message and keep this 10s budget. */
 const JOB_CALL_MS = 10_000;
 /** jobsIngest runs `vani jobs ingest`, which the host bounds at 30 s (35 s over the agent's XPC); this
  *  outlasts both, so the host's own timeout answer arrives instead of a false "unreachable". */
