@@ -449,8 +449,34 @@ public protocol AgentClient: Sendable {
 /// not registered, not approved or not answering reads as code "agent".
 public struct XPCAgentClient: AgentClient {
     public static let callTimeout: TimeInterval = 5
+    /// `start` and `result` only. A cold launchd hop can answer after `callTimeout` and still
+    /// inside the extension's 10s job budget. The model does not run on this hop.
+    public static let jobCallTimeout: TimeInterval = 10
     /// Room for `vani jobs ingest` (JobsClient.ingestTimeout) plus the hop.
     public static let ingestCallTimeout: TimeInterval = JobsClient.ingestTimeout + 5
+
+    /// Which hop a call is waiting on. `short` is identity, reachability, and every other call
+    /// that does not name its own budget.
+    public enum HopBudget {
+        case short
+        case job
+        case ingest
+    }
+
+    public static func timeout(for budget: HopBudget) -> TimeInterval {
+        switch budget {
+        case .short: return callTimeout
+        case .job: return jobCallTimeout
+        case .ingest: return ingestCallTimeout
+        }
+    }
+
+    /// Tests replace the wait so a budget can be recorded without sleeping. Production leaves it nil.
+    final class ReplyWaitHook: @unchecked Sendable {
+        var wait: ((DispatchSemaphore, TimeInterval) -> DispatchTimeoutResult)?
+    }
+    static let replyWaitHook = ReplyWaitHook()
+
     let serviceName: String
 
     public init(serviceName: String = AgentConstants.machService) {
@@ -463,12 +489,17 @@ public struct XPCAgentClient: AgentClient {
     ] }
 
     func call(timeout: TimeInterval = XPCAgentClient.callTimeout, _ body: (AgentXPC, DispatchSemaphore, Box) -> Void) -> [String: Any] {
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        // A test supplies the clock and records `timeout`. It must not open a Mach service or sleep.
+        if let wait = Self.replyWaitHook.wait {
+            if wait(done, timeout) == .timedOut { return Self.unreachable }
+            return box.get() ?? Self.unreachable
+        }
         let conn = NSXPCConnection(machServiceName: serviceName, options: [])
         conn.remoteObjectInterface = NSXPCInterface(with: AgentXPC.self)
         conn.resume()
         defer { conn.invalidate() }
-        let done = DispatchSemaphore(value: 0)
-        let box = Box()
         let proxy = conn.remoteObjectProxyWithErrorHandler { _ in
             box.set(Self.unreachable)
             done.signal()
@@ -505,7 +536,7 @@ public struct XPCAgentClient: AgentClient {
     }
 
     public func start(kind: String, request: Data) -> [String: Any] {
-        call { agent, done, box in
+        call(timeout: Self.timeout(for: .job)) { agent, done, box in
             agent.start(kind: kind, request: request) { id, error in
                 if let id { box.set(["job": id]) } else { box.set(["error": error ?? "the agent refused the job", "code": error == "busy" ? "busy" : "bad_request"]) }
                 done.signal()
@@ -514,7 +545,7 @@ public struct XPCAgentClient: AgentClient {
     }
 
     public func result(job: String) -> [String: Any] {
-        call { agent, done, box in
+        call(timeout: Self.timeout(for: .job)) { agent, done, box in
             agent.result(job: job) { data, pending, error in
                 if pending {
                     box.set(["pending": true])

@@ -3,11 +3,14 @@
 //
 // The protocol has no request ids, but the host (vani-apply-host/main.swift) is one synchronous loop,
 // so replies come back strictly in request order and a reply is matched to its call by FIFO position.
-// That only holds while no frame is lost, so anything that could desynchronise the two sides
-// (a timeout of a call already written, a disconnect, a stray frame) poisons the port: it is closed,
-// every pending call is rejected, and the next call opens a fresh one. A call that times out while
-// still queued was never written, so it is dropped and the port stays up. A caller's shorter deadline
-// is that call's only timer; it is not sent to the host, and it does not outlive the call.
+// A disconnect or a stray frame poisons the port: it is closed, every pending call is rejected, and
+// the next call opens a fresh one. A call that times out while still queued was never written, so it
+// is dropped and the port stays up. A call that times out after it was written stays in line as one
+// tombstone: its caller is rejected, the one reply that belongs to it is discarded, and calls that
+// have not been written are not failed and the timeout is not a failed connect. The port stays up so
+// a later bank call can use it. Tombstones that have filled the queue and can never be retired drop
+// the connection without failing those unwritten calls and without backoff. A caller's shorter
+// deadline is that call's only timer; it is not sent to the host, and it does not outlive the call.
 import type { Transport } from "./store";
 
 /** The slice of chrome.runtime.Port this transport uses. */
@@ -41,15 +44,17 @@ export interface PortTransportOptions {
   now?: () => number;
 }
 
-/** Ops answered from the bank file or the agent at once. Anything else (draft, jobFind, jobMark, jobsIngest,
- *  resumeOpen, resumeOpenData, unknown) runs per message so it cannot hold up the serial host's bank ops.
+/** Ops answered from the bank file at once. Anything else (draft, jobFind, jobMark, jobsIngest,
+ *  jobStart, jobResult, resumeOpen, resumeOpenData, unknown) runs per message so it cannot hold up the
+ *  serial host's bank ops, and so the caller's deadline is not clamped to callTimeoutMs.
  *  resumeOpen is excluded on purpose: the host then calls NSWorkspace.open, which can stall until the
  *  port's own timeout and would block every bank call queued behind it. sameQuestion is excluded for the
- *  same reason (it runs the on-device model, seconds not milliseconds) and because the port clamps a
- *  call's deadline to callTimeoutMs, where the per-message spawn keeps the caller's 8 s. */
+ *  same reason (it runs the on-device model, seconds not milliseconds) and because the per-message spawn
+ *  keeps the caller's 8 s. jobStart and jobResult are excluded so a cold host gets the caller's 10 s:
+ *  the agent returns as soon as the job is queued, and the slow part is the hop, not the model. */
 const PORT_OPS = new Set([
   "ping", "get", "getChunk", "put", "patch", "log",
-  "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "jobStart", "jobResult",
+  "resumePut", "resumeGet", "resumeInfo", "resumeDelete",
 ]);
 /** Ops that change nothing, so running one twice is harmless. resumeOpen is absent with resumeOpenData:
  *  opening Preview twice is not harmless, and resumeOpenData carries the PDF. */
@@ -60,6 +65,8 @@ interface Pending {
   resolve: (reply: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Set when a written call times out. The slot stays in FIFO order so its reply is not delivered later. */
+  tombstone?: boolean;
 }
 
 interface Connection {
@@ -84,7 +91,7 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
   const now = opts.now ?? Date.now;
 
   /** A passed deadline shorter than the port's own bound. Anything else (omitted, longer, or not a
-   *  finite non-negative number) stays at callTimeoutMs: a longer wait would still desync a late reply. */
+   *  finite non-negative number) stays at callTimeoutMs. Short ops do not take a caller's longer budget. */
   function callDeadline(timeoutMs: number | undefined): number {
     if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs >= callTimeoutMs) {
       return callTimeoutMs;
@@ -119,6 +126,21 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
     rejectAll(() => new PortError(message, kind), stranded);
   }
 
+  /** Calls still waiting on the host. A tombstone is only a discarded-reply slot, so it does not hold the window. */
+  function liveInFlight(c: Connection): number {
+    let n = 0;
+    for (const p of c.inFlight) if (!p.tombstone) n++;
+    return n;
+  }
+
+  /** The host never retired these written timeouts. Close so the next call opens a fresh port.
+   *  Unwritten queued calls stay queued, and this is not a failed connect. */
+  function abandonUnreplied(c: Connection) {
+    if (conn === c) conn = null;
+    for (const p of c.inFlight.splice(0)) clearTimeout(p.timer);
+    try { c.port.disconnect(); } catch { /* already gone */ }
+  }
+
   function open(): Connection {
     const port = opts.connect();
     const c: Connection = { port, inFlight: [], replied: false };
@@ -130,6 +152,7 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
       clearTimeout(head.timer);
       c.replied = true;
       failures = 0;
+      if (head.tombstone) { pump(); return; } // the reply belongs to a call that already timed out
       head.resolve(msg);
       pump();
     });
@@ -150,7 +173,7 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
           return;
         }
       }
-      if (conn.inFlight.length >= maxInFlight) return;
+      if (liveInFlight(conn) >= maxInFlight) return;
       const p = queue.shift()!;
       conn.inFlight.push(p);
       try { conn.port.postMessage(p.msg); } catch (e) {
@@ -171,9 +194,13 @@ export function createPortTransport(opts: PortTransportOptions): Transport & { c
         msg, resolve, reject,
         timer: setTimeout(() => {
           const c = conn;
-          if (c && c.inFlight.includes(p)) {
-            // Written: its reply may still arrive and would be taken for the next call's. Start over.
-            poison(c, "timeout", `native call timed out after ${limit} ms`);
+          const at = c?.inFlight.indexOf(p) ?? -1;
+          if (c && at >= 0) {
+            // Written. Keep the FIFO slot so the late reply is discarded, not handed to the next caller.
+            p.tombstone = true;
+            p.reject(new PortError(`native call timed out after ${limit} ms`, "timeout"));
+            if (c.inFlight.length >= maxQueued && c.inFlight.every(x => x.tombstone)) abandonUnreplied(c);
+            pump();
             return;
           }
           const i = queue.indexOf(p);

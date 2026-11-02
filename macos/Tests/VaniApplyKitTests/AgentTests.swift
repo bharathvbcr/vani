@@ -192,4 +192,36 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(r["code"] as? String, "agent")
         XCTAssertLessThan(Date().timeIntervalSince(started), XPCAgentClient.callTimeout + 1)
     }
+
+    /// start and result wait out a cold launchd hop. identity and reachable stay on the short budget.
+    /// The hook records the wait these methods actually pass; nothing sleeps for 10s.
+    func testJobHopWaitsAtLeastTenSecondsAndIdentityStaysAtFive() {
+        XCTAssertEqual(XPCAgentClient.callTimeout, 5, "identity and reachable keep the 5s hop")
+        XCTAssertGreaterThanOrEqual(XPCAgentClient.jobCallTimeout, 10, "start and result use the job budget")
+        XCTAssertGreaterThan(XPCAgentClient.jobCallTimeout, XPCAgentClient.callTimeout)
+        XCTAssertEqual(XPCAgentClient.ingestCallTimeout, JobsClient.ingestTimeout + 5, "ingest keeps its own budget")
+        XCTAssertEqual(XPCAgentClient.timeout(for: .job), XPCAgentClient.jobCallTimeout)
+        XCTAssertEqual(XPCAgentClient.timeout(for: .short), XPCAgentClient.callTimeout)
+        XCTAssertEqual(XPCAgentClient.timeout(for: .ingest), XPCAgentClient.ingestCallTimeout)
+
+        var seen: [TimeInterval] = []
+        XPCAgentClient.replyWaitHook.wait = { _, timeout in
+            seen.append(timeout)
+            return .timedOut
+        }
+        defer { XPCAgentClient.replyWaitHook.wait = nil }
+        let client = XPCAgentClient(serviceName: "\(AppGroup.identifier).budget-probe-\(UUID().uuidString)")
+        let started = Date()
+        XCTAssertEqual(client.start(kind: "suggest", request: Data("{}".utf8))["code"] as? String, "agent")
+        XCTAssertEqual(client.result(job: "j")["code"] as? String, "agent")
+        XCTAssertNil(client.identity())
+        XCTAssertFalse(client.reachable())
+        XCTAssertEqual(seen, [
+            XPCAgentClient.jobCallTimeout,
+            XPCAgentClient.jobCallTimeout,
+            XPCAgentClient.callTimeout,
+            XPCAgentClient.callTimeout,
+        ])
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "the hook must not wait out either budget")
+    }
 }

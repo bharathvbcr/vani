@@ -131,23 +131,25 @@ describe("native frame probe", () => {
     jest.advanceTimersByTime(2_000);
     await flush();
     expect(probe.box).toEqual({ settled: true, ok: true, v: UNREACHABLE });
-    expect(first?.disconnected).toBe(true);
+    expect(first?.disconnected).toBe(false);
     expect(jest.getTimerCount()).toBe(0);
 
     const next = track(native({ op: "get" }));
-    const second = opened[before + 1];
-    expect(opened.length).toBe(before + 2);
-    expect(second?.disconnected).toBe(false);
-    expect(second?.posted).toEqual([{ op: "get" }]);
+    expect(opened.length).toBe(before + 1);
+    expect(first?.disconnected).toBe(false);
+    expect(first?.posted).toEqual([
+      { op: "resumeInfo", key: "https://boards.example/jobs/1" },
+      { op: "get" },
+    ]);
     expect(jest.getTimerCount()).toBe(1);
     jest.advanceTimersByTime(3_000);
     await flush();
     expect(next.box.settled).toBe(false);
-    expect(second?.disconnected).toBe(false);
+    expect(first?.disconnected).toBe(false);
     first?.say({ ok: true, late: true });
     await flush();
     expect(next.box.settled).toBe(false);
-    second?.say({ ok: true, rev: 1 });
+    first?.say({ ok: true, rev: 1 });
     await flush();
     expect(next.box).toEqual({ settled: true, ok: true, v: { ok: true, rev: 1 } });
   });
