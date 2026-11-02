@@ -23,6 +23,18 @@ node_modules/
 /go.work.sum
 .gocache*
 
+# Test, coverage, and compiler build reports
+*.xcresult
+*.xccovreport
+*.xccovarchive
+*.profraw
+*.profdata
+test-results.xml
+junit.xml
+report.xml
+coverage/
+.coverage*
+
 # Local runtime state and personal drafts (never committed)
 /.state/
 .state/
@@ -58,16 +70,27 @@ build-report*
 *BUILD_REPORT*
 *build_report*
 *build-report*
+*build*report*
+*BUILD*REPORT*
 build-reports/
 build_reports/
+build-report/
+build_report/
+*.build-report.*
+*.build_report.*
 WAVE_REPORT*
 wave_report*
 wave-report*
 *WAVE_REPORT*
 *wave_report*
 *wave-report*
+*wave*report*
+*WAVE*REPORT*
 wave-reports/
 wave_reports/
+wave-report/
+wave_report/
+docs/reports/
 BRANCH_REPORT*
 branch_report*
 branch-report*
