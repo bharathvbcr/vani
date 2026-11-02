@@ -260,10 +260,16 @@ function setSelect(el: HTMLSelectElement, values: string[]): { ok: boolean; part
     const want = new Set(wanted);
     const o = Array.from(el.options).find(x => want.has(normalizeLabel(x.text)));
     if (!o) return { ok: false, partial: false };
-    el.value = o.value;
-    fire(el, "input"); fire(el, "change");
-    // The assignment is not the result: a setter or change handler can put another option back.
-    const kept = el.value === o.value && normalizeLabel(selectedText(el)) === normalizeLabel(o.text);
+    // Captured before the events: a handler can rewrite the option's text and still leave its value.
+    const label = normalizeLabel(o.text);
+    const value = o.value;
+    try {
+      el.value = value;
+      fire(el, "input"); fire(el, "change");
+    } catch {
+      return { ok: false, partial: false };
+    }
+    const kept = el.value === value && normalizeLabel(selectedText(el)) === label;
     return { ok: kept, partial: false };
   }
   const options = Array.from(el.options);
@@ -385,20 +391,23 @@ async function driveCombo(trigger: HTMLElement, pick: (options: string[]) => str
     await waitFor(() => (target = choose()) !== null, 900, root);
   }
   if (!target) return giveUp();
-  const want = normalizeLabel(txt(target));
+  const chosenText = txt(target);
+  const want = normalizeLabel(chosenText);
+  const wantDigits = codeDigits(chosenText);
   const icon = iconSignature(target);
   realClick(target);
   let verdict: "ok" | "check" | null = null;
   // What the widget shows must be the chosen option. A longer or shorter label that merely
-  // overlaps it is a different option. A box that shows only a dialling code ("+9") could be any
-  // option that shares it: the flag beside it must be the chosen option's flag, and with no flag
-  // to compare the fill is only one to review.
+  // overlaps it is a different option. A box that shows only a dialling code ("+9", "(+9)") can
+  // stand for the option only when those digits are the option's own, read before the click.
+  // The flag beside it must then be the chosen option's flag; with no flag the fill is a review.
+  // A different code, or a code on an option that has none, is not that option.
   const judge = (): "ok" | "check" | null => {
     for (const v of readWidgetValue(trigger)) {
       const n = normalizeLabel(v);
       if (n === "") continue;
       if (n === want) return "ok";
-      if (!dialCodeOnly(v)) continue;
+      if (!dialCodeOnly(v) || wantDigits === "" || codeDigits(v) !== wantDigits) continue;
       const shownIcon = widgetValueIcon(trigger);
       if (icon && shownIcon) return icon === shownIcon ? "ok" : null;
       return "check";
