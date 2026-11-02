@@ -39,6 +39,13 @@ func waitDone(_ jobs: AgentJobs, _ id: String, file: StaticString = #filePath, l
 }
 
 final class AgentTests: XCTestCase {
+    override func tearDown() {
+        let leaked = XPCAgentClient.replyWaitHook.wait != nil
+        XPCAgentClient.replyWaitHook.wait = nil
+        XCTAssertFalse(leaked, "replyWaitHook leaked past the test")
+        super.tearDown()
+    }
+
     func testJobRunsOnceAndItsResultIsHandedOutOnce() throws {
         let jobs = AgentJobs { kind, req in Data(#"{"kind":"\#(kind.rawValue)","n":\#(req.count)}"#.utf8) }
         let s = jobs.start(kind: "suggest", request: Data(#"{"fields":[]}"#.utf8))
@@ -223,5 +230,29 @@ final class AgentTests: XCTestCase {
             XPCAgentClient.callTimeout,
         ])
         XCTAssertLessThan(Date().timeIntervalSince(started), 2, "the hook must not wait out either budget")
+    }
+
+    /// ingest stays on its own budget. find and mark stay on the short hop. The hook is cleared on the way out.
+    func testIngestKeepsItsBudgetAndTheHookDoesNotLeak() {
+        XCTAssertNil(XPCAgentClient.replyWaitHook.wait)
+        var seen: [TimeInterval] = []
+        XPCAgentClient.replyWaitHook.wait = { _, timeout in
+            seen.append(timeout)
+            return .timedOut
+        }
+        defer { XPCAgentClient.replyWaitHook.wait = nil }
+        let client = XPCAgentClient(serviceName: "\(AppGroup.identifier).budget-probe-\(UUID().uuidString)")
+        XCTAssertThrowsError(try client.ingest(payload: Data()))
+        XCTAssertThrowsError(try client.find(url: "https://example.test/jobs/1"))
+        XCTAssertThrowsError(try client.markApplied(key: "k"))
+        XCTAssertEqual(client.start(kind: "suggest", request: Data("{}".utf8))["code"] as? String, "agent")
+        XCTAssertEqual(seen, [
+            XPCAgentClient.ingestCallTimeout,
+            XPCAgentClient.callTimeout,
+            XPCAgentClient.callTimeout,
+            XPCAgentClient.jobCallTimeout,
+        ])
+        XCTAssertEqual(XPCAgentClient.ingestCallTimeout, JobsClient.ingestTimeout + 5)
+        XCTAssertNotEqual(XPCAgentClient.ingestCallTimeout, XPCAgentClient.jobCallTimeout)
     }
 }
