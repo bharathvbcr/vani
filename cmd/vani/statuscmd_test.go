@@ -624,15 +624,16 @@ func TestStatusJSONUnreadableRunRecordIsUnknown(t *testing.T) {
 	}
 }
 
-// Not being able to write the record must not fail the run: its work is in the
-// ledger. The failure is on stderr.
-func TestRunRecordWriteFailureDoesNotFailTheRun(t *testing.T) {
+// Not being able to write last.json fails the run. The pipeline's work is in
+// the ledger, and the failure is on stderr, but a finished record that never
+// landed must not exit 0.
+func TestRunRecordWriteFailureFailsTheRun(t *testing.T) {
 	_, stateDir := setup(t)
 	mustCode(t, 0, "init")
 	wire(t, fixture(), &fakeNotifier{}, nil)
 	writeStateFile(t, stateDir, "runs", "a file where the runs directory should be")
-	_, e := mustCode(t, 0, "run-once")
-	if !strings.Contains(e, "could not record the run") {
+	_, e := mustCode(t, 1, "run-once")
+	if !strings.Contains(e, "could not record the run") || !strings.Contains(e, "could not save the finished run record") {
 		t.Errorf("stderr %q", e)
 	}
 }

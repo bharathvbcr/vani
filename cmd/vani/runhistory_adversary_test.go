@@ -848,10 +848,12 @@ func TestLastJSONFailureOversizedIsNotInvented(t *testing.T) {
 	}
 }
 
-// History that cannot be written is a warning on the real run path. The run
-// still exits 0, and a finished last.json that could not be flushed is not
-// replaced. Nothing is written in the working directory.
-func TestHistoryWriteFailureDoesNotFailTheRun(t *testing.T) {
+// Flushing the previous finished record is what lets last.json be replaced.
+// When that flush cannot write, last.json stays and the run exits 1: the
+// finished record was not saved. A history failure after last.json itself was
+// written is still only a warning (TestRunOnceJSONFinishedRecordSave). Nothing
+// is written in the working directory.
+func TestHistoryFlushFailureFailsTheRunWithoutReplacingLast(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	_, stateDir := setup(t)
@@ -869,8 +871,8 @@ func TestHistoryWriteFailureDoesNotFailTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeStateFile(t, stateDir, filepath.Join(runRecordDir, runHistoryDir), "not-a-directory")
-	_, stderr := mustCode(t, 0, "run-once")
-	if !warningKeepsHistoryError(stderr) {
+	_, stderr := mustCode(t, 1, "run-once")
+	if !warningKeepsHistoryError(stderr) || !strings.Contains(stderr, "could not save the finished run record") {
 		t.Fatalf("stderr: %q", stderr)
 	}
 	after, err := os.ReadFile(runRecordPath(stateDir))

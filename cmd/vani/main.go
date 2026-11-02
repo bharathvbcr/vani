@@ -333,6 +333,11 @@ type env struct {
 	// reloadConfig asks it whether the file was replaced. Nil outside
 	// `vani daemon`, or when the identity could not be recorded: no check.
 	binary *binWatch
+
+	// recordWriter writes runs/last.json. Nil calls writeRunRecord. A test
+	// sets it so the running write can succeed and the finished write can
+	// fail. Nil is the real writer, never a writer that drops the error.
+	recordWriter func(stateDir string, r runRecord) error
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,
