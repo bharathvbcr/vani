@@ -167,27 +167,40 @@ public enum SameQuestion {
     /// trusts no caller, then the helper. Never an error string for a reading that could not be had.
     public static func agentReply(a: String, b: String, helper: SameQuestionBackend) -> (reply: Data?, error: String?) {
         guard let checked = labels(a: a, b: b) else { return (nil, "not two labels of 1 to \(maxLabelScalars) characters") }
-        // Suggest's skip is before the helper. `labels` flattens format characters into spaces, which
-        // would split a word folds() joins, so the original strings are checked too.
-        let object = preModelSkip(rawA: a, rawB: b, labels: checked) ?? helper.compare(checked)
+        // Suggest's skip reads the page strings only. `labels()` drops a leading or trailing C0/C1
+        // control, and that stripped copy is not a second vote: Go's Guard still sees the control.
+        if let skipped = preModelSkip(rawA: a, rawB: b) {
+            guard let data = try? JSONSerialization.data(withJSONObject: skipped) else { return (nil, "the reply could not be encoded") }
+            return (data, nil)
+        }
+        let object = helper.compare(compareLabels(rawA: a, rawB: b, flat: checked))
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return (nil, "the reply could not be encoded") }
         return (data, nil)
     }
 
-    /// `unavailable`/`skipped` when either label is one suggest would not send to a model, else nil.
+    /// `unavailable`/`skipped` when either page label is one suggest would not send to a model, else nil.
+    /// This is `SuggestSkip.applies` on those strings only. The `labels()` copy is not consulted:
+    /// dropping a control can turn "\u{0001}White" into "White", which Guard does not pin.
     static func preModelSkip(_ labels: Labels) -> [String: Any]? {
-        preModelSkip(rawA: labels.a, rawB: labels.b, labels: labels)
-    }
-
-    /// `rawA`/`rawB` are the page labels before `labels()` turns format characters into spaces.
-    /// Folds joins those characters; the flattened pair is checked as well, since that is what a
-    /// direct caller of `FMHelper` holds. Either string on either side is enough.
-    static func preModelSkip(rawA: String, rawB: String, labels: Labels) -> [String: Any]? {
-        if SuggestSkip.applies(rawA) || SuggestSkip.applies(rawB)
-            || SuggestSkip.applies(labels.a) || SuggestSkip.applies(labels.b) {
+        if SuggestSkip.applies(labels.a) || SuggestSkip.applies(labels.b) {
             return unavailable("skipped")
         }
         return nil
+    }
+
+    static func preModelSkip(rawA: String, rawB: String) -> [String: Any]? {
+        preModelSkip(Labels(a: rawA, b: rawB))
+    }
+
+    /// What `compare` is given. Normally the flattened pair, so a saved answer's label has no
+    /// leading space and no control. When flattening itself is what would make `applies` true,
+    /// pass the page strings: a downstream `FMHelper` judges its argument, and must not skip a
+    /// label Guard leaves alone. The prompt is flattened inside `FMHelper` after that judgment.
+    static func compareLabels(rawA: String, rawB: String, flat: Labels) -> Labels {
+        if SuggestSkip.applies(flat.a) || SuggestSkip.applies(flat.b) {
+            return Labels(a: rawA, b: rawB)
+        }
+        return flat
     }
 }
 
@@ -228,8 +241,11 @@ public struct FMHelper: SameQuestionBackend {
         if let skipped = SameQuestion.preModelSkip(labels) { return skipped }
         // Absent or not executable: nothing is started and the answer is immediate.
         guard Self.runnable(binary) else { return SameQuestion.unavailable("no_binary") }
+        // The skip already ran on the caller's strings. The prompt still has no control character
+        // and no line break, which is what `labels()` is for.
+        let prompt = SameQuestion.labels(a: labels.a, b: labels.b) ?? labels
         let outcome = VaniProcess.run(binary, arguments: [], environment: ["HOME": NSHomeDirectory()],
-                                      input: SameQuestion.helperRequest(labels), timeout: seconds,
+                                      input: SameQuestion.helperRequest(prompt), timeout: seconds,
                                       maxOutputBytes: SameQuestion.maxHelperReplyBytes)
         return SameQuestion.reply(outcome: outcome)
     }

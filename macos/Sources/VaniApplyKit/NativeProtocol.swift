@@ -226,10 +226,10 @@ public enum NativeProtocol {
             guard let backend = sameQuestion ?? (agent as? SameQuestionBackend) else {
                 return SameQuestion.unavailable("unsupported")
             }
-            if let skipped = SameQuestion.preModelSkip(rawA: req["a"] as? String ?? "",
-                                                       rawB: req["b"] as? String ?? "",
-                                                       labels: labels) { return skipped }
-            return backend.compare(labels)
+            let rawA = req["a"] as? String ?? ""
+            let rawB = req["b"] as? String ?? ""
+            if let skipped = SameQuestion.preModelSkip(rawA: rawA, rawB: rawB) { return skipped }
+            return backend.compare(SameQuestion.compareLabels(rawA: rawA, rawB: rawB, flat: labels))
         case "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "resumeOpen":
             return resumeOp(op, req, store: store, source: source, openResume: openResume)
         case "resumeOpenData":
