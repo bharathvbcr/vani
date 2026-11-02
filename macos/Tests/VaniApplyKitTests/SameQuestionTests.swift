@@ -259,6 +259,114 @@ final class SameQuestionTests: XCTestCase {
         XCTAssertEqual(viaAgent.calls.count, 1, "an explicit backend is not shadowed by the agent")
     }
 
+    /// Suggest's pre-model skip: a label `vani suggest` would not send to a model must not start the
+    /// helper. `skipped` is the closed detail for that. An empty label stays `bad_request`, not a skip.
+    func testSuggestSkipDoesNotStartTheHelper() throws {
+        let store = BankStore(directory: try tempDir(self))
+        func asked(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws -> Bool {
+            let spy = Spy()
+            let reply = try handle(["op": "sameQuestion", "a": a, "b": b], store: store, backend: spy)
+            XCTAssertEqual(reply["reading"] as? String, "unavailable", file: file, line: line)
+            XCTAssertEqual(reply["detail"] as? String, "skipped", file: file, line: line)
+            XCTAssertNil(reply["value"], file: file, line: line)
+            XCTAssertFalse(String(describing: reply).contains(a) || (b.count > 2 && String(describing: reply).contains(b)),
+                           "the reply must not echo a label", file: file, line: line)
+            return spy.calls.isEmpty
+        }
+        func started(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws {
+            let spy = Spy(reply: ["reading": "answered", "value": "different"])
+            let reply = try handle(["op": "sameQuestion", "a": a, "b": b], store: store, backend: spy)
+            XCTAssertEqual(reply as NSDictionary, ["reading": "answered", "value": "different"], file: file, line: line)
+            XCTAssertEqual(spy.calls.count, 1, file: file, line: line)
+            let agentSpy = Spy()
+            let agent = SQ.agentReply(a: a, b: b, helper: agentSpy)
+            XCTAssertNil(agent.error, file: file, line: line)
+            XCTAssertEqual(agentSpy.calls.count, 1, "the agent must reach the helper", file: file, line: line)
+        }
+
+        for (a, b) in [
+            ("Visa sponsorship", "Favorite color"),
+            ("Favorite color", "Visa sponsorship"),
+            ("Gender", "Years of experience"),
+            ("I agree to the terms", "LinkedIn profile"),
+            ("Visa\u{00A0}sponsorship", "Favorite color"),
+            ("Visa\u{200B}sponsorship", "Favorite color"),
+            ("\u{FF36}\u{FF49}\u{FF53}\u{FF41} sponsorship", "Favorite color"),
+            ("citi&lt;b&gt;zenship", "Favorite color"),
+            ("authoris\u{0435}d to work", "Favorite color"),
+            ("Are you on OPT or CPT?", "Favorite color"),
+            ("Are you a citiz\u{00E9}n?", "Favorite color"),
+            ("citi&shy;zenship", "Favorite color"),
+            ("Visa&nbsp;sponsorship", "Favorite color"),
+            ("Are you 18 or older?", "Favorite color"),
+            ("Are you a citi<b>zen</b>?", "Favorite color"),
+            ("Are you a \u{24B8}itizen?", "Favorite color"),
+            ("Are you a citi\u{2060}zen?", "Favorite color"),
+            ("citi\u{00AD}zen", "Favorite color"),
+            ("White", "Favorite color"),
+            ("workauthorization", "Favorite color"),
+            ("Describe your visa sponsorship history", "Favorite color"),
+        ] {
+            XCTAssertTrue(try asked(a, b), "\(a) / \(b)")
+        }
+        let emptySpy = Spy()
+        let empty = try handle(["op": "sameQuestion", "a": "", "b": "Visa sponsorship"], store: store, backend: emptySpy)
+        XCTAssertEqual(empty["code"] as? String, "bad_request")
+        XCTAssertNil(empty["reading"])
+        XCTAssertTrue(emptySpy.calls.isEmpty)
+
+        try started("Years of experience", "Favorite color")
+        try started("Describe a time you did not agree with the plan", "Favorite color")
+        try started("Favorite color", "Describe a time you did not agree with the plan")
+        try started("Date of birth", "Favorite color")
+        try started("Opt in to receive job alerts", "Link to a white paper you wrote")
+        try started("Cyrillic \u{0430} and Latin a apart", "Favorite color")
+        try started("R\u{00E9}sum\u{00E9} summary", "Favorite color")
+        try started("Tell us about the H-2 pressure sensor you built", "Favorite color")
+        try started("Do you have 10 years of experience?", "Favorite color")
+        try started("passport", "Favorite color")
+        try started("social security", "Favorite color")
+        try started("Describe a blackbox testing project", "Favorite color")
+        // Four entity layers stay undecoded, so this is not a citizenship label.
+        try started("citi&amp;amp;amp;amp;lt;b&amp;amp;amp;amp;gt;zen", "Favorite color")
+
+        let agentSpy = Spy()
+        let skipped = SQ.agentReply(a: "Gender", b: "Years of experience", helper: agentSpy)
+        XCTAssertNil(skipped.error)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(skipped.reply)) as? [String: Any])
+        XCTAssertEqual(object as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertTrue(agentSpy.calls.isEmpty)
+        XCTAssertEqual(SQ.checked(object) as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertTrue(SQ.opDetails.contains("skipped"))
+
+        let marker = try tempDir(self).appendingPathComponent("launched")
+        let binary = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"same\"}'")
+        let direct = try compare(FMHelper(binary: binary.url), "I agree to the terms", "Years of experience")
+        XCTAssertEqual(direct as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "vani-fm must not be executed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: binary.request.path), "stdin must not be written")
+
+        let ran = try fakeHelper(#"echo '{"v":1,"reading":"answered","value":"different"}'"#)
+        let born = try compare(FMHelper(binary: ran.url), "Date of birth", "Favorite color")
+        XCTAssertEqual(born as NSDictionary, ["reading": "answered", "value": "different"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ran.request.path), "a broader-only label still starts vani-fm")
+        let essay = try compare(FMHelper(binary: ran.url), "Describe a time you did not agree with the plan", "LinkedIn profile")
+        XCTAssertEqual(essay as NSDictionary, ["reading": "answered", "value": "different"])
+
+        // labels() turns a format character into a space. FMHelper is also given the unflattened
+        // pair, which only matches after folds drops the character.
+        let joined = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"same\"}'")
+        let directLabels = SQ.Labels(a: "citi\u{00AD}zen", b: "Favorite color")
+        XCTAssertEqual(FMHelper(binary: joined.url).compare(directLabels) as NSDictionary,
+                       ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        let agentJoined = Spy()
+        let joinedReply = SQ.agentReply(a: "citi\u{00AD}zen", b: "Favorite color", helper: agentJoined)
+        XCTAssertEqual(try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(joinedReply.reply)) as? [String: Any]) as NSDictionary,
+                       ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertTrue(agentJoined.calls.isEmpty)
+    }
+
     func testReadingsCarryNoLabelText() throws {
         let store = BankStore(directory: try tempDir(self))
         for helperReply in ["unavailable", "failed", "refused"] {
