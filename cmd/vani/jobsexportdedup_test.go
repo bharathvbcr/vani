@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +13,9 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/exportlog"
+	"github.com/bharathvbcr/Vani/internal/jobview"
+	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -276,6 +283,218 @@ func TestJobsExportRecordFailures(t *testing.T) {
 	}
 	if rows := exportRows(t, out); len(rows) != 3 {
 		t.Fatalf("rows %v", rows)
+	}
+}
+
+// limitSeen is the limits jobsExport passed to the list builder.
+type limitSeen struct {
+	limits []int
+}
+
+func (s *limitSeen) install(t *testing.T) {
+	t.Helper()
+	old := jobsExportList
+	t.Cleanup(func() { jobsExportList = old })
+	jobsExportList = func(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobview.Opts, rk jobview.Ranker, info jobview.InsightInfo, kw, limit int) jobview.List {
+		s.limits = append(s.limits, limit)
+		return jobview.BuildList(snap, m, o, rk, info, kw, limit)
+	}
+}
+
+func (s *limitSeen) last(t *testing.T) int {
+	t.Helper()
+	if len(s.limits) == 0 {
+		t.Fatal("jobs export built no list")
+	}
+	return s.limits[len(s.limits)-1]
+}
+
+func exportReply(t *testing.T, code int, args ...string) jobsExportJSON {
+	t.Helper()
+	got, o, stderr := do(t, append([]string{"jobs", "export", "--json"}, args...)...)
+	if got != code {
+		t.Fatalf("exit %d, want %d\nstderr: %s\nstdout: %s", got, code, stderr, o)
+	}
+	var r jobsExportJSON
+	if err := json.Unmarshal([]byte(o), &r); err != nil {
+		t.Fatalf("reply %q: %v", o, err)
+	}
+	return r
+}
+
+// Ask and skip with a non-empty export record stay inside the Jobs page.
+// The default ask path omits --already-exported, which is what the Mac export uses.
+// Row equality of that prefix matches the old whole-ledger call, so the recorded
+// limit is what fails on math.MaxInt.
+func TestJobsExportAskSkipPageBound(t *testing.T) {
+	_, state := setup(t)
+	seedExportJobs(t, state, 7)
+	var seen limitSeen
+	seen.install(t)
+
+	// An empty record keeps --top. The page bound would be wrong here.
+	empty := filepath.Join(t.TempDir(), "empty.xlsx")
+	if r := exportReply(t, 0, "--dry-run", "--out", empty); r.Rows != 7 || r.AlreadyExported != 0 {
+		t.Fatalf("empty ask %+v", r)
+	}
+	if lim := seen.last(t); lim == math.MaxInt || lim == defaultJobsLimit || lim != defaultExportTop {
+		t.Fatalf("empty log limit %d, want --top %d", lim, defaultExportTop)
+	}
+	absent(t, empty)
+
+	first := filepath.Join(t.TempDir(), "first.xlsx")
+	if r := exportReply(t, 0, "--top", "1", "--out", first); r.Rows != 1 || r.AlreadyExported != 0 {
+		t.Fatalf("first %+v", r)
+	}
+	if len(readRecord(t, state).Jobs) == 0 {
+		t.Fatal("export record is empty")
+	}
+
+	// Default ask, flag omitted: refuse outside a terminal, and do not scan MaxInt.
+	ask := filepath.Join(t.TempDir(), "ask.xlsx")
+	r := exportReply(t, 1, "--out", ask)
+	if r.Code != codeAlreadyExported || r.Rows != 7 {
+		t.Fatalf("ask %+v", r)
+	}
+	if lim := seen.last(t); lim == math.MaxInt || lim != defaultJobsLimit {
+		t.Fatalf("ask limit %d, want page bound %d", lim, defaultJobsLimit)
+	}
+	absent(t, ask)
+
+	order := listKeys(t, "--limit", "7")
+	skip := filepath.Join(t.TempDir(), "skip.xlsx")
+	r = exportReply(t, 0, "--already-exported", "skip", "--top", "3", "--out", skip)
+	if lim := seen.last(t); lim == math.MaxInt || lim != defaultJobsLimit {
+		t.Fatalf("skip limit %d, want page bound %d", lim, defaultJobsLimit)
+	}
+	if r.Rows != 3 || r.Skipped != 1 || !slices.Equal(rowKeys(t, skip), order[1:4]) {
+		t.Fatalf("skip %+v keys %v, want %v", r, rowKeys(t, skip), order[1:4])
+	}
+
+	// include keeps --top, which is not the page bound.
+	inc := filepath.Join(t.TempDir(), "inc.xlsx")
+	r = exportReply(t, 0, "--dry-run", "--already-exported", "include", "--top", "4", "--out", inc)
+	if lim := seen.last(t); lim == math.MaxInt || lim == defaultJobsLimit || lim != 4 {
+		t.Fatalf("include limit %d, want --top 4", lim)
+	}
+	if r.Rows != 4 {
+		t.Fatalf("include %+v", r)
+	}
+	absent(t, inc)
+
+	// --top above the page raises the bound to --top, not to the whole ledger.
+	raised := filepath.Join(t.TempDir(), "raised.xlsx")
+	r = exportReply(t, 1, "--top", "1200", "--out", raised)
+	if r.Code != codeAlreadyExported {
+		t.Fatalf("raised %+v", r)
+	}
+	if lim := seen.last(t); lim == math.MaxInt || lim != 1200 {
+		t.Fatalf("raised limit %d, want 1200", lim)
+	}
+	absent(t, raised)
+
+	capped := filepath.Join(t.TempDir(), "capped.xlsx")
+	r = exportReply(t, 1, "--top", fmt.Sprint(maxJobsLimit), "--out", capped)
+	if lim := seen.last(t); lim == math.MaxInt || lim != maxJobsLimit {
+		t.Fatalf("top at max limit %d, want %d", lim, maxJobsLimit)
+	}
+	absent(t, capped)
+
+	// Keys still need every selected job, even when the record is non-empty.
+	withKeys(t, "gh:co4:4\ngh:co0:0\n")
+	keysOut := filepath.Join(t.TempDir(), "keys.xlsx")
+	r = exportReply(t, 0, "--keys-stdin", "--dry-run", "--out", keysOut)
+	if lim := seen.last(t); lim != math.MaxInt {
+		t.Fatalf("keys limit %d, want %d", lim, math.MaxInt)
+	}
+	if r.Rows != 2 || r.Total != 2 {
+		t.Fatalf("keys %+v", r)
+	}
+	absent(t, keysOut)
+
+	// Past the hard cap is still usage, and it does not build a list.
+	n := len(seen.limits)
+	over := filepath.Join(t.TempDir(), "over.xlsx")
+	code, _, stderr := do(t, "jobs", "export", "--top", fmt.Sprint(maxJobsLimit+1), "--out", over)
+	if code != 2 || !strings.Contains(stderr, fmt.Sprintf("must be 1-%d", maxJobsLimit)) {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if len(seen.limits) != n {
+		t.Fatalf("usage error built a list: %v", seen.limits)
+	}
+	absent(t, over)
+}
+
+// BuildList still selects the whole snapshot, so ns/op may grow with the ledger; the flat metrics are the limit and the rows kept.
+func BenchmarkJobsExportAskPageBound(b *testing.B) {
+	for _, n := range []int{defaultJobsLimit, 4 * defaultJobsLimit} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			dir := b.TempDir()
+			state := filepath.Join(dir, "state")
+			b.Setenv("VANI_CONFIG", filepath.Join(dir, "config.json"))
+			b.Setenv("VANI_STATE_DIR", state)
+			seedExportBench(b, state, n)
+
+			old := jobsExportList
+			b.Cleanup(func() { jobsExportList = old })
+			var limit int
+			jobsExportList = func(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *jobview.Opts, rk jobview.Ranker, info jobview.InsightInfo, kw, got int) jobview.List {
+				limit = got
+				return jobview.BuildList(snap, m, o, rk, info, kw, got)
+			}
+
+			var setupOut, setupErr bytes.Buffer
+			code := run([]string{"jobs", "export", "--json", "--top", "1", "--out", filepath.Join(dir, "first.xlsx")}, &setupOut, &setupErr)
+			if code != 0 {
+				b.Fatalf("setup export exit %d\n%s\n%s", code, setupOut.String(), setupErr.String())
+			}
+
+			b.ResetTimer()
+			var rows int
+			for i := 0; i < b.N; i++ {
+				var o, e bytes.Buffer
+				code = run([]string{"jobs", "export", "--json", "--dry-run", "--out", filepath.Join(dir, "ask.xlsx")}, &o, &e)
+				if code != 0 {
+					b.Fatalf("ask exit %d\n%s\n%s", code, o.String(), e.String())
+				}
+				var r jobsExportJSON
+				if err := json.Unmarshal(o.Bytes(), &r); err != nil {
+					b.Fatal(err)
+				}
+				rows = r.Rows
+			}
+			if limit != defaultJobsLimit || rows != defaultExportTop {
+				b.Fatalf("limit %d rows %d, want %d and %d", limit, rows, defaultJobsLimit, defaultExportTop)
+			}
+			b.ReportMetric(float64(limit), "limit")
+			b.ReportMetric(float64(rows), "rows")
+		})
+	}
+}
+
+func seedExportBench(b *testing.B, state string, n int) {
+	b.Helper()
+	l, err := ledger.Open(filepath.Join(state, "ledger"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { l.Close() })
+	for i := 0; i < n; i++ {
+		p := posting.Posting{
+			Key: posting.Key(fmt.Sprintf("gh:co%d:%d", i, i)), ATS: "gh",
+			Company: fmt.Sprintf("Co%d", i), Title: fmt.Sprintf("Engineer %d", i),
+			URL: fmt.Sprintf("https://boards.test/%d", i), Description: "Build things.",
+		}
+		ann := map[string]string{
+			ledger.AnnExplanation:     "Fits: Inference serving and runtimes (88%).",
+			"triage.role_fit":         "strong_fit",
+			"triage.role_fit.reading": "answered",
+			ledger.AnnRank:            "90",
+		}
+		ev := ledger.Event{V: 1, At: jobsT0, Key: p.Key, Status: posting.Digested, Posting: &p, Annotations: ann}
+		if err := l.Append(context.Background(), ev); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
