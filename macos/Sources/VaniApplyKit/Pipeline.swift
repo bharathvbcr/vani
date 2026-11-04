@@ -276,6 +276,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var rateLimited: Int
             public var skipped: Int
             public var listed: Int
+            /// New ledger rows the boards already finished wrote. Nil when this
+            /// snapshot did not report it; 0 is a real zero.
+            public var added: Int?
             public var ats: String
             public var token: String
             public var company: String
@@ -288,7 +291,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var updatedAt: Date?
 
             enum CodingKeys: String, CodingKey {
-                case ok, reason, stage, phase, index, total, done, read, failed, skipped, listed
+                case ok, reason, stage, phase, index, total, done, read, failed, skipped, listed, added
                 case ats, token, company, outcome, attempted, limit, eligible
                 case rateLimited = "rate_limited"
                 case updatedAt = "updated_at"
@@ -296,7 +299,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
             public init(ok: Bool, reason: String? = nil, stage: String = "", phase: String = "",
                         index: Int = 0, total: Int = 0, done: Int = 0, read: Int = 0, failed: Int = 0,
-                        rateLimited: Int = 0, skipped: Int = 0, listed: Int = 0,
+                        rateLimited: Int = 0, skipped: Int = 0, listed: Int = 0, added: Int? = nil,
                         ats: String = "", token: String = "", company: String = "", outcome: String = "",
                         attempted: Int = 0, limit: Int = 0, eligible: Int = 0, updatedAt: Date? = nil) {
                 self.ok = ok
@@ -311,6 +314,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 self.rateLimited = rateLimited
                 self.skipped = skipped
                 self.listed = listed
+                self.added = added
                 self.ats = ats
                 self.token = token
                 self.company = company
@@ -335,6 +339,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 rateLimited = try c.decodeIfPresent(Int.self, forKey: .rateLimited) ?? 0
                 skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
                 listed = try c.decodeIfPresent(Int.self, forKey: .listed) ?? 0
+                added = try c.decodeIfPresent(Int.self, forKey: .added)
                 ats = try c.decodeIfPresent(String.self, forKey: .ats) ?? ""
                 token = try c.decodeIfPresent(String.self, forKey: .token) ?? ""
                 company = try c.decodeIfPresent(String.self, forKey: .company) ?? ""
@@ -1009,9 +1014,17 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 public var payError: String?
                 /// Details that answered 404 under a listing that succeeded.
                 public var gone: Int
+                /// `reconcile.new`: new ledger rows this board wrote. Nil when the
+                /// board was not read. A read board whose key was omitted wrote 0.
+                public var reconcileNew: Int?
+
+                private struct ReconcileWire: Decodable {
+                    var new: Int?
+                    enum CodingKeys: String, CodingKey { case new }
+                }
 
                 enum CodingKeys: String, CodingKey {
-                    case ats, token, company, outcome, listed, error, deferred, gone
+                    case ats, token, company, outcome, listed, error, deferred, gone, reconcile
                     case payFailed = "pay_failed"
                     case paySkipped = "pay_skipped"
                     case payError = "pay_error"
@@ -1030,10 +1043,16 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     paySkipped = try c.decodeIfPresent(Int.self, forKey: .paySkipped) ?? 0
                     payError = try c.decodeIfPresent(String.self, forKey: .payError)
                     gone = try c.decodeIfPresent(Int.self, forKey: .gone) ?? 0
+                    if let wire = try c.decodeIfPresent(ReconcileWire.self, forKey: .reconcile) {
+                        reconcileNew = wire.new ?? 0
+                    } else {
+                        reconcileNew = nil
+                    }
                 }
 
                 public init(ats: String, token: String, company: String? = nil, outcome: Outcome, listed: Int? = nil, error: String? = nil,
-                            deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, payError: String? = nil, gone: Int = 0) {
+                            deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, payError: String? = nil, gone: Int = 0,
+                            reconcileNew: Int? = nil) {
                     self.ats = ats
                     self.token = token
                     self.company = company
@@ -1045,6 +1064,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     self.paySkipped = paySkipped
                     self.payError = payError
                     self.gone = gone
+                    self.reconcileNew = reconcileNew
                 }
 
                 /// The board and its error as one line, "ats:token (Company): error": what
@@ -1096,9 +1116,12 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var items: [Item]
             /// Tried boards vani left out of `items`.
             public var unrecorded: Int
+            /// New ledger rows every tried board wrote, including ones `items`
+            /// left out. Nil when this vani did not report it; 0 is a real zero.
+            public var added: Int?
 
             enum CodingKeys: String, CodingKey {
-                case configured, read, failed, skipped, listed, items, unrecorded, deferred, gone
+                case configured, read, failed, skipped, listed, items, unrecorded, deferred, gone, added
                 case notReached = "not_reached"
                 case rateLimited = "rate_limited"
                 case payFailed = "pay_failed"
@@ -1122,10 +1145,11 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 payError = try c.decodeIfPresent(String.self, forKey: .payError)
                 items = try c.decodeIfPresent([Item].self, forKey: .items) ?? []
                 unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
+                added = try c.decodeIfPresent(Int.self, forKey: .added)
             }
 
             public init(configured: Int, read: Int, failed: Int = 0, rateLimited: Int = 0, skipped: Int = 0, notReached: Int = 0,
-                        listed: Int, items: [Item] = [], unrecorded: Int = 0,
+                        listed: Int, items: [Item] = [], unrecorded: Int = 0, added: Int? = nil,
                         deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, gone: Int = 0, payError: String? = nil) {
                 self.configured = configured
                 self.read = read
@@ -1136,6 +1160,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 self.listed = listed
                 self.items = items
                 self.unrecorded = unrecorded
+                self.added = added
                 self.deferred = deferred
                 self.payFailed = payFailed
                 self.paySkipped = paySkipped

@@ -222,6 +222,14 @@ final class HomeOverviewTests: XCTestCase {
         XCTAssertTrue(HomeOverview.runHeadline(.init(ok: false, reason: "torn\nfile", state: .unknown), now: now).hasPrefix("Last run unreadable: torn file"))
         let future = PipelineStatus.LastRun(state: .ok, finishedAt: now.addingTimeInterval(9999))
         XCTAssertEqual(HomeOverview.runHeadline(future, now: now), "Succeeded under 2 min ago", "clock skew must not print a negative age")
+        let boards = PipelineStatus.LastRun.Boards(configured: 5, read: 4, listed: 10)
+        let counted = PipelineStatus.LastRun(state: .ok, finishedAt: now.addingTimeInterval(-3 * 3600),
+                                             postingsBefore: 780, postingsAfter: 812, boards: boards)
+        XCTAssertEqual(HomeOverview.runHeadline(counted, now: now), "Succeeded 3 h ago · +32 postings",
+                       "a missing added count keeps the ledger line")
+        let board = try XCTUnwrap(PipelineBoard.present(counted))
+        XCTAssertEqual(board.counts.first { $0.id == "added" }?.value, .unavailable)
+        XCTAssertEqual(board.ledgerLine, "+32 postings")
     }
 
     // MARK: activity

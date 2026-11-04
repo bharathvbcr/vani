@@ -19,7 +19,9 @@ struct PipelineView: View {
                 if let err = pipeline.runError {
                     ErrorBanner(title: "The manual run could not start", message: err, stale: false)
                 }
-                if pipeline.startingRun || pipeline.runInProgress || pipeline.waitingForDaemon {
+                if let s = pipeline.status, s.lastRun.state == .running, let board = PipelineBoard.present(s.lastRun) {
+                    PipelineBoardView(board: board, showsRunControls: true)
+                } else if pipeline.startingRun || pipeline.runInProgress || pipeline.waitingForDaemon {
                     RunningBanner()
                 }
                 if let s = pipeline.status {
@@ -540,10 +542,11 @@ private struct LastRunSection: View {
             } else if run.state == .never {
                 Row(label: "State", value: "No run recorded yet")
             } else {
-                Row(label: "State", value: stateText(run))
-                if run.state == .running, let progress = run.progress {
-                    Row(label: "Now", value: progress.nowText, verbatim: true)
+                if run.state != .running, let board = PipelineBoard.present(run) {
+                    PipelineBoardView(board: board)
+                        .padding(.bottom, 4)
                 }
+                Row(label: "State", value: stateText(run))
                 if let trigger = run.trigger {
                     Row(label: "Started by", value: triggerText(trigger) + (run.options?.summary.map { ": \($0)" } ?? ""))
                 }
@@ -563,8 +566,8 @@ private struct LastRunSection: View {
                 if let e = run.error, !e.isEmpty {
                     Row(label: run.stage.map { "Failed at \($0)" } ?? "Error", value: e)
                 }
-                if let boards = run.boards {
-                    BoardRows(boards: boards)
+                if let boards = run.boards, let fetch = boards.fetchSummary {
+                    Row(label: "Board fetches", value: fetchLine(boards, fetch), secondary: boards.payFailed == 0, verbatim: true)
                 }
                 if let adv = run.advance {
                     AdvanceRows(advance: adv)
@@ -655,6 +658,12 @@ private struct LastRunSection: View {
     private func duration(_ s: Double) -> String {
         s < 90 ? "\(Int(s.rounded())) s" : "\(Int((s / 60).rounded())) min"
     }
+
+    /// Pay and detail counts. The board list itself is the progress board.
+    private func fetchLine(_ boards: PipelineStatus.LastRun.Boards, _ fetch: String) -> String {
+        guard boards.payFailed > 0, let err = boards.payError, !err.isEmpty else { return fetch }
+        return fetch + ": " + PipelineStatus.bounded(err, max: 200)
+    }
 }
 
 /// Copy failures and the run's files. The failure text is vani's (`vani runs
@@ -726,55 +735,6 @@ private struct RunToolsRow: View {
         }
         .fixedSize()
         .help("Open or reveal the last manual run's log, the run record, and the kept history of earlier runs")
-    }
-}
-
-/// Which boards the run read, and why any was not: a board that fails to list
-/// leaves its postings as they were, so without this it looks like a quiet board.
-private struct BoardRows: View {
-    let boards: PipelineStatus.LastRun.Boards
-
-    var body: some View {
-        Row(label: "Boards", value: boards.summary)
-        if let o = boards.outcome {
-            Row(label: "", value: o, secondary: true)
-        }
-        if let fetch = boards.fetchSummary {
-            Row(label: "Board fetches", value: fetchLine(fetch), secondary: boards.payFailed == 0, verbatim: true)
-        }
-        ForEach(Array(boards.problems().enumerated()), id: \.offset) { _, line in
-            HStack(alignment: .firstTextBaseline) {
-                // Not a Spacer: see BackendErrorRows.
-                Color.clear.frame(width: 130, height: 1)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: "\(line.board): \(line.outcome)").fontWeight(.medium)
-                    if !line.error.isEmpty {
-                        Text(verbatim: line.error)
-                            .font(.callout.monospaced()).foregroundStyle(.secondary)
-                            .lineLimit(3).textSelection(.enabled)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-            .contextMenu {
-                // The same line vani's failure report prints for this board.
-                Button("Copy error") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(line.copyText, forType: .string)
-                }
-            }
-        }
-        if let more = boards.moreNote() {
-            Row(label: "", value: more, secondary: true)
-        }
-    }
-
-    /// The fetch counts, plus the pay error when a pay fetch failed. Built
-    /// outside `body` because a ViewBuilder cannot assign into a local.
-    private func fetchLine(_ fetch: String) -> String {
-        guard boards.payFailed > 0, let err = boards.payError, !err.isEmpty else { return fetch }
-        return fetch + ": " + PipelineStatus.bounded(err, max: 200)
     }
 }
 

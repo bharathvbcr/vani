@@ -500,6 +500,9 @@ private struct PipelineCard: View {
                         Text(HomeOverview.runHeadline(s.lastRun, now: now)).font(.callout).foregroundStyle(.secondary)
                     }
                 }
+                if let board = PipelineBoard.present(s.lastRun) {
+                    PipelineBoardView(board: board, compact: true)
+                }
                 ForEach(Array(issues.prefix(3).enumerated()), id: \.offset) { _, issue in
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: issue.severity == .problem ? "xmark.circle.fill" : "exclamationmark.triangle.fill")

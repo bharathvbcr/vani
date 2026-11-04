@@ -153,6 +153,9 @@ func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stag
 		rec.Stage = stage
 		rec.Error = runErrorText(err)
 		rec.Cause = runCause(err)
+		// A panic inside the report, before boards were stored, still has the
+		// snapshot. endLive has not deleted it yet.
+		e.fillBoardsFromSnapshot(rec)
 		finishLog()
 		e.saveRunRecord(*rec)
 		e.announceFailure(ctx, app, *rec)
@@ -161,6 +164,7 @@ func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stag
 	if app.RunReport != nil {
 		rec.runDetail = app.RunReport()
 	}
+	e.fillBoardsFromSnapshot(rec)
 	if app.Ledger != nil {
 		rec.CountsAfter = statusCounts(app.Ledger.All())
 	}

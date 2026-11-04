@@ -97,7 +97,7 @@ func TestListBoardsRecordsReadFailedAndSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rep.Configured != 5 || rep.Read != 2 || rep.Failed != 1 || rep.Skipped != 2 || rep.NotReached != 0 ||
-		rep.Listed != 2 || rep.Unrecorded != 0 || len(rep.Items) != 5 {
+		rep.Listed != 2 || rep.Unrecorded != 0 || len(rep.Items) != 5 || rep.Added == nil || *rep.Added != 2 {
 		t.Fatalf("totals: %+v", rep)
 	}
 	got := rep.Items
@@ -296,7 +296,7 @@ func TestBoardsReportIsBoundedForManyBoards(t *testing.T) {
 // No board configured: an empty report, not a nil list.
 func TestBoardsReportEmpty(t *testing.T) {
 	rep, err := listBoards(context.Background(), nil, nil, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, "")
-	if err != nil || rep.Configured != 0 || rep.Items == nil || len(rep.Items) != 0 {
+	if err != nil || rep.Configured != 0 || rep.Items == nil || len(rep.Items) != 0 || rep.Added == nil || *rep.Added != 0 {
 		t.Fatalf("report %+v, %v", rep, err)
 	}
 }
@@ -380,6 +380,10 @@ func TestListBoardsTicksTheBoardItIsReading(t *testing.T) {
 	if len(ticks) != len(want) {
 		t.Fatalf("ticks %d: %+v", len(ticks), ticks)
 	}
+	// The board in flight is not in the sum. After it is read, its new rows are.
+	if ticks[0].Added != 0 || ticks[2].Added != 2 || ticks[len(ticks)-1].Added != 2 {
+		t.Fatalf("added: %+v", ticks)
+	}
 	for i := range want {
 		if !tickSame(ticks[i], want[i]) {
 			t.Errorf("tick %d:\n got %+v\nwant %+v", i, ticks[i], want[i])
@@ -449,5 +453,66 @@ func TestListBoardsEmptyWatchlistNamesNoPortal(t *testing.T) {
 	ctx := withListingTick(context.Background(), func(tk listingTick) { ticks = append(ticks, tk) })
 	if _, err := listBoards(ctx, nil, nil, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, ""); err != nil || len(ticks) != 0 {
 		t.Fatalf("err %v ticks %+v", err, ticks)
+	}
+}
+
+// Added counts every tried board. Cutting Items by count or by bytes does not
+// change it, and a run that added nothing still writes 0.
+func TestBoardsReportAddedStaysExactWhenItemsAreCut(t *testing.T) {
+	n := maxRecordedBoards + 15
+	tried := make([]boardReport, 0, n+1)
+	for i := range n {
+		listed := 1
+		tried = append(tried, boardReport{ATS: "gh", Token: fmt.Sprint(i), Outcome: boardRead, Listed: &listed, Reconcile: &reconcileCounts{New: 3}})
+	}
+	tried = append(tried, boardReport{ATS: "gh", Token: "fail", Outcome: boardFailed, Error: "http 500"})
+	rep := boardsReportOf(len(tried), tried)
+	want := n * 3
+	if rep.Added == nil || *rep.Added != want || len(rep.Items) >= len(tried) {
+		t.Fatalf("added %v items %d of %d", rep.Added, len(rep.Items), len(tried))
+	}
+	kept := 0
+	for _, e := range rep.Items {
+		if e.Reconcile != nil {
+			kept += e.Reconcile.New
+		}
+	}
+	if kept == 0 || kept >= want {
+		t.Fatalf("kept new %d, want a real cut of %d", kept, want)
+	}
+
+	huge := strings.Repeat("<", maxBoardErrorRunes)
+	var wide []boardReport
+	for i := range 200 {
+		wide = append(wide, boardReport{ATS: "wd", Token: fmt.Sprintf("t%d", i), Outcome: boardFailed, Error: huge})
+	}
+	for i := range 10 {
+		listed := 2
+		wide = append(wide, boardReport{ATS: "gh", Token: fmt.Sprintf("r%d", i), Outcome: boardRead, Listed: &listed, Reconcile: &reconcileCounts{New: 5}})
+	}
+	rep = boardsReportOf(len(wide), wide)
+	if rep.Added == nil || *rep.Added != 50 {
+		t.Fatalf("byte-cut added %v", rep.Added)
+	}
+	kept = 0
+	for _, e := range rep.Items {
+		if e.Reconcile != nil {
+			kept += e.Reconcile.New
+		}
+		if e.Outcome == boardRead {
+			t.Fatalf("a read board was kept after the byte cut stopped: %+v", e)
+		}
+	}
+	if kept != 0 {
+		t.Fatalf("kept new %d from boards the byte cut dropped", kept)
+	}
+
+	zero := boardsReportOf(2, []boardReport{{ATS: "gh", Token: "a", Outcome: boardFailed}, {ATS: "gh", Token: "b", Outcome: boardRead, Reconcile: &reconcileCounts{New: 0}}})
+	if zero.Added == nil || *zero.Added != 0 {
+		t.Fatalf("zero %+v", zero.Added)
+	}
+	raw, err := json.Marshal(zero)
+	if err != nil || !strings.Contains(string(raw), `"added":0`) {
+		t.Fatalf("json %s %v", raw, err)
 	}
 }

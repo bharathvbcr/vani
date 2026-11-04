@@ -73,9 +73,13 @@ type runProgress struct {
 	RateLimited int       `json:"rate_limited,omitempty"`
 	Skipped     int       `json:"skipped,omitempty"`
 	Listed      int       `json:"listed,omitempty"`
-	ATS         string    `json:"ats,omitempty"`
-	Token       string    `json:"token,omitempty"`
-	Company     string    `json:"company,omitempty"`
+	// Added is how many new ledger rows the boards already finished wrote.
+	// A pointer so 0 is written and a missing key stays "not reported".
+	// Set on every listing snapshot, including the one before the first board.
+	Added   *int   `json:"added,omitempty"`
+	ATS     string `json:"ats,omitempty"`
+	Token   string `json:"token,omitempty"`
+	Company string `json:"company,omitempty"`
 	// Outcome is how the board named above finished. Set only when Phase is
 	// done: read, failed, rate_limited, or skipped. Empty while the board is
 	// still being read, so a failure is not shown as a successful read.
@@ -90,24 +94,26 @@ type runProgress struct {
 // facet carries no board name, so another run's portal is not shown as current.
 type progressFacet struct {
 	facet
-	Stage       string    `json:"stage,omitempty"`
-	Phase       string    `json:"phase,omitempty"`
-	Index       int       `json:"index,omitempty"`
-	Total       int       `json:"total,omitempty"`
-	Done        int       `json:"done,omitempty"`
-	Read        int       `json:"read,omitempty"`
-	Failed      int       `json:"failed,omitempty"`
-	RateLimited int       `json:"rate_limited,omitempty"`
-	Skipped     int       `json:"skipped,omitempty"`
-	Listed      int       `json:"listed,omitempty"`
-	ATS         string    `json:"ats,omitempty"`
-	Token       string    `json:"token,omitempty"`
-	Company     string    `json:"company,omitempty"`
-	Outcome     string    `json:"outcome,omitempty"`
-	Attempted   int       `json:"attempted,omitempty"`
-	Limit       int       `json:"limit,omitempty"`
-	Eligible    int       `json:"eligible,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at,omitzero"`
+	Stage       string `json:"stage,omitempty"`
+	Phase       string `json:"phase,omitempty"`
+	Index       int    `json:"index,omitempty"`
+	Total       int    `json:"total,omitempty"`
+	Done        int    `json:"done,omitempty"`
+	Read        int    `json:"read,omitempty"`
+	Failed      int    `json:"failed,omitempty"`
+	RateLimited int    `json:"rate_limited,omitempty"`
+	Skipped     int    `json:"skipped,omitempty"`
+	Listed      int    `json:"listed,omitempty"`
+	// Added matches runProgress.Added. Nil when this snapshot did not report it.
+	Added     *int      `json:"added,omitempty"`
+	ATS       string    `json:"ats,omitempty"`
+	Token     string    `json:"token,omitempty"`
+	Company   string    `json:"company,omitempty"`
+	Outcome   string    `json:"outcome,omitempty"`
+	Attempted int       `json:"attempted,omitempty"`
+	Limit     int       `json:"limit,omitempty"`
+	Eligible  int       `json:"eligible,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
 }
 
 func knownProgressStage(s string) bool {
@@ -164,11 +170,13 @@ func (p runProgress) sane() error {
 		{p.RateLimited, "rate_limited"}, {p.Skipped, "skipped"}, {p.Listed, "listed"},
 		{p.Attempted, "attempted"}, {p.Limit, "limit"}, {p.Eligible, "eligible"},
 	} {
-		if c.n < 0 {
-			return fmt.Errorf("progress %s is negative", c.name)
+		if err := boundProgressCount(c.n, c.name); err != nil {
+			return err
 		}
-		if c.n > maxProgressCount {
-			return fmt.Errorf("progress %s is too large", c.name)
+	}
+	if p.Added != nil {
+		if err := boundProgressCount(*p.Added, "added"); err != nil {
+			return err
 		}
 	}
 	if p.Read+p.Failed+p.Skipped != p.Done {
@@ -192,6 +200,29 @@ func (p runProgress) sane() error {
 		}
 	}
 	return nil
+}
+
+func boundProgressCount(n int, name string) error {
+	if n < 0 {
+		return fmt.Errorf("progress %s is negative", name)
+	}
+	if n > maxProgressCount {
+		return fmt.Errorf("progress %s is too large", name)
+	}
+	return nil
+}
+
+// progressCount is a snapshot counter that must be written even when it is 0.
+func progressCount(n int) *int {
+	v := n
+	return &v
+}
+
+func cloneCount(n *int) *int {
+	if n == nil {
+		return nil
+	}
+	return progressCount(*n)
 }
 
 func writeRunProgress(stateDir string, p runProgress) error {
@@ -325,6 +356,7 @@ func (e *env) beginLive(id string) {
 	e.liveMu.Lock()
 	e.liveRun = id
 	e.liveWarned = false
+	e.listing = listingTotals{}
 	e.liveMu.Unlock()
 	e.noteProgress(runProgress{Stage: progressStarting})
 }
@@ -338,6 +370,7 @@ func (e *env) endLive() {
 	}
 	e.liveMu.Lock()
 	e.liveRun = ""
+	e.listing = listingTotals{}
 	dir := e.stateDir
 	e.liveMu.Unlock()
 	if err := removeRunProgress(dir); err != nil {
@@ -367,8 +400,68 @@ func (e *env) noteProgress(p runProgress) {
 	p.ATS = boundProgressName(p.ATS)
 	p.Token = boundProgressName(p.Token)
 	p.Company = boundProgressName(p.Company)
+	p = e.withListingTotals(p)
 	if err := writeRunProgress(e.stateDir, p); err != nil {
+		// An impossible merge is not written over the snapshot already there.
 		e.warnLiveLocked(err)
+		return
+	}
+	if p.Stage == progressListing {
+		e.rememberListing(p)
+	}
+}
+
+// listingTotals is the last listing snapshot's counters. Later stages copy
+// them. The current board (index, phase, names, outcome) is not part of it.
+type listingTotals struct {
+	set         bool
+	total       int
+	done        int
+	read        int
+	failed      int
+	rateLimited int
+	skipped     int
+	listed      int
+	added       *int
+}
+
+// carriesListingTotals is every stage after listing. Stages before listing
+// leave the totals unset.
+func carriesListingTotals(stage string) bool {
+	switch stage {
+	case progressNearDup, progressExclusions, progressLogos, progressWarm,
+		progressAdvance, progressBackfill, progressDigest:
+		return true
+	default:
+		return false
+	}
+}
+
+func listingReported(stage string) bool {
+	return stage == progressListing || carriesListingTotals(stage)
+}
+
+func (e *env) withListingTotals(p runProgress) runProgress {
+	if !e.listing.set || !carriesListingTotals(p.Stage) {
+		return p
+	}
+	m := e.listing
+	p.Total = m.total
+	p.Done = m.done
+	p.Read = m.read
+	p.Failed = m.failed
+	p.RateLimited = m.rateLimited
+	p.Skipped = m.skipped
+	p.Listed = m.listed
+	p.Added = cloneCount(m.added)
+	return p
+}
+
+func (e *env) rememberListing(p runProgress) {
+	e.listing = listingTotals{
+		set: true, total: p.Total, done: p.Done, read: p.Read, failed: p.Failed,
+		rateLimited: p.RateLimited, skipped: p.Skipped, listed: p.Listed,
+		added: cloneCount(p.Added),
 	}
 }
 
@@ -394,9 +487,9 @@ func (e *env) warnLiveLocked(err error) {
 	fmt.Fprintf(e.stderr, "vani: live progress was not written: %s\n", oneLine(err.Error(), 300))
 }
 
-// attachProgress is the live snapshot for a record status has already decided
-// is running. A missing file is omitted. Anything else that cannot be trusted
-// is ok false and names no portal.
+// attachProgress is the snapshot for a record status has decided is running
+// or interrupted. A missing file is omitted. Anything else that cannot be
+// trusted is ok false and names no portal. This does not write the record.
 func (e *env) attachProgress(r runRecord, at time.Time) *progressFacet {
 	p, err := readRunProgress(e.stateDir)
 	if err != nil {
@@ -405,21 +498,63 @@ func (e *env) attachProgress(r runRecord, at time.Time) *progressFacet {
 		}
 		return &progressFacet{facet: unknown(err)}
 	}
-	if p.PID != r.PID || p.ID != runID(r) {
-		return &progressFacet{facet: facet{Reason: "live progress is from another run"}}
-	}
-	if p.At.Before(r.StartedAt.Add(-time.Minute)) {
-		return &progressFacet{facet: facet{Reason: "live progress is from before this run"}}
-	}
-	if p.At.After(at.Add(time.Minute)) {
-		return &progressFacet{facet: facet{Reason: "live progress time is ahead of this status"}}
+	if why := progressMismatch(p, r, at); why != "" {
+		return &progressFacet{facet: facet{Reason: why}}
 	}
 	return &progressFacet{
 		facet: facet{OK: true}, Stage: p.Stage, Phase: p.Phase,
 		Index: p.Index, Total: p.Total, Done: p.Done, Read: p.Read, Failed: p.Failed,
-		RateLimited: p.RateLimited, Skipped: p.Skipped, Listed: p.Listed,
+		RateLimited: p.RateLimited, Skipped: p.Skipped, Listed: p.Listed, Added: cloneCount(p.Added),
 		ATS: p.ATS, Token: p.Token, Company: p.Company, Outcome: p.Outcome,
 		Attempted: p.Attempted, Limit: p.Limit, Eligible: p.Eligible, UpdatedAt: p.At,
+	}
+}
+
+// progressMismatch is why p is not r's snapshot, or "" when it is. The same
+// pid, run id and time checks apply to a live run and to one that was killed.
+func progressMismatch(p runProgress, r runRecord, at time.Time) string {
+	if p.PID != r.PID || p.ID != runID(r) {
+		return "live progress is from another run"
+	}
+	if p.At.Before(r.StartedAt.Add(-time.Minute)) {
+		return "live progress is from before this run"
+	}
+	if p.At.After(at.Add(time.Minute)) {
+		return "live progress time is ahead of this status"
+	}
+	return ""
+}
+
+// boardsFromProgress is the aggregate report of a listing snapshot that
+// belongs to r: totals and added, not_reached = total - done, no items,
+// unrecorded = done. Nil when the file is missing, belongs to another run,
+// or was written before listing (no added count to turn into a fake zero).
+func boardsFromProgress(stateDir string, r runRecord, at time.Time) *boardsReport {
+	p, err := readRunProgress(stateDir)
+	if err != nil || progressMismatch(p, r, at) != "" || p.Added == nil || !listingReported(p.Stage) {
+		return nil
+	}
+	added := *p.Added
+	left := p.Total - p.Done
+	if left < 0 {
+		left = 0
+	}
+	return &boardsReport{
+		Configured: p.Total, Read: p.Read, Failed: p.Failed, RateLimited: p.RateLimited,
+		Skipped: p.Skipped, NotReached: left, Listed: p.Listed, Added: progressCount(added),
+		Items: []boardReport{}, Unrecorded: p.Done,
+	}
+}
+
+// fillBoardsFromSnapshot copies the leftover snapshot onto rec when the run
+// never stored a boards report. A report already stored, with its per-board
+// rows, is left alone. Called before endLive deletes the file.
+func (e *env) fillBoardsFromSnapshot(rec *runRecord) {
+	if e == nil || rec == nil || rec.Boards != nil {
+		return
+	}
+	if rep := boardsFromProgress(e.stateDir, *rec, now()); rep != nil {
+		rec.Boards = rep
 	}
 }
 
@@ -521,6 +656,9 @@ func progressCounts(p *progressFacet) string {
 	add(p.RateLimited, "rate-limited")
 	add(p.Skipped, "skipped")
 	add(p.Listed, "listed")
+	if p.Added != nil && *p.Added > 0 {
+		parts = append(parts, fmt.Sprintf("%d added", *p.Added))
+	}
 	return strings.Join(parts, ", ")
 }
 

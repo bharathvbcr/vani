@@ -122,6 +122,9 @@ type listingTick struct {
 	Index, Total                                     int
 	Board                                            sources.Board
 	Done, Read, Failed, RateLimited, Skipped, Listed int
+	// Added is the sum of reconcile.new on boards already appended, including
+	// zero. The board still in flight is not in it.
+	Added int
 	// Outcome is set only for phase done, and only when the last appended
 	// report is this board. Empty while the board is still in flight.
 	Outcome string
@@ -148,7 +151,7 @@ func noteListing(ctx context.Context, tk listingTick) {
 	}
 }
 
-func tallyTried(tried []boardReport) (done, read, failed, limited, skipped, listed int) {
+func tallyTried(tried []boardReport) (done, read, failed, limited, skipped, listed, added int) {
 	for _, e := range tried {
 		done++
 		switch e.Outcome {
@@ -156,6 +159,9 @@ func tallyTried(tried []boardReport) (done, read, failed, limited, skipped, list
 			read++
 			if e.Listed != nil {
 				listed += *e.Listed
+			}
+			if e.Reconcile != nil {
+				added += e.Reconcile.New
 			}
 		case boardFailed:
 			failed++
@@ -170,10 +176,11 @@ func tallyTried(tried []boardReport) (done, read, failed, limited, skipped, list
 }
 
 func emitListing(ctx context.Context, phase string, index, total int, b sources.Board, tried []boardReport) {
-	done, read, failed, limited, skipped, listed := tallyTried(tried)
+	done, read, failed, limited, skipped, listed, added := tallyTried(tried)
 	tk := listingTick{
 		Phase: phase, Index: index, Total: total, Board: b,
 		Done: done, Read: read, Failed: failed, RateLimited: limited, Skipped: skipped, Listed: listed,
+		Added: added,
 	}
 	if phase == progressPhaseDone && len(tried) > 0 {
 		last := tried[len(tried)-1]
@@ -229,7 +236,11 @@ func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 // keeps watchlist order.
 func boardsReportOf(configured int, tried []boardReport) boardsReport {
 	r := boardsReport{Configured: configured, NotReached: max(configured-len(tried), 0), Items: []boardReport{}}
+	added := 0
 	for _, e := range tried {
+		if e.Reconcile != nil {
+			added += e.Reconcile.New
+		}
 		switch e.Outcome {
 		case boardRead:
 			r.Read++
@@ -245,6 +256,8 @@ func boardsReportOf(configured int, tried []boardReport) boardsReport {
 			r.Skipped++
 		}
 	}
+	// Every tried board, not the cut Items. Zero is a real total.
+	r.Added = progressCount(added)
 	// The first entry that does not fit ends the selection, so a read board is
 	// never kept while a failed or skipped one is cut.
 	keep := make([]bool, len(tried))

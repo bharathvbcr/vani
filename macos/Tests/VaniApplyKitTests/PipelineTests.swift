@@ -354,6 +354,9 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(b.configured, 4)
         XCTAssertEqual(b.unreadCount, 2)
         XCTAssertEqual(b.items.map(\.outcome), [.read, .failed, .skipped, .read])
+        XCTAssertEqual(b.items[0].reconcileNew, 35)
+        XCTAssertNil(b.items[1].reconcileNew, "a board that was not read has no reconcile.new")
+        XCTAssertNil(b.added, "a missing added key is not zero")
         XCTAssertEqual(b.items[3].listed, 0)
         XCTAssertNil(b.items[3].company)
         XCTAssertEqual(b.summary, "2 of 4 boards read; 35 postings listed")
@@ -660,6 +663,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(live.meter?.total, 5)
         XCTAssertEqual(live.attention, .calm)
         XCTAssertEqual(live.nowText, "Reading Acme · gh:acme · 2 of 5 · 1 read · 10 listed")
+        XCTAssertNil(live.added, "a missing added key is not zero")
         XCTAssertNotNil(live.updatedAt)
     }
 

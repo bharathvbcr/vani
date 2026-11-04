@@ -129,6 +129,14 @@ public enum HomeOverview {
         return "\(progress.headline) · \(progress.placeText)"
     }
 
+    /// The ledger's size change, only when both ends were recorded. Nil for a
+    /// kill: that run never wrote the end count. This is not jobs added.
+    public static func ledgerDelta(_ run: PipelineStatus.LastRun) -> String? {
+        guard let added = run.postingsAdded else { return nil }
+        let n = added.magnitude > UInt(Int.max) ? Int.max : Int(added.magnitude)
+        return "\(added < 0 ? "-" : "+")\(count(n)) postings"
+    }
+
     /// "Succeeded 3 h ago · +12 postings", "Failed 5 min ago (digest)": the
     /// one line the Pipeline card leads with.
     public static func runHeadline(_ run: PipelineStatus.LastRun, now: Date) -> String {
@@ -140,7 +148,7 @@ public enum HomeOverview {
         case .unknown: return "Last run unreadable"
         case .ok:
             var s = "Succeeded" + ago(run.finishedAt)
-            if let added = run.postingsAdded { s += " · \(added < 0 ? "-" : "+")\(count(added.magnitude > UInt(Int.max) ? Int.max : abs(added))) postings" }
+            if let delta = ledgerDelta(run) { s += " · " + delta }
             return s
         case .failed: return "Failed" + ago(run.finishedAt) + (run.stage.map { " (\($0))" } ?? "")
         case .cancelled: return "Cancelled" + ago(run.finishedAt)

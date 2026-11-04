@@ -334,12 +334,13 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// ledger here (the adapters read it), as Reconciler requires.
 	rec := pipeline.NewReconciler(w.led)
 	rec.Protect(protect)
-	w.noteLive(runProgress{Stage: progressListing, Total: len(w.cfg.Watchlist)})
+	// Before the first board: added is 0, not an unreported count.
+	w.noteLive(runProgress{Stage: progressListing, Total: len(w.cfg.Watchlist), Added: progressCount(0)})
 	ctx = withListingTick(ctx, func(tk listingTick) {
 		w.noteLive(runProgress{
 			Stage: progressListing, Phase: tk.Phase, Index: tk.Index, Total: tk.Total,
 			Done: tk.Done, Read: tk.Read, Failed: tk.Failed, RateLimited: tk.RateLimited,
-			Skipped: tk.Skipped, Listed: tk.Listed,
+			Skipped: tk.Skipped, Listed: tk.Listed, Added: progressCount(tk.Added),
 			ATS: string(tk.Board.ATS), Token: tk.Board.Token, Company: tk.Board.Company,
 			Outcome: tk.Outcome,
 		})

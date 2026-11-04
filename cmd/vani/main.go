@@ -337,9 +337,12 @@ type env struct {
 	// liveRun is the id of the run whose progress file this process may write.
 	// The daemon's pid does not change between runs, so the id is what tells
 	// this run's snapshot from the last one's. liveWarned is one warning per run.
+	// listing is that run's last listing counters, copied onto later stages.
+	// All three are guarded by liveMu. listing is cleared when a run begins.
 	liveMu     sync.Mutex
 	liveRun    string
 	liveWarned bool
+	listing    listingTotals
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,

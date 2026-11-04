@@ -325,6 +325,10 @@ type boardsReport struct {
 	NotReached int `json:"not_reached,omitempty"`
 	// Listed is the postings the read boards listed, together.
 	Listed int `json:"listed"`
+	// Added is how many new ledger rows the tried boards wrote: the sum of
+	// reconcile.new on every tried board, including ones Items had to leave
+	// out. Zero is written. A missing key means this record did not report it.
+	Added *int `json:"added,omitempty"`
 	// Deferred, PayFailed, PaySkipped and Gone are detail and pay counts for
 	// the whole listing. They stay exact when Items is cut. A pay failure
 	// leaves no pay line, the same shape as a job that publishes none.

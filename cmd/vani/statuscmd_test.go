@@ -618,21 +618,22 @@ func TestStatusJSONLiveProgress(t *testing.T) {
 	if st := statusOf(t).LastRun; st.State != "running" || st.Progress != nil {
 		t.Fatalf("missing file: state %s progress %+v", st.State, st.Progress)
 	}
+	added := 4
 	snap := runProgress{
 		V: runProgressVersion, PID: rec.PID, ID: runID(rec), At: now(),
 		Stage: progressListing, Phase: progressPhaseListing,
-		Index: 2, Total: 5, Done: 1, Read: 1, Listed: 10,
+		Index: 2, Total: 5, Done: 1, Read: 1, Listed: 10, Added: &added,
 		ATS: "gh", Token: "acme", Company: "Acme",
 	}
 	if err := writeRunProgress(stateDir, snap); err != nil {
 		t.Fatal(err)
 	}
 	st := statusOf(t).LastRun
-	if st.Progress == nil || !st.Progress.OK || st.Progress.Company != "Acme" || st.Progress.Index != 2 || st.Progress.Listed != 10 {
+	if st.Progress == nil || !st.Progress.OK || st.Progress.Company != "Acme" || st.Progress.Index != 2 || st.Progress.Listed != 10 || st.Progress.Added == nil || *st.Progress.Added != 4 {
 		t.Fatalf("live %+v", st.Progress)
 	}
 	text, _ := mustCode(t, 0, "status")
-	if !strings.Contains(text, "run: reading Acme (2 of 5); 1 read, 10 listed") {
+	if !strings.Contains(text, "run: reading Acme (2 of 5); 1 read, 10 listed, 4 added") {
 		t.Fatalf("status text:\n%s", text)
 	}
 
@@ -726,10 +727,50 @@ func TestStatusJSONLiveProgress(t *testing.T) {
 	old := pidAlive
 	t.Cleanup(func() { pidAlive = old })
 	pidAlive = func(int) bool { return false }
+	hist := runHistoryPath(stateDir, runID(rec))
 	st = statusOf(t).LastRun
 	text, _ = mustCode(t, 0, "status")
-	if st.State != outcomeInterrupted || st.Progress != nil || strings.Contains(text, "Hidden") || strings.Contains(text, "run: reading") {
+	if st.State != outcomeInterrupted || st.Progress == nil || !st.Progress.OK || st.Progress.Company != "Hidden" || st.Progress.Added == nil || *st.Progress.Added != 4 || st.Progress.Listed != 10 {
 		t.Fatalf("interrupted state %s progress %+v\n%s", st.State, st.Progress, text)
+	}
+	if !strings.Contains(text, "run: reading Hidden (2 of 5); 1 read, 10 listed, 4 added") {
+		t.Fatalf("interrupted text:\n%s", text)
+	}
+	if _, err := os.Lstat(hist); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("status wrote a history record: %v", err)
+	}
+	// A second read still does not write the record.
+	_ = statusOf(t)
+	if _, err := os.Lstat(hist); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a second status wrote history: %v", err)
+	}
+
+	otherDead := snap
+	otherDead.ID = "20260101T000000.000Z-9"
+	otherDead.Company = "OtherCo"
+	otherDead.At = now()
+	if err := writeRunProgress(stateDir, otherDead); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t).LastRun
+	raw, err = json.Marshal(st.Progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != outcomeInterrupted || st.Progress == nil || st.Progress.OK || st.Progress.Company != "" || strings.Contains(string(raw), "OtherCo") {
+		t.Fatalf("another run while interrupted: %s", raw)
+	}
+	text, _ = mustCode(t, 0, "status")
+	if strings.Contains(text, "OtherCo") {
+		t.Fatalf("text named the other run:\n%s", text)
+	}
+
+	if err := os.Remove(runsPath(stateDir, runProgressFile)); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t).LastRun
+	if st.State != outcomeInterrupted || st.Progress != nil {
+		t.Fatalf("missing snapshot is not a zero report: %+v", st.Progress)
 	}
 }
 

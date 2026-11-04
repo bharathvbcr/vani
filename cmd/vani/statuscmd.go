@@ -373,7 +373,10 @@ func (e *env) lastRunFacet(at time.Time) lastRunFacet {
 		n := sumCounts(r.CountsAfter)
 		f.PostingsAfter = &n
 	}
-	if f.State == outcomeRunning {
+	// A kill leaves the snapshot on disk and the record still "running".
+	// runState then says interrupted. Attach the same way as a live run:
+	// this read does not write the record or the history.
+	if f.State == outcomeRunning || f.State == outcomeInterrupted {
 		f.Progress = e.attachProgress(*r, at)
 	}
 	return f

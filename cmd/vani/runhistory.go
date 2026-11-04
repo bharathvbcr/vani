@@ -181,6 +181,14 @@ func archiveInterruptedRun(stateDir string) (*runRecord, error) {
 		return nil, fmt.Errorf("check the run history: %w", err)
 	}
 	r.Outcome = outcomeInterrupted
+	// The next beginLive overwrites the snapshot. Copy its totals first, and
+	// only when they are this run's. A snapshot from before listing is not a
+	// report of zero boards. A report already on the record is left as it is.
+	if r.Boards == nil {
+		if rep := boardsFromProgress(stateDir, *r, now()); rep != nil {
+			r.Boards = rep
+		}
+	}
 	if err := writeRunHistory(stateDir, *r); err != nil {
 		return nil, fmt.Errorf("keep the interrupted run in the history: %w", err)
 	}
