@@ -83,6 +83,123 @@ func TestRepeatApplyFutureMarkDoesNotReplaceARecentOne(t *testing.T) {
 	}
 }
 
+// 06:00 in Los Angeles on this date is 13:00 UTC: the wall clock is earlier than
+// t0, the instant is an hour later. 05:00 there is the same instant as t0.
+func TestRepeatApplyUsesInstantNotWallClock(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterInstant := time.Date(2026, 10, 27, 6, 0, 0, 0, loc)
+	sameInstant := time.Date(2026, 10, 27, 5, 0, 0, 0, loc)
+	if laterInstant.Hour() >= t0.Hour() || !laterInstant.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("06:00 Los Angeles = %s (hour %d), want 13:00 UTC with an earlier wall hour", laterInstant.UTC(), laterInstant.Hour())
+	}
+	if !sameInstant.Equal(t0) {
+		t.Fatalf("05:00 Los Angeles = %s, want %s", sameInstant.UTC(), t0)
+	}
+	recs := []ledger.Record{
+		rec("gh:acme:1", "Acme", "Backend Engineer", "", t0.Add(-days(2))),
+		rec("gh:acme:2", "Acme", "Target", "", t0),
+	}
+	a, ok := New(recs, appliedAt("gh:acme:1", laterInstant), nil, t0).RepeatApply("gh:acme:2", "Acme")
+	if ok || a.Count != 0 {
+		t.Fatalf("future instant with an earlier wall clock counted: ok=%v %+v", ok, a)
+	}
+	a, ok = New(recs, appliedAt("gh:acme:1", sameInstant), nil, t0).RepeatApply("gh:acme:2", "Acme")
+	if !ok || a.Count != 1 || a.Latest.Key != "gh:acme:1" || !a.Latest.At.Equal(sameInstant) {
+		t.Fatalf("same instant did not count: ok=%v %+v", ok, a)
+	}
+}
+
+func TestRepeatApplyAgeGrid(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	var grid []time.Duration
+	add := func(d time.Duration) {
+		if !seen[d] {
+			seen[d] = true
+			grid = append(grid, d)
+		}
+	}
+	for d := -days(400); d <= days(400); d += 24 * time.Hour {
+		add(d)
+	}
+	for _, d := range []time.Duration{
+		0,
+		time.Nanosecond,
+		-time.Nanosecond,
+		applyWindow,
+		applyWindow - time.Nanosecond,
+		applyWindow + time.Nanosecond,
+		days(400),
+		-days(400),
+	} {
+		add(d)
+	}
+	recs := []ledger.Record{
+		rec("gh:acme:marked", "Acme", "Marked Role", "", t0.Add(-days(10))),
+		rec("gh:acme:target", "Acme", "Target", "", t0),
+	}
+	for _, ago := range grid {
+		markAt := t0.Add(-ago)
+		want := ago >= 0 && ago <= applyWindow
+		a, ok := New(recs, appliedAt("gh:acme:marked", markAt), nil, t0).RepeatApply("gh:acme:target", "Acme")
+		if ok != want {
+			t.Fatalf("ago %s: ok=%v, want %v (%+v)", ago, ok, want, a)
+		}
+		if !ok && a.Count != 0 {
+			t.Fatalf("ago %s: ok false but count %d (%+v)", ago, a.Count, a)
+		}
+		if ok && (a.Count != 1 || a.Latest.Key != "gh:acme:marked") {
+			t.Fatalf("ago %s: %+v", ago, a)
+		}
+	}
+	far := time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+	a, ok := New(recs, appliedAt("gh:acme:marked", far), nil, t0).RepeatApply("gh:acme:target", "Acme")
+	if ok || a.Count != 0 {
+		t.Fatalf("year 9999 counted: ok=%v %+v", ok, a)
+	}
+}
+
+func TestRepeatApplyTwoFutureMarksDoNotWarn(t *testing.T) {
+	recs := []ledger.Record{
+		rec("gh:acme:a", "Acme", "Earlier Future", "", t0.Add(-days(3))),
+		rec("gh:acme:z", "Acme", "Later Future", "", t0.Add(-days(3))),
+		rec("gh:acme:target", "Acme", "Target", "", t0),
+	}
+	m := merge(
+		appliedAt("gh:acme:a", t0.Add(time.Nanosecond)),
+		appliedAt("gh:acme:z", t0.Add(days(400))),
+	)
+	a, ok := New(recs, m, nil, t0).RepeatApply("gh:acme:target", "Acme")
+	if ok || a.Count != 0 {
+		t.Fatalf("two future marks warned: ok=%v %+v", ok, a)
+	}
+}
+
+func TestRepeatApplyLaterFutureKeyDoesNotBecomeLatest(t *testing.T) {
+	recentAt := t0.Add(-days(2))
+	futureAt := t0.Add(time.Hour)
+	const recentKey = "gh:acme:a-recent"
+	const futureKey = "gh:acme:z-future"
+	if !(posting.Key(futureKey) > posting.Key(recentKey)) || !futureAt.After(recentAt) {
+		t.Fatalf("fixture does not put the future mark after the recent one by key and time")
+	}
+	target := rec("gh:acme:target", "Acme", "Target", "", t0)
+	recent := rec(recentKey, "Acme", "Recent Role", "", t0.Add(-days(10)))
+	future := rec(futureKey, "Acme", "Future Role", "", t0.Add(-days(10)))
+	m := merge(appliedAt(recentKey, recentAt), appliedAt(futureKey, futureAt))
+	for _, recs := range [][]ledger.Record{
+		{recent, future, target},
+		{future, recent, target},
+	} {
+		a, ok := New(recs, m, nil, t0).RepeatApply("gh:acme:target", "Acme")
+		if !ok || a.Count != 1 || a.Latest.Key != recentKey || !a.Latest.At.Equal(recentAt) {
+			t.Fatalf("answer = %+v ok=%v", a, ok)
+		}
+	}
+}
+
 func TestRepeatApplyZeroTimeMarkDoesNotCount(t *testing.T) {
 	recs := []ledger.Record{
 		rec("gh:acme:1", "Acme", "Backend Engineer", "", t0.Add(-days(200))),
