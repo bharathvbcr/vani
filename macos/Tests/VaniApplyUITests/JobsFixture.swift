@@ -68,6 +68,7 @@ struct JobsFixture {
         "jobs show")
             for last; do :; done
             case "$last" in fx:*) exec cat "$d/show-$last.json" ;; esac ;;
+        "jobs export") exec cat "$d/export.json" ;;
         esac
         printf '{"error":"fake vani: no reply for %s"}\\n' "$1 $2"
         exit 1
@@ -96,8 +97,14 @@ struct JobsFixture {
             try Data(text.utf8).write(to: dir.appendingPathComponent("labels.json"))
         }
         try Data(Self.gapsReply.utf8).write(to: dir.appendingPathComponent("gaps.json"))
+        try Data(Self.exportReply.utf8).write(to: dir.appendingPathComponent("export.json"))
         for r in Self.roles { try write("show-\(r.key).json", job(r)) }
     }
+
+    /// One dry-run export: one role, already exported, so the app asks before saving.
+    static let exportReply = """
+    {"path":"/x/a.xlsx","rows":1,"total":1,"view":"new","sort":"default","missing":[],"already_exported":1,"last_exported_at":"2026-10-27T14:05:00Z","last_file":"/x/old.xlsx","skipped":0}
+    """
 
     /// `vani jobs gaps --json` over the four roles: DevPrism-found gaps first.
     static let gapsReply = """

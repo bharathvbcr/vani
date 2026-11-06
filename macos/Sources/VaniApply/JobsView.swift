@@ -269,23 +269,88 @@ private struct ViewSwitcher: View {
 /// flag; the view counts above ignore them, the list and Insights do not.
 /// Save roles to an Excel workbook: the first 100, 250, … of the list as it is sorted and filtered,
 /// all of it when it is no longer than the largest size, or the selected roles.
+/// What the Export menu asked for, before hide-duplicates is applied.
+enum ExportMenuChoice: Equatable {
+    case top(Int)
+    case all
+    case selected([String])
+}
+
+/// The scope an export sends. Hide-duplicates is client-side, so while it is on the file is the
+/// rows on screen (`onScreenKeys`), never a server `.top` sized from `pageTotal`. While it is off,
+/// Top and All stay `.top`, which is the list the server already filtered.
+enum OnScreenExport {
+    static func scope(hideDuplicates: Bool, onScreenKeys: [String], pageTotal: Int, choice: ExportMenuChoice) -> JobsExportScope {
+        if hideDuplicates {
+            switch choice {
+            case let .top(n):
+                return .keys(Array(onScreenKeys.prefix(max(0, n))))
+            case .all:
+                return .keys(Array(onScreenKeys.prefix(JobsClient.maxExportRows)))
+            case let .selected(selected):
+                return .keys(selected)
+            }
+        }
+        switch choice {
+        case let .top(n):
+            return .top(n)
+        case .all:
+            return .top(JobsClient.maxExportRows)
+        case let .selected(selected):
+            return .keys(selected)
+        }
+    }
+
+    /// The count the menu labels use. While hide-duplicates is on, that is the on-screen list.
+    static func menuTotal(hideDuplicates: Bool, onScreenCount: Int, pageTotal: Int) -> Int {
+        hideDuplicates ? onScreenCount : pageTotal
+    }
+}
+
+/// The alert and the save panel. Tests pass their own; the app uses `live`.
+struct ExportPanels {
+    var ask: @MainActor (JobsExportRepeatPrompt) -> JobsAlreadyExported?
+    var save: @MainActor (JobsModel, JobsExportScope) -> URL?
+
+    @MainActor static let live = ExportPanels(
+        ask: { askAboutExported($0) },
+        save: { jobs, scope in
+            let panel = NSSavePanel()
+            if let xlsx = UTType(filenameExtension: "xlsx") { panel.allowedContentTypes = [xlsx] }
+            panel.nameFieldStringValue = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
+            guard panel.runModal() == .OK, let url = panel.url else { return nil }
+            return url
+        }
+    )
+}
+
 private struct ExportMenu: View {
     @Environment(JobsModel.self) private var jobs
+    @AppStorage(JobList.hideDuplicatesKey) private var hideDuplicates = false
 
     var body: some View {
-        let total = jobs.page?.total ?? 0
+        let onScreen = hideDuplicates ? Job.hidingPossibleDuplicates(jobs.jobs) : jobs.jobs
+        let pageTotal = jobs.page?.total ?? 0
+        let total = OnScreenExport.menuTotal(hideDuplicates: hideDuplicates, onScreenCount: onScreen.count, pageTotal: pageTotal)
+        let keys = onScreen.map(\.key)
         let selected = jobs.selectedJobs.map(\.key)
         Menu {
             ForEach(JobsClient.exportSizes.filter { $0 < total }, id: \.self) { n in
-                Button("Top \(n.formatted())") { exportJobs(jobs, .top(n)) }
+                Button("Top \(n.formatted())") {
+                    exportJobs(jobs, OnScreenExport.scope(hideDuplicates: hideDuplicates, onScreenKeys: keys, pageTotal: pageTotal, choice: .top(n)))
+                }
             }
             if total <= JobsClient.maxExportRows {
-                Button("All \(total.formatted()) Roles") { exportJobs(jobs, .top(JobsClient.maxExportRows)) }
-                    .disabled(total == 0)
+                Button("All \(total.formatted()) Roles") {
+                    exportJobs(jobs, OnScreenExport.scope(hideDuplicates: hideDuplicates, onScreenKeys: keys, pageTotal: pageTotal, choice: .all))
+                }
+                .disabled(total == 0)
             }
             Divider()
-            Button("Selected Roles (\(selected.count.formatted()))") { exportJobs(jobs, .keys(selected)) }
-                .disabled(selected.isEmpty)
+            Button("Selected Roles (\(selected.count.formatted()))") {
+                exportJobs(jobs, OnScreenExport.scope(hideDuplicates: hideDuplicates, onScreenKeys: keys, pageTotal: pageTotal, choice: .selected(selected)))
+            }
+            .disabled(selected.isEmpty)
         } label: {
             Label("Export", systemImage: "tablecells")
         }
@@ -429,19 +494,22 @@ private struct TopTriageKeyMonitor: NSViewRepresentable {
 /// Check what the export would hold; when an earlier export wrote some of those roles, ask whether
 /// to skip them or write them again; then ask where to save, and export. The name suggested says
 /// the view, the size and the day.
+/// Check what the export would hold; when an earlier export wrote some of those roles, ask whether
+/// to skip them or write them again; then ask where to save, and export. `exporting` stays set
+/// from before the check until this returns, including while the alert and the save panel are open,
+/// so a second export does not start. Cancel releases it.
 @MainActor
-func exportJobs(_ jobs: JobsModel, _ scope: JobsExportScope) {
+func exportJobs(_ jobs: JobsModel, _ scope: JobsExportScope, panels: ExportPanels = .live) {
     Task { @MainActor in
+        guard jobs.beginExport() else { return }
+        defer { jobs.endExport() }
         guard let check = await jobs.checkExport(scope) else { return }
         var already: JobsAlreadyExported?
         if let prompt = check.repeatPrompt(scope) {
-            guard let answer = askAboutExported(prompt) else { return }
+            guard let answer = panels.ask(prompt) else { return }
             already = answer
         }
-        let panel = NSSavePanel()
-        if let xlsx = UTType(filenameExtension: "xlsx") { panel.allowedContentTypes = [xlsx] }
-        panel.nameFieldStringValue = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = panels.save(jobs, scope) else { return }
         await jobs.export(scope, to: url, already: already)
     }
 }
