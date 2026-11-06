@@ -45,7 +45,9 @@ func TestRepeatApplyWindowBoundaries(t *testing.T) {
 		{"exactly the window", days(ApplyWindowDays), true},
 		{"a second past the window", days(ApplyWindowDays) + time.Second, false},
 		{"a day past the window", days(ApplyWindowDays + 1), false},
-		{"a mark dated in the future (clock skew)", -time.Hour, true},
+		{"a mark dated in the future (clock skew)", -time.Hour, false},
+		{"one nanosecond in the future", -time.Nanosecond, false},
+		{"a mark one year in the future", -days(365), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -62,6 +64,58 @@ func TestRepeatApplyWindowBoundaries(t *testing.T) {
 				t.Fatalf("answer = %+v", a)
 			}
 		})
+	}
+}
+
+func TestRepeatApplyFutureMarkDoesNotReplaceARecentOne(t *testing.T) {
+	recs := []ledger.Record{
+		rec("gh:acme:future", "Acme", "Future Role", "", t0.Add(-days(10))),
+		rec("gh:acme:recent", "Acme", "Recent Role", "", t0.Add(-days(10))),
+		rec("gh:acme:target", "Acme", "Target", "", t0),
+	}
+	m := merge(
+		appliedAt("gh:acme:future", t0.Add(days(365))),
+		appliedAt("gh:acme:recent", t0.Add(-days(2))),
+	)
+	a, ok := New(recs, m, nil, t0).RepeatApply("gh:acme:target", "Acme")
+	if !ok || a.Count != 1 || a.Latest.Key != "gh:acme:recent" || a.Latest.Title != "Recent Role" || !a.Latest.At.Equal(t0.Add(-days(2))) {
+		t.Fatalf("answer = %+v ok=%v", a, ok)
+	}
+}
+
+func TestRepeatApplyZeroTimeMarkDoesNotCount(t *testing.T) {
+	recs := []ledger.Record{
+		rec("gh:acme:1", "Acme", "Backend Engineer", "", t0.Add(-days(200))),
+		rec("gh:acme:2", "Acme", "Data Engineer", "", t0),
+	}
+	a, ok := New(recs, appliedAt("gh:acme:1", time.Time{}), nil, t0).RepeatApply("gh:acme:2", "Acme")
+	if ok {
+		t.Fatalf("a zero applied time counted: %+v", a)
+	}
+}
+
+func TestRepeatApplyFutureMarkAloneDoesNotWarn(t *testing.T) {
+	recs := []ledger.Record{
+		rec("gh:acme:1", "Acme", "Future Role", "", t0.Add(-days(3))),
+		rec("gh:acme:2", "Acme", "Target", "", t0),
+	}
+	a, ok := New(recs, appliedAt("gh:acme:1", t0.Add(time.Nanosecond)), nil, t0).RepeatApply("gh:acme:2", "Acme")
+	if ok {
+		t.Fatalf("a future mark alone warned: %+v", a)
+	}
+}
+
+func TestRepeatApplyAlreadyAppliedStaysSilentWithAFutureSibling(t *testing.T) {
+	recs := []ledger.Record{
+		rec("gh:acme:1", "Acme", "Target", "", t0),
+		rec("gh:acme:2", "Acme", "Future Role", "", t0),
+	}
+	m := merge(
+		appliedAt("gh:acme:1", t0.Add(-days(1))),
+		appliedAt("gh:acme:2", t0.Add(time.Hour)),
+	)
+	if a, ok := New(recs, m, nil, t0).RepeatApply("gh:acme:1", "Acme"); ok {
+		t.Fatalf("an applied posting was warned: %+v", a)
 	}
 }
 
