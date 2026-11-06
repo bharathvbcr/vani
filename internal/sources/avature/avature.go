@@ -406,12 +406,9 @@ func (s *source) listing(ctx context.Context, st *site) ([]row, error) {
 		if err := st.pace.Wait(ctx); err != nil {
 			return nil, err
 		}
-		body, err := srcutil.GetBody(ctx, s.d, st.pageURL(offset))
+		body, err := srcutil.GetBodyLimit(ctx, s.d, st.pageURL(offset), "text/html,application/xhtml+xml", pageMaxBody)
 		if err != nil {
 			return nil, fmt.Errorf("listing at offset %d: %w", offset, err)
-		}
-		if len(body) > pageMaxBody {
-			return nil, fmt.Errorf("listing at offset %d: %w: %d bytes", offset, srcutil.ErrBodyTooLarge, len(body))
 		}
 		got, end, err := st.parseListing(string(body))
 		if err != nil {
@@ -561,15 +558,12 @@ func (s *source) detail(ctx context.Context, st *site, b sources.Board, token st
 		return posting.Posting{}, err
 	}
 	u := r.url(st.host)
-	raw, err := srcutil.GetBody(ctx, s.d, u)
+	raw, err := srcutil.GetBodyLimit(ctx, s.d, u, "text/html,application/xhtml+xml", detailMaxBody)
 	if err != nil {
 		if errors.Is(err, srcutil.ErrBoardNotFound) {
 			return posting.Posting{}, errDetailGone
 		}
 		return posting.Posting{}, err
-	}
-	if len(raw) > detailMaxBody {
-		return posting.Posting{}, fmt.Errorf("%w: %d bytes", srcutil.ErrBodyTooLarge, len(raw))
 	}
 	body := string(raw)
 	if err := st.checkCanonical(body, r.id); err != nil {
