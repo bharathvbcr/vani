@@ -83,6 +83,44 @@ final class JobsExportTests: XCTestCase {
                        "Saved 100 selected roles to Next.xlsx. 1 is no longer in this list and was left out. Left out 4 roles exported before. The export record keeps at most 50,000 roles; the 7 roles exported longest ago now read as never exported.")
     }
 
+    /// A forgotten count that is not an integer must not decode into a success line.
+    /// Null is absence (0). A fraction or a value past Int must throw, not truncate or wrap.
+    func testForgottenDecodeRejectsMalformed() throws {
+        let head = #"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"skipped":0,"forgotten":"#
+        let malformed = [
+            ("string", head + #""12"}"#),
+            ("object", head + #"{"n":1}}"#),
+            ("array", head + #"[12]}"#),
+            ("true", head + "true}"),
+            ("false", head + "false}"),
+            ("fraction", head + "1.5}"),
+            ("past Int", head + "9223372036854775808}"),
+        ]
+        for (why, json) in malformed {
+            do {
+                let got = try decodeExport(json)
+                XCTFail("\(why) decoded forgotten=\(got.forgotten) summary=\(got.summary(.top(100)))")
+            } catch {
+                XCTAssertTrue(error is DecodingError, "\(why): \(error)")
+            }
+        }
+
+        let nullCount = try decodeExport(head + "null}")
+        XCTAssertEqual(nullCount.forgotten, 0)
+        XCTAssertFalse(nullCount.summary(.top(100)).contains("never exported"))
+
+        let odd = try decodeExport(#"{"path":"/名前/odd.xlsx","rows":2,"total":9,"view":"new","sort":"default","missing":[],"forgotten":2}"#)
+        XCTAssertEqual(odd.forgotten, 2)
+        let oddLine = odd.summary(.top(2))
+        XCTAssertEqual(oddLine, "Saved the first 2 of 9 roles to odd.xlsx. The export record keeps at most 50,000 roles; the 2 roles exported longest ago now read as never exported.")
+        XCTAssertFalse(oddLine.contains("名前"), "the file name is the last path component, not the directory")
+
+        let skippedNoneForgotten = try decodeExport(#"{"path":"/x/Next.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"skipped":3,"forgotten":0}"#)
+        XCTAssertEqual(skippedNoneForgotten.forgotten, 0)
+        XCTAssertEqual(skippedNoneForgotten.summary(.top(100)), "Saved 100 roles to Next.xlsx. Left out 3 roles exported before.")
+        XCTAssertFalse(skippedNoneForgotten.summary(.keys(["a"])).contains("never exported"))
+    }
+
     private func decodeExport(_ json: String) throws -> JobsExport {
         try JobsClient.decoder.decode(JobsExport.self, from: Data(json.utf8))
     }
