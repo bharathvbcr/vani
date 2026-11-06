@@ -541,18 +541,42 @@ func TestDaemonExitsCleanlyOnCancel(t *testing.T) {
 }
 
 func TestExitCodeConfigRestart(t *testing.T) {
-	if exitCode(nil) != exitOK || exitCode(flag.ErrHelp) != exitOK {
-		t.Fatalf("ok: %d %d", exitCode(nil), exitCode(flag.ErrHelp))
+	if exitCode("run-once", nil) != exitOK || exitCode("daemon", nil) != exitOK || exitCode("status", flag.ErrHelp) != exitOK {
+		t.Fatal("nil and help are exit 0")
 	}
-	if exitCode(usagef("nope")) != exitUsage {
-		t.Fatalf("usage: %d", exitCode(usagef("nope")))
+	if exitCode("run-once", usagef("nope")) != exitUsage || exitCode("daemon", usagef("nope")) != exitUsage {
+		t.Fatal("usage stays exit 2")
 	}
-	wrapped := fmt.Errorf("during daemon: %w", errConfigRestart)
-	if exitCode(wrapped) != exitConfigRestart || exitCode(errors.Join(errors.New("also"), errConfigRestart)) != exitConfigRestart {
-		t.Fatal("a wrapped restart must be exit 75")
+	if exitCode("run-once", unsupportedError{msg: "no json"}) != exitUsage || exitCode("digest", unsupportedError{msg: "no json"}) != exitUsage {
+		t.Fatal("unsupported stays exit 2")
 	}
-	if exitCode(errors.New("boom")) != exitRuntime {
-		t.Fatal("runtime")
+	wrappedOnce := fmt.Errorf("during run-once: %w", fmt.Errorf("reload: %w", errConfigRestart))
+	joinedOnce := errors.Join(errors.New("also"), errConfigRestart)
+	if exitCode("run-once", errConfigRestart) != exitRuntime ||
+		exitCode("run-once", wrappedOnce) != exitRuntime ||
+		exitCode("run-once", joinedOnce) != exitRuntime {
+		t.Fatal("run-once config restart is exit 1")
+	}
+	wrappedDaemon := fmt.Errorf("during daemon: %w", errConfigRestart)
+	joinedDaemon := errors.Join(errors.New("also"), errConfigRestart)
+	if exitCode("daemon", errConfigRestart) != exitConfigRestart ||
+		exitCode("daemon", wrappedDaemon) != exitConfigRestart ||
+		exitCode("daemon", joinedDaemon) != exitConfigRestart {
+		t.Fatal("daemon config restart is exit 75")
+	}
+	// A command that is neither daemon nor run-once, including a near name.
+	for _, command := range []string{"digest", "run-request", "status", "Daemon", "daemons", ""} {
+		if exitCode(command, errConfigRestart) != exitRuntime || exitCode(command, wrappedOnce) != exitRuntime {
+			t.Fatalf("%q config restart is exit 1, got %d", command, exitCode(command, errConfigRestart))
+		}
+	}
+	if exitCode("daemon", errors.New("boom")) != exitRuntime || exitCode("run-once", errors.New("boom")) != exitRuntime || exitCode("status", errors.New("boom")) != exitRuntime {
+		t.Fatal("a plain error is exit 1")
+	}
+	// A usage error joined with the restart still exits 2, on the daemon too.
+	if exitCode("daemon", errors.Join(usagef("nope"), errConfigRestart)) != exitUsage ||
+		exitCode("run-once", errors.Join(errConfigRestart, usagef("nope"))) != exitUsage {
+		t.Fatal("usage stays exit 2 beside a restart")
 	}
 }
 

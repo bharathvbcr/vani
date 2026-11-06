@@ -420,7 +420,7 @@ func runEnv(e *env, args []string) int {
 	// A usage error replies in JSON only under the global flag: a command's own
 	// --json has always exited 2 with nothing on stdout for one, and the Mac app
 	// reads that silence as an older vani (ResumeStudio.swift).
-	code := exitCode(cmdErr)
+	code := exitCode(args[0], cmdErr)
 	asked := global || code != exitUsage && (leaf.Mode == jsonAlways || e.jsonAsked != nil && *e.jsonAsked)
 	if code != exitOK && asked && out.n.Load() == 0 && !errors.Is(cmdErr, errAlreadyReported) {
 		if err := writeJSON(out, errorReply{cmdErr.Error(), envelopeCode(cmdErr)}); err != nil {
@@ -529,16 +529,19 @@ func (e *env) dispatch(args []string) error {
 	return cmdErr
 }
 
-// exitCode is the process exit code for a command error. A wrapped
-// errConfigRestart is exitConfigRestart, including through errors.Join.
+// exitCode is the process exit code for a command error. errConfigRestart is
+// exitConfigRestart only for the daemon command, including through errors.Join
+// and a wrapped error. run-once leaves the daemon cancel nil, so dailyJob
+// returns that error and the process exits 1; every other command does too.
+// usageError and unsupportedError stay exit 2, ahead of the restart check.
 // Named exitCode because statusOf is the test helper that reads `vani status`.
-func exitCode(err error) int {
+func exitCode(command string, err error) int {
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return exitOK
 	case errors.As(err, new(usageError)), errors.As(err, new(unsupportedError)):
 		return exitUsage
-	case errors.Is(err, errConfigRestart):
+	case command == "daemon" && errors.Is(err, errConfigRestart):
 		return exitConfigRestart
 	default:
 		return exitRuntime
