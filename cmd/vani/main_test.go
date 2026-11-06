@@ -578,6 +578,103 @@ func TestExitCodeConfigRestart(t *testing.T) {
 		exitCode("run-once", errors.Join(errConfigRestart, usagef("nope"))) != exitUsage {
 		t.Fatal("usage stays exit 2 beside a restart")
 	}
+	// A wrap of usageError is still a usage error when the restart is in the
+	// same chain. The check does not look at the command, so an empty name
+	// is exit 2 as well. This usage error is not errConfigRestart.
+	wrappedUse := fmt.Errorf("parse: %w", usagef("nope"))
+	if got := exitCode("daemon", fmt.Errorf("during daemon: %w", errors.Join(wrappedUse, errConfigRestart))); got != exitUsage {
+		t.Fatalf("wrapped usage beside restart: exit %d, want %d", got, exitUsage)
+	}
+	if got := exitCode("", usagef("nope")); got != exitUsage {
+		t.Fatalf("usage on an empty command: exit %d, want %d", got, exitUsage)
+	}
+	if got := exitCode("daemon", errors.Join(unsupportedError{msg: "no json"}, errConfigRestart)); got != exitUsage {
+		t.Fatalf("unsupported joined with restart: exit %d, want %d", got, exitUsage)
+	}
+	if got := exitCode("run-once", errors.Join(errConfigRestart, unsupportedError{msg: "no json"})); got != exitUsage {
+		t.Fatalf("unsupported joined with restart on run-once: exit %d, want %d", got, exitUsage)
+	}
+	// errors.Is walks both wraps. A name that is not exactly "daemon" does not.
+	twoWraps := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", errConfigRestart))
+	if got := exitCode("daemon", twoWraps); got != exitConfigRestart {
+		t.Fatalf("two wraps on daemon: exit %d, want %d", got, exitConfigRestart)
+	}
+	for _, command := range []string{"daemon\n", " daemon", "DAEMON", "デーモン"} {
+		if got := exitCode(command, errConfigRestart); got != exitRuntime {
+			t.Fatalf("%q config restart: exit %d, want %d", command, got, exitRuntime)
+		}
+		if got := exitCode(command, twoWraps); got != exitRuntime {
+			t.Fatalf("%q wrapped config restart: exit %d, want %d", command, got, exitRuntime)
+		}
+	}
+}
+
+// TestRunOnceConfigRestart drives runEnv, not exitCode alone. buildApp rewrites
+// the schedule before dailyJob's first reload, and the stub pipeline must not run.
+func TestRunOnceConfigRestart(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	oldBuild, oldSig := buildApp, signalContext
+	t.Cleanup(func() { buildApp, signalContext = oldBuild, oldSig })
+	// A cancelled context, or a caught signal, makes dailyJob drop
+	// errConfigRestart and return nil. This context stays live.
+	signalContext = func() (context.Context, context.CancelFunc) {
+		return context.Background(), func() {}
+	}
+	runs := 0
+	buildApp = func(cfg config.Config, _ string, _ io.Writer) (*App, error) {
+		err := config.Update(cfgPath, func(c *config.Config) error {
+			next := "09:15"
+			if c.Schedule.DailyAt == next {
+				next = "10:45"
+			}
+			if next == cfg.Schedule.DailyAt {
+				next = "11:00"
+			}
+			c.Schedule.DailyAt = next
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &App{
+			Ledger: fixture(),
+			Reload: func(config.Config) {},
+			RunOnce: func(context.Context) error {
+				runs++
+				return errors.New("pipeline must not run after a config restart")
+			},
+		}, nil
+	}
+	check := func(args ...string) {
+		t.Helper()
+		before := runs
+		code, stdout, stderr := do(t, args...)
+		if code != exitRuntime {
+			t.Fatalf("vani %v: exit %d, want %d (not %d)\nstdout: %s\nstderr: %s", args, code, exitRuntime, exitConfigRestart, stdout, stderr)
+		}
+		if runs != before {
+			t.Fatalf("vani %v: pipeline ran (%d calls)\nstderr: %s", args, runs-before, stderr)
+		}
+		if !strings.Contains(stderr, errConfigRestart.Error()) || !strings.Contains(stderr, "the schedule changed") {
+			t.Fatalf("vani %v: stderr does not report the restart:\n%s", args, stderr)
+		}
+		if _, err := os.Stat(filepath.Join(stateDir, "runs", "last.json")); !os.IsNotExist(err) {
+			t.Fatalf("vani %v: last.json after a restart before the pipeline: %v", args, err)
+		}
+		if len(args) > 0 && args[0] == "--json" {
+			r := onlyError(t, args, stdout)
+			if r.Code != codeRuntime || !strings.Contains(r.Error, "restarting") {
+				t.Fatalf("vani %v: reply %+v, want a runtime restart", args, r)
+			}
+			return
+		}
+		if stdout != "" {
+			t.Fatalf("vani %v: stdout %q; a restart before the pipeline writes nothing", args, stdout)
+		}
+	}
+	check("run-once")
+	check("--json", "run-once")
 }
 
 func TestCountsForUsesScheduleZone(t *testing.T) {
