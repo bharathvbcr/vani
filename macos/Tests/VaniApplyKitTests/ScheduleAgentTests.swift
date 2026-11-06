@@ -242,10 +242,14 @@ final class ScheduleAgentTests: XCTestCase {
         return (s, done)
     }
 
-    /// One positive integer, with at most one trailing newline. Anything else is not a published pid.
+    /// One positive integer in canonical decimal (no sign, no leading zero), with at most one
+    /// trailing newline. A partial, padded, overlong, or non-ASCII digit string is not a published pid:
+    /// `Int32` would otherwise turn a 20-digit string of zeros plus one into pid 1.
     private func isPublishedPid(_ raw: String) -> Bool {
         let body = raw.hasSuffix("\n") ? raw.dropLast() : Substring(raw)
-        return !body.isEmpty && !body.contains("\n") && body.allSatisfy { $0 >= "0" && $0 <= "9" } && (Int32(body) ?? 0) > 0
+        guard !body.isEmpty, !body.contains("\n"), body.allSatisfy({ $0 >= "0" && $0 <= "9" }) else { return false }
+        guard let pid = Int32(body), pid > 0 else { return false }
+        return String(pid) == String(body)
     }
 
     private func waitUntil(_ timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
@@ -325,23 +329,114 @@ final class ScheduleAgentTests: XCTestCase {
     }
 
     func testThePidWaitRejectsEmptyPartialAndNonPositiveText() {
-        for raw in ["", "\n", "0", "-1", "12abc", "12\n\n", " 12"] {
+        let twentyDigits = "12345678901234567890"
+        let twentyDigitsThatInt32WouldAccept = "00000000000000000001"
+        let veryLong = String(repeating: "9", count: 128)
+        let embeddedNul = "12\u{0}"
+        for raw in ["", "\n", "0", "0\n", "-1", "12abc", "12\n\n", " 12",
+                    "１２", "/tmp/pid", "12/34", twentyDigits, twentyDigitsThatInt32WouldAccept, veryLong,
+                    embeddedNul, "\u{0}", "1\u{0}2"] {
             XCTAssertFalse(isPublishedPid(raw), raw.debugDescription)
         }
         XCTAssertTrue(isPublishedPid("12"))
         XCTAssertTrue(isPublishedPid("12\n"))
+        XCTAssertEqual(embeddedNul.count, 3, "String holds an embedded NUL; the wait must still reject it")
     }
 
     func testADaemonThatIgnoresSigtermIsKilledAfterTheGrace() throws {
         let r = try rig()
         let pidFile = r.dir.appendingPathComponent("pid")
-        let program = try r.script("echo $$ > '\(pidFile.path)'; trap '' TERM; while :; do sleep 0.05; done")
+        let pidPart = r.dir.appendingPathComponent("pid.part")
+        // Ignore SIGTERM, then publish the pid by rename. A redirect would create the pid
+        // file empty before the trap is installed, and the wait must not treat that as ready.
+        let program = try r.script("trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; while :; do sleep 0.05; done")
         let (s, done) = supervise(r, attempt: { r.start(program) }, grace: 0.4)
-        XCTAssertTrue(waitUntil { FileManager.default.fileExists(atPath: pidFile.path) })
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        })
         s.stop()
         XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
         let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
         XCTAssertTrue(waitUntil(3) { kill(pid, 0) != 0 && errno == ESRCH }, "SIGKILL after the grace")
+    }
+
+    func testAnEmptyPidFileBeforeTheTrapIsNotReady() throws {
+        let r = try rig()
+        let pidFile = r.dir.appendingPathComponent("pid")
+        let pidPart = r.dir.appendingPathComponent("pid.part")
+        let go = r.dir.appendingPathComponent("go")
+        // The redirect creates the pid file empty before the trap. The grace-test wait
+        // (isPublishedPid, not file existence) must not treat that as ready. The loop is capped
+        // at 5s so a missed `go` cannot spin.
+        let program = try r.script(
+            ": > '\(pidFile.path)'; i=0; "
+                + "while [ ! -f '\(go.path)' ] && [ \"$i\" -lt 250 ]; do i=$((i + 1)); sleep 0.02; done; "
+                + "trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; "
+                + "while :; do sleep 0.05; done")
+        let (s, done) = supervise(r, attempt: { r.start(program) }, grace: 0.4)
+        defer { s.stop() }
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return !isPublishedPid(raw)
+        }, "the empty pid file exists before the trap")
+        let empty = try String(contentsOf: pidFile, encoding: .utf8)
+        XCTAssertFalse(isPublishedPid(empty), empty.debugDescription)
+        XCTAssertTrue(empty.isEmpty)
+        try Data("go\n".utf8).write(to: go)
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        }, "the pid is published only after the trap")
+        s.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
+        let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertTrue(waitUntil(3) { kill(pid, 0) != 0 && errno == ESRCH }, "SIGKILL after the grace")
+    }
+
+    func testADaemonThatIgnoresSigtermIsKilledWhenThePidPathHasASpace() throws {
+        let r = try rig()
+        let odd = r.dir.appendingPathComponent("名前 odd")
+        try FileManager.default.createDirectory(at: odd, withIntermediateDirectories: true)
+        let pidFile = odd.appendingPathComponent("pid")
+        let pidPart = odd.appendingPathComponent("pid.part")
+        XCTAssertTrue(pidFile.path.contains("名前 odd"))
+        XCTAssertFalse(pidFile.path.contains("'"))
+        XCTAssertFalse(pidFile.path.contains("\n"))
+        // Single quotes keep the space and the non-ASCII directory component literal in /bin/sh.
+        let program = try r.script(
+            "trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; while :; do sleep 0.05; done")
+        let (s, done) = supervise(r, attempt: { r.start(program) }, grace: 0.4)
+        defer { s.stop() }
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        })
+        let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertGreaterThan(pid, 0)
+        s.stop()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(waitUntil(3) { kill(pid, 0) != 0 && errno == ESRCH }, "SIGKILL after the grace")
+    }
+
+    func testStopReturnsDuringTheGraceAndLeavesNoProcess() throws {
+        let r = try rig()
+        let pidFile = r.dir.appendingPathComponent("pid")
+        let pidPart = r.dir.appendingPathComponent("pid.part")
+        let program = try r.script(
+            "trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; while :; do sleep 0.05; done")
+        let (s, done) = supervise(r, attempt: { r.start(program) }, grace: 0.4)
+        defer { s.stop() }
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        })
+        let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let started = Date()
+        s.stop()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.3, "stop() returns during the grace instead of waiting it out")
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(waitUntil(3) { kill(pid, 0) != 0 && errno == ESRCH }, "the grace kill still leaves no daemon")
     }
 
     func testAStopDuringTheBackoffReturnsAtOnce() throws {
