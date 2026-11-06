@@ -1042,14 +1042,18 @@ public struct JobsExport: Codable, Equatable, Sendable {
     public var lastFile: String?
     /// Roles exported before that a `skip` export left out.
     public var skipped: Int
+    /// Oldest exported keys the record dropped to stay under its cap (`exportlog.MaxJobs`).
+    /// They read as never exported from now on. Zero when the reply omits the count or dropped none.
+    public var forgotten: Int
 
     private enum CodingKeys: String, CodingKey {
-        case path, rows, total, view, sort, missing, skipped
+        case path, rows, total, view, sort, missing, skipped, forgotten
         case alreadyExported = "already_exported", lastExportedAt = "last_exported_at", lastFile = "last_file"
     }
 
     public init(path: String, rows: Int, total: Int, view: String, sort: String, missing: [String] = [],
-                alreadyExported: Int = 0, lastExportedAt: Date? = nil, lastFile: String? = nil, skipped: Int = 0) {
+                alreadyExported: Int = 0, lastExportedAt: Date? = nil, lastFile: String? = nil, skipped: Int = 0,
+                forgotten: Int = 0) {
         self.path = path
         self.rows = rows
         self.total = total
@@ -1060,6 +1064,7 @@ public struct JobsExport: Codable, Equatable, Sendable {
         self.lastExportedAt = lastExportedAt
         self.lastFile = lastFile
         self.skipped = skipped
+        self.forgotten = forgotten
     }
 
     public init(from decoder: Decoder) throws {
@@ -1074,6 +1079,8 @@ public struct JobsExport: Codable, Equatable, Sendable {
         lastExportedAt = try c.decodeIfPresent(Date.self, forKey: .lastExportedAt)
         lastFile = try c.decodeIfPresent(String.self, forKey: .lastFile).flatMap { $0.isEmpty ? nil : $0 }
         skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
+        // Go omits zero (`forgotten,omitempty`); an older reply has no key.
+        forgotten = try c.decodeIfPresent(Int.self, forKey: .forgotten) ?? 0
     }
 
     /// The one line the app shows once the file is written.
@@ -1094,6 +1101,13 @@ public struct JobsExport: Codable, Equatable, Sendable {
         }
         if skipped > 0 {
             line += " Left out \(skipped.formatted()) \(skipped == 1 ? "role" : "roles") exported before."
+        }
+        // Same fact as the CLI warning: past exportlog.MaxJobs the oldest keys read as never exported.
+        // A zero, absent, or negative count is not that (omitempty, or a bad number).
+        if forgotten > 0 {
+            let noun = forgotten == 1 ? "role" : "roles"
+            let verb = forgotten == 1 ? "reads" : "read"
+            line += " The export record keeps at most \(50_000.formatted()) roles; the \(forgotten.formatted()) \(noun) exported longest ago now \(verb) as never exported."
         }
         return line
     }
