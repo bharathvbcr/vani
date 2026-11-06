@@ -312,8 +312,6 @@ func TestServeRunRequestAdversarialFiles(t *testing.T) {
 		{"corrupt", []byte(`{"v":1,"requested_at":`)},
 		{"not an object", []byte(`[1,2]`)},
 		{"trailing data", append(requestJSON(t, runRequest{V: 1, RequestedAt: fresh}), []byte(` {}`)...)},
-		{"unknown key", []byte(`{"v":1,"requested_at":"` + fresh.UTC().Format(time.RFC3339Nano) + `","options":{},"run_twice":true}`)},
-		{"unknown option", []byte(`{"v":1,"requested_at":"` + fresh.UTC().Format(time.RFC3339Nano) + `","options":{"advance":3,"boards_all":true}}`)},
 		{"wrong version", requestJSON(t, runRequest{V: 2, RequestedAt: fresh})},
 		{"no time", requestJSON(t, runRequest{V: 1})},
 		{"from the future", requestJSON(t, runRequest{V: 1, RequestedAt: fresh.Add(time.Hour)})},
@@ -333,6 +331,29 @@ func TestServeRunRequestAdversarialFiles(t *testing.T) {
 			}
 			if requestExists(stateDir, runRequestFile) || requestExists(stateDir, runClaimedFile) {
 				t.Error("the bad request was kept")
+			}
+		})
+	}
+	// An unknown key on an otherwise valid request is not corrupt. This binary
+	// must not run it and must not delete it: a newer vani wrote it.
+	requeue := []struct {
+		name string
+		raw  []byte
+	}{
+		{"unknown key", []byte(`{"v":1,"requested_at":"` + fresh.UTC().Format(time.RFC3339Nano) + `","options":{},"run_twice":true}`)},
+		{"unknown option", []byte(`{"v":1,"requested_at":"` + fresh.UTC().Format(time.RFC3339Nano) + `","options":{"advance":3,"boards_all":true}}`)},
+	}
+	for _, c := range requeue {
+		t.Run(c.name, func(t *testing.T) {
+			_, stateDir := setup(t)
+			writeRequestFile(t, stateDir, c.raw)
+			got, err := serveOnce(t, stateDir, nil)
+			if got.calls != 0 || err != nil {
+				t.Fatalf("served %+v, %v", got, err)
+			}
+			body, rerr := os.ReadFile(runsPath(stateDir, runRequestFile))
+			if rerr != nil || !bytes.Equal(body, c.raw) || requestExists(stateDir, runClaimedFile) {
+				t.Fatalf("pending %v claimed %v\n%s", rerr, requestExists(stateDir, runClaimedFile), body)
 			}
 		})
 	}
