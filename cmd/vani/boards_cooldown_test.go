@@ -121,13 +121,13 @@ func TestListBoardsThrottledHostIsAskedOnceMoreThenNotAtAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if site.requests() != 5+1 {
-		t.Errorf("%d requests, want 5 for the first board, 1 probe for the second, none for the third", site.requests())
+	if site.requests() != 6+1 {
+		t.Errorf("%d requests, want 6 for the first board, 1 probe for the second, none for the third", site.requests())
 	}
 	if rep.RateLimited != 3 || rep.Failed != 3 || rep.Read != 0 || len(cr.got) != 0 {
 		t.Fatalf("report %+v, reconciled %v", rep, cr.got)
 	}
-	for i, want := range []string{"gave up after 5 attempts", "host rate limited earlier this run; probed once", "host rate limited earlier this run; probed once"} {
+	for i, want := range []string{"gave up after 6 attempts", "host rate limited earlier this run; probed once", "host rate limited earlier this run; probed once"} {
 		if e := rep.Items[i]; e.Outcome != boardRateLimited || !strings.Contains(e.Error, want) {
 			t.Errorf("board %d: %+v, want rate_limited with %q", i, e, want)
 		}
@@ -154,9 +154,9 @@ func TestListBoardsCooldownAcrossRuns(t *testing.T) {
 		return rep, site, warn.String()
 	}
 
-	// Day 1: the host is down. It costs the usual five requests, once.
+	// Day 1: the host is down. It costs the usual six requests, once.
 	_, site, _ := runOnce(cooldownClock, down)
-	if site.requests() != 5+1 {
+	if site.requests() != 6+1 {
 		t.Fatalf("day 1: %d requests", site.requests())
 	}
 	if c := readCooldowns(t, file)[msHost]; c.Runs != 1 || !c.Last.Equal(cooldownClock) {
@@ -243,14 +243,14 @@ func TestListBoardsCooldownFileAdversarial(t *testing.T) {
 	for name, c := range map[string]struct {
 		body      string
 		wantWarn  string
-		wantReqs  int // requests to a host that is down: 5 for a fresh host, 1 for a probe
+		wantReqs  int // requests to a host that is down: 6 for a fresh host, 1 for a probe
 		wantAfter int // runs on file afterwards
 	}{
-		"garbage":    {"\x00\xff not json", "host cooldowns ignored", 5, 1},
-		"oversized":  {huge, "host cooldowns ignored", 5, 1},
-		"wrong type": {`{"version":1,"hosts":{"` + msHost + `":{"runs":"lots","last":5}}}`, "dropped", 5, 1},
+		"garbage":    {"\x00\xff not json", "host cooldowns ignored", 6, 1},
+		"oversized":  {huge, "host cooldowns ignored", 6, 1},
+		"wrong type": {`{"version":1,"hosts":{"` + msHost + `":{"runs":"lots","last":5}}}`, "dropped", 6, 1},
 		"future":     {`{"version":1,"hosts":{"` + msHost + `":{"runs":3,"last":"2031-01-01T00:00:00Z"}}}`, "", 1, 4},
-		"far past":   {`{"version":1,"hosts":{"` + msHost + `":{"runs":3,"last":"2020-01-01T00:00:00Z"}}}`, "dropped", 5, 1},
+		"far past":   {`{"version":1,"hosts":{"` + msHost + `":{"runs":3,"last":"2020-01-01T00:00:00Z"}}}`, "dropped", 6, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			withClock(t, cooldownClock)
