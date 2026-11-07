@@ -347,3 +347,95 @@ func TestSkillCoversEveryCommand(t *testing.T) {
 		}
 	}
 }
+
+// The skill must not send an agent to exit 75 from run-once, must not describe
+// run-request --json's usage error as exit 2 with an empty stdout unless it
+// also says why that exit is avoided, and must not say the place flags scope
+// pending.us.
+func TestSkillExitAndPendingClaims(t *testing.T) {
+	raw, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill := string(raw)
+	flat := strings.Join(strings.Fields(skill), " ")
+	low := strings.ToLower(flat)
+	for _, bad := range []string{
+		"run-once exits 75",
+		"`run-once` exits 75",
+		"run-once always exits 75",
+		"always exits 75",
+		"75 can come from run-once",
+		"75 can come from `run-once`",
+		"run-once` can exit 75",
+	} {
+		if strings.Contains(low, bad) {
+			t.Errorf("SKILL.md says %q", bad)
+		}
+	}
+	const restart = "The same restart from `run-once` is exit 1, not 75"
+	const convert = "converts a usageError into a plain error on purpose, because exit 2 means the binary is too old to the Mac app"
+	const unscoped = "`--company`, `--state` and `--area` do not scope `pending.us`: `pending.us` counts every awaiting posting located in the US"
+	for _, want := range []string{restart, convert, unscoped, "75 comes only from"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("SKILL.md missing %q", want)
+		}
+	}
+	if n := strings.Count(flat, unscoped); n != 2 {
+		t.Errorf("the unscoped pending.us sentence appears %d times, want the triage flags and the backlog steps", n)
+	}
+	if claim := runRequestUsageExitWithoutPurpose(skill); claim != "" {
+		t.Errorf("SKILL.md says a usage error is exit 2 with empty stdout for run-request --json without the purpose:\n%s", claim)
+	}
+	if claim := flagsScopePendingUS(skill); claim != "" {
+		t.Errorf("SKILL.md says --company, --state, or --area scope pending.us:\n%s", claim)
+	}
+}
+
+// runRequestUsageExitWithoutPurpose reports a stretch that ties run-request
+// --json's usage error to exit 2 and an empty stdout without the reason that
+// exit is avoided.
+func runRequestUsageExitWithoutPurpose(skill string) string {
+	parts := strings.Split(skill, "\n\n")
+	for _, part := range parts {
+		low := strings.ToLower(part)
+		if !strings.Contains(low, "run-request") || !strings.Contains(low, "--json") || !strings.Contains(low, "usage") {
+			continue
+		}
+		if !strings.Contains(low, "exit 2") {
+			continue
+		}
+		if !strings.Contains(low, "nothing on stdout") && !strings.Contains(low, "empty stdout") {
+			continue
+		}
+		if strings.Contains(low, "too old") && strings.Contains(low, "on purpose") && strings.Contains(low, "plain error") {
+			continue
+		}
+		return part
+	}
+	return ""
+}
+
+// flagsScopePendingUS reports a sentence that says the place flags scope
+// pending.us. A sentence that says they do not is not that claim.
+func flagsScopePendingUS(skill string) string {
+	// A period followed by whitespace ends a sentence. The dot in `pending.us` does not.
+	for _, sentence := range regexp.MustCompile(`\.\s`).Split(skill, -1) {
+		sentence = strings.Join(strings.Fields(sentence), " ")
+		low := strings.ToLower(sentence)
+		if !strings.Contains(low, "pending.us") {
+			continue
+		}
+		if !strings.Contains(low, "--company") || !strings.Contains(low, "--state") || !strings.Contains(low, "--area") {
+			continue
+		}
+		if !strings.Contains(low, "scope") {
+			continue
+		}
+		if strings.Contains(low, "not scope") || strings.Contains(low, "n't scope") || strings.Contains(low, "never scope") {
+			continue
+		}
+		return strings.TrimSpace(sentence)
+	}
+	return ""
+}

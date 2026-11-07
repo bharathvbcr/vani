@@ -44,6 +44,9 @@ whether a binary has them.
   `{"error","code"}` object.
 - **Command flag:** `vani <command> --json` does the same for a successful reply and for a
   runtime failure. A usage error keeps its older form: exit 2 and nothing on stdout.
+  `run-request --json` does not: it converts a usageError into a plain error on purpose,
+  because exit 2 means the binary is too old to the Mac app. That exit is not changed for
+  any other command.
 - **Failure:** `{"error","code"}`. `code` is `usage` (bad flags or arguments), `unsupported`
   (the command has no JSON form), `runtime`, or a command's own code (`busy`, `timeout`,
   `budget_exhausted`, `ineligible`, ...). A command that fails after producing something
@@ -52,7 +55,9 @@ whether a binary has them.
   `jobs export` refused with `already_exported` keeps the count of roles exported before. Re-run
   it with `--already-exported skip` or `include` only after asking the owner.
 - **Exit codes:** 0 ok, 1 runtime failure, 2 usage error or unsupported. 75 comes only from
-  `vani daemon` (restart for a config change).
+  `vani daemon` (restart for a config change, or its own binary replaced on disk). The same
+  restart from `run-once` is exit 1, not 75: that command's daemon cancel is nil, so the
+  error is a runtime failure. 75 is not a `run-once` exit.
 - **Discovery:** `vani --json help` lists every command with how it answers. `json` is one of:
   - `flag`: takes `--json`
   - `always`: JSON whatever the flags
@@ -131,9 +136,10 @@ and calls no decision backend.
   `--or-remote` on `run-once` or `run-request` limit triage, scoring and explaining to
   postings there, and the rest wait for a later run. They read the same as on `jobs list`,
   so first run `vani --json jobs list --view pending` with those flags to see what is waiting
-  there (and the company names as Vani has them). `--advance N` caps the run within the
-  scope. The record's `options` keep the scope, and a name with nothing waiting is a warning
-  in the run's output. To have Sonnet read again roles already triaged there, take the keys
+  there (and the company names as Vani has them). `--company`, `--state` and `--area` do not
+  scope `pending.us`: `pending.us` counts every awaiting posting located in the US. `--advance N`
+  caps the run within the scope. The record's `options` keep the scope, and a name with nothing
+  waiting is a warning in the run's output. To have Sonnet read again roles already triaged there, take the keys
   from `jobs list --json` with the same flags and pass them to `jobs retriage --batch`.
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
@@ -196,8 +202,10 @@ United States first, and to pick N:
 2. `vani --json jobs list --view pending --limit 1` reads the `pending` summary in the reply: `total`
    awaiting triage, and `companies`, the 20 companies with the most (a bounded list, not the whole
    backlog). When the build has them, the summary also carries `us`, how many of `total` are located
-   in the United States, and each company entry its own `us`. Size N from `pending.us` then, and from
-   `total` otherwise. A reply without `us` is from an older build: do not read it as zero.
+   in the United States, and each company entry its own `us`. `--company`, `--state` and `--area`
+   do not scope `pending.us`: `pending.us` counts every awaiting posting located in the US, not
+   the rows those flags list. Size N from `pending.us` then, and from `total` otherwise. A reply
+   without `us` is from an older build: do not read it as zero.
 3. Ask the owner. The run spends from `decide.daily_usd`, so give N and what it may cost. Then
    `vani --json run-request --us-first --advance N` when the daemon runs, or
    `vani --json run-once --us-first --advance N` when it does not (`run-once` is refused while the
