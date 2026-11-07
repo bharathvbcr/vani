@@ -132,7 +132,8 @@ func (ix *Index) RepeatApply(k posting.Key, company string) (a Applied, ok bool)
 		return Applied{}, false
 	}
 	for _, p := range ix.applied[id] {
-		if p.Key == k || ix.now.Sub(p.At) > applyWindow {
+		age := ix.now.Sub(p.At)
+		if p.Key == k || age < 0 || age > applyWindow {
 			continue
 		}
 		a.Count++
