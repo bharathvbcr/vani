@@ -415,12 +415,30 @@ final class JobsModel {
         }
     }
 
+    /// Takes the single-flight flag for an export, including the alert and the save panel
+    /// that follow the check. False when one is already in flight.
+    func beginExport() -> Bool {
+        guard !exporting else { return false }
+        exporting = true
+        return true
+    }
+
+    /// Releases the flag `beginExport` took. The menu stays disabled until this runs,
+    /// which is after the panels return or the user cancels.
+    func endExport() {
+        exporting = false
+    }
+
     /// What exporting `scope` of the list as it is viewed would write, written nowhere: how many of
     /// those roles an earlier export wrote. Nil when the check failed (`actionError` says why).
+    ///
+    /// A flight that already holds `exporting` keeps it. This method clears the flag only when it
+    /// took the flag itself, so the alert and the save panel that follow a check are not left open
+    /// to a second export.
     func checkExport(_ scope: JobsExportScope) async -> JobsExport? {
-        guard !exporting else { return nil }
-        exporting = true
-        defer { exporting = false }
+        let owns = !exporting
+        if owns { exporting = true }
+        defer { if owns { exporting = false } }
         let c = client(), v = view, q = query, s = sort, f = filter
         switch await BlockingWork.run({ try c.exportCheck(v, query: q, sort: s, filter: f, scope) }) {
         case let .success(reply): return reply
@@ -433,10 +451,13 @@ final class JobsModel {
     /// Write the list as it is viewed, sorted and filtered (its first N roles, or the roles `scope`
     /// names) to `url` as an Excel workbook. `already` is the owner's answer about roles exported
     /// before; nil when the check found none, so vani refuses if one was exported meanwhile.
+    ///
+    /// Same flag rule as `checkExport`: a caller that already began the flight keeps it until
+    /// `endExport`.
     func export(_ scope: JobsExportScope, to url: URL, already: JobsAlreadyExported?) async {
-        guard !exporting else { return }
-        exporting = true
-        defer { exporting = false }
+        let owns = !exporting
+        if owns { exporting = true }
+        defer { if owns { exporting = false } }
         let c = client(), v = view, q = query, s = sort, f = filter
         let result = await BlockingWork.run { try c.export(v, query: q, sort: s, filter: f, scope, to: url, already: already) }
         switch result {
