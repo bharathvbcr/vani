@@ -16,12 +16,17 @@ import Foundation
 public struct ManualRunOptions: Codable, Equatable, Sendable {
     /// config.MaxAdvancePerRun.
     public static let maxAdvance = 5000
+    /// config.MaxAdvanceConcurrency.
+    public static let maxWorkers = 16
     /// maxRunBoards: at most this many --board flags.
-    public static let maxBoards = 200
+    public static let maxBoards = 500
 
     /// Cap on postings triaged, scored and explained this run; 0 keeps the
     /// config's advance_per_run.
     public var advance: Int
+    /// Concurrent triage/score/explain workers this run (`--workers`); 0 keeps
+    /// the config's advance_concurrency.
+    public var workers: Int
     /// The watchlist boards to list, as "ats:token"; empty lists every board.
     public var boards: [String]
     /// List and reconcile boards only: no triage, scoring or explaining. No
@@ -44,10 +49,11 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     public var remote: Bool
     public var orRemote: Bool
 
-    public init(advance: Int = 0, boards: [String] = [], listOnly: Bool = false, noDigest: Bool = false,
+    public init(advance: Int = 0, workers: Int = 0, boards: [String] = [], listOnly: Bool = false, noDigest: Bool = false,
                 usFirst: Bool = false,
                 companies: [String] = [], states: [String] = [], areas: [String] = [], remote: Bool = false, orRemote: Bool = false) {
         self.advance = advance
+        self.workers = workers
         self.boards = boards
         self.listOnly = listOnly
         self.noDigest = noDigest
@@ -60,7 +66,7 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case advance, boards
+        case advance, workers, boards
         case listOnly = "list_only"
         case noDigest = "no_digest"
         case usFirst = "us_first"
@@ -72,6 +78,7 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         advance = try c.decodeIfPresent(Int.self, forKey: .advance) ?? 0
+        workers = try c.decodeIfPresent(Int.self, forKey: .workers) ?? 0
         boards = try c.decodeIfPresent([String].self, forKey: .boards) ?? []
         listOnly = try c.decodeIfPresent(Bool.self, forKey: .listOnly) ?? false
         noDigest = try c.decodeIfPresent(Bool.self, forKey: .noDigest) ?? false
@@ -87,7 +94,7 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
     public static func ref(ats: String, token: String) -> String { "\(ats):\(token)" }
 
     /// The run as the config describes it, which is what the daemon runs.
-    public var isDefault: Bool { advance == 0 && boards.isEmpty && !listOnly && !noDigest && !usFirst && !scoped }
+    public var isDefault: Bool { advance == 0 && workers == 0 && boards.isEmpty && !listOnly && !noDigest && !usFirst && !scoped }
 
     /// Whether the run triages only some companies or places.
     public var scoped: Bool { !companies.isEmpty || !states.isEmpty || !areas.isEmpty || remote || orRemote }
@@ -99,11 +106,16 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         guard (0...Self.maxAdvance).contains(advance) else {
             throw BankError("the advance cap must be within 1…\(Self.maxAdvance), or 0 for advance_per_run")
         }
+        guard (0...Self.maxWorkers).contains(workers) else {
+            throw BankError("parallel workers must be within 1…\(Self.maxWorkers), or 0 for advance_concurrency")
+        }
         if listOnly && advance != 0 { throw BankError("a list-only run has no advance phase to cap") }
+        if listOnly && workers != 0 { throw BankError("a list-only run has no advance phase for parallel workers") }
         if listOnly && usFirst { throw BankError("a list-only run has no advance phase for US first to order") }
         guard boards.count <= Self.maxBoards else { throw BankError("choose at most \(Self.maxBoards) boards, or all of them") }
         var args = [command]
         if advance > 0 { args += ["--advance", String(advance)] }
+        if workers > 0 { args += ["--workers", String(workers)] }
         for b in boards {
             let parts = b.split(separator: ":", maxSplits: 1)
             guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty, !b.hasPrefix("-") else {
@@ -196,6 +208,7 @@ public struct ManualRunOptions: Codable, Equatable, Sendable {
         var parts: [String] = []
         if !boards.isEmpty { parts.append(boards.count == 1 ? "1 board" : "\(boards.count) boards") }
         if listOnly { parts.append("list only") } else if advance > 0 { parts.append("advance cap \(advance)") }
+        if workers > 0 { parts.append(workers == 1 ? "1 worker" : "\(workers) workers") }
         if usFirst { parts.append("US first") }
         if let s = scopeWords { parts.append("advancing only \(s)") }
         if noDigest { parts.append("no digest") }

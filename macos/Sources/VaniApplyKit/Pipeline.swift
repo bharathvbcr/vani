@@ -288,11 +288,16 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var attempted: Int
             public var limit: Int
             public var eligible: Int
+            /// Concurrent boards being fetched right now during the listing stage.
+            public var inFlight: Int
+            /// Parallel triage/score/explain workers during the advance stage.
+            public var workers: Int
             public var updatedAt: Date?
 
             enum CodingKeys: String, CodingKey {
                 case ok, reason, stage, phase, index, total, done, read, failed, skipped, listed, added
-                case ats, token, company, outcome, attempted, limit, eligible
+                case ats, token, company, outcome, attempted, limit, eligible, workers
+                case inFlight = "in_flight"
                 case rateLimited = "rate_limited"
                 case updatedAt = "updated_at"
             }
@@ -301,7 +306,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                         index: Int = 0, total: Int = 0, done: Int = 0, read: Int = 0, failed: Int = 0,
                         rateLimited: Int = 0, skipped: Int = 0, listed: Int = 0, added: Int? = nil,
                         ats: String = "", token: String = "", company: String = "", outcome: String = "",
-                        attempted: Int = 0, limit: Int = 0, eligible: Int = 0, updatedAt: Date? = nil) {
+                        attempted: Int = 0, limit: Int = 0, eligible: Int = 0,
+                        inFlight: Int = 0, workers: Int = 0, updatedAt: Date? = nil) {
                 self.ok = ok
                 self.reason = reason
                 self.stage = stage
@@ -322,6 +328,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 self.attempted = attempted
                 self.limit = limit
                 self.eligible = eligible
+                self.inFlight = inFlight
+                self.workers = workers
                 self.updatedAt = updatedAt
             }
 
@@ -347,7 +355,22 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 attempted = try c.decodeIfPresent(Int.self, forKey: .attempted) ?? 0
                 limit = try c.decodeIfPresent(Int.self, forKey: .limit) ?? 0
                 eligible = try c.decodeIfPresent(Int.self, forKey: .eligible) ?? 0
+                inFlight = try c.decodeIfPresent(Int.self, forKey: .inFlight) ?? 0
+                workers = try c.decodeIfPresent(Int.self, forKey: .workers) ?? 0
                 updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+            }
+
+            /// Parallelism during board scraping or triage. Empty when sequential or unreported.
+            public var parallelNote: String {
+                guard ok else { return "" }
+                switch stage {
+                case "listing":
+                    return inFlight > 1 ? "\(inFlight) boards in flight" : ""
+                case "advance":
+                    return workers > 1 ? "\(workers) parallel workers" : ""
+                default:
+                    return ""
+                }
             }
 
             /// The banner title while this snapshot can be trusted. Empty when it
@@ -1373,9 +1396,11 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var stopped: Stop?
             public var failOpen: FailOpen
             public var notes: Notes
+            /// Concurrent workers when the advance phase ran with >1 worker.
+            public var workers: Int?
 
             enum CodingKeys: String, CodingKey {
-                case eligible, limit, attempted, unread, failed, deferred, stopped, notes
+                case eligible, limit, attempted, unread, failed, deferred, stopped, notes, workers
                 case failOpen = "fail_open"
             }
 
@@ -1390,10 +1415,11 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 stopped = try c.decodeIfPresent(String.self, forKey: .stopped).flatMap { $0.isEmpty ? nil : Stop(raw: $0) }
                 failOpen = try c.decodeIfPresent(FailOpen.self, forKey: .failOpen) ?? FailOpen()
                 notes = try c.decodeIfPresent(Notes.self, forKey: .notes) ?? Notes()
+                workers = try c.decodeIfPresent(Int.self, forKey: .workers)
             }
 
             public init(eligible: Int, limit: Int, attempted: Int, unread: Int = 0, failed: Int = 0, deferred: Int, stopped: Stop? = nil,
-                        failOpen: FailOpen = FailOpen(), notes: Notes = Notes()) {
+                        failOpen: FailOpen = FailOpen(), notes: Notes = Notes(), workers: Int? = nil) {
                 self.eligible = eligible
                 self.limit = limit
                 self.attempted = attempted
@@ -1403,6 +1429,13 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 self.stopped = stopped
                 self.failOpen = failOpen
                 self.notes = notes
+                self.workers = workers
+            }
+
+            /// Parallel triage workers when more than one worker ran.
+            public var parallelNote: String? {
+                guard let w = workers, w > 1 else { return nil }
+                return "Triaged across \(w) parallel workers."
             }
 
             /// Attempted postings that moved on: neither unread nor failed.

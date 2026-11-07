@@ -225,6 +225,9 @@ func TestScopeWords(t *testing.T) {
 	if got := optionsSummary(runOptions{Advance: 20, USFirst: true, Companies: []string{"acme"}, NoDigest: true}); got != "advance cap 20; US first; advancing only postings at acme; no digest" {
 		t.Errorf("optionsSummary with us_first = %q", got)
 	}
+	if got := optionsSummary(runOptions{Advance: 20, Workers: 4, USFirst: true}); got != "advance cap 20; 4 workers; US first" {
+		t.Errorf("optionsSummary with workers = %q", got)
+	}
 }
 
 // An app that cannot be tuned must not run a scoped run over every posting.

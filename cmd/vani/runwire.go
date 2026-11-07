@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/egress"
@@ -79,6 +81,7 @@ func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...
 //
 //	field       kindRun                          kindInbox
 //	Limit       the tuned cap, else advance_per_run   advance_per_run (a tune is not read)
+//	Workers     the tuned --workers, else advance_concurrency   advance_concurrency
 //	Skip        the tuned --list-only            never
 //	Order       title rank, then the semantic    title rank only
 //	            knowledge-base order when on
@@ -88,7 +91,7 @@ func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...
 func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeline.AdvancePlan {
 	w.mu.Lock()
 	limit, workers := w.cfg.AdvanceLimit(), w.cfg.AdvanceWorkers()
-	capOverride, listOnly := w.tuned.Advance, w.tuned.ListOnly
+	capOverride, workersOverride, listOnly := w.tuned.Advance, w.tuned.Workers, w.tuned.ListOnly
 	usFirst := withUSFirst(w.tuned.USFirst || w.cfg.AdvanceUSFirst)
 	inboxUSFirst := withUSFirst(w.cfg.AdvanceUSFirst)
 	tuned := w.tuned
@@ -100,6 +103,9 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 	case kindRun:
 		if capOverride > 0 {
 			p.Limit = capOverride
+		}
+		if workersOverride > 0 {
+			p.Workers = workersOverride
 		}
 		p.Skip = listOnly
 		// The semantic order reads the cache the warm before the advance phase
@@ -114,7 +120,11 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 	// Counts only. The callback has no posting key; an inbox or rescore with
 	// no live run id is a no-op inside noteLive's writer.
 	p.Progress = func(attempted, limit, eligible int) {
-		w.noteLive(runProgress{Stage: progressAdvance, Attempted: attempted, Limit: limit, Eligible: eligible})
+		var activeWorkers int
+		if p.Workers > 1 {
+			activeWorkers = p.Workers
+		}
+		w.noteLive(runProgress{Stage: progressAdvance, Attempted: attempted, Limit: limit, Eligible: eligible, Workers: activeWorkers})
 	}
 	return p
 }
@@ -193,6 +203,32 @@ func (w *wired) runOnce(ctx context.Context) error {
 // configured board through them. The careers-page browser and its proxy live
 // for this listing only. The board report is kept for the run record.
 func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipeline.DropPolicy, protect func(posting.Key) bool) (pipeline.BoardCounts, error) {
+	// Snapshot the sorted ledger once so concurrent detail-fetching boards
+	// (Workday, SmartRecruiters, Oracle HCM, Rippling, TalentBrew, Avature)
+	// binary-search their prefix in O(log N) instead of cloning and sorting
+	// the entire ledger on every board. If a prefix is ever reconciled before
+	// another board with the same prefix lists, storedFor falls back to w.storedFor.
+	initialRecs := w.led.All()
+	var prefixMu sync.Mutex
+	dirtyPrefix := map[string]bool{}
+	storedFor := func(b sources.Board) []posting.Posting {
+		prefix := b.KeyPrefix()
+		prefixMu.Lock()
+		dirty := dirtyPrefix[prefix]
+		prefixMu.Unlock()
+		if dirty {
+			return w.storedFor(b)
+		}
+		start := sort.Search(len(initialRecs), func(i int) bool {
+			return string(initialRecs[i].Key) >= prefix
+		})
+		var out []posting.Posting
+		for i := start; i < len(initialRecs) && strings.HasPrefix(string(initialRecs[i].Key), prefix); i++ {
+			out = append(out, ledger.Full(w.led, initialRecs[i]).Posting)
+		}
+		return out
+	}
+
 	srcs := apiSources(d)
 	resolved := ""
 	if w.stateDir != "" {
@@ -226,7 +262,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// and new ones the title rule drops are never fetched, so a large board
 	// spends at most workday.MaxDetails requests a run.
 	wd, err := workday.NewWith(d, workday.Options{
-		Stored:     w.storedFor,
+		Stored:     storedFor,
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -241,7 +277,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// same bounds (stored postings reused, listed rows prefiltered, at most
 	// smartrecruiters.MaxDetails requests a board a run).
 	sr, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
-		Stored:     w.storedFor,
+		Stored:     storedFor,
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st smartrecruiters.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -254,7 +290,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	srcs[posting.SmartRecruiters] = sr
 	// Oracle HCM costs a detail request per posting too, bounded the same way.
 	oc, err := oraclehcm.NewWith(d, oraclehcm.Options{
-		Stored: w.storedFor,
+		Stored: storedFor,
 		Report: func(b sources.Board, st oraclehcm.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
@@ -268,7 +304,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// SmartRecruiters (stored postings reused, listed rows prefiltered, at most
 	// rippling.MaxDetails requests a board a run).
 	rp, err := rippling.NewWith(d, rippling.Options{
-		Stored:     w.storedFor,
+		Stored:     storedFor,
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -283,7 +319,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// so every posting costs one: bounded as Rippling's is, at
 	// talentbrew.MaxDetails pages a board a run.
 	tb, err := talentbrew.NewWith(d, talentbrew.Options{
-		Stored:     w.storedFor,
+		Stored:     storedFor,
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -304,7 +340,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// postings reused, listed rows prefiltered, at most avature.MaxDetails
 	// requests a board a run).
 	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
-		Stored:     w.storedFor,
+		Stored:     storedFor,
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -334,6 +370,12 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// ledger here (the adapters read it), as Reconciler requires.
 	rec := pipeline.NewReconciler(w.led)
 	rec.Protect(protect)
+	reconcile := func(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
+		prefixMu.Lock()
+		dirtyPrefix[b.KeyPrefix()] = true
+		prefixMu.Unlock()
+		return rec.Reconcile(ctx, b, listed, now)
+	}
 	// Before the first board: added is 0, not an unreported count.
 	w.noteLive(runProgress{Stage: progressListing, Total: len(w.cfg.Watchlist), Added: progressCount(0)})
 	ctx = withListingTick(ctx, func(tk listingTick) {
@@ -342,10 +384,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			Done: tk.Done, Read: tk.Read, Failed: tk.Failed, RateLimited: tk.RateLimited,
 			Skipped: tk.Skipped, Listed: tk.Listed, Added: progressCount(tk.Added),
 			ATS: string(tk.Board.ATS), Token: tk.Board.Token, Company: tk.Board.Company,
-			Outcome: tk.Outcome,
+			Outcome: tk.Outcome, InFlight: tk.InFlight,
 		})
 	})
-	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, rec.Reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
+	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
 	w.boards = &boards

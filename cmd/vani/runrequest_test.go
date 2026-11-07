@@ -317,7 +317,10 @@ func TestServeRunRequestAdversarialFiles(t *testing.T) {
 		{"from the future", requestJSON(t, runRequest{V: 1, RequestedAt: fresh.Add(time.Hour)})},
 		{"advance out of bounds", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Advance: config.MaxAdvancePerRun + 1}})},
 		{"negative advance", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Advance: -1}})},
+		{"workers out of bounds", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Workers: config.MaxAdvanceConcurrency + 1}})},
+		{"negative workers", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Workers: -1}})},
 		{"list-only with a cap", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Advance: 3, ListOnly: true}})},
+		{"list-only with workers", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Workers: 4, ListOnly: true}})},
 		{"too many boards", requestJSON(t, runRequest{V: 1, RequestedAt: fresh, Options: runOptions{Boards: make([]string, maxRunBoards+1)}})},
 		{"oversized", append([]byte(`{"v":1,"pad":"`), bytes.Repeat([]byte("x"), maxRunRequest)...)},
 	}

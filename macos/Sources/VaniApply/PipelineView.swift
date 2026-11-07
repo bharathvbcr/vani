@@ -106,6 +106,9 @@ private struct RunningBanner: View {
                         if !live.phaseNote.isEmpty {
                             Text(verbatim: live.phaseNote)
                         }
+                        if !live.parallelNote.isEmpty {
+                            Text(verbatim: live.parallelNote)
+                        }
                     }
                     if !live.countsText.isEmpty {
                         Text(verbatim: live.countsText)
@@ -210,6 +213,8 @@ private struct RunNowSheet: View {
     @State private var advance: Bool
     @State private var capOn: Bool
     @State private var cap: Int
+    @State private var workersOn: Bool
+    @State private var workers: Int
     @State private var digest: Bool
     @State private var usFirst: Bool
     @State private var boards: [WatchlistEntry] = []
@@ -226,6 +231,8 @@ private struct RunNowSheet: View {
         _advance = State(initialValue: !initial.listOnly)
         _capOn = State(initialValue: initial.advance > 0)
         _cap = State(initialValue: initial.advance > 0 ? initial.advance : 50)
+        _workersOn = State(initialValue: initial.workers > 0)
+        _workers = State(initialValue: initial.workers > 0 ? initial.workers : 4)
         _digest = State(initialValue: !initial.noDigest)
         _usFirst = State(initialValue: initial.usFirst && !initial.listOnly)
     }
@@ -264,6 +271,18 @@ private struct RunNowSheet: View {
                                 }
                             }
                         }
+                        Toggle("Parallelize triage across multiple AI workers (instead of advance_concurrency)", isOn: $workersOn)
+                        if workersOn {
+                            Stepper(value: $workers, in: 1...ManualRunOptions.maxWorkers) {
+                                HStack {
+                                    Text("Run")
+                                    TextField("Workers", value: $workers, format: .number)
+                                        .frame(width: 50)
+                                        .multilineTextAlignment(.trailing)
+                                    Text(workers == 1 ? "worker" : "parallel workers")
+                                }
+                            }
+                        }
                         Toggle("Triage US postings first", isOn: $usFirst)
                         Text("Advance postings located in the United States before the rest. It only changes the order; nothing is dropped.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -296,12 +315,13 @@ private struct RunNowSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: (allBoards ? 560 : 720) + (presentation.banner == nil ? 0 : 110))
+        .frame(width: 560, height: (allBoards ? 590 : 750) + (presentation.banner == nil ? 0 : 110))
         .task { await loadBoards() }
     }
 
     private var options: ManualRunOptions {
         ManualRunOptions(advance: advance && capOn ? cap : 0,
+                         workers: advance && workersOn ? workers : 0,
                          boards: allBoards ? [] : boards.map(ref).filter(chosen.contains),
                          listOnly: !advance,
                          noDigest: !digest,
@@ -746,6 +766,9 @@ private struct AdvanceRows: View {
     var body: some View {
         Row(label: "Advanced", value: advance.summary)
             .help("Eligible postings are every one waiting for a stage (triage, score or explain), so this can be more than the Jobs tab's awaiting-triage count.")
+        if let p = advance.parallelNote {
+            Row(label: "", value: p, secondary: true)
+        }
         if let o = advance.outcome {
             Row(label: "", value: o, secondary: true)
         }

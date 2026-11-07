@@ -42,6 +42,19 @@ func TestAdvancePlanDifferencesBetweenCallers(t *testing.T) {
 	if run.Workers != inbox.Workers || run.Workers != cfg.AdvanceWorkers() {
 		t.Errorf("workers: run %d inbox %d", run.Workers, inbox.Workers)
 	}
+	w.tune(runOptions{Advance: 7, Workers: 12})
+	if got := w.advancePlan(kindRun, policy).Workers; got != 12 {
+		t.Errorf("tuned run workers = %d, want 12", got)
+	}
+	rep, err := pipeline.Advance(context.Background(), w.advancePlan(kindRun, policy), pipeline.AdvanceDeps{
+		Advance: func(context.Context, posting.Key) error { return nil },
+	})
+	if err != nil || rep.Workers != 12 {
+		t.Errorf("Advance report workers = %d (err %v), want 12", rep.Workers, err)
+	}
+	if got := w.advancePlan(kindInbox, policy).Workers; got != cfg.AdvanceWorkers() {
+		t.Errorf("inbox workers with run tune = %d, want %d", got, cfg.AdvanceWorkers())
+	}
 	if resc.Limit != 3 || resc.Workers != 2 || resc.Select == nil || !resc.QuietCap || resc.FillFunnel || resc.TitleDrop != nil {
 		t.Errorf("rescore: %+v", resc)
 	}

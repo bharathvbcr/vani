@@ -52,6 +52,7 @@ type AdvanceReport struct {
 	Eligible int `json:"eligible"`
 	// Limit is the per-run cap (config advance_per_run).
 	Limit     int `json:"limit"`
+	Workers   int `json:"workers,omitempty"`
 	Attempted int `json:"attempted"`
 	// Unread postings no decision backend could read; they stay live.
 	Unread int `json:"unread"`
@@ -167,8 +168,13 @@ func Advanceable(r ledger.Record) bool {
 // (they count as attempted but end and extend no streak).
 func Advance(ctx context.Context, plan AdvancePlan, deps AdvanceDeps) (AdvanceReport, error) {
 	rep, err := advance(ctx, plan, deps)
-	if plan.FillFunnel && deps.Runner != nil {
-		FillFunnelReport(&rep, deps.Runner, plan.warnf)
+	if plan.FillFunnel {
+		if plan.Workers > 1 {
+			rep.Workers = plan.Workers
+		}
+		if deps.Runner != nil {
+			FillFunnelReport(&rep, deps.Runner, plan.warnf)
+		}
 	}
 	return rep, err
 }

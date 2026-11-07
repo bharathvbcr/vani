@@ -22,7 +22,7 @@ const (
 
 // maxRunBoards bounds --board: a selection longer than this is the whole
 // watchlist, and the run record carries the selection.
-const maxRunBoards = 200
+const maxRunBoards = 500
 
 // runOptions are a manual run's overrides (run-once's flags). The zero value is
 // the run as the config describes it, which is the run the daemon makes.
@@ -30,6 +30,9 @@ type runOptions struct {
 	// Advance caps this run's advance phase (triage, score, explain); 0 keeps
 	// the config's advance_per_run.
 	Advance int `json:"advance,omitempty"`
+	// Workers sets how many postings this run's advance phase advances in
+	// parallel (1..16); 0 keeps the config's advance_concurrency.
+	Workers int `json:"workers,omitempty"`
 	// Boards limits the listing phase to these watchlist boards, as "ats:token";
 	// empty lists every board. Postings of the boards left out are untouched.
 	Boards []string `json:"boards,omitempty"`
@@ -57,7 +60,7 @@ type runOptions struct {
 }
 
 func (o runOptions) isZero() bool {
-	return o.Advance == 0 && len(o.Boards) == 0 && !o.ListOnly && !o.NoDigest && !o.USFirst && !o.scoped()
+	return o.Advance == 0 && o.Workers == 0 && len(o.Boards) == 0 && !o.ListOnly && !o.NoDigest && !o.USFirst && !o.scoped()
 }
 
 // recorded is the options as the run record keeps them: nil for none.
@@ -69,7 +72,9 @@ func (o runOptions) recorded() *runOptions {
 }
 
 // tunes reports whether the options change the pipeline itself (App.Tune).
-func (o runOptions) tunes() bool { return o.Advance != 0 || o.ListOnly || o.USFirst || o.scoped() }
+func (o runOptions) tunes() bool {
+	return o.Advance != 0 || o.Workers != 0 || o.ListOnly || o.USFirst || o.scoped()
+}
 
 // runOptionFlags registers a manual run's flags on fs (run-once and
 // run-request take the same ones). The boards land in the second value; the
@@ -78,6 +83,7 @@ func runOptionFlags(fs *flag.FlagSet) (*runOptions, *boardRefs) {
 	var opts runOptions
 	var boards boardRefs
 	fs.IntVar(&opts.Advance, "advance", 0, fmt.Sprintf("triage, score and explain at most N postings this run (1..%d; default advance_per_run)", config.MaxAdvancePerRun))
+	fs.IntVar(&opts.Workers, "workers", 0, fmt.Sprintf("advance up to N postings in parallel this run (1..%d; default advance_concurrency)", config.MaxAdvanceConcurrency))
 	fs.Var(&boards, "board", "list only this watchlist board, as ats:token (repeatable; default every board)")
 	cmd := fs.Name()
 	fs.Var(scopeFlag{&opts.Companies, func(raw string) (map[string]bool, error) { return companySet(cmd, raw) }}, "company",
@@ -165,8 +171,14 @@ func checkRunOptions(o runOptions, watchlist []sources.Board) error {
 	if o.Advance < 0 || o.Advance > config.MaxAdvancePerRun {
 		return usagef("--advance %d must be within 0..%d (0 means advance_per_run)", o.Advance, config.MaxAdvancePerRun)
 	}
+	if o.Workers < 0 || o.Workers > config.MaxAdvanceConcurrency {
+		return usagef("--workers %d must be within 0..%d (0 means advance_concurrency)", o.Workers, config.MaxAdvanceConcurrency)
+	}
 	if o.ListOnly && o.Advance != 0 {
 		return usagef("--list-only skips the advance phase; --advance has nothing to cap")
+	}
+	if o.ListOnly && o.Workers != 0 {
+		return usagef("--list-only skips the advance phase; --workers has nothing to run")
 	}
 	if o.ListOnly && o.USFirst {
 		return usagef("--list-only skips the advance phase; --us-first has nothing to order")

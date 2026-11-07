@@ -146,7 +146,7 @@ func New(cfg Config) (*Client, error) {
 		// certificate verification.
 		DialContext:           c.dial,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          8,
+		MaxIdleConns:          32,
 		MaxIdleConnsPerHost:   2,
 		IdleConnTimeout:       30 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,

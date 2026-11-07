@@ -207,6 +207,23 @@ final class PipelineBoardTests: XCTestCase {
         XCTAssertEqual(board.mark.tone, .cancelled)
     }
 
+    func testParallelBadgeForInFlightBoardsAndWorkers() {
+        var progress = listing(index: 12, total: 48, done: 11, read: 9, failed: 2, rateLimited: 1, listed: 100, added: 8)
+        progress.inFlight = 6
+        let liveListing = PipelineBoard.present(.init(state: .running, progress: progress))!
+        XCTAssertEqual(liveListing.parallelBadge, "6 boards in flight")
+
+        let liveTriage = PipelineBoard.present(.init(state: .running, progress: .init(
+            ok: true, stage: "advance", attempted: 40, limit: 300, workers: 4)))!
+        XCTAssertEqual(liveTriage.parallelBadge, "4 parallel workers")
+
+        let finished = PipelineBoard.present(.init(state: .ok, advance: .init(eligible: 100, limit: 50, attempted: 50, deferred: 50, workers: 8)))!
+        XCTAssertEqual(finished.parallelBadge, "8 parallel workers")
+
+        let single = PipelineBoard.present(.init(state: .ok, advance: .init(eligible: 100, limit: 50, attempted: 50, deferred: 50, workers: 1)))!
+        XCTAssertNil(single.parallelBadge)
+    }
+
     private func value(_ board: PipelineBoard, _ id: String) -> PipelineBoard.CountValue? {
         board.counts.first { $0.id == id }?.value
     }

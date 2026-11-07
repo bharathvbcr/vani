@@ -301,6 +301,9 @@ func TestListBoardsCooldownFileUnwritable(t *testing.T) {
 // A run stopped part-way still writes what it learned, and a cooldown for a
 // host no board reached is left as it was.
 func TestListBoardsCancelledRunKeepsCooldowns(t *testing.T) {
+	// One fetch at a time. With more, the board after the cancellation can
+	// already be inside List on its own host, and the report's NotReached moves.
+	withBoardListParallel(t, 1)
 	withClock(t, cooldownClock)
 	file := cooldownFile(t)
 	other := srcutil.HostCooldown{Runs: 4, Last: cooldownClock.Add(-time.Hour)}

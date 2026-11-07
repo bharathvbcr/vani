@@ -99,6 +99,9 @@ public struct PipelineBoard: Equatable, Sendable {
     public var updatedAt: Date?
     /// The ledger's size change. Nil unless both ends were recorded.
     public var ledgerLine: String?
+    /// Live concurrent board fetches ("6 boards in flight") or parallel triage
+    /// workers ("4 parallel workers"), when more than one is active or ran.
+    public var parallelBadge: String?
 
     /// Nil when there is no run to draw (none recorded, or the record itself
     /// could not be read).
@@ -116,7 +119,7 @@ public struct PipelineBoard: Equatable, Sendable {
                 mark: mark, steps: [], stageLine: "", fraction: nil, placeCaption: "",
                 segments: [], counts: [], showsCounts: false, current: nil, rows: [],
                 problemsDefault: false, footer: "", listNote: "", showsVisuals: false,
-                updatedAt: nil, ledgerLine: HomeOverview.ledgerDelta(run))
+                updatedAt: nil, ledgerLine: HomeOverview.ledgerDelta(run), parallelBadge: nil)
         }
         let stage = progress?.ok == true ? progress?.stage ?? "" : ""
         let known = stepIndex(of: stage)
@@ -125,6 +128,14 @@ public struct PipelineBoard: Equatable, Sendable {
         let numbers = numbers(of: run, progress: progress)
         let rows = rows(of: run.boards)
         let steps = steps(of: run, stage: stage, known: known, running: running, hasFraction: place.fraction != nil)
+        let badge: String?
+        if running, let note = progress?.parallelNote, !note.isEmpty {
+            badge = note
+        } else if let w = run.advance?.workers, w > 1 {
+            badge = "\(w) parallel workers"
+        } else {
+            badge = nil
+        }
         return PipelineBoard(
             mark: mark,
             steps: steps,
@@ -141,7 +152,8 @@ public struct PipelineBoard: Equatable, Sendable {
             listNote: listNote(of: run, showingCounts: numbers.show, rows: rows),
             showsVisuals: true,
             updatedAt: progress?.ok == true ? progress?.updatedAt : nil,
-            ledgerLine: HomeOverview.ledgerDelta(run))
+            ledgerLine: HomeOverview.ledgerDelta(run),
+            parallelBadge: badge)
     }
 
     // MARK: - Mark

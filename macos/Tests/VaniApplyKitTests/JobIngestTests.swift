@@ -354,8 +354,11 @@ final class JobIngestTests: XCTestCase {
         }
     }
 
-    func testTalentBrewBoardHasAName() {
+    func testTalentBrewAndEnterpriseBoardsHaveNames() {
         XCTAssertEqual(WatchlistEntry(ats: "tb", token: "intuit", company: "Intuit").kind, "TalentBrew")
+        for (code, name) in ["az": "Amazon", "gg": "Google", "ap": "Apple", "ef": "Eightfold", "jb": "Jibe"] {
+            XCTAssertEqual(WatchlistEntry(ats: code, token: "acme", company: "Acme").kind, name)
+        }
     }
 
     func testOnlyHTTPSPageURLsOpen() {

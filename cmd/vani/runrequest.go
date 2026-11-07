@@ -42,7 +42,7 @@ const (
 	daemonRecordFile  = "daemon.json"
 	// maxRunRequest bounds a request file: the options are at most
 	// maxRunBoards board refs.
-	maxRunRequest = 64 << 10
+	maxRunRequest = 128 << 10
 	maxDaemonFile = 4 << 10
 	// runRequestMaxAge is how long a request waits for a daemon to pick it up.
 	runRequestMaxAge = time.Hour

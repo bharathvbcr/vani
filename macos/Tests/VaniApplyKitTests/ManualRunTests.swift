@@ -184,6 +184,9 @@ final class ManualRunTests: XCTestCase {
             ManualRunOptions(advance: -1),
             ManualRunOptions(advance: ManualRunOptions.maxAdvance + 1),
             ManualRunOptions(advance: 5, listOnly: true),
+            ManualRunOptions(workers: -1),
+            ManualRunOptions(workers: ManualRunOptions.maxWorkers + 1),
+            ManualRunOptions(workers: 4, listOnly: true),
             ManualRunOptions(boards: Array(repeating: "gh:acme", count: ManualRunOptions.maxBoards + 1)),
             ManualRunOptions(boards: ["acme"]),
             ManualRunOptions(boards: [":acme"]),
@@ -194,7 +197,16 @@ final class ManualRunTests: XCTestCase {
         for o in bad {
             XCTAssertThrowsError(try o.arguments(), "\(o)")
         }
-        XCTAssertNoThrow(try ManualRunOptions(advance: ManualRunOptions.maxAdvance).arguments())
+        XCTAssertNoThrow(try ManualRunOptions(advance: ManualRunOptions.maxAdvance, workers: ManualRunOptions.maxWorkers).arguments())
+        XCTAssertNoThrow(try ManualRunOptions(boards: Array(repeating: "gh:acme", count: ManualRunOptions.maxBoards)).arguments())
+    }
+
+    func testWorkersBecomesItsFlagAndSummary() throws {
+        let o = ManualRunOptions(advance: 20, workers: 4, usFirst: true)
+        XCTAssertFalse(o.isDefault)
+        XCTAssertEqual(try o.arguments(), ["run-once", "--advance", "20", "--workers", "4", "--us-first"])
+        XCTAssertEqual(o.summary, "advance cap 20; 4 workers; US first")
+        XCTAssertEqual(ManualRunOptions(workers: 1).summary, "1 worker")
     }
 
     func testOptionsRoundTripThroughGoNames() throws {

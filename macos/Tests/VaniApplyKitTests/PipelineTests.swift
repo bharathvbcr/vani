@@ -738,4 +738,23 @@ final class PipelineTests: XCTestCase {
         let nullRun = #"{"ok":true,"state":"running","progress":null}"#
         XCTAssertNil(try decode(statusReply(lastRun: nullRun)).lastRun.progress)
     }
+
+    func testParallelProgressAndAdvanceWorkersDecode() throws {
+        let progress = #"{"ok":true,"stage":"listing","index":4,"total":20,"in_flight":6}"#
+        let run = #"{"ok":true,"state":"running","progress":\#(progress)}"#
+        let live = try XCTUnwrap(decode(statusReply(lastRun: run)).lastRun.progress)
+        XCTAssertEqual(live.inFlight, 6)
+        XCTAssertEqual(live.parallelNote, "6 boards in flight")
+
+        let triage = #"{"ok":true,"stage":"advance","attempted":10,"limit":50,"workers":4}"#
+        let triageRun = #"{"ok":true,"state":"running","progress":\#(triage)}"#
+        let liveTriage = try XCTUnwrap(decode(statusReply(lastRun: triageRun)).lastRun.progress)
+        XCTAssertEqual(liveTriage.workers, 4)
+        XCTAssertEqual(liveTriage.parallelNote, "4 parallel workers")
+
+        let finished = #"{"ok":true,"state":"ok","advance":{"eligible":50,"limit":50,"attempted":50,"unread":0,"failed":0,"deferred":0,"workers":4}}"#
+        let adv = try XCTUnwrap(decode(statusReply(lastRun: finished)).lastRun.advance)
+        XCTAssertEqual(adv.workers, 4)
+        XCTAssertEqual(adv.parallelNote, "Triaged across 4 parallel workers.")
+    }
 }

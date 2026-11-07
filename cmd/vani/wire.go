@@ -59,8 +59,8 @@ func (w *wired) shadowName() string {
 }
 
 // maxBoardBytes bounds one board listing. Greenhouse returns a whole board,
-// descriptions included, in one response (GitLab's was 3.6 MB on 2026-10-18).
-const maxBoardBytes = 32 << 20
+// descriptions included, in one response (Anduril's exceeds 32 MiB).
+const maxBoardBytes = 64 << 20
 
 // wireApp builds the real components. It opens only what every command needs
 // (the ledger); network clients and child processes start on the first run,

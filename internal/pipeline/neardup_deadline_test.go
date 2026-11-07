@@ -140,3 +140,47 @@ func TestNearDupCancelDuringWritesIsAnError(t *testing.T) {
 		t.Fatal("a cancelled write phase must be an error, not a clean run")
 	}
 }
+
+// Postings at one company that share only a single generic title word ("Engineer")
+// below NearDupTitleMin (0.8) have no titleMatches and must not have their
+// descriptions shingled during pre-warming or starve newest-first decisions.
+func TestNearDupPrewarmDoesNotShingleUnrelatedTitlesOrStarveNewest(t *testing.T) {
+	bigDesc := words(" clauses", 8000)
+	dupDesc := words("design", 100)
+	l := &slowLedger{}
+	const unrelated = 600
+	for i := range unrelated {
+		k, err := posting.GreenhouseKey("acme", fmt.Sprintf("u-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		title := fmt.Sprintf("Engineer T1_%d T2_%d T3_%d T4_%d T5_%d", i, i, i, i, i)
+		l.recs = append(l.recs, ledger.Record{
+			Key: k, Status: posting.Live, Annotations: map[string]string{},
+			FirstSeen: t0.Add(time.Duration(i) * time.Second),
+			Posting:   posting.Posting{Key: k, Company: "Acme", Title: title, Location: "Remote", Description: bigDesc},
+		})
+	}
+	for j := range 2 {
+		k, err := posting.GreenhouseKey("globex", fmt.Sprintf("d-%d", j))
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.recs = append(l.recs, ledger.Record{
+			Key: k, Status: posting.Live, Annotations: map[string]string{},
+			FirstSeen: t0.Add(time.Duration(unrelated+j) * time.Second),
+			Posting:   posting.Posting{Key: k, Company: "Globex", Title: "Product Designer", Location: "Remote", Description: dupDesc},
+		})
+	}
+
+	rep, err := AnnotateNearDuplicates(ctx, l, t1, NearDupOptions{Deadline: 60 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Duplicates != 1 || rep.Written != 1 {
+		t.Fatalf("newest duplicate was starved by unrelated pre-warming: %+v", rep)
+	}
+	if rep.Partial || rep.Examined != unrelated+2 || rep.Compared != 1 {
+		t.Fatalf("expected all %d records examined with 1 comparison and no partial cut, got %+v", unrelated+2, rep)
+	}
+}

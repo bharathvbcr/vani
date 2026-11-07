@@ -61,7 +61,18 @@ struct PipelineBoardView: View {
                 .foregroundStyle(toneColor)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(board.mark.title).font(compact ? .callout.weight(.semibold) : .headline)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(board.mark.title).font(compact ? .callout.weight(.semibold) : .headline)
+                    if let badge = board.parallelBadge, !badge.isEmpty {
+                        Text(badge)
+                            .font(.caption2.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary.opacity(0.6), in: Capsule())
+                    }
+                }
                 if !board.mark.detail.isEmpty {
                     Text(board.mark.detail)
                         .font(.callout)

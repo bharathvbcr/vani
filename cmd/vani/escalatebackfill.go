@@ -201,7 +201,11 @@ func (w *wired) runEscalateBackfill(ctx context.Context, runner *pipeline.Runner
 		}
 	}
 	items := backfillItems(kept, esc.belowP, backfillSlots(cfg))
-	rep := backfillPass(ctx, runner, esc, items, cfg.TargetSummary, cfg.AdvanceWorkers())
+	workers := cfg.AdvanceWorkers()
+	if w.tuned.Workers > 0 {
+		workers = w.tuned.Workers
+	}
+	rep := backfillPass(ctx, runner, esc, items, cfg.TargetSummary, workers)
 	rep.Note = note
 	return &rep
 }

@@ -4,9 +4,12 @@ import (
 	"cmp"
 	"context"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -199,29 +202,30 @@ func truncateBytes(s string, n int) string {
 }
 
 type dupRec struct {
-	rec     ledger.Record
-	company string
-	title   textsim.Set
-	role    string // roleTitle: equal only for the same role, seniority and bracketed qualifier
-	loc     string
-	desc    string // the board's text (srcutil.SourceText), for the optional similarity
-	shingle textsim.Set
-	words   int
-	ready   bool
+	rec        ledger.Record
+	company    string
+	title      textsim.Set
+	role       string // roleTitle: equal only for the same role, seniority and bracketed qualifier
+	loc        string
+	desc       string // the board's text (srcutil.SourceText), for the optional similarity
+	shingle    textsim.Set
+	words      int
+	once       sync.Once
+	cands      []dupMatch
+	capped     bool
+	candsReady bool
 }
 
 // text computes the description side of a record once.
 func (d *dupRec) text() {
-	if d.ready {
-		return
-	}
-	d.ready = true
-	d.desc = srcutil.SourceText(d.rec.Posting.Description)
-	ws := textsim.Words(d.desc, textsim.DefaultMaxBytes)
-	d.words = len(ws)
-	if d.words >= NearDupMinWords {
-		d.shingle = textsim.Shingles(ws, NearDupShingleWords)
-	}
+	d.once.Do(func() {
+		d.desc = srcutil.SourceText(d.rec.Posting.Description)
+		ws := textsim.Words(d.desc, textsim.DefaultMaxBytes)
+		d.words = len(ws)
+		if d.words >= NearDupMinWords {
+			d.shingle = textsim.Shingles(ws, NearDupShingleWords)
+		}
+	})
 }
 
 type titleToken struct {
@@ -271,13 +275,43 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 	sctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	var recs []*dupRec
+	var raw []ledger.Record
 	for _, r := range led.All() {
 		if r.Status.Terminal() || r.Posting.Company == "" || r.Posting.Title == "" {
 			continue
 		}
-		recs = append(recs, &dupRec{rec: r, company: looseCompany(r.Posting.Company),
-			title: textsim.TokenSet(looseTitleWords(r.Posting.Title)), role: roleTitle(r.Posting.Title), loc: looseLocation(r.Posting)})
+		raw = append(raw, r)
+	}
+	recs := make([]*dupRec, len(raw))
+	buildRec := func(i int) {
+		r := raw[i]
+		recs[i] = &dupRec{
+			rec: r, company: looseCompany(r.Posting.Company),
+			title: textsim.TokenSet(looseTitleWords(r.Posting.Title)),
+			role:  roleTitle(r.Posting.Title), loc: looseLocation(r.Posting),
+		}
+	}
+	if workers := min(runtime.GOMAXPROCS(0), 8, len(raw)); workers <= 1 || len(raw) < 32 {
+		for i := range raw {
+			buildRec(i)
+		}
+	} else {
+		var next atomic.Int64
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for range workers {
+			go func() {
+				defer wg.Done()
+				for {
+					i := int(next.Add(1) - 1)
+					if i >= len(raw) {
+						return
+					}
+					buildRec(i)
+				}
+			}()
+		}
+		wg.Wait()
 	}
 	slices.SortFunc(recs, func(a, b *dupRec) int {
 		return cmp.Or(a.rec.FirstSeen.Compare(b.rec.FirstSeen), cmp.Compare(a.rec.Key, b.rec.Key))
@@ -292,6 +326,50 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 		}
 		for h := range a.title {
 			index[titleToken{a.company, h}] = append(index[titleToken{a.company, h}], i)
+		}
+	}
+
+	// Pre-compute titleMatches and pre-warm shingles across CPU cores in
+	// newest-first order, only for records that actually have an earlier title
+	// match (overlap >= NearDupTitleMin), bounded to at most half the stage
+	// deadline so decide always keeps time for the newest postings.
+	if sctx.Err() == nil && len(recs) >= 32 && deadline > 0 {
+		if workers := min(runtime.GOMAXPROCS(0), 8, len(recs)); workers > 1 {
+			wctx, wcancel := context.WithTimeout(sctx, min(deadline/2, 500*time.Millisecond))
+			var next atomic.Int64
+			var wg sync.WaitGroup
+			wg.Add(workers)
+			for range workers {
+				go func() {
+					defer wg.Done()
+					for wctx.Err() == nil {
+						step := int(next.Add(1) - 1)
+						i := len(recs) - 1 - step
+						if i < 0 {
+							return
+						}
+						a := recs[i]
+						if a.company == "" || len(a.title) == 0 {
+							a.candsReady = true
+							continue
+						}
+						cands, capped := titleMatches(a, i, recs, index)
+						a.cands, a.capped, a.candsReady = cands, capped, true
+						if len(cands) == 0 || wctx.Err() != nil {
+							continue
+						}
+						a.text()
+						for _, tm := range cands {
+							if wctx.Err() != nil {
+								break
+							}
+							recs[tm.j].text()
+						}
+					}
+				}()
+			}
+			wg.Wait()
+			wcancel()
 		}
 	}
 
@@ -381,7 +459,11 @@ func (d *nearDup) decide(i int) bool {
 	capped := false
 	if a.company != "" && len(a.title) > 0 {
 		var cands []dupMatch
-		cands, capped = titleMatches(a, i, d.recs, d.index)
+		if a.candsReady {
+			cands, capped = a.cands, a.capped
+		} else {
+			cands, capped = titleMatches(a, i, d.recs, d.index)
+		}
 		for _, tm := range cands {
 			if !d.decide(tm.j) {
 				return false

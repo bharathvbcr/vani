@@ -817,6 +817,13 @@ func optionsSummary(o runOptions) string {
 	} else if o.Advance > 0 {
 		parts = append(parts, fmt.Sprintf("advance cap %d", o.Advance))
 	}
+	if o.Workers > 0 {
+		if o.Workers == 1 {
+			parts = append(parts, "1 worker")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d workers", o.Workers))
+		}
+	}
 	if o.USFirst {
 		parts = append(parts, "US first")
 	}

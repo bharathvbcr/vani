@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -67,6 +68,14 @@ func (w *warnLog) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return strings.Join(w.lines, "\n")
+}
+
+// withBoardListParallel sets how many boards list at once and restores it.
+func withBoardListParallel(t *testing.T, n int) {
+	t.Helper()
+	prev := boardListParallel
+	boardListParallel = n
+	t.Cleanup(func() { boardListParallel = prev })
 }
 
 // A run's boards land in the report as read (with the listing's count and
@@ -141,6 +150,9 @@ func TestListBoardsRecordsReadFailedAndSkipped(t *testing.T) {
 // listed is failed with its error, and the rest are never tried, counted as
 // not reached, never as read.
 func TestListBoardsCancelledMidListing(t *testing.T) {
+	// One fetch at a time, so the board after the cancellation cannot already
+	// be inside List. Different hosts otherwise list together.
+	withBoardListParallel(t, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a := sources.Board{ATS: posting.Greenhouse, Token: "a", Company: "A"}
@@ -344,13 +356,6 @@ func TestWorstCaseRunRecordIsReadable(t *testing.T) {
 	}
 }
 
-func tickSame(a, b listingTick) bool {
-	return a.Phase == b.Phase && a.Index == b.Index && a.Total == b.Total &&
-		a.Board.ATS == b.Board.ATS && a.Board.Token == b.Board.Token && a.Board.Company == b.Board.Company &&
-		a.Done == b.Done && a.Read == b.Read && a.Failed == b.Failed && a.RateLimited == b.RateLimited &&
-		a.Skipped == b.Skipped && a.Listed == b.Listed && a.Outcome == b.Outcome
-}
-
 func TestListBoardsTicksTheBoardItIsReading(t *testing.T) {
 	gh := sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}
 	lv := sources.Board{ATS: posting.Lever, Token: "initech", Company: "Initech"}
@@ -369,25 +374,65 @@ func TestListBoardsTicksTheBoardItIsReading(t *testing.T) {
 	if _, err := listBoards(ctx, []sources.Board{gh, lv, wd}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, ""); err != nil {
 		t.Fatal(err)
 	}
-	want := []listingTick{
-		{Phase: progressPhaseListing, Index: 1, Total: 3, Board: gh},
-		{Phase: progressPhaseReconciling, Index: 1, Total: 3, Board: gh},
-		{Phase: progressPhaseDone, Index: 1, Total: 3, Board: gh, Done: 1, Read: 1, Listed: 2, Outcome: boardRead},
-		{Phase: progressPhaseDone, Index: 2, Total: 3, Board: lv, Done: 2, Read: 1, Skipped: 1, Listed: 2, Outcome: boardSkipped},
-		{Phase: progressPhaseListing, Index: 3, Total: 3, Board: wd, Done: 2, Read: 1, Skipped: 1, Listed: 2},
-		{Phase: progressPhaseDone, Index: 3, Total: 3, Board: wd, Done: 3, Read: 1, Failed: 1, Skipped: 1, Listed: 2, Outcome: boardFailed},
-	}
-	if len(ticks) != len(want) {
-		t.Fatalf("ticks %d: %+v", len(ticks), ticks)
-	}
-	// The board in flight is not in the sum. After it is read, its new rows are.
-	if ticks[0].Added != 0 || ticks[2].Added != 2 || ticks[len(ticks)-1].Added != 2 {
-		t.Fatalf("added: %+v", ticks)
-	}
-	for i := range want {
-		if !tickSame(ticks[i], want[i]) {
-			t.Errorf("tick %d:\n got %+v\nwant %+v", i, ticks[i], want[i])
+	// Done ticks stay in watchlist order. A listing tick is emitted before that
+	// board's own done tick. It can arrive before an earlier board is appended,
+	// because a later host is listed at the same time. A skip has no listing tick.
+	var done, reconciling []listingTick
+	listingAt := map[string]int{}
+	for i, tk := range ticks {
+		switch tk.Phase {
+		case progressPhaseListing:
+			if _, ok := listingAt[tk.Board.Token]; ok {
+				t.Errorf("two listing ticks for %s", tk.Board.Token)
+			}
+			listingAt[tk.Board.Token] = i
+		case progressPhaseReconciling:
+			reconciling = append(reconciling, tk)
+		case progressPhaseDone:
+			done = append(done, tk)
+		default:
+			t.Errorf("unknown phase %q", tk.Phase)
 		}
+	}
+	if len(done) != 3 || done[0].Board.Token != "acme" || done[1].Board.Token != "initech" || done[2].Board.Token != "intel" {
+		t.Fatalf("done ticks: %+v", ticks)
+	}
+	if done[0].Outcome != boardRead || done[0].Done != 1 || done[0].Read != 1 || done[0].Listed != 2 || done[0].Added != 2 {
+		t.Errorf("gh done: %+v", done[0])
+	}
+	if done[1].Outcome != boardSkipped || done[1].Skipped != 1 || done[1].Read != 1 || done[1].Listed != 2 || done[1].Added != 2 {
+		t.Errorf("skip done: %+v", done[1])
+	}
+	if _, ok := listingAt["initech"]; ok {
+		t.Error("a skipped board was listed")
+	}
+	ghAt, ok := listingAt["acme"]
+	if !ok || ticks[ghAt].Added != 0 || ticks[ghAt].Outcome != "" || ticks[ghAt].Index != 1 {
+		t.Errorf("gh listing: %+v", ticks[ghAt])
+	}
+	wdAt, ok := listingAt["intel"]
+	if !ok || ticks[wdAt].Outcome != "" || ticks[wdAt].Index != 3 {
+		t.Errorf("wd listing: %+v", ticks[wdAt])
+	}
+	if len(reconciling) != 1 || reconciling[0].Board.Token != "acme" || reconciling[0].Added != 0 || reconciling[0].Outcome != "" {
+		t.Errorf("reconciling: %+v", reconciling)
+	}
+	if done[2].Outcome != boardFailed || done[2].Failed != 1 || done[2].Skipped != 1 || done[2].Read != 1 ||
+		done[2].Listed != 2 || done[2].Added != 2 || done[2].Done != 3 {
+		t.Errorf("wd done: %+v", done[2])
+	}
+	ghDone := -1
+	wdDone := -1
+	for i, tk := range ticks {
+		if tk.Phase == progressPhaseDone && tk.Board.Token == "acme" {
+			ghDone = i
+		}
+		if tk.Phase == progressPhaseDone && tk.Board.Token == "intel" {
+			wdDone = i
+		}
+	}
+	if ghAt >= ghDone || wdAt >= wdDone {
+		t.Fatalf("listing tick after its own done tick: %+v", ticks)
 	}
 	if !strings.Contains(warn.String(), "board gh/acme: reading (1 of 3)") {
 		t.Errorf("warnings:\n%s", warn.String())
@@ -445,6 +490,206 @@ func TestListBoardsCancelLeavesTheBoardItWasReading(t *testing.T) {
 		if tk.Board.Token == "later" {
 			t.Fatalf("ticked the next board: %+v", ticks)
 		}
+	}
+}
+
+// Boards on different hosts list at the same time. A second host that never
+// enters List means the launcher is still walking the watchlist one board at
+// a time.
+func TestListBoardsFetchesDifferentHostsTogether(t *testing.T) {
+	withBoardListParallel(t, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	entered := make(chan string, 2)
+	hold := func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+		select {
+		case entered <- b.Token:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		select {
+		case <-release:
+			return boardPostings(b, 1), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	gh := sources.Board{ATS: posting.Greenhouse, Token: "a", Company: "A"}
+	wd := sources.Board{ATS: posting.Workday, Token: "intel/External", Company: "Intel", Host: "intel.wd1.myworkdayjobs.com"}
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, hold},
+		posting.Workday:    fakeSource{posting.Workday, hold},
+	}
+	rec := tempReconciler(t)
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		_, err := listBoards(ctx, []sources.Board{gh, wd}, srcs, nil, rec.Reconcile, (&warnLog{}).warnf, "")
+		done <- err
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		finish()
+		<-finished
+	})
+	got := map[string]bool{}
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for len(got) < 2 {
+		select {
+		case tok := <-entered:
+			got[tok] = true
+		case err := <-done:
+			t.Fatalf("listBoards returned before both hosts were in List: %v (entered %v)", err, got)
+		case <-timer.C:
+			t.Fatalf("hosts did not list together, entered %v", got)
+		}
+	}
+	finish()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Two boards on one host do not list together. The host is blocked only after
+// a 429 is recorded, so overlapping its boards would spend the retry budget
+// before that block is known.
+func TestListBoardsOneBoardPerHost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	var current, maxSeen atomic.Int32
+	entered := make(chan struct{}, 1)
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+			n := current.Add(1)
+			for {
+				old := maxSeen.Load()
+				if n <= old || maxSeen.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			defer current.Add(-1)
+			if b.Token == "a" {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return boardPostings(b, 1), nil
+		}},
+	}
+	rec := tempReconciler(t)
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		_, err := listBoards(ctx, []sources.Board{
+			{ATS: posting.Greenhouse, Token: "a", Company: "A"},
+			{ATS: posting.Greenhouse, Token: "b", Company: "B"},
+		}, srcs, nil, rec.Reconcile, (&warnLog{}).warnf, "")
+		done <- err
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		finish()
+		<-finished
+	})
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("listBoards ended before the first board listed: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first board did not start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := maxSeen.Load(); n != 1 {
+		t.Fatalf("same host overlapped: %d boards in List", n)
+	}
+	finish()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := maxSeen.Load(); n != 1 {
+		t.Fatalf("same host overlapped: %d boards in List", n)
+	}
+}
+
+// Page boards share one browser, so two of them do not list together even
+// when their page hosts differ.
+func TestListBoardsPageBoardsDoNotOverlap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	var current, maxSeen atomic.Int32
+	entered := make(chan struct{}, 1)
+	srcs := map[posting.ATS]sources.Source{
+		posting.Page: fakeSource{posting.Page, func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+			n := current.Add(1)
+			for {
+				old := maxSeen.Load()
+				if n <= old || maxSeen.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			defer current.Add(-1)
+			if b.Token == "one" {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return boardPostings(b, 1), nil
+		}},
+	}
+	rec := tempReconciler(t)
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		_, err := listBoards(ctx, []sources.Board{
+			{ATS: posting.Page, Token: "one", Company: "One", URL: "https://one.example/jobs"},
+			{ATS: posting.Page, Token: "two", Company: "Two", URL: "https://two.example/jobs"},
+		}, srcs, nil, rec.Reconcile, (&warnLog{}).warnf, "")
+		done <- err
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		finish()
+		<-finished
+	})
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("listBoards ended before the first page listed: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first page board did not start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := maxSeen.Load(); n != 1 {
+		t.Fatalf("page boards overlapped: %d in List", n)
+	}
+	finish()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := maxSeen.Load(); n != 1 {
+		t.Fatalf("page boards overlapped: %d in List", n)
 	}
 }
 
@@ -514,5 +759,166 @@ func TestBoardsReportAddedStaysExactWhenItemsAreCut(t *testing.T) {
 	raw, err := json.Marshal(zero)
 	if err != nil || !strings.Contains(string(raw), `"added":0`) {
 		t.Fatalf("json %s %v", raw, err)
+	}
+}
+
+// Per-tenant ATS boards (Pinpoint, Recruitee, BambooHR, Personio) resolve to
+// distinct tenant hosts and list concurrently, and a fast board that finishes
+// List while an earlier board is still in List releases its pool slot right
+// away so later boards are not head-of-line blocked.
+func TestListBoardsPerTenantHostsAndEarlySlotRelease(t *testing.T) {
+	withBoardListParallel(t, 2)
+	b0 := sources.Board{ATS: posting.Pinpoint, Token: "alpha", Company: "Alpha"}
+	b1 := sources.Board{ATS: posting.Pinpoint, Token: "beta", Company: "Beta"}
+	b2 := sources.Board{ATS: posting.Recruitee, Token: "gamma", Company: "Gamma"}
+	if listFetchHost(b0) == listFetchHost(b1) {
+		t.Fatalf("per-tenant boards share a fetch host: %q", listFetchHost(b0))
+	}
+
+	b0Entered := make(chan struct{})
+	b0Release := make(chan struct{})
+	b2Done := make(chan struct{})
+	srcs := map[posting.ATS]sources.Source{
+		posting.Pinpoint: fakeSource{posting.Pinpoint, func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+			if b.Token == "alpha" {
+				close(b0Entered)
+				select {
+				case <-b0Release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return boardPostings(b, 1), nil
+		}},
+		posting.Recruitee: fakeSource{posting.Recruitee, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
+			close(b2Done)
+			return boardPostings(b, 1), nil
+		}},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := listBoards(context.Background(), []sources.Board{b0, b1, b2}, srcs, nil, tempReconciler(t).Reconcile, (&warnLog{}).warnf, "")
+		done <- err
+	}()
+	select {
+	case <-b0Entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("b0 did not enter List")
+	}
+	// b1 finishes while b0 is still blocked; if b1 releases its pool slot on
+	// completion, b2 takes the freed slot and finishes before b0 is released.
+	select {
+	case <-b2Done:
+	case <-time.After(3 * time.Second):
+		close(b0Release)
+		t.Fatal("b2 was blocked waiting for b0 to reconcile (head-of-line slot blocking)")
+	}
+	close(b0Release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A single board whose HTTP request times out (wrapping context.DeadlineExceeded
+// while the run's own ctx is still live) is recorded as a failed board and does
+// not cancel the rest of the watchlist.
+func TestListBoardsBoardTimeoutDoesNotCancelRun(t *testing.T) {
+	withBoardListParallel(t, 2)
+	b0 := sources.Board{ATS: posting.Greenhouse, Token: "slow", Company: "Slow"}
+	b1 := sources.Board{ATS: posting.Lever, Token: "fast", Company: "Fast"}
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, func(context.Context, sources.Board) ([]posting.Posting, error) {
+			return nil, fmt.Errorf("greenhouse slow: get: %w", context.DeadlineExceeded)
+		}},
+		posting.Lever: fakeSource{posting.Lever, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
+			return boardPostings(b, 1), nil
+		}},
+	}
+	rec := tempReconciler(t)
+	rep, err := listBoards(context.Background(), []sources.Board{b0, b1}, srcs, nil, rec.Reconcile, (&warnLog{}).warnf, "")
+	if err != nil {
+		t.Fatalf("per-board timeout aborted the run: %v", err)
+	}
+	if rep.Failed != 1 || rep.Read != 1 || len(rep.Items) != 2 {
+		t.Fatalf("unexpected report: %+v", rep)
+	}
+	if rep.Items[0].Outcome != boardFailed || rep.Items[1].Outcome != boardRead {
+		t.Fatalf("unexpected item outcomes: %+v", rep.Items)
+	}
+}
+
+// When an early board finishes List and releases its slot while a second board on
+// the same host was already parked in the same scan pass, a later board on that
+// host can take the freed slot and leave the parked board waiting in cond.Wait.
+// If the early board's reconcile then fails, abandon must wake the launcher and
+// drain all boards without deadlocking.
+func TestListBoardsReconcileFailureWhileEarlierBoardParkedDoesNotDeadlock(t *testing.T) {
+	withBoardListParallel(t, 2)
+	b0 := sources.Board{ATS: posting.Greenhouse, Token: "a", Company: "A"}
+	b1 := sources.Board{ATS: posting.Greenhouse, Token: "b", Company: "B"}
+	b2 := sources.Board{ATS: posting.Lever, Token: "c", Company: "C"}
+	b3 := sources.Board{ATS: posting.Greenhouse, Token: "d", Company: "D"}
+
+	b0AllowReturn := make(chan struct{})
+	b0Released := make(chan struct{})
+	b3Entered := make(chan struct{})
+
+	ctx := withListingTick(context.Background(), func(tk listingTick) {
+		if tk.Board.Token == "c" && tk.Phase == progressPhaseListing {
+			close(b0AllowReturn)
+			<-b0Released
+		}
+	})
+
+	srcs := map[posting.ATS]sources.Source{
+		posting.Greenhouse: fakeSource{posting.Greenhouse, func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+			switch b.Token {
+			case "a":
+				<-b0AllowReturn
+				return boardPostings(b, 1), nil
+			case "d":
+				close(b3Entered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			default:
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+		}},
+		posting.Lever: fakeSource{posting.Lever, func(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}},
+	}
+
+	reconcile := func(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
+		if b.Token == "a" {
+			<-b3Entered
+			return pipeline.Summary{}, errors.New("simulated ledger write error")
+		}
+		return pipeline.Summary{}, nil
+	}
+
+	// Detect when b0's goroutine has called release() by watching its send or
+	// wrapping with a tiny wait after b0AllowReturn closes.
+	go func() {
+		<-b0AllowReturn
+		time.Sleep(10 * time.Millisecond)
+		close(b0Released)
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := listBoards(ctx, []sources.Board{b0, b1, b2, b3}, srcs, nil, reconcile, (&warnLog{}).warnf, "")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "simulated ledger write error") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("deadlock in listBoards abandon when an earlier board is parked in cond.Wait")
 	}
 }

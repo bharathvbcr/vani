@@ -84,9 +84,11 @@ type runProgress struct {
 	// done: read, failed, rate_limited, or skipped. Empty while the board is
 	// still being read, so a failure is not shown as a successful read.
 	Outcome   string `json:"outcome,omitempty"`
+	InFlight  int    `json:"in_flight,omitempty"`
 	Attempted int    `json:"attempted,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 	Eligible  int    `json:"eligible,omitempty"`
+	Workers   int    `json:"workers,omitempty"`
 }
 
 // progressFacet is last_run.progress. ok false means the file was present and
@@ -110,9 +112,11 @@ type progressFacet struct {
 	Token     string    `json:"token,omitempty"`
 	Company   string    `json:"company,omitempty"`
 	Outcome   string    `json:"outcome,omitempty"`
+	InFlight  int       `json:"in_flight,omitempty"`
 	Attempted int       `json:"attempted,omitempty"`
 	Limit     int       `json:"limit,omitempty"`
 	Eligible  int       `json:"eligible,omitempty"`
+	Workers   int       `json:"workers,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitzero"`
 }
 
@@ -168,7 +172,8 @@ func (p runProgress) sane() error {
 	}{
 		{p.Done, "done"}, {p.Read, "read"}, {p.Failed, "failed"},
 		{p.RateLimited, "rate_limited"}, {p.Skipped, "skipped"}, {p.Listed, "listed"},
-		{p.Attempted, "attempted"}, {p.Limit, "limit"}, {p.Eligible, "eligible"},
+		{p.InFlight, "in_flight"}, {p.Attempted, "attempted"}, {p.Limit, "limit"},
+		{p.Eligible, "eligible"}, {p.Workers, "workers"},
 	} {
 		if err := boundProgressCount(c.n, c.name); err != nil {
 			return err
@@ -505,8 +510,8 @@ func (e *env) attachProgress(r runRecord, at time.Time) *progressFacet {
 		facet: facet{OK: true}, Stage: p.Stage, Phase: p.Phase,
 		Index: p.Index, Total: p.Total, Done: p.Done, Read: p.Read, Failed: p.Failed,
 		RateLimited: p.RateLimited, Skipped: p.Skipped, Listed: p.Listed, Added: cloneCount(p.Added),
-		ATS: p.ATS, Token: p.Token, Company: p.Company, Outcome: p.Outcome,
-		Attempted: p.Attempted, Limit: p.Limit, Eligible: p.Eligible, UpdatedAt: p.At,
+		ATS: p.ATS, Token: p.Token, Company: p.Company, Outcome: p.Outcome, InFlight: p.InFlight,
+		Attempted: p.Attempted, Limit: p.Limit, Eligible: p.Eligible, Workers: p.Workers, UpdatedAt: p.At,
 	}
 }
 
