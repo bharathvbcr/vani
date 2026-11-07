@@ -43,6 +43,88 @@ final class JobsExportTests: XCTestCase {
         XCTAssertEqual(fresh.summary(.keys(["gh:a:1", "gh:a:2"])), "Saved 1 selected role to S.xlsx. Left out 1 role exported before.")
     }
 
+    /// After the export record hits its cap, the success line must say the oldest keys now read
+    /// as never exported — the same fact the CLI warns about. Zero, absent, and a negative count do not.
+    func testForgottenInSummary() throws {
+        let dozen = try decodeExport(#"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"skipped":0,"forgotten":12}"#)
+        XCTAssertEqual(dozen.forgotten, 12)
+        XCTAssertEqual(dozen.summary(.top(100)),
+                       "Saved the first 100 of 5,961 roles to Top.xlsx. The export record keeps at most 50,000 roles; the 12 roles exported longest ago now read as never exported.")
+        let one = try decodeExport(#"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"forgotten":1}"#)
+        XCTAssertEqual(one.forgotten, 1)
+        XCTAssertEqual(one.summary(.top(100)),
+                       "Saved the first 100 of 5,961 roles to Top.xlsx. The export record keeps at most 50,000 roles; the 1 role exported longest ago now reads as never exported.")
+
+        let zero = try decodeExport(#"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"forgotten":0}"#)
+        XCTAssertEqual(zero.forgotten, 0)
+        XCTAssertEqual(zero.summary(.top(100)), "Saved the first 100 of 5,961 roles to Top.xlsx.")
+        XCTAssertFalse(zero.summary(.top(100)).contains("never exported"))
+        let absent = try decodeExport(#"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[]}"#)
+        XCTAssertEqual(absent.forgotten, 0)
+        XCTAssertEqual(absent.summary(.top(100)), "Saved the first 100 of 5,961 roles to Top.xlsx.")
+        XCTAssertFalse(absent.summary(.keys(["a"])).contains("never exported"))
+
+        let negative = try decodeExport(#"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"forgotten":-4}"#)
+        XCTAssertEqual(negative.forgotten, -4)
+        XCTAssertEqual(negative.summary(.top(100)), "Saved the first 100 of 5,961 roles to Top.xlsx.")
+        XCTAssertFalse(negative.summary(.keys(["a"])).contains("never exported"), "a negative count is not keys forgotten")
+
+        let huge = try decodeExport(#"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"forgotten":9223372036854775807}"#)
+        XCTAssertEqual(huge.forgotten, Int.max)
+        XCTAssertEqual(huge.summary(.top(100)),
+                       "Saved the first 100 of 5,961 roles to Top.xlsx. The export record keeps at most 50,000 roles; the 9,223,372,036,854,775,807 roles exported longest ago now read as never exported.")
+
+        let both = try decodeExport(#"{"path":"/x/Next.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":["gh:a:9"],"skipped":4,"forgotten":7}"#)
+        XCTAssertEqual(both.skipped, 4)
+        XCTAssertEqual(both.forgotten, 7)
+        XCTAssertEqual(both.summary(.top(100)),
+                       "Saved 100 roles to Next.xlsx. Left out 4 roles exported before. The export record keeps at most 50,000 roles; the 7 roles exported longest ago now read as never exported.")
+        XCTAssertEqual(both.summary(.keys(["gh:a:1", "gh:a:9"])),
+                       "Saved 100 selected roles to Next.xlsx. 1 is no longer in this list and was left out. Left out 4 roles exported before. The export record keeps at most 50,000 roles; the 7 roles exported longest ago now read as never exported.")
+    }
+
+    /// A forgotten count that is not an integer must not decode into a success line.
+    /// Null is absence (0). A fraction or a value past Int must throw, not truncate or wrap.
+    func testForgottenDecodeRejectsMalformed() throws {
+        let head = #"{"path":"/x/Top.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"skipped":0,"forgotten":"#
+        let malformed = [
+            ("string", head + #""12"}"#),
+            ("object", head + #"{"n":1}}"#),
+            ("array", head + #"[12]}"#),
+            ("true", head + "true}"),
+            ("false", head + "false}"),
+            ("fraction", head + "1.5}"),
+            ("past Int", head + "9223372036854775808}"),
+        ]
+        for (why, json) in malformed {
+            do {
+                let got = try decodeExport(json)
+                XCTFail("\(why) decoded forgotten=\(got.forgotten) summary=\(got.summary(.top(100)))")
+            } catch {
+                XCTAssertTrue(error is DecodingError, "\(why): \(error)")
+            }
+        }
+
+        let nullCount = try decodeExport(head + "null}")
+        XCTAssertEqual(nullCount.forgotten, 0)
+        XCTAssertFalse(nullCount.summary(.top(100)).contains("never exported"))
+
+        let odd = try decodeExport(#"{"path":"/名前/odd.xlsx","rows":2,"total":9,"view":"new","sort":"default","missing":[],"forgotten":2}"#)
+        XCTAssertEqual(odd.forgotten, 2)
+        let oddLine = odd.summary(.top(2))
+        XCTAssertEqual(oddLine, "Saved the first 2 of 9 roles to odd.xlsx. The export record keeps at most 50,000 roles; the 2 roles exported longest ago now read as never exported.")
+        XCTAssertFalse(oddLine.contains("名前"), "the file name is the last path component, not the directory")
+
+        let skippedNoneForgotten = try decodeExport(#"{"path":"/x/Next.xlsx","rows":100,"total":5961,"view":"new","sort":"default","missing":[],"skipped":3,"forgotten":0}"#)
+        XCTAssertEqual(skippedNoneForgotten.forgotten, 0)
+        XCTAssertEqual(skippedNoneForgotten.summary(.top(100)), "Saved 100 roles to Next.xlsx. Left out 3 roles exported before.")
+        XCTAssertFalse(skippedNoneForgotten.summary(.keys(["a"])).contains("never exported"))
+    }
+
+    private func decodeExport(_ json: String) throws -> JobsExport {
+        try JobsClient.decoder.decode(JobsExport.self, from: Data(json.utf8))
+    }
+
     func testRepeatPrompt() throws {
         let at = try Date("2026-10-27T14:05:00Z", strategy: .iso8601)
         let utc = TimeZone(identifier: "UTC")!
