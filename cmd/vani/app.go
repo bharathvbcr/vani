@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
@@ -95,6 +96,9 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		// With no cancel (a test, or run-once) the error is returned as-is.
 		// An exclusion-only edit falls through; dailySteps reloads it again.
 		if _, err := e.reloadConfig(app, cfg, opts.Boards); errors.Is(err, errConfigRestart) {
+			// Recorded before the nil return. A signal that already cancelled
+			// wins the cause, and this nil is not a finished run.
+			noteConfigRestart(e)
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -118,6 +122,7 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		defer e.endLive()
 		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
 		if errors.Is(err, errConfigRestart) && !errors.Is(err, daemon.ErrFatal) {
+			noteConfigRestart(e)
 			finishLog()
 			if ownedLog && rec.Log != "" {
 				_ = os.Remove(rec.Log)
@@ -404,6 +409,26 @@ func (e *env) requestConfigRestart() {
 	if e.restart != nil {
 		e.restart(errConfigRestart)
 	}
+}
+
+// configRestartSeen records that dailyJob observed errConfigRestart for this
+// *env. The first cancel wins, so a signal that already stopped the process
+// makes dailyJob return nil even though the run did not finish. serveRunRequest
+// reads the note and puts the claim back. takeConfigRestart consumes it.
+var configRestartSeen sync.Map
+
+func noteConfigRestart(e *env) {
+	if e != nil {
+		configRestartSeen.Store(e, struct{}{})
+	}
+}
+
+func takeConfigRestart(e *env) bool {
+	if e == nil {
+		return false
+	}
+	_, ok := configRestartSeen.LoadAndDelete(e)
+	return ok
 }
 
 // processPinned lists the config fields fixed for the process's life: the

@@ -289,12 +289,21 @@ func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, run
 	if ctx.Err() != nil {
 		return nil // shutting down: the request waits for the next daemon
 	}
+	// A note from an earlier job on this env is not this request's restart.
+	takeConfigRestart(e)
 	// A newer vani may have written options this binary does not know (a
 	// scope), which its strict decode would drop as corrupt. A replaced binary
 	// restarts first, as a run's reload does, and the request stays unclaimed.
+	// A missing binary is not a replacement: replaced returns false for a stat
+	// error. It is the same restart, and the request stays unclaimed.
 	if e.binary.replaced(e.stderr) {
 		e.requestConfigRestart()
 		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting onto the replaced binary; the request waits for the next daemon")
+		return nil
+	}
+	if e.binaryMissing() {
+		e.requestConfigRestart()
+		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon's binary is missing; the request waits for the next daemon")
 		return nil
 	}
 	// Claimed under the mutex: a request waiting behind the scheduled run
@@ -306,12 +315,29 @@ func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, run
 		return fmt.Errorf("claiming it: %w", err)
 	}
 	defer func() {
+		// Link and rename both failed. The claimed file is the only copy.
+		if errors.Is(err, errClaimKept) {
+			return
+		}
 		if rerr := os.Remove(claimed); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 			err = errors.Join(err, fmt.Errorf("removing the claimed request: %w", rerr))
 		}
 	}()
-	req, err := readRunRequest(claimed, now())
+	at := now()
+	// The binary can disappear between the pre-claim check and the claim.
+	// Missing is still not "replaced", so look again before the run.
+	if e.binaryMissing() {
+		e.requestConfigRestart()
+		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon's binary disappeared after the claim; the request waits for the next daemon")
+		return e.requeueRequest(claimed, path)
+	}
+	req, err := readRunRequest(claimed, at)
 	if err != nil {
+		if requestStillValidDespiteUnknownFields(claimed, at) {
+			e.requestConfigRestart()
+			fmt.Fprintln(e.stderr, "vani: run request: not run yet, this binary does not know a field in the request; the request waits for the next daemon")
+			return e.requeueRequest(claimed, path)
+		}
 		return fmt.Errorf("dropped, no run made: %w", err)
 	}
 	// The boards are checked against the watchlist the run itself reloads
@@ -336,28 +362,101 @@ func (e *env) serveRunRequest(ctx context.Context, run func(context.Context, run
 	// A restart is not a run: dailyJob's reload found a replaced binary or a
 	// pinned config change and stopped before the pipeline (returning nil when
 	// it cancelled the daemon). The cause can only be this run's own reload,
-	// because every other reloadConfig caller holds mu. The request goes back
-	// for the daemon that starts next, instead of vanishing with the claim.
-	if errors.Is(err, errConfigRestart) || errors.Is(context.Cause(ctx), errConfigRestart) {
+	// because every other reloadConfig caller holds mu. A signal that cancelled
+	// first leaves the cause as the signal, and dailyJob returns nil; the note
+	// from noteConfigRestart is that restart. The request goes back for the
+	// daemon that starts next, instead of vanishing with the claim.
+	sawRestart := takeConfigRestart(e)
+	if errors.Is(err, errConfigRestart) || errors.Is(context.Cause(ctx), errConfigRestart) || sawRestart {
 		return e.requeueRequest(claimed, path)
 	}
 	return err
 }
+
+// linkRequest and renameRequest put a claimed request back. Tests replace
+// them. Link keeps a newer pending file (os.ErrExist). Rename is the fallback
+// when the volume cannot link.
+var (
+	linkRequest   = os.Link
+	renameRequest = os.Rename
+)
+
+// errClaimKept means the only copy of a claim could not be put back, so the
+// caller's deferred remove must leave the claimed file where it is.
+var errClaimKept = errors.New("claimed request kept: putting it back failed")
 
 // requeueRequest puts a claimed request back as the pending one; the caller's
 // deferred remove then drops the claimed name. A request written while this one
 // was claimed is the owner's latest ask and is kept, and the claimed one is
 // dropped rather than run as well. The link fails rather than replace it.
 func (e *env) requeueRequest(claimed, path string) error {
-	if err := os.Link(claimed, path); err != nil {
+	if err := linkRequest(claimed, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			fmt.Fprintln(e.stderr, "vani: run request: not run, the daemon is restarting; a newer request waits for the next daemon")
 			return nil
 		}
-		return fmt.Errorf("dropped, no run made: the daemon is restarting and putting the request back failed: %w", err)
+		// A newer pending file wins even when Link failed for another reason.
+		if _, statErr := os.Lstat(path); statErr == nil {
+			fmt.Fprintln(e.stderr, "vani: run request: not run, the daemon is restarting; a newer request waits for the next daemon")
+			return nil
+		}
+		// Link failed and there is no newer file. Rename moves the only copy
+		// back. If that fails too, leave the claimed file for the caller.
+		if rerr := renameRequest(claimed, path); rerr != nil {
+			fmt.Fprintf(e.stderr, "vani: run request: not run, the daemon is restarting; the claimed request was kept because putting it back failed: link: %v; rename: %v\n", err, rerr)
+			return fmt.Errorf("%w: link: %v; rename: %w", errClaimKept, err, rerr)
+		}
+		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request was moved back because linking it failed")
+		return nil
 	}
 	fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request waits for the next daemon")
 	return nil
+}
+
+// binaryMissing reports that the daemon's own binary is gone. A nil watch or
+// an empty path means the check is off. Any other stat error, including a path
+// that is not a regular file, is not missing.
+func (e *env) binaryMissing() bool {
+	if e == nil || e.binary == nil || e.binary.path == "" {
+		return false
+	}
+	_, err := statExecutable(e.binary.path)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// requestStillValidDespiteUnknownFields reports that strict decode failed only
+// because of keys this binary does not know, and the fields it can read are
+// inside the version, time, board-count and option bounds. A syntax error,
+// trailing data, a bad version, a stale or future time, or too many boards is
+// not still valid.
+func requestStillValidDespiteUnknownFields(path string, at time.Time) bool {
+	raw, err := readBoundedFile(path, maxRunRequest)
+	if err != nil {
+		return false
+	}
+	var strict runRequest
+	if decodeStrict(raw, &strict) == nil {
+		return false
+	}
+	var loose runRequest
+	if decodeObject(raw, &loose, false) != nil {
+		return false
+	}
+	if loose.V != runRequestVersion || loose.RequestedAt.IsZero() {
+		return false
+	}
+	if loose.RequestedAt.After(at.Add(runRequestFutureSlack)) {
+		return false
+	}
+	if len(loose.Options.Boards) > maxRunBoards {
+		return false
+	}
+	if at.Sub(loose.RequestedAt) > runRequestMaxAge {
+		return false
+	}
+	bounds := loose.Options
+	bounds.Boards = nil
+	return checkRunOptions(bounds, nil) == nil
 }
 
 // runRequestReply is `vani run-request --json`'s answer.
