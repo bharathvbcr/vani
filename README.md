@@ -4,6 +4,17 @@
 
 # Vani
 
+Vani fetches public employer job listings into one place. Those listings are split across many
+applicant-tracking systems, and there is no single way to read them. Vani is that reader. It
+exists to help people look for work. It is not a business, it is not sold, and it is not
+intended to make money.
+
+An employer or board operator can ask for a source to be included or excluded. Send that notice
+by opening an issue on [github.com/bharathvbcr/vani](https://github.com/bharathvbcr/vani/issues).
+The code is under the [PolyForm Noncommercial License 1.0.0](LICENSE), which is not an
+open-source license. The notice and the policy are [NOTICE](NOTICE) and
+[docs/LEGAL.md](docs/LEGAL.md).
+
 A personal, listings-first career engine. Each day it reads the job boards of companies you
 watch, drops dead and duplicate postings without spending anything, triages the rest with a
 decision model, ranks them against your career knowledge base with DevPrism's deterministic

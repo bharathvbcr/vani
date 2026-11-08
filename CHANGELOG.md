@@ -7,6 +7,11 @@ ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters 
 
 ### Added
 
+- **Public noncommercial terms.** [LICENSE](LICENSE) is the PolyForm Noncommercial License 1.0.0.
+  [NOTICE](NOTICE) and [docs/LEGAL.md](docs/LEGAL.md) state the purpose (one reader for employer
+  job listings that are split across applicant-tracking systems, to help people look for work,
+  not to make money) and that a source is included or excluded when the author is notified by a
+  GitHub issue. The license does not cover fetched job text or third-party dependencies.
 - **US postings first** (`cmd/vani/advanceorder.go`, `cmd/vani/runoptions.go`,
   `internal/location/us.go`, `internal/config/config.go`). `vani run-once --us-first` and
   `vani run-request --us-first` advance (triage, score, explain) postings located in the United

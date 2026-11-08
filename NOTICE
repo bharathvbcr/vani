@@ -1,0 +1,11 @@
+Required Notice: Copyright 2026 bharathvbcr (https://github.com/bharathvbcr/vani). Vani is a noncommercial job-listing reader. It is not sold and is not intended to make money. To ask the author to include or exclude a job source, open an issue at https://github.com/bharathvbcr/vani/issues. The code license is PolyForm Noncommercial 1.0.0 (LICENSE). The policy is docs/LEGAL.md.
+
+Vani exists to help people look for work. Employer job listings are split across many applicant-tracking systems. Vani is one program that fetches those public listings into one place. The author does not charge for it, does not sell listings, and does not take a fee for applications.
+
+The source code in this repository is under the PolyForm Noncommercial License 1.0.0 (see LICENSE). That license is not an OSI-approved open-source license. Using Vani to look for a job is a permitted personal use. Selling the software, or operating it as a paid product, is not.
+
+This license does not grant any right in material Vani fetches. Job-posting text and employer marks stay with the people who published them. A copy of Vani stores fetched listings on the computer of the person who runs it.
+
+Dependencies and separate programs keep their own licenses. That includes Manvi, the decide module, Tessl, DevPrism, Lightpanda, and the modules named in go.mod. Lightpanda is AGPL-licensed and is only ever executed as a separate program, never linked. docs/PLAN.md records patterns reimplemented from other projects. Those projects keep their licenses. This repository does not claim their code. If a file in this tree is a substantial copy of someone else's work, say so in an issue and the author will mark that file with its upstream license or remove it.
+
+An employer, a board operator, or anyone else may ask the author to include a job source or to stop offering one. Send that notice by opening an issue on https://github.com/bharathvbcr/vani. The author will add or remove that source in this repository. The steps and the limits of that promise are in docs/LEGAL.md.
