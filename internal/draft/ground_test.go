@@ -187,7 +187,7 @@ func TestDraftDoesNotGroundAgainstUnsentText(t *testing.T) {
 	ungroundedErr(t, err)
 	// The same notes do ground a motivation answer, where they are sent.
 	motive := Request{Question: "Why Modal?", Job: latencyRequest().Job}
-	if _, err := draftReply(t, "I care about 7 things.", motive, Config{MotivationNotes: "I care about 7 things"}); err != nil {
+	if _, err := draftReply(t, "I care about 7 things at Modal.", motive, Config{MotivationNotes: "I care about 7 things"}); err != nil {
 		t.Errorf("notes sent with a motivation question must ground it: %v", err)
 	}
 }

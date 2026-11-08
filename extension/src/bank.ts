@@ -209,7 +209,7 @@ function addUnique(list: string[], item: string, cap: number): string[] {
  * replaces the old one: the latest answer is the one the user means now.
  * Secret fields are never stored; self-id fields only when enabled.
  */
-export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now: Date): CaptureResult {
+export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now: Date, postingKey: string | null = null): CaptureResult {
   const out: Bank = { ...bank, answers: { ...bank.answers } };
   const res: CaptureResult = { bank: out, added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 };
   const owners = ownerIndex(out.answers);
@@ -270,6 +270,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
     // Long free text is job-specific, and a model draft is never a confident
     // answer however short: both are filled next time only as drafts to review.
     const long = f.drafted === true || (!CHOICE_KINDS.has(f.kind) && value.join(" ").length > REVIEW_CHARS);
+    const bound = long ? (postingKey || prev?.postingKey) : undefined;
     const next: Answer = {
       key: target,
       labels: addUnique(prev?.labels ?? [], label, MAX_LABELS),
@@ -281,6 +282,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
       fills: prev?.fills ?? 0,
       updatedAt: now.toISOString(),
       review: long,
+      ...(bound ? { postingKey: bound } : {}),
     };
     out.answers[target] = next;
     owners.add(next);
@@ -320,8 +322,8 @@ export interface CaptureDelta {
 /**
  * Computes the minimal delta (upsert and deleteKeys) for granular row-level patching.
  */
-export function mergeCaptureDelta(bank: Bank, fields: FieldInfo[], host: string, now: Date): CaptureDelta {
-  const result = mergeCapture(bank, fields, host, now);
+export function mergeCaptureDelta(bank: Bank, fields: FieldInfo[], host: string, now: Date, postingKey: string | null = null): CaptureDelta {
+  const result = mergeCapture(bank, fields, host, now, postingKey);
   const upsert: Answer[] = [];
   const deleteKeys: string[] = [];
   for (const [k, a] of Object.entries(result.bank.answers)) {
@@ -390,6 +392,7 @@ export function parseBank(json: string): { bank: Bank; droppedSecret: number } {
       fills: Number.isSafeInteger(a.fills) && (a.fills as number) >= 0 ? (a.fills as number) : 0,
       updatedAt: typeof a.updatedAt === "string" ? a.updatedAt.slice(0, 40) : new Date(0).toISOString(),
       review: a.review === true,
+      ...(typeof a.postingKey === "string" && a.postingKey.length > 0 && a.postingKey.length <= 2048 && !/[\u0000-\u001f]/.test(a.postingKey) ? { postingKey: a.postingKey } : {}),
     };
   }
   const bytes = bankBytes(bank);

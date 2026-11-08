@@ -286,6 +286,15 @@ answered, provider turns (0 when none was spent) and milliseconds).
 the owner's template; DevPrism only ranks postings (the DevPrism `resume_synthesize` path was
 removed 2026-10-23: its `career.db` held stale blocks and its layout is not the owner's).
 
+`vani cover` and `vani jobs cover build|use` (`cmd/vani/covercmd.go`, `cmd/vani/jobscover.go`)
+write a cover letter with the same drafter and the same daily LLM ledger as `vani draft`. The body
+is about 250 words. A posting with no text, no eligible bullets, a spent budget, a timeout, or a
+still-ungrounded reply saves nothing. `jobs cover build` saves a version under `letters/`; `use`
+is the version the extension may fetch. A one-page PDF is drawn with the standard PDF fonts. The
+base selection's header is stamped into that PDF only when the font can draw it, and never enters
+the prompt, a log line, or the JSON reply. A character the font cannot draw fails the PDF with
+code `render` and keeps the text.
+
 | Config | Use |
 |---|---|
 | `kb.bank`, `kb.rkb`, `kb.code_root` | as above; `code_root` is rkb's `RKB_CODE_ROOT` |

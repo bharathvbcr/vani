@@ -32,13 +32,20 @@ describe("the draft panel stays in step with the page", () => {
     expect(header).toContain('capture("saved")');
     expect(header).not.toContain("saveOne");
 
-    const tailorAt = content.indexOf('btn("d", "Tailor to JD")');
+    // The tailor button used to insert an invented biography. It now holds an
+    // empty field, and inserts only a saved answer or a grounded draft.
+    const tailorAt = content.indexOf("openAnswerFill(");
     const tailor = content.slice(tailorAt, content.indexOf("row.append(tb)", tailorAt));
-    const inserted = tailor.indexOf("Inserted tailored answer");
+    const held = tailor.indexOf("toast(");
+    const inserted = tailor.indexOf("insertDraft");
     const rescanned = tailor.indexOf("void scheduleScan()");
-    expect(inserted).toBeGreaterThan(0);
+    expect(tailor).toContain("Why blank");
+    expect(tailor).not.toContain("generateTailoredDraft");
+    expect(tailor).not.toContain("requestSubmit");
+    expect(tailor).not.toContain(".submit(");
+    expect(held).toBeGreaterThan(0);
+    expect(inserted).toBeGreaterThan(held);
     expect(rescanned).toBeGreaterThan(inserted);
-    expect(tailor.indexOf("overwrite = true")).toBeLessThan(inserted);
 
     const handler = between(content, "insertTailored:", "resumeNoted:");
     const ok = handler.lastIndexOf("return { ok: true }");
@@ -46,13 +53,13 @@ describe("the draft panel stays in step with the page", () => {
     expect(handler.lastIndexOf("void scheduleScan()")).toBeLessThan(ok);
   });
 
-  test("the popup redraws coverage after a tailored insert and not after a refused replace", () => {
-    const block = between(popup, 'type: "insertTailored"', "if (q.note !== UNDRAFTED_NOTE)");
-    const success = block.indexOf("a.reply.ok === true");
-    const redraw = block.indexOf("renderCoverage(scanned.tabCoverage.total)");
-    const refused = block.indexOf('reply.reason === "has_value"');
-    expect(success).toBeGreaterThan(0);
-    expect(redraw).toBeGreaterThan(success);
-    expect(refused).toBeGreaterThan(redraw);
+  test("the popup explains a blank open answer and does not insert one", () => {
+    // The popup tailor button used to send insertTailored with invented prose.
+    const block = between(popup, "Why blank", "if (q.note !== UNDRAFTED_NOTE)");
+    expect(block).toContain("openAnswerFill(");
+    expect(block).toContain("toast(");
+    expect(block).not.toContain("insertTailored");
+    expect(block).not.toContain("generateTailoredDraft");
+    expect(popup).not.toContain('type: "insertTailored"');
   });
 });

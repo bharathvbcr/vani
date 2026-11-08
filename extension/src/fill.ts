@@ -10,9 +10,11 @@ import {
   type FieldRef, comboOptions, forgetFill, forgetFills, iconSignature, ownedListbox, readRefValue, readWidgetValue, recordFill, sameValues, widgetValueIcon,
 } from "./extract";
 import { mapChoice, matchField } from "./match";
+import { type ContactChoice, type ContactGet, MAX_CONTACT_ASKS, NOT_RUN_NOTE, jarvisKeyOf, mayAskContactKey } from "./contacts";
 import { dialCodeOnly, normalizeLabel } from "./normalize";
 import { codeDigits, monthIndex, parseDate, parsePhone } from "./sections";
 import { type ResumeFetch, isResumeField } from "./resume";
+import { type CoverFetch, isCoverField, isCoverText } from "./cover";
 import { observeRoots } from "./rounds";
 import { overLimit } from "./guards";
 import { fillAlreadyRecording, noteFillRecording } from "./frames";
@@ -24,9 +26,11 @@ export interface FillOutcome {
   score?: number;
   review?: boolean;
   key?: string;
-  reason?: "no_match" | "has_value" | "no_option" | "untouchable" | "manual" | "detached"
+  reason?: "no_match" | "has_value" | "no_option" | "untouchable" | "manual" | "detached" | "not_run"
     /** A resume input: nothing chosen for this job, the file could not be had, or the page dropped it. */
     | "no_resume" | "resume_unavailable" | "refused"
+    /** A cover-letter input: nothing used for this job, the file could not be had, or the page dropped it. Never the resume. */
+    | "no_cover" | "cover_unavailable"
     /** The answer is longer than the field's character limit; the field was left as it was. */
     | "too_long";
   /** Why, in words, for a resume or too_long reason. */
@@ -710,8 +714,21 @@ export interface FillOptions {
    * once per fill. Without it every file input is left alone ("untouchable").
    */
   resume?: () => Promise<ResumeFetch>;
+  /** The used cover letter for this posting. A missing letter is not replaced with the resume. */
+  cover?: () => Promise<CoverFetch>;
+  /** The page's posting key. A review answer fills only when it was saved for this key. */
+  pageKey?: string | null;
   /** Matches already computed for these refs (coverageOf's `matches`); fillAll matches only the refs missing from it. */
   matches?: Map<FieldRef, Match | null>;
+  /**
+   * Jarvis contact values. A known contact label is filled from get, in code.
+   * An unmatched text field may ask choose, at most MAX_CONTACT_ASKS times.
+   * Absent: Fill uses only the answer bank, as before.
+   */
+  contacts?: {
+    get(key: string): Promise<ContactGet>;
+    choose(label: string, kind: string): Promise<ContactChoice>;
+  };
 }
 
 // --- undo ---------------------------------------------------------------------------------------
@@ -951,9 +968,48 @@ async function attachResume(ref: FieldRef, get: () => Promise<ResumeFetch>, opts
   }
   fire(el, "input");
   fire(el, "change");
+  el.setAttribute("data-vani-file", `${r.name}\t${r.bytes.length}`);
   const when = r.pickedAt ? `, chosen ${r.pickedAt.slice(0, 10)}` : "";
   mark(ref, true, `resume: ${r.name}${when}. Check it is the version for this job`);
   return { label, filled: true, review: true };
+}
+
+/** The used letter, read back the same way as a resume. A missing or refused file is never the resume. */
+async function attachCover(ref: FieldRef, get: () => Promise<CoverFetch>, opts: FillOptions): Promise<FillOutcome> {
+  const label = ref.info.label;
+  const el = ref.els[0] as HTMLInputElement | undefined;
+  if (!el || ref.els.length !== 1) return { label, filled: false, reason: "untouchable" };
+  if (!el.isConnected) return { label, filled: false, reason: "detached" };
+  if (!opts.overwrite && hasValue(ref)) return { label, filled: false, reason: "has_value" };
+  const r = await get();
+  if (!r.ok) return { label, filled: false, reason: r.reason, detail: r.detail };
+  if (!r.hasPDF || r.bytes.length === 0) return { label, filled: false, reason: "no_cover", detail: "the used letter has no PDF" };
+  if (!el.isConnected) return { label, filled: false, reason: "detached" };
+  const w = winOf(el);
+  try {
+    const dt = new w.DataTransfer();
+    dt.items.add(new w.File([r.bytes.slice()], r.name, { type: "application/pdf" }));
+    el.files = dt.files;
+  } catch {
+    return { label, filled: false, reason: "refused", detail: "this page did not take the cover letter; attach it by hand" };
+  }
+  const got = el.files?.[0];
+  if (el.files?.length !== 1 || !got || got.name !== r.name || got.size !== r.bytes.length) {
+    return { label, filled: false, reason: "refused", detail: "this page did not take the cover letter; attach it by hand" };
+  }
+  fire(el, "input");
+  fire(el, "change");
+  el.setAttribute("data-vani-file", `${r.name}\t${r.bytes.length}`);
+  mark(ref, true, `cover letter: ${r.name}. Check it is the letter for this job`);
+  return { label, filled: true, review: true };
+}
+
+async function insertCoverBody(ref: FieldRef, get: () => Promise<CoverFetch>, opts: FillOptions): Promise<FillOutcome> {
+  const label = ref.info.label;
+  const r = await get();
+  if (!r.ok) return { label, filled: false, reason: r.reason, detail: r.detail };
+  if (!r.body.trim()) return { label, filled: false, reason: "no_cover", detail: "the used letter has no text" };
+  return insertDraft(ref, r.body, { overwrite: opts.overwrite === true });
 }
 
 /** Widgets that open a list or wait on the page: filled after the plain fields, which settle at once. */
@@ -965,17 +1021,79 @@ const driven = (ref: FieldRef): boolean => ref.widget === "combobox" || ref.widg
  * radios/checkboxes and multi-selects, which wait on the page. `opts.matches` (from coverageOf) lets
  * the page's matches be computed once: a ref found in it is not matched again.
  */
+/** Write a contact value the host supplied. The outline names the key, never the value. */
+async function writeSupplied(ref: FieldRef, text: string, review: boolean, key: string): Promise<{ outcome: FillOutcome; written?: Written }> {
+  const label = ref.info.label;
+  const no = (outcome: FillOutcome) => ({ outcome });
+  if (ref.manual) return no({ label, filled: false, reason: "manual", key });
+  if (ref.els.some(e => !e.isConnected)) return no({ label, filled: false, reason: "detached", key });
+  const el = ref.els[0];
+  if (!el || ref.els.length !== 1 || (ref.widget !== "native" && ref.widget !== undefined)) return no({ label, filled: false, reason: "manual", key });
+  if (hasValue(ref)) return no({ label, filled: false, reason: "has_value", key });
+  let before: string[] = [];
+  let restore: (() => void) | null = null;
+  try { before = readRefValue(ref); restore = restoreFor(ref); } catch { /* undo will say so */ }
+  const long = tooLong(el, text, "answer");
+  if (long) {
+    mark(ref, true, long);
+    return no({ label, filled: false, reason: "too_long", detail: long, key });
+  }
+  const kept = keptResult(await writeKept(el as HTMLInputElement, text, textKept));
+  if (!kept.ok) return no({ label, filled: false, reason: kept.reason ?? "manual", ...(kept.detail ? { detail: kept.detail } : {}), key });
+  mark(ref, review, review ? "a model chose this contact key" : "contact");
+  return {
+    outcome: { label, filled: true, via: "autocomplete", review, key },
+    written: { ref, key, review, before, restore, after: [], ...(kept.recheck ? { recheck: kept.recheck } : {}) },
+  };
+}
+
 export async function fillAll(refs: FieldRef[], bank: Bank, host: string, opts: FillOptions = {}): Promise<FillOutcome[]> {
   const out = new Array<FillOutcome>(refs.length);
   // One request for the resume per fill, made only if a resume input is there.
   let resume: Promise<ResumeFetch> | undefined;
   const getResume = opts.resume ? () => (resume ??= opts.resume!()) : undefined;
+  let cover: Promise<CoverFetch> | undefined;
+  const getCover = opts.cover ? () => (cover ??= opts.cover!()) : undefined;
   const written: Written[] = [];
   const at = new Map<Written, number>();
+  let asks = 0;
+  const notRun = (label: string, note?: string): FillOutcome => ({
+    label, filled: false, reason: "not_run", detail: note && note.includes(NOT_RUN_NOTE) ? note : NOT_RUN_NOTE,
+  });
   const one = async (ref: FieldRef): Promise<FillOutcome> => {
+    if (ref.info.kind === "file" && isCoverField(ref.info)) {
+      if (!getCover) return { label: ref.info.label, filled: false, reason: "no_cover", detail: "no cover letter chosen for this job" };
+      return attachCover(ref, getCover, opts);
+    }
     if (ref.info.kind === "file" && getResume && isResumeField(ref.info)) return attachResume(ref, getResume, opts);
+    if (isCoverText(ref.info)) {
+      if (!getCover) return { label: ref.info.label, filled: false, reason: "no_cover", detail: "no cover letter chosen for this job" };
+      return insertCoverBody(ref, getCover, opts);
+    }
     if (ref.info.kind === "file" || ref.info.kind === "password") return { label: ref.info.label, filled: false, reason: "untouchable" };
-    const m = opts.matches?.has(ref) ? opts.matches.get(ref) ?? null : matchField(ref.info, bank, host);
+    const catalog = opts.contacts ? jarvisKeyOf(ref.info) : "";
+    if (catalog && opts.contacts) {
+      const got = await opts.contacts.get(catalog);
+      if (got.status === "value" && got.text) {
+        const t = await writeSupplied(ref, got.text, false, catalog);
+        if (t.written) written.push(t.written);
+        return t.outcome;
+      }
+      if (got.status === "not_run") return notRun(ref.info.label, got.note);
+    }
+    const m = opts.matches?.has(ref) ? opts.matches.get(ref) ?? null : matchField(ref.info, bank, host, Date.now(), opts.pageKey ?? null);
+    if (!m && opts.contacts && mayAskContactKey(ref.info)) {
+      if (asks >= MAX_CONTACT_ASKS) return notRun(ref.info.label);
+      asks++;
+      const choice = await opts.contacts.choose(ref.info.label, ref.info.kind);
+      if (choice.status === "filled" && choice.text && choice.key) {
+        const t = await writeSupplied(ref, choice.text, true, choice.key);
+        if (t.written) written.push(t.written);
+        return t.outcome;
+      }
+      if (choice.status === "not_run") return notRun(ref.info.label, choice.note);
+      return { label: ref.info.label, filled: false, reason: "no_match" };
+    }
     if (!m) return { label: ref.info.label, filled: false, reason: "no_match" };
     const t = await fillTracked(ref, m, opts);
     if (t.written) written.push(t.written);

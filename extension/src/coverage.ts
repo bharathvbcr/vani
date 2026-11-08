@@ -58,11 +58,11 @@ export interface PageQuestion {
 export type Bucket = "skipped" | "manual" | "fillable" | "unknown";
 
 /** The one place a field is sorted, so scan and fill cannot disagree. `onMatch` receives the match it computed (not called for a skipped field or no bank). */
-export function bucketOf(f: FieldInfo, manual: string, bank: Bank | null, host: string, onMatch?: (m: Match | null) => void): { bucket: Bucket; known: boolean } {
+export function bucketOf(f: FieldInfo, manual: string, bank: Bank | null, host: string, onMatch?: (m: Match | null) => void, pageKey: string | null = null): { bucket: Bucket; known: boolean } {
   if (untouchable(f.kind)) return { bucket: "skipped", known: false };
   const sens = classify(f);
   if (sens === "secret" || (sens === "self_id" && !(bank?.settings.captureSelfId))) return { bucket: "skipped", known: false };
-  const match = bank ? matchField(f, bank, host) : undefined;
+  const match = bank ? matchField(f, bank, host, Date.now(), pageKey) : undefined;
   if (match !== undefined) onMatch?.(match);
   const known = match != null;
   if (manual) return { bucket: "manual", known };
@@ -108,6 +108,7 @@ export function coverageOf<R extends { info: FieldInfo; manual: string }>(
   postingChars = 0,
   /** Where an unknown row's reason comes from; a parameter so a test can supply one. */
   reason: WhyNoMatch | undefined = whyNoMatch,
+  pageKey: string | null = null,
 ): Coverage {
   const c: Coverage = {
     found: refs.length, known: 0, fillable: 0, unknown: 0, manual: 0, skipped: 0,
@@ -116,7 +117,7 @@ export function coverageOf<R extends { info: FieldInfo; manual: string }>(
   };
   for (let i = 0; i < refs.length; i++) {
     const r = refs[i]!;
-    const { bucket, known } = bucketOf(r.info, r.manual, bank, host, matches && (m => matches.set(r, m)));
+    const { bucket, known } = bucketOf(r.info, r.manual, bank, host, matches && (m => matches.set(r, m)), pageKey);
     if (known) c.known++;
     c[bucket]++;
     const label = r.info.label.trim() || r.info.name || "(unlabelled)";

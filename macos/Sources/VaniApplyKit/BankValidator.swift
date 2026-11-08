@@ -67,7 +67,11 @@ public enum BankValidator {
                 uses: count(a["uses"]),
                 fills: count(a["fills"]),
                 updatedAt: (a["updatedAt"] as? String).map { prefixUTF16($0, 40) } ?? "1970-01-01T00:00:00.000Z",
-                review: isTrue(a["review"])
+                review: isTrue(a["review"]),
+                postingKey: (a["postingKey"] as? String).flatMap { key in
+                    let trimmed = String(key.prefix(2048))
+                    return trimmed.isEmpty ? nil : trimmed
+                }
             )
         }
 

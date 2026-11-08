@@ -146,6 +146,7 @@ async function probeFrames(tabId: number, timeoutMs: number): Promise<number[]> 
 export const ACCEPT: { [K in ToContent["type"]]: (r: unknown) => boolean } = {
   scan: isScanReply,
   fill: isFillReply,
+  submitPage: r => typeof r === "object" && r !== null && ("sent" in r || "code" in r || "error" in r),
   capture: isCaptureReply,
   clearMarks: () => true,
   appliedShow: r => typeof r === "object" && r !== null && "shown" in r,
@@ -388,6 +389,7 @@ export function notAnswered(r: FanOut<unknown>): string {
 export interface ContentHandlers {
   scan(): Promise<ScanReply>;
   fill(overwrite?: boolean, typeahead?: boolean): Promise<FillReply>;
+  submitPage?(): Promise<unknown> | unknown;
   capture(): Promise<CaptureReply>;
   clearMarks?(): void | Promise<void>;
   /** Show a pending Applied question; only the top frame has one (null in a sub-frame). */
@@ -471,6 +473,11 @@ export function contentListener(h: ContentHandlers): Listener {
       h.resumeNoted(name);
       sendResponse({ shown: true });
       return false;
+    }
+    if (msg.type === "submitPage") {
+      void Promise.resolve().then(() => h.submitPage?.() ?? { error: "This frame cannot submit.", code: "off" })
+        .then(sendResponse, (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e), code: "off" }));
+      return true;
     }
     if (msg.type === "fill") {
       // Synchronous: a second message in this realm is rejected before h.fill, including before its first await.

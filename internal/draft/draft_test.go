@@ -141,7 +141,7 @@ func TestDraftFramesUntrustedTextAndSendsOnlyRelevantEvidence(t *testing.T) {
 }
 
 func TestAnthropicRequestsAreShaped(t *testing.T) {
-	p := &provider{name: "anthropic", text: "ok draft"}
+	p := &provider{name: "anthropic", text: "ok draft for Modal"}
 	d, _ := New(p, Config{Model: "claude-opus-5-5"}, nil)
 	if _, err := d.Draft(context.Background(), request()); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestAnthropicRequestsAreShaped(t *testing.T) {
 // A model that does not list "high" keeps the effort Shape chose, and a model
 // with a small ceiling is never asked for more than it can emit.
 func TestDraftEffortFollowsTheModelsLevels(t *testing.T) {
-	p := &provider{name: "anthropic", text: "ok draft", levels: []string{"low", "medium"}}
+	p := &provider{name: "anthropic", text: "ok draft for Modal", levels: []string{"low", "medium"}}
 	d, _ := New(p, Config{Model: "claude-opus-5-5"}, nil)
 	if _, err := d.Draft(context.Background(), request()); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestDraftEffortFollowsTheModelsLevels(t *testing.T) {
 		t.Errorf("a model without high: effort %q max %d", r.Effort, r.MaxTokens)
 	}
 	// Non-Anthropic providers get no effort at all.
-	q := &provider{text: "ok draft"}
+	q := &provider{text: "ok draft for Modal"}
 	d, _ = New(q, Config{Model: "m"}, nil)
 	if _, err := d.Draft(context.Background(), request()); err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestBadRequestsAreRefusedBeforeSpending(t *testing.T) {
 }
 
 func TestLongPostingIsClipped(t *testing.T) {
-	p := &provider{text: "x"}
+	p := &provider{text: "x at Modal"}
 	d, _ := New(p, Config{Model: "m"}, nil)
 	r := request()
 	r.Job.Description = strings.Repeat("é", MaxDescriptionRunes+500)
@@ -407,7 +407,11 @@ func motivationKB() []Evidence {
 
 func draftPrompt(t *testing.T, kb []Evidence, target string, r Request) (system, user string) {
 	t.Helper()
-	p := &provider{text: "draft"}
+	text := "draft"
+	if name := strings.TrimSpace(r.Job.Company); Motivation(r.Question) && name != "" {
+		text = "A draft for " + name + "."
+	}
+	p := &provider{text: text}
 	d, err := New(p, Config{Model: "m", TargetSummary: target}, kb)
 	if err != nil {
 		t.Fatal(err)

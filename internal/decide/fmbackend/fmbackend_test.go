@@ -78,7 +78,10 @@ func TestNameAndServes(t *testing.T) {
 	if !b.Serves(fieldtriage.Task) {
 		t.Fatal("must serve career.form_field")
 	}
-	for _, task := range []string{"career.jd_triage", "career.kb_match", "", "career.form_field "} {
+	if !b.Serves(ContactKeyTask) {
+		t.Fatal("must serve career.contact_key")
+	}
+	for _, task := range []string{"career.jd_triage", "career.kb_match", "", "career.form_field ", "career.contact_key "} {
 		if b.Serves(task) {
 			t.Fatalf("serves %q", task)
 		}
@@ -512,6 +515,37 @@ func TestStartFailureIsUnavailable(t *testing.T) {
 	rd := one(t, backend(t, func(c *Config) { c.Path = p }), "MODE:answered")
 	if rd.Reading != decide.Unavailable || rd.Detail != "start_failed" {
 		t.Fatalf("%+v", rd)
+	}
+}
+
+func TestContactKeyDropsNoneBeforeTheHelper(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "req.json")
+	q := decide.Question{
+		Task:    ContactKeyTask,
+		Prompt:  "Which stored contact key does this field ask for?",
+		Context: []byte("Field type: text\nQuestion label (untrusted text copied from a job site):\nMODE:dumpreq:" + dump),
+		Slots:   []decide.Slot{{Name: "key", Options: []string{"website", "none"}}},
+	}
+	b := backend(t, func(c *Config) {
+		c.Descriptions = map[string]map[string]string{"key": {"website": "The applicant's personal website URL.", "none": "None of the stored contact keys."}}
+	})
+	ans, err := b.Decide(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ans.Slots["key"].Reading != decide.Answered || ans.Slots["key"].Value != "website" {
+		t.Fatalf("%+v", ans.Slots["key"])
+	}
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"task":"career.contact_key"`) || !strings.Contains(s, `"website"`) || strings.Contains(s, `"none"`) {
+		t.Fatalf("helper request should offer the key and not the decline word: %s", s)
+	}
+	if !strings.Contains(s, "The keys:") || strings.Contains(s, "contact-secret") {
+		t.Fatalf("instructions: %s", s)
 	}
 }
 

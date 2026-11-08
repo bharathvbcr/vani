@@ -114,6 +114,8 @@ var jsonLeaves = []jsonLeaf{
 	{"jobs resume current", jsonFlag, ""},
 	{"jobs resume coverage", jsonFlag, ""},
 	{"jobs resume gaps", jsonFlag, ""},
+	{"jobs cover build", jsonFlag, ""},
+	{"jobs cover use", jsonFlag, ""},
 	{"jobs gaps", jsonFlag, ""},
 	{"retriage", jsonFlag, ""},
 	{"rescore", jsonFlag, ""},
@@ -125,6 +127,8 @@ var jsonLeaves = []jsonLeaf{
 	{"draft", jsonAlways, ""},
 	{"suggest", jsonAlways, ""},
 	{"resume", jsonAlways, ""},
+	{"cover", jsonAlways, ""},
+	{"contacts", jsonAlways, ""},
 	{"migrate rekey-fallback", jsonFlag, ""},
 	{"launchd plist", jsonNone, "its output is a launchd plist (XML) to install"},
 }

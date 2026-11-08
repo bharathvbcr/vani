@@ -51,13 +51,13 @@ export function parseSameQuestion(x: unknown): Reading {
 
 /** Matches for `refs`: the ones in `carried` as they are, the rest computed. Files and passwords are never matched. */
 export function matchAll<R extends { info: FieldInfo }>(
-  refs: readonly R[], bank: Bank, host: string, carried?: Map<R, Match | null>,
+  refs: readonly R[], bank: Bank, host: string, carried?: Map<R, Match | null>, pageKey: string | null = null,
 ): Map<R, Match | null> {
   const out = new Map<R, Match | null>();
   for (const r of refs) {
     if (carried?.has(r)) { out.set(r, carried.get(r) ?? null); continue; }
     if (r.info.kind === "file" || r.info.kind === "password") continue;
-    out.set(r, matchField(r.info, bank, host));
+    out.set(r, matchField(r.info, bank, host, Date.now(), pageKey));
   }
   return out;
 }

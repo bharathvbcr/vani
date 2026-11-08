@@ -52,6 +52,8 @@ export interface Answer {
   fills: number;        // times filled
   updatedAt: string;    // ISO time of the last capture
   review: boolean;      // long free text: filled only as a draft to review
+  /** The posting this review answer was saved for. Absent when the page had no posting key. */
+  postingKey?: string;
 }
 
 export interface Settings {

@@ -111,11 +111,15 @@ final class JobsModel {
     /// operation at a time. A version built, revalidated or used re-shows the open posting, whose
     /// `resume` summary is what vani now reports. Without a runner (a test host) the actions are not offered.
     let resume: ResumeStudioModel
+    /// Build and Use for the posting's cover letter, on the same Resume card.
+    let cover: CoverLetterModel
 
     init(client: @escaping () -> JobsClient, retriage: (() -> RetriageClient)? = nil,
-         resume: (() -> ResumeStudioClient)? = nil, bankStore: @escaping () -> BankStore? = { nil }) {
+         resume: (() -> ResumeStudioClient)? = nil, cover: (() -> CoverLetterClient)? = nil,
+         bankStore: @escaping () -> BankStore? = { nil }) {
         self.client = client
         self.resume = ResumeStudioModel(client: resume, bankStore: bankStore)
+        self.cover = CoverLetterModel(client: cover, bankStore: bankStore)
         self.retriage = RetriageModel(client: retriage)
         self.batch = RetriageBatchModel(client: retriage.map { make in { RetriageBatchClient(runner: make().runner) } })
         self.resume.onChange = { [weak self] key in self?.reloadAfterResume(key) }

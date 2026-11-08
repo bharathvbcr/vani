@@ -101,8 +101,8 @@ export function valueFor(field: FieldInfo, a: Answer): string[] | null {
  * field on the same site, the autocomplete meaning, the same question, then a
  * fuzzy question match. Secret fields never match; self-id only when enabled.
  */
-export function matchField(field: FieldInfo, bank: Bank, host: string, now: number = Date.now()): Match | null {
-  return walk(field, bank, host, now);
+export function matchField(field: FieldInfo, bank: Bank, host: string, now: number = Date.now(), pageKey: string | null = null): Match | null {
+  return walk(field, bank, host, now, undefined, pageKey);
 }
 
 /**
@@ -114,7 +114,7 @@ export function matchField(field: FieldInfo, bank: Bank, host: string, now: numb
  */
 export function whyNoMatch(field: FieldInfo, bank: Bank, host: string, now: number = Date.now()): string | null {
   const sink: Refusals = {};
-  if (walk(field, bank, host, now, sink)) return null;
+  if (walk(field, bank, host, now, sink, null)) return null;
   const r = sink.refusal;
   if (!r) return null;
   return r.kind === "past"
@@ -125,6 +125,24 @@ export function whyNoMatch(field: FieldInfo, bank: Bank, host: string, now: numb
 /** A candidate the walk refused for a reason worth telling the person (whyNoMatch); only filled when asked for. */
 interface Refusals {
   refusal?: { kind: "past"; saved: string; noun: string } | { kind: "options"; saved: string };
+  /** A review answer that matches, withheld because it was saved for a different posting. */
+  held?: Match;
+}
+
+/** A review answer fills again only on the posting it was saved for. No page key keeps today's fill. */
+function reviewHeld(a: Answer, pageKey: string | null): boolean {
+  return a.review === true && pageKey !== null && pageKey !== "" && typeof a.postingKey === "string" && a.postingKey !== "" && a.postingKey !== pageKey;
+}
+
+/**
+ * The review answer that would have filled this field on another posting, so the panel can offer it
+ * as a Use button. Null when the field would be filled, or when the page has no posting key.
+ */
+export function heldReview(field: FieldInfo, bank: Bank, host: string, pageKey: string | null, now: number = Date.now()): Match | null {
+  if (!pageKey) return null;
+  const sink: Refusals = {};
+  if (walk(field, bank, host, now, sink, pageKey)) return null;
+  return sink.held ?? null;
 }
 
 /** What a dated question is called in the message: its intent's own noun, else just "date" (today's date, a signature date). */
@@ -142,7 +160,7 @@ function listsOptions(field: FieldInfo): boolean {
 }
 
 /** The one walk behind matchField and whyNoMatch. `sink`, when given, is told what was refused; matching never reads it. */
-function walk(field: FieldInfo, bank: Bank, host: string, now: number, sink?: Refusals): Match | null {
+function walk(field: FieldInfo, bank: Bank, host: string, now: number, sink?: Refusals, pageKey: string | null = null): Match | null {
   if (untouchable(field.kind)) return null;
   const sens = classify(field);
   if (sens === "secret") return null;
@@ -273,6 +291,11 @@ function walk(field: FieldInfo, bank: Bank, host: string, now: number, sink?: Re
       const x = answers[held]!;
       const xv = x === c.a ? null : valueFor(field, x);
       if (xv && ageOf(field, want, idx.intentsOf.get(x), x, xv, now) === null) m.alternative = { answer: x, value: xv, wording: x.labels.at(-1) ?? x.key };
+    }
+    // A review answer saved for a different posting is not written. The field stays empty; the panel may offer it.
+    if (reviewHeld(c.a, pageKey)) {
+      if (sink) sink.held = m;
+      return null;
     }
     return m;
   }

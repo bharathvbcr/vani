@@ -20,6 +20,7 @@ import { createDrafter, draftHelp } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
 import { parseFindRow } from "./jobrow";
 import { checkResumeFile, checkResumeName, resumeKey, runResume } from "./resume";
+import { runCover } from "./cover";
 
 const draft = createDrafter();
 
@@ -458,12 +459,12 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       try {
         if (mode === "mac-app") {
           const b = await loadBank({ fresh: true }); // the delta is computed against this: never a window-old copy
-          const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date());
+          const delta = mergeCaptureDelta(b, msg.fields, msg.host, new Date(), msg.postingKey ?? null);
           const { droppedSecret } = await patchAnswers(delta.upsert, delta.deleteKeys);
           result = refusedByApp(delta.counts, droppedSecret);
         } else {
           await update(b => {
-            const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date());
+            const { bank, ...counts } = mergeCapture(b, msg.fields, msg.host, new Date(), msg.postingKey ?? null);
             result = counts;
             return bank;
           });
@@ -513,6 +514,28 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       });
       void logActivity({ event: "edit" });
       return { ok: true };
+    case "contacts": {
+      // The value, when this is a put or an import, is inside `request` for the host.
+      // It is not written to the activity log.
+      const ms = msg.op === "choose" ? 45_000 : 8_000;
+      const request = msg.op === "put" ? { op: "put", key: msg.key, text: msg.text }
+        : msg.op === "get" ? { op: "get", key: msg.key }
+        : msg.op === "list" ? { op: "list" }
+        : msg.op === "choose" ? { op: "choose", label: msg.label, kind: msg.kind }
+        : { op: "import", items: msg.items };
+      return native({ op: "contacts", request }, ms);
+    }
+    case "contactsCopied": {
+      const store = chrome.storage?.local;
+      if (!store) return { copied: false, error: "the check did not run", code: "unavailable" };
+      try {
+        if (msg.set === true) await store.set({ vaniContactsCopied: true });
+        const got = await store.get("vaniContactsCopied");
+        return { copied: got.vaniContactsCopied === true };
+      } catch {
+        return { copied: false, error: "the check did not run", code: "unavailable" };
+      }
+    }
     case "draft": {
       // Messages cross a trust boundary (a compromised page can't send these,
       // but a buggy content script can): re-check the shape here.
@@ -603,6 +626,12 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
           ...(j.posted === undefined ? {} : { posted: j.posted }),
         })),
       }, INGEST_CALL_MS);
+    case "coverGet":
+    case "coverInfo":
+    case "coverOpen": {
+      const url = sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url;
+      return runCover({ type: msg.type, url }, native);
+    }
     case "resumeGet":
     case "resumePut":
     case "resumeDelete": {

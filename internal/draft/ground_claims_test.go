@@ -472,7 +472,7 @@ func TestDraftAcceptsBackedSpelledAndAcronymClaims(t *testing.T) {
 func TestNotesGroundCredentialsForMotivationQuestionsOnly(t *testing.T) {
 	notes := Config{MotivationNotes: "I hold a PhD and I use AWS every day"}
 	motive := Request{Question: "Why Modal?", Job: latencyRequest().Job}
-	if _, err := draftReply(t, "I hold a PhD and use AWS.", motive, notes); err != nil {
+	if _, err := draftReply(t, "I hold a PhD and use AWS at Modal.", motive, notes); err != nil {
 		t.Errorf("notes sent with a motivation question must ground it: %v", err)
 	}
 	_, err := draftReply(t, "I hold a PhD.", latencyRequest(), notes)

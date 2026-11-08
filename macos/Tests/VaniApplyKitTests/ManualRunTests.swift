@@ -94,6 +94,28 @@ final class ManualRunTests: XCTestCase {
         }
     }
 
+    /// Each Run Now choice has a short title and a detail that says what it changes.
+    func testRunSheetCopySaysWhatEachChoiceDoes() {
+        let titles = [RunSheetCopy.advanceTitle, RunSheetCopy.capTitle, RunSheetCopy.workersTitle, RunSheetCopy.usTitle]
+        for title in titles {
+            XCTAssertFalse(title.contains("("), title)
+            XCTAssertFalse(title.contains("instead of"), title)
+            XCTAssertLessThan(title.count, 40, title)
+        }
+        XCTAssertTrue(RunSheetCopy.advanceDetail.contains("no decision model is called"))
+        XCTAssertTrue(RunSheetCopy.capDetail.contains("advance_per_run"))
+        XCTAssertTrue(RunSheetCopy.capDetail.contains(ManualRunOptions.maxAdvance.formatted()))
+        XCTAssertTrue(RunSheetCopy.capDetail.contains("already past triage"))
+        XCTAssertEqual(RunSheetCopy.capLabel, "Postings this run")
+        XCTAssertTrue(RunSheetCopy.workersDetail.contains("advance_concurrency"))
+        XCTAssertTrue(RunSheetCopy.workersDetail.contains("\(ManualRunOptions.maxWorkers)"))
+        XCTAssertEqual(RunSheetCopy.workersLabel, "Workers")
+        XCTAssertEqual(RunSheetCopy.usDetail, "Advance postings located in the United States before the rest. It only changes the order; nothing is dropped.")
+        XCTAssertTrue(RunSheetCopy.everyBoardDetail.contains("every board"))
+        XCTAssertTrue(RunSheetCopy.chosenBoardDetail.contains("daily run"))
+        XCTAssertFalse(RunSheetCopy.workersLabel.contains("parallel workers"))
+    }
+
     /// The sheet says which path will run, and says it was opened from Triage now.
     func testRunSheetSaysWhereItCameFromAndWhetherItIsKept() {
         let triage = RunSheet(options: .backlog, source: .triageNow)

@@ -68,47 +68,20 @@ describe("tailored repeated questions engine", () => {
     expect(matchTailorableQuestion("")).toBeNull();
   });
 
-  test("generateTailoredDraft injects company, title, and skills into all 5 templates", () => {
+  test("generateTailoredDraft does not invent a biography from the posting", () => {
+    // These cases used to require invented prose (company, title, skills, a greeting).
+    // That expectation is retired: the posting is not the applicant's experience.
     const job: JobInfo = {
       title: "Senior Infrastructure Engineer",
       company: "CloudTech Labs",
       description: "We are seeking a senior infrastructure engineer skilled in Go, Kubernetes, and GCP to scale distributed systems.",
     };
-
-    const whyCompany = generateTailoredDraft("why_company", job);
-    expect(whyCompany).toContain("CloudTech Labs");
-
-    const whyRole = generateTailoredDraft("why_role", job);
-    expect(whyRole).toContain("Senior Infrastructure Engineer");
-    expect(whyRole).toContain("CloudTech Labs");
-    expect(whyRole.toLowerCase()).toContain("go");
-
-    const roleFit = generateTailoredDraft("role_fit", job);
-    expect(roleFit).toContain("Senior Infrastructure Engineer");
-    expect(roleFit.toLowerCase()).toContain("kubernetes");
-
-    const project = generateTailoredDraft("project_experience", job);
-    expect(project.toLowerCase()).toContain("go");
-    expect(project).toContain("latency");
-
-    const coverLetter = generateTailoredDraft("cover_letter", job);
-    expect(coverLetter).toContain("Dear CloudTech Labs Hiring Team");
-    expect(coverLetter).toContain("Senior Infrastructure Engineer");
-  });
-
-  test("generateTailoredDraft handles missing or minimal job info gracefully", () => {
-    const emptyJob: JobInfo = {
-      title: "",
-      company: "",
-      description: "",
-    };
-
-    const draftRole = generateTailoredDraft("why_role", emptyJob);
-    expect(draftRole).toContain("this position");
-    expect(draftRole).toContain("your team");
-
-    const draftCover = generateTailoredDraft("cover_letter", emptyJob);
-    expect(draftCover).toContain("Dear your team Hiring Team");
+    for (const kind of ["why_company", "why_role", "role_fit", "project_experience", "cover_letter"] as const) {
+      expect(generateTailoredDraft(kind, job), kind).toBe("");
+    }
+    const emptyJob: JobInfo = { title: "", company: "", description: "" };
+    expect(generateTailoredDraft("why_role", emptyJob)).toBe("");
+    expect(generateTailoredDraft("cover_letter", emptyJob)).toBe("");
   });
 
   test("matchTailorableQuestion recognizes all new repeated question categories", () => {
@@ -138,33 +111,21 @@ describe("tailored repeated questions engine", () => {
     expect(qDiv?.title).toBe("Diversity & Perspective");
   });
 
-  test("generateTailoredDraft tailors new categories based on JD and profile", () => {
+  test("generateTailoredDraft does not invent salary, work authorization, a date, or a story", () => {
+    // These cases used to require a salary, a visa sentence, a notice period, and
+    // other invented biography. An empty or partial profile is not that text.
     const jobWithComp: JobInfo = {
       title: "Backend Engineer",
       company: "DataCo",
       description: "Base salary $160,000 - $190,000 per year. Looking for Go developers.",
     };
-
-    const salDraft = generateTailoredDraft("salary_expectations", jobWithComp);
-    expect(salDraft).toContain("$160,000 - $190,000");
-
-    const salDraftProfile = generateTailoredDraft("salary_expectations", { title: "Dev", company: "A", description: "" }, { minSalary: 155000 });
-    expect(salDraftProfile).toContain("155,000");
-
-    const authSponsor = generateTailoredDraft("work_auth_explanation", jobWithComp, { requiresSponsorship: true });
-    expect(authSponsor).toContain("visa sponsorship");
-
-    const authNoSponsor = generateTailoredDraft("work_auth_explanation", jobWithComp, { requiresSponsorship: false });
-    expect(authNoSponsor).toContain("fully authorized");
-
-    const startDate = generateTailoredDraft("start_date", jobWithComp);
-    expect(startDate).toContain("two-week notice period");
-
-    const remoteDraft = generateTailoredDraft("remote_collaboration", jobWithComp);
-    expect(remoteDraft).toContain("asynchronous communication");
-
-    const diversityDraft = generateTailoredDraft("diversity_perspective", jobWithComp);
-    expect(diversityDraft).toContain("diverse viewpoints");
+    expect(generateTailoredDraft("salary_expectations", jobWithComp)).toBe("");
+    expect(generateTailoredDraft("salary_expectations", { title: "Dev", company: "A", description: "" }, { minSalary: 155000 })).toBe("");
+    expect(generateTailoredDraft("work_auth_explanation", jobWithComp, { requiresSponsorship: true })).toBe("");
+    expect(generateTailoredDraft("work_auth_explanation", jobWithComp, { requiresSponsorship: false })).toBe("");
+    expect(generateTailoredDraft("start_date", jobWithComp)).toBe("");
+    expect(generateTailoredDraft("remote_collaboration", jobWithComp)).toBe("");
+    expect(generateTailoredDraft("diversity_perspective", jobWithComp)).toBe("");
   });
 
   test("matchTailorableQuestion matches company-specific prompts", () => {

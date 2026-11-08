@@ -76,7 +76,7 @@ func TestDraftRefusesANeverDraftedQuestionBeforeSpending(t *testing.T) {
 }
 
 func TestDraftRecordsACountsOnlyOutcome(t *testing.T) {
-	p := &draftLLM{text: "I cut latency by 42% at Acme."}
+	p := &draftLLM{text: "I cut latency by 42% at Modal."}
 	draftSetup(t, goodDraftReq, p, true)
 	mustCode(t, 0, "draft")
 	outs, raw := stateOutcomes(t)

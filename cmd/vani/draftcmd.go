@@ -40,6 +40,10 @@ type draftReply struct {
 	// Category is what a not_drafted refusal read the question as
 	// (fieldtriage's work_authorization, self_identification, legal_consent).
 	Category string `json:"category,omitempty"`
+	// CompanyCheck is named, skipped, or empty. Skipped means the company was
+	// empty, so the check did not run. Note says that in a sentence.
+	CompanyCheck string `json:"company_check,omitempty"`
+	Note         string `json:"note,omitempty"`
 }
 
 // Codes `vani draft` adds to draft's own.
@@ -59,7 +63,10 @@ func (e *env) cmdDraft(args []string) error {
 	}
 	start := time.Now()
 	res, code, err := e.draftOnce()
-	reply := draftReply{Draft: res.Draft, Model: res.Model, EvidenceItems: res.EvidenceItems}
+	reply := draftReply{Draft: res.Draft, Model: res.Model, EvidenceItems: res.EvidenceItems, CompanyCheck: res.CompanyCheck}
+	if res.CompanyCheck == draft.CompanySkipped {
+		reply.Note = draft.CompanySkippedNote
+	}
 	if err != nil {
 		reply = draftReply{Error: err.Error(), Code: code, Kind: draft.KindOf(err), Category: draft.CategoryOf(err)}
 	}
@@ -120,7 +127,7 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 	if err != nil {
 		return draft.Result{}, codeConfig, err
 	}
-	d, code, err := e.newDrafter(ctx, cfg, p)
+	d, code, err := e.drafterWith(ctx, cfg, p, 0)
 	if err != nil {
 		return draft.Result{}, code, err
 	}
@@ -136,9 +143,10 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 	return res, "", nil
 }
 
-// newDrafter loads the knowledge-base evidence (when configured) and builds a
-// drafter on p. On failure it returns the reply code to report.
-func (e *env) newDrafter(ctx context.Context, cfg config.Config, p llm.Provider) (*draft.Drafter, string, error) {
+// drafterWith loads the knowledge-base evidence (when configured) and builds a
+// drafter on p. timeout 0 is the package default. On failure it returns the
+// reply code to report.
+func (e *env) drafterWith(ctx context.Context, cfg config.Config, p llm.Provider, timeout time.Duration) (*draft.Drafter, string, error) {
 	var evidence []draft.Evidence
 	if cfg.KB.Bank != "" && cfg.KB.RKB != "" {
 		b, claims, el, err := eligibleBank(ctx, cfg)
@@ -150,7 +158,7 @@ func (e *env) newDrafter(ctx context.Context, cfg config.Config, p llm.Provider)
 	} else {
 		fmt.Fprintln(e.stderr, "vani: draft: kb.bank and kb.rkb are not configured; drafting without knowledge-base evidence")
 	}
-	d, err := draft.New(p, draft.Config{Model: cfg.LLM.Model, TargetSummary: cfg.TargetSummary, MotivationNotes: cfg.MotivationNotes}, evidence)
+	d, err := draft.New(p, draft.Config{Model: cfg.LLM.Model, TargetSummary: cfg.TargetSummary, MotivationNotes: cfg.MotivationNotes, Timeout: timeout}, evidence)
 	if err != nil {
 		return nil, codeConfig, err
 	}

@@ -38,6 +38,21 @@ final class OnDeviceDeciderTests: XCTestCase {
         XCTAssertFalse(D.sessionInstructions(for: req).contains("LinkedIn"), "the untrusted label belongs in the prompt, not the instructions")
     }
 
+    func testContactKeyTaskOffersTheKeysAndDeclinesWithNone() throws {
+        let keys = ["email", "website"]
+        let req = try D.parse(request {
+            $0["task"] = D.contactKeyTask
+            $0["options"] = keys
+            $0["instructions"] = "The keys:\n- email: The applicant's email address."
+        }).get()
+        XCTAssertEqual(req.options, keys)
+        XCTAssertEqual(D.choices(for: req), keys + ["none"])
+        XCTAssertTrue(D.prompt(for: req).contains("Keys: email, website"))
+        XCTAssertTrue(D.sessionInstructions(for: req).contains("stored contact key"))
+        XCTAssertFalse(D.sessionInstructions(for: req).contains("LinkedIn"), "the untrusted label belongs in the prompt, not the instructions")
+        rejected(request { $0["task"] = D.contactKeyTask; $0["options"] = ["email", "none"] }, "bad_request_options")
+    }
+
     func testRefusesBadRequests() {
         rejected(Data(), "bad_request_json")
         rejected(Data("not json".utf8), "bad_request_json")

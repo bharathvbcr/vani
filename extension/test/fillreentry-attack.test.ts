@@ -1,6 +1,6 @@
 // Attacks the fill lock past the cases the first reentrancy test already names:
 // a write that throws later, a frame budget that elapses, the popup's own click, two tabs, a dead frame.
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { FILL_BUSY, FRAME_REPLY_MS, contentListener, releaseFillClaim } from "../src/frames";
 import { beginFill, fillRef, undoCount, undoFill } from "../src/fill";
 import { isFillReply } from "../src/messages";
@@ -80,6 +80,12 @@ function askContent(l: ContentL, msg: unknown): Promise<{ async: boolean; replie
 }
 
 describe("a fill that has already written", () => {
+  beforeEach(() => {
+    // undoCount is process-wide. A file that ran earlier can leave a record, and this
+    // test treats the first record as its own write.
+    releaseFillClaim();
+    beginFill();
+  });
   afterEach(() => { releaseFillClaim(); });
 
   test("a second message during a later await does not write, and the lock stays until the throw finishes writing", async () => {

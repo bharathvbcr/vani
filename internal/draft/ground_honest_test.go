@@ -2,6 +2,7 @@ package draft
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,9 @@ func TestHonestDraftsAreNotRefusedByTheExtendedGuard(t *testing.T) {
 		"I bring Python, React and TypeScript experience, and I have worked one-on-one with researchers to learn what they need.",
 	}
 	for _, reply := range honest {
+		if !strings.Contains(reply, "Anthropic") {
+			reply += " I want to do this at Anthropic."
+		}
 		d.p = &provider{text: reply}
 		if _, err := d.Draft(context.Background(), Request{Question: "Why Anthropic?", Job: job}); err != nil {
 			t.Errorf("an honest draft was refused: %v\n  %s", err, reply)

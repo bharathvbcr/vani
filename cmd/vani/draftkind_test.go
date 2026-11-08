@@ -31,7 +31,7 @@ func TestDraftRefusalCarriesWhatWasUnbacked(t *testing.T) {
 
 // Only an ungrounded refusal has a kind: every other reply is as it was.
 func TestOtherDraftRepliesHaveNoKind(t *testing.T) {
-	draftSetup(t, goodDraftReq, &draftLLM{text: "A plain draft."}, false)
+	draftSetup(t, goodDraftReq, &draftLLM{text: "A plain draft for Modal."}, false)
 	stdout, _ := mustCode(t, 0, "draft")
 	if strings.Contains(stdout, `"kind"`) {
 		t.Errorf("a draft carries a kind: %q", stdout)

@@ -296,6 +296,8 @@ func TestLeafOf(t *testing.T) {
 		{[]string{"audit", "answer", "--key", "k"}, "audit answer", 2},
 		{[]string{"audit-sample", "answer"}, "audit answer", 2},
 		{[]string{"jobs", "resume", "build", "k"}, "jobs resume build", 3},
+		{[]string{"cover"}, "cover", 1},
+		{[]string{"jobs", "cover", "build", "k"}, "jobs cover build", 3},
 		{[]string{"jobs", "categories"}, "jobs folders", 2},
 		{[]string{"runs", "show", "list"}, "runs show", 2},
 		{[]string{"--version"}, "version", 1},

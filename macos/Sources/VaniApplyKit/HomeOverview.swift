@@ -323,6 +323,7 @@ public enum HomeOverview {
             case .settings: "Changed settings"
             case .draft: "Drafted an answer"
             case .resume: "Chose a resume"
+            case .cover: "Chose a cover letter"
             }
             let host = e.host.map { PipelineStatus.bounded($0, max: 60) }.flatMap { $0.isEmpty ? nil : $0 }
             let symbol: String = switch e.source {

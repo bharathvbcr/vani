@@ -1,6 +1,7 @@
 // Popup: act on the current page and manage saved answers.
 import type { Answer, Bank, FieldInfo } from "./types";
 import { MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
+import { ANSWER_KEY_BY_JARVIS, CONTACT_BY_ID, NOT_RUN_NOTE, contactEdits, contactItems, omitContactAnswers, readImport } from "./contacts";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
 import { type FanOut, sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, coverageLine, noteLines, questionRows, tabCoverage } from "./coverage";
@@ -9,11 +10,11 @@ import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } fr
 import { intentOf } from "./intents";
 import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
 import { type IngestSource, buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
-import { type RelevanceResult, targetProfileFromBank } from "./relevance";
+import { type RelevanceResult } from "./relevance";
 import { scoreWord } from "./jobrow";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
-import { templateTailoring, generateTailoredDraft } from "./tailor";
+import { templateTailoring, openAnswerFill, OPEN_ANSWER_HOLD } from "./tailor";
 import { draftStartError, type JobInfo } from "./draft";
 import { UNDRAFTED_NOTE, draftButton, draftEnabled, isDraftOffer } from "./suggest";
 import { formatJobDetails } from "./jobinfo";
@@ -414,6 +415,9 @@ $("#modal-add-save").onclick = async () => {
 // --- your basics ---------------------------------------------------------------------
 
 let basicsTyped = false;
+/** Contact values read from Jarvis. Null means that read did not run, so the boxes are not shown as empty. */
+let contactOverlay: Record<string, string> | null = null;
+let copyTask: Promise<void> | null = null;
 
 function basicInput(id: string): HTMLInputElement | HTMLSelectElement | null {
   return $(`#basic-${id}`) as HTMLInputElement | HTMLSelectElement | null;
@@ -461,7 +465,7 @@ function buildBasics(): void {
 }
 
 function renderBasics(): void {
-  const v = basicsValues(current);
+  const v = basicsValues(current, contactOverlay);
   if (!basicsTyped) {
     for (const b of BASICS) {
       const box = basicInput(b.id);
@@ -488,8 +492,13 @@ async function saveBasics(): Promise<void> {
     const el = basicInput(b.id);
     if (el) values[b.id] = el.value;
   }
-  const fields = basicsFields(values, basicsValues(current));
-  if (fields.length === 0) {
+  const saved = basicsValues(current, contactOverlay);
+  const edits = contactEdits(values, saved);
+  const fields = basicsFields(values, saved).filter(f => {
+    const basic = BASICS.find(b => b.label === f.label);
+    return basic?.group !== "contact";
+  });
+  if (fields.length === 0 && edits.puts.length === 0 && edits.cleared.length === 0) {
     if (out) out.textContent = "Nothing new to save.";
     toast("No changes in basics.");
     return;
@@ -497,9 +506,31 @@ async function saveBasics(): Promise<void> {
   savingBasics = true;
   if (button) button.disabled = true;
   if (out) out.textContent = "Saving basics...";
+  const putNotes: string[] = [];
+  let storedPuts = 0;
+  for (const put of edits.puts) {
+    const raw = await bg({ type: "contacts", op: "put", key: put.key, text: put.text }).catch(() => null);
+    const rec = raw && typeof raw === "object" ? raw as { stored?: boolean; error?: string } : null;
+    if (rec?.stored === true) {
+      storedPuts++;
+      contactOverlay = { ...(contactOverlay ?? saved), [idForJarvis(put.key)]: put.text };
+    } else {
+      const msg = typeof rec?.error === "string" ? rec.error : "";
+      putNotes.push(msg.includes("bank executable is missing") ? `${NOT_RUN_NOTE}: bank executable is missing` : NOT_RUN_NOTE);
+    }
+  }
+  if (edits.cleared.length > 0) putNotes.push("A stored contact cannot be cleared from here.");
+  if (fields.length === 0 && storedPuts === 0) {
+    savingBasics = false;
+    if (button) button.disabled = false;
+    const why = putNotes[0] ?? NOT_RUN_NOTE;
+    if (out) out.textContent = why;
+    toast(why);
+    return;
+  }
   let reply: unknown;
   try {
-    reply = await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields });
+    reply = fields.length > 0 ? await bg<CaptureReply | { error?: string } | undefined>({ type: "capture", host: BASICS_HOST, fields }) : { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 };
   } catch (e) {
     reply = { error: friendlyError(e, "the extension did not answer").detail || "the extension did not answer" };
   } finally {
@@ -507,8 +538,9 @@ async function saveBasics(): Promise<void> {
     if (button) button.disabled = false;
   }
   const o = basicsSaveOutcome(reply);
-  if (out) out.textContent = o.status;
-  toast(o.toast);
+  const extra = putNotes.length ? ` ${putNotes[0]}` : storedPuts ? ` Saved ${storedPuts} contact ${storedPuts === 1 ? "value" : "values"} in Jarvis.` : "";
+  if (out) out.textContent = `${o.status}${extra}`;
+  toast(o.toast + extra);
   if (!o.saved) return; // what was typed stays in the boxes for another try
   basicsTyped = false;
   // The save landed; a failure to redraw from the bank is reported as that, not as a failed save.
@@ -525,8 +557,72 @@ async function refresh(): Promise<void> {
   current = r.bank;
   mode = r.mode ?? "browser";
   note = r.note ?? null;
+  await loadContacts();
   render();
   renderDashboard();
+}
+
+function idForJarvis(key: string): string {
+  return Object.entries(CONTACT_BY_ID).find(([, jarvis]) => jarvis === key)?.[0] ?? key;
+}
+
+/** Read stored contact keys. A failed read leaves the overlay null so blank boxes are not an empty catalog. */
+async function loadContacts(): Promise<void> {
+  const listed = await bg<{ keys?: string[]; error?: string }>({ type: "contacts", op: "list" }).catch(() => null);
+  if (!listed || listed.error || !Array.isArray(listed.keys)) {
+    // A failed read is not an empty catalog. Keep values a put just stored.
+    const msg = listed && typeof listed.error === "string" && listed.error.includes("bank executable is missing")
+      ? `${NOT_RUN_NOTE}: bank executable is missing`
+      : NOT_RUN_NOTE;
+    if (!contactOverlay) contactOverlay = null;
+    const out = $("#basic-status");
+    if (out && !out.textContent) out.textContent = msg;
+    return;
+  }
+  const overlay: Record<string, string> = {};
+  for (const id of Object.keys(CONTACT_BY_ID)) overlay[id] = "";
+  for (const key of listed.keys) {
+    const got = await bg<{ text?: string; error?: string }>({ type: "contacts", op: "get", key }).catch(() => null);
+    if (!got || got.error || typeof got.text !== "string") {
+      const out = $("#basic-status");
+      if (out && !out.textContent) out.textContent = got?.error?.includes("bank executable is missing") ? `${NOT_RUN_NOTE}: bank executable is missing` : NOT_RUN_NOTE;
+      return;
+    }
+    overlay[idForJarvis(key)] = got.text;
+  }
+  contactOverlay = overlay;
+  void copyContactsOnce();
+}
+
+function copyContactsOnce(): Promise<void> {
+  if (!copyTask) copyTask = runCopy();
+  return copyTask;
+}
+
+async function runCopy(): Promise<void> {
+  if (!current) return;
+  const flag = await bg<{ copied?: boolean }>({ type: "contactsCopied" }).catch(() => null);
+  if (flag?.copied) return;
+  const items = contactItems(current);
+  if (items.length === 0) {
+    await bg({ type: "contactsCopied", set: true });
+    return;
+  }
+  const imported = readImport(await bg({ type: "contacts", op: "import", items }).catch(() => null));
+  if (!imported.ok) {
+    copyTask = null;
+    const out = $("#basic-status");
+    if (out) out.textContent = imported.note;
+    return;
+  }
+  await bg({ type: "contactsCopied", set: true });
+  for (const key of imported.stored) {
+    const answer = ANSWER_KEY_BY_JARVIS[key];
+    if (answer && current?.answers[answer]) {
+      await bg({ type: "deleteAnswer", key: answer });
+      delete current.answers[answer];
+    }
+  }
 }
 
 // --- home tab: which blocks show, and the dashboard -------------------------------------
@@ -551,7 +647,7 @@ function renderDashboard(): void {
   const card = $("#home-profile");
   card.hidden = current === null;
   if (!current) return;
-  const c = basicsCompleteness(current);
+  const c = basicsCompleteness(current, contactOverlay);
   const s = bankSummary(current);
   const step = nextStep(c, s);
   const pct = $("#profile-pct");
@@ -652,55 +748,15 @@ function questionItem(q: PageQuestion): HTMLElement {
   }
   const tailorable = prose ? templateTailoring(q.label, activeJob?.company) : null;
   if (tailorable) {
+    const decision = openAnswerFill({ label: q.label, companyName: activeJob?.company });
     const tb = document.createElement("button");
     tb.type = "button";
     tb.className = "sm";
-    tb.textContent = "Tailor";
-    tb.title = `Write a tailored answer for "${tailorable.title}" from this posting and insert it`;
+    tb.textContent = "Why blank";
+    tb.title = decision.reason ?? OPEN_ANSWER_HOLD;
     tb.addEventListener("click", () => {
-      void (async () => {
-        if (q.frameId === undefined) {
-          toast("Open the question list on the page to tailor this one.");
-          return;
-        }
-        const overwrite = tb.dataset.overwrite === "1";
-        const text = generateTailoredDraft(
-          tailorable.kind,
-          activeJob ?? { title: "", company: "", description: "" },
-          targetProfileFromBank(current),
-        );
-        try {
-          const r = await toFrames<{ ok?: boolean; error?: string; reason?: string }>(
-            { type: "insertTailored", label: q.label, text, ordinal: q.ordinal, overwrite },
-            { registered, frameId: q.frameId },
-          );
-          if (r.answered.some(a => a.reply.ok === true)) {
-            try {
-              await navigator.clipboard.writeText(text);
-              toast(`Tailored answer inserted into "${q.label}". It stays yellow until you review it. Copied.`);
-            } catch {
-              toast(`Tailored answer inserted into "${q.label}". It stays yellow until you review it. Copy failed.`);
-            }
-            delete tb.dataset.overwrite;
-            tb.textContent = "Tailor";
-            const scanned = await scanTabExtended().catch(() => null);
-            if (scanned) renderCoverage(scanned.tabCoverage.total);
-            return;
-          }
-          if (r.answered.some(a => a.reply.reason === "has_value") && !overwrite) {
-            tb.dataset.overwrite = "1";
-            tb.textContent = "Replace the field's text";
-            toast(`"${q.label}" already has text. Click again to replace it.`);
-            return;
-          }
-          const err = r.answered.map(a => a.reply.error).find((e): e is string => typeof e === "string" && e !== "")
-            ?? r.failed[0]?.error
-            ?? "The field is not on this page.";
-          toast(err);
-        } catch (e) {
-          toast(`Could not insert the answer: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      })();
+      const again = openAnswerFill({ label: q.label, companyName: activeJob?.company });
+      toast(again.reason ?? OPEN_ANSWER_HOLD);
     });
     actions.append(tb);
   }
@@ -1068,7 +1124,18 @@ function renderRelevance(rel?: RelevanceResult): void {
   }
 }
 
+let submitReady = false;
+
+function syncSubmit(): void {
+  const arm = document.querySelector<HTMLInputElement>("#submit-arm");
+  const button = document.querySelector<HTMLButtonElement>("#submit-page");
+  if (!arm || !button) return;
+  button.disabled = !arm.checked || !submitReady;
+}
+
 function renderMissedChecklist(audit?: FormAuditReport): void {
+  submitReady = !!audit && audit.missedCount === 0;
+  syncSubmit();
   const card = $("#missed-card");
   if (!card) return;
   if (!audit || audit.missedCount === 0) {
@@ -1538,6 +1605,30 @@ async function rescanTab(notify = false): Promise<void> {
   }
 }
 
+document.querySelector("#submit-arm")?.addEventListener("change", syncSubmit);
+$("#submit-page")?.addEventListener("click", async () => {
+  const button = $("#submit-page") as HTMLButtonElement | null;
+  if (!button || button.disabled) return;
+  const done = busy(button, "Submitting…");
+  try {
+    const r = await toFrames<{ sent?: boolean; code?: string; detail?: string; error?: string }>(
+      { type: "submitPage", armed: true },
+      { registered },
+    );
+    const reply = r.answered.map(a => a.reply).find(x => x && (x.sent === true || typeof x.code === "string" || typeof x.error === "string"));
+    if (!reply) {
+      status(r.failed[0]?.error ?? "Submit did not get an answer from the page", "error");
+      return;
+    }
+    if (reply.sent === true) status("Submitted. A confirmation is on the page. This does not mark the job Applied.", "ok");
+    else status(reply.detail || reply.error || "Not submitted.", "error");
+  } catch (e) {
+    statusError(e, "Submit failed");
+  } finally {
+    done();
+  }
+});
+
 $("#fill").onclick = async () => {
   const done = busy($("#fill") as HTMLButtonElement | null, "Filling…");
   try {
@@ -1616,9 +1707,16 @@ $("#disabled").onchange = async () => {
   await bg({ type: "setSettings", settings: { disabledHosts: hosts } });
   await refresh();
 };
-$("#export").onclick = () => {
+$("#export").onclick = async () => {
   if (!current) return;
-  const url = URL.createObjectURL(new Blob([exportBank(current)], { type: "application/json" }));
+  await copyContactsOnce();
+  const flag = await bg<{ copied?: boolean }>({ type: "contactsCopied" }).catch(() => ({ copied: false }));
+  const body = flag?.copied ? exportBank(omitContactAnswers(current)) : exportBank(current);
+  if (!flag?.copied) {
+    const out = $("#basic-status");
+    if (out) out.textContent = `${NOT_RUN_NOTE}. This export still has contact basics because they were not copied.`;
+  }
+  const url = URL.createObjectURL(new Blob([body], { type: "application/json" }));
   const a = document.createElement("a");
   a.href = url; a.download = `vani-answers-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);

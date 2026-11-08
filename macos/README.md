@@ -25,7 +25,7 @@ résumé roles best (`semantic.evidence`). Both are display only, decoded lenien
 `vani`. Settings › Vani sets the freshness half-life (`--half-life`, sent only when it is not Vani's 10 days).
 Its **Pipeline** tab shows `vani status --json` and has **Run Now…** (⇧⌘R), which starts
 `vani run-once` with options for that run only: every board or the ones you pick from the watchlist,
-whether to triage, score and explain (and a cap in place of `advance_per_run`), optional US-first ordering
+whether to triage, score and explain (and a cap in place of `advance_per_run`), how many postings advance at once (in place of `advance_concurrency`), optional US-first ordering
 (`--us-first`), run scoping by company, state, area, or remote (`--company`, `--state`, `--area`, `--remote`,
 `--or-remote`), and whether to write a digest. The last choices are remembered. **Triage now**, on Jobs
 while postings are awaiting triage, opens this same sheet prefilled for one advance at `advance_per_run`,

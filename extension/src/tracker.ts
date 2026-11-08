@@ -267,7 +267,7 @@ export function createTracker(d: TrackerDeps): Tracker {
     const adv = t.closest("button, input[type=submit], [role=button], a[role=button]");
     if (adv && isAdvance(adv)) {
       void flush((adv.textContent || "advance").trim().toLowerCase().slice(0, 40));
-      if (isFinalSubmit(controlLabel(adv))) d.onSubmit?.();
+      if (isFinalSubmit(controlLabel(adv)) && adv.getAttribute("data-vani-suppress-applied") !== "1") d.onSubmit?.();
       return;
     }
     if (t.closest("[role=option], [role=radio], [role=checkbox], [role=switch], input[type=radio], input[type=checkbox], label")) commitSoon(150);

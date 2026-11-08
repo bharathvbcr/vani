@@ -130,6 +130,11 @@ final class AppModel {
         ResumeStudioClient(runner: draftRunner)
     }
 
+    /// `vani jobs cover` for the Resume card's letter. Build spends the draft budget. Use does not.
+    var coverClient: CoverLetterClient {
+        CoverLetterClient(runner: draftRunner)
+    }
+
     // MARK: - Agent
 
     /// The login-item agent that runs drafts and suggestions for both browsers.
@@ -663,9 +668,10 @@ final class AppModel {
 
     func exportData() -> Data? {
         do {
-            let data = try Editing.exportData(snapshot.bank)
+            let exported = (store != nil && ContactsMarker.exists(in: store!.directory)) ? snapshot.bank.omittingContactAnswers() : snapshot.bank
+            let data = try Editing.exportData(exported)
             if let store {
-                let entry = ActivityEntry(source: .app, event: .export, counts: ["answers": snapshot.bank.answers.count])
+                let entry = ActivityEntry(source: .app, event: .export, counts: ["answers": exported.answers.count])
                 Task { await self.appendActivity(store, entry) }
             }
             return data

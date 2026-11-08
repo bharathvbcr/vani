@@ -25,7 +25,7 @@ public enum Source: String, Codable, Sendable {
 /// One activity-log line. It never holds answer values or question text.
 public struct ActivityEntry: Codable, Equatable, Sendable {
     public enum Event: String, Codable, CaseIterable, Sendable {
-        case capture, fill, edit, delete, `import`, export, settings, draft, resume
+        case capture, fill, edit, delete, `import`, export, settings, draft, resume, cover
     }
     public var at: String
     public var source: Source

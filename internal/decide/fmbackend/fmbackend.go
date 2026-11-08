@@ -35,6 +35,12 @@ const (
 	// answer under it.
 	Name = "apple_fm"
 
+	// ContactKeyTask is the catalog-key question (contacts.Task). Kept as a
+	// string here so this package does not import contacts. The helper's
+	// decline word is "none", so that option is dropped before the request;
+	// the model still declines with its own "none".
+	ContactKeyTask = "career.contact_key"
+
 	// EnvBinary names the helper explicitly (an absolute path).
 	EnvBinary = "VANI_FM_BINARY"
 	// AppBinary is where the installed app keeps the helper.
@@ -132,8 +138,11 @@ func New(cfg Config) *Backend {
 // Name implements decide.Backend.
 func (*Backend) Name() string { return Name }
 
-// Serves implements decide.Backend: only the form-field question.
-func (*Backend) Serves(task string) bool { return task == fieldtriage.Task }
+// Serves implements decide.Backend: the form-field question and the contact-key
+// question. Both go to the same helper.
+func (*Backend) Serves(task string) bool {
+	return task == fieldtriage.Task || task == ContactKeyTask
+}
 
 // Binary reports the helper that would run, or "" when none is usable.
 func (b *Backend) Binary() string {
@@ -196,7 +205,7 @@ type reply struct {
 // error is only the caller's context ending.
 func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer, error) {
 	ans := decide.Answer{Backend: Name, Slots: make(map[string]decide.SlotReading, len(q.Slots))}
-	if q.Task != fieldtriage.Task {
+	if q.Task != fieldtriage.Task && q.Task != ContactKeyTask {
 		for _, s := range q.Slots {
 			ans.Slots[s.Name] = decide.SlotReading{Reading: decide.NotAsked, Detail: "not_served"}
 		}
@@ -287,20 +296,32 @@ func (b *Backend) buildRequest(q decide.Question, s decide.Slot) ([]byte, *decid
 	if len(question) > maxQuestionBytes {
 		return refuse("question_too_large")
 	}
-	if n := len(s.Options); n < 1 || n > decide.MaxOptions {
+	opts := s.Options
+	if q.Task == ContactKeyTask {
+		kept := make([]string, 0, len(s.Options))
+		for _, o := range s.Options {
+			if o != "none" {
+				kept = append(kept, o)
+			}
+		}
+		opts = kept
+	}
+	if n := len(opts); n < 1 || n > decide.MaxOptions {
 		return refuse("bad_options")
 	}
-	for _, o := range s.Options {
+	for _, o := range opts {
 		// What the helper accepts (OnDeviceDecider.parse): "none" is its decline choice.
 		if len(o) > maxOptionBytes || o == "none" || o != strings.TrimSpace(o) || strings.ContainsAny(o, "\r\n") {
 			return refuse("bad_options")
 		}
 	}
-	instr := instructions(s, b.cfg.Descriptions[s.Name])
+	shown := s
+	shown.Options = opts
+	instr := instructions(q.Task, shown, b.cfg.Descriptions[s.Name])
 	if len(instr) > maxInstructionsBytes {
 		return refuse("instructions_too_large")
 	}
-	raw, err := json.Marshal(request{V: protocolVersion, Task: q.Task, Question: question, Options: s.Options, Instructions: instr})
+	raw, err := json.Marshal(request{V: protocolVersion, Task: q.Task, Question: question, Options: opts, Instructions: instr})
 	if err != nil || len(raw) > maxRequestBytes {
 		return refuse("request_too_large")
 	}
@@ -309,7 +330,7 @@ func (b *Backend) buildRequest(q decide.Question, s decide.Slot) ([]byte, *decid
 
 // instructions renders the option descriptions the caller supplied, in option
 // order. They are the caller's own fixed text, never site text.
-func instructions(s decide.Slot, desc map[string]string) string {
+func instructions(task string, s decide.Slot, desc map[string]string) string {
 	var sb strings.Builder
 	for _, o := range s.Options {
 		if d := strings.TrimSpace(desc[o]); d != "" {
@@ -319,7 +340,11 @@ func instructions(s decide.Slot, desc map[string]string) string {
 	if sb.Len() == 0 {
 		return ""
 	}
-	return "The kinds:\n" + sb.String()
+	head := "The kinds:\n"
+	if task == ContactKeyTask {
+		head = "The keys:\n"
+	}
+	return head + sb.String()
 }
 
 // knownDetails is the closed set of codes the helper may report (the details

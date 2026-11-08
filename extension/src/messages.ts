@@ -16,7 +16,7 @@ import { type IngestJob, type IngestPage, ingestJobsProblem } from "./ingest";
 
 export type ToBackground =
   | { type: "getBank"; fresh?: boolean } // fresh: skip the background's 2 s memo (Fill: the Mac app may have changed behind it)
-  | { type: "capture"; host: string; fields: FieldInfo[] }
+  | { type: "capture"; host: string; fields: FieldInfo[]; postingKey?: string }
   | { type: "filled"; keys: string[] }
   | { type: "setSettings"; settings: Partial<Settings> }
   | { type: "deleteAnswer"; key: string }
@@ -24,6 +24,14 @@ export type ToBackground =
   | { type: "replaceBank"; json: string }
   /** Only the question label and the posting as shown on the page: never field values or bank content. */
   | { type: "draft"; question: string; job: JobInfo; maxWords?: number; attempt?: number }
+  /** Jarvis contact catalog. put/get/import carry values to the host only; the background does not log them. */
+  | { type: "contacts"; op: "put"; key: string; text: string }
+  | { type: "contacts"; op: "get"; key: string }
+  | { type: "contacts"; op: "list" }
+  | { type: "contacts"; op: "choose"; label: string; kind: string }
+  | { type: "contacts"; op: "import"; items: { key: string; text: string }[] }
+  /** Whether the one-time copy of bank basics into Jarvis has finished. */
+  | { type: "contactsCopied"; set?: boolean }
   /** A job in the Vani Apply agent: a request built by buildSuggestRequest or buildDraftRequest (labels and the posting only). */
   | { type: "jobStart"; kind: "suggest" | "draft" | "resume" | "resumeJob"; request: object }
   | { type: "jobPoll"; job: string }
@@ -54,6 +62,9 @@ export type ToBackground =
   // row is showing and the tab id; the background reads that tab's URL itself and opens only when the key
   // is still that page or one frame of that tab. The reply names the file; it has no PDF.
   // resumeShow opens a PDF the page already holds (just built or chosen), the same way.
+  | { type: "coverGet"; url: string }
+  | { type: "coverInfo"; url: string }
+  | { type: "coverOpen"; url: string }
   | { type: "resumeGet"; url: string }
   | { type: "resumeInfo"; url: string; tabId?: number }
   /** pdf is base64, at most MAX_RESUME_BYTES decoded; name ends in .pdf. */
@@ -80,6 +91,8 @@ export type DraftResponse = DraftReply;
 export type ToContent =
   | { type: "scan" }
   | { type: "fill"; overwrite?: boolean; typeahead?: boolean }
+  /** The owner turned Submit this page on. Fill, Draft and scan do not send it. */
+  | { type: "submitPage"; armed: true }
   | { type: "capture" }
   | { type: "clearMarks" }
   /** To the top frame only: a form in a frame found a job to ask about, so show the question here. */
@@ -126,13 +139,19 @@ const optAttempt = (x: unknown) => x === undefined || (typeof x === "number" && 
 /** One check per message type; the mapped type makes a new message type fail to compile until it has one. */
 export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, unknown>) => boolean } = {
   getBank: m => m.fresh === undefined || typeof m.fresh === "boolean",
-  capture: m => Array.isArray(m.fields) && typeof m.host === "string",
+  capture: m => Array.isArray(m.fields) && typeof m.host === "string" && (m.postingKey === undefined || (typeof m.postingKey === "string" && m.postingKey.length <= 2048)),
   filled: m => Array.isArray(m.keys) && m.keys.every(k => typeof k === "string"),
   setSettings: m => isRecord(m.settings),
   deleteAnswer: m => typeof m.key === "string",
   editAnswer: m => typeof m.key === "string" && Array.isArray(m.value) && (m.review === undefined || typeof m.review === "boolean"),
   replaceBank: m => typeof m.json === "string" && utf8Within(m.json, MAX_BANK_BYTES),
   draft: m => typeof m.question === "string" && optAttempt(m.attempt),
+  contacts: m => (m.op === "list")
+    || (m.op === "get" && typeof m.key === "string" && m.key.length > 0 && m.key.length <= 64)
+    || (m.op === "put" && typeof m.key === "string" && m.key.length > 0 && m.key.length <= 64 && typeof m.text === "string" && m.text.length > 0 && m.text.length <= 10_000)
+    || (m.op === "choose" && typeof m.label === "string" && m.label.length > 0 && m.label.length <= 1000 && typeof m.kind === "string" && m.kind.length <= 32)
+    || (m.op === "import" && Array.isArray(m.items) && m.items.length <= 9 && m.items.every(item => isRecord(item) && typeof item.key === "string" && typeof item.text === "string" && item.text.length > 0 && item.text.length <= 10_000)),
+  contactsCopied: m => m.set === undefined || typeof m.set === "boolean",
   jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume" || m.kind === "resumeJob",
   jobPoll: m => typeof m.job === "string",
   sameQuestion: m => label(m.a) && label(m.b),
@@ -145,6 +164,9 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
   frameReady: () => true,
   frames: optTab,
   ingestJobs: m => ingestJobsProblem(m) === null,
+  coverGet: m => typeof m.url === "string",
+  coverInfo: m => typeof m.url === "string",
+  coverOpen: m => typeof m.url === "string",
   resumeGet: m => typeof m.url === "string",
   resumeInfo: m => typeof m.url === "string" && optTabId(m),
   resumePut: m => typeof m.url === "string" && typeof m.name === "string" && typeof m.pdf === "string",
@@ -174,6 +196,8 @@ export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
   editAnswer: "popup",
   replaceBank: "popup",
   draft: "content",
+  contacts: "either",
+  contactsCopied: "popup",
   jobStart: "content",
   jobPoll: "content",
   sameQuestion: "content",
@@ -186,6 +210,9 @@ export const SENDER_POLICY: { [K in ToBackground["type"]]: SenderPolicy } = {
   frameReady: "content",
   frames: "either",
   ingestJobs: "either",
+  coverGet: "content",
+  coverInfo: "popup",
+  coverOpen: "popup",
   resumeGet: "content",
   resumeInfo: "popup",
   resumePut: "either",
@@ -215,6 +242,7 @@ export function checkSender(type: ToBackground["type"], sender: { tab?: unknown;
 export const TO_CONTENT: { [K in ToContent["type"]]: (m: Record<string, unknown>) => boolean } = {
   scan: () => true,
   fill: m => optBool(m.overwrite) && optBool(m.typeahead),
+  submitPage: m => m.armed === true,
   capture: () => true,
   clearMarks: () => true,
   appliedShow: () => true,

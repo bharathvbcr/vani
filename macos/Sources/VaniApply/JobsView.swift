@@ -562,6 +562,7 @@ private struct FilterMenu: View {
                 }
                 .help("By the top of the stated range. Roles that state no pay stay; roles that state pay only in another currency are left out.")
                 Toggle("Only roles that state pay", isOn: Binding(get: { jobs.filter.salaryListed }, set: { jobs.filter.salaryListed = $0 }))
+                    .help("Off keeps roles that state no pay. On leaves those out. Pay stated only in another currency is left out either way.")
                 Menu("Currency: \(jobs.filter.currency)") {
                     ForEach(Job.payCurrencies, id: \.self) { c in
                         Button {
@@ -599,7 +600,9 @@ private struct FilterMenu: View {
             }
             Divider()
             Toggle("Hide closed roles", isOn: Binding(get: { jobs.filter.openOnly }, set: { jobs.filter.openOnly = $0 }))
+                .help("Leaves out roles the board has marked closed.")
             Toggle("Hide possible duplicates", isOn: $hideDuplicates)
+                .help("Hides a role that looks like another one in this list. The role stays saved.")
             Button("Clear Filters") { jobs.clearFilter() }
                 .disabled(jobs.filter.isEmpty)
             if let note = jobs.labelsNote {
@@ -696,12 +699,14 @@ private struct LocationPopover: View {
                 .focused($searchFocused)
             Toggle("Listed as remote", isOn: Binding(get: { jobs.filter.remoteOnly }, set: { jobs.filter.setRemoteOnly($0) }))
                 .toggleStyle(.checkbox)
+            Text("Only roles the posting lists as remote.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             // Widens the chosen countries, states and areas: remote, or in these places.
             Toggle("Or remote anywhere", isOn: Binding(get: { jobs.filter.orRemote && !jobs.filter.remoteOnly }, set: { jobs.filter.setOrRemote($0) }))
                 .toggleStyle(.checkbox)
                 .disabled(jobs.filter.states.isEmpty && jobs.filter.areas.isEmpty && jobs.filter.countries.isEmpty)
-                .help("Also include roles listed as remote, wherever they are. Choose a country, state or area first.")
-            Text("A remote role counts when its scope names a country. A region such as Europe does not.")
+            Text("The places you tick, plus remote roles wherever they are. Choose a country, state or area first. A remote role counts when its scope names a country. A region such as Europe does not.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1200,7 +1205,13 @@ private struct JobList: View {
                 Text("\(page.total) \(page.total == 1 ? "role" : "roles")")
             }
             if let err = jobs.error {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(err)
+                Label {
+                    Text(verbatim: String(err.prefix(180)))
+                        .lineLimit(2)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                }
+                .help(err)
             }
             if let note = jobs.labelsNote {
                 Label("Built-in labels", systemImage: "textformat").foregroundStyle(.orange).help(note)

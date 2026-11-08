@@ -1,6 +1,7 @@
 // Content script: saves your answers as you commit them (and flushes on submit,
 // Next/Continue, Enter, route change, tab hide) and fills a form from saved
-// answers when you ask. It never submits a form.
+// answers when you ask. Fill, Draft and scan never submit a form. Submit this
+// page is a separate action, off until the owner turns it on.
 //
 // Frames: a frame whose parent is same-origin does nothing itself; the parent's
 // script walks into it (extract.ts) and listens on its document, so one frame
@@ -10,8 +11,9 @@
 // match, the extension cannot enter a cross-origin frame at all. The popup asks
 // each frame that runs a copy on its own and adds the answers up (frames.ts).
 import type { Bank, FieldInfo } from "./types";
-import { type FieldRef, filledBy, forgetFill, readRefValue, scanForm } from "./extract";
+import { type FieldRef, filledBy, forgetFill, readRefValue, scanForm, writeStatus } from "./extract";
 import { type FillOutcome, beginFill, clearMarks, fillAll, fillRef, insertDraft, undoCount, undoFill } from "./fill";
+import { readChoice, readGet } from "./contacts";
 import { type Coverage, type PageQuestion, bucketOf, coverageLine, coverageOf, noteLines } from "./coverage";
 import { type FlushResult, MIN_FORM_FIELDS, type Tracker, createTracker } from "./tracker";
 import {
@@ -21,7 +23,7 @@ import {
 import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
 import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, maxWordsFor, parseDraftReply } from "./draft";
 import { classify } from "./classify";
-import { type AppliedFlow, type AppliedUi, createAppliedFlow, offerSubject } from "./applied";
+import { type AppliedFlow, type AppliedUi, createAppliedFlow, isFinalSubmit as appliedFinal, offerSubject, postingKey as applicationKey } from "./applied";
 import {
   DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, OLDER_VANI, SUGGEST_TIMEOUT_MS, type SuggestField, type SuggestRequest,
   buildSuggestRequest, runJob, runSuggest,
@@ -34,7 +36,10 @@ import { type FindRow, applyVaniRow, withRowError } from "./jobrow";
 import { noticeOf } from "./formnote";
 import { type RepeatNotice, createRepeatNotice } from "./repeatapply";
 import { auditForm, jumpToField, type FormAuditReport } from "./formaudit";
-import { templateTailoring, generateTailoredDraft } from "./tailor";
+import { templateTailoring, openAnswerFill, OPEN_ANSWER_HOLD } from "./tailor";
+import { heldReview, matchField, whyNoMatch } from "./match";
+import { isCoverField, parseCoverGet, type CoverFetch } from "./cover";
+import { decideSubmit, looksConfirmed } from "./submit";
 import { scrapePageJobs, type ScrapeResult } from "./scraper";
 import { DRAWER_PREVIEW, companyLine, drawerSummary, scorePillText, scoreTone, selectJobs } from "./joblist";
 import { isHttpUrl } from "./joblink";
@@ -169,7 +174,7 @@ async function scan(cached = false): Promise<ScanReply> {
   lastRefs = s.refs;
   const matches = new Map<FieldRef, Match | null>();
   const job = jobInfo();
-  const coverage = coverageOf(s.refs, b, location.hostname, { capped: s.capped, unread: s.unread }, matches, job.description.trim().length);
+  const coverage = coverageOf(s.refs, b, location.hostname, { capped: s.capped, unread: s.unread }, matches, job.description.trim().length, whyNoMatch, applicationKey(location.href));
   lastScan = { refs: s.refs, matches, bank: b };
   // A field is "unknown" exactly when it was matched (not skipped) and nothing matched; without a bank nothing is matched, so ask bucketOf.
   lastUnknown = b
@@ -209,6 +214,14 @@ function observeDom(roots: readonly Node[]): (onChange: () => void) => () => voi
 }
 
 /** The resume chosen for this page's job, from the Mac app (through the background); a reason when there is none. */
+async function coverForThisJob(): Promise<CoverFetch> {
+  try {
+    return parseCoverGet(await send<unknown>({ type: "coverGet", url: location.href }));
+  } catch {
+    return parseCoverGet({ error: "the extension's background did not answer", code: "background" });
+  }
+}
+
 async function resumeForThisJob(): Promise<ResumeFetch> {
   try {
     return parseResumeGet(await send<unknown>({ type: "resumeGet", url: location.href }));
@@ -275,7 +288,8 @@ async function performFill(overwrite = false, typeahead = false): Promise<FillRe
   // different saved answers are settled by the Mac app's on-device model (samequestion.ts). Labels only. Anything it
   // cannot settle keeps its yellow match, and a host that does not know the op is not an error.
   const first = scanForm(document);
-  const settled = matchAll(first.refs, b, location.hostname, prior ? carryMatches(first.refs, prior) : undefined);
+  const page = applicationKey(location.href);
+  const settled = matchAll(first.refs, b, location.hostname, prior ? carryMatches(first.refs, prior) : undefined, page);
   const same = await settleAmbiguous(first.refs, settled, askSameQuestion, { overwrite, bank: b, host: location.hostname });
   // Round 1 fills the page; later rounds fill what the first made appear (rounds.ts). Only round 1 may overwrite.
   let roots: readonly Node[] = [document]; // the roots the latest scan walked: the settle watches all of them
@@ -285,6 +299,12 @@ async function performFill(overwrite = false, typeahead = false): Promise<FillRe
       overwrite: overwrite && round === 1,
       typeahead,
       resume: resumeForThisJob,
+      cover: coverForThisJob,
+      pageKey: page,
+      contacts: {
+        get: async key => readGet(await send({ type: "contacts", op: "get", key })),
+        choose: async (label, kind) => readChoice(await send({ type: "contacts", op: "choose", label, kind })),
+      },
       // The scan made new field objects: the earlier scan's matches carry over only to fields provably unchanged (same bank, same elements).
       // The pre-fill pass matched every field of the page, so it is the one carried, with the model's answers in it.
       ...(round === 1 ? { matches: carryMatches(refs, { refs: first.refs, matches: settled }) } : {}),
@@ -300,7 +320,8 @@ async function performFill(overwrite = false, typeahead = false): Promise<FillRe
   const left = outcomes.filter(o => !o.filled && o.reason === "no_match").length;
   const manual = outcomes.filter(o => !o.filled && o.reason === "manual").length;
   const tooLong = outcomes.filter(o => !o.filled && o.reason === "too_long").length;
-  const resumeNote = outcomes.find(o => o.reason === "no_resume" || o.reason === "resume_unavailable" || o.reason === "refused");
+  const coverNote = outcomes.find(o => o.reason === "no_cover" || o.reason === "cover_unavailable" || (o.reason === "refused" && (o.detail ?? "").includes("cover letter")));
+  const resumeNote = outcomes.find(o => o !== coverNote && (o.reason === "no_resume" || o.reason === "resume_unavailable" || o.reason === "refused"));
   // With no resume chosen for this job, the offer (bottom left) says so; otherwise the reason goes in the toast.
   const offered = resumeOffer.offerAfterFill(outcomes);
   toast(`Filled ${filled} fields` + (review ? `, ${review} to review (yellow)` : "") + (left ? `, ${left} new questions` : "") + (manual ? `, ${manual} to do by hand` : "") +
@@ -308,7 +329,8 @@ async function performFill(overwrite = false, typeahead = false): Promise<FillRe
     // Said only when the model settled something or ran out of time; a host that cannot answer (an older app) says nothing here,
     // and the yellow outline's own note explains the fill.
     (same.same + same.different > 0 || same.timedOut ? `. Reworded questions: ${same.same + same.different} of ${same.asked} settled on this Mac, the rest left yellow` : "") +
-    (resumeNote?.detail && !offered ? `. Resume not attached: ${resumeNote.detail}` : "") + ". Check, then submit yourself.");
+    (resumeNote?.detail && !offered ? `. Resume not attached: ${resumeNote.detail}` : "") +
+    (coverNote?.detail ? `. Cover letter not attached: ${coverNote.detail}` : "") + ". Check, then submit yourself.");
   syncUndo();
   return { outcomes };
 }
@@ -785,6 +807,8 @@ const REASON: Record<NonNullable<FillOutcome["reason"]>, string> = {
   no_resume: "no resume chosen for this job (choose one in the Vani Apply popup)",
   resume_unavailable: "the resume could not be had from the Vani Apply Mac app",
   refused: "this page did not take the file; attach it by hand",
+  no_cover: "no cover letter chosen for this job",
+  cover_unavailable: "the cover letter could not be had from the Vani Apply Mac app",
   too_long: "the answer is longer than the field allows; shorten it by hand",
 };
 
@@ -1327,15 +1351,38 @@ function renderUnknown(c: Coverage): void {
         });
         row.append(b);
       }
+      const held = heldReview(ref.info, lastBank, location.hostname, applicationKey(location.href));
+      if (held) {
+        const b = btn("c", `Use: ${preview(held.value.join(", "))}`);
+        b.title = "Saved for a different posting. It is not filled on its own.";
+        b.addEventListener("click", () => {
+          void fillRef(ref, { ...held, review: true }).then(out => {
+            toast(out.filled ? `Filled "${preview(label)}" from a saved answer for another posting (yellow: check it).` : `Couldn't fill: ${whyNot(out)}`);
+          });
+        });
+        row.append(b);
+      }
     }
     const tailorable = templateTailoring(label, job.company);
     if (tailorable && (o.offer === "draft" || o.offer === "regenerate" || o.offer === "replace" || o.offer === "needs-posting")) {
-      const tb = btn("d", "Tailor to JD");
-      tb.title = `Write a tailored answer for "${tailorable.title}" from this posting, on this page`;
+      const openAnswer = () => openAnswerFill({
+        label,
+        companyName: job.company,
+        stored: lastBank ? (matchField(ref.info, lastBank, location.hostname)?.value.join(", ") ?? "") : "",
+        groundedDraft: note?.status === "drafted" && note.answerKind !== "choice" ? note.draft.trim() : "",
+      });
+      const initial = openAnswer();
+      const tb = btn("d", initial.filled ? (initial.source === "stored" ? "Use saved answer" : "Use grounded draft") : "Why blank");
+      tb.title = initial.reason ?? (initial.source === "stored" ? "Fill with the saved answer" : "Fill with the grounded draft");
       let overwrite = false;
       tb.addEventListener("click", () => {
         void (async () => {
-          const text = generateTailoredDraft(tailorable.kind, job, targetProfileFromBank(lastBank));
+          const offer = openAnswer();
+          if (!offer.filled || (offer.source !== "stored" && offer.source !== "grounded_draft")) {
+            toast(offer.reason || OPEN_ANSWER_HOLD);
+            return;
+          }
+          const text = offer.text;
           const res = insertDraft(ref, text, { overwrite });
           if (!res.filled && res.reason === "has_value" && !overwrite) {
             overwrite = true;
@@ -1347,11 +1394,12 @@ function renderUnknown(c: Coverage): void {
             toast(`Couldn't insert: ${whyNot(res)}`);
             return;
           }
+          const from = offer.source === "stored" ? "a saved answer" : "a grounded draft";
           try {
             await navigator.clipboard.writeText(text);
-            toast(`Inserted tailored answer for "${preview(label)}" (yellow: review before submit). Copied.`);
+            toast(`Filled "${preview(label)}" from ${from} (yellow: review before submit). Copied.`);
           } catch {
-            toast(`Inserted tailored answer for "${preview(label)}" (yellow: review before submit). Copy failed.`);
+            toast(`Filled "${preview(label)}" from ${from} (yellow: review before submit). Copy failed.`);
           }
           void scheduleScan();
         })();
@@ -1903,6 +1951,87 @@ const resumeOffer = createResumeOffer({
 
 // --- wiring -------------------------------------------------------------------
 
+let submitUnconfirmed = false;
+
+function controlText(el: Element): string {
+  const input = el as HTMLInputElement;
+  return (el.textContent || input.value || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function finalLabels(root: ParentNode): string[] {
+  const out: string[] = [];
+  root.querySelectorAll("button, input[type='submit'], [role='button']").forEach(el => {
+    const label = controlText(el);
+    if (appliedFinal(label)) out.push(label);
+  });
+  return out;
+}
+
+function writesOf(refs: FieldRef[]): { label: string; held: boolean }[] {
+  const out: { label: string; held: boolean }[] = [];
+  for (const ref of refs) {
+    const el = ref.els[0];
+    if (!el) continue;
+    if (el.getAttribute("data-vani-draft") === "1") {
+      const want = el.getAttribute("data-vani-draft-text") ?? "";
+      const now = ref.widget === "contenteditable" ? (el.textContent ?? "") : ((el as HTMLInputElement).value ?? "");
+      out.push({ label: ref.info.label, held: now === want });
+      continue;
+    }
+    const mark = el.getAttribute("data-vani-file");
+    if (mark !== null && ref.info.kind === "file") {
+      const [name, size] = mark.split("\t");
+      const f = (el as HTMLInputElement).files?.[0];
+      out.push({ label: ref.info.label, held: !!f && f.name === name && String(f.size) === size });
+      continue;
+    }
+    const status = writeStatus(el, readRefValue(ref));
+    if (status === "none") continue;
+    out.push({ label: ref.info.label, held: status === "held" });
+  }
+  return out;
+}
+
+async function coverGate(refs: FieldRef[]): Promise<"absent" | "attached" | "missing"> {
+  const required = refs.filter(r => r.info.required && isCoverField(r.info));
+  if (required.length === 0) return "absent";
+  const got = await coverForThisJob();
+  if (!got.ok || !got.hasPDF) return "missing";
+  const ok = required.every(r => {
+    const f = (r.els[0] as HTMLInputElement | undefined)?.files?.[0];
+    return !!f && f.name === got.name && f.size === got.bytes.length;
+  });
+  return ok ? "attached" : "missing";
+}
+
+/** The explicit Submit this page action. Fill, Draft and scan do not call it, and it does not mark a job. */
+async function submitThisPage(): Promise<{ sent: boolean; code?: string; detail?: string }> {
+  const refs = scanForm(document).refs;
+  const audit = auditForm(refs);
+  const decision = decideSubmit({
+    armed: true,
+    missed: audit.missedCount,
+    finals: finalLabels(document),
+    writes: writesOf(refs),
+    cover: await coverGate(refs),
+    unconfirmed: submitUnconfirmed,
+  });
+  if (!decision.click) return { sent: false, code: decision.code, detail: decision.detail };
+  const buttons = [...document.querySelectorAll("button, input[type='submit'], [role='button']")];
+  const target = buttons.find(el => appliedFinal(controlText(el)) && controlText(el) === decision.label);
+  if (!(target instanceof HTMLElement)) return { sent: false, code: "controls", detail: "The submit control is no longer on the page." };
+  target.setAttribute("data-vani-suppress-applied", "1");
+  target.click();
+  target.removeAttribute("data-vani-suppress-applied");
+  const text = document.body?.innerText || document.body?.textContent || "";
+  if (looksConfirmed(text)) {
+    submitUnconfirmed = false;
+    return { sent: true };
+  }
+  submitUnconfirmed = true;
+  return { sent: false, code: "unconfirmed", detail: "No confirmation is visible, so this page is not marked sent and will not be submitted again." };
+}
+
 if (!window.__vaniApply && !coveredByParent()) {
   window.__vaniApply = true;
   tracker = createTracker({
@@ -1910,7 +2039,8 @@ if (!window.__vaniApply && !coveredByParent()) {
     host: location.hostname,
     getBank: bank,
     send: async fields => {
-      const r = await send<CaptureReply | { error: string }>({ type: "capture", host: location.hostname, fields });
+      const key = applicationKey(location.href);
+      const r = await send<CaptureReply | { error: string }>({ type: "capture", host: location.hostname, fields, ...(key ? { postingKey: key } : {}) });
       bankMemo.invalidate(); // the scan that follows must see what was just saved
       return r && "added" in r ? r : null;
     },
@@ -1926,6 +2056,7 @@ if (!window.__vaniApply && !coveredByParent()) {
   chrome.runtime.onMessage.addListener(contentListener({
     scan,
     fill,
+    submitPage: () => submitThisPage(),
     fillSettled: () => { void send({ type: "fillSettled" }).catch(() => undefined); },
     capture: () => capture("saved"),
     clearMarks: () => clearMarks(document),

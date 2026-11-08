@@ -12,7 +12,11 @@ const wantNotesLabel = "What the seeker cares about (their own words)"
 
 func notesPrompt(t *testing.T, notes string, r Request) string {
 	t.Helper()
-	p := &provider{text: "draft"}
+	text := "draft"
+	if name := strings.TrimSpace(r.Job.Company); Motivation(r.Question) && name != "" {
+		text = "A draft for " + name + "."
+	}
+	p := &provider{text: text}
 	d, err := New(p, Config{Model: "m", TargetSummary: "Research tooling roles", MotivationNotes: notes}, motivationKB())
 	if err != nil {
 		t.Fatal(err)

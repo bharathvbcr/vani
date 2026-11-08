@@ -131,9 +131,9 @@ function usableBank(bank: unknown): Bank | null {
 }
 
 /** How much of the profile Fill can draw on. Self-ID basics count only while self-ID capture is on (basicsValues blanks them otherwise). */
-export function basicsCompleteness(bank: Bank | null | undefined): Completeness {
+export function basicsCompleteness(bank: Bank | null | undefined, contacts?: Readonly<Record<string, string>> | null): Completeness {
   const b = usableBank(bank);
-  const values = basicsValues(b);
+  const values = basicsValues(b, contacts);
   const counted = BASICS.filter(x => x.group !== "self_id" || b?.settings?.captureSelfId === true);
   const isSet = (id: string) => (values[id] ?? "").trim() !== "";
   const filled = counted.filter(x => isSet(x.id)).length;

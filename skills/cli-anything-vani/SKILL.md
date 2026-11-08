@@ -169,6 +169,8 @@ prices the work and asks nothing.
 - `vani answers similar` compares form-question wordings.
 - `vani jobs export`, `vani jobs ingest` and `vani jobs resume ...` (`render`, `show`, `use`,
   `diff`, `coverage`, ...) back the Mac app.
+- `vani cover` and `vani jobs cover build|use` write one cover letter with the same budget as
+  `vani draft`. Build saves a version; use is what the extension may fetch.
 
 ## Examples
 

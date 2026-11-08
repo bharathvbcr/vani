@@ -273,6 +273,28 @@ public struct RunSheet: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Words the Run Now sheet shows beside each choice. Titles stay short; the
+/// detail says what the choice changes for this run. Bounds come from
+/// `ManualRunOptions`, so the sentence and the flag vani accepts stay the same.
+public enum RunSheetCopy {
+    public static let everyBoardDetail = "Lists every board on the watchlist, then triages what they added."
+    public static let chosenBoardDetail = "Lists only the boards you tick. The others are left for the daily run."
+
+    public static let advanceTitle = "Advance new postings"
+    public static let advanceDetail = "Triage, score, and explain postings this run. Off only lists and reconciles the boards: new postings stay live, and no decision model is called."
+
+    public static let capTitle = "Cap how many postings advance"
+    public static let capDetail = "Stop after this many postings, from 1 to \(ManualRunOptions.maxAdvance.formatted()). Off uses the configured advance_per_run. Scoring and explaining postings already past triage counts toward the same cap."
+    public static let capLabel = "Postings this run"
+
+    public static let workersTitle = "Use several workers"
+    public static let workersDetail = "Triage, score, and explain this many postings at the same time, from 1 to \(ManualRunOptions.maxWorkers). Off uses the configured advance_concurrency."
+    public static let workersLabel = "Workers"
+
+    public static let usTitle = "Triage US postings first"
+    public static let usDetail = "Advance postings located in the United States before the rest. It only changes the order; nothing is dropped."
+}
+
 /// What the Run Now sheet shows for one `RunSheet`.
 public struct RunSheetPresentation: Equatable, Sendable {
     public var options: ManualRunOptions

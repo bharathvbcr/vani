@@ -68,12 +68,25 @@ struct SettingsView: View {
                 if let accountsProblem {
                     Text(accountsProblem).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                Stepper(value: $draftHalfLife, in: 1...JobsClient.maxHalfLifeDays, step: 1) {
-                    LabeledContent("Freshness half-life") {
-                        Text(verbatim: "\(draftHalfLife.formatted()) days").monospacedDigit()
+                LabeledContent("Freshness half-life") {
+                    HStack(spacing: 8) {
+                        TextField("Days", value: $draftHalfLife, format: .number)
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                            .accessibilityLabel("Freshness half-life, days")
+                        Text("days")
+                        Stepper("Freshness half-life", value: $draftHalfLife, in: 1...JobsClient.maxHalfLifeDays, step: 1)
+                            .labelsHidden()
+                            .fixedSize()
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
-                .help("Days of age that halve a job's freshness bonus in the Jobs priority. Vani's default is 10. Display only: it reorders roles, never drops one.")
+                Text("Days of age that halve a job's freshness bonus in the Jobs priority. From 1 to \(Int(JobsClient.maxHalfLifeDays)) days. Vani's default is \(Int(JobsClient.defaultHalfLifeDays)). Display only: it reorders roles, never drops one.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
                     Button("Save") {
@@ -150,7 +163,7 @@ struct SettingsView: View {
                 if let problem = exclusions.problem {
                     Text(problem).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
-                Text("Type an entry and press Return; paste several lines to add each. Any case. Each change is saved at once, and Jobs hides the roles it matches; the next run drops them, and removing an entry brings its roles back. Roles you saved, applied to or hid are never dropped. Hover a list\u{2019}s name for how it matches; `vani prefilter --list` shows what the next run will do. Saved as exclude in the Vani config above.")
+                Text("Type an entry and press Return; paste several lines to add each. Any case. Each change is saved at once, and Jobs hides the roles it matches; the next run drops them, and removing an entry brings its roles back. Roles you saved, applied to or hid are never dropped. The line under each list says how it matches. `vani prefilter --list` shows what the next run will do. Saved as exclude in the Vani config above.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -264,6 +277,10 @@ struct SettingsView: View {
                     if let refused {
                         Text(refused).font(.caption).foregroundStyle(.red)
                     }
+                    Text(help)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } label: {
                 Text(label).help(help)

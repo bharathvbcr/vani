@@ -55,10 +55,11 @@ export interface PortTransportOptions {
 const PORT_OPS = new Set([
   "ping", "get", "getChunk", "put", "patch", "log",
   "resumePut", "resumeGet", "resumeInfo", "resumeDelete",
+  "coverGet", "coverInfo",
 ]);
 /** Ops that change nothing, so running one twice is harmless. resumeOpen is absent with resumeOpenData:
  *  opening Preview twice is not harmless, and resumeOpenData carries the PDF. */
-const READ_ONLY_OPS = new Set(["ping", "get", "getChunk", "resumeGet", "resumeInfo"]);
+const READ_ONLY_OPS = new Set(["ping", "get", "getChunk", "resumeGet", "resumeInfo", "coverGet", "coverInfo"]);
 
 interface Pending {
   msg: object;

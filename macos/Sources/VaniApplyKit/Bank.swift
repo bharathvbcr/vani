@@ -29,11 +29,13 @@ public struct Answer: Codable, Equatable, Identifiable, Sendable {
     public var fills: Int
     public var updatedAt: String
     public var review: Bool
+    /// The posting a review answer was saved for. Absent when the page had no posting key.
+    public var postingKey: String?
 
     public var id: String { key }
 
     public init(key: String, labels: [String], kind: FieldKind, value: [String], sensitivity: Sensitivity,
-                signatures: [String], uses: Int, fills: Int, updatedAt: String, review: Bool) {
+                signatures: [String], uses: Int, fills: Int, updatedAt: String, review: Bool, postingKey: String? = nil) {
         self.key = key
         self.labels = labels
         self.kind = kind
@@ -44,6 +46,7 @@ public struct Answer: Codable, Equatable, Identifiable, Sendable {
         self.fills = fills
         self.updatedAt = updatedAt
         self.review = review
+        self.postingKey = postingKey
     }
 }
 

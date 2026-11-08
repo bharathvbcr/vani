@@ -29,17 +29,35 @@ struct DraftSheet: View {
                 TextField("Question", text: $question, prompt: Text("Why do you want to work here?"))
                 TextField("Company", text: $company)
                 TextField("Job title", text: $title)
-                Stepper("At most \(words) words", value: $words, in: 40...400, step: 20)
+                LabeledContent("Length") {
+                    HStack(spacing: 8) {
+                        TextField("Words", value: $words, format: .number)
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                            .accessibilityLabel("Maximum words")
+                        Text("words")
+                        Stepper("Length", value: $words, in: 40...400, step: 20)
+                            .labelsHidden()
+                            .fixedSize()
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                Text("How long the draft may be. From 40 to 400 words.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Text("Job posting (paste the description)").font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $posting).frame(minHeight: 90).border(.separator)
+            Text("Claude sees the question, the posting and matching knowledge-base bullets. Never your name, contact details or work authorization.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button(running ? "Drafting…" : "Draft") { Task { await run() } }
                     .disabled(running || question.trimmingCharacters(in: .whitespaces).isEmpty)
                 if running { ProgressView().controlSize(.small) }
                 Spacer()
-                Text("Claude sees the question, the posting and matching knowledge-base bullets. Never your name, contact details or work authorization.")
-                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
             }
             if let status {
                 Text(status).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)

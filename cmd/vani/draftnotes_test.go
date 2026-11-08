@@ -18,7 +18,7 @@ func TestDraftPassesMotivationNotesThrough(t *testing.T) {
 		{"other question", `{"question":"Describe a time you cut latency.","job":{"company":"Modal","title":"Engineer","description":"Latency matters."}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &draftLLM{text: "A draft."}
+			p := &draftLLM{text: "A draft for Modal."}
 			draftSetup(t, tc.req, p, false)
 			cfgPath := os.Getenv("VANI_CONFIG")
 			cfg, err := config.Load(cfgPath)

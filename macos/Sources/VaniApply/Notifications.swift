@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let model = AppModel(autoRegisterAgent: launch.mode == .register)
         self.model = model
         let jobs = JobsModel(client: { model.jobsClient }, retriage: { model.retriageClient },
-                             resume: { model.resumeStudioClient }, bankStore: { model.store })
+                             resume: { model.resumeStudioClient }, cover: { model.coverClient }, bankStore: { model.store })
         self.jobs = jobs
         // A saved exclusion re-lists Jobs, which hides the roles it matches.
         exclusions = ExclusionsEditor(client: { model.draftSettings.exclusionsClient(vaniBinary: model.vaniBinary) },

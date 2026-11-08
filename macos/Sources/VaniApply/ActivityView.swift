@@ -44,6 +44,7 @@ struct ActivityView: View {
         case .settings: "Changed settings"
         case .draft: "Drafted an answer with Claude"
         case .resume: "Chose a resume for a job"
+        case .cover: "Chose a cover letter for a job"
         }
         return e.host.map { "\(verb) on \($0)" } ?? verb
     }

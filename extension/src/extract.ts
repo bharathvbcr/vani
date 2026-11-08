@@ -761,3 +761,10 @@ export function filledBy(el: Element | undefined, value: readonly string[]): Fie
   const rec = el ? fills.get(el) : undefined;
   return rec && sameValues(rec.value, value) ? { key: rec.key, review: rec.review } : undefined;
 }
+
+/** Whether Fill's record for `el` still matches `value`. none: Fill did not write it. */
+export function writeStatus(el: Element | undefined, value: readonly string[]): "none" | "held" | "changed" {
+  const rec = el ? fills.get(el) : undefined;
+  if (!rec) return "none";
+  return sameValues(rec.value, value) ? "held" : "changed";
+}

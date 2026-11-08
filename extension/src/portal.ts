@@ -142,7 +142,7 @@ export function detectPortal(
       isMultiStep: false,
       tips: [
         "Lever uses simple linear forms. URLs for LinkedIn, GitHub, and Portfolio map directly.",
-        "Custom question textareas can be quickly drafted using Vani's JD-tailor buttons.",
+        "Open answers stay blank until a saved answer or a grounded draft can fill them.",
       ],
     };
   }

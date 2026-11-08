@@ -140,7 +140,7 @@ func TestSeekerOwnedTextGroundsClaimsAboutTheSeeker(t *testing.T) {
 func TestMotivationNotesGroundClaimsAboutTheSeeker(t *testing.T) {
 	notes := Config{MotivationNotes: "I hold a PhD and have ten years in ML"}
 	motive := Request{Question: "Why Modal?", Job: latencyRequest().Job}
-	if _, err := draftReply(t, "I hold a PhD and ten years of experience.", motive, notes); err != nil {
+	if _, err := draftReply(t, "I hold a PhD and ten years of experience at Modal.", motive, notes); err != nil {
 		t.Errorf("notes sent with a motivation question must ground it: %v", err)
 	}
 	for _, reply := range []string{"I hold a PhD.", "I have ten years of experience."} {

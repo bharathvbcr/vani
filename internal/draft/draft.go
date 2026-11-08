@@ -73,6 +73,9 @@ const (
 	// nothing the model was shown, or a credential or a count of years that is not
 	// in anything the seeker wrote (ground.go).
 	CodeUngrounded = "ungrounded"
+	// CodeNotSpecific: a motivation draft does not contain the plain company name
+	// after the one repair turn. The draft is not returned.
+	CodeNotSpecific = "not_specific"
 	// CodeTruncated: the reply ran into max_tokens, so the draft would end
 	// mid-sentence; it is refused, never filled.
 	CodeTruncated = "truncated"
@@ -93,6 +96,24 @@ const (
 	KindCredential = "credential" // a degree, certification or licence
 	KindAcronym    = "acronym"
 )
+
+// Company-name check on a motivation draft. Named means the draft contains the
+// plain company name. Skipped means the company was empty, so the check did
+// not run and the draft is not specific. Anything else is not a motivation draft.
+const (
+	CompanyNamed   = "named"
+	CompanySkipped = "skipped"
+	// CompanySkippedNote is the sentence a reply carries when the check did not run.
+	CompanySkippedNote = "the company-name check did not run: the company is empty, so this draft is not specific"
+)
+
+// CoverWords is the cover-letter ceiling: about 250 words, inside MinWords..MaxWords.
+const CoverWords = 250
+
+// CoverQuestion is the fixed question a cover letter asks. It is a motivation
+// question, so the same evidence selection and company-name check apply. It
+// asks for the body only.
+const CoverQuestion = "Why do you want to work at this company in this role? Write three short paragraphs as the body of a cover letter, with no greeting, no sign-off and no placeholders."
 
 // Error is a failure with a code the caller can act on. Kind is set only on
 // CodeUngrounded.
@@ -175,6 +196,9 @@ type Result struct {
 	// was refused as ungrounded and the repair turn passed. Repaired says which.
 	Turns    int  `json:"-"`
 	Repaired bool `json:"-"`
+	// CompanyCheck is CompanyNamed, CompanySkipped, or empty when the question
+	// is not a motivation draft. A skipped check is not a specific draft.
+	CompanyCheck string `json:"company_check,omitempty"`
 }
 
 // Config configures New.
@@ -219,6 +243,9 @@ func New(p llm.Provider, cfg Config, kb []Evidence) (*Drafter, error) {
 	}
 	return &Drafter{p: p, cfg: cfg, kb: kb, rarity: rarityOf(kb)}, nil
 }
+
+// EvidenceCount is how many knowledge-base entries this drafter may cite.
+func (d *Drafter) EvidenceCount() int { return len(d.kb) }
 
 // Validate checks a request's bounds without trimming anything silently: an
 // oversized question is refused, while a long posting is cut to its first
@@ -330,18 +357,19 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 	shown := []string{r.Question, r.Job.Company, r.Job.Title, post.text()}
 	g := newGrounding(seeker, shown)
 	cs := g.claims(text)
-	if len(cs) == 0 {
-		return Result{Draft: text, Model: d.cfg.Model, EvidenceItems: len(ev), Turns: 1}, nil
+	_, missing := companyStatus(r.Question, r.Job.Company, text)
+	if len(cs) == 0 && !missing {
+		return finished(text, d.cfg.Model, len(ev), 1, false, r), nil
 	}
 
-	// The one repair turn. A failure of it other than a spent budget or the
-	// shared timeout leaves the first refusal standing: the repair is an
-	// attempt to save a draft, not a new reason to fail.
-	refusal := withTurns(ungroundedError(cs), 2)
+	// The one repair turn covers an ungrounded claim and a missing company
+	// name together. A failure of it other than a spent budget or the shared
+	// timeout leaves the first refusal standing.
+	refusal := firstRefusal(cs, missing)
 	repair := req
 	repair.Messages = []llm.Message{user,
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: text}}},
-		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: repairMessage(cs, r.MaxWords)}}},
+		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: repairFor(cs, missing, r.MaxWords)}}},
 	}
 	fixed, err := d.turn(ctx, repair)
 	if err != nil {
@@ -354,7 +382,58 @@ func (d *Drafter) Draft(ctx context.Context, r Request) (Result, error) {
 	if cs := g.claims(fixed); len(cs) > 0 {
 		return Result{}, withTurns(ungroundedError(cs), 2)
 	}
-	return Result{Draft: fixed, Model: d.cfg.Model, EvidenceItems: len(ev), Turns: 2, Repaired: true}, nil
+	if _, missing := companyStatus(r.Question, r.Job.Company, fixed); missing {
+		return Result{}, withTurns(notSpecificError(), 2)
+	}
+	return finished(fixed, d.cfg.Model, len(ev), 2, true, r), nil
+}
+
+func finished(text, model string, evidence, turns int, repaired bool, r Request) Result {
+	status, _ := companyStatus(r.Question, r.Job.Company, text)
+	return Result{Draft: text, Model: model, EvidenceItems: evidence, Turns: turns, Repaired: repaired, CompanyCheck: status}
+}
+
+// companyStatus reports the company-name check. missing is true only when the
+// question is a motivation draft, the company name is non-empty, and the draft
+// does not contain that plain name. An empty company is skipped, not missing.
+func companyStatus(question, company, text string) (status string, missing bool) {
+	if !Motivation(question) {
+		return "", false
+	}
+	name := strings.TrimSpace(company)
+	if name == "" {
+		return CompanySkipped, false
+	}
+	if containsPlain(text, name) {
+		return CompanyNamed, false
+	}
+	return "", true
+}
+
+func containsPlain(text, company string) bool {
+	return strings.Contains(strings.ToLower(text), strings.ToLower(strings.TrimSpace(company)))
+}
+
+func notSpecificError() *Error {
+	return &Error{Code: CodeNotSpecific, Err: errors.New("draft: the draft does not contain the company name, so it is not specific to this posting")}
+}
+
+func firstRefusal(cs []claim, missing bool) *Error {
+	if len(cs) > 0 {
+		return withTurns(ungroundedError(cs), 2)
+	}
+	return withTurns(notSpecificError(), 2)
+}
+
+func repairFor(cs []claim, missing bool, words int) string {
+	switch {
+	case len(cs) > 0 && missing:
+		return repairMessage(cs, words) + "\n\n" + companyRepair(words)
+	case len(cs) > 0:
+		return repairMessage(cs, words)
+	default:
+		return companyRepair(words)
+	}
 }
 
 // turn is one provider turn, with its failure as an *Error: a spent budget, the
@@ -449,6 +528,12 @@ func repairMessage(cs []claim, words int) string {
 		quoted = append(quoted, `"`+t+`"`)
 	}
 	return fmt.Sprintf(`Your draft says %s, which the seeker's evidence, the posting and the question do not back. Rewrite the whole answer without it: leave each one out, and drop any point that depended on it. Do not replace it with another number, credential or acronym, and do not restate it in other words (spelled out, rounded or as a range). A number of years and a degree, certification or licence may be written only if the seeker's own evidence says it. Write at most %d words, in plain prose, and reply with the answer only.`, strings.Join(quoted, ", "), words)
+}
+
+// companyRepair tells the model to use the company name already inside the
+// untrusted frame. The name itself is not copied here: it is page text.
+func companyRepair(words int) string {
+	return fmt.Sprintf(`The draft does not contain the company name from the Company line. Rewrite the whole answer so that name appears exactly as it is written there. Do not add a number, credential or acronym the evidence does not back, and do not write a greeting or a sign-off. Write at most %d words, in plain prose, and reply with the answer only.`, words)
 }
 
 // maxTokens is the visible-reply budget: about 1.5 tokens a word plus margin.

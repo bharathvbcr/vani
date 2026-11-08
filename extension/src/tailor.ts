@@ -4,7 +4,7 @@
 
 import type { JobInfo } from "./draft";
 import { motivationEssay } from "./intents";
-import { extractSalaryRange, extractSkills, type UserTargetProfile } from "./relevance";
+import type { UserTargetProfile } from "./relevance";
 
 export type TailoredKind =
   | "why_company"
@@ -22,6 +22,11 @@ export interface TailoredQuestionMatch {
   kind: TailoredKind;
   title: string;
   templateSnippet: string;
+}
+
+/** A match carries no biography. Open answers stay blank until a saved answer or a grounded draft fills them. */
+function tailored(kind: TailoredKind, title: string): TailoredQuestionMatch {
+  return { kind, title, templateSnippet: "" };
 }
 
 const WHY_COMPANY_PATTERNS = [
@@ -110,168 +115,131 @@ export function matchTailorableQuestion(label: string, companyName?: string): Ta
   if (companyName && companyName.trim().length > 1) {
     const esc = companyName.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (new RegExp(`\\bwhy\\s+(at\\s+|with\\s+)?${esc}\\b`, "i").test(l)) {
-      return {
-        kind: "why_company",
-        title: "Why This Company",
-        templateSnippet: "I am drawn to the mission and engineering culture here...",
-      };
+      return tailored("why_company", "Why This Company");
     }
   }
 
   for (const p of WHY_COMPANY_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "why_company",
-        title: "Why This Company",
-        templateSnippet: "I am drawn to the mission and engineering culture here...",
-      };
+      return tailored("why_company", "Why This Company");
     }
   }
 
   for (const p of WHY_ROLE_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "why_role",
-        title: "Why This Role",
-        templateSnippet: "This role directly aligns with my focus on scalable backend systems...",
-      };
+      return tailored("why_role", "Why This Role");
     }
   }
 
   for (const p of ROLE_FIT_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "role_fit",
-        title: "Why You're a Fit",
-        templateSnippet: "My background in high-throughput services and clean APIs matches...",
-      };
+      return tailored("role_fit", "Why You're a Fit");
     }
   }
 
   for (const p of PROJECT_EXPERIENCE_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "project_experience",
-        title: "Relevant Project",
-        templateSnippet: "In my recent work, I designed and delivered a resilient service...",
-      };
+      return tailored("project_experience", "Relevant Project");
     }
   }
 
   for (const p of COVER_LETTER_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "cover_letter",
-        title: "Cover Letter / Note",
-        templateSnippet: "Dear Hiring Team, I am excited to apply for this opportunity...",
-      };
+      return tailored("cover_letter", "Cover Letter / Note");
     }
   }
 
   for (const p of SALARY_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "salary_expectations",
-        title: "Salary Expectations",
-        templateSnippet: "My salary expectations are flexible and in line with market rates...",
-      };
+      return tailored("salary_expectations", "Salary Expectations");
     }
   }
 
   for (const p of START_DATE_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "start_date",
-        title: "Earliest Start Date",
-        templateSnippet: "I am available to start within a standard two-week notice period...",
-      };
+      return tailored("start_date", "Earliest Start Date");
     }
   }
 
   for (const p of WORK_AUTH_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "work_auth_explanation",
-        title: "Work Authorization Details",
-        templateSnippet: "I am legally authorized to work...",
-      };
+      return tailored("work_auth_explanation", "Work Authorization Details");
     }
   }
 
   for (const p of REMOTE_COLLABORATION_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "remote_collaboration",
-        title: "Remote Collaboration",
-        templateSnippet: "I have substantial experience collaborating effectively in distributed teams...",
-      };
+      return tailored("remote_collaboration", "Remote Collaboration");
     }
   }
 
   for (const p of DIVERSITY_PATTERNS) {
     if (p.test(l)) {
-      return {
-        kind: "diversity_perspective",
-        title: "Diversity & Perspective",
-        templateSnippet: "I believe strong engineering teams thrive on diverse viewpoints...",
-      };
+      return tailored("diversity_perspective", "Diversity & Perspective");
     }
   }
 
   return null;
 }
 
-/** Generate an adaptive, grounded draft tailored to the specific company, role, skills, and seeker profile. */
-export function generateTailoredDraft(
-  kind: TailoredKind,
-  job: JobInfo,
-  profile?: Partial<UserTargetProfile>,
-): string {
-  const company = job.company?.trim() || "your team";
-  const title = job.title?.trim() || "this position";
-  const skills = extractSkills(job.description);
-  const skillList = skills.slice(0, 3).join(", ");
-  const skillText = skillList ? ` particularly working with ${skillList}` : "";
-  const salaryRange = extractSalaryRange(job.description);
+/**
+ * Shown when an open answer has no saved text and no grounded draft.
+ * It names what Vani will not invent. It is not itself an answer.
+ */
+export const OPEN_ANSWER_HOLD =
+  "Vani left this blank. It will not invent experience, a project story, a date, a salary, work authorization, or another open answer. A saved answer, or a draft that already passed the grounding check, can still fill this field.";
 
-  switch (kind) {
-    case "why_company":
-      return `I have been following ${company}'s work and appreciate the engineering excellence and high standard of product craftsmanship you bring to the problem space. I am excited by the opportunity to contribute to a collaborative, ambitious team where solid systems design and meaningful user impact are prioritized.`;
+const OPEN_ANSWER_KINDS: ReadonlySet<TailoredKind> = new Set<TailoredKind>([
+  "why_company",
+  "why_role",
+  "role_fit",
+  "project_experience",
+  "cover_letter",
+  "salary_expectations",
+  "start_date",
+  "work_auth_explanation",
+  "remote_collaboration",
+  "diversity_perspective",
+]);
 
-    case "why_role":
-      return `I am excited about the ${title} role at ${company} because it offers the ideal intersection of high-impact challenges and technical depth${skillText}. The responsibilities outlined in the job description align closely with where I excel: building dependable, well-tested services and taking end-to-end ownership from design through production delivery.`;
+export interface OpenAnswerFill {
+  filled: boolean;
+  text: string;
+  source?: "stored" | "grounded_draft";
+  reason?: string;
+}
 
-    case "role_fit":
-      return `My background directly matches the needs of the ${title} role. I have extensive hands-on experience designing, scaling, and maintaining robust software systems${skillText}. I take pride in pragmatic engineering—writing clean code, establishing automated tests, and communicating effectively across cross-functional teams to reliably ship quality software.`;
-
-    case "project_experience":
-      return `In a recent project, I architected and implemented an end-to-end service designed for reliability and low latency${skillText}. I focused on thorough boundary validation, clear error contracts, and deterministic test coverage. The solution handled production traffic reliably, reduced error rates, and significantly boosted developer velocity.`;
-
-    case "cover_letter":
-      return `Dear ${company} Hiring Team,\n\nI am writing to express my strong enthusiasm for the ${title} position at ${company}. Having reviewed the requirements and responsibilities, I am confident that my engineering experience${skillText} and focus on building resilient, performant systems will allow me to make an immediate impact on your team.\n\nI would love the opportunity to discuss how my skill set and dedication can help drive ${company}'s engineering goals forward.\n\nThank you for your time and consideration.`;
-
-    case "salary_expectations":
-      if (salaryRange) {
-        return `My compensation expectations align with the posted range of ${salaryRange} for this role. I am open to discussing a competitive total package that reflects the role's scope, responsibilities, and equity opportunities.`;
-      }
-      if (profile?.minSalary) {
-        return `My target base compensation is around $${profile.minSalary.toLocaleString()}, flexible depending on the full compensation structure, equity, and benefits.`;
-      }
-      return `My salary expectations are flexible and in line with market rates for a ${title} role with this scope. I am open to discussing a competitive package including base salary, performance incentives, and benefits.`;
-
-    case "start_date":
-      return `I am available to start within a standard two-week notice period, though I can remain flexible based on team onboarding cycles and project schedules.`;
-
-    case "work_auth_explanation":
-      if (profile?.requiresSponsorship) {
-        return `I will require employment visa sponsorship (e.g. H-1B transfer or work authorization) to work in the United States and look forward to discussing the onboarding timeline.`;
-      }
-      return `I am fully authorized to work in the United States without restriction and do not require employer sponsorship now or in the future.`;
-
-    case "remote_collaboration":
-      return `I have substantial experience collaborating effectively in distributed, remote-first engineering teams. I prioritize asynchronous communication, high-clarity technical documentation, proactive issue tracking, and clean pull request reviews to ensure seamless velocity across time zones.`;
-
-    case "diversity_perspective":
-      return `I believe strong engineering teams thrive on diverse viewpoints, thoughtful mentorship, and inclusive collaboration. In my day-to-day work, I focus on empathetic code reviews, creating psychological safety for teammates, and designing software accessible to all users.`;
+/**
+ * What may be written into an open answer. A saved answer wins, then a draft
+ * that already passed the grounding check. Anything else stays empty, with a
+ * reason the person can read. This never invents a biography.
+ */
+export function openAnswerFill(input: {
+  label: string;
+  companyName?: string;
+  stored?: string;
+  groundedDraft?: string;
+}): OpenAnswerFill {
+  const stored = input.stored?.trim() ?? "";
+  if (stored !== "") return { filled: true, text: stored, source: "stored" };
+  const grounded = input.groundedDraft?.trim() ?? "";
+  if (grounded !== "") return { filled: true, text: grounded, source: "grounded_draft" };
+  const match = matchTailorableQuestion(input.label, input.companyName);
+  if (match && OPEN_ANSWER_KINDS.has(match.kind)) {
+    return { filled: false, text: "", reason: OPEN_ANSWER_HOLD };
   }
+  return { filled: false, text: "", reason: OPEN_ANSWER_HOLD };
+}
+
+/**
+ * No biography. The old templates invented experience, dates, salary, and work
+ * authorization from an empty profile. Callers that still import this get an
+ * empty string; openAnswerFill decides whether a field is filled.
+ */
+export function generateTailoredDraft(
+  _kind: TailoredKind,
+  _job: JobInfo,
+  _profile?: Partial<UserTargetProfile>,
+): string {
+  return "";
 }

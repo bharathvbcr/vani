@@ -11,6 +11,20 @@ import Foundation
 //   {"op":"log","entry":{"event":...,"host"?:...,"counts"?:{...}}} -> {"ok":true}
 //   {"op":"draft","request":{"question":...,"job":{...},"max_words"?:N,"attempt"?:N}}
 //                                         -> {"draft","model","evidence_items"} | {"error","code"}
+//   {"op":"contacts","request":{"op":"put","key","text"}}
+//                                         -> {"stored":true} | {"error","code":"E_JARVIS"|"E_BAD_REQUEST"|"unavailable"}
+//   {"op":"contacts","request":{"op":"list"}}
+//                                         -> {"keys":[...]} | {"error","code"}
+//                                            a missing bank executable is an error, never {"keys":[]}
+//   {"op":"contacts","request":{"op":"get","key"}}
+//                                         -> {"key","text"} | {"error","code"}
+//   {"op":"contacts","request":{"op":"choose","label","kind"}}
+//                                         -> {"status":"filled","key","text","review":true}
+//                                          | {"status":"none"|"refused"|"empty"|"skipped"|"missing","detail"?}
+//                                          | {"status":"not_run","note":"the check did not run",...}
+//   {"op":"contacts","request":{"op":"import","items":[{"key","text"}]}}
+//                                         -> {"stored":[...],"failed"?} 
+//                                            the reply names keys, never the values
 //   {"op":"jobStart","kind":"draft"|"suggest","request":{...}}
 //                                         -> {"job":id} | {"error","code"}
 //   {"op":"jobResult","job":id}           -> {"pending":true} | {"done":true,"reply":{...}} | {"error","code"}
@@ -66,10 +80,11 @@ public enum NativeProtocol {
     public static func handle(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner? = nil,
                               agent: AgentClient? = nil, jobs: JobsBackend? = nil,
                               openResume: (@Sendable (URL) -> Bool)? = nil,
-                              sameQuestion: SameQuestionBackend? = nil) -> [String: Any] {
+                              sameQuestion: SameQuestionBackend? = nil,
+                              contacts: ContactsRunning? = nil) -> [String: Any] {
         do {
             return try dispatch(request, store: store, source: source, drafter: drafter, agent: agent, jobs: jobs,
-                                openResume: openResume, sameQuestion: sameQuestion)
+                                openResume: openResume, sameQuestion: sameQuestion, contacts: contacts)
         } catch {
             return ["error": String(describing: error)]
         }
@@ -77,7 +92,7 @@ public enum NativeProtocol {
 
     private static func dispatch(_ request: Any, store: BankStore, source: Source, drafter: DraftRunner?,
                                  agent: AgentClient?, jobs: JobsBackend?, openResume: (@Sendable (URL) -> Bool)?,
-                                 sameQuestion: SameQuestionBackend?) throws -> [String: Any] {
+                                 sameQuestion: SameQuestionBackend?, contacts: ContactsRunning?) throws -> [String: Any] {
         guard let req = request as? [String: Any], let op = req["op"] as? String else {
             throw BankError("request is not an object with an op")
         }
@@ -227,10 +242,25 @@ public enum NativeProtocol {
                 return SameQuestion.unavailable("unsupported")
             }
             return backend.compare(labels)
+        case "coverGet", "coverInfo", "coverOpen":
+            return coverOp(op, req, store: store, openResume: openResume)
         case "resumePut", "resumeGet", "resumeInfo", "resumeDelete", "resumeOpen":
             return resumeOp(op, req, store: store, source: source, openResume: openResume)
         case "resumeOpenData":
             return resumeOpenData(req, openResume: openResume)
+        case "contacts":
+            guard let body = req["request"] as? [String: Any], let op = body["op"] as? String, !op.isEmpty else {
+                return ["error": "contacts needs a request", "code": "E_BAD_REQUEST"]
+            }
+            guard let contacts else {
+                return ["status": "not_run", "note": "the check did not run", "code": "unsupported",
+                        "error": "contacts are not available here"]
+            }
+            let reply = contacts.run(body)
+            if op == "import", (reply["failed"] as? [Any])?.isEmpty != false, reply["error"] == nil, reply["stored"] is [Any] {
+                ContactsMarker.write(in: store.directory)
+            }
+            return reply
         case "draft":
             guard let drafter else {
                 return ["error": "drafting is not available here; use Draft in the Vani Apply app", "code": "unsupported"]
@@ -278,9 +308,10 @@ public enum NativeProtocol {
             }
             let updatedAt = try optional(row, "updatedAt", String.self, row: i) ?? isoNow()
             let review = try optional(row, "review", Bool.self, row: i) ?? false
+            let postingKey = (try optional(row, "postingKey", String.self, row: i)).flatMap { $0.isEmpty ? nil : String($0.prefix(2048)) }
             let sens = Classifier.classify(kind: kind, label: ([key] + labels).joined(separator: " "), name: "", autocomplete: "")
             out.append(Answer(key: key, labels: labels, kind: kind, value: value, sensitivity: sens, signatures: signatures,
-                              uses: uses, fills: fills, updatedAt: updatedAt, review: review))
+                              uses: uses, fills: fills, updatedAt: updatedAt, review: review, postingKey: postingKey))
         }
         return out
     }
@@ -297,6 +328,38 @@ public enum NativeProtocol {
             throw BankError("patch baseRev must be a non-negative integer")
         }
         return n
+    }
+
+    private static func coverOp(_ op: String, _ req: [String: Any], store: BankStore, openResume: (@Sendable (URL) -> Bool)?) -> [String: Any] {
+        let letters = CoverStore(directory: store.directory.appendingPathComponent("letters", isDirectory: true))
+        guard let key = JobLinks.checkedURL(req["key"]) else {
+            return ["error": "\(op) needs the job page's http(s) key", "code": "bad_request"]
+        }
+        do {
+            switch op {
+            case "coverGet":
+                guard let got = try letters.get(key: key) else { return ["found": false] }
+                var out: [String: Any] = ["found": true, "name": got.entry.name, "bytes": got.entry.bytes,
+                                          "textBytes": got.entry.textBytes, "sha256": got.entry.textSHA256,
+                                          "pickedAt": got.entry.pickedAt, "body": got.body]
+                if let pdf = got.pdf { out["pdf"] = pdf.base64EncodedString(); out["bytes"] = pdf.count }
+                return out
+            case "coverInfo":
+                guard let e = try letters.info(key: key) else { return ["found": false] }
+                return ["found": true, "name": e.name, "bytes": e.bytes, "textBytes": e.textBytes, "pickedAt": e.pickedAt]
+            default:
+                guard let openResume else { return ["error": "opening a cover letter is not available here", "code": "unsupported"] }
+                guard let got = try letters.get(key: key) else { return ["found": false] }
+                guard let pdf = got.pdf else { return ["error": "this letter has no PDF", "code": "render"] }
+                let url = try ResumeStore.previewCopy(name: got.entry.name, data: pdf)
+                guard openResume(url) else { return ["error": "Preview did not open the cover letter", "code": "io"] }
+                return ["ok": true, "name": got.entry.name, "bytes": pdf.count]
+            }
+        } catch let f as CoverStore.Failure {
+            return ["error": f.message, "code": f.code]
+        } catch {
+            return ["error": String(describing: error), "code": "io"]
+        }
     }
 
     /// base64 of ResumeStore.maxBytes plus padding slack: a longer string is refused before it is decoded.

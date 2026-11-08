@@ -168,11 +168,11 @@ func draftOut(t *testing.T, stdout string) draftReply {
 const goodDraftReq = `{"question":"Why do you want to cut latency here?","job":{"company":"Modal","title":"Engineer","description":"Latency matters."},"max_words":120}`
 
 func TestDraftUsesKnowledgeBaseWithoutPersonalData(t *testing.T) {
-	p := &draftLLM{text: "I cut latency by 42% at Acme."}
+	p := &draftLLM{text: "I cut latency by 42% at Modal."}
 	draftSetup(t, goodDraftReq, p, true)
 	stdout, _ := mustCode(t, 0, "draft")
 	r := draftOut(t, stdout)
-	if r.Draft != "I cut latency by 42% at Acme." || r.Error != "" || r.EvidenceItems != 1 {
+	if r.Draft != "I cut latency by 42% at Modal." || r.Error != "" || r.EvidenceItems != 1 || r.CompanyCheck != draft.CompanyNamed {
 		t.Fatalf("reply = %+v", r)
 	}
 	if len(p.reqs) != 1 {
@@ -190,10 +190,10 @@ func TestDraftUsesKnowledgeBaseWithoutPersonalData(t *testing.T) {
 }
 
 func TestDraftWithoutKnowledgeBaseStillDrafts(t *testing.T) {
-	p := &draftLLM{text: "A draft."}
+	p := &draftLLM{text: "A draft for Modal."}
 	draftSetup(t, goodDraftReq, p, false)
 	stdout, stderr := mustCode(t, 0, "draft")
-	if r := draftOut(t, stdout); r.Draft != "A draft." || r.EvidenceItems != 0 {
+	if r := draftOut(t, stdout); r.Draft != "A draft for Modal." || r.EvidenceItems != 0 || r.CompanyCheck != draft.CompanyNamed {
 		t.Errorf("reply = %+v", r)
 	}
 	if !strings.Contains(stderr, "without knowledge-base evidence") {

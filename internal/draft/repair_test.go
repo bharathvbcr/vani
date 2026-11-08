@@ -261,7 +261,7 @@ func TestTruncatedAndRefusedRepliesAreNotAccepted(t *testing.T) {
 
 func TestDraftLeavesRoomToWriteTheWordsAfterThinking(t *testing.T) {
 	for _, words := range []int{MinWords, DefaultWords, MaxWords} {
-		p := &provider{name: "anthropic", text: "ok draft"}
+		p := &provider{name: "anthropic", text: "ok draft for Modal"}
 		d, _ := New(p, Config{Model: "claude-opus-5-5"}, nil)
 		r := request()
 		r.MaxWords = words

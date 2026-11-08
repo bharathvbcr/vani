@@ -78,12 +78,14 @@ export function basicsFields(values: Readonly<Record<string, string>>, saved: Re
  * A question basic shows what Fill would use for it (match.ts): the latest
  * answer saved under any wording of its intent.
  */
-export function basicsValues(bank: Bank | null): Record<string, string> {
+export function basicsValues(bank: Bank | null, contacts?: Readonly<Record<string, string>> | null): Record<string, string> {
   const out: Record<string, string> = {};
   const answers = bank ? Object.values(bank.answers) : [];
   for (const b of BASICS) {
     if (b.group === "contact") {
-      out[b.id] = bank?.answers[answerKey(info(b, []))]?.value.join(", ") ?? "";
+      // A Jarvis read replaces the bank for these boxes. Null means that read
+      // did not happen, so the bank values stay visible rather than looking empty.
+      out[b.id] = contacts ? (contacts[b.id] ?? "") : (bank?.answers[answerKey(info(b, []))]?.value.join(", ") ?? "");
       continue;
     }
     // Self-identification stays out of the popup while self-ID is off (Fill ignores it then too).

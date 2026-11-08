@@ -92,7 +92,7 @@ func (e *env) suggestOnce() ([]suggest.Suggestion, string, error) {
 		return nil, codeConfig, err
 	}
 	var d pageDrafter
-	dr, code, err := e.newDrafter(ctx, cfg, p)
+	dr, code, err := e.drafterWith(ctx, cfg, p, 0)
 	switch {
 	case err == nil:
 		d = dr

@@ -31,7 +31,7 @@ const (
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage or resume")
+		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage, resume or cover")
 	}
 	switch args[0] {
 	case "list":
@@ -58,6 +58,8 @@ func (e *env) cmdJobs(args []string) error {
 		return e.jobsRetriage(args[1:])
 	case "resume":
 		return e.jobsResume(args[1:])
+	case "cover":
+		return e.jobsCover(args[1:])
 	}
 	return usagef("jobs: unknown subcommand %q", args[0])
 }

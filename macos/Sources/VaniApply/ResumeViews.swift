@@ -137,6 +137,16 @@ struct ResumeSection: View {
                 .help(reason ?? "Ask \(ResumeWords.modelName) to pick this posting's bullets (\(ResumeShortcut.label)). It shows the cost first; nothing is spent until you confirm.")
                 .accessibilityIdentifier("resume.start")
                 useButton
+                if jobs.cover.available {
+                    Button("Build letter") { jobs.cover.build(job) }
+                        .disabled(jobs.cover.busy)
+                        .help("Write a cover letter for this posting and save a version. Nothing is attached until you use it.")
+                        .accessibilityIdentifier("cover.build")
+                    Button("Use letter") { jobs.cover.use(job) }
+                        .disabled(jobs.cover.busy)
+                        .help("Make the saved letter the one the browser may attach to this job.")
+                        .accessibilityIdentifier("cover.use")
+                }
                 // A version never fitted to pages has no PDF to open.
                 if card.kind == .ready, card.currentVersion > 0, (summary?.pages ?? 0) > 0 { previewButton }
                 Button("Open Studio") { jobs.openStudio(job) }
@@ -149,6 +159,10 @@ struct ResumeSection: View {
             }
             if let shownReason {
                 Text(shownReason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !jobs.cover.status.isEmpty {
+                Text(jobs.cover.status).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("cover.status")
             }
         }
     }

@@ -231,6 +231,12 @@ commands:
                              coverage KEY [vN] says which posting terms a version hits and
                              which no eligible bullet covers; gaps [--dry-run] KEY hands those
                              terms to state dir resumes/gaps.jsonl for the career session
+  jobs cover build|use [--json] KEY [vN]
+                             a cover letter for one tracked posting, kept in state dir letters/
+                             (one used letter per posting). build spends the same daily llm budget
+                             as draft and saves a version; use KEY [vN] is what the extension may
+                             fetch. No posting text, no eligible bullets, a spent budget, a timeout
+                             or a still-ungrounded reply saves nothing
   jobs gaps [--json] [-n N] [--examples N] [same selection flags as list]
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the
@@ -268,6 +274,13 @@ commands:
                              essays: JSON request on stdin, JSON reply on stdout
   resume                     build a resume PDF for one job with rkb (the model picks the
                              bullets): JSON request on stdin, JSON reply with the PDF on stdout
+  cover                      one cover letter for the same JSON job request as draft (the question
+                             and the 250-word bound are fixed). Spends the same daily llm budget.
+                             The reply is the body and, when the font can draw it, a one-page PDF.
+                             A letterhead from the base selection is stamped into the PDF only.
+  contacts                   contact basics through jarvis serve, and one catalog key for an
+                             unmatched field: JSON on stdin, JSON on stdout. A model sees keys
+                             and descriptions only. A check that cannot run says so and fills nothing
   migrate rekey-fallback [--json] [--dry-run]
                              one-time: move fallback-keyed (x:) postings, and their marks, to the
                              keys titles that keep C++/C#/.NET apart give them (backs up first;
@@ -494,6 +507,10 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdSuggest(args[1:])
 	case "resume":
 		cmdErr = e.cmdResume(args[1:])
+	case "cover":
+		cmdErr = e.cmdCover(args[1:])
+	case "contacts":
+		cmdErr = e.cmdContacts(args[1:])
 	case "reasons":
 		cmdErr = e.cmdReasons(args[1:])
 	case "teacher":

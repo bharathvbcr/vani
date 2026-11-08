@@ -238,13 +238,20 @@ private struct RunNowSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let banner = presentation.banner {
-                Text(banner).font(.callout).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let banner = presentation.banner {
+                    Text(banner).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("Run the pipeline now").font(.headline)
+                Text("These choices apply to this run only. Your config and the daily run stay as they are.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Run the pipeline now").font(.headline)
-            Text("These choices apply to this run only. Your config and the daily run stay as they are.")
-                .font(.callout).foregroundStyle(.secondary)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
             Form {
                 Section("Boards") {
                     Picker("Boards", selection: $allBoards) {
@@ -253,70 +260,74 @@ private struct RunNowSheet: View {
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
+                    RunNote(text: allBoards ? RunSheetCopy.everyBoardDetail : RunSheetCopy.chosenBoardDetail)
                     if !allBoards { boardPicker }
                 }
                 Section("Triage, scoring and explaining") {
-                    Toggle("Advance new postings this run", isOn: $advance)
-                        .help("Off lists and reconciles boards only: new postings stay live for the next run. No decision model is called, and none needs to be configured.")
+                    Toggle(RunSheetCopy.advanceTitle, isOn: $advance)
+                    RunNote(text: RunSheetCopy.advanceDetail)
                     if advance {
-                        Toggle("Cap the postings advanced this run (instead of advance_per_run)", isOn: $capOn)
+                        Toggle(RunSheetCopy.capTitle, isOn: $capOn)
+                        RunNote(text: RunSheetCopy.capDetail)
                         if capOn {
-                            Stepper(value: $cap, in: 1...ManualRunOptions.maxAdvance, step: cap < 50 ? 5 : 25) {
-                                HStack {
-                                    Text("At most")
-                                    TextField("Postings", value: $cap, format: .number)
-                                        .frame(width: 70)
-                                        .multilineTextAlignment(.trailing)
-                                    Text("postings")
-                                }
-                            }
+                            RunCount(label: RunSheetCopy.capLabel, value: $cap,
+                                     step: cap < 50 ? 5 : 25, range: 1...ManualRunOptions.maxAdvance)
                         }
-                        Toggle("Parallelize triage across multiple AI workers (instead of advance_concurrency)", isOn: $workersOn)
+                        Toggle(RunSheetCopy.workersTitle, isOn: $workersOn)
+                        RunNote(text: RunSheetCopy.workersDetail)
                         if workersOn {
-                            Stepper(value: $workers, in: 1...ManualRunOptions.maxWorkers) {
-                                HStack {
-                                    Text("Run")
-                                    TextField("Workers", value: $workers, format: .number)
-                                        .frame(width: 50)
-                                        .multilineTextAlignment(.trailing)
-                                    Text(workers == 1 ? "worker" : "parallel workers")
-                                }
-                            }
+                            RunCount(label: RunSheetCopy.workersLabel, value: $workers,
+                                     step: 1, range: 1...ManualRunOptions.maxWorkers)
                         }
-                        Toggle("Triage US postings first", isOn: $usFirst)
-                        Text("Advance postings located in the United States before the rest. It only changes the order; nothing is dropped.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Toggle(RunSheetCopy.usTitle, isOn: $usFirst)
+                        RunNote(text: RunSheetCopy.usDetail)
                     }
                 }
                 Section("Digest") {
                     Toggle("Write a digest when the run ends", isOn: $digest)
-                    Text(digest
-                         ? "The roles it lists are marked digested, so the next daily digest will not list them again."
-                         : "The run's roles stay pending and the next digest lists them.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    RunNote(text: digest
+                            ? "The roles it lists are marked digested, so the next daily digest will not list them again."
+                            : "The run's roles stay pending and the next digest lists them.")
                 }
             }
             .formStyle(.grouped)
-            if let problem {
-                Text(problem).font(.callout).foregroundStyle(.red)
-            }
-            HStack(alignment: .center) {
-                Text(presentation.footnote)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Start Run") {
-                    start(options)
-                    dismiss()
+            .frame(maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 8) {
+                Divider()
+                if let problem {
+                    Text(problem).font(.callout).foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(problem != nil)
+                HStack(alignment: .center) {
+                    Text(presentation.footnote)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Start Run") {
+                        start(options)
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(problem != nil)
+                }
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+            .background(.background)
         }
-        .padding(20)
-        .frame(width: 560, height: (allBoards ? 590 : 750) + (presentation.banner == nil ? 0 : 110))
+        .frame(width: 580, height: sheetHeight)
         .task { await loadBoards() }
+    }
+
+    /// Tall enough for the descriptions. The form scrolls once a banner or the
+    /// board list needs more, and the buttons stay below that scroll.
+    private var sheetHeight: CGFloat {
+        let base: CGFloat = 800
+        let withBanner = presentation.banner == nil ? base : base + 100
+        let withBoards = allBoards ? withBanner : withBanner + 180
+        return min(withBoards, 900)
     }
 
     private var options: ManualRunOptions {
@@ -384,6 +395,52 @@ private struct RunNowSheet: View {
             chosen = chosen.filter(known.contains)
         case let .failure(err):
             boardsError = String(describing: err)
+        }
+    }
+}
+
+/// One line under a Run Now choice. The sheet uses this instead of a tooltip,
+/// so the choice says what it changes without a hover.
+private struct RunNote: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A bounded count for one run. The digits are their own field beside the
+/// stepper. A Form puts a Stepper's label in a narrow column, and a number
+/// written inside that label wraps onto the digits.
+private struct RunCount: View {
+    let label: String
+    @Binding var value: Int
+    let step: Int
+    let range: ClosedRange<Int>
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: 8) {
+                TextField(label, value: $value, format: .number)
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 88)
+                    .accessibilityLabel(label)
+                Stepper(label, value: $value, in: range, step: step)
+                    .labelsHidden()
+                    .fixedSize()
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        } label: {
+            Text(label)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 }
@@ -482,6 +539,12 @@ private struct Panel<Content: View>: View {
     }
 }
 
+/// Label column for a pipeline status row. Wide enough that
+/// "Semantic, before advance" stays one line; a 130 pt column broke it after the comma.
+private enum PipelineMetrics {
+    static let labelWidth: CGFloat = 196
+}
+
 private struct Row: View {
     let label: String
     let value: String
@@ -491,7 +554,10 @@ private struct Row: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(.secondary).frame(width: 130, alignment: .leading)
+            Text(label).foregroundStyle(.secondary)
+                .frame(width: PipelineMetrics.labelWidth, alignment: .leading)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Group {
                 if verbatim {
                     Text(verbatim: value)
@@ -795,7 +861,7 @@ private struct BackendErrorRows: View {
             HStack(alignment: .firstTextBaseline) {
                 // Not a Spacer: the stack drops its spacing next to one, which
                 // would put the causes left of the other rows' values.
-                Color.clear.frame(width: 130, height: 1)
+                Color.clear.frame(width: PipelineMetrics.labelWidth, height: 1)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(verbatim: "\(line.backend): \(line.count) call\(line.count == 1 ? "" : "s")").fontWeight(.medium)
                     Text(verbatim: line.example)
