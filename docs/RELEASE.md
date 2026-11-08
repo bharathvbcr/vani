@@ -4,7 +4,11 @@ Decided by the owner on 2026-10-22 (card ft-52b6e7d3f0950c24195d9c20c0a20351).
 
 ## Policy
 
-- **Private release.** Releases are GitHub releases in the private repo `bharathvbcr/vani`. The
+The source repository was made public on 2026-11-07. The release script was not changed
+with it, so `scripts/release.sh` still refuses while `isPrivate` is false. A GitHub release
+of the app is not cut until this check is deliberately changed.
+
+- **Private release.** Releases were GitHub releases in the then-private repo `bharathvbcr/vani`. The
   script refuses to publish if `gh repo view --json isPrivate` is not `true`.
 - **Signing.** The Apple Development identity, exactly as `macos/scripts/bundle.sh` signs (team
   `HAUHVD8M37`, hardened runtime, inside-out). `VANI_SIGN_IDENTITY` still overrides.

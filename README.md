@@ -30,6 +30,57 @@ Jarvis is a sibling Manvi client with no code link to Vani. Config, state and ke
 First-time setup (workspace, OpenRouter, knowledge base, embeddings): [`docs/SETUP.md`](docs/SETUP.md).
 
 Plan: [`docs/PLAN.md`](docs/PLAN.md). Follow-ups: [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
+Credits: [docs/ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md). Measurements:
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+## Features
+
+Vani runs on your machine. It watches the employer boards you list, fetches
+the listings they publish, and writes one digest.
+
+- **One fetch for many boards.** Twenty-six source kinds: Greenhouse, Lever
+  (US and EU), Ashby, Workday, Amazon, Google Careers, Apple, Eightfold,
+  iCIMS Jibe, Gem, SmartRecruiters, Oracle HCM, IBM, Avature, D. E. Shaw,
+  Atlassian, Rippling, Workable, Recruitee, Pinpoint, BambooHR, Personio,
+  TikTok, Radancy TalentBrew, XML feeds, and a career page read by Lightpanda.
+  The list and the caps are under Sources below.
+- **A board that does not fit is skipped, not cut.** A partial list would
+  treat the missing postings as gone. Caps are per adapter. The shared cap is
+  5,000. Workday and Oracle HCM can raise `max_postings` up to 10,000.
+- **Polite fetches.** Requests identify as `Vani/0.1 (+personal job-listing reader)`.
+  HTTPS only, a host allowlist, private addresses blocked, and dials pinned.
+  Career pages honor `robots.txt`, including `Crawl-delay`. Listing calls are
+  paced per host. Up to 16 boards are fetched at once, one at a time for each
+  host, and one career page at a time.
+- **Duplicates and dead listings cost nothing.** The same posting on two
+  boards collapses. A listing absent twice is marked dead. No model call.
+- **Triage annotates. Rules drop.** `career.jd_triage` reads role fit,
+  sponsorship, work mode, and seniority. An uncertain answer keeps the
+  posting. A drop is a configured rule on that annotation, or an `exclude`
+  rule on the posting's own title, company, location, or description.
+  Default triage concurrency is 4, and the ceiling is 16.
+- **Rank, pay, and a reason you can edit.** DevPrism scores must-have
+  coverage when you point Vani at it. Pay is parsed from the posting text by
+  fixed rules. The "why this role" note is chosen from a catalog you review.
+  A model does not write a new paragraph per posting.
+- **Optional local extras.** Embeddings on Metal through Tessl. A shadow
+  model for evaluation. Employer badges from public IPEDS and IRS lists
+  ("likely", not a legal finding). Certified H-1B counts from DOL LCA files.
+- **You apply.** The Mac app and the browser extension remember answers and
+  fill the next form. They never press Submit.
+- **Discover, don't silently add.** `watchlist discover` can ask freehire.me
+  which companies match a search. You add the board yourself.
+
+## What it does not do
+
+- It does not sell listings, access, or applications.
+- It does not log into LinkedIn, Indeed, Glassdoor, or other aggregator
+  accounts, and it does not solve CAPTCHAs. A link from one of those sites
+  can be queued. Vani does not search that site.
+- It does not submit an application.
+- It is not a hosted job board. Listings stay on the computer that fetched them.
+- The code licence is PolyForm Noncommercial 1.0.0. Personal job search is
+  allowed. Selling the software, or running it as a paid service, is not.
 
 ## Ingestion & Pipeline Architecture
 
@@ -149,9 +200,11 @@ stateDiagram-v2
   and Radancy TalentBrew career
   sites such as Intuit's and Citi's (`tb`, token the owner's slug, host `jobs.intuit.com`), read from the
   site's sitemap and job pages, each page 2 s after the last and at most 150 pages a board a run. Eightfold requests are spaced 2 s apart; both spacings
-  run through one `srcutil.Pacer` with a 15-minute budget per board. A search site fails a board that reports
-  more postings than its cap, rather than list part of it: Eightfold and Apple 200, Amazon 500, Google 20 per
-  search term, Workday and the rest 5000 (Workday and Oracle HCM configurable via `max_postings` 1..10,000). All
+  run through one `srcutil.Pacer` with a 15-minute budget per board. A board that reports
+  more postings than its cap fails, rather than listing part of it. The shared cap is 5,000
+  (`srcutil.MaxPostings`). Adapters that set their own: Eightfold and Apple 200, Amazon and IBM 500,
+  Avature 400, D. E. Shaw 1,000, SmartRecruiters and Atlassian 3,000, Google 20 per search and at most
+  10 searches. Workday and Oracle HCM default to 5,000 and may set `max_postings` from 1 to 10,000. All
   go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address block, pinned
   dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one `lightpanda mcp` process per board,
   driven over stdio, whose traffic is forced through a per-run authenticated loopback CONNECT proxy that
@@ -1070,6 +1123,23 @@ It is on when both keys are set, and off otherwise:
 - No bank text or posting text is written to a log line, the run record or an error: counts and
   reasons only.
 
+## Benchmarks
+
+Measured 2026-11-07 on an Apple M5 Pro with `go1.27.3`, five runs, minimum
+reported. Inputs are synthetic. No network.
+
+| Benchmark | Minimum |
+|---|---|
+| Parse one pay range in a 64 KiB description | 0.141 ms |
+| Parse 64 KiB dense with currency signs and no pay range | 4.30 ms |
+| Score and sort 5,000 postings of about 6 KiB | 0.468 s |
+| Decode a 20 MiB listing body (cap 64 MiB) | 18.5 ms |
+
+The method, the ranges, older model-agreement numbers, and the benchmarks
+that were not re-run are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). A
+benchmark that was not run is not a result. Agreement with a decision model
+is not accuracy.
+
 ## Build and test
 
 The `go.work` file is ignored but required: Manvi's own `go.mod` replaces DevCouncil and gusset
@@ -1099,9 +1169,19 @@ go -C /Users/bharath/Code/apps/Vani vet ./...
 go -C /Users/bharath/Code/apps/Vani test -race ./...
 ```
 
+## Acknowledgements
+
+Vani reimplements patterns from career-ops, JobSpy, ats-scrapers, freehire,
+Seekter, Resume-Matcher, and others, and it runs Manvi, DevPrism, Tessl, and
+Lightpanda under those projects' own licences. The full list, with the
+licence read on 2026-11-07 and the line between "pattern" and "copied code",
+is [docs/ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md).
+
 ## Releasing
 
-A release is private: a GitHub release in the private repo, signed with the Apple Development
-identity, not notarized, and rolled back by reinstalling the previous release's zip. Cut one with
-`scripts/release.sh vX.Y.Z [--dry-run]`; the policy, commands, install and rollback steps are in
-[docs/RELEASE.md](docs/RELEASE.md).
+The source repository is public. A built app is a separate step.
+`scripts/release.sh` still refuses unless `gh repo view` reports the
+repository private (`repo-not-private`), which was the policy when releases
+were decided on 2026-10-22. Until that check is changed, the script will not
+cut a GitHub release of this public repository. The signing, notarization,
+and rollback notes are in [docs/RELEASE.md](docs/RELEASE.md).

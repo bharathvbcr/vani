@@ -3,10 +3,23 @@
 ## [Unreleased]
 
 Ideas taken from Dossier, career-ops, Seekter, ApplyPilot, Simplify Copilot, JobSpy, freehire and
-ats-scrapers (2026-10-27 study), reimplemented in Vani; freehire's MIT adapters were ported with notice.
+ats-scrapers (2026-10-27 study), reimplemented in Vani. Credits and licences:
+[docs/ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md). An earlier note said freehire's MIT adapters
+were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Features, benchmarks, and credits.** The README leads with what Vani fetches
+  and what it refuses to do. Board caps in that list match the adapter
+  constants (Avature 400, IBM 500, D. E. Shaw 1,000, SmartRecruiters and
+  Atlassian 3,000, among the others). [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+  records a 2026-11-07 run of the pay, insight, and 20 MiB JSON benchmarks on
+  an Apple M5 Pro, and points at older numbers that were not re-run.
+  [docs/ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md) names the projects whose
+  patterns were reimplemented and the programs Vani actually runs, with the
+  licence each public repository reported. `scripts/release.sh` still requires
+  a private repository, so the README no longer says a release is a private
+  GitHub release that the script can cut.
 - **Public noncommercial terms.** [LICENSE](LICENSE) is the PolyForm Noncommercial License 1.0.0.
   [NOTICE](NOTICE) and [docs/LEGAL.md](docs/LEGAL.md) state the purpose (one reader for employer
   job listings that are split across applicant-tracking systems, to help people look for work,
