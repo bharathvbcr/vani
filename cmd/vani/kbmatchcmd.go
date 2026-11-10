@@ -169,24 +169,33 @@ func (e *env) kbmatchSetup() (config.Config, semantic.Profile, kbmatch.Digest, s
 	if err != nil {
 		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", err
 	}
+	prof, d, summary, err := kbmatchDigest(cfg)
+	return cfg, prof, d, summary, err
+}
+
+// kbmatchDigest is the knowledge base as a kb_match question carries it, read
+// only through eligibleBank (semanticProfile), which fails closed, and the
+// normalized target summary. `vani kbmatch` and `vani teacher --task kb_match`
+// both read it here.
+func kbmatchDigest(cfg config.Config) (semantic.Profile, kbmatch.Digest, string, error) {
 	if strings.TrimSpace(cfg.TargetSummary) == "" {
-		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", errors.New("kbmatch: the config has no target_summary to judge the postings against")
+		return semantic.Profile{}, kbmatch.Digest{}, "", errors.New("kbmatch: the config has no target_summary to judge the postings against")
 	}
 	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
 	if err != nil {
-		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", err
+		return semantic.Profile{}, kbmatch.Digest{}, "", err
 	}
 	ctx, cancel := boundedKBContext()
 	defer cancel()
 	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
-		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", fmt.Errorf("kbmatch: the knowledge base: %w", err)
+		return semantic.Profile{}, kbmatch.Digest{}, "", fmt.Errorf("kbmatch: the knowledge base: %w", err)
 	}
 	d, err := kbmatch.DigestOf(prof)
 	if err != nil {
-		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", err
+		return semantic.Profile{}, kbmatch.Digest{}, "", err
 	}
-	return cfg, prof, d, summary, nil
+	return prof, d, summary, nil
 }
 
 // kbmatchCandidate is a posting to ask about and where it stands.

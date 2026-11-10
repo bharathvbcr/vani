@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -61,21 +62,77 @@ type TeacherSlot struct {
 
 // TeacherRow is one stored reading. It holds no posting text: TextSHA256 is
 // HashText of the description, the hash a label carries.
+//
+// Task and DigestSHA are empty on a jd_triage row (every row written before
+// the teacher asked anything else is one, and jd_triage rows are still written
+// without them, byte for byte as before). A kb_match row carries Task
+// "career.kb_match" and DigestSHA, the knowledge-base digest's sha256
+// (kbmatch.Digest.SHA256) the question carried; its FixtureSHA is the hash of
+// the question's definition (kbmatch.Prompt and its ordered options) and its
+// PromptHash the hash of the exact messages with the posting left out, the
+// target summary included (TeacherTask).
 type TeacherRow struct {
 	V          int                    `json:"v"`
 	Key        posting.Key            `json:"key"`
+	Task       string                 `json:"task,omitempty"`
 	TextSHA256 string                 `json:"text_sha256"`
 	Model      string                 `json:"model"`
 	FixtureSHA string                 `json:"fixture_sha"`
 	PromptHash string                 `json:"prompt_hash"`
+	DigestSHA  string                 `json:"kb_digest_sha,omitempty"`
 	Slots      map[string]TeacherSlot `json:"slots"`
 	At         time.Time              `json:"at"`
 }
 
 // TeacherIdent is what makes a stored reading current: the same text asked the
-// same way of the same model.
+// same way, of the same task (and, for kb_match, the same knowledge-base
+// digest), of the same model. Task and Digest are empty for jd_triage.
 type TeacherIdent struct {
-	Text, Model, Fixture, Prompt string
+	Task, Text, Model, Fixture, Prompt, Digest string
+}
+
+func (r TeacherRow) ident() TeacherIdent {
+	return TeacherIdent{Task: r.Task, Text: r.TextSHA256, Model: r.Model, Fixture: r.FixtureSHA, Prompt: r.PromptHash, Digest: r.DigestSHA}
+}
+
+// TeacherTask is the question a run asks: its identity (what a stored reading
+// must match to count as current) and how it is asked. The zero value is not a
+// task; JDTriageTask is the default.
+type TeacherTask struct {
+	// Name is the stored row's task: empty for jd_triage, else the decide task
+	// (kbmatch.Task).
+	Name string
+	// Fixture, Prompt and Digest are the identity hashes a row carries
+	// (TeacherRow.FixtureSHA, PromptHash, DigestSHA). Digest is empty for a task
+	// that reads no knowledge base.
+	Fixture, Prompt, Digest string
+	// Ask asks d about p with the very question a real run sends, and returns
+	// d's answer as it is: an abstention is an answer to keep, not an error.
+	Ask func(ctx context.Context, d decide.Decider, p posting.Posting) (decide.Answer, error)
+}
+
+// JDTriageTask is the triage question (jdtriage.Triager) for the normalized
+// target summary: the teacher's original task, with the identity rows written
+// before tasks existed already carry.
+func JDTriageTask(summary string) TeacherTask {
+	return TeacherTask{
+		Fixture: FixtureSHA(), Prompt: PromptHash(summary),
+		Ask: func(ctx context.Context, d decide.Decider, p posting.Posting) (decide.Answer, error) {
+			return jdtriage.Triager{D: d, TargetSummary: summary}.Triage(ctx, p)
+		},
+	}
+}
+
+// Ident is the identity a reading of p by model under t carries.
+func (t TeacherTask) Ident(p posting.Posting, model string) TeacherIdent {
+	return TeacherIdent{Task: t.Name, Text: HashText(p.Description), Model: model, Fixture: t.Fixture, Prompt: t.Prompt, Digest: t.Digest}
+}
+
+func (t TeacherTask) validate() error {
+	if t.Ask == nil || t.Fixture == "" || t.Prompt == "" {
+		return errors.New("eval: teacher task needs a question, a fixture hash and a prompt hash")
+	}
+	return nil
 }
 
 // FixtureSHA is the sha256 of the shared triage fixture the question comes from.
@@ -100,7 +157,7 @@ func PromptHash(summary string) string {
 }
 
 func (i TeacherIdent) key(k posting.Key) string {
-	return strings.Join([]string{string(k), i.Text, i.Model, i.Fixture, i.Prompt}, "\x00")
+	return strings.Join([]string{string(k), i.Task, i.Text, i.Model, i.Fixture, i.Prompt, i.Digest}, "\x00")
 }
 
 // TeacherStore is the readings log. Rows are appended whole; a torn last line
@@ -137,7 +194,7 @@ func OpenTeacherStore(path string) (*TeacherStore, error) {
 			if json.Unmarshal(line, &r) != nil || r.validate() != nil {
 				s.Skipped++
 			} else {
-				s.seen[TeacherIdent{r.TextSHA256, r.Model, r.FixtureSHA, r.PromptHash}.key(r.Key)] = struct{}{}
+				s.seen[r.ident().key(r.Key)] = struct{}{}
 				s.byKey[r.Key] = append(s.byKey[r.Key], r)
 				s.rows++
 			}
@@ -234,7 +291,7 @@ func (s *TeacherStore) Append(r TeacherRow) error {
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("teacher: sync readings: %w", err)
 	}
-	s.seen[TeacherIdent{r.TextSHA256, r.Model, r.FixtureSHA, r.PromptHash}.key(r.Key)] = struct{}{}
+	s.seen[r.ident().key(r.Key)] = struct{}{}
 	s.byKey[r.Key] = append(s.byKey[r.Key], r)
 	s.rows++
 	return nil
@@ -244,8 +301,20 @@ func (s *TeacherStore) Append(r TeacherRow) error {
 // shared fixture and the prompt (target summary included) as they are now.
 // It implements TeacherReadings.
 type CurrentReadings struct {
-	s                      *TeacherStore
-	model, fixture, prompt string
+	s                                    *TeacherStore
+	task, model, fixture, prompt, digest string
+}
+
+func (c CurrentReadings) matches(r TeacherRow) bool {
+	return r.Task == c.task && r.Model == c.model && r.FixtureSHA == c.fixture && r.PromptHash == c.prompt && r.DigestSHA == c.digest
+}
+
+// CurrentOf is the store seen through model and the identity of t: for
+// kb_match, the question's fixture and prompt hashes and the knowledge-base
+// digest as they are now, so a reading made under another digest is not
+// current. Current(model, summary) is CurrentOf(model, JDTriageTask(summary)).
+func (s *TeacherStore) CurrentOf(model string, t TeacherTask) CurrentReadings {
+	return CurrentReadings{s: s, task: t.Name, model: model, fixture: t.Fixture, prompt: t.Prompt, digest: t.Digest}
 }
 
 // Current returns the store's readings as the label queue reads them. Only
@@ -255,7 +324,7 @@ type CurrentReadings struct {
 // the match (the queue holds the key, and bodies may be evicted), so an edited
 // description keeps its reading; it only reorders the queue, never a label.
 func (s *TeacherStore) Current(model, summary string) CurrentReadings {
-	return CurrentReadings{s: s, model: model, fixture: FixtureSHA(), prompt: PromptHash(summary)}
+	return s.CurrentOf(model, TeacherTask{Fixture: FixtureSHA(), Prompt: PromptHash(summary)})
 }
 
 // Reading returns the newest current-identity reading of key: each slot the
@@ -270,7 +339,7 @@ func (c CurrentReadings) Reading(key string) (map[string]string, bool) {
 	rows := c.s.byKey[posting.Key(key)]
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
-		if r.Model != c.model || r.FixtureSHA != c.fixture || r.PromptHash != c.prompt {
+		if !c.matches(r) {
 			continue
 		}
 		out := map[string]string{}
@@ -390,7 +459,7 @@ func (c CurrentReadings) Has(key string) bool {
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
 	for _, r := range c.s.byKey[posting.Key(key)] {
-		if r.Model == c.model && r.FixtureSHA == c.fixture && r.PromptHash == c.prompt {
+		if c.matches(r) {
 			return true
 		}
 	}
@@ -443,6 +512,8 @@ type TeacherRun struct {
 	Model   string
 	Summary string // normalized target summary (jdtriage.NormalizeSummary)
 	Store   *TeacherStore
+	// Task is the question asked; the zero value is JDTriageTask(Summary).
+	Task TeacherTask
 	// Concurrency is the questions in flight (1..MaxTeacherConcurrency).
 	Concurrency int
 	// Timeout bounds one question; zero is no extra bound beyond D's own.
@@ -543,6 +614,13 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 	if r.LimitNano <= 0 {
 		return res, errors.New("eval: teacher run needs a positive spend limit")
 	}
+	task := r.Task
+	if task.Ask == nil && task.Name == "" && task.Fixture == "" && task.Prompt == "" && task.Digest == "" {
+		task = JDTriageTask(r.Summary)
+	}
+	if err := task.validate(); err != nil {
+		return res, err
+	}
 	now := r.Now
 	if now == nil {
 		now = time.Now
@@ -552,7 +630,6 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 		return res, fmt.Errorf("eval: reading the spend: %w", err)
 	}
 	st := &teacherState{base: base}
-	fixture, prompt := FixtureSHA(), PromptHash(r.Summary)
 
 	var todo []TeacherCandidate
 	seen := map[posting.Key]bool{}
@@ -562,8 +639,7 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 		}
 		seen[c.Posting.Key] = true
 		res.Considered++
-		id := TeacherIdent{Text: HashText(c.Posting.Description), Model: r.Model, Fixture: fixture, Prompt: prompt}
-		if r.Store.Has(c.Posting.Key, id) {
+		if r.Store.Has(c.Posting.Key, task.Ident(c.Posting, r.Model)) {
 			res.Skipped++
 			continue
 		}
@@ -607,8 +683,7 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 					continue
 				}
 				var q decide.Question
-				tr := jdtriage.Triager{D: teacherGate{run: &r, st: st, q: &q}, TargetSummary: r.Summary}
-				ans, err := tr.Triage(ctx, c.Posting)
+				ans, err := task.Ask(ctx, teacherGate{run: &r, st: st, q: &q}, c.Posting)
 				mu.Lock()
 				switch {
 				case errors.Is(err, errTeacherLimit):
@@ -624,7 +699,7 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 				default:
 					res.Asked++
 					streak = 0
-					row := teacherRow(c.Posting, r.Model, fixture, prompt, q, ans, now())
+					row := teacherRow(c.Posting, r.Model, task, q, ans, now())
 					if aerr := r.Store.Append(row); aerr != nil {
 						fatal = errors.Join(fatal, aerr)
 						stop("the readings log could not be written")
@@ -677,20 +752,27 @@ func firstLine(err error) string {
 	return s
 }
 
-// teacherRow records a's reading of every slot q asked. A slot the answer does
-// not mention is recorded as not read, never left out.
-func teacherRow(p posting.Posting, model, fixture, prompt string, q decide.Question, a decide.Answer, at time.Time) TeacherRow {
+// teacherRow records a's reading of every slot q asked under task t. A slot the
+// answer does not mention is recorded as not read, never left out. An answer
+// whose value is not one of the slot's options is recorded as failed
+// ("invalid_value"), so an answered slot always holds a listed option: a
+// model's "none" (no option fits, or it cannot tell) is the backend's
+// abstention, kept as reading "abstained" with no value, never as a value.
+func teacherRow(p posting.Posting, model string, t TeacherTask, q decide.Question, a decide.Answer, at time.Time) TeacherRow {
 	slots := make(map[string]TeacherSlot, len(q.Slots))
 	for _, s := range q.Slots {
 		rd, ok := a.Slots[s.Name]
-		if !ok {
+		switch {
+		case !ok:
 			slots[s.Name] = TeacherSlot{Reading: string(decide.Failed), Detail: "missing_slot"}
-			continue
+		case rd.Reading == decide.Answered && !slices.Contains(s.Options, rd.Value):
+			slots[s.Name] = TeacherSlot{Reading: string(decide.Failed), Detail: "invalid_value"}
+		default:
+			slots[s.Name] = TeacherSlot{Reading: string(rd.Reading), Value: rd.Value, Detail: rd.Detail}
 		}
-		slots[s.Name] = TeacherSlot{Reading: string(rd.Reading), Value: rd.Value, Detail: rd.Detail}
 	}
 	return TeacherRow{
-		V: TeacherSchema, Key: p.Key, TextSHA256: HashText(p.Description), Model: model,
-		FixtureSHA: fixture, PromptHash: prompt, Slots: slots, At: at.UTC(),
+		V: TeacherSchema, Key: p.Key, Task: t.Name, TextSHA256: HashText(p.Description), Model: model,
+		FixtureSHA: t.Fixture, PromptHash: t.Prompt, DigestSHA: t.Digest, Slots: slots, At: at.UTC(),
 	}
 }
