@@ -15,8 +15,22 @@ func (e *env) heldoutExportPath() string {
 	return filepath.Join(e.stateDir, "export", "heldout", "owner_labels.jsonl")
 }
 
-// cmdExport is `vani export heldout [--out PATH] [--labels DIR]`.
+// cmdExport is `vani export heldout` or `vani export posting-fingerprints`.
 func (e *env) cmdExport(args []string) error {
+	if len(args) == 0 {
+		return usagef("export: want `export heldout` or `export posting-fingerprints`")
+	}
+	switch args[0] {
+	case "heldout":
+		return e.cmdExportHeldout(args)
+	case "posting-fingerprints":
+		return e.cmdExportPostingFingerprints(args)
+	default:
+		return usagef("export: want `export heldout` or `export posting-fingerprints`")
+	}
+}
+
+func (e *env) cmdExportHeldout(args []string) error {
 	if len(args) == 0 || args[0] != "heldout" {
 		return usagef("export: want `export heldout [--out PATH] [--labels DIR]`")
 	}
@@ -52,6 +66,47 @@ func (e *env) cmdExport(args []string) error {
 			fmt.Fprintf(e.stderr, "vani: no text for labelled posting %s; left out of the export\n", k)
 		}
 		return fmt.Errorf("export heldout: %d labelled posting(s) have no text and are not in the export", len(missing))
+	}
+	return nil
+}
+
+// cmdExportPostingFingerprints is `vani export posting-fingerprints [--out PATH]`.
+// It writes qd-posting-heldout.v1 for the labelled postings. It does not
+// change the owner_labels.jsonl export.
+func (e *env) cmdExportPostingFingerprints(args []string) error {
+	fs := e.newFlags("export posting-fingerprints")
+	out := fs.String("out", "", "output file (default: <state dir>/export/heldout/signatures.json)")
+	labels := fs.String("labels", "", "label directory (default: state dir)")
+	seed := fs.Uint64("seed", eval.DoorSeed, "MinHash seed")
+	if err := parse(fs, args[1:]); err != nil {
+		return err
+	}
+	s, err := e.openEvalStore(*labels)
+	if err != nil {
+		return err
+	}
+	path := *out
+	if path == "" {
+		path = filepath.Join(e.stateDir, "export", "heldout", "signatures.json")
+	}
+	recs, err := e.ledgerRecords()
+	if err != nil {
+		return err
+	}
+	snap := ledger.Snapshot{Records: recs}
+	raw, missing, err := eval.ExportLabelledFingerprints(s, func(k posting.Key) (string, bool) {
+		r, ok := findRecord(snap, k)
+		return r.Posting.Description, ok
+	}, *seed)
+	if err != nil {
+		return err
+	}
+	if err := eval.WriteDoorExport(path, raw); err != nil {
+		return err
+	}
+	fmt.Fprintf(e.stdout, "exported posting fingerprints to %s\n", path)
+	if len(missing) > 0 {
+		return fmt.Errorf("export posting-fingerprints: %d labelled posting(s) have no text and are not in the export", len(missing))
 	}
 	return nil
 }

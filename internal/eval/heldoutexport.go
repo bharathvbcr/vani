@@ -96,12 +96,9 @@ func NormalizedTextSHA256(text string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// Signer is the seam for a MinHash signature of a posting's normalised text,
-// to be exported next to the hash once Lappi and the owner agree the format
-// (5-shingle MinHash against 8-gram containment at 0.5 is still open, and the
-// hash family is blake2b). Nothing implements it and the export writes no
-// "sig" field, so no reader can come to depend on a signature whose
-// definition may change.
+// Signer is unused by the owner_labels.jsonl export, which still writes no
+// "sig" field. Fingerprints are a separate file: ExportDoorFingerprints writes
+// qd-posting-heldout.v1 (8-grams, 128 permutations, blake2b).
 type Signer interface {
 	Sign(normalized string) ([]byte, error)
 }
