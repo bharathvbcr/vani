@@ -185,6 +185,10 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// at most one range per currency.
     public var pay: [Pay]?
 
+    /// How many exact company + title duplicates `jobs list` folded into this row (jobview.Diversify,
+    /// ranked orders of the New view only). Nil when none were, and from a mark or show reply.
+    public var similar: Int?
+
     // Near-duplicate display (cmd/vani/jobscmd.go jobJSON). Each is decoded
     // leniently (see `Lenient`): a value of the wrong type reads as absent and
     // never fails the list. Read them through the accessors below.
@@ -274,6 +278,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         case remoteListed = "remote_listed"
         case remoteScope = "remote_scope"
         case pay
+        case similar
     }
 
     public enum FreshSource: String, Codable, Sendable { case posted, seen }
@@ -1551,13 +1556,19 @@ public struct JobsClient: Sendable {
         return ["--half-life", String(format: "%g", d)]
     }
 
-    public func list(_ view: JobView, query: String = "", sort: JobSort = .standard, filter: JobFilter = JobFilter(), limit: Int = 1000) throws -> JobsPage {
-        try call(Self.listArguments(view, query: query, sort: sort, filter: filter, limit: limit, halfLifeDays: halfLifeDays))
+    /// Setting `cancellation` stops the child at once and throws `VaniCallCancelled`: a list a
+    /// newer one superseded need not run on to its timeout (on a large ledger it takes many seconds
+    /// of CPU and a gigabyte of memory).
+    public func list(_ view: JobView, query: String = "", sort: JobSort = .standard, filter: JobFilter = JobFilter(), limit: Int = 1000,
+                     cancellation: CancelFlag? = nil) throws -> JobsPage {
+        try call(Self.listArguments(view, query: query, sort: sort, filter: filter, limit: limit, halfLifeDays: halfLifeDays),
+                 cancellation: cancellation)
     }
 
     /// Distributions over the selection a list with the same arguments shows.
-    public func stats(_ view: JobView, query: String = "", filter: JobFilter = JobFilter()) throws -> JobsStats {
-        try call(Self.statsArguments(view, query: query, filter: filter, halfLifeDays: halfLifeDays))
+    public func stats(_ view: JobView, query: String = "", filter: JobFilter = JobFilter(),
+                      cancellation: CancelFlag? = nil) throws -> JobsStats {
+        try call(Self.statsArguments(view, query: query, filter: filter, halfLifeDays: halfLifeDays), cancellation: cancellation)
     }
 
     static func listArguments(_ view: JobView, query: String, sort: JobSort, filter: JobFilter, limit: Int, halfLifeDays: Double? = nil) -> [String] {
@@ -1653,10 +1664,10 @@ public struct JobsClient: Sendable {
         return args + halfLifeArguments(halfLifeDays) + selection(query, filter)
     }
 
-    func call<T: Decodable>(_ args: [String]) throws -> T {
+    func call<T: Decodable>(_ args: [String], cancellation: CancelFlag? = nil) throws -> T {
         try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir,
                              timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: Self.decoder,
-                             tooOld: "this vani is too old for Jobs; rebuild the app")
+                             tooOld: "this vani is too old for Jobs; rebuild the app", cancellation: cancellation)
     }
 
     /// Go writes RFC 3339 times with optional fractional seconds and an offset.
@@ -1672,5 +1683,210 @@ public struct JobsClient: Sendable {
             throw DecodingError.dataCorrupted(.init(codingPath: dec.codingPath, debugDescription: "not an RFC 3339 time: \(s.prefix(40))"))
         }
         return d
+    }
+}
+
+extension JobView {
+    /// vani's `jobview.KeptStatus` (internal/jobview/job.go): the statuses of postings that passed
+    /// triage and are still listed. Unmarked, only these are in New and All.
+    public static let keptStatuses: Set<String> = ["triaged", "unsure", "scored", "explained", "digested"]
+
+    /// vani's `jobview.InView` (internal/jobview/job.go): whether a posting with this ledger status
+    /// and mark belongs in the view, before any search or filter.
+    public func contains(status: String, mark: JobMark?) -> Bool {
+        switch self {
+        case .new: mark == nil && Self.keptStatuses.contains(status)
+        case .pending: mark == nil && status == "live"
+        case .all: mark != nil || Self.keptStatuses.contains(status)
+        case .saved: mark == .saved
+        case .applied: mark == .applied
+        case .hidden: mark == .hidden
+        }
+    }
+}
+
+extension Job {
+    /// This row with what a `jobs mark` or `jobs note` reply owns copied in from `reply`: the mark, the
+    /// stage and the note, with their times. Every other field stays as the list showed it. The reply is
+    /// enriched for `jobs show` (vani's default half-life, 30 keywords), not for the list (the app's
+    /// half-life, 8 keywords), so its ranking and keyword fields are not the list's.
+    public func withWrite(from reply: Job) -> Job {
+        var out = self
+        out.mark = reply.mark
+        out.markedAt = reply.markedAt
+        out.stageWire = reply.stageWire
+        out.furthestStageWire = reply.furthestStageWire
+        out.stageAt = reply.stageAt
+        out.note = reply.note
+        out.noteAt = reply.noteAt
+        return out
+    }
+
+    /// vani's `jobview.MatchesQuery` (internal/jobview/job.go): the search, lower-cased and trimmed,
+    /// is found in the title, company, location, department or note. Nil when this app cannot say
+    /// exactly as vani would: Go lower-cases rune by rune and Swift by full Unicode mapping, which
+    /// agree on ASCII only.
+    func matches(query raw: String) -> Bool? {
+        let q = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return true }
+        let hay = [title, company, location ?? "", department ?? "", note ?? ""].joined(separator: "\n")
+        guard q.unicodeScalars.allSatisfy(\.isASCII), hay.unicodeScalars.allSatisfy(\.isASCII) else { return nil }
+        return hay.lowercased().contains(q.lowercased())
+    }
+}
+
+extension JobsPage {
+    /// The page after a `jobs mark` or `jobs note` write changed one of its rows, as a re-list would
+    /// show it, or nil when this page cannot say that exactly and only a re-list can.
+    ///
+    /// Exact: the row's mark, stage and note; whether the row stays in this view (`JobView.contains`,
+    /// the search, which reads the note, and the relevance floor); the per-view counts, `total` and
+    /// `shown`; and the awaiting-triage summary's `total` and `matching` (its company list too, unless
+    /// the company is not among the 20 vani lists).
+    ///
+    /// Nil (re-list): the key is not a row of this page, so where it would go is unknown; the search
+    /// or the text it reads is not ASCII (see `Job.matches`); or the row leaves a New list that vani
+    /// shaped (`jobview.Diversify`) in a way only it can redo: the row carried folded duplicates
+    /// (`similar`), one of which a re-list shows in its place, or it was in the first
+    /// `diversityWindow` rows while some company already led `diversityPerCompany` of them, so rows
+    /// vani moved below the window may move back up.
+    ///
+    /// Not redone until the next list, by design (they need rows this page does not hold): a row
+    /// past the list's limit that a re-list would bring in when one leaves (`total` > `shown`), and
+    /// the company factor a mark moves on the company's other postings, which can reorder them and
+    /// move them across a relevance floor.
+    public func patched(with reply: Job, minRelevance: Int?) -> JobsPage? {
+        guard let view = JobView(rawValue: self.view),
+              let i = jobs.firstIndex(where: { $0.key == reply.key }) else { return nil }
+        let old = jobs[i]
+        let new = old.withWrite(from: reply)
+        let q = query ?? ""
+        guard let oldMatches = old.matches(query: q), let newMatches = new.matches(query: q) else { return nil }
+        // The status is vani's as listed (exclusions already applied); a write never changes it.
+        func inView(_ v: JobView, _ j: Job) -> Bool { v.contains(status: old.status, mark: j.mark) }
+
+        var out = self
+        for v in JobView.allCases {
+            let d = (inView(v, new) ? 1 : 0) - (inView(v, old) ? 1 : 0)
+            guard d != 0 else { continue }
+            let n = (out.counts[v.rawValue] ?? 0) + d
+            // vani writes a count only for a view that has a posting.
+            out.counts[v.rawValue] = n > 0 ? n : nil
+        }
+
+        // The reply's relevance is the list's (it does not depend on the half-life; vani's
+        // TestJobsMarkReportsTheListsPriority), company factor included, so the floor is checked on it.
+        let floor = minRelevance.map(Double.init) ?? 0
+        let stays = inView(view, new) && newMatches && !(floor > 0 && (reply.relevance ?? 0) < floor)
+        if stays {
+            out.jobs[i] = new
+        } else {
+            if view == .new, Self.diversifiedSorts.contains(sort ?? "") {
+                if (old.similar ?? 0) > 0 { return nil }
+                if i < Self.diversityWindow {
+                    var perCompany: [String: Int] = [:]
+                    for j in jobs.prefix(Self.diversityWindow) {
+                        let c = j.company.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard c.unicodeScalars.allSatisfy(\.isASCII) else { return nil }
+                        perCompany[c.lowercased(), default: 0] += 1
+                    }
+                    if perCompany.values.contains(where: { $0 >= Self.diversityPerCompany }) { return nil }
+                }
+            }
+            out.jobs.remove(at: i)
+            out.total -= 1
+            out.shown -= 1
+        }
+
+        if var p = out.pending {
+            let was = inView(.pending, old), now = inView(.pending, new)
+            if was != now {
+                let d = now ? 1 : -1
+                p.total += d
+                if let c = p.companies.firstIndex(where: { $0.company == old.company }) {
+                    p.companies[c].n += d
+                    if p.companies[c].n <= 0 { p.companies.remove(at: c) }
+                } else if now, p.companies.count < Self.maxPendingCompanies {
+                    p.companies.append(.init(company: old.company, n: 1))
+                }
+                // vani's order: most first, then company names by their bytes.
+                p.companies.sort { $0.n != $1.n ? $0.n > $1.n : Array($0.company.utf8).lexicographicallyPrecedes($1.company.utf8) }
+            }
+            p.matching += ((now && newMatches) ? 1 : 0) - ((was && oldMatches) ? 1 : 0)
+            out.pending = p
+        }
+        return out
+    }
+
+    /// The orders of the New view vani shapes with `jobview.Diversify`, and its bounds
+    /// (jobinsight.DiversityWindow, DiversityPerCompany).
+    static let diversifiedSorts: Set<String> = ["default", "priority", "relevance"]
+    static let diversityWindow = 50
+    static let diversityPerCompany = 3
+    /// jobview.MaxPendingCompanies.
+    static let maxPendingCompanies = 20
+}
+
+/// What `jobs list` reads that can change while the app is in the background: the ledger, the marks
+/// and stages, the manual re-triage readings, and the config (its exclusions hide postings). Each file
+/// as its modification time, size and inode, or absent. Equal stamps mean a re-list would read the
+/// same files.
+public struct JobsListInputs: Equatable, Sendable {
+    struct Stamp: Equatable, Sendable {
+        var seconds: Int
+        var nanoseconds: Int
+        var size: Int64
+        var inode: UInt64
+    }
+
+    public let paths: [String]
+    let stamps: [Stamp?]
+
+    /// The files under `stateDir` (vani's state folder: the parent of the `ledger` folder a list
+    /// reports) and the config file.
+    public static func paths(stateDir: String, configPath: String) -> [String] {
+        let s = URL(fileURLWithPath: stateDir)
+        return [
+            s.appendingPathComponent("ledger/events.jsonl").path,
+            s.appendingPathComponent("marks/marks.jsonl").path,
+            s.appendingPathComponent("marks/stages.jsonl").path,
+            s.appendingPathComponent("retriage/readings.jsonl").path,
+            configPath,
+        ]
+    }
+
+    /// The files as they are now; nil when one could not be looked at (anything but absent), which
+    /// no stamp equals, so it reads as changed.
+    public static func read(_ paths: [String]) -> JobsListInputs? {
+        var stamps: [Stamp?] = []
+        for path in paths {
+            var st = stat()
+            if stat(path, &st) != 0 {
+                guard errno == ENOENT || errno == ENOTDIR else { return nil }
+                stamps.append(nil)
+                continue
+            }
+            stamps.append(Stamp(seconds: st.st_mtimespec.tv_sec, nanoseconds: st.st_mtimespec.tv_nsec,
+                                size: Int64(st.st_size), inode: UInt64(st.st_ino)))
+        }
+        return JobsListInputs(paths: paths, stamps: stamps)
+    }
+}
+
+extension JobsClient {
+    /// The files a list made with this client reads (`JobsListInputs`). `ledgerDir` is the folder the
+    /// last list reported reading (`JobsPage.ledger`), the surest word on the state folder; without
+    /// one, this client's state folder, else vani's default. Config likewise.
+    public func listInputPaths(ledgerDir: String?) -> [String] {
+        let state: String
+        if let ledgerDir, !ledgerDir.isEmpty {
+            state = URL(fileURLWithPath: ledgerDir).deletingLastPathComponent().path
+        } else if let stateDir, !stateDir.isEmpty {
+            state = stateDir
+        } else {
+            state = VaniProcess.defaultStateDir
+        }
+        let config = configPath.flatMap { $0.isEmpty ? nil : $0 } ?? VaniProcess.defaultConfigPath
+        return JobsListInputs.paths(stateDir: state, configPath: config)
     }
 }

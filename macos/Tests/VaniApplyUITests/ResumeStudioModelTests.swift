@@ -496,12 +496,15 @@ final class ResumeStudioModelTests: XCTestCase {
         let jobs = try JobsFixture(self), f = try fake()
         try show(jobs, resume: #"{"current":3,"used":3,"versions":3,"pages":2,"fit":"passed","eligibility":"current","source":"tailored"}"#)
         // `jobs mark` answers with the job but, as vani does, no `resume`; everything else is the fixture's.
+        // The list is the All view's, where a saved role stays (in New it would leave, and the selection
+        // with it), so the open detail is still this job's after the mark.
         let dir = try tempDirectory()
         let wrapper = dir.appendingPathComponent("vani")
         let script = """
         #!/bin/sh
         case "$1 $2" in
         "jobs mark") cat '\(dir.path)/mark.json'; exit 0 ;;
+        "jobs list") '\(jobs.dir.path)/vani' "$@" | sed 's/"view":"new"/"view":"all"/'; exit 0 ;;
         esac
         exec '\(jobs.dir.path)/vani' "$@"
         """
@@ -515,6 +518,7 @@ final class ResumeStudioModelTests: XCTestCase {
 
         await m.setMark(job.key, .saved)
         XCTAssertEqual(m.detail?.mark, .saved, "the mark reply is what is shown")
+        XCTAssertEqual(m.jobs.first { $0.key == job.key }?.mark, .saved, "and the row shows it")
         XCTAssertEqual(m.detail?.resume?.current, 3, "saving a job never turns its resumes into no resume")
         XCTAssertEqual(ResumeCardPresentation.card(for: m.detail?.resume).kind, .ready)
     }
