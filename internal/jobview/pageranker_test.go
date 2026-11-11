@@ -19,31 +19,31 @@ func newCountingRanker() *countingRanker {
 	return &countingRanker{ranked: map[posting.Key]int{}, finished: map[posting.Key]int{}, enriched: map[posting.Key]int{}}
 }
 
-func (c *countingRanker) score(j *Job) {
-	var n int
-	fmt.Sscanf(string(j.Key)[len("gh:acme:"):], "%d", &n)
-	j.Priority, j.Relevance = float64(n), float64(n)
-}
-
-func (c *countingRanker) Enrich(j *Job, r ledger.Record, _ int) []jobinsight.Hit {
+func (c *countingRanker) Enrich(j *Job, r ledger.Record, kwLimit int) []jobinsight.Hit {
 	c.enriched[r.Key]++
-	c.score(j)
-	j.Logo = "logo"
-	return []jobinsight.Hit{{Term: "go"}}
+	return EnrichWith(c, j, r, kwLimit)
 }
 
-func (c *countingRanker) Rank(j *Job, r ledger.Record, withPay bool) {
+func (c *countingRanker) Rank(rk *Ranked, r ledger.Record, withPay bool) {
 	c.ranked[r.Key]++
 	if withPay {
 		c.payAsked++
+		rk.PayRead = true
 	}
-	c.score(j)
+	if Untriaged(r) {
+		return // as insight.Rank: no score without a triage reading
+	}
+	var n int
+	fmt.Sscanf(string(r.Key)[len("gh:acme:"):], "%d", &n)
+	rk.Priority, rk.Relevance = float64(n), float64(n)
 }
+
+func (c *countingRanker) Hits(ledger.Record) []jobinsight.Hit { return []jobinsight.Hit{{Term: "go"}} }
 
 func (c *countingRanker) Finish(j *Job, r ledger.Record, _ int, _ bool) []jobinsight.Hit {
 	c.finished[r.Key]++
 	j.Logo = "logo"
-	return []jobinsight.Hit{{Term: "go"}}
+	return c.Hits(r)
 }
 
 func pageSnap(n int) ledger.Snapshot {
@@ -104,19 +104,32 @@ func TestBuildListRanksPayWhenRead(t *testing.T) {
 	}
 }
 
-// Stats and gaps read every selected job's hits, so a plain Select enriches
-// every job whole, PageRanker or not.
-func TestSelectEnrichesWholeOutsideAList(t *testing.T) {
+// Select's callers (gaps, audit) read every selected job whole, with its hits
+// and pay: each is ranked with pay and finished exactly once, as Enrich would.
+func TestSelectReturnsEveryJobWhole(t *testing.T) {
 	c := newCountingRanker()
 	o := Opts{View: "all"}
 	sel, _ := Select(pageSnap(10), nil, &o, c, 0)
-	if len(sel) != 10 || len(c.enriched) != 10 || len(c.ranked) != 0 {
-		t.Fatalf("selected %d, enriched %d, ranked %d; want 10, 10, 0", len(sel), len(c.enriched), len(c.ranked))
+	if len(sel) != 10 || len(c.ranked) != 10 || len(c.finished) != 10 || c.payAsked != 10 {
+		t.Fatalf("selected %d, ranked %d, finished %d, paid %d; want 10 each", len(sel), len(c.ranked), len(c.finished), c.payAsked)
 	}
 	for _, s := range sel {
-		if len(s.Hits) == 0 {
-			t.Errorf("%s: no hits for stats", s.Job.Key)
+		if len(s.Hits) == 0 || s.Job.Logo != "logo" || c.finished[s.Job.Key] != 1 {
+			t.Errorf("%s: hits %d logo %q finished %d", s.Job.Key, len(s.Hits), s.Job.Logo, c.finished[s.Job.Key])
 		}
+	}
+}
+
+// Stats read every selected job's hits without finishing any job.
+func TestStatsForFinishesNothing(t *testing.T) {
+	c := newCountingRanker()
+	o := Opts{View: "all"}
+	st := StatsFor(pageSnap(10), nil, &o, c, InsightInfo{}, nil, "USD")
+	if st.Total != 10 || len(c.finished) != 0 || len(c.enriched) != 0 {
+		t.Fatalf("total %d, finished %d, enriched %d; want 10, 0, 0", st.Total, len(c.finished), len(c.enriched))
+	}
+	if len(st.Keywords) != 1 || st.Keywords[0].N != 10 {
+		t.Errorf("keywords %+v, want go counted for all 10", st.Keywords)
 	}
 }
 

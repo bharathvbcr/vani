@@ -111,6 +111,12 @@ func (m *rankMemo) titleHits(v *jobinsight.Vocab, title string) []jobinsight.Hit
 // flag (the only fields it reads). j.Places is shared and clipped, so an
 // append to it copies.
 func (m *rankMemo) locate(j *jobview.Job, p posting.Posting) {
+	a := m.place(p)
+	j.Places, j.RemoteListed, j.RemoteScope = a.places, a.remoteListed, a.remoteScope
+}
+
+// place is what locate sets, remembered.
+func (m *rankMemo) place(p posting.Posting) placeAnswer {
 	k := placeKey{p.Location, p.Remote}
 	m.mu.RLock()
 	a, ok := m.places[k]
@@ -118,8 +124,8 @@ func (m *rankMemo) locate(j *jobview.Job, p posting.Posting) {
 	if ok {
 		m.lookups.Add(1)
 	} else {
-		var probe jobview.Job
-		jobview.Locate(&probe, posting.Posting{Location: p.Location, Remote: p.Remote})
+		var probe jobview.Ranked
+		probe.Locate(posting.Posting{Location: p.Location, Remote: p.Remote})
 		a = placeAnswer{places: slices.Clip(probe.Places), remoteListed: probe.RemoteListed, remoteScope: probe.RemoteScope}
 		m.mu.Lock()
 		if len(m.places) >= rankMemoCap {
@@ -129,7 +135,7 @@ func (m *rankMemo) locate(j *jobview.Job, p posting.Posting) {
 		m.mu.Unlock()
 		m.miss()
 	}
-	j.Places, j.RemoteListed, j.RemoteScope = a.places, a.remoteListed, a.remoteScope
+	return a
 }
 
 // miss counts a question that was computed.

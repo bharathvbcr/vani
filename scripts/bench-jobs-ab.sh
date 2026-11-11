@@ -6,7 +6,7 @@
 #
 # Run from the repository root. The old binary is built with `go build -overlay`
 # over this tree: each non-test .go file changed since <base-rev> is replaced by
-# its copy at <base-rev>, and each added one is hidden. A file deleted since then
+# its copy at <base-rev>, and each added one (committed or not) is hidden. A file deleted since then
 # stops the script. Each round runs every case with both arms, the arm that goes
 # first alternating by round. One line per run: case arm wall_s user_s maxrss_bytes.
 # Use a copy of the state: the new arm saves its checkpoint and facts store there.
@@ -37,6 +37,11 @@ for line in ${(f)"$(git diff --name-status $base -- '*.go')"}; do
       exit 1
       ;;
   esac
+done
+# Files not yet committed are new too: hide them from the old build.
+for p in ${(f)"$(git ls-files --others --exclude-standard -- '*.go')"}; do
+  [[ $p == *_test.go ]] && continue
+  entries+=("\"$PWD/$p\": \"\"")
 done
 print -r -- "{\"Replace\": {${(j:, :)entries}}}" > $work/overlay.json
 go build -overlay $work/overlay.json -o $work/vani-old ./cmd/vani

@@ -153,9 +153,7 @@ func (e *env) jobsStatsCmd(args []string) error {
 			return err
 		}
 		snap, m := rd.snap, rd.m
-		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
-		out = jobview.StatsOf(sel, in.info, in.target)
-		out.Salary = jobview.PayStatsOf(sel, o.more.Currency)
+		out = jobview.StatsFor(snap, m, &o.Opts, in, in.info, in.target, o.more.Currency)
 		out.View, out.Query, out.Torn = o.View, o.Query, snap.Torn
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))

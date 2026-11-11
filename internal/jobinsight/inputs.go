@@ -92,6 +92,18 @@ func (c RankContext) ScoreOf(r ledger.Record) Result {
 	return ScoreWith(InputsFor(r, c), w)
 }
 
+// OrderOf is ScoreOf without the factor list (Blend.Order): what ordering and
+// filtering read.
+func (c RankContext) OrderOf(r ledger.Record) Result {
+	w := DefaultWeights()
+	if c.Weights != nil {
+		w = *c.Weights
+	}
+	in := InputsFor(r, c)
+	b := BlendOf(in, w)
+	return b.Order(ClosingOf(in), w)
+}
+
 // AgeNeutralSet turns the config's age_neutral_companies into the set
 // RankContext.AgeNeutral reads: names lower-cased and trimmed, blanks dropped,
 // nil for none.

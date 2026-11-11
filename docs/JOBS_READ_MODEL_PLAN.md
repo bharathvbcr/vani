@@ -317,7 +317,7 @@ heavier requests' garbage, and did not fall. **Both targets are still missed.** 
 in the view: `ToJob`, the score and the sort. The next step is planned below ("Plan: page-only
 rows and a two-stage score").
 
-## Plan: page-only rows and a two-stage score (proposed 2026-11-11, not built)
+## Plan: page-only rows and a two-stage score (proposed 2026-11-11; A and B built)
 
 ### Where a warm request's CPU goes now
 
@@ -403,6 +403,32 @@ selects, sorts and builds its page. `hideExcluded` is answered per request from 
 lower peak for about 20% more CPU; BENCHMARKS.md). Options: a memory limit for serve
 (`debug.SetMemoryLimit`), a lower `GOGC` for serve, or a smaller live heap (Phase B's smaller
 garbage, a leaner kept score file). Each is measured with `/usr/bin/time -l` on the warm table.
+
+**Phase A results (9965dcd).** `BlendOf` then `Close` (or `Order`, without the factor list) holds
+to a verbatim copy of the old scorer bit for bit over 200k seeded cases. The live parity dump is
+unchanged.
+
+**Phase B results (measured 2026-11-11, load average 40–66).** A selection works on a compact
+candidate (`internal/jobview/cand.go`). `BuildList` builds and finishes a `Job` only for its page.
+`jobs stats` (`StatsFor`) and `jobs gaps` (`SelectBriefs`) build none. `Select` still returns
+every job whole, for audit. `Rank` orders with `Blend.Order`, and `Finish` adds the factor list
+for the jobs shown. The live parity dump is byte-identical for 9965dcd, the new command and
+serve's warm pass. Interleaved A/B against 9965dcd, 3 rounds each:
+
+| | 9965dcd | Phase B |
+|---|---|---|
+| serve, warm `--view new`, CPU per request | 792–807 ms | 438–592 ms |
+| serve, warm `--view all --sort company` | 743–760 ms | 506–544 ms |
+| serve, warm `--sort salary` | 718–737 ms | 563–570 ms |
+| serve, warm `stats --view new` | 967–1079 ms | 377–498 ms |
+| serve, heap in use after a list | 467–474 MiB | 453–458 MiB |
+| serve, peak RSS of the bench process | 1.01–1.07 GB | 0.93–0.96 GB |
+| command `jobs list --view new`, user CPU | 1.68–2.33 s | 1.44–2.04 s |
+| command `--sort salary`, user CPU | 1.93–2.03 s | 1.76–1.79 s |
+
+The plan's heap gate was "no higher than 456 MiB", from an earlier measurement. The new arm read
+453–458 MiB here, while the old arm read 467–474 MiB in the same runs. The command gains less,
+because a cold command's time is mostly its read.
 
 **Expected after A–C (inferred, to be measured):** about 250 ms on the goroutine. The read and
 insight build (~120 ms) and the 1,000-row page (~70 ms) stay, so roughly 300 ms of CPU per warm

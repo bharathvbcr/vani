@@ -69,7 +69,34 @@ func TestPagedListMatchesWholeEnrich(t *testing.T) {
 		jobview.Opts{View: "all", Sort: "fresh", MaxAge: 10, Open: true},
 		jobview.Opts{View: "new", Sort: "default", Remote: true},
 		jobview.Opts{View: "new", Sort: "company", Query: "engineer"},
+		jobview.Opts{View: "all", Sort: "default", Query: "CO 3"},
+		jobview.Opts{View: "all", Sort: "fresh", Query: "inference"},
 	)
+	// Stats and Select (gaps, audit) agree with the whole-Enrich path too.
+	for _, o := range opts {
+		if o.View == jobview.ViewPending {
+			continue
+		}
+		a, b := o, o
+		got := jobview.StatsFor(snap, m, &a, in, in.info, in.target, "USD")
+		sel, _ := jobview.Select(snap, m, &b, enrichOnly{in}, 0)
+		want := jobview.StatsOf(sel, in.info, in.target)
+		want.Salary = jobview.PayStatsOf(sel, "USD")
+		gj, _ := json.Marshal(got)
+		wj, _ := json.Marshal(want)
+		if string(gj) != string(wj) {
+			t.Errorf("stats %s/%s (%+v): differs from whole Enrich\ngot:  %.600s\nwant: %.600s", o.View, o.Sort, o.More, gj, wj)
+		}
+		c := o
+		paged, _ := jobview.Select(snap, m, &c, in, listKeywords)
+		d := o
+		whole, _ := jobview.Select(snap, m, &d, enrichOnly{in}, listKeywords)
+		pj, _ := json.Marshal(paged)
+		wj, _ = json.Marshal(whole)
+		if string(pj) != string(wj) {
+			t.Errorf("select %s/%s (%+v): differs from whole Enrich", o.View, o.Sort, o.More)
+		}
+	}
 	for _, limit := range []int{1, 3, defaultJobsLimit} {
 		for _, o := range opts {
 			a, b := o, o

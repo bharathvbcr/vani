@@ -63,18 +63,14 @@ func (e *env) jobsGapsCmd(args []string) error {
 			return err
 		}
 		snap, m := rd.snap, rd.m
-		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
+		sel := jobview.SelectBriefs(snap, m, &o.Opts, in)
 		jobs := make([]jobinsight.GapJob, 0, len(sel))
 		for _, s := range sel {
-			// The raw annotation, not the display copy in s.Job.Missing, which
+			// The raw annotation, not the display copy in a Job's Missing, which
 			// is cut at jobNoteRunes.
-			var missing string
-			if r, ok := findRecord(snap, s.Job.Key); ok {
-				missing = r.Annotations[ledger.AnnMissing]
-			}
 			jobs = append(jobs, jobinsight.GapJob{
-				Key: string(s.Job.Key), Company: s.Job.Company, Title: s.Job.Title,
-				Priority: s.Job.Priority, Hits: s.Hits, Missing: missing,
+				Key: string(s.Key), Company: s.Company, Title: s.Title,
+				Priority: s.Priority, Hits: s.Hits, Missing: snap.Records[s.Record].Annotations[ledger.AnnMissing],
 			})
 		}
 		out.GapReport = jobinsight.Gaps(jobs, in.vocab, in.target,

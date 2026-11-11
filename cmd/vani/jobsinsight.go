@@ -360,12 +360,13 @@ func (in *insight) titleHits(title string) []jobinsight.Hit {
 }
 
 // locate is jobview.Locate.
-func (in *insight) locate(j *jobview.Job, p posting.Posting) {
+func (in *insight) locate(rk *jobview.Ranked, p posting.Posting) {
 	if in.memo != nil {
-		in.memo.locate(j, p)
+		a := in.memo.place(p)
+		rk.Places, rk.RemoteListed, rk.RemoteScope = a.places, a.remoteListed, a.remoteScope
 		return
 	}
-	jobview.Locate(j, p)
+	rk.Locate(p)
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -560,36 +561,47 @@ func oneLine(s string, n int) string { return jobview.CleanText(s, n, false) }
 // enrich fills j's insight fields from r and returns the posting's full
 // keyword hits (for stats).
 func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobinsight.Hit {
-	in.Rank(j, r, true)
-	return in.Finish(j, r, kwLimit, true)
+	return jobview.EnrichWith(in, j, r, kwLimit)
 }
 
-// Rank is jobview.PageRanker's first half: what selection, filters and every
-// sort read, for every job in the view. Place, freshness and score; pay only
-// when withPay (it is a regex pass over the whole description, read only by
-// the salary sort and the pay filters). Each step sets its own fields, so
-// splitting Enrich in two changes no answer.
-func (in *insight) Rank(j *jobview.Job, r ledger.Record, withPay bool) {
-	in.locate(j, r.Posting)
+// Rank is jobview.PageRanker's first part: what selection, filters, every
+// sort and the stats read, for every job in the view. Place, freshness and
+// score (without its factor list, which only a shown job lists); pay only when
+// withPay (it is a regex pass over the whole description, read only by the
+// salary sort, the pay filters and the stats). Each step sets its own fields,
+// so splitting Enrich changes no answer.
+func (in *insight) Rank(rk *jobview.Ranked, r ledger.Record, withPay bool) {
+	in.locate(rk, r.Posting)
 	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
-		age := jobinsight.AgeDays(at, in.now)
-		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
+		rk.FreshAt, rk.FreshSrc, rk.AgeDays, rk.AgeKnown = at, string(src), jobinsight.AgeDays(at, in.now), true
 	}
-	if j.Untriaged {
+	if jobview.Untriaged(r) {
 		return
 	}
-	res := in.rc.ScoreOf(r)
-	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
-	j.RelevanceKnown = res.RelevanceKnown
+	res := in.rc.OrderOf(r)
+	rk.Priority, rk.Relevance, rk.Basis, rk.RelevanceKnown = res.Score, res.Relevance, res.Basis, res.RelevanceKnown
 	if withPay {
-		j.Pay = in.payOf(r)
+		rk.Pay, rk.PayRead = in.payOf(r), true
 	}
 }
 
-// Finish is jobview.PageRanker's second half: the rest of a job that will be
-// shown (resume, company history, keywords, reasons, semantic match, manual
-// reading, logo, row), after Rank(j, r, paid). It returns the posting's full
-// keyword hits; the row is built last, from everything else.
+// Hits is the keyword hits Finish returns for r, without finishing a job.
+func (in *insight) Hits(r ledger.Record) []jobinsight.Hit {
+	if jobview.Untriaged(r) {
+		return nil
+	}
+	hits, ok := in.hits[r.Key]
+	if !ok {
+		hits = in.hitsOf(r)
+	}
+	return jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
+}
+
+// Finish is jobview.PageRanker's last part: the rest of a job that will be
+// shown (score factors, resume, company history, keywords, reasons, semantic
+// match, manual reading, logo, row), after its Ranked was applied. It returns
+// the posting's full keyword hits (Hits); the row is built last, from
+// everything else.
 func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit {
 	j.Resume = jobview.ResumeFor(in.resumes, string(r.Key))
 	in.annotateSame(j, r)
@@ -597,11 +609,8 @@ func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid boo
 		in.enrichUntriaged(j, r)
 		return nil
 	}
-	hits, ok := in.hits[r.Key]
-	if !ok {
-		hits = in.hitsOf(r)
-	}
-	hits = jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
+	j.ScoreFactors = in.rc.ScoreOf(r).Factors
+	hits := in.Hits(r)
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
 	j.Reasons = jobview.ParseReasons(j.Explanation)
