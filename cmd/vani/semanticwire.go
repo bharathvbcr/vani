@@ -546,6 +546,13 @@ func (e *env) logSemantic(rep semanticReport) {
 // opened; warning says why in the last two cases. Unknown stays unknown: the
 // ranker takes its prior, never a score of 0.
 func semanticLookup(cfg config.Config, stateDir string) (m *semantic.Matcher, warning string) {
+	return semanticLookupKept(cfg, stateDir, nil)
+}
+
+// semanticLookupKept is semanticLookup that opens through kept (a resident
+// reader's, semantic.Lookups), so an unchanged score file is not decoded
+// again; nil opens it now.
+func semanticLookupKept(cfg config.Config, stateDir string, kept *semantic.Lookups) (m *semantic.Matcher, warning string) {
 	if !cfg.SemanticOn() {
 		return nil, ""
 	}
@@ -555,7 +562,11 @@ func semanticLookup(cfg config.Config, stateDir string) (m *semantic.Matcher, wa
 	if err != nil {
 		return nil, "knowledge-base matching is off: the profile could not be built: " + oneLine(err.Error(), 200)
 	}
-	m, err = semantic.OpenLookupFor(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	if kept != nil {
+		m, err = kept.Open(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	} else {
+		m, err = semantic.OpenLookupFor(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	}
 	if errors.Is(err, semantic.ErrModelMismatch) {
 		return nil, "knowledge-base scores are from another model; run `vani semantic warm`"
 	}
@@ -614,7 +625,11 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 // and points the ranking at it. A failure is a warning on the listing and
 // leaves semantic unknown.
 func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
-	m, warning := semanticLookup(cfg, stateDir)
+	var kept *semantic.Lookups
+	if in.res != nil {
+		kept = &in.res.lookups
+	}
+	m, warning := semanticLookupKept(cfg, stateDir, kept)
 	if warning != "" {
 		if in.info.Warning != "" {
 			in.info.Warning += "; "

@@ -502,12 +502,11 @@ func rowRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool, error)
 // Records left bodiless are matched against the exclusion rules only when no
 // rule reads descriptions (hideExcluded).
 func (e *env) jobsStateFor(scope func(ledger.Snapshot) func(ledger.Record) bool) (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
-	rd, release, err := e.jobsReader()
+	rd, snap, _, release, err := e.jobsReader()
 	if err != nil {
 		return ledger.Snapshot{}, nil, err
 	}
 	defer release()
-	snap := rd.Snapshot()
 	m, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read marks: %w", err)

@@ -615,7 +615,12 @@ The Mac app runs one `vani jobs serve` per vani binary, config and state folder
 (`JobsServeClient` in `VaniApplyKit`), with the same environment as its other `vani` calls. It
 keeps the Reader and the facts store between requests and reads marks, the config and every other
 store per request, so its replies are the commands' (`params.args` are the command's flags; the
-result is the command's `--json` reply). It exits when the app closes its stdin. Until it has
+result is the command's `--json` reply). It also keeps what it derived from inputs that did not
+change: each posting's company identity and role groups for the company-history notes, until the
+ledger or the watchlist's domains change (`samecompany.Groups`); the decoded semantic scores, until
+`<state>/semantic/semantic-scores.json` changes size or modification time (`semantic.Lookups`); and each title's rank
+and keyword hits and each location's places, keyed by the text they read (`rankMemo`). Nothing it
+keeps is computed from the marks, the clock or a request's flags. It exits when the app closes its stdin. Until it has
 said hello, after it dies (it is restarted once, two seconds later), or when it is busy, the app
 runs the command instead.
 

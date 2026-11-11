@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // lookupEmbedder stands in for a model on the cache-only path. It never embeds.
@@ -55,6 +57,63 @@ func OpenLookupFor(p Profile, cacheDir, modelPrefix string) (*Matcher, error) {
 	}
 	return &Matcher{e: lookupEmbedder{model: sf.Model}, p: p, model: sf.Model, hash: hash, dir: cacheDir,
 		sf: sf, maxEntries: DefaultMaxEntries}, nil
+}
+
+// Lookups keeps the Matcher OpenLookupFor last opened, for a long-lived reader
+// that asks for one on every request (`vani jobs serve`): while the profile,
+// the cache directory, the model prefix and the score file's size and
+// modification time are the ones it was opened under, Open returns it again
+// instead of decoding the file again. The file is looked at before it is
+// read, so a write that lands in between is seen by the next Open. A failed
+// open is not kept. Safe for concurrent use. The Matcher is shared: callers
+// only Lookup on it.
+type Lookups struct {
+	mu    sync.Mutex
+	key   lookupsKey
+	m     *Matcher
+	opens int
+}
+
+type lookupsKey struct {
+	hash, dir, prefix string
+	exists            bool
+	size, mod         int64
+}
+
+// Open is OpenLookupFor(p, cacheDir, modelPrefix), from the kept Matcher when
+// nothing it was opened from has changed.
+func (l *Lookups) Open(p Profile, cacheDir, modelPrefix string) (*Matcher, error) {
+	if len(p.Chunks) == 0 || cacheDir == "" {
+		return OpenLookupFor(p, cacheDir, modelPrefix)
+	}
+	key := lookupsKey{hash: p.Hash(), dir: cacheDir, prefix: modelPrefix}
+	switch st, err := os.Stat(filepath.Join(cacheDir, scoresFileName)); {
+	case err == nil:
+		key.exists, key.size, key.mod = true, st.Size(), st.ModTime().UnixNano()
+	case !errors.Is(err, os.ErrNotExist):
+		return OpenLookupFor(p, cacheDir, modelPrefix) // it reports the file's problem
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m != nil && l.key == key {
+		return l.m, nil
+	}
+	m, err := OpenLookupFor(p, cacheDir, modelPrefix)
+	if err != nil {
+		l.m = nil
+		return nil, err
+	}
+	l.key, l.m = key, m
+	l.opens++
+	return m, nil
+}
+
+// Opens is how many times Open read the score file: a test's evidence that a
+// kept Matcher was reused.
+func (l *Lookups) Opens() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.opens
 }
 
 // StaleScores counts the cached scores written for a profile other than p.

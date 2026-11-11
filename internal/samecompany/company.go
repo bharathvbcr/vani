@@ -17,6 +17,7 @@
 package samecompany
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 
@@ -54,6 +55,23 @@ func NewCompanies(boards []sources.Board) *Companies {
 		}
 	}
 	return c
+}
+
+// Key identifies what c resolves: two Companies with one Key identify every
+// posting alike, so Groups built under one serve the other.
+func (c *Companies) Key() string {
+	if c == nil {
+		return ""
+	}
+	var lines []string
+	for p, d := range c.byPrefix {
+		lines = append(lines, "b\x00"+p+"\x00"+d)
+	}
+	for n, d := range c.byName {
+		lines = append(lines, "n\x00"+n+"\x00"+d)
+	}
+	slices.Sort(lines)
+	return strings.Join(lines, "\n")
 }
 
 func (c *Companies) domainOfBoard(k posting.Key) string {

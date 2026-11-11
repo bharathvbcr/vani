@@ -144,7 +144,15 @@ func (o *Opts) needsPay() bool {
 func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ranker, kwLimit int) ([]Selected, map[string]int) {
 	counts := map[string]int{}
 	q := strings.ToLower(strings.TrimSpace(o.Query))
-	var sel []Selected
+	// Room for every job in the view, counted first: a Selected carries a whole
+	// Job, and growing the slice by doubling copies and clears it again and again.
+	inView := 0
+	for _, r := range snap.Records {
+		if InView(o.View, r, m[r.Key].Mark) {
+			inView++
+		}
+	}
+	sel := make([]Selected, 0, inView)
 	var areas map[string]*AreaStat
 	if o.where != nil {
 		if o.where.State == nil {
@@ -332,16 +340,26 @@ func resultOf(j Job) jobinsight.Result {
 // when they were marked, the rest by priority (jobinsight.Score), then
 // relevance, then key (jobinsight.ComparePriority, the one tie-break).
 // Every order ends on the key, so it is total and stable across calls.
+//
+// It sorts a permutation and moves each Selected once: a Selected carries a
+// whole Job, too large to swap at every step of the sort.
 func Sort(sel []Selected, view, by string) {
 	by = EffectiveSort(view, by)
 	byMarkTime := by == "default" && (view == "saved" || view == "applied" || view == "hidden")
-	sort.SliceStable(sel, func(i, j int) bool {
-		a, b := sel[i].Job, sel[j].Job
+	var lower []string // each job's company, lower-cased once, for the orders that compare it
+	if by == "company" || by == "fresh" && view == ViewPending {
+		lower = make([]string, len(sel))
+		for i := range sel {
+			lower[i] = strings.ToLower(sel[i].Job.Company)
+		}
+	}
+	less := func(i, j int) bool {
+		a, b := &sel[i].Job, &sel[j].Job
 		switch by {
 		case "priority":
-			return jobinsight.ComparePriority(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
+			return jobinsight.ComparePriority(resultOf(*a), resultOf(*b), string(a.Key), string(b.Key)) < 0
 		case "relevance":
-			return jobinsight.CompareRelevance(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
+			return jobinsight.CompareRelevance(resultOf(*a), resultOf(*b), string(a.Key), string(b.Key)) < 0
 		case "fresh":
 			if a.FreshAt.IsZero() != b.FreshAt.IsZero() {
 				return !a.FreshAt.IsZero()
@@ -351,15 +369,15 @@ func Sort(sel []Selected, view, by string) {
 			}
 			// A board read in one sweep dates many postings alike; with no
 			// scores to separate them, group them by company.
-			if ca, cb := strings.ToLower(a.Company), strings.ToLower(b.Company); view == ViewPending && ca != cb {
-				return ca < cb
+			if view == ViewPending && lower[i] != lower[j] {
+				return lower[i] < lower[j]
 			}
 			if a.Relevance != b.Relevance {
 				return a.Relevance > b.Relevance
 			}
 		case "company":
-			if ca, cb := strings.ToLower(a.Company), strings.ToLower(b.Company); ca != cb {
-				return ca < cb
+			if lower[i] != lower[j] {
+				return lower[i] < lower[j]
 			}
 			if a.Relevance != b.Relevance {
 				return a.Relevance > b.Relevance
@@ -379,10 +397,20 @@ func Sort(sel []Selected, view, by string) {
 			}
 			// The digest's order: priority, relevance, key. Rank (DevPrism coverage)
 			// is already in both numbers, so it is not a tie-break.
-			return jobinsight.ComparePriority(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
+			return jobinsight.ComparePriority(resultOf(*a), resultOf(*b), string(a.Key), string(b.Key)) < 0
 		}
 		return a.Key < b.Key
-	})
+	}
+	perm := make([]int, len(sel))
+	for i := range perm {
+		perm[i] = i
+	}
+	sort.SliceStable(perm, func(x, y int) bool { return less(perm[x], perm[y]) })
+	sorted := make([]Selected, len(sel))
+	for i, p := range perm {
+		sorted[i] = sel[p]
+	}
+	copy(sel, sorted)
 }
 
 // MaxPendingCompanies bounds Pending.Companies; Total still counts all.

@@ -94,8 +94,43 @@ comes near it.
 
 What remains is the ranking itself, run per request over every posting:
 `jobview.Select`, same-company grouping, location parsing, and the semantic
-scores decoded again on each request. That is the next piece of work. The
-Phase 4 section of the plan gives the profile.
+scores decoded again on each request. The Phase 4 section of the plan gives
+the profile.
+
+**Serve keeps what did not change (later the same day).** Serve now keeps the
+company-history groups while the ledger and the watchlist domains are
+unchanged, the decoded semantic scores while their file is unchanged, and
+each title's rank and keyword hits and each location's places. `jobview.Sort`
+sorts a permutation instead of swapping whole jobs, and `Select` sizes its
+slice once. `old` is `3b1e221` (the serve table above), built with
+`go build -overlay`; `new` is the working tree. Same `BenchmarkLiveServe`
+warm requests, `-benchtime=5x`, three runs per arm, interleaved with the
+order alternating, load average 42 to 69. CPU per request, user plus system.
+In every row the slowest `new` run used less CPU than the fastest `old` run.
+
+| Warm request | old (3 runs) | new (3 runs) | change, min to min | allocated old / new |
+|---|---|---|---|---|
+| `--view new` | 1488–1553 ms | 764–808 ms | −49% | 702 / 323 MB |
+| `--view all --sort company` | 1107–1146 ms | 700–900 ms | −37% | 553 / 288 MB |
+| `--view new --sort salary` | 1249–1336 ms | 739–847 ms | −41% | 584 / 288 MB |
+| `--view saved` | 347–352 ms | 189–213 ms | −46% | 176 / 81 MB |
+| `--view new --q engineer` | 1344–1371 ms | 703–737 ms | −48% | 599 / 292 MB |
+| `stats --view new` | 1793–1883 ms | 1056–1069 ms | −41% | 760 / 339 MB |
+
+Maximum RSS of the benchmark process (`/usr/bin/time -l`; one first list,
+then the warm requests): 1.06–1.07 GB old, 1.01–1.06 GB new. That is the
+in-process request path, not a `vani jobs serve` fed over stdin, which was not
+measured. It is three times the plan's 300 MB target, and these changes did
+not lower it.
+
+The replies did not change: the live-copy parity dump (`TestLiveJobsParityDump`,
+18 lists, 2 stats, gaps and 5 shows at a pinned clock) is byte-identical for
+the old command, the new command and the new serve's warm second pass
+(`VANI_PARITY_SERVE=1`).
+
+Still about 0.7–1.1 s of CPU per warm view, against a 200 ms target. What is
+left is per request over every posting in the view: `ToJob`, the score
+(`InputsFor`, `ScoreWith`), the stable sort, and the garbage they make.
 
 ```bash
 scripts/bench-jobs-ab.sh 17ce448^ <copy-of-state> <config.json> 5

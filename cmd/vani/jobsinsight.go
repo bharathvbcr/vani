@@ -20,6 +20,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resumestore"
+	"github.com/bharathvbcr/Vani/internal/samecompany"
 	"github.com/bharathvbcr/Vani/internal/semantic"
 )
 
@@ -343,6 +344,28 @@ type insight struct {
 	// dropReadsText is whether drop's exclusions read descriptions, so a
 	// posting held without its text cannot be judged by them.
 	dropReadsText bool
+	// res is the resident reader this insight was built for (`vani jobs
+	// serve`), whose kept parts it reuses, and memo its per-title and
+	// per-place answers; both nil for a command run once.
+	res  *jobsResident
+	memo *rankMemo
+}
+
+// titleHits is the keyword hits of a title.
+func (in *insight) titleHits(title string) []jobinsight.Hit {
+	if in.memo != nil {
+		return in.memo.titleHits(in.vocab, title)
+	}
+	return in.vocab.Extract(title)
+}
+
+// locate is jobview.Locate.
+func (in *insight) locate(j *jobview.Job, p posting.Posting) {
+	if in.memo != nil {
+		in.memo.locate(j, p)
+		return
+	}
+	jobview.Locate(j, p)
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -405,24 +428,32 @@ func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float
 // newInsightScoped is newInsightFor learning only the company only names (see
 // learn); "" learns every company.
 func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) (*insight, error) {
-	return newInsightWith(cfg, err, stateDir, halfLife, snap, m, only, nil)
+	return newInsightWith(cfg, err, stateDir, halfLife, snap, m, only, nil, nil, 0)
 }
 
 // newListInsight is newInsight over a Jobs view read (jobsListRead): every
 // posting's keywords, pay and text hashes come from the read's facts.
 func (e *env) newListInsight(halfLife float64, rd jobsRead) (*insight, error) {
 	cfg, err := e.loadConfig()
-	return newInsightWith(cfg, err, e.stateDir, halfLife, rd.snap, rd.m, "", rd.facts)
+	return newInsightWith(cfg, err, e.stateDir, halfLife, rd.snap, rd.m, "", rd.facts, e.resident, rd.gen)
 }
 
 // newInsightWith is newInsightScoped over facts (nil: derive from the text).
-func newInsightWith(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string, facts *textFacts) (*insight, error) {
+// With a resident reader (res, and gen, the generation snap was taken at) it
+// reuses what res kept: the company-history groups of gen's records, the
+// opened semantic scores, and the per-title and per-place answers (rankMemo).
+// Everything computed from the marks, the clock and the rest of the config is
+// computed here, for this read.
+func newInsightWith(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string, facts *textFacts, res *jobsResident, gen uint64) (*insight, error) {
 	v, verr := jobinsight.Default()
 	if verr != nil {
 		return nil, verr
 	}
-	in := &insight{vocab: v, now: now(), halfLife: halfLife, facts: facts,
+	in := &insight{vocab: v, now: now(), halfLife: halfLife, facts: facts, res: res,
 		info: jobview.InsightInfo{HalfLifeDays: halfLife, Vocab: v.Len()}}
+	if res != nil {
+		in.memo = res.memo
+	}
 	if err == nil {
 		in.logos = newLogoIndex(cfg, stateDir)
 	}
@@ -440,13 +471,22 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	for k, e := range m {
 		marked[k] = e.Mark
 	}
-	in.same = newSameCompany(cfg, err, snap, m, in.now)
+	if res != nil {
+		in.same = newSameCompanyFrom(cfg, err, m, in.now, func(co *samecompany.Companies) *samecompany.Groups {
+			return res.sameGroups(gen, co, snap.Records)
+		})
+	} else {
+		in.same = newSameCompany(cfg, err, snap, m, in.now)
+	}
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	in.info.Weights = rankWeightsHand
 	if err == nil {
 		in.attachSemantic(cfg, stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
+		if in.rc.TitleRank != nil && in.memo != nil {
+			in.rc.TitleRank = in.memo.titleRank(cfg.TitleSignals)
+		}
 		in.rc.EscalateBelowP = rankEscalateBelowP(cfg)
 		if p := dropPolicy(cfg, cfg.Decide.OpenRouterName()); p.Prefilters() {
 			in.drop, in.dropReadsText = &p, cfg.Exclude.ReadsDescriptions()
@@ -494,7 +534,7 @@ func (in *insight) warn(w string) {
 func (in *insight) targetHits(r ledger.Record) (title, body int) {
 	boiler := in.boiler[companyKey(r.Posting.Company)]
 	inTitle := map[string]bool{}
-	for _, h := range jobinsight.Without(in.vocab.Extract(r.Posting.Title), boiler) {
+	for _, h := range jobinsight.Without(in.titleHits(r.Posting.Title), boiler) {
 		if in.target[h.Term] {
 			inTitle[h.Term] = true
 		}
@@ -530,7 +570,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 // the salary sort and the pay filters). Each step sets its own fields, so
 // splitting Enrich in two changes no answer.
 func (in *insight) Rank(j *jobview.Job, r ledger.Record, withPay bool) {
-	jobview.Locate(j, r.Posting)
+	in.locate(j, r.Posting)
 	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
 		age := jobinsight.AgeDays(at, in.now)
 		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age

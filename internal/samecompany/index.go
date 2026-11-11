@@ -56,59 +56,103 @@ type Applied struct {
 	Latest Prior
 }
 
-// Index answers both questions over one ledger snapshot, built once: company
-// identity is worked out in a single pass over the records, and a company's
-// role groups only when a row at that company is first asked about. It is safe
-// for concurrent use.
-type Index struct {
-	now  time.Time
-	co   *Companies
-	recs []ledger.Record
+// Groups is the half of an Index that reads only the records and the
+// watchlist's domains: each posting's company identity, worked out in one pass,
+// and a company's role groups, built the first time a row at that company is
+// asked about. It reads nothing from the marks or the clock, so a long-lived
+// reader (`vani jobs serve`) keeps one for as long as the ledger and the
+// domains are unchanged and pairs it with each request's marks and clock
+// (Index). It keeps a copy of the few fields it reads, never the records,
+// whose descriptions a caller may have loaded. It is safe for concurrent use.
+type Groups struct {
+	co      *Companies
+	all     []member           // every posting with a company identity, in record order
+	members map[string][]int32 // company id -> indexes into all
 
-	mu          sync.Mutex
-	names       map[string]string // company text -> Name
+	mu     sync.Mutex
+	names  map[string]string // company text -> Name
+	groups map[string]map[string]*roleGroup
+	built  int // role groups built, for tests
+}
+
+// member is what Groups keeps of one record.
+type member struct {
+	key      posting.Key
+	id       string
+	title    string
+	location string
+	remote   bool
+	first    time.Time
+}
+
+// Index answers both questions over one ledger snapshot: its Groups, and the
+// owner's applications as of now. It is safe for concurrent use.
+type Index struct {
+	g           *Groups
+	now         time.Time
 	applied     map[string][]Prior
 	appliedKeys map[posting.Key]bool // every applied key, in or out of the window
-	members     map[string][]int32   // company id -> indexes into recs
-	groups      map[string]map[string]*roleGroup
 }
 
 // New indexes recs against the owner's marks. now is the clock the window is
 // measured from. A nil co identifies companies by name alone. Records with no
 // company (and on no domain board) have no identity and match nothing.
 func New(recs []ledger.Record, m map[posting.Key]marks.Entry, co *Companies, now time.Time) *Index {
-	ix := &Index{now: now, co: co, recs: recs, names: map[string]string{},
-		applied: map[string][]Prior{}, appliedKeys: map[posting.Key]bool{},
-		members: map[string][]int32{}, groups: map[string]map[string]*roleGroup{}}
-	for i, r := range recs {
-		id := ix.id(r.Key, r.Posting.Company)
+	return NewGroups(recs, co).Index(m, now)
+}
+
+// NewGroups works out the company identity of every record in recs.
+func NewGroups(recs []ledger.Record, co *Companies) *Groups {
+	g := &Groups{co: co, members: map[string][]int32{}, names: map[string]string{},
+		groups: map[string]map[string]*roleGroup{}}
+	for _, r := range recs {
+		id := g.id(r.Key, r.Posting.Company)
 		if id == "" {
 			continue
 		}
-		ix.members[id] = append(ix.members[id], int32(i))
-		if at, ok := AppliedAt(m[r.Key]); ok && !ix.appliedKeys[r.Key] {
-			ix.appliedKeys[r.Key] = true
-			ix.applied[id] = append(ix.applied[id], Prior{Key: r.Key, Title: r.Posting.Title, At: at})
+		g.members[id] = append(g.members[id], int32(len(g.all)))
+		g.all = append(g.all, member{key: r.Key, id: id, title: r.Posting.Title,
+			location: r.Posting.Location, remote: r.Posting.Remote, first: r.FirstSeen})
+	}
+	return g
+}
+
+// Index pairs g with the owner's marks and the clock the apply window is
+// measured from.
+func (g *Groups) Index(m map[posting.Key]marks.Entry, now time.Time) *Index {
+	ix := &Index{g: g, now: now, applied: map[string][]Prior{}, appliedKeys: map[posting.Key]bool{}}
+	for _, mb := range g.all {
+		if at, ok := AppliedAt(m[mb.key]); ok && !ix.appliedKeys[mb.key] {
+			ix.appliedKeys[mb.key] = true
+			ix.applied[mb.id] = append(ix.applied[mb.id], Prior{Key: mb.key, Title: mb.title, At: at})
 		}
 	}
 	return ix
 }
 
+// Built is how many companies' role groups g has built: a test's evidence
+// that a kept Groups was reused.
+func (g *Groups) Built() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.built
+}
+
 // id is the company identity of a posting, "" for none. The caller holds mu
-// (or is New, before the index is shared).
-func (ix *Index) id(k posting.Key, company string) string {
-	if d := ix.co.domainOfBoard(k); d != "" {
+// (or is NewGroups, before g is shared).
+func (g *Groups) id(k posting.Key, company string) string {
+	if d := g.co.domainOfBoard(k); d != "" {
 		return "d:" + d
 	}
-	n, ok := ix.names[company]
+	n, ok := g.names[company]
 	if !ok {
 		n = Name(company)
-		ix.names[company] = n
+		g.names[company] = n
 	}
 	if n == "" {
 		return ""
 	}
-	if d := ix.co.domainOfName(n); d != "" {
+	if d := g.co.domainOfName(n); d != "" {
 		return "d:" + d
 	}
 	return "n:" + n
@@ -122,12 +166,12 @@ func (ix *Index) RepeatApply(k posting.Key, company string) (a Applied, ok bool)
 	if ix == nil {
 		return Applied{}, false
 	}
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
 	if ix.appliedKeys[k] {
 		return Applied{}, false
 	}
-	id := ix.id(k, company)
+	ix.g.mu.Lock()
+	id := ix.g.id(k, company)
+	ix.g.mu.Unlock()
 	if id == "" {
 		return Applied{}, false
 	}
@@ -167,37 +211,38 @@ func (a relisted) cmp(b relisted) int {
 }
 
 // groupsOf builds (once) the role groups of company id. The caller holds mu.
-func (ix *Index) groupsOf(id string) map[string]*roleGroup {
-	if g, ok := ix.groups[id]; ok {
-		return g
+func (g *Groups) groupsOf(id string) map[string]*roleGroup {
+	if out, ok := g.groups[id]; ok {
+		return out
 	}
-	g := map[string]*roleGroup{}
+	out := map[string]*roleGroup{}
 	seen := map[posting.Key]bool{}
-	for _, i := range ix.members[id] {
-		r := ix.recs[i]
-		role := roleTitle(r.Posting.Title)
-		if role == "" || r.FirstSeen.IsZero() || seen[r.Key] {
+	for _, i := range g.members[id] {
+		mb := g.all[i]
+		role := roleTitle(mb.title)
+		if role == "" || mb.first.IsZero() || seen[mb.key] {
 			continue
 		}
-		seen[r.Key] = true
-		e := relisted{key: r.Key, title: r.Posting.Title, first: r.FirstSeen}
-		rg := g[role]
+		seen[mb.key] = true
+		e := relisted{key: mb.key, title: mb.title, first: mb.first}
+		rg := out[role]
 		if rg == nil {
 			rg = &roleGroup{byLoc: map[string][]relisted{}}
-			g[role] = rg
+			out[role] = rg
 		}
 		rg.all = append(rg.all, e)
-		loc := locationOf(r.Posting)
+		loc := locationOf(mb.location, mb.remote)
 		rg.byLoc[loc] = append(rg.byLoc[loc], e)
 	}
-	for _, rg := range g {
+	for _, rg := range out {
 		slices.SortFunc(rg.all, relisted.cmp)
 		for _, l := range rg.byLoc {
 			slices.SortFunc(l, relisted.cmp)
 		}
 	}
-	ix.groups[id] = g
-	return g
+	g.groups[id] = out
+	g.built++
+	return out
 }
 
 // Repost reports the earlier posting r is likely a relisting of: one at the
@@ -217,13 +262,13 @@ func (ix *Index) Repost(r ledger.Record) (p Prior, ok bool) {
 	if role == "" {
 		return Prior{}, false
 	}
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	id := ix.id(r.Key, r.Posting.Company)
+	ix.g.mu.Lock()
+	defer ix.g.mu.Unlock()
+	id := ix.g.id(r.Key, r.Posting.Company)
 	if id == "" {
 		return Prior{}, false
 	}
-	rg := ix.groupsOf(id)[role]
+	rg := ix.g.groupsOf(id)[role]
 	if rg == nil {
 		return Prior{}, false
 	}
@@ -235,7 +280,7 @@ func (ix *Index) Repost(r ledger.Record) (p Prior, ok bool) {
 			best, found = q, true
 		}
 	}
-	if loc := locationOf(r.Posting); loc == "" {
+	if loc := locationOf(r.Posting.Location, r.Posting.Remote); loc == "" {
 		consider(rg.all) // names no place: compatible with every listing
 	} else {
 		consider(rg.byLoc[loc])
@@ -263,11 +308,13 @@ func latestIn(list []relisted, skip posting.Key, lo, hi time.Time) (relisted, bo
 // roleTitle is the title a role is grouped by.
 func roleTitle(title string) string { return pipeline.RoleTitle(title) }
 
-// locationOf is a posting's place folded for comparison, or "" when it names
-// none (no location text and not remote), which is compatible with any place.
-func locationOf(p posting.Posting) string {
-	if strings.TrimSpace(p.Location) == "" && !p.Remote {
+// locationOf is a posting's place (its location text and whether the board
+// lists it remote, the only fields pipeline.LooseLocation reads) folded for
+// comparison, or "" when it names none (no location text and not remote),
+// which is compatible with any place.
+func locationOf(location string, remote bool) string {
+	if strings.TrimSpace(location) == "" && !remote {
 		return ""
 	}
-	return pipeline.LooseLocation(p)
+	return pipeline.LooseLocation(posting.Posting{Location: location, Remote: remote})
 }

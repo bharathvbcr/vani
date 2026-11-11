@@ -12,6 +12,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/samecompany"
 	"github.com/bharathvbcr/Vani/internal/semantic"
 )
 
@@ -25,6 +26,9 @@ type jobsRead struct {
 	snap  ledger.Snapshot
 	m     map[posting.Key]marks.Entry
 	facts *textFacts
+	// gen is the resident Reader's generation snap was taken at
+	// (jobsResident.read); 0 without a resident.
+	gen uint64
 }
 
 // textFacts is each in-scope record's facts for one read. The slices in a
@@ -48,11 +52,64 @@ func (e *env) jobsFactsPath() string { return filepath.Join(e.stateDir, "readmod
 
 // jobsResident is what a long-lived Jobs reader (`vani jobs serve`) keeps
 // between reads: one ledger Reader, advanced to the events file's end before
-// each read, and the facts store, opened once. A command run once has none and
-// opens both for its one read.
+// each read, the facts store, opened once, and what was derived from the
+// records alone while they stay unchanged (the company-history groups). A
+// command run once has none and opens both for its one read.
+//
+// Nothing kept here is computed from the marks, the config's other settings,
+// the clock or a request's flags: each read pairs the kept parts with its own.
 type jobsResident struct {
 	rd    *ledger.Reader
 	store *jobfacts.Store
+
+	// lookups keeps the opened semantic scores while their file is unchanged;
+	// memo the per-title and per-place answers (rankMemo).
+	lookups semantic.Lookups
+	memo    *rankMemo
+
+	// mu orders Advance with the Snapshot it labels: gen counts the Advances
+	// that changed the records, so two reads with one gen saw the same records.
+	mu  sync.Mutex
+	gen uint64
+
+	// sameMu guards the kept company-history groups: built from the records
+	// of generation sameGen under the watchlist domains sameCo (Companies.Key).
+	sameMu     sync.Mutex
+	same       *samecompany.Groups
+	sameGen    uint64
+	sameCo     string
+	sameBuilds int // how many Groups were built, for tests
+}
+
+// read advances the Reader to the events file's end and snapshots it, with the
+// generation the snapshot belongs to.
+func (r *jobsResident) read() (ledger.Snapshot, uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed, err := r.rd.Advance()
+	if err != nil {
+		return ledger.Snapshot{}, 0, fmt.Errorf("jobs: read the ledger: %w", err)
+	}
+	if changed {
+		r.gen++
+	}
+	return r.rd.Snapshot(), r.gen, nil
+}
+
+// sameGroups is the company-history groups of generation gen's records under
+// co: the kept ones when they were built from that generation under domains
+// that resolve alike, or new ones from recs, which are then kept. recs must be
+// generation gen's records; Groups copies what it reads of them.
+func (r *jobsResident) sameGroups(gen uint64, co *samecompany.Companies, recs []ledger.Record) *samecompany.Groups {
+	key := co.Key()
+	r.sameMu.Lock()
+	defer r.sameMu.Unlock()
+	if r.same != nil && r.sameGen == gen && r.sameCo == key {
+		return r.same
+	}
+	r.same, r.sameGen, r.sameCo = samecompany.NewGroups(recs, co), gen, key
+	r.sameBuilds++
+	return r.same
 }
 
 // openJobsResident opens the ledger Reader (from the jobs checkpoint) and the
@@ -67,26 +124,28 @@ func (e *env) openJobsResident() (*jobsResident, error) {
 		rd.Close()
 		return nil, err
 	}
-	return &jobsResident{rd: rd, store: jobfacts.Open(e.jobsFactsPath(), jobfacts.Version(v))}, nil
+	return &jobsResident{rd: rd, store: jobfacts.Open(e.jobsFactsPath(), jobfacts.Version(v)), memo: newRankMemo()}, nil
 }
 
 // Close releases the events file.
 func (r *jobsResident) Close() error { return r.rd.Close() }
 
-// jobsReader is the ledger Reader for one Jobs read and its release: the
-// resident one, advanced to the events file's end, or a new one.
-func (e *env) jobsReader() (*ledger.Reader, func(), error) {
+// jobsReader is the ledger Reader for one Jobs read, its snapshot and its
+// release: the resident one, advanced to the events file's end (with the
+// snapshot's generation, jobsResident.read), or a new one (generation 0).
+func (e *env) jobsReader() (*ledger.Reader, ledger.Snapshot, uint64, func(), error) {
 	if e.resident != nil {
-		if _, err := e.resident.rd.Advance(); err != nil {
-			return nil, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		snap, gen, err := e.resident.read()
+		if err != nil {
+			return nil, ledger.Snapshot{}, 0, nil, err
 		}
-		return e.resident.rd, func() {}, nil
+		return e.resident.rd, snap, gen, func() {}, nil
 	}
 	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
 	if err != nil {
-		return nil, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		return nil, ledger.Snapshot{}, 0, nil, fmt.Errorf("jobs: read the ledger: %w", err)
 	}
-	return rd, func() { rd.Close() }, nil
+	return rd, rd.Snapshot(), 0, func() { rd.Close() }, nil
 }
 
 // jobsFactsStore is the facts store for one Jobs read: the resident one, or
@@ -109,12 +168,11 @@ func (e *env) jobsFactsStore(v *jobinsight.Vocab) *jobfacts.Store {
 // must match its text. Facts derived here are saved for the next read, and the
 // store forgets postings no view reads.
 func (e *env) jobsListRead() (jobsRead, error) {
-	rd, release, err := e.jobsReader()
+	rd, snap, gen, release, err := e.jobsReader()
 	if err != nil {
 		return jobsRead{}, err
 	}
 	defer release()
-	snap := rd.Snapshot()
 	m, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return jobsRead{}, fmt.Errorf("jobs: read marks: %w", err)
@@ -184,7 +242,7 @@ func (e *env) jobsListRead() (jobsRead, error) {
 		hideExcluded(snap.Records, m, cfg.Exclude)
 	}
 	e.lastFacts = tf
-	return jobsRead{snap: snap, m: m, facts: tf}, nil
+	return jobsRead{snap: snap, m: m, facts: tf, gen: gen}, nil
 }
 
 // jobsView is jobsListRead and its insight, for one Jobs view command. The

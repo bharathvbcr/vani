@@ -277,6 +277,45 @@ Each of these is a cost per request over every posting. A resident view
 would have to cache the ranked selection, keyed on marks, config and the clock bucket. That is
 follow-up work, not part of this phase.
 
+### Follow-up: what serve keeps (2026-11-11)
+
+The ranked selection itself cannot be cached as sketched above. A job's age is whole days counted
+from its own instant, so no clock bucket answers as the command does at the same moment. The
+score also reads the semantic and kbmatch stores, manual readings, the weights file and
+`--half-life`, and the marks reach it through the company blurbs and counts. What serve keeps is
+only what is computed from inputs that did not change, each kept under a key that names all of
+them:
+
+- `samecompany.Groups`, the company identity and role groups behind the company-history notes,
+  under the Reader's generation (bumped, under one lock with the snapshot it labels, when
+  `Advance` reports a change) and the watchlist domains (`Companies.Key`). The marks and the clock
+  are paired with it per request (`Groups.Index`). It copies the fields it reads, so it never
+  holds a request's records or their descriptions.
+- `semantic.Lookups`, the decoded score file, while its size and modification time are unchanged.
+  The file is looked at before it is read.
+- `rankMemo`: each title's rank under the title signals, each title's keyword hits, and each
+  location's places. Each map is keyed by the text its function reads and is emptied past 2^18
+  entries.
+
+`jobview.Sort` now sorts a permutation, and `Select` sizes its slice once. Both help the command
+too.
+
+Tests: `TestJobsServeSecondRequestAnswersAsTheCommand` changes one input between two requests
+(a mark, the clock +1 day and past the apply window, an appended relisting, a retitled posting,
+the watchlist domains, the title signals) and compares every reply with a fresh command's. It also
+checks that each step changed the replies, and that the groups were rebuilt exactly when the
+records or domains changed. `TestJobsServeSeesARewrittenScoreFile` covers a warm between requests.
+With any one key part removed (generation, domains, signals, the score file's stat), a parity
+comparison fails. The live-copy parity dump is byte-identical for the old command, the new command
+and serve's warm pass.
+
+Result (BENCHMARKS.md, 2026-11-11): warm requests use 37–49% less CPU (`--view new` 1.49 s →
+0.76 s) and allocate about half as much. Peak RSS, measured for the first time, is about 1 GB and
+did not fall. **Both targets are still missed.** What is left is per request over every posting
+in the view: `ToJob`, the score and the sort. The next step would keep the clock-independent part
+of each posting's row and score inputs per generation, and recompute only the age terms and what
+reads the marks. That changes how `jobinsight` builds a score, so it needs its own plan.
+
 ## Target architecture
 
 Four layers. Each one owns one thing, and each makes the layers above it cheap.

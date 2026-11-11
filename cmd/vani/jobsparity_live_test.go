@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +55,46 @@ func TestLiveJobsParityDump(t *testing.T) {
 			t.Logf("  facts: served %d, derived %d, store %q, %s", f.Served, f.Derived, f.Store, f.Saved)
 		}
 		return stdout.Bytes()
+	}
+	// VANI_PARITY_SERVE=1 asks every case of one resident `jobs serve` instead,
+	// twice over, and dumps the second (warm) pass, which must equal the first:
+	// the dump then compares with a command run's byte for byte (the command
+	// prints its reply and a newline; serve's result is the reply).
+	passes := 1
+	if os.Getenv("VANI_PARITY_SERVE") != "" {
+		passes = 2
+		e := &env{stateDir: state, configPath: os.Getenv("VANI_PARITY_CONFIG"), stdout: io.Discard, stderr: os.Stderr}
+		res, err := e.openJobsResident()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { res.Close() })
+		s := newJobsServer(e, res, io.Discard)
+		firstPass := map[string]string{}
+		run = func(name string, fn func(*env, []string) error, args ...string) []byte {
+			t.Helper()
+			id := name + " " + strings.Join(args, " ")
+			start := time.Now()
+			resp := s.runOp(id, fn, slices.DeleteFunc(slices.Clone(args), isJSONFlag))
+			var reply []byte
+			var rerr error
+			if resp.OK {
+				reply = append(resp.Result, '\n')
+			} else {
+				rerr = fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+			}
+			t.Logf("serve %s: %d bytes in %s", id, len(reply), time.Since(start).Round(time.Millisecond))
+			if prev, ok := firstPass[id]; !ok {
+				firstPass[id] = string(reply)
+				return reply
+			} else if prev != string(reply) {
+				t.Errorf("serve %s: the warm answer differs from the first: %s", id, firstDiff(string(reply), prev))
+			}
+			fmt.Fprintf(&dump, "### %s %s (err=%v)\n", name, strings.Join(args, " "), rerr)
+			dump.Write(reply)
+			dump.WriteByte('\n')
+			return reply
+		}
 	}
 	// How the jobs reads find the ledger checkpoint, before and after: the
 	// commands open their Reader with these same options. Logged, never dumped,
@@ -106,30 +148,32 @@ func TestLiveJobsParityDump(t *testing.T) {
 		{"--view", "new", "--fit", "strong_fit,partial_fit"},
 		{"--view", "all", "--half-life", "7"},
 	}
-	var first []byte
-	for i, c := range cases {
-		b := run("list", list, append([]string{"--json"}, c...)...)
-		if i == 0 {
-			first = b
+	for range passes {
+		var first []byte
+		for i, c := range cases {
+			b := run("list", list, append([]string{"--json"}, c...)...)
+			if i == 0 {
+				first = b
+			}
 		}
-	}
-	run("stats", (*env).jobsStatsCmd, "--json", "--view", "new")
-	run("stats", (*env).jobsStatsCmd, "--json", "--view", "all", "--q", "engineer")
-	run("gaps", (*env).jobsGapsCmd, "--json", "--view", "new")
+		run("stats", (*env).jobsStatsCmd, "--json", "--view", "new")
+		run("stats", (*env).jobsStatsCmd, "--json", "--view", "all", "--q", "engineer")
+		run("gaps", (*env).jobsGapsCmd, "--json", "--view", "new")
 
-	var l struct {
-		Jobs []struct {
-			Key string `json:"key"`
-		} `json:"jobs"`
-	}
-	if err := json.Unmarshal(first, &l); err != nil {
-		t.Fatalf("list new: %v", err)
-	}
-	for i, j := range l.Jobs {
-		if i >= 5 {
-			break
+		var l struct {
+			Jobs []struct {
+				Key string `json:"key"`
+			} `json:"jobs"`
 		}
-		run("show", (*env).jobsShow, "--json", j.Key)
+		if err := json.Unmarshal(first, &l); err != nil {
+			t.Fatalf("list new: %v", err)
+		}
+		for i, j := range l.Jobs {
+			if i >= 5 {
+				break
+			}
+			run("show", (*env).jobsShow, "--json", j.Key)
+		}
 	}
 	if err := os.WriteFile(out, dump.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
