@@ -2,6 +2,8 @@ package kbmatch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -218,5 +220,47 @@ func TestTextSHA256ChangesWithWhatTheModelSees(t *testing.T) {
 	// Moving text between fields must not collide.
 	if TextSHA256(posting.Posting{Title: "ab", Description: "c"}, "s", d) == TextSHA256(posting.Posting{Title: "a", Description: "bc"}, "s", d) {
 		t.Errorf("field boundaries collide")
+	}
+}
+
+// oldTextSHA256 is TextSHA256 as it was before TextPrefix, written out: the
+// identity every stored answer was filed under, which must never move.
+func oldTextSHA256(p posting.Posting, summary string, d Digest) string {
+	h := sha256.New()
+	for _, s := range []string{Task, p.Title, p.Location, p.Description, summary, d.SHA256} {
+		fmt.Fprintf(h, "%d:%s\x00", len(s), s)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// TextSHA256, and TextSHA256Of over a saved TextPrefix, are the hash stored
+// answers were filed under, for text that ends anywhere in a SHA-256 block.
+func TestTextPrefixResumesToTheStoredIdentity(t *testing.T) {
+	d, _ := DigestOf(testProfile())
+	var posts []posting.Posting
+	for n := range 140 { // every length across two 64-byte blocks
+		posts = append(posts, posting.Posting{Title: "T", Location: "Austin, TX", Description: strings.Repeat("x", n)})
+	}
+	posts = append(posts,
+		posting.Posting{},
+		posting.Posting{Title: "nul\x00", Location: "\xff\xfe", Description: "bad utf8 \xff and nul \x00 — 工程师 🚀"},
+		posting.Posting{Title: "Big", Description: strings.Repeat("Go and Rust on Kubernetes. ", 4000)},
+	)
+	for _, summary := range []string{"", "inference engineer, Go and Rust"} {
+		for _, p := range posts {
+			want := oldTextSHA256(p, summary, d)
+			if got := TextSHA256(p, summary, d); got != want {
+				t.Fatalf("TextSHA256 moved for a %d-byte description: %s, want %s", len(p.Description), got, want)
+			}
+			got, err := TextSHA256Of(TextPrefix(p), summary, d)
+			if err != nil || got != want {
+				t.Fatalf("TextSHA256Of(TextPrefix) for a %d-byte description: %s, %v; want %s", len(p.Description), got, err, want)
+			}
+		}
+	}
+	for _, bad := range [][]byte{nil, {}, []byte("not a state"), TextPrefix(posts[0])[:20]} {
+		if got, err := TextSHA256Of(bad, "s", d); err == nil {
+			t.Errorf("prefix %q resumed to %s", bad, got)
+		}
 	}
 }

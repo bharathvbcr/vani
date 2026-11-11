@@ -337,6 +337,12 @@ type insight struct {
 	resumes *resumestore.Summaries
 	// same answers the company-history notes (jobssame.go); nil answers none.
 	same *sameCompany
+	// facts is the read's text facts (jobsListRead), which every deriver site
+	// asks first (storedFacts); nil derives everything from resident text.
+	facts *textFacts
+	// dropReadsText is whether drop's exclusions read descriptions, so a
+	// posting held without its text cannot be judged by them.
+	dropReadsText bool
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -359,7 +365,7 @@ func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, on
 		if !jobview.InView("all", r, m[r.Key].Mark) {
 			continue
 		}
-		h := in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+		h := in.hitsOf(r)
 		in.hits[r.Key] = h
 		companies, all = append(companies, r.Posting.Company), append(all, h)
 	}
@@ -399,11 +405,23 @@ func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float
 // newInsightScoped is newInsightFor learning only the company only names (see
 // learn); "" learns every company.
 func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) (*insight, error) {
+	return newInsightWith(cfg, err, stateDir, halfLife, snap, m, only, nil)
+}
+
+// newListInsight is newInsight over a Jobs view read (jobsListRead): every
+// posting's keywords, pay and text hashes come from the read's facts.
+func (e *env) newListInsight(halfLife float64, rd jobsRead) (*insight, error) {
+	cfg, err := e.loadConfig()
+	return newInsightWith(cfg, err, e.stateDir, halfLife, rd.snap, rd.m, "", rd.facts)
+}
+
+// newInsightWith is newInsightScoped over facts (nil: derive from the text).
+func newInsightWith(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string, facts *textFacts) (*insight, error) {
 	v, verr := jobinsight.Default()
 	if verr != nil {
 		return nil, verr
 	}
-	in := &insight{vocab: v, now: now(), halfLife: halfLife,
+	in := &insight{vocab: v, now: now(), halfLife: halfLife, facts: facts,
 		info: jobview.InsightInfo{HalfLifeDays: halfLife, Vocab: v.Len()}}
 	if err == nil {
 		in.logos = newLogoIndex(cfg, stateDir)
@@ -431,11 +449,11 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
 		in.rc.EscalateBelowP = rankEscalateBelowP(cfg)
 		if p := dropPolicy(cfg, cfg.Decide.OpenRouterName()); p.Prefilters() {
-			in.drop = &p
+			in.drop, in.dropReadsText = &p, cfg.Exclude.ReadsDescriptions()
 		}
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 		var warn string
-		in.rc.KBMatch, warn = kbmatchLookup(cfg, stateDir)
+		in.rc.KBMatch, warn = kbmatchLookupBy(cfg, stateDir, in.kbHashOf)
 		in.warn(warn)
 		in.rc.Weights, in.info.Weights, warn = rankWeights(cfg)
 		in.warn(warn)
@@ -444,6 +462,9 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	var warn string
 	in.manual, in.rc.Manual, warn = manualReadings(stateDir)
 	in.warn(warn)
+	if in.manual != nil {
+		in.manual.facts = in.storedFacts
+	}
 	// One walk of the resume store, not a probe per job. An unusable store shows
 	// per job (jobview.ResumeOf), so it can never look like "no resume".
 	rs, rerr := resumestore.Open(stateDir)
@@ -480,7 +501,7 @@ func (in *insight) targetHits(r ledger.Record) (title, body int) {
 	}
 	whole, ok := in.hits[r.Key]
 	if !ok {
-		whole = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+		whole = in.hitsOf(r)
 	}
 	for _, h := range jobinsight.Without(whole, boiler) {
 		if in.target[h.Term] && !inTitle[h.Term] {
@@ -521,7 +542,7 @@ func (in *insight) Rank(j *jobview.Job, r ledger.Record, withPay bool) {
 	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
 	j.RelevanceKnown = res.RelevanceKnown
 	if withPay {
-		j.Pay = jobinsight.PostingPay(r.Posting)
+		j.Pay = in.payOf(r)
 	}
 }
 
@@ -538,7 +559,7 @@ func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid boo
 	}
 	hits, ok := in.hits[r.Key]
 	if !ok {
-		hits = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+		hits = in.hitsOf(r)
 	}
 	hits = jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
@@ -547,7 +568,7 @@ func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid boo
 	in.semanticInto(j, r)
 	j.ManualTriage = in.manual.view(r)
 	if !paid {
-		j.Pay = jobinsight.PostingPay(r.Posting)
+		j.Pay = in.payOf(r)
 	}
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	row := jobview.RowOf(*j)
@@ -562,7 +583,8 @@ func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid boo
 func (in *insight) enrichUntriaged(j *jobview.Job, r ledger.Record) {
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	// Marked postings are never dropped by exclusions (hideExcluded, protectMarked).
-	if in.drop == nil || r.BodyEvicted || j.Mark != marks.None {
+	// A posting held without its text is judged only by rules that read none.
+	if in.drop == nil || (r.BodyEvicted && in.dropReadsText) || j.Mark != marks.None {
 		return
 	}
 	// The kind is the backend the policy names, not its reason text, which

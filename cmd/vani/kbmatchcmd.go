@@ -575,6 +575,14 @@ func (e *env) kbmatchStatusOf() (kbmatchStatusReply, error) {
 // kbmatchLookup is jobinsight.RankContext.KBMatch over the store; nil when no
 // run has made one. The warning says why answers exist but are not used.
 func kbmatchLookup(cfg config.Config, stateDir string) (func(ledger.Record) (jobinsight.Slot, bool), string) {
+	return kbmatchLookupBy(cfg, stateDir, nil)
+}
+
+// kbmatchLookupBy is kbmatchLookup identifying a record's text with hash
+// (insight.kbHashOf, which reads the read's stored facts, so a posting held
+// without its description is looked up as if it were read whole); nil hashes
+// the resident text.
+func kbmatchLookupBy(cfg config.Config, stateDir string, hash func(ledger.Record, string, kbmatch.Digest) string) (func(ledger.Record) (jobinsight.Slot, bool), string) {
 	path := filepath.Join(stateDir, kbmatch.FileName)
 	st, err := kbmatch.OpenStore(path)
 	if err != nil {
@@ -598,7 +606,13 @@ func kbmatchLookup(cfg config.Config, stateDir string) (func(ledger.Record) (job
 		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
 	}
 	return func(r ledger.Record) (jobinsight.Slot, bool) {
-		en, ok := st.Lookup(string(r.Key), digest.SHA256, kbmatch.TextSHA256(r.Posting, summary, digest))
+		var text string
+		if hash != nil {
+			text = hash(r, summary, digest)
+		} else {
+			text = kbmatch.TextSHA256(r.Posting, summary, digest)
+		}
+		en, ok := st.Lookup(string(r.Key), digest.SHA256, text)
 		if !ok {
 			return jobinsight.Slot{}, false
 		}

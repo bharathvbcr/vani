@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
+	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -159,6 +160,9 @@ type manualReadingSet struct {
 	m map[posting.Key]manualtriage.Reading
 	// text hashes each read posting once, however many slots and rows ask.
 	text manualtriage.TextMemo
+	// facts is the insight's stored facts (insight.storedFacts); nil, or no
+	// answer for a record, hashes its resident text.
+	facts func(ledger.Record) (jobfacts.Facts, bool)
 }
 
 // manualReadings reads the store. nil sets and a warning when it cannot be read
@@ -190,6 +194,13 @@ func (s *manualReadingSet) state(r ledger.Record) (manualtriage.Reading, manualt
 	rd, ok := s.m[r.Key]
 	if !ok {
 		return manualtriage.Reading{}, "", false
+	}
+	if s.facts != nil {
+		// Stored facts hold the text's hash, so a posting held without its text
+		// is not gone: its reading is judged as if the text were read.
+		if f, ok := s.facts(r); ok {
+			return rd, rd.StateOfText(f.ManualText), true
+		}
 	}
 	return rd, rd.StateWith(r.Posting, r.BodyEvicted, &s.text), true
 }

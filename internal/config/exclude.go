@@ -80,6 +80,11 @@ func (x Exclude) Empty() bool {
 // whether its lists are nil or empty.
 func (x Exclude) IsZero() bool { return x.Empty() && len(x.TitleUnless) == 0 }
 
+// ReadsDescriptions reports whether Match reads a posting's description. When
+// it does not, a posting held without its description (ledger.Record's
+// BodyEvicted) is matched exactly as it would be with it.
+func (x Exclude) ReadsDescriptions() bool { return len(x.Descriptions) > 0 }
+
 // Match reports why x drops p: which field matched and, but for a description,
 // the entry that did. ok is false when x keeps p.
 func (x Exclude) Match(p posting.Posting) (why string, ok bool) {

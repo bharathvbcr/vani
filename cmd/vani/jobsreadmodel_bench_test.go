@@ -5,10 +5,12 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -183,6 +185,71 @@ func BenchmarkLiveReadModel(b *testing.B) {
 		}
 	})
 
+	// Phase 3's question: is opening the stored facts (one gob decode of every
+	// in-scope posting's hits, hashes and pay) clearly cheaper than what it
+	// replaces, the reading back of every description (Hydrate) and its
+	// tokenising (learn)?
+	b.Run("reader_snapshot_only", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			rd, err := ledger.OpenReader(filepath.Join(f.e.stateDir, "ledger"), f.e.jobsReaderOptions())
+			if err != nil {
+				b.Fatal(err)
+			}
+			rd.Snapshot()
+			rd.Close()
+		}
+	})
+	b.Run("reader_snapshot_hydrate_text_scope", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			rd, err := ledger.OpenReader(filepath.Join(f.e.stateDir, "ledger"), f.e.jobsReaderOptions())
+			if err != nil {
+				b.Fatal(err)
+			}
+			snap := rd.Snapshot()
+			if err := rd.Hydrate(snap.Records, jobsTextScope(f.m)); err != nil {
+				b.Fatal(err)
+			}
+			rd.Close()
+		}
+	})
+	b.Run("facts_open", func(b *testing.B) {
+		rd, err := ledger.OpenReader(filepath.Join(f.e.stateDir, "ledger"), ledger.ReaderOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		v := f.full.vocab
+		path := filepath.Join(b.TempDir(), "facts")
+		ver := jobfacts.Version(v)
+		s := jobfacts.Open(path, ver)
+		keep := jobsTextScope(f.m)
+		for _, r := range f.snap.Records {
+			fp, ok := rd.BodyFP(r.Key)
+			if !ok || r.BodyEvicted || !keep(r) {
+				continue
+			}
+			s.Put(r.Key, jobfacts.InputOf(r.Posting, fp), jobfacts.Derive(v, r.Posting))
+		}
+		rd.Close()
+		if err := s.Save(); err != nil {
+			b.Fatal(err)
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			if got := jobfacts.Open(path, ver); got.Info() != "loaded" {
+				b.Fatal(got.Info())
+			}
+		}
+		// After the loop: b.Loop resets the timer, which clears reported metrics.
+		b.ReportMetric(float64(fi.Size())/(1<<20), "MiB")
+		b.ReportMetric(float64(s.Len()), "postings")
+	})
+
 	// A checkpoint candidate: the lean records (descriptions left in the log),
 	// gob-encoded. Decode time is the cold-start load; strings are not interned.
 	b.Run("checkpoint_gob_decode_lean", func(b *testing.B) {
@@ -196,7 +263,6 @@ func BenchmarkLiveReadModel(b *testing.B) {
 			b.Fatal(err)
 		}
 		raw := buf.Bytes()
-		b.ReportMetric(float64(len(raw))/(1<<20), "MiB")
 		b.ReportAllocs()
 		for b.Loop() {
 			var out []ledger.Record
@@ -204,5 +270,6 @@ func BenchmarkLiveReadModel(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
+		b.ReportMetric(float64(len(raw))/(1<<20), "MiB") // after the loop, which clears metrics
 	})
 }

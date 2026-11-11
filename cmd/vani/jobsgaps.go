@@ -58,14 +58,11 @@ func (e *env) jobsGapsCmd(args []string) error {
 		if err := o.check("jobs gaps", false); err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		rd, in, err := e.jobsView(o.HalfLife)
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.HalfLife, snap, m)
-		if err != nil {
-			return err
-		}
+		snap, m := rd.snap, rd.m
 		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
 		jobs := make([]jobinsight.GapJob, 0, len(sel))
 		for _, s := range sel {
@@ -88,7 +85,7 @@ func (e *env) jobsGapsCmd(args []string) error {
 		out.View, out.Query, out.Torn = o.View, o.Query, snap.Torn
 		out.Insight = in.info
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
-		return nil
+		return in.facts.err()
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %s, %d with a DevPrism gap analysis\n", oneLine(out.View, 40), plural(out.Roles, "role"), out.WithMissing)

@@ -1,7 +1,9 @@
 package jobinsight
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,7 +30,12 @@ const (
 type Vocab struct {
 	terms   []term
 	byFirst map[string][]pattern // first token (lowercase) -> patterns, longest first
+	fp      string               // hex SHA-256 of the text it was parsed from
 }
+
+// Fingerprint identifies the vocabulary: the hex SHA-256 of the text it was
+// parsed from. Two vocabularies with one fingerprint extract alike.
+func (v *Vocab) Fingerprint() string { return v.fp }
 
 type term struct {
 	name, category string
@@ -68,7 +75,8 @@ func Default() (*Vocab, error) { return defaultVocab() }
 // ParseVocab reads the vocab.txt format. Duplicate spellings across terms are
 // refused: a token sequence must name one term.
 func ParseVocab(text string) (*Vocab, error) {
-	v := &Vocab{byFirst: map[string][]pattern{}}
+	sum := sha256.Sum256([]byte(text))
+	v := &Vocab{byFirst: map[string][]pattern{}, fp: hex.EncodeToString(sum[:])}
 	seen := map[string]string{}
 	for n, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)

@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/jobfacts"
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // TestLiveJobsParityDump writes what `jobs list`, `stats`, `gaps` and `show`
@@ -46,6 +49,9 @@ func TestLiveJobsParityDump(t *testing.T) {
 		dump.Write(stdout.Bytes())
 		dump.WriteByte('\n')
 		t.Logf("%s %s: %d bytes in %s", name, strings.Join(args, " "), stdout.Len(), time.Since(start).Round(time.Millisecond))
+		if f := e.lastFacts; f != nil {
+			t.Logf("  facts: served %d, derived %d, store %q, %s", f.Served, f.Derived, f.Store, f.Saved)
+		}
 		return stdout.Bytes()
 	}
 	// How the jobs reads find the ledger checkpoint, before and after: the
@@ -59,6 +65,23 @@ func TestLiveJobsParityDump(t *testing.T) {
 		}
 		t.Logf("reader %s: %+v", when, rd.Info())
 		rd.Close()
+	}
+	// VANI_PARITY_STALE_FACTS=1 forgets every third posting's stored facts
+	// first, so the run derives those again from text and serves the rest: a
+	// partly stale store must dump as a full or an empty one does.
+	if os.Getenv("VANI_PARITY_STALE_FACTS") != "" {
+		v, err := jobinsight.Default()
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := &env{stateDir: state}
+		s := jobfacts.Open(e.jobsFactsPath(), jobfacts.Version(v))
+		before, i := s.Len(), 0
+		s.Prune(func(posting.Key) bool { i++; return i%3 != 0 })
+		if err := s.Save(); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("stale facts: kept %d of %d (%s)", s.Len(), before, s.Info())
 	}
 	readerInfo("before")
 	t.Cleanup(func() { readerInfo("after") })

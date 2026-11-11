@@ -83,18 +83,15 @@ func (e *env) jobsList(args []string) error {
 		if err := o.check("jobs list", true); err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		rd, in, err := e.jobsView(o.HalfLife)
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.HalfLife, snap, m)
-		if err != nil {
-			return err
-		}
+		snap, m := rd.snap, rd.m
 		out = jobview.BuildList(snap, m, &o.Opts, in, in.info, listKeywords, *limit)
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
-		return nil
+		return in.facts.err()
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		for _, j := range out.Jobs {
@@ -149,21 +146,18 @@ func (e *env) jobsStatsCmd(args []string) error {
 		if err := o.check("jobs stats", false); err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		rd, in, err := e.jobsView(o.HalfLife)
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.HalfLife, snap, m)
-		if err != nil {
-			return err
-		}
+		snap, m := rd.snap, rd.m
 		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
 		out = jobview.StatsOf(sel, in.info, in.target)
 		out.Salary = jobview.PayStatsOf(sel, o.more.Currency)
 		out.View, out.Query, out.Torn = o.View, o.Query, snap.Torn
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
-		return nil
+		return in.facts.err()
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %d jobs\n", out.View, out.Total)
@@ -503,8 +497,8 @@ func rowRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool, error)
 // every record a jobs view reads the text of). It folds through a
 // ledger.Reader from the jobs checkpoint, so a read pays only for the events
 // appended since one was saved, and loads only the descriptions scope keeps.
-// Records left bodiless are not matched against exclusion rules, which can
-// only drop a record from its own company's view.
+// Records left bodiless are matched against the exclusion rules only when no
+// rule reads descriptions (hideExcluded).
 func (e *env) jobsStateFor(scope func(ledger.Snapshot) func(ledger.Record) bool) (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
 	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
 	if err != nil {
@@ -540,8 +534,9 @@ func hideExcluded(recs []ledger.Record, m map[posting.Key]marks.Entry, x config.
 	if x.Empty() {
 		return
 	}
+	needsText := x.ReadsDescriptions() // else a bodiless record matches as it would whole
 	for i, r := range recs {
-		if r.BodyEvicted || m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
+		if (r.BodyEvicted && needsText) || m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
 			continue
 		}
 		if _, ok := x.Match(r.Posting); ok {

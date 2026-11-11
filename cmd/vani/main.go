@@ -328,6 +328,10 @@ type env struct {
 	// command did not report itself.
 	jsonAsked *bool
 
+	// lastFacts is the text facts of the last Jobs view read (jobsListRead),
+	// for what reports how a read found them; nil before one.
+	lastFacts *textFacts
+
 	// runLog is the log file a manual run's output goes to, as its starter said
 	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it
 	// said was refused. dailyJob records it in the run record.

@@ -656,7 +656,7 @@ func (in *insight) semanticMatch(r ledger.Record) (semantic.Match, bool) {
 	if hit && e.title == p.Title && e.description == p.Description {
 		return e.mt, e.ok
 	}
-	mt, ok := semanticScore(in.sem, r)
+	mt, ok := in.sem.Lookup(string(r.Key), in.textHashOf(r)) // semanticScore, by the read's facts
 	in.semMemo.mu.Lock()
 	if in.semMemo.m == nil {
 		in.semMemo.m = map[posting.Key]semMemoEntry{}

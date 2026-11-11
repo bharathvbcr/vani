@@ -168,6 +168,61 @@ Peak RSS fell from 1.27–1.33 GB to 0.92–1.07 GB. The fold is no longer the f
 reading back about 50k descriptions for the text scope and tokenizing them (`learn`), which is
 Phase 3.
 
+## Phase 3 results (2026-11-11, measured)
+
+What was built (Layer 2), as `internal/jobfacts` rather than the drafted `internal/jobindex`:
+
+- **Every fact a Jobs view derives from a posting's text**, found by reading the code for every
+  description reader on the list path, not only the profiled ones: keyword hits
+  (`Vocab.Extract`), the semantic text hash, the manual-reading text hash, stated pay, and the
+  posting half of the knowledge-base match identity (`kbmatch.TextPrefix`, a saved SHA-256 state
+  that `kbmatch.TextSHA256Of` finishes with the summary and digest). The last one was not in the
+  plan. The live state has no kbmatch store, so the live parity dump could not have caught a
+  view that still hashed an empty description for it. `TestTextPrefixResumesToTheStoredIdentity`
+  pins the old hash as an oracle, so stored answers keep matching.
+- Each posting's facts are filed under its key with the `Input` they were derived from (the
+  description's `BodyFingerprint`, title, location, remote). A fact is used only while that input
+  is the posting's now, and only from a store whose `Version` is this build's (the vocabulary's
+  hash and every deriver's answers over a fixed probe).
+- `jobsListRead` (list, stats, gaps) loads a description only for an in-scope posting with no
+  current fact, derives and saves facts for those, and prunes the store to the postings a view
+  reads. When the config's exclusions read descriptions (`exclude.descriptions`), it loads every
+  in-scope description as before, because the rule must see the text.
+- Every deriver site asks one accessor (`insight.storedFacts`). A record that reaches a deriver
+  with neither its text nor a fact fails the command (`textFacts.err`) instead of being answered
+  for an empty description.
+- The exclusion and prefilter guards now skip a bodiless posting only when a rule reads
+  descriptions (`config.Exclude.ReadsDescriptions`); `TestExcludeReadsDescriptions` checks that
+  every other rule answers the same with and without the text.
+
+Store: `<state>/readmodel/jobfacts`, gob, written atomically under a try-lock. On the live state
+it is 13.8 MB for 26,358 postings and opens in 44–62 ms (77 MB allocated), where the Hydrate of
+the text scope and `learn` it replaces cost 0.6–1.5 s and 2.7 s (2.9 GB allocated).
+
+Parity: the live dump is byte-identical to the Phase 1b dump with no store (the first command
+derived 26,358 facts, every later one served them), with a full store (all served), and with a
+third of the entries removed (17,572 served, 8,786 derived). `TestJobsViewFromFactsMatchesText`
+compares the facts read with the text read over every view, sort, stats and pay filter, cold,
+warm and after a posting changed. Deliberate mutations (stored pay ignored, stored hits ignored,
+either guard reverted) each fail at least one test.
+
+Timing: interleaved A/B of the Phase 2 and Phase 3 binaries over the same state copy with a full
+store, 7 runs per arm, user CPU (the load average was again 60–230 from other work, so wall time
+is not reported). In every row the slowest Phase 3 run used less than a third of the CPU of the
+fastest Phase 2 run.
+
+| `jobs list` | Phase 2 user CPU (min) | Phase 3 user CPU (min) | change |
+|---|---|---|---|
+| `--view new` | 5.39 s | 2.04 s | −62% |
+| `--view all --sort company` | 5.06 s | 1.57 s | −69% |
+| `--view new --sort salary` | 6.40 s | 1.72 s | −73% |
+| `--view saved` | 4.40 s | 0.99 s | −78% |
+
+Peak RSS fell from 0.81–1.16 GB to 0.52–0.67 GB. Across Phases 1b–3, `--view new` went from 6.8 s
+wall (Phase 1b's baseline, a quieter machine) to about 2 s of CPU. What is left per call is the
+process start, the checkpoint load (76 MB of gob for 62k lean records) and the ranking itself;
+the first two are what a resident serve keeps.
+
 ## Target architecture
 
 Four layers. Each one owns one thing, and each makes the layers above it cheap.
@@ -316,7 +371,8 @@ Each phase ships on its own and is useful by itself.
 2. **Ledger `Reader` and checkpoint (Layer 1). Done; see "Phase 2 results".** No
    `vani ledger checkpoint` command: readers save the checkpoint themselves. Rekey needs no
    invalidation step (it replaces the file).
-3. **Hits index (Layer 2).** Every CLI read gets faster again.
+3. **Text facts store (Layer 2). Done; see "Phase 3 results".** Built as `internal/jobfacts`, not
+   `internal/jobindex`: it holds every text-derived fact a view reads, not only hits.
 4. **`vani jobs serve` (Layer 3),** read ops first, then writes.
 5. **Swift client and fallback (Layer 4).**
 6. **Prove it.** A committed benchmark in `docs/BENCHMARKS.md`: interleaved A/B runs, min-of-N,

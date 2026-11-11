@@ -167,10 +167,16 @@ func (r Reading) StateOf(p posting.Posting, gone bool) State {
 
 // StateWith is StateOf hashing the posting's text through memo (nil: no memo).
 func (r Reading) StateWith(p posting.Posting, gone bool, memo *TextMemo) State {
-	switch {
-	case gone:
+	if gone {
 		return TextGone
-	case r.Text != memo.TextSHA256(p):
+	}
+	return r.StateOfText(memo.TextSHA256(p))
+}
+
+// StateOfText is r's state for a posting whose text hashes (TextSHA256) to
+// text, which the ledger still holds: current while it is the text r read.
+func (r Reading) StateOfText(text string) State {
+	if r.Text != text {
 		return TextChanged
 	}
 	return Current
