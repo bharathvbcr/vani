@@ -222,28 +222,46 @@ func replay(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt) (good int
 // Description and BodyEvicted set, and lean remembers the line to read it back
 // from. lean is for the lock-free snapshot reader and is exclusive with rd.
 func replayWith(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt, lean *leanState) (good int64, torn bool, err error) {
+	good, _, torn, err = replayFrom(src, recs, rd, lean, 0)
+	return good, torn, err
+}
+
+// replayFrom is replayWith over src read from byte base of the events file (a
+// Reader's tail): offsets it records and returns are absolute. last is the
+// start of the last intact line folded (base when none was).
+func replayFrom(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt, lean *leanState, base int64) (good, last int64, torn bool, err error) {
 	bufSize := 64 * 1024
 	if lean != nil {
 		bufSize = 256 * 1024 // the scan reads every byte and decodes few
 	}
 	r := bufio.NewReaderSize(src, bufSize)
 	in := interner{}
+	good, last = base, base
+	if lean != nil {
+		if lean.bodies == nil {
+			lean.bodies = map[posting.Key]leanBody{}
+		}
+		if lean.fps == nil {
+			lean.fps = map[posting.Key][16]byte{}
+		}
+	}
 	for n := 1; ; n++ {
 		line, raw, hadNL, err := readLine(r)
 		if errors.Is(err, io.EOF) {
-			return good, false, nil
+			return good, last, false, nil
 		}
 		if err != nil {
-			return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
+			return good, last, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
 		}
 		if !hadNL {
-			return good, true, nil // torn tail: the writer died (or is still writing) before the newline
+			return good, last, true, nil // torn tail: the writer died (or is still writing) before the newline
 		}
 		var e Event
-		dec, cut := line, 0
+		dec, cut, fp, spanned := line, 0, [16]byte{}, false
 		if lean != nil {
-			if l, c, ok := stripDescription(line, lean.buf); ok {
-				dec, cut, lean.buf = l, c, l
+			if l, start, end, ok := stripDescriptionSpan(line, lean.buf); ok {
+				dec, cut, lean.buf = l, end-start, l
+				fp, spanned = BodyFingerprint(line[start:end]), true
 			} else {
 				lean.whole++
 			}
@@ -255,21 +273,30 @@ func replayWith(src io.Reader, recs map[posting.Key]*slot, rd io.ReaderAt, lean 
 		if perr != nil {
 			valid := json.Valid(line) // before Peek: line may be a view of r's buffer
 			if _, pe := r.Peek(1); errors.Is(pe, io.EOF) && !valid {
-				return good, true, nil
+				return good, last, true, nil
 			}
-			return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
+			return good, last, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, perr)
 		}
 		s := slotFor(recs, e)
 		fold(&s.Record, e, in)
-		if cut > 0 && e.Posting != nil {
-			s.BodyEvicted = true
-			lean.note(e.Key, good, raw, line)
+		if lean != nil && e.Posting != nil {
+			if !spanned {
+				fp = bodyFingerprintOf(s.Posting.Description)
+			}
+			lean.fps[e.Key] = fp
+			if cut > 0 {
+				s.BodyEvicted = true
+				lean.note(e.Key, good, raw, fp)
+			} else {
+				delete(lean.bodies, e.Key) // the new body is resident; an older line no longer holds it
+			}
 		}
 		if rd != nil {
 			if err := s.apply(e, good, raw, nil, nil, rd, good); err != nil {
-				return good, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
+				return good, last, false, fmt.Errorf("%w: line %d: %v", ErrCorrupt, n, err)
 			}
 		}
+		last = good
 		good += int64(raw)
 	}
 }

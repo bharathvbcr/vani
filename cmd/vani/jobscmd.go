@@ -441,6 +441,32 @@ func (e *env) jobsState() (ledger.Snapshot, map[posting.Key]marks.Entry, error) 
 	return e.jobsStateFor(nil)
 }
 
+// jobsCheckpointAfter is how many bytes of events a jobs read folds before it
+// saves a new checkpoint: a few runs' worth, so the next read replays little
+// and a save (a few hundred ms at 60k postings) is rare.
+const jobsCheckpointAfter = 8 << 20
+
+// jobsReaderOptions is where the jobs views keep their ledger checkpoint:
+// beside the ledger directory (which only its lock holder writes), saved by
+// whichever read folded at least jobsCheckpointAfter bytes.
+func (e *env) jobsReaderOptions() ledger.ReaderOptions {
+	return ledger.ReaderOptions{Checkpoint: filepath.Join(e.stateDir, "readmodel", "ledger.ckpt"), SaveAfter: jobsCheckpointAfter}
+}
+
+// jobsTextScope keeps the description of every record a jobs view can read
+// the text of: any not closed, dropped or a duplicate (the views list the kept
+// statuses, the pending view the live ones), and every marked one. Nothing in
+// the views reads the text of an unmarked closed, dropped or duplicate posting.
+func jobsTextScope(m map[posting.Key]marks.Entry) func(ledger.Record) bool {
+	return func(r ledger.Record) bool {
+		switch r.Status {
+		case posting.Dead, posting.Dropped, posting.Duplicate:
+			return m[r.Key].Mark != marks.None
+		}
+		return true
+	}
+}
+
 // rowScope is the ledger.ReadSnapshotScoped scope for enriching one row: the
 // record pick names and every record of its company are read whole (what
 // newRowInsight learns from); every other record keeps its description out
@@ -473,23 +499,31 @@ func rowRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool, error)
 	return r, ok, nil
 }
 
-// jobsStateFor is jobsState reading the ledger with scope (nil: whole, via
-// ledger.ReadSnapshot). Records scope leaves bodiless are not matched against
-// exclusion rules, which can only drop a record from its own company's view.
+// jobsStateFor is jobsState reading the ledger with scope (nil: jobsTextScope,
+// every record a jobs view reads the text of). It folds through a
+// ledger.Reader from the jobs checkpoint, so a read pays only for the events
+// appended since one was saved, and loads only the descriptions scope keeps.
+// Records left bodiless are not matched against exclusion rules, which can
+// only drop a record from its own company's view.
 func (e *env) jobsStateFor(scope func(ledger.Snapshot) func(ledger.Record) bool) (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
-	var snap ledger.Snapshot
-	var err error
-	if scope == nil {
-		snap, err = ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
-	} else {
-		snap, err = ledger.ReadSnapshotScoped(filepath.Join(e.stateDir, "ledger"), scope)
-	}
+	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
 	if err != nil {
 		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read the ledger: %w", err)
 	}
+	defer rd.Close()
+	snap := rd.Snapshot()
 	m, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read marks: %w", err)
+	}
+	keep := jobsTextScope(m)
+	if scope != nil {
+		keep = scope(snap)
+	}
+	if keep != nil {
+		if err := rd.Hydrate(snap.Records, keep); err != nil {
+			return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		}
 	}
 	// Listing jobs needs no config; when there is one, its exclusions hide now
 	// what the next run will drop.

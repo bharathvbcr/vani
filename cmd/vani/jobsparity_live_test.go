@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
 // TestLiveJobsParityDump writes what `jobs list`, `stats`, `gaps` and `show`
@@ -45,6 +48,20 @@ func TestLiveJobsParityDump(t *testing.T) {
 		t.Logf("%s %s: %d bytes in %s", name, strings.Join(args, " "), stdout.Len(), time.Since(start).Round(time.Millisecond))
 		return stdout.Bytes()
 	}
+	// How the jobs reads find the ledger checkpoint, before and after: the
+	// commands open their Reader with these same options. Logged, never dumped,
+	// so a cold and a warm run dump alike and the log says which one ran.
+	readerInfo := func(when string) {
+		e := &env{stateDir: state}
+		rd, err := ledger.OpenReader(filepath.Join(state, "ledger"), e.jobsReaderOptions())
+		if err != nil {
+			t.Fatalf("reader %s: %v", when, err)
+		}
+		t.Logf("reader %s: %+v", when, rd.Info())
+		rd.Close()
+	}
+	readerInfo("before")
+	t.Cleanup(func() { readerInfo("after") })
 	list := (*env).jobsList
 	cases := [][]string{
 		{"--view", "new"},

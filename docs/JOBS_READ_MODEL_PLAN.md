@@ -124,6 +124,50 @@ Peak RSS stayed at 1.3–1.4 GB in both arms, so memory did not move. What remai
 2.4 s and 2.6 s in a separate run), plus pay parsing for the salary sort. Those are Layers 1 and 2: the checkpoint and the stored text-derived
 facts. Phase 1b cannot remove them.
 
+## Phase 2 results (2026-11-11, measured)
+
+What was built (Layer 1), and where it differs from the draft below:
+
+- `ledger.Reader` (`internal/ledger/reader.go`): `OpenReader`, `Advance`, `Snapshot`, `Body`,
+  `Hydrate`, `BodyFP`, `Info`. `ReadSnapshotScoped` is now `OpenReader` + `Snapshot` + `Hydrate`.
+  `Advance` folds only the new lines. It refolds from scratch when the file was replaced
+  (device/inode), shrank, or its last folded line changed (a rollback followed by a longer
+  append), and after a failed fold.
+- Each posting line's description is fingerprinted (`BodyFingerprint`, SHA-256 of the raw JSON
+  string contents, 16 bytes) as it is folded, whether or not it is kept in memory. Phase 3 keys
+  stored facts on it.
+- Checkpoint: `<state>/readmodel/ledger.ckpt`, gob, interned on load. It is trusted only when its
+  format and schema, file identity, covered size, the SHA-256 of the last covered line and 32
+  sampled lines all match the events file; otherwise the reader folds in full and `Info` says why.
+  `internal/rekey` writes the events file by rename, so a rekeyed log has a new inode and is never
+  read through an old checkpoint.
+- **No `vani ledger checkpoint` command.** Any reader that folded at least 8 MiB of tail saves a
+  new checkpoint, under a try-lock of its own (a reader that finds it held skips the save). That
+  covers the case the command was for (scheduling off, nothing else takes the ledger lock) without
+  a new entry point.
+- The Jobs reads (`jobsStateFor`) load descriptions only for records a view reads the text of
+  (`jobsTextScope`: everything except unmarked closed, dropped and duplicate postings).
+
+Parity: the live parity dump is byte-identical to the Phase 1b dump, both cold (no checkpoint) and
+warm (a checkpoint saved by the cold run).
+
+Timing: interleaved A/B, real binaries (Phase 1b built with `go build -overlay` from the HEAD
+sources), same state copy with a checkpoint, 7 runs per arm. Other sessions kept the load
+average near 86 throughout, so wall time ranged 5–48 s for the same command and is not reported.
+User CPU time is the measure; its spread within an arm was about 10%, and in every row the slowest
+Phase 2 run used less CPU than the fastest Phase 1b run.
+
+| `jobs list` | Phase 1b user CPU (min) | Phase 2 user CPU (min) | change |
+|---|---|---|---|
+| `--view new` | 6.31 s | 5.23 s | −17% |
+| `--view all --sort company` | 5.85 s | 4.86 s | −17% |
+| `--view new --sort salary` | 7.31 s | 6.44 s | −12% |
+| `--view saved` | 5.03 s | 4.17 s | −17% |
+
+Peak RSS fell from 1.27–1.33 GB to 0.92–1.07 GB. The fold is no longer the floor: what remains is
+reading back about 50k descriptions for the text scope and tokenizing them (`learn`), which is
+Phase 3.
+
 ## Target architecture
 
 Four layers. Each one owns one thing, and each makes the layers above it cheap.
@@ -166,11 +210,11 @@ depending on reading all of it.
   The format is versioned, written to a temp file, fsynced, then renamed. Strings are interned on
   load, as replay's `interner` does today, because a decoded checkpoint otherwise holds a separate
   copy of every repeated company and annotation value and can use more memory than a replay.
-- **Who writes checkpoints.** The ledger lock holder (daemon, `run-once`, `jobs ingest`) writes one
-  after each run or batch. A new `vani ledger checkpoint` command writes one on demand, and serve
-  calls it when the tail it replays passes a threshold. With scheduling off, nothing else takes the
-  lock for days, so without this the checkpoint would go stale. The checkpoint only ever holds a
-  fold of complete lines, so writing it needs its own try-lock, not the ledger lock.
+- **Who writes checkpoints.** (As built: any reader that folded at least 8 MiB of tail, under its
+  own try-lock; see "Phase 2 results". The draft had the lock holder and a `vani ledger checkpoint`
+  command write them.) With scheduling off, nothing else takes the ledger lock for days, so a
+  checkpoint written only by the lock holder would go stale. The checkpoint only ever holds a fold
+  of complete lines, so writing it needs its own try-lock, not the ledger lock.
 - **When the checkpoint is not trusted.** If it is missing, corrupt, its inode differs, the file is
   shorter than its offset, or its last-line hash no longer matches, readers do a full fold and the
   reply says so. `internal/rekey` rewrites `events.jsonl` and also removes the checkpoint.
@@ -269,9 +313,9 @@ Each phase ships on its own and is useful by itself.
 1b. **CLI hot-path fixes (Go, no contract change). Done; see "Phase 1b results".** `TextHash`
    without `fmt`; the manual-reading text hash and the semantic match remembered per posting; and a
    two-phase list (`jobview.PageRanker`: rank every row, finish only the returned page).
-2. **Ledger `Reader` and checkpoint (Layer 1),** folding `ReadSnapshot`/`ReadSnapshotScoped` into
-   it, and adding `vani ledger checkpoint` and rekey invalidation. Every CLI read gets faster. Needs
-   the owner's OK first.
+2. **Ledger `Reader` and checkpoint (Layer 1). Done; see "Phase 2 results".** No
+   `vani ledger checkpoint` command: readers save the checkpoint themselves. Rekey needs no
+   invalidation step (it replaces the file).
 3. **Hits index (Layer 2).** Every CLI read gets faster again.
 4. **`vani jobs serve` (Layer 3),** read ops first, then writes.
 5. **Swift client and fallback (Layer 4).**
