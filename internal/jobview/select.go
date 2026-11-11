@@ -130,7 +130,10 @@ type Ranker interface {
 // finishes a Job only for the jobs a reply returns (EnrichWith).
 //
 //   - Rank fills what selection, the filters, every sort and the stats read
-//     (place, freshness, priority, relevance; pay when withPay).
+//     (place, freshness, priority, relevance; pay when withPay). i is r's
+//     index in the snapshot being selected from, -1 outside a selection; a
+//     ranker that keeps work per record between selections keys it by i and
+//     checks it is r's.
 //   - Hits is the keyword hits Finish returns, without finishing a Job: the
 //     stats and gaps count them.
 //   - Finish fills the rest of a job that will be shown, after its Ranked was
@@ -139,7 +142,7 @@ type Ranker interface {
 // Rank, Apply and Finish must leave a job exactly as Enrich does.
 type PageRanker interface {
 	Ranker
-	Rank(rk *Ranked, r ledger.Record, withPay bool)
+	Rank(rk *Ranked, i int, r ledger.Record, withPay bool)
 	Hits(r ledger.Record) []jobinsight.Hit
 	Finish(j *Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit
 }
@@ -204,15 +207,14 @@ func BuildList(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk 
 	cs, counts := selectCands(snap, m, &opts, rk, selectArgs{withPay: opts.needsPay(), kwLimit: kwLimit})
 	out.Where = where
 	out.Counts = counts
-	sortCands(cs, o.View, o.Sort)
-	cs = diversifyCands(cs, o.View, o.Sort)
-	out.Total = len(cs)
-	if len(cs) > limit {
-		cs = cs[:max(limit, 0)]
+	order := diversifyOrder(cs, candOrder(cs, o.View, o.Sort), o.View, o.Sort)
+	out.Total = len(order)
+	if len(order) > limit {
+		order = order[:max(limit, 0)]
 	}
 	// A whole Job is built and finished only for the page.
-	out.Jobs = make([]Job, 0, len(cs))
-	for i := range cs {
+	out.Jobs = make([]Job, 0, len(order))
+	for _, i := range order {
 		j, _ := materialize(&cs[i], snap, m, rk, kwLimit)
 		out.Jobs = append(out.Jobs, j)
 	}

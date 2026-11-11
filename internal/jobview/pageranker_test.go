@@ -24,7 +24,7 @@ func (c *countingRanker) Enrich(j *Job, r ledger.Record, kwLimit int) []jobinsig
 	return EnrichWith(c, j, r, kwLimit)
 }
 
-func (c *countingRanker) Rank(rk *Ranked, r ledger.Record, withPay bool) {
+func (c *countingRanker) Rank(rk *Ranked, _ int, r ledger.Record, withPay bool) {
 	c.ranked[r.Key]++
 	if withPay {
 		c.payAsked++

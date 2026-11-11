@@ -349,6 +349,13 @@ type insight struct {
 	// per-place answers; both nil for a command run once.
 	res  *jobsResident
 	memo *rankMemo
+	// gen is the generation of res's records this insight's snapshot was read
+	// at; blends the Blends res keeps under what this insight resolved (nil
+	// keeps none), and boilerFPs each company's blurb fingerprint
+	// (jobsblends.go).
+	gen       uint64
+	blends    *blendStore
+	boilerFPs map[string]uint64
 }
 
 // titleHits is the keyword hits of a title.
@@ -450,7 +457,7 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	if verr != nil {
 		return nil, verr
 	}
-	in := &insight{vocab: v, now: now(), halfLife: halfLife, facts: facts, res: res,
+	in := &insight{vocab: v, now: now(), halfLife: halfLife, facts: facts, res: res, gen: gen,
 		info: jobview.InsightInfo{HalfLifeDays: halfLife, Vocab: v.Len()}}
 	if res != nil {
 		in.memo = res.memo
@@ -482,6 +489,9 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	in.info.Weights = rankWeightsHand
+	// kb identifies the kbmatch reads for the kept Blends; kbOK is false when
+	// the store changed while it was read.
+	kb, kbOK := "", true
 	if err == nil {
 		in.attachSemantic(cfg, stateDir)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
@@ -494,7 +504,15 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 		}
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 		var warn string
-		in.rc.KBMatch, warn = kbmatchLookupBy(cfg, stateDir, in.kbHashOf)
+		before := ""
+		if res != nil {
+			before = kbStat(stateDir)
+		}
+		in.rc.KBMatch, warn, kb = kbmatchLookupKeyed(cfg, stateDir, in.kbHashOf)
+		if res != nil {
+			kbOK = before == kbStat(stateDir)
+			kb = before + " " + kb
+		}
 		in.warn(warn)
 		in.rc.Weights, in.info.Weights, warn = rankWeights(cfg)
 		in.warn(warn)
@@ -506,6 +524,7 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	if in.manual != nil {
 		in.manual.facts = in.storedFacts
 	}
+	in.keepBlends(cfg, err == nil, kb, kbOK, len(snap.Records))
 	// One walk of the resume store, not a probe per job. An unusable store shows
 	// per job (jobview.ResumeOf), so it can never look like "no resume".
 	rs, rerr := resumestore.Open(stateDir)
@@ -570,7 +589,7 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 // withPay (it is a regex pass over the whole description, read only by the
 // salary sort, the pay filters and the stats). Each step sets its own fields,
 // so splitting Enrich changes no answer.
-func (in *insight) Rank(rk *jobview.Ranked, r ledger.Record, withPay bool) {
+func (in *insight) Rank(rk *jobview.Ranked, i int, r ledger.Record, withPay bool) {
 	in.locate(rk, r.Posting)
 	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
 		rk.FreshAt, rk.FreshSrc, rk.AgeDays, rk.AgeKnown = at, string(src), jobinsight.AgeDays(at, in.now), true
@@ -578,7 +597,7 @@ func (in *insight) Rank(rk *jobview.Ranked, r ledger.Record, withPay bool) {
 	if jobview.Untriaged(r) {
 		return
 	}
-	res := in.rc.OrderOf(r)
+	res := in.order(i, r)
 	rk.Priority, rk.Relevance, rk.Basis, rk.RelevanceKnown = res.Score, res.Relevance, res.Basis, res.RelevanceKnown
 	if withPay {
 		rk.Pay, rk.PayRead = in.payOf(r), true

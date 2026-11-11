@@ -63,7 +63,7 @@ func rankedOf(j *Job) Ranked {
 // EnrichWith is Enrich for a PageRanker: Rank (with pay), Apply, Finish.
 func EnrichWith(pr PageRanker, j *Job, r ledger.Record, kwLimit int) []jobinsight.Hit {
 	var rk Ranked
-	pr.Rank(&rk, r, true)
+	pr.Rank(&rk, -1, r, true)
 	rk.Apply(j)
 	return pr.Finish(j, r, kwLimit, true)
 }
@@ -114,7 +114,7 @@ func selectCands(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, r
 		}
 	}
 	sel := make([]cand, 0, inView)
-	var areas map[string]*AreaStat
+	var areas areaCounts
 	var census Stats
 	if o.where != nil {
 		if o.where.State == nil {
@@ -123,11 +123,15 @@ func selectCands(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, r
 		if o.where.Country == nil {
 			o.where.Country = map[string]int{}
 		}
-		areas = map[string]*AreaStat{}
+		areas = areaCounts{}
 		census = Stats{State: o.where.State, Country: o.where.Country, RemoteScope: map[string]int{}}
 	}
 	placeOn := o.Remote || o.States != nil || o.Areas != nil || o.Countries != nil
 	pr, _ := rk.(PageRanker)
+	var kept *keptRows
+	if pr != nil {
+		kept = keptRowsOf(rk, snap)
+	}
 	for i, r := range snap.Records {
 		entry := m[r.Key]
 		for _, v := range Views {
@@ -143,7 +147,7 @@ func selectCands(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, r
 			j := ToJob(r, entry)
 			c = cand{st: rowStatic{company: j.Company, title: j.Title}, job: &j}
 		} else {
-			c = cand{st: staticOf(r)}
+			c = cand{st: kept.static(i, r)}
 		}
 		c.rec, c.key, c.closed, c.markedAt = i, r.Key, r.Status == posting.Dead, entry.MarkedAt
 		if q != "" && !matchesQuery(q, c.st.title, c.st.company, CleanText(r.Posting.Location, FieldRunes, false),
@@ -173,7 +177,7 @@ func selectCands(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, r
 			}
 		}
 		if pr != nil {
-			pr.Rank(&c.rk, r, a.withPay)
+			pr.Rank(&c.rk, i, r, a.withPay)
 			if a.withHits {
 				c.hits = pr.Hits(r)
 			}
@@ -331,34 +335,31 @@ func sortOrder(keys []sortKey, view, by string) []int {
 	return perm
 }
 
-// sortCands orders cands as Sort orders the jobs they stand for.
-func sortCands(cs []cand, view, by string) {
+// candOrder is the order Sort puts the jobs cs stand for in, as indexes into
+// cs: a cand is too large to move at every step, or at all past the page.
+func candOrder(cs []cand, view, by string) []int {
 	keys := make([]sortKey, len(cs))
 	for i := range cs {
 		keys[i] = cs[i].sortKey()
 	}
-	perm := sortOrder(keys, view, by)
-	sorted := make([]cand, len(cs))
-	for i, p := range perm {
-		sorted[i] = cs[p]
-	}
-	copy(cs, sorted)
+	return sortOrder(keys, view, by)
 }
 
-// diversifyCands is Diversify over cands.
-func diversifyCands(cs []cand, view, by string) []cand {
+// diversifyOrder is Diversify over an order of cs: the order it shapes, each
+// folded row's count set in its cand's similar.
+func diversifyOrder(cs []cand, order []int, view, by string) []int {
 	if !diversified(view, by) {
-		return cs
+		return order
 	}
-	rows := jobinsight.Diversify(len(cs),
-		func(i int) string { return cs[i].st.company },
-		func(i int) string { return cs[i].st.title },
+	rows := jobinsight.Diversify(len(order),
+		func(i int) string { return cs[order[i]].st.company },
+		func(i int) string { return cs[order[i]].st.title },
 		jobinsight.DiversityPerCompany, jobinsight.DiversityWindow)
-	out := make([]cand, 0, len(rows))
+	out := make([]int, 0, len(rows))
 	for _, r := range rows {
-		c := cs[r.Index]
-		c.similar = len(r.Similar)
-		out = append(out, c)
+		i := order[r.Index]
+		cs[i].similar = len(r.Similar)
+		out = append(out, i)
 	}
 	return out
 }

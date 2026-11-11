@@ -85,23 +85,56 @@ type RankContext struct {
 
 // ScoreOf scores r under c: InputsFor, then c.Weights or DefaultWeights.
 func (c RankContext) ScoreOf(r ledger.Record) Result {
-	w := DefaultWeights()
-	if c.Weights != nil {
-		w = *c.Weights
-	}
-	return ScoreWith(InputsFor(r, c), w)
+	return ScoreWith(InputsFor(r, c), c.weights())
 }
 
 // OrderOf is ScoreOf without the factor list (Blend.Order): what ordering and
 // filtering read.
 func (c RankContext) OrderOf(r ledger.Record) Result {
-	w := DefaultWeights()
+	b := c.BlendFor(r)
+	return b.Order(c.ClosingFor(r), c.weights())
+}
+
+// weights is c.Weights or DefaultWeights.
+func (c RankContext) weights() Weights {
 	if c.Weights != nil {
-		w = *c.Weights
+		return *c.Weights
 	}
-	in := InputsFor(r, c)
-	b := BlendOf(in, w)
-	return b.Order(ClosingOf(in), w)
+	return DefaultWeights()
+}
+
+// BlendFor is r's Blend under c: what reads no clock and no marks. It builds
+// none of what ClosingFor builds.
+func (c RankContext) BlendFor(r ledger.Record) Blend {
+	return BlendOf(blendInputsFor(r, c), c.weights())
+}
+
+// CloseOrder is OrderOf over a Blend already worked out (BlendFor): b closed
+// under r's Closing.
+func (c RankContext) CloseOrder(b *Blend, r ledger.Record) Result {
+	return b.Order(c.ClosingFor(r), c.weights())
+}
+
+// ClosingFor is ClosingOf(InputsFor(r, c)) without the rest of the Inputs: r's
+// age against the clock, the half-life, its employer's age-neutrality and its
+// company's marks less its own.
+func (c RankContext) ClosingFor(r ledger.Record) Closing {
+	cl := Closing{HalfLifeDays: c.HalfLifeDays, AgeDays: -1, AgeNeutral: c.AgeNeutral[companyKey(r.Posting.Company)]}
+	if at, _, known := FreshAge(r.Posting.PostedAt, r.FirstSeen, c.FirstCrawl[BoardOf(string(r.Key))], c.Now); known {
+		cl.AgeDays, cl.AgeKnown = AgeDays(at, c.Now), true
+	} else if !at.IsZero() {
+		// Age unknown, but the first sighting bounds it from below (Score).
+		cl.SeenDays, cl.SeenKnown = AgeDays(at, c.Now), true
+	}
+	cl.Company = c.Company[companyKey(r.Posting.Company)]
+	switch c.Marks[r.Key] {
+	case marks.Saved, marks.Applied:
+		cl.Company.Liked--
+	case marks.Hidden:
+		cl.Company.Hidden--
+	}
+	cl.Company.Liked, cl.Company.Hidden = max(cl.Company.Liked, 0), max(cl.Company.Hidden, 0)
+	return cl
 }
 
 // AgeNeutralSet turns the config's age_neutral_companies into the set
@@ -257,13 +290,21 @@ const employerBoostSlack = 1e-6
 // A record without a coverage key predates the split: its rank stands in for
 // coverage, as digest.Coverage does, and no boost can be seen.
 func InputsFor(r ledger.Record, c RankContext) Inputs {
+	in := blendInputsFor(r, c)
+	cl := c.ClosingFor(r)
+	in.HalfLifeDays, in.AgeNeutral, in.Company = cl.HalfLifeDays, cl.AgeNeutral, cl.Company
+	in.AgeKnown, in.AgeDays, in.SeenKnown, in.SeenDays = cl.AgeKnown, cl.AgeDays, cl.SeenKnown, cl.SeenDays
+	return in
+}
+
+// blendInputsFor is InputsFor without the fields ClosingFor builds (they are
+// left zero, the age unknown).
+func blendInputsFor(r ledger.Record, c RankContext) Inputs {
 	ann := r.Annotations
 	in := Inputs{
-		RoleFit:      c.SlotFor(r, "role_fit"),
-		Unsure:       IsUnsure(r),
-		HalfLifeDays: c.HalfLifeDays,
-		AgeDays:      -1,
-		AgeNeutral:   c.AgeNeutral[companyKey(r.Posting.Company)],
+		RoleFit: c.SlotFor(r, "role_fit"),
+		Unsure:  IsUnsure(r),
+		AgeDays: -1,
 	}
 
 	rank, hasRank := parseFloat(ann[ledger.AnnRank])
@@ -293,13 +334,6 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 		}
 	}
 
-	if at, _, known := FreshAge(r.Posting.PostedAt, r.FirstSeen, c.FirstCrawl[BoardOf(string(r.Key))], c.Now); known {
-		in.AgeDays, in.AgeKnown = AgeDays(at, c.Now), true
-	} else if !at.IsZero() {
-		// Age unknown, but the first sighting bounds it from below (Score).
-		in.SeenDays, in.SeenKnown = AgeDays(at, c.Now), true
-	}
-
 	seen := map[string]bool{}
 	for _, rule := range c.DropRules {
 		if seen[rule.Slot] {
@@ -317,14 +351,5 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 			}
 		}
 	}
-
-	in.Company = c.Company[companyKey(r.Posting.Company)]
-	switch c.Marks[r.Key] {
-	case marks.Saved, marks.Applied:
-		in.Company.Liked--
-	case marks.Hidden:
-		in.Company.Hidden--
-	}
-	in.Company.Liked, in.Company.Hidden = max(in.Company.Liked, 0), max(in.Company.Hidden, 0)
 	return in
 }

@@ -583,28 +583,38 @@ func kbmatchLookup(cfg config.Config, stateDir string) (func(ledger.Record) (job
 // without its description is looked up as if it were read whole); nil hashes
 // the resident text.
 func kbmatchLookupBy(cfg config.Config, stateDir string, hash func(ledger.Record, string, kbmatch.Digest) string) (func(ledger.Record) (jobinsight.Slot, bool), string) {
+	f, warn, _ := kbmatchLookupKeyed(cfg, stateDir, hash)
+	return f, warn
+}
+
+// kbmatchLookupKeyed is kbmatchLookupBy and what its lookups read besides the
+// store and the record: the knowledge-base profile's digest and the normalized
+// target summary ("" when the lookup is nil).
+func kbmatchLookupKeyed(cfg config.Config, stateDir string, hash func(ledger.Record, string, kbmatch.Digest) string) (func(ledger.Record) (jobinsight.Slot, bool), string, string) {
+	const notUsed = "language-model reads of your work not used: "
 	path := filepath.Join(stateDir, kbmatch.FileName)
 	st, err := kbmatch.OpenStore(path)
 	if err != nil {
-		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
+		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}
 	if st.Len() == 0 {
-		return nil, ""
+		return nil, "", ""
 	}
 	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
 	if err != nil {
-		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
+		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}
 	ctx, cancel := boundedKBContext()
 	defer cancel()
 	prof, err := semanticProfile(ctx, cfg)
 	if err != nil {
-		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
+		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}
 	digest, err := kbmatch.DigestOf(prof)
 	if err != nil {
-		return nil, "language-model reads of your work not used: " + oneLine(err.Error(), 200)
+		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}
+	id := fmt.Sprintf("%s %q", digest.SHA256, summary)
 	return func(r ledger.Record) (jobinsight.Slot, bool) {
 		var text string
 		if hash != nil {
@@ -617,5 +627,5 @@ func kbmatchLookupBy(cfg config.Config, stateDir string, hash func(ledger.Record
 			return jobinsight.Slot{}, false
 		}
 		return jobinsight.Slot{Value: en.Value, Answered: true, P: en.P, HasP: en.P > 0}, true
-	}, ""
+	}, "", id
 }

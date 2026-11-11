@@ -619,8 +619,13 @@ result is the command's `--json` reply). It also keeps what it derived from inpu
 change: each posting's company identity and role groups for the company-history notes, until the
 ledger or the watchlist's domains change (`samecompany.Groups`); the decoded semantic scores, until
 `<state>/semantic/semantic-scores.json` changes size or modification time (`semantic.Lookups`); and each title's rank
-and keyword hits and each location's places, keyed by the text they read (`rankMemo`). Nothing it
-keeps is computed from the marks, the clock or a request's flags. It exits when the app closes its stdin. Until it has
+and keyword hits and each location's places, keyed by the text they read (`rankMemo`); each
+record's cleaned row fields per ledger generation (`jobview.KeptRows`); and each posting's score
+blend, the part that reads no clock and no marks, under a key naming everything the request
+resolved for it: the generation, weights, rules, title signals, target, semantic scores, kbmatch
+store and digest, and manual readings (`cmd/vani/jobsblends.go`). Each request closes the blend
+with its own clock and marks. Nothing it keeps is computed from the marks, the clock or a request's
+flags. It exits when the app closes its stdin. Until it has
 said hello, after it dies (it is restarted once, two seconds later), or when it is busy, the app
 runs the command instead.
 

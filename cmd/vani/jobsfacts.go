@@ -9,6 +9,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
 	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -79,6 +80,11 @@ type jobsResident struct {
 	sameGen    uint64
 	sameCo     string
 	sameBuilds int // how many Groups were built, for tests
+
+	// rows keeps each record's static row fields per generation; blends each
+	// posting's score Blend under what it read (jobsblends.go).
+	rows   jobview.KeptRows
+	blends blendKeep
 }
 
 // read advances the Reader to the events file's end and snapshots it, with the

@@ -430,7 +430,36 @@ The plan's heap gate was "no higher than 456 MiB", from an earlier measurement. 
 453–458 MiB here, while the old arm read 467–474 MiB in the same runs. The command gains less,
 because a cold command's time is mostly its read.
 
-**Expected after A–C (inferred, to be measured):** about 250 ms on the goroutine. The read and
+**Phase C results (measured 2026-11-11, load average 40–60).** A profile after B put
+`InputsFor` at ~70 ms, `staticOf` at ~50 ms and the where census at ~45 ms of a warm
+`--view new` request. Phase C is three steps:
+
+- **C1:** the census without per-job maps, and sort and diversify over a permutation. No cache.
+- **C2:** `jobview.KeptRows`, each record's static row fields per generation.
+- **C3:** `cmd/vani/jobsblends.go`, each posting's `Blend` under a key built from what the
+  request resolved: the generation, config read or not, weights, rules, escalation, title
+  signals, target, vocabulary, semantic matcher, kbmatch stat and digest, and manual readings.
+  Per-posting guards cover status, stored facts and the company blurb.
+
+`InputsFor` is now `BlendFor`'s inputs plus `ClosingFor`, and is held to a pinned copy. Each key
+part, removed alone, fails a parity test. The status guard has no reachable list case today,
+since `hideExcluded` only drops postings, so it fails a mechanism test instead. The live parity
+dump is unchanged (`75bf02f2…`). Interleaved A/B against b9036fd, 3 rounds:
+
+| | b9036fd (B) | Phase C |
+|---|---|---|
+| serve, warm `--view new` | 587–686 ms | 395–441 ms |
+| serve, warm `--view all --sort company` | 562–600 ms | 345–372 ms |
+| serve, warm `--sort salary` | 575–636 ms | 317–402 ms |
+| serve, warm `--q engineer` | 530–569 ms | 403–431 ms |
+| serve, warm `stats --view new` | 441–460 ms | 287–321 ms |
+| serve, heap in use after a list | 462 MiB | 495–501 MiB |
+| serve, peak RSS of the bench process | 0.91–0.95 GB | 0.96–0.98 GB |
+
+The kept rows and Blends cost about 35 MiB of heap, inside the plan's 10–30 MiB estimate plus a
+little. The 200 ms target is still missed: about 400 ms of CPU per warm view, under load.
+
+**Expected after A–C (inferred before measuring; superseded by the table above):** about 250 ms on the goroutine. The read and
 insight build (~120 ms) and the 1,000-row page (~70 ms) stay, so roughly 300 ms of CPU per warm
 view. Short of 200 ms.
 

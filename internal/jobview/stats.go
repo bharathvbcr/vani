@@ -2,6 +2,7 @@ package jobview
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -130,7 +131,7 @@ func statsOfCands(sel []cand, info InsightInfo, target map[string]bool) Stats {
 		State: map[string]int{}, Country: map[string]int{}, Area: []AreaStat{}, RemoteScope: map[string]int{},
 		Insight: info,
 	}
-	areas := map[string]*AreaStat{}
+	areas := areaCounts{}
 	for _, b := range ageBuckets {
 		out.Age = append(out.Age, AgeBucket{Label: b.label, MaxDays: b.max})
 	}
@@ -226,8 +227,14 @@ func statsOfCands(sel []cand, info InsightInfo, target map[string]bool) Stats {
 	return out
 }
 
+// areaKey is an area as counted: folded (location.NormArea), with its state.
+type areaKey struct{ area, state string }
+
+// areaCounts counts the jobs naming each area.
+type areaCounts map[areaKey]*AreaStat
+
 // rankedAreas is the most-named areas, most first, then by name.
-func rankedAreas(areas map[string]*AreaStat) []AreaStat {
+func rankedAreas(areas areaCounts) []AreaStat {
 	out := make([]AreaStat, 0, len(areas))
 	for _, a := range areas {
 		out = append(out, *a)
@@ -250,28 +257,42 @@ func rankedAreas(areas map[string]*AreaStat) []AreaStat {
 
 // countPlacesIn adds one job's states, areas and remote listing to the stats.
 // A job counts once per distinct state and once per distinct area.
-func countPlacesIn(out *Stats, areas map[string]*AreaStat, places []Place, remoteListed bool, remoteScope string) {
-	states, seen := map[string]bool{}, map[string]bool{}
-	for _, p := range places {
-		if p.State != "" && !states[p.State] {
-			states[p.State] = true
-			out.State[p.State]++
+//
+// A job names a handful of places, so the distinct ones are found by looking
+// back over the earlier ones, not with a set per job.
+func countPlacesIn(out *Stats, areas areaCounts, places []Place, remoteListed bool, remoteScope string) {
+	named := false
+	var buf [8]string
+	norm := buf[:0] // each earlier place's folded area
+	for i, p := range places {
+		if p.State != "" {
+			named = true
+			if !slices.ContainsFunc(places[:i], func(q Place) bool { return q.State == p.State }) {
+				out.State[p.State]++
+			}
 		}
 		a := location.NormArea(p.Area)
+		norm = append(norm, a)
 		if a == "" {
 			continue
 		}
-		k := a + "\x00" + p.State
-		if seen[k] {
+		dup := false
+		for j := range i {
+			if norm[j] == a && places[j].State == p.State {
+				dup = true
+				break
+			}
+		}
+		if dup {
 			continue
 		}
-		seen[k] = true
+		k := areaKey{area: a, state: p.State}
 		if areas[k] == nil {
 			areas[k] = &AreaStat{Area: p.Area, State: p.State}
 		}
 		areas[k].N++
 	}
-	if len(states) == 0 {
+	if !named {
 		out.State["none"]++
 	}
 	if remoteListed {
