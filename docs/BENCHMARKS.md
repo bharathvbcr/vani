@@ -117,16 +117,33 @@ In every row the slowest `new` run used less CPU than the fastest `old` run.
 | `--view new --q engineer` | 1344–1371 ms | 703–737 ms | −48% | 599 / 292 MB |
 | `stats --view new` | 1793–1883 ms | 1056–1069 ms | −41% | 760 / 339 MB |
 
-Maximum RSS of the benchmark process (`/usr/bin/time -l`; one first list,
-then the warm requests): 1.06–1.07 GB old, 1.01–1.06 GB new. That is the
-in-process request path, not a `vani jobs serve` fed over stdin, which was not
-measured. It is three times the plan's 300 MB target, and these changes did
-not lower it.
+Memory, measured in the same benchmark process (the in-process request path,
+not a `vani jobs serve` fed over stdin, which was not measured):
+
+- Heap in use after a list and a forced GC, with everything serve keeps held
+  (`-test.v`, `warm_list_3`, two runs per arm): 360 MiB old, 450–456 MiB new.
+  Keeping things costs about 90 MiB more resident heap. The split was not
+  measured; the decoded score file, which a request used to decode and drop,
+  is the likely bulk.
+- Maximum RSS (`/usr/bin/time -l`): 0.78–0.80 GB old and 0.74–0.81 GB new for
+  one first list and one `--view saved`; 1.06–1.07 GB old and 1.01–1.06 GB new
+  for the whole warm table above. The peak is set by the heavier requests'
+  garbage, and these changes did not lower it.
+
+Both are well over the plan's 300 MB target.
 
 The replies did not change: the live-copy parity dump (`TestLiveJobsParityDump`,
 18 lists, 2 stats, gaps and 5 shows at a pinned clock) is byte-identical for
 the old command, the new command and the new serve's warm second pass
 (`VANI_PARITY_SERVE=1`).
+
+The `old` arm is a test binary built the way `scripts/bench-jobs-ab.sh` builds
+its old CLI: an overlay that maps each non-test `.go` file changed since the
+base revision to its `git show` copy and each added file (tests included) to
+`""`, then `go test -c -overlay <overlay.json> -o old.test ./cmd/vani/`. Each
+arm ran as `/usr/bin/time -l <arm>.test -test.run '^$' -test.bench
+'BenchmarkLiveServe/warm' -test.benchtime 5x`, with `VANI_BENCH_STATE` and
+`VANI_BENCH_CONFIG` set as above.
 
 Still about 0.7–1.1 s of CPU per warm view, against a 200 ms target. What is
 left is per request over every posting in the view: `ToJob`, the score

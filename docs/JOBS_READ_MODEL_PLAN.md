@@ -1,7 +1,8 @@
 # Plan: a read model that keeps the Jobs tab fast at any ledger size
 
-Status: proposal, 2026-11-11. Nothing here is built. This is the long-term plan, and it accepts a
-major refactor of how state is read and cached.
+Status: phases 1b–6 built on 2026-11-11, plus serve's kept state ("Follow-up: what serve keeps").
+The speed and memory targets are not met (see the phase results and docs/BENCHMARKS.md). Written
+as a proposal; the long-term plan, which accepts a major refactor of how state is read and cached.
 
 ## Why it is slow
 
@@ -310,8 +311,9 @@ comparison fails. The live-copy parity dump is byte-identical for the old comman
 and serve's warm pass.
 
 Result (BENCHMARKS.md, 2026-11-11): warm requests use 37–49% less CPU (`--view new` 1.49 s →
-0.76 s) and allocate about half as much. Peak RSS, measured for the first time, is about 1 GB and
-did not fall. **Both targets are still missed.** What is left is per request over every posting
+0.76 s) and allocate about half as much. What serve keeps costs memory: heap in use after a list
+rose from 360 MiB to 450–456 MiB. Peak RSS, measured for the first time, is about 1 GB, set by the
+heavier requests' garbage, and did not fall. **Both targets are still missed.** What is left is per request over every posting
 in the view: `ToJob`, the score and the sort. The next step would keep the clock-independent part
 of each posting's row and score inputs per generation, and recompute only the age terms and what
 reads the marks. That changes how `jobinsight` builds a score, so it needs its own plan.
