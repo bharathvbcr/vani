@@ -3,8 +3,12 @@ import Observation
 import VaniApplyKit
 
 /// State for the Jobs tab. Every read and write is a `vani jobs` call off the
-/// main thread; a list is about a tenth of a second, so after each change the
-/// model simply re-lists rather than patching its copy.
+/// main thread. A list re-reads the whole ledger: on 62,734 postings it takes
+/// 15–23 s, some 8 s of CPU and over a gigabyte of memory. So the model lists as
+/// little as it can: a mark, stage or note write patches the page from vani's
+/// reply (`JobsPage.patched`, which says what it cannot redo), a list a newer
+/// one supersedes is stopped, and coming to the front re-lists only when the
+/// files a list reads have changed (`JobsListInputs`).
 @MainActor
 @Observable
 final class JobsModel {
@@ -97,6 +101,11 @@ final class JobsModel {
     private let client: () -> JobsClient
     private var searchesGeneration = 0
     private var listGeneration = 0
+    /// Stops the newest list's `vani` children; set (and replaced) when a newer list supersedes it.
+    private var listFlag: CancelFlag?
+    /// The files the newest list reads, as they were when it started. Nil when it failed, when they
+    /// could not be looked at, or when they were not the files vani reported reading.
+    private var listedInputs: JobsListInputs?
     private var detailGeneration = 0
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
@@ -224,12 +233,22 @@ final class JobsModel {
     }
 
     /// The app came to the front: a mark may have been written meanwhile (the browser
-    /// extension marks a job Applied through `vani jobs mark`), so re-read the list and
-    /// the open job rather than show the state from before.
+    /// extension marks a job Applied through `vani jobs mark`), or a run may have added
+    /// postings, so re-list when a file a list reads changed since the newest list began,
+    /// and re-read the open job rather than show the state from before. This app's own
+    /// writes change the marks too, so the next activation after one re-lists, which also
+    /// brings in what a patched page leaves for the next list.
     func reloadAfterActivation() {
-        reload()
+        if listInputsChanged() { reload() }
         if showSearches { reloadSearches() }
         if selection != nil { loadDetail() }
+    }
+
+    /// False only when the newest list (landed or in flight) read files that are as they were
+    /// when it began; any doubt (no such list, a failed one, a file that cannot be looked at) is true.
+    func listInputsChanged() -> Bool {
+        guard let last = listedInputs else { return true }
+        return JobsListInputs.read(last.paths) != last
     }
 
     /// Why the label table is the built-in fallback (vani's could not be read), or
@@ -259,24 +278,35 @@ final class JobsModel {
         await loadLabels()
         listGeneration += 1
         let gen = listGeneration
+        // The list this one supersedes is stopped rather than left to run to its timeout; its
+        // result (cancelled) is dropped by the generation check below.
+        listFlag?.set()
+        let flag = CancelFlag()
+        listFlag = flag
         loading = true
         // Stats and gaps chart fit, relevance and priority, which postings awaiting
         // triage have none of: vani refuses them, so they are not asked.
         let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights && view.isRanked
-        async let listed = BlockingWork.run { try c.list(v, query: q, sort: s, filter: f) }
+        // Stamped before the list starts, so a write that lands while it runs reads as a change.
+        let inputs = JobsListInputs.read(c.listInputPaths(ledgerDir: page?.ledger))
+        listedInputs = inputs
+        async let listed = BlockingWork.run { try c.list(v, query: q, sort: s, filter: f, cancellation: flag) }
         async let counted: Result<JobsStats, Error>? = wantStats
-            ? BlockingWork.run { try c.stats(v, query: q, filter: f) }
+            ? BlockingWork.run { try c.stats(v, query: q, filter: f, cancellation: flag) }
             : nil
         async let gapped: Result<JobsGaps, Error>? = wantStats
-            ? BlockingWork.run { try c.gaps(v, query: q, filter: f) }
+            ? BlockingWork.run { try c.gaps(v, query: q, filter: f, cancellation: flag) }
             : nil
         let (result, statsResult, gapsResult) = await (listed, counted, gapped)
         guard gen == listGeneration else { return } // a newer list superseded this one
         loading = false
+        listFlag = nil
         switch result {
         case let .success(p):
             page = p
             error = nil
+            // The stamp counts only if it looked at the files vani says it read.
+            if inputs?.paths != c.listInputPaths(ledgerDir: p.ledger) { listedInputs = nil }
             // Only ranked roles were put in front of the owner to pass over; an
             // unranked posting awaiting triage is not "seen and passed".
             if v.isRanked {
@@ -284,6 +314,7 @@ final class JobsModel {
             }
         case let .failure(err):
             error = String(describing: err)
+            listedInputs = nil
         }
         switch statsResult {
         case let .success(st)?:
@@ -379,11 +410,11 @@ final class JobsModel {
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }
+            await applyWrite(j)
         case let .failure(err):
             actionError = String(describing: err)
             return
         }
-        await refresh()
         if selection == key, !jobs.contains(where: { $0.key == key }) {
             selection = index.flatMap { jobs.isEmpty ? nil : jobs[min($0, jobs.count - 1)].key }
         }
@@ -397,16 +428,31 @@ final class JobsModel {
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }
+            await applyWrite(j)
         case let .failure(err):
             actionError = String(describing: err)
-            return
         }
-        await refresh()
+    }
+
+    /// Put a successful mark, stage or note write into the list. The page is patched from vani's reply
+    /// when `JobsPage.patched` can say exactly what a re-list would show for that row and the counts.
+    /// It re-lists instead when it cannot, when a list is in flight (it may have read the marks before
+    /// the write and would land over the patch), and while Insights is open (its charts are over the
+    /// selection, and only vani can recount them).
+    private func applyWrite(_ reply: Job) async {
+        let next = page?.patched(with: reply, minRelevance: filter.minRelevance)
+        if let next { page = next }
+        if next == nil || loading || (showInsights && view.isRanked) {
+            await refresh()
+        }
     }
 
     /// Adds the job's company to the exclusions Settings edits, and saves them;
     /// the re-list then hides its unmarked roles, and the next run drops them.
     /// Selection moves on as it does when a mark takes a job out of the view.
+    /// This one write always re-lists: which postings the exclusion hides is vani's
+    /// matching (company names normalised, and the config's other exclusion lists),
+    /// over postings this page does not hold.
     func excludeCompany(of job: Job, using exclusions: ExclusionsEditor) async {
         let index = jobs.firstIndex { $0.key == job.key }
         if let problem = await exclusions.add(job.company, to: \.companies) {
@@ -483,7 +529,7 @@ final class JobsModel {
         switch result {
         case let .success(j):
             if detail?.key == key { detail = merged(j) }
-            await refresh()
+            await applyWrite(j)
             return true
         case let .failure(err):
             actionError = String(describing: err)

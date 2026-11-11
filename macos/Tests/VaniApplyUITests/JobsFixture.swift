@@ -56,6 +56,14 @@ struct JobsFixture {
         printf '%s\\n' "$*" >> "$d/calls.log"
         case "$1 $2" in
         "jobs list")
+            # One slow list, armed by slowNextList(): it runs until stopped and logs the SIGTERM.
+            if [ -f "$d/slow" ]; then
+                rm -f "$d/slow"
+                trap 'echo term >> "$d/term.log"; kill $! 2>/dev/null; exit 143' TERM
+                sleep 30 &
+                echo started >> "$d/slow.started"
+                wait
+            fi
             case " $* " in
             *" --fit strong_fit "*) exec cat "$d/list-strong.json" ;;
             *" --sort fresh "*) exec cat "$d/list-fresh.json" ;;
@@ -69,6 +77,9 @@ struct JobsFixture {
             for last; do :; done
             case "$last" in fx:*) exec cat "$d/show-$last.json" ;; esac ;;
         "jobs export") exec cat "$d/export.json" ;;
+        "jobs mark"|"jobs note")
+            # Answers only a key setWriteReply gave a reply; any other falls through to the error.
+            case "$4" in fx:*) [ -f "$d/write-$4.json" ] && exec cat "$d/write-$4.json" ;; esac ;;
         esac
         printf '{"error":"fake vani: no reply for %s"}\\n' "$1 $2"
         exit 1
@@ -119,6 +130,48 @@ struct JobsFixture {
     /// Replaces what the fake `vani jobs gaps` answers.
     func setGapsReply(_ json: String) throws {
         try Data(json.utf8).write(to: dir.appendingPathComponent("gaps.json"))
+    }
+
+    /// What the fake `vani jobs mark` and `jobs note` answer for `key`: the role as `jobs show`
+    /// has it, with `mark` and `note`. Without one, a write to that key fails.
+    func setWriteReply(_ key: String, mark: String? = nil, note: String? = nil, relevance: Double? = nil) throws {
+        let r = try XCTUnwrap(Self.roles.first { $0.key == key })
+        var j = job(r)
+        if let mark { j["mark"] = mark }
+        if let note { j["note"] = note }
+        if let relevance { j["relevance"] = relevance }
+        try write("write-\(key).json", j)
+    }
+
+    /// The next `jobs list` runs until it is stopped (SIGTERM), which it records in term.log;
+    /// it writes slow.started once it is waiting.
+    func slowNextList() throws {
+        try Data().write(to: dir.appendingPathComponent("slow"))
+    }
+
+    func exists(_ name: String) -> Bool {
+        FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path)
+    }
+
+    /// A state folder holding the files a list reads, for a client whose `stateDir` it is.
+    var stateDir: URL { dir.appendingPathComponent("state") }
+    var configPath: URL { dir.appendingPathComponent("config.json") }
+
+    func makeState() throws {
+        for sub in ["ledger", "marks", "retriage"] {
+            try FileManager.default.createDirectory(at: stateDir.appendingPathComponent(sub), withIntermediateDirectories: true)
+        }
+        try Data("{}\n".utf8).write(to: stateDir.appendingPathComponent("ledger/events.jsonl"))
+        try Data("{}\n".utf8).write(to: stateDir.appendingPathComponent("marks/marks.jsonl"))
+        try Data("{}\n".utf8).write(to: configPath)
+    }
+
+    /// Appends a line to a state file, as a run or another writer would.
+    func append(_ relative: String) throws {
+        let h = try FileHandle(forWritingTo: stateDir.appendingPathComponent(relative))
+        defer { try? h.close() }
+        try h.seekToEnd()
+        try h.write(contentsOf: Data("{}\n".utf8))
     }
 
     func calls() -> [String] {
