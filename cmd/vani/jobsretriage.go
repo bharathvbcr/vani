@@ -157,6 +157,8 @@ type retriageErrorReply struct {
 // stale reading too) and for RankContext.Manual (which uses only current ones).
 type manualReadingSet struct {
 	m map[posting.Key]manualtriage.Reading
+	// text hashes each read posting once, however many slots and rows ask.
+	text manualtriage.TextMemo
 }
 
 // manualReadings reads the store. nil sets and a warning when it cannot be read
@@ -189,7 +191,7 @@ func (s *manualReadingSet) state(r ledger.Record) (manualtriage.Reading, manualt
 	if !ok {
 		return manualtriage.Reading{}, "", false
 	}
-	return rd, rd.StateOf(r.Posting, r.BodyEvicted), true
+	return rd, rd.StateWith(r.Posting, r.BodyEvicted, &s.text), true
 }
 
 // value is RankContext.Manual: the slot's value of a current reading.

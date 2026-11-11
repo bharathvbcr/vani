@@ -25,7 +25,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -175,11 +177,44 @@ type Report struct {
 	VectorsErr       string // first problem with the log, empty when none; scoring went on without it
 }
 
-// TextHash identifies a posting's scored text.
+// TextHash identifies a posting's scored text: the first 16 bytes of the
+// SHA-256 of "<len>:<title>\x00<len>:<description>", hex. Every stored score
+// and vector is keyed by it, so these bytes must never change.
+//
+// The Jobs views hash every listed posting on every list, so the text is fed
+// to the hash through one bounded buffer rather than copied whole first
+// (fmt.Fprintf grew a buffer the size of the description per call).
 func TextHash(title, description string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d:%s\x00%d:%s", len(title), title, len(description), description)
+	bp := textHashBufs.Get().(*[]byte)
+	defer textHashBufs.Put(bp)
+	buf := append(strconv.AppendInt((*bp)[:0], int64(len(title)), 10), ':')
+	h.Write(buf)
+	hashString(h, buf, title)
+	buf = append(strconv.AppendInt(append(buf[:0], 0), int64(len(description)), 10), ':')
+	h.Write(buf)
+	hashString(h, buf, description)
 	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// textHashChunk bounds the bytes TextHash copies at a time.
+const textHashChunk = 4 << 10
+
+// textHashBufs reuses TextHash's chunk buffers: the hash consumes each chunk
+// before Write returns, so a buffer is free again when TextHash ends.
+var textHashBufs = sync.Pool{New: func() any {
+	b := make([]byte, 0, textHashChunk)
+	return &b
+}}
+
+// hashString writes s to h through buf's capacity, a chunk at a time.
+func hashString(h hash.Hash, buf []byte, s string) {
+	buf = buf[:cap(buf)]
+	for len(s) > 0 {
+		n := copy(buf, s)
+		h.Write(buf[:n])
+		s = s[n:]
+	}
 }
 
 // dot is the cosine of two vectors of equal width that validRow normalized.

@@ -318,6 +318,8 @@ type insight struct {
 	rc jobinsight.RankContext
 	// sem is the cache-only knowledge-base matcher; nil when off or unusable.
 	sem *semantic.Matcher
+	// semMemo remembers each posting's match for the rank and the row (semanticMatch).
+	semMemo semMemo
 	// logos finds each posting's cached company icon; nil when the config
 	// could not be read (every job then shows its monogram).
 	logos *logoIndex
@@ -497,12 +499,38 @@ func oneLine(s string, n int) string { return jobview.CleanText(s, n, false) }
 // enrich fills j's insight fields from r and returns the posting's full
 // keyword hits (for stats).
 func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobinsight.Hit {
+	in.Rank(j, r, true)
+	return in.Finish(j, r, kwLimit, true)
+}
+
+// Rank is jobview.PageRanker's first half: what selection, filters and every
+// sort read, for every job in the view. Place, freshness and score; pay only
+// when withPay (it is a regex pass over the whole description, read only by
+// the salary sort and the pay filters). Each step sets its own fields, so
+// splitting Enrich in two changes no answer.
+func (in *insight) Rank(j *jobview.Job, r ledger.Record, withPay bool) {
 	jobview.Locate(j, r.Posting)
-	j.Resume = jobview.ResumeFor(in.resumes, string(r.Key))
 	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
 		age := jobinsight.AgeDays(at, in.now)
 		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
 	}
+	if j.Untriaged {
+		return
+	}
+	res := in.rc.ScoreOf(r)
+	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
+	j.RelevanceKnown = res.RelevanceKnown
+	if withPay {
+		j.Pay = jobinsight.PostingPay(r.Posting)
+	}
+}
+
+// Finish is jobview.PageRanker's second half: the rest of a job that will be
+// shown (resume, company history, keywords, reasons, semantic match, manual
+// reading, logo, row), after Rank(j, r, paid). It returns the posting's full
+// keyword hits; the row is built last, from everything else.
+func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit {
+	j.Resume = jobview.ResumeFor(in.resumes, string(r.Key))
 	in.annotateSame(j, r)
 	if j.Untriaged {
 		in.enrichUntriaged(j, r)
@@ -515,13 +543,12 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 	hits = jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
-	res := in.rc.ScoreOf(r)
-	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
-	j.RelevanceKnown = res.RelevanceKnown
 	j.Reasons = jobview.ParseReasons(j.Explanation)
 	in.semanticInto(j, r)
 	j.ManualTriage = in.manual.view(r)
-	j.Pay = jobinsight.PostingPay(r.Posting)
+	if !paid {
+		j.Pay = jobinsight.PostingPay(r.Posting)
+	}
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	row := jobview.RowOf(*j)
 	j.Row = &row

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -621,15 +622,59 @@ func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
 		in.info.Warning += warning
 	}
 	in.sem = m
-	in.rc.Semantic = semanticRank(m)
+	if m == nil {
+		in.rc.Semantic = nil
+		return
+	}
+	// semanticRank's rule over the memoized match, which semanticInto shares.
+	in.rc.Semantic = func(r ledger.Record) (float64, bool) {
+		mt, ok := in.semanticMatch(r)
+		return mt.Score, ok && !mt.Thin
+	}
 }
 
 // semanticInto fills j's semantic match when one is cached for r.
 func (in *insight) semanticInto(j *jobview.Job, r ledger.Record) {
-	if in.sem == nil {
-		return
-	}
-	if mt, ok := semanticScore(in.sem, r); ok {
+	if mt, ok := in.semanticMatch(r); ok {
 		j.Semantic = &jobview.Semantic{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
 	}
+}
+
+// semanticMatch is semanticScore over in.sem, remembered per posting: a listed
+// job's match is read for its rank and again for its row, and each read hashes
+// the whole posting text. A remembered match is reused only while the posting's
+// title and description are the text it was looked up for. Evidence is shared
+// between the rank and the row; neither changes it.
+func (in *insight) semanticMatch(r ledger.Record) (semantic.Match, bool) {
+	if in.sem == nil {
+		return semantic.Match{}, false
+	}
+	p := r.Posting
+	in.semMemo.mu.Lock()
+	e, hit := in.semMemo.m[r.Key]
+	in.semMemo.mu.Unlock()
+	if hit && e.title == p.Title && e.description == p.Description {
+		return e.mt, e.ok
+	}
+	mt, ok := semanticScore(in.sem, r)
+	in.semMemo.mu.Lock()
+	if in.semMemo.m == nil {
+		in.semMemo.m = map[posting.Key]semMemoEntry{}
+	}
+	in.semMemo.m[r.Key] = semMemoEntry{title: p.Title, description: p.Description, mt: mt, ok: ok}
+	in.semMemo.mu.Unlock()
+	return mt, ok
+}
+
+// semMemo holds semanticMatch's answers for one insight (one snapshot), one per
+// posting asked. Safe for concurrent use; the zero value is ready.
+type semMemo struct {
+	mu sync.Mutex
+	m  map[posting.Key]semMemoEntry
+}
+
+type semMemoEntry struct {
+	title, description string
+	mt                 semantic.Match
+	ok                 bool
 }

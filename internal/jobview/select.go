@@ -98,6 +98,10 @@ type Opts struct {
 	// where, when set, receives place counts for jobs that pass every filter
 	// except the place ones. Nil keeps the place filter ahead of ranking.
 	where *WhereChoices
+
+	// rankOnly, with a PageRanker, makes Select call Rank instead of Enrich:
+	// BuildList finishes only the page it returns. Its Selected carry no Hits.
+	rankOnly bool
 }
 
 // PlaceOK applies the location options to a located job: --state, --area and
@@ -118,6 +122,23 @@ type Ranker interface {
 	Enrich(j *Job, r ledger.Record, kwLimit int) []jobinsight.Hit
 }
 
+// PageRanker is a Ranker that can split Enrich in two, so a list ranks every
+// job in its view but enriches for display only the page it returns. Rank
+// fills what selection, the filters and every sort read (place, freshness,
+// priority, relevance; pay when withPay). Finish fills the rest after
+// Rank(j, r, paid), and returns what Enrich would. Rank then Finish must
+// leave j exactly as Enrich does.
+type PageRanker interface {
+	Ranker
+	Rank(j *Job, r ledger.Record, withPay bool)
+	Finish(j *Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit
+}
+
+// needsPay says whether o's selection or order reads a job's pay.
+func (o *Opts) needsPay() bool {
+	return o.Sort == "salary" || o.More.PayListed || o.More.MinPay > 0
+}
+
 // Select returns the jobs in o's view that pass its query and filters,
 // unsorted, and the per-view counts (which ignore the query and filters).
 func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ranker, kwLimit int) ([]Selected, map[string]int) {
@@ -135,7 +156,12 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 		areas = map[string]*AreaStat{}
 	}
 	placeOn := o.Remote || o.States != nil || o.Areas != nil || o.Countries != nil
-	for _, r := range snap.Records {
+	pr, _ := rk.(PageRanker)
+	if !o.rankOnly {
+		pr = nil
+	}
+	withPay := o.needsPay()
+	for i, r := range snap.Records {
 		entry := m[r.Key]
 		for _, v := range Views {
 			if InView(v, r, entry.Mark) {
@@ -166,7 +192,12 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 				continue
 			}
 		}
-		hits := rk.Enrich(&j, r, kwLimit)
+		var hits []jobinsight.Hit
+		if pr != nil {
+			pr.Rank(&j, r, withPay)
+		} else {
+			hits = rk.Enrich(&j, r, kwLimit)
+		}
 		if o.MaxAge > 0 && (j.AgeDays == nil || *j.AgeDays > o.MaxAge) {
 			continue
 		}
@@ -180,7 +211,7 @@ func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ran
 				continue
 			}
 		}
-		sel = append(sel, Selected{Job: j, Hits: hits, Pay: PayKey(j, o.More.Currency)})
+		sel = append(sel, Selected{Job: j, Hits: hits, Pay: PayKey(j, o.More.Currency), rec: i})
 	}
 	if o.where != nil {
 		o.where.Area = rankedAreas(areas)
@@ -226,6 +257,8 @@ func BuildList(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk 
 	opts := *o
 	where := &WhereChoices{State: map[string]int{}, Country: map[string]int{}}
 	opts.where = where
+	pr, page := rk.(PageRanker)
+	opts.rankOnly = page
 	sel, counts := Select(snap, m, &opts, rk, kwLimit)
 	out.Where = where
 	out.Counts = counts
@@ -235,7 +268,12 @@ func BuildList(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk 
 	if len(sel) > limit {
 		sel = sel[:limit]
 	}
+	// Ranked rows are finished for display only now that the page is known.
+	paid := opts.needsPay()
 	for _, s := range sel {
+		if page {
+			pr.Finish(&s.Job, snap.Records[s.rec], kwLimit, paid)
+		}
 		out.Jobs = append(out.Jobs, s.Job)
 	}
 	out.Shown = len(out.Jobs)
@@ -246,6 +284,7 @@ type Selected struct {
 	Job  Job
 	Hits []jobinsight.Hit
 	Pay  float64 // top annual pay in --currency, -1 for none (the salary sort)
+	rec  int     // index of the job's record in the snapshot Select read
 }
 
 // Diversify shapes a sorted list for reading, as the digest does
