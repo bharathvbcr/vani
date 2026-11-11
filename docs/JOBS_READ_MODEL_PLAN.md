@@ -314,9 +314,119 @@ Result (BENCHMARKS.md, 2026-11-11): warm requests use 37–49% less CPU (`--view
 0.76 s) and allocate about half as much. What serve keeps costs memory: heap in use after a list
 rose from 360 MiB to 450–456 MiB. Peak RSS, measured for the first time, is about 1 GB, set by the
 heavier requests' garbage, and did not fall. **Both targets are still missed.** What is left is per request over every posting
-in the view: `ToJob`, the score and the sort. The next step would keep the clock-independent part
-of each posting's row and score inputs per generation, and recompute only the age terms and what
-reads the marks. That changes how `jobinsight` builds a score, so it needs its own plan.
+in the view: `ToJob`, the score and the sort. The next step is planned below ("Plan: page-only
+rows and a two-stage score").
+
+## Plan: page-only rows and a two-stage score (proposed 2026-11-11, not built)
+
+### Where a warm request's CPU goes now
+
+From one profile of eight warm `--view new` requests on the live copy (`bbb0442`, load about 80),
+per request, on the request's own goroutine. These are inferred from one profile under load, not
+a benchmark:
+
+| Part | CPU | What it does |
+|---|---|---|
+| read and insight build | ~120 ms | advance and snapshot the Reader, read marks and config, look up stored facts, learn the company blurbs, open the stores |
+| `Select`, own loop | ~110 ms | view counts, filters, a 40k-entry `Selected` slice |
+| `Rank` → `ScoreOf` | ~115 ms | `InputsFor` and `ScoreWith` for every job in the view |
+| `ToJob` | ~90 ms | a full `Job` (cleaned text, triage map, URLs) for every job in the view |
+| `Sort` | ~60 ms | stable sort of 40k jobs |
+| page finish, diversify, encode | ~70 ms | 1,000 rows: keywords, reasons, resume, company notes, row, JSON |
+| **total on the goroutine** | **~565 ms** | the garbage collector adds roughly 250 ms more |
+
+**Ceiling of caching the score and the row alone** (inferred): it removes `Rank` and `ToJob`, about
+200 ms plus their garbage, which leaves about 0.5 s of CPU per view. That is not 200 ms. The plan
+below goes further: it stops building a `Job` for anything but the page.
+
+### What a score reads, and what may be kept
+
+`Score = 100 × match × gate × fresh × company`. Only `fresh` (the clock, `--half-life`, a
+posting's dates, `age_neutral_companies`) and `company` (the marks on the company's other
+postings) change from one request to the next while nothing else changes. `match`, `gate`, the
+displayed relevance and its basis are a blend of inputs that change only when a file changes:
+
+| Input | Comes from | Key part when kept | Test step that changes it |
+|---|---|---|---|
+| titles, annotations, statuses, first-seen, dates | the ledger | Reader generation | append a posting; retitle one; add an annotation |
+| statuses `hideExcluded` sets | config `exclude` and the marks (a marked posting is never hidden) | computed per request (see C) | add an exclusion; mark an excluded posting |
+| company blurbs (keyword part) | keyword hits of the `all` view, whose members depend on statuses and marks | a hash of the learned blurb map, learned per request (~20 ms) | mark a closed posting so it joins `all` |
+| title signals, drop rules, rank penalties, target summary, `decide.escalate.below_p`, age-neutral set | config | a fingerprint of those fields | change each |
+| fitted weights | `rank_weights_file` | its path, size and modification time | rewrite it |
+| semantic scores | `<state>/semantic/semantic-scores.json`, read under the knowledge-base profile | the `semantic.Lookups` key (profile hash, file size and modification time) | warm between requests; edit the bank |
+| kbmatch readings | `<state>/kbmatch.json`, matched under the knowledge-base profile and the target summary | the file's size and modification time, the profile's digest, the summary | record a reading; edit the bank |
+| manual readings | `retriage/readings.jsonl` | its size and modification time | `vani jobs retriage` between requests |
+| vocabulary | embedded | its fingerprint | (fixed per binary) |
+
+What stays per request: the marks (mark fields, stage, note, company counts, view membership), the
+clock and `--half-life` (`fresh`, `age_days`), every flag (view, query, filters, sort, `--currency`,
+`--limit`), and the aggregation in `stats` and `gaps`. `MatchesQuery` reads the mark's note as well
+as the title, company, location and team, so the query test is a kept lowered text plus the note
+per request. Phase B must show that this equals lowering the joined fields (test it with fuzzed
+Unicode, invalid UTF-8 included).
+
+### Phases
+
+**A. One scorer in two stages (`internal/jobinsight`).** `ScoreWith` becomes
+`Blend(in, w)`, which computes the parts, `match`, `gate`, relevance and basis, followed by
+`Blend.Close(age, company, halfLife)`, which computes `fresh`, `company`, `Score`, `Relevance` and the factor list.
+`ScoreWith` stays as their composition, so the digest, the daily run and `rankfit` are unchanged.
+The factor list is built only in `Close`, so a caller that needs only the order skips it.
+- Gate: a copy of the pre-split `ScoreWith` kept in a `_test.go` as the oracle. Compare every
+  `Result` field and every factor by `math.Float64bits` over seeded random inputs, the edge values
+  (zero, negative and huge weights, NaN, unknown parts) and, env-gated, every posting on the live
+  copy. The arm64 compiler may fuse a multiply and an add within one function. Moving code across
+  a call can change a last bit, and that bit reaches the factor JSON. Plus the digest, `rankfit` and
+  scoring tests. No speed target: this phase is the seam.
+
+**B. Page-only jobs, one path for the command and serve (`internal/jobview`).** `Select`, `Sort`,
+`Diversify`, `StatsOf`, `PayStatsOf` and the place counts work on a compact candidate: record index,
+the sort keys (priority, relevance, fresh date, pay key in `--currency`, lowered company, key, mark
+time), and the fields the filters, stats and diversification read (triage slots, category, company
+key, title, places, remote, closed, age, hits). `ToJob` and `Finish` run only for the page
+`BuildList` returns (≤ `--limit`, which the app sends as 1000). This extends the existing
+`Rank`/`Finish` seam rather than adding a second one.
+- Gate: the live parity dump is byte-identical (old command, new command, serve's warm pass).
+  An interleaved CPU A/B of both the command and serve. The heap floor after a list is measured
+  and is no higher than 456 MiB.
+
+**C. Serve keeps each posting's blend and static fields.** Per Reader generation and under the key
+parts in the table, serve keeps each posting's `Blend` and the candidate's fields that read no
+marks. A request then closes the score (`fresh`, `company`), applies its marks and statuses,
+selects, sorts and builds its page. `hideExcluded` is answered per request from a kept per-posting
+"an exclusion matches" bit under the exclusions' fingerprint, with the marks applied on top.
+- Gate: `TestJobsServeSecondRequestAnswersAsTheCommand` gains a step for every row of the table;
+  with any one key part removed, a parity comparison fails; the live parity dump; the A/B; a
+  memory budget the owner sets (the kept blends and fields are estimated at 10–30 MiB, unmeasured).
+
+**D. Memory, a separate track.** Peak RSS follows the collector's target (`GOGC=50`: about 15%
+lower peak for about 20% more CPU; BENCHMARKS.md). Options: a memory limit for serve
+(`debug.SetMemoryLimit`), a lower `GOGC` for serve, or a smaller live heap (Phase B's smaller
+garbage, a leaner kept score file). Each is measured with `/usr/bin/time -l` on the warm table.
+
+**Expected after A–C (inferred, to be measured):** about 250 ms on the goroutine. The read and
+insight build (~120 ms) and the 1,000-row page (~70 ms) stay, so roughly 300 ms of CPU per warm
+view. Short of 200 ms.
+
+### Open questions for the owner
+
+1. **The 200 ms target.** After A–C, two levers remain, and both are the owner's choice:
+   - *Reuse the read between requests:* serve stops re-reading the marks, the config and the
+     stores when their files' size and modification time are unchanged, as `semantic.Lookups`
+     does. A reply stays the command's except after a rewrite that keeps both the size and the
+     modification time, which modern file systems make unlikely but not impossible.
+   - *A smaller page:* the app asks for fewer than 1,000 rows and pages through the rest.
+   - Or the target moves to about 300 ms.
+2. **Memory.** Accept about 450–500 MiB of heap and a ~1 GB peak, or cap serve (D) at the cost of
+   CPU.
+
+Language: Go throughout. This is the existing ranking and view code. No kernel here is CPU-bound
+enough to justify a Rust core behind gusset (each step is map lookups and small arithmetic per
+posting).
+
+The hardest question is Phase A's: proving the two-stage score bit-identical on arm64. If the
+compiler fuses operations differently across the split, the fix is to make each stage's
+arithmetic explicit and unfused, without changing a single rounding.
 
 ## Target architecture
 

@@ -127,8 +127,11 @@ not a `vani jobs serve` fed over stdin, which was not measured):
   is the likely bulk.
 - Maximum RSS (`/usr/bin/time -l`): 0.78–0.80 GB old and 0.74–0.81 GB new for
   one first list and one `--view saved`; 1.06–1.07 GB old and 1.01–1.06 GB new
-  for the whole warm table above. The peak is set by the heavier requests'
-  garbage, and these changes did not lower it.
+  for the whole warm table above. These changes did not lower it.
+- The peak follows the garbage collector's target as much as the garbage: two
+  more runs of the warm table per arm, alternating, gave 1.04–1.27 GB at the
+  default `GOGC` and 0.87–1.07 GB at `GOGC=50`, with `--view new` costing
+  886–928 ms and 1074–1125 ms of CPU respectively (load average 41 to 45).
 
 Both are well over the plan's 300 MB target.
 
