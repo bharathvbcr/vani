@@ -49,8 +49,9 @@ Same machine, `go1.27.3`, `VANI_NO_KEYCHAIN=1`. The state is a copy of the
 owner's live state: a 629 MB ledger of about 62k records, with a ledger
 checkpoint and a text facts store saved by an earlier run. Other sessions kept
 the load average between 59 and 230 throughout. Wall time for one command
-varied from 1.2 to 36 s, so the tables use CPU time. Its spread within an arm
-was at most 15%. The plan, [JOBS_READ_MODEL_PLAN.md](JOBS_READ_MODEL_PLAN.md),
+varied from 1.2 to 36 s, so the tables use CPU time. In the CLI table the
+CPU spread within an arm was at most 15%; in the serve table it reached 23%
+(`--view all --sort company`). The plan, [JOBS_READ_MODEL_PLAN.md](JOBS_READ_MODEL_PLAN.md),
 has each phase's own A/B.
 
 **Cold CLI, before and after.** `old` is `vani` built from `17ce448^` (before
@@ -81,11 +82,14 @@ user-only CPU in the table above. Not interleaved with the CLI.
 | warm `--view new --q engineer` | 1.34–1.52 s | 600 MB |
 | warm `stats --view new` | 1.80–1.92 s | 760 MB |
 
-Heap in use with the Reader and the facts store held: 360 MiB.
+Heap in use after a list and a forced GC, with the Reader and the facts store
+held: 360 MiB. That is a floor, not serve's resident size. Each warm request
+allocates 176–760 MB, so the process's RSS between requests is larger. RSS
+was not measured.
 
 These numbers miss two of the plan's targets. A warm view change takes about
-1.2–1.6 s of CPU, against a target under 200 ms. Resident heap is 360 MiB,
-against under 300 MB. The cold CLI target was under 1 s. Only `--view saved`
+1.2–1.6 s of CPU, against a target under 200 ms. Resident memory is at least
+360 MiB of heap, against under 300 MB. The cold CLI target was under 1 s. Only `--view saved`
 comes near it.
 
 What remains is the ranking itself, run per request over every posting:
@@ -94,20 +98,10 @@ scores decoded again on each request. That is the next piece of work. The
 Phase 4 section of the plan gives the profile.
 
 ```bash
+scripts/bench-jobs-ab.sh 17ce448^ <copy-of-state> <config.json> 5
 VANI_NO_KEYCHAIN=1 VANI_BENCH_STATE=<state> VANI_BENCH_CONFIG=<config.json> \
   go test -run '^$' -bench BenchmarkLiveServe -benchtime=5x -count=3 ./cmd/vani/
 ```
-
-The CLI A/B used scratch scripts that were not committed. To repeat it:
-
-1. Build the old binary with `go build -overlay`, mapping each non-test `.go`
-   file changed since `17ce448^` to its `git show` copy and each added file
-   to `""`.
-2. Build the new binary plainly.
-3. Run the four `jobs list` commands with `VANI_STATE_DIR` and `VANI_CONFIG`
-   set, alternating which arm goes first each round.
-4. Record `real`, `user` and `maximum resident set size` from
-   `/usr/bin/time -l`.
 
 ## Not re-run on 2026-11-07
 

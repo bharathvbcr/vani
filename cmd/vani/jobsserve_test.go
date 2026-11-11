@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -141,6 +142,65 @@ func TestJobsServeAnswersAsTheCommand(t *testing.T) {
 	}
 	if !got["after"].OK {
 		t.Errorf("the request after the refusals: %+v", got["after"].Error)
+	}
+}
+
+// Requests computing at once over the one resident Reader and facts store
+// (serve runs up to serveMaxRunning) each answer the command's bytes: each
+// works on its own copy of the snapshot, and the facts they derive, put and
+// prune at the same time from an empty store do not leak between them. Run
+// with -race.
+func TestJobsServeConcurrentOpsAnswerAsTheCommand(t *testing.T) {
+	e, seeds := factsFixture(t, config.Exclude{Titles: []string{"intern"}})
+	cases := []struct {
+		op   string
+		args []string
+	}{
+		{"list", []string{"--view", "new"}},
+		{"list", []string{"--view", "all", "--sort", "salary"}},
+		{"stats", []string{"--view", "new"}},
+		{"gaps", []string{"--view", "all"}},
+		{"show", []string{seeds[0].key}},
+		{"list", []string{"--view", "new", "--q", "go"}},
+	}
+	want := make([]string, len(cases))
+	for i, c := range cases {
+		want[i] = cliReply(t, e, serveOps[c.op], c.args...)
+	}
+	// Serve starts with no stored facts, so the first requests derive and save
+	// them while the others read.
+	if err := os.Remove(e.jobsFactsPath()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	res, err := e.openJobsResident()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Close()
+	s := newJobsServer(e, res, io.Discard)
+
+	const rounds = 4
+	var wg sync.WaitGroup
+	errs := make(chan string, rounds*len(cases))
+	for round := 0; round < rounds; round++ {
+		for i, c := range cases {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := s.runOp(fmt.Sprintf("%d-%d", round, i), serveOps[c.op], c.args)
+				switch {
+				case !r.OK:
+					errs <- fmt.Sprintf("%s %v: %+v", c.op, c.args, r.Error)
+				case string(r.Result) != want[i]:
+					errs <- fmt.Sprintf("%s %v: serve and the command differ: %s", c.op, c.args, firstDiff(string(r.Result), want[i]))
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
 	}
 }
 

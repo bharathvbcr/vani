@@ -258,10 +258,12 @@ other sessions, so the table gives CPU time per request (getrusage), not wall ti
 | warm `--view new --q engineer` | 1.34–1.52 s | 600 MB |
 | warm `stats --view new` | 1.80–1.92 s | 760 MB |
 
-Heap in use after a list, with the Reader and the facts store held: 360 MiB.
+Heap in use after a list and a forced GC, with the Reader and the facts store held: 360 MiB. That
+is a floor. Serve's RSS between requests, with 176–760 MB allocated per request, is larger and
+was not measured.
 
 **These miss two Phase 6 targets.** A warm view change takes about 1.2–1.6 s of CPU, not under
-200 ms. Resident heap is 360 MiB, not under 300 MB. Serve takes away the process start, the
+200 ms. Resident memory is at least 360 MiB of heap, not under 300 MB. Serve takes away the process start, the
 checkpoint load and the facts derivation. It does not take away the per-request ranking.
 A CPU profile of warm `--view new` puts the time in these places:
 
@@ -440,7 +442,9 @@ Each phase ships on its own and is useful by itself.
      A/B, min of 5, against a build from before Phase 1b.
    - Serve's first reply takes 2.4–2.5 s of CPU.
    - Serve's warm replies take 0.34–1.6 s of CPU.
-   - Serve holds 360 MiB of heap.
+   - Serve holds at least 360 MiB of heap; its RSS was not measured.
+   - Serve's byte-equality with the command is tested on fixtures, including concurrent requests
+     under `-race`. The live parity dump covers the command path.
 
    Neither the 200 ms warm target nor the 300 MB resident target is met. What remains is the
    per-request ranking (Phase 4 results). `docs/RUNTIME.md` documents the read path, `jobs serve`
