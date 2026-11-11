@@ -102,14 +102,17 @@ func (in *insight) blendFor(i int, r ledger.Record) *jobinsight.Blend {
 	keep := &in.res.blends
 	keep.lookups.Add(1)
 	_, fact := in.facts.get(r.Key)
+	// A posting held without its text and without facts is never read from
+	// the keep or put in it: its derivers must run, to note it missing.
+	lean := !fact && r.BodyEvicted
 	boiler := in.boilerPrint(r.Posting.Company)
 	slot := &in.blends.entries[i]
-	if e := slot.Load(); e != nil && e.key == r.Key && e.status == r.Status && e.fact == fact && e.boiler == boiler {
+	if e := slot.Load(); !lean && e != nil && e.key == r.Key && e.status == r.Status && e.fact == fact && e.boiler == boiler {
 		return &e.blend
 	}
 	keep.misses.Add(1)
 	e := &keptBlend{key: r.Key, status: r.Status, fact: fact, boiler: boiler, blend: in.rc.BlendFor(r)}
-	if fact || !r.BodyEvicted {
+	if !lean {
 		slot.Store(e)
 	}
 	return &e.blend

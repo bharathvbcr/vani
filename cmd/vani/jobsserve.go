@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"strings"
 	"sync"
@@ -38,10 +39,12 @@ import (
 // its response.
 //
 // What serve keeps between requests is the ledger Reader (advanced to the
-// events file's end before each read) and the text facts store
-// (jobsResident); marks, config, the clock and every other store are read per
-// request, as the command reads them, so a reply is never staler than the
-// command's would be.
+// events file's end before each read), the text facts store, and what was
+// derived from inputs that did not change, each under a key naming them
+// (jobsResident: company-history groups, semantic scores, rankMemo, row
+// fields, score Blends). Marks, config, the clock and every other store are
+// read per request, as the command reads them, so a reply is never staler than
+// the command's would be.
 
 // jobsServeProtocol is the wire's major version: it moves only when an existing
 // field changes meaning (Manvi's rule).
@@ -134,35 +137,53 @@ func (e *env) jobsServe(args []string) error {
 	if fs.NArg() > 0 {
 		return usagef("jobs serve: takes no arguments (requests arrive on stdin)")
 	}
-	setServeMemoryLimit(os.Getenv)
 	res, err := e.openJobsResident()
 	if err != nil {
 		return err
 	}
 	defer res.Close()
 	s := newJobsServer(e, res, e.stdout)
+	s.limit = serveLimitFunc(os.Getenv)
 	return s.serve(serveStdin)
 }
 
-// serveMemoryLimit is serve's soft heap limit (runtime/debug.SetMemoryLimit)
-// when GOMEMLIMIT does not set one. Measured on a 60k-posting state
-// (docs/BENCHMARKS.md, 2026-11-11): serve's live heap is about 480 MiB, and
-// without a limit the collector lets the process peak at 0.91-0.95 GB. At
-// 800 MiB the peak was 0.84-0.85 GB for no measurable CPU; at 650 MiB,
-// 0.73 GB for about a third more CPU, which is why the default is not lower.
-// It is soft: past it the collector runs more often (the runtime caps that at
-// about half the CPU), it never refuses memory. Set GOMEMLIMIT to choose
-// another, or GOMEMLIMIT=off for none.
+// serveMemoryLimit is the floor of serve's soft heap limit
+// (runtime/debug.SetMemoryLimit) when GOMEMLIMIT does not set one. Measured on
+// a 60k-posting state (docs/BENCHMARKS.md, 2026-11-11, 2 runs per arm): serve's
+// live heap after a list is about 480-530 MiB, and without a limit warm
+// requests peak at 0.91-0.95 GB. At 800 MiB they peaked at 0.84-0.85 GB with no
+// CPU difference those runs could show; at 650 MiB, 0.73 GB for about a third
+// more CPU. A cold first list (every posting's facts derived) runs above
+// 800 MiB, and the limit cost it about a third more CPU, so the limit is set
+// only after the first view is answered (serveLimit), never before it.
 const serveMemoryLimit = 800 << 20
 
-// setServeMemoryLimit sets serveMemoryLimit unless getenv("GOMEMLIMIT") names
-// one (the runtime has read it). It reports whether it set the limit.
-func setServeMemoryLimit(getenv func(string) string) bool {
+// serveLimitHeadroom is how far above the live heap the limit stays (8/5), so
+// a heap that has grown past the floor's design does not run the collector
+// without pause.
+const serveLimitHeadroom = 8.0 / 5
+
+// serveLimit is the limit to set once the live heap is live bytes: the larger
+// of serveMemoryLimit and live × serveLimitHeadroom.
+func serveLimit(live uint64) int64 {
+	return max(int64(serveMemoryLimit), int64(float64(live)*serveLimitHeadroom))
+}
+
+// serveLimitFunc is what jobsServer.limit runs, or nil when getenv("GOMEMLIMIT")
+// names a limit (the runtime has read it; GOMEMLIMIT=off sets none).
+func serveLimitFunc(getenv func(string) string) func() {
 	if getenv("GOMEMLIMIT") != "" {
-		return false
+		return nil
 	}
-	debug.SetMemoryLimit(serveMemoryLimit)
-	return true
+	return func() {
+		s := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+		metrics.Read(s)
+		var live uint64
+		if s[0].Value.Kind() == metrics.KindUint64 {
+			live = s[0].Value.Uint64()
+		}
+		debug.SetMemoryLimit(serveLimit(live))
+	}
 }
 
 // serveStdin is the request stream; a test replaces it.
@@ -181,6 +202,11 @@ type jobsServer struct {
 	running int
 	pending sync.WaitGroup // accepted requests not yet answered
 	latest  map[string]*serveCall
+
+	// limit sets serve's soft heap limit (serveLimit); it runs once, after the
+	// first view (list, stats or gaps) is answered. nil sets none.
+	limit     func()
+	limitOnce sync.Once
 }
 
 // serveCall is one accepted request: answered exactly once (answer).
@@ -297,7 +323,11 @@ func (s *jobsServer) compute(call *serveCall, op string, run func(*env, []string
 		}
 		s.mu.Unlock()
 	}()
-	s.answer(call, s.runOp(call.id, run, args))
+	resp := s.runOp(call.id, run, args)
+	if resp.OK && op != "show" && s.limit != nil {
+		s.limitOnce.Do(s.limit)
+	}
+	s.answer(call, resp)
 }
 
 // runOp runs one view command as `vani jobs <op> --json` would, in an env of

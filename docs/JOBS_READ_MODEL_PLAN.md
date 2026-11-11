@@ -456,14 +456,21 @@ dump is unchanged (`75bf02f2…`). Interleaved A/B against b9036fd, 3 rounds:
 | serve, heap in use after a list | 462 MiB | 495–501 MiB |
 | serve, peak RSS of the bench process | 0.91–0.95 GB | 0.96–0.98 GB |
 
-The kept rows and Blends cost about 35 MiB of heap, inside the plan's 10–30 MiB estimate plus a
-little. The 200 ms target is still missed: about 400 ms of CPU per warm view, under load.
+The kept rows and Blends cost 33–39 MiB of heap. That is over the plan's 10–30 MiB estimate. The
+gate was a budget for the owner to set, which is still open. The 200 ms target is still missed: about 400 ms of CPU per warm view, under load.
 
 **Phase D results.** Measured settings: no limit, `GOMEMLIMIT` at 1 GiB, 800 MiB and 650 MiB,
-and `GOGC=50` (table in BENCHMARKS.md). Serve now defaults to an 800 MiB soft limit when
-`GOMEMLIMIT` is unset. That takes the peak from 0.91–0.95 GB to 0.84–0.85 GB for no measurable
-CPU. A tighter cap is the owner's call (question 2): 650 MiB reached 0.73 GB for about a third
-more CPU, and `GOGC=50` reached 0.76 GB for about 8% more.
+and `GOGC=50` (tables in BENCHMARKS.md, n=2 per arm).
+
+- **Warm requests:** 800 MiB took the peak from 0.91–0.95 GB to 0.84–0.85 GB, with no CPU
+  difference those runs could show.
+- **A cold first list** (every posting's facts derived): it runs above 800 MiB, and the limit cost
+  it about a third more CPU.
+
+So serve sets its limit only after its first view, when `GOMEMLIMIT` is unset. The limit is the
+larger of 800 MiB and 1.6 times the live heap measured then. A tighter cap is the owner's call
+(question 2): 650 MiB reached 0.73 GB for about a third more CPU, and `GOGC=50` reached 0.76 GB
+for about 8% more.
 
 **Expected after A–C (inferred before measuring; superseded by the table above):** about 250 ms on the goroutine. The read and
 insight build (~120 ms) and the 1,000-row page (~70 ms) stay, so roughly 300 ms of CPU per warm

@@ -193,10 +193,28 @@ process.
 | `GOMEMLIMIT=650MiB` | 532–618 ms | 0.73 GB | 17.0–17.3 s |
 | `GOGC=50` | 418–445 ms | 0.76–0.77 GB | 13.4–14.4 s |
 
-`vani jobs serve` now sets an 800 MiB soft limit when `GOMEMLIMIT` is unset (`serveMemoryLimit`).
-That lowers the peak about 10% for no measurable CPU. Going lower trades CPU for memory: 650 MiB
-costs about a third more CPU, since the live heap is about 480 MiB. A limit set through
-`GOMEMLIMIT`, or `GOMEMLIMIT=off`, stands.
+With n=2 per arm and the no-limit arm itself spanning 389–536 ms, "no CPU difference at 800 MiB"
+means no difference these runs could show.
+
+A cold first list is different. It has no checkpoint and no facts store, so every posting's facts
+are derived. Measured with the same binary, `first_list_new`, the clone's `readmodel` deleted
+before each run, 2 interleaved runs per arm:
+
+| Setting | CPU | max RSS |
+|---|---|---|
+| none | 9.9–11.3 s | 1.17–1.38 GB |
+| `GOMEMLIMIT=800MiB` | 14.1–14.7 s | 1.11 GB |
+
+Its heap runs above 800 MiB, and the limit cost it about a third more CPU. So `vani jobs serve`
+sets its limit only after it has answered its first view (list, stats or gaps; `serveLimitFunc`),
+never before. The limit is the larger of 800 MiB and 1.6 times the live heap measured then
+(`/gc/heap/live:bytes`; 480–531 MiB here), and it is set only when `GOMEMLIMIT` is unset. A limit
+set through `GOMEMLIMIT`, or `GOMEMLIMIT=off`, stands. Warm requests under it should behave like the
+800 MiB arm above. That is inferred: a serve process fed over stdin was not measured. Going lower
+trades CPU for memory: 650 MiB cost about a third more CPU.
+
+The kept Blends are hit on the live state. After the first list and a warm table they were asked
+for 390,107 times and computed 26,288 times, which is one view's worth from the first list.
 
 Still about 0.4 s of CPU per warm view under this load, against a 200 ms target, and a 0.85 GB
 peak against 300 MB.

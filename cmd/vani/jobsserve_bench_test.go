@@ -99,4 +99,8 @@ func BenchmarkLiveServe(b *testing.B) {
 			s.write(resp)
 		})
 	})
+	// Kept Blends (jobsblends.go): after the first list, a warm request should
+	// compute none.
+	b.Logf("kept Blends: %d asked for, %d computed (the first list's included)",
+		res.blends.lookups.Load(), res.blends.misses.Load())
 }

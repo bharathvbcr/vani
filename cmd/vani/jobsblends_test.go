@@ -117,6 +117,9 @@ func TestJobsServeKeptBlendsAnswerAsTheCommand(t *testing.T) {
 	other.RankWeightsFile = weights
 	saveCfg(other)
 	changed("a weights file", check("a weights file"))
+	if reused("the weights file again") != last {
+		t.Fatal("the weights file again: an unchanged state answered differently")
+	}
 
 	// The target summary: the keyword part. The descriptions name Kubernetes,
 	// so the first summary scores them on it and the second on nothing.
@@ -134,6 +137,9 @@ func TestJobsServeKeptBlendsAnswerAsTheCommand(t *testing.T) {
 	other.RankPenalties = []config.RankPenalty{{Slot: "role_fit", Values: []string{"strong_fit"}}}
 	saveCfg(other)
 	changed("a rank penalty", check("a rank penalty"))
+	if reused("the penalty again") != last {
+		t.Fatal("the penalty again: an unchanged state answered differently")
+	}
 
 	// A weights file that cannot be read: the hand weights rank.
 	if err := os.WriteFile(weights, []byte("{"), 0o600); err != nil {
@@ -170,6 +176,9 @@ func TestJobsServeKeptBlendsAnswerAsTheCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed("a manual reading", check("a manual reading"))
+	if reused("the reading again") != last {
+		t.Fatal("the reading again: an unchanged state answered differently")
+	}
 
 	// An exclusion hides postings (their status, as this read sees it).
 	other.Exclude.Companies = []string{"Gamma"}
@@ -215,6 +224,13 @@ func TestJobsServeKeptBlendsSeeKBMatchReadings(t *testing.T) {
 	step("before any reading")
 	mustCode(t, 0, "kbmatch", "run")
 	step("readings recorded")
+	misses := res.blends.misses.Load()
+	if resp := s.runOp("again", serveOps["list"], []string{"--view", "all"}); !resp.OK || string(resp.Result) != last {
+		t.Fatal("readings recorded, asked again: the reply changed")
+	}
+	if n := res.blends.misses.Load() - misses; n != 0 {
+		t.Fatalf("readings recorded, asked again: %d Blends computed again", n)
+	}
 	bank := strings.Replace(kbmBank, "Cut decode latency", "Cut prefill latency", 1)
 	if err := os.WriteFile(k.bankPath, []byte(bank), 0o600); err != nil {
 		t.Fatal(err)
@@ -339,8 +355,11 @@ func TestBlendForGuards(t *testing.T) {
 	misses("a blurb learned", r, 1)
 	misses("again with the blurb", r, 0)
 	in.facts = nil
+	misses("its facts gone", r, 1)
+	misses("with its text", r, 0)
 	lean := r
 	lean.BodyEvicted = true
+	misses("the kept one, now held without text or facts", lean, 1)
 	misses("held without text or facts", lean, 1)
 	misses("still without", lean, 1)
 	if in.res.blends.store(blendKey{gen: 2}, 2) == in.blends {
