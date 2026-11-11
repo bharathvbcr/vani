@@ -43,6 +43,72 @@ this page does not call the difference a speedup or a regression:
   2026-11-07 run. The time does not. The Go version of that run was not
   recorded beside the number.
 
+## 2026-11-11, the Jobs read path at the live scale
+
+Same machine, `go1.27.3`, `VANI_NO_KEYCHAIN=1`. The state is a copy of the
+owner's live state: a 629 MB ledger of about 62k records, with a ledger
+checkpoint and a text facts store saved by an earlier run. Other sessions kept
+the load average between 59 and 230 throughout. Wall time for one command
+varied from 1.2 to 36 s, so the tables use CPU time. Its spread within an arm
+was at most 15%. The plan, [JOBS_READ_MODEL_PLAN.md](JOBS_READ_MODEL_PLAN.md),
+has each phase's own A/B.
+
+**Cold CLI, before and after.** `old` is `vani` built from `17ce448^` (before
+Phase 1b) with `go build -overlay` over the same tree. `new` is `a9f754c`. The
+runs were interleaved, 5 per arm, with the order alternating each round. Each
+row is `/usr/bin/time -l vani jobs list --json <args>`, and the figure is the
+minimum user CPU. In every row the slowest `new` run used less than a third of
+the CPU of the fastest `old` run.
+
+| `jobs list` | old user CPU (min, range) | new user CPU (min, range) | change | max RSS old / new |
+|---|---|---|---|---|
+| `--view new` | 8.37 s (8.37–8.75) | 2.08 s (2.08–2.27) | −75% | 1.28–1.53 / 0.57–0.66 GB |
+| `--view all --sort company` | 8.22 s (8.22–8.90) | 1.65 s (1.65–1.88) | −80% | 1.29–1.52 / 0.57–0.62 GB |
+| `--view new --sort salary` | 8.26 s (8.26–8.88) | 1.81 s (1.81–1.93) | −78% | 1.28–1.31 / 0.57–0.70 GB |
+| `--view saved` | 5.32 s (5.32–5.69) | 1.06 s (1.06–1.12) | −80% | 0.78–1.38 / 0.56–0.62 GB |
+
+**Resident serve.** `BenchmarkLiveServe`, `-benchtime=5x -count=3`, CPU per
+request from getrusage, user plus system. This is not the same measure as the
+user-only CPU in the table above. Not interleaved with the CLI.
+
+| Request | CPU per request (range of 3) | Allocated |
+|---|---|---|
+| first list, `--view new` (opens the checkpoint and the facts store) | 2.39–2.52 s | 1.60 GB |
+| warm `--view new` | 1.54–1.58 s | 702 MB |
+| warm `--view all --sort company` | 1.16–1.42 s | 554 MB |
+| warm `--view new --sort salary` | 1.23–1.45 s | 587 MB |
+| warm `--view saved` | 0.34–0.41 s | 176 MB |
+| warm `--view new --q engineer` | 1.34–1.52 s | 600 MB |
+| warm `stats --view new` | 1.80–1.92 s | 760 MB |
+
+Heap in use with the Reader and the facts store held: 360 MiB.
+
+These numbers miss two of the plan's targets. A warm view change takes about
+1.2–1.6 s of CPU, against a target under 200 ms. Resident heap is 360 MiB,
+against under 300 MB. The cold CLI target was under 1 s. Only `--view saved`
+comes near it.
+
+What remains is the ranking itself, run per request over every posting:
+`jobview.Select`, same-company grouping, location parsing, and the semantic
+scores decoded again on each request. That is the next piece of work. The
+Phase 4 section of the plan gives the profile.
+
+```bash
+VANI_NO_KEYCHAIN=1 VANI_BENCH_STATE=<state> VANI_BENCH_CONFIG=<config.json> \
+  go test -run '^$' -bench BenchmarkLiveServe -benchtime=5x -count=3 ./cmd/vani/
+```
+
+The CLI A/B used scratch scripts that were not committed. To repeat it:
+
+1. Build the old binary with `go build -overlay`, mapping each non-test `.go`
+   file changed since `17ce448^` to its `git show` copy and each added file
+   to `""`.
+2. Build the new binary plainly.
+3. Run the four `jobs list` commands with `VANI_STATE_DIR` and `VANI_CONFIG`
+   set, alternating which arm goes first each round.
+4. Record `real`, `user` and `maximum resident set size` from
+   `/usr/bin/time -l`.
+
 ## Not re-run on 2026-11-07
 
 - **Advance** (`BenchmarkAdvance` in `cmd/vani/advance_bench_test.go`). The

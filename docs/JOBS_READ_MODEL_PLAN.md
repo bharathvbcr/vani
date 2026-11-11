@@ -434,10 +434,26 @@ Each phase ships on its own and is useful by itself.
    The app's `JobsClient` asks serve for `list`, `stats`, `gaps` and `show`, and runs the command
    whenever serve cannot answer. Serve restarts once, 2 s after it dies. Row patching after a write
    and the stale `JobsModel` comment came with the Swift quick win (merge `6951e10`).
-6. **Prove it.** A committed benchmark in `docs/BENCHMARKS.md`: interleaved A/B runs, min-of-N,
-   old vs new at the live scale, for cold CLI read, serve's first reply and serve's warm reply.
-   Update `docs/RUNTIME.md` with the new entry point and files. Report lines removed alongside
-   lines added.
+6. **Prove it. Done; the targets are not met.** `docs/BENCHMARKS.md` ("2026-11-11, the Jobs read
+   path at the live scale") gives the results at the live scale.
+   - Cold `jobs list` dropped from 8.4 s to 2.1 s of user CPU (`--view new`). This is interleaved
+     A/B, min of 5, against a build from before Phase 1b.
+   - Serve's first reply takes 2.4–2.5 s of CPU.
+   - Serve's warm replies take 0.34–1.6 s of CPU.
+   - Serve holds 360 MiB of heap.
+
+   Neither the 200 ms warm target nor the 300 MB resident target is met. What remains is the
+   per-request ranking (Phase 4 results). `docs/RUNTIME.md` documents the read path, `jobs serve`
+   and the two `readmodel` files. The live parity dump at the end is byte-identical to the Phase 1b
+   dump.
+
+   Lines from Phase 1b to Phase 5, without the merged Swift quick win:
+   - code: about +2,520 / −140;
+   - tests: about +2,740;
+   - docs: +480.
+
+   Nothing was deleted outright. The removed lines are the old full-text fold and per-call
+   derivation in the jobs path, replaced in place.
 
 Targets, to be confirmed by Phase 0: cold CLI `jobs list` under 1 s; serve's warm sort, filter and
 view changes under 200 ms; serve's resident memory under 300 MB.

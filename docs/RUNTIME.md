@@ -601,6 +601,24 @@ to an `.xlsx` workbook using `internal/xlsx` (standard library `archive/zip` + X
 - An export holding roles an earlier one wrote asks in a terminal. Elsewhere it refuses with `code: already_exported` and writes nothing. `--already-exported skip` leaves those roles out, so `--top N` takes the next N not yet exported; `include` writes them again. `--dry-run` writes nothing and reports `already_exported`, `last_exported_at` and `last_file`.
 - A record that cannot be read stops the export before the workbook is written. If the record cannot be written afterwards, the export exits 1 and names the workbook it wrote.
 
+## The Jobs tab's read path (`vani jobs list|stats|gaps|show`, `vani jobs serve`)
+
+The Jobs views read the ledger without its lock, through a `ledger.Reader` that starts from
+`<state>/readmodel/ledger.ckpt` and folds only the lines appended since. `list`, `stats` and
+`gaps` then load a description only for a posting whose stored text facts
+(`<state>/readmodel/jobfacts`) no longer describe it; with an `exclude.descriptions` rule they
+load every description a view reads, as the rule must see the text. `show` loads the
+descriptions of the shown posting's company only (`rowScope`). None of them reads a key or writes
+the ledger.
+
+The Mac app runs one `vani jobs serve` per vani binary, config and state folder
+(`JobsServeClient` in `VaniApplyKit`), with the same environment as its other `vani` calls. It
+keeps the Reader and the facts store between requests and reads marks, the config and every other
+store per request, so its replies are the commands' (`params.args` are the command's flags; the
+result is the command's `--json` reply). It exits when the app closes its stdin. Until it has
+said hello, after it dies (it is restarted once, two seconds later), or when it is busy, the app
+runs the command instead.
+
 ## Runtime state, cooldowns and locks
 
 State directory files and locks created during operations:
@@ -621,6 +639,8 @@ State directory files and locks created during operations:
 | `<state>/retriage/readings.jsonl` | Manual triage readings from `vani jobs retriage` (and `--batch`), append-only, written without holding the ledger lock. |
 | `<state>/resume-build.lock` | Process try-lock serializing paid model builds and renders per state directory. |
 | `<state>/resume-chrome.lock` | Whole-file lock serializing headless Chrome PDF fitting passes. |
+| `<state>/readmodel/ledger.ckpt` | The Jobs reads' checkpoint of the ledger fold (`ledger.Reader`): lean records, where each description sits in `ledger/events.jsonl`, and the covered prefix of that file. Gob. Saved by any jobs read that folded at least 8 MiB of new lines, under `ledger.ckpt.lock` (a try-lock: a reader that finds it held skips the save). Trusted only while its format, the events file's identity and size, its last covered line and 32 sampled lines match; otherwise the read folds the whole file. Safe to delete. |
+| `<state>/readmodel/jobfacts` | The Jobs views' text facts (`internal/jobfacts`): per posting, keyword hits, text hashes, stated pay and the knowledge-base match prefix, filed under the description's fingerprint. Gob, replaced atomically under `jobfacts.lock` (try-lock). A store from another build's derivers is not read. Safe to delete; the next `jobs list` derives it again (about 26k postings, a few seconds). |
 
 ## Runtime reliability & defensive checks
 
