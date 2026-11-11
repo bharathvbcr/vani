@@ -440,10 +440,10 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 }
 
 // newListInsight is newInsight over a Jobs view read (jobsListRead): every
-// posting's keywords, pay and text hashes come from the read's facts.
+// posting's keywords, pay and text hashes come from the read's facts, and its
+// config is the one the read loaded.
 func (e *env) newListInsight(halfLife float64, rd jobsRead) (*insight, error) {
-	cfg, err := e.loadConfig()
-	return newInsightWith(cfg, err, e.stateDir, halfLife, rd.snap, rd.m, "", rd.facts, e.resident, rd.gen)
+	return newInsightWith(rd.cfg, rd.cfgErr, e.stateDir, halfLife, rd.snap, rd.m, "", rd.facts, e.resident, rd.gen)
 }
 
 // newInsightWith is newInsightScoped over facts (nil: derive from the text).
@@ -493,7 +493,9 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	// the store changed while it was read.
 	kb, kbOK := "", true
 	if err == nil {
-		in.attachSemantic(cfg, stateDir)
+		// One knowledge-base profile (one rkb run) for both lookups that read it.
+		profile := onceProfile(cfg)
+		in.attachSemantic(cfg, stateDir, profile)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
 		if in.rc.TitleRank != nil && in.memo != nil {
 			in.rc.TitleRank = in.memo.titleRank(cfg.TitleSignals)
@@ -508,7 +510,7 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 		if res != nil {
 			before = kbStat(stateDir)
 		}
-		in.rc.KBMatch, warn, kb = kbmatchLookupKeyed(cfg, stateDir, in.kbHashOf)
+		in.rc.KBMatch, warn, kb = kbmatchLookupKeyed(cfg, stateDir, in.kbHashOf, profile)
 		if res != nil {
 			kbOK = before == kbStat(stateDir)
 			kb = before + " " + kb

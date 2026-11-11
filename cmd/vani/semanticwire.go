@@ -136,6 +136,26 @@ func semanticProfile(ctx context.Context, cfg config.Config) (semantic.Profile, 
 	return p, err
 }
 
+// profileFunc is the knowledge-base profile of one config (semanticProfile).
+type profileFunc func() (semantic.Profile, error)
+
+// onceProfile is semanticProfile(cfg), built on its first call and answered
+// from then on: one read builds the profile once for its semantic lookup and
+// its kbmatch lookup (each runs rkb).
+func onceProfile(cfg config.Config) profileFunc {
+	var once sync.Once
+	var p semantic.Profile
+	var err error
+	return func() (semantic.Profile, error) {
+		once.Do(func() {
+			ctx, cancel := boundedKBContext()
+			defer cancel()
+			p, err = semanticProfile(ctx, cfg)
+		})
+		return p, err
+	}
+}
+
 // boundedKBContext is a context for callers that hold none of their own: the
 // ranking views read the profile to find their cache.
 func boundedKBContext() (context.Context, context.CancelFunc) {
@@ -546,19 +566,20 @@ func (e *env) logSemantic(rep semanticReport) {
 // opened; warning says why in the last two cases. Unknown stays unknown: the
 // ranker takes its prior, never a score of 0.
 func semanticLookup(cfg config.Config, stateDir string) (m *semantic.Matcher, warning string) {
-	return semanticLookupKept(cfg, stateDir, nil)
+	return semanticLookupKept(cfg, stateDir, nil, nil)
 }
 
 // semanticLookupKept is semanticLookup that opens through kept (a resident
 // reader's, semantic.Lookups), so an unchanged score file is not decoded
 // again; nil opens it now.
-func semanticLookupKept(cfg config.Config, stateDir string, kept *semantic.Lookups) (m *semantic.Matcher, warning string) {
+func semanticLookupKept(cfg config.Config, stateDir string, kept *semantic.Lookups, profile profileFunc) (m *semantic.Matcher, warning string) {
 	if !cfg.SemanticOn() {
 		return nil, ""
 	}
-	ctx, cancel := boundedKBContext()
-	defer cancel()
-	prof, err := semanticProfile(ctx, cfg)
+	if profile == nil {
+		profile = onceProfile(cfg)
+	}
+	prof, err := profile()
 	if err != nil {
 		return nil, "knowledge-base matching is off: the profile could not be built: " + oneLine(err.Error(), 200)
 	}
@@ -624,12 +645,12 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)
 // and points the ranking at it. A failure is a warning on the listing and
 // leaves semantic unknown.
-func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
+func (in *insight) attachSemantic(cfg config.Config, stateDir string, profile profileFunc) {
 	var kept *semantic.Lookups
 	if in.res != nil {
 		kept = &in.res.lookups
 	}
-	m, warning := semanticLookupKept(cfg, stateDir, kept)
+	m, warning := semanticLookupKept(cfg, stateDir, kept, profile)
 	if warning != "" {
 		if in.info.Warning != "" {
 			in.info.Warning += "; "

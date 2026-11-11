@@ -10,25 +10,34 @@ import (
 	"time"
 )
 
-// cpuTime is this process's user and system CPU so far: under the load other
-// work puts on the machine, wall time per op is not the cost, CPU is.
-func cpuTime(b *testing.B) time.Duration {
-	var ru syscall.Rusage
+// cpuTime is the user and system CPU so far of this process (self) and of the
+// children it waited for (the rkb a request runs for the knowledge-base
+// profile): under the load other work puts on the machine, wall time per op is
+// not the cost, CPU is.
+func cpuTime(b *testing.B) (self, children time.Duration) {
+	var ru, rc syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
 		b.Fatal(err)
 	}
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+	if err := syscall.Getrusage(syscall.RUSAGE_CHILDREN, &rc); err != nil {
+		b.Fatal(err)
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano()), time.Duration(rc.Utime.Nano() + rc.Stime.Nano())
 }
 
-// loopCPU runs body as b.Loop does and reports its CPU per op.
+// loopCPU runs body as b.Loop does and reports its CPU per op: cpu-ms/op is
+// this process's, child-cpu-ms/op its children's.
 func loopCPU(b *testing.B, body func()) {
 	b.ReportAllocs()
-	start, n := cpuTime(b), 0
+	self0, child0 := cpuTime(b)
+	n := 0
 	for b.Loop() {
 		body()
 		n++
 	}
-	b.ReportMetric(float64(cpuTime(b)-start)/float64(n)/1e6, "cpu-ms/op")
+	self, child := cpuTime(b)
+	b.ReportMetric(float64(self-self0)/float64(n)/1e6, "cpu-ms/op")
+	b.ReportMetric(float64(child-child0)/float64(n)/1e6, "child-cpu-ms/op")
 }
 
 // BenchmarkLiveServe is what `vani jobs serve` costs on a real state dir, by

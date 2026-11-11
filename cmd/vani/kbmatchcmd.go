@@ -583,14 +583,15 @@ func kbmatchLookup(cfg config.Config, stateDir string) (func(ledger.Record) (job
 // without its description is looked up as if it were read whole); nil hashes
 // the resident text.
 func kbmatchLookupBy(cfg config.Config, stateDir string, hash func(ledger.Record, string, kbmatch.Digest) string) (func(ledger.Record) (jobinsight.Slot, bool), string) {
-	f, warn, _ := kbmatchLookupKeyed(cfg, stateDir, hash)
+	f, warn, _ := kbmatchLookupKeyed(cfg, stateDir, hash, nil)
 	return f, warn
 }
 
 // kbmatchLookupKeyed is kbmatchLookupBy and what its lookups read besides the
 // store and the record: the knowledge-base profile's digest and the normalized
-// target summary ("" when the lookup is nil).
-func kbmatchLookupKeyed(cfg config.Config, stateDir string, hash func(ledger.Record, string, kbmatch.Digest) string) (func(ledger.Record) (jobinsight.Slot, bool), string, string) {
+// target summary ("" when the lookup is nil). profile builds the knowledge-base
+// profile (a caller shares one with its semantic lookup); nil builds it here.
+func kbmatchLookupKeyed(cfg config.Config, stateDir string, hash func(ledger.Record, string, kbmatch.Digest) string, profile profileFunc) (func(ledger.Record) (jobinsight.Slot, bool), string, string) {
 	const notUsed = "language-model reads of your work not used: "
 	path := filepath.Join(stateDir, kbmatch.FileName)
 	st, err := kbmatch.OpenStore(path)
@@ -604,9 +605,10 @@ func kbmatchLookupKeyed(cfg config.Config, stateDir string, hash func(ledger.Rec
 	if err != nil {
 		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}
-	ctx, cancel := boundedKBContext()
-	defer cancel()
-	prof, err := semanticProfile(ctx, cfg)
+	if profile == nil {
+		profile = onceProfile(cfg)
+	}
+	prof, err := profile()
 	if err != nil {
 		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}

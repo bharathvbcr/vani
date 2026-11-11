@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
 	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -30,6 +31,10 @@ type jobsRead struct {
 	// gen is the resident Reader's generation snap was taken at
 	// (jobsResident.read); 0 without a resident.
 	gen uint64
+	// cfg is the config this read was taken under (cfgErr why it could not
+	// be read): the view's insight ranks under the same one, read once.
+	cfg    config.Config
+	cfgErr error
 }
 
 // textFacts is each in-scope record's facts for one read. The slices in a
@@ -248,7 +253,7 @@ func (e *env) jobsListRead() (jobsRead, error) {
 		hideExcluded(snap.Records, m, cfg.Exclude)
 	}
 	e.lastFacts = tf
-	return jobsRead{snap: snap, m: m, facts: tf, gen: gen}, nil
+	return jobsRead{snap: snap, m: m, facts: tf, gen: gen, cfg: cfg, cfgErr: cfgErr}, nil
 }
 
 // jobsView is jobsListRead and its insight, for one Jobs view command. The

@@ -24,7 +24,7 @@ func TestInsightSemanticMatchFollowsThePostingText(t *testing.T) {
 		t.Fatalf("warm %+v", rep)
 	}
 	in := &insight{}
-	in.attachSemantic(cfg, state)
+	in.attachSemantic(cfg, state, nil)
 	if in.sem == nil || in.rc.Semantic == nil {
 		t.Fatalf("no matcher after the warm: %q", in.info.Warning)
 	}
