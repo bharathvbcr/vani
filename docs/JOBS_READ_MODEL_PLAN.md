@@ -223,6 +223,58 @@ wall (Phase 1b's baseline, a quieter machine) to about 2 s of CPU. What is left 
 process start, the checkpoint load (76 MB of gob for 62k lean records) and the ranking itself;
 the first two are what a resident serve keeps.
 
+## Phase 4 results (2026-11-11)
+
+What was built (Layer 3, read ops):
+
+- `vani jobs serve` (`cmd/vani/jobsserve.go`). Manvi's serve contract, copied: NDJSON, `{id, op,
+  params}` in and exactly one `{id, ok, result|error}` out per request, errors as values, unknown
+  fields ignored, major-only `protocol` 1, `hello` reports the ops and each op's deadline.
+- Ops `list`, `stats`, `gaps`, `show`. `params.args` are the command's own flags, and the result
+  is byte for byte what `vani jobs <op> --json` prints (`TestJobsServeAnswersAsTheCommand`), so
+  the app decodes one set of types.
+- Resident between requests: the ledger `Reader`, advanced before each read, and the facts store.
+  Marks, config, the clock and every other store are read per request, as the command reads them
+  (`TestJobsServeReadsTheLatestState`).
+- Bounds: 64 KiB request lines (a longer one is refused with its id, and the session lives on),
+  4 requests computing at once (past it `E_BUSY`, retryable), a 30 s deadline per request
+  (`E_TIMEOUT`, retryable). The drafted 10 s was too short for the first list after a vocabulary
+  change, which derives every posting's facts. A newer `list`, `stats` or `gaps` answers the older
+  one `E_SUPERSEDED` at once; its computation is not interrupted (the list path takes no context)
+  and still counts against the 4. A panic is `E_INTERNAL`. Closing stdin exits once every
+  accepted request is answered.
+
+Measured (`BenchmarkLiveServe`, `cmd/vani/jobsserve_bench_test.go`). The state was a copy of the
+live state, 62k records, `-benchtime=5x -count=3`. The machine's load average was about 86 from
+other sessions, so the table gives CPU time per request (getrusage), not wall time:
+
+| Request | CPU per request (3 counts) | Allocated per request |
+|---|---|---|
+| first list, `--view new` (Reader from the checkpoint, facts store opened) | 2.39–2.52 s | 1.60 GB |
+| warm `--view new` | 1.54–1.58 s | 702 MB |
+| warm `--view all --sort company` | 1.16–1.42 s | 554 MB |
+| warm `--view new --sort salary` | 1.23–1.45 s | 587 MB |
+| warm `--view saved` | 0.34–0.41 s | 176 MB |
+| warm `--view new --q engineer` | 1.34–1.52 s | 600 MB |
+| warm `stats --view new` | 1.80–1.92 s | 760 MB |
+
+Heap in use after a list, with the Reader and the facts store held: 360 MiB.
+
+**These miss two Phase 6 targets.** A warm view change takes about 1.2–1.6 s of CPU, not under
+200 ms. Resident heap is 360 MiB, not under 300 MB. Serve takes away the process start, the
+checkpoint load and the facts derivation. It does not take away the per-request ranking.
+A CPU profile of warm `--view new` puts the time in these places:
+
+- `jobview.Select`'s allocation and slice growth: 27%.
+- `samecompany`'s `groupsOf`, `roleTitle` and `looseLocation`: 15%.
+- `location.Parse`, called twice per row: 10–14%.
+- The semantic scores file, decoded again on each request: 4%.
+- The rest is GC and memclr.
+
+Each of these is a cost per request over every posting. A resident view
+would have to cache the ranked selection, keyed on marks, config and the clock bucket. That is
+follow-up work, not part of this phase.
+
 ## Target architecture
 
 Four layers. Each one owns one thing, and each makes the layers above it cheap.
@@ -373,7 +425,8 @@ Each phase ships on its own and is useful by itself.
    invalidation step (it replaces the file).
 3. **Text facts store (Layer 2). Done; see "Phase 3 results".** Built as `internal/jobfacts`, not
    `internal/jobindex`: it holds every text-derived fact a view reads, not only hits.
-4. **`vani jobs serve` (Layer 3),** read ops first, then writes.
+4. **`vani jobs serve` (Layer 3). Read ops done; see "Phase 4 results".** Writes (`mark`, `note`,
+   `stage`) still go through the command.
 5. **Swift client and fallback (Layer 4).**
 6. **Prove it.** A committed benchmark in `docs/BENCHMARKS.md`: interleaved A/B runs, min-of-N,
    old vs new at the live scale, for cold CLI read, serve's first reply and serve's warm reply.

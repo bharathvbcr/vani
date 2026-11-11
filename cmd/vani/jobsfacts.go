@@ -46,6 +46,58 @@ type textFacts struct {
 // checkpoint.
 func (e *env) jobsFactsPath() string { return filepath.Join(e.stateDir, "readmodel", "jobfacts") }
 
+// jobsResident is what a long-lived Jobs reader (`vani jobs serve`) keeps
+// between reads: one ledger Reader, advanced to the events file's end before
+// each read, and the facts store, opened once. A command run once has none and
+// opens both for its one read.
+type jobsResident struct {
+	rd    *ledger.Reader
+	store *jobfacts.Store
+}
+
+// openJobsResident opens the ledger Reader (from the jobs checkpoint) and the
+// facts store for e's state.
+func (e *env) openJobsResident() (*jobsResident, error) {
+	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
+	if err != nil {
+		return nil, fmt.Errorf("jobs: read the ledger: %w", err)
+	}
+	v, err := jobinsight.Default()
+	if err != nil {
+		rd.Close()
+		return nil, err
+	}
+	return &jobsResident{rd: rd, store: jobfacts.Open(e.jobsFactsPath(), jobfacts.Version(v))}, nil
+}
+
+// Close releases the events file.
+func (r *jobsResident) Close() error { return r.rd.Close() }
+
+// jobsReader is the ledger Reader for one Jobs read and its release: the
+// resident one, advanced to the events file's end, or a new one.
+func (e *env) jobsReader() (*ledger.Reader, func(), error) {
+	if e.resident != nil {
+		if _, err := e.resident.rd.Advance(); err != nil {
+			return nil, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		}
+		return e.resident.rd, func() {}, nil
+	}
+	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
+	if err != nil {
+		return nil, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+	}
+	return rd, func() { rd.Close() }, nil
+}
+
+// jobsFactsStore is the facts store for one Jobs read: the resident one, or
+// the one on disk opened now.
+func (e *env) jobsFactsStore(v *jobinsight.Vocab) *jobfacts.Store {
+	if e.resident != nil {
+		return e.resident.store
+	}
+	return jobfacts.Open(e.jobsFactsPath(), jobfacts.Version(v))
+}
+
 // jobsListRead is jobsState for the Jobs views (list, stats, gaps): the same
 // snapshot, marks and exclusions, with text facts in place of descriptions
 // wherever the stored facts still describe the posting.
@@ -57,11 +109,11 @@ func (e *env) jobsFactsPath() string { return filepath.Join(e.stateDir, "readmod
 // must match its text. Facts derived here are saved for the next read, and the
 // store forgets postings no view reads.
 func (e *env) jobsListRead() (jobsRead, error) {
-	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
+	rd, release, err := e.jobsReader()
 	if err != nil {
-		return jobsRead{}, fmt.Errorf("jobs: read the ledger: %w", err)
+		return jobsRead{}, err
 	}
-	defer rd.Close()
+	defer release()
 	snap := rd.Snapshot()
 	m, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
@@ -73,7 +125,7 @@ func (e *env) jobsListRead() (jobsRead, error) {
 	if err != nil {
 		return jobsRead{}, err
 	}
-	store := jobfacts.Open(e.jobsFactsPath(), jobfacts.Version(v))
+	store := e.jobsFactsStore(v)
 	tf := &textFacts{m: map[posting.Key]jobfacts.Facts{}, Store: store.Info()}
 
 	keep := jobsTextScope(m)

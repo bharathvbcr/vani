@@ -97,6 +97,7 @@ var jsonLeaves = []jsonLeaf{
 	{"labels", jsonFlag, ""},
 	{"jobs list", jsonFlag, ""},
 	{"jobs stats", jsonFlag, ""},
+	{"jobs serve", jsonNone, "answers list, stats, gaps and show as NDJSON on stdin/stdout, one response line per request line; each result is that command's --json reply"},
 	{"jobs export", jsonFlag, ""},
 	{"jobs folders", jsonFlag, ""},
 	{"jobs show", jsonFlag, ""},

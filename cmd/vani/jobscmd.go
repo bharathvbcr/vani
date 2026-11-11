@@ -31,7 +31,7 @@ const (
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage, resume or cover")
+		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage, resume, cover or serve")
 	}
 	switch args[0] {
 	case "list":
@@ -40,6 +40,8 @@ func (e *env) cmdJobs(args []string) error {
 		return e.jobsExport(args[1:])
 	case "stats":
 		return e.jobsStatsCmd(args[1:])
+	case "serve":
+		return e.jobsServe(args[1:])
 	case "folders", "categories":
 		return e.jobsFolders(args[1:])
 	case "show":
@@ -500,11 +502,11 @@ func rowRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool, error)
 // Records left bodiless are matched against the exclusion rules only when no
 // rule reads descriptions (hideExcluded).
 func (e *env) jobsStateFor(scope func(ledger.Snapshot) func(ledger.Record) bool) (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
-	rd, err := ledger.OpenReader(filepath.Join(e.stateDir, "ledger"), e.jobsReaderOptions())
+	rd, release, err := e.jobsReader()
 	if err != nil {
-		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		return ledger.Snapshot{}, nil, err
 	}
-	defer rd.Close()
+	defer release()
 	snap := rd.Snapshot()
 	m, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
