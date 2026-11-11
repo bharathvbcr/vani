@@ -248,10 +248,7 @@ extension JobsClient {
     /// you lack. Display-only. `cancellation` stops it as it does `list`.
     public func gaps(_ view: JobView, query: String = "", filter: JobFilter = JobFilter(),
                      cancellation: CancelFlag? = nil) throws -> JobsGaps {
-        try VaniProcess.call(vaniBinary, Self.gapsArguments(view, query: query, filter: filter),
-                             configPath: configPath, stateDir: stateDir, timeout: timeout,
-                             maxOutputBytes: JobsGaps.maxReplyBytes, decoder: Self.decoder,
-                             tooOld: "this vani is too old for skills to build; rebuild the app",
-                             cancellation: cancellation)
+        try call(Self.gapsArguments(view, query: query, filter: filter), maxOutputBytes: JobsGaps.maxReplyBytes,
+                 tooOld: "this vani is too old for skills to build; rebuild the app", cancellation: cancellation)
     }
 }

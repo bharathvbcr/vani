@@ -1535,12 +1535,17 @@ public struct JobsClient: Sendable {
     /// the flag keeps working until the setting is used.
     public let halfLifeDays: Double?
     let timeout: TimeInterval
+    /// The app's resident `vani jobs serve` (`JobsServeClient.shared`), which answers list,
+    /// stats, gaps and show without a process per call; nil runs every command.
+    public let serve: JobsServeClient?
 
-    public init(vaniBinary: URL, configPath: String? = nil, stateDir: String? = nil, halfLifeDays: Double? = nil, timeout: TimeInterval = JobsClient.timeout) {
+    public init(vaniBinary: URL, configPath: String? = nil, stateDir: String? = nil, halfLifeDays: Double? = nil,
+                timeout: TimeInterval = JobsClient.timeout, serve: JobsServeClient? = nil) {
         self.vaniBinary = vaniBinary
         self.configPath = configPath
         self.stateDir = stateDir
         self.halfLifeDays = halfLifeDays
+        self.serve = serve
         self.timeout = timeout
     }
 
@@ -1664,10 +1669,28 @@ public struct JobsClient: Sendable {
         return args + halfLifeArguments(halfLifeDays) + selection(query, filter)
     }
 
-    func call<T: Decodable>(_ args: [String], cancellation: CancelFlag? = nil) throws -> T {
-        try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir,
-                             timeout: timeout, maxOutputBytes: Self.maxOutputBytes, decoder: Self.decoder,
-                             tooOld: "this vani is too old for Jobs; rebuild the app", cancellation: cancellation)
+    /// Runs `vani <args>` and decodes its reply. `jobs list|stats|gaps|show --json` go to the
+    /// resident serve when there is one and it can answer (its reply is the command's, read the
+    /// same way); otherwise, and for every other command, the command runs.
+    func call<T: Decodable>(_ args: [String], maxOutputBytes: Int = JobsClient.maxOutputBytes,
+                            tooOld: String = "this vani is too old for Jobs; rebuild the app",
+                            cancellation: CancelFlag? = nil) throws -> T {
+        if let serve, args.count >= 3, args[0] == "jobs", args[2] == "--json", JobsServeClient.ops.contains(args[1]),
+           let answer = try serve.ask(op: args[1], args: Array(args.dropFirst(3)), timeout: timeout, cancellation: cancellation) {
+            let name = "vani jobs \(args[1])"
+            switch answer {
+            case .failed(let message):
+                throw BankError(message)
+            case .reply(let reply):
+                guard reply.count <= maxOutputBytes else { throw VaniProcess.tooLarge(maxOutputBytes) }
+                return try VaniProcess.decodeReply(reply, name: name, decoder: Self.decoder) {
+                    BankError("\(name) sent a reply this app cannot read")
+                }
+            }
+        }
+        return try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir,
+                                    timeout: timeout, maxOutputBytes: maxOutputBytes, decoder: Self.decoder,
+                                    tooOld: tooOld, cancellation: cancellation)
     }
 
     /// Go writes RFC 3339 times with optional fractional seconds and an offset.

@@ -164,12 +164,13 @@ public struct DraftSettings: Codable, Equatable, Sendable {
 
     /// `vani jobs` with the same config and state folder as drafting, so the app's Jobs
     /// tab, the Chrome host and the agent all read and write one set of marks. It reads no key.
-    public func jobsClient(vaniBinary: URL, timeout: TimeInterval = JobsClient.timeout) -> JobsClient {
-        JobsClient(vaniBinary: vaniBinary,
-                   configPath: vaniConfig.isEmpty ? nil : vaniConfig,
-                   stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,
-                   halfLifeDays: jobsHalfLifeDays,
-                   timeout: timeout)
+    /// `resident` asks the app's one `vani jobs serve` for these paths (JobsServeClient.shared)
+    /// to answer the views; only the app sets it, so a short-lived process starts no serve.
+    public func jobsClient(vaniBinary: URL, timeout: TimeInterval = JobsClient.timeout, resident: Bool = false) -> JobsClient {
+        let config = vaniConfig.isEmpty ? nil : vaniConfig, state = vaniStateDir.isEmpty ? nil : vaniStateDir
+        return JobsClient(vaniBinary: vaniBinary, configPath: config, stateDir: state,
+                          halfLifeDays: jobsHalfLifeDays, timeout: timeout,
+                          serve: resident ? JobsServeClient.shared(binary: vaniBinary, configPath: config, stateDir: state) : nil)
     }
 
     /// A runner for `vaniBinary` with these paths and this account. By default

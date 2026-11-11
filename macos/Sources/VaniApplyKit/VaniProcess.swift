@@ -239,31 +239,49 @@ extension VaniProcess {
         let (out, name) = try finished(binary, args, configPath: configPath, stateDir: stateDir, input: input,
                                        timeout: timeout, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
         guard out.status == 0 else { throw failure(out, name: name, decoder: decoder, tooOld: tooOld) }
+        return try decodeReply(out.stdout, name: name, decoder: decoder) {
+            failure(out, name: name, decoder: decoder, tooOld: tooOld)
+        }
+    }
+
+    /// A command's reply, read as `call` reads a command's stdout: a reply of another contract
+    /// version (VersionedReply) is refused as that, `{"error": ...}` is thrown as is, and a reply
+    /// of the wrong shape names where it went wrong. `unreadable` is the error for bytes that are
+    /// no reply at all. `JobsServeClient`'s replies are read here too, so a reply means the same
+    /// whichever way it came.
+    static func decodeReply<T: Decodable>(_ reply: Data, name: String, decoder: JSONDecoder,
+                                          unreadable: () -> BankError) throws -> T {
         // A reply of another contract version is named as that before anything else is read from it:
         // its shape is not this app's to judge.
         if let versioned = T.self as? VersionedReply.Type {
             do {
-                if let seen = try decoder.decode(VersionProbe.self, from: out.stdout).version, seen != versioned.supportedVersion {
+                if let seen = try decoder.decode(VersionProbe.self, from: reply).version, seen != versioned.supportedVersion {
                     throw BankError("\(name) reports reply version \(seen); this app reads version \(versioned.supportedVersion). Rebuild the app.")
                 }
             } catch is DecodingError {
                 // JSON whose version this app cannot hold (1.5, a string, 10^23) is a version problem,
                 // named without the value; only non-JSON is "without a reply".
-                if let object = (try? JSONSerialization.jsonObject(with: out.stdout)) as? [String: Any],
+                if let object = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any],
                    let raw = object["version"], !(raw is NSNull) {
                     throw BankError("\(name) sent a reply this app cannot read: version is not an integer this app can hold. Rebuild the app.")
                 }
             }
         }
         do {
-            return try decoder.decode(T.self, from: out.stdout)
+            return try decoder.decode(T.self, from: reply)
         } catch let error as DecodingError {
-            if let reported = try? decoder.decode(Failure.self, from: out.stdout) { throw BankError(reported.error) }
+            if let reported = try? decoder.decode(Failure.self, from: reply) { throw BankError(reported.error) }
             if let place = describe(error) { throw BankError("\(name) sent a reply this app cannot read: \(place)") }
-            throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+            throw unreadable()
         } catch {
-            throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+            throw unreadable()
         }
+    }
+
+    /// The error for a reply past `maxOutputBytes`, however it came.
+    static func tooLarge(_ maxOutputBytes: Int) -> BankError {
+        let cap = maxOutputBytes >= 1 << 20 ? "\(maxOutputBytes >> 20) MB" : "\(maxOutputBytes >> 10) KB"
+        return BankError("vani's reply was larger than \(cap)")
     }
 
     /// Where a reply of the wrong shape went wrong, as a path of keys and positions and the kind
@@ -312,8 +330,7 @@ extension VaniProcess {
         if let launchError = out.launchError { throw BankError(launchError) }
         if out.cancelled { throw VaniCallCancelled(command: name) }
         if out.timedOut { throw BankError("\(name) did not finish within \(Int(timeout)) s") }
-        let cap = maxOutputBytes >= 1 << 20 ? "\(maxOutputBytes >> 20) MB" : "\(maxOutputBytes >> 10) KB"
-        if out.truncated { throw BankError("vani's reply was larger than \(cap)") }
+        if out.truncated { throw tooLarge(maxOutputBytes) }
         return (out, name)
     }
 

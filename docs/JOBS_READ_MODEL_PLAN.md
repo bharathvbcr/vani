@@ -427,7 +427,13 @@ Each phase ships on its own and is useful by itself.
    `internal/jobindex`: it holds every text-derived fact a view reads, not only hits.
 4. **`vani jobs serve` (Layer 3). Read ops done; see "Phase 4 results".** Writes (`mark`, `note`,
    `stage`) still go through the command.
-5. **Swift client and fallback (Layer 4).**
+5. **Swift client and fallback (Layer 4). Done.** As built, `JobsServeClient`
+   (`macos/Sources/VaniApplyKit/JobsServe.swift`) runs its own `Process` rather than
+   `VaniProcess.launch`, because a `LaunchedJob` reads one reply and exits, and serve does neither.
+   It shares `VaniProcess.environment`, `decodeReply` and the reply size cap with the command path.
+   The app's `JobsClient` asks serve for `list`, `stats`, `gaps` and `show`, and runs the command
+   whenever serve cannot answer. Serve restarts once, 2 s after it dies. Row patching after a write
+   and the stale `JobsModel` comment came with the Swift quick win (merge `6951e10`).
 6. **Prove it.** A committed benchmark in `docs/BENCHMARKS.md`: interleaved A/B runs, min-of-N,
    old vs new at the live scale, for cold CLI read, serve's first reply and serve's warm reply.
    Update `docs/RUNTIME.md` with the new entry point and files. Report lines removed alongside
