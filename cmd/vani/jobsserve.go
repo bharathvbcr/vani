@@ -134,6 +134,7 @@ func (e *env) jobsServe(args []string) error {
 	if fs.NArg() > 0 {
 		return usagef("jobs serve: takes no arguments (requests arrive on stdin)")
 	}
+	setServeMemoryLimit(os.Getenv)
 	res, err := e.openJobsResident()
 	if err != nil {
 		return err
@@ -141,6 +142,27 @@ func (e *env) jobsServe(args []string) error {
 	defer res.Close()
 	s := newJobsServer(e, res, e.stdout)
 	return s.serve(serveStdin)
+}
+
+// serveMemoryLimit is serve's soft heap limit (runtime/debug.SetMemoryLimit)
+// when GOMEMLIMIT does not set one. Measured on a 60k-posting state
+// (docs/BENCHMARKS.md, 2026-11-11): serve's live heap is about 480 MiB, and
+// without a limit the collector lets the process peak at 0.91-0.95 GB. At
+// 800 MiB the peak was 0.84-0.85 GB for no measurable CPU; at 650 MiB,
+// 0.73 GB for about a third more CPU, which is why the default is not lower.
+// It is soft: past it the collector runs more often (the runtime caps that at
+// about half the CPU), it never refuses memory. Set GOMEMLIMIT to choose
+// another, or GOMEMLIMIT=off for none.
+const serveMemoryLimit = 800 << 20
+
+// setServeMemoryLimit sets serveMemoryLimit unless getenv("GOMEMLIMIT") names
+// one (the runtime has read it). It reports whether it set the limit.
+func setServeMemoryLimit(getenv func(string) string) bool {
+	if getenv("GOMEMLIMIT") != "" {
+		return false
+	}
+	debug.SetMemoryLimit(serveMemoryLimit)
+	return true
 }
 
 // serveStdin is the request stream; a test replaces it.

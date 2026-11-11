@@ -317,7 +317,7 @@ heavier requests' garbage, and did not fall. **Both targets are still missed.** 
 in the view: `ToJob`, the score and the sort. The next step is planned below ("Plan: page-only
 rows and a two-stage score").
 
-## Plan: page-only rows and a two-stage score (proposed 2026-11-11; A and B built)
+## Plan: page-only rows and a two-stage score (proposed 2026-11-11; A–D built and measured)
 
 ### Where a warm request's CPU goes now
 
@@ -458,6 +458,12 @@ dump is unchanged (`75bf02f2…`). Interleaved A/B against b9036fd, 3 rounds:
 
 The kept rows and Blends cost about 35 MiB of heap, inside the plan's 10–30 MiB estimate plus a
 little. The 200 ms target is still missed: about 400 ms of CPU per warm view, under load.
+
+**Phase D results.** Measured settings: no limit, `GOMEMLIMIT` at 1 GiB, 800 MiB and 650 MiB,
+and `GOGC=50` (table in BENCHMARKS.md). Serve now defaults to an 800 MiB soft limit when
+`GOMEMLIMIT` is unset. That takes the peak from 0.91–0.95 GB to 0.84–0.85 GB for no measurable
+CPU. A tighter cap is the owner's call (question 2): 650 MiB reached 0.73 GB for about a third
+more CPU, and `GOGC=50` reached 0.76 GB for about 8% more.
 
 **Expected after A–C (inferred before measuring; superseded by the table above):** about 250 ms on the goroutine. The read and
 insight build (~120 ms) and the 1,000-row page (~70 ms) stay, so roughly 300 ms of CPU per warm

@@ -625,7 +625,8 @@ blend, the part that reads no clock and no marks, under a key naming everything 
 resolved for it: the generation, weights, rules, title signals, target, semantic scores, kbmatch
 store and digest, and manual readings (`cmd/vani/jobsblends.go`). Each request closes the blend
 with its own clock and marks. Nothing it keeps is computed from the marks, the clock or a request's
-flags. It exits when the app closes its stdin. Until it has
+flags. It sets an 800 MiB soft heap limit when `GOMEMLIMIT` is unset (`serveMemoryLimit`;
+`GOMEMLIMIT=off` sets none). It exits when the app closes its stdin. Until it has
 said hello, after it dies (it is restarted once, two seconds later), or when it is busy, the app
 runs the command instead.
 

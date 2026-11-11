@@ -158,6 +158,49 @@ VANI_NO_KEYCHAIN=1 VANI_BENCH_STATE=<state> VANI_BENCH_CONFIG=<config.json> \
   go test -run '^$' -bench BenchmarkLiveServe -benchtime=5x -count=3 ./cmd/vani/
 ```
 
+**Page-only rows, a two-stage score, kept blends (evening).** These are plan phases A–C in
+`JOBS_READ_MODEL_PLAN.md`:
+
+- **A (`9965dcd`):** the score in two stages.
+- **B (`b9036fd`):** a selection over compact candidates, with a whole `Job` built only for
+  the page.
+- **C (`f1a0c37`):** serve keeps each record's row fields and each posting's score blend.
+
+Same benchmark and recipe as above, 3 interleaved rounds per pair, load average 40 to 66. CPU per
+request:
+
+| Warm request | 9965dcd | b9036fd | f1a0c37 |
+|---|---|---|---|
+| `--view new` | 792–807 ms | 438–592 ms (vs 9965dcd); 587–686 ms (vs f1a0c37) | 395–441 ms |
+| `--view all --sort company` | 743–760 ms | 506–544 / 562–600 ms | 345–372 ms |
+| `--view new --sort salary` | 718–737 ms | 563–570 / 575–636 ms | 317–402 ms |
+| `stats --view new` | 967–1079 ms | 377–498 / 441–460 ms | 287–321 ms |
+| heap in use after a list | 467–474 MiB | 453–458 / 462 MiB | 495–501 MiB |
+
+Phase B was measured twice, once in each pair, and the load moved between the two runs. Read each
+pair against itself, not one column across the table. The command (`jobs list --view new`, user
+CPU) went from 1.68–2.33 s to 1.44–2.04 s with B. A cold command's cost is mostly its read.
+
+**Memory limit for serve (plan phase D).** These are the f1a0c37 bench binary's warm table under
+each setting, 2 interleaved rounds, at load average about 57. Max RSS is of the whole bench
+process.
+
+| Setting | `--view new` CPU | max RSS | process user CPU |
+|---|---|---|---|
+| none | 389–536 ms | 0.91–0.95 GB | 12.9–13.0 s |
+| `GOMEMLIMIT=1GiB` | 357–366 ms | 0.90–0.95 GB | 11.6–12.1 s |
+| `GOMEMLIMIT=800MiB` | 376–411 ms | 0.84–0.85 GB | 12.2 s |
+| `GOMEMLIMIT=650MiB` | 532–618 ms | 0.73 GB | 17.0–17.3 s |
+| `GOGC=50` | 418–445 ms | 0.76–0.77 GB | 13.4–14.4 s |
+
+`vani jobs serve` now sets an 800 MiB soft limit when `GOMEMLIMIT` is unset (`serveMemoryLimit`).
+That lowers the peak about 10% for no measurable CPU. Going lower trades CPU for memory: 650 MiB
+costs about a third more CPU, since the live heap is about 480 MiB. A limit set through
+`GOMEMLIMIT`, or `GOMEMLIMIT=off`, stands.
+
+Still about 0.4 s of CPU per warm view under this load, against a 200 ms target, and a 0.85 GB
+peak against 300 MB.
+
 ## Not re-run on 2026-11-07
 
 - **Advance** (`BenchmarkAdvance` in `cmd/vani/advance_bench_test.go`). The
