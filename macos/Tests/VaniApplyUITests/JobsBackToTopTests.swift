@@ -61,9 +61,10 @@ final class JobsBackToTopTests: XCTestCase {
                                 "no row for \(key)")
         try s.click(row, "the Filler Role 03 row")
         try s.waitForState("\(key) open") { $0.selection == key }
-        // The long description arrives with `jobs show`; wait until the pane can scroll.
+        // The pane appears once the role opens, and its long description arrives with `jobs show`:
+        // wait until it is on screen and can scroll.
         let deadline = Date().addingTimeInterval(JobsTabSession.waitTimeout)
-        while try s.scroll(.detail, to: nil) < 400 {
+        while try (s.scrollIfShown(.detail, to: nil) ?? 0) < 400 {
             guard Date() < deadline else { throw JobsTabSession.Failure(description: "the detail pane never grew long enough to scroll") }
             Thread.sleep(forTimeInterval: 0.1)
         }

@@ -27,6 +27,10 @@ struct JobsFixture {
     static var freshOrder: [String] { roles.sorted { $0.freshAt > $1.freshAt }.map(\.key) }
     static var strongOrder: [String] { roles.filter { $0.fit == "strong_fit" }.map(\.key) }
 
+    /// What the app shows for `strong_fit` over this fixture: the labels reply (Go's golden table)
+    /// with this one word changed, so a test can tell vani's words from the built-in fallback's.
+    static let strongFitLabel = "Best fit"
+
     /// Made-up roles after the four, so the list and the detail pane scroll:
     /// keys `fx:filler:NN`, each with a description long enough to scroll.
     static func fillers(_ n: Int) -> [Role] {
@@ -104,7 +108,7 @@ struct JobsFixture {
             let golden = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("internal/jobview/testdata/labels.golden.json")
-            let text = try String(contentsOf: golden, encoding: .utf8).replacingOccurrences(of: "\"Strong fit\"", with: "\"Best fit\"")
+            let text = try String(contentsOf: golden, encoding: .utf8).replacingOccurrences(of: "\"Strong fit\"", with: "\"\(Self.strongFitLabel)\"")
             try Data(text.utf8).write(to: dir.appendingPathComponent("labels.json"))
         }
         try Data(Self.gapsReply.utf8).write(to: dir.appendingPathComponent("gaps.json"))

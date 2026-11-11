@@ -34,7 +34,7 @@ final class JobsModelTests: XCTestCase {
         await m.refresh()
         XCTAssertNil(m.labelsNote)
         XCTAssertEqual(Labels.source, .vani)
-        XCTAssertEqual(Job.label(for: "strong_fit"), "Best fit", "the menus read vani's words, not the built-in ones")
+        XCTAssertEqual(Job.label(for: "strong_fit"), JobsFixture.strongFitLabel, "the menus read vani's words, not the built-in ones")
         XCTAssertEqual(f.calls().filter { $0 == "labels --json" }.count, 1, "\(f.calls())")
         XCTAssertEqual(m.jobs.map(\.key), JobsFixture.standardOrder)
     }

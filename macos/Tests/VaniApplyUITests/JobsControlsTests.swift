@@ -48,29 +48,32 @@ final class JobsControlsTests: XCTestCase {
         XCTAssertEqual(shown, JobsFixture.freshOrder, "rows: \(rows)")
     }
 
-    // Toolbar Filter menu > Role fit > Strong fit.
+    // Toolbar Filter menu > Role fit > the strong_fit item, titled in vani's words
+    // (JobsFixture.strongFitLabel), not the built-in "Strong fit".
     func testFilterMenuStrongFitFiltersByFit() throws {
         let s = try start()
         let filter = try s.element("the toolbar Filter menu") { $0.role == kAXMenuButtonRole && $0.title.hasPrefix("Filter") }
         try s.press(filter, "Filter")
-        let item = try s.element("the Strong fit item") { $0.role == kAXMenuItemRole && $0.title == "Strong fit" }
-        try s.press(item, "Strong fit")
+        let label = JobsFixture.strongFitLabel
+        let item = try s.element("the \(label) item") { $0.role == kAXMenuItemRole && $0.title == label }
+        try s.press(item, label)
 
         let st = try s.waitForState("fits [strong_fit] with the list re-read") { $0.fits == ["strong_fit"] && $0.jobs == JobsFixture.strongOrder }
         XCTAssertEqual(st.fits, ["strong_fit"])
         XCTAssertTrue(s.vaniCalls().contains { $0.hasPrefix("jobs list") && $0.contains("--fit strong_fit") }, "\(s.vaniCalls())")
     }
 
-    // Insights > Role fit card: a click on the Strong fit bar toggles that fit.
+    // Insights > Role fit card: a click on the strong_fit bar toggles that fit.
     // A click, not AXPress: the row's tap gesture and its accessibility action
     // are separate closures, and this test is about the tap.
     func testFitRowClickTogglesTheFit() throws {
         let s = try start()
         try showInsights(s)
-        let row = { try s.element("the Strong fit row") { $0.role == kAXButtonRole && $0.label.hasPrefix("Strong fit:") } }
-        try s.click(row(), "the Strong fit row")
+        let label = JobsFixture.strongFitLabel
+        let row = { try s.element("the \(label) row") { $0.role == kAXButtonRole && $0.label.hasPrefix(label + ":") } }
+        try s.click(row(), "the \(label) row")
         try s.waitForState("fits [strong_fit]") { $0.fits == ["strong_fit"] && $0.jobs == JobsFixture.strongOrder }
-        try s.click(row(), "the Strong fit row")
+        try s.click(row(), "the \(label) row")
         try s.waitForState("fits cleared again") { $0.fits.isEmpty && $0.jobs == JobsFixture.standardOrder }
     }
 
