@@ -614,11 +614,19 @@ the ledger.
 The Mac app runs one `vani jobs serve` per vani binary, config and state folder
 (`JobsServeClient` in `VaniApplyKit`), with the same environment as its other `vani` calls. It
 keeps the Reader and the facts store between requests and reads marks, the config and every other
-store per request, so its replies are the commands' (`params.args` are the command's flags; the
+store per request (the config once per request, shared by the read and the ranking; the
+knowledge-base profile, one rkb run, once per request, shared by the semantic and kbmatch
+lookups), so its replies are the commands' (`params.args` are the command's flags; the
 result is the command's `--json` reply). It also keeps what it derived from inputs that did not
 change: each posting's company identity and role groups for the company-history notes, until the
 ledger or the watchlist's domains change (`samecompany.Groups`); the decoded semantic scores, until
-`<state>/semantic/semantic-scores.json` changes size or modification time (`semantic.Lookups`); and each title's rank
+`<state>/semantic/semantic-scores.json` changes size or modification time (`semantic.Lookups`); a view's
+read (`cmd/vani/jobsreadkeep.go`): the text facts map, while the ledger generation, the marks on
+closed, dropped and duplicate postings and the facts store's edit count are unchanged and the
+read that built it loaded no text and saved;
+the company blurbs and keyword hits learned over that map, while the postings in view are the same;
+and the manual readings, while a stat of `<state>/retriage/readings.jsonl` (device, inode, size,
+mode, modification and change time, taken before the read) is unchanged; and each title's rank
 and keyword hits and each location's places, keyed by the text they read (`rankMemo`); each
 record's cleaned row fields per ledger generation (`jobview.KeptRows`); and each posting's score
 blend, the part that reads no clock and no marks, under a key naming everything the request

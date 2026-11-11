@@ -195,6 +195,9 @@ func manualFingerprint(s *manualReadingSet) uint64 {
 	if s == nil || len(s.m) == 0 {
 		return 0
 	}
+	if s.fp != 0 {
+		return s.fp
+	}
 	keys := make([]posting.Key, 0, len(s.m))
 	for k := range s.m {
 		keys = append(keys, k)

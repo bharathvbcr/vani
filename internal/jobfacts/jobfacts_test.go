@@ -174,6 +174,36 @@ func TestStoreSaveAndPrune(t *testing.T) {
 	}
 }
 
+// Changes counts every edit, and only edits: a Get, a Prune that forgets
+// nothing and a Save leave it; Dirty is whether Save has edits to write.
+func TestStoreChangesCountsEdits(t *testing.T) {
+	v := vocab(t)
+	s := Open(filepath.Join(t.TempDir(), "facts"), Version(v))
+	p := samplePostings()[0]
+	in := InputOf(p, [16]byte{1})
+	if s.Changes() != 0 || s.Dirty() {
+		t.Fatalf("opened: %d changes, dirty %v", s.Changes(), s.Dirty())
+	}
+	s.Put("gh:a:1", in, Derive(v, p))
+	s.Put("gh:a:1", in, Derive(v, p)) // the same facts again is still an edit
+	s.Put("gh:a:2", in, Derive(v, p))
+	if s.Changes() != 3 || !s.Dirty() {
+		t.Fatalf("three puts: %d changes, dirty %v", s.Changes(), s.Dirty())
+	}
+	s.Get("gh:a:1", in)
+	s.Prune(func(posting.Key) bool { return true })
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if s.Changes() != 3 || s.Dirty() {
+		t.Fatalf("get, empty prune, save: %d changes, dirty %v", s.Changes(), s.Dirty())
+	}
+	s.Prune(func(k posting.Key) bool { return k == "gh:a:1" })
+	if s.Changes() != 4 || !s.Dirty() {
+		t.Fatalf("a prune that forgot one: %d changes, dirty %v", s.Changes(), s.Dirty())
+	}
+}
+
 func TestStoreConcurrentUse(t *testing.T) {
 	v := vocab(t)
 	s := Open(filepath.Join(t.TempDir(), "facts"), Version(v))

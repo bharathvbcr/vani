@@ -163,6 +163,9 @@ type manualReadingSet struct {
 	// facts is the insight's stored facts (insight.storedFacts); nil, or no
 	// answer for a record, hashes its resident text.
 	facts func(ledger.Record) (jobfacts.Facts, bool)
+	// fp is manualFingerprint(m) when the set's map is a resident's kept one
+	// (readKeep.manualReadings), which is never changed; 0 computes it.
+	fp uint64
 }
 
 // manualReadings reads the store. nil sets and a warning when it cannot be read
@@ -171,13 +174,18 @@ type manualReadingSet struct {
 func manualReadings(stateDir string) (*manualReadingSet, func(ledger.Record, string) (string, bool), string) {
 	m, err := manualtriage.Read(manualtriage.Dir(stateDir))
 	if err != nil {
-		return nil, nil, "manual Sonnet readings not used: " + oneLine(err.Error(), 200)
+		return nil, nil, manualReadError(err)
 	}
 	if len(m) == 0 {
 		return nil, nil, ""
 	}
 	s := &manualReadingSet{m: m}
 	return s, s.value, ""
+}
+
+// manualReadError is the warning for a readings store that cannot be read.
+func manualReadError(err error) string {
+	return "manual Sonnet readings not used: " + oneLine(err.Error(), 200)
 }
 
 // manualLookup is manualReadings for a caller that wants only the lookup.

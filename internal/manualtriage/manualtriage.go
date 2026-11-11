@@ -122,6 +122,10 @@ type event struct {
 // Dir is where the store lives for a state directory.
 func Dir(stateDir string) string { return filepath.Join(stateDir, dirName) }
 
+// File is the readings file Read reads in dir. A writer appends to it or
+// replaces it whole (a new file renamed over it), never rewrites it in place.
+func File(dir string) string { return filepath.Join(dir, fileName) }
+
 // TextSHA256 is the hash a reading is keyed on: the posting's title, location and
 // description as the triage question lays them out (jdtriage.Render with no
 // target summary), so anything beyond the question's own cut does not change it

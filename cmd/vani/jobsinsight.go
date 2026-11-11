@@ -386,6 +386,20 @@ func (in *insight) locate(rk *jobview.Ranked, p posting.Posting) {
 // not the ledger's. in.info.Boilerplate then counts only that company's terms,
 // which is listing metadata no single row carries.
 func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) {
+	// Under `vani jobs serve`, over a kept facts map, what an earlier request
+	// learned from the same postings is reused (readKeep).
+	var reads *readKeep
+	var key learnKey
+	if in.res != nil && only == "" && in.facts != nil && in.facts.kept != nil {
+		reads = &in.res.reads
+		key = learnKey{facts: in.facts.kept, gen: in.gen, vocab: in.vocab.Fingerprint()}
+		key.view, key.nView = reads.viewKey(snap.Records, m)
+		if l := reads.keptLearnFor(key); l != nil {
+			in.hits, in.boiler, in.info.Boilerplate = l.hits, l.boiler, l.n
+			return
+		}
+	}
+	missing := in.facts.missingCount()
 	in.hits = map[posting.Key][]jobinsight.Hit{}
 	var companies []string
 	var all [][]jobinsight.Hit
@@ -393,7 +407,7 @@ func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, on
 		if only != "" && companyKey(r.Posting.Company) != only {
 			continue
 		}
-		if !jobview.InView("all", r, m[r.Key].Mark) {
+		if !inLearnView(r, m) {
 			continue
 		}
 		h := in.hitsOf(r)
@@ -406,6 +420,16 @@ func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, on
 		n += len(b)
 	}
 	in.info.Boilerplate = n
+	// A posting noted missing must be noted again by the next request, so
+	// what learned it is not kept.
+	if reads != nil && in.facts.missingCount() == missing {
+		reads.keepLearn(&keptLearn{key: key, hits: in.hits, boiler: in.boiler, n: n})
+	}
+}
+
+// inLearnView is whether learn reads r: every posting in view "all".
+func inLearnView(r ledger.Record, m map[posting.Key]marks.Entry) bool {
+	return jobview.InView("all", r, m[r.Key].Mark)
 }
 
 // newInsight reads the target summary from the config and learns the
@@ -521,7 +545,11 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	}
 	// The owner's manual readings need no config: the store is beside the ledger.
 	var warn string
-	in.manual, in.rc.Manual, warn = manualReadings(stateDir)
+	if res != nil {
+		in.manual, in.rc.Manual, warn = res.reads.manualReadings(stateDir)
+	} else {
+		in.manual, in.rc.Manual, warn = manualReadings(stateDir)
+	}
 	in.warn(warn)
 	if in.manual != nil {
 		in.manual.facts = in.storedFacts

@@ -50,6 +50,11 @@ type textFacts struct {
 
 	mu      sync.Mutex
 	missing []posting.Key // lean records a deriver asked for (factsOf)
+	noted   int           // every such ask, including those missing does not hold
+
+	// kept is the resident's kept facts this read's m is (readKeep), nil when
+	// m is this read's own. A kept m is shared and never changed.
+	kept *keptFacts
 }
 
 // jobsFactsPath is where the Jobs views keep their facts: beside the ledger
@@ -90,6 +95,9 @@ type jobsResident struct {
 	// posting's score Blend under what it read (jobsblends.go).
 	rows   jobview.KeptRows
 	blends blendKeep
+	// reads keeps the facts map, the learned blurbs and the manual readings
+	// of a Jobs view's read (jobsreadkeep.go).
+	reads readKeep
 }
 
 // read advances the Reader to the events file's end and snapshots it, with the
@@ -194,7 +202,36 @@ func (e *env) jobsListRead() (jobsRead, error) {
 	if err != nil {
 		return jobsRead{}, err
 	}
+	tf, err := e.listFacts(rd, snap, gen, m, wholeText, v)
+	if err != nil {
+		return jobsRead{}, err
+	}
+	if cfgErr == nil {
+		hideExcluded(snap.Records, m, cfg.Exclude)
+	}
+	e.lastFacts = tf
+	return jobsRead{snap: snap, m: m, facts: tf, gen: gen, cfg: cfg, cfgErr: cfgErr}, nil
+}
+
+// listFacts is the text facts of snap's records in jobsTextScope(m): served
+// from the facts store where they still describe the posting, else derived
+// from the text, which it loads into snap (and saves to the store). Under
+// `vani jobs serve` it reuses the facts map a read of the same generation,
+// marks and store kept (readKeep).
+func (e *env) listFacts(rd *ledger.Reader, snap ledger.Snapshot, gen uint64, m map[posting.Key]marks.Entry, wholeText bool, v *jobinsight.Vocab) (*textFacts, error) {
 	store := e.jobsFactsStore(v)
+	var reads *readKeep
+	var key factsKey
+	if e.resident != nil && !wholeText {
+		reads = &e.resident.reads
+		key = factsKey{gen: gen, changes: store.Changes(), vocab: v.Fingerprint()}
+		key.marked, key.nMarked = reads.markedKey(m, snap.Records)
+		if kf := reads.keptFactsFor(key); kf != nil {
+			// The store is as it was after the kept read's own save, so a
+			// read now would need no text and Save would have nothing to write.
+			return &textFacts{m: kf.m, Served: kf.served, Store: store.Info(), Saved: "saved or unchanged", kept: kf}, nil
+		}
+	}
 	tf := &textFacts{m: map[posting.Key]jobfacts.Facts{}, Store: store.Info()}
 
 	keep := jobsTextScope(m)
@@ -218,7 +255,7 @@ func (e *env) jobsListRead() (jobsRead, error) {
 	}
 	if len(need) > 0 {
 		if err := rd.Hydrate(snap.Records, func(r ledger.Record) bool { return need[r.Key] }); err != nil {
-			return jobsRead{}, fmt.Errorf("jobs: read the ledger: %w", err)
+			return nil, fmt.Errorf("jobs: read the ledger: %w", err)
 		}
 	}
 	for _, r := range snap.Records {
@@ -238,22 +275,27 @@ func (e *env) jobsListRead() (jobsRead, error) {
 		tf.Derived++
 	}
 	store.Prune(func(k posting.Key) bool { return inScope[k] })
-	switch err := store.Save(); {
-	case err == nil:
+	saveErr := store.Save()
+	switch {
+	case saveErr == nil:
 		tf.Saved = "saved or unchanged"
-	case errors.Is(err, jobfacts.ErrBusy):
+	case errors.Is(saveErr, jobfacts.ErrBusy):
 		tf.Saved = "skipped: another read is saving"
 	default:
 		// A cache that cannot be written costs the next read time, never an
 		// answer: say so, and list.
-		tf.Saved = "not saved: " + err.Error()
-		fmt.Fprintf(e.stderr, "vani: jobs: text facts not saved (the next list derives them again): %v\n", err)
+		tf.Saved = "not saved: " + saveErr.Error()
+		fmt.Fprintf(e.stderr, "vani: jobs: text facts not saved (the next list derives them again): %v\n", saveErr)
 	}
-	if cfgErr == nil {
-		hideExcluded(snap.Records, m, cfg.Exclude)
+	// Kept only when no other read edited the store between the lookups and
+	// this save (the edit count is the one sampled before them), the read
+	// loaded no text, and the store has nothing left unsaved.
+	if reads != nil && len(need) == 0 && saveErr == nil && store.Changes() == key.changes && !store.Dirty() {
+		kf := &keptFacts{key: key, m: tf.m, served: tf.Served}
+		reads.keepFacts(kf)
+		tf.kept = kf
 	}
-	e.lastFacts = tf
-	return jobsRead{snap: snap, m: m, facts: tf, gen: gen, cfg: cfg, cfgErr: cfgErr}, nil
+	return tf, nil
 }
 
 // jobsView is jobsListRead and its insight, for one Jobs view command. The
@@ -286,9 +328,21 @@ func (tf *textFacts) get(k posting.Key) (jobfacts.Facts, bool) {
 func (tf *textFacts) noteMissing(k posting.Key) {
 	tf.mu.Lock()
 	defer tf.mu.Unlock()
+	tf.noted++
 	if len(tf.missing) < 8 {
 		tf.missing = append(tf.missing, k)
 	}
+}
+
+// missingCount is how many times a record was noted missing so far (missing
+// holds only the first few); 0 for no facts read.
+func (tf *textFacts) missingCount() int {
+	if tf == nil {
+		return 0
+	}
+	tf.mu.Lock()
+	defer tf.mu.Unlock()
+	return tf.noted
 }
 
 // err is non-nil when a deriver was asked about a record with no text.

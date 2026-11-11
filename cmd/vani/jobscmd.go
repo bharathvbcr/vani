@@ -453,12 +453,21 @@ func (e *env) jobsReaderOptions() ledger.ReaderOptions {
 // the views reads the text of an unmarked closed, dropped or duplicate posting.
 func jobsTextScope(m map[posting.Key]marks.Entry) func(ledger.Record) bool {
 	return func(r ledger.Record) bool {
-		switch r.Status {
-		case posting.Dead, posting.Dropped, posting.Duplicate:
+		if scopeReadsMark(r.Status) {
 			return m[r.Key].Mark != marks.None
 		}
 		return true
 	}
+}
+
+// scopeReadsMark is whether jobsTextScope reads a record's mark: only for a
+// closed, dropped or duplicate posting does a mark bring its text in.
+func scopeReadsMark(s posting.Status) bool {
+	switch s {
+	case posting.Dead, posting.Dropped, posting.Duplicate:
+		return true
+	}
+	return false
 }
 
 // rowScope is the ledger.ReadSnapshotScoped scope for enriching one row: the

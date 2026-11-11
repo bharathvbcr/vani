@@ -1,6 +1,7 @@
 # Plan: a read model that keeps the Jobs tab fast at any ledger size
 
-Status: phases 1b–6 built on 2026-11-11, plus serve's kept state ("Follow-up: what serve keeps").
+Status: phases 1b–6 built on 2026-11-11, plus serve's kept state ("Follow-up: what serve keeps"),
+phases A–D and phase E, the kept read ("E: the kept read").
 The speed and memory targets are not met (see the phase results and docs/BENCHMARKS.md). Written
 as a proposal; the long-term plan, which accepts a major refactor of how state is read and cached.
 
@@ -476,17 +477,94 @@ for about 8% more.
 insight build (~120 ms) and the 1,000-row page (~70 ms) stay, so roughly 300 ms of CPU per warm
 view. Short of 200 ms.
 
+### E: the kept read (2026-11-11, chosen by the owner: "Reuse the read between requests")
+
+A warm `--view new` cost about 406 ms of CPU in this process and about 61 ms more in a child, the
+`rkb claims export` run that builds the knowledge-base profile; the bench did not count the
+child before (`child-cpu-ms/op` now does). A warm-only profile (30 requests, live-state clone) put
+the read and insight build at about 120 ms of it: learn ~24 ms, the profile ~19 ms besides rkb,
+the manual readings ~18 ms and their fingerprint ~10 ms, the facts lookups and prune ~20 ms, the
+config ~5 ms (twice), the snapshot ~7 ms. `BuildList` (selection, places, sort, the page) was
+~138 ms.
+
+Built, in two commits:
+
+- *Once per request* (`9457f8a`): the semantic and kbmatch lookups share one profile (one rkb
+  run; `onceProfile`), and the read's config is the ranking's. On the live state there is no
+  kbmatch store, so the first saves nothing there yet; the second saves one config parse.
+- *Kept between requests* (`cmd/vani/jobsreadkeep.go`), each under a key naming what it read:
+  - the text facts map: the generation, the marks the text scope reads (those on closed, dropped
+    and duplicate postings, `scopeReadsMark`; saving or hiding a live posting keeps the map) and
+    the facts store's edit count (`jobfacts.Store.Changes`), sampled before the lookups and again
+    after the read's own prune and save. Kept only when the read loaded no text, its save
+    succeeded and the store holds nothing unsaved, so a reuse skips no hydration, derivation or
+    save.
+  - what learn learned (company blurbs, keyword hits): the kept facts map itself, the generation,
+    the postings in view "all" after the exclusions, the vocabulary. Kept only when learning noted
+    no posting missing.
+  - the manual readings and their fingerprint: a stat of `retriage/readings.jsonl` taken before
+    it is read (device, inode, size, mode, modification and change time; `fileStamp`). The store
+    appends or renames a new file over the old, and either changes the stamp; a rewrite in place
+    at the same size and modification time still changes the change time. Without a change time
+    (not darwin or linux) nothing is kept.
+  Set hashes use a per-process random seed (`hash/maphash`), so posting keys cannot be chosen to
+  collide.
+
+Not kept, and why: the weights file (none in the live config: nothing to save); the marks (3 ms,
+and the keys above are computed from them); the config (5 ms, but `config.Config` holds maps and
+slices that request code could change); the profile (its rkb run reads files Vani cannot list,
+the reason the resume pool is not cached either; question 3 below).
+
+Tests: `TestJobsServeKeepsTheReadAndAnswersAsTheCommand` (a live posting saved and hidden, which
+rebuild nothing; a dropped posting, a mark bringing it into scope, cleared and marked again with
+one request between; an exclusion, one that reads descriptions; a reading appended, rewritten in
+place at the same size and time, replaced by a rename, deleted; every reply the command's, and
+the keep counters per step), `TestJobsServeKeepsNoFactsMapWithAnUnsavedStore`,
+`TestJobsServeUnreadableReadingsWarnEveryRequest`, `TestJobsServeReadKeepConcurrent` (`-race`),
+`TestFileStampSeesEveryChange`, `TestLearnKeepsNothingNotedMissing`,
+`TestStoreChangesCountsEdits`.
+
+Mutation runs, one change each: the stamp's change time, the facts key's marks, its generation,
+its edit count in the lookup, the marks narrowed back to every mark, the learn key's view set and
+facts identity, learn's missing check, the readings stamp, the whole-text rule, and the save
+checks (failed save and unsaved edits, removed together) each fail a test. Five survive, each
+covered by another guard: the learn key's generation (its facts identity carries one); the
+keep-time edit count (counts only grow, so the lookup never matches a map kept after an edit; the
+check only avoids keeping a dead entry); the failed-save and unsaved-edit checks alone (a failed
+save leaves the store dirty, so each covers the other); and "the read loaded no text" (a read
+that loaded text derived and filed it, moving the edit count, except for a record no event gave a
+posting, whose hydration loads nothing). The vocabulary in the keys is fixed per process and not
+mutated.
+
+Left as it was: `kbStat`, the kbmatch store's identity for the kept Blends, is still size and
+modification time only, not `fileStamp`.
+
+Result (BENCHMARKS.md, 3 interleaved rounds, live-state clone): a warm `--view new` went from
+364–400 ms to 227–258 ms of CPU in this process, `--view saved` from 171–245 ms to 53–60 ms, and
+every other warm request by 70–135 ms; rkb's ~60 ms of child CPU is unchanged. Every keep hit on
+every warm request (30 hits, 1 miss each). Heap in use after a list stayed at about 490–505 MiB;
+max RSS fell from 0.95–0.97 GB to 0.90–0.93 GB. **The 200 ms target is still missed:** about
+0.23–0.26 s here plus about 0.06 s in rkb. What is left is `BuildList` (~138 ms in the profile:
+selection, the places count, the sort, the page) and the profile (rkb and the bank parse).
+
 ### Open questions for the owner
 
-1. **The 200 ms target.** After A–C, two levers remain, and both are the owner's choice:
-   - *Reuse the read between requests:* serve stops re-reading the marks, the config and the
-     stores when their files' size and modification time are unchanged, as `semantic.Lookups`
-     does. A reply stays the command's except after a rewrite that keeps both the size and the
-     modification time, which modern file systems make unlikely but not impossible.
+1. **The 200 ms target.** After A–E, the levers left are the owner's choice:
+   - *Keep the profile:* rkb's claims export (~60 ms of child CPU and ~70 ms of wall time per
+     request) and the bank parse (~12 ms). See question 3.
    - *A smaller page:* the app asks for fewer than 1,000 rows and pages through the rest.
    - Or the target moves to about 300 ms.
 2. **Memory.** Accept about 450–500 MiB of heap and a ~1 GB peak, or cap serve (D) at the cost of
    CPU.
+3. **rkb per request.** Every view runs `rkb claims export` for the knowledge-base profile. Its
+   output depends on files Vani does not name: the claims file and verification log rkb's config
+   lists, and rkb's own binary and config. Three ways:
+   - keep running it (exact, ~60 ms of child CPU and ~70 ms of wall time per view);
+   - key a kept profile on stats of the bank, the selections, the rkb binary, rkb's config and the
+     files that config lists, running rkb again on any change (exact only while that list is
+     complete);
+   - rkb reports its inputs (a list of the files a claims export read, with their stamps), and
+     serve keys on that.
 
 Language: Go throughout. This is the existing ranking and view code. No kernel here is CPU-bound
 enough to justify a Rust core behind gusset (each step is map lookups and small arithmetic per

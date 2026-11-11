@@ -217,7 +217,37 @@ The kept Blends are hit on the live state. After the first list and a warm table
 for 390,107 times and computed 26,288 times, which is one view's worth from the first list.
 
 Still about 0.4 s of CPU per warm view under this load, against a 200 ms target, and a 0.85 GB
-peak against 300 MB.
+peak against 300 MB. That figure is this process's CPU only: each view also runs `rkb claims
+export` for the knowledge-base profile, about 51–68 ms of child CPU (`child-cpu-ms/op`, counted
+from `9457f8a` on), which the bench did not count before.
+
+**The kept read (plan phase E).** Serve keeps a view's text facts map, what learn learned, and
+the manual readings between requests (`cmd/vani/jobsreadkeep.go`). `BenchmarkLiveServe/warm`,
+`9457f8a` against the kept read, 3 interleaved rounds per arm, live-state clone, load average
+50–66. CPU per request in this process (rkb's child CPU, about 51–68 ms, is the same in both arms
+and not included):
+
+| Warm request | 9457f8a | kept read |
+|---|---|---|
+| `--view new` | 364–400 ms | 227–258 ms |
+| `--view all --sort company` | 286–305 ms | 205–237 ms |
+| `--view new --sort salary` | 306–329 ms | 235–256 ms |
+| `--view saved` | 171–245 ms | 53–60 ms |
+| `--view new --q engineer` | 327–360 ms | 236–241 ms |
+| `stats --view new` | 223–269 ms | 131–187 ms |
+| heap in use after a list | 487–494 MiB | 488–507 MiB |
+| max RSS (whole bench process) | 0.95–0.97 GB | 0.90–0.93 GB |
+| process user CPU | 11.4–11.7 s | 8.5–8.9 s |
+
+The ranges do not overlap in any row. Each keep was hit on every warm request: facts, learn and
+manual readings each 30 hits and 1 miss (the first list) per run. That is with nothing changing
+between requests. After the ledger advances, the first request rebuilds all three and its save
+moves the store's edit count, so the second rebuilds the facts map too; reuse resumes from the
+third. Saving or hiding a live posting rebuilds nothing. The cut is larger than the ~75–80 ms
+the profile's lines summed to. A warm `--view new` allocates 132 MB in 1.32M allocations against
+171 MB in 1.53M (all 3 rounds), so less garbage and less GC are the likely rest; the GC share was
+not measured on its own. A warm `--view new` is now about 0.23–0.26 s of CPU here plus about
+0.06 s in rkb, against a 200 ms target.
 
 ## Not re-run on 2026-11-07
 

@@ -108,6 +108,8 @@ type Store struct {
 	m       map[posting.Key]entry
 	dirty   bool
 	loaded  string // how Open found the file, for Info
+	// changes counts the edits to m (Put, and each key Prune forgets).
+	changes uint64
 }
 
 type entry struct {
@@ -205,6 +207,7 @@ func (s *Store) Put(k posting.Key, in Input, f Facts) {
 	defer s.mu.Unlock()
 	s.m[k] = entry{In: in, F: f}
 	s.dirty = true
+	s.changes++
 }
 
 // Prune forgets every key live does not name, so the store holds only
@@ -216,8 +219,24 @@ func (s *Store) Prune(live func(posting.Key) bool) {
 		if !live(k) {
 			delete(s.m, k)
 			s.dirty = true
+			s.changes++
 		}
 	}
+}
+
+// Changes counts the edits made to the store since it was opened: two equal
+// counts mean every Get between them answered from the same facts.
+func (s *Store) Changes() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changes
+}
+
+// Dirty is whether the store holds edits Save has not written.
+func (s *Store) Dirty() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dirty
 }
 
 // Len is how many postings have facts.

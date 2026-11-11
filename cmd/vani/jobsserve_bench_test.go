@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 import (
@@ -112,4 +114,10 @@ func BenchmarkLiveServe(b *testing.B) {
 	// compute none.
 	b.Logf("kept Blends: %d asked for, %d computed (the first list's included)",
 		res.blends.lookups.Load(), res.blends.misses.Load())
+	// The kept read (jobsreadkeep.go): after the first list or two, a warm
+	// request should miss none.
+	r := &res.reads
+	b.Logf("kept read, hits/misses: facts %d/%d, learn %d/%d, manual readings %d/%d",
+		r.factsHits.Load(), r.factsMisses.Load(), r.learnHits.Load(), r.learnMisses.Load(),
+		r.manualHits.Load(), r.manualMisses.Load())
 }
