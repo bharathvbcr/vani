@@ -7,6 +7,9 @@ import (
 	"io/fs"
 	"path/filepath"
 
+	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -83,12 +86,14 @@ func (e *env) cmdRetriage(args []string) error {
 	if *dry {
 		verb = "would return to live"
 	}
+	pol := dropPolicy(cfg, cfg.Decide.OpenRouterName())
 	if *policy {
-		got, err := pipeline.RetriagePolicyDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.OpenRouterName()), *dry)
+		got, err := pipeline.RetriagePolicyDrops(ctx, l, now(), pol, reopenScope(cfg), *dry)
 		keys := append(append([]posting.Key{}, got.Title...), got.Model...)
 		if *asJSON {
 			return e.reply(true, &retriageRunReply{DryRun: *dry, PolicyDrops: true, Returned: len(keys), Keys: keys,
-				TitleReturned: len(got.Title), ModelReturned: len(got.Model), Unjudged: got.Unjudged}, err, nil)
+				TitleReturned: len(got.Title), ModelReturned: len(got.Model), Unjudged: &got.Unjudged,
+				Stale: &got.Stale, Unreadable: &got.Unreadable}, err, nil)
 		}
 		verb = "returned"
 		if *dry {
@@ -98,30 +103,69 @@ func (e *env) cmdRetriage(args []string) error {
 		fmt.Fprintf(e.stdout, "  title drops, back to live for the backends to read: %d\n", len(got.Title))
 		fmt.Fprintf(e.stdout, "  model drops, back on their stored reading (no model asked): %d\n", len(got.Model))
 		if got.Unjudged > 0 {
-			fmt.Fprintf(e.stdout, "  model drops not judged, left dropped: %d (no calibrated reading from %q or lappi)\n", got.Unjudged, cfg.Decide.OpenRouterName())
+			fmt.Fprintf(e.stdout, "  model drops not judged, left dropped: %d (read under another model or question, or no calibrated reading from %q or lappi)\n", got.Unjudged, cfg.Decide.OpenRouterName())
 		}
+		writeLeftDropped(e, got)
 		return err
 	}
 	var keys []posting.Key
+	var left *pipeline.PolicyReopen
 	why := "triaged with no backend reading"
 	if *titles {
-		keys, err = pipeline.RetriageTitleDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.OpenRouterName()), *dry)
+		sc := reopenScope(cfg)
+		sc.TitleOnly = true
+		got, rerr := pipeline.RetriagePolicyDrops(ctx, l, now(), pol, sc, *dry)
+		keys, err, left = got.Title, rerr, &got
 		why = "dropped on a title the current rules no longer drop"
 	} else {
 		keys, err = pipeline.RetriageUnread(ctx, l, now(), *dry)
 	}
 	if *asJSON {
-		return e.reply(true, &retriageRunReply{DryRun: *dry, TitleDrops: *titles, Returned: len(keys), Keys: nonNil(keys)}, err, nil)
+		r := &retriageRunReply{DryRun: *dry, TitleDrops: *titles, Returned: len(keys), Keys: nonNil(keys)}
+		if left != nil {
+			r.Stale, r.Unreadable = &left.Stale, &left.Unreadable
+		}
+		return e.reply(true, r, err, nil)
 	}
 	fmt.Fprintf(e.stdout, "%d posting(s) %s (%s)\n", len(keys), verb, why)
+	if left != nil {
+		writeLeftDropped(e, *left)
+	}
 	return err
+}
+
+// writeLeftDropped names the drops the current rules would let back that the
+// reopen left dropped, and why, so a count of zero returned is never read as
+// "every drop was checked".
+func writeLeftDropped(e *env, got pipeline.PolicyReopen) {
+	if got.Stale > 0 {
+		fmt.Fprintf(e.stdout, "  left dropped, on a board no longer watched: %d\n", got.Stale)
+	}
+	if got.Unreadable > 0 {
+		fmt.Fprintf(e.stdout, "  left dropped, stored description unreadable: %d\n", got.Unreadable)
+	}
+}
+
+// reopenScope is what bounds a drop reopen besides the drop policy: the model
+// id fresh triage records readings under (triageModelID), the slot options
+// today's question offers (the shared fixture's and the job-category slot's),
+// and the boards still on the watchlist.
+func reopenScope(cfg config.Config) pipeline.ReopenScope {
+	opts := jdtriage.SlotValues()
+	extra := jobcategory.DecideSlot()
+	opts[extra.Name] = extra.Options
+	return pipeline.ReopenScope{ModelID: triageModelID(cfg), Options: opts, Watched: pipeline.WatchedBy(cfg.Watchlist)}
 }
 
 // retriageRunReply is `vani retriage --json`: the postings returned to live (or
 // that would be, in a dry run). A failure part way keeps the ones it returned.
 // With --policy-drops, title_returned and model_returned split returned by the
 // class of drop, and unjudged counts model drops the current rules could not
-// judge (left dropped).
+// judge (left dropped). With --policy-drops or --title-drops, stale and
+// unreadable count drops the rules would let back that were left dropped (an
+// unwatched board, an unreadable stored body). The three left-dropped counts
+// are present whenever the mode reports them, zero included, so a 0 is told
+// apart from a binary that does not count them; they are absent otherwise.
 type retriageRunReply struct {
 	DryRun        bool          `json:"dry_run"`
 	TitleDrops    bool          `json:"title_drops"`
@@ -130,6 +174,8 @@ type retriageRunReply struct {
 	Keys          []posting.Key `json:"keys"`
 	TitleReturned int           `json:"title_returned,omitempty"`
 	ModelReturned int           `json:"model_returned,omitempty"`
-	Unjudged      int           `json:"unjudged,omitempty"`
+	Unjudged      *int          `json:"unjudged,omitempty"`
+	Stale         *int          `json:"stale,omitempty"`
+	Unreadable    *int          `json:"unreadable,omitempty"`
 	failure
 }

@@ -122,6 +122,12 @@ func TestRetriageTitleDropsCommand(t *testing.T) {
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
+	// The posting's board is watched, as a real title drop's is: one on a
+	// board no longer watched is left dropped (stale).
+	watchGreenhouse(t, cfgPath, "acme")
+	if cfg, err = config.Load(cfgPath); err != nil {
+		t.Fatal(err)
+	}
 	l, err := ledger.Open(filepath.Join(stateDir, "ledger"))
 	if err != nil {
 		t.Fatal(err)

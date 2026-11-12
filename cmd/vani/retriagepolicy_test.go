@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -18,9 +20,16 @@ import (
 // same reading under the model's old backend name, a title drop and an
 // exclusion. The default config has no drop rules and names d1-ultra, so the
 // first and third no longer drop, the second cannot be judged, and the
-// exclusion is ApplyExclusions' business.
-func seedDrops(t *testing.T, stateDir string) (model, oldName, title, excluded posting.Key) {
+// exclusion is ApplyExclusions' business. The readings carry the model id a
+// run under cfg records, and the board (gh:d) is put on cfg's watchlist, as a
+// real drop's is.
+func seedDrops(t *testing.T, cfgPath, stateDir string) (model, oldName, title, excluded posting.Key) {
 	t.Helper()
+	watchGreenhouse(t, cfgPath, "d")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	l, err := ledger.Open(filepath.Join(stateDir, "ledger"))
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +40,7 @@ func seedDrops(t *testing.T, stateDir string) (model, oldName, title, excluded p
 			"triage.backend": backend, "triage.seniority": "staff_plus", "triage.seniority.reading": "answered",
 			"triage.seniority.backend": backend, "triage.seniority.p": "0.9500",
 			"triage.role_fit": "strong_fit", "triage.role_fit.reading": "answered", "triage.role_fit.backend": backend,
-			"triage.role_fit.p": "0.9100",
+			"triage.role_fit.p": "0.9100", pipeline.AnnTriageModel: triageModelID(cfg),
 		}
 	}
 	add := func(id string, ann map[string]string) posting.Key {
@@ -51,9 +60,9 @@ func seedDrops(t *testing.T, stateDir string) (model, oldName, title, excluded p
 }
 
 func TestRetriagePolicyDropsCommand(t *testing.T) {
-	_, stateDir := setup(t)
+	cfgPath, stateDir := setup(t)
 	mustCode(t, 0, "init")
-	model, oldName, title, excluded := seedDrops(t, stateDir)
+	model, oldName, title, excluded := seedDrops(t, cfgPath, stateDir)
 
 	// The owner hid the model-dropped role: a mark is the owner's, kept in
 	// state marks/, and the reopen neither reads nor changes it.
@@ -83,7 +92,8 @@ func TestRetriagePolicyDropsCommand(t *testing.T) {
 	var rt retriageRunReply
 	decodeOne(t, o, &rt)
 	if !rt.DryRun || !rt.PolicyDrops || rt.TitleDrops || rt.Returned != 2 || rt.TitleReturned != 1 || rt.ModelReturned != 1 ||
-		rt.Unjudged != 1 || !slices.Contains(rt.Keys, model) || !slices.Contains(rt.Keys, title) {
+		rt.Unjudged == nil || *rt.Unjudged != 1 || rt.Stale == nil || *rt.Stale != 0 || rt.Unreadable == nil || *rt.Unreadable != 0 ||
+		!slices.Contains(rt.Keys, model) || !slices.Contains(rt.Keys, title) {
 		t.Fatalf("json dry run %+v", rt)
 	}
 	for _, r := range held.All() {

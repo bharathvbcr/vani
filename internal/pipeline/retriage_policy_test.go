@@ -44,7 +44,7 @@ func modelDrop(t *testing.T, l ledger.Ledger, id string, ans decide.Answer, rule
 	ft := &fakeTriager{ans: ans}
 	r := &Runner{Ledger: l, Triager: ft, Scorer: fakeScorer{}, Explainer: fakeExplainer{text: "n"},
 		Policy: DropPolicy{Rules: rules, OpenRouter: "d1-ultra"}, Badger: fakeBadger{"Acme": "LCA: 3 filings"},
-		Now: func() time.Time { return t0.Add(time.Minute) }}
+		Now: func() time.Time { return t0.Add(time.Minute) }, Funnel: Funnel{ModelID: reviewModelID}}
 	if err := r.Advance(ctx, p.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -66,18 +66,18 @@ func TestRetriagePolicyDropsReturnsAModelDropTheRulesNoLongerDrop(t *testing.T) 
 	r, ft, k := modelDrop(t, l, "1", staffAns(0.95), staffRules)
 
 	// Same rules: nothing comes back.
-	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(staffRules), false)
+	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(staffRules), reviewScope(), false)
 	if err != nil || got.Returned() != 0 {
 		t.Fatalf("unchanged rules returned %+v (%v)", got, err)
 	}
 
 	// Dry run under the new rules: reported, nothing written.
-	got, err = RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), true)
+	got, err = RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), reviewScope(), true)
 	if err != nil || !slices.Equal(got.Model, []posting.Key{k}) || len(got.Title) != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("dry run: %+v (%v), status %s", got, err, rec(t, l, k).Status)
 	}
 
-	got, err = RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), false)
+	got, err = RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), reviewScope(), false)
 	if err != nil || !slices.Equal(got.Model, []posting.Key{k}) {
 		t.Fatalf("retriage: %+v (%v)", got, err)
 	}
@@ -107,7 +107,7 @@ func TestRetriagePolicyDropsReturnsAModelDropTheRulesNoLongerDrop(t *testing.T) 
 	}
 
 	// Run again: nothing left to return, and the explained posting is untouched.
-	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(2*time.Hour), pol(keptStaff), false); err != nil || got.Returned() != 0 {
+	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(2*time.Hour), pol(keptStaff), reviewScope(), false); err != nil || got.Returned() != 0 {
 		t.Fatalf("second retriage returned %+v (%v)", got, err)
 	}
 }
@@ -128,7 +128,7 @@ func TestRetriagePolicyDropsThresholds(t *testing.T) {
 			_, _, k := modelDrop(t, l, "1", staffAns(c.p), staffRules)
 			rules := slices.Clone(staffRules)
 			rules[0].MinOpenRouterProb = c.threshold
-			got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(rules), false)
+			got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(rules), reviewScope(), false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +152,7 @@ func TestRetriagePolicyDropsSlotRemovedAndUnsure(t *testing.T) {
 	l := openLedger(t)
 	_, _, k := modelDrop(t, l, "1", staffAns(0.95), staffRules)
 	onlyRoleFit := []DropRule{staffRules[1]}
-	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(onlyRoleFit), false); err != nil || !slices.Equal(got.Model, []posting.Key{k}) {
+	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(onlyRoleFit), reviewScope(), false); err != nil || !slices.Equal(got.Model, []posting.Key{k}) {
 		t.Fatalf("slot removed: %+v (%v)", got, err)
 	}
 	if st := rec(t, l, k).Status; st != posting.Triaged {
@@ -163,7 +163,7 @@ func TestRetriagePolicyDropsSlotRemovedAndUnsure(t *testing.T) {
 	_, _, k2 := modelDrop(t, l2, "2", staffAns(0.95), staffRules)
 	// The owner now rules on a slot this reading never had.
 	newSlot := []DropRule{{Slot: "sponsorship", Values: []string{"no"}, MinOpenRouterProb: 0.9}}
-	if _, err := RetriagePolicyDrops(ctx, l2, t0.Add(time.Hour), pol(newSlot), false); err != nil {
+	if _, err := RetriagePolicyDrops(ctx, l2, t0.Add(time.Hour), pol(newSlot), reviewScope(), false); err != nil {
 		t.Fatal(err)
 	}
 	got := rec(t, l2, k2)
@@ -178,7 +178,7 @@ func TestRetriagePolicyDropsStillDroppedByAnotherRule(t *testing.T) {
 	ans := staffAns(0.95)
 	ans.Slots["role_fit"] = jev("mismatch_domain", 0.96)
 	_, _, k := modelDrop(t, l, "1", ans, staffRules)
-	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), false)
+	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), reviewScope(), false)
 	if err != nil || got.Returned() != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("returned %+v (%v), status %s", got, err, rec(t, l, k).Status)
 	}
@@ -192,12 +192,12 @@ func TestRetriagePolicyDropsLappiBackend(t *testing.T) {
 	rules := []DropRule{{Slot: "seniority", Values: []string{"staff_plus"}, MinLappiScore: 0.5}}
 	l := openLedger(t)
 	_, _, k := modelDrop(t, l, "1", lappiAns, rules)
-	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(rules), false); err != nil || got.Returned() != 0 {
+	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(rules), reviewScope(), false); err != nil || got.Returned() != 0 {
 		t.Fatalf("unchanged: %+v (%v)", got, err)
 	}
 	raised := slices.Clone(rules)
 	raised[0].MinLappiScore = 0.8
-	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(raised), false)
+	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(raised), reviewScope(), false)
 	if err != nil || !slices.Equal(got.Model, []posting.Key{k}) || rec(t, l, k).Status != posting.Triaged {
 		t.Fatalf("raised lappi threshold: %+v (%v), status %s", got, err, rec(t, l, k).Status)
 	}
@@ -234,7 +234,7 @@ func TestRetriagePolicyDropsLeavesUnjudgeableReadings(t *testing.T) {
 				Status: posting.Dropped, Annotations: ann, Reason: "test: rewrite the reading"}); err != nil {
 				t.Fatal(err)
 			}
-			got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), c.policy, false)
+			got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), c.policy, reviewScope(), false)
 			if err != nil || got.Returned() != 0 || got.Unjudged != 1 || rec(t, l, k).Status != posting.Dropped {
 				t.Fatalf("got %+v (%v), status %s; want left dropped and counted unjudged", got, err, rec(t, l, k).Status)
 			}
@@ -259,7 +259,7 @@ func TestRetriagePolicyDropsInheritedReading(t *testing.T) {
 	if rec(t, l, b.Key).Annotations[AnnTriageInheritedFrom] != string(a.Key) {
 		t.Fatal("setup: b did not inherit")
 	}
-	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), false)
+	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), reviewScope(), false)
 	if err != nil || len(got.Model) != 2 {
 		t.Fatalf("returned %+v (%v), want both", got, err)
 	}
@@ -283,10 +283,10 @@ func TestRetriagePolicyDropsTitleAndModelTogether(t *testing.T) {
 	kept := r.Policy
 	kept.Rules = keptStaff
 
-	if keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), kept, true); err != nil || !slices.Equal(keys, []posting.Key{kt}) {
+	if keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), kept, reviewScope(), true); err != nil || !slices.Equal(keys, []posting.Key{kt}) {
 		t.Fatalf("title drops alone: %v (%v)", keys, err)
 	}
-	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), kept, false)
+	got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), kept, reviewScope(), false)
 	if err != nil || !slices.Equal(got.Title, []posting.Key{kt}) || !slices.Equal(got.Model, []posting.Key{km}) {
 		t.Fatalf("got %+v (%v)", got, err)
 	}
@@ -306,12 +306,12 @@ func TestRetriagePolicyDropsRespectsPrefilters(t *testing.T) {
 	_, _, k := modelDrop(t, l, "1", staffAns(0.95), staffRules)
 	p := pol(keptStaff)
 	p.Exclude = func(posting.Posting) (string, bool) { return "company is \"Acme\"", true }
-	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), p, false); err != nil || got.Returned() != 0 || rec(t, l, k).Status != posting.Dropped {
+	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), p, reviewScope(), false); err != nil || got.Returned() != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("excluded now: %+v (%v)", got, err)
 	}
 	p = pol(keptStaff)
 	p.ReadTitle = readsOn(map[string]TitleReading{"Software": {Slot: "seniority", Value: "manager"}})
-	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), p, false); err != nil || got.Returned() != 0 {
+	if got, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), p, reviewScope(), false); err != nil || got.Returned() != 0 {
 		t.Fatalf("title rule drops it now: %+v (%v)", got, err)
 	}
 
@@ -328,13 +328,13 @@ func TestRetriagePolicyDropsRespectsPrefilters(t *testing.T) {
 	if err := rx.Advance(ctx, q.Key); err != nil || rec(t, l2, q.Key).Status != posting.Dropped {
 		t.Fatalf("exclusion setup: %v", err)
 	}
-	if got, err := RetriagePolicyDrops(ctx, l2, t0.Add(time.Hour), pol(keptStaff), false); err != nil || got.Returned() != 0 || got.Unjudged != 0 {
+	if got, err := RetriagePolicyDrops(ctx, l2, t0.Add(time.Hour), pol(keptStaff), reviewScope(), false); err != nil || got.Returned() != 0 || got.Unjudged != 0 {
 		t.Fatalf("exclusion drop: %+v (%v)", got, err)
 	}
 }
 
 func TestRetriagePolicyDropsEmptyLedger(t *testing.T) {
-	got, err := RetriagePolicyDrops(ctx, openLedger(t), t0, pol(keptStaff), false)
+	got, err := RetriagePolicyDrops(ctx, openLedger(t), t0, pol(keptStaff), reviewScope(), false)
 	if err != nil || got.Returned() != 0 || got.Unjudged != 0 {
 		t.Fatalf("%+v (%v)", got, err)
 	}
@@ -371,6 +371,7 @@ func manyDrops(t *testing.T, l ledger.Ledger, n int) []posting.Key {
 		t.Fatal(err)
 	}
 	ann := triageAnnotations(staffAns(0.95))
+	ann[AnnTriageModel] = reviewModelID
 	evs := make([]ledger.Event, n)
 	keys := make([]posting.Key, n)
 	for i, p := range ps {
@@ -393,7 +394,7 @@ func TestRetriagePolicyDropsBatchesWithinLedgerBounds(t *testing.T) {
 	n := ledger.MaxBatchEvents + 3
 	keys := manyDrops(t, f, n)
 	bc := &batchCounter{File: f}
-	got, err := RetriagePolicyDrops(ctx, bc, t0.Add(time.Hour), pol(keptStaff), false)
+	got, err := RetriagePolicyDrops(ctx, bc, t0.Add(time.Hour), pol(keptStaff), reviewScope(), false)
 	if err != nil || len(got.Model) != n {
 		t.Fatalf("returned %d of %d (%v)", len(got.Model), n, err)
 	}
@@ -419,7 +420,7 @@ func TestRetriagePolicyDropsCancelMidBatch(t *testing.T) {
 	c, cancel := context.WithCancel(ctx)
 	defer cancel()
 	bc := &batchCounter{File: f, cancelAfter: cancel}
-	got, err := RetriagePolicyDrops(c, bc, t0.Add(time.Hour), pol(keptStaff), false)
+	got, err := RetriagePolicyDrops(c, bc, t0.Add(time.Hour), pol(keptStaff), reviewScope(), false)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err %v, want canceled", err)
 	}
@@ -450,7 +451,7 @@ func TestRetriagePolicyDropsCancelledBeforeStart(t *testing.T) {
 	_, _, k := modelDrop(t, l, "1", staffAns(0.95), staffRules)
 	c, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := RetriagePolicyDrops(c, l, t0, pol(keptStaff), false); !errors.Is(err, context.Canceled) {
+	if _, err := RetriagePolicyDrops(c, l, t0, pol(keptStaff), reviewScope(), false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err %v", err)
 	}
 	if rec(t, l, k).Status != posting.Dropped {
