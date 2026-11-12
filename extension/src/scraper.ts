@@ -62,6 +62,20 @@ export interface ScrapeResult {
    * page holds more jobs than `jobs`. 0 when every link was read (or the page was read another way).
    */
   unread: number;
+  /**
+   * The board's own count of its jobs, when the page's state gives one (a paged Greenhouse board shows
+   * 50 of them a page). Larger than `jobs` means the rest are on other pages: Crawl all pages reads them.
+   */
+  boardTotal?: number;
+}
+
+/** A board count past this is not believed. */
+const MAX_BOARD_TOTAL = 1_000_000;
+
+/** Words for a board that lists more jobs than this page shows, or "" when it does not say so. */
+export function boardTotalText(boardTotal: number | undefined, shown: number): string {
+  if (boardTotal === undefined || !Number.isInteger(boardTotal) || boardTotal <= shown) return "";
+  return `This board lists ${boardTotal} jobs and this page shows ${shown}; Crawl all pages reads the rest`;
 }
 
 /**
@@ -319,23 +333,28 @@ function isJobPostingType(type: unknown): boolean {
   return type === "JobPosting" || (Array.isArray(type) && type.includes("JobPosting"));
 }
 
-function collectJsonLdPostings(node: unknown, out: Record<string, unknown>[], depth = 0): void {
-  if (depth > 6 || out.length >= 200 || typeof node !== "object" || node === null) return;
+/** Postings collected across a page's JSON-LD blocks: at most MAX_PAGE_JOB_LINKS, the rest counted. */
+interface LdBudget { left: number; over: number }
+
+function collectJsonLdPostings(node: unknown, out: Record<string, unknown>[], budget: LdBudget, depth = 0): void {
+  if (depth > 6 || typeof node !== "object" || node === null) return;
   if (Array.isArray(node)) {
-    for (const n of node) collectJsonLdPostings(n, out, depth + 1);
+    for (const n of node) collectJsonLdPostings(n, out, budget, depth + 1);
     return;
   }
   const o = node as Record<string, unknown>;
-  if (isJobPostingType(o["@type"])) out.push(o);
+  if (isJobPostingType(o["@type"])) {
+    if (budget.left > 0) { budget.left--; out.push(o); } else budget.over++;
+  }
   if (o["@type"] === "ItemList" && Array.isArray(o.itemListElement)) {
     for (const it of o.itemListElement) {
       if (it && typeof it === "object") {
         const item = (it as Record<string, unknown>).item ?? it;
-        collectJsonLdPostings(item, out, depth + 1);
+        collectJsonLdPostings(item, out, budget, depth + 1);
       }
     }
   }
-  if (o["@graph"]) collectJsonLdPostings(o["@graph"], out, depth + 1);
+  if (o["@graph"]) collectJsonLdPostings(o["@graph"], out, budget, depth + 1);
 }
 
 function formatSinglePlace(loc: unknown): string {
@@ -406,15 +425,20 @@ function formatJsonLdSalary(baseSalary: unknown): string | undefined {
  * <head> keeps describing the URL the document loaded at, so a posting with no url of its own is
  * listed (under the current URL) only when it belongs to the current route (jobinfo.ts).
  */
-function scrapeJsonLd(doc: Document, profile: Partial<UserTargetProfile> | undefined, ctx: JobReadContext): ScrapedJob[] {
+/**
+ * JobPostings in the page's JSON-LD: at most MAX_PAGE_JOB_LINKS across all blocks, in page order;
+ * postings past that are counted in `unread`, never dropped in silence.
+ */
+function scrapeJsonLd(doc: Document, profile: Partial<UserTargetProfile> | undefined, ctx: JobReadContext): { jobs: ScrapedJob[]; unread: number } {
   const jobs: ScrapedJob[] = [];
   const scripts = Array.from(doc.querySelectorAll('script[type="application/ld+json"]'));
+  const budget: LdBudget = { left: MAX_PAGE_JOB_LINKS, over: 0 };
 
   for (const s of scripts) {
     try {
       const parsed = JSON.parse(s.textContent ?? "");
       const items: Record<string, unknown>[] = [];
-      collectJsonLdPostings(parsed, items);
+      collectJsonLdPostings(parsed, items, budget);
 
       for (const it of items) {
         if (!it || !isJobPostingType(it["@type"])) continue;
@@ -448,7 +472,7 @@ function scrapeJsonLd(doc: Document, profile: Partial<UserTargetProfile> | undef
       }
     } catch {}
   }
-  return jobs;
+  return { jobs, unread: budget.over };
 }
 
 /** Scrape listings from LinkedIn jobs results. */
@@ -591,9 +615,18 @@ function scrapeWorkday(doc: Document, host: string, base: string, profile?: Part
   return jobs;
 }
 
-/** Scrape structured job listings from modern Greenhouse (job-boards.greenhouse.io) Remix state if present. */
-function scrapeRemixGreenhouse(doc: Document, base: string, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
+/** A board's own job count as its state gives it: a whole number, else undefined. */
+function boardCount(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= MAX_BOARD_TOTAL ? v : undefined;
+}
+
+/**
+ * Scrape structured job listings from modern Greenhouse (job-boards.greenhouse.io) Remix state if present.
+ * `boardTotal` is the board's own count (jobPosts.total): a paged board shows 50 a page.
+ */
+function scrapeRemixGreenhouse(doc: Document, base: string, profile?: Partial<UserTargetProfile>): { jobs: ScrapedJob[]; boardTotal?: number } {
   const jobs: ScrapedJob[] = [];
+  let boardTotal: number | undefined;
   const scripts = Array.from(doc.querySelectorAll("script"));
 
   for (const s of scripts) {
@@ -624,6 +657,8 @@ function scrapeRemixGreenhouse(doc: Document, base: string, profile?: Partial<Us
         const jobPostsObj = routeData.jobPosts as Record<string, unknown> | undefined;
         const postList: unknown[] = [];
         if (Array.isArray(jobPostsObj?.data)) postList.push(...jobPostsObj.data);
+        const total = boardCount(jobPostsObj?.total);
+        if (total !== undefined) boardTotal = Math.max(boardTotal ?? 0, total);
 
         // Check featuredPosts.data
         const featuredObj = routeData.featuredPosts as Record<string, unknown> | undefined;
@@ -683,7 +718,7 @@ function scrapeRemixGreenhouse(doc: Document, base: string, profile?: Partial<Us
     }
   }
 
-  return jobs;
+  return { jobs, boardTotal };
 }
 
 const ASHBY_EMP_TYPE: Readonly<Record<string, string>> = {
@@ -1112,7 +1147,14 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
   return { jobs, unread };
 }
 
-const TRACKING_PARAM = /^(utm_.*|gclid|fbclid|msclkid|ref|refid|trk|trackingid)$/i;
+/** One posting's key across readers: its URL without a trailing slash, or title and company without one. */
+function dedupeKey(j: ScrapedJob): string {
+  // A Workday posting has several routes (/job/, /details/, locale-prefixed); applied.ts folds them to one key.
+  const folded = isWorkdayHost(hostOf(j.url)) ? postingKey(j.url) : null;
+  return (folded ?? (j.url ? j.url.replace(/\/$/, "") : `${j.title}|${j.company}`)).toLowerCase();
+}
+
+const TRACKING_PARAM =/^(utm_.*|gclid|fbclid|msclkid|ref|refid|trk|trackingid)$/i;
 
 /** A listing page's URL without credentials, fragment and tracking parameters (search parameters stay); "" unless http(s). */
 export function scrubPageUrl(href: string): string {
@@ -1160,16 +1202,13 @@ export function scrapePageJobs(
   let unread = 0;
 
   // Try JSON-LD first
-  const jsonLdJobs = scrapeJsonLd(currentDoc, profile, ctx);
-  if (jsonLdJobs.length > 0) {
-    jobs.push(...jsonLdJobs);
-  }
+  const jsonLd = scrapeJsonLd(currentDoc, profile, ctx);
+  jobs.push(...jsonLd.jobs);
+  unread += jsonLd.unread;
 
   // Try Remix structured state (modern Greenhouse job-boards.greenhouse.io)
-  const remixJobs = scrapeRemixGreenhouse(currentDoc, base, profile);
-  if (remixJobs.length > 0) {
-    jobs.push(...remixJobs);
-  }
+  const remix = scrapeRemixGreenhouse(currentDoc, base, profile);
+  jobs.push(...remix.jobs);
 
   // Try Ashby structured state when the board DOM is unhydrated
   const ashbyStateJobs = scrapeAshbyAppData(currentDoc, base, profile, ctx);
@@ -1194,20 +1233,23 @@ export function scrapePageJobs(
     jobs.push(...scrapeATSBoards(currentDoc, host, base, profile));
   }
 
-  // If still empty or very few, try generic DOM scraper
-  if (jobs.length < 2) {
-    const generic = scrapeGeneric(currentDoc, base, profile);
+  // The link-by-link reader runs when the readers above found almost nothing, and is also kept when it
+  // finds more jobs they missed than they found: a page that marks up a few featured roles as structured
+  // data and lists hundreds more as cards. On an ATS board the readers above already hold every posting,
+  // so the link reader adds no more than a stray navigation link and is not kept.
+  const known = new Set(jobs.map(dedupeKey));
+  const generic = scrapeGeneric(currentDoc, base, profile);
+  const missed = new Set(generic.jobs.map(dedupeKey).filter(k => !known.has(k))).size;
+  if (jobs.length < 2 || missed > known.size) {
     jobs.push(...generic.jobs);
-    unread = generic.unread;
+    unread += generic.unread;
   }
 
   // Deduplicate by normalized URL or Title+Company
   const deduped: ScrapedJob[] = [];
   const seen = new Set<string>();
   for (const j of jobs) {
-    // A Workday posting has several routes (/job/, /details/, locale-prefixed); applied.ts folds them to one key.
-    const folded = isWorkdayHost(hostOf(j.url)) ? postingKey(j.url) : null;
-    const key = (folded ?? (j.url ? j.url.replace(/\/$/, "") : `${j.title}|${j.company}`)).toLowerCase();
+    const key = dedupeKey(j);
     if (!seen.has(key)) {
       seen.add(key);
       deduped.push(j);
@@ -1224,6 +1266,7 @@ export function scrapePageJobs(
     totalFound: deduped.length,
     jobs: deduped,
     unread,
+    ...(remix.boardTotal !== undefined ? { boardTotal: remix.boardTotal } : {}),
   };
 }
 

@@ -315,6 +315,30 @@ describe("crawlPages: stopping", () => {
     }
   });
 
+  test("a walk whose pager ends before the board's own count is not complete, and says both numbers", async () => {
+    // A paged Greenhouse board (669 jobs, 50 a page) whose pager is lost after page 2.
+    let p = 0;
+    const next = fel("button", {}, "Next", () => { p++; });
+    const controls = () => (p < 1 ? [next] : []);
+    const r = await crawlPages(fakeDoc(controls), page, { scrape: () => ({ jobs: [job(p * 2), job(p * 2 + 1)], unread: 0, boardTotal: 669 }), sleep: noSleep }, { delayMs: 0 });
+    expect(r.listed).toBe(4);
+    expect(r.expected).toBe(669);
+    expect(r.complete).toBe(false);
+    expect(r.notes).toEqual(["the board lists 669 jobs and 4 were read"]);
+    expect(describeCrawl(r)).toBe("Read 4 of 669 jobs from 2 pages (incomplete: the board lists 669 jobs and 4 were read).");
+  });
+
+  test("a walk that reads every job the board counts is complete; a count it cannot believe is ignored", async () => {
+    const whole = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: [job(1), job(2)], unread: 0, boardTotal: 2 }), sleep: noSleep }, { delayMs: 0 });
+    expect(whole.complete).toBe(true);
+    expect(whole.expected).toBe(2);
+    for (const boardTotal of [0, -4, 2.5, Number.NaN]) {
+      const r = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: [job(1)], unread: 0, boardTotal }), sleep: noSleep }, { delayMs: 0 });
+      expect(r.complete).toBe(true);
+      expect(r.expected).toBeUndefined();
+    }
+  });
+
   test("a scrape answer whose jobs is not an array reads as no jobs, never a throw", async () => {
     const r = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: null, unread: 0 }) as unknown as PageScrape, sleep: noSleep }, { delayMs: 0 });
     expect(r.jobs).toEqual([]);

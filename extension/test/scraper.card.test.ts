@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_CARD_NODES, cardRest, readCard, withoutGluedLabel } from "../src/card";
 import { prepareIngest } from "../src/ingest";
-import { MAX_PAGE_JOB_LINKS, scrapePageJobs, unreadText } from "../src/scraper";
+import { MAX_PAGE_JOB_LINKS, boardTotalText, scrapePageJobs, unreadText } from "../src/scraper";
 
 const ELEMENT = 1;
 const TEXT = 3;
@@ -350,6 +350,44 @@ describe("a one-page listing with many job links", () => {
     expect(scrape(listingPage([listingCard(1)])).unread).toBe(0);
     const ld = `<script type="application/ld+json">{"@type":"JobPosting","title":"Staff Engineer","hiringOrganization":{"name":"Acme"},"url":"https://careers.example.test/jobs/1"}</script>`;
     expect(scrape(ld + listingPage(Array.from({ length: 3 }, (_, i) => listingCard(i)))).unread).toBe(0);
+  });
+
+  test("structured data for a few featured roles does not hide the page's other job cards", () => {
+    // A careers page that marks up 3 featured roles as JSON-LD and lists 300 roles as cards.
+    const posting = (i: number) => ({ "@type": "JobPosting", title: `Featured Engineer ${i}`, hiringOrganization: { name: "Acme" }, url: `https://careers.example.test/featured/${i}` });
+    const ld = `<script type="application/ld+json">${JSON.stringify({ "@type": "ItemList", itemListElement: [0, 1, 2].map(posting) })}</script>`;
+    const r = scrape(ld + Array.from({ length: 300 }, (_, i) => `<p>${listingCard(i)}</p>`).join(""), "careers.example.test");
+    expect(r.jobs.filter(j => j.url.includes("/featured/"))).toHaveLength(3);
+    expect(r.jobs.filter(j => j.url.includes("/anthropic/jobs/"))).toHaveLength(300);
+  });
+
+  test("a JSON-LD list of 300 postings is read whole", () => {
+    const posting = (i: number) => ({ "@type": "JobPosting", title: `Engineer ${i}`, hiringOrganization: { name: "Acme" }, url: `https://careers.example.test/jobs/${i}` });
+    const ld = `<script type="application/ld+json">${JSON.stringify({ "@type": "ItemList", itemListElement: Array.from({ length: 300 }, (_, i) => posting(i)) })}</script>`;
+    const r = scrape(ld, "careers.example.test");
+    expect(r.jobs).toHaveLength(300);
+    expect(r.unread).toBe(0);
+  });
+
+  test("a paged Greenhouse board says how many jobs it lists beyond this page, and its paging is not unread", () => {
+    // job-boards.greenhouse.io/anthropic, as saved: jobPosts {count 50, page 1, total 669, total_pages 14}.
+    const post = (i: number) => ({ title: `Engineer ${i}`, location: "San Francisco, CA", absolute_url: `https://job-boards.greenhouse.io/anthropic/jobs/${4_000_000_000 + i}`, department: { name: "Engineering" } });
+    const state = (total: unknown) => ({ state: { loaderData: { root: { boardConfiguration: { name: "Anthropic" } }, "routes/$url_token": { jobPosts: { count: 50, page: 1, total, total_pages: 14, data: Array.from({ length: 50 }, (_, i) => post(i)) } } } } });
+    const page = (total: unknown) => `<script>window.__remixContext = ${JSON.stringify(state(total))};</script>`;
+    const r = scrape(page(669), "job-boards.greenhouse.io");
+    expect(r.jobs).toHaveLength(50);
+    expect(r.boardTotal).toBe(669);
+    expect(r.unread).toBe(0);
+    expect(boardTotalText(r.boardTotal, r.jobs.length)).toBe("This board lists 669 jobs and this page shows 50; Crawl all pages reads the rest");
+    // A total that is not a whole count, or past belief, is not carried.
+    for (const bad of ["669", -1, 3.5, Number.MAX_SAFE_INTEGER, null]) expect(scrape(page(bad), "job-boards.greenhouse.io").boardTotal).toBeUndefined();
+  });
+
+  test("board total words: nothing when the board shows everything or gives no count", () => {
+    expect(boardTotalText(undefined, 50)).toBe("");
+    expect(boardTotalText(50, 50)).toBe("");
+    expect(boardTotalText(40, 50)).toBe("");
+    expect(boardTotalText(51.5, 50)).toBe("");
   });
 
   test("unread words: nothing for zero, negative or not a number; one link is singular", () => {

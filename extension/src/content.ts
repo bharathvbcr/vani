@@ -40,7 +40,7 @@ import { templateTailoring, openAnswerFill, OPEN_ANSWER_HOLD } from "./tailor";
 import { heldReview, matchField, whyNoMatch } from "./match";
 import { isCoverField, parseCoverGet, type CoverFetch } from "./cover";
 import { decideSubmit, looksConfirmed } from "./submit";
-import { scrapePageJobs, type ScrapeResult, unreadText } from "./scraper";
+import { boardTotalText, scrapePageJobs, type ScrapeResult, unreadText } from "./scraper";
 import { DRAWER_PREVIEW, companyLine, drawerSummary, scorePillText, scoreTone, selectJobs } from "./joblist";
 import { isHttpUrl } from "./joblink";
 import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, RESUME_KEYED_TIMEOUT_MS, type ResumeFetch, checkResumeFile, isResumeField, openHeldResume, parseResumeGet, toBase64 } from "./resume";
@@ -645,7 +645,8 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   header.className = "shead";
   const titleSpan = document.createElement("span");
   const unread = unreadText(res.unread);
-  titleSpan.textContent = [drawerSummary(res.jobs.length, preview.length, batch.jobs.length, leftOutText(batch)), unread && `${unread}.`].filter(Boolean).join(" ");
+  const more = boardTotalText(res.boardTotal, res.jobs.length);
+  titleSpan.textContent = [drawerSummary(res.jobs.length, preview.length, batch.jobs.length, leftOutText(batch)), unread && `${unread}.`, more && `${more}.`].filter(Boolean).join(" ");
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "ctrl";

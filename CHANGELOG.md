@@ -150,7 +150,12 @@ were ported with notice. Source files do not carry an upstream copyright header.
   nothing, so Anthropic's careers page (669 jobs on one page) gave 100, and **Crawl all pages**
   called that complete. It now reads up to 2000 distinct job links (`MAX_PAGE_JOB_LINKS`); a posting
   linked twice counts once, and links past the bound are named in the drawer, the popup and the
-  crawl's last line, which then reports itself incomplete.
+  crawl's last line, which then reports itself incomplete. The same holds for the rest of the scrape
+  path: JSON-LD stopped at 200 postings per block (now 2000 across the page, the rest counted); a page
+  whose JSON-LD marked up a few featured roles hid all its job cards (the link reader now runs when it
+  finds more jobs than the structured readers did); a paged Greenhouse board says how many jobs it
+  lists beyond the page, and a crawl that ends short of that count is incomplete; Workday answer rows
+  past 100 are named instead of dropped.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and

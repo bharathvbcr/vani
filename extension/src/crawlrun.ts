@@ -57,7 +57,7 @@ export async function runCrawlToVani(deps: CrawlRunDeps, saveSearch: boolean, si
   const host = (() => { try { return new URL(deps.pageUrl).hostname; } catch { return ""; } })();
   const scrape = (d: Document, url: string): PageScrape => {
     const r = scrapePageJobs(d, host, deps.profile, url);
-    return { jobs: r.jobs.map(j => ({ title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.description || j.snippet, posted: j.posted })), unread: r.unread };
+    return { jobs: r.jobs.map(j => ({ title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.description || j.snippet, posted: j.posted })), unread: r.unread, ...(r.boardTotal !== undefined ? { boardTotal: r.boardTotal } : {}) };
   };
   const pageDeps: PageDeps = { scrape, load: pageLoader(deps), sleep: ms => (deps.http ? deps.http.sleep(ms) : new Promise(r => setTimeout(r, ms))) };
   const company = workdayCompany(deps.doc); // the board's API does not name it

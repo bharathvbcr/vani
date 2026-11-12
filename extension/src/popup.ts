@@ -8,7 +8,7 @@ import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, c
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
-import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult, unreadText } from "./scraper";
+import { boardTotalText, exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult, unreadText } from "./scraper";
 import { type IngestSource, buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
 import { type RelevanceResult } from "./relevance";
 import { scoreWord } from "./jobrow";
@@ -907,6 +907,8 @@ let scrapeGen = 0;
 let scrapedPage = { pageUrl: "", pageTitle: "" };
 /** Job links on the scraped page past the scraper's bound (ScrapeResult.unread); 0 from a page that sent none. */
 let scrapedUnread = 0;
+/** The board's own count of its jobs when the scraped page gave one (ScrapeResult.boardTotal). */
+let scrapedBoardTotal: number | undefined;
 
 /** Send jobs to Vani and say what Vani answered, or why nothing was sent; a failure is shown, never swallowed. */
 async function sendToVani(scrape: { pageUrl: string; pageTitle: string; jobs: readonly IngestSource[] }, saveSearch: boolean): Promise<{ ok: boolean; text: string }> {
@@ -1360,7 +1362,8 @@ function renderScraper(): void {
   if (countEl) countEl.textContent = countLabel(filtered.length, scrapedJobs.length, active);
   const scope = $("#scraper-scope");
   const unread = unreadText(scrapedUnread);
-  if (scope) scope.textContent = [scopeNote(filtered.length, scrapedJobs.length, active), sendNote, unread && `${unread}.`].filter(Boolean).join(" ");
+  const more = boardTotalText(scrapedBoardTotal, scrapedJobs.length);
+  if (scope) scope.textContent = [scopeNote(filtered.length, scrapedJobs.length, active), sendNote, unread && `${unread}.`, more && `${more}.`].filter(Boolean).join(" ");
   setScraperActions(filtered.length, scrapedJobs.length, active, sendNote);
 
   // The empty states live outside the list. Clearing the list must not remove them.
@@ -1402,6 +1405,7 @@ function initScraper(): void {
         scrapedJobs = r.jobs;
         scrapedPage = { pageUrl: typeof r.pageUrl === "string" ? r.pageUrl : "", pageTitle: typeof r.pageTitle === "string" ? r.pageTitle : "" };
         scrapedUnread = typeof r.unread === "number" && Number.isFinite(r.unread) && r.unread > 0 ? Math.trunc(r.unread) : 0;
+        scrapedBoardTotal = typeof r.boardTotal === "number" && Number.isInteger(r.boardTotal) && r.boardTotal > 0 ? r.boardTotal : undefined;
         renderScraper();
         const unread = unreadText(scrapedUnread);
         toast(r.jobs.length === 0 ? "No jobs found on this page." : `Scraped ${r.jobs.length} ${r.jobs.length === 1 ? "job" : "jobs"}${unread ? `; ${unread}` : ""}.`);

@@ -330,6 +330,17 @@ describe("requests stay on the board's detail endpoint", () => {
     expect(http.calls.every(c => c === LIST)).toBe(true);
   });
 
+  test("an answer with more rows than one answer is read for is incomplete and says so, never cut in silence", async () => {
+    // Asked for WORKDAY_PAGE rows, the board answers 130 at once: 100 are read, 30 are named.
+    const rows = Array.from({ length: 130 }, (_, i) => ({ title: `t${i}`, externalPath: `/job/x/${i}` }));
+    let first = true;
+    const http = server({ jobs: [], respond: () => { const r = first ? { total: 130, jobPostings: rows } : { total: 130, jobPostings: [] }; first = false; return r; } });
+    const r = await crawlWorkday(board, ALL, http);
+    expect(r.listed).toBe(100);
+    expect(r.complete).toBe(false);
+    expect(r.notes.join(" ")).toContain("answered 30 rows past the 100 read from one answer");
+  });
+
   test("pin: every request is same-origin, credentialed same-origin only, and refuses redirects", async () => {
     const inits: RequestInit[] = [];
     const http = server({ jobs: mk(25), hook: (_u, init) => { inits.push(init); return undefined; } });
