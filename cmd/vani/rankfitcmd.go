@@ -108,6 +108,9 @@ func (e *env) cmdRankfit(args []string) error {
 	fmt.Fprintf(w, "slot labels: %d eval entries (%d not in the ledger)\n", rep.Labels, missing)
 	fmt.Fprintf(w, "audit judgments: %d yes, %d maybe, %d no (%d skipped); marks: %d saved, %d hidden; shown and left unmarked: %d\n",
 		tc.Yes, tc.Maybe, tc.No, tc.Skipped, tc.Saved, tc.Hidden, tc.Passed)
+	if tc.Closed > 0 {
+		fmt.Fprintf(w, "audit judgments of closed postings (dead or duplicate) left out of the fit: %d\n", tc.Closed)
+	}
 
 	doPlatt, doWeights := *part != "weights", *part != "platt"
 	var notRun []string

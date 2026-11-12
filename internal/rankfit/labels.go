@@ -91,6 +91,10 @@ type TargetCounts struct {
 	Saved, Hidden, Passed int
 	// Skipped counts judgments of "can't tell", which label nothing.
 	Skipped int
+	// Closed counts judgments drawn from the audit's closed strata (dead or
+	// duplicate postings), kept out of the fit: they measure liveness and the
+	// duplicate fold, not what the ranking orders.
+	Closed int
 }
 
 // Judged is the usable judgment count the weight fit's threshold is on.
@@ -132,6 +136,10 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 		e := labels[k]
 		if err := checkInclusion(string(k), e.Source, e.PSelect); err != nil {
 			return nil, TargetCounts{}, err
+		}
+		if strings.HasPrefix(e.Source, eval.ClosedPrefix) {
+			c.Closed++
+			continue
 		}
 		t := Target{Judged: true, Scores: scores(k), Source: e.Source, PSelect: e.PSelect}
 		switch v {
