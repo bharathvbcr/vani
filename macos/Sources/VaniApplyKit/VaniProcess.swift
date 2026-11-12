@@ -230,38 +230,58 @@ extension VaniProcess {
     /// Runs a `vani` command that writes one JSON reply on stdout: the value on
     /// exit 0, or `{"error": ...}` on failure, which is thrown as is. stderr is
     /// never shown. `tooOld` explains an exit 2 (a usage error: this vani
-    /// predates the command).
+    /// predates the command). Setting `cancellation` stops the child (SIGTERM, then SIGKILL)
+    /// and throws `VaniCallCancelled`.
     static func call<T: Decodable>(_ binary: URL, _ args: [String], configPath: String?, stateDir: String?,
                                    input: Data? = nil, timeout: TimeInterval, maxOutputBytes: Int,
-                                   decoder: JSONDecoder = JSONDecoder(), tooOld: String) throws -> T {
+                                   decoder: JSONDecoder = JSONDecoder(), tooOld: String,
+                                   cancellation: CancelFlag? = nil) throws -> T {
         let (out, name) = try finished(binary, args, configPath: configPath, stateDir: stateDir, input: input,
-                                       timeout: timeout, maxOutputBytes: maxOutputBytes)
+                                       timeout: timeout, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
         guard out.status == 0 else { throw failure(out, name: name, decoder: decoder, tooOld: tooOld) }
+        return try decodeReply(out.stdout, name: name, decoder: decoder) {
+            failure(out, name: name, decoder: decoder, tooOld: tooOld)
+        }
+    }
+
+    /// A command's reply, read as `call` reads a command's stdout: a reply of another contract
+    /// version (VersionedReply) is refused as that, `{"error": ...}` is thrown as is, and a reply
+    /// of the wrong shape names where it went wrong. `unreadable` is the error for bytes that are
+    /// no reply at all. `JobsServeClient`'s replies are read here too, so a reply means the same
+    /// whichever way it came.
+    static func decodeReply<T: Decodable>(_ reply: Data, name: String, decoder: JSONDecoder,
+                                          unreadable: () -> BankError) throws -> T {
         // A reply of another contract version is named as that before anything else is read from it:
         // its shape is not this app's to judge.
         if let versioned = T.self as? VersionedReply.Type {
             do {
-                if let seen = try decoder.decode(VersionProbe.self, from: out.stdout).version, seen != versioned.supportedVersion {
+                if let seen = try decoder.decode(VersionProbe.self, from: reply).version, seen != versioned.supportedVersion {
                     throw BankError("\(name) reports reply version \(seen); this app reads version \(versioned.supportedVersion). Rebuild the app.")
                 }
             } catch is DecodingError {
                 // JSON whose version this app cannot hold (1.5, a string, 10^23) is a version problem,
                 // named without the value; only non-JSON is "without a reply".
-                if let object = (try? JSONSerialization.jsonObject(with: out.stdout)) as? [String: Any],
+                if let object = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any],
                    let raw = object["version"], !(raw is NSNull) {
                     throw BankError("\(name) sent a reply this app cannot read: version is not an integer this app can hold. Rebuild the app.")
                 }
             }
         }
         do {
-            return try decoder.decode(T.self, from: out.stdout)
+            return try decoder.decode(T.self, from: reply)
         } catch let error as DecodingError {
-            if let reported = try? decoder.decode(Failure.self, from: out.stdout) { throw BankError(reported.error) }
+            if let reported = try? decoder.decode(Failure.self, from: reply) { throw BankError(reported.error) }
             if let place = describe(error) { throw BankError("\(name) sent a reply this app cannot read: \(place)") }
-            throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+            throw unreadable()
         } catch {
-            throw failure(out, name: name, decoder: decoder, tooOld: tooOld)
+            throw unreadable()
         }
+    }
+
+    /// The error for a reply past `maxOutputBytes`, however it came.
+    static func tooLarge(_ maxOutputBytes: Int) -> BankError {
+        let cap = maxOutputBytes >= 1 << 20 ? "\(maxOutputBytes >> 20) MB" : "\(maxOutputBytes >> 10) KB"
+        return BankError("vani's reply was larger than \(cap)")
     }
 
     /// Where a reply of the wrong shape went wrong, as a path of keys and positions and the kind
@@ -298,18 +318,19 @@ extension VaniProcess {
         throw failure(out, name: name, decoder: JSONDecoder(), tooOld: tooOld)
     }
 
-    /// Runs the command and refuses what no reply can come from: it did not start, did
-    /// not finish in time, or wrote more than the ceiling. Also returns the command's
-    /// name: its leading words, before any flag.
+    /// Runs the command and refuses what no reply can come from: it did not start, was
+    /// cancelled, did not finish in time, or wrote more than the ceiling. Also returns the
+    /// command's name: its leading words, before any flag.
     private static func finished(_ binary: URL, _ args: [String], configPath: String?, stateDir: String?,
-                                 input: Data?, timeout: TimeInterval, maxOutputBytes: Int) throws -> (Outcome, String) {
+                                 input: Data?, timeout: TimeInterval, maxOutputBytes: Int,
+                                 cancellation: CancelFlag? = nil) throws -> (Outcome, String) {
         let out = run(binary, arguments: args, environment: environment(configPath: configPath, stateDir: stateDir),
-                      input: input, timeout: timeout, maxOutputBytes: maxOutputBytes)
+                      input: input, timeout: timeout, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
         let name = "vani \(args.prefix { !$0.hasPrefix("-") }.prefix(2).joined(separator: " "))"
         if let launchError = out.launchError { throw BankError(launchError) }
+        if out.cancelled { throw VaniCallCancelled(command: name) }
         if out.timedOut { throw BankError("\(name) did not finish within \(Int(timeout)) s") }
-        let cap = maxOutputBytes >= 1 << 20 ? "\(maxOutputBytes >> 20) MB" : "\(maxOutputBytes >> 10) KB"
-        if out.truncated { throw BankError("vani's reply was larger than \(cap)") }
+        if out.truncated { throw tooLarge(maxOutputBytes) }
         return (out, name)
     }
 
@@ -405,6 +426,14 @@ public final class LaunchedJob: @unchecked Sendable {
 private final class OutputBox: @unchecked Sendable {
     var out = Data()
     var err = Data()
+}
+
+/// A `VaniProcess.call` whose `CancelFlag` was set: the child was stopped and reaped, and there
+/// is no reply. The caller asked for this, so it is not vani failing; a caller that superseded
+/// the call drops it.
+public struct VaniCallCancelled: Error, Equatable, CustomStringConvertible {
+    public let command: String
+    public var description: String { "\(command) was cancelled" }
 }
 
 /// Set once to tell a thread to stop: `run`'s own pipe threads, and (passed as `cancellation`)

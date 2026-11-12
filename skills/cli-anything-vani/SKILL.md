@@ -83,6 +83,8 @@ and work while a run holds the ledger.
   - filters: `--q`, `--fit`, `--work-mode`, `--max-age`, `--state`, `--remote`, ...
 - `vani jobs show KEY` prints one role with its description. `vani jobs find --url URL` says
   which tracked role a page is.
+- `vani jobs serve` is the Mac app's long-lived Jobs reader (NDJSON on stdin/stdout). It is not
+  for agents: run `vani --json jobs list|stats|gaps|show` instead, which reply identically.
 - `vani labels` prints the label vocabularies (fit, status, category, triage).
 - `vani watchlist list` lists the boards. `vani prefilter`, `vani eval` and `vani relevance`
   report on the filter and the label set.

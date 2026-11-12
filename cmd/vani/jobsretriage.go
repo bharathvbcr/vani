@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
+	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -157,6 +158,14 @@ type retriageErrorReply struct {
 // stale reading too) and for RankContext.Manual (which uses only current ones).
 type manualReadingSet struct {
 	m map[posting.Key]manualtriage.Reading
+	// text hashes each read posting once, however many slots and rows ask.
+	text manualtriage.TextMemo
+	// facts is the insight's stored facts (insight.storedFacts); nil, or no
+	// answer for a record, hashes its resident text.
+	facts func(ledger.Record) (jobfacts.Facts, bool)
+	// fp is manualFingerprint(m) when the set's map is a resident's kept one
+	// (readKeep.manualReadings), which is never changed; 0 computes it.
+	fp uint64
 }
 
 // manualReadings reads the store. nil sets and a warning when it cannot be read
@@ -165,13 +174,18 @@ type manualReadingSet struct {
 func manualReadings(stateDir string) (*manualReadingSet, func(ledger.Record, string) (string, bool), string) {
 	m, err := manualtriage.Read(manualtriage.Dir(stateDir))
 	if err != nil {
-		return nil, nil, "manual Sonnet readings not used: " + oneLine(err.Error(), 200)
+		return nil, nil, manualReadError(err)
 	}
 	if len(m) == 0 {
 		return nil, nil, ""
 	}
 	s := &manualReadingSet{m: m}
 	return s, s.value, ""
+}
+
+// manualReadError is the warning for a readings store that cannot be read.
+func manualReadError(err error) string {
+	return "manual Sonnet readings not used: " + oneLine(err.Error(), 200)
 }
 
 // manualLookup is manualReadings for a caller that wants only the lookup.
@@ -189,7 +203,14 @@ func (s *manualReadingSet) state(r ledger.Record) (manualtriage.Reading, manualt
 	if !ok {
 		return manualtriage.Reading{}, "", false
 	}
-	return rd, rd.StateOf(r.Posting, r.BodyEvicted), true
+	if s.facts != nil {
+		// Stored facts hold the text's hash, so a posting held without its text
+		// is not gone: its reading is judged as if the text were read.
+		if f, ok := s.facts(r); ok {
+			return rd, rd.StateOfText(f.ManualText), true
+		}
+	}
+	return rd, rd.StateWith(r.Posting, r.BodyEvicted, &s.text), true
 }
 
 // value is RankContext.Manual: the slot's value of a current reading.

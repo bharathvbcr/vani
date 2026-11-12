@@ -29,12 +29,22 @@ type sameCompany struct {
 }
 
 func newSameCompany(cfg config.Config, cfgErr error, snap ledger.Snapshot, m map[posting.Key]marks.Entry, now time.Time) *sameCompany {
+	return newSameCompanyFrom(cfg, cfgErr, m, now, func(co *samecompany.Companies) *samecompany.Groups {
+		return samecompany.NewGroups(snap.Records, co)
+	})
+}
+
+// newSameCompanyFrom is newSameCompany over groups, which returns the
+// company-history groups of the snapshot's records under co: built now, or
+// kept by a resident reader (jobsResident.sameGroups). The marks and the clock
+// are always this read's.
+func newSameCompanyFrom(cfg config.Config, cfgErr error, m map[posting.Key]marks.Entry, now time.Time, groups func(*samecompany.Companies) *samecompany.Groups) *sameCompany {
 	var boards []sources.Board
 	if cfgErr == nil {
 		boards = cfg.Watchlist
 	}
 	return &sameCompany{build: func() *samecompany.Index {
-		return samecompany.New(snap.Records, m, samecompany.NewCompanies(boards), now)
+		return groups(samecompany.NewCompanies(boards)).Index(m, now)
 	}}
 }
 

@@ -184,6 +184,11 @@ commands:
   jobs stats [--json] [same selection flags as list]
                              distributions over the selection: fit, age, scores, companies, keywords,
                              US states, areas and remote listings
+  jobs serve                 answer jobs list, stats, gaps and show for the Mac app from one
+                             long-lived process: NDJSON requests on stdin
+                             ({"id","op","params":{"args":[...]}}), one response line each on
+                             stdout ({"id","ok","result"|"error"}), the result being that
+                             command's --json reply; exits when stdin closes
   jobs export [--json] [--out FILE.xlsx] [--top N | --keys-stdin] [--already-exported ask|skip|include]
             [--dry-run] [same selection flags and --sort as list]
                              write jobs to an Excel workbook: the first N (default 100, at most
@@ -327,6 +332,13 @@ type env struct {
 	// has none. runEnv reads it to reply {"error","code"} for a failure the
 	// command did not report itself.
 	jsonAsked *bool
+
+	// lastFacts is the text facts of the last Jobs view read (jobsListRead),
+	// for what reports how a read found them; nil before one.
+	lastFacts *textFacts
+	// resident is what `vani jobs serve` keeps between requests (the ledger
+	// Reader and the facts store); nil for a command that opens them per read.
+	resident *jobsResident
 
 	// runLog is the log file a manual run's output goes to, as its starter said
 	// (VANI_RUN_LOG, checked by checkRunLog); "" when it said nothing or what it

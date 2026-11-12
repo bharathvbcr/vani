@@ -29,9 +29,11 @@ package kbmatch
 import (
 	"context"
 	"crypto/sha256"
+	"encoding"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -203,12 +205,44 @@ func cutRunes(s string, n int) string {
 // TextSHA256 identifies what a stored answer was given: the posting's text, the
 // target summary and the digest. A change to any re-asks.
 func TextSHA256(p posting.Posting, summary string, d Digest) string {
-	h := sha256.New()
-	for _, s := range []string{Task, p.Title, p.Location, p.Description, summary, d.SHA256} {
-		fmt.Fprintf(h, "%d:%s\x00", len(s), s)
+	sum, err := TextSHA256Of(TextPrefix(p), summary, d)
+	if err != nil {
+		panic("kbmatch: " + err.Error()) // TextPrefix's own state always resumes
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return sum
 }
+
+// TextPrefix is TextSHA256's hash state after the posting (the task, title,
+// location and description), saved: TextSHA256Of finishes it with a summary
+// and digest, so a caller that kept it needs no description to find a stored
+// answer. The saved form is the standard library's SHA-256 state, which only
+// TextSHA256Of reads.
+func TextPrefix(p posting.Posting) []byte {
+	h := sha256.New()
+	for _, s := range []string{Task, p.Title, p.Location, p.Description} {
+		writeField(h, s)
+	}
+	state, err := h.(encoding.BinaryMarshaler).MarshalBinary()
+	if err != nil {
+		panic("kbmatch: save a SHA-256 state: " + err.Error()) // never fails for crypto/sha256
+	}
+	return state
+}
+
+// TextSHA256Of is TextSHA256 from the posting's TextPrefix. A prefix that is not
+// a saved SHA-256 state is an error.
+func TextSHA256Of(prefix []byte, summary string, d Digest) (string, error) {
+	h := sha256.New()
+	if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(prefix); err != nil {
+		return "", fmt.Errorf("text prefix: %w", err)
+	}
+	writeField(h, summary)
+	writeField(h, d.SHA256)
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeField writes one length-prefixed field of TextSHA256's input.
+func writeField(w io.Writer, s string) { fmt.Fprintf(w, "%d:%s\x00", len(s), s) }
 
 // Question renders the question for p. The context stays within
 // jdtriage.MaxContextBytes: the title and location are cut to draft.MaxTitleRunes

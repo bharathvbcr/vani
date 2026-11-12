@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"math"
 	"strconv"
 	"sync"
@@ -179,30 +180,42 @@ type Report struct {
 // TextHash identifies a posting's scored text: the first 16 bytes of sha256
 // over "<len(title)>:<title>\x00<len(description)>:<description>", in hex. The
 // hash keys every stored vector and score, so these bytes must never change
-// (texthash_test.go holds it to the first implementation). The text is fed
-// through a fixed buffer rather than formatted into one, so a call allocates
-// the same few KiB however long the description is: the Jobs views hash
-// every listed posting on every list.
+// (texthash_test.go holds it to the first implementation).
+//
+// The Jobs views hash every listed posting on every list, so the text is fed
+// to the hash through one bounded, pooled buffer rather than copied whole first
+// (fmt.Fprintf grew a buffer the size of the description per call).
 func TextHash(title, description string) string {
 	h := sha256.New()
-	var buf [4 << 10]byte
-	feed := func(s string) {
-		for len(s) > 0 {
-			n := copy(buf[:], s)
-			h.Write(buf[:n])
-			s = s[n:]
-		}
+	bp := textHashBufs.Get().(*[]byte)
+	defer textHashBufs.Put(bp)
+	buf := append(strconv.AppendInt((*bp)[:0], int64(len(title)), 10), ':')
+	h.Write(buf)
+	hashString(h, buf, title)
+	buf = append(strconv.AppendInt(append(buf[:0], 0), int64(len(description)), 10), ':')
+	h.Write(buf)
+	hashString(h, buf, description)
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// textHashChunk bounds the bytes TextHash copies at a time.
+const textHashChunk = 4 << 10
+
+// textHashBufs reuses TextHash's chunk buffers: the hash consumes each chunk
+// before Write returns, so a buffer is free again when TextHash ends.
+var textHashBufs = sync.Pool{New: func() any {
+	b := make([]byte, 0, textHashChunk)
+	return &b
+}}
+
+// hashString writes s to h through buf's capacity, a chunk at a time.
+func hashString(h hash.Hash, buf []byte, s string) {
+	buf = buf[:cap(buf)]
+	for len(s) > 0 {
+		n := copy(buf, s)
+		h.Write(buf[:n])
+		s = s[n:]
 	}
-	var num [20]byte
-	h.Write(strconv.AppendInt(num[:0], int64(len(title)), 10))
-	feed(":")
-	feed(title)
-	feed("\x00")
-	h.Write(strconv.AppendInt(num[:0], int64(len(description)), 10))
-	feed(":")
-	feed(description)
-	var sum [sha256.Size]byte
-	return hex.EncodeToString(h.Sum(sum[:0])[:16])
 }
 
 // dot is the cosine of two vectors of equal width that validRow normalized.

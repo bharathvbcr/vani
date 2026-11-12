@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -133,6 +134,26 @@ func semanticProfile(ctx context.Context, cfg config.Config) (semantic.Profile, 
 		return semantic.Profile{}, fmt.Errorf("%w (%s)", err, eligibleSummary(cfg, el))
 	}
 	return p, err
+}
+
+// profileFunc is the knowledge-base profile of one config (semanticProfile).
+type profileFunc func() (semantic.Profile, error)
+
+// onceProfile is semanticProfile(cfg), built on its first call and answered
+// from then on: one read builds the profile once for its semantic lookup and
+// its kbmatch lookup (each runs rkb).
+func onceProfile(cfg config.Config) profileFunc {
+	var once sync.Once
+	var p semantic.Profile
+	var err error
+	return func() (semantic.Profile, error) {
+		once.Do(func() {
+			ctx, cancel := boundedKBContext()
+			defer cancel()
+			p, err = semanticProfile(ctx, cfg)
+		})
+		return p, err
+	}
 }
 
 // boundedKBContext is a context for callers that hold none of their own: the
@@ -545,16 +566,28 @@ func (e *env) logSemantic(rep semanticReport) {
 // opened; warning says why in the last two cases. Unknown stays unknown: the
 // ranker takes its prior, never a score of 0.
 func semanticLookup(cfg config.Config, stateDir string) (m *semantic.Matcher, warning string) {
+	return semanticLookupKept(cfg, stateDir, nil, nil)
+}
+
+// semanticLookupKept is semanticLookup that opens through kept (a resident
+// reader's, semantic.Lookups), so an unchanged score file is not decoded
+// again; nil opens it now.
+func semanticLookupKept(cfg config.Config, stateDir string, kept *semantic.Lookups, profile profileFunc) (m *semantic.Matcher, warning string) {
 	if !cfg.SemanticOn() {
 		return nil, ""
 	}
-	ctx, cancel := boundedKBContext()
-	defer cancel()
-	prof, err := semanticProfile(ctx, cfg)
+	if profile == nil {
+		profile = onceProfile(cfg)
+	}
+	prof, err := profile()
 	if err != nil {
 		return nil, "knowledge-base matching is off: the profile could not be built: " + oneLine(err.Error(), 200)
 	}
-	m, err = semantic.OpenLookupFor(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	if kept != nil {
+		m, err = kept.Open(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	} else {
+		m, err = semantic.OpenLookupFor(prof, semanticDir(stateDir), semanticModelPrefix(cfg))
+	}
 	if errors.Is(err, semantic.ErrModelMismatch) {
 		return nil, "knowledge-base scores are from another model; run `vani semantic warm`"
 	}
@@ -612,8 +645,12 @@ func digestOptions(cfg config.Config, stateDir string) (digest.Options, string) 
 // attachSemantic opens the lookup matcher into in (jobsinsight.go newInsight)
 // and points the ranking at it. A failure is a warning on the listing and
 // leaves semantic unknown.
-func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
-	m, warning := semanticLookup(cfg, stateDir)
+func (in *insight) attachSemantic(cfg config.Config, stateDir string, profile profileFunc) {
+	var kept *semantic.Lookups
+	if in.res != nil {
+		kept = &in.res.lookups
+	}
+	m, warning := semanticLookupKept(cfg, stateDir, kept, profile)
 	if warning != "" {
 		if in.info.Warning != "" {
 			in.info.Warning += "; "
@@ -621,15 +658,59 @@ func (in *insight) attachSemantic(cfg config.Config, stateDir string) {
 		in.info.Warning += warning
 	}
 	in.sem = m
-	in.rc.Semantic = semanticRank(m)
+	if m == nil {
+		in.rc.Semantic = nil
+		return
+	}
+	// semanticRank's rule over the memoized match, which semanticInto shares.
+	in.rc.Semantic = func(r ledger.Record) (float64, bool) {
+		mt, ok := in.semanticMatch(r)
+		return mt.Score, ok && !mt.Thin
+	}
 }
 
 // semanticInto fills j's semantic match when one is cached for r.
 func (in *insight) semanticInto(j *jobview.Job, r ledger.Record) {
-	if in.sem == nil {
-		return
-	}
-	if mt, ok := semanticScore(in.sem, r); ok {
+	if mt, ok := in.semanticMatch(r); ok {
 		j.Semantic = &jobview.Semantic{Score: mt.Score, Evidence: mt.Evidence, Thin: mt.Thin}
 	}
+}
+
+// semanticMatch is semanticScore over in.sem, remembered per posting: a listed
+// job's match is read for its rank and again for its row, and each read hashes
+// the whole posting text. A remembered match is reused only while the posting's
+// title and description are the text it was looked up for. Evidence is shared
+// between the rank and the row; neither changes it.
+func (in *insight) semanticMatch(r ledger.Record) (semantic.Match, bool) {
+	if in.sem == nil {
+		return semantic.Match{}, false
+	}
+	p := r.Posting
+	in.semMemo.mu.Lock()
+	e, hit := in.semMemo.m[r.Key]
+	in.semMemo.mu.Unlock()
+	if hit && e.title == p.Title && e.description == p.Description {
+		return e.mt, e.ok
+	}
+	mt, ok := in.sem.Lookup(string(r.Key), in.textHashOf(r)) // semanticScore, by the read's facts
+	in.semMemo.mu.Lock()
+	if in.semMemo.m == nil {
+		in.semMemo.m = map[posting.Key]semMemoEntry{}
+	}
+	in.semMemo.m[r.Key] = semMemoEntry{title: p.Title, description: p.Description, mt: mt, ok: ok}
+	in.semMemo.mu.Unlock()
+	return mt, ok
+}
+
+// semMemo holds semanticMatch's answers for one insight (one snapshot), one per
+// posting asked. Safe for concurrent use; the zero value is ready.
+type semMemo struct {
+	mu sync.Mutex
+	m  map[posting.Key]semMemoEntry
+}
+
+type semMemoEntry struct {
+	title, description string
+	mt                 semantic.Match
+	ok                 bool
 }

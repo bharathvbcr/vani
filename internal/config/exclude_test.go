@@ -32,6 +32,52 @@ func TestExcludeMatchTitles(t *testing.T) {
 	}
 }
 
+// ReadsDescriptions is the promise the Jobs views rely on to match a posting
+// held without its description: with no description rule, every rule answers
+// the same with and without the text; with one, the text decides.
+func TestExcludeReadsDescriptions(t *testing.T) {
+	rules := []Exclude{
+		{Titles: []string{"intern"}, TitleUnless: []string{"internal tools"}},
+		{Companies: []string{"Acme Corp"}},
+		{Locations: []string{"London", "TX"}},
+		{OnlyLocations: []string{"United States", "remote"}},
+		{Titles: []string{"staff"}, Companies: []string{"Initech"}, Locations: []string{"India"}, OnlyLocations: []string{"Canada"}},
+	}
+	posts := []posting.Posting{
+		{Title: "Software Engineer Intern", Company: "Acme Corp", Location: "London, UK", Description: "intern acme london security clearance required"},
+		{Title: "Staff Engineer", Company: "Initech", Location: "Austin, TX", Remote: true, Description: "staff initech texas"},
+		{Title: "ML Engineer", Company: "Globex", Location: "Remote - India", Remote: true, Description: "remote india"},
+		{Title: "Platform Engineer", Company: "Umbrella", Location: "Toronto, ON", Description: "canada toronto"},
+		{Title: "", Company: "", Location: "", Description: "only a description"},
+	}
+	for i, x := range rules {
+		if x.ReadsDescriptions() {
+			t.Fatalf("rule %d: has no description rule but reads descriptions", i)
+		}
+		for _, p := range posts {
+			bare := p
+			bare.Description = ""
+			w1, ok1 := x.Match(p)
+			w2, ok2 := x.Match(bare)
+			if w1 != w2 || ok1 != ok2 {
+				t.Errorf("rule %d, %q: (%q, %v) with its text, (%q, %v) without", i, p.Title, w1, ok1, w2, ok2)
+			}
+		}
+	}
+	x := Exclude{Descriptions: []string{"security clearance"}}
+	if !x.ReadsDescriptions() {
+		t.Fatal("a description rule does not read descriptions")
+	}
+	p := posts[0]
+	if _, ok := x.Match(p); !ok {
+		t.Fatal("the description rule did not match its text")
+	}
+	p.Description = ""
+	if _, ok := x.Match(p); ok {
+		t.Fatal("the description rule matched without the text")
+	}
+}
+
 func TestExcludeMatchCompanies(t *testing.T) {
 	x := Exclude{Companies: []string{"Acme  Corp"}}
 	for company, want := range map[string]bool{"acme corp": true, " ACME Corp ": true, "Acme": false, "Acme Corp Labs": false, "": false} {

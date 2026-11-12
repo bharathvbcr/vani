@@ -122,6 +122,10 @@ type event struct {
 // Dir is where the store lives for a state directory.
 func Dir(stateDir string) string { return filepath.Join(stateDir, dirName) }
 
+// File is the readings file Read reads in dir. A writer appends to it or
+// replaces it whole (a new file renamed over it), never rewrites it in place.
+func File(dir string) string { return filepath.Join(dir, fileName) }
+
 // TextSHA256 is the hash a reading is keyed on: the posting's title, location and
 // description as the triage question lays them out (jdtriage.Render with no
 // target summary), so anything beyond the question's own cut does not change it
@@ -162,13 +166,61 @@ const (
 // the ledger no longer holds the posting's text (a closed role's body is
 // evicted).
 func (r Reading) StateOf(p posting.Posting, gone bool) State {
-	switch {
-	case gone:
+	return r.StateWith(p, gone, nil)
+}
+
+// StateWith is StateOf hashing the posting's text through memo (nil: no memo).
+func (r Reading) StateWith(p posting.Posting, gone bool, memo *TextMemo) State {
+	if gone {
 		return TextGone
-	case r.Text != TextSHA256(p):
+	}
+	return r.StateOfText(memo.TextSHA256(p))
+}
+
+// StateOfText is r's state for a posting whose text hashes (TextSHA256) to
+// text, which the ledger still holds: current while it is the text r read.
+func (r Reading) StateOfText(text string) State {
+	if r.Text != text {
 		return TextChanged
 	}
 	return Current
+}
+
+// TextMemo remembers TextSHA256 per posting for as long as the posting's title,
+// location and description are the same text, so a caller that asks for one
+// posting's state many times (the ranking asks once per triage slot, the row
+// once more, for every listed posting) renders and hashes its text once.
+//
+// An answer is reused only when all three fields equal what was hashed, so a
+// changed posting is always hashed again; the key only finds the entry. Each
+// entry holds the strings it was given (no copy), and there is one per distinct
+// key asked. Safe for concurrent use; the zero value is ready.
+type TextMemo struct {
+	mu sync.Mutex
+	m  map[posting.Key]textMemoEntry
+}
+
+type textMemoEntry struct{ title, location, description, sum string }
+
+// TextSHA256 is TextSHA256(p), remembered. A nil memo remembers nothing.
+func (t *TextMemo) TextSHA256(p posting.Posting) string {
+	if t == nil {
+		return TextSHA256(p)
+	}
+	t.mu.Lock()
+	e, ok := t.m[p.Key]
+	t.mu.Unlock()
+	if ok && e.title == p.Title && e.location == p.Location && e.description == p.Description {
+		return e.sum
+	}
+	sum := TextSHA256(p)
+	t.mu.Lock()
+	if t.m == nil {
+		t.m = map[posting.Key]textMemoEntry{}
+	}
+	t.m[p.Key] = textMemoEntry{title: p.Title, location: p.Location, description: p.Description, sum: sum}
+	t.mu.Unlock()
+	return sum
 }
 
 func hexOK(s string) bool {

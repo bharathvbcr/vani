@@ -2,11 +2,15 @@ package jobview
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/location"
+	"github.com/bharathvbcr/Vani/internal/marks"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // The aggregates `vani jobs stats` reports over a selection: distributions,
@@ -97,7 +101,29 @@ func bucket10(v float64) int {
 	return min(int(v/10), 9)
 }
 
+// StatsFor is `jobs stats` over o's selection: StatsOf and, in cur, PayStatsOf,
+// without building a whole Job for any of them.
+func StatsFor(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ranker, info InsightInfo, target map[string]bool, cur string) Stats {
+	cs, _ := selectCands(snap, m, o, rk, selectArgs{withPay: true, withHits: true})
+	out := statsOfCands(cs, info, target)
+	out.Salary = payStatsOfCands(cs, cur)
+	return out
+}
+
+// candsOf is the cands a selection of whole jobs stands for.
+func candsOf(sel []Selected) []cand {
+	cs := make([]cand, len(sel))
+	for i := range sel {
+		cs[i] = candOfJob(&sel[i].Job, sel[i].Hits, sel[i].Pay)
+	}
+	return cs
+}
+
 func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
+	return statsOfCands(candsOf(sel), info, target)
+}
+
+func statsOfCands(sel []cand, info InsightInfo, target map[string]bool) Stats {
 	out := Stats{
 		Total: len(sel), Fit: map[string]int{}, WorkMode: map[string]int{}, Sponsorship: map[string]int{},
 		Seniority: map[string]int{}, Category: map[string]int{}, Basis: map[string]int{}, FreshSource: map[string]int{},
@@ -105,7 +131,7 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 		State: map[string]int{}, Country: map[string]int{}, Area: []AreaStat{}, RemoteScope: map[string]int{},
 		Insight: info,
 	}
-	areas := map[string]*AreaStat{}
+	areas := areaCounts{}
 	for _, b := range ageBuckets {
 		out.Age = append(out.Age, AgeBucket{Label: b.label, MaxDays: b.max})
 	}
@@ -122,25 +148,23 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 	}
 	companies := map[string]*acc{}
 	terms := map[string]*KeywordStat{}
-	for _, s := range sel {
-		j := s.Job
-		out.Fit[or(j.Triage["role_fit"])]++
-		out.WorkMode[or(j.Triage["work_mode"])]++
-		out.Sponsorship[or(j.Triage["sponsorship"])]++
-		out.Seniority[or(j.Triage["seniority"])]++
-		cat := j.Category
-		if cat == "" && j.Triage != nil {
-			cat = j.Triage["category"]
-		}
-		out.Category[or(cat)]++
-		out.Basis[string(j.RelevanceBasis)]++
-		out.Relevance[bucket10(j.Relevance)]++
-		out.Priority[bucket10(j.Priority)]++
-		if j.AgeDays != nil {
-			out.FreshSource[j.FreshSrc]++
+	for i := range sel {
+		c := &sel[i]
+		st, rk := &c.st, &c.rk
+		basis, relevance, priority := rk.Basis, rk.Relevance, rk.Priority
+		out.Fit[or(st.fit)]++
+		out.WorkMode[or(st.workMode)]++
+		out.Sponsorship[or(st.sponsorship)]++
+		out.Seniority[or(st.seniority)]++
+		out.Category[or(st.category)]++
+		out.Basis[string(basis)]++
+		out.Relevance[bucket10(relevance)]++
+		out.Priority[bucket10(priority)]++
+		if rk.AgeKnown {
+			out.FreshSource[rk.FreshSrc]++
 			for i, b := range ageBuckets {
-				if b.max < 0 || *j.AgeDays <= b.max {
-					if j.FreshSrc == string(jobinsight.FromPosted) {
+				if b.max < 0 || rk.AgeDays <= b.max {
+					if rk.FreshSrc == string(jobinsight.FromPosted) {
 						out.Age[i].Posted++
 					} else {
 						out.Age[i].Seen++
@@ -151,19 +175,19 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 		} else {
 			out.FreshSource["unknown"]++
 		}
-		countPlaces(&out, areas, j)
-		ck := strings.ToLower(j.Company)
+		countPlacesIn(&out, areas, rk.Places, rk.RemoteListed, rk.RemoteScope)
+		ck := strings.ToLower(st.company)
 		a := companies[ck]
 		if a == nil {
-			a = &acc{name: j.Company}
+			a = &acc{name: st.company}
 			companies[ck] = a
 		}
 		a.n++
-		a.sum += j.Relevance
-		if j.Triage["role_fit"] == "strong_fit" {
+		a.sum += relevance
+		if st.fit == "strong_fit" {
 			a.strong++
 		}
-		for _, h := range s.Hits {
+		for _, h := range c.hits {
 			k := terms[h.Term]
 			if k == nil {
 				k = &KeywordStat{Term: h.Term, Cat: h.Category, Target: target[h.Term]}
@@ -203,8 +227,14 @@ func StatsOf(sel []Selected, info InsightInfo, target map[string]bool) Stats {
 	return out
 }
 
+// areaKey is an area as counted: folded (location.NormArea), with its state.
+type areaKey struct{ area, state string }
+
+// areaCounts counts the jobs naming each area.
+type areaCounts map[areaKey]*AreaStat
+
 // rankedAreas is the most-named areas, most first, then by name.
-func rankedAreas(areas map[string]*AreaStat) []AreaStat {
+func rankedAreas(areas areaCounts) []AreaStat {
 	out := make([]AreaStat, 0, len(areas))
 	for _, a := range areas {
 		out = append(out, *a)
@@ -225,41 +255,55 @@ func rankedAreas(areas map[string]*AreaStat) []AreaStat {
 	return out
 }
 
-// countPlaces adds one job's states, areas and remote listing to the stats.
+// countPlacesIn adds one job's states, areas and remote listing to the stats.
 // A job counts once per distinct state and once per distinct area.
-func countPlaces(out *Stats, areas map[string]*AreaStat, j Job) {
-	states, seen := map[string]bool{}, map[string]bool{}
-	for _, p := range j.Places {
-		if p.State != "" && !states[p.State] {
-			states[p.State] = true
-			out.State[p.State]++
+//
+// A job names a handful of places, so the distinct ones are found by looking
+// back over the earlier ones, not with a set per job.
+func countPlacesIn(out *Stats, areas areaCounts, places []Place, remoteListed bool, remoteScope string) {
+	named := false
+	var buf [8]string
+	norm := buf[:0] // each earlier place's folded area
+	for i, p := range places {
+		if p.State != "" {
+			named = true
+			if !slices.ContainsFunc(places[:i], func(q Place) bool { return q.State == p.State }) {
+				out.State[p.State]++
+			}
 		}
 		a := location.NormArea(p.Area)
+		norm = append(norm, a)
 		if a == "" {
 			continue
 		}
-		k := a + "\x00" + p.State
-		if seen[k] {
+		dup := false
+		for j := range i {
+			if norm[j] == a && places[j].State == p.State {
+				dup = true
+				break
+			}
+		}
+		if dup {
 			continue
 		}
-		seen[k] = true
+		k := areaKey{area: a, state: p.State}
 		if areas[k] == nil {
 			areas[k] = &AreaStat{Area: p.Area, State: p.State}
 		}
 		areas[k].N++
 	}
-	if len(states) == 0 {
+	if !named {
 		out.State["none"]++
 	}
-	if j.RemoteListed {
+	if remoteListed {
 		out.RemoteListed++
-		scope := j.RemoteScope
+		scope := remoteScope
 		if scope == "" {
 			scope = "unstated"
 		}
 		out.RemoteScope[scope]++
 	}
-	cs := countriesOf(j)
+	cs := countriesIn(places, remoteScope)
 	if len(cs) == 0 {
 		out.Country["none"]++
 		return
@@ -267,14 +311,6 @@ func countPlaces(out *Stats, areas map[string]*AreaStat, j Job) {
 	for _, c := range cs {
 		out.Country[c]++
 	}
-}
-
-// PayKey is a job's top annual pay in cur, or -1 when it states none in cur.
-func PayKey(j Job, cur string) float64 {
-	if p, ok := jobinsight.PayIn(j.Pay, cur); ok {
-		return p.AnnualMax
-	}
-	return -1
 }
 
 type PayBucket struct {
@@ -299,6 +335,10 @@ type PayStats struct {
 const PayBuckets = 8
 
 func PayStatsOf(sel []Selected, cur string) PayStats {
+	return payStatsOfCands(candsOf(sel), cur)
+}
+
+func payStatsOfCands(sel []cand, cur string) PayStats {
 	step := jobinsight.PayStep(cur)
 	out := PayStats{Currency: cur, Buckets: make([]PayBucket, 0, PayBuckets)}
 	// Buckets: under 2 steps, then one step wide, then the rest.
@@ -320,8 +360,9 @@ func PayStatsOf(sel []Selected, cur string) PayStats {
 		out.Buckets = append(out.Buckets, PayBucket{Label: label, Min: lo, Max: hi})
 	}
 	var mids []float64
-	for _, s := range sel {
-		p, ok := jobinsight.PayIn(s.Job.Pay, cur)
+	for i := range sel {
+		pay := sel[i].rk.Pay
+		p, ok := jobinsight.PayIn(pay, cur)
 		switch {
 		case ok:
 			out.Listed++
@@ -333,7 +374,7 @@ func PayStatsOf(sel []Selected, cur string) PayStats {
 					break
 				}
 			}
-		case len(s.Job.Pay) > 0:
+		case len(pay) > 0:
 			out.Other++
 		default:
 			out.Unlisted++

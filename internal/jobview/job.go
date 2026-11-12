@@ -60,12 +60,20 @@ type Place struct {
 
 // Locate fills j's places and remote_listed from the posting's location.
 func Locate(j *Job, p posting.Posting) location.Location {
+	var rk Ranked
+	loc := rk.Locate(p)
+	j.Places, j.RemoteListed, j.RemoteScope = rk.Places, rk.RemoteListed, rk.RemoteScope
+	return loc
+}
+
+// Locate sets rk's place fields from p, as Locate sets a Job's.
+func (rk *Ranked) Locate(p posting.Posting) location.Location {
 	loc := location.Parse(p.Location, p.Remote)
-	j.Places = nil
+	rk.Places = nil
 	for _, pl := range loc.Places {
-		j.Places = append(j.Places, Place(pl))
+		rk.Places = append(rk.Places, Place(pl))
 	}
-	j.RemoteListed, j.RemoteScope = loc.Remote, loc.RemoteScope
+	rk.RemoteListed, rk.RemoteScope = loc.Remote, loc.RemoteScope
 	return loc
 }
 
@@ -117,10 +125,10 @@ func InCountries(set map[string]bool, countries []string) bool {
 	return false
 }
 
-// countriesOf is the countries a located job names.
-func countriesOf(j Job) []string {
-	loc := location.Location{RemoteScope: j.RemoteScope}
-	for _, p := range j.Places {
+// countriesIn is the countries places and a remote scope name.
+func countriesIn(places []Place, remoteScope string) []string {
+	loc := location.Location{RemoteScope: remoteScope}
+	for _, p := range places {
 		loc.Places = append(loc.Places, location.Place(p))
 	}
 	return location.Countries(loc)
@@ -177,7 +185,12 @@ func ParseReasons(note string) []Reason {
 // MatchesQuery is the --q rule: q (already lowered and trimmed) is empty or
 // appears in the job's title, company, location, team or note.
 func MatchesQuery(j Job, q string) bool {
-	return q == "" || strings.Contains(strings.ToLower(strings.Join([]string{j.Title, j.Company, j.Location, j.Department, j.Note}, "\n")), q)
+	return matchesQuery(q, j.Title, j.Company, j.Location, j.Department, j.Note)
+}
+
+// matchesQuery is MatchesQuery over the fields it reads.
+func matchesQuery(q, title, company, location, department, note string) bool {
+	return q == "" || strings.Contains(strings.ToLower(strings.Join([]string{title, company, location, department, note}, "\n")), q)
 }
 
 // InSet: a nil set takes everything; "none" stands for no reading.
@@ -354,19 +367,100 @@ func InView(view string, r ledger.Record, mark marks.Mark) bool {
 	return string(mark) == view
 }
 
+// rowStatic is what a job's row reads of its record for selection, filters,
+// sorts and stats, cleaned as ToJob cleans it: ToJob and a selection candidate
+// (cand) both take these from staticOf, so they cannot disagree.
+type rowStatic struct {
+	company, title                                  string
+	fit, sponsorship, workMode, seniority, category string
+}
+
+// staticOf is r's rowStatic.
+func staticOf(r ledger.Record) rowStatic {
+	ann := r.Annotations
+	st := rowStatic{
+		company: CleanText(r.Posting.Company, FieldRunes, false),
+		title:   CleanText(r.Posting.Title, FieldRunes, false),
+	}
+	if st.title == "" {
+		st.title = "(untitled)"
+	}
+	for _, slot := range digest.TriageSlots {
+		v := CleanText(ann[ledger.AnnTriagePrefix+slot], 80, false)
+		switch slot {
+		case "role_fit":
+			st.fit = v
+		case "sponsorship":
+			st.sponsorship = v
+		case "work_mode":
+			st.workMode = v
+		case "seniority":
+			st.seniority = v
+		default:
+			panic("jobview: digest.TriageSlots names a slot rowStatic does not hold: " + slot)
+		}
+	}
+	if cat := CleanText(ann[ledger.AnnCategory], 80, false); cat != "" {
+		st.category = cat
+	} else if cat := CleanText(ann[ledger.AnnTriagePrefix+"category"], 80, false); cat != "" {
+		st.category = cat
+	}
+	return st
+}
+
+// triage is the slot readings a Job's Triage map holds: the triage slots in
+// digest.TriageSlots order, then the category, each only when set.
+func (st rowStatic) triage() map[string]string {
+	var m map[string]string
+	for _, slot := range digest.TriageSlots {
+		var v string
+		switch slot {
+		case "role_fit":
+			v = st.fit
+		case "sponsorship":
+			v = st.sponsorship
+		case "work_mode":
+			v = st.workMode
+		case "seniority":
+			v = st.seniority
+		}
+		if v != "" {
+			if m == nil {
+				m = map[string]string{}
+			}
+			m[slot] = v
+		}
+	}
+	if st.category != "" {
+		if m == nil {
+			m = map[string]string{}
+		}
+		m["category"] = st.category
+	}
+	return m
+}
+
+// Untriaged is Job.Untriaged for a record: no run has triaged it (status live).
+func Untriaged(r ledger.Record) bool { return r.Status == posting.Live }
+
 func ToJob(r ledger.Record, entry marks.Entry) Job {
+	return toJob(r, entry, staticOf(r))
+}
+
+// toJob is ToJob over r's rowStatic, already worked out.
+func toJob(r ledger.Record, entry marks.Entry, st rowStatic) Job {
 	p := r.Posting
 	ann := r.Annotations
 	j := Job{
 		Key:         r.Key,
-		Company:     CleanText(p.Company, FieldRunes, false),
-		Title:       CleanText(p.Title, FieldRunes, false),
+		Company:     st.company,
+		Title:       st.title,
 		Location:    CleanText(p.Location, FieldRunes, false),
 		Remote:      p.Remote,
 		Department:  CleanText(p.Department, FieldRunes, false),
 		Status:      r.Status,
 		Closed:      r.Status == posting.Dead,
-		Untriaged:   r.Status == posting.Live,
+		Untriaged:   Untriaged(r),
 		Explanation: CleanText(ann[ledger.AnnExplanation], NoteRunes, false),
 		Missing:     CleanText(ann[ledger.AnnMissing], NoteRunes, false),
 		LCA:         CleanText(ann[ledger.AnnLCA], FieldRunes, false),
@@ -380,9 +474,6 @@ func ToJob(r ledger.Record, entry marks.Entry) Job {
 	}
 	j.ApplyFormNote, j.ApplyFlags = ApplyFormNote(p), ApplyFormFlags(p.Form)
 	j.Stage, j.StageAt, j.FurthestStage = entry.Stage, entry.StageAt, entry.Furthest
-	if j.Title == "" {
-		j.Title = "(untitled)"
-	}
 	if u, ok := digest.HTTPURL(p.URL); ok {
 		j.URL = u
 	}
@@ -398,25 +489,7 @@ func ToJob(r ledger.Record, entry marks.Entry) Job {
 	if digest.IsUnsure(r) {
 		j.Unsure = digest.WhyUnsure(ann)
 	}
-	for _, slot := range digest.TriageSlots {
-		if v := CleanText(ann[ledger.AnnTriagePrefix+slot], 80, false); v != "" {
-			if j.Triage == nil {
-				j.Triage = map[string]string{}
-			}
-			j.Triage[slot] = v
-		}
-	}
-	if cat := CleanText(ann[ledger.AnnCategory], 80, false); cat != "" {
-		j.Category = cat
-	} else if cat := CleanText(ann[ledger.AnnTriagePrefix+"category"], 80, false); cat != "" {
-		j.Category = cat
-	}
-	if j.Category != "" {
-		if j.Triage == nil {
-			j.Triage = map[string]string{}
-		}
-		j.Triage["category"] = j.Category
-	}
+	j.Triage, j.Category = st.triage(), st.category
 	j.DupOf = CleanText(ann[pipeline.DuplicateOfKey], FieldRunes, false)
 	j.DupCandidateOf = CleanText(ann[pipeline.AnnDupCandidateOf], FieldRunes, false)
 	j.DupSiblingOf = CleanText(ann[pipeline.AnnDupSiblingOf], FieldRunes, false)

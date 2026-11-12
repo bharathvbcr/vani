@@ -20,6 +20,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resumestore"
+	"github.com/bharathvbcr/Vani/internal/samecompany"
 	"github.com/bharathvbcr/Vani/internal/semantic"
 )
 
@@ -318,6 +319,8 @@ type insight struct {
 	rc jobinsight.RankContext
 	// sem is the cache-only knowledge-base matcher; nil when off or unusable.
 	sem *semantic.Matcher
+	// semMemo remembers each posting's match for the rank and the row (semanticMatch).
+	semMemo semMemo
 	// logos finds each posting's cached company icon; nil when the config
 	// could not be read (every job then shows its monogram).
 	logos *logoIndex
@@ -335,6 +338,42 @@ type insight struct {
 	resumes *resumestore.Summaries
 	// same answers the company-history notes (jobssame.go); nil answers none.
 	same *sameCompany
+	// facts is the read's text facts (jobsListRead), which every deriver site
+	// asks first (storedFacts); nil derives everything from resident text.
+	facts *textFacts
+	// dropReadsText is whether drop's exclusions read descriptions, so a
+	// posting held without its text cannot be judged by them.
+	dropReadsText bool
+	// res is the resident reader this insight was built for (`vani jobs
+	// serve`), whose kept parts it reuses, and memo its per-title and
+	// per-place answers; both nil for a command run once.
+	res  *jobsResident
+	memo *rankMemo
+	// gen is the generation of res's records this insight's snapshot was read
+	// at; blends the Blends res keeps under what this insight resolved (nil
+	// keeps none), and boilerFPs each company's blurb fingerprint
+	// (jobsblends.go).
+	gen       uint64
+	blends    *blendStore
+	boilerFPs map[string]uint64
+}
+
+// titleHits is the keyword hits of a title.
+func (in *insight) titleHits(title string) []jobinsight.Hit {
+	if in.memo != nil {
+		return in.memo.titleHits(in.vocab, title)
+	}
+	return in.vocab.Extract(title)
+}
+
+// locate is jobview.Locate.
+func (in *insight) locate(rk *jobview.Ranked, p posting.Posting) {
+	if in.memo != nil {
+		a := in.memo.place(p)
+		rk.Places, rk.RemoteListed, rk.RemoteScope = a.places, a.remoteListed, a.remoteScope
+		return
+	}
+	rk.Locate(p)
 }
 
 // learn extracts the keywords of every posting the Jobs views can show (kept
@@ -347,6 +386,20 @@ type insight struct {
 // not the ledger's. in.info.Boilerplate then counts only that company's terms,
 // which is listing metadata no single row carries.
 func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) {
+	// Under `vani jobs serve`, over a kept facts map, what an earlier request
+	// learned from the same postings is reused (readKeep).
+	var reads *readKeep
+	var key learnKey
+	if in.res != nil && only == "" && in.facts != nil && in.facts.kept != nil {
+		reads = &in.res.reads
+		key = learnKey{facts: in.facts.kept, gen: in.gen, vocab: in.vocab.Fingerprint()}
+		key.view, key.nView = reads.viewKey(snap.Records, m)
+		if l := reads.keptLearnFor(key); l != nil {
+			in.hits, in.boiler, in.info.Boilerplate = l.hits, l.boiler, l.n
+			return
+		}
+	}
+	missing := in.facts.missingCount()
 	in.hits = map[posting.Key][]jobinsight.Hit{}
 	var companies []string
 	var all [][]jobinsight.Hit
@@ -354,10 +407,10 @@ func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, on
 		if only != "" && companyKey(r.Posting.Company) != only {
 			continue
 		}
-		if !jobview.InView("all", r, m[r.Key].Mark) {
+		if !inLearnView(r, m) {
 			continue
 		}
-		h := in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+		h := in.hitsOf(r)
 		in.hits[r.Key] = h
 		companies, all = append(companies, r.Posting.Company), append(all, h)
 	}
@@ -367,6 +420,16 @@ func (in *insight) learn(snap ledger.Snapshot, m map[posting.Key]marks.Entry, on
 		n += len(b)
 	}
 	in.info.Boilerplate = n
+	// A posting noted missing must be noted again by the next request, so
+	// what learned it is not kept.
+	if reads != nil && in.facts.missingCount() == missing {
+		reads.keepLearn(&keptLearn{key: key, hits: in.hits, boiler: in.boiler, n: n})
+	}
+}
+
+// inLearnView is whether learn reads r: every posting in view "all".
+func inLearnView(r ledger.Record, m map[posting.Key]marks.Entry) bool {
+	return jobview.InView("all", r, m[r.Key].Mark)
 }
 
 // newInsight reads the target summary from the config and learns the
@@ -397,12 +460,32 @@ func newInsightFor(cfg config.Config, err error, stateDir string, halfLife float
 // newInsightScoped is newInsightFor learning only the company only names (see
 // learn); "" learns every company.
 func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string) (*insight, error) {
+	return newInsightWith(cfg, err, stateDir, halfLife, snap, m, only, nil, nil, 0)
+}
+
+// newListInsight is newInsight over a Jobs view read (jobsListRead): every
+// posting's keywords, pay and text hashes come from the read's facts, and its
+// config is the one the read loaded.
+func (e *env) newListInsight(halfLife float64, rd jobsRead) (*insight, error) {
+	return newInsightWith(rd.cfg, rd.cfgErr, e.stateDir, halfLife, rd.snap, rd.m, "", rd.facts, e.resident, rd.gen)
+}
+
+// newInsightWith is newInsightScoped over facts (nil: derive from the text).
+// With a resident reader (res, and gen, the generation snap was taken at) it
+// reuses what res kept: the company-history groups of gen's records, the
+// opened semantic scores, and the per-title and per-place answers (rankMemo).
+// Everything computed from the marks, the clock and the rest of the config is
+// computed here, for this read.
+func newInsightWith(cfg config.Config, err error, stateDir string, halfLife float64, snap ledger.Snapshot, m map[posting.Key]marks.Entry, only string, facts *textFacts, res *jobsResident, gen uint64) (*insight, error) {
 	v, verr := jobinsight.Default()
 	if verr != nil {
 		return nil, verr
 	}
-	in := &insight{vocab: v, now: now(), halfLife: halfLife,
+	in := &insight{vocab: v, now: now(), halfLife: halfLife, facts: facts, res: res, gen: gen,
 		info: jobview.InsightInfo{HalfLifeDays: halfLife, Vocab: v.Len()}}
+	if res != nil {
+		in.memo = res.memo
+	}
 	if err == nil {
 		in.logos = newLogoIndex(cfg, stateDir)
 	}
@@ -420,28 +503,58 @@ func newInsightScoped(cfg config.Config, err error, stateDir string, halfLife fl
 	for k, e := range m {
 		marked[k] = e.Mark
 	}
-	in.same = newSameCompany(cfg, err, snap, m, in.now)
+	if res != nil {
+		in.same = newSameCompanyFrom(cfg, err, m, in.now, func(co *samecompany.Companies) *samecompany.Groups {
+			return res.sameGroups(gen, co, snap.Records)
+		})
+	} else {
+		in.same = newSameCompany(cfg, err, snap, m, in.now)
+	}
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
 	in.info.Weights = rankWeightsHand
+	// kb identifies the kbmatch reads for the kept Blends; kbOK is false when
+	// the store changed while it was read.
+	kb, kbOK := "", true
 	if err == nil {
-		in.attachSemantic(cfg, stateDir)
+		// One knowledge-base profile (one rkb run) for both lookups that read it.
+		profile := onceProfile(cfg)
+		in.attachSemantic(cfg, stateDir, profile)
 		in.rc.DropRules, in.rc.TitleRank = rankRules(cfg)
+		if in.rc.TitleRank != nil && in.memo != nil {
+			in.rc.TitleRank = in.memo.titleRank(cfg.TitleSignals)
+		}
 		in.rc.EscalateBelowP = rankEscalateBelowP(cfg)
 		if p := dropPolicy(cfg, cfg.Decide.OpenRouterName()); p.Prefilters() {
-			in.drop = &p
+			in.drop, in.dropReadsText = &p, cfg.Exclude.ReadsDescriptions()
 		}
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)
 		var warn string
-		in.rc.KBMatch, warn = kbmatchLookup(cfg, stateDir)
+		before := ""
+		if res != nil {
+			before = kbStat(stateDir)
+		}
+		in.rc.KBMatch, warn, kb = kbmatchLookupKeyed(cfg, stateDir, in.kbHashOf, profile)
+		if res != nil {
+			kbOK = before == kbStat(stateDir)
+			kb = before + " " + kb
+		}
 		in.warn(warn)
 		in.rc.Weights, in.info.Weights, warn = rankWeights(cfg)
 		in.warn(warn)
 	}
 	// The owner's manual readings need no config: the store is beside the ledger.
 	var warn string
-	in.manual, in.rc.Manual, warn = manualReadings(stateDir)
+	if res != nil {
+		in.manual, in.rc.Manual, warn = res.reads.manualReadings(stateDir)
+	} else {
+		in.manual, in.rc.Manual, warn = manualReadings(stateDir)
+	}
 	in.warn(warn)
+	if in.manual != nil {
+		in.manual.facts = in.storedFacts
+	}
+	in.keepBlends(cfg, err == nil, kb, kbOK, len(snap.Records))
 	// One walk of the resume store, not a probe per job. An unusable store shows
 	// per job (jobview.ResumeOf), so it can never look like "no resume".
 	rs, rerr := resumestore.Open(stateDir)
@@ -471,14 +584,14 @@ func (in *insight) warn(w string) {
 func (in *insight) targetHits(r ledger.Record) (title, body int) {
 	boiler := in.boiler[companyKey(r.Posting.Company)]
 	inTitle := map[string]bool{}
-	for _, h := range jobinsight.Without(in.vocab.Extract(r.Posting.Title), boiler) {
+	for _, h := range jobinsight.Without(in.titleHits(r.Posting.Title), boiler) {
 		if in.target[h.Term] {
 			inTitle[h.Term] = true
 		}
 	}
 	whole, ok := in.hits[r.Key]
 	if !ok {
-		whole = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+		whole = in.hitsOf(r)
 	}
 	for _, h := range jobinsight.Without(whole, boiler) {
 		if in.target[h.Term] && !inTitle[h.Term] {
@@ -497,31 +610,64 @@ func oneLine(s string, n int) string { return jobview.CleanText(s, n, false) }
 // enrich fills j's insight fields from r and returns the posting's full
 // keyword hits (for stats).
 func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobinsight.Hit {
-	jobview.Locate(j, r.Posting)
-	j.Resume = jobview.ResumeFor(in.resumes, string(r.Key))
+	return jobview.EnrichWith(in, j, r, kwLimit)
+}
+
+// Rank is jobview.PageRanker's first part: what selection, filters, every
+// sort and the stats read, for every job in the view. Place, freshness and
+// score (without its factor list, which only a shown job lists); pay only when
+// withPay (it is a regex pass over the whole description, read only by the
+// salary sort, the pay filters and the stats). Each step sets its own fields,
+// so splitting Enrich changes no answer.
+func (in *insight) Rank(rk *jobview.Ranked, i int, r ledger.Record, withPay bool) {
+	in.locate(rk, r.Posting)
 	if at, src, known := jobinsight.FreshAge(r.Posting.PostedAt, r.FirstSeen, in.rc.FirstCrawl[jobinsight.BoardOf(string(r.Key))], in.now); known {
-		age := jobinsight.AgeDays(at, in.now)
-		j.FreshAt, j.FreshSrc, j.AgeDays = at, string(src), &age
+		rk.FreshAt, rk.FreshSrc, rk.AgeDays, rk.AgeKnown = at, string(src), jobinsight.AgeDays(at, in.now), true
 	}
+	if jobview.Untriaged(r) {
+		return
+	}
+	res := in.order(i, r)
+	rk.Priority, rk.Relevance, rk.Basis, rk.RelevanceKnown = res.Score, res.Relevance, res.Basis, res.RelevanceKnown
+	if withPay {
+		rk.Pay, rk.PayRead = in.payOf(r), true
+	}
+}
+
+// Hits is the keyword hits Finish returns for r, without finishing a job.
+func (in *insight) Hits(r ledger.Record) []jobinsight.Hit {
+	if jobview.Untriaged(r) {
+		return nil
+	}
+	hits, ok := in.hits[r.Key]
+	if !ok {
+		hits = in.hitsOf(r)
+	}
+	return jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
+}
+
+// Finish is jobview.PageRanker's last part: the rest of a job that will be
+// shown (score factors, resume, company history, keywords, reasons, semantic
+// match, manual reading, logo, row), after its Ranked was applied. It returns
+// the posting's full keyword hits (Hits); the row is built last, from
+// everything else.
+func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit {
+	j.Resume = jobview.ResumeFor(in.resumes, string(r.Key))
 	in.annotateSame(j, r)
 	if j.Untriaged {
 		in.enrichUntriaged(j, r)
 		return nil
 	}
-	hits, ok := in.hits[r.Key]
-	if !ok {
-		hits = in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
-	}
-	hits = jobinsight.Without(hits, in.boiler[companyKey(r.Posting.Company)])
+	j.ScoreFactors = in.rc.ScoreOf(r).Factors
+	hits := in.Hits(r)
 	gap := in.vocab.Terms(r.Annotations[ledger.AnnMissing])
 	j.Keywords = jobinsight.Annotate(hits, in.target, gap, kwLimit)
-	res := in.rc.ScoreOf(r)
-	j.Priority, j.Relevance, j.RelevanceBasis, j.ScoreFactors = res.Score, res.Relevance, res.Basis, res.Factors
-	j.RelevanceKnown = res.RelevanceKnown
 	j.Reasons = jobview.ParseReasons(j.Explanation)
 	in.semanticInto(j, r)
 	j.ManualTriage = in.manual.view(r)
-	j.Pay = jobinsight.PostingPay(r.Posting)
+	if !paid {
+		j.Pay = in.payOf(r)
+	}
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	row := jobview.RowOf(*j)
 	j.Row = &row
@@ -535,7 +681,8 @@ func (in *insight) Enrich(j *jobview.Job, r ledger.Record, kwLimit int) []jobins
 func (in *insight) enrichUntriaged(j *jobview.Job, r ledger.Record) {
 	j.Logo = in.logos.path(r.Key, r.Posting.Company)
 	// Marked postings are never dropped by exclusions (hideExcluded, protectMarked).
-	if in.drop == nil || r.BodyEvicted || j.Mark != marks.None {
+	// A posting held without its text is judged only by rules that read none.
+	if in.drop == nil || (r.BodyEvicted && in.dropReadsText) || j.Mark != marks.None {
 		return
 	}
 	// The kind is the backend the policy names, not its reason text, which

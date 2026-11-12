@@ -2,12 +2,10 @@ package ledger
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"hash/maphash"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -55,6 +53,13 @@ const (
 // The structural scan jumps from quote to quote, so only the description is
 // examined byte by byte, and only for validity; it is never copied or tokenised.
 func stripDescription(line, buf []byte) (lean []byte, cut int, ok bool) {
+	lean, start, end, ok := stripDescriptionSpan(line, buf)
+	return lean, end - start, ok
+}
+
+// stripDescriptionSpan is stripDescription returning where the description's
+// raw string contents were in line: line[start:end], between its quotes.
+func stripDescriptionSpan(line, buf []byte) (lean []byte, start, end int, ok bool) {
 	depth, inPosting := 0, false
 	postings, descs := 0, 0
 	dstart, dend := 0, 0
@@ -68,11 +73,11 @@ func stripDescription(line, buf []byte) (lean []byte, cut int, ok bool) {
 			depth--
 			i++
 		case c <= ' ':
-			return nil, 0, false // whitespace outside a string: not a canonical line
+			return nil, 0, 0, false // whitespace outside a string: not a canonical line
 		case c == '"':
 			end := stringEnd(line, i)
 			if end < 0 {
-				return nil, 0, false
+				return nil, 0, 0, false
 			}
 			name := line[i+1 : end] // raw contents
 			i = end + 1
@@ -81,23 +86,23 @@ func stripDescription(line, buf []byte) (lean []byte, cut int, ok bool) {
 			}
 			i++
 			if !plainKey(name) {
-				return nil, 0, false
+				return nil, 0, 0, false
 			}
 			switch {
 			case depth == 1:
 				inPosting = bytes.EqualFold(name, postingKeyB)
 				if inPosting {
 					if postings++; postings > 1 {
-						return nil, 0, false
+						return nil, 0, 0, false
 					}
 				}
 			case depth == 2 && inPosting && bytes.EqualFold(name, descriptionKeyB):
 				if descs++; descs > 1 || i >= len(line) || line[i] != '"' {
-					return nil, 0, false
+					return nil, 0, 0, false
 				}
 				vend := stringEnd(line, i)
 				if vend < 0 || !validStringBody(line[i+1:vend]) {
-					return nil, 0, false
+					return nil, 0, 0, false
 				}
 				dstart, dend = i+1, vend
 				i = vend + 1
@@ -107,11 +112,11 @@ func stripDescription(line, buf []byte) (lean []byte, cut int, ok bool) {
 		}
 	}
 	if descs != 1 {
-		return nil, 0, false
+		return nil, 0, 0, false
 	}
 	buf = append(buf[:0], line[:dstart]...)
 	buf = append(buf, line[dend:]...)
-	return buf, dend - dstart, true
+	return buf, dstart, dend, true
 }
 
 var (
@@ -193,24 +198,47 @@ func stringEnd(line []byte, open int) int {
 type leanBody struct {
 	off int64
 	n   int32
-	sum uint64
+	fp  [16]byte // BodyFingerprint of the description's raw contents in that line
 }
 
 // leanState is the per-read state of a scoped fold.
 type leanState struct {
 	bodies map[posting.Key]leanBody
-	buf    []byte
-	whole  int // lines decoded whole because stripDescription would not cut them
+	// fps is every posted record's BodyFingerprint, resident body or not.
+	fps   map[posting.Key][16]byte
+	buf   []byte
+	whole int // lines decoded whole because stripDescription would not cut them
+}
+
+func newLeanState() *leanState {
+	return &leanState{bodies: map[posting.Key]leanBody{}, fps: map[posting.Key][16]byte{}}
 }
 
 // note records the line (n bytes at off, newline included) that carried k's
-// cut-out description.
-func (l *leanState) note(k posting.Key, off int64, n int, line []byte) {
-	l.bodies[k] = leanBody{off: off, n: int32(n), sum: maphash.Bytes(bodySeed, line)}
+// cut-out description, and its fingerprint.
+func (l *leanState) note(k posting.Key, off int64, n int, fp [16]byte) {
+	l.bodies[k] = leanBody{off: off, n: int32(n), fp: fp}
+}
+
+// BodyFingerprint identifies a posting description by its contents as the
+// events file holds them: the first 16 bytes of the SHA-256 of the JSON string
+// contents between its quotes, escapes as written. It is stable across
+// processes, so a checkpoint or a store of derived facts can key on it.
+func BodyFingerprint(raw []byte) [16]byte {
+	sum := sha256.Sum256(raw)
+	return [16]byte(sum[:16])
+}
+
+// bodyFingerprintOf is BodyFingerprint of a decoded description, as the
+// writer's json.Marshal encodes it (the line held it in that form).
+func bodyFingerprintOf(desc string) [16]byte {
+	b, _ := json.Marshal(desc) // a string always marshals
+	return BodyFingerprint(b[1 : len(b)-1])
 }
 
 // read returns k's description from the line note recorded, below limit, after
-// checking that line is byte for byte the one that was folded.
+// checking that the line still ends where it did and its description still has
+// the fingerprint it was folded with. Only the description is decoded.
 func (l *leanState) read(rd io.ReaderAt, k posting.Key, limit int64) (string, error) {
 	b, ok := l.bodies[k]
 	if !ok || b.n <= 1 || b.n > MaxLineBytes || b.off < 0 || b.off+int64(b.n) > limit {
@@ -221,17 +249,19 @@ func (l *leanState) read(rd io.ReaderAt, k posting.Key, limit int64) (string, er
 		return "", fmt.Errorf("%w: %s: %v", ErrBodyUnavailable, k, err)
 	}
 	line := buf[:len(buf)-1]
-	if buf[len(buf)-1] != '\n' || maphash.Bytes(bodySeed, line) != b.sum {
+	if buf[len(buf)-1] != '\n' {
 		return "", fmt.Errorf("%w: %s: the line changed since it was read", ErrBodyUnavailable, k)
 	}
-	var e Event
-	if err := json.Unmarshal(line, &e); err != nil {
+	_, start, end, ok := stripDescriptionSpan(line, nil)
+	if !ok || BodyFingerprint(line[start:end]) != b.fp {
+		return "", fmt.Errorf("%w: %s: the line changed since it was read", ErrBodyUnavailable, k)
+	}
+	// The quotes around the contents are part of the line: decode just the string.
+	var d string
+	if err := json.Unmarshal(line[start-1:end+1], &d); err != nil {
 		return "", fmt.Errorf("%w: %s: %v", ErrBodyUnavailable, k, err)
 	}
-	if e.Key != k || e.Posting == nil || e.Posting.Key != k {
-		return "", fmt.Errorf("%w: %s: the line is another event", ErrBodyUnavailable, k)
-	}
-	return e.Posting.Description, nil
+	return d, nil
 }
 
 // ReadSnapshotScoped is ReadSnapshot that loads no description until asked.
@@ -246,20 +276,15 @@ func (l *leanState) read(rd io.ReaderAt, k posting.Key, limit int64) (string, er
 // caller may use only its other fields. A body that cannot be read back
 // verbatim (the file changed under the read) is an ErrBodyUnavailable error,
 // never a record with a missing or different description. ReadSnapshot is
-// unchanged and returns every body.
+// unchanged and returns every body. It is a one-shot Reader with no
+// checkpoint: it writes nothing.
 func ReadSnapshotScoped(dir string, scope func(lean Snapshot) (keep func(Record) bool)) (Snapshot, error) {
-	ev, err := os.Open(filepath.Join(dir, eventsName))
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("ledger: %w", err)
-	}
-	defer ev.Close()
-	recs := map[posting.Key]*slot{}
-	lean := &leanState{bodies: map[posting.Key]leanBody{}}
-	good, torn, err := replayWith(ev, recs, nil, lean)
+	r, err := OpenReader(dir, ReaderOptions{})
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap := Snapshot{Records: sorted(recs), Torn: torn}
+	defer r.Close()
+	snap := r.Snapshot()
 	if scope == nil {
 		return snap, nil
 	}
@@ -267,16 +292,8 @@ func ReadSnapshotScoped(dir string, scope func(lean Snapshot) (keep func(Record)
 	if keep == nil {
 		return snap, nil
 	}
-	for i := range snap.Records {
-		r := &snap.Records[i]
-		if !r.BodyEvicted || !keep(*r) {
-			continue
-		}
-		d, err := lean.read(ev, r.Key, good)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		r.Posting.Description, r.BodyEvicted = d, false
+	if err := r.Hydrate(snap.Records, keep); err != nil {
+		return Snapshot{}, err
 	}
 	return snap, nil
 }

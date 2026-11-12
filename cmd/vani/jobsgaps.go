@@ -58,26 +58,19 @@ func (e *env) jobsGapsCmd(args []string) error {
 		if err := o.check("jobs gaps", false); err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		rd, in, err := e.jobsView(o.HalfLife)
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.HalfLife, snap, m)
-		if err != nil {
-			return err
-		}
-		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
+		snap, m := rd.snap, rd.m
+		sel := jobview.SelectBriefs(snap, m, &o.Opts, in)
 		jobs := make([]jobinsight.GapJob, 0, len(sel))
 		for _, s := range sel {
-			// The raw annotation, not the display copy in s.Job.Missing, which
+			// The raw annotation, not the display copy in a Job's Missing, which
 			// is cut at jobNoteRunes.
-			var missing string
-			if r, ok := findRecord(snap, s.Job.Key); ok {
-				missing = r.Annotations[ledger.AnnMissing]
-			}
 			jobs = append(jobs, jobinsight.GapJob{
-				Key: string(s.Job.Key), Company: s.Job.Company, Title: s.Job.Title,
-				Priority: s.Job.Priority, Hits: s.Hits, Missing: missing,
+				Key: string(s.Key), Company: s.Company, Title: s.Title,
+				Priority: s.Priority, Hits: s.Hits, Missing: snap.Records[s.Record].Annotations[ledger.AnnMissing],
 			})
 		}
 		out.GapReport = jobinsight.Gaps(jobs, in.vocab, in.target,
@@ -88,7 +81,7 @@ func (e *env) jobsGapsCmd(args []string) error {
 		out.View, out.Query, out.Torn = o.View, o.Query, snap.Torn
 		out.Insight = in.info
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
-		return nil
+		return in.facts.err()
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %s, %d with a DevPrism gap analysis\n", oneLine(out.View, 40), plural(out.Roles, "role"), out.WithMissing)

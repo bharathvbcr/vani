@@ -106,6 +106,12 @@ final class JobsTabSession {
     /// where it landed.
     @discardableResult
     func scroll(_ pane: Pane, to y: Double?) throws -> Double {
+        guard let at = try scrollIfShown(pane, to: y) else { throw Failure(description: "the \(pane.rawValue) pane is not on screen") }
+        return at
+    }
+
+    /// `scroll`, or nil while `pane` is not on screen yet (the detail pane before a role opens).
+    func scrollIfShown(_ pane: Pane, to y: Double?) throws -> Double? {
         send("scroll \(pane.rawValue) " + (y.map { String($0) } ?? "end"))
         return try readOffset("scroll \(pane.rawValue)")
     }
@@ -113,13 +119,19 @@ final class JobsTabSession {
     /// Points `pane` is scrolled from its top.
     func offset(_ pane: Pane) throws -> Double {
         send("offset \(pane.rawValue)")
-        return try readOffset("offset \(pane.rawValue)")
+        guard let at = try readOffset("offset \(pane.rawValue)") else { throw Failure(description: "the \(pane.rawValue) pane is not on screen") }
+        return at
     }
 
-    private func readOffset(_ what: String) throws -> Double {
-        guard let line = lines.next(prefix: "OFFSET ", timeout: Self.waitTimeout),
-              let y = Double(line.dropFirst("OFFSET ".count)) else {
-            throw Failure(description: "the host did not answer \(what) (no such pane yet?)")
+    /// The host's answer: `OFFSET y`, `NOPANE` (nil), or `ERROR`, which fails at once rather than
+    /// waiting out the deadline for an offset that will not come.
+    private func readOffset(_ what: String) throws -> Double? {
+        guard let line = lines.next(prefixes: ["OFFSET ", "NOPANE ", "ERROR "], timeout: Self.waitTimeout) else {
+            throw Failure(description: "the host did not answer \(what) within \(Int(Self.waitTimeout)) s")
+        }
+        if line.hasPrefix("NOPANE ") { return nil }
+        guard line.hasPrefix("OFFSET "), let y = Double(line.dropFirst("OFFSET ".count)) else {
+            throw Failure(description: "the host refused \(what): \(line)")
         }
         return y
     }
@@ -285,11 +297,16 @@ final class LineReader: @unchecked Sendable {
 
     /// The next line starting with `prefix` (earlier lines are dropped), or nil at the deadline.
     func next(prefix: String, timeout: TimeInterval) -> String? {
+        next(prefixes: [prefix], timeout: timeout)
+    }
+
+    /// The next line starting with any of `prefixes` (earlier lines are dropped), or nil at the deadline.
+    func next(prefixes: [String], timeout: TimeInterval) -> String? {
         let deadline = Date().addingTimeInterval(timeout)
         cond.lock()
         defer { cond.unlock() }
         while true {
-            if let i = lines.firstIndex(where: { $0.hasPrefix(prefix) }) {
+            if let i = lines.firstIndex(where: { line in prefixes.contains { line.hasPrefix($0) } }) {
                 let line = lines[i]
                 lines.removeSubrange(...i)
                 return line

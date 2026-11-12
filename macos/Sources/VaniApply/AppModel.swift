@@ -96,8 +96,9 @@ final class AppModel {
     var vaniBinary: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/vani") }
 
     /// `vani jobs` for the Jobs tab, with the same Vani config and state folder as drafting.
-    /// It reads no key: listing and marking spend nothing.
-    var jobsClient: JobsClient { draftSettings.jobsClient(vaniBinary: vaniBinary) }
+    /// It reads no key: listing and marking spend nothing. Its views go to the app's one
+    /// resident `vani jobs serve` (JobsServeClient), which falls back to the command.
+    var jobsClient: JobsClient { draftSettings.jobsClient(vaniBinary: vaniBinary, resident: true) }
 
     /// `vani audit` for the Audit tab: the weekly blind draw and its answers. It reads no key.
     var auditClient: AuditClient { AuditClient(jobs: jobsClient) }

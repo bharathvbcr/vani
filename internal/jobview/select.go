@@ -3,7 +3,6 @@ package jobview
 import (
 	"cmp"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -40,38 +39,43 @@ type Filter struct {
 
 // Keep reports whether an enriched job passes the filters.
 func (f *Filter) Keep(j *Job) bool {
-	if !InSet(f.Seniorities, j.Triage["seniority"]) {
-		return false
-	}
 	cat := j.Category
 	if cat == "" && j.Triage != nil {
 		cat = j.Triage["category"]
 	}
-	if !InSet(f.Categories, cat) {
+	return f.keep(j.Triage["seniority"], cat, j.Company, j.Title, j.Relevance, j.Pay)
+}
+
+// keep is Keep over the fields it reads.
+func (f *Filter) keep(seniority, category, company, title string, relevance float64, pay []jobinsight.Pay) bool {
+	if !InSet(f.Seniorities, seniority) {
 		return false
 	}
-	company := CompanyKey(j.Company)
-	if (f.Companies != nil && !f.Companies[company]) || f.NotCompanies[company] {
+	if !InSet(f.Categories, category) {
+		return false
+	}
+	ck := CompanyKey(company)
+	if (f.Companies != nil && !f.Companies[ck]) || f.NotCompanies[ck] {
 		return false
 	}
 	if len(f.ExcludeTerms) > 0 {
-		title := strings.ToLower(j.Title)
+		lt := strings.ToLower(title)
 		for _, w := range f.ExcludeTerms {
-			if strings.Contains(title, w) {
+			if strings.Contains(lt, w) {
 				return false
 			}
 		}
 	}
-	if f.MinRelevance > 0 && j.Relevance < f.MinRelevance {
+	if f.MinRelevance > 0 && relevance < f.MinRelevance {
 		return false
 	}
-	if f.PayListed && len(j.Pay) == 0 {
+	if f.PayListed && len(pay) == 0 {
 		return false
 	}
-	if f.MinPay > 0 && len(j.Pay) > 0 {
+	if f.MinPay > 0 && len(pay) > 0 {
 		// Stated pay is compared in the chosen currency only; a job stating
 		// pay only in another one cannot be compared, so it is left out.
-		p, ok := jobinsight.PayIn(j.Pay, f.Currency)
+		p, ok := jobinsight.PayIn(pay, f.Currency)
 		if !ok || p.AnnualMax < f.MinPay {
 			return false
 		}
@@ -103,12 +107,15 @@ type Opts struct {
 // PlaceOK applies the location options to a located job: --state, --area and
 // --country, widened by --or-remote to roles the board lists as remote, or
 // narrowed by --remote to them.
-func (o *Opts) PlaceOK(j Job) bool {
-	in := InPlaces(o.States, o.Areas, j.Places) && InCountries(o.Countries, countriesOf(j))
+func (o *Opts) PlaceOK(j Job) bool { return o.placeOK(j.Places, j.RemoteListed, j.RemoteScope) }
+
+// placeOK is PlaceOK over the fields it reads.
+func (o *Opts) placeOK(places []Place, remoteListed bool, remoteScope string) bool {
+	in := InPlaces(o.States, o.Areas, places) && InCountries(o.Countries, countriesIn(places, remoteScope))
 	if o.OrRemote {
-		return in || j.RemoteListed
+		return in || remoteListed
 	}
-	return in && (!o.Remote || j.RemoteListed)
+	return in && (!o.Remote || remoteListed)
 }
 
 // Ranker fills a job's insight fields (freshness, scores, keywords, reasons,
@@ -118,72 +125,43 @@ type Ranker interface {
 	Enrich(j *Job, r ledger.Record, kwLimit int) []jobinsight.Hit
 }
 
+// PageRanker is a Ranker that can split Enrich in parts, so a selection ranks
+// every job in its view without building a Job for it, and builds and
+// finishes a Job only for the jobs a reply returns (EnrichWith).
+//
+//   - Rank fills what selection, the filters, every sort and the stats read
+//     (place, freshness, priority, relevance; pay when withPay). i is r's
+//     index in the snapshot being selected from, -1 outside a selection; a
+//     ranker that keeps work per record between selections keys it by i and
+//     checks it is r's.
+//   - Hits is the keyword hits Finish returns, without finishing a Job: the
+//     stats and gaps count them.
+//   - Finish fills the rest of a job that will be shown, after its Ranked was
+//     applied (Ranked.Apply), and returns its hits.
+//
+// Rank, Apply and Finish must leave a job exactly as Enrich does.
+type PageRanker interface {
+	Ranker
+	Rank(rk *Ranked, i int, r ledger.Record, withPay bool)
+	Hits(r ledger.Record) []jobinsight.Hit
+	Finish(j *Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit
+}
+
+// needsPay says whether o's selection or order reads a job's pay.
+func (o *Opts) needsPay() bool {
+	return o.Sort == "salary" || o.More.PayListed || o.More.MinPay > 0
+}
+
 // Select returns the jobs in o's view that pass its query and filters,
-// unsorted, and the per-view counts (which ignore the query and filters).
+// unsorted, each whole (enriched, with its keyword hits), and the per-view
+// counts (which ignore the query and filters). A list builds whole only the
+// page it returns (BuildList); Select is for callers that read every job.
 func Select(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk Ranker, kwLimit int) ([]Selected, map[string]int) {
-	counts := map[string]int{}
-	q := strings.ToLower(strings.TrimSpace(o.Query))
-	var sel []Selected
-	var areas map[string]*AreaStat
-	if o.where != nil {
-		if o.where.State == nil {
-			o.where.State = map[string]int{}
-		}
-		if o.where.Country == nil {
-			o.where.Country = map[string]int{}
-		}
-		areas = map[string]*AreaStat{}
-	}
-	placeOn := o.Remote || o.States != nil || o.Areas != nil || o.Countries != nil
-	for _, r := range snap.Records {
-		entry := m[r.Key]
-		for _, v := range Views {
-			if InView(v, r, entry.Mark) {
-				counts[v]++
-			}
-		}
-		if !InView(o.View, r, entry.Mark) {
-			continue
-		}
-		j := ToJob(r, entry)
-		if !MatchesQuery(j, q) {
-			continue
-		}
-		if !InSet(o.Fits, j.Triage["role_fit"]) || !InSet(o.WorkModes, j.Triage["work_mode"]) || !InSet(o.Sponsors, j.Triage["sponsorship"]) {
-			continue
-		}
-		if o.Open && j.Closed {
-			continue
-		}
-		if o.Stages != nil && (entry.Mark != marks.Applied || !o.Stages[entry.Stage]) {
-			continue
-		}
-		// Without a menu census, drop other places before ranking them.
-		// With one, rank them too and count them, then drop them from the list.
-		if placeOn && o.where == nil {
-			Locate(&j, r.Posting)
-			if !o.PlaceOK(j) {
-				continue
-			}
-		}
-		hits := rk.Enrich(&j, r, kwLimit)
-		if o.MaxAge > 0 && (j.AgeDays == nil || *j.AgeDays > o.MaxAge) {
-			continue
-		}
-		if !o.More.Keep(&j) {
-			continue
-		}
-		if o.where != nil {
-			st := Stats{State: o.where.State, Country: o.where.Country, RemoteScope: map[string]int{}}
-			countPlaces(&st, areas, j)
-			if placeOn && !o.PlaceOK(j) {
-				continue
-			}
-		}
-		sel = append(sel, Selected{Job: j, Hits: hits, Pay: PayKey(j, o.More.Currency)})
-	}
-	if o.where != nil {
-		o.where.Area = rankedAreas(areas)
+	cs, counts := selectCands(snap, m, o, rk, selectArgs{withPay: true, kwLimit: kwLimit})
+	sel := make([]Selected, len(cs))
+	for i := range cs {
+		j, hits := materialize(&cs[i], snap, m, rk, kwLimit)
+		sel[i] = Selected{Job: j, Hits: hits, Pay: cs[i].pay}
 	}
 	return sel, counts
 }
@@ -226,17 +204,19 @@ func BuildList(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, rk 
 	opts := *o
 	where := &WhereChoices{State: map[string]int{}, Country: map[string]int{}}
 	opts.where = where
-	sel, counts := Select(snap, m, &opts, rk, kwLimit)
+	cs, counts := selectCands(snap, m, &opts, rk, selectArgs{withPay: opts.needsPay(), kwLimit: kwLimit})
 	out.Where = where
 	out.Counts = counts
-	Sort(sel, o.View, o.Sort)
-	sel = Diversify(sel, o.View, o.Sort)
-	out.Total = len(sel)
-	if len(sel) > limit {
-		sel = sel[:limit]
+	order := diversifyOrder(cs, candOrder(cs, o.View, o.Sort), o.View, o.Sort)
+	out.Total = len(order)
+	if len(order) > limit {
+		order = order[:max(limit, 0)]
 	}
-	for _, s := range sel {
-		out.Jobs = append(out.Jobs, s.Job)
+	// A whole Job is built and finished only for the page.
+	out.Jobs = make([]Job, 0, len(order))
+	for _, i := range order {
+		j, _ := materialize(&cs[i], snap, m, rk, kwLimit)
+		out.Jobs = append(out.Jobs, j)
 	}
 	out.Shown = len(out.Jobs)
 	return out
@@ -256,7 +236,7 @@ type Selected struct {
 // the "all" view, which mixes in marked roles,
 // and the fresh, company and salary sorts are lists the owner asked for as is.
 func Diversify(sel []Selected, view, by string) []Selected {
-	if view != "new" || by != "default" && by != "priority" && by != "relevance" {
+	if !diversified(view, by) {
 		return sel
 	}
 	rows := jobinsight.Diversify(len(sel),
@@ -272,6 +252,11 @@ func Diversify(sel []Selected, view, by string) []Selected {
 	return out
 }
 
+// diversified says whether Diversify shapes a list in view sorted by.
+func diversified(view, by string) bool {
+	return view == "new" && (by == "default" || by == "priority" || by == "relevance")
+}
+
 // EffectiveSort is the order a view really uses for the order asked. Untriaged
 // postings have no priority or relevance, so the default, priority and
 // relevance orders (which all rank by them) become "fresh": newest first, the
@@ -284,66 +269,27 @@ func EffectiveSort(view, by string) string {
 	return by
 }
 
-// resultOf is the two numbers an order reads, as jobinsight's comparators take them.
-func resultOf(j Job) jobinsight.Result {
-	return jobinsight.Result{Score: j.Priority, Relevance: j.Relevance}
-}
-
 // Sort orders a list. "default" is the digest's order: marked views by
 // when they were marked, the rest by priority (jobinsight.Score), then
 // relevance, then key (jobinsight.ComparePriority, the one tie-break).
 // Every order ends on the key, so it is total and stable across calls.
+// sortOrder is the one comparator; a list sorts its candidates with it too.
+//
+// It sorts a permutation and moves each Selected once: a Selected carries a
+// whole Job, too large to swap at every step of the sort.
 func Sort(sel []Selected, view, by string) {
-	by = EffectiveSort(view, by)
-	byMarkTime := by == "default" && (view == "saved" || view == "applied" || view == "hidden")
-	sort.SliceStable(sel, func(i, j int) bool {
-		a, b := sel[i].Job, sel[j].Job
-		switch by {
-		case "priority":
-			return jobinsight.ComparePriority(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
-		case "relevance":
-			return jobinsight.CompareRelevance(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
-		case "fresh":
-			if a.FreshAt.IsZero() != b.FreshAt.IsZero() {
-				return !a.FreshAt.IsZero()
-			}
-			if !a.FreshAt.Equal(b.FreshAt) {
-				return a.FreshAt.After(b.FreshAt)
-			}
-			// A board read in one sweep dates many postings alike; with no
-			// scores to separate them, group them by company.
-			if ca, cb := strings.ToLower(a.Company), strings.ToLower(b.Company); view == ViewPending && ca != cb {
-				return ca < cb
-			}
-			if a.Relevance != b.Relevance {
-				return a.Relevance > b.Relevance
-			}
-		case "company":
-			if ca, cb := strings.ToLower(a.Company), strings.ToLower(b.Company); ca != cb {
-				return ca < cb
-			}
-			if a.Relevance != b.Relevance {
-				return a.Relevance > b.Relevance
-			}
-		case "salary":
-			// Highest top of range first; jobs stating no pay in the
-			// currency last.
-			if pa, pb := sel[i].Pay, sel[j].Pay; pa != pb {
-				return pa > pb
-			}
-			if a.Relevance != b.Relevance {
-				return a.Relevance > b.Relevance
-			}
-		default:
-			if byMarkTime && !a.MarkedAt.Equal(b.MarkedAt) {
-				return a.MarkedAt.After(b.MarkedAt)
-			}
-			// The digest's order: priority, relevance, key. Rank (DevPrism coverage)
-			// is already in both numbers, so it is not a tie-break.
-			return jobinsight.ComparePriority(resultOf(a), resultOf(b), string(a.Key), string(b.Key)) < 0
-		}
-		return a.Key < b.Key
-	})
+	keys := make([]sortKey, len(sel))
+	for i := range sel {
+		j := &sel[i].Job
+		keys[i] = sortKey{key: j.Key, priority: j.Priority, relevance: j.Relevance, pay: sel[i].Pay,
+			freshAt: j.FreshAt, markedAt: j.MarkedAt, company: j.Company}
+	}
+	perm := sortOrder(keys, view, by)
+	sorted := make([]Selected, len(sel))
+	for i, p := range perm {
+		sorted[i] = sel[p]
+	}
+	copy(sel, sorted)
 }
 
 // MaxPendingCompanies bounds Pending.Companies; Total still counts all.

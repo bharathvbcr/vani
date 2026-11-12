@@ -31,7 +31,7 @@ const (
 
 func (e *env) cmdJobs(args []string) error {
 	if len(args) == 0 {
-		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage, resume or cover")
+		return usagef("jobs: expected list, stats, export, gaps, folders, show, find, ingest, mark, note, retriage, resume, cover or serve")
 	}
 	switch args[0] {
 	case "list":
@@ -40,6 +40,8 @@ func (e *env) cmdJobs(args []string) error {
 		return e.jobsExport(args[1:])
 	case "stats":
 		return e.jobsStatsCmd(args[1:])
+	case "serve":
+		return e.jobsServe(args[1:])
 	case "folders", "categories":
 		return e.jobsFolders(args[1:])
 	case "show":
@@ -83,18 +85,15 @@ func (e *env) jobsList(args []string) error {
 		if err := o.check("jobs list", true); err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		rd, in, err := e.jobsView(o.HalfLife)
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.HalfLife, snap, m)
-		if err != nil {
-			return err
-		}
+		snap, m := rd.snap, rd.m
 		out = jobview.BuildList(snap, m, &o.Opts, in, in.info, listKeywords, *limit)
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
-		return nil
+		return in.facts.err()
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		for _, j := range out.Jobs {
@@ -149,21 +148,16 @@ func (e *env) jobsStatsCmd(args []string) error {
 		if err := o.check("jobs stats", false); err != nil {
 			return err
 		}
-		snap, m, err := e.jobsState()
+		rd, in, err := e.jobsView(o.HalfLife)
 		if err != nil {
 			return err
 		}
-		in, err := e.newInsight(o.HalfLife, snap, m)
-		if err != nil {
-			return err
-		}
-		sel, _ := jobview.Select(snap, m, &o.Opts, in, 0)
-		out = jobview.StatsOf(sel, in.info, in.target)
-		out.Salary = jobview.PayStatsOf(sel, o.more.Currency)
+		snap, m := rd.snap, rd.m
+		out = jobview.StatsFor(snap, m, &o.Opts, in, in.info, in.target, o.more.Currency)
 		out.View, out.Query, out.Torn = o.View, o.Query, snap.Torn
 		out.Ledger, out.Records = filepath.Join(e.stateDir, "ledger"), len(snap.Records)
 		out.Pending = jobview.PendingOf(snap, m, strings.ToLower(strings.TrimSpace(o.Query)))
-		return nil
+		return in.facts.err()
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s: %d jobs\n", out.View, out.Total)
@@ -441,6 +435,41 @@ func (e *env) jobsState() (ledger.Snapshot, map[posting.Key]marks.Entry, error) 
 	return e.jobsStateFor(nil)
 }
 
+// jobsCheckpointAfter is how many bytes of events a jobs read folds before it
+// saves a new checkpoint: a few runs' worth, so the next read replays little
+// and a save (a few hundred ms at 60k postings) is rare.
+const jobsCheckpointAfter = 8 << 20
+
+// jobsReaderOptions is where the jobs views keep their ledger checkpoint:
+// beside the ledger directory (which only its lock holder writes), saved by
+// whichever read folded at least jobsCheckpointAfter bytes.
+func (e *env) jobsReaderOptions() ledger.ReaderOptions {
+	return ledger.ReaderOptions{Checkpoint: filepath.Join(e.stateDir, "readmodel", "ledger.ckpt"), SaveAfter: jobsCheckpointAfter}
+}
+
+// jobsTextScope keeps the description of every record a jobs view can read
+// the text of: any not closed, dropped or a duplicate (the views list the kept
+// statuses, the pending view the live ones), and every marked one. Nothing in
+// the views reads the text of an unmarked closed, dropped or duplicate posting.
+func jobsTextScope(m map[posting.Key]marks.Entry) func(ledger.Record) bool {
+	return func(r ledger.Record) bool {
+		if scopeReadsMark(r.Status) {
+			return m[r.Key].Mark != marks.None
+		}
+		return true
+	}
+}
+
+// scopeReadsMark is whether jobsTextScope reads a record's mark: only for a
+// closed, dropped or duplicate posting does a mark bring its text in.
+func scopeReadsMark(s posting.Status) bool {
+	switch s {
+	case posting.Dead, posting.Dropped, posting.Duplicate:
+		return true
+	}
+	return false
+}
+
 // rowScope is the ledger.ReadSnapshotScoped scope for enriching one row: the
 // record pick names and every record of its company are read whole (what
 // newRowInsight learns from); every other record keeps its description out
@@ -473,23 +502,30 @@ func rowRecord(snap ledger.Snapshot, k posting.Key) (ledger.Record, bool, error)
 	return r, ok, nil
 }
 
-// jobsStateFor is jobsState reading the ledger with scope (nil: whole, via
-// ledger.ReadSnapshot). Records scope leaves bodiless are not matched against
-// exclusion rules, which can only drop a record from its own company's view.
+// jobsStateFor is jobsState reading the ledger with scope (nil: jobsTextScope,
+// every record a jobs view reads the text of). It folds through a
+// ledger.Reader from the jobs checkpoint, so a read pays only for the events
+// appended since one was saved, and loads only the descriptions scope keeps.
+// Records left bodiless are matched against the exclusion rules only when no
+// rule reads descriptions (hideExcluded).
 func (e *env) jobsStateFor(scope func(ledger.Snapshot) func(ledger.Record) bool) (ledger.Snapshot, map[posting.Key]marks.Entry, error) {
-	var snap ledger.Snapshot
-	var err error
-	if scope == nil {
-		snap, err = ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
-	} else {
-		snap, err = ledger.ReadSnapshotScoped(filepath.Join(e.stateDir, "ledger"), scope)
-	}
+	rd, snap, _, release, err := e.jobsReader()
 	if err != nil {
-		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		return ledger.Snapshot{}, nil, err
 	}
+	defer release()
 	m, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read marks: %w", err)
+	}
+	keep := jobsTextScope(m)
+	if scope != nil {
+		keep = scope(snap)
+	}
+	if keep != nil {
+		if err := rd.Hydrate(snap.Records, keep); err != nil {
+			return ledger.Snapshot{}, nil, fmt.Errorf("jobs: read the ledger: %w", err)
+		}
 	}
 	// Listing jobs needs no config; when there is one, its exclusions hide now
 	// what the next run will drop.
@@ -506,8 +542,9 @@ func hideExcluded(recs []ledger.Record, m map[posting.Key]marks.Entry, x config.
 	if x.Empty() {
 		return
 	}
+	needsText := x.ReadsDescriptions() // else a bodiless record matches as it would whole
 	for i, r := range recs {
-		if r.BodyEvicted || m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
+		if (r.BodyEvicted && needsText) || m[r.Key].Mark != marks.None || !jobview.KeptStatus(r.Status) {
 			continue
 		}
 		if _, ok := x.Match(r.Posting); ok {

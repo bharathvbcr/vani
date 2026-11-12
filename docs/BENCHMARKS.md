@@ -43,6 +43,212 @@ this page does not call the difference a speedup or a regression:
   2026-11-07 run. The time does not. The Go version of that run was not
   recorded beside the number.
 
+## 2026-11-11, the Jobs read path at the live scale
+
+Same machine, `go1.27.3`, `VANI_NO_KEYCHAIN=1`. The state is a copy of the
+owner's live state: a 629 MB ledger of about 62k records, with a ledger
+checkpoint and a text facts store saved by an earlier run. Other sessions kept
+the load average between 59 and 230 throughout. Wall time for one command
+varied from 1.2 to 36 s, so the tables use CPU time. In the CLI table the
+CPU spread within an arm was at most 15%; in the serve table it reached 23%
+(`--view all --sort company`). The plan, [JOBS_READ_MODEL_PLAN.md](JOBS_READ_MODEL_PLAN.md),
+has each phase's own A/B.
+
+**Cold CLI, before and after.** `old` is `vani` built from `17ce448^` (before
+Phase 1b) with `go build -overlay` over the same tree. `new` is `a9f754c`. The
+runs were interleaved, 5 per arm, with the order alternating each round. Each
+row is `/usr/bin/time -l vani jobs list --json <args>`, and the figure is the
+minimum user CPU. In every row the slowest `new` run used less than a third of
+the CPU of the fastest `old` run.
+
+| `jobs list` | old user CPU (min, range) | new user CPU (min, range) | change | max RSS old / new |
+|---|---|---|---|---|
+| `--view new` | 8.37 s (8.37–8.75) | 2.08 s (2.08–2.27) | −75% | 1.28–1.53 / 0.57–0.66 GB |
+| `--view all --sort company` | 8.22 s (8.22–8.90) | 1.65 s (1.65–1.88) | −80% | 1.29–1.52 / 0.57–0.62 GB |
+| `--view new --sort salary` | 8.26 s (8.26–8.88) | 1.81 s (1.81–1.93) | −78% | 1.28–1.31 / 0.57–0.70 GB |
+| `--view saved` | 5.32 s (5.32–5.69) | 1.06 s (1.06–1.12) | −80% | 0.78–1.38 / 0.56–0.62 GB |
+
+**Resident serve.** `BenchmarkLiveServe`, `-benchtime=5x -count=3`, CPU per
+request from getrusage, user plus system. This is not the same measure as the
+user-only CPU in the table above. Not interleaved with the CLI.
+
+| Request | CPU per request (range of 3) | Allocated |
+|---|---|---|
+| first list, `--view new` (opens the checkpoint and the facts store) | 2.39–2.52 s | 1.60 GB |
+| warm `--view new` | 1.54–1.58 s | 702 MB |
+| warm `--view all --sort company` | 1.16–1.42 s | 554 MB |
+| warm `--view new --sort salary` | 1.23–1.45 s | 587 MB |
+| warm `--view saved` | 0.34–0.41 s | 176 MB |
+| warm `--view new --q engineer` | 1.34–1.52 s | 600 MB |
+| warm `stats --view new` | 1.80–1.92 s | 760 MB |
+
+Heap in use after a list and a forced GC, with the Reader and the facts store
+held: 360 MiB. That is a floor, not serve's resident size. Each warm request
+allocates 176–760 MB, so the process's RSS between requests is larger. RSS
+was not measured.
+
+These numbers miss two of the plan's targets. A warm view change takes about
+1.2–1.6 s of CPU, against a target under 200 ms. Resident memory is at least
+360 MiB of heap, against under 300 MB. The cold CLI target was under 1 s. Only `--view saved`
+comes near it.
+
+What remains is the ranking itself, run per request over every posting:
+`jobview.Select`, same-company grouping, location parsing, and the semantic
+scores decoded again on each request. The Phase 4 section of the plan gives
+the profile.
+
+**Serve keeps what did not change (later the same day).** Serve now keeps the
+company-history groups while the ledger and the watchlist domains are
+unchanged, the decoded semantic scores while their file is unchanged, and
+each title's rank and keyword hits and each location's places. `jobview.Sort`
+sorts a permutation instead of swapping whole jobs, and `Select` sizes its
+slice once. `old` is `3b1e221` (the serve table above), built with
+`go build -overlay`; `new` is the working tree. Same `BenchmarkLiveServe`
+warm requests, `-benchtime=5x`, three runs per arm, interleaved with the
+order alternating, load average 42 to 69. CPU per request, user plus system.
+In every row the slowest `new` run used less CPU than the fastest `old` run.
+
+| Warm request | old (3 runs) | new (3 runs) | change, min to min | allocated old / new |
+|---|---|---|---|---|
+| `--view new` | 1488–1553 ms | 764–808 ms | −49% | 702 / 323 MB |
+| `--view all --sort company` | 1107–1146 ms | 700–900 ms | −37% | 553 / 288 MB |
+| `--view new --sort salary` | 1249–1336 ms | 739–847 ms | −41% | 584 / 288 MB |
+| `--view saved` | 347–352 ms | 189–213 ms | −46% | 176 / 81 MB |
+| `--view new --q engineer` | 1344–1371 ms | 703–737 ms | −48% | 599 / 292 MB |
+| `stats --view new` | 1793–1883 ms | 1056–1069 ms | −41% | 760 / 339 MB |
+
+Memory, measured in the same benchmark process (the in-process request path,
+not a `vani jobs serve` fed over stdin, which was not measured):
+
+- Heap in use after a list and a forced GC, with everything serve keeps held
+  (`-test.v`, `warm_list_3`, two runs per arm): 360 MiB old, 450–456 MiB new.
+  Keeping things costs about 90 MiB more resident heap. The split was not
+  measured; the decoded score file, which a request used to decode and drop,
+  is the likely bulk.
+- Maximum RSS (`/usr/bin/time -l`): 0.78–0.80 GB old and 0.74–0.81 GB new for
+  one first list and one `--view saved`; 1.06–1.07 GB old and 1.01–1.06 GB new
+  for the whole warm table above. These changes did not lower it.
+- The peak follows the garbage collector's target as much as the garbage: two
+  more runs of the warm table per arm, alternating, gave 1.04–1.27 GB at the
+  default `GOGC` and 0.87–1.07 GB at `GOGC=50`, with `--view new` costing
+  886–928 ms and 1074–1125 ms of CPU respectively (load average 41 to 45).
+
+Both are well over the plan's 300 MB target.
+
+The replies did not change: the live-copy parity dump (`TestLiveJobsParityDump`,
+18 lists, 2 stats, gaps and 5 shows at a pinned clock) is byte-identical for
+the old command, the new command and the new serve's warm second pass
+(`VANI_PARITY_SERVE=1`).
+
+The `old` arm is a test binary built the way `scripts/bench-jobs-ab.sh` builds
+its old CLI: an overlay that maps each non-test `.go` file changed since the
+base revision to its `git show` copy and each added file (tests included) to
+`""`, then `go test -c -overlay <overlay.json> -o old.test ./cmd/vani/`. Each
+arm ran as `/usr/bin/time -l <arm>.test -test.run '^$' -test.bench
+'BenchmarkLiveServe/warm' -test.benchtime 5x`, with `VANI_BENCH_STATE` and
+`VANI_BENCH_CONFIG` set as above.
+
+Still about 0.7–1.1 s of CPU per warm view, against a 200 ms target. What is
+left is per request over every posting in the view: `ToJob`, the score
+(`InputsFor`, `ScoreWith`), the stable sort, and the garbage they make.
+
+```bash
+scripts/bench-jobs-ab.sh 17ce448^ <copy-of-state> <config.json> 5
+VANI_NO_KEYCHAIN=1 VANI_BENCH_STATE=<state> VANI_BENCH_CONFIG=<config.json> \
+  go test -run '^$' -bench BenchmarkLiveServe -benchtime=5x -count=3 ./cmd/vani/
+```
+
+**Page-only rows, a two-stage score, kept blends (evening).** These are plan phases A–C in
+`JOBS_READ_MODEL_PLAN.md`:
+
+- **A (`9965dcd`):** the score in two stages.
+- **B (`b9036fd`):** a selection over compact candidates, with a whole `Job` built only for
+  the page.
+- **C (`f1a0c37`):** serve keeps each record's row fields and each posting's score blend.
+
+Same benchmark and recipe as above, 3 interleaved rounds per pair, load average 40 to 66. CPU per
+request:
+
+| Warm request | 9965dcd | b9036fd | f1a0c37 |
+|---|---|---|---|
+| `--view new` | 792–807 ms | 438–592 ms (vs 9965dcd); 587–686 ms (vs f1a0c37) | 395–441 ms |
+| `--view all --sort company` | 743–760 ms | 506–544 / 562–600 ms | 345–372 ms |
+| `--view new --sort salary` | 718–737 ms | 563–570 / 575–636 ms | 317–402 ms |
+| `stats --view new` | 967–1079 ms | 377–498 / 441–460 ms | 287–321 ms |
+| heap in use after a list | 467–474 MiB | 453–458 / 462 MiB | 495–501 MiB |
+
+Phase B was measured twice, once in each pair, and the load moved between the two runs. Read each
+pair against itself, not one column across the table. The command (`jobs list --view new`, user
+CPU) went from 1.68–2.33 s to 1.44–2.04 s with B. A cold command's cost is mostly its read.
+
+**Memory limit for serve (plan phase D).** These are the f1a0c37 bench binary's warm table under
+each setting, 2 interleaved rounds, at load average about 57. Max RSS is of the whole bench
+process.
+
+| Setting | `--view new` CPU | max RSS | process user CPU |
+|---|---|---|---|
+| none | 389–536 ms | 0.91–0.95 GB | 12.9–13.0 s |
+| `GOMEMLIMIT=1GiB` | 357–366 ms | 0.90–0.95 GB | 11.6–12.1 s |
+| `GOMEMLIMIT=800MiB` | 376–411 ms | 0.84–0.85 GB | 12.2 s |
+| `GOMEMLIMIT=650MiB` | 532–618 ms | 0.73 GB | 17.0–17.3 s |
+| `GOGC=50` | 418–445 ms | 0.76–0.77 GB | 13.4–14.4 s |
+
+With n=2 per arm and the no-limit arm itself spanning 389–536 ms, "no CPU difference at 800 MiB"
+means no difference these runs could show.
+
+A cold first list is different. It has no checkpoint and no facts store, so every posting's facts
+are derived. Measured with the same binary, `first_list_new`, the clone's `readmodel` deleted
+before each run, 2 interleaved runs per arm:
+
+| Setting | CPU | max RSS |
+|---|---|---|
+| none | 9.9–11.3 s | 1.17–1.38 GB |
+| `GOMEMLIMIT=800MiB` | 14.1–14.7 s | 1.11 GB |
+
+Its heap runs above 800 MiB, and the limit cost it about a third more CPU. So `vani jobs serve`
+sets its limit only after it has answered its first view (list, stats or gaps; `serveLimitFunc`),
+never before. The limit is the larger of 800 MiB and 1.6 times the live heap measured then
+(`/gc/heap/live:bytes`; 480–531 MiB here), and it is set only when `GOMEMLIMIT` is unset. A limit
+set through `GOMEMLIMIT`, or `GOMEMLIMIT=off`, stands. Warm requests under it should behave like the
+800 MiB arm above. That is inferred: a serve process fed over stdin was not measured. Going lower
+trades CPU for memory: 650 MiB cost about a third more CPU.
+
+The kept Blends are hit on the live state. After the first list and a warm table they were asked
+for 390,107 times and computed 26,288 times, which is one view's worth from the first list.
+
+Still about 0.4 s of CPU per warm view under this load, against a 200 ms target, and a 0.85 GB
+peak against 300 MB. That figure is this process's CPU only: each view also runs `rkb claims
+export` for the knowledge-base profile, about 51–68 ms of child CPU (`child-cpu-ms/op`, counted
+from `9457f8a` on), which the bench did not count before.
+
+**The kept read (plan phase E).** Serve keeps a view's text facts map, what learn learned, and
+the manual readings between requests (`cmd/vani/jobsreadkeep.go`). `BenchmarkLiveServe/warm`,
+`9457f8a` against the kept read, 3 interleaved rounds per arm, live-state clone, load average
+50–66. CPU per request in this process (rkb's child CPU, about 51–68 ms, is the same in both arms
+and not included):
+
+| Warm request | 9457f8a | kept read |
+|---|---|---|
+| `--view new` | 364–400 ms | 227–258 ms |
+| `--view all --sort company` | 286–305 ms | 205–237 ms |
+| `--view new --sort salary` | 306–329 ms | 235–256 ms |
+| `--view saved` | 171–245 ms | 53–60 ms |
+| `--view new --q engineer` | 327–360 ms | 236–241 ms |
+| `stats --view new` | 223–269 ms | 131–187 ms |
+| heap in use after a list | 487–494 MiB | 488–507 MiB |
+| max RSS (whole bench process) | 0.95–0.97 GB | 0.90–0.93 GB |
+| process user CPU | 11.4–11.7 s | 8.5–8.9 s |
+
+The ranges do not overlap in any row. Each keep was hit on every warm request: facts, learn and
+manual readings each 30 hits and 1 miss (the first list) per run. That is with nothing changing
+between requests. After the ledger advances, the first request rebuilds all three and its save
+moves the store's edit count, so the second rebuilds the facts map too; reuse resumes from the
+third. Saving or hiding a live posting rebuilds nothing. The cut is larger than the ~75–80 ms
+the profile's lines summed to. A warm `--view new` allocates 132 MB in 1.32M allocations against
+171 MB in 1.53M (all 3 rounds), so less garbage and less GC are the likely rest; the GC share was
+not measured on its own. A warm `--view new` is now about 0.23–0.26 s of CPU here plus about
+0.06 s in rkb, against a 200 ms target.
+
 ## Not re-run on 2026-11-07
 
 - **Advance** (`BenchmarkAdvance` in `cmd/vani/advance_bench_test.go`). The

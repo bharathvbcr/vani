@@ -1032,6 +1032,84 @@ private extension View {
     }
 }
 
+/// Scrolls the List it sits behind to the top edge of its content each time `request` changes.
+/// The top edge, not the first row: the inset List style keeps a margin above row 0, and
+/// ScrollViewReader's scroll to that row leaves the margin scrolled off, 10 pt short of where
+/// the list opened. SwiftUI's own edge scroll (ScrollPosition, macOS 15) does not move a List,
+/// whose rows live in an AppKit table, so this scrolls the table's NSScrollView. `fallback` runs
+/// when no table is found under this view.
+struct ListTopScroller: NSViewRepresentable {
+    let request: Int
+    let animated: Bool
+    let fallback: () -> Void
+
+    /// The last request scrolled for. It starts at the request current when the view is made, so a
+    /// List rebuilt after presses (emptied and refilled) is not scrolled for a press already done.
+    final class Coordinator {
+        var handled: Int
+        init(handled: Int) { self.handled = handled }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(handled: request) }
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard request != context.coordinator.handled else { return }
+        context.coordinator.handled = request
+        let animated = animated, fallback = fallback
+        // After this update's layout, so the frames compared are the ones on screen.
+        DispatchQueue.main.async {
+            guard let sv = Self.tableScrollView(behind: view) else { return fallback() }
+            Self.scrollToTop(sv, animated: animated)
+        }
+    }
+
+    static let maxViews = 6000
+
+    /// The scroll view of the table that covers the most of `view`, and at least half of it.
+    /// Searched from the top of `view`'s hierarchy, at most `maxViews` views.
+    @MainActor static func tableScrollView(behind view: NSView) -> NSScrollView? {
+        var root = view
+        while let up = root.superview { root = up }
+        let mine = view.convert(view.bounds, to: nil)
+        guard mine.width > 0, mine.height > 0 else { return nil }
+        var best: (sv: NSScrollView, area: CGFloat)?
+        var stack = [root], budget = maxViews
+        while let v = stack.popLast(), budget > 0 {
+            budget -= 1
+            if let sv = v as? NSScrollView, sv.documentView is NSTableView {
+                let overlap = sv.convert(sv.bounds, to: nil).intersection(mine)
+                let area = overlap.isNull ? 0 : overlap.width * overlap.height
+                if area >= mine.width * mine.height / 2, area > (best?.area ?? 0) { best = (sv, area) }
+            }
+            stack.append(contentsOf: v.subviews)
+        }
+        return best?.sv
+    }
+
+    /// Puts the top of `sv`'s content at the top of the visible area: where the clip view stops
+    /// when asked for a point beyond the top, so its insets and any header are AppKit's to count.
+    @MainActor static func scrollToTop(_ sv: NSScrollView, animated: Bool) {
+        guard let doc = sv.documentView else { return }
+        let clip = sv.contentView
+        let beyond = doc.isFlipped ? -doc.frame.height - clip.bounds.height : doc.frame.height + clip.bounds.height
+        let top = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: beyond), size: clip.bounds.size)).origin
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.3
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                clip.animator().setBoundsOrigin(top)
+            } completionHandler: {
+                // AppKit runs the completion on the main thread.
+                MainActor.assumeIsolated { sv.reflectScrolledClipView(clip) }
+            }
+        } else {
+            clip.setBoundsOrigin(top)
+            sv.reflectScrolledClipView(clip)
+        }
+    }
+}
+
 // MARK: - List
 
 private struct JobList: View {
@@ -1042,6 +1120,9 @@ private struct JobList: View {
     /// The rows on screen, for the back-to-top button: List rows load lazily,
     /// so their appear/disappear tracks scrolling.
     @State private var visibleRows = VisibleRowsTracker()
+    /// Counts presses of the list's Back to top button; `ListTopScroller` scrolls on each change.
+    @State private var topRequests = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         @Bindable var jobs = jobs
@@ -1125,10 +1206,13 @@ private struct JobList: View {
                         .onChange(of: jobs.page) {
                             if let s = jobs.selection { proxy.scrollTo(s) }
                         }
-                        .overlay(alignment: .bottomTrailing) {
-                            BackToTopOverlay(tracker: visibleRows, first: shown.first?.key) {
+                        .background {
+                            ListTopScroller(request: topRequests, animated: !reduceMotion) {
                                 if let first = shown.first { proxy.scrollTo(first.key, anchor: .top) }
                             }
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            BackToTopOverlay(tracker: visibleRows, first: shown.first?.key) { topRequests += 1 }
                         }
                     }
                 }

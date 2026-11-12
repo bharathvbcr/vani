@@ -601,6 +601,45 @@ to an `.xlsx` workbook using `internal/xlsx` (standard library `archive/zip` + X
 - An export holding roles an earlier one wrote asks in a terminal. Elsewhere it refuses with `code: already_exported` and writes nothing. `--already-exported skip` leaves those roles out, so `--top N` takes the next N not yet exported; `include` writes them again. `--dry-run` writes nothing and reports `already_exported`, `last_exported_at` and `last_file`.
 - A record that cannot be read stops the export before the workbook is written. If the record cannot be written afterwards, the export exits 1 and names the workbook it wrote.
 
+## The Jobs tab's read path (`vani jobs list|stats|gaps|show`, `vani jobs serve`)
+
+The Jobs views read the ledger without its lock, through a `ledger.Reader` that starts from
+`<state>/readmodel/ledger.ckpt` and folds only the lines appended since. `list`, `stats` and
+`gaps` then load a description only for a posting whose stored text facts
+(`<state>/readmodel/jobfacts`) no longer describe it; with an `exclude.descriptions` rule they
+load every description a view reads, as the rule must see the text. `show` loads the
+descriptions of the shown posting's company only (`rowScope`). None of them reads a key or writes
+the ledger.
+
+The Mac app runs one `vani jobs serve` per vani binary, config and state folder
+(`JobsServeClient` in `VaniApplyKit`), with the same environment as its other `vani` calls. It
+keeps the Reader and the facts store between requests and reads marks, the config and every other
+store per request (the config once per request, shared by the read and the ranking; the
+knowledge-base profile, one rkb run, once per request, shared by the semantic and kbmatch
+lookups), so its replies are the commands' (`params.args` are the command's flags; the
+result is the command's `--json` reply). It also keeps what it derived from inputs that did not
+change: each posting's company identity and role groups for the company-history notes, until the
+ledger or the watchlist's domains change (`samecompany.Groups`); the decoded semantic scores, until
+`<state>/semantic/semantic-scores.json` changes size or modification time (`semantic.Lookups`); a view's
+read (`cmd/vani/jobsreadkeep.go`): the text facts map, while the ledger generation, the marks on
+closed, dropped and duplicate postings and the facts store's edit count are unchanged and the
+read that built it loaded no text and saved;
+the company blurbs and keyword hits learned over that map, while the postings in view are the same;
+and the manual readings, while a stat of `<state>/retriage/readings.jsonl` (device, inode, size,
+mode, modification and change time, taken before the read) is unchanged; and each title's rank
+and keyword hits and each location's places, keyed by the text they read (`rankMemo`); each
+record's cleaned row fields per ledger generation (`jobview.KeptRows`); and each posting's score
+blend, the part that reads no clock and no marks, under a key naming everything the request
+resolved for it: the generation, weights, rules, title signals, target, semantic scores, kbmatch
+store and digest, and manual readings (`cmd/vani/jobsblends.go`). Each request closes the blend
+with its own clock and marks. Nothing it keeps is computed from the marks, the clock or a request's
+flags. After it answers its first view, it sets a soft heap limit when `GOMEMLIMIT` is unset: the
+larger of 800 MiB and 1.6 times the live heap (`serveLimitFunc`). It is not set before that view,
+because a first list that derives every posting's facts runs above 800 MiB. `GOMEMLIMIT=off` sets
+no limit. It exits when the app closes its stdin. Until it has
+said hello, after it dies (it is restarted once, two seconds later), or when it is busy, the app
+runs the command instead.
+
 ## Runtime state, cooldowns and locks
 
 State directory files and locks created during operations:
@@ -621,6 +660,8 @@ State directory files and locks created during operations:
 | `<state>/retriage/readings.jsonl` | Manual triage readings from `vani jobs retriage` (and `--batch`), append-only, written without holding the ledger lock. |
 | `<state>/resume-build.lock` | Process try-lock serializing paid model builds and renders per state directory. |
 | `<state>/resume-chrome.lock` | Whole-file lock serializing headless Chrome PDF fitting passes. |
+| `<state>/readmodel/ledger.ckpt` | The Jobs reads' checkpoint of the ledger fold (`ledger.Reader`): lean records, where each description sits in `ledger/events.jsonl`, and the covered prefix of that file. Gob. Saved by any jobs read that folded at least 8 MiB of new lines, under `ledger.ckpt.lock` (a try-lock: a reader that finds it held skips the save). Trusted only while its format, the events file's identity and size, its last covered line and 32 sampled lines match; otherwise the read folds the whole file. Safe to delete. |
+| `<state>/readmodel/jobfacts` | The Jobs views' text facts (`internal/jobfacts`): per posting, keyword hits, text hashes, stated pay and the knowledge-base match prefix, filed under the description's fingerprint. Gob, replaced atomically under `jobfacts.lock` (try-lock). A store from another build's derivers is not read. Safe to delete; the next `jobs list` derives it again (about 26k postings, a few seconds). |
 
 ## Runtime reliability & defensive checks
 
