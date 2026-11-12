@@ -55,7 +55,7 @@ func TestRetriageTitleDropsForgetsCategory(t *testing.T) {
 	if err := l.Append(ctx, ledger.Event{V: 1, At: t0, Key: p.Key, Status: posting.Dropped, Posting: &p, Annotations: ann}); err != nil {
 		t.Fatal(err)
 	}
-	keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), DropPolicy{}, false)
+	keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), DropPolicy{}, reviewScope(), false)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("= %v, %v", keys, err)
 	}

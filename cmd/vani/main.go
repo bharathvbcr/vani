@@ -251,10 +251,20 @@ commands:
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the
                              priority of the roles each blocks; display-only
-  retriage [--json] [--dry-run] [--title-drops]
+  retriage [--json] [--dry-run] [--title-drops | --policy-drops]
                              return postings triaged with no backend reading to live; with
                              --title-drops, postings dropped on a title the current
-                             title_signals.read and drop rules no longer drop
+                             title_signals.read and drop rules no longer drop; with
+                             --policy-drops, those and postings a decision model dropped on a
+                             reading the current drop rules no longer drop (a value or slot
+                             taken out, a threshold raised). A title drop goes back to live; a
+                             model drop goes back on its stored reading, so no model is asked
+                             again. It never drops anything. Counted and left dropped: a
+                             reading the rules cannot judge (made under another model or
+                             question, a slot or value the question no longer has, or no
+                             calibration from the configured model or Lappi); a drop on a
+                             board no longer on the watchlist (stale: no listing would age
+                             it); one whose stored description cannot be read back
   rescore [--json] [--dry-run] [--limit N]
                              score scored and explained postings that have no score (they went
                              through while devprism.binary was empty); status and explanation

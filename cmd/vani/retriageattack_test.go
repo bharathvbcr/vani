@@ -49,8 +49,9 @@ func tearTail(t *testing.T, stateDir string) {
 // events file byte for byte as it found it (the locked path would cut the tail).
 func TestRetriageDryRunMatchesTheLockedRun(t *testing.T) {
 	for _, flags := range [][]string{nil, {"--title-drops"}} {
-		_, stateDir := setup(t)
+		cfgPath, stateDir := setup(t)
 		mustCode(t, 0, "init")
+		watchGreenhouse(t, cfgPath, "d") // seedTitleDrop's board, watched as a real drop's is
 		seedUnread(t, stateDir, 3)
 		seedTitleDrop(t, stateDir, "1")
 		seedTitleDrop(t, stateDir, "2")
