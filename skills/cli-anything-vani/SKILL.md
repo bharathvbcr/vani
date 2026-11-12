@@ -156,11 +156,14 @@ before running one.
 - `vani reasons draft`
 - `vani kbmatch run`
 - `vani teacher`
+- `vani auditor calibrate` (it also needs `--budget-usd`, and stops at the auditor's own
+  $15 daily cap). `vani auditor report` spends nothing: it measures the auditor's answers
+  against the owner's, and its gate says whether they may be trusted.
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
 
-`jobs retriage`, `jobs resume build`, `kbmatch run` and `teacher` take `--dry-run`, which
-prices the work and asks nothing.
+`jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher` and `auditor calibrate` take
+`--dry-run`, which prices the work and asks nothing.
 
 **Owner tools.** Not for unattended use:
 
