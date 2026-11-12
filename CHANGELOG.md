@@ -9,6 +9,14 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
+  (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
+  `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings
+  stratified by drop class. It reports which boards fail silently and which drops look wrong. It is
+  report only (`<state dir>/doctor/`). `--dry-run --show` prints both requests and their worst-case
+  cost, and a real run needs `--budget-usd` to cover that cost. Sponsorship rules, readings and
+  drops never leave the machine. A failed part is written as failed and the command exits 1.
+  [docs/RUNTIME.md](docs/RUNTIME.md) describes it.
 - **Features, benchmarks, and credits.** The README leads with what Vani fetches
   and what it refuses to do. Board caps in that list match the adapter
   constants (Avature 400, IBM 500, D. E. Shaw 1,000, SmartRecruiters and
