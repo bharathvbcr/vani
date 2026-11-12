@@ -115,6 +115,15 @@ type Stats struct {
 	// Stubs are listing rows with no path and no title, not counted in
 	// Listed (see isStub).
 	Stubs int `json:"stubs,omitempty"`
+	// Short is how many rows the board counted but never listed: for each
+	// query under the window whose listing ended before the first page's total
+	// (walk keeps such a listing rather than failing the board), that total less
+	// the jobs the query listed, summed over search terms and split buckets. It
+	// counts rows, not distinct postings, and includes the query's stubs. A
+	// query whose total cannot be believed (pagedTotal) adds nothing, as it
+	// gives no count to fall short of. The postings behind these rows go unseen
+	// this run, so Reconcile's absence pass ages any stored ones toward Dead.
+	Short int `json:"short,omitempty"`
 }
 
 // NewWith returns the Workday source with the bounded detail step: stored
@@ -204,7 +213,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("workday %q: search %q: %w", b.Token, term, err)
 		}
 	}
-	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests, Stubs: w.stubs}
+	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests, Stubs: w.stubs, Short: w.short}
 	out, err := s.details(ctx, b, base, host, tenant, site, w.rows, &st)
 	if err != nil {
 		return nil, fmt.Errorf("workday %q: %w", b.Token, err)

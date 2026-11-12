@@ -252,7 +252,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			if st.Short > 0 {
+				w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, st.Short)
+			}
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short})
 		},
 	})
 	if err != nil {
