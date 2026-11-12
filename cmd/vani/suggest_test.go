@@ -41,7 +41,7 @@ func (p *suggestLLM) Stream(_ context.Context, req llm.Request) (llm.Stream, err
 		return &draftStream{text: `{"kind":"` + kind + `"}`}, nil
 	}
 	p.drafts = append(p.drafts, msg)
-	return &draftStream{text: "I want to build reliable inference."}, nil
+	return &draftStream{text: "I want to build reliable inference at Modal."}, nil
 }
 
 func suggestSetup(t *testing.T, input string, p llm.Provider) {
@@ -91,7 +91,7 @@ func TestSuggestTriagesWithTheDecisionModelAndDraftsEssaysOnly(t *testing.T) {
 			t.Errorf("%s = %s, want %s", id, got[id], w)
 		}
 	}
-	if r.Fields[0].Draft != "I want to build reliable inference." || r.Fields[0].Backend != "llm" {
+	if r.Fields[0].Draft != "I want to build reliable inference at Modal." || r.Fields[0].Backend != "llm" {
 		t.Errorf("q1 = %+v", r.Fields[0])
 	}
 	if len(p.classify) != 2 || len(p.drafts) != 1 {

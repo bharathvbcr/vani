@@ -560,12 +560,13 @@ func TestTimeoutAndCancellation(t *testing.T) {
 	}
 }
 
-// TestLargestBoardFitsThePaceBudget: a board at the cap is 50 pages, 49 paced
-// waits, far inside the pacer's budget, so the budget never ends a legal board.
+// TestLargestBoardFitsThePaceBudget: a board at the cap is MaxPostings/100
+// pages, one paced wait fewer, inside the pacer's budget, so the budget never
+// ends a legal board.
 func TestLargestBoardFitsThePaceBudget(t *testing.T) {
 	s, f, _ := newSource(t, numbered(srcutil.MaxPostings))
 	got, err := s.List(context.Background(), board)
-	if err != nil || len(got) != srcutil.MaxPostings || len(f.reqs) != 50 {
+	if err != nil || len(got) != srcutil.MaxPostings || len(f.reqs) != srcutil.MaxPostings/100 {
 		t.Fatalf("%d postings, %d requests, %v", len(got), len(f.reqs), err)
 	}
 }

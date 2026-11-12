@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -175,11 +176,33 @@ type Report struct {
 	VectorsErr       string // first problem with the log, empty when none; scoring went on without it
 }
 
-// TextHash identifies a posting's scored text.
+// TextHash identifies a posting's scored text: the first 16 bytes of sha256
+// over "<len(title)>:<title>\x00<len(description)>:<description>", in hex. The
+// hash keys every stored vector and score, so these bytes must never change
+// (texthash_test.go holds it to the first implementation). The text is fed
+// through a fixed buffer rather than formatted into one, so a call allocates
+// the same few KiB however long the description is: the Jobs views hash
+// every listed posting on every list.
 func TextHash(title, description string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d:%s\x00%d:%s", len(title), title, len(description), description)
-	return hex.EncodeToString(h.Sum(nil)[:16])
+	var buf [4 << 10]byte
+	feed := func(s string) {
+		for len(s) > 0 {
+			n := copy(buf[:], s)
+			h.Write(buf[:n])
+			s = s[n:]
+		}
+	}
+	var num [20]byte
+	h.Write(strconv.AppendInt(num[:0], int64(len(title)), 10))
+	feed(":")
+	feed(title)
+	feed("\x00")
+	h.Write(strconv.AppendInt(num[:0], int64(len(description)), 10))
+	feed(":")
+	feed(description)
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(h.Sum(sum[:0])[:16])
 }
 
 // dot is the cosine of two vectors of equal width that validRow normalized.

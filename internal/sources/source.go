@@ -247,9 +247,10 @@ const (
 	// MaxPostingsCeiling bounds Board.MaxPostings. Workday stops counting one
 	// query at 2,000 (checked 2026-10-19 on NVIDIA), and the adapter lists a
 	// larger board by splitting it on its facets, which count past that; at
-	// 10,000 a whole listing is at most about 600 requests, ten minutes at the
-	// per-host pace.
-	MaxPostingsCeiling = 10000
+	// 15,000 (raised from 10,000 on 2026-11-11) a whole listing is about 1,600
+	// requests, some 27 minutes at the per-host pace, and only for a board
+	// whose max_postings asks for it.
+	MaxPostingsCeiling = 15000
 )
 
 // FilterKeys lists, per system, the query filters verified to narrow its

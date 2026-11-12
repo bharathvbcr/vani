@@ -578,7 +578,10 @@ func TestCapFor(t *testing.T) {
 			t.Errorf("capFor(%d) accepted", n)
 		}
 	}
-	if MaxPostings < 2753 || sources.MaxPostingsCeiling < MaxPostings || listRequests(sources.MaxPostingsCeiling) > 1100 {
+	// At the 15,000 ceiling (raised from 10,000 on 2026-11-11) a whole listing
+	// is about 1,600 requests, some 27 minutes at the per-host pace, and only
+	// for a board whose max_postings asks for it.
+	if MaxPostings < 2753 || sources.MaxPostingsCeiling < MaxPostings || listRequests(sources.MaxPostingsCeiling) > 1700 {
 		t.Errorf("bounds: default %d, ceiling %d, %d requests at the ceiling", MaxPostings, sources.MaxPostingsCeiling, listRequests(sources.MaxPostingsCeiling))
 	}
 }

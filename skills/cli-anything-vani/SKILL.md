@@ -101,7 +101,8 @@ and work while a run holds the ledger.
 
 - `vani init` writes a config and refuses to overwrite one.
 - `vani watchlist add|remove|domain|icon` edits the boards.
-- `vani watchlist discover` reads a third-party site and never edits the watchlist.
+- `vani watchlist discover` reads a third-party site and never edits the watchlist, except
+  `--profile --add N`, which adds the top N corroborated new boards (ask the owner first).
 - `vani config motivation|exclude [--set]` reads or replaces those config fields.
 - `vani track use` copies a track into the config.
 - `vani logos refresh` fetches board icons.
@@ -171,6 +172,10 @@ prices the work and asks nothing.
   `diff`, `coverage`, ...) back the Mac app.
 - `vani cover` and `vani jobs cover build|use` write one cover letter with the same budget as
   `vani draft`. Build saves a version; use is what the extension may fetch.
+- `vani contacts` keeps the owner's contact basics in Jarvis for form fills: a JSON request on
+  stdin (`op` put, list, get, import or choose) and a JSON reply. The values are the owner's
+  personal data, so never run it unattended, never log or quote its replies, and never pass
+  what it returns to a model; `choose` itself shows a model only the keys and descriptions.
 
 ## Examples
 

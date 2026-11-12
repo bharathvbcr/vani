@@ -44,7 +44,7 @@ func (p *answerLLM) Stream(_ context.Context, req llm.Request) (llm.Stream, erro
 		return &draftStream{text: p.batch}, nil
 	}
 	p.drafts = append(p.drafts, msg)
-	return &draftStream{text: "I want to build reliable inference."}, nil
+	return &draftStream{text: "I want to build reliable inference at Modal."}, nil
 }
 
 // A page with a fact, a choice and a work-authorization choice: the first two are

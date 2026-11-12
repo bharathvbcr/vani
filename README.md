@@ -46,7 +46,7 @@ the listings they publish, and writes one digest.
   The list and the caps are under Sources below.
 - **A board that does not fit is skipped, not cut.** A partial list would
   treat the missing postings as gone. Caps are per adapter. The shared cap is
-  5,000. Workday and Oracle HCM can raise `max_postings` up to 10,000.
+  15,000. Workday and Oracle HCM can raise `max_postings` up to 15,000.
 - **Polite fetches.** Requests identify as `Vani/0.1 (+personal job-listing reader)`.
   HTTPS only, a host allowlist, private addresses blocked, and dials pinned.
   Career pages honor `robots.txt`, including `Crawl-delay`. Listing calls are
@@ -69,7 +69,9 @@ the listings they publish, and writes one digest.
 - **You apply.** The Mac app and the browser extension remember answers and
   fill the next form. They never press Submit.
 - **Discover, don't silently add.** `watchlist discover` can ask freehire.me
-  which companies match a search. You add the board yourself.
+  which companies match a search, or, with `--profile`, your role words and
+  most-listed knowledge-base skills. You add the board yourself, or say
+  `--add N`.
 
 ## What it does not do
 
@@ -201,10 +203,10 @@ stateDiagram-v2
   sites such as Intuit's and Citi's (`tb`, token the owner's slug, host `jobs.intuit.com`), read from the
   site's sitemap and job pages, each page 2 s after the last and at most 150 pages a board a run. Eightfold requests are spaced 2 s apart; both spacings
   run through one `srcutil.Pacer` with a 15-minute budget per board. A board that reports
-  more postings than its cap fails, rather than listing part of it. The shared cap is 5,000
+  more postings than its cap fails, rather than listing part of it. The shared cap is 15,000
   (`srcutil.MaxPostings`). Adapters that set their own: Eightfold and Apple 200, Amazon and IBM 500,
   Avature 400, D. E. Shaw 1,000, SmartRecruiters and Atlassian 3,000, Google 20 per search and at most
-  10 searches. Workday and Oracle HCM default to 5,000 and may set `max_postings` from 1 to 10,000. All
+  10 searches. Workday and Oracle HCM default to 5,000 and may set `max_postings` from 1 to 15,000. All
   go through [`internal/egress`](internal/egress) (https only, host allowlist, private-address block, pinned
   dialing). Custom careers pages (`pg` boards) are read by Lightpanda: one `lightpanda mcp` process per board,
   driven over stdio, whose traffic is forced through a per-run authenticated loopback CONNECT proxy that
@@ -814,7 +816,7 @@ and, where verified, `--filter name=value`: `az --token amazon` (`normalized_cou
 `ef --token microsoft.com --host apply.careers.microsoft.com` (`location`). A board over its
 posting cap fails rather than being truncated, so pick searches narrow enough. Workday lists past
 its 2000-row window by splitting the board on its own facets (5,000 postings by default; a board's
-`max_postings` sets 1 to 10,000); stored
+`max_postings` sets 1 to 15,000); stored
 postings are reused, so a run spends at most 300 detail requests per board and a new large board
 fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. More board kinds, each read through
@@ -870,6 +872,30 @@ shell-quoted in the printed commands, and the board a command names is worth a `
 ATS:TOKEN --list-only` before it joins the daily run (Greenhouse boards hosted on
 `job-boards.eu.greenhouse.io` are named from the result's id and not checked against Vani's Greenhouse
 adapter).
+
+Finding boards from your profile: `watchlist discover --profile [--country US] [--dry-run]
+[--max-searches N] [--max-skills N] [--no-kb] [--add N [--allow-board-hosts]] [--json]` makes the
+searches itself and runs them one at a time, 3 s apart, under the same terms. The searches are the
+role words of `title_signals.include`, in your order, then the skills your eligible knowledge base
+(the bullets `kb.selections` keeps) lists in the stacks of at least 3 entries, most-listed first
+(`internal/discover/searchplan`). Nothing else from the knowledge base is read or sent: no title,
+organisation, bullet or `target_summary`. A skill fewer than 3 entries list (often a project's own
+name) is counted, never named or sent. A word under 3 letters ("ML", "Go") is left out as too broad,
+and so is anything past the cap (16 searches by default, at most 24; at most 6 skills by default).
+`--dry-run` prints the plan and sends nothing. A result counts toward its board only when its title
+passes your own rules: it holds a `title_signals.include` word, and no `title_signals.exclude` word,
+`exclude` entry (title, company, location) or drop rule read from the title drops it. A role search
+puts its own word in every title it finds, so that match is not evidence: a board is corroborated
+when two or more searches found it, or a kept title matches a role word beyond its own search's
+("LLM Inference Engineer" found by "Inference"). Boards are ranked by how many searches found them,
+then by that evidence, then by distinct postings (a posting two searches found counts once); the
+rest are marked `weak` ("Agent d'accueil" found by "Agent") and `--add` never adds one. A Workday or Oracle board carries every search that found it. A 429 ends the
+run and keeps what was read; a search that fails is reported on its row; every search failing is an
+error. The command edits the watchlist only with `--add N` (at most 50), which adds the top N new
+corroborated boards in rank order. A board whose own host is not in `allowed_hosts` yet (Workday, the per-tenant
+ATSs) is skipped with the reason unless `--allow-board-hosts` is given, which adds that host and no
+other. If the knowledge base cannot be read, the command says why on stderr and in `kb_error`, and
+searches the role words alone.
 
 Company icons: a board's optional `domain` is the host of the company's own website
 (`watchlist add … --domain www.acme.com`, or `watchlist domain --ats gh --token acme --domain

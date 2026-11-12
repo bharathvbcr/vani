@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/discover/freehire"
+	"github.com/bharathvbcr/Vani/internal/discover/searchplan"
 	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
@@ -94,8 +96,41 @@ func (e *env) watchlistDiscover(args []string) error {
 	pages := fs.Int("pages", freehire.DefaultPages, fmt.Sprintf("pages of %d results to read, 1..%d", freehire.PageSize, freehire.MaxPages))
 	asJSON := e.jsonFlag(fs, "a JSON document on stdout")
 	allow := fs.Bool("allow-host", false, "add "+freehire.Host+" to allowed_hosts first, when it is not there")
+	profile := fs.Bool("profile", false, "search for the role words in title_signals.include and the skills the knowledge base lists most, in place of --search")
+	maxSearches := fs.Int("max-searches", searchplan.DefaultSearches, fmt.Sprintf("--profile: the most searches, 1..%d", searchplan.MaxSearches))
+	maxSkills := fs.Int("max-skills", searchplan.DefaultSkills, "--profile: the most knowledge-base skill searches, 0 for none")
+	noKB := fs.Bool("no-kb", false, "--profile: search the role words only, without reading the knowledge base")
+	dryRun := fs.Bool("dry-run", false, "--profile: print the searches and ask nothing")
+	addTop := fs.Int("add", 0, fmt.Sprintf("--profile: add the top N new boards to the watchlist, 1..%d", maxDiscoverAdd))
+	allowBoards := fs.Bool("allow-board-hosts", false, "--profile --add: also add a board's own host to allowed_hosts (per-tenant ATSs); without it such a board is not added")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	profileOnly := []string{"max-searches", "max-skills", "no-kb", "dry-run", "add", "allow-board-hosts"}
+	var setFlags []string
+	fs.Visit(func(f *flag.Flag) { setFlags = append(setFlags, f.Name) })
+	if *profile {
+		if slices.Contains(setFlags, "search") {
+			return usagef("watchlist discover: --profile makes its own searches; leave out --search")
+		}
+		return e.discoverProfile(profileDiscoverOptions{
+			filters:      freehire.Query{Country: *country, WorkMode: *workMode, Seniority: *seniority},
+			pages:        *pages,
+			asJSON:       *asJSON,
+			allowHost:    *allow,
+			maxSearches:  *maxSearches,
+			maxSkills:    *maxSkills,
+			maxSkillsSet: slices.Contains(setFlags, "max-skills"),
+			noKB:         *noKB,
+			dryRun:       *dryRun,
+			add:          *addTop,
+			allowBoards:  *allowBoards,
+		})
+	}
+	for _, f := range profileOnly {
+		if slices.Contains(setFlags, f) {
+			return usagef("watchlist discover: --%s needs --profile", f)
+		}
 	}
 	q := freehire.Query{Search: *search, Country: *country, WorkMode: *workMode, Seniority: *seniority}
 	if err := q.Check(); err != nil {
@@ -108,20 +143,8 @@ func (e *env) watchlistDiscover(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !egress.AllowsHost(cfg.AllowedHosts, freehire.Host) {
-		if !*allow {
-			return fmt.Errorf("%s is not in allowed_hosts, so watchlist discover cannot ask it for boards "+
-				"(a third-party site: keyless personal use, one request a search, at most %d pages); "+
-				"re-run with --allow-host to add it", freehire.Host, freehire.MaxPages)
-		}
-		if err := e.updateConfig(func(c *config.Config) error {
-			c.AllowedHosts = allowHost(c.AllowedHosts, freehire.Host)
-			return nil
-		}); err != nil {
-			return err
-		}
-		cfg.AllowedHosts = allowHost(cfg.AllowedHosts, freehire.Host)
-		fmt.Fprintf(e.stderr, "added %s to allowed_hosts\n", freehire.Host)
+	if err := e.ensureFreehireHost(&cfg, *allow); err != nil {
+		return err
 	}
 	doer, err := newDiscoverDoer()
 	if err != nil {
@@ -223,6 +246,9 @@ func addCommand(b sources.Board, allowed []string) string {
 		if f.v != "" {
 			parts = append(parts, f.flag, shellQuote(f.v))
 		}
+	}
+	for _, s := range b.Searches {
+		parts = append(parts, "--search", shellQuote(s))
 	}
 	if slices.ContainsFunc(config.BoardHosts(b), func(h string) bool { return !egress.AllowsHost(allowed, h) }) {
 		parts = append(parts, "--allow-host")

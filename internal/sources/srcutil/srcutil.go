@@ -28,7 +28,7 @@ import (
 const (
 	// MaxPostings is the most postings one board may report. A board above it
 	// is an error: silently dropping the tail would hide real postings.
-	MaxPostings = 5000
+	MaxPostings = 15000
 	// MaxDescription is the byte cap on one posting's description text.
 	MaxDescription = 64 << 10
 	// MaxBody is the byte cap on one API response body.

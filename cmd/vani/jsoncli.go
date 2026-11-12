@@ -74,6 +74,7 @@ var jsonLeaves = []jsonLeaf{
 	{"runs failures", jsonFlag, ""},
 	{"label", jsonNone, "asks the owner one posting at a time on the terminal"},
 	{"export heldout", jsonFlag, ""},
+	{"export posting-fingerprints", jsonFlag, ""},
 	{"eval", jsonFlag, ""},
 	{"audit", jsonFlag, ""},
 	{"audit answer", jsonFlag, ""},

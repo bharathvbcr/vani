@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,57 @@ func TestExportHeldoutReportsMissingLedgerText(t *testing.T) {
 	b, _ := os.ReadFile(exportFile(state))
 	if strings.Contains(string(b), "ghost") {
 		t.Fatalf("missing key exported: %s", b)
+	}
+}
+
+// export posting-fingerprints signs the labelled postings it has text for,
+// names each it has not (exit 1), and with --json says the same as one
+// document whose count is read back from the file written.
+func TestExportPostingFingerprints(t *testing.T) {
+	_, state := setup(t)
+	mustCode(t, 0, "init")
+	long := "build the inference stack for large language models on gpus at scale"
+	seedExportLedger(t, state, map[string]string{"gh:1": long, "gh:2": long + " with rust"})
+	putEntry(t, state, eval.Entry{Key: "gh:1", Labels: map[string]string{"role_fit": "strong_fit"}})
+	putEntry(t, state, eval.Entry{Key: "gh:2", Labels: map[string]string{"role_fit": "strong_fit"}})
+	path := filepath.Join(state, "export", "heldout", "signatures.json")
+
+	o, _ := mustCode(t, 0, "export", "posting-fingerprints")
+	if !strings.Contains(o, "exported 2 posting fingerprint(s) to "+path) {
+		t.Fatalf("stdout %q", o)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Entries []struct {
+			Key string `json:"key"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil || len(doc.Entries) != 2 || strings.Contains(string(b), "inference") {
+		t.Fatalf("export (%v):\n%s", err, b)
+	}
+
+	putEntry(t, state, eval.Entry{Key: "gh:ghost", Labels: map[string]string{"role_fit": "strong_fit"}})
+	o, e := mustCode(t, 1, "export", "posting-fingerprints")
+	if !strings.Contains(o, "exported 2") || !strings.Contains(e, "gh:ghost") || !strings.Contains(e, "1 labelled posting(s) have no text") {
+		t.Fatalf("stdout %q stderr %q", o, e)
+	}
+	o, _ = mustCode(t, 1, "export", "posting-fingerprints", "--json")
+	var r heldoutReply
+	dec := json.NewDecoder(strings.NewReader(o))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil || r.Path != path || r.Exported != 2 || len(r.Missing) != 1 || r.Missing[0] != "gh:ghost" ||
+		r.Code != codeRuntime || !strings.Contains(r.Error, "no text") || dec.More() {
+		t.Fatalf("reply %+v (%v): %s", r, err, o)
+	}
+	// Nothing labelled with text is an error, not an empty export.
+	_, state2 := setup(t)
+	mustCode(t, 0, "init")
+	putEntry(t, state2, eval.Entry{Key: "gh:ghost", Labels: map[string]string{"role_fit": "strong_fit"}})
+	if _, e := mustCode(t, 1, "export", "posting-fingerprints"); !strings.Contains(e, "no held-out posting text") {
+		t.Errorf("stderr %q", e)
 	}
 }
 

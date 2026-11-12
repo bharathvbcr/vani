@@ -143,7 +143,7 @@ func TestNoPersonalDataOrPinnedFieldReachesTheBatchedPrompt(t *testing.T) {
 	}
 	// The same drafter does send the notes to a motivation essay: the seam is live,
 	// so their absence above is the batch's doing and not an empty fixture.
-	essay := &recProvider{text: "I want to build reliable infrastructure."}
+	essay := &recProvider{text: "I want to build reliable infrastructure at Modal."}
 	ed, err := draft.New(essay, draft.Config{Model: "m", MotivationNotes: notesWithContact, Timeout: 2 * time.Second}, kb)
 	if err != nil {
 		t.Fatal(err)

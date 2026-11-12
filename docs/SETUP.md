@@ -380,6 +380,9 @@ new board; it edits nothing. freehire.me is a third-party site, so the command r
 `allowed_hosts` (`--allow-host` adds it, once). Terms: keyless personal use only, no scraping beyond
 its API, so one request of 100 results by default and at most 3 pages with a pause between them.
 Run the printed commands you want, then `run-once --board gh:BOARD --list-only` to see the board read.
+`vani watchlist discover --profile --dry-run` shows the searches your `title_signals.include` and
+knowledge base would make; drop `--dry-run` to run them, and add `--add 10` to put the ten
+best-ranked new boards on the watchlist.
 
 Put `target_summary` in the config (step 6). Then list without spending:
 

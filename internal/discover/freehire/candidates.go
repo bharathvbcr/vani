@@ -117,17 +117,7 @@ func Boards(jobs []Job, search string) Candidates {
 	var keys []string
 	unreadable := map[[2]string]int{}
 	for _, j := range jobs {
-		b, reason := boardOf(j)
-		if reason == "" {
-			if searchesBoard(b.ATS) {
-				b.Search = strings.TrimSpace(search)
-			}
-			if err := config.ValidBoard(b); err != nil {
-				reason = reasonRefused + err.Error()
-			} else if !printable(b.Token) || !printable(b.BoardName) || !printable(b.Host) {
-				reason = ReasonBadBoardID
-			}
-		}
+		b, reason := readBoard(j, []string{search})
 		if reason != "" {
 			unreadable[[2]string{j.Source, reason}]++
 			continue
@@ -174,6 +164,48 @@ func Boards(jobs []Job, search string) Candidates {
 		return cmp.Or(cmp.Compare(y.Count, x.Count), strings.Compare(x.Source, y.Source), strings.Compare(x.Reason, y.Reason))
 	})
 	return out
+}
+
+// readBoard is the board a result is on, ready for `watchlist add`, or why it
+// cannot be (reason): boardOf, the searches attached where the board takes
+// them (searchesBoard; one becomes Search, several Searches, at most
+// sources.MaxSearches), then config.ValidBoard and a printable check.
+func readBoard(j Job, searches []string) (sources.Board, string) {
+	b, reason := boardOf(j)
+	if reason != "" {
+		return b, reason
+	}
+	if searchesBoard(b.ATS) {
+		setSearches(&b, searches)
+	}
+	if err := config.ValidBoard(b); err != nil {
+		return b, reasonRefused + err.Error()
+	}
+	if !printable(b.Token) || !printable(b.BoardName) || !printable(b.Host) {
+		return b, ReasonBadBoardID
+	}
+	return b, ""
+}
+
+// setSearches puts the distinct non-empty searches on b, in order: one as
+// Search, several as Searches, at most sources.MaxSearches.
+func setSearches(b *sources.Board, searches []string) {
+	var terms []string
+	for _, s := range searches {
+		s = strings.TrimSpace(s)
+		if s != "" && !slices.ContainsFunc(terms, func(x string) bool { return strings.EqualFold(x, s) }) &&
+			len(terms) < sources.MaxSearches {
+			terms = append(terms, s)
+		}
+	}
+	b.Search, b.Searches = "", nil
+	switch len(terms) {
+	case 0:
+	case 1:
+		b.Search = terms[0]
+	default:
+		b.Searches = terms
+	}
 }
 
 // boardOf names the board a result is on, or says why it cannot (reason).

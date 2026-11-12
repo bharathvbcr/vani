@@ -45,6 +45,40 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Profile discovery and the 15,000 cap (2026-11-11): what is left
+
+`watchlist discover --profile` (README, "Finding boards from your profile") and the shared posting
+cap raised from 5,000 to 15,000 (`srcutil.MaxPostings`, `sources.MaxPostingsCeiling`).
+
+- **First live run (read-only, 14 searches, no `--country`):** 1,084 distinct on-profile postings
+  on 240 boards, 202 not watched (gh 59, ab 49, wd 28, sr 20, oc 12, lv 9, wk 7, bh 7, bz 5, tm 4,
+  hb 1, rc 1). Before the evidence gate, the one-search tier was led by boards only the search word
+  matched: "Agent" found a gym chain's front-desk roles and Securitas' guard roles, "Performance"
+  found marketing roles. `--add` now stops before such weak boards: the second run, with the gate,
+  found 142 new boards, 39 corroborated (gh 16, ab 8, wd 3, bz 3, oc 3, bh 2, tm, lv, rc, sr 1 each)
+  and 103 weak, with the gym chain and Securitas weak and LG AI Research and Callosum
+  corroborated. freehire's results moved between the two runs (1,084 then 1,000 distinct).
+  The owner may also want to drop
+  the generic words from `title_signals.include` or run with `--country US`; the config has no
+  `exclude` location rule for discovery to apply.
+- **Only Rust passes the skill floor.** The eligible pool is 17 entries (the career-pipeline note
+  below), and only Rust is listed by 3 or more of them (Go is too short to search). A wider
+  approved pool, or a lower `MinEntries`, widens the skill searches. A lower floor sends rarer stack
+  names, which can be project names, to a third party; that is an owner decision.
+- **On-profile results Vani cannot add a board for, by source (684 of 1,084):** adzuna 53,
+  eightfold 53, whatjobs-es 47, naukri 28, whatjobs-my 22, comeet 20, eures 20, shine 19,
+  whatjobs-uk 19, manatal 16, oracle 16 ("the posting URL names no board"), digitalrecruiters 15,
+  successfactors 13, icims 6. Most are aggregators. **Eightfold** has an adapter (`ef`) but no
+  `sourceATS` row: its board is the company domain plus the careers host, which the result URL
+  does not name reliably. The mapping needs live result URLs read first. **Oracle**: freehire's
+  URLs for 16 results name no `oc` board that `sources.BoardFromURL` reads.
+- **Not raised with the cap:** the Workday and Oracle HCM defaults (`workday.MaxPostings`,
+  `oraclehcm.MaxPostings`, still 5,000; a board may set `max_postings` up to 15,000),
+  `advance_per_run` (at most 5,000), `semantic warm --max` (5,000), `jobs export --top` (5,000), and
+  the extension's `DAEMON_WORKDAY_MAX` (mirrors `workday.MaxPostings`).
+- **A Workday board at the 15,000 ceiling** lists in about 1,600 requests, some 27 minutes at the
+  per-host pace (`TestCapFor`). No board sets that today; the largest live board is 2,913.
+
 ## Autofill rework (2026-10-28): what is left
 
 Stale answers, write-verify, undo, drafting, the on-device decider, and fact and choice answers
@@ -95,8 +129,8 @@ scratch folder and the bundle verified. What remains, by design or unmeasured:
   `page.RobotsAllowsPaths` answers several paths from one read.
 - **Eightfold:** robots.txt is now read before the first pcsx request, so a robots.txt outage
   fails Microsoft's, Qualcomm's and Netflix's boards. Before, pcsx boards never read it.
-- **TikTok:** the unfiltered board (4,318 rows on 2026-10-28) is near `srcutil.MaxPostings`
-  (5,000), and `max_postings` applies to `wd` and `oc` only. The live board uses searches and a
+- **TikTok:** the unfiltered board (4,318 rows on 2026-10-28) was near `srcutil.MaxPostings`
+  when it was 5,000; it is 15,000 since 2026-11-11. `max_postings` applies to `wd` and `oc` only. The live board uses searches and a
   country filter.
 - **Bloomberg (av):** its "Salary Range = 110,000 - 190,000 USD Annual" line does not match
   `basePayRE`, so no pay line is read.

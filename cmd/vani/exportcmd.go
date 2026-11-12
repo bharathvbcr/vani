@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 
@@ -78,6 +79,7 @@ func (e *env) cmdExportPostingFingerprints(args []string) error {
 	out := fs.String("out", "", "output file (default: <state dir>/export/heldout/signatures.json)")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	seed := fs.Uint64("seed", eval.DoorSeed, "MinHash seed")
+	asJSON := e.jsonFlag(fs, `{"path","exported","missing"} on stdout`)
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}
@@ -101,14 +103,29 @@ func (e *env) cmdExportPostingFingerprints(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The count is read back from what is written, so it cannot disagree
+	// with the file.
+	var doc struct {
+		Entries []json.RawMessage `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("export posting-fingerprints: the export is not readable back: %w", err)
+	}
 	if err := eval.WriteDoorExport(path, raw); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "exported posting fingerprints to %s\n", path)
+	var missingErr error
 	if len(missing) > 0 {
-		return fmt.Errorf("export posting-fingerprints: %d labelled posting(s) have no text and are not in the export", len(missing))
+		missingErr = fmt.Errorf("export posting-fingerprints: %d labelled posting(s) have no text and are not in the export", len(missing))
 	}
-	return nil
+	if *asJSON {
+		return e.reply(true, &heldoutReply{Path: path, Exported: len(doc.Entries), Missing: nonNil(missing)}, missingErr, nil)
+	}
+	fmt.Fprintf(e.stdout, "exported %d posting fingerprint(s) to %s\n", len(doc.Entries), path)
+	for _, k := range missing {
+		fmt.Fprintf(e.stderr, "vani: no text for labelled posting %s; left out of the export\n", k)
+	}
+	return missingErr
 }
 
 // heldoutReply is `vani export heldout --json`. Missing are the labelled keys

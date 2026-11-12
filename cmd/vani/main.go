@@ -109,7 +109,7 @@ commands:
   label [-n N] [--labels DIR] label postings for the eval set (disagreements first)
   export heldout [--json] [--out PATH]
                              owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
-  export posting-fingerprints [--out PATH] [--labels DIR] [--seed N]
+  export posting-fingerprints [--json] [--out PATH] [--labels DIR] [--seed N]
                              near-duplicate fingerprints of those postings (qd-posting-heldout.v1)
   eval [--json] [--labels DIR] [--held-out SPLIT] [--window]
                              per-backend precision and coverage on the labelled set

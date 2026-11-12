@@ -150,6 +150,14 @@ type Job struct {
 	URL string
 	// Company is the cleaned company name, "" when the result had none.
 	Company string
+	// Title is the cleaned posting title, "" when the result had none. It is
+	// third-party text, used only to judge the result against the owner's
+	// title rules and shown as a sample.
+	Title string
+	// Location is the cleaned location text ("Remote, US-Based"), "" when the
+	// result had none; third-party text, read only by the owner's location
+	// exclusions.
+	Location string
 }
 
 // Result is what a search found. Total, Fetched and Capped carry both numbers
@@ -203,6 +211,8 @@ type wireJob struct {
 	URL         string `json:"url"`
 	Company     string `json:"company"`
 	CompanySlug string `json:"company_slug"`
+	Title       string `json:"title"`
+	Location    string `json:"location"`
 }
 
 // Search reads up to c.Pages pages of q's results. An error is returned only
@@ -325,7 +335,8 @@ func validJob(raw json.RawMessage) (Job, bool) {
 	if name == "" {
 		name = CleanName(w.CompanySlug)
 	}
-	return Job{Source: w.Source, ExternalID: w.ExternalID, URL: w.URL, Company: name}, true
+	return Job{Source: w.Source, ExternalID: w.ExternalID, URL: w.URL, Company: name, Title: CleanName(w.Title),
+		Location: CleanName(w.Location)}, true
 }
 
 // CleanName is untrusted text as one printable line of at most maxName runes:

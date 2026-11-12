@@ -126,7 +126,7 @@ directly would bypass that choice, so `vani` does not.
 | Extension "suggest" (`vani suggest`) | the app's agent | the same | the same |
 | Extension "draft" (`vani draft`) | the app's agent or Chrome host | not used | the same |
 | `vani run-request` | a terminal or the app | whatever the running daemon has | the same |
-| `vani watchlist discover` (boards to consider) | you | not used | none; asks freehire.me keyless, which must be in `allowed_hosts` (`--allow-host` adds it, the only config write) |
+| `vani watchlist discover` (boards to consider; `--profile` searches your `title_signals.include` and most-listed eligible KB skills) | you | `--profile` reads the eligible bank's stacks only | none; asks freehire.me keyless, which must be in `allowed_hosts` (`--allow-host` adds it); the config is otherwise written only by `--profile --add N` (boards, and with `--allow-board-hosts` their hosts) |
 | `vani daemon` (scheduled runs) | launchd, from `vani launchd plist` | `vani`'s own Keychain read at start (the plist pins only `VANI_CONFIG` and `VANI_STATE_DIR`) | none |
 | `vani` in a terminal | you | environment, else Keychain | environment only |
 | `vani` in an agent shell | an agent | none with `VANI_NO_KEYCHAIN=1` | environment only |
