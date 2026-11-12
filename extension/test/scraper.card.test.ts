@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_CARD_NODES, cardRest, readCard, withoutGluedLabel } from "../src/card";
 import { prepareIngest } from "../src/ingest";
-import { MAX_PAGE_JOB_LINKS, boardTotalText, scrapePageJobs, unreadText } from "../src/scraper";
+import { isPagerText } from "../src/crawler";
+import { MAX_PAGE_JOB_LINKS, boardTotalText, namesPosting, scrapePageJobs, skippedText, unreadText } from "../src/scraper";
 
 const ELEMENT = 1;
 const TEXT = 3;
@@ -139,7 +140,10 @@ function docOf(html: string): Document {
 const PAGE = "https://careers.example.test/board";
 const scrape = (body: string, host = "careers.example.test") =>
   scrapePageJobs(docOf(`<html><head><title>Board</title></head><body>${body}</body></html>`), host, undefined, PAGE);
-const card = (inner: string, href = "/careers/role-1") => `<div><a href="${href}">${inner}</a></div>`;
+/** A scrape of `body` as the page at `url` (the listing's own address matters to the link reader). */
+const scrapeAt = (body: string, host: string, url: string) =>
+  scrapePageJobs(docOf(`<html><head><title>Board</title></head><body>${body}</body></html>`), host, undefined, url);
+const card = (inner: string, href = "/careers/role-1") =>`<div><a href="${href}">${inner}</a></div>`;
 
 describe("a card that is one link around several elements", () => {
   const html = readFileSync(join(import.meta.dir, "fixtures", "revolutpeople-biorce-2026-10.html"), "utf8");
@@ -381,6 +385,111 @@ describe("a one-page listing with many job links", () => {
     expect(boardTotalText(r.boardTotal, r.jobs.length)).toBe("This board lists 669 jobs and this page shows 50; Crawl all pages reads the rest");
     // A total that is not a whole count, or past belief, is not carried.
     for (const bad of ["669", -1, 3.5, Number.MAX_SAFE_INTEGER, null]) expect(scrape(page(bad), "job-boards.greenhouse.io").boardTotal).toBeUndefined();
+  });
+
+  test("navigation links on a search page are not jobs: Citi's saved page, 15 postings and 11 site links", () => {
+    // jobs.citi.com/search-jobs as saved 2026-11-12: postings at /job/{city}/{slug}/287/{id}; the rest
+    // are site navigation, a talent-network form on another host, and the pager's Previous link.
+    const posting = (i: number) => `<li><a href="/job/irving/senior-engineer-${i}/287/1032218337${10 + i}"><h2>Senior Engineer ${i}</h2><span class="job-location">Irving, Texas</span></a></li>`;
+    const nav = [
+      `<a href="/saved-jobs">Saved Jobs</a>`,
+      `<a href="/early-career-programs">Early Career Overview</a>`,
+      `<a href="/early-career-programs-pre-internships">Pre-Internships</a>`,
+      `<a href="/early-career-programs-internships">Internships</a>`,
+      `<a href="/early-career-programs-full-time">Full-Time Programs</a>`,
+      `<a href="/early-career-programs-apprenticeships">Apprenticeships</a>`,
+      `<a href="https://citi.eightfold.ai/careers/join?jtn_form_id=jtn-early-career">Early Career Talent Network (opens in new window)</a>`,
+      `<a href="https://citi.eightfold.ai/careers/join?jtn_form_id=jtn-general">Career Professionals Talent Network (opens in new window)</a>`,
+      `<a href="https://citi.eightfold.ai/careers">Get Matched (opens in new window)</a>`,
+      `<a href="/search-jobs&p=1">Previous</a>`,
+      `<a href="/early-careers">Learn About Early Careers</a>`,
+    ].map(a => `<p>${a}</p>`);
+    const r = scrapeAt(nav.slice(0, 6).join("") + `<ul>${Array.from({ length: 15 }, (_, i) => posting(i)).join("")}</ul>` + nav.slice(6).join(""), "jobs.citi.com", "https://jobs.citi.com/search-jobs");
+    expect(r.jobs.map(j => j.title).sort()).toEqual(Array.from({ length: 15 }, (_, i) => `Senior Engineer ${i}`).sort());
+    expect(r.skipped).toBe(10); // "Previous" is a pager control, not counted as a skipped link
+    expect(skippedText(r.skipped)).toBe("10 links that name no posting left out as site navigation");
+    expect(skippedText(1)).toBe("1 link that names no posting left out as site navigation");
+    for (const n of [undefined, 0, -2, 1.5]) expect(skippedText(n)).toBe("");
+  });
+
+  test("a section's skip link and Show more jobs are not jobs: ServiceNow's SmartRecruiters page", () => {
+    const posting = (i: number) => `<li><a href="https://jobs.smartrecruiters.com/ServiceNow/7440001609878${10 + i}-staff-engineer-${i}"><h4>Staff Engineer ${i}</h4></a></li>`;
+    const body = `<a href="https://careers.smartrecruiters.com/ServiceNow#st-footer">Skip openings section</a><ul>${Array.from({ length: 5 }, (_, i) => posting(i)).join("")}</ul>` +
+      `<a href="https://careers.smartrecruiters.com/ServiceNow?search=&page=0&location=Amsterdam%2C%20NL">Show more jobs</a>`;
+    const r = scrapeAt(body, "careers.smartrecruiters.com", "https://careers.smartrecruiters.com/ServiceNow");
+    expect(r.jobs.map(j => j.title).sort()).toEqual(["Staff Engineer 0", "Staff Engineer 1", "Staff Engineer 2", "Staff Engineer 3", "Staff Engineer 4"]);
+  });
+
+  test("controls inside an ATS section are not jobs either: ServiceNow's .opening sections as served", () => {
+    // careers.smartrecruiters.com marks its sections "opening", which the .opening reader takes whole.
+    const posting = (i: number) => `<li class="opening-job"><a href="https://jobs.smartrecruiters.com/ServiceNow/7440001609878${10 + i}-staff-engineer-${i}"><h4>Staff Engineer ${i}</h4></a></li>`;
+    const body = `<section class="openings-section opening opening--grouped"><a href="#st-footer" class="skipping-link">Skip openings section</a><ul>${Array.from({ length: 5 }, (_, i) => posting(i)).join("")}` +
+      `<li><a href="?search=&amp;page=0&amp;location=Amsterdam%2C%20NL" class="link details-desc js-more">Show more jobs</a></li></ul></section>`;
+    const r = scrapeAt(body, "careers.smartrecruiters.com", "https://careers.smartrecruiters.com/ServiceNow");
+    expect(r.jobs.map(j => j.title).sort()).toEqual(["Staff Engineer 0", "Staff Engineer 1", "Staff Engineer 2", "Staff Engineer 3", "Staff Engineer 4"]);
+  });
+
+  test("a single posting's page keeps its posting at the page's own address", () => {
+    const ld = `<script type="application/ld+json">${JSON.stringify({ "@type": "JobPosting", title: "Staff Engineer", description: "You will build things.", hiringOrganization: { name: "Acme" }, url: "https://careers.example.test/careers/staff-engineer" })}</script>`;
+    const r = scrapeAt(ld, "careers.example.test", "https://careers.example.test/careers/staff-engineer");
+    expect(r.jobs.map(j => j.title)).toEqual(["Staff Engineer"]);
+  });
+
+  test("a narrow search with fewer postings than site links keeps the site links: nothing is dropped on a guess", () => {
+    // Two postings and five unnumbered site links: no clear majority of numbered links, so all are kept.
+    const posting = (i: number) => `<p><a href="/job/irving/engineer-${i}/287/10322183${i}0">Engineer ${i}</a></p>`;
+    const nav = ["saved-jobs", "early-careers", "careers/students", "careers/veterans", "job-alerts"].map(p => `<p><a href="/${p}">${p.replace(/[-/]/g, " ")} page</a></p>`);
+    const r = scrapeAt(nav.join("") + posting(1) + posting(2), "jobs.citi.com", "https://jobs.citi.com/search-jobs?q=engineer");
+    expect(r.jobs).toHaveLength(7);
+    expect(r.skipped).toBeUndefined();
+  });
+
+  test("a board whose postings carry no number keeps every link; short numeric ids and gh_jid count as ids", () => {
+    const slug = (s: string) => `<p><a href="/careers/${s}">${s.replace(/-/g, " ")}</a></p>`;
+    const slugOnly = scrapeAt(["staff-engineer", "product-designer", "data-scientist", "sales-lead"].map(slug).join(""), "careers.example.test", PAGE);
+    expect(slugOnly.jobs).toHaveLength(4);
+    // /jobs/57 is an id; the one unnumbered link is the odd one out among four numbered postings.
+    const short = scrapeAt([57, 58, 112, 9].map(n => `<p><a href="/jobs/${n}">Software Engineer ${n}</a></p>`).join("") + `<p><a href="/careers">Back to Careers</a></p>`, "careers.example.test", PAGE);
+    expect(short.jobs.map(j => j.url).sort()).toEqual([9, 112, 57, 58].map(n => `https://careers.example.test/jobs/${n}`).sort());
+    expect(short.skipped).toBe(1);
+    // A Greenhouse embed names the job in the query on the listing's own path.
+    const embed = scrapeAt([11, 12, 13].map(n => `<p><a href="/careers?gh_jid=40000000${n}">Machine Learning Engineer ${n}</a></p>`).join(""), "careers.example.test", "https://careers.example.test/careers");
+    expect(embed.jobs).toHaveLength(3);
+  });
+
+  test("what names a posting, and what is a pager control", () => {
+    for (const u of [
+      "https://jobs.citi.com/job/irving/senior-engineer/287/103221833776",
+      "https://jobs.smartrecruiters.com/ServiceNow/744000160987819-staff-engineer",
+      "https://job-boards.greenhouse.io/anthropic/jobs/4980436008",
+      "https://jobs.lever.co/shieldai/a2627727-1714-46fd-8724-3557bc17c696",
+      "https://acme.wd5.myworkdayjobs.com/External/job/Austin/Engineer_JR12345",
+      "https://careers.example.test/jobs/57",
+      "https://careers.example.test/careers?gh_jid=4000000011",
+    ]) expect(namesPosting(u)).toBe(true);
+    for (const u of [
+      "https://jobs.citi.com/saved-jobs",
+      "https://jobs.citi.com/early-career-programs-internships",
+      "https://citi.eightfold.ai/careers/join?jtn_form_id=jtn-general",
+      "https://www.anthropic.com/careers",
+      "not a url",
+    ]) expect(namesPosting(u)).toBe(false);
+    // A year in a slug is a four-digit run, so it reads as named: the link is kept, the safe direction.
+    expect(namesPosting("https://careers.example.test/careers/early-careers-2026")).toBe(true);
+    for (const t of ["Next", "Next page", "Previous", "‹ Prev", "« Previous", "Show more jobs", "Load more", "›", "→"]) expect(isPagerText(t)).toBe(true);
+    for (const t of ["Next Gen Platform Engineer", "Previous Experience Required Analyst", "Show more about Acme", "Staff Engineer", ""]) expect(isPagerText(t)).toBe(false);
+  });
+
+  test("a TalentBrew search says how many results it has: Citi's search-results section", () => {
+    const section = (attrs: string) => `<section id="search-results" ${attrs}><ul>${Array.from({ length: 3 }, (_, i) => `<li><a href="/job/irving/engineer-${i}/287/1032218337${i}0"><h2>Engineer ${i}</h2></a></li>`).join("")}</ul></section>`;
+    const r = scrapeAt(section(`data-total-results="3116" data-total-job-results="3116" data-total-pages="208" data-records-per-page="15"`), "jobs.citi.com", "https://jobs.citi.com/search-jobs");
+    expect(r.boardTotal).toBe(3116);
+    expect(boardTotalText(r.boardTotal, r.jobs.length)).toBe("This board lists 3116 jobs and this page shows 3; Crawl all pages reads the rest");
+    // data-total-results stands in when the job count is absent; a count that is not a whole number is ignored.
+    expect(scrapeAt(section(`data-total-results="40"`), "jobs.citi.com", "https://jobs.citi.com/search-jobs").boardTotal).toBe(40);
+    for (const bad of [`data-total-job-results="many"`, `data-total-job-results="-3"`, `data-total-job-results="1e9"`, ``]) {
+      expect(scrapeAt(section(bad), "jobs.citi.com", "https://jobs.citi.com/search-jobs").boardTotal).toBeUndefined();
+    }
   });
 
   test("board total words: nothing when the board shows everything or gives no count", () => {

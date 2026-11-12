@@ -748,6 +748,13 @@ const NEXT_WORDS = "(go to )?(the )?next( page| results| set of results)?|more r
 const NEXT_TEXT = new RegExp(`^(${NEXT_WORDS})(\\s*${ARROWS})?$`, "i");
 const ARROW_ONLY = new RegExp(`^${ARROWS}$`);
 const MORE_TEXT = /^(load|show|see|view) more( jobs| results| positions| openings| roles)?$/i;
+const PREV_TEXT = /^((go to )?(the )?(previous|prev)( page| results)?(\s*[‹«<←]{1,2})?|[‹«<←]{1,2}\s*(previous|prev)?)$/i;
+
+/** A pager control's text (Next, Previous, Show more jobs, an arrow): a way through the listing, never a posting. */
+export function isPagerText(text: string): boolean {
+  const t = text.replace(/\s+/g, " ").trim();
+  return NEXT_TEXT.test(t) || ARROW_ONLY.test(t) || MORE_TEXT.test(t) || PREV_TEXT.test(t);
+}
 /** Controls scanned for the pager; past this many, a missing pager is reported, never read as the end. */
 const MAX_CONTROLS = 5000;
 

@@ -11,8 +11,8 @@ import {
   extractSalaryRange,
   extractWorkplaceType,
 } from "./relevance";
-import { isWorkdaySharedHost, postingKey } from "./applied";
-import { excerpt } from "./crawler";
+import { ID_PARAMS, isWorkdaySharedHost, postingKey } from "./applied";
+import { excerpt, isPagerText, sameListing } from "./crawler";
 import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent, routeChanged } from "./jobinfo";
 import { scorePillText } from "./joblist";
 
@@ -67,10 +67,35 @@ export interface ScrapeResult {
    * 50 of them a page). Larger than `jobs` means the rest are on other pages: Crawl all pages reads them.
    */
   boardTotal?: number;
+  /**
+   * Links the link-by-link reader judged navigation and left out (Saved Jobs, programme pages): only
+   * when most of the page's job links name a posting and these do not (postingLinks). Absent when none.
+   */
+  skipped?: number;
 }
 
 /** A board count past this is not believed. */
 const MAX_BOARD_TOTAL = 1_000_000;
+
+/**
+ * A TalentBrew (Radancy) search's own count of its results: section#search-results carries
+ * data-total-job-results (jobs.citi.com: 3116 over 208 pages of 15), data-total-results standing in.
+ */
+function talentBrewTotal(doc: Document): number | undefined {
+  const s = doc.querySelector("section[id='search-results']");
+  if (!s) return undefined;
+  for (const attr of ["data-total-job-results", "data-total-results"]) {
+    const raw = (s.getAttribute(attr) ?? "").trim();
+    if (/^\d{1,7}$/.test(raw)) return boardCount(Number(raw));
+  }
+  return undefined;
+}
+
+/** Words for navigation links left out of a scrape, or "" when none were. */
+export function skippedText(skipped: number | undefined): string {
+  if (skipped === undefined || !Number.isInteger(skipped) || skipped <= 0) return "";
+  return `${skipped} link${skipped === 1 ? "" : "s"} that name${skipped === 1 ? "s" : ""} no posting left out as site navigation`;
+}
 
 /** Words for a board that lists more jobs than this page shows, or "" when it does not say so. */
 export function boardTotalText(boardTotal: number | undefined, shown: number): string {
@@ -1072,11 +1097,64 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
   return jobs;
 }
 
+interface LinkAt { a: HTMLAnchorElement; url: string }
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * The link names one posting: a path segment that is a number or holds a run of four or more digits
+ * (Citi's /287/103221833776, Workday's _JR12345, SmartRecruiters' 744000160987819-slug, /jobs/57), a
+ * UUID (Lever, Ashby, Rippling), or a job-naming query parameter (applied.ts ID_PARAMS, e.g. gh_jid).
+ */
+export function namesPosting(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (ID_PARAMS.some(p => (u.searchParams.get(p) ?? "").trim() !== "")) return true;
+  return u.pathname.split("/").some(seg => /^\d+$/.test(seg) || /\d{4,}/.test(seg) || UUID.test(seg));
+}
+
+/** Links that name postings need at least this many, and more than half the page's job links, to mark the rest as navigation. */
+const MIN_NAMED_LINKS = 3;
+
+/**
+ * The page's job links less its navigation, and how many navigation links were left out (`skipped`).
+ * Always left out, uncounted: pager controls (Next, Previous, Show more jobs) and links back to this
+ * listing that name no posting. Also left out, and counted: links that name no posting when at least
+ * MIN_NAMED_LINKS links, and more than half of them, do (Citi's Saved Jobs and programme pages beside
+ * its numbered postings). Without such a majority nothing more is dropped: a board whose postings carry
+ * no number keeps every link.
+ */
+function postingLinks(firsts: readonly LinkAt[], pageUrl: string): { links: LinkAt[]; skipped: number } {
+  const controls = (l: LinkAt) => isPagerText(clean(l.a.textContent)) || (!namesPosting(l.url) && (sameListing(l.url, pageUrl) || sameDocument(l.url, pageUrl)));
+  const kept = firsts.filter(l => !controls(l));
+  const named = kept.filter(l => namesPosting(l.url)).length;
+  if (named < MIN_NAMED_LINKS || named * 2 <= kept.length) return { links: kept, skipped: 0 };
+  const links = kept.filter(l => namesPosting(l.url));
+  return { links, skipped: kept.length - links.length };
+}
+
+/** The same address apart from the fragment: an in-page link ("Skip openings section"). */
+function sameDocument(a: string, b: string): boolean {
+  try {
+    const x = new URL(a), y = new URL(b);
+    x.hash = "";
+    y.hash = "";
+    return x.href === y.href;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Generic DOM scraper for any career page or job listing page. Reads the first MAX_PAGE_JOB_LINKS
- * distinct job links in page order (a posting linked twice counts once) and counts the rest as `unread`.
+ * distinct job links in page order (a posting linked twice counts once) and counts the rest as `unread`;
+ * navigation is left out first (postingLinks) and counted as `skipped`.
  */
-function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTargetProfile>): { jobs: ScrapedJob[]; unread: number } {
+function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTargetProfile>): { jobs: ScrapedJob[]; unread: number; skipped: number } {
   const jobs: ScrapedJob[] = [];
   const seenUrls = new Set<string>();
   let unread = 0;
@@ -1098,15 +1176,19 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
     return read;
   };
 
+  // One entry per distinct URL in page order, the first link to it standing for it; then navigation is
+  // left out before the bound, so it neither uses the budget nor counts as unread.
+  const firsts: LinkAt[] = [];
   for (const a of candidateLinks) {
     const url = resolveUrl(a.getAttribute("href"), base);
     if (!url || seenUrls.has(url)) continue;
-    const past = seenUrls.size >= MAX_PAGE_JOB_LINKS;
-    seenUrls.add(url); // remembered past the bound too, so a link repeated later is not counted twice
-    if (past) {
-      unread++;
-      continue;
-    }
+    seenUrls.add(url);
+    firsts.push({ a, url });
+  }
+  const { links, skipped } = postingLinks(firsts, base);
+  unread = Math.max(0, links.length - MAX_PAGE_JOB_LINKS);
+
+  for (const { a, url } of links.slice(0, MAX_PAGE_JOB_LINKS)) {
 
     // A card that is one link around several elements (title, badge, location row) is read from its own
     // markup: a.textContent glues them into "TitleFeaturedOffice: City". A plain text link keeps its text.
@@ -1144,7 +1226,7 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
     });
   }
 
-  return { jobs, unread };
+  return { jobs, unread, skipped };
 }
 
 /** One posting's key across readers: its URL without a trailing slash, or title and company without one. */
@@ -1230,7 +1312,9 @@ export function scrapePageJobs(
     host.includes("workday.com") ||
     currentDoc.querySelector(".opening, .posting, .ashby-job-posting-brief, .ashby-job-posting, [class*='ashby-job-posting'], [data-automation-id*='job'], tr.job-post, [class*='job-post']") !== null
   ) {
-    jobs.push(...scrapeATSBoards(currentDoc, host, base, profile));
+    // A board reader takes every link in a posting section; one back to this page that names no
+    // posting is a control (ServiceNow's SmartRecruiters page: its .opening sections hold a skip link).
+    jobs.push(...scrapeATSBoards(currentDoc, host, base, profile).filter(j => namesPosting(j.url) || !(sameListing(j.url, docHref) || sameDocument(j.url, docHref))));
   }
 
   // The link-by-link reader runs when the readers above found almost nothing, and is also kept when it
@@ -1240,15 +1324,20 @@ export function scrapePageJobs(
   const known = new Set(jobs.map(dedupeKey));
   const generic = scrapeGeneric(currentDoc, base, profile);
   const missed = new Set(generic.jobs.map(dedupeKey).filter(k => !known.has(k))).size;
+  let skipped = 0;
   if (jobs.length < 2 || missed > known.size) {
     jobs.push(...generic.jobs);
     unread += generic.unread;
+    skipped = generic.skipped;
   }
+  const boardTotal = remix.boardTotal ?? talentBrewTotal(currentDoc);
 
-  // Deduplicate by normalized URL or Title+Company
+  // Deduplicate by normalized URL or Title+Company. A pager control is never a job, whichever reader
+  // found it.
   const deduped: ScrapedJob[] = [];
   const seen = new Set<string>();
   for (const j of jobs) {
+    if (isPagerText(j.title)) continue;
     const key = dedupeKey(j);
     if (!seen.has(key)) {
       seen.add(key);
@@ -1266,7 +1355,8 @@ export function scrapePageJobs(
     totalFound: deduped.length,
     jobs: deduped,
     unread,
-    ...(remix.boardTotal !== undefined ? { boardTotal: remix.boardTotal } : {}),
+    ...(skipped > 0 ? { skipped } : {}),
+    ...(boardTotal !== undefined ? { boardTotal } : {}),
   };
 }
 

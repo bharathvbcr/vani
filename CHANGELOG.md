@@ -155,7 +155,14 @@ were ported with notice. Source files do not carry an upstream copyright header.
   whose JSON-LD marked up a few featured roles hid all its job cards (the link reader now runs when it
   finds more jobs than the structured readers did); a paged Greenhouse board says how many jobs it
   lists beyond the page, and a crawl that ends short of that count is incomplete; Workday answer rows
-  past 100 are named instead of dropped.
+  past 100 are named instead of dropped. A TalentBrew search (Citi: 15 shown of 3116) states its
+  count the same way.
+- **Extension scraper, navigation read as jobs**: on Citi's search 11 of 26 scraped "jobs" were site
+  links (Saved Jobs, programme pages, talent-network forms, the pager's Previous), and ServiceNow's
+  SmartRecruiters page gave its skip link and "Show more jobs"; each was sent to Vani as a posting.
+  Pager controls are never jobs; a board reader's link back to the listing that names no posting is
+  left out; and when most job links name a posting (a number, a UUID or a job parameter), the link
+  reader leaves out those that do not and says how many.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and
