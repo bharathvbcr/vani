@@ -371,6 +371,11 @@ type env struct {
 	liveRun    string
 	liveWarned bool
 	listing    listingTotals
+
+	// recordWriter writes runs/last.json. Nil calls writeRunRecord. A test
+	// sets it so the running write can succeed and the finished write can
+	// fail. Nil is the real writer, never a writer that drops the error.
+	recordWriter func(stateDir string, r runRecord) error
 }
 
 // run executes the CLI and returns the exit code: 0 ok, 1 runtime error,

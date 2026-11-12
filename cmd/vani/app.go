@@ -117,7 +117,10 @@ func (e *env) dailyJob(app *App, cfg config.Config, trigger string, opts runOpti
 		// The run's own reload can still see a change that landed after the
 		// check above. Snapshot the record first so that path can put it back.
 		priorRecord, priorErr := readBoundedFile(runRecordPath(e.stateDir), maxRunRecord)
-		e.saveRunRecord(rec)
+		// The running marker's write failure is already logged. Ignoring it is
+		// deliberate: the finished save fails the run when last.json is still
+		// this running record.
+		_ = e.saveRunRecord(rec)
 		e.beginLive(runID(rec))
 		defer e.endLive()
 		stage, err := e.guardedRun(ctx, app, cfg, opts, &rec)
@@ -162,7 +165,7 @@ func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stag
 		// snapshot. endLive has not deleted it yet.
 		e.fillBoardsFromSnapshot(rec)
 		finishLog()
-		e.saveRunRecord(*rec)
+		err = errors.Join(err, e.saveFinishedRun(*rec))
 		e.announceFailure(ctx, app, *rec)
 	}()
 	rec.FinishedAt = now()
@@ -185,7 +188,7 @@ func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stag
 		rec.Cause = runCause(err)
 	}
 	finishLog()
-	e.saveRunRecord(*rec)
+	err = errors.Join(err, e.saveFinishedRun(*rec))
 	e.announceFailure(ctx, app, *rec)
 	return err
 }
@@ -545,29 +548,50 @@ func (e *env) keepInterruptedRun() {
 	}
 }
 
-// saveRunRecord writes the record, and a finished one to the run history too;
-// a failure is a warning, never a failed run: the run's work is in the ledger
-// either way. A finished record that history does not already hold is written
-// there first, once and on failure once more. If that file is still missing,
-// last.json stays and the warning is the history error. An unreadable
-// last.json is not invented. The new record is then written to last.json
-// before its own history entry, so a history failure of this run never costs
-// the record status reads; the next save flushes it.
-func (e *env) saveRunRecord(r runRecord) {
+// saveRunRecord writes the record, and a finished one to the run history too.
+// A finished record that history does not already hold is written there first,
+// once and on failure once more. If that file is still missing, last.json is
+// left in place and the error is returned: the finished write did not happen,
+// so a run whose last.json is still the running record must not look
+// successful. The running-record caller may ignore that error; it is already
+// logged. An unreadable last.json is not invented. The new record is then
+// written to last.json before its own history entry. A history failure after
+// that write is a warning only and is not returned: it never costs the record
+// status reads, and the next save flushes it. The run's work is in the ledger
+// either way.
+func (e *env) saveRunRecord(r runRecord) error {
 	if err := flushFinishedLast(e.stateDir); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not keep the run in the history: %v\n", err)
-		return
+		return err
 	}
-	if err := writeRunRecord(e.stateDir, r); err != nil {
+	if err := e.writeLastRecord(r); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not record the run: %v\n", err)
-		return
+		return err
 	}
 	if r.Outcome == outcomeRunning {
-		return
+		return nil
 	}
 	if err := writeRunHistory(e.stateDir, r); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not keep the run in the history: %v\n", err)
 	}
+	return nil
+}
+
+// saveFinishedRun is the finished save. A non-nil error means last.json was
+// not replaced with the finished record.
+func (e *env) saveFinishedRun(rec runRecord) error {
+	if err := e.saveRunRecord(rec); err != nil {
+		return fmt.Errorf("could not save the finished run record: %w", err)
+	}
+	return nil
+}
+
+// writeLastRecord writes runs/last.json. A nil recordWriter is writeRunRecord.
+func (e *env) writeLastRecord(r runRecord) error {
+	if e.recordWriter != nil {
+		return e.recordWriter(e.stateDir, r)
+	}
+	return writeRunRecord(e.stateDir, r)
 }
 
 func scheduleLoc(cfg config.Config) (*time.Location, error) {
