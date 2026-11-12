@@ -6,9 +6,10 @@ import VaniApplyKit
 /// A fake `vani` for the Pipeline tab: `status --json` prints status.json, and
 /// `run-once` acts out the run named in the file `mode`, rewriting status.json
 /// the way a real run rewrites its record. `run-request` acts out a daemon that
-/// picks the request up (`daemon-picks`) or drops it (`daemon-drops`), in the
-/// background as the real daemon would. `daemon` is the status's daemon facet
-/// (none: an older vani). Every call is appended to `calls`.
+/// picks the request up (`daemon-picks`), drops it (`daemon-drops`), or stops
+/// and comes back (`daemon-restarts`), in the background as the real daemon
+/// would. `daemon` is the status's daemon facet (none: an older vani). Every
+/// call is appended to `calls`.
 private struct PipelineFixture {
     let dir: URL
     var vani: URL { dir.appendingPathComponent("vani") }
@@ -47,6 +48,18 @@ private struct PipelineFixture {
             ;;
           daemon-drops)
             ( sleep 1; status "$old" "{\"ok\":true,\"pending\":false,\"claimed\":false}" ) >/dev/null 2>&1 &
+            ;;
+          daemon-restarts)
+            # The daemon is gone while the request is still pending, then a new
+            # one starts and runs it. The request's time stays the one just filed.
+            printf '%s\n' '{"ok":true,"running":false,"reason":"no daemon has announced itself"}' > "$D/daemon"
+            status "$old" "{\"ok\":true,\"pending\":true,\"requested_at\":\"$now\",\"claimed\":false}"
+            ( sleep 3
+              printf '%s\n' '{"ok":true,"running":true,"pid":4242}' > "$D/daemon"
+              status "$running" "{\"ok\":true,\"pending\":false,\"claimed\":true,\"claimed_requested_at\":\"$now\"}"
+              sleep 1
+              status "{\"ok\":true,\"state\":\"ok\",\"trigger\":\"manual\",\"options\":{\"advance\":9},\"started_at\":\"$now\",\"finished_at\":\"$now\"}" "{\"ok\":true,\"pending\":false,\"claimed\":false}"
+            ) >/dev/null 2>&1 &
             ;;
           esac
           printf '{"requested_at":"%s","options":{"advance":9},"daemon_pid":4242}\n' "$now"
@@ -221,6 +234,27 @@ final class PipelineModelTests: XCTestCase {
         XCTAssertTrue(f.calls().contains("run-request --advance 9 --json"), "\(f.calls())")
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") }, "\(f.calls())")
         XCTAssertNil(m.runBlocker)
+    }
+
+    /// A daemon that stops after the request is filed, and starts again, still
+    /// runs it. The gap is not a failed start: the request stays, and the tab
+    /// follows the run once the new daemon records it.
+    func testARestartedDaemonStillRunsTheWaitingRequest() async throws {
+        let f = try PipelineFixture(self, mode: "daemon-restarts", lastRun: oldRun, daemon: daemonUp)
+        let m = try model(f)
+        await m.refresh()
+        XCTAssertTrue(m.daemonRunning)
+        await m.startRun(ManualRunOptions(advance: 9))
+        XCTAssertNil(m.runError)
+        XCTAssertTrue(m.waitingForDaemon)
+        try await eventually("the daemon to be down while the request still waits") {
+            m.waitingForDaemon && m.status?.daemon?.running == false && m.runError == nil
+        }
+        try await eventually("the restarted daemon's run to end", within: 15) {
+            !m.waitingForDaemon && m.status?.lastRun.state == .ok && m.runError == nil
+        }
+        XCTAssertEqual(m.status?.lastRun.trigger, .manual)
+        XCTAssertEqual(m.status?.lastRun.options, ManualRunOptions(advance: 9))
     }
 
     /// A request the daemon drops without a run (stale, invalid) is reported,

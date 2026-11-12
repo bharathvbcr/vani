@@ -282,7 +282,12 @@ final class PipelineModel {
 
     /// Settle this app's pending request against a fresh status: picked up
     /// (a manual run recorded since it was made), still waiting, or gone
-    /// without a run (the daemon dropped it, or stopped).
+    /// without a run (the daemon dropped it). A daemon that is down while the
+    /// request is still pending is still waiting. A restart (the app was
+    /// replaced, or the schedule agent stopped) leaves the request for up to
+    /// an hour, and the next daemon runs it. Treating that gap as a failed
+    /// start would show "could not start" and stop watching a run that then
+    /// starts.
     private func settleRequest(_ s: PipelineStatus) {
         guard let at = requestedAt else { return }
         let since = at.addingTimeInterval(-Self.requestSlack)
@@ -298,9 +303,6 @@ final class PipelineModel {
         if r?.pending == true, mine(r?.requestedAt) {
             if r?.stale == true {
                 runError = "The daemon did not pick up your run within an hour, so it will not run. Ask again."
-                requestedAt = nil
-            } else if s.daemon?.running != true {
-                runError = "The daemon stopped before it picked up your run. The request waits up to an hour for it to start again."
                 requestedAt = nil
             }
             return

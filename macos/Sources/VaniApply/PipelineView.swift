@@ -156,7 +156,10 @@ private struct RunningBanner: View {
             return pipeline.daemonRunning ? "Asking the daemon, which holds the ledger, to make this run." : "Reading the model keys and starting vani."
         }
         if pipeline.waitingForDaemon {
-            return "The daemon checks for it every few seconds, after any run it is making now. It runs with the daemon's own keys and can be stopped only by stopping the daemon."
+            if pipeline.daemonRunning {
+                return "The daemon checks for it every few seconds, after any run it is making now. It runs with the daemon's own keys and can be stopped only by stopping the daemon."
+            }
+            return "The daemon is not running. Your request stays for up to an hour and runs when a daemon starts again."
         }
         guard let live = liveProgress else { return "" }
         if !live.ok {
