@@ -164,13 +164,13 @@ func (e *env) auditorSetupWords(modelFlag string) (config.Config, string, string
 	if err != nil {
 		return cfg, "", "", kbmatch.Digest{}, auditorIdent{}, eval.TeacherTask{}, fmt.Errorf("auditor: %w", err)
 	}
-	// The same digest with nothing removed, only for the auditor's own check
-	// (see auditorIdent): never sent, never hashed.
-	raw, err := kbmatch.DigestOf(prof, keepAll{w})
+	// The knowledge base before any redaction or cut, only for the auditor's own
+	// check (see auditorIdent): never sent, never hashed.
+	raw, err := kbmatch.RawDigestText(prof)
 	if err != nil {
 		return cfg, "", "", kbmatch.Digest{}, auditorIdent{}, eval.TeacherTask{}, fmt.Errorf("auditor: %w", err)
 	}
-	return cfg, model, summary, d, auditorIdent{words: w, rawDigest: raw.Text}, auditorTask(summary, d), nil
+	return cfg, model, summary, d, auditorIdent{words: w, rawDigest: raw}, auditorTask(summary, d), nil
 }
 
 // auditorIdent is what calibrate's identifying-word check needs: the list the
@@ -186,13 +186,6 @@ type auditorIdent struct {
 	words     track.Words
 	rawDigest string
 }
-
-// keepAll is a kbmatch.Redactor that removes nothing and finds with w: it builds
-// the unredacted digest text auditorIdent checks.
-type keepAll struct{ w track.Words }
-
-func (keepAll) Redact(s string) (string, int) { return s, 0 }
-func (k keepAll) Found(s string) []string     { return k.w.Found(s) }
 
 // Which identifying-word lists a calibration checked (auditorPlanJSON).
 const (

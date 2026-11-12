@@ -41,6 +41,14 @@ func jsonStrings(v any, out *[]string) {
 // unrelated body cannot pass.
 func TestKBMatchProviderBytesCarryNoOwnerTerm(t *testing.T) {
 	k := twoPostings(t)
+	// The bank spells a listed term the way a leak would ("Zephyr-net" for the
+	// listed "Zephyrnet"), so the assertion on it below can fire.
+	bank := strings.Replace(kbmBank, `"bullets":["b1","b2"]`, `"bullets":["b1","b2","b3"]`, 1)
+	bank = strings.Replace(bank, `"bullets":{`, `"bullets":{"b3":{"text":"Shipped Zephyr-net bindings for the runtime"},`, 1)
+	if bank == kbmBank {
+		t.Fatal("the bank was not extended")
+	}
+	wireEligibleKB(t, &k.cfg, k.bankPath, bank)
 	clearKeys(t)
 	t.Setenv("OPENROUTER_API_KEY", "test-not-a-real-key")
 	k.cfg.LLM = config.LLM{}
@@ -89,7 +97,7 @@ func TestKBMatchProviderBytesCarryNoOwnerTerm(t *testing.T) {
 				t.Errorf("request %d: %q reached the provider (owner part):\n%s", i, term, owner)
 			}
 		}
-		for _, want := range []string{"[redacted]", "LLM Inference Runtime", "CUDA", "scheduler"} {
+		for _, want := range []string{"[redacted]", "LLM Inference Runtime", "CUDA", "scheduler", "bindings for the runtime"} {
 			if !strings.Contains(owner, want) {
 				t.Errorf("request %d: owner part lacks %q (an empty or unrelated body would pass without this):\n%s", i, want, owner)
 			}

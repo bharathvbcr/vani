@@ -45,12 +45,29 @@ type folded struct {
 	upper []bool // the source rune was an upper-case letter
 }
 
-func foldString(s string) folded {
+// placeholder is the folded rune standing for an existing "[redacted]" in the text:
+// not a letter, not a separator, so a term next to it sees a boundary and nothing
+// matches inside it (a listed "reda" is a prefix of the placeholder's own word).
+const placeholder = rune(1)
+
+// foldString folds text; foldTerm folds a listed term, which has no placeholder.
+func foldString(s string) folded { return fold(s, true) }
+func foldTerm(s string) folded   { return fold(s, false) }
+
+func fold(s string, mask bool) folded {
 	f := folded{
 		r: make([]rune, 0, len(s)), start: make([]int, 0, len(s)),
 		end: make([]int, 0, len(s)), upper: make([]bool, 0, len(s)),
 	}
 	for i := 0; i < len(s); {
+		if mask && s[i] == '[' && strings.HasPrefix(s[i:], Redacted) {
+			f.r = append(f.r, placeholder)
+			f.start = append(f.start, i)
+			f.end = append(f.end, i+len(Redacted))
+			f.upper = append(f.upper, false)
+			i += len(Redacted)
+			continue
+		}
 		r, size := utf8.DecodeRuneInString(s[i:])
 		out, n, up := foldRune(r)
 		if n == 0 {
@@ -94,6 +111,10 @@ func foldRune(r rune) (out [3]rune, n int, upper bool) {
 		return [3]rune{' '}, 1, false
 	case unicode.In(r, unicode.Cf, unicode.Mn, unicode.Me, unicode.Cc):
 		return out, 0, false
+	case r == 0x2018 || r == 0x2019 || r == 0x201b || r == 0x2032 || r == 0x02bc || r == 0x02b9 || r == 0x02c8:
+		return [3]rune{'\''}, 1, false // every apostrophe and prime is the ASCII one
+	case r == 0x2044 || r == 0x2215: // fraction slash, division slash
+		return [3]rune{'/'}, 1, false
 	case unicode.Is(unicode.Pd, r) || r == 0x2212:
 		return [3]rune{'-'}, 1, false
 	case r >= 0xff01 && r <= 0xff5e: // fullwidth ASCII
@@ -138,6 +159,9 @@ func foldRune(r rune) (out [3]rune, n int, upper bool) {
 	upper = unicode.IsUpper(r)
 	c := unicode.ToLower(unicode.ToUpper(r))
 	if b, ok := latinBase[c]; ok {
+		return one(b)
+	}
+	if b, ok := extraLookalikes[c]; ok {
 		return one(b)
 	}
 	if b, ok := lookalike[c]; ok {
@@ -226,7 +250,25 @@ var lookalike = func() map[rune]rune {
 func isASCIILetter(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }
 
 // isSep reports a folded rune that may stand between the words of an owner term.
-func isSep(r rune) bool { return r == ' ' || r == '-' || r == '_' || r == '.' || r == '/' }
+func isSep(r rune) bool {
+	switch r {
+	case ' ', '-', '_', '.', '/', '\'', '(', ')', ':', '+', '·':
+		return true
+	}
+	return false
+}
+
+// extraLookalikes maps lower-case Latin Extended-B and IPA letters that are
+// plain Latin letters drawn with a bar, hook, tail or turned (U+0180-U+024F and
+// the IPA block) to that Latin letter. A bounded table, like latinBase.
+var extraLookalikes = map[rune]rune{
+	'ƀ': 'b', 'ƃ': 'b', 'ɓ': 'b', 'ƈ': 'c', 'ȼ': 'c', 'ƌ': 'd', 'ɗ': 'd',
+	'ǝ': 'e', 'ɇ': 'e', 'ɘ': 'e', 'ə': 'e', 'ƒ': 'f', 'ǥ': 'g', 'ɠ': 'g',
+	'ɦ': 'h', 'ɨ': 'i', 'ȷ': 'j', 'ɉ': 'j', 'ƚ': 'l', 'ɫ': 'l', 'ɱ': 'm',
+	'ƞ': 'n', 'ȵ': 'n', 'ɲ': 'n', 'ɳ': 'n', 'ɵ': 'o', 'ƥ': 'p', 'ɋ': 'q',
+	'ɍ': 'r', 'ɽ': 'r', 'ȿ': 's', 'ȶ': 't', 'ƫ': 't', 'ƭ': 't', 'ʈ': 't',
+	'ʉ': 'u', 'ƴ': 'y', 'ɏ': 'y', 'ƶ': 'z', 'ȥ': 'z', 'ɀ': 'z', 'ʐ': 'z', 'ʑ': 'z',
+}
 
 // Which separators may stand before an item of an owner term. gapJoin is a word
 // join the term itself lists (a space or hyphen in "decode-latency"): any run of
@@ -250,7 +292,7 @@ type term struct {
 
 // newOwnerTerm compiles one owner term. ok is false when nothing visible is left.
 func newOwnerTerm(raw string) (t *term, ok bool) {
-	f := foldString(raw)
+	f := foldTerm(raw)
 	t = &term{raw: raw, loose: true}
 	pending := false
 	for _, c := range f.r {
@@ -281,7 +323,7 @@ func newOwnerTerm(raw string) (t *term, ok bool) {
 }
 
 func newBuiltinTerm(raw string) *term {
-	f := foldString(raw)
+	f := foldTerm(raw)
 	if len(f.r) == 0 {
 		return nil
 	}
@@ -414,8 +456,9 @@ func (c *compiled) spans(s string, f *folded) []span {
 		i++
 	}
 	if c.at {
+		tokEnd := 0 // each token is expanded once: an "@" inside the last one is covered
 		for k, r := range f.r {
-			if r != '@' {
+			if r != '@' || f.start[k] < tokEnd {
 				continue
 			}
 			a, b := f.start[k], f.end[k]
@@ -433,6 +476,7 @@ func (c *compiled) spans(s string, f *folded) []span {
 				}
 				b += size
 			}
+			tokEnd = b
 			out = append(out, span{a, b})
 		}
 	}

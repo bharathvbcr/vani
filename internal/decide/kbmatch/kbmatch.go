@@ -163,7 +163,25 @@ type Focus struct {
 // text; entries are still grouped by their own titles, so two entries whose
 // titles redact alike stay apart. A nil r is refused, as is a profile with
 // nothing to say.
-func DigestOf(p semantic.Profile, r Redactor) (Digest, error) {
+func DigestOf(p semantic.Profile, r Redactor) (Digest, error) { return digestOf(p, r, true) }
+
+// passRedactor removes nothing and finds nothing.
+type passRedactor struct{}
+
+func (passRedactor) Redact(s string) (string, int) { return s, 0 }
+func (passRedactor) Found(string) []string         { return nil }
+
+// RawDigestText is the text DigestOf would make with nothing redacted, no
+// bullet cut to maxBulletBytes and no byte cap: every line the digest could keep, whole. A
+// caller that checks the knowledge base for identifying terms before they are
+// stripped (the auditor, which refuses instead) reads this, because a term can
+// cross the cut. It is for checking only: never hashed, never sent.
+func RawDigestText(p semantic.Profile) (string, error) {
+	d, err := digestOf(p, passRedactor{}, false)
+	return d.Text, err
+}
+
+func digestOf(p semantic.Profile, r Redactor, cut bool) (Digest, error) {
 	if r == nil {
 		return Digest{}, ErrNoRedactor
 	}
@@ -194,7 +212,7 @@ func DigestOf(p semantic.Profile, r Redactor) (Digest, error) {
 	}
 	var sb, compact strings.Builder
 	add := func(b *strings.Builder, max int, line string) bool {
-		if b.Len()+len(line)+1 > max {
+		if cut && b.Len()+len(line)+1 > max { // the raw text (cut false) has no caps at all
 			return false
 		}
 		b.WriteString(line)
@@ -217,7 +235,7 @@ func DigestOf(p semantic.Profile, r Redactor) (Digest, error) {
 		for _, b := range bullets[label] {
 			// Redact before the cut, so the cut can never split a term into a
 			// fragment the redactor no longer recognises.
-			if !add(&sb, MaxDigestBytes, "    * "+cutRunes(red(b), maxBulletBytes)) {
+			if !add(&sb, MaxDigestBytes, "    * "+cutIf(cut, red(b))) {
 				break
 			}
 		}
@@ -230,9 +248,11 @@ func DigestOf(p semantic.Profile, r Redactor) (Digest, error) {
 	// per-line pass sees but the check over the assembled text does.
 	text, k := r.Redact(sb.String())
 	n += k
-	text = fitLines(text, MaxDigestBytes)
+	if cut {
+		text = fitLines(text, MaxDigestBytes)
+	}
 	compactText, _ := r.Redact(compact.String())
-	compactText = fitLines(compactText, MaxCompactBytes)
+	compactText = fitLines(compactText, MaxCompactBytes) // (raw: Compact is unused)
 	if text == "" {
 		return Digest{}, errors.New("kbmatch: the knowledge base has no titles, skills or bullets to describe")
 	}
@@ -267,6 +287,14 @@ func (d Digest) Frame(summary string) (decide.Question, error) {
 	}
 	q, _ := question(posting.Posting{}, summary, empty, nil)
 	return q, nil
+}
+
+// cutIf is a bullet cut to maxBulletBytes when cut, and the whole bullet otherwise.
+func cutIf(cut bool, s string) string {
+	if !cut {
+		return s
+	}
+	return cutRunes(s, maxBulletBytes)
 }
 
 // cutRuneCount cuts s to at most n runes and reports whether it cut.

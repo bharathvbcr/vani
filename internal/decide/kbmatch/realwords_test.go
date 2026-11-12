@@ -107,3 +107,25 @@ func TestFrameRefusesAnUnredactedDigestAndASummaryTerm(t *testing.T) {
 		t.Fatalf("summary term: %v", err)
 	}
 }
+
+// RawDigestText keeps what DigestOf cuts and strips, so a check before redaction
+// sees a term that crosses the per-bullet cut whole.
+func TestRawDigestTextIsUncutAndUnredacted(t *testing.T) {
+	long := strings.Repeat("word ", 47) + "Zephyrnet engine"
+	p := semantic.Profile{Chunks: []semantic.Chunk{
+		{Label: "Runtime", Text: "Runtime", Weight: 1},
+		{Label: "Runtime", Text: long, Weight: 1},
+	}}
+	raw, err := RawDigestText(p)
+	if err != nil || !strings.Contains(raw, "Zephyrnet engine") {
+		t.Fatalf("raw text lost the tail: %v\n%s", err, raw)
+	}
+	w := realWords(t, "zephyrnet")
+	d, _ := DigestOf(p, w)
+	if strings.Contains(strings.ToLower(d.Text), "zephy") && !strings.Contains(d.Text, Redacted) {
+		t.Fatalf("the sent digest was not redacted:\n%s", d.Text)
+	}
+	if len(w.Found(raw)) != 1 {
+		t.Fatalf("the check misses the term in the raw text")
+	}
+}
