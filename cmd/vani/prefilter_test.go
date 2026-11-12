@@ -175,7 +175,7 @@ func TestDropPolicyWiresTitleReadsOnlyWhenConfigured(t *testing.T) {
 		TitleSignals: config.TitleSignals{Read: []config.TitleRead{{Slot: "seniority", Value: "manager", Match: []string{"Manager"}}}},
 	}
 	p := dropPolicy(cfg, "d1-ultra")
-	if _, reason, dropped := p.EvaluateTitle("Engineering Manager"); !dropped || !strings.Contains(reason, `title matched "Manager"`) {
+	if _, reason, dropped := p.EvaluateTitle("Engineering Manager", ""); !dropped || !strings.Contains(reason, `title matched "Manager"`) {
 		t.Fatalf("dropped %v %q", dropped, reason)
 	}
 	if len(p.Rules) != 1 || p.Rules[0].MinOpenRouterProb != 0.9 {

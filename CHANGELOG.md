@@ -154,6 +154,17 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **Ranking: a role's level is penalised once, and "Staff" must agree with the years asked**
+  (`internal/jobinsight`, `internal/expyears`, `internal/pipeline`). A seniority rank penalty and a
+  `mismatch_seniority` role-fit reading say the same thing, yet both multiplied the gate, so a
+  senior role in the owner's area (Anthropic's TPU Performance Engineer, gate 0.24) sank below
+  off-domain staff roles that neither touched. The gate now takes the stronger of the two;
+  `mismatch_domain` and a seniority penalty still compound. A `staff_plus` reading whose posting
+  asks fewer than 7 years (the largest lower bound of its "N years" figures) is ranked at the level
+  those years imply (5 or more senior, otherwise mid), and a title read as staff abstains on such a
+  posting, so `vani retriage --title-drops` reopens one dropped that way (Perplexity's "Member of
+  Data Staff"). With no figure, or 7 or more years, the staff reading stands. On the owner's ledger,
+  with `staff_plus` added to `rank_penalties`, Anthropic's top 30 went from 15 staff+ roles to none.
 - **Extension scraper**: a page read link by link stopped at its first 100 job links and said
   nothing, so Anthropic's careers page (669 jobs on one page) gave 100, and **Crawl all pages**
   called that complete. It now reads up to 2000 distinct job links (`MAX_PAGE_JOB_LINKS`); a posting
