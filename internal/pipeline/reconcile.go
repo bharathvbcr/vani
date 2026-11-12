@@ -55,7 +55,14 @@ type Summary struct {
 	Reappeared int // seen again after a miss (or after being marked dead)
 	Missed     int // absent, below the death threshold
 	Dead       int
-	Duplicate  int
+	// Duplicate counts every record this fold stored or marked as a
+	// duplicate: listed postings stored as one (ListedDuplicate) and other
+	// records this listing marked as their twins.
+	Duplicate int
+	// ListedDuplicate is the part of Duplicate that is listed postings: new
+	// ones stored as a duplicate of another record (twinOf). Each counts one
+	// listed posting, as New does; the rest of Duplicate is not a listed one.
+	ListedDuplicate int
 	// Revived duplicates were listed again while their survivor was gone
 	// (reviveDuplicate): live again, or a duplicate of another live record.
 	Revived int
@@ -150,6 +157,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 					e.Reason += " (" + why + ")"
 				}
 				s.Duplicate++
+				s.ListedDuplicate++
 			}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err

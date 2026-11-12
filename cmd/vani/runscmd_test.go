@@ -564,6 +564,9 @@ func TestRunHasFailuresRule(t *testing.T) {
 		"deferred details are not a failure": {mk(func(r *runRecord) { r.Boards = &boardsReport{Deferred: 9} }), false},
 		"pay skipped is not a failure":       {mk(func(r *runRecord) { r.Boards = &boardsReport{PaySkipped: 4} }), false},
 		"gone details are not a failure":     {mk(func(r *runRecord) { r.Boards = &boardsReport{Gone: 1} }), false},
+		"a short listing is not a failure": {mk(func(r *runRecord) {
+			r.Boards = &boardsReport{Short: 12, Items: []boardReport{{ATS: "workday", Token: "a/B", Outcome: boardRead, Short: 12}}}
+		}), false},
 	} {
 		if got := runHasFailures(tc.r, at); got != tc.want {
 			t.Errorf("%s: runHasFailures = %v, want %v", name, got, tc.want)

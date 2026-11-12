@@ -111,7 +111,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 		// on each path and not only on the easy ones.
 		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Redated == 0 || total.Reappeared == 0 ||
 			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 || total.Revived == 0 ||
-			total.Refreshed == 0 {
+			total.Refreshed == 0 || total.ListedDuplicate == 0 || total.ListedDuplicate == total.Duplicate {
 			t.Errorf("the seeds did not cover every outcome: %+v", total)
 		}
 	}()
@@ -179,6 +179,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.Missed += got.Missed
 					total.Dead += got.Dead
 					total.Duplicate += got.Duplicate
+					total.ListedDuplicate += got.ListedDuplicate
 					total.Unchanged += got.Unchanged
 					total.Revived += got.Revived
 				}

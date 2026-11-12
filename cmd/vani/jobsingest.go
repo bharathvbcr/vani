@@ -693,11 +693,80 @@ func ingestCompany(page inbox.Page, jobs []inbox.Job) string {
 // drainResult is what one drainInbox did.
 type drainResult struct {
 	Report inbox.DrainReport
-	// New and Duplicate sum the batches' fold summaries.
-	New, Duplicate int
+	// New, ListedDuplicate, Known, Invalid and Repeated count the folded
+	// batches' jobs (Report.Jobs), each job in one of them at most: New is
+	// stored new and Live, ListedDuplicate is stored new as a duplicate of
+	// another record (pipeline.Summary.ListedDuplicate), Known is a record the
+	// ledger already held (knownOf), Invalid had no usable key (no page key,
+	// or pipeline.Summary.Invalid), Repeated repeats a key earlier in its
+	// batch (the fold skips it uncounted). What they leave is unaccounted().
+	New, ListedDuplicate, Known, Invalid, Repeated int
+	// Duplicate sums the batches' pipeline.Summary.Duplicate: the jobs in
+	// ListedDuplicate and the other records the folds marked as their twins.
+	// Its part past ListedDuplicate is not a job of Report.Jobs.
+	Duplicate int
 	// Live lists the postings the folded batches name that are Live now, in
 	// fold order: the ones that still wait for triage.
 	Live []posting.Key
+}
+
+// knownOf is the listed postings a fold found already stored, whatever it did
+// to them: every listed outcome of pipeline.Summary but New, ListedDuplicate
+// and Invalid (Duplicate also counts marked records, not listed ones). An outcome
+// Summary gains later and this does not name shows up as unaccounted, never in
+// another bucket.
+func knownOf(s pipeline.Summary) int {
+	return s.Changed + s.Kept + s.Rerendered + s.Redated + s.Refreshed + s.Unchanged + s.Revived + s.Reappeared
+}
+
+// repeatedKeys is how many of ps repeat a key earlier in ps, the ones a fold
+// skips without counting. A posting with no key is the fold's Invalid, not a
+// repeat. A batch's URLs are unique and canonical (inbox.Batch.Validate), so
+// this is zero unless two of them share a page key.
+func repeatedKeys(ps []posting.Posting) int {
+	seen := make(map[posting.Key]bool, len(ps))
+	n := 0
+	for _, p := range ps {
+		if p.Key == "" || p.Key.ATS() == "" {
+			continue
+		}
+		if seen[p.Key] {
+			n++
+		}
+		seen[p.Key] = true
+	}
+	return n
+}
+
+// unaccounted is the folded jobs no count names: Report.Jobs less New,
+// ListedDuplicate, Known, Invalid and Repeated. It is negative when the counts
+// overrun the jobs, and is reported as it is, never folded into another bucket.
+func (r drainResult) unaccounted() int {
+	return r.Report.Jobs - r.New - r.ListedDuplicate - r.Known - r.Invalid - r.Repeated
+}
+
+// inboxFoldLine is the drain's log line. Its job buckets add up to the job
+// count, any remainder printed as unaccounted; the other records the folds
+// marked as duplicates are not jobs of the batches and are said apart.
+func inboxFoldLine(r drainResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "inbox: folded %d batch(es), %d job(s): %d new, %d already known", r.Report.Folded, r.Report.Jobs, r.New, r.Known)
+	for _, p := range []countPart{
+		{r.ListedDuplicate, "duplicate of a stored job"},
+		{r.Invalid, "invalid"},
+		{r.Repeated, "repeated in a batch"},
+	} {
+		if p.n > 0 {
+			fmt.Fprintf(&b, ", %d %s", p.n, p.label)
+		}
+	}
+	if u := r.unaccounted(); u != 0 {
+		fmt.Fprintf(&b, ", %d unaccounted", u)
+	}
+	if m := r.Duplicate - r.ListedDuplicate; m != 0 {
+		fmt.Fprintf(&b, "; %d other record(s) marked as duplicates", m)
+	}
+	return b.String()
 }
 
 // inboxDrainLimit is how many spooled files one drain takes.
@@ -718,7 +787,12 @@ func drainInbox(ctx context.Context, led ledger.Ledger, stateDir string, protect
 		if err != nil {
 			return fmt.Errorf("fold batch: %w", err)
 		}
+		// Counted only once the batch folded, as Drain counts its jobs.
 		res.New += sum.New
+		res.ListedDuplicate += sum.ListedDuplicate
+		res.Known += knownOf(sum)
+		res.Invalid += sum.Invalid + len(b.Jobs) - len(ps)
+		res.Repeated += repeatedKeys(ps)
 		res.Duplicate += sum.Duplicate
 		for _, p := range ps {
 			if !seen[p.Key] {

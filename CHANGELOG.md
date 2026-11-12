@@ -163,6 +163,15 @@ were ported with notice. Source files do not carry an upstream copyright header.
   Pager controls are never jobs; a board reader's link back to the listing that names no posting is
   left out; and when most job links name a posting (a number, a UUID or a job parameter), the link
   reader leaves out those that do not and says how many.
+- **Workday short listings are counted**: a query under the 2000-row window that ends before the
+  board's own total is still kept, not failed, but the rows it counted and did not list are now
+  recorded (`boards.short`, `items[].short` in the run record) and named per board by
+  `vani runs show` ("Listed short: …"). Stored postings among them age as absent, so the gap is
+  now visible. It is not a failure.
+- **Inbox fold line adds up**: "folded N batch(es), M job(s)" now splits M into new, already known,
+  duplicate of a stored job, invalid and repeated, prints any remainder as unaccounted, and says
+  the other records it marked as duplicates apart. `pipeline.Summary` gains `ListedDuplicate`;
+  `Duplicate` keeps its meaning.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and

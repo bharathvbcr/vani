@@ -338,6 +338,9 @@ type boardsReport struct {
 	PaySkipped int    `json:"pay_skipped,omitempty"`
 	Gone       int    `json:"gone,omitempty"`
 	PayError   string `json:"pay_error,omitempty"`
+	// Short is rows the boards counted but did not list, together (see
+	// boardReport.Short). Additive: readers that do not know the key ignore it.
+	Short int `json:"short,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
 	// bounds cut it, failed and skipped boards are kept before read ones.
 	Items []boardReport `json:"items"`
@@ -371,6 +374,11 @@ type boardReport struct {
 	// Gone is details that answered 404 under a listing that succeeded, under
 	// the threshold that fails the board.
 	Gone int `json:"gone,omitempty"`
+	// Short is rows a read board counted but did not list: a Workday query
+	// under its 2000-row window that ended before its own total
+	// (workday.Stats.Short). The listing is kept, not failed, so the postings
+	// behind those rows go unseen and stored ones age toward dead.
+	Short int `json:"short,omitempty"`
 }
 
 // reconcileCounts is pipeline.Summary as the run record writes it.

@@ -282,6 +282,9 @@ type walker struct {
 	requests int // listing requests, every term's
 	queries  int // queries walked, a split query's buckets each counted
 	stubs    int // stub rows met (isStub), every query's
+	// short is the rows queries under the window counted but did not list,
+	// every query's (Stats.Short).
+	short int
 	// stubRefetches counts extra reads of a page that came back with stubs.
 	stubRefetches int
 }
@@ -564,6 +567,12 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 	// A query under the window that ends short of its total is kept, as before
 	// (docs/FOLLOWUPS.md, "Absence ages every open posting"): a live total that
 	// overstates would otherwise fail the board on every run. Rows a split's
-	// buckets lose are still caught against the facet count above.
+	// buckets lose are still caught against the facet count above. The rows it
+	// counted and did not list are counted (Stats.Short), per query and never
+	// below zero, so a query that lists more than its total cancels no other
+	// query's gap.
+	if known && len(here) < stop {
+		w.short += stop - len(here)
+	}
 	return here, nil
 }

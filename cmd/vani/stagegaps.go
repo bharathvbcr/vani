@@ -107,6 +107,8 @@ type boardFetch struct {
 	PaySkipped int
 	Gone       int
 	PayError   string
+	// Short is rows the board counted but did not list (workday.Stats.Short).
+	Short int
 }
 
 type boardKey struct {
@@ -135,6 +137,7 @@ func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	prev.PayFailed += f.PayFailed
 	prev.PaySkipped += f.PaySkipped
 	prev.Gone += f.Gone
+	prev.Short += f.Short
 	if prev.PayError == "" {
 		prev.PayError = f.PayError
 	}
@@ -159,6 +162,7 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 		it.PayFailed = f.PayFailed
 		it.PaySkipped = f.PaySkipped
 		it.Gone = f.Gone
+		it.Short = f.Short
 		it.PayError = f.PayError
 		addFetch(rep, f)
 	}
@@ -175,6 +179,7 @@ func addFetch(rep *boardsReport, f boardFetch) {
 	rep.PayFailed += f.PayFailed
 	rep.PaySkipped += f.PaySkipped
 	rep.Gone += f.Gone
+	rep.Short += f.Short
 	if rep.PayError == "" {
 		rep.PayError = f.PayError
 	}
