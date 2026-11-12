@@ -10,10 +10,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
@@ -25,6 +27,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/track"
 )
 
 // `vani doctor` is the pipeline doctor (internal/doctor): Claude, through the
@@ -78,6 +81,7 @@ type doctorPlanJSON struct {
 	RunProblems    []string          `json:"run_problems,omitempty"`
 	BoardsSignaled int               `json:"boards_signaled"`
 	Recovered      int               `json:"board_reads_recovered_from_logs"`
+	WordsPartial   bool              `json:"identifying_words_builtin_only,omitempty"`
 	LogMissing     int               `json:"runs_with_unnamed_boards_and_no_log,omitempty"`
 	Drops          int               `json:"drops_sampled"`
 	Strata         []doctor.Stratum  `json:"strata,omitempty"`
@@ -116,7 +120,9 @@ func (e *env) cmdDoctor(args []string) error {
 		return usagef("doctor: a real run needs --budget-usd in (0, %.0f]; --dry-run prices it first", doctorMaxBudgetUSD)
 	}
 	plan := &doctorPlanJSON{}
-	err := e.doctor(context.Background(), o, plan)
+	ctx, stop := signalContext() // ^C cancels a request in flight
+	defer stop()
+	err := e.doctor(ctx, o, plan)
 	return e.reply(o.asJSON, plan, err, func() {})
 }
 
@@ -138,16 +144,34 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 	if err != nil {
 		return err
 	}
+	// The identifying-word list (internal/track: the built-in work
+	// authorization terms and the owner's own names, employers and schools).
+	// Unreadable, nothing is sent: a screen that could not run is not a pass.
+	words, err := track.LoadWords(track.Dir(cfg, e.stateDir))
+	if err != nil {
+		return fmt.Errorf("doctor: the identifying-word list is unreadable, so nothing is sent: %w", err)
+	}
+	if hits := words.Found(summary); len(hits) > 0 {
+		return fmt.Errorf("doctor: target_summary holds %d identifying term(s); nothing is sent", len(hits))
+	}
+	plan.WordsPartial = !words.Personal
+	if plan.WordsPartial {
+		fmt.Fprintf(out, "doctor: no %s in %s, so only the built-in identifying words are screened out\n", track.WordsFile, track.Dir(cfg, e.stateDir))
+	}
 	redact := doctorRedactor()
+	screen := func(s string) bool { return len(words.Found(s)) > 0 }
 
-	in, runFiles, problems, logs := e.doctorHistory(cfg, o.runs, redact)
+	in, runFiles, problems, logs := e.doctorHistory(cfg, o.runs, redact, screen)
 	plan.RunsRead, plan.RunProblems = len(runFiles), problems
+	if len(runFiles) == 0 {
+		return fmt.Errorf("doctor: no run record could be read (%d problem(s)), so there is nothing to judge boards on", len(problems))
+	}
 	plan.BoardsSignaled = len(in.Boards)
 	plan.Recovered, plan.LogMissing = in.Recovered, in.LogMissing
-	in.Logs = doctor.Digest(logs, redact)
+	in.Logs = doctor.Digest(logs, redact, screen)
 	doctor.AttachDetails(in.Boards, doctor.Details(logs))
-	fmt.Fprintf(out, "doctor: %d run records read (%d unreadable); %d board reads the records left unnamed recovered from run logs (%d runs with unnamed boards had no log); %d boards tripped a signal; %d log trouble lines (%d distinct)\n",
-		len(runFiles), len(problems), in.Recovered, in.LogMissing, len(in.Boards), in.Logs.LinesSeen, in.Logs.Distinct)
+	fmt.Fprintf(out, "doctor: %d run records read (%d unreadable); %d board reads the records left unnamed recovered from run logs (%d runs with unnamed boards had no whole readable log); %d boards tripped a signal; %d log trouble lines (%d distinct, %d withheld for an identifying word)\n",
+		len(runFiles), len(problems), in.Recovered, in.LogMissing, len(in.Boards), in.Logs.LinesSeen, in.Logs.Distinct, in.Logs.Withheld)
 
 	if o.sample > 0 {
 		seed := o.seed
@@ -232,13 +256,19 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 	plan.Report = path
 	fmt.Fprint(out, doctor.Markdown(rep, in.Drops))
 	fmt.Fprintf(out, "\ndoctor: report written to %s (and .json)\n", path)
-	// A part that could not run is a failed command, not a clean report.
+	// A part that could not run, or that judged only some of what it was
+	// sent, is a failed command, not a clean report.
 	var failed []string
-	if rep.Boards.Error != "" {
-		failed = append(failed, "boards: "+rep.Boards.Error)
-	}
-	if rep.Drops.Error != "" {
-		failed = append(failed, "drops: "+rep.Drops.Error)
+	for _, pt := range []struct {
+		name string
+		p    doctor.Part
+	}{{"boards", rep.Boards}, {"drops", rep.Drops}} {
+		switch {
+		case pt.p.Error != "":
+			failed = append(failed, pt.name+": "+pt.p.Error)
+		case pt.p.Answered < pt.p.Asked:
+			failed = append(failed, fmt.Sprintf("%s: judged %d of the %d sent; the rest are not examined", pt.name, pt.p.Answered, pt.p.Asked))
+		}
 	}
 	if len(failed) > 0 {
 		plan.Error = strings.Join(failed, "; ")
@@ -279,7 +309,10 @@ type doctorRun struct {
 
 // doctorHistory reads the newest n run records, and their logs, into the
 // doctor's input. logs are the logs read (doctorLogs), for the digest.
-func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string) (in doctor.Input, read []historyFile, problems []string, logs []doctor.Log) {
+//
+// redact runs on every board error; screen withholds an error that still
+// holds an identifying word after it.
+func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string, screen func(string) bool) (in doctor.Input, read []historyFile, problems []string, logs []doctor.Log) {
 	files, _, err := listRunHistory(e.stateDir, n)
 	if err != nil {
 		return in, nil, []string{"history: " + oneLine(err.Error(), doctorMaxRunRecordErr)}, e.doctorLogs(nil)
@@ -310,8 +343,12 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 			s.Configured, s.Read, s.Failed, s.Unrecorded, s.Listed = b.Configured, b.Read, b.Failed, b.Unrecorded, b.Listed
 			for _, it := range b.Items {
 				named[it.ATS+":"+it.Token] = true
+				msg := redact(it.Error)
+				if msg != "" && screen(msg) {
+					msg = doctorWithheld
+				}
 				br := doctor.BoardRun{RunID: f.ID, At: r.StartedAt, Board: it.ATS + ":" + it.Token, Company: it.Company,
-					Outcome: it.Outcome, Listed: it.Listed, Error: redact(it.Error)}
+					Outcome: it.Outcome, Listed: it.Listed, Error: msg}
 				if c := it.Reconcile; c != nil {
 					br.New, br.Missed, br.Dead = c.New, c.Missed, c.Dead
 				}
@@ -338,8 +375,10 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 		if run.unrecorded == 0 {
 			continue
 		}
+		// A log that is missing, unreadable or read from its tail only cannot
+		// say which boards the run read (the board lines lead the log).
 		l, ok := byName[run.id+".log"]
-		if !ok {
+		if !ok || l.Err != nil || l.Truncated {
 			in.LogMissing++
 			continue
 		}
@@ -361,6 +400,7 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 	}
 	in.Boards = doctor.Signals(history, watch)
 	in.Trend = doctor.RunTrend(summaries)
+	in.RunProblems = problems
 	return in, read, problems, logs
 }
 
@@ -403,47 +443,55 @@ func readTail(path string, n int64) ([]byte, bool, error) {
 	return b, off > 0, err
 }
 
-// doctorRedactor removes secrets and the home directory (which names the
-// owner) from a line before it can be kept or sent.
+// doctorWithheld stands for a board error withheld for an identifying word.
+const doctorWithheld = "[withheld: holds an identifying word]"
+
+// doctorRedactor removes secrets, the home directory and the user name (both
+// name the owner) from a line before it can be kept or sent. The user name is
+// matched case-insensitively by Unicode rules, whatever else the line holds.
+// The owner's other names, employers and schools are the identifying-word
+// screen's (track.LoadWords), which runs after this.
 func doctorRedactor() func(string) string {
 	home, _ := os.UserHomeDir()
 	user := filepath.Base(home)
+	var userRE *regexp.Regexp
+	if len(user) >= 3 && user != "." && user != "/" {
+		userRE = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(user))
+	}
 	return func(s string) string {
 		s = redactSecrets(s)
 		if home != "" && home != "/" {
 			s = strings.ReplaceAll(s, home, "~")
 		}
-		if len(user) >= 3 && user != "." && user != "/" {
-			s = replaceFold(s, user, "<user>")
+		if userRE != nil {
+			s = userRE.ReplaceAllString(s, "<user>")
 		}
 		return s
 	}
 }
 
-// replaceFold replaces every case-insensitive occurrence of old in s.
-func replaceFold(s, old, repl string) string {
-	low, lowOld := strings.ToLower(s), strings.ToLower(old)
-	if len(low) != len(s) || !strings.Contains(low, lowOld) {
-		return s
-	}
-	var b strings.Builder
-	for {
-		i := strings.Index(low, lowOld)
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:i])
-		b.WriteString(repl)
-		s, low = s[i+len(old):], low[i+len(old):]
-	}
-}
+// workAuthLong are substrings, and workAuthShort whole tokens, of a slot or
+// drop-class name about work authorization or citizenship.
+var (
+	workAuthLong  = []string{"sponsor", "authoriz", "authoris", "visa", "citizen", "clearance", "h1b", "h-1b", "h_1b", "green_card", "greencard", "permanent_resident", "immigra", "work_auth", "right_to_work"}
+	workAuthShort = []string{"opt", "cpt", "ead", "gc"}
+)
 
 // sponsorshipSlot is whether a rule slot (or a drop class naming one) is about
 // work authorization: its readings and its drops never leave the machine.
 func sponsorshipSlot(s string) bool {
 	s = strings.ToLower(s)
-	return strings.Contains(s, "sponsor") || strings.Contains(s, "authoriz") || strings.Contains(s, "visa")
+	for _, w := range workAuthLong {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	for _, tok := range strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		if slices.Contains(workAuthShort, tok) {
+			return true
+		}
+	}
+	return false
 }
 
 // doctorRules are the configured drop rules, one line each, without any
@@ -482,8 +530,15 @@ func (e *env) doctorDrops(n int, seed string) ([]doctor.DropCase, []doctor.Strat
 			continue
 		}
 		class := eval.DropClass(r, rules)
-		if sponsorshipSlot(class) {
+		switch {
+		case sponsorshipSlot(class):
 			leftOut["sponsorship"]++
+			continue
+		case strings.HasPrefix(class, "exclude:"):
+			// An owner-written exclusion: what it matched can say what the
+			// owner needs (a work-authorization phrase), and it is the owner's
+			// rule to review, not a model's.
+			leftOut["exclusion"]++
 			continue
 		}
 		cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: class})

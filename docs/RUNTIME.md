@@ -648,8 +648,10 @@ and which drops look wrong. Go computes and the model interprets (`internal/doct
 
 - **Board signals** over the newest `--runs` records (default 30): `zero_every_run`,
   `zero_after_nonzero`, `sharp_drop`, `mass_missed`, `chronic_failure`, `failing_now`, and
-  `never_recorded` (a watched board no record names, which includes the boards a record's size
-  bound left unnamed). Each signalled board carries its raw `details {Listed … Prefiltered …}`
+  `never_recorded` (a watched board no run reached). The boards a record's size bound left unnamed
+  are read back from that run's own log (its per-board reconcile line); a run whose log is missing,
+  unreadable or read from its tail only is counted, and the model is told `never_recorded` may be a
+  reporting gap there. Each signalled board carries its raw `details {Listed … Prefiltered …}`
   lines from the run logs, anomalous runs first. A record's `listed` is counted after the board's
   prefilter, so only the raw line separates an empty answer (`Listed:0 Prefiltered:0`) from a board
   the prefilter emptied (`Listed:7 Prefiltered:7`).
@@ -658,12 +660,20 @@ and which drops look wrong. Go computes and the model interprets (`internal/doct
   name are removed before a line is kept.
 - **Drop sample**: `--sample` dropped postings (default 40) drawn with the weekly audit's sampler
   (`eval.AuditDraw`, seeded by `--seed`, default the ISO week) across drop classes. Drops whose class
-  is about sponsorship are not sampled, and no sponsorship rule or reading is sent.
+  is about work authorization (sponsorship, visa, citizenship, clearance and similar slot names) or
+  that an owner exclusion made are not sampled, and no such rule or reading is sent.
+- **Identifying words**: the target summary, every log line and every board error are checked
+  against `internal/track`'s identifying-word list (the built-in work-authorization terms plus the
+  owner's `identifying-words.txt` in the tracks directory). A log line or error that holds one is
+  withheld whole and counted; a target summary that holds one, or a list that cannot be read,
+  refuses the run before anything is sent.
 
 Both requests frame their data as untrusted. A reply is decoded strictly: one that judges a board or
 posting it was not sent, repeats one, or leaves an enum is refused whole, and a reply cut off at
-`max_tokens` is refused. A part that fails is written into the report as failed and the command
-exits 1. The report is `<state dir>/doctor/<UTC time>.md` and `.json`. Nothing in the ledger, the
+`max_tokens` is refused; a refused reply is kept in the JSON report (`raw_reply`, at most 64 KiB)
+because it was paid for. A part that fails, or that judged fewer boards or postings than it was
+sent, is written into the report as such and the command exits 1; so does a run with no readable
+run record. The report is `<state dir>/doctor/<UTC time>.md` and `.json`. Nothing in the ledger, the
 rules or the watchlist is changed.
 
 ## Runtime state, cooldowns and locks

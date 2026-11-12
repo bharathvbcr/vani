@@ -121,10 +121,12 @@ type BoardSignal struct {
 // least one signal.
 func Signals(history []BoardRun, watchlist []string) []BoardSignal {
 	byBoard := map[string][]BoardRun{}
+	once := map[[2]string]bool{} // board, run: a run's first entry for a board is its own
 	for _, br := range history {
-		if br.Board == "" {
+		if br.Board == "" || once[[2]string{br.Board, br.RunID}] {
 			continue
 		}
+		once[[2]string{br.Board, br.RunID}] = true
 		byBoard[br.Board] = append(byBoard[br.Board], br)
 	}
 	var out []BoardSignal
@@ -217,7 +219,7 @@ func boardSignal(board string, runs []BoardRun) (BoardSignal, bool) {
 	if s.Latest != nil && s.Reads >= minRuns && s.Median >= sharpDropMin && float64(*s.Latest) < sharpDropShare*float64(s.Median) {
 		s.Signals = appendOnce(s.Signals, SigSharpDrop)
 	}
-	if len(runs) >= 2 && 2*s.Failures >= len(runs) {
+	if s.Failures >= 2 && 2*s.Failures >= len(runs) {
 		s.Signals = appendOnce(s.Signals, SigChronicFailure)
 	}
 	if last.Outcome == OutcomeFailed || last.Outcome == OutcomeRateLimited {

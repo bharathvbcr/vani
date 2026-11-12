@@ -64,6 +64,9 @@ func Markdown(r Report, drops []DropCase) string {
 	fmt.Fprintf(&b, "# Pipeline doctor, %s\n\n", r.At.UTC().Format("2006-01-02 15:04Z"))
 	fmt.Fprintf(&b, "Model: %s. Runs read through %s. The model's verdicts are a report only: nothing in the ledger, the drop rules or the watchlist was changed.\n\n", r.Model, stamp(r.Through))
 
+	if len(r.RunProblems) > 0 {
+		fmt.Fprintf(&b, "**%d run records could not be read**, so the board series below have gaps: %s\n\n", len(r.RunProblems), cell(strings.Join(r.RunProblems, "; ")))
+	}
 	b.WriteString("## Boards\n\n")
 	fmt.Fprintf(&b, "%d boards tripped a deterministic signal; %d were sent, %d judged.", len(r.Signals), r.Boards.Asked, r.Boards.Answered)
 	if r.Boards.Error != "" {
@@ -124,10 +127,14 @@ func Markdown(r Report, drops []DropCase) string {
 	if len(r.DropsLeft) > 0 {
 		fmt.Fprintf(&b, "Not examined: %d sampled drops.\n\n", len(r.DropsLeft))
 	}
+	if n := bodiesMissing(drops); n > 0 {
+		fmt.Fprintf(&b, "%d sampled drops were sent without their description (it could not be read back); their verdicts rest on the title and readings.\n\n", n)
+	}
 	patterns(&b, r.Drops.Patterns)
 
 	b.WriteString("## Logs read\n\n")
-	fmt.Fprintf(&b, "%d logs read, %d trouble lines, %d distinct; %d distinct lines past the cap were not sent.", r.Logs.LogsRead, r.Logs.LinesSeen, r.Logs.Distinct, r.Logs.LeftOut)
+	fmt.Fprintf(&b, "%d logs read, %d trouble lines, %d distinct; %d distinct lines past the cap were not sent; %d lines were withheld for an identifying word; %d lines too long to read were skipped.",
+		r.Logs.LogsRead, r.Logs.LinesSeen, r.Logs.Distinct, r.Logs.LeftOut, r.Logs.Withheld, r.Logs.TooLong)
 	if len(r.Logs.Unreadable) > 0 {
 		fmt.Fprintf(&b, " Unreadable: %s.", strings.Join(r.Logs.Unreadable, ", "))
 	}
@@ -156,9 +163,24 @@ func patterns(b *strings.Builder, ps []Pattern) {
 	b.WriteString("\n")
 }
 
-// cell is s safe inside one Markdown table cell.
-func cell(s string) string {
-	return strings.ReplaceAll(oneLineMD(s), "|", "\\|")
+func bodiesMissing(drops []DropCase) int {
+	n := 0
+	for _, d := range sentDrops(drops) {
+		if d.BodyMissing {
+			n++
+		}
+	}
+	return n
 }
 
-func oneLineMD(s string) string { return strings.Join(strings.Fields(s), " ") }
+// mdEscaper escapes what Markdown would read as markup in text written by an
+// employer or a model (a title, an error, a verdict): links, emphasis, code,
+// inline HTML and the table's own separator.
+var mdEscaper = strings.NewReplacer(`\`, `\\`, "|", `\|`, "[", `\[`, "]", `\]`, "<", `&lt;`, ">", `&gt;`,
+	"`", "\\`", "*", `\*`, "_", `\_`)
+
+// cell is s safe inside one Markdown table cell (oneLineMD escapes "|").
+func cell(s string) string { return oneLineMD(s) }
+
+// oneLineMD is s on one line, with markup escaped.
+func oneLineMD(s string) string { return mdEscaper.Replace(strings.Join(strings.Fields(s), " ")) }

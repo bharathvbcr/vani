@@ -26,7 +26,9 @@ const (
 	MaxTimeout       = 10 * time.Minute
 	// MaxBoards bounds the board signals sent in one request; the rest are
 	// reported as not examined.
-	MaxBoards = 120
+	// 60 verdicts of at most 300+300 characters, with the thinking before
+	// them, fit DefaultMaxTokens; a reply cut off there is refused whole.
+	MaxBoards = 60
 	// MaxDrops bounds the dropped postings sent in one request.
 	MaxDrops = 80
 	// MaxDescRunes bounds one dropped posting's description as sent.
@@ -90,6 +92,8 @@ type Input struct {
 	// boards are still missing from the history.
 	Recovered  int
 	LogMissing int
+	// RunProblems are the run records that could not be read, one line each.
+	RunProblems []string
 }
 
 // Board verdicts.
@@ -173,6 +177,7 @@ type Report struct {
 	Logs        LogDigest      `json:"logs"`
 	Unrecorded  int            `json:"unrecorded_boards_newest_run,omitempty"`
 	Recovered   int            `json:"board_reads_recovered_from_logs,omitempty"`
+	RunProblems []string       `json:"run_problems,omitempty"`
 	LogMissing  int            `json:"runs_with_unnamed_boards_and_no_log,omitempty"`
 }
 
@@ -285,7 +290,7 @@ Judge only from the evidence given. When the evidence cannot separate a silent f
 
 Reply with exactly one JSON object and nothing else (no prose, no code fence):
 {"boards":[{"board":"ats:token","verdict":"silent_failure|transient_empty|truly_empty|loud_failure|healthy|unclear","confidence":"high|medium|low","evidence":"...","next_step":"..."}],"patterns":[{"title":"...","detail":"...","refs":["ats:token or log line"],"fix":"..."}]}
-Give one entry per board you were sent, using its exact board id. evidence and next_step: at most 600 characters each. patterns: at most 10 cross-cutting issues (a class of adapter, a reporting gap, a recurring log error), each with a concrete fix in the pipeline's code or configuration.`
+Give one entry per board you were sent, using its exact board id. evidence and next_step: at most 300 characters each. patterns: at most 10 cross-cutting issues (a class of adapter, a reporting gap, a recurring log error), each with a concrete fix in the pipeline's code or configuration.`
 
 const dropsSystem = `You audit the drop decisions of a personal job-search pipeline. The pipeline drops postings either by title rules (a substring of the title selects a slot value, e.g. seniority=manager when the title contains "Manager") or by a small decision model reading the posting (e.g. role_fit=mismatch_domain at p>=0.90). A wrong drop is costly: the job seeker never sees the role.
 
@@ -294,7 +299,7 @@ For each sampled dropped posting, decide whether dropping it was correct for the
 - seniority_rule: the seniority reading is right but dropping that level is wrong for this target, or the level was misread;
 - model_misread: the decision model misjudged the domain or fit;
 - exclusion: an owner-written exclusion matched;
-- thin_description: the posting text was too thin to judge, so a drop was premature;
+- thin_description: the posting text was too thin to judge, so a drop was premature (not when body_missing is true: that posting's text was not available to this review, which says nothing about what the pipeline read; judge it from the title and readings, or answer unclear);
 - none: the drop was correct;
 - other.
 
@@ -306,7 +311,14 @@ Give one entry per posting you were sent, using its exact key. why: at most 300 
 
 func boardsUser(in Input, boards []BoardSignal) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Runs read through %s. %d boards tripped a signal; %d are sent here.\n\n", stamp(in.Through), len(in.Boards), len(boards))
+	fmt.Fprintf(&sb, "Runs read through %s. %d boards tripped a signal; %d are sent here.\n", stamp(in.Through), len(in.Boards), len(boards))
+	if in.LogMissing > 0 {
+		fmt.Fprintf(&sb, "%d runs left boards unnamed in their record and had no whole readable log, so never_recorded may be a reporting gap for those runs, not proof no run reached the board.\n", in.LogMissing)
+	}
+	if len(in.RunProblems) > 0 {
+		fmt.Fprintf(&sb, "%d run records could not be read; the series have gaps there.\n", len(in.RunProblems))
+	}
+	sb.WriteString("\n")
 	sb.WriteString(llmbackend.BeginMarker + "\n")
 	data := struct {
 		Boards []BoardSignal `json:"boards"`
@@ -382,7 +394,7 @@ func Analyze(ctx context.Context, p llm.Provider, cfg Config, in Input, now time
 		return Report{}, fmt.Errorf("doctor: %w", err)
 	}
 	rep := Report{At: now, Model: cfg.Model, Through: in.Through, Seed: in.Seed, Strata: in.Strata, Signals: in.Boards, Logs: in.Logs, Unrecorded: in.Unrecorded,
-		Recovered: in.Recovered, LogMissing: in.LogMissing}
+		Recovered: in.Recovered, LogMissing: in.LogMissing, RunProblems: in.RunProblems}
 
 	sentB := sentBoards(in.Boards)
 	rep.Boards.Asked = len(sentB)

@@ -258,6 +258,12 @@ func (w Words) found(s string) []string {
 	return out
 }
 
+// Found is found for callers outside this package that screen text before it
+// leaves the machine (vani doctor). Its signature is the one the
+// kb-redactor-plus-auditor branch gives its folding matcher (match.go), so a
+// caller is unchanged when that matcher replaces this one.
+func (w Words) Found(s string) []string { return w.found(s) }
+
 // Bank is the set of knowledge-base entry ids evidence may cite.
 type Bank map[string]struct{}
 
