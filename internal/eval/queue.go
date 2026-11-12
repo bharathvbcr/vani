@@ -21,7 +21,10 @@ type DropRule struct {
 // annotations (the folded record keeps no event reason): "title" or "model"
 // for what read it, and the slot of the first rule its readings match, as
 // "title:role_fit" or "model:seniority". A dropped record no rule explains is
-// "<who>:other"; "" is returned for a record that is not dropped. It never
+// "<who>:other". A record an exclusion dropped (at triage or by
+// ApplyExclusions) is "exclude:<field>", the field that matched (title,
+// company, location, description or other), whatever readings it carries.
+// "" is returned for a record that is not dropped. It never
 // names a rule's value: values can reveal the owner's work authorization, and a
 // class reaches the label file.
 func DropClass(r ledger.Record, rules []DropRule) string {
@@ -29,6 +32,11 @@ func DropClass(r ledger.Record, rules []DropRule) string {
 		return ""
 	}
 	backend := r.Annotations[ledger.AnnTriagePrefix+"backend"]
+	// An exclusion is checked first: ApplyExclusions keeps the readings a
+	// model made before it, and those must not be credited with its drop.
+	if why := strings.TrimSpace(r.Annotations[AnnExcludeMatched]); why != "" || strings.TrimSpace(backend) == ExcludeBackend {
+		return "exclude:" + excludeField(why)
+	}
 	for _, rule := range rules {
 		v := strings.TrimSpace(r.Annotations[ledger.AnnTriagePrefix+rule.Slot])
 		if v == "" {
@@ -46,14 +54,41 @@ func DropClass(r ledger.Record, rules []DropRule) string {
 	return dropWho(backend) + ":other"
 }
 
+// The pipeline's markers on a dropped record that DropClass reads. eval does
+// not import the pipeline; dropclass_parity_test pins these to its writers
+// (pipeline.AnnExcluded, ExcludeBackend, TitleBackend).
+const (
+	// AnnExcludeMatched holds why an exclusion dropped the posting, at triage
+	// or by ApplyExclusions; it is cleared when the posting is reopened.
+	AnnExcludeMatched = "exclude.matched"
+	// ExcludeBackend is the triage backend recorded when an exclusion dropped
+	// a posting before any backend was asked.
+	ExcludeBackend = "exclude"
+	// TitleBackend is the backend a title reading is recorded under.
+	TitleBackend = "title"
+)
+
 func dropWho(backend string) string {
 	switch strings.TrimSpace(backend) {
 	case "":
 		return "unknown"
-	case "title":
+	case TitleBackend:
 		return "title"
 	}
 	return "model"
+}
+
+// excludeField names the posting field an exclusion matched, from the reason
+// config.Exclude.Match gives ("title matches …", "company is …", "location …",
+// "description matches …"), with or without the pipeline's "excluded: "
+// prefix. The matched value is never kept: a class reaches the label file.
+func excludeField(why string) string {
+	why = strings.TrimPrefix(strings.TrimSpace(why), "excluded:")
+	switch f, _, _ := strings.Cut(strings.TrimSpace(why), " "); f {
+	case "title", "company", "location", "description":
+		return f
+	}
+	return "other"
 }
 
 // classToken keeps the characters of s that are safe in a class name (a-z, 0-9,
