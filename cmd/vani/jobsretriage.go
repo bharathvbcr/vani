@@ -594,8 +594,7 @@ func (a *retriageAsker) read(ctx context.Context, p llm.Provider, dir string, r 
 		// The teacher store's provenance, computed its way, so the reading binds
 		// to its text and question as a teacher reading does. pr.q is the
 		// jd_triage question for a.summary, the one PromptHash fingerprints.
-		TextSHA256: eval.HashText(r.Posting.Description), TitleSHA256: eval.HashText(r.Posting.Title),
-		LocationSHA256: eval.HashText(r.Posting.Location), FixtureSHA: eval.FixtureSHA(), PromptHash: eval.PromptHash(a.summary),
+		TextSHA256: eval.HashText(r.Posting.Description), FixtureSHA: eval.FixtureSHA(), PromptHash: eval.PromptHash(a.summary),
 	}
 	if err := manualtriage.Set(dir, rd); err != nil {
 		return manualtriage.Reading{}, nil, storeErr(err, cost)

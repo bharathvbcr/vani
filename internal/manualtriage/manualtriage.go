@@ -106,47 +106,43 @@ type Reading struct {
 	Text   string `json:"text"`
 	Prompt string `json:"prompt"`
 	// Provenance in the teacher store's terms (eval.TeacherRow), so a reader can
-	// bind a manual reading as it binds a teacher reading: TextSHA256,
-	// TitleSHA256 and LocationSHA256 are eval.HashText of the raw description,
-	// title and location; FixtureSHA is eval.FixtureSHA and PromptHash
-	// eval.PromptHash of the target summary. Readings stored before 2026-11-11
+	// admit a manual reading as it admits a teacher reading: TextSHA256 is
+	// eval.HashText of the raw description, FixtureSHA eval.FixtureSHA and
+	// PromptHash eval.PromptHash of the target summary. The rendered title and
+	// location are already bound by Text. Readings stored before 2026-11-11
 	// have none of them, and none is ever made up for one. They are not what
 	// makes a reading current (Text is).
-	TextSHA256     string `json:"text_sha256,omitempty"`
-	TitleSHA256    string `json:"title_sha256,omitempty"`
-	LocationSHA256 string `json:"location_sha256,omitempty"`
-	FixtureSHA     string `json:"fixture_sha,omitempty"`
-	PromptHash     string `json:"prompt_hash,omitempty"`
+	TextSHA256 string `json:"text_sha256,omitempty"`
+	FixtureSHA string `json:"fixture_sha,omitempty"`
+	PromptHash string `json:"prompt_hash,omitempty"`
 }
 
 // event is one stored line. The provenance fields are stored under the teacher
 // store's names. A reader older than them refuses a line that carries them
 // (DisallowUnknownFields), as it refuses any line from a newer writer.
 type event struct {
-	V              int               `json:"v"`
-	At             time.Time         `json:"at"`
-	Key            posting.Key       `json:"key"`
-	Op             string            `json:"op"`
-	Slots          map[string]string `json:"slots,omitempty"`
-	Model          string            `json:"model,omitempty"`
-	Text           string            `json:"text,omitempty"`
-	Prompt         string            `json:"prompt,omitempty"`
-	TextSHA256     string            `json:"text_sha256,omitempty"`
-	TitleSHA256    string            `json:"title_sha256,omitempty"`
-	LocationSHA256 string            `json:"location_sha256,omitempty"`
-	FixtureSHA     string            `json:"fixture_sha,omitempty"`
-	PromptHash     string            `json:"prompt_hash,omitempty"`
+	V          int               `json:"v"`
+	At         time.Time         `json:"at"`
+	Key        posting.Key       `json:"key"`
+	Op         string            `json:"op"`
+	Slots      map[string]string `json:"slots,omitempty"`
+	Model      string            `json:"model,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	Prompt     string            `json:"prompt,omitempty"`
+	TextSHA256 string            `json:"text_sha256,omitempty"`
+	FixtureSHA string            `json:"fixture_sha,omitempty"`
+	PromptHash string            `json:"prompt_hash,omitempty"`
 }
 
 // setEvent is rd's set line.
 func setEvent(rd Reading) event {
 	return event{V: Version, At: rd.At.UTC(), Key: rd.Key, Op: opSet, Slots: rd.Slots, Model: rd.Model, Text: rd.Text, Prompt: rd.Prompt,
-		TextSHA256: rd.TextSHA256, TitleSHA256: rd.TitleSHA256, LocationSHA256: rd.LocationSHA256, FixtureSHA: rd.FixtureSHA, PromptHash: rd.PromptHash}
+		TextSHA256: rd.TextSHA256, FixtureSHA: rd.FixtureSHA, PromptHash: rd.PromptHash}
 }
 
 // provenance lists e's optional provenance hashes.
 func (e event) provenance() []string {
-	return []string{e.TextSHA256, e.TitleSHA256, e.LocationSHA256, e.FixtureSHA, e.PromptHash}
+	return []string{e.TextSHA256, e.FixtureSHA, e.PromptHash}
 }
 
 // Dir is where the store lives for a state directory.
@@ -332,7 +328,7 @@ func fold(m map[posting.Key]Reading, e event) {
 		return
 	}
 	m[e.Key] = Reading{Key: e.Key, Slots: maps.Clone(e.Slots), Model: e.Model, At: e.At, Text: e.Text, Prompt: e.Prompt,
-		TextSHA256: e.TextSHA256, TitleSHA256: e.TitleSHA256, LocationSHA256: e.LocationSHA256, FixtureSHA: e.FixtureSHA, PromptHash: e.PromptHash}
+		TextSHA256: e.TextSHA256, FixtureSHA: e.FixtureSHA, PromptHash: e.PromptHash}
 }
 
 type replayed struct {

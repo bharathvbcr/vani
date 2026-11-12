@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 
@@ -13,7 +14,9 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/manualtriage"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/decide"
 )
 
 // The provenance a training export reads off Vani's records (Lappi-decision's
@@ -69,6 +72,50 @@ func TestWiredEscalationRecordsTheTierModelAndTheText(t *testing.T) {
 	}
 }
 
+// The LLM backend as the drop-candidate shadow (decide.shadow "llm") answers
+// under the name "llm", which does not say which Claude model it asked: its
+// reading names llm.triage_model as triage.<slot>.shadow_model.
+func TestWiredLLMShadowRecordsItsModel(t *testing.T) {
+	for _, model := range []string{"claude-haiku-5-5", "claude-sonnet-5-5"} {
+		t.Run(model, func(t *testing.T) {
+			rig := cloudShadowRig(t, func(c *config.Config) { c.LLM.TriageModel = model })
+			if err := rig.r.Advance(context.Background(), "gh:acme:1"); err != nil {
+				t.Fatal(err)
+			}
+			if bodies := *rig.claudeBody; len(bodies) != 1 || requestModel(t, bodies[0]) != model {
+				t.Fatalf("shadow requests: %d", len(bodies))
+			}
+			rec, _ := rig.l.Get("gh:acme:1")
+			if rec.Annotations["triage.role_fit.shadow_backend"] != "llm" || rec.Annotations["triage.role_fit.shadow_model"] != model {
+				t.Fatalf("shadow backend %q model %q, want llm / %s", rec.Annotations["triage.role_fit.shadow_backend"],
+					rec.Annotations["triage.role_fit.shadow_model"], model)
+			}
+		})
+	}
+}
+
+// modelTagged tags every slot, an error's readings too, and never writes the
+// wrapped backend's own map.
+func TestModelTaggedTagsEveryReadingWithoutWritingTheBackendsMap(t *testing.T) {
+	own := map[string]decide.SlotReading{
+		"role_fit":  {Reading: decide.Answered, Value: "strong_fit"},
+		"work_mode": {Reading: decide.Unavailable, Detail: "deadline"},
+	}
+	inner := &escFake{reply: func(decide.Question) (decide.Answer, error) {
+		return decide.Answer{Backend: "llm", Slots: own}, errors.New("partial")
+	}}
+	a, err := modelTagged{Backend: inner, model: "claude-haiku-5-5"}.Decide(context.Background(), triageQuestion("gh:acme:1"))
+	if err == nil {
+		t.Fatal("the backend's error was dropped")
+	}
+	if a.Slots["role_fit"].Detail != "model=claude-haiku-5-5" || a.Slots["work_mode"].Detail != "deadline;model=claude-haiku-5-5" {
+		t.Fatalf("slots %+v", a.Slots)
+	}
+	if own["role_fit"].Detail != "" || own["work_mode"].Detail != "deadline" {
+		t.Fatalf("the backend's own map was written: %+v", own)
+	}
+}
+
 // The backfill records the tier's model on each reading and the raw text it
 // asked the tier about, under the shadow's own keys.
 func TestBackfillRecordsTheTierModelAndText(t *testing.T) {
@@ -98,8 +145,8 @@ func TestBackfillRecordsTheTierModelAndText(t *testing.T) {
 // A manual reading is stored with the provenance a teacher-store row carries,
 // computed the teacher's way: fixture_sha (FixtureSHA), prompt_hash
 // (PromptHash of the target summary), text_sha256 (HashText of the raw
-// description), and title_sha256 and location_sha256. The store's own text and
-// prompt hashes are kept as they were.
+// description). The store's own text (which binds the rendered title and
+// location) and prompt hashes are kept as they were.
 func TestJobsRetriageRecordsTheTeacherProvenance(t *testing.T) {
 	p := &retriageLLM{text: rtAnswer, usage: llm.Usage{InputTokens: 1800, OutputTokens: 210}, stop: llm.StopEndTurn}
 	_, state := rtSetup(t, p, nil)
@@ -116,12 +163,11 @@ func TestJobsRetriageRecordsTheTeacherProvenance(t *testing.T) {
 	}
 	post := rtPosting("gh:acme:2", "Platform Engineer")
 	want := map[string]string{
-		"fixture_sha":     eval.FixtureSHA(),
-		"prompt_hash":     eval.PromptHash(rtSummary),
-		"text_sha256":     eval.HashText(post.Description),
-		"title_sha256":    eval.HashText(post.Title),
-		"location_sha256": eval.HashText(post.Location),
-		"model":           rtSonnet,
+		"fixture_sha": eval.FixtureSHA(),
+		"prompt_hash": eval.PromptHash(rtSummary),
+		"text_sha256": eval.HashText(post.Description),
+		"text":        manualtriage.TextSHA256(post),
+		"model":       rtSonnet,
 	}
 	for k, v := range want {
 		if line[k] != v {

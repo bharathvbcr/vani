@@ -14,14 +14,13 @@ import (
 // withProvenance is reading() carrying the teacher store's provenance fields.
 func withProvenance(k string) Reading {
 	r := reading(k, t0)
-	r.TextSHA256, r.TitleSHA256, r.LocationSHA256 = hash('c'), hash('d'), hash('e')
-	r.FixtureSHA, r.PromptHash = hash('f'), hash('0')
+	r.TextSHA256, r.FixtureSHA, r.PromptHash = hash('c'), hash('f'), hash('0')
 	return r
 }
 
-// The fields are written under the teacher store's names (fixture_sha,
-// prompt_hash, text_sha256, title_sha256, location_sha256), read back, and
-// carried through a compaction; the store's own text and prompt are unchanged.
+// The fields are written under the teacher store's names (text_sha256,
+// fixture_sha, prompt_hash), read back, and carried through a compaction; the
+// store's own text and prompt are unchanged.
 func TestProvenanceRoundTripsUnderTheTeacherNames(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "retriage")
 	want := withProvenance("gh:acme:1")
@@ -36,8 +35,7 @@ func TestProvenanceRoundTripsUnderTheTeacherNames(t *testing.T) {
 	}
 	for k, v := range map[string]string{
 		"text": want.Text, "prompt": want.Prompt,
-		"text_sha256": want.TextSHA256, "title_sha256": want.TitleSHA256, "location_sha256": want.LocationSHA256,
-		"fixture_sha": want.FixtureSHA, "prompt_hash": want.PromptHash,
+		"text_sha256": want.TextSHA256, "fixture_sha": want.FixtureSHA, "prompt_hash": want.PromptHash,
 	} {
 		if line[k] != v {
 			t.Errorf("stored %s = %v, want %s", k, line[k], v)
@@ -49,8 +47,8 @@ func TestProvenanceRoundTripsUnderTheTeacherNames(t *testing.T) {
 			t.Fatalf("%s: %v", stage, err)
 		}
 		got := m["gh:acme:1"]
-		if got.TextSHA256 != want.TextSHA256 || got.TitleSHA256 != want.TitleSHA256 || got.LocationSHA256 != want.LocationSHA256 ||
-			got.FixtureSHA != want.FixtureSHA || got.PromptHash != want.PromptHash || got.Text != want.Text || got.Prompt != want.Prompt {
+		if got.TextSHA256 != want.TextSHA256 || got.FixtureSHA != want.FixtureSHA || got.PromptHash != want.PromptHash ||
+			got.Text != want.Text || got.Prompt != want.Prompt {
 			t.Fatalf("%s: read back %+v", stage, got)
 		}
 	}
@@ -78,7 +76,7 @@ func TestOldLinesWithoutProvenanceStillRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(file(dir))
-	for _, k := range []string{"text_sha256", "title_sha256", "location_sha256", "fixture_sha", "prompt_hash"} {
+	for _, k := range []string{"text_sha256", "fixture_sha", "prompt_hash"} {
 		if strings.Contains(string(raw), `"`+k+`"`) {
 			t.Errorf("an old reading gained %s: %s", k, raw)
 		}
@@ -90,8 +88,7 @@ func TestProvenanceFieldsAreCheckedWhenPresent(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "retriage")
 	for name, mut := range map[string]func(*Reading){
 		"text_sha256 short":    func(r *Reading) { r.TextSHA256 = "abc" },
-		"title_sha256 not hex": func(r *Reading) { r.TitleSHA256 = strings.Repeat("z", 64) },
-		"location_sha256 long": func(r *Reading) { r.LocationSHA256 = hash('a') + "a" },
+		"text_sha256 long":     func(r *Reading) { r.TextSHA256 = hash('a') + "a" },
 		"fixture_sha not hex":  func(r *Reading) { r.FixtureSHA = strings.Repeat("g", 64) },
 		"prompt_hash with\nnl": func(r *Reading) { r.PromptHash = hash('a')[:63] + "\n" },
 	} {
@@ -112,17 +109,20 @@ func TestProvenanceFieldsAreCheckedWhenPresent(t *testing.T) {
 	}
 }
 
-// A full store (MaxEntries readings, each with every field) still fits the
-// file bound, so the fields never make a store full that was not.
+// A full store (MaxEntries readings, each with every field and a long key)
+// still fits the file bound with room to spare, so the fields do not make a
+// store fill by bytes before it reaches its entry cap: a reading refused then
+// would already have been paid for.
 func TestFullStoreWithProvenanceFitsTheFileBound(t *testing.T) {
 	var buf bytes.Buffer
-	for i := 0; i < MaxEntries; i++ {
-		r := withProvenance(fmt.Sprintf("gh:acme-corporation:%010d", i))
+	for i := range MaxEntries {
+		// 96-byte keys: longer than a board key usually is.
+		r := withProvenance(fmt.Sprintf("wd:acme-corporation.wd5.myworkdayjobs.com/External_Careers_Site:JR-%027d", i))
 		r.Model = "claude-sonnet-5-5"
-		buf.Write(lineOf(t, event{V: Version, At: t0, Key: r.Key, Op: opSet, Slots: r.Slots, Model: r.Model, Text: r.Text, Prompt: r.Prompt,
-			TextSHA256: r.TextSHA256, TitleSHA256: r.TitleSHA256, LocationSHA256: r.LocationSHA256, FixtureSHA: r.FixtureSHA, PromptHash: r.PromptHash}))
+		buf.Write(lineOf(t, setEvent(r)))
 	}
 	if buf.Len() > MaxFileBytes {
 		t.Fatalf("%d readings with provenance take %d bytes, over the %d bound", MaxEntries, buf.Len(), MaxFileBytes)
 	}
+	t.Logf("%d readings with provenance: %d bytes (%d per line) of %d", MaxEntries, buf.Len(), buf.Len()/MaxEntries, MaxFileBytes)
 }

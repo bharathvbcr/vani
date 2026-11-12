@@ -16,7 +16,7 @@ field, exactly as the backend was asked: no whitespace folding, no case change
 | Key | On which events | Value |
 |---|---|---|
 | `triage.desc_sha256`, `triage.title_sha256`, `triage.location_sha256` | the event of a triage that asked the backends, kept or dropped (exactly the triage events the next list does not exclude) | hash of the posting's description, title, location the question was built from. The primary readings and any in-line shadow reading on that same event were all asked about this text. |
-| `triage.<slot>.shadow_model` | beside `triage.<slot>.shadow_backend` = `escalate`, on a triage event or a backfill event (reason `shadow_backfilled`) | the model id the escalation tier asked that run (`llm.triage_model`, else `llm.model`), for example `claude-sonnet-5-5`. Also present when the tier's reading was an outage. |
+| `triage.<slot>.shadow_model` | beside `triage.<slot>.shadow_backend` = `escalate` (a triage event or a backfill event, reason `shadow_backfilled`) or `llm` (`decide.shadow: "llm"`) | the model id that shadow asked that run (`llm.triage_model`, else `llm.model`), for example `claude-sonnet-5-5`. Also present when the shadow's reading was an outage. |
 | `triage.shadow_desc_sha256`, `triage.shadow_title_sha256`, `triage.shadow_location_sha256` | backfill events only (reason `shadow_backfilled`) | hash of the text the tier was asked about. The tier may read a later version than the primary did, so these never overwrite `triage.desc_sha256`. |
 
 Not bound, on purpose:
@@ -25,9 +25,13 @@ Not bound, on purpose:
 
 A later triage of the same key writes `""` for every `triage.*` key it does not set (the ledger's forget rule), so read `""` as absent. A kept-across-edit event carries no binding; the key's last binding and `triage.basis_hash` still describe what the triage read.
 
-`triage.<slot>.shadow_model` is absent for a shadow backend that does not name its model (the Lappi shadow) and for a model id that holds `;`, `=`, whitespace or a control character (`pipeline.TagModel` refuses to tag one it could not read back whole).
+The hashes cover the whole field. The model read the rendered context (target summary, title, location, description), cut to 24 KiB (`jdtriage.Render`), so a very long description was read only in part.
 
-`triage.model` is unchanged: its `llm=` part is still `llm.model`, not the escalation tier's model.
+An escalation reading was asked only the escalated slots (the same context, fewer slots), so the teacher's `prompt_hash`, which fingerprints the all-slot question, does not describe its question.
+
+`triage.<slot>.shadow_model` is absent for a shadow backend whose name already names its model (the Lappi, OpenRouter and local shadows) and for a model id that holds `;`, `=`, whitespace or a control character (`pipeline.TagModel` refuses to tag one it could not read back whole).
+
+`triage.model` is unchanged: its `llm=` part is still `llm.model`. The LLM fallback and the escalation tier both ask `llm.triage_model`. A primary reading the fallback answered (`triage.<slot>.backend` = `llm`) still records no model of its own; only shadow readings do.
 
 ## Teacher store (`teacher_readings.jsonl`)
 
@@ -43,11 +47,11 @@ A later triage of the same key writes `""` for every `triage.*` key it does not 
 |---|---|
 | `fixture_sha` | `eval.FixtureSHA()`: sha256 of `internal/decide/jdtriage/fixture.json` (the teacher's jd fixture sha) |
 | `prompt_hash` | `eval.PromptHash(summary)`: the teacher's jd `prompt_hash` for the normalised target summary |
-| `text_sha256`, `title_sha256`, `location_sha256` | hash of the raw description, title and location asked about |
+| `text_sha256` | hash of the raw description asked about |
 
-The rows carry no `task` key; every retriage reading is `career.jd_triage`. `model` was already the model asked. The store's own `text` and `prompt` keep their meaning. A clear line carries none of the fields.
+The rows carry no `task` key; every retriage reading is `career.jd_triage`. `model` was already the model asked. The store's own `text` and `prompt` keep their meaning. `text` is sha256 of `jdtriage.Render(title, location, description, "")`, so it already binds the rendered title and location; retriage lines carry no `title_sha256` or `location_sha256`, because a full store (5,000 readings) would then fill its 4 MiB bound before its entry cap. A clear line carries none of the fields.
 
-Older `vani` binaries read the retriage store with unknown fields refused, so they treat a store holding a new line as corrupt. Install the new binaries together, and do not roll back to one older than this change once a new reading is stored.
+Older `vani` binaries read the retriage store with unknown fields refused, so they treat a store holding a new line as corrupt. That includes a daemon or app that is still running the old binary. Install the new binaries together and restart what runs them, and do not roll back to one older than this change once a new reading is stored.
 
 ### Why the old retriage `prompt` never matched the teacher's `prompt_hash`
 
