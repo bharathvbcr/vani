@@ -209,7 +209,12 @@ and what Vani answered.
 - **Other listings** are walked through their own "Next" or "Load more" control. A `rel=next` or
   next link is fetched and parsed only when it stays on the same listing: the same origin and path,
   and the same query apart from paging parameters. Anything else is reported and not followed. The
-  tab never navigates.
+  tab never navigates. A page read link by link (no JSON-LD or ATS markup, such as Anthropic's
+  careers page with 669 jobs on one page) is read up to its first 2000 distinct job links
+  (`MAX_PAGE_JOB_LINKS`). Links past that are counted and named in the drawer, the popup and the
+  crawl's last line, and such a walk is never reported complete. Checked: the scraper and crawl on a
+  saved copy of that page in Chrome (669 of 669 jobs, about 220 ms), and `bun test`. Not checked: the
+  drawer and popup wording in the loaded extension.
 - **Bounds:** 600 requests, 3 in flight, a 250 ms pause before each, 15 s per request, a 4 MiB
   body, 15 minutes per Workday crawl, 50 pages or 2000 jobs per page walk. Eight descriptions
   failing in a row end the description phase. The crawl reports itself complete only when the

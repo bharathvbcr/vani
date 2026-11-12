@@ -719,9 +719,12 @@ export async function crawlWorkday(b: WorkdayBoard, options: CrawlOptions = {}, 
 
 export interface PageJob { title: string; company: string; location: string; url: string; snippet: string; posted?: string }
 
+/** One document's listing; `unread` counts job links on it the scraper did not read (scraper.ts MAX_PAGE_JOB_LINKS). */
+export interface PageScrape { jobs: readonly PageJob[]; unread: number }
+
 export interface PageDeps {
-  /** The listing on one document (scraper.ts's scrapePageJobs, adapted). */
-  scrape(doc: Document, pageUrl: string): PageJob[];
+  /** The listing on one document (scraper.ts's scrapePageJobs, adapted). A bare array means nothing was left unread. */
+  scrape(doc: Document, pageUrl: string): readonly PageJob[] | PageScrape;
   /** Fetch a same-listing URL and parse it; absent where no parser exists. */
   load?(url: string, signal: AbortSignal): Promise<Document>;
   sleep(ms: number): Promise<void>;
@@ -847,6 +850,13 @@ function jobKey(url: string): string {
   }
 }
 
+function readScrape(s: readonly PageJob[] | PageScrape): PageScrape {
+  if (Array.isArray(s)) return { jobs: s, unread: 0 };
+  const p = s as PageScrape;
+  const unread = Number.isFinite(p.unread) && p.unread > 0 ? Math.trunc(p.unread) : 0;
+  return { jobs: Array.isArray(p.jobs) ? p.jobs : [], unread };
+}
+
 /** Every page of the listing on `doc`, walked through its own pagination. */
 export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps, options: CrawlOptions = {}): Promise<CrawlReport> {
   const maxPages = Math.max(1, options.maxPages ?? 50);
@@ -861,6 +871,7 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
   let requests = 0;
   let complete = false;
   let shortened = 0;
+  let unread = 0;
   const keep = (jobs: readonly PageJob[]): number => {
     let n = 0;
     for (const j of jobs) {
@@ -877,9 +888,14 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
   try {
     for (;;) {
       if (options.signal?.aborted) { notes.push("stopped"); break; }
-      const found = deps.scrape(cur, url);
+      const read = readScrape(deps.scrape(cur, url));
+      const found = read.jobs;
       const fresh = keep(found);
       pages++;
+      if (read.unread > 0) {
+        unread += read.unread;
+        notes.push(`page ${pages} had ${read.unread} job link${read.unread === 1 ? "" : "s"} past the per-page read limit, not read`);
+      }
       options.onProgress?.({ phase: "pages", done: pages, jobs: seen.size });
       if (pages > 1 && fresh === 0) { notes.push(`page ${pages} showed no jobs not already seen`); break; }
       if (seen.size >= maxJobs) { notes.push(`stopped at ${maxJobs} jobs`); break; }
@@ -921,7 +937,7 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
       for (let waited = 0; waited < waitMs; waited += 250) {
         await deps.sleep(250);
         if (options.signal?.aborted) break;
-        const now = deps.scrape(doc, url);
+        const now = readScrape(deps.scrape(doc, url)).jobs;
         const fp = fingerprint(now);
         if (now.length > 0 && fp !== before && fp === last) { changed = true; break; }
         last = now.length > 0 && fp !== before ? fp : "";
@@ -939,8 +955,9 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
     requests,
     parts: pages,
     shortened,
-    complete,
-    notes: complete ? [] : notes,
+    // The pager running out is not the listing read whole when a page held links that were not read.
+    complete: complete && unread === 0,
+    notes: complete && unread === 0 ? [] : notes,
   };
 }
 

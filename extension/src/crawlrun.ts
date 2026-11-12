@@ -2,7 +2,7 @@
 // progress in the page, and hands the jobs to Vani through the ingest path (ingestJobs). It runs in the
 // content script, where the board's own API is same-origin, and keeps going if the popup closes.
 
-import { type CrawlProgress, type CrawlReport, type Http, type PageDeps, type PageJob, crawlListing, describeCrawl, readBody, sendCrawl } from "./crawler";
+import { type CrawlProgress, type CrawlReport, type Http, type PageDeps, type PageScrape, crawlListing, describeCrawl, readBody, sendCrawl } from "./crawler";
 import type { UserTargetProfile } from "./relevance";
 import { scrapePageJobs, scrubPageUrl, workdayCompany } from "./scraper";
 
@@ -55,8 +55,10 @@ const bytes = (s: string): number => new TextEncoder().encode(s).length;
  */
 export async function runCrawlToVani(deps: CrawlRunDeps, saveSearch: boolean, signal: AbortSignal, onStatus: (text: string) => void): Promise<{ text: string; report: CrawlReport }> {
   const host = (() => { try { return new URL(deps.pageUrl).hostname; } catch { return ""; } })();
-  const scrape = (d: Document, url: string): PageJob[] =>
-    scrapePageJobs(d, host, deps.profile, url).jobs.map(j => ({ title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.description || j.snippet, posted: j.posted }));
+  const scrape = (d: Document, url: string): PageScrape => {
+    const r = scrapePageJobs(d, host, deps.profile, url);
+    return { jobs: r.jobs.map(j => ({ title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.description || j.snippet, posted: j.posted })), unread: r.unread };
+  };
   const pageDeps: PageDeps = { scrape, load: pageLoader(deps), sleep: ms => (deps.http ? deps.http.sleep(ms) : new Promise(r => setTimeout(r, ms))) };
   const company = workdayCompany(deps.doc); // the board's API does not name it
   onStatus("Starting the crawl…");

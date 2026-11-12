@@ -57,6 +57,25 @@ export interface ScrapeResult {
   pageTitle: string;
   totalFound: number;
   jobs: ScrapedJob[];
+  /**
+   * Distinct job links on the page past MAX_PAGE_JOB_LINKS that the generic scraper did not read: the
+   * page holds more jobs than `jobs`. 0 when every link was read (or the page was read another way).
+   */
+  unread: number;
+}
+
+/**
+ * The most distinct job links the generic scraper reads on one page. Page content is untrusted, so the
+ * work is bounded; the bound is the crawl's own job limit, and links past it are counted (`unread`),
+ * never dropped in silence. One-page boards are large: Anthropic's careers page lists 669.
+ */
+export const MAX_PAGE_JOB_LINKS = 2000;
+
+/** Words for links the scraper did not read, or "" when there are none. */
+export function unreadText(unread: number): string {
+  if (!Number.isFinite(unread) || unread <= 0) return "";
+  const n = Math.trunc(unread);
+  return `${n} more job link${n === 1 ? "" : "s"} on this page not read (at most ${MAX_PAGE_JOB_LINKS} are read)`;
 }
 
 /**
@@ -1018,20 +1037,41 @@ function scrapeATSBoards(doc: Document, host: string, base: string, profile?: Pa
   return jobs;
 }
 
-/** Generic DOM scraper for any career page or job listing page. */
-function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTargetProfile>): ScrapedJob[] {
+/**
+ * Generic DOM scraper for any career page or job listing page. Reads the first MAX_PAGE_JOB_LINKS
+ * distinct job links in page order (a posting linked twice counts once) and counts the rest as `unread`.
+ */
+function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTargetProfile>): { jobs: ScrapedJob[]; unread: number } {
   const jobs: ScrapedJob[] = [];
   const seenUrls = new Set<string>();
+  let unread = 0;
 
   // Look for links that match job URLs
   const candidateLinks = Array.from(doc.querySelectorAll<HTMLAnchorElement>("a[href]")).filter(isJobLink);
 
   const company = extractCompanyName(doc, clean(doc.querySelector("meta[property='og:site_name']")?.getAttribute("content") ?? doc.title), base);
 
-  for (const a of candidateLinks.slice(0, 100)) {
+  // A container is read once however many links share it: a page that wraps every card in one
+  // div class="jobs" would otherwise read the whole list's text again for each of its links.
+  const containers = new Map<Element, { text: string; workplace: string; salary: string | undefined }>();
+  const readContainer = (c: Element | null): { text: string; workplace: string; salary: string | undefined } => {
+    const hit = c ? containers.get(c) : undefined;
+    if (hit) return hit;
+    const text = clean(c?.textContent);
+    const read = { text, workplace: extractWorkplaceType(text), salary: extractSalaryRange(text) };
+    if (c) containers.set(c, read);
+    return read;
+  };
+
+  for (const a of candidateLinks) {
     const url = resolveUrl(a.getAttribute("href"), base);
     if (!url || seenUrls.has(url)) continue;
-    seenUrls.add(url);
+    const past = seenUrls.size >= MAX_PAGE_JOB_LINKS;
+    seenUrls.add(url); // remembered past the bound too, so a link repeated later is not counted twice
+    if (past) {
+      unread++;
+      continue;
+    }
 
     // A card that is one link around several elements (title, badge, location row) is read from its own
     // markup: a.textContent glues them into "TitleFeaturedOffice: City". A plain text link keeps its text.
@@ -1050,10 +1090,8 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
 
     if (!title || title.length < 4 || title.length > 160 || /^(apply|apply now|view job|view|read more|details)$/i.test(title)) continue;
 
-    const containerText = clean(container?.textContent);
-    const workplace = extractWorkplaceType(containerText);
+    const { text: containerText, workplace, salary } = readContainer(container);
     const place = card?.location ?? "";
-    const salary = extractSalaryRange(containerText);
     // What the card says beyond its title; empty when it says nothing, never the title handed back.
     const rest = card ? (container ? cardRest(container, title) : "") : containerText;
     const snippet = (rest === title ? "" : rest).slice(0, 250);
@@ -1071,7 +1109,7 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
     });
   }
 
-  return jobs;
+  return { jobs, unread };
 }
 
 const TRACKING_PARAM = /^(utm_.*|gclid|fbclid|msclkid|ref|refid|trk|trackingid)$/i;
@@ -1109,7 +1147,7 @@ export function scrapePageJobs(
   const host = targetHost ?? (typeof location !== "undefined" ? location.hostname : "example.com");
   const page = scrubPageUrl(pageUrl ?? (typeof location !== "undefined" ? location.href : ""));
   if (!currentDoc) {
-    return { host, pageUrl: page, pageTitle: "", totalFound: 0, jobs: [] };
+    return { host, pageUrl: page, pageTitle: "", totalFound: 0, jobs: [], unread: 0 };
   }
   // Where this document is now, and where it was loaded. On the live document both are its own
   // window's (a frame is not at the top frame's URL); a fetched or parsed one is at pageUrl and,
@@ -1119,6 +1157,7 @@ export function scrapePageJobs(
   const base = baseOn(docHref, host);
   const ctx: JobReadContext = { href: docHref, loadedHref: loadedHref ?? (live ? navigationHref() : undefined) };
   let jobs: ScrapedJob[] = [];
+  let unread = 0;
 
   // Try JSON-LD first
   const jsonLdJobs = scrapeJsonLd(currentDoc, profile, ctx);
@@ -1157,7 +1196,9 @@ export function scrapePageJobs(
 
   // If still empty or very few, try generic DOM scraper
   if (jobs.length < 2) {
-    jobs.push(...scrapeGeneric(currentDoc, base, profile));
+    const generic = scrapeGeneric(currentDoc, base, profile);
+    jobs.push(...generic.jobs);
+    unread = generic.unread;
   }
 
   // Deduplicate by normalized URL or Title+Company
@@ -1182,6 +1223,7 @@ export function scrapePageJobs(
     pageTitle: currentDoc.title ?? "",
     totalFound: deduped.length,
     jobs: deduped,
+    unread,
   };
 }
 

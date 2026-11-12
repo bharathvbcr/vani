@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Http } from "../src/crawler";
 import { progressText, runCrawlToVani } from "../src/crawlrun";
+import { MAX_PAGE_JOB_LINKS } from "../src/scraper";
 
 const ORIGIN = "https://acme.wd1.myworkdayjobs.com";
 const PAGE = `${ORIGIN}/en-US/Careers?q=engineer&utm_source=mail`;
@@ -121,6 +122,32 @@ describe("runCrawlToVani", () => {
     // The fake page lists nothing, so nothing goes; the run still finishes and says why.
     expect(sent.length).toBe(0);
     expect(r.text).toContain("Nothing to send.");
+  });
+
+  test("a one-page listing past the scraper's link bound is read up to it and reported incomplete, not complete", async () => {
+    // Anthropic's careers page shape: every job a link on one page, no pager, no structured data.
+    const extra = 3;
+    const anchors = Array.from({ length: MAX_PAGE_JOB_LINKS + extra }, (_, i) => ({
+      children: [],
+      parentElement: null,
+      textContent: `Software Engineer, Team ${i}`,
+      getAttribute: (n: string) => (n === "href" ? `https://job-boards.greenhouse.io/anthropic/jobs/${4_000_000_000 + i}` : null),
+      closest: () => null,
+    }));
+    const page = {
+      title: "Jobs",
+      querySelector: () => null,
+      querySelectorAll: (sel: string) => (sel === "a[href]" ? anchors : []),
+    } as unknown as Document;
+    const sent: Array<{ jobs: unknown[] }> = [];
+    const r = await runCrawlToVani(
+      { doc: page, pageUrl: "https://www.anthropic.com/careers/jobs", pageTitle: "Jobs", send: async m => { sent.push(m as { jobs: unknown[] }); return { queued: (m as { jobs: unknown[] }).jobs.length }; } },
+      false, new AbortController().signal, () => {},
+    );
+    expect(r.report.listed).toBe(MAX_PAGE_JOB_LINKS);
+    expect(r.report.complete).toBe(false);
+    expect(r.text).toContain(`incomplete: page 1 had ${extra} job links past the per-page read limit, not read`);
+    expect(sent.reduce((n, m) => n + m.jobs.length, 0)).toBe(MAX_PAGE_JOB_LINKS);
   });
 
   test("a page that holds a whole posting sends its role text, not the 300-character listing snippet", async () => {

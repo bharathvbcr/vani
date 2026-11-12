@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_CARD_NODES, cardRest, readCard, withoutGluedLabel } from "../src/card";
 import { prepareIngest } from "../src/ingest";
-import { scrapePageJobs } from "../src/scraper";
+import { MAX_PAGE_JOB_LINKS, scrapePageJobs, unreadText } from "../src/scraper";
 
 const ELEMENT = 1;
 const TEXT = 3;
@@ -304,5 +304,57 @@ describe("card reading, adversarial", () => {
       const r = scrapePageJobs(d, "careers.example.test", undefined, PAGE);
       expect(r.jobs.map(j => j.company)).toEqual(["", ""]);
     }
+  });
+});
+
+// Anthropic's careers page (www.anthropic.com/careers/jobs) lists every opening as one card link to
+// its Greenhouse posting, all on one page, with no JSON-LD and no ATS markup, so the generic scraper
+// reads it. It used to stop at the first 100 links in page order and say nothing (669 on the page).
+const ROLES = ["Research Engineer", "Software Engineer", "Product Manager", "Recruiting Coordinator"];
+const listingCard = (i: number, href = `https://job-boards.greenhouse.io/anthropic/jobs/${4_000_000_000 + i}`) =>
+  `<a href="${href}" class="_8DFgsW_jobItem"><span class="title">${ROLES[i % ROLES.length]}, Team ${i}</span><span class="location">San Francisco, CA</span></a>`;
+const listingPage = (cards: string[]) => `<div class="jobs">${cards.join("")}</div>`;
+
+describe("a one-page listing with many job links", () => {
+  test("a page of 669 job cards is read whole", () => {
+    const r = scrape(listingPage(Array.from({ length: 669 }, (_, i) => listingCard(i))), "www.anthropic.com");
+    expect(r.jobs).toHaveLength(669);
+    expect(new Set(r.jobs.map(j => j.url)).size).toBe(669);
+  });
+
+  test("a posting linked twice is one job, and the second link does not use up the bound", () => {
+    const cards = Array.from({ length: 150 }, (_, i) => listingCard(i) + listingCard(i));
+    const r = scrape(listingPage(cards), "www.anthropic.com");
+    expect(r.jobs).toHaveLength(150);
+    expect(r.unread).toBe(0);
+  });
+
+  test("past the bound, the rest are counted as unread, never dropped in silence; repeats past it count once", () => {
+    const extra = 5;
+    // Plain text links, each in its own <p>: this test's small DOM walks a whole subtree for every
+    // querySelector, so cards sharing one big wrapper would time the test DOM, not the bound.
+    const link = (i: number) => `<p><a href="https://job-boards.greenhouse.io/anthropic/jobs/${4_000_000_000 + i}">${ROLES[i % ROLES.length]}, Team ${i}</a></p>`;
+    const cards = Array.from({ length: MAX_PAGE_JOB_LINKS + extra }, (_, i) => link(i));
+    // The last unread posting linked again: still 5 unread, not 6.
+    cards.push(link(MAX_PAGE_JOB_LINKS + extra - 1));
+    const r = scrape(cards.join(""), "www.anthropic.com");
+    expect(r.jobs).toHaveLength(MAX_PAGE_JOB_LINKS);
+    expect(r.unread).toBe(extra);
+    // The first links in page order are the ones read.
+    expect(r.jobs.some(j => j.url.endsWith(`/jobs/${4_000_000_000 + MAX_PAGE_JOB_LINKS}`))).toBe(false);
+    expect(unreadText(r.unread)).toBe(`5 more job links on this page not read (at most ${MAX_PAGE_JOB_LINKS} are read)`);
+  });
+
+  test("an empty page, a page of one job, and a page read from structured data leave nothing unread", () => {
+    expect(scrape("").unread).toBe(0);
+    expect(scrape(listingPage([listingCard(1)])).unread).toBe(0);
+    const ld = `<script type="application/ld+json">{"@type":"JobPosting","title":"Staff Engineer","hiringOrganization":{"name":"Acme"},"url":"https://careers.example.test/jobs/1"}</script>`;
+    expect(scrape(ld + listingPage(Array.from({ length: 3 }, (_, i) => listingCard(i)))).unread).toBe(0);
+  });
+
+  test("unread words: nothing for zero, negative or not a number; one link is singular", () => {
+    for (const n of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) expect(unreadText(n)).toBe("");
+    expect(unreadText(1)).toBe(`1 more job link on this page not read (at most ${MAX_PAGE_JOB_LINKS} are read)`);
+    expect(unreadText(2.9)).toStartWith("2 more job links");
   });
 });

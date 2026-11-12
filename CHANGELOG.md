@@ -146,6 +146,11 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **Extension scraper**: a page read link by link stopped at its first 100 job links and said
+  nothing, so Anthropic's careers page (669 jobs on one page) gave 100, and **Crawl all pages**
+  called that complete. It now reads up to 2000 distinct job links (`MAX_PAGE_JOB_LINKS`); a posting
+  linked twice counts once, and links past the bound are named in the drawer, the popup and the
+  crawl's last line, which then reports itself incomplete.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and
