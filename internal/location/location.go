@@ -358,14 +358,25 @@ func onlyScopes(seg string) []string {
 // place; a non-remote one ("Canada") is a place with that region.
 func parseSegment(seg string, remote bool) (Place, bool, string) {
 	var parts []string
+	negState := false
 	for _, part := range strings.Split(partSep.Replace(seg), ",") {
 		// Workday writes empty fields as "BLANK" ("BLANK,BLANK,Multiple
 		// Locations"); a field that is only that names nothing.
 		if part = stripWorkMode(part); part != "" && NormArea(part) != "blank" {
+			if negatedUSState(part) != "" {
+				// "Remote, USA (non-California)", "Remote (not available in
+				// CA)": a state excluded is no place; it says the role is in
+				// the US elsewhere.
+				negState = true
+				continue
+			}
 			parts = append(parts, part)
 		}
 	}
 	if len(parts) == 0 {
+		if negState {
+			return Place{}, false, "US"
+		}
 		return Place{}, false, ""
 	}
 	if multipleLocations(parts) {
@@ -507,6 +518,20 @@ func stripWorkMode(part string) string {
 			raws = append(raws, raw{s, fi == len(fields)-1, si == 0})
 		}
 	}
+	// negatesPlace: the pieces after the "not" or "non" at ri name a place,
+	// not a work mode. The first piece that is not a weak word ("in", "on",
+	// "at", "site") decides: "Not in the US" negates the US; "not in office"
+	// and "not on site" negate the mode.
+	negatesPlace := func(ri int) bool {
+		for _, n := range raws[ri+1:] {
+			w := words(n.text)
+			if len(w) == 0 || allIn(w, weakWords) {
+				continue
+			}
+			return !allIn(w, workModeWords)
+		}
+		return false
+	}
 	var keep []piece
 	strong, dropped := 0, false
 	first := true
@@ -515,18 +540,13 @@ func stripWorkMode(part string) string {
 		if r.first {
 			first = true
 		}
-		var next []string
-		for _, n := range raws[ri+1:] {
-			if next = words(n.text); len(next) > 0 {
-				break
-			}
-		}
 		switch {
 		case len(w) == 0:
-		case len(w) == 1 && (w[0] == "not" || w[0] == "non") && len(next) > 0 && !allIn(next, workModeWords) && !allIn(next, weakWords):
-			// "Not US", "non-US": a negated place, kept for the reader of the
-			// place (PlaceOptions). A negated work mode ("Non-remote", "not
-			// remote") is dropped with the mode below.
+		case len(w) == 1 && (w[0] == "not" || w[0] == "non") && negatesPlace(ri):
+			// "Not US", "non-US", "Not in the US": a negated place, kept for
+			// the reader of the place (PlaceOptions). A negated work mode
+			// ("Non-remote", "not remote", "not in office", "not on site") is
+			// dropped with the mode below.
 			keep = append(keep, piece{s, false, !first})
 			first = false
 			strong++

@@ -135,4 +135,6 @@ var usCityNames = set(
 	"roswell", "cape canaveral", "lake mary", "palm beach gardens", "juno beach", "southaven",
 	"southfield", "chippewa falls", "sioux falls", "conshohocken", "king of prussia",
 	"quonset", "o fallon", "grandview", "warrenton", "westerville", "sandusky",
+	// Regional names boards write for one US area (review of 2e347f4).
+	"long island", "orange county", "raleigh durham", "raleigh durham chapel hill", "chapel hill",
 )

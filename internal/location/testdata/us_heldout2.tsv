@@ -1,5 +1,7 @@
-# Held-out US-location set 2 (2026-11-12): 170 distinct board location strings
-# from the live ledger (7,606 distinct strings over 69,024 postings), none in
+# Held-out US-location set 2 (2026-11-12): 170 distinct (board location string,
+# remote flag) pairs, 160 distinct strings (10 drawn once with each remote
+# flag; header corrected 2026-11-12, it said 170 distinct strings), from the
+# live ledger (7,606 distinct strings over 69,024 postings), none in
 # us_oracle.tsv or us_heldout.tsv, drawn AFTER the per-option change by a
 # seeded sample (seed 20261112) with probability proportional to each
 # string's posting count (Efraimidis-Spirakis, without replacement), so the

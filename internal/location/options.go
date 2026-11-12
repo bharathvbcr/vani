@@ -79,6 +79,7 @@ func PlaceOptions(p Place) []Option {
 	for i := range raw {
 		raw[i] = bounded(raw[i])
 	}
+	raw = splitZipState(raw)
 	ps := make([]part, 0, len(raw)+1)
 	for i, r := range raw {
 		// The part before Parse's state is the town's name ("Lebanon, NH");
@@ -93,6 +94,7 @@ func PlaceOptions(p Place) []Option {
 		ps = append(ps, part{text: p.State, kind: kindState, state: p.State})
 	}
 	resolveCollisions(ps)
+	washingtonDC(ps)
 
 	var opts []*optBuild
 	var cur *optBuild
@@ -354,6 +356,12 @@ func classifyPart(raw string, first, stated bool) part {
 		q.kind = kindNoise
 		return q
 	}
+	if t == "NoVA" || t == "NOVA" {
+		// Northern Virginia, as written. Not the word "nova": "Nova Scotia"
+		// is Canada.
+		q.kind, q.head = kindHead, headUS
+		return q
+	}
 	dotless := strings.TrimSuffix(t, ".")
 	if canadaProvinces[dotless] {
 		q.kind, q.country = kindCountry, "Canada"
@@ -363,13 +371,17 @@ func classifyPart(raw string, first, stated bool) part {
 		classifyScope(&q, s)
 		return q
 	}
+	if s, ok := salesRegions[NormArea(t)]; ok && !stated {
+		classifyScope(&q, s)
+		return q
+	}
 	if c, ok := isoPrefixCountry(t); ok && !stated {
 		// Before the negation: "NO-Norway" is Norway, not "no Norway".
 		q.kind, q.country = kindCountry, c
 		return q
 	}
 	ws := words(t)
-	if k, ok := negation(ws); ok {
+	if k, _, ok := negation(t, ws); ok {
 		q.kind = k
 		return q
 	}
@@ -490,6 +502,19 @@ func classifyPart(raw string, first, stated bool) part {
 		q.kind = kindNoise
 		return q
 	}
+	if code, ok := phraseState(named); ok && !stated {
+		// "Upstate New York", "Northern Virginia", "Must be located in
+		// Georgia": a state named at the end of a regional phrase.
+		q.kind, q.state, q.strong = kindState, code, true
+		return q
+	}
+	if usWide(named) {
+		// "Nationwide", "EST", "Pacific Time": takes in the US, says no
+		// more. Read like North America: US beside a US place, not judged
+		// alone.
+		q.kind = kindWide
+		return q
+	}
 	if s := regionPhrase(named); s != "" && !stated {
 		classifyScope(&q, s)
 		return q
@@ -529,6 +554,68 @@ func classifyPart(raw string, first, stated bool) part {
 		}
 	}
 	return q
+}
+
+// salesRegions are region codes boards write as a place ("Remote, AMER",
+// "Remote-NAMER", "CONUS"), read here as the region they stand for. They are
+// not Parse scopes: as a scope, AMER beside a state ("Remote, California,
+// United States, AMER") would make the whole segment a scope list and lose
+// the state, and Parse's places are near-duplicate keys.
+var salesRegions = map[string]string{
+	"amer": "Americas", "namer": "North America", "noram": "North America", "conus": "US",
+}
+
+// phraseWords may come before a state's name in a phrase that names the
+// state or a part of it: a direction or extent ("Upstate New York", "Western
+// North Carolina", "Greater New York") or a residency note ("Must be located
+// in Georgia", "Anywhere in Texas"). A word outside the list leaves the
+// phrase unread: "Baja California" is Mexico, "Republic of Georgia" a country.
+var phraseWords = set("north", "south", "east", "west", "northern", "southern", "eastern", "western",
+	"central", "upstate", "downstate", "northeast", "northwest", "southeast", "southwest", "northeastern",
+	"northwestern", "southeastern", "southwestern", "greater", "coastal", "rural", "state", "of", "in",
+	"the", "must", "be", "located", "reside", "residing", "live", "living", "anywhere", "within",
+	"throughout", "across", "all")
+
+// phraseState reads a state named at the end of a phrase of phraseWords,
+// taking the longest name ("Western North Carolina" is NC, not Carolina).
+// The phrase is short: a part is bounded to maxPartRunes before it is read.
+func phraseState(ws []string) (string, bool) {
+	for start := 1; start < len(ws); start++ {
+		if !phraseWords[ws[start-1]] {
+			return "", false
+		}
+		name := strings.Join(ws[start:], " ")
+		if code, ok := stateByName[name]; ok && code != "DC" {
+			return code, true
+		}
+	}
+	return "", false
+}
+
+// usTimeZones are the US time zones boards write as a location ("Remote
+// EST", "Pacific Time"). The two-letter forms are left out: "CT" and "MT"
+// are states, "PT" is Portugal.
+var usTimeZones = set("est", "edt", "cst", "cdt", "mst", "mdt", "pst", "pdt", "akst", "akdt", "hst",
+	"eastern time", "central time", "mountain time", "pacific time", "eastern standard time",
+	"central standard time", "mountain standard time", "pacific standard time", "eastern daylight time",
+	"central daylight time", "mountain daylight time", "pacific daylight time")
+
+// usWide reports a part that takes in the US without saying more:
+// "Nationwide", or a US time zone with "zone", "hours" or "time" after it or
+// not ("EST", "Pacific Time Zone", "CST hours"). "Pacific" or "Central" alone
+// is not a time zone.
+func usWide(ws []string) bool {
+	if len(ws) == 1 && ws[0] == "nationwide" {
+		return true
+	}
+	for len(ws) > 1 && (ws[len(ws)-1] == "zone" || ws[len(ws)-1] == "timezone" || ws[len(ws)-1] == "tz" || ws[len(ws)-1] == "hours") {
+		ws = ws[:len(ws)-1]
+	}
+	if usTimeZones[strings.Join(ws, " ")] {
+		return true
+	}
+	// "EST time": the abbreviation with "time" after it.
+	return len(ws) == 2 && ws[1] == "time" && usTimeZones[ws[0]]
 }
 
 // ledCountry reports whether a part led by a code that is also country c's
@@ -705,11 +792,18 @@ func (o *optBuild) refusesHead(q *part) bool {
 }
 
 // takesCountry: a country or region qualifies the option unless the option
-// already says the US, names another country, or holds a state written in
-// full after its city ("Houston, New York, Singapore" is a list). A state
-// code does not stop it ("Madrid, MD, Spain" is Madrid, Spain), and neither
-// does a city of the foreign lists: the qualifier names which one ("London,
-// Ontario" is in Canada).
+// already says the US, names another country, holds a state written in full
+// after its city ("Houston, New York, Singapore" is a list), or is a city of
+// the US table (or a name as likely US as not) that a state code has already
+// placed: "Seattle, WA, Canada", "Austin, TX (EMEA hours)" and "Portland, OR
+// (Canada OK)" are a US place and a second option, as "New York, NY
+// (Europe)" is. Otherwise a state code does not stop it, and neither does a
+// city of the foreign lists: a city the US table does not hold, then a code,
+// then a country, is that country's address with a subdivision code that a
+// USPS code shares ("Madrid, MD, Spain" is Comunidad de Madrid, "Westport,
+// MO, Ireland" Mayo, "Hoofddorp, NH, Netherlands" Noord-Holland; every such
+// string in the live ledger on 2026-11-12 was foreign), and the qualifier
+// names which one ("London, Ontario" is in Canada).
 func (o *optBuild) takesCountry(q *part) bool {
 	switch {
 	case o.us, o.negUS:
@@ -718,8 +812,67 @@ func (o *optBuild) takesCountry(q *part) bool {
 		return false
 	case o.strongState:
 		return false
+	case len(o.states) > 0 && o.head == headUS:
+		return false
+	case len(o.states) > 0 && o.head == headAmbiguous && (q.country == "" || collidingCountry[o.states[0]] != q.country):
+		// A name as likely US as not keeps its state unless the code is
+		// also the country's ISO code ("Richmond, CA, Canada" is Canada).
+		// A city of the US table keeps it either way: "San Francisco, CA
+		// (Canada OK)".
+		return false
 	}
 	return true
+}
+
+// washingtonDC reads "Washington" just before DC as the city, so
+// "Washington, D.C." and "Washington, DC Metro Area" are one option in DC,
+// not Washington state and DC. Other state names before a state are left as
+// written: after Parse, "New York, New Jersey" (a list) and "Indiana, PA" (a
+// town) are the same parts, and reading them as one would lose a state.
+func washingtonDC(ps []part) {
+	for i := 0; i+1 < len(ps); i++ {
+		if ps[i].kind == kindState && ps[i].state == "WA" && NormArea(ps[i].text) == "washington" &&
+			ps[i+1].kind == kindState && ps[i+1].state == "DC" {
+			ps[i].kind, ps[i].head, ps[i].state, ps[i].strong = kindHead, headUS, "", false
+		}
+	}
+}
+
+// splitZipState splits a part that ends in a state code and a ZIP code
+// ("Plano TX 75024", "Austin TX 78701-1234") into the town and the code: a
+// ZIP after a USPS code says the US. Without the ZIP a code after a name
+// stays in the part ("Pune MH"), as Parse already reads "Plano TX".
+func splitZipState(raw []string) []string {
+	var out []string
+	for _, r := range raw {
+		f := strings.Fields(r)
+		if n := len(f); n >= 3 && isZip(f[n-1]) && isStateCode(f[n-2]) {
+			out = append(out, strings.Join(f[:n-2], " "), f[n-2])
+			continue
+		}
+		out = append(out, r)
+	}
+	if len(out) > maxOptionParts {
+		out = out[:maxOptionParts]
+	}
+	return out
+}
+
+// isZip reports a US ZIP code: five digits, or ZIP+4.
+func isZip(s string) bool {
+	if len(s) == 10 && s[5] == '-' {
+		return isDigits(s[:5]) && isDigits(s[6:])
+	}
+	return len(s) == 5 && isDigits(s)
+}
+
+func isDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func (o *optBuild) option() Option {
@@ -763,11 +916,16 @@ var negWords = map[string]bool{
 	"no": true, "not": true, "non": true, "without": true,
 }
 
+// negFiller are words between a negation and the place it negates: "not in
+// the US", "not available in CA", "not open to Texas".
+var negFiller = set("the", "in", "of", "available", "located", "open", "to", "for", "hiring")
+
 // negation reads a part that negates a place: kindNegUS when the place is the
 // US, kindNegOther when it is another place a vocabulary knows, kindNegUnknown
-// otherwise. ok is false when the part has no negation word with something
-// after it.
-func negation(ws []string) (partKind, bool) {
+// otherwise. state is the USPS code when the negated place is a US state
+// ("non-California", "not available in CA"; a code only in capitals). ok is
+// false when the part has no negation word with something after it.
+func negation(t string, ws []string) (kind partKind, state string, ok bool) {
 	i := -1
 	for j, w := range ws {
 		if negWords[w] && j < len(ws)-1 {
@@ -776,30 +934,54 @@ func negation(ws []string) (partKind, bool) {
 		}
 	}
 	if i < 0 {
-		return 0, false
+		return 0, "", false
 	}
 	rest := ws[i+1:]
-	for len(rest) > 1 && (rest[0] == "the" || rest[0] == "in" || rest[0] == "of") {
+	for len(rest) > 1 && negFiller[rest[0]] {
 		rest = rest[1:]
 	}
 	r := strings.Join(rest, " ")
 	switch r {
 	case "us", "u s", "usa", "u s a", "united states", "united states of america", "america", "the us":
-		return kindNegUS, true
+		return kindNegUS, "", true
 	}
-	if _, ok := scopes[r]; ok {
-		return kindNegOther, true
+	if s, ok := scopes[r]; ok {
+		if s == "US" {
+			return kindNegUS, "", true // "outside the lower 48", "excluding the USA"
+		}
+		return kindNegOther, "", true
 	}
-	if _, ok := stateByName[r]; ok {
-		return kindNegOther, true
+	if s, ok := salesRegions[r]; ok {
+		if s == "US" {
+			return kindNegUS, "", true // "outside CONUS"
+		}
+		return kindNegOther, "", true
+	}
+	if code, ok := stateByName[r]; ok {
+		return kindNegOther, code, true
+	}
+	if f := strings.Fields(t); len(rest) == 1 && len(f) > 0 && isStateCode(strings.Trim(f[len(f)-1], ".,;:()")) &&
+		strings.EqualFold(strings.Trim(f[len(f)-1], ".,;:()"), r) {
+		return kindNegOther, strings.ToUpper(r), true
 	}
 	if _, ok := countryAliases[r]; ok {
-		return kindNegOther, true
+		return kindNegOther, "", true
 	}
 	if _, ok := foreignRegions[r]; ok {
-		return kindNegOther, true
+		return kindNegOther, "", true
 	}
-	return kindNegUnknown, true
+	return kindNegUnknown, "", true
+}
+
+// negatedUSState is the US state a part excludes ("non-California", "not
+// available in CA", "excluding Hawaii"), or "". Georgia is left out: "no
+// Georgia" beside a foreign region may be the country.
+func negatedUSState(part string) string {
+	k, code, ok := negation(part, words(part))
+	if !ok || k != kindNegOther || code == "" || code == "GA" {
+		return ""
+	}
+	return code
 }
 
 // namesUS reports whether a part names the US among other words: "USA" or
@@ -893,6 +1075,6 @@ func isoPrefixCountry(t string) (string, bool) {
 var leadAffix = set("greater", "metro", "downtown", "main")
 
 var tailAffix = set("hq", "headquarters", "office", "offices", "campus", "hub", "area", "metro",
-	"metropolitan", "region", "site", "state", "main", "corporate", "branch", "location",
+	"metropolitan", "metroplex", "region", "site", "state", "main", "corporate", "branch", "location",
 	"downtown", "center", "centre", "building", "facility", "lab", "labs", "studio", "studios",
 	"virtual", "address")
