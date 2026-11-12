@@ -66,9 +66,11 @@ func TestClockAheadForTwoRunsDoesNotFreezeAYear(t *testing.T) {
 	reviewRead(t, l, b, t0.Add(24*time.Hour+year), append(idRange(0, 20), 100))
 	reviewRead(t, l, b, t0.Add(31*time.Hour+year), append(idRange(0, 20), 100, 101))
 
-	// The clock is right again; posting 0 is no longer listed.
+	// The clock is right again; posting 0 is no longer listed, nor posting 100,
+	// first seen under the bad clock (its first sighting is stamped a year
+	// ahead, which must not make every stamp read as "before it existed").
 	at := t0.Add(48 * time.Hour)
-	live := append(idRange(1, 20), 100, 101)
+	live := append(idRange(1, 20), 101)
 	s := reviewRead(t, l, b, at, live)
 	if s.ClockBehind {
 		t.Fatalf("a year-ahead burst over two runs froze aging under a right clock: %+v", s)
@@ -81,22 +83,25 @@ func TestClockAheadForTwoRunsDoesNotFreezeAYear(t *testing.T) {
 	if rec(t, l, probeKey(t, b, 0)).Status == posting.Dead {
 		t.Fatal("died 19 hours into its absence")
 	}
-	if s := reviewRead(t, l, b, at.Add(20*time.Hour), live); s.Dead != 1 || s.ClockBehind {
-		t.Fatalf("not dead 20 hours into its absence: %+v", s)
+	if r := rec(t, l, probeKey(t, b, 100)); r.MissedRuns != 2 || r.Annotations[MissedSinceKey] != stampOf(at) {
+		t.Fatalf("posting 100, first seen a year ahead, restarted its episode: %+v", r)
+	}
+	if s := reviewRead(t, l, b, at.Add(20*time.Hour), live); s.Dead != 2 || s.ClockBehind {
+		t.Fatalf("postings 0 and 100 not dead 20 hours into their absence: %+v", s)
 	}
 
 	// A year on: daily reads across the bad runs' time, each leaving out
 	// another posting (the one before is back, so none dies). Only reads within
-	// ClockWindow of the bad events (the two new postings' "new", which no
-	// later read rewrote) freeze, and they name the newest such event.
-	// The freeze therefore spans at most ClockWindow plus the 7 hours between
-	// the bad runs.
-	bad := []time.Time{t0.Add(24*time.Hour + year), t0.Add(31*time.Hour + year)}
+	// ClockWindow of the bad event no later read rewrote (posting 101's "new";
+	// posting 100 died under the right clock) freeze, and they name it. With
+	// both bad events left, the freeze would span at most ClockWindow plus the
+	// 7 hours between the bad runs.
+	bad := []time.Time{t0.Add(31*time.Hour + year)}
 	var frozen []time.Time
 	for d := -6; d <= 6; d++ {
 		now := t0.Add(year + 28*time.Hour + time.Duration(d)*24*time.Hour)
 		gone := 1 + d + 6
-		live := append(append(idRange(1, gone), idRange(gone+1, 20)...), 100, 101)
+		live := append(append(idRange(1, gone), idRange(gone+1, 20)...), 101)
 		s := reviewRead(t, l, b, now, live)
 		var want time.Time // the newest bad event within the window
 		for _, e := range bad {
