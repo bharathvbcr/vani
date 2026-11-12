@@ -122,7 +122,10 @@ type Relevance struct {
 	Precision []PrecisionRow `json:"precision"`
 	Deciles   []StratumRow   `json:"deciles"`
 	Drops     []StratumRow   `json:"drops"`
-	Backends  []BackendRow   `json:"backends"`
+	// Closed are the closed-status strata (closed:dead, closed:duplicate):
+	// postings the engine took out of every view without a drop rule.
+	Closed   []StratumRow `json:"closed"`
+	Backends []BackendRow `json:"backends"`
 }
 
 func wanted(v string) (hit, judged bool) {
@@ -145,7 +148,7 @@ func BuildRelevance(labels map[posting.Key]Entry, recs []ledger.Record, ordering
 	var out Relevance
 	judged := map[posting.Key]bool{} // owner-judged: would_apply yes, maybe or no
 	hit := map[posting.Key]bool{}
-	dec, drop := map[string]*Count{}, map[string]*Count{}
+	dec, drop, shut := map[string]*Count{}, map[string]*Count{}, map[string]*Count{}
 	add := func(m map[string]*Count, src string, h bool) {
 		c := m[src]
 		if c == nil {
@@ -175,8 +178,10 @@ func BuildRelevance(labels map[posting.Key]Entry, recs []ledger.Record, ordering
 			out.Manual++
 		case strings.HasPrefix(e.Source, "decile:"):
 			add(dec, e.Source, h)
-		case strings.HasPrefix(e.Source, "dropped:"):
+		case strings.HasPrefix(e.Source, DroppedPrefix):
 			add(drop, e.Source, h)
+		case strings.HasPrefix(e.Source, ClosedPrefix):
+			add(shut, e.Source, h)
 		}
 	}
 	for _, o := range orderings {
@@ -196,7 +201,7 @@ func BuildRelevance(labels map[posting.Key]Entry, recs []ledger.Record, ordering
 			out.Precision = append(out.Precision, row)
 		}
 	}
-	out.Deciles, out.Drops = strata(dec, true), strata(drop, false)
+	out.Deciles, out.Drops, out.Closed = strata(dec, true), strata(drop, false), strata(shut, false)
 	out.Backends = backendRows(judged, hit, recs, names)
 	return out
 }
@@ -295,8 +300,13 @@ func (r Relevance) Markdown() string {
 	b.WriteString("\n## Wanted by score decile\n\n")
 	writeStrata(&b, r.Deciles, "decile")
 
-	b.WriteString("\n## Drop recall per rule: wanted among dropped\n\nEach wanted posting here is one the rule dropped that the owner would have applied to (a miss). Recall itself needs the kept side weighted by p_select, which this report does not do.\n\n")
+	b.WriteString("\n## Drop recall per rule: wanted among dropped\n\nEach wanted posting here is one the rule dropped that the owner would have applied to (a miss). These are raw counts; the drop recall estimate below weights them, and the kept side, to the pool.\n\n")
 	writeStrata(&b, r.Drops, "drop rule")
+
+	if len(r.Closed) > 0 {
+		b.WriteString("\n## Wanted among closed postings\n\nPostings the engine closed (dead: absent from its board twice; duplicate: folded into another). A wanted one is worth opening: if it is still listed, liveness or the duplicate fold lost it.\n\n")
+		writeStrata(&b, r.Closed, "closed as")
+	}
 
 	b.WriteString("\n## Backend reliability: p against would_apply\n\nOnly postings the backend read as strong_fit or partial_fit with a recorded p are scored: p is the backend's probability of that reading, the event is the owner wanting the posting. Brier is the mean of (p - wanted)^2; lower is better, 0.25 is a constant guess of 0.5.\n\n")
 	if len(r.Backends) == 0 {

@@ -9,19 +9,72 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// Default weekly audit quotas (owner-approved: 15 postings).
+// Default weekly audit quotas (owner-approved: 15 postings, 5 scored and 10
+// dropped). AuditClosed adds two postings the engine closed (dead or
+// duplicate), which no other stratum ever draws.
 const (
 	AuditScored  = 5  // by score decile across the scored pool
 	AuditDropped = 10 // across drop classes
+	AuditClosed  = 2  // across closed statuses (dead, duplicate)
 )
 
+// AuditQuotas are the places of one draw per group. A group's places are
+// never lent to another (that would change the inclusion probabilities).
+type AuditQuotas struct {
+	Scored, Dropped, Closed int
+}
+
+// DefaultAuditQuotas are the weekly draw's quotas.
+var DefaultAuditQuotas = AuditQuotas{Scored: AuditScored, Dropped: AuditDropped, Closed: AuditClosed}
+
 // AuditCandidate is a posting the weekly audit may draw: a kept one with its
-// priority score, or a dropped one with its DropClass.
+// priority score, a dropped one with its DropClass, or a closed one (Closed,
+// with Class its status: "dead" or "duplicate").
 type AuditCandidate struct {
 	Key     posting.Key
 	Score   float64
 	Dropped bool
+	Closed  bool
 	Class   string
+}
+
+// Audit cell and stratum prefixes. A kept posting's stratum is its score
+// decile ("decile:N"); for the recall estimate all kept postings are one cell.
+const (
+	CellKept       = "kept"
+	DroppedPrefix  = "dropped:"
+	ClosedPrefix   = "closed:"
+	unknownDropped = DroppedPrefix + "unknown:other"
+)
+
+// droppedSource is the stratum of a dropped posting of class c.
+func droppedSource(c string) string {
+	if src := DroppedPrefix + c; c != "" && validSource(src) {
+		return src
+	}
+	return unknownDropped
+}
+
+// closedSource is the stratum of a closed posting whose status is c.
+func closedSource(c string) string {
+	if t := classToken(c); t != "" {
+		return ClosedPrefix + t
+	}
+	return ClosedPrefix + "other"
+}
+
+// AuditCell is the cell c stands in for when labels are weighted up to the
+// pool: CellKept, its dropped stratum, or its closed stratum. Unlike the draw's
+// strata, kept postings are one cell: deciles are re-cut every week, so a
+// label's decile is not where its posting sits now.
+func AuditCell(c AuditCandidate) string {
+	switch {
+	case c.Closed:
+		return closedSource(c.Class)
+	case c.Dropped:
+		return droppedSource(c.Class)
+	}
+	return CellKept
 }
 
 // AuditPick is a drawn posting, the stratum it stands for, and its inclusion
@@ -67,16 +120,27 @@ type AuditPlan struct {
 // the whole scored pool, labelled or not, so a stratum keeps its meaning as
 // labels accumulate.
 func AuditSample(cands []AuditCandidate, labeled map[posting.Key]Entry, seed string, nScored, nDropped int) AuditPlan {
-	var scored, dropped []AuditCandidate
+	return AuditDraw(cands, labeled, seed, AuditQuotas{Scored: nScored, Dropped: nDropped})
+}
+
+// AuditDraw is AuditSample with a third group: q.Closed places over the closed
+// statuses ("closed:dead", "closed:duplicate"), drawn as the drop classes are.
+// The scored and dropped groups draw exactly what AuditSample draws for the
+// same seed, whatever q.Closed is: each group spends only its own places.
+func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed string, q AuditQuotas) AuditPlan {
+	var scored, dropped, closed []AuditCandidate
 	seen := map[posting.Key]bool{}
 	for _, c := range cands {
 		if c.Key == "" || seen[c.Key] {
 			continue
 		}
 		seen[c.Key] = true
-		if c.Dropped {
+		switch {
+		case c.Closed:
+			closed = append(closed, c)
+		case c.Dropped:
 			dropped = append(dropped, c)
-		} else {
+		default:
 			scored = append(scored, c)
 		}
 	}
@@ -101,16 +165,24 @@ func AuditSample(cands []AuditCandidate, labeled map[posting.Key]Entry, seed str
 		if _, done := labeled[c.Key]; done {
 			continue
 		}
-		src := "dropped:" + c.Class
-		if c.Class == "" || !validSource(src) {
-			src = "dropped:unknown:other"
-		}
+		src := droppedSource(c.Class)
 		classes[src] = append(classes[src], c.Key)
+	}
+	shut := map[string][]posting.Key{}
+	for _, c := range closed {
+		if _, done := labeled[c.Key]; done {
+			continue
+		}
+		src := closedSource(c.Class)
+		shut[src] = append(shut[src], c.Key)
 	}
 
 	var plan AuditPlan
-	drawGroup(&plan, deciles, nScored, seed)
-	drawGroup(&plan, classes, nDropped, seed)
+	drawGroup(&plan, deciles, q.Scored, seed)
+	drawGroup(&plan, classes, q.Dropped, seed)
+	if q.Closed > 0 {
+		drawGroup(&plan, shut, q.Closed, seed)
+	}
 	return plan
 }
 

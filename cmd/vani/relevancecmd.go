@@ -52,12 +52,15 @@ func (e *env) cmdRelevance(args []string) error {
 		// The drop-candidate agreement needs no labels, only the ledger. If it
 		// cannot be read the reply says so: that is not "no data".
 		agree, err := e.dropAgreement(done)
-		out := relevanceReply{Relevance: rep, DropAgreement: agree}
+		recall := eval.DropRecall{Status: eval.RecallInsufficient, Reason: "no judged would_apply labels yet (run `vani audit`)",
+			Cells: []eval.RecallCell{}, Draws: eval.RecallDraws, MinJudged: eval.MinRecallCellJudged}
+		out := relevanceReply{Relevance: rep, DropAgreement: agree, DropRecall: &recall}
 		if err != nil {
 			out.DropAgreement, out.DropAgreementError = nil, err.Error()
 		}
 		return e.reply(*asJSON, out, nil, func() {
 			fmt.Fprint(e.stdout, rep.Markdown())
+			fmt.Fprint(e.stdout, recall.Markdown())
 			if err != nil {
 				fmt.Fprintf(e.stdout, "\n## Drop candidates\n\nnot computed: %v\n", err)
 			} else {
@@ -95,18 +98,33 @@ func (e *env) cmdRelevance(args []string) error {
 	rep := eval.BuildRelevance(done, b.snap.Records, orderings, kk, names)
 	rep.Malformed = bad
 	agree := eval.BuildDropAgreement(done, b.snap.Records, specs, names)
-	return e.reply(*asJSON, relevanceReply{Relevance: rep, DropAgreement: &agree}, nil, func() {
+	rules := make([]eval.DropRule, 0, len(specs))
+	for _, s := range specs {
+		rules = append(rules, eval.DropRule{Slot: s.Slot, Values: s.Values})
+	}
+	recall := eval.BuildDropRecall(done, b.recallMembers(rules))
+	proxy := eval.BuildTeacherDropProxy(b.snap.Records, rules, e.teacherReadings())
+	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy}
+	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
+		fmt.Fprint(e.stdout, recall.Markdown())
+		fmt.Fprint(e.stdout, proxy.Markdown())
 		fmt.Fprint(e.stdout, agree.Markdown())
 	})
 }
 
 // relevanceReply is `vani relevance --json`. DropAgreementError replaces
 // DropAgreement when the ledger or config could not be read for it.
+// DropRecall is the weighted estimate of wanted postings the engine dropped
+// (status "insufficient" with a reason until the labels can carry it), and
+// TeacherProxy the model-against-model count of candidate misses; with no
+// judged labels the ledger is not read and TeacherProxy is absent.
 type relevanceReply struct {
-	Relevance          eval.Relevance      `json:"relevance"`
-	DropAgreement      *eval.DropAgreement `json:"drop_agreement,omitempty"`
-	DropAgreementError string              `json:"drop_agreement_error,omitempty"`
+	Relevance          eval.Relevance         `json:"relevance"`
+	DropRecall         *eval.DropRecall       `json:"drop_recall,omitempty"`
+	TeacherProxy       *eval.TeacherDropProxy `json:"teacher_proxy,omitempty"`
+	DropAgreement      *eval.DropAgreement    `json:"drop_agreement,omitempty"`
+	DropAgreementError string                 `json:"drop_agreement_error,omitempty"`
 }
 
 // dropAgreement is the drop-candidate agreement for a run that has not read

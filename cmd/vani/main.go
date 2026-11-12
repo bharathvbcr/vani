@@ -113,8 +113,9 @@ commands:
                              near-duplicate fingerprints of those postings (qd-posting-heldout.v1)
   eval [--json] [--labels DIR] [--held-out SPLIT] [--window]
                              per-backend precision and coverage on the labelled set
-  audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N]
-                             weekly stratified would-I-apply sample (deciles + drop classes);
+  audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N] [--closed N]
+                             weekly stratified would-I-apply sample (deciles + drop classes,
+                             and --closed postings the engine closed: dead or duplicate);
                              --json prints keys, strata and p_select only (no posting text),
                              --blind hides the model's readings while you answer
                              (audit-sample is the old name)
@@ -122,7 +123,9 @@ commands:
                              record one would-I-apply answer; the stratum and p_select come from
                              the flags (an Explore row's, or an audit --json pick's) or the draw
   relevance [--json] [-k LIST]
-                             precision@k, drop misses and backend reliability from would_apply labels
+                             precision@k, drop misses and backend reliability from would_apply labels;
+                             the weighted drop recall estimate ("insufficient" until every cell has
+                             labels) and a teacher-vs-drops proxy (model against model)
   rankfit [--json] [--part all|platt|weights] [--dry-run] [--labels DIR] [--out FILE] [--seed N]
           [--lambda X] [--holdout PCT] [--max-pairs N]
                              fit Score's per-backend calibration (eval slot labels, 100 judged

@@ -195,8 +195,13 @@ func TestAuditSampleUsageErrors(t *testing.T) {
 	for _, args := range [][]string{
 		{"audit", "--scored", "-1"},
 		{"audit", "--dropped", "-1"},
-		{"audit", "--scored", "0", "--dropped", "0"},
+		{"audit", "--closed", "-1"},
+		// Asking for nothing at all: every quota 0 (the closed one defaults
+		// to eval.AuditClosed, so it is named too).
+		{"audit", "--scored", "0", "--dropped", "0", "--closed", "0"},
 		{"audit", "--scored", "101"},
+		{"audit", "--closed", "101"},
+		{"audit", "answer", "--key", "gh:k:000", "--verdict", "yes", "--closed", "-1"},
 		{"audit", "--seed", strings.Repeat("x", 300)},
 		{"audit", "extra"},
 	} {

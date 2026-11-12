@@ -91,9 +91,14 @@ type auditDraw struct {
 }
 
 // checkAuditDraw validates the draw flags the audit commands share.
-func checkAuditDraw(scored, dropped int, seed string) error {
-	if scored < 0 || dropped < 0 || scored+dropped < 1 || scored > maxAuditQuota || dropped > maxAuditQuota {
-		return usagef("audit: --scored and --dropped must be within 0..%d and not both 0", maxAuditQuota)
+func checkAuditDraw(q eval.AuditQuotas, seed string) error {
+	for _, n := range []int{q.Scored, q.Dropped, q.Closed} {
+		if n < 0 || n > maxAuditQuota {
+			return usagef("audit: --scored, --dropped and --closed must be within 0..%d and not all 0", maxAuditQuota)
+		}
+	}
+	if q.Scored+q.Dropped+q.Closed < 1 {
+		return usagef("audit: --scored, --dropped and --closed must be within 0..%d and not all 0", maxAuditQuota)
 	}
 	if len(seed) > maxSeedBytes {
 		return usagef("audit: --seed is longer than %d bytes", maxSeedBytes)
@@ -104,7 +109,7 @@ func checkAuditDraw(scored, dropped int, seed string) error {
 // drawAudit makes the draw for seed ("" is this ISO week). It fails closed,
 // as `label` does: a draw made without the labels could repeat a posting
 // already answered.
-func (e *env) drawAudit(scored, dropped int, seed, labels string) (*auditDraw, error) {
+func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, error) {
 	s, err := e.openEvalStore(labels)
 	if err != nil {
 		return nil, err
@@ -133,15 +138,55 @@ func (e *env) drawAudit(scored, dropped int, seed, labels string) (*auditDraw, e
 	}
 	rules := e.dropRules()
 	for _, r := range b.snap.Records {
-		if r.Status == posting.Dropped && b.m[r.Key].Mark == marks.None {
-			cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)})
+		if b.m[r.Key].Mark != marks.None {
+			continue
+		}
+		if c, ok := closedOrDropped(r, rules); ok {
+			cands = append(cands, c)
 		}
 	}
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
-	plan := eval.AuditSample(cands, done, seed, scored, dropped)
+	plan := eval.AuditDraw(cands, done, seed, q)
 	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+}
+
+// closedOrDropped is r as an audit candidate when the engine dropped it (with
+// its DropClass) or closed it (dead, or folded into another as a duplicate);
+// ok is false for any other status.
+func closedOrDropped(r ledger.Record, rules []eval.DropRule) (eval.AuditCandidate, bool) {
+	switch r.Status {
+	case posting.Dropped:
+		return eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)}, true
+	case posting.Dead, posting.Duplicate:
+		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status)}, true
+	}
+	return eval.AuditCandidate{}, false
+}
+
+// recallMembers is every kept and dropped posting as the drop-recall estimate
+// counts it: its cell now and, for a marked one, whether the mark says wanted
+// (saved or applied) or not (hidden). Closed and untriaged postings are not
+// members.
+func (b *browsing) recallMembers(rules []eval.DropRule) []eval.RecallMember {
+	out := make([]eval.RecallMember, 0, len(b.snap.Records))
+	for _, r := range b.snap.Records {
+		var cell string
+		switch {
+		case jobview.KeptStatus(r.Status):
+			cell = eval.CellKept
+		case r.Status == posting.Dropped:
+			c, _ := closedOrDropped(r, rules)
+			cell = eval.AuditCell(c)
+		default:
+			continue
+		}
+		mk := b.m[r.Key].Mark
+		out = append(out, eval.RecallMember{Key: r.Key, Cell: cell, Marked: mk != marks.None,
+			MarkedWanted: mk == marks.Saved || mk == marks.Applied})
+	}
+	return out
 }
 
 // auditJSON is `audit --json`: the draw as a screen needs it. It holds keys,
@@ -178,6 +223,7 @@ func (e *env) cmdAudit(args []string) error {
 	fs := e.newFlags("audit")
 	scored := fs.Int("scored", eval.AuditScored, "postings drawn across the score deciles")
 	dropped := fs.Int("dropped", eval.AuditDropped, "postings drawn across the drop classes")
+	closed := fs.Int("closed", eval.AuditClosed, "postings drawn across the closed statuses (dead, duplicate)")
 	seed := fs.String("seed", "", "draw seed (default: this ISO week, so a batch stays the same all week)")
 	labels := fs.String("labels", "", "label directory (default: state dir; use the repo's eval/jd_triage to keep labels in git)")
 	list := fs.Bool("list", false, "print the draw (stratum, p_select, key) and ask nothing")
@@ -189,10 +235,11 @@ func (e *env) cmdAudit(args []string) error {
 	if *list && *asJSON {
 		return usagef("audit: --list and --json are two ways to print the draw; pick one")
 	}
-	if err := checkAuditDraw(*scored, *dropped, *seed); err != nil {
+	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
+	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
-	d, err := e.drawAudit(*scored, *dropped, *seed, *labels)
+	d, err := e.drawAudit(q, *seed, *labels)
 	if *asJSON { // a failure is {"error"} on stdout, as every --json command reports it
 		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}}
 		if err == nil {
@@ -213,7 +260,7 @@ func (e *env) cmdAudit(args []string) error {
 		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored or dropped pool")
 		return nil
 	}
-	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d scored + %d dropped)\n", d.seed, len(d.picks), *scored, *dropped)
+	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d scored + %d dropped + %d closed)\n", d.seed, len(d.picks), *scored, *dropped, *closed)
 	if !*blind { // a stratum name says whether the model dropped the posting
 		for _, st := range d.plan.Strata {
 			fmt.Fprintf(e.stdout, "  %-34s pool %4d, drawn %d\n", st.Source, st.Pool, st.Taken)
@@ -267,6 +314,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	seed := fs.String("seed", "", "draw to look the stratum up in (default: this ISO week)")
 	scored := fs.Int("scored", eval.AuditScored, "scored quota of that draw")
 	dropped := fs.Int("dropped", eval.AuditDropped, "dropped quota of that draw")
+	closed := fs.Int("closed", eval.AuditClosed, "closed quota of that draw")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
@@ -282,10 +330,11 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	case given["source"] != given["p-select"]:
 		return usagef("audit answer: --source and --p-select go together")
 	}
-	if err := checkAuditDraw(*scored, *dropped, *seed); err != nil {
+	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
+	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
-	reply, err := e.answerAudit(posting.Key(*key), *verdict, *source, *p, given["source"], *seed, *scored, *dropped, *labels)
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, *source, *p, given["source"], *seed, q, *labels)
 	return e.reply(*asJSON, reply, err, func() {
 		fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
 	})
@@ -301,7 +350,7 @@ type auditAnswerJSON struct {
 
 // answerAudit writes one would_apply label (see cmdAuditAnswer). explicit says
 // source and p came from the caller; otherwise they are the draw's.
-func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, scored, dropped int, labels string) (auditAnswerJSON, error) {
+func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var snap ledger.Snapshot
 	src, prob := source, p
@@ -316,7 +365,7 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		}
 		snap = b.snap
 	} else {
-		d, err := e.drawAudit(scored, dropped, seed, labels)
+		d, err := e.drawAudit(q, seed, labels)
 		if err != nil {
 			return auditAnswerJSON{}, err
 		}
