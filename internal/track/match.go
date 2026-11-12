@@ -33,7 +33,9 @@ import (
 // separators in the text, at the word joins of the term always and, for a term
 // of five letters or more, between any two letters but not by a space ("Zephyr-net"); a
 // continuation after the term counts (a plural, a suffix, "...App"), for a term
-// of four letters or more, and a plural ("s", "es") for a shorter one; and the
+// of five letters or more; a term of four or fewer letters takes only a plural or
+// possessive, or a capital that starts a new word ("MarkApp"), never the start of
+// a longer word ("Markdown"); and the
 // term may follow a lowercase letter where it starts a capital ("myZephyrnet").
 // A short term thus stays a whole word, so a three-letter listed name does not
 // eat every word that starts with it.
@@ -375,7 +377,7 @@ func (t *term) matchAt(f *folded, i int) int {
 		camel := f.upper[j] && (!f.upper[j-1] || j+1 < len(r) && isASCIILetter(r[j+1]) && !f.upper[j+1])
 		plural := r[j] == 's' && (j+1 == len(r) || !isASCIILetter(r[j+1])) ||
 			r[j] == 'e' && j+2 <= len(r) && r[j+1] == 's' && (j+2 == len(r) || !isASCIILetter(r[j+2]))
-		if !camel && !plural && t.letters < 4 {
+		if !camel && !plural && t.letters < 5 {
 			return -1
 		}
 	}

@@ -101,7 +101,7 @@ Ported from the drafting validator (`build/check-deciders.js`):
     bounded Latin table, no dependency), zero-width and other invisible characters, every kind of
     space and dash, fullwidth and math letters, and Cyrillic/Greek look-alikes of Latin letters.
     The built-in terms are then whole words. The owner's terms are looser: a plural or suffix
-    (`kernel` finds `kernels`, `kernelized`; a term under four letters takes only a plural), a
+    (`kernel` finds `kernels`, `kernelized`; a term of four letters or fewer takes only a plural or possessive, so `mark` finds `Marks` and `Mark's` but not `Marketing`), a
     camelCase join (`ZephyrnetApp`, `myZephyrnet`), and optional spaces, hyphens, underscores,
     dots or slashes at a term's word joins (`decode-latency` finds `decode latency`,
     `DecodeLatency`) and, for terms of five or more letters, between any two letters (not by a space)
