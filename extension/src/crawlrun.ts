@@ -2,7 +2,7 @@
 // progress in the page, and hands the jobs to Vani through the ingest path (ingestJobs). It runs in the
 // content script, where the board's own API is same-origin, and keeps going if the popup closes.
 
-import { type CrawlProgress, type CrawlReport, type Http, type PageDeps, type PageScrape, crawlListing, describeCrawl, readBody, sendCrawl } from "./crawler";
+import { type CrawlProgress, type CrawlReport, type Http, type PageDeps, type PageScrape, crawlListing, describeCrawl, describeSend, readBody, sendCrawl } from "./crawler";
 import type { UserTargetProfile } from "./relevance";
 import { scrapePageJobs, scrubPageUrl, workdayCompany } from "./scraper";
 
@@ -81,8 +81,7 @@ export async function runCrawlToVani(deps: CrawlRunDeps, saveSearch: boolean, si
   const sent = await sendCrawl(report, page, save, deps.send, signal);
   // Each part is a sentence of its own; its own closing stop is dropped so none ends in "..".
   const bare = (s: string) => s.replace(/[.\s]+$/, "");
-  const said = sent.outcomes.map(o => bare(o.text));
-  const vani = said.length === 0 ? "nothing was sent" : said.length === 1 ? said[0] : `${sent.batches} batches: ${said.join("; ")}`;
+  const vani = bare(describeSend(sent).text);
   const notSaved = !saveSearch || save ? ""
     : tooBig ? ` The search was not saved: this board has over ${DAEMON_WORKDAY_MAX} jobs, more than Vani's daily Workday listing reads; narrow it with a search or filter and crawl again to save it.`
       : " The search was not saved (the page is not https).";

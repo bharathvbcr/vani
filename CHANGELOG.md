@@ -171,6 +171,20 @@ were ported with notice. Source files do not carry an upstream copyright header.
   Pager controls are never jobs; a board reader's link back to the listing that names no posting is
   left out; and when most job links name a posting (a number, a UUID or a job parameter), the link
   reader leaves out those that do not and says how many.
+- **Extension Save sends every job**: **Save to Vani** in the drawer and the popup sent one message of
+  at most 200 jobs, so Anthropic's 669 went as 200 with "469 not sent (at most 200 at a time)", and a
+  page of 200 full postings could pass the Mac host's 1 MiB bound in that one message and be refused
+  whole. Save now goes through the crawl's batched sender (`sendScrape` over `sendCrawl`: 200 jobs or
+  800 KiB a batch, the search saved by the first), says "Sending 201–400 of 669…" while it runs, and
+  is reported ok only when no batch failed. A message that never reached Vani reads "Could not reach
+  Vani", never "Vani refused". Only jobs no batch can carry are named as left out. The popup must stay
+  open until the last batch: closing it ends the batches after the one in flight.
+- **Extension crawl of a cut Workday URL**: a page URL with more than 20 filters, more than 200 values
+  in one filter, or a search over 200 characters was cut to fit in silence, so the crawl read a
+  different listing from the page's and could call it complete. The cut is now named in the crawl's
+  notes and the crawl is incomplete.
+- **Extension typecheck**: the fill reason `not_run` (contact checks that could not run) had no words
+  in the panel's reason table, so `bun run typecheck` failed on `main`.
 - **Workday short listings are counted**: a query under the 2000-row window that ends before the
   board's own total is still kept, not failed, but the rows it counted and did not list are now
   recorded (`boards.short`, `items[].short` in the run record) and named per board by

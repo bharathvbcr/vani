@@ -15,7 +15,7 @@
 
 import { isWorkdaySharedHost, workdaySharedPath } from "./applied";
 import { isRecord } from "./guards";
-import { type IngestOutcome, type IngestPage, type IngestSource, MAX_INGEST_JOBS, MAX_SNIPPET, buildIngestBatch, describeIngest, isIngestReply, leftOutText } from "./ingest";
+import { type IngestOutcome, type IngestPage, type IngestSource, MAX_INGEST_JOBS, MAX_SNIPPET, buildIngestBatch, describeIngest, isIngestReply, leftOutText, prepareIngest, sendable } from "./ingest";
 import { type UserTargetProfile, rankListing } from "./relevance";
 
 export const WORKDAY_PAGE = 20;
@@ -25,6 +25,8 @@ const MAX_SPLIT_DEPTH = 3;
 const MAX_LOCATION_BYTES = 200;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_FACET_PARAMS = 20;
+/** The longest search text a crawl sends Workday. */
+const MAX_SEARCH_CHARS = 200;
 /** Facet values taken from the page's URL. */
 const MAX_FACET_VALUES = 200;
 /** Facet values read from an answer; a facet with more is partial and never used to split. */
@@ -33,6 +35,12 @@ const MAX_ROWS = 10_000;
 const MAX_RETRIES = 2;
 /** Descriptions that fail in a row before the rest are not tried: the board is refusing them. */
 const MAX_DETAIL_FAILS_IN_ROW = 8;
+/**
+ * Workday descriptions a crawl fetches by default, most relevant first: one request to the board each, so a
+ * budget of requests, not a send bound (the send itself takes any number, in MAX_INGEST_JOBS batches).
+ * Jobs past it are listed, counted in the notes and not sent.
+ */
+export const DEFAULT_WORKDAY_DETAILS = 200;
 
 export interface CrawlOptions {
   /** Stops the crawl; what was collected so far is still returned. */
@@ -236,6 +244,8 @@ export interface WorkdayBoard {
   searchText: string;
   /** Facets the page has applied (multi-select within a facet is OR, across facets AND). */
   facets: Record<string, string[]>;
+  /** Set when the page's search or filters were past a bound and cut: the crawl is then not the listing the page shows. */
+  cut?: string;
 }
 
 const WD_HOST = /^([a-z0-9][a-z0-9-]{0,62})\.wd\d{1,3}\.myworkdayjobs\.com$/i;
@@ -268,20 +278,29 @@ export function parseWorkdayBoard(href: string): WorkdayBoard | null {
   }
   if (!WD_SITE.test(site) || site === "job" || site === "wday") return null;
   const facets: Record<string, string[]> = {};
+  // A cut filter or search changes which jobs the crawl reads (fewer values narrow it, a dropped filter
+  // widens it), so every cut is named, never made in silence.
+  const cuts: string[] = [];
   let names = 0;
   for (const name of new Set(u.searchParams.keys())) {
     if (name === "q" || !WD_FACET_NAME.test(name)) continue;
     const ids = u.searchParams.getAll(name).flatMap(v => v.split(",")).filter(v => WD_FACET_ID.test(v));
     if (ids.length === 0) continue;
-    if (++names > MAX_FACET_PARAMS) break;
-    facets[name] = [...new Set(ids)].slice(0, MAX_FACET_VALUES);
+    if (++names > MAX_FACET_PARAMS) continue;
+    const unique = [...new Set(ids)];
+    if (unique.length > MAX_FACET_VALUES) cuts.push(`the page's ${name} filter has ${unique.length} values and the crawl reads the first ${MAX_FACET_VALUES}`);
+    facets[name] = unique.slice(0, MAX_FACET_VALUES);
   }
+  if (names > MAX_FACET_PARAMS) cuts.unshift(`the page applies ${names} filters and the crawl reads the first ${MAX_FACET_PARAMS}`);
+  const q = u.searchParams.get("q") ?? "";
+  if (q.length > MAX_SEARCH_CHARS) cuts.push(`the page's search is ${q.length} characters and the crawl reads the first ${MAX_SEARCH_CHARS}`);
   return {
     origin: u.origin,
     tenant,
     site,
-    searchText: (u.searchParams.get("q") ?? "").slice(0, 200),
+    searchText: q.slice(0, MAX_SEARCH_CHARS),
     facets,
+    ...(cuts.length > 0 ? { cut: cuts.join("; ") } : {}),
   };
 }
 
@@ -636,6 +655,10 @@ export async function crawlWorkday(b: WorkdayBoard, options: CrawlOptions = {}, 
   };
   const seen = new Map<string, Row>();
   const company = clean(options.company) || b.tenant;
+  if (b.cut) {
+    ctx.complete = false;
+    note(ctx, b.cut);
+  }
   try {
     await walkQuery(ctx, b, b.facets, 0, seen);
   } catch (e) {
@@ -651,7 +674,7 @@ export async function crawlWorkday(b: WorkdayBoard, options: CrawlOptions = {}, 
     note(ctx, "the board's count rests on one facet, so jobs that facet leaves out cannot be ruled out");
   }
 
-  const maxDetails = Math.max(0, Math.min(options.maxDetails ?? MAX_INGEST_JOBS, options.maxJobs ?? MAX_ROWS));
+  const maxDetails = Math.max(0, Math.min(options.maxDetails ?? DEFAULT_WORKDAY_DETAILS, options.maxJobs ?? MAX_ROWS));
   const ranked = [...seen.values()]
     .map(r => ({ r, score: rankListing(r, options.profile) }))
     .sort((a, b2) => b2.score - a.score)
@@ -999,6 +1022,8 @@ export interface SendResult {
   outcomes: IngestOutcome[];
   /** Words for jobs no batch could carry. */
   leftOut: string;
+  /** The send ended before the last batch: one failed, or it was stopped. Jobs after it were not sent. */
+  stopped: boolean;
 }
 
 /**
@@ -1040,29 +1065,38 @@ function nextBatch(jobs: readonly IngestSource[], start: number, page: IngestPag
  * the next would fail alike.
  */
 export async function sendCrawl(
-  report: Pick<CrawlReport, "jobs">,
+  report: { readonly jobs: readonly IngestSource[] },
   page: IngestPage,
   saveSearch: boolean,
   send: (msg: unknown) => Promise<unknown> = m => chrome.runtime.sendMessage(m),
   signal?: AbortSignal,
+  onBatch?: (from: number, to: number, total: number) => void,
 ): Promise<SendResult> {
   const outcomes: IngestOutcome[] = [];
   let sent = 0;
   let batches = 0;
   let skipped = 0;
+  // Jobs handed to a batch so far, for progress: 1-based, as a person counts them, out of the jobs a batch
+  // can carry (ingest.ts sendable's count, the number the note before sending names).
+  let handed = 0;
+  const total = onBatch ? sendable(report.jobs).count : 0;
   for (let i = 0; i < report.jobs.length;) {
     if (signal?.aborted) {
-      return { sent, batches, outcomes, leftOut: joinLeftOut(leftOutText({ skipped, overLimit: 0 }), `${report.jobs.length - i} not sent (stopped)`) };
+      return { sent, batches, outcomes, leftOut: joinLeftOut(leftOutText({ skipped, overLimit: 0 }), `${report.jobs.length - i} not sent (stopped)`), stopped: true };
     }
     const start = i;
     const batch = nextBatch(report.jobs, start, page);
     i = batch.end;
     if (batch.jobs.length === 0) { skipped += batch.skipped; continue; }
+    onBatch?.(handed + 1, handed + batch.jobs.length, total);
+    handed += batch.jobs.length;
     let reply: unknown;
     try {
       reply = await send({ type: "ingestJobs", page, saveSearch: saveSearch && batches === 0, jobs: batch.jobs });
     } catch (e) {
-      reply = { error: e instanceof Error ? e.message : String(e) };
+      // The message never reached Vani; describeIngest words this as not reached, never as refused.
+      const why = e instanceof Error ? e.message : e === undefined || e === null ? "" : String(e);
+      reply = { error: why || "the message was not delivered", code: "transport" };
     }
     batches++;
     const outcome = describeIngest(reply);
@@ -1071,15 +1105,47 @@ export async function sendCrawl(
     if (!isIngestReply(reply) || (isRecord(reply) && reply.error !== undefined)) {
       // This batch's own unusable jobs are in the remainder, so they are not counted again as skipped.
       // Why is the batch's own outcome (in `outcomes`); repeating it here would say it twice.
-      return { sent, batches, outcomes, leftOut: joinLeftOut(leftOutText({ skipped, overLimit: 0 }), `${report.jobs.length - start} not sent`) };
+      return { sent, batches, outcomes, leftOut: joinLeftOut(leftOutText({ skipped, overLimit: 0 }), `${report.jobs.length - start} not sent`), stopped: true };
     }
     skipped += batch.skipped;
     sent += reply.queued + (reply.duplicates ?? 0);
   }
-  return { sent, batches, outcomes, leftOut: leftOutText({ skipped, overLimit: 0 }) };
+  return { sent, batches, outcomes, leftOut: leftOutText({ skipped, overLimit: 0 }), stopped: false };
 }
 
 const joinLeftOut = (...parts: string[]): string => parts.filter(Boolean).join("; ");
+
+/**
+ * Vani's answers to a send in words, the one wording Save and Crawl share: one batch reads as the host's
+ * own answer; more read as a count, then each answer. Ok only when no batch failed or was cut off and some
+ * batch took a job (one batch's own ok, as describeIngest rules it).
+ */
+export function describeSend(sent: Pick<SendResult, "batches" | "outcomes" | "stopped">): IngestOutcome {
+  const bare = (s: string) => s.replace(/[.\s]+$/, "");
+  const ok = !sent.stopped && sent.outcomes.some(o => o.ok);
+  if (sent.outcomes.length === 0) return { ok: false, text: "nothing was sent" };
+  if (sent.outcomes.length === 1) return { ok, text: sent.outcomes[0]!.text };
+  return { ok, text: `${sent.batches} batches: ${sent.outcomes.map(o => bare(o.text)).join("; ")}` };
+}
+
+/**
+ * Save: a scrape's jobs to Vani in as many bounded batches as it takes (sendCrawl), with what cannot be
+ * sent at all refused first in prepareIngest's words. `onBatch` names the jobs in flight; a popup that
+ * closes mid-send ends the batches after the one in flight, so the popup shows it.
+ */
+export async function sendScrape(
+  scrape: { pageUrl: string; pageTitle: string; jobs: readonly IngestSource[] },
+  saveSearch: boolean,
+  send: (msg: unknown) => Promise<unknown>,
+  onBatch?: (from: number, to: number, total: number) => void,
+): Promise<IngestOutcome> {
+  const p = prepareIngest(scrape, saveSearch);
+  if ("error" in p) return { ok: false, text: p.error };
+  const sent = await sendCrawl({ jobs: scrape.jobs }, p.req.page, p.req.saveSearch, send, undefined, onBatch);
+  const said = describeSend(sent);
+  const left = sent.leftOut.replace(/[.\s]+$/, "");
+  return { ok: said.ok, text: left ? `${said.text.replace(/[.\s]+$/, "")}. ${left}` : said.text };
+}
 
 /** The crawl a page calls for: Workday's API on a Workday board, its own pagination anywhere else. */
 export async function crawlListing(doc: Document, pageUrl: string, deps: PageDeps, options: CrawlOptions = {}, http?: Http): Promise<CrawlReport> {
