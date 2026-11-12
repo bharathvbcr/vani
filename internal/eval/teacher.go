@@ -71,17 +71,25 @@ type TeacherSlot struct {
 // the question's definition (kbmatch.Prompt and its ordered options) and its
 // PromptHash the hash of the exact messages with the posting left out, the
 // target summary included (TeacherTask).
+//
+// TitleSHA256 and LocationSHA256 are HashText of the raw title and location
+// the question rendered beside the description, so a reader can tell whether
+// two readings saw the same rendered posting. Rows written before 2026-11-11
+// have neither. They are provenance only: not part of TeacherIdent, so a stored
+// reading stays current when they are absent or differ.
 type TeacherRow struct {
-	V          int                    `json:"v"`
-	Key        posting.Key            `json:"key"`
-	Task       string                 `json:"task,omitempty"`
-	TextSHA256 string                 `json:"text_sha256"`
-	Model      string                 `json:"model"`
-	FixtureSHA string                 `json:"fixture_sha"`
-	PromptHash string                 `json:"prompt_hash"`
-	DigestSHA  string                 `json:"kb_digest_sha,omitempty"`
-	Slots      map[string]TeacherSlot `json:"slots"`
-	At         time.Time              `json:"at"`
+	V              int                    `json:"v"`
+	Key            posting.Key            `json:"key"`
+	Task           string                 `json:"task,omitempty"`
+	TextSHA256     string                 `json:"text_sha256"`
+	TitleSHA256    string                 `json:"title_sha256,omitempty"`
+	LocationSHA256 string                 `json:"location_sha256,omitempty"`
+	Model          string                 `json:"model"`
+	FixtureSHA     string                 `json:"fixture_sha"`
+	PromptHash     string                 `json:"prompt_hash"`
+	DigestSHA      string                 `json:"kb_digest_sha,omitempty"`
+	Slots          map[string]TeacherSlot `json:"slots"`
+	At             time.Time              `json:"at"`
 }
 
 // TeacherIdent is what makes a stored reading current: the same text asked the
@@ -772,7 +780,8 @@ func teacherRow(p posting.Posting, model string, t TeacherTask, q decide.Questio
 		}
 	}
 	return TeacherRow{
-		V: TeacherSchema, Key: p.Key, Task: t.Name, TextSHA256: HashText(p.Description), Model: model,
+		V: TeacherSchema, Key: p.Key, Task: t.Name, TextSHA256: HashText(p.Description),
+		TitleSHA256: HashText(p.Title), LocationSHA256: HashText(p.Location), Model: model,
 		FixtureSHA: t.Fixture, PromptHash: t.Prompt, DigestSHA: t.Digest, Slots: slots, At: at.UTC(),
 	}
 }

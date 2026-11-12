@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
+	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
@@ -590,6 +591,10 @@ func (a *retriageAsker) read(ctx context.Context, p llm.Provider, dir string, r 
 	rd := manualtriage.Reading{
 		Key: r.Key, Slots: slots, Model: a.model, At: now().UTC(),
 		Text: manualtriage.TextSHA256(r.Posting), Prompt: manualtriage.PromptSHA256(pr.system, a.summary),
+		// The teacher store's provenance, computed its way, so the reading binds
+		// to its text and question as a teacher reading does. pr.q is the
+		// jd_triage question for a.summary, the one PromptHash fingerprints.
+		TextSHA256: eval.HashText(r.Posting.Description), FixtureSHA: eval.FixtureSHA(), PromptHash: eval.PromptHash(a.summary),
 	}
 	if err := manualtriage.Set(dir, rd); err != nil {
 		return manualtriage.Reading{}, nil, storeErr(err, cost)

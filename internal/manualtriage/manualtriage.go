@@ -105,18 +105,44 @@ type Reading struct {
 	// it was given, for audit; a changed prompt does not invalidate a reading.
 	Text   string `json:"text"`
 	Prompt string `json:"prompt"`
+	// Provenance in the teacher store's terms (eval.TeacherRow), so a reader can
+	// admit a manual reading as it admits a teacher reading: TextSHA256 is
+	// eval.HashText of the raw description, FixtureSHA eval.FixtureSHA and
+	// PromptHash eval.PromptHash of the target summary. The rendered title and
+	// location are already bound by Text. Readings stored before 2026-11-11
+	// have none of them, and none is ever made up for one. They are not what
+	// makes a reading current (Text is).
+	TextSHA256 string `json:"text_sha256,omitempty"`
+	FixtureSHA string `json:"fixture_sha,omitempty"`
+	PromptHash string `json:"prompt_hash,omitempty"`
 }
 
-// event is one stored line.
+// event is one stored line. The provenance fields are stored under the teacher
+// store's names. A reader older than them refuses a line that carries them
+// (DisallowUnknownFields), as it refuses any line from a newer writer.
 type event struct {
-	V      int               `json:"v"`
-	At     time.Time         `json:"at"`
-	Key    posting.Key       `json:"key"`
-	Op     string            `json:"op"`
-	Slots  map[string]string `json:"slots,omitempty"`
-	Model  string            `json:"model,omitempty"`
-	Text   string            `json:"text,omitempty"`
-	Prompt string            `json:"prompt,omitempty"`
+	V          int               `json:"v"`
+	At         time.Time         `json:"at"`
+	Key        posting.Key       `json:"key"`
+	Op         string            `json:"op"`
+	Slots      map[string]string `json:"slots,omitempty"`
+	Model      string            `json:"model,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	Prompt     string            `json:"prompt,omitempty"`
+	TextSHA256 string            `json:"text_sha256,omitempty"`
+	FixtureSHA string            `json:"fixture_sha,omitempty"`
+	PromptHash string            `json:"prompt_hash,omitempty"`
+}
+
+// setEvent is rd's set line.
+func setEvent(rd Reading) event {
+	return event{V: Version, At: rd.At.UTC(), Key: rd.Key, Op: opSet, Slots: rd.Slots, Model: rd.Model, Text: rd.Text, Prompt: rd.Prompt,
+		TextSHA256: rd.TextSHA256, FixtureSHA: rd.FixtureSHA, PromptHash: rd.PromptHash}
+}
+
+// provenance lists e's optional provenance hashes.
+func (e event) provenance() []string {
+	return []string{e.TextSHA256, e.FixtureSHA, e.PromptHash}
 }
 
 // Dir is where the store lives for a state directory.
@@ -271,7 +297,7 @@ func validate(e event) error {
 	}
 	switch e.Op {
 	case opClear:
-		if e.Slots != nil || e.Model != "" || e.Text != "" || e.Prompt != "" {
+		if e.Slots != nil || e.Model != "" || e.Text != "" || e.Prompt != "" || slices.ContainsFunc(e.provenance(), func(h string) bool { return h != "" }) {
 			return fmt.Errorf("%w: a clear line carries a reading", ErrInvalid)
 		}
 		return nil
@@ -285,6 +311,12 @@ func validate(e event) error {
 		if !hexOK(e.Text) || !hexOK(e.Prompt) {
 			return fmt.Errorf("%w: a reading has no hashes", ErrInvalid)
 		}
+		// Absent on readings stored before they existed; a sha256 when present.
+		for _, h := range e.provenance() {
+			if h != "" && !hexOK(h) {
+				return fmt.Errorf("%w: a provenance hash is not a sha256", ErrInvalid)
+			}
+		}
 		return nil
 	}
 	return fmt.Errorf("%w: op %q", ErrInvalid, e.Op)
@@ -295,7 +327,8 @@ func fold(m map[posting.Key]Reading, e event) {
 		delete(m, e.Key)
 		return
 	}
-	m[e.Key] = Reading{Key: e.Key, Slots: maps.Clone(e.Slots), Model: e.Model, At: e.At, Text: e.Text, Prompt: e.Prompt}
+	m[e.Key] = Reading{Key: e.Key, Slots: maps.Clone(e.Slots), Model: e.Model, At: e.At, Text: e.Text, Prompt: e.Prompt,
+		TextSHA256: e.TextSHA256, FixtureSHA: e.FixtureSHA, PromptHash: e.PromptHash}
 }
 
 type replayed struct {
@@ -372,8 +405,7 @@ func Read(dir string) (map[posting.Key]Reading, error) {
 // Set records rd (its At is the time it was made) and replaces any earlier
 // reading of the same posting.
 func Set(dir string, rd Reading) error {
-	return write(dir, event{V: Version, At: rd.At.UTC(), Key: rd.Key, Op: opSet,
-		Slots: rd.Slots, Model: rd.Model, Text: rd.Text, Prompt: rd.Prompt})
+	return write(dir, setEvent(rd))
 }
 
 // Clear removes k's manual reading at now and reports whether there was one.
@@ -571,7 +603,8 @@ func compact(path string, m map[posting.Key]Reading) (int64, error) {
 	var buf bytes.Buffer
 	for _, k := range keys {
 		rd := m[k]
-		line, err := json.Marshal(event{V: Version, At: rd.At, Key: k, Op: opSet, Slots: rd.Slots, Model: rd.Model, Text: rd.Text, Prompt: rd.Prompt})
+		rd.Key = k
+		line, err := json.Marshal(setEvent(rd))
 		if err != nil {
 			return 0, fmt.Errorf("manualtriage: compact: %w", err)
 		}

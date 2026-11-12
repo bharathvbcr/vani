@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -396,6 +397,9 @@ func shadowAnnotations(slot string, primaryAnswered bool, primaryValue string, s
 	if b := slotBackend(decide.Answer{}, sh); b != "" {
 		ann[pre+ledger.AnnTriageSuffixShadowBackend] = b
 	}
+	if m := slotModel(sh); m != "" {
+		ann[pre+ledger.AnnTriageSuffixShadowModel] = m
+	}
 	if sh.Reading == decide.Answered {
 		ann[pre+ledger.AnnTriageSuffixShadow] = sh.Value
 		if primaryAnswered && primaryValue != sh.Value {
@@ -417,6 +421,45 @@ func slotBackend(a decide.Answer, sr decide.SlotReading) string {
 		}
 	}
 	return a.Backend
+}
+
+// modelTag prefixes the Detail part that names the model a reading came from.
+const modelTag = "model="
+
+// TagModel returns detail with a "model=<model>" part appended, the tag
+// shadowAnnotations records as triage.<slot>.shadow_model. A tier that knows
+// which model it asked (the escalation tier) tags each reading with it. A
+// model id that could not be read back whole (empty, or holding ';', '=',
+// whitespace or a control character) is not tagged, so no reading ever names a
+// wrong model; it then names none.
+func TagModel(detail, model string) string {
+	if model == "" || strings.ContainsFunc(model, func(r rune) bool {
+		return r == ';' || r == '=' || unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return detail
+	}
+	if detail != "" {
+		detail += ";"
+	}
+	return detail + modelTag + model
+}
+
+// slotModel is the model a TagModel tag on sr names, or "".
+func slotModel(sr decide.SlotReading) string {
+	for _, part := range strings.Split(sr.Detail, ";") {
+		if m, ok := strings.CutPrefix(strings.TrimSpace(part), modelTag); ok {
+			return m
+		}
+	}
+	return ""
+}
+
+// bindText writes the text binding of a reading of p into ann under the given
+// description, title and location keys: posting.RawSHA256 of each raw field.
+func bindText(ann map[string]string, p posting.Posting, desc, title, location string) {
+	ann[desc] = posting.RawSHA256(p.Description)
+	ann[title] = posting.RawSHA256(p.Title)
+	ann[location] = posting.RawSHA256(p.Location)
 }
 
 // DropRule drops a posting whose Slot is answered with one of Values by a

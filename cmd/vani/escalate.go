@@ -10,6 +10,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -34,7 +35,7 @@ func (w *wired) escalateBackend(p llm.Provider) (decide.Backend, error) {
 	if !w.cfg.Decide.EscalateEnabled() {
 		return nil, nil
 	}
-	lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.EffectiveTriageModel(), Name: escalateName})
+	lb, err := llmbackend.New(p, llmbackend.Config{Model: w.escalateModel(), Name: escalateName})
 	if err != nil {
 		return nil, fmt.Errorf("escalate backend: %w", err)
 	}
@@ -53,8 +54,13 @@ func (w *wired) escalating(router decide.Decider, esc decide.Backend) decide.Dec
 		w.noteShadow(msg)
 		return router
 	}
-	return newEscalator(router, decide.NewRouter(esc), w.cfg.Decide.EscalateBelowP(), w.cfg.Decide.EscalateMaxPerRun(), w.warnf)
+	return newEscalator(router, decide.NewRouter(esc), w.escalateModel(), w.cfg.Decide.EscalateBelowP(), w.cfg.Decide.EscalateMaxPerRun(), w.warnf)
 }
+
+// escalateModel is the model the escalation tier asks: llm.triage_model, or
+// llm.model when that is empty. One definition, so the backend asks the model
+// the readings are tagged with.
+func (w *wired) escalateModel() string { return w.cfg.LLM.EffectiveTriageModel() }
 
 // escalator is the decide.Decider that measures a cheaper Claude tier against
 // the primary's low-confidence readings (decide.escalate). MEASURE MODE: it only
@@ -93,7 +99,11 @@ type escalator struct {
 	// backend, because it checks every value against the slot's options (Rule 7),
 	// contains a panic, and tags each reading "backend=escalate", which is what
 	// triageAnnotations reads shadow_backend from.
-	ask     decide.Decider
+	ask decide.Decider
+	// model is the model id ask's backend asks (escalateModel): each reading is
+	// tagged with it (pipeline.TagModel), so the ledger records which model made
+	// every shadow reading as triage.<slot>.shadow_model.
+	model   string
 	belowP  float64
 	maxRun  int64
 	warnf   func(format string, a ...any)
@@ -104,11 +114,11 @@ type escalator struct {
 
 var _ decide.Decider = (*escalator)(nil)
 
-func newEscalator(primary, ask decide.Decider, belowP float64, maxPerRun int, warnf func(string, ...any)) *escalator {
+func newEscalator(primary, ask decide.Decider, model string, belowP float64, maxPerRun int, warnf func(string, ...any)) *escalator {
 	if warnf == nil {
 		warnf = func(string, ...any) {}
 	}
-	return &escalator{primary: primary, ask: ask, belowP: belowP, maxRun: int64(maxPerRun), warnf: warnf}
+	return &escalator{primary: primary, ask: ask, model: model, belowP: belowP, maxRun: int64(maxPerRun), warnf: warnf}
 }
 
 // Escalated is how many slots this run has sent to the escalation tier.
@@ -157,6 +167,8 @@ func (e *escalator) askSlots(ctx context.Context, q decide.Question, slots []dec
 		if !ok {
 			rd = decide.SlotReading{Reading: decide.Unavailable, Detail: "missing_slot;backend=" + escalateName}
 		}
+		// Every reading, an outage too, names the model that was asked.
+		rd.Detail = pipeline.TagModel(rd.Detail, e.model)
 		out[s.Name] = rd
 	}
 	return out

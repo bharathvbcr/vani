@@ -320,11 +320,12 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 		if err != nil {
 			w.warnf("llm disabled: %v", err)
 		} else {
-			lb, err := llmbackend.New(p, llmbackend.Config{Model: w.cfg.LLM.EffectiveTriageModel()})
+			model := w.cfg.LLM.EffectiveTriageModel()
+			lb, err := llmbackend.New(p, llmbackend.Config{Model: model})
 			if err != nil {
 				return nil, fmt.Errorf("llm backend: %w", err)
 			}
-			backends = append(backends, logErrors(lb, w.warnf, w.backendErrs))
+			backends = append(backends, logErrors(modelTagged{Backend: lb, model: model}, w.warnf, w.backendErrs))
 			if esc, err = w.escalateBackend(p); err != nil {
 				return nil, err
 			}
