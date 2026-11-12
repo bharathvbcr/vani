@@ -19,6 +19,7 @@ func TestShortListingIsCountedNotFailed(t *testing.T) {
 	for name, tc := range map[string]struct {
 		fb    func() *fakeBoard
 		short int
+		lost  int // rows the board does not serve at all
 	}{
 		"total exact": {fb: func() *fakeBoard { return nvidiaBoard(300) }, short: 0},
 		"total lies high": {fb: func() *fakeBoard {
@@ -56,6 +57,32 @@ func TestShortListingIsCountedNotFailed(t *testing.T) {
 			}
 			return fb
 		}, short: 40},
+		// A bucket that loses rows and whose own total drops with them lists
+		// all it counts, so it is not short by itself; the split's count still
+		// names the gap, which the split's allowance lets pass. It is counted.
+		"a split's allowance hides a gap": {fb: func() *fakeBoard {
+			fb := nvidiaBoard(2753)
+			inBucket := func(applied map[string][]string) bool {
+				ids, ok := applied["jobFamilyGroup"]
+				return ok && ids[0] == fid(2, 3)
+			}
+			fb.total = func(real int, applied map[string][]string) (string, bool) {
+				if inBucket(applied) {
+					return fmt.Sprint(real - 5), true
+				}
+				return fmt.Sprint(min(real, window)), true
+			}
+			fb.page = func(offset int, rows []fakeJob) []fakeJob {
+				fb.mu.Lock()
+				applied := fb.applied[len(fb.applied)-1]
+				fb.mu.Unlock()
+				if inBucket(applied) && len(rows) > 0 && len(rows) < pageSize {
+					return rows[:max(0, len(rows)-5)] // the last page loses 5 rows
+				}
+				return rows
+			}
+			return fb
+		}, short: 5, lost: 5},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fb := tc.fb()
@@ -63,8 +90,8 @@ func TestShortListingIsCountedNotFailed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("a short listing failed the board: %v", err)
 			}
-			if len(rows) != len(fb.jobs) {
-				t.Fatalf("listed %d of %d", len(rows), len(fb.jobs))
+			if len(rows) != len(fb.jobs)-tc.lost {
+				t.Fatalf("listed %d of %d, want %d lost", len(rows), len(fb.jobs), tc.lost)
 			}
 			if w.short != tc.short {
 				t.Fatalf("short = %d, want %d", w.short, tc.short)
